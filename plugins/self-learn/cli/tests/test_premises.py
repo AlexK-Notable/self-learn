@@ -21,6 +21,7 @@ import json
 import os
 import stat
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,7 @@ from self_learn.premises import (
     ProbeRefused,
 )
 from self_learn.records import Record, ValidationError
-from support import make_behavior, make_home
+from support import commit_all, make_behavior, make_home
 
 # ------------------------------------------------------------ fake binaries
 
@@ -63,13 +64,21 @@ FORBIDDEN_VERBS = {{
     "git": {{"push", "fetch", "pull", "clone", "commit", "checkout", "reset", "gc",
              "config", "remote", "show", "log", "status"}},
 }}[PROG]
-REQUIRED = {{"systemctl": "show", "pacman": "-Q", "git": "cat-file"}}[PROG]
-if REQUIRED not in argv or any(a in FORBIDDEN_VERBS for a in argv):
+REQUIRED = {{"systemctl": {{"show"}}, "pacman": {{"-Q"}}, "git": {{"cat-file", "rev-parse"}}}}[PROG]
+if not REQUIRED & set(argv) or any(a in FORBIDDEN_VERBS for a in argv):
     with open(os.path.join(HERE, "FORBIDDEN"), "a") as fh:
         fh.write(json.dumps(argv) + "\\n")
     sys.exit(97)
 with open(os.path.join(HERE, "scenario.json")) as fh:
     scenario = json.load(fh).get(PROG, {{}})
+if PROG == "git":
+    # git answers per step: resolve (rev-parse), size (cat-file -s), blob.
+    step = "resolve" if "rev-parse" in argv else ("size" if "-s" in argv else "blob")
+    scenario = scenario.get(step, {{}})
+if PROG == "systemctl" and "LoadState" in argv:
+    # The probe reads the unit's LoadState first; "loaded" unless a test
+    # says otherwise. Exit status, stderr and delay stay the scenario's.
+    scenario = dict(scenario, stdout=scenario.get("load_state", "loaded") + "\\n")
 time.sleep(scenario.get("sleep", 0))
 sys.stdout.write(scenario.get("stdout", ""))
 sys.stderr.write(scenario.get("stderr", ""))
@@ -100,6 +109,20 @@ class Fakes:
         self._scenario[prog] = answer
         self._write_scenario()
 
+    def set_git(self, text: str | None = None, **steps) -> None:
+        """The fake git's three answers. *text* fills all three for a file
+        committed at HEAD (its object id, its size, its bytes); *steps*
+        (``resolve``, ``size``, ``blob``) override one answer each."""
+        answers: dict = {}
+        if text is not None:
+            answers = {
+                "resolve": {"stdout": GIT_OID + "\n"},
+                "size": {"stdout": f"{len(text.encode('utf-8'))}\n"},
+                "blob": {"stdout": text},
+            }
+        answers.update(steps)
+        self.set("git", **answers)
+
     def calls(self) -> list[dict]:
         log = self.bindir / "calls.jsonl"
         if not log.exists():
@@ -121,13 +144,23 @@ class Fakes:
         return ProbeEnv(**kwargs)
 
 
+GIT_OID = "ab" * 20
+GIT_HEAD = ["git", "--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C"]
+
+
 @pytest.fixture
 def fakes(tmp_path) -> Fakes:
-    # Only the shared temporary ROOT may excuse a test: a refused word in
-    # a test's own directory name is a test-naming defect and must fail.
-    root = os.path.realpath(tmp_path.parent)
-    if premises.credential_path_problem(root, reads_content=True) is not None:
-        pytest.skip(f"the temporary root {root} sits under a path premises refuse")
+    # A temporary root under a refused path component would make every
+    # file probe here unavailable by design: fail loudly rather than skip
+    # thirty tests (a skip reads as a pass). A refused word in a test's own
+    # directory name is a test-naming defect and fails the same way.
+    root = os.path.realpath(tmp_path)
+    problem = premises.credential_path_problem(root, reads_content=True)
+    if problem is not None:
+        pytest.fail(
+            f"the temporary directory {root} sits under a path premises refuse ({problem}); "
+            "point --basetemp elsewhere or rename the test"
+        )
     return Fakes(tmp_path)
 
 
@@ -246,6 +279,39 @@ class TestSchema:
         with pytest.raises(PremiseError, match="placement premise"):
             premises.validate_premises([_premise({"kind": name})])
 
+    @pytest.mark.parametrize(
+        "key",
+        ["api_key", "database.password", "auth.token", ["services", "github", "accessKey"],
+         "client_secret", "db.passwd", "smtp.pass", "ssh_key", "oauth.clientSecret",
+         "APIKey", "cookies.session"],
+    )
+    def test_key_probes_refuse_keys_that_name_a_credential(self, key):
+        good = {"kind": "json-key", "path": "~/.config/app/settings.json", "key": "mode"}
+        premises.validate_probe(good)  # control: an ordinary key is accepted
+        for kind in ("json-key", "yaml-key", "toml-key"):
+            with pytest.raises(PremiseError, match="marks a credential"):
+                premises.validate_probe(dict(good, kind=kind, key=key))
+
+    @pytest.mark.parametrize(
+        "key", ["mode", "keybindings.main", "hotkey", "general.author", "tool.name", "a.0"]
+    )
+    def test_ordinary_keys_are_not_refused(self, key):
+        premises.validate_probe({"kind": "yaml-key", "path": "~/a.yaml", "key": key})
+
+    @pytest.mark.parametrize(
+        "prop",
+        ["Environment", "EnvironmentFiles", "PassEnvironment", "ExecStart", "ExecStartPre",
+         "ExecReload", "LoadCredential", "LoadCredentialEncrypted", "SetCredential",
+         "SetCredentialEncrypted", "ImportCredential", "StandardInputText",
+         "StandardInputData", "LogExtraFields"],
+    )
+    def test_systemd_properties_that_carry_secrets_are_refused(self, prop):
+        good = {"kind": "systemd-show", "scope": "user", "unit": "x.service",
+                "property": "BindsTo"}
+        premises.validate_probe(good)  # control
+        with pytest.raises(PremiseError, match="is refused"):
+            premises.validate_probe(dict(good, property=prop))
+
     def test_a_ledger_probe_may_not_name_its_own_lesson(self):
         for ref in ("lrn-0000000a", "lrn-0000000a#follow_up"):
             value = [_premise({"kind": "ledger", "ref": ref})]
@@ -290,6 +356,14 @@ class TestPaths:
             "~/notes/my-password-list.txt",
             "~/apps/service/secret.json",
             "~/repos/app/.git/config",
+            "~/.zsh_history",
+            "~/.bash_history",
+            "~/.local/share/fish/fish_history",
+            "~/.mozilla/firefox/abc.default/logins.json",
+            "~/.config/chromium/Default/Login Data",
+            "~/.config/google-chrome/Default/Cookies",
+            "/etc/NetworkManager/system-connections/home.nmconnection",
+            "~/.config/op/config",
         ],
     )
     def test_credential_locations_are_refused_at_validation(self, path):
@@ -346,12 +420,25 @@ class TestCommandGate:
             ["sh", "-c", "systemctl show x.service"],
             ["pacman", "-S", "--", "git"],
             ["pacman", "-Q", "--", "git", "extra"],
-            ["git", "--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C",
-             "/repo", "fetch", "origin", "HEAD:x"],
-            ["git", "--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C",
-             "/repo", "cat-file", "blob", "HEAD:../escape"],
-            ["git", "--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C",
-             "/repo", "cat-file", "blob", "HEAD:.ssh/id_rsa"],
+            [*GIT_HEAD, "/repo", "fetch", "origin", "HEAD:x"],
+            # The old whole-blob read by path is no longer a catalog shape:
+            # a blob is read only by object id, after its size is checked.
+            [*GIT_HEAD, "/repo", "cat-file", "blob", "HEAD:conf/app.conf"],
+            [*GIT_HEAD, "/repo", "cat-file", "-p", GIT_OID],
+            [*GIT_HEAD, "/repo", "cat-file", "blob", GIT_OID, "extra"],
+            [*GIT_HEAD, "/repo", "rev-parse", "--verify", "--quiet", "HEAD:../escape"],
+            [*GIT_HEAD, "/repo", "rev-parse", "--verify", "--quiet", "HEAD:.ssh/id_rsa"],
+            [*GIT_HEAD, "/repo", "rev-parse", "HEAD:conf/app.conf"],
+            [*GIT_HEAD, "relative/repo", "cat-file", "-s", GIT_OID],
+            [*GIT_HEAD, "/home/u/.ssh", "cat-file", "-s", GIT_OID],
+            # Properties that carry an environment, a credential or a
+            # command line never reach systemctl, whatever builds the argv.
+            ["systemctl", "--user", "show", "--no-pager", "--no-ask-password", "--property",
+             "Environment", "--value", "--", "x.service"],
+            ["systemctl", "--user", "show", "--no-pager", "--no-ask-password", "--property",
+             "ExecStart", "--value", "--", "x.service"],
+            ["systemctl", "--system", "show", "--no-pager", "--no-ask-password", "--property",
+             "SetCredentialEncrypted", "--value", "--", "x.service"],
             [],
         ],
     )
@@ -363,7 +450,10 @@ class TestCommandGate:
         premises._check_argv(premises._systemctl_argv("user", "x.service", "BindsTo"))
         premises._check_argv(premises._systemctl_argv("system", "x.service", "ActiveState"))
         premises._check_argv(premises._pacman_argv("git"))
-        premises._check_argv(premises._git_argv("/repo", "dir/file.conf"))
+        premises._check_argv(premises._git_resolve_argv("/repo", "dir/file.conf"))
+        premises._check_argv(premises._git_size_argv("/repo", GIT_OID))
+        premises._check_argv(premises._git_blob_argv("/repo", GIT_OID))
+        premises._check_argv(premises._git_blob_argv("/repo", "cd" * 32))  # sha256 repos
 
     def test_a_refused_argv_never_reaches_the_runner(self, fakes):
         seen: list = []
@@ -385,7 +475,7 @@ class TestCommandGate:
                  "property": "BindsTo"}
         fakes.set("systemctl", stdout="y.service\n")
         first = premises.run_probe(probe, fakes.env())
-        assert first.state == OBS_OK and len(fakes.calls()) == 1  # control: it runs
+        assert first.state == OBS_OK and len(fakes.calls()) == 2  # control: it runs
         monkeypatch.setattr(
             premises, "_systemctl_argv",
             lambda scope, unit, prop: ["systemctl", "--user", "start", unit],
@@ -393,7 +483,7 @@ class TestCommandGate:
         obs = premises.run_probe(probe, fakes.env())
         assert obs.state == OBS_UNAVAILABLE
         assert obs.reason.startswith("refused")
-        assert len(fakes.calls()) == 1  # the fake was not called again
+        assert len(fakes.calls()) == 2  # the fake was not called again
         assert not fakes.forbidden()
 
 
@@ -412,18 +502,34 @@ class TestSystemd:
         obs = premises.run_probe(probe, fakes.env())
         assert obs.state == OBS_OK
         assert obs.shown == "dbus-broker.service"
-        (call,) = fakes.calls()
-        assert call["argv"] == [
-            "--user", "show", "--no-pager", "--no-ask-password", "--property", "BindsTo",
-            "--value", "--", "x-daemon.service",
+        load, show = fakes.calls()
+        assert [load["argv"], show["argv"]] == [
+            ["--user", "show", "--no-pager", "--no-ask-password", "--property", "LoadState",
+             "--value", "--", "x-daemon.service"],
+            ["--user", "show", "--no-pager", "--no-ask-password", "--property", "BindsTo",
+             "--value", "--", "x-daemon.service"],
         ]
-        assert call["stdin_devnull"] is True
-        env = call["env"]
-        assert env["LC_ALL"] == "C"
-        assert env["XDG_RUNTIME_DIR"] == "/nonexistent-runtime-dir"
         allowed = set(premises._child_env(fakes.env())) | {"LC_CTYPE"}
-        assert set(env) - allowed == set()
+        for call in (load, show):
+            assert call["stdin_devnull"] is True
+            env = call["env"]
+            assert env["LC_ALL"] == "C"
+            assert env["XDG_RUNTIME_DIR"] == "/nonexistent-runtime-dir"
+            assert set(env) - allowed == set()
         assert not fakes.forbidden()
+
+    def test_an_unknown_unit_is_unavailable_not_an_empty_value(self, fakes):
+        # systemctl show prints an empty value and exits 0 for a unit it
+        # does not know; 02 §3a.10.2 rule 4 makes "unit unknown" unavailable.
+        probe = {"kind": "systemd-show", "scope": "user", "unit": "x.service",
+                 "property": "BindsTo"}
+        fakes.set("systemctl", stdout="\n")
+        assert premises.run_probe(probe, fakes.env()).state == OBS_OK  # control: loaded
+        fakes.set("systemctl", stdout="\n", load_state="not-found")
+        obs = premises.run_probe(probe, fakes.env())
+        assert obs.state == OBS_UNAVAILABLE and "not known" in obs.reason
+        asked = premises.run_probe(dict(probe, property="LoadState"), fakes.env())
+        assert asked.state == OBS_OK and asked.shown == "not-found"  # asked for itself
 
     def test_system_scope_uses_the_system_flag(self, fakes):
         fakes.set("systemctl", stdout="active\n")
@@ -459,7 +565,10 @@ class TestSystemd:
         probe = {"kind": "systemd-show", "scope": "user", "unit": "x.service",
                  "property": "BindsTo"}
         premises.run_probe(probe, fakes.env(runner=runner, timeout=60))
-        assert seen == [premises.PROBE_TIMEOUT] and premises.PROBE_TIMEOUT == 5.0
+        # Two commands (LoadState, then the property) share one 5 s bound.
+        assert premises.PROBE_TIMEOUT == 5.0 and len(seen) == 2
+        assert all(0 < t <= premises.PROBE_TIMEOUT for t in seen)
+        assert seen[0] > premises.PROBE_TIMEOUT - 1 and seen[1] <= seen[0]
 
     def test_a_missing_program_is_unavailable(self, fakes, tmp_path):
         empty = tmp_path / "empty-bin"
@@ -510,30 +619,66 @@ class TestGitFile:
         probe.update(matcher or {"contains": "BindsTo=dbus-broker.service"})
         return probe
 
-    def test_reads_head_through_cat_file_only(self, fakes):
+    def test_reads_head_by_object_id_after_sizing_it(self, fakes):
         (fakes.home / "repo").mkdir()
-        fakes.set("git", stdout="[Unit]\nBindsTo=dbus-broker.service\n")
+        fakes.set_git("[Unit]\nBindsTo=dbus-broker.service\n")
         obs = premises.run_probe(self._probe(), fakes.env())
         assert obs.shown == premises.PRESENT
-        (call,) = fakes.calls()
-        assert call["argv"] == [
-            "--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C",
-            os.path.realpath(fakes.home / "repo"), "cat-file", "blob", "HEAD:conf/app.conf",
+        repo = os.path.realpath(fakes.home / "repo")
+        head = ["--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", repo]
+        assert [call["argv"] for call in fakes.calls()] == [
+            [*head, "rev-parse", "--verify", "--quiet", "HEAD:conf/app.conf"],
+            [*head, "cat-file", "-s", GIT_OID],
+            [*head, "cat-file", "blob", GIT_OID],
         ]
-        assert call["env"]["GIT_NO_LAZY_FETCH"] == "1"
-        assert call["stdin_devnull"] is True
+        for call in fakes.calls():
+            assert call["env"]["GIT_NO_LAZY_FETCH"] == "1"
+            assert call["stdin_devnull"] is True
         assert not fakes.forbidden()
 
-    def test_a_path_not_in_head_is_missing_and_a_broken_repo_is_unavailable(self, fakes):
+    def test_an_oversized_blob_is_never_read(self, fakes):
         (fakes.home / "repo").mkdir()
-        fakes.set("git", rc=128, stderr="fatal: path 'conf/app.conf' does not exist in 'HEAD'\n")
-        assert premises.run_probe(self._probe(), fakes.env()).shown == premises.MISSING
-        fakes.set("git", rc=128, stderr="fatal: not a git repository\n")
+        fakes.set_git("x\n")
+        assert premises.run_probe(self._probe(), fakes.env()).state == OBS_OK  # control
+        (fakes.bindir / "calls.jsonl").unlink()
+        fakes.set_git("x\n", size={"stdout": f"{premises.READ_LIMIT + 1}\n"})
+        obs = premises.run_probe(self._probe(), fakes.env())
+        assert obs.state == OBS_UNAVAILABLE and "read limit" in obs.reason
+        # The recorded argv starts after the program name: five prefix
+        # words and the repository, then the step.
+        steps = [call["argv"][6:8] for call in fakes.calls()]
+        assert steps == [["rev-parse", "--verify"], ["cat-file", "-s"]]  # no blob read
+
+    def test_a_path_not_in_head_and_a_broken_repo_are_unavailable(self, fakes):
+        # 02 §3a.10.2 rule 4: a file that is gone is `unavailable`, never a
+        # value that could read as a moved premise.
+        (fakes.home / "repo").mkdir()
+        fakes.set_git("x\n")
+        assert premises.run_probe(self._probe(), fakes.env()).state == OBS_OK  # control
+        fakes.set_git(resolve={"rc": 1})
+        gone = premises.run_probe(self._probe(), fakes.env())
+        assert gone.state == OBS_UNAVAILABLE and "not in HEAD" in gone.reason
+        fakes.set_git(resolve={"rc": 128, "stderr": "fatal: not a git repository\n"})
         assert premises.run_probe(self._probe(), fakes.env()).state == OBS_UNAVAILABLE
+        fakes.set_git(resolve={"stdout": "not-an-object-id\n"})
+        assert premises.run_probe(self._probe(), fakes.env()).state == OBS_UNAVAILABLE
+        assert not fakes.forbidden()
 
     def test_a_repo_that_does_not_exist_is_unavailable_and_runs_nothing(self, fakes):
         obs = premises.run_probe(self._probe(), fakes.env())
         assert obs.state == OBS_UNAVAILABLE
+        assert fakes.calls() == []
+
+    def test_a_repo_link_into_a_refused_place_runs_nothing(self, fakes):
+        (fakes.home / "repo").mkdir()
+        fakes.set_git("x\n")
+        assert premises.run_probe(self._probe(), fakes.env()).state == OBS_OK  # control
+        (fakes.bindir / "calls.jsonl").unlink()
+        keydir = fakes.home / ".ssh"
+        keydir.mkdir()
+        (fakes.home / "linked").symlink_to(keydir)
+        obs = premises.run_probe(dict(self._probe(), repo="~/linked"), fakes.env())
+        assert obs.state == OBS_UNAVAILABLE and "refused location" in obs.reason
         assert fakes.calls() == []
 
 
@@ -560,7 +705,9 @@ class TestFiles:
         for obs in (present, line, absent):
             assert "SENTINEL" not in repr(obs) and "SENTINEL" not in json.dumps(obs.as_dict())
 
-    def test_a_deleted_file_is_a_change_not_unchanged(self, fakes):
+    def test_a_deleted_file_is_unavailable_never_moved(self, fakes):
+        # Design D3 and 02 §3a.10.2 rule 4: a file that is gone is
+        # `unavailable`, which is neither "holds" nor "moved".
         conf = fakes.home / "app.conf"
         conf.write_text("BindsTo=dbus-broker.service\n", encoding="utf-8")
         premise = _premise(
@@ -568,10 +715,38 @@ class TestFiles:
         )
         premise["baseline"] = premises.make_baseline(premises.observe(premise, fakes.env()))
         assert premises.verdict(premise, premises.observe(premise, fakes.env())) == "holds"
+        conf.write_text("other\n", encoding="utf-8")
+        assert premises.verdict(premise, premises.observe(premise, fakes.env())) == "moved"
         conf.unlink()
         gone = premises.observe(premise, fakes.env())
-        assert gone.state == OBS_OK and gone.shown == premises.MISSING
-        assert premises.verdict(premise, gone) == "moved"
+        assert gone.state == OBS_UNAVAILABLE and gone.value_sha is None
+        assert "does not exist" in gone.reason
+        assert premises.verdict(premise, gone) == "unavailable"
+
+    def test_a_wrong_home_is_unavailable_for_every_home_path(self, fakes, tmp_path):
+        (fakes.home / "app.conf").write_text("x\n", encoding="utf-8")
+        (fakes.home / "a.json").write_text('{"mode": "plain"}', encoding="utf-8")
+        probes = [
+            {"kind": "file-match", "path": "~/app.conf", "contains": "x"},
+            {"kind": "json-key", "path": "~/a.json", "key": "mode"},
+            {"kind": "path", "path": "~/app.conf"},
+            {"kind": "path", "path": "~/never-there"},
+        ]
+        for probe in probes:  # control: the right home observes every one
+            assert premises.run_probe(probe, fakes.env()).state == OBS_OK
+        wrong = fakes.env(home=tmp_path / "no-such-home")
+        for probe in probes:
+            obs = premises.run_probe(probe, wrong)
+            assert obs.state == OBS_UNAVAILABLE, probe
+            assert "home directory" in obs.reason
+
+    def test_a_missing_key_file_is_unavailable_but_a_missing_key_is_a_value(self, fakes):
+        probe = {"kind": "json-key", "path": "~/a.json", "key": "mode"}
+        gone = premises.run_probe(probe, fakes.env())
+        assert gone.state == OBS_UNAVAILABLE and "does not exist" in gone.reason
+        (fakes.home / "a.json").write_text('{"other": 1}', encoding="utf-8")
+        present = premises.run_probe(probe, fakes.env())
+        assert present.state == OBS_OK and present.shown == premises.MISSING_KEY
 
     def test_lines_hash_moves_only_when_those_lines_change(self, fakes):
         conf = fakes.home / "app.conf"
@@ -632,6 +807,39 @@ class TestFiles:
             {"kind": "file-match", "path": "~/link.conf", "contains": "SENTINEL"}, fakes.env()
         )
         assert obs.state == OBS_UNAVAILABLE and "refused location" in obs.reason
+        # The same answer when the link's target does not exist: a probe
+        # cannot tell a present key file from an absent one.
+        (fakes.home / "dangling.conf").symlink_to(keydir / "id_ed25519")
+        dangling = premises.run_probe(
+            {"kind": "file-match", "path": "~/dangling.conf", "contains": "x"}, fakes.env()
+        )
+        assert dangling.state == OBS_UNAVAILABLE and "refused location" in dangling.reason
+
+    def test_key_kinds_recheck_the_resolved_path(self, fakes):
+        keydir = fakes.home / ".ssh"
+        keydir.mkdir()
+        (keydir / "conf.json").write_text('{"mode": "plain"}', encoding="utf-8")
+        (fakes.home / "plain.json").write_text('{"mode": "plain"}', encoding="utf-8")
+        probe = {"kind": "json-key", "path": "~/plain.json", "key": "mode"}
+        assert premises.run_probe(probe, fakes.env()).shown == '"plain"'  # control
+        (fakes.home / "link.json").symlink_to(keydir / "conf.json")
+        obs = premises.run_probe(dict(probe, path="~/link.json"), fakes.env())
+        assert obs.state == OBS_UNAVAILABLE and "refused location" in obs.reason
+        assert obs.value_sha is None
+
+    def test_path_kind_resolves_the_directories_on_the_way(self, fakes):
+        keydir = fakes.home / ".ssh"
+        keydir.mkdir()
+        (keydir / "config").write_text("x\n", encoding="utf-8")
+        (fakes.home / "plain-dir").mkdir()
+        (fakes.home / "plain-dir" / "config").write_text("x\n", encoding="utf-8")
+        assert premises.run_probe(
+            {"kind": "path", "path": "~/plain-dir/config"}, fakes.env()
+        ).shown == "file"  # control
+        (fakes.home / "via").symlink_to(keydir)
+        for name in ("config", "absent-name"):
+            obs = premises.run_probe({"kind": "path", "path": f"~/via/{name}"}, fakes.env())
+            assert obs.state == OBS_UNAVAILABLE and "refused location" in obs.reason
 
     def test_path_kind_reports_type_and_link_target(self, fakes):
         (fakes.home / "f").write_text("x", encoding="utf-8")
@@ -698,6 +906,29 @@ class TestKeys:
             )
             assert obs.state == OBS_OK and obs.value_sha and obs.shown == ""
 
+    def test_random_looking_values_are_hashed_not_shown(self, fakes):
+        # The secret scan's own runs start at 40 (base64) and 48 (hex)
+        # characters: a bare 32-hex key or a URL with a password passes it.
+        values = {
+            "plain": "plain",
+            "hex32": "a3f9c2e1b7d04f6a9e8c0d1b2a3f4e5d",
+            "mixed": "Zx81kPq0Lm2Nw7Rt",
+            "url": "postgres://app:hunter2@db.local/app",
+        }
+        (fakes.home / "a.json").write_text(json.dumps(values), encoding="utf-8")
+        shown = {
+            key: premises.run_probe(
+                {"kind": "json-key", "path": "~/a.json", "key": key}, fakes.env()
+            )
+            for key in values
+        }
+        assert shown["plain"].shown == '"plain"'  # control: an ordinary value shows
+        for key in ("hex32", "mixed", "url"):
+            assert shown[key].state == OBS_OK and shown[key].value_sha
+            assert shown[key].shown == "", key
+        lines = premises.observation_from_value("sha256:" + "0a" * 16)
+        assert lines.shown.startswith("sha256:")  # this module's own token still shows
+
 
 class TestWhichAndLedger:
     def test_which_resolves_on_the_probe_path(self, fakes):
@@ -731,10 +962,112 @@ class TestWhichAndLedger:
             {"kind": "ledger", "ref": "lrn-0000000b#follow_up"}, env
         )
         assert follow.shown == "none"
+
+        routed = make_behavior(scope="skill:s", record_id="lrn-0000000c")
+        routed.set_status("routed")
+        routed.set_routing({"routed_at": "2026-10-01T00:00:00Z", "destination": "skill-md",
+                            "by": "human"})
+        routed.set_follow_up("bind the daemon to the bus")
+        ledger_ops.create_record(home, routed)
+        closed = make_behavior(scope="skill:s", record_id="lrn-0000000d")
+        closed.set_status("routed")
+        closed.set_routing({"routed_at": "2026-10-01T00:00:00Z", "destination": "skill-md",
+                            "by": "human"})
+        closed.set_follow_up("bind the daemon to the bus")
+        closed.complete_follow_up(done_at="2026-10-20")
+        ledger_ops.create_record(home, closed)
+        replaced = make_behavior(scope="skill:s", record_id="lrn-0000000f")
+        replaced.set_status("superseded")
+        replaced.set_superseded_by("lrn-0000000c")
+        ledger_ops.create_record(home, replaced)
+        later = {
+            ref: premises.run_probe({"kind": "ledger", "ref": ref}, env).shown
+            for ref in ("lrn-0000000c#follow_up", "lrn-0000000d#follow_up", "lrn-0000000f",
+                        "lrn-0000000c")
+        }
+        assert later == {
+            "lrn-0000000c#follow_up": "open",
+            "lrn-0000000d#follow_up": "done:2026-10-20",
+            "lrn-0000000f": "superseded:lrn-0000000c",
+            "lrn-0000000c": "routed",
+        }
         no_ledger = premises.run_probe(
             {"kind": "ledger", "ref": "lrn-0000000b"}, ProbeEnv(home=tmp_path)
         )
         assert no_ledger.state == OBS_UNAVAILABLE
+
+
+# ================================================= in-process probe bounds
+
+
+def _join_blocked() -> None:
+    """Wait for every left-behind worker thread (the tests below release
+    them), so no test leaves the next one at the blocked-thread cap."""
+    for thread in list(premises._blocked_threads):
+        thread.join(timeout=10)
+    assert premises.blocked_probe_count() == 0
+
+
+class TestInProcessBounds:
+    """02 §3a.10.2 rule 2: each probe has 5 seconds, and a probe that
+    blocks fails; it never hangs the sweep. The filesystem kinds run in
+    this process, so a system call stuck on a dead mount is simulated by
+    an executor that waits on an event."""
+
+    def _blocking(self, release, started):
+        def executor(probe, env):
+            started.append(probe)
+            release.wait(30)
+            return "file"
+
+        return executor
+
+    def test_a_blocked_filesystem_probe_is_unavailable_within_its_bound(
+        self, fakes, monkeypatch
+    ):
+        (fakes.home / "f").write_text("x", encoding="utf-8")
+        probe = {"kind": "path", "path": "~/f"}
+        assert premises.run_probe(probe, fakes.env(timeout=0.3)).shown == "file"  # control
+        release, started = threading.Event(), []
+        monkeypatch.setitem(premises._EXECUTORS, "path", self._blocking(release, started))
+        try:
+            begin = time.monotonic()
+            obs = premises.run_probe(probe, fakes.env(timeout=0.3))
+            assert time.monotonic() - begin < 3
+            assert obs.state == OBS_UNAVAILABLE and "timed out" in obs.reason
+            assert started  # the executor did run, and was not waited for
+            assert premises.blocked_probe_count() == 1
+        finally:
+            release.set()
+            _join_blocked()
+
+    def test_left_behind_threads_are_capped(self, fakes, monkeypatch):
+        release, started = threading.Event(), []
+        monkeypatch.setitem(premises._EXECUTORS, "path", self._blocking(release, started))
+        probe = {"kind": "path", "path": "~/f"}
+        try:
+            for _ in range(premises.MAX_BLOCKED_PROBES):
+                obs = premises.run_probe(probe, fakes.env(timeout=0.1))
+                assert obs.state == OBS_UNAVAILABLE and "timed out" in obs.reason
+            assert len(started) == premises.MAX_BLOCKED_PROBES
+            capped = premises.run_probe(probe, fakes.env(timeout=0.1))
+            assert capped.state == OBS_UNAVAILABLE and "still blocked" in capped.reason
+            assert len(started) == premises.MAX_BLOCKED_PROBES  # no new thread started
+        finally:
+            release.set()
+            _join_blocked()
+        monkeypatch.undo()
+        (fakes.home / "f").write_text("x", encoding="utf-8")
+        again = premises.run_probe(probe, fakes.env(timeout=0.3))
+        assert again.shown == "file"  # the cap lifts once the threads finish
+
+    def test_an_executor_error_is_unavailable_not_raised(self, fakes, monkeypatch):
+        def broken(probe, env):
+            raise RuntimeError("boom")
+
+        monkeypatch.setitem(premises._EXECUTORS, "which", broken)
+        obs = premises.run_probe({"kind": "which", "name": "git"}, fakes.env())
+        assert obs.state == OBS_UNAVAILABLE and "RuntimeError" in obs.reason
 
 
 # ========================================================= judging values
@@ -906,6 +1239,28 @@ class TestRecord:
         with pytest.raises(ValidationError, match="premises"):
             Record.from_text(bad)
 
+    def test_a_tighter_policy_never_stops_a_record_loading(self, fakes, monkeypatch):
+        # MINOR-6 of the U1 gate: structure is checked on load, policy on
+        # write and before a run. A record written under a looser policy
+        # still loads; its probe is simply unavailable, and a rewrite of
+        # the field is refused until the probe is changed.
+        (fakes.home / "app.conf").write_text("x\n", encoding="utf-8")
+        value = [_premise({"kind": "file-match", "path": "~/app.conf", "contains": "x"})]
+        record = make_behavior(record_id="lrn-0000000a")
+        record.set_premises(value)
+        text = record.to_text()
+        assert premises.observe(value[0], fakes.env()).state == OBS_OK  # control
+        monkeypatch.setattr(
+            premises, "_CREDENTIAL_COMPONENTS",
+            premises._CREDENTIAL_COMPONENTS | {"app.conf"},
+        )
+        loaded = Record.from_text(text)
+        assert loaded.premises == record.premises
+        obs = premises.observe(loaded.premises[0], fakes.env())
+        assert obs.state == OBS_UNAVAILABLE and "invalid probe" in obs.reason
+        with pytest.raises(ValidationError, match="refused"):
+            loaded.set_premises(loaded.premises)
+
     def test_a_record_may_not_probe_its_own_status(self):
         record = make_behavior(record_id="lrn-0000000a")
         with pytest.raises(ValidationError, match="own lesson"):
@@ -921,6 +1276,26 @@ class TestRecord:
         )
         assert made.supersedes == "lrn-0000000a"  # control: this is the replacement
         assert made.premises == first.premises
+
+    def test_the_replace_verb_carries_premises_and_baselines(self, tmp_path, monkeypatch):
+        # Through the verb, not only the composer: the composed record's
+        # whole-record secret scan (`secret-record`) runs over the carried
+        # baselines, whose 32-hex value hashes must pass it.
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+        monkeypatch.setenv("HOME", str(tmp_path / "fake-home"))
+        home = make_home(tmp_path)
+        first = make_behavior(scope="skill:s", record_id="lrn-0000000a")
+        first.set_premises(self._value())
+        ledger_ops.create_record(home, first)
+        commit_all(home, "seed lrn-0000000a")
+        result = verbs.replace_lesson(
+            home, "lrn-0000000a", fact="The daemon is bound to the bus.",
+            because="it is a fact, not a rule", no_push=True,
+        )
+        made = Record.from_path(ledger_ops.find_record_path(home, result.new_record_id))
+        assert made.supersedes == "lrn-0000000a"  # control: this is the replacement
+        assert made.premises == first.premises
+        assert made.premises[0]["baseline"]["value_sha"] == "a" * 32
 
     def test_premises_is_a_rewrite_field(self):
         assert "premises" in cases.REWRITE_FIELDS

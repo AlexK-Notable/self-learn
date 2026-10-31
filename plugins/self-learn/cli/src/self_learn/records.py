@@ -22,8 +22,9 @@ Mutation rules (02 §2) are enforced in code paths, not by convention:
   supersession targets already-routed records by design).
 - ``premises`` (S-NEXT-u1-premises, ``premises.py``) is metadata like
   ``env``: mutable in every status through :meth:`Record.set_premises`,
-  which validates the whole list; :meth:`Record.validate` checks it on
-  every load and write.
+  which validates the whole list, policy included; :meth:`Record.validate`
+  checks its structure on every load and write (the policy runs on write
+  and before every probe: ``premises.validate_premises``).
 - ``resolution_note`` is write-ONCE: a second write raises.
 - ``superseded_by`` accepts ``None``, a ``lrn-xxxxxxxx`` id (a **replacement**
   — a rewritten successor record), a ``covered_by:<kind>:<name>`` reference
@@ -510,7 +511,7 @@ class Record:
         value = self._fm.get("premises")
         if value is None:
             return None
-        return _premises._plain(value)
+        return _premises.plain_value(value)
 
     @property
     def follow_up(self) -> dict | None:
@@ -1062,7 +1063,11 @@ class Record:
         premises = fm.get("premises")
         if premises is not None:
             try:
-                _premises.validate_premises(premises, record_id=fm.get("id"))
+                # Structure only on load (S-NEXT-u1-premises): the policy
+                # (secret scan, credential rules) runs on every write and
+                # before every probe, so a policy that tightens later never
+                # stops an existing record from loading.
+                _premises.validate_premises(premises, record_id=fm.get("id"), policy=False)
             except _premises.PremiseError as exc:
                 raise ValidationError(f"premises: {exc}") from None
         done = fm.get("follow_up_done")
