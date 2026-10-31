@@ -50,7 +50,10 @@ remembers what they said, so that a change is noticed only when it is real:
   cache file directly, so the file's row keys (``record``, ``premise``,
   ``psha``, ``state``, ``value_sha``, ``failing``, ``observed_at``, ...) are
   its contract; :func:`confirmed_moves` is the same judgement for the read
-  verb and the sweep's own count.
+  verb and the sweep's own count. Its placement half (U8,
+  S-NEXT-u8-placement) reads :func:`confirmed_placement_moves`, the cache
+  alone, and the verbs that fold or restore a hand-edited block read
+  :func:`confirmed_intact_values`.
 
 The switch is ``premises.enabled`` (tier C, default TRUE; agents never set
 it). With it false the job is never due and :func:`run` does nothing unless
@@ -98,7 +101,9 @@ __all__ = [
     "SWEEP_INTERVAL_SECS",
     "SweepResult",
     "check",
+    "confirmed_intact_values",
     "confirmed_moves",
+    "confirmed_placement_moves",
     "default_cache_dir",
     "doctor_rows",
     "enabled",
@@ -635,12 +640,17 @@ def _intact_facts(
                 facts.append(_Fact(rid, INTACT, "holds", region.verdict, region.verdict, group=group_key))
             elif region.verdict == "missing":
                 facts.append(
-                    _Fact(rid, INTACT, "failing", "region-missing", "the managed block is gone",
+                    _Fact(rid, INTACT, "failing",
+                          premises.intact_failing_value("missing", None) or "region-missing",
+                          "the managed block is gone",
                           "the managed block is gone from the target", group_key)
                 )
             elif rid in carriers:  # edited
                 sha = compiled.sha256_hex(region.observed or b"")
-                facts.append(_Fact(rid, INTACT, "failing", f"edited:{sha}", "hand-edited", note, group_key))
+                # S-NEXT-u8-placement: the one spelling the fold and restore
+                # verbs compare against (`premises.intact_failing_value`).
+                value = premises.intact_failing_value("edited", sha) or f"edited:{sha}"
+                facts.append(_Fact(rid, INTACT, "failing", value, "hand-edited", note, group_key))
             else:
                 facts.append(_Fact(rid, INTACT, "holds", "entry-unedited", "entry unedited", group=group_key))
     return facts
@@ -873,6 +883,64 @@ def confirmed_moves(
             )
     out.sort(key=lambda m: (m.since, m.record_id, m.premise_id))
     return out
+
+
+def confirmed_placement_moves(
+    home: Path | str,
+    cache_dir: Path | None = None,
+    *,
+    history: History | None = None,
+) -> list[Movement]:
+    """S-NEXT-u8-placement: the confirmed moves of PLACEMENT premises
+    only, read from the cache alone -- no record is parsed, so the
+    steward's due check can ask on every scheduler tick. The same
+    judgement :func:`confirmed_moves` makes (:func:`judge_placement`); the
+    caller checks that each lesson is still placed (a lesson retired since
+    the last sweep keeps its rows until the next one). Longest-moved first."""
+    cache_dir = cache_dir if cache_dir is not None else default_cache_dir(Path(home))
+    history = history if history is not None else read_history(cache_dir)
+    out: list[Movement] = []
+    for (record_id, pid), rows in sorted(history.items()):
+        if pid not in premises.PLACEMENT_PREMISE_IDS:
+            continue
+        judged = judge_placement(rows)
+        if judged.verdict != premises.VERDICT_MOVED or not judged.confirmed or judged.row is None:
+            continue
+        out.append(
+            Movement(
+                record_id=record_id, premise_id=pid, kind=KIND_PLACEMENT,
+                claim=_PLACEMENT_CLAIMS[pid], value_sha=str(judged.row.get("value_sha")),
+                shown=str(judged.row.get("shown") or ""), baseline_shown="",
+                since=str(judged.since), observed_at=str(judged.row.get("observed_at")),
+                detail=str(judged.row.get("detail") or ""), group=judged.row.get("group"),
+            )
+        )
+    out.sort(key=lambda m: (m.since, m.record_id, m.premise_id))
+    return out
+
+
+def _same_path(a: object, b: object) -> bool:
+    try:
+        return Path(str(a)).resolve() == Path(str(b)).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return str(a) == str(b)
+
+
+def confirmed_intact_values(
+    home: Path | str, target: Path | str, cache_dir: Path | None = None
+) -> set[str]:
+    """S-NEXT-u8-placement (02 §3a.10.7, the whole-region rule's first
+    condition): the value hashes of every CONFIRMED ``@intact`` move of the
+    managed block in *target* -- what the steward's input saw. A fold or a
+    restore acts only on the block the sweep confirmed: a block edited again
+    since is a new input after two more sweeps, never decided on the old
+    one's evidence. Empty when the cache is gone (fail-closed: nothing is
+    confirmed, so nothing is folded or restored)."""
+    return {
+        move.value_sha
+        for move in confirmed_placement_moves(home, cache_dir)
+        if move.premise_id == INTACT and move.group is not None and _same_path(move.group, target)
+    }
 
 
 # ------------------------------------------------------------------ refresh

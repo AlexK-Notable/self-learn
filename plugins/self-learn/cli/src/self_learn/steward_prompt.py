@@ -1323,6 +1323,19 @@ def _premise_lines() -> list[str]:
         "  false: write it with the probe that shows it; its first value is recorded as",
         "  contradicting the claim and the lesson comes back the next night as a premise-moved",
         "  input. When no probe can show it, park the case (`authority-unclear`).",
+        # S-NEXT-u8-placement (02 §3a.10.3, §3a.10.7)
+        "  A PLACEMENT premise (`@reach`, `@writable`, `@intact`; method section 17) is derived",
+        "  by code for every placed lesson and never written: nothing to rebaseline. On an",
+        "  `@intact` input (a person hand-edited the lesson's managed block) every lesson of the",
+        "  block the brief lists goes in ONE case, each with either a `replace` line with",
+        "  `adopt_region: true` (fold the edit into the lesson; no also, to, dest or",
+        "  rules_paths) or a `premises` line `action: restore-region` (no other key but",
+        "  because and note: put the ledger's text back), and the case's `evidence` quotes",
+        "  every line the brief lists as written by a person. When those lessons were not all",
+        "  placed by one case, that one case is `kind: resolution` and you write no",
+        "  `supersedes` (the runner fills one in only when exactly one earlier case covers any",
+        "  of them). Both lines are refused on any other input. On an `@reach` or `@writable`",
+        "  input the lesson moves with a `route` line (applied as a reroute), or is retired.",
     ]
 
 

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -71,6 +71,7 @@ __all__ = [
     "PERMITTED_VERBS",
     "REFUSAL_KINDS",
     "REFUSED_HOOK_DESTINATION",
+    "REGION_WRITE_ACTORS",
     "REPLACE_REFUSED_ACTORS",
     "RESTATE_REFUSED_ACTORS",
     "BatchError",
@@ -83,6 +84,7 @@ __all__ = [
     "Sheet",
     "SheetItem",
     "UnreadableRecord",
+    "agent_refused_keys",
     "agent_refused_verbs",
     "classify",
     "decision_code",
@@ -165,6 +167,10 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
         {
             "also", "trigger", "instruction", "fact", "context", "text_from",
             "type", "kind", "to", "dest", "rules_paths", "because", "note", "by",
+            # S-NEXT-u8-placement (02 §3a.10.7): `adopt_region: true` folds a
+            # person's hand edit in the lesson's managed block into the
+            # new lesson -- the steward's only (`REGION_WRITE_ACTORS`).
+            "adopt_region",
         }
     ),
     # S-NEXT-cures-f (C4): a corrected version of a CLOSED lesson (rejected or
@@ -304,6 +310,48 @@ def _refuse_agent_restate(item: "SheetItem", actor: str) -> None:
             "(batch.RESTATE_REFUSED_ACTORS); decide this lesson with route, revise, "
             "reject, defer or replace, or park it"
         )
+
+
+#: S-NEXT-u8-placement (02 §3a.10.7): the actors a line that writes a
+#: lesson's whole managed block over a person's hand edit is open to -- a
+#: `replace` with `adopt_region: true` (fold the edit into the lesson) and a
+#: `premises` line `action: restore-region` (put the ledger's text back).
+#: Only the steward, and only on an `@intact` `premise-moved` input for that
+#: lesson, which its runner checks before anything is applied
+#: (`steward._placement_decision_problem`). The overseer and a person's
+#: sheet are refused it by name: a person has `recompile --adopt` and
+#: `recompile` for the same two answers.
+REGION_WRITE_ACTORS = frozenset({"steward"})
+
+
+def _region_line(item: "SheetItem") -> str | None:
+    """Which block-writing line *item* is (`adopt_region` or
+    `restore-region`), or ``None``."""
+    if item.verb == "replace" and item.fields.get("adopt_region"):
+        return "adopt_region"
+    if item.verb == "premises" and item.fields.get("action") == "restore-region":
+        return "restore-region"
+    return None
+
+
+def _refuse_region_lines(item: "SheetItem", actor: str) -> None:
+    """Raise the refusal (kind ``bad-line``) of a block-writing line for an
+    actor :data:`REGION_WRITE_ACTORS` does not name. Keyed on the runner's
+    *actor*; `_dispatch` and `dry_run` both run it before the verb reads
+    anything."""
+    which = _region_line(item)
+    if which is not None and actor not in REGION_WRITE_ACTORS:
+        raise verbs.SheetLineError(
+            f"{item.id}: `{which}` is the steward's alone, on a hand edit in the lesson's "
+            f"managed block that its daily check confirmed; refused for the {actor}"
+        )
+
+
+def agent_refused_keys(actor: str) -> dict[str, frozenset[str]]:
+    """The sheet keys refused for *actor* by name, per verb, and so left out
+    of the contract its runner shows it (S-NEXT-u8-placement):
+    ``adopt_region`` on ``replace`` for every actor but the steward."""
+    return {} if actor in REGION_WRITE_ACTORS else {"replace": frozenset({"adopt_region"})}
 
 
 def _refuse_agent_replace(item: "SheetItem", actor: str) -> None:
@@ -868,6 +916,16 @@ def _replace_shape_problem(raw: dict) -> str | None:
         value = raw.get(key)
         if value is not None and not isinstance(value, str):
             return f"`{key}` must be text, got {value!r}"
+    if "adopt_region" in raw:
+        # S-NEXT-u8-placement: a fold keeps the lesson where it sits.
+        if raw.get("adopt_region") is not True:
+            return f"`adopt_region` is `true` or absent, got {raw.get('adopt_region')!r}"
+        mixed = sorted(key for key in ("also", "to", "dest", "rules_paths") if raw.get(key) is not None)
+        if mixed:
+            return (
+                f"`adopt_region` folds a hand edit into the lesson where it sits; it takes "
+                f"no {mixed}"
+            )
     if raw.get("rules_paths") is not None:
         problem = verbs.sheet_rules_paths_problem(raw.get("dest"), raw.get("rules_paths"))
         if problem is not None:
@@ -1100,6 +1158,13 @@ def classify(
         return target in record.contradicts
     if verb == "followup-done":
         return record.follow_up is None and record.follow_up_done is not None
+    if verb == "premises" and f.get("action") == "restore-region":
+        # S-NEXT-u8-placement: applied iff the lesson's managed block is
+        # `clean` and holds exactly the ledger's rendering -- so a re-run
+        # after an earlier line of the same case put the block right is
+        # never refused, and a crash after the ledger commit is finished by
+        # the post-run recompile, not by a second restore.
+        return verbs.region_restored(home, item.id)
     if verb == "premises":
         # S-NEXT-u4-steward: every `set` or `rebaseline` runs its probes
         # and records what they saw NOW, so its effect is not derivable from
@@ -1459,6 +1524,38 @@ def _dispatch_reroute(
     )
 
 
+def _dispatch_reroute_if_moved(
+    home: Path,
+    item: SheetItem,
+    *,
+    case: str | None,
+    verb: str,
+    actor: str,
+    hook_activation: bool,
+    is_hook_dest: bool,
+    execution: execution_evidence.ExecutionRef | None,
+) -> "ItemResult | None":
+    """The `route` line that MOVES a routed lesson, applied as
+    :func:`_dispatch_reroute`: under a valid `kind: reconsider` case (U3b,
+    S-72), or under the `kind: resolution` case of a `premise-moved` input
+    no case covers (S-NEXT-u4-steward, :func:`_resolution_reroute_for`);
+    ``None`` for every other route, which :func:`_dispatch` applies as a
+    route. Factored out of :func:`_dispatch` (S-NEXT-u8-placement fix
+    round 1): with cures-a's execution trailer and u4's resolution reroute
+    both merged in, pyright found that function too complex to analyse."""
+    if _reconsider_case_for(home, item.id, case, verb) is not None:
+        return _dispatch_reroute(
+            home, item, actor=actor, hook_activation=hook_activation,
+            is_hook_dest=is_hook_dest, execution=execution,
+        )
+    if _resolution_reroute_for(home, item.id, case, verb, actor):
+        return _dispatch_reroute(
+            home, item, actor=actor, hook_activation=hook_activation,
+            is_hook_dest=is_hook_dest, why="premise moved", execution=execution,
+        )
+    return None
+
+
 def _dispatch_retire(
     home: Path,
     item: SheetItem,
@@ -1479,6 +1576,20 @@ def _dispatch_retire(
     )
 
 
+def _fold_context(home: Path, item: SheetItem) -> AbstractContextManager[object]:
+    """S-NEXT-u8-placement: :func:`verbs.fold_region` for a ``replace`` line
+    with ``adopt_region: true`` (its checks, then the approval of exactly the
+    hand-edited block the daily check confirmed), else nothing. The run and
+    its preview both wrap the replace in it."""
+    f = item.fields
+    if item.verb != "replace" or not f.get("adopt_region"):
+        return nullcontext()
+    return verbs.fold_region(
+        home, item.id, also=f.get("also"), to=f.get("to"), dest=f.get("dest"),
+        rules_paths=f.get("rules_paths"),
+    )
+
+
 def _dispatch_replace(
     home: Path,
     item: SheetItem,
@@ -1494,20 +1605,25 @@ def _dispatch_replace(
     runner's actor for a non-human runner, as on `route`. A refusal raises
     to :func:`_dispatch`, which maps it like every other verb's."""
     _refuse_agent_replace(item, actor)
+    _refuse_region_lines(item, actor)
     f = item.fields
     _refuse_agent_reference(
         item.id, verbs.replace_destination(home, item.id, f.get("dest")), actor
     )
     try:
-        result = verbs.replace_lesson(
-            home, item.id, because=f["because"], also=f.get("also"),
-            trigger=f.get("trigger"), instruction=f.get("instruction"),
-            fact=f.get("fact"), context=f.get("context"), text_from=f.get("text_from"),
-            type=f.get("type"), kind=f.get("kind"), to=f.get("to"), dest=f.get("dest"),
-            rules_paths=f.get("rules_paths"), note=f.get("note"),
-            by=(f.get("by") or (actor if actor != "human" else None)),
-            no_push=True, execution=execution, actor=actor,
-        )
+        # S-NEXT-u8-placement: a fold (`adopt_region: true`) runs inside
+        # `verbs.fold_region`, which checks the block and lets the replace
+        # compile over exactly the hand edit the daily check confirmed.
+        with _fold_context(home, item):
+            result = verbs.replace_lesson(
+                home, item.id, because=f["because"], also=f.get("also"),
+                trigger=f.get("trigger"), instruction=f.get("instruction"),
+                fact=f.get("fact"), context=f.get("context"), text_from=f.get("text_from"),
+                type=f.get("type"), kind=f.get("kind"), to=f.get("to"), dest=f.get("dest"),
+                rules_paths=f.get("rules_paths"), note=f.get("note"),
+                by=(f.get("by") or (actor if actor != "human" else None)),
+                no_push=True, execution=execution, actor=actor,
+            )
     except (verbs.VerbError, LedgerOpsError) as exc:
         made = getattr(exc, "replace_made", None)
         if not isinstance(made, str):
@@ -1719,17 +1835,13 @@ def _dispatch(
                         home, item, actor=actor, hook_activation=hook_activation,
                         route_result=None,
                     )
-            if _reconsider_case_for(home, item.id, case, verb) is not None:
-                return _dispatch_reroute(
-                    home, item, actor=actor, hook_activation=hook_activation,
-                    is_hook_dest=is_hook_dest, execution=execution,
-                )
-            if _resolution_reroute_for(home, item.id, case, verb, actor):
-                return _dispatch_reroute(
-                    home, item, actor=actor, hook_activation=hook_activation,
-                    is_hook_dest=is_hook_dest, execution=execution,
-                    why="premise moved",
-                )
+            rerouted = _dispatch_reroute_if_moved(
+                home, item, case=case, verb=verb, actor=actor,
+                hook_activation=hook_activation, is_hook_dest=is_hook_dest,
+                execution=execution,
+            )
+            if rerouted is not None:
+                return rerouted
             follow_up = _sheet_follow_up(f)
             result = verbs.route(
                 home, item.id,
@@ -1857,6 +1969,7 @@ def _dispatch(
                 execution=execution,
             )
         elif verb in ("followup-done", "premises"):
+            _refuse_region_lines(item, actor)  # S-NEXT-u8-placement: restore-region
             result = _dispatch_record_metadata(home, item, execution)
         elif verb == "replace":
             return _dispatch_replace(home, item, actor=actor, execution=execution)
@@ -1930,6 +2043,10 @@ def _dispatch(
     return ItemResult(
         n=item.n, id=item.id, verb=verb, rc=0, sha=result.commit_sha,
         state="applied", warnings=list(result.warnings),
+        # S-NEXT-u8-placement: a `premises` line's subject names its action,
+        # which tells the post-run recompile a restore-region's host write
+        # may be owed (`verbs.host_result_ids`).
+        detail=result.commit_message if verb == "premises" else None,
     )
 
 
@@ -1947,6 +2064,17 @@ _STOP_CODES = frozenset({5, 6, 7})
 _HOST_OUTCOME_VERBS = frozenset(
     {"route", "reject", "retire", "supersede", "replace"}
 )
+
+
+def _host_outcome(item: "SheetItem") -> bool:
+    """Whether *item* commits the ledger and then writes a host file: a
+    :data:`_HOST_OUTCOME_VERBS` line, or (S-NEXT-u8-placement, fix round 1)
+    a `premises` line `action: restore-region` -- its ledger commit lands
+    first and its block is written after (`verbs.restore_region`), so one
+    that fails after the commit is the same half-state a route's is and
+    halts the sheet the same way. Every other `premises` action writes the
+    ledger alone."""
+    return item.verb in _HOST_OUTCOME_VERBS or _region_line(item) == "restore-region"
 
 
 def _validate_continuation(
@@ -2224,6 +2352,13 @@ def _preview_premises(
     line's probes (read-only by construction) -- so a probe that cannot
     observe is a `would-refuse` here exactly as it is a refusal at apply."""
     f = item.fields
+    if f.get("action") == "restore-region":
+        # S-NEXT-u8-placement: the restore's own checks (the block, its
+        # writability, the daily check's confirmation); nothing is written.
+        verbs._preflight_restore_region(
+            home, item.id, because=f.get("because"), note=f.get("note"),
+        )
+        return
     verbs._preflight_premises(
         home, item.id, action=f.get("action"), premises=f.get("premises"),
         ids=f.get("ids"), because=f.get("because"), note=f.get("note"),
@@ -2253,13 +2388,17 @@ def _preview_replace(
     the S-81 gates on every lesson it rewrites included. *actor* as
     `_dispatch_replace` passes it (:func:`_preview_checks` gives it)."""
     f = item.fields
-    verbs._preflight_replace(
-        home, item.id, also=f.get("also"), trigger=f.get("trigger"),
-        instruction=f.get("instruction"), fact=f.get("fact"), context=f.get("context"),
-        text_from=f.get("text_from"), type=f.get("type"), kind=f.get("kind"),
-        to=f.get("to"), dest=f.get("dest"), rules_paths=f.get("rules_paths"),
-        because=f["because"], note=f.get("note"), by=by, actor=actor,
-    )
+    # S-NEXT-u8-placement: a fold previews inside the same approval its run
+    # gets (`_fold_context`), so the preview neither refuses the confirmed
+    # hand edit nor lets a newer one through.
+    with _fold_context(home, item):
+        verbs._preflight_replace(
+            home, item.id, also=f.get("also"), trigger=f.get("trigger"),
+            instruction=f.get("instruction"), fact=f.get("fact"), context=f.get("context"),
+            text_from=f.get("text_from"), type=f.get("type"), kind=f.get("kind"),
+            to=f.get("to"), dest=f.get("dest"), rules_paths=f.get("rules_paths"),
+            because=f["because"], note=f.get("note"), by=by, actor=actor,
+        )
 
 
 def _preview_restate(
@@ -2332,6 +2471,7 @@ def _preview_checks(
     _refuse_agent_shelf_cover(item, actor)
     _refuse_agent_replace(item, actor)
     _refuse_agent_restate(item, actor)
+    _refuse_region_lines(item, actor)
     f = item.fields
     if item.verb == "replace":
         _refuse_agent_reference(
@@ -2982,7 +3122,7 @@ def _run_items(
                         if checkpoint_required
                         else False
                     )
-                    if continuation is not None and item.verb in _HOST_OUTCOME_VERBS:
+                    if continuation is not None and _host_outcome(item):
                         item_result.evidence = (
                             f"host result returned by {item.verb}"
                             if item_result.rc == 0
@@ -3009,7 +3149,7 @@ def _run_items(
                         if (
                             no_mutation
                             or item_result.rc != 0
-                            or item.verb in _HOST_OUTCOME_VERBS
+                            or _host_outcome(item)
                         ):
                             _checkpoint_or_halt(
                                 checkpoint, result, list(items[idx + 1:])
@@ -3029,7 +3169,7 @@ def _run_items(
                         # lost five prepared cases to a halt over a route
                         # that had refused at preflight.)
                         if (
-                            item.verb in _HOST_OUTCOME_VERBS
+                            _host_outcome(item)
                             and item_result.rc != 0
                             and not no_mutation
                         ):

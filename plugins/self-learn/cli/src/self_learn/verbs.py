@@ -69,13 +69,16 @@ the skills root hosts its own CLAUDE.md canon).
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import difflib
 import hashlib
 import json
 import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections import Counter
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -702,6 +705,21 @@ def _abort_if_dirty(repo: Path, target: Path) -> None:
 #: differently from "uncommitted changes").
 REGION_VERDICT_MARKER = "was hand-edited outside self-learn"
 
+#: S-NEXT-u8-placement (02 §3a.10.7, folding a hand edit into the lesson):
+#: the ``(region key, sha256 of the block on disk)`` pairs a steward fold
+#: approved for the call it wraps (:func:`fold_region`). An ``edited``
+#: block whose key AND bytes are named here passes the pre-flight below as
+#: a ``stale`` one does, so the ``replace`` that folds the edit compiles
+#: over it; its compile-record entry, written in the replace's own ledger
+#: commit, records those bytes as ``based_on_sha256`` (REC9), so a crash
+#: before the host write leaves a ``stale`` block that any recompile
+#: finishes. Keyed on the exact bytes: a block edited again since the fold
+#: was approved is ``edited`` with another hash and still refuses. Empty
+#: outside :func:`fold_region`, so nothing else changes.
+_APPROVED_EDITED_REGIONS: contextvars.ContextVar[frozenset[tuple[str, str]]] = (
+    contextvars.ContextVar("self_learn_approved_edited_regions", default=frozenset())
+)
+
 
 def _abort_if_region_unsound(
     home: Path,
@@ -761,6 +779,12 @@ def _abort_if_region_unsound(
     )
     observed_hash = compiled.sha256_hex(region)
     verdict = compiled.verdict_for(entry, observed_hash)
+    if verdict == "edited" and (
+        compiled.region_key(host_path, target, region_kind), observed_hash
+    ) in _APPROVED_EDITED_REGIONS.get():
+        # S-NEXT-u8-placement: the steward's fold of exactly these bytes
+        # (`fold_region`); the caller's write records them as based_on.
+        return
     if verdict == "unknown" and region_kind == "managed" and spec is not None:
         try:
             expected = _expected_managed_region(home, spec)
@@ -10794,9 +10818,12 @@ def confirm_held(
 # per line, under the commit lock. No CLI writer in this build: a sheet
 # (the steward's, the overseer's or a person's `batch`) is the one way in.
 
-#: The actions this build carries. U8 (placement premises) adds
-#: `restore-region` here, with its own branch in :func:`premises`.
-PREMISES_ACTIONS = ("set", "rebaseline")
+#: The actions of the `premises` sheet verb (02 §3a.10.7). `set` and
+#: `rebaseline` write the field (S-NEXT-u4-steward); `restore-region`
+#: (S-NEXT-u8-placement) writes no premise: it puts the ledger's text of the
+#: lesson's managed block back over a hand edit, with its own branch in
+#: :func:`premises`.
+PREMISES_ACTIONS = ("set", "rebaseline", "restore-region")
 #: The keys of one premise that only the runner writes.
 PREMISE_RUNNER_KEYS = frozenset({"baseline", "decided_at"})
 
@@ -10817,6 +10844,14 @@ def premises_line_problem(action: object, premises: object, ids: object) -> str 
     :func:`premises.validate_premises`'s, at the verb."""
     if action not in PREMISES_ACTIONS:
         return f"`action` must be one of {list(PREMISES_ACTIONS)}, got {action!r}"
+    if action == "restore-region":
+        # S-NEXT-u8-placement: it names no premise; the block is the lesson's.
+        if premises is not None or ids is not None:
+            return (
+                "action restore-region takes neither `premises` nor `ids`: it puts the "
+                "ledger's text of the lesson's managed block back over a hand edit"
+            )
+        return None
     if action == "set":
         if ids is not None:
             return "`ids` belongs to action rebaseline; action set writes the whole list in `premises`"
@@ -10908,6 +10943,13 @@ def _preflight_premises(
     problem = premises_line_problem(action, premises, ids)
     if problem is not None:
         raise SheetLineError(f"premises {record_id}: {problem}")
+    if action == "restore-region":
+        # S-NEXT-u8-placement: its checks are `_preflight_restore_region`'s,
+        # which `premises` and `batch._preview_premises` call instead.
+        raise SheetLineError(
+            f"premises {record_id}: restore-region writes no premises; its checks are "
+            "_preflight_restore_region's"
+        )
     path = find_record_path(home, record_id)
     _scan_or_refuse([path], note, texts=(("because", because),))
     try:
@@ -11017,8 +11059,17 @@ def premises(
     the claim is recorded as ``contradicts-claim`` (`premises.make_baseline`),
     which makes the lesson a ``premise-moved`` input the next night. Commit
     ``self-learn: premises <action> lrn-…``; the body carries *because*,
-    *note* and each premise's old and new shown value."""
+    *note* and each premise's old and new shown value.
+
+    ``action: restore-region`` (S-NEXT-u8-placement) is :func:`restore_region`."""
     home = Path(home)
+    if action == "restore-region":
+        problem = premises_line_problem(action, premises, ids)
+        if problem is not None:
+            raise SheetLineError(f"premises {record_id}: {problem}")
+        return restore_region(
+            home, record_id, because=because, note=note, no_push=no_push, execution=execution,
+        )
     path, record, new_list, lines = _preflight_premises(
         home, record_id, action=action, premises=premises, ids=ids,
         because=because, note=note,
@@ -11052,6 +11103,409 @@ def premises(
             staged=staged,
             push=push,
             sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+
+# ------------------------------------------ managed blocks (S-NEXT-u8-placement)
+#
+# 02 §3a.10.3 and §3a.10.7: a person's hand edit inside a placed lesson's
+# managed block (the `@intact` placement premise). The steward decides it in
+# one of two ways, each only on an `@intact` `premise-moved` input for that
+# lesson (the runner's stage check, `steward._placement_decision_problem`)
+# and only as the steward (`batch`):
+#
+# * FOLD the edit into the lesson: a `replace` line with `adopt_region:
+#   true` (:func:`fold_region`). The replace compiles its new lesson over the
+#   edited block, and its own ledger commit records the edited bytes as what
+#   it was based on (REC9), so the edit becomes the lesson in one motion.
+# * RESTORE the ledger's text: a `premises` line `action: restore-region`
+#   (:func:`restore_region`).
+#
+# Both act only on the block the daily sweep confirmed: a block edited again
+# since is a new input after two more sweeps (the whole-region rule's first
+# condition, :func:`_require_confirmed_block`). A git host's block with
+# uncommitted changes, and a plain host's file git tracks (S-80), are never
+# written.
+
+
+@dataclass(frozen=True)
+class LessonRegion:
+    """One placed lesson's managed block as it is now: where it is, what the
+    compile record says of it (``verdict``: clean, stale, edited, missing,
+    unknown or fresh), its bytes on disk (``observed``, ``None`` when the
+    block is absent) and the block the compiler renders from the ledger now
+    (``expected``, ``None`` when not asked for)."""
+
+    record_id: str
+    spec: TargetSpec
+    key: str
+    slug: str
+    host_label: str
+    verdict: str
+    observed: bytes | None
+    expected: bytes | None = None
+
+    @property
+    def observed_sha(self) -> str | None:
+        return compiled.sha256_hex(self.observed) if self.observed is not None else None
+
+    @property
+    def target(self) -> Path:
+        assert self.spec.target is not None  # `lesson_region` refuses a spec without one
+        return self.spec.target
+
+
+#: The destinations whose lessons sit in a managed block the compile record
+#: tracks (:func:`_region_kind_for`): only these have an ``@intact``.
+REGION_DESTINATIONS = ("claude-md", "skill-md")
+
+
+def lesson_region(
+    home: Path | str,
+    record_id: str,
+    *,
+    user_claude_md: Path | str | None = None,
+    render: bool = True,
+) -> LessonRegion:
+    """The managed block of the placed lesson *record_id*, resolved the way
+    ``recompile`` resolves a routed record's target. Reads only. *render*
+    also compiles the block the ledger would write now (``expected``).
+    Refuses (:class:`SheetLineError`) a lesson that is not placed in a
+    destination with a managed block."""
+    home = Path(home)
+    path = find_record_path(home, record_id)
+    record = read_record_or_refuse(path)
+    if record.status != "routed":
+        raise SheetLineError(
+            f"{record_id} is {record.status!r}, not placed: it has no managed block"
+        )
+    routing = record.routing or {}
+    destination = routing.get("destination")
+    if destination not in REGION_DESTINATIONS:
+        raise SheetLineError(
+            f"{record_id} sits in {destination!r}, which has no managed block self-learn "
+            "tracks (only claude-md and skill-md lessons do)"
+        )
+    spec = _resolve_target(
+        home, path.parent.parent, record.scope, str(destination), None,
+        user_claude_md=user_claude_md, check_dirty=False,
+        variant=routing.get("variant"), rules_topic=routing.get("rules_topic"),
+    )
+    region_kind = _region_kind_for(spec)
+    if region_kind != "managed" or spec.target is None:
+        raise SheetLineError(f"{record_id}: its target has no managed block")
+    try:
+        slug = host_slug(home, spec.host_path, scope_kind=spec.scope_kind)
+        key = compiled.region_key(spec.host_path, spec.target, region_kind)
+        entry = compiled.entry_for(compiled.load_record(home, slug), key, region=region_kind)
+        observed = (
+            compiled.region_bytes(spec.target.read_text(encoding="utf-8"), region_kind)
+            if spec.target.is_file() else None
+        )
+    except HostsError as exc:
+        raise _hosts_unreadable(exc) from exc
+    except (compiled.CompiledRecordError, OSError, UnicodeDecodeError) as exc:
+        raise VerbError(
+            f"{record_id}: the managed block of {spec.target} cannot be read ({exc})"
+        ) from exc
+    verdict = compiled.verdict_for(
+        entry, compiled.sha256_hex(observed) if observed is not None else None
+    )
+    expected = _expected_managed_region(home, spec) if render else None
+    host_label = "(user scope — ~/.claude)" if spec.scope_kind == "user" else str(spec.host_path)
+    return LessonRegion(record_id, spec, key, slug, host_label, verdict, observed, expected)
+
+
+def _region_lines(data: bytes | None) -> list[str]:
+    if data is None:
+        return []
+    return [line.rstrip() for line in data.decode("utf-8", errors="replace").splitlines()]
+
+
+def edited_region_lines(region: LessonRegion) -> list[str]:
+    """The lines of the block on disk that the ledger's rendering does not
+    hold -- what a person wrote there -- in file order, blank lines left out.
+    The whole-region rule's third condition asks the case to quote each one,
+    so a person's words the re-render drops survive in the case. Needs a
+    region read with ``render=True``; ``[]`` for a block that is gone."""
+    if region.observed is None or region.expected is None:
+        return []
+    left = Counter(_region_lines(region.expected))
+    out: list[str] = []
+    for line in _region_lines(region.observed):
+        if left[line] > 0:
+            left[line] -= 1
+            continue
+        if line.strip():
+            out.append(line)
+    return out
+
+
+def region_diff(region: LessonRegion, *, context: int = 1) -> list[str]:
+    """The line diff from the block the ledger renders to the block on
+    disk (``-`` the ledger's line, ``+`` the line on disk)."""
+    return list(difflib.unified_diff(
+        _region_lines(region.expected), _region_lines(region.observed),
+        "the ledger's text", "the block on disk", n=context, lineterm="",
+    ))
+
+
+def _require_confirmed_block(home: Path, region: LessonRegion, *, verb: str) -> None:
+    """The whole-region rule's first condition (02 §3a.10.7): a fold or a
+    restore acts only on the hand-edited (or missing) block the daily sweep
+    confirmed -- the very block the steward's input showed. A block whose
+    verdict no longer fails (an earlier line of the same case already put
+    it right) passes: nothing a person wrote is undecided on disk."""
+    from . import premise_sweep  # late: premise_sweep imports this module
+
+    want = premises_mod.intact_value_sha(region.verdict, region.observed_sha)
+    if want is None:
+        return
+    if want not in premise_sweep.confirmed_intact_values(home, region.target):
+        raise SheetLineError(
+            f"{verb} {region.record_id}: the managed block of {region.target} is not the one "
+            "the daily check confirmed (it was edited again since, or the check has not seen "
+            "this state on two checks running); a newer edit is decided on its own input"
+        )
+
+
+def _refuse_block_write(region: LessonRegion, *, verb: str) -> None:
+    """A fold or a restore writes the whole block, so it is refused where a
+    write is: a git host's target with uncommitted changes (a person's work
+    in progress), and a plain host's file git tracks (S-80)."""
+    spec = region.spec
+    if spec.mode == "git":
+        if region.target.is_file() and gitops.paths_dirty(spec.host_path, region.target):
+            raise SheetLineError(
+                f"{verb} {region.record_id}: {region.target} has uncommitted changes in its git "
+                "host, and a person's work in progress is never overwritten; park it"
+            )
+        return
+    _refuse_unsafe_plain_write(spec)
+
+
+def _preflight_fold(
+    home: Path,
+    record_id: str,
+    *,
+    also: object = None,
+    to: object = None,
+    dest: object = None,
+    rules_paths: object = None,
+    user_claude_md: Path | str | None = None,
+) -> LessonRegion:
+    """The checks of a ``replace`` line with ``adopt_region: true`` before
+    any lock, shared with ``batch.dry_run``: the fold keeps the lesson where
+    it sits (no ``also``, ``to``, ``dest`` or ``rules_paths``); the lesson is
+    placed in a managed block the compile record tracks; an edited block is
+    writable and is the one the daily check confirmed. A block that is gone
+    has no edit to fold. Reads only."""
+    if also or to is not None or dest is not None or rules_paths is not None:
+        raise SheetLineError(
+            f"replace {record_id}: adopt_region folds a hand edit into the lesson where it "
+            "sits; it takes no also, to, dest or rules_paths"
+        )
+    try:
+        require_status(
+            home, record_id, ROUTED_ONLY, verb="replace",
+            reason="adopt_region folds a hand edit into a placed lesson's managed block",
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    region = lesson_region(home, record_id, user_claude_md=user_claude_md, render=False)
+    if region.verdict == "missing":
+        raise SheetLineError(
+            f"replace {record_id}: the managed block of {region.target} is gone, so there is "
+            "no edit to fold; put it back with a `premises` line `action: restore-region`, "
+            "or retire or move the lesson"
+        )
+    if region.verdict in ("unknown", "fresh"):
+        raise SheetLineError(
+            f"replace {record_id}: the compile record has no entry for {region.key}, so "
+            "nothing says what self-learn wrote there and no hand edit can be told apart"
+        )
+    if region.verdict == "edited":
+        _refuse_block_write(region, verb="replace")
+        _require_confirmed_block(home, region, verb="replace")
+    return region
+
+
+@contextlib.contextmanager
+def fold_region(
+    home: Path | str,
+    record_id: str,
+    *,
+    also: object = None,
+    to: object = None,
+    dest: object = None,
+    rules_paths: object = None,
+    user_claude_md: Path | str | None = None,
+) -> Iterator[LessonRegion]:
+    """S-NEXT-u8-placement (02 §3a.10.7, folding a hand edit into the
+    lesson): wraps the ``replace`` of a line with ``adopt_region: true``
+    (``batch`` wraps the verb and its preview alike). It runs
+    :func:`_preflight_fold`, then, while the block is ``edited``, approves
+    exactly those bytes for the wrapped call
+    (:data:`_APPROVED_EDITED_REGIONS`): the replace's pre-flight lets the
+    block through, and the replace writes the new lesson's line over it,
+    recording the edited bytes as what the write was based on. The S-83
+    adopt and the compile thus land in the replace's own ledger commit and
+    host write, never as a separate adopt that a refusal could leave behind
+    accepting the edit with the lesson unchanged. A block that is ``clean``
+    or ``stale`` (an earlier line of the same case put it right) needs no
+    approval, and the replace runs as any other."""
+    home = Path(home)
+    region = _preflight_fold(
+        home, record_id, also=also, to=to, dest=dest, rules_paths=rules_paths,
+        user_claude_md=user_claude_md,
+    )
+    sha = region.observed_sha
+    if region.verdict != "edited" or sha is None:
+        yield region
+        return
+    token = _APPROVED_EDITED_REGIONS.set(_APPROVED_EDITED_REGIONS.get() | {(region.key, sha)})
+    try:
+        yield region
+    finally:
+        _APPROVED_EDITED_REGIONS.reset(token)
+
+
+def region_restored(
+    home: Path | str, record_id: str, *, user_claude_md: Path | str | None = None
+) -> bool:
+    """Whether a ``restore-region`` line is already applied: the lesson's
+    block is ``clean`` and holds exactly what the ledger renders now. Reads
+    only; anything it cannot read is "not applied" (the verb then refuses
+    by name)."""
+    try:
+        region = lesson_region(home, record_id, user_claude_md=user_claude_md)
+    except (VerbError, LedgerOpsError, CompileError, HostsError, OSError):
+        return False
+    return region.verdict == "clean" and region.observed == region.expected
+
+
+def _preflight_restore_region(
+    home: Path,
+    record_id: str,
+    *,
+    because: str | None,
+    note: str | None,
+    user_claude_md: Path | str | None = None,
+) -> LessonRegion:
+    """``restore-region``'s checks before any lock, shared with
+    ``batch.dry_run``: the line's text is scan-clean, the lesson is placed
+    in a managed block the compile record tracks and the overseer does not
+    hold it, the block differs from the ledger's text, it may be written,
+    and an edited or missing block is the one the daily check confirmed.
+    Reads only."""
+    path = find_record_path(home, record_id)
+    _scan_or_refuse([path], note, texts=(("because", because),))
+    try:
+        require_status(
+            home, record_id, ROUTED_ONLY, verb="premises",
+            reason="restore-region puts back the managed block of a placed lesson",
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    region = lesson_region(home, record_id, user_claude_md=user_claude_md)
+    if region.verdict in ("unknown", "fresh"):
+        raise SheetLineError(
+            f"premises {record_id}: the compile record has no entry for {region.key}, so "
+            "nothing says what self-learn wrote there; restore-region does not guess"
+        )
+    if region.verdict == "clean" and region.observed == region.expected:
+        raise VerbError(
+            f"premises {record_id}: the managed block of {region.target} already holds the "
+            "ledger's text -- nothing to restore"
+        )
+    _refuse_block_write(region, verb="premises")
+    _require_confirmed_block(home, region, verb="premises")
+    return region
+
+
+def restore_region(
+    home: Path | str,
+    record_id: str,
+    *,
+    because: str | None = None,
+    note: str | None = None,
+    no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
+    user_claude_md: Path | str | None = None,
+) -> VerbResult:
+    """``premises`` ``action: restore-region`` (S-NEXT-u8-placement, 02
+    §3a.10.7): the ledger's text wins over a hand edit in the lesson's
+    managed block. One lock span, the shape every route has (REC9): the
+    block is read again under the ledger lock (a block changed since the
+    checks refuses the line), the compile-record entry is written with the
+    ledger's rendering as ``sha256`` and the block on disk as
+    ``based_on_sha256`` (this is the S-83 adopt of that one region key and
+    the decision to overwrite it, in one entry), the ledger commit lands
+    (``self-learn: premises restore-region lrn-…``; its body names the
+    block and the hash it replaced), then the host write renders that one
+    target from the ledger. A crash before the host write leaves a
+    ``stale`` block, which any recompile finishes; it is never read as a
+    new hand edit. The edited words themselves are not lost: the case that
+    decided this quotes them (the whole-region rule's third condition)."""
+    home = Path(home)
+    region = _preflight_restore_region(
+        home, record_id, because=because, note=note, user_claude_md=user_claude_md,
+    )
+    spec = region.spec
+    message = f"{RESTORE_REGION_SUBJECT}{record_id}"
+    # 12 hex characters: a full digest would trip the secret scan's hex rule.
+    replaced = (
+        f"its sha256 began {region.observed_sha[:12]}" if region.observed_sha
+        else "the block was gone"
+    )
+    body = "\n\n".join(
+        part.strip() for part in (
+            because, note,
+            f"Put the ledger's text back in the managed block {region.key} "
+            f"(it was {region.verdict}; {replaced}).",
+        ) if part and part.strip()
+    )
+    warnings: list[str] = []
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            now = lesson_region(home, record_id, user_claude_md=user_claude_md, render=False)
+            if now.observed != region.observed:
+                raise SheetLineError(
+                    f"premises {record_id}: the managed block of {region.target} changed while "
+                    "this line was being checked; a newer edit is decided on its own input"
+                )
+            record_path = _write_compile_record_entry(
+                home, spec, now.observed_sha, by=f"premises restore-region {record_id}",
+                predict_removal=False,
+            )
+            if record_path is None:
+                raise VerbError(
+                    f"premises {record_id}: the ledger's text of {region.key} could not be "
+                    "rendered, so nothing was restored"
+                )
+            staged, sha = _commit_ledger(
+                home, [record_path], message, _body_with_by_trailer(body, None, execution),
+            )
+            _host_phase(
+                home, spec, record_id, routed_record=None, note=body, message=message,
+                warnings=warnings, user_push=not no_push,
+            )
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="premises",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+            warnings=warnings,
         )
     finally:
         hold.release()
@@ -11473,10 +11927,25 @@ def replace_host_records(home: Path | str, first_id: str) -> list[str]:
     return [new_id, *retired]
 
 
+#: S-NEXT-u8-placement: the subject a `restore-region` line's commit carries
+#: (`restore_region`), which `batch` puts in the item's detail: its host
+#: write is owed when it did not land, like a route's.
+RESTORE_REGION_SUBJECT = "self-learn: premises restore-region "
+
+
+def _restores_a_region(item: object) -> bool:
+    return getattr(item, "verb", None) == "premises" and str(
+        getattr(item, "detail", None) or ""
+    ).startswith(RESTORE_REGION_SUBJECT)
+
+
 def _host_result_items(items: Iterable[object]) -> list[object]:
     return [
         item for item in items
-        if getattr(item, "verb", None) in HOST_RESULT_VERBS | {"replace"}
+        if (
+            getattr(item, "verb", None) in HOST_RESULT_VERBS | {"replace"}
+            or _restores_a_region(item)
+        )
         and getattr(item, "state", None) in ("applied", "unresolved-host")
         and getattr(item, "id", None)
     ]
@@ -11491,7 +11960,12 @@ def host_result_ids(items: Iterable[object], home: Path | str | None = None) -> 
     own id alone (the first lesson, retired) but by
     :func:`replace_host_records`: the new lesson and every lesson it
     superseded, so both the target the new line goes to and each one an
-    old line leaves are compiled."""
+    old line leaves are compiled.
+
+    S-NEXT-u8-placement: a ``premises`` ``restore-region`` item too
+    (:func:`_restores_a_region`): its block is written after its ledger
+    commit, so a host write that failed leaves a ``stale`` block this
+    recompile finishes."""
     out: list[str] = []
     for item in _host_result_items(items):
         if getattr(item, "verb", None) == "replace":

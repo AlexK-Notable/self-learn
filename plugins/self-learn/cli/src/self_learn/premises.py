@@ -180,6 +180,8 @@ __all__ = [
     "check_record",
     "credential_path_problem",
     "default_runner",
+    "intact_failing_value",
+    "intact_value_sha",
     "make_baseline",
     "normalize_premises",
     "normalize_value",
@@ -236,6 +238,29 @@ BASELINE_STATES = frozenset({"holds", "contradicts-claim"})
 #: U8's implicit placement premises (02 §3a.10.3 as drafted): derived by
 #: code, never written. The ``@`` keeps them apart from written ids.
 PLACEMENT_PREMISE_IDS = ("@reach", "@writable", "@intact")
+
+
+def intact_failing_value(verdict: str, region_sha: str | None) -> str | None:
+    """S-NEXT-u8-placement: the value a failing ``@intact`` is observed as,
+    from the compile record's verdict for a managed block and the sha256 of
+    the block on disk -- ``edited:<sha256>`` for a hand-edited block,
+    ``region-missing`` for one that is gone -- or ``None`` for every verdict
+    that does not fail it. The ONE spelling: the sweep observes it
+    (`premise_sweep`), and the verbs that fold or restore a block compare
+    the block on disk with what the sweep confirmed through it, so the two
+    can never disagree about which block a decision was about."""
+    if verdict == "edited" and region_sha:
+        return f"edited:{region_sha}"
+    if verdict == "missing":
+        return "region-missing"
+    return None
+
+
+def intact_value_sha(verdict: str, region_sha: str | None) -> str | None:
+    """The stored hash (:func:`value_sha` of the normalized value) of
+    :func:`intact_failing_value`, or ``None`` when the block does not fail."""
+    value = intact_failing_value(verdict, region_sha)
+    return value_sha(normalize_value(value)) if value is not None else None
 
 MAX_PREMISES = 4
 MAX_PROBED = 3

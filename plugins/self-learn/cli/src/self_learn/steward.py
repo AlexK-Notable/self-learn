@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace as dataclass_replace
 from datetime import datetime, timezone
 from operator import itemgetter
 from pathlib import Path
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import cast
 
 from ruamel.yaml import YAML, YAMLError
@@ -1161,54 +1161,141 @@ def _premise_moved_inputs(
     S-NEXT-u6-backfill: *capped* false returns every waiting row, the
     ones past the nightly cap included -- what the backfill reads so that
     a lesson whose move waits is not offered to have its premises written
-    meanwhile (:func:`_premise_inputs`)."""
+    meanwhile (:func:`_premise_inputs`).
+
+    S-NEXT-u8-placement: a placement premise the sweep confirmed as failing
+    (:func:`steward_inputs.placement_moves`: `@reach`, `@writable`,
+    `@intact`) is a mover too, and joins the version like a written one,
+    with its `basis` (fix round 2) in place of a baseline's time.
+    The lessons of one managed block that carry an `@intact` mover are a
+    GROUP (02 §3a.10.3): offered together or not at all -- when an earlier
+    input of the run takes one of them, or the overseer holds one, the
+    whole group waits -- and counted as one against the nightly cap."""
     if not steward_inputs.premises_enabled(home):
         return []
     followups = {moved.record_id: moved for moved in steward_inputs.moved_followups(home)}
     premise_moves = steward_inputs.moved_premises(home)
-    if not followups and not premise_moves:
+    placement = steward_inputs.placement_moves(home)
+    if not followups and not premise_moves and not placement:
         return []
     terminal = _terminal_versions(home, manifests=manifests)
     held = cases.held_lessons(home)
-    candidates: list[tuple[str, str, dict]] = []
-    for rid in sorted(set(followups) | set(premise_moves)):
-        if (exclude and rid in exclude) or rid in held:
+    rows: dict[str, tuple[str, dict]] = {}
+    for rid in sorted(set(followups) | set(premise_moves) | set(placement)):
+        if rid in held:
             continue
-        followup = followups.get(rid)
-        found = premise_moves.get(rid)
-        written = list(found.items) if found is not None else []
-        version = steward_inputs.premise_moved_version(
-            followup_done=followup.done if followup is not None else None,
-            moved=[
-                (item["premise"], item["value_sha"], item["recorded_at"]) for item in written
-            ],
+        built = _premise_moved_row(
+            home, rid, followups.get(rid), premise_moves.get(rid), placement.get(rid)
         )
-        if (rid, version) in terminal:
+        if built is not None and (rid, built[1]["version"]) not in terminal:
+            rows[rid] = built
+    return _premise_moved_units(rows, placement, exclude or set(), held, capped=capped)
+
+
+def _premise_moved_row(
+    home: Path,
+    rid: str,
+    followup: steward_inputs.MovedFollowup | None,
+    found: steward_inputs.PremiseMoves | None,
+    placed: steward_inputs.PlacementMoves | None,
+) -> tuple[str, dict] | None:
+    """One lesson's `premise-moved` input row and when its oldest mover was
+    first seen (:func:`_premise_moved_inputs`), or ``None`` when nothing
+    moved."""
+    written = list(found.items) if found is not None else []
+    placements = list(placed.items) if placed is not None else []
+    if followup is None and not written and not placements:
+        return None
+    movers = written + placements
+    # A written premise hashes with its baseline's time (S-NEXT-u4-steward,
+    # so a value that returns after two decisions is a new version); a
+    # placement premise has no baseline and is judged by its failing state,
+    # so it hashes the premise, that state's value hash and what the
+    # failure is a failure OF (`basis`, fix round 2: the placement's
+    # `routed_at`, or the managed block's last compile-record write). A
+    # reroute or a restore changes the basis, so the same failing value
+    # seen again after one is a new version; a park or a refusal does not.
+    version = steward_inputs.premise_moved_version(
+        followup_done=followup.done if followup is not None else None,
+        moved=[(item["premise"], item["value_sha"], item["recorded_at"]) for item in written]
+        + [
+            (item["premise"], item["value_sha"], *([item["basis"]] if item.get("basis") else []))
+            for item in placements
+        ],
+    )
+    moved = ([_followup_item(followup)] if followup is not None else []) + movers
+    row: dict = {
+        "path": f"followup-done:{rid}" if not movers else f"premise-moved:{rid}",
+        "blob": version,
+        "version": version,
+        "record": rid,
+        "kind": steward_inputs.INPUT_PREMISE_MOVED,
+        "record_status": "routed",
+        "reason": _premise_moved_reason(
+            followup is not None, [str(item["premise"]) for item in movers]
+        ),
+        "moved": moved,
+    }
+    predecessor = _premise_predecessor(home, rid)
+    if predecessor:
+        row["predecessor"] = predecessor
+    since = [found.since] if written and found is not None and found.since else []
+    if placements and placed is not None:
+        since.append(placed.since)
+    if followup is not None:
+        since.append(f"{followup.done_on.isoformat()}T00:00:00Z")
+    return (min(since) if since else ""), row
+
+
+def _premise_moved_units(
+    rows: Mapping[str, tuple[str, dict]],
+    placement: Mapping[str, steward_inputs.PlacementMoves],
+    exclude: set[str],
+    held: Iterable[str],
+    *,
+    capped: bool = True,
+) -> list[dict]:
+    """S-NEXT-u8-placement: the rows of :func:`_premise_moved_inputs` in
+    units -- one lesson, or one `@intact` group (every placed lesson whose
+    `@intact` mover names the same managed block, offered or not as one) --
+    oldest first, at most `steward_inputs.PREMISE_MOVED_PER_RUN` units. A
+    group any lesson of which another input of the run takes (*exclude*) or
+    the overseer holds (*held*) waits whole. Each `@intact` mover names the
+    group's other lessons (`members`), which its brief lists, and says when
+    no one case covers them (`cases_differ`: the group is decided in a
+    `kind: resolution` case, :func:`_split_intact_members`)."""
+    held_ids = set(held)
+    groups: dict[str, list[str]] = {}
+    for rid, found in sorted(placement.items()):
+        for item in found.items:
+            if item.get("premise") == "@intact" and item.get("group"):
+                groups.setdefault(str(item["group"]), []).append(rid)
+    grouped = {rid for members in groups.values() for rid in members}
+    units: list[tuple[str, str, list[dict]]] = []
+    for group, members in groups.items():
+        if any(rid in exclude or rid in held_ids for rid in members):
             continue
-        moved = ([_followup_item(followup)] if followup is not None else []) + written
-        row: dict = {
-            "path": f"followup-done:{rid}" if not written else f"premise-moved:{rid}",
-            "blob": version,
-            "version": version,
-            "record": rid,
-            "kind": steward_inputs.INPUT_PREMISE_MOVED,
-            "record_status": "routed",
-            "reason": _premise_moved_reason(
-                followup is not None, [str(item["premise"]) for item in written]
-            ),
-            "moved": moved,
-        }
-        predecessor = _premise_predecessor(home, rid)
-        if predecessor:
-            row["predecessor"] = predecessor
-        since = [found.since] if written and found is not None and found.since else []
-        if followup is not None:
-            since.append(f"{followup.done_on.isoformat()}T00:00:00Z")
-        candidates.append((min(since) if since else "", rid, row))
-    candidates.sort(key=lambda entry: (entry[0], entry[1]))
-    rows = [row for _since, _rid, row in candidates]
-    # the cap is read at call time (a test narrows it on the module)
-    return rows[: steward_inputs.PREMISE_MOVED_PER_RUN] if capped else rows
+        offered_ids = [rid for rid in members if rid in rows]
+        offered = [rows[rid] for rid in offered_ids]
+        if not offered:
+            continue
+        # Fix round 1 (gate MAJOR 1): when no ONE case covers the group's
+        # lessons, its one case is a `kind: resolution` case; the brief says so.
+        cases_differ = len({str(row.get("predecessor") or "") for _s, row in offered}) > 1
+        for _since, row in offered:
+            for item in row["moved"]:
+                if item.get("source") == "placement" and item.get("premise") == "@intact":
+                    item["members"] = list(offered_ids)
+                    if cases_differ:
+                        item["cases_differ"] = True
+        units.append((min(since for since, _row in offered), group, [r for _s, r in offered]))
+    for rid, (since, row) in rows.items():
+        if rid in grouped or rid in exclude:
+            continue
+        units.append((since, rid, [row]))
+    units.sort(key=lambda unit: (unit[0], unit[1]))
+    kept = units[: steward_inputs.PREMISE_MOVED_PER_RUN] if capped else units
+    return [row for _since, _key, members in kept for row in members]
 
 
 # ------------------------- premise-extract: the backfill (S-NEXT-u6-backfill)
@@ -1694,6 +1781,7 @@ def _pair_problem(
         replace_problem = _steward_replace_problem(
             home, case_data, lines, label=case_path.name,
             uncovered_moved=_uncovered_premise_moved(inputs),
+            fold_in_resolution=_split_intact_members(inputs),
         )
     if replace_problem is None and home is not None:
         replace_problem = _steward_move_problem(
@@ -1707,6 +1795,10 @@ def _pair_problem(
     if replace_problem is None:
         replace_problem = _premise_extract_problem(
             case_data, lines, inputs, label=case_path.name
+        )
+    if replace_problem is None:
+        replace_problem = _placement_decision_problem(
+            home, case_data, lines, inputs, label=case_path.name
         )
     if replace_problem is not None:
         return replace_problem
@@ -1892,9 +1984,197 @@ def _premise_extract_problem(
     return None
 
 
+def _region_line_kind(item: Mapping) -> str | None:
+    """`adopt_region` (a fold) or `restore-region`, the two lines that
+    rewrite a lesson's managed block over a hand edit, or ``None``."""
+    if item.get("verb") == "replace" and item.get("adopt_region"):
+        return "adopt_region"
+    if item.get("verb") == "premises" and item.get("action") == "restore-region":
+        return "restore-region"
+    return None
+
+
+def _quoted(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _quotable_words(line: str) -> str:
+    """What of a line a person wrote in a managed block the case's evidence
+    must quote: the line itself, or for a line that starts with `## ` (a
+    heading, which `cases.split_runner_evidence` drops from evidence at the
+    start of a quoted line) the words after it (`steward_inputs.quotable_line`
+    shows the brief the same)."""
+    return steward_inputs.quotable_line(line)
+
+
+def _placement_decision_problem(
+    home: Path | None, case_data: dict, items: list,
+    inputs: Mapping[str, Mapping] | None, *, label: str,
+) -> str | None:
+    """S-NEXT-u8-placement (02 §3a.10.7): the rules of a hand edit in a
+    placed lesson's managed block (an `@intact` `premise-moved` input).
+
+    1. A fold (`replace` with `adopt_region: true`) or a `premises` line
+       `action: restore-region` stands only on an `@intact` input for that
+       very lesson (`steward_inputs.intact_group`); anywhere else it is
+       refused by name -- a parked case included, so its tentative sheet
+       never teaches the wrong shape.
+    2. The whole-region rule's second condition: the compiler rewrites the
+       WHOLE block, so every lesson of the block that carries an `@intact`
+       input in this packet is in this one case's `records`, each with a
+       fold or a restore line. A case that only notes or rebaselines it
+       leaves the block refusing every later write to its file.
+    3. The third condition: the case's `evidence` quotes every line a person
+       wrote in the block (`verbs.edited_region_lines`, read from disk now;
+       a line the secret scan matches is exempt, as the case's own scan
+       would refuse it), so the words the re-render drops survive in the
+       case even in a plain host with no git history.
+
+    The first condition (the block is still the one the input saw) is the
+    verbs' own, checked again at apply time under the ledger lock
+    (`verbs._require_confirmed_block`). A parked case is never applied, so
+    2 and 3 do not bind it.
+
+    Fix round 1 (gate MAJOR 1): the lessons of one block are often placed
+    by different cases (each route has its own). A `kind: reconsider` case
+    supersedes ONE case, so such a group -- or one mixing a covered lesson
+    with an uncovered one -- is decided in one `kind: resolution` case
+    that supersedes nothing (:func:`_split_intact_members`); a reconsider
+    case for it is refused here, where the repair turn can still fix it,
+    rather than at `_prepared_recipe`. A group whose lessons share one
+    covering case keeps the reconsider case 02 §3a.10.7 names."""
+    if not inputs:
+        return None
+    lines = [item for item in items if isinstance(item, dict)]
+    for item in lines:
+        which = _region_line_kind(item)
+        rid = str(item.get("id"))
+        if which is not None and steward_inputs.intact_group(inputs.get(rid)) is None:
+            return (
+                f"{label}: `{which}` on {rid}: it rewrites the lesson's managed block over a "
+                "hand edit, and stands only on a premise-moved input whose block the daily "
+                "check saw hand-edited (`@intact`) for that lesson; decide this lesson "
+                "another way"
+            )
+    if case_data.get("kind") == "parked":
+        return None
+    records = [str(rid) for rid in case_data.get("records") or []]
+    groups = _intact_groups_of(inputs)
+    decided = {str(item.get("id")) for item in lines if _region_line_kind(item) is not None}
+    for group, members in sorted(groups.items()):
+        if not set(members) & set(records):
+            continue
+        outside = [rid for rid in members if rid not in records]
+        if outside:
+            return (
+                f"{label}: the managed block {group} was hand-edited on the lines of "
+                f"{sorted(members)}; the block is rewritten whole, so decide every one of them "
+                f"in this one case -- add {outside} to its `records`, each with its own line"
+            )
+        if case_data.get("kind") == "reconsider" and _group_cases_differ(inputs, members):
+            return (
+                f"{label}: the lessons of the managed block {group} ({sorted(members)}) are "
+                "not all covered by one earlier case, and a `kind: reconsider` case supersedes "
+                "exactly one; decide them all in this one case as `kind: resolution` and write "
+                "no `supersedes` (on this input a fold or a restore of a placed lesson is yours "
+                "in a resolution case)"
+            )
+        undecided = [rid for rid in members if rid not in decided]
+        if undecided:
+            return (
+                f"{label}: {undecided} carry a hand edit in the managed block {group}; give "
+                "each a `replace` line with `adopt_region: true` (fold the edit into the "
+                "lesson) or a `premises` line `action: restore-region` (put the ledger's text "
+                "back) -- an edited block refuses every later write to its file, so leaving "
+                "it as it is is not an answer; or park the case"
+            )
+        problem = _unquoted_edit_problem(home, case_data, members[0], group, label=label)
+        if problem is not None:
+            return problem
+    return None
+
+
+def _intact_groups_of(inputs: Mapping[str, Mapping] | None) -> dict[str, list[str]]:
+    """``managed target -> [record ids]``: the packet's `@intact` groups
+    (every input whose `@intact` mover names that block), by input order."""
+    groups: dict[str, list[str]] = {}
+    for rid, row in (inputs or {}).items():
+        group = steward_inputs.intact_group(row)
+        if group is not None:
+            groups.setdefault(group, []).append(str(rid))
+    return groups
+
+
+def _group_cases_differ(inputs: Mapping[str, Mapping], members: Sequence[str]) -> bool:
+    """Whether the lessons *members* of one `@intact` group are covered by
+    more than one case, counting "no case" as one of them (a covered lesson
+    and an uncovered one differ): the input row's `predecessor`, the case
+    a `kind: reconsider` would supersede for it."""
+    covering = {
+        str((inputs.get(rid) or {}).get("predecessor") or "") for rid in members
+    }
+    return len(covering) > 1
+
+
+def _split_intact_members(inputs: Mapping[str, Mapping] | None) -> frozenset[str]:
+    """Fix round 1 (gate MAJOR 1): the lessons of every `@intact` group
+    whose members no ONE case covers (:func:`_group_cases_differ`). Their
+    one case is a `kind: resolution` case, and in it a fold (`replace`
+    with `adopt_region: true`) of a covered placed lesson is the steward's
+    (:func:`_steward_replace_problem`): a reconsider case could supersede
+    only one of their cases, and splitting the group would decide one
+    hand edit without the other (the block is rewritten whole)."""
+    out: set[str] = set()
+    for members in _intact_groups_of(inputs).values():
+        if inputs is not None and _group_cases_differ(inputs, members):
+            out.update(members)
+    return frozenset(out)
+
+
+def _unquoted_edit_problem(
+    home: Path | None, case_data: dict, record_id: str, group: str, *, label: str
+) -> str | None:
+    """The whole-region rule's third condition for one block (see
+    :func:`_placement_decision_problem`), or ``None``. A block that cannot
+    be read now is the verbs' to refuse at apply time, not this check's.
+
+    Fix round 1 (gate MINOR 4): judged on the evidence as the runner will
+    record it (`cases.split_runner_evidence`, which drops an item with a
+    line that starts with `## `), and a heading line a person wrote is
+    asked for by its words after the `## ` (:func:`_quotable_words`): the
+    quote that would carry it verbatim is dropped before the case is
+    recorded, so before this a check that passed could still lose it."""
+    if home is None:
+        return None
+    try:
+        region = verbs.lesson_region(home, record_id)
+    except Exception:  # noqa: BLE001 -- the apply-time checks name it
+        return None
+    recorded, _dropped = cases.split_runner_evidence(dict(case_data))
+    quotes = " ".join(
+        _quoted(str(item.get("quote") or ""))
+        for item in recorded.get("evidence") or [] if isinstance(item, dict)
+    )
+    missing = [
+        line for line in verbs.edited_region_lines(region)
+        if not steward_inputs.scan_hit(line) and _quoted(_quotable_words(line)) not in quotes
+    ]
+    if missing:
+        # The lines themselves are not repeated here (this message can reach
+        # the run record); the brief lists them under the block.
+        return (
+            f"{label}: the case's evidence does not quote what a person wrote in the managed "
+            f"block {group}: {len(missing)} of the lines the brief lists under \"the lines a "
+            "person wrote there\" are missing; quote each word for word in an evidence item "
+            f"(ref `{group}#managed`), so the words survive the re-render"
+        )
+    return None
+
+
 def _steward_replace_problem(
     home: Path, case_data: dict, items: list, *, label: str,
     uncovered_moved: frozenset[str] = frozenset(),
+    fold_in_resolution: frozenset[str] = frozenset(),
 ) -> str | None:
     """E3b, D-AUTHOR §2.8 ("Who may do what"), the steward's column, as far
     as code can tell it: a placed (routed) lesson is replaced only by a
@@ -1918,7 +2198,14 @@ def _steward_replace_problem(
     the one placed lesson a `kind: resolution` case may replace (S-88's
     rule for a deferred lesson no case covers, extended to this input; its
     move is :func:`_steward_move_problem`'s). Merging stays refused for it
-    as for every placed lesson."""
+    as for every placed lesson.
+
+    S-NEXT-u8-placement, fix round 1: a lesson in *fold_in_resolution* (a
+    member of an `@intact` group no one case covers,
+    :func:`_split_intact_members`) may be folded -- a `replace` with
+    `adopt_region: true`, which keeps it where it is -- in a `kind:
+    resolution` case. Only the fold: any other replace of it still needs
+    its own reconsider case."""
     if case_data.get("kind") == "parked":
         return None
     for item in items:
@@ -1940,9 +2227,11 @@ def _steward_replace_problem(
                 "lesson; park the case (authority-unclear) with the merge as your "
                 "tentative answer"
             )
+        resolution = case_data.get("kind") == "resolution"
         if (
             case_data.get("kind") != "reconsider"
-            and not (case_data.get("kind") == "resolution" and rid in uncovered_moved)
+            and not (resolution and rid in uncovered_moved)
+            and not (resolution and rid in fold_in_resolution and item.get("adopt_region") is True)
             and _lesson_status(home, rid) == "routed"
         ):
             return (
@@ -3048,8 +3337,9 @@ def _predecessor_fill(home: Path, stage: Path, predecessors: dict) -> dict[str, 
     * the ledger shows it superseded already -- an earlier attempt of the
       same packet decided another of its lessons (2026-10-08, gate S1b F2:
       filled in again, the case writer refused the case);
-    * the case's records span more than one predecessor (refused later,
-      by `_prepared_recipe`).
+    * the case's records span more than one predecessor (a reconsider
+      case is refused alone later, :func:`_spanning_reconsider_refusal`;
+      a case of another kind records with no predecessor).
 
     When two staged cases could take it, a ``kind: reconsider`` case does,
     since it cannot record without one; a ``resolution`` case records
@@ -3082,6 +3372,30 @@ def _predecessor_fill(home: Path, stage: Path, predecessors: dict) -> dict[str, 
                 fill[stem] = str(predecessor)
                 claimed.add(str(predecessor))
     return fill
+
+
+def _spanning_reconsider_refusal(
+    name: str, case_data: Mapping, predecessor_ids: set
+) -> str | None:
+    """S-NEXT-u8-placement, fix round 1 (gate MAJOR 1): why a `kind:
+    reconsider` case whose records were placed by more than one earlier
+    case cannot be recorded (it supersedes exactly one), or ``None``. Until
+    this round `_prepared_recipe` RAISED here, before the parking branch and
+    outside any handler, so one such case ended the whole steward run and
+    came back on every run until the attempt cap. It is now refused alone,
+    as a case refused before it was recorded (sent back once, parked on a
+    second refusal), and the rest of the packet goes on. A case of any other
+    kind records without a predecessor: the runner fills none in for it
+    (:func:`_predecessor_fill`). The stage check names the `@intact` shape
+    first (:func:`_placement_decision_problem`), while the repair turn can
+    still fix it."""
+    if case_data.get("kind") != "reconsider" or len(predecessor_ids) < 2:
+        return None
+    return (
+        f"{name}: records span more than one predecessor case "
+        f"({', '.join(sorted(str(p) for p in predecessor_ids))}); a `kind: reconsider` "
+        "case supersedes exactly one"
+    )
 
 
 def _prepared_recipe(
@@ -3123,10 +3437,6 @@ def _prepared_recipe(
             for rid in case_data.get("records") or []
             if rid in predecessors
         }
-        if len(predecessor_ids) > 1:
-            raise ValueError(
-                f"{case_path.name}: records span more than one predecessor case"
-            )
         if predecessor_ids and not case_data.get("supersedes") and stem in fill:
             case_data["supersedes"] = fill[stem]
         parking_reason = _forced_parking_reason(
@@ -3166,6 +3476,8 @@ def _prepared_recipe(
         refusal = _withheld_refusal(
             [case_text, sheet_text, *(row["ref"] for row in dropped_evidence)]
         )
+        if refusal is None:
+            refusal = _spanning_reconsider_refusal(case_path.name, case_data, predecessor_ids)
         if refusal is not None:
             # Nothing of this case's text is frozen into the run record: it
             # holds the hit. 2026-10-08 (gate S1b F6): its lessons used to
@@ -3321,6 +3633,14 @@ def _verify_mutation_commit(
     home: Path, sha: str, ref: execution_evidence.ExecutionRef, item: batch.SheetItem
 ) -> bool:
     """Require the candidate commit to contain the referenced record effect."""
+    if item.verb == "premises" and item.fields.get("action") == "restore-region":
+        # S-NEXT-u8-placement, fix round 1: a restore commits the compile
+        # record alone (no record file), under its own subject
+        # (`verbs.restore_region`); that subject for this lesson is its effect.
+        shown = gitops._git(home, "log", "-1", "--format=%s", sha)  # noqa: SLF001
+        return shown.returncode == 0 and shown.stdout.strip() == (
+            f"{verbs.RESTORE_REGION_SUBJECT}{ref.record_id}"
+        )
     proc = gitops._git(  # noqa: SLF001 -- committed-effect verification
         home, "diff-tree", "--no-commit-id", "--name-only", "-r", sha
     )
@@ -3429,7 +3749,15 @@ def _recovered_items(
                 ),
             )
             continue
-        if item.verb in {"route", "rehome", "rescope"}:
+        restores = item.verb == "premises" and item.fields.get("action") == "restore-region"
+        if item.verb in {"route", "rehome", "rescope"} or restores:
+            # S-NEXT-u8-placement, fix round 1 (gate MINOR 1): a
+            # `restore-region` line's block is written after its ledger
+            # commit, so one that crashed in between left a `stale` block
+            # (the person's words the case decided to overwrite, still
+            # loaded), which the daily check reads as intact and never
+            # offers again. It is finished here, like a route's host leg.
+            #
             # Sweep 2, R2 (2026-09-27): judge THIS record's own target(s)
             # only. A ledger-wide recompile here rewrote every other stale
             # host target while checking one item, and any unrelated
@@ -3457,6 +3785,9 @@ def _recovered_items(
                     rc=0,
                     sha=sha,
                     state="applied",
+                    # the commit subject a restore's result carries
+                    # (`verbs._restores_a_region`), as `batch` sets it
+                    detail=f"{verbs.RESTORE_REGION_SUBJECT}{item.id}" if restores else None,
                     evidence="ledger mutation and host result established by recompile",
                 )
         else:
@@ -5511,6 +5842,11 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             finally:
                 if index is not None:
                     index.close()
+            # S-NEXT-u8-placement: the lessons of one hand-edited managed
+            # block are decided in one case, so they share one packet.
+            plans = steward_inputs.keep_groups_together(
+                plans, steward_inputs.intact_groups(eligible)
+            )
             by_record = {row["record"]: row for row in eligible}
             packet_rows = []
             observations: list[str] = []
