@@ -134,7 +134,7 @@ def normalize_register(raw: object, text: str) -> tuple[dict[str, str] | None, s
 def _names_path(text: str, path: str) -> bool:
     """True when *text* holds *path* as a whole path: not the front of a longer
     one (`/srv/app` inside `/srv/app-old` or `/srv/app/sub`), not the tail of
-    one (`/home/x/srv/app`). A closing `?`, `,`, `.` or quote is fine."""
+    one (`/home/user/srv/app`). A closing `?`, `,`, `.` or quote is fine."""
     return (
         re.search(rf"(?<![\w/.~-]){re.escape(path)}(?![\w/-])(?!\.\w)", text) is not None
     )

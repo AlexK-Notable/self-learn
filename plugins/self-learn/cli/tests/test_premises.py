@@ -430,7 +430,7 @@ class TestCommandGate:
             [*GIT_HEAD, "/repo", "rev-parse", "--verify", "--quiet", "HEAD:.ssh/id_rsa"],
             [*GIT_HEAD, "/repo", "rev-parse", "HEAD:conf/app.conf"],
             [*GIT_HEAD, "relative/repo", "cat-file", "-s", GIT_OID],
-            [*GIT_HEAD, "/home/u/.ssh", "cat-file", "-s", GIT_OID],
+            [*GIT_HEAD, "/home/user/.ssh", "cat-file", "-s", GIT_OID],
             # Properties that carry an environment, a credential or a
             # command line never reach systemctl, whatever builds the argv.
             ["systemctl", "--user", "show", "--no-pager", "--no-ask-password", "--property",

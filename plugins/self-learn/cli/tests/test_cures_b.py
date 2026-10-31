@@ -692,7 +692,7 @@ def _register(path, mode="git", kind="project"):
         # the path must be the whole path, and the mode a phrase, not a stray word
         (_register("/srv/app"), "Register /srv/app-old in git mode?", "text must name"),
         (_register("/srv/app"), "Register /srv/app/sub in git mode?", "text must name"),
-        (_register("/srv/app"), "Register /home/x/srv/app in git mode?", "text must name"),
+        (_register("/srv/app"), "Register /home/user/srv/app in git mode?", "text must name"),
         (_register("/srv/app"), "Register /srv/app.git in git mode?", "text must name"),
         (_register("/srv/app"), "Register /srv/app, a git repository?", "text must name"),
         # round 2: ordinary prose is not a mode, and a text naming the other mode names neither
