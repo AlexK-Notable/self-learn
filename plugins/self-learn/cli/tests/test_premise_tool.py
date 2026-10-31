@@ -180,11 +180,14 @@ def test_a_probe_shows_the_value_and_the_baseline_a_premise_would_record(tmp_pat
     assert f"value_sha: {premises.value_sha('')}" in text
     assert "claim: holds (holds_if absent 'dbus-broker.service')" in text
     assert "baseline if written now: holds" in text
-    # The one command run is the catalog's own read-only shape.
+    # The commands run are the catalog's own read-only shape: the unit's
+    # LoadState first (integration 2026-10-31: U1 fix round 1, 66bd21f, reads it
+    # so an unknown unit is `unavailable`, never an empty value), then the
+    # property asked for.
     assert runner.calls == [[
         "systemctl", "--user", "show", "--no-pager", "--no-ask-password", "--property",
-        "BindsTo", "--value", "--", "oo7-daemon.service",
-    ]]
+        prop, "--value", "--", "oo7-daemon.service",
+    ] for prop in ("LoadState", "BindsTo")]
 
 
 def test_a_first_value_that_contradicts_the_claim_is_reported_at_write_time(tmp_path):
@@ -285,7 +288,7 @@ def test_a_forbidden_command_cannot_be_asked_for_through_the_tool(tmp_path):
     assert runner.calls == []
     _ok(tool.dispatch({"probe": {"kind": "systemd-show", "scope": "user", "unit": "x.service",
                                   "property": "ActiveState"}}))
-    assert len(runner.calls) == 1
+    assert [c[6] for c in runner.calls] == ["LoadState", "ActiveState"]  # 66bd21f: LoadState first
 
 
 def test_a_file_probe_never_returns_the_files_text(tmp_path):
@@ -371,7 +374,9 @@ def test_a_lesson_with_premises_is_probed_and_judged_against_its_baseline(tmp_pa
     assert "probe: none (a behaviour premise" in text and "verdict: no-probe" in text
     # p3 has no baseline yet
     assert "verdict: no-baseline" in text
-    assert len(runner.calls) == 2  # p1's systemctl and p3's pacman; p2 ran nothing
+    # p1's two systemctl reads (LoadState, then BindsTo: 66bd21f) and p3's
+    # pacman; p2 ran nothing
+    assert [c[0] for c in runner.calls] == ["systemctl", "systemctl", "pacman"]
     runner.by_prog["systemctl"] = b""
     held = _ok(_tool(tmp_path, runner, ledger=home).dispatch({"lesson": "lrn-0000000a"}))
     assert "verdict: holds" in held and "verdict: moved" not in held  # positive control
@@ -386,11 +391,12 @@ def test_asking_for_one_premise_runs_only_that_probe(tmp_path):
     ))
     assert "premises: 3 recorded, showing p1" in text
     assert "p1:" in text and "p2:" not in text and "p3:" not in text
-    assert len(runner.calls) == 1 and runner.calls[0][0] == "systemctl"
+    # p1's two systemctl reads (LoadState, then BindsTo: 66bd21f), nothing else
+    assert [c[0] for c in runner.calls] == ["systemctl", "systemctl"]
     behaviour = _ok(_tool(tmp_path, runner, ledger=home).dispatch(
         {"lesson": "lrn-0000000a", "premise": "p2"}
     ))
-    assert "verdict: no-probe" in behaviour and len(runner.calls) == 1
+    assert "verdict: no-probe" in behaviour and len(runner.calls) == 2
     missing = _err(_tool(tmp_path, runner, ledger=home).dispatch(
         {"lesson": "lrn-0000000b", "premise": "p1"}
     ))
