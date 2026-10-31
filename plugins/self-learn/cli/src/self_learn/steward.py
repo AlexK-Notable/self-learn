@@ -825,6 +825,7 @@ def _terminal_versions(
     states: frozenset[str] = _DECIDED_DISPOSITIONS,
     *,
     defers_decide: bool = True,
+    manifests: list[dict] | None = None,
 ) -> set[tuple[str, str]]:
     """Every ``(record, input version)`` a committed steward run decided.
 
@@ -850,7 +851,7 @@ def _terminal_versions(
     is what brings back a lesson moved project->project before that -- its
     bytes, and so its version, never changed."""
     terminal: set[tuple[str, str]] = set()
-    for manifest in committed_manifests(home):
+    for manifest in (committed_manifests(home) if manifests is None else manifests):
         recipes = manifest.get("cases") or {}
         for packet in manifest.get("packets") or []:
             if not isinstance(packet, dict):
@@ -1071,22 +1072,18 @@ def _suspected_violation_inputs(home: Path, exclude: set[str] | None = None) -> 
 
 def _premise_predecessor(home: Path, record_id: str) -> str | None:
     """The case a `premise-moved` decision of *record_id* supersedes: the
-    newest case that covers it and that `kind: reconsider` could take as its
-    predecessor (:func:`_reconsider_predecessor_problem` -- the apply-time
+    newest case that covers it (:func:`_covering_cases` -- the apply-time
     test, so the runner never fills in a predecessor the ledger would
     refuse), or `None` when no case does (a lesson routed before cases
     existed)."""
-    best: tuple[tuple[str, str], str] | None = None
-    for row in cases.list_cases(home, record_id=record_id, only_ok=True):
-        case_id = row.get("case")
-        if not isinstance(case_id, str) or row.get("superseded_by"):
-            continue
-        if _reconsider_predecessor_problem(home, case_id, record_id) is not None:
-            continue
-        key = (str(row.get("opened_at") or ""), case_id)
-        if best is None or key > best[0]:
-            best = (key, case_id)
-    return best[1] if best else None
+    covering = _covering_cases(home, record_id)
+    if not covering:
+        return None
+    opened = {
+        str(row.get("case")): str(row.get("opened_at") or "")
+        for row in cases.list_cases(home, record_id=record_id, only_ok=True)
+    }
+    return max(covering, key=lambda case_id: (opened.get(case_id, ""), case_id))
 
 
 #: The card line a `premise-moved` input from a closed follow-up carries.
@@ -1096,27 +1093,36 @@ _FOLLOWUP_MOVED_REASON = (
 )
 
 
-def _premise_moved_inputs(home: Path, exclude: set[str] | None = None) -> list[dict]:
+def _premise_moved_inputs(
+    home: Path, exclude: set[str] | None = None, *, manifests: list[dict] | None = None
+) -> list[dict]:
     """S-NEXT-u3-followup (premise-check design U3): one `premise-moved` input
     per ROUTED lesson whose follow-up was closed after the lesson was last
     decided (:func:`steward_inputs.moved_followups`). That is the live
     trigger (`followup-done`) and the one-time pass for the follow-ups
     closed before it existed, by one predicate.
 
-    The version is a hash of the closed follow-up
+    The version is `follow_up:<done_at>`
     (:func:`steward_inputs.premise_moved_version`), so a run that decided it
-    -- applied, parked, refused or abandoned -- never sees it again, and the
-    follow-up being closed again with other words is a new input. A lesson
-    the overseer holds is not offered (S-81); a lesson another input of the
-    run already names is not offered twice (the premise input comes back on
-    the next run). At most `steward_inputs.PREMISE_MOVED_PER_RUN` rows,
-    oldest closing first. Off when `premises.enabled` is false."""
+    -- applied, parked, refused or abandoned -- never sees it again, and a
+    follow-up closed on another day is a new input. A lesson the overseer
+    holds is not offered (S-81). A lesson another input of the run already
+    names is not offered twice: that input's case, opened on a later day than
+    the closing, decides the lesson (:func:`steward_inputs.moved_followups`),
+    with the closed follow-up shown in its brief
+    (:func:`steward_inputs.render_closed_followup`) -- the premise input does
+    NOT come back after it. A case opened the SAME day does not decide it
+    (the day is the closing's only precision), so there the premise input
+    comes back on the next run. At most `steward_inputs.PREMISE_MOVED_PER_RUN`
+    rows, oldest closing first. Off when `premises.enabled` is false.
+    *manifests*: the committed steward manifests the caller has already read
+    (the due check reads them once per tick)."""
     if not steward_inputs.premises_enabled(home):
         return []
     found = steward_inputs.moved_followups(home)
     if not found:
         return []
-    terminal = _terminal_versions(home)
+    terminal = _terminal_versions(home, manifests=manifests)
     held = cases.held_lessons(home)
     out: list[dict] = []
     for moved in found:

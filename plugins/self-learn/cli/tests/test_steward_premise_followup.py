@@ -15,11 +15,15 @@ the brief do not exist there):
   every "nothing is offered" assertion below);
 * the one predicate is both the live trigger and the one-time pass: a follow-up
   closed before the last decision is left alone, one closed on the same day or
-  later is offered, and what counts as a decision is the ledger's own dated
-  facts (`routed_at`, a placing case, a `routing` or `reconsidered` history
-  entry, `last_confirmed`), never a deferral, a parked case or a recurrence;
-* a run that decided an input never sees it again; closing the follow-up again
-  with other words is a new version;
+  later is offered, and the last decision is the premise spec's own rule (02
+  section 3a.10.4): the `opened_at` of the newest case that names the lesson, or
+  `routed_at` when none does -- never a history entry or `last_confirmed`;
+* a case opened after the closing takes the lesson out of the list only because
+  every brief of a routed lesson shows its closed follow-up (the review's first
+  finding: otherwise a reconsider input decided first loses the lesson without
+  the case ever seeing what moved);
+* a run that decided an input never sees it again; its version is
+  `follow_up:<done_at>`, so a follow-up closed on another day is a new input;
 * the switch (`premises.enabled`, tier C, default ON in code), the overseer's
   hold, another input of the run and the per-run cap of ten each hold an input
   back;
@@ -132,7 +136,7 @@ def test_a_closed_follow_up_is_a_premise_moved_input_and_an_open_one_is_not(tmp_
     assert steward_inputs.INPUT_PREMISE_MOVED in steward_inputs.INPUT_KINDS
     assert row["kind"] == "premise-moved" and row["record"] == A
     assert row["record_status"] == "routed" and row["version"] == row["blob"]
-    assert row["version"].startswith("premise:")
+    assert row["version"] == f"follow_up:{_day()}"
     assert row["moved"] == [{
         "source": "follow-up-done", "done_at": _day(),
         "action": "bind the unit to the bus", "unblocks_on": "the unit is bound",
@@ -184,30 +188,39 @@ def test_a_follow_up_closed_before_the_last_decision_is_left_alone(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "rows, offered",
+    "kind, outcome",
     [
-        ([], True),
-        ([{"case": "case-0000beef", "kind": "resolution", "outcome": "route"}], False),
-        ([{"case": "case-0000beef", "kind": "reconsider", "outcome": "replaced"}], False),
-        ([{"case": "case-0000beef", "kind": "resolution", "outcome": "retire"}], False),
-        # a recurrence decision, a deferral and a parked case never looked at the premises
-        ([{"case": "case-0000beef", "kind": "resolution", "outcome": "no-action"}], True),
-        ([{"case": "case-0000beef", "kind": "resolution", "outcome": "defer"}], True),
-        ([{"case": "case-0000beef", "kind": "parked", "outcome": "parked"}], True),
-        ([{"case": "case-0000beef", "kind": "parked", "outcome": "route"}], True),
+        ("resolution", "route"),
+        ("reconsider", "replaced"),
+        ("resolution", "retire"),
+        # the premise spec counts the newest case that names the lesson, whatever
+        # it decided: it froze its facts when it opened, and its brief showed
+        # the closed follow-up
+        ("resolution", "no-action"),
+        ("resolution", "defer"),
+        ("parked", "parked"),
     ],
 )
-def test_only_a_case_that_placed_or_changed_the_lesson_is_a_decision(tmp_path, monkeypatch, rows, offered):
+def test_the_last_decision_is_the_newest_case_that_names_the_lesson(tmp_path, monkeypatch, kind, outcome):
     env = make_env(tmp_path)
     home = env.ledger
     _routed(env, A)
     verbs.followup_done(home, A, no_push=True)
-    later = f"{_day(1)}T00:00:00Z"
-    monkeypatch.setattr(cases, "list_cases", _case_index([dict(row, opened_at=later, records=[A]) for row in rows]))
-    assert (_moved(home) == [A]) is offered
+    row = {"case": "case-0000beef", "kind": kind, "outcome": outcome, "records": [A]}
+    # control: a case opened BEFORE the closing leaves the lesson offered, so the
+    # case index is read (not nothing at all) when the next line drops it
+    monkeypatch.setattr(cases, "list_cases", _case_index([dict(row, opened_at=f"{_day(-1)}T00:00:00Z")]))
+    assert _moved(home) == [A]
+    monkeypatch.setattr(cases, "list_cases", _case_index([dict(row, opened_at=f"{_day(1)}T00:00:00Z")]))
+    assert _moved(home) == []
+    decided_at, by = steward_inputs.last_decision(home, Record.from_path(ledger_ops.find_record_path(home, A)))
+    assert by == "case:case-0000beef" and decided_at.date().isoformat() == _day(1)
 
 
-def test_a_reconsideration_or_a_confirmation_after_the_closing_is_a_decision(tmp_path):
+def test_a_history_entry_or_a_confirmation_is_not_a_decision(tmp_path):
+    """A `reconsidered` entry is dated when the case APPLIED (weeks after it froze
+    its facts) and `last_confirmed` says a person saw the rule work: neither says
+    the closed follow-up was looked at, so neither takes the lesson out."""
     env = make_env(tmp_path)
     home = env.ledger
     for rid in (A, B, C):
@@ -224,16 +237,15 @@ def test_a_reconsideration_or_a_confirmation_after_the_closing_is_a_decision(tmp
     record = Record.from_path(path)
     record.set_last_confirmed(_day(1))
     record.write(path)
-    # a filing move decides nothing about a premise
     path = ledger_ops.find_record_path(home, C)
     record = Record.from_path(path)
     record.append_history("moved", {"at": later, "by": "steward"})
     record.write(path)
     commit_all(home, "later facts")
 
-    assert _moved(home) == [C]
+    assert _moved(home) == [A, B, C]
     decided_at, by = steward_inputs.last_decision(home, Record.from_path(ledger_ops.find_record_path(home, A)))
-    assert by == "history:reconsidered" and decided_at.date().isoformat() == _day(1)
+    assert by == "routed_at" and decided_at is not None and decided_at.date().isoformat() == _day()
 
 
 # --------------------------------------------------- identity
@@ -252,28 +264,36 @@ def test_a_decided_input_is_not_offered_again_and_a_returned_one_is(tmp_path):
     _publish_disposition(home, A, row["version"], "applied", "run-f5a000000002")
     assert _moved(home) == []
     # an applied row under another version decides nothing about this one
-    _publish_disposition(home, A, "premise:000000000000", "applied", "run-f5a000000003")
+    _publish_disposition(home, A, "follow_up:2000-01-01", "applied", "run-f5a000000003")
     assert _moved(home) == []
 
 
-def test_the_version_is_the_closed_follow_up_and_what_moved():
+def test_the_version_is_the_closing_day_and_the_premises_that_moved():
     done = {"action": "bind it", "unblocks_on": "bound", "done_at": "2026-10-29", "done_note": "met"}
     version = steward_inputs.premise_moved_version(followup_done=done)
+    # 02 section 3a.10.7: `follow_up:<done_at>` for a closed follow-up alone
+    assert version == "follow_up:2026-10-29"
     assert version == steward_inputs.premise_moved_version(followup_done=dict(done))
-    assert version.startswith("premise:") and len(version) == len("premise:") + 12
-    # a follow-up closed again with other words, or on another day, is a new input
-    assert version != steward_inputs.premise_moved_version(followup_done={**done, "done_note": "met again"})
+    # a follow-up closed on another day is a new input; other words the same day are not
     assert version != steward_inputs.premise_moved_version(followup_done={**done, "done_at": "2026-10-30"})
+    assert version == steward_inputs.premise_moved_version(followup_done={**done, "done_note": "met again"})
     # a premise that moved is part of it, whatever order the pairs arrive in
     pairs = [("p2", "bbb"), ("p1", "aaa")]
     both = steward_inputs.premise_moved_version(followup_done=done, moved=pairs)
-    assert both != version
+    assert both == "premises:p1=aaa,p2=bbb;follow_up:2026-10-29"
     assert both == steward_inputs.premise_moved_version(followup_done=done, moved=reversed(pairs))
     assert both != steward_inputs.premise_moved_version(followup_done=done, moved=[("p1", "ccc"), ("p2", "bbb")])
-    # a date that is a value, not text (hand-edited YAML), hashes like its text
+    assert steward_inputs.premise_moved_version(moved=pairs) == "premises:p1=aaa,p2=bbb"
+    # a date that is a value, not text (hand-edited YAML), or a timestamp, names the same day
     assert version == steward_inputs.premise_moved_version(
         followup_done={**done, "done_at": datetime(2026, 10, 29).date()}
     )
+    assert version == steward_inputs.premise_moved_version(
+        followup_done={**done, "done_at": "2026-10-29T10:30:00Z"}
+    )
+    # an input that names nothing that moved has no identity
+    with pytest.raises(ValueError):
+        steward_inputs.premise_moved_version()
 
 
 # ------------------------------------- what holds an input back
@@ -341,6 +361,33 @@ def test_the_steward_due_check_sees_a_premise_moved_input(tmp_path):
     assert serve._steward_is_due(home, cache, now) is True
 
 
+def test_the_due_check_hands_the_manifests_it_read_to_the_terminal_check(tmp_path, monkeypatch):
+    """`serve._steward_is_due` reads the committed manifests once a tick; the
+    premise check must not read every one of them from git a second time (the
+    review's cost finding)."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    verbs.followup_done(home, A, no_push=True)
+    (row,) = steward._premise_moved_inputs(home)
+    manifests = [{"packets": [{"dispositions": {
+        A: {"state": "applied", "input_version": row["version"]},
+    }}]}]
+
+    def refuse(home_):
+        raise AssertionError("the committed manifests were read again")
+
+    monkeypatch.setattr(steward, "committed_manifests", refuse)
+    # the manifests handed in decide it; nothing is read from git
+    assert steward._premise_moved_inputs(home, manifests=manifests) == []
+    # positive control: without them the (refusing) read is made
+    with pytest.raises(AssertionError, match="read again"):
+        steward._premise_moved_inputs(home)
+    # and a manifest that decided another version of it decides nothing here
+    other = [{"packets": [{"dispositions": {A: {"state": "applied", "input_version": "follow_up:2000-01-01"}}}]}]
+    assert [r["record"] for r in steward._premise_moved_inputs(home, manifests=other)] == [A]
+
+
 # ------------------------------------------------------- the brief
 
 
@@ -389,6 +436,40 @@ def test_the_brief_shows_what_moved_with_the_record_lines_to_cite(tmp_path):
     # lesson as an ordinary input has one (positive control).
     assert "[evidence pack]" not in body
     assert "[evidence pack]" in _brief(home, {"record": A, "kind": "lesson"})
+
+
+@pytest.mark.parametrize("kind", ["lesson", "reconsider", "suspected-violation"])
+def test_every_brief_of_a_lesson_with_a_closed_follow_up_shows_it(tmp_path, kind):
+    """The guard behind `last_decision`: a case opened after the closing takes the
+    lesson out of the premise check (a reconsider input decided first, a suspected
+    violation, a plain queued lesson), so each of those briefs must carry the
+    closed follow-up -- or the lesson would lose it without the case ever seeing
+    what moved (the review's first finding, the oo7 failure over again)."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    # control: while the follow-up is OPEN the brief has no such block
+    assert "[closed follow-up]" not in _brief(home, {"record": A, "kind": kind})
+
+    verbs.followup_done(home, A, note="the condition is met", no_push=True)
+    body = _brief(home, {"record": A, "kind": kind})
+
+    assert "[closed follow-up]" in body
+    assert f"the follow-up on this lesson was closed on {_day()}" in body
+    assert "what the follow-up asked for: bind the unit to the bus" in body
+    assert "the note it was closed with: the condition is met" in body
+    path = ledger_ops.find_record_path(home, A)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    first = lines.index("follow_up_done:") + 1
+    assert f":{path.relative_to(home).as_posix()}#L{first}-" in body
+    assert f"L{first}: follow_up_done:" in body
+    # a premise-moved input is not one of these: it carries the facts in its own
+    # block, once
+    (row,) = steward._premise_moved_inputs(home)
+    moved_body = _brief(home, row)
+    assert "[closed follow-up]" not in moved_body
+    assert moved_body.count("the follow-up on this lesson was closed on") == 1
+    assert moved_body.count("L%d: follow_up_done:" % first) == 1
 
 
 def test_a_covering_case_is_the_predecessor_and_only_its_what_would_change_is_shown(tmp_path, monkeypatch):
@@ -506,6 +587,95 @@ def test_a_run_decides_a_premise_moved_input_once(tmp_path, monkeypatch):
     manifest = steward.committed_manifests(home)[-1]
     assert [(row["record"], row["kind"]) for row in manifest["inputs"]] == [(A, "premise-moved")]
     # decided: not offered again, the due check is quiet, the next run is idle
+    assert steward._premise_moved_inputs(home) == []
+    assert steward.run(home).status == "idle"
+    assert len(seen) == 1
+
+
+# ------------------------------- through a run: a lesson a case placed (lrn-9b4250f5's shape)
+
+
+def _placed_by_a_case(home: Path, setup: Path, rid: str) -> str:
+    """The lesson is routed to its skill's SKILL.md by a steward case with a
+    follow-up, the way the pipeline places lessons (the live acceptance case:
+    routed by case-333cc8dc, follow-up closed a month later); returns the case."""
+    from self_learn import batch
+    from test_steward_refusals import _case
+    from test_u3b_steward_authority import HOOK_TRIGGER, _record_case
+
+    setup.mkdir(parents=True, exist_ok=True)
+    ledger_ops.create_record(home, make_behavior(record_id=rid, trigger=HOOK_TRIGGER))
+    ledger_ops.write_proposal(home, rid, proposal_dict())
+    ledger_ops.stamp_proposal(home, rid)
+    commit_all(home, f"seed {rid}")
+    case_id = _record_case(home, setup, _case([rid], "route", "route"))
+    sheet = setup / "route.yaml"
+    _dump_yaml(sheet, {"version": 1, "case": case_id, "items": [{
+        "id": rid, "verb": "route", "dest": "skill-md",
+        "follow_up": "bind the unit to the bus", "unblocks_on": "the unit is bound",
+    }]})
+    result = batch.run(home, batch.load_sheet(sheet, home=home), no_push=True, actor="steward")
+    assert result.items[0].state == "applied", result.items[0].detail
+    return case_id
+
+
+def test_a_lesson_a_case_placed_is_decided_through_a_reconsider_case_and_not_offered_again(tmp_path, monkeypatch):
+    """The covering-case path end to end, with nothing about the case index or the
+    predecessor test stubbed: the real `cases.require_reconsider_predecessor`
+    accepts the route case, the runner fills in `supersedes`, `verbs.reconsider`
+    applies and writes `history: reconsidered`, and the input is not offered
+    again (the review's first MINOR: the live acceptance case lrn-9b4250f5 takes
+    this path and nothing ran it)."""
+    from test_steward_refusals import _case
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    rid = "lrn-f5a00004"
+    prior = _placed_by_a_case(home, tmp_path / "setup", rid)
+    # control: the follow-up is open, so nothing has moved
+    assert steward._premise_moved_inputs(home) == []
+    verbs.followup_done(home, rid, note="the condition is met", no_push=True)
+
+    (row,) = steward._premise_moved_inputs(home)
+    assert row["predecessor"] == prior
+    decided_at, by = steward_inputs.last_decision(home, Record.from_path(ledger_ops.find_record_path(home, rid)))
+    assert decided_at is not None and by == f"case:{prior}"
+
+    _configure_steward(home)
+    seen: list[str] = []
+
+    def fake(spec):
+        seen.append(spec.prompt)
+        stage = _stage_dir(spec)
+        case = _case([rid], "no-action", "note")
+        # no `supersedes`: the runner fills it in from the input's predecessor
+        case.update(kind="reconsider", trigger="reconsider",
+                    question="is the lesson still true now that its follow-up is closed?")
+        _dump_yaml(stage / "cases" / f"{rid}.yaml", case)
+        _dump_yaml(stage / "sheets" / f"{rid}.yaml", {
+            "version": 1, "case": "$CASE_ID",
+            "items": [{"id": rid, "verb": "note",
+                       "append": "checked against the closed follow-up: still true"}],
+        })
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    monkeypatch.setattr(steward.invocation, "write_session", fake)
+    result = steward.run(home)
+
+    assert result.status == "applied", result
+    assert len(seen) == 1 and "[input] premise-moved" in seen[0] and f"### brief: {rid}" in seen[0]
+    assert f"`supersedes: {prior}`" in seen[0]
+    by_id = {c["case"]: c for c in cases.list_cases(home, record_id=rid)}
+    (successor,) = [c for c in by_id.values() if c["case"] != prior]
+    assert successor["kind"] == "reconsider" and successor["supersedes"] == prior
+    assert by_id[prior]["superseded_by"] == successor["case"]
+    record = Record.from_path(ledger_ops.find_record_path(home, rid))
+    assert any(
+        h.get("event") == "reconsidered" and h.get("case") == successor["case"] for h in record.history
+    )
+    manifest = steward.committed_manifests(home)[-1]
+    assert [(r["record"], r["kind"]) for r in manifest["inputs"]] == [(rid, "premise-moved")]
+    # decided: not offered again, the next run is idle
     assert steward._premise_moved_inputs(home) == []
     assert steward.run(home).status == "idle"
     assert len(seen) == 1
