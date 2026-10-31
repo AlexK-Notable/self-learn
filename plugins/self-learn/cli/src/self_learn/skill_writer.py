@@ -47,14 +47,33 @@ lock and the skills root's lock, in this order:
    sha256) -- one ledger commit, or none when the row already says so;
 2. the skill's files: ``SKILL.md`` (the draft, stamped with
    ``metadata.self-learn`` -- ``authored_by``, ``case``, ``created``, which
-   never change after the skill is made -- plus exactly one managed
-   section at the end: the deployed file's own section carried over byte
-   for byte, or an empty one for a new skill), ``references/*.md`` (the
-   draft's set replaces the deployed set), ``.claude-plugin/plugin.json``,
-   and the marketplace entry, each written only when its bytes change --
-   one skills-root commit, or none;
+   never change after the skill is made -- then exactly one managed
+   section: the deployed file's own section carried over byte for byte,
+   or an empty one for a new skill -- then, when the deployed file has
+   one, the pointer block a skill-scoped ``reference`` route added, also
+   carried over byte for byte, last), ``references/*.md`` (the draft's
+   set replaces the deployed set, except the reference shelf
+   ``references/LEARNINGS.md``, which a write never writes or removes),
+   ``.claude-plugin/plugin.json``, and the marketplace entry, each written
+   only when its bytes change -- one skills-root commit, or none;
 3. the link ``~/.claude/skills/<name>`` -> ``plugins/<name>/skills/<name>``
    (:func:`link_skill`), made only once the folder exists.
+
+**What the compilers own.** The managed section, the pointer block and the
+reference shelf are the compilers', not the author's: a draft may not
+carry the shelf or a pointer marker (``bad-line``), :func:`draft_view`
+leaves all three out, and a write keeps the deployed ones. Everything else
+in the deployed SKILL.md is the author's, wherever it stands, including
+text a person added after the managed section: :func:`draft_view` hands
+it back at the end of the prose, and a write replaces it with the draft,
+which is why changing it needs ``expect_sha`` (the authored hash covers
+it). A ``reference`` lesson routed with ``--dest`` into one of the
+author's ``references/*.md`` files has its entry in that file, so a write
+that would change or remove that file is refused (``needs-person``) until
+the lesson is moved.
+
+Both commits carry a ``By: <actor>`` trailer: the skills-root commit and
+the registry commit (:func:`skill_registry.with_update`'s ``body``).
 
 **Interrupted writes.** The registry row is the write's intent: it is
 committed first, and everything after it is idempotent, so running the
@@ -99,7 +118,16 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 from . import gitops, intents, sentinel, skill_registry
 from .cases import CASE_ID_RE
-from .compilers import BEGIN_MARKER, END_MARKER, CompileError, _find_leading_block
+from .compilers import (
+    BEGIN_MARKER,
+    DEFAULT_REFERENCE_BASENAME,
+    END_MARKER,
+    POINTER_BEGIN_MARKER,
+    POINTER_END_MARKER,
+    CompileError,
+    _find_leading_block,
+    reference_target_path,
+)
 from .hosts import HostsError, host_mode, load_hosts, validate_host_path
 from .primitives import chrono, fsops, yamlio
 from .scan import scan as secret_scan
@@ -162,6 +190,19 @@ MAX_DRAFT_FILE_BYTES = 1024 * 1024
 #: ``check`` runs before the case and author are known; the stamp it
 #: checks is built with these and never written.
 _PLACEHOLDER_CASE = "case-00000000"
+
+#: The reference shelf, ``references/LEARNINGS.md``: a skill-scoped
+#: ``reference`` route creates it and appends to it (``compilers.
+#: compile_reference``), so the compilers own it, like the managed section.
+#: A draft may not carry it, ``draft_view`` leaves it out, and a write
+#: never writes or removes it (``skill_registry.authored_sha256`` leaves it
+#: out of the hash for the same reason).
+_SHELF_KEY = f"{SKILL_REFERENCES_DIR}/{DEFAULT_REFERENCE_BASENAME}"
+
+#: What both pointer-block markers start with
+#: (``compilers.POINTER_BEGIN_MARKER`` / ``POINTER_END_MARKER``): a draft
+#: carrying either one, whole or damaged, is refused.
+_POINTER_MARK = "<!-- self-learn:pointers:"
 
 _MARKETPLACE_REL = ".claude-plugin/marketplace.json"
 _MANIFEST_REL = ".claude-plugin/plugin.json"
@@ -443,6 +484,19 @@ def _authored_sha(files: Mapping[str, str]) -> str:
     return skill_registry.authored_sha256(files[SKILL_ENTRY_FILE], others)
 
 
+def _authored_sha_or_refuse(files: Mapping[str, str], what: str) -> str:
+    """:func:`_authored_sha` for the checks: a file the hash cannot take (a
+    deployed file name with a backslash in it, say) is a refusal with its
+    reason, never a traceback."""
+    try:
+        return _authored_sha(files)
+    except SkillRegistryError as exc:
+        raise _Refused(
+            KIND_NEEDS_PERSON,
+            [f"the authored sha256 of {what} cannot be taken: {exc}; a person must look at the folder"],
+        ) from exc
+
+
 def deployed_authored_sha256(home: Path | str, name: str) -> str | None:
     """The authored sha256 of the deployed files (what ``expect_sha`` is
     compared with), or ``None`` when none are deployed."""
@@ -452,27 +506,37 @@ def deployed_authored_sha256(home: Path | str, name: str) -> str | None:
 
 def draft_view(files: Mapping[str, str]) -> dict[str, str]:
     """A deployed skill's files as a draft the overseer can edit and hand
-    back: SKILL.md without the runner's stamp and without the managed
-    section, plus the ``references/*.md`` files. Other files are left out
-    (a draft may not carry them; :func:`write` leaves them where they are)."""
+    back: SKILL.md without the runner's stamp and without the two blocks
+    the compilers own (the managed section and the pointer block), plus the
+    ``references/*.md`` files except the reference shelf
+    ``references/LEARNINGS.md``. Other files are left out (a draft may not
+    carry them; :func:`write` leaves them where they are).
+
+    Every other line of SKILL.md is in the view, wherever it stood: text a
+    person added after the managed section or after the pointer block
+    comes back at the end of the prose (one blank line between pieces), so
+    whoever edits the view sees it and a write from the view keeps it,
+    moved above the managed section. Nothing a person wrote is dropped
+    unseen (D4)."""
     out: dict[str, str] = {}
     for key, value in files.items():
         if key == SKILL_ENTRY_FILE:
-            text = _unstamped(value)
-            out[key] = _without_section(text).rstrip() + "\n"
+            out[key] = _authored_part(_unstamped(value)) + "\n"
         elif _is_managed_reference(key):
             out[key] = value
     return out
 
 
 def _is_managed_reference(key: str) -> bool:
-    """``references/<file>.md``, one level deep: the support files a write
-    replaces. Anything else in the folder is left alone."""
+    """``references/<file>.md``, one level deep, other than the reference
+    shelf: the support files a write replaces. Anything else in the folder
+    (the shelf included) is left alone."""
     parts = key.split("/")
     return (
         len(parts) == 2
         and parts[0] == SKILL_REFERENCES_DIR
         and parts[1].endswith(SKILL_SUPPORT_FILE_SUFFIX)
+        and key != _SHELF_KEY
     )
 
 
@@ -485,12 +549,15 @@ def routed_lessons(home: Path | str, name: str) -> list[str]:
     the skill's SKILL.md (the compiler's own resolution,
     ``verbs.managed_target_for``), and a ``reference`` route filed in the
     ``skills/<name>`` bucket. A retire is refused while this is not empty."""
-    return sorted({record_id for record_id, _destination in _routed(Path(home), name)})
+    return sorted({record_id for record_id, _destination, _file in _routed(Path(home), name)})
 
 
-def _routed(home: Path, name: str) -> list[tuple[str, str]]:
-    """``(lesson id, destination)`` for every lesson :func:`routed_lessons`
-    counts."""
+def _routed(home: Path, name: str) -> list[tuple[str, str, Path | None]]:
+    """``(lesson id, destination, file)`` for every lesson
+    :func:`routed_lessons` counts. *file* is the references file a
+    ``reference`` lesson's entry lives in (the shelf, or the file its
+    ``--dest`` named: ``compilers.reference_target_path``, the one place
+    that mapping lives), ``None`` for the other destinations."""
     from . import ledger_ops, verbs  # local: verbs imports a great deal
     from .ledger import discover_buckets
     from .records import Record
@@ -499,7 +566,8 @@ def _routed(home: Path, name: str) -> list[tuple[str, str]]:
     if root is None or not _valid_name(name):
         return []
     target = (skill_dir(root, name) / SKILL_ENTRY_FILE).resolve()
-    found: list[tuple[str, str]] = []
+    references = skill_dir(root, name) / SKILL_REFERENCES_DIR
+    found: list[tuple[str, str, Path | None]] = []
     seen: set[str] = set()
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
@@ -512,14 +580,21 @@ def _routed(home: Path, name: str) -> list[tuple[str, str]]:
                 continue
             if record.status != "routed" or record.id in seen:
                 continue
-            destination = (record.routing or {}).get("destination")
+            routing = record.routing or {}
+            destination = routing.get("destination")
+            file: Path | None = None
             if destination in ("skill-md", "new-skill"):
                 hit = verbs.managed_target_for(home, bucket, record) == target
             else:
                 hit = destination == "reference" and bucket.scope == "skill" and bucket.name == name
+                if hit:
+                    reference_file = routing.get("reference_file")
+                    file = reference_target_path(
+                        references, reference_file if isinstance(reference_file, str) else None
+                    )
             if hit:
                 seen.add(record.id)
-                found.append((record.id, str(destination)))
+                found.append((record.id, str(destination), file))
     return found
 
 
@@ -648,21 +723,117 @@ def _section_of(text: str) -> str | None:
     )
 
 
+def _pointer_block_of(text: str) -> str | None:
+    """The pointer block (pointer begin marker through pointer end marker)
+    of a deployed SKILL.md, ``None`` when there is none; refuses a broken
+    one. A skill-scoped ``reference`` route adds this block at the end of
+    the file, after the managed section (``compilers.compile_pointer_text``),
+    and owns it: a write carries it over byte for byte."""
+    begins = text.count(POINTER_BEGIN_MARKER)
+    ends = text.count(POINTER_END_MARKER)
+    marks = text.count(_POINTER_MARK)
+    if marks == 0:
+        return None
+    if begins == 1 and ends == 1 and marks == 2:
+        begin_at = text.index(POINTER_BEGIN_MARKER)
+        end_at = text.index(POINTER_END_MARKER)
+        if begin_at < end_at:
+            return text[begin_at : end_at + len(POINTER_END_MARKER)]
+    raise _Refused(
+        KIND_NEEDS_PERSON,
+        [
+            f"the deployed {SKILL_ENTRY_FILE}'s pointer block is broken (its markers are not "
+            "one intact pair); a person must repair it before self-learn writes the skill"
+        ],
+    )
+
+
+def _compiler_blocks(text: str) -> tuple[str | None, str | None]:
+    """``(managed section, pointer block)`` of a deployed SKILL.md, each
+    ``None`` when absent. Refuses (``needs-person``) when either is broken
+    or when the two overlap."""
+    section = _section_of(text)
+    pointer = _pointer_block_of(text)
+    if section is not None and pointer is not None:
+        section_at, pointer_at = text.index(section), text.index(pointer)
+        apart = (
+            section_at + len(section) <= pointer_at or pointer_at + len(pointer) <= section_at
+        )
+        if not apart:
+            raise _Refused(
+                KIND_NEEDS_PERSON,
+                [
+                    f"the deployed {SKILL_ENTRY_FILE}'s managed section and pointer block "
+                    "overlap; a person must repair the file before self-learn writes the skill"
+                ],
+            )
+    return section, pointer
+
+
+def _intact_span(text: str, begin: str, end: str) -> tuple[int, int] | None:
+    """Where the *begin* .. *end* block is in *text*, when its markers are
+    exactly one pair, in order."""
+    if text.count(begin) == 1 and text.count(end) == 1:
+        begin_at, end_at = text.index(begin), text.index(end)
+        if begin_at < end_at:
+            return begin_at, end_at + len(end)
+    return None
+
+
+def _authored_part(text: str) -> str:
+    """*text* with the managed section and the pointer block taken out
+    (each when it is one intact pair, in order) and every other line kept,
+    wherever it stood: the pieces left are joined with one blank line, and
+    trailing whitespace goes. A damaged managed section is cut off at its
+    first marker, as before: a write refuses the deployed file by name
+    (:func:`_section_of`) rather than the draft. Pure; never raises."""
+    spans = sorted(
+        span
+        for span in (
+            _intact_span(text, BEGIN_MARKER, END_MARKER),
+            _intact_span(text, POINTER_BEGIN_MARKER, POINTER_END_MARKER),
+        )
+        if span is not None
+    )
+    if len(spans) == 2 and spans[0][1] > spans[1][0]:
+        spans = spans[:1]  # overlapping blocks: a write refuses this file
+    pieces: list[str] = []
+    at = 0
+    for start, stop in spans:
+        pieces.append(text[at:start])
+        at = stop
+    pieces.append(text[at:])
+    kept = [pieces[0].rstrip()]
+    kept += [piece.strip("\n").rstrip() for piece in pieces[1:] if piece.strip()]
+    joined = "\n\n".join(kept)
+    if SKILL_MANAGED_BEGIN_PREFIX in joined:
+        joined = joined[: joined.index(SKILL_MANAGED_BEGIN_PREFIX)].rstrip()
+    return joined
+
+
 def _without_section(text: str) -> str:
-    """*text* with its managed section and everything after it taken out
-    (the template check already refused text after the section)."""
+    """A DRAFT's SKILL.md with its managed section and everything after it
+    taken out (the template check already refused text after the section,
+    and a pointer marker in a draft)."""
     for marker in (BEGIN_MARKER, SKILL_MANAGED_BEGIN_PREFIX):
         if marker in text:
             return text[: text.index(marker)].rstrip()
     return text.rstrip()
 
 
-def _with_section(authored: str, section: str | None) -> str:
+def _with_section(authored: str, section: str | None, pointer: str | None = None) -> str:
     """The deployed SKILL.md: the authored text, one blank line, the
-    section (an empty marker pair when *section* is ``None``) last."""
+    section (an empty marker pair when *section* is ``None``), and then,
+    when the deployed file had one, one blank line and the pointer block,
+    last: the layout ``compilers.compile_pointer_text`` leaves when it adds
+    the block to a file that ends with the section, so a write from
+    :func:`draft_view` changes no byte of it."""
     if section is None:
         section = f"{BEGIN_MARKER}\n{END_MARKER}"
-    return f"{authored.rstrip()}\n\n{section}\n"
+    out = f"{authored.rstrip()}\n\n{section}\n"
+    if pointer is not None:
+        out += f"\n{pointer}\n"
+    return out
 
 
 # ----------------------------------------------------------- JSON files
@@ -839,29 +1010,98 @@ def _load_registry(home: Path) -> skill_registry.Registry:
         raise _Refused(KIND_NEEDS_PERSON, [str(exc)]) from exc
 
 
-def _loaded_names(home: Path, *, leaving_out: str | None) -> tuple[set[str], list[str]]:
+def _resolves_to(path: object, folder: Path) -> bool:
+    if not isinstance(path, str) or not path:
+        return False
+    try:
+        return Path(path).resolve() == folder.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _is_own_entry(
+    full: str, paths: tuple[object, ...], where: str, *, own: str, own_folder: Path | None
+) -> bool:
+    """Whether a catalogue entry (case-folded name *full*) is the skill
+    being updated itself: it reaches *own_folder*, or it is the
+    ``<name>:<name>`` skill of its own plugin."""
+    from .overseer import catalogue  # local, as in _loaded_names
+
+    if own_folder is not None and any(_resolves_to(p, own_folder) for p in paths):
+        return True
+    return full == f"{own}:{own}" and where in (catalogue.WHERE_PLUGIN, catalogue.WHERE_SYNCED_PLUGIN)
+
+
+def _loaded_names(
+    home: Path, *, leaving_out: str | None, own_folder: Path | None = None
+) -> tuple[set[str], list[str], list[str]]:
     """Every name a skill or command is loaded under on this machine, both
     as listed (``plugin:skill``) and as its last part (``skill``), all
-    case-folded; with *leaving_out*'s own entries left out when updating.
-    Also returns the catalogue's problems, as notes."""
+    case-folded. Returns ``(names, the catalogue's problems, collision
+    notes)``.
+
+    When updating (*leaving_out* is the skill's name), the skill's own
+    entries are left out: the one that reaches *own_folder* (the
+    ``~/.claude/skills/<name>`` link) and the ``<name>:<name>`` entry of
+    its own plugin installed from the marketplace (Claude Code loads an
+    installed plugin from its own copy, which does not resolve to the
+    skills root). Any OTHER entry with the same last part (``other:<name>``,
+    a synced ``anthropic-skills:<name>``) is left out of the names too, so
+    an update is not refused for a name the skill already had, but each
+    one is named in a note: the clash is reported, not hidden."""
     from .overseer import catalogue  # local: the catalogue imports report, hosts, ...
 
     machine = catalogue.skills_on_machine(
         home,
         placed=catalogue.PlacedLessons(surfaces={}, unlisted=(), unreadable=()),
     )
+    own = leaving_out.casefold() if leaving_out is not None else None
     names: set[str] = set()
+    clashes: list[str] = []
     for entry in machine.skills:
         full = entry.name.casefold()
         bare = full.rsplit(":", 1)[-1]
-        if leaving_out is not None and bare == leaving_out.casefold():
+        if own is not None and bare == own:
+            paths = (entry.path, entry.resolves_to)
+            if not _is_own_entry(full, paths, entry.where, own=own, own_folder=own_folder):
+                clashes.append(entry.name)
             continue
         names.update((full, bare))
-    for entry in machine.not_loaded:
-        bare = entry["name"].casefold().rsplit(":", 1)[-1]
-        if leaving_out is None or bare != leaving_out.casefold():
-            names.add(bare)
-    return names, list(machine.problems)
+    for item in machine.not_loaded:
+        full = item["name"].casefold()
+        bare = full.rsplit(":", 1)[-1]
+        if own is not None and bare == own:
+            paths = (item.get("path"),)
+            if not _is_own_entry(full, paths, item.get("where", ""), own=own, own_folder=own_folder):
+                clashes.append(item["name"])
+            continue
+        names.add(bare)
+    notes = [
+        f"name-collision (not refused on an update): {clash} also uses the name {leaving_out}"
+        for clash in sorted(set(clashes))
+    ]
+    return names, list(machine.problems), notes
+
+
+def _compiler_owned_in_draft(files: Mapping[Any, Any]) -> list[str]:
+    """What a draft may not carry because the compilers own it: the
+    reference shelf, and the pointer block's markers (whole or damaged).
+    :func:`draft_view` leaves both out; a write keeps the deployed ones."""
+    problems: list[str] = []
+    if _SHELF_KEY in files:
+        problems.append(
+            f"reference-shelf: {_SHELF_KEY} is the reference shelf self-learn's compilers "
+            "own (lessons routed as references land there); a draft may not carry it, and "
+            "a write leaves the deployed one as it is"
+        )
+    skill_md = files.get(SKILL_ENTRY_FILE)
+    if isinstance(skill_md, str) and _POINTER_MARK in skill_md:
+        problems.append(
+            f"pointer-block: {SKILL_ENTRY_FILE} carries a self-learn pointer-block marker; the "
+            "pointer block is the compilers' (a reference route adds it), so leave it out of "
+            "the draft, and a write keeps the deployed one"
+        )
+    return problems
 
 
 def _secret_problems(files: Mapping[Any, Any]) -> list[str]:
@@ -958,8 +1198,11 @@ def _preflight(
 
     # -- names
     problems: list[str] = []
-    loaded, catalogue_problems = _loaded_names(home, leaving_out=name if updating else None)
+    loaded, catalogue_problems, clash_notes = _loaded_names(
+        home, leaving_out=name if updating else None, own_folder=plan.folder
+    )
     plan.notes += [f"skills on this machine: {p}" for p in catalogue_problems]
+    plan.notes += clash_notes
     if not updating:
         taken: list[str] = []
         if plan.plugin_dir.exists():
@@ -988,6 +1231,7 @@ def _preflight(
     )
     problems += [str(p) if p.path == SKILL_ENTRY_FILE else f"{p} ({p.path})" for p in result.problems]
     plan.notes += [str(n) for n in result.notes]
+    problems += _compiler_owned_in_draft(files)
     problems += _secret_problems(files)
     if problems:
         raise _Refused(KIND_BAD_LINE, problems, notes=plan.notes)
@@ -1004,10 +1248,17 @@ def _preflight(
     deployed = _read_tree(folder)
     deployed_md = deployed.get(SKILL_ENTRY_FILE)
     if deployed_md is not None:
-        plan.current_sha = _authored_sha(deployed)
-    section = _section_of(deployed_md) if deployed_md is not None else None
+        plan.current_sha = _authored_sha_or_refuse(deployed, "the deployed files")
+    section, pointer = (
+        _compiler_blocks(deployed_md) if deployed_md is not None else (None, None)
+    )
     authored = _stamped(_without_section(draft[SKILL_ENTRY_FILE]) + "\n", plan.stamp)
-    new_md = _with_section(authored, section)
+    # Both compiler blocks are carried over byte for byte; everything else
+    # in the deployed SKILL.md (a person's text after the section included)
+    # is replaced by the draft, which is why an update with that text in
+    # place needs --expect (the hash covers it) and why draft_view hands it
+    # back to whoever edits the skill.
+    new_md = _with_section(authored, section, pointer)
     plan.writes[folder / SKILL_ENTRY_FILE] = new_md
     for key, text in draft.items():
         if key != SKILL_ENTRY_FILE:
@@ -1038,7 +1289,7 @@ def _preflight(
     after = {k: v for k, v in deployed.items() if not _is_managed_reference(k)}
     after.update({k: v for k, v in draft.items() if k != SKILL_ENTRY_FILE})
     after[SKILL_ENTRY_FILE] = new_md
-    plan.new_sha = _authored_sha(after)
+    plan.new_sha = _authored_sha_or_refuse(after, "the files this write would leave")
 
     # -- the compare-and-swap (D4)
     if expect_sha is not None:
@@ -1074,23 +1325,28 @@ def _preflight(
                 notes=plan.notes,
             )
 
-    # -- lessons filed as references in the skill's own bucket: their
-    # blocks live in references/*.md, which a write replaces
-    touches_references = bool(plan.removals) or any(
-        p.is_relative_to(folder) and _is_managed_reference(p.relative_to(folder).as_posix())
-        for p in plan.changed_writes()
-    )
-    if touches_references:
+    # -- lessons filed as references in the skill's own bucket: an entry
+    # routed with --dest into an authored references file lives in that
+    # file, which a write replaces or removes. (The shelf is never written
+    # or removed by a write, so the lessons in it never stop one.)
+    touched = {
+        p.resolve()
+        for p in [*plan.changed_writes(), *plan.removals]
+        if p.is_relative_to(folder) and _is_managed_reference(p.relative_to(folder).as_posix())
+    }
+    if touched:
         reference_lessons = [
-            rid for rid, destination in _routed(home, name) if destination == "reference"
+            rid
+            for rid, destination, file in _routed(home, name)
+            if destination == "reference" and file is not None and file.resolve() in touched
         ]
         if reference_lessons:
             raise _Refused(
                 KIND_NEEDS_PERSON,
                 [
                     f"{name}'s references hold lessons routed there as references "
-                    f"({', '.join(reference_lessons)}); a write would change those files, so "
-                    "a person must move the lessons first"
+                    f"({', '.join(reference_lessons)}); this write would change or remove the "
+                    "files they live in, so a person must move the lessons first"
                 ],
                 notes=plan.notes,
             )
@@ -1270,6 +1526,7 @@ def _apply_write(home: Path, plan: _Plan, *, case: str, by: str, now: str) -> Wr
         home,
         partial(_registry_after_write, name=name, sha=plan.new_sha, case=case, by=by, now=now),
         subject=subject,
+        body=body,
     )
     touched = [*plan.writes, *plan.removals]
     snapshot = _snapshot(touched)
@@ -1285,6 +1542,7 @@ def _apply_write(home: Path, plan: _Plan, *, case: str, by: str, now: str) -> Wr
                     home,
                     partial(_registry_restore, name=name, row=plan.row_before),
                     subject=_subject("write", name, case) + " undone: the skills-root write failed",
+                    body=body,
                 )
             except (SkillRegistryError, gitops.GitOpsError) as undo_exc:
                 undone += f"; the registry row could not be put back ({undo_exc}): run the same write again to finish it"
@@ -1517,19 +1775,36 @@ def _apply_retire(home: Path, plan: _RetirePlan, *, case: str, by: str, now: str
     The caller holds the ledger lock and the skills root's lock."""
     name = plan.name
     subject = _subject("retire", name, case)
+    body = f"By: {by}"
     snapshot = _snapshot([*plan.removals, plan.root / _MARKETPLACE_REL])
     unlinked = _drop_link(link_path(name), skill_dir(plan.root, name))
     try:
-        host_sha = _remove_plugin(plan, subject, f"By: {by}")
+        host_sha = _remove_plugin(plan, subject, body)
     except (gitops.GitOpsError, OSError) as exc:
         undone = _undo_remove(plan, snapshot, unlinked)
         return RetireResult(
             name=name, ok=False, kind=KIND_GIT,
             problems=(f"the skills-root removal failed ({exc}); {undone}",),
         )
-    ledger_sha = skill_registry.with_update(
-        home, partial(_registry_after_retire, name=name, case=case, by=by, now=now), subject=subject
-    )
+    try:
+        ledger_sha = skill_registry.with_update(
+            home,
+            partial(_registry_after_retire, name=name, case=case, by=by, now=now),
+            subject=subject,
+            body=body,
+        )
+    except (gitops.GitOpsError, SkillRegistryError) as exc:
+        # The skill is already gone from the skills root; only the row is
+        # left. The removal commit is returned so retire() still pushes it,
+        # and running the same retire again marks the row.
+        return RetireResult(
+            name=name, ok=False, kind=KIND_GIT,
+            problems=(
+                f"the skill was removed from the skills root, but the registry row could not be "
+                f"marked retired ({exc}); run the same retire again to finish it",
+            ),
+            host_sha=host_sha, unlinked=unlinked,
+        )
     return RetireResult(
         name=name, ok=True, ledger_sha=ledger_sha, host_sha=host_sha, unlinked=unlinked
     )
