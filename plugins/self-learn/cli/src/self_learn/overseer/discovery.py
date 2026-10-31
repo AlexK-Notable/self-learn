@@ -22,8 +22,11 @@ neither phase A's blind case views and journal nor phase B's ``full/`` and
 ``skills-index.yaml``, ``history.yaml``, ``briefs/`` and ``answers.yaml``
 (plus its ``formats/``, its prompt and its journal). ``history.yaml`` leaves
 out every ``skill-proposal`` disposition, so the steward's proposals never
-reach it, not even a week late. Its ``formats/`` holds only the candidates
-format, so it never sees case or sheet vocabulary.
+reach it, not even a week late; the text phase B wrote that it does show (a
+candidate's ``because`` and ``would_change_it``, a question's ``asked``) has
+every case id and every mention of the steward or a proposal blanked
+(:func:`_blind`). Its ``formats/`` holds only the candidates format, so it
+never sees case or sheet vocabulary.
 
 **Never fails the run.** A phase S whose inputs could not be prepared, whose
 call failed or timed out, or whose file does not validate leaves phase B to
@@ -33,7 +36,14 @@ B would meet the same wall.) A validated phase S is kept in the cache
 (:func:`keep`, ``overseer/phase-s/<week>/``) under a hash of its whole stage
 less ``formats/`` and ``journal.md``, and the week's next attempt reuses it
 only when that hash is unchanged; the kept copy is dropped once a run record
-is published (:func:`drop_kept`).
+is published (:func:`drop_kept`). The catalogue prints each lesson's age in
+whole days (counted from the moment it was created) and its fires over a
+window ending now, so the hash changes as soon as any listed lesson's age
+ticks over or a fire leaves the window: in practice a kept phase S serves an
+attempt made the same day, and a later attempt usually makes phase S again.
+That fails safe -- one more call, never stale candidates -- and keeps the
+spec's rule that a changed catalogue is never met with an earlier
+attempt's candidates.
 
 **The switch.** ``overseer.skill_discovery`` (default on; tier C, config.yaml
 only: agents never set it). Off, a run makes two model calls, phase B writes
@@ -163,6 +173,16 @@ _DISPOSITION_REQUIRED = ("source", "id", "disposition", "because")
 _NEEDS_SKILL = ("build", "add-to-existing")
 
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+#: Fix round 1 (S-NEXT-sk4-discovery): what :func:`_blind` blanks out of
+#: text phase B wrote before phase S reads it -- a case id, the steward,
+#: and a (skill) proposal -- so phase S never learns of the steward's
+#: proposals through a candidate's ``because`` or a question's text, not
+#: even a week late (``02-schema.md`` §3).
+_STEWARD_MENTION_RE = re.compile(
+    r"\bcase-[0-9a-f]{8}\b|\bstewards?(?:'s)?\b|\b(?:skill[- ])?proposals?(?:\.yaml)?\b",
+    re.IGNORECASE,
+)
+BLANKED = "[withheld]"
 _WEEK_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 STATE_OK, STATE_FAILED, STATE_OFF = "ok", "failed", "off"
@@ -250,7 +270,9 @@ _KEPT_JOURNAL = "journal.md"
 def stage_key(workspace: Path) -> str:
     """A hash of every file of phase S's stage except ``formats/`` and
     ``journal.md``: its relative path and its bytes, in sorted order. Taken
-    before the call, so phase S's own output is never part of it."""
+    before the call, so phase S's own output is never part of it. The
+    catalogue's ages and fire counts move with the clock, so the key
+    usually changes within a day (module docstring)."""
     digest = hashlib.sha256()
     root = workspace.resolve()
     for path in sorted(workspace.rglob("*")):
@@ -353,6 +375,33 @@ def _scanned(text: str, where: str) -> str:
     return _withheld(hits[0].rule, where) if hits else text
 
 
+def _blind(value: object) -> object:
+    """*value* with every case id, every mention of the steward and every
+    mention of a (skill) proposal replaced by ``[withheld]``; a value that
+    is not text is answered unchanged."""
+    if not isinstance(value, str):
+        return value
+    return _STEWARD_MENTION_RE.sub(BLANKED, value)
+
+
+def answer_rows(answers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The user's answers as phase S is shown them: phase B's rows, with
+    each answer the secret scan matches withheld, and the question's text
+    (``asked``) and its ``ref`` -- which phase B wrote, and which may name
+    a proposal -- passed through :func:`_blind`. The user's own words are
+    shown as they are."""
+    rows = []
+    for row in answers:
+        row = dict(row)
+        if scan.scan(str(row.get("verbatim") or "")):
+            row["verbatim"] = "withheld: the secret scan matched it"
+        for key in ("asked", "ref"):
+            if key in row:
+                row[key] = _blind(row[key])
+        rows.append(row)
+    return rows
+
+
 def stage_inputs(
     home: Path | str, workspace: Path, write: Writer, *, answers: list[dict[str, Any]],
 ) -> StagedInputs:
@@ -436,10 +485,13 @@ def stage_inputs(
         staged.notes.append(f"owned-skills.yaml could not be read ({exc})")
         index["self_learn_owns"] = []
         index["vetoed_names"] = []
-    write(workspace, workspace / SKILLS_INDEX_FILE, _scanned(_yaml_text(index), "the skills index"))
+    index_text = _yaml_text(index)
+    shown_index = _scanned(index_text, "the skills index")
+    write(workspace, workspace / SKILLS_INDEX_FILE, shown_index)
+    # A stubbed index showed phase S no skill, so `into:` may name none.
     staged.skill_names = frozenset(
         str(row["name"]) for row in index["skills"] if isinstance(row.get("name"), str)
-    )
+    ) if shown_index == index_text else frozenset()
 
     # history.yaml: earlier runs' candidates and what became of each.
     past = history(home)
@@ -449,13 +501,9 @@ def stage_inputs(
     # briefs/: what a person committed for the overseer to read.
     staged.briefs = _stage_briefs(home, workspace, write)
 
-    # answers.yaml: the user's own words, as phase B reads them.
-    rows = []
-    for row in answers:
-        row = dict(row)
-        if scan.scan(str(row.get("verbatim") or "")):
-            row["verbatim"] = "withheld: the secret scan matched it"
-        rows.append(row)
+    # answers.yaml: the user's own words, as phase B reads them, with the
+    # question text phase B wrote blinded to the steward (answer_rows).
+    rows = answer_rows(answers)
     write(workspace, workspace / ANSWERS_FILE, _scanned(_yaml_text({"answers": rows}), "the statements"))
     return staged
 
@@ -504,6 +552,9 @@ def _week_files(home: Path) -> list[Path]:
 
 
 _DISPOSITION_SHOWN = ("disposition", "skill", "because", "would_change_it")
+#: The disposition fields phase B writes as free text: :func:`history`
+#: passes them through :func:`_blind` (fix round 1).
+_DISPOSITION_BLINDED = ("because", "would_change_it")
 
 
 def history(home: Path | str) -> dict[str, Any]:
@@ -512,7 +563,10 @@ def history(home: Path | str) -> dict[str, Any]:
 
     Every ``skill-proposal`` disposition is left out: phase S never sees the
     steward's proposals, not even as last week's outcome (``02-schema.md``
-    §3). A week file that cannot be read is named, not fatal."""
+    §3). A candidate's own ``because`` and ``would_change_it`` are phase
+    B's words and may still name the proposal it was decided with, so each
+    passes through :func:`_blind`. A week file that cannot be read is named,
+    not fatal."""
     home = Path(home)
     earlier: list[dict[str, Any]] = []
     unreadable: list[str] = []
@@ -540,7 +594,10 @@ def history(home: Path | str) -> dict[str, Any]:
                 shown.append({
                     **cand,
                     "disposition": (
-                        {k: row[k] for k in _DISPOSITION_SHOWN if k in row} if row else None
+                        {
+                            k: _blind(row[k]) if k in _DISPOSITION_BLINDED else row[k]
+                            for k in _DISPOSITION_SHOWN if k in row
+                        } if row else None
                     ),
                 })
             if shown:
@@ -874,6 +931,12 @@ def _disposition_problem(
             return f"a {choice} disposition names its skill"
     if choice == "defer" and not _text_ok(entry.get("would_change_it")):
         return "a defer disposition says what would change it (would_change_it)"
+    # Fix round 1: every field is copied into the run record whole, so an
+    # optional one that is present must be text too; a YAML date there
+    # (`would_change_it: 2026-11-07`) would otherwise reach json.dumps.
+    for key in ("skill", "would_change_it"):
+        if key in entry and not _text_ok(entry[key]):
+            return f"{key} must be non-empty text"
     return None
 
 

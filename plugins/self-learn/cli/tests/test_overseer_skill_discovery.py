@@ -21,6 +21,7 @@ three (test (a)).
 
 from __future__ import annotations
 
+import datetime
 import io
 from pathlib import Path
 
@@ -643,6 +644,12 @@ def test_a_candidates_file_of_the_wrong_shape_is_not_valid(tmp_path, text):
     ({"source": "candidate", "id": GOOD, "disposition": "build", "because": "x"}, "names its skill"),
     ({"source": "candidate", "id": GOOD, "disposition": "defer", "because": "x"}, "would_change_it"),
     ({"source": "steward", "id": GOOD, "disposition": "decline", "because": "x"}, "source must be"),
+    # Fix round 1: an optional field present on any disposition is text, or
+    # a YAML date reaches the run record and json.dumps raises at publish.
+    ({"source": "candidate", "id": GOOD, "disposition": "decline", "because": "x",
+      "would_change_it": datetime.date(2026, 11, 7)}, "would_change_it must be non-empty text"),
+    ({"source": "candidate", "id": GOOD, "disposition": "decline", "because": "x",
+      "skill": 5}, "skill must be non-empty text"),
 ])
 def test_a_bad_disposition_is_dropped_and_its_candidate_named_missing(tmp_path, entry, why):
     path = tmp_path / discovery.DISPOSITIONS_FILE
@@ -683,6 +690,49 @@ def test_history_leaves_out_every_skill_proposal_disposition(tmp_path):
     assert earlier["candidates"][0]["disposition"]["because"] == "seen"  # positive control
     text = discovery._yaml_text(history)
     assert "STEWARD-MARK" not in text and "case-0000abcd" not in text and "PROPOSED-NAME" not in text
+
+
+def test_history_blanks_a_candidates_because_that_names_the_proposal(tmp_path):
+    """Fix round 1: phase B decides a candidate and a proposal of the same
+    group together and may say so in the candidate's own because; history
+    must not hand that to next week's phase S."""
+    ledger = tmp_path / "ledger"
+    path = discovery.week_path(ledger, "2026-10-25")
+    path.parent.mkdir(parents=True)
+    path.write_text(discovery.week_text(None, "2026-10-25", {
+        "run": "abcd1234", "at": "2026-10-25T04:15:00Z", "discovery": "ok",
+        "candidates": [_candidate()],
+        "dispositions": [
+            {"source": "candidate", "id": GOOD, "disposition": "defer",
+             "because": "KEPT-WORDS: the same group as the Steward's skill-proposal case-0000abcd.",
+             "would_change_it": "MORE-WORDS once the proposal in case-0000abcd is decided"},
+            {"source": "skill-proposal", "id": "case-0000abcd", "disposition": "defer",
+             "because": "same group as sc-release-notes", "would_change_it": "y"},
+        ],
+    }), encoding="utf-8")
+    (earlier,) = discovery.history(ledger)["earlier"]
+    shown = earlier["candidates"][0]["disposition"]
+    # Positive control: the candidate's disposition is shown, words intact.
+    assert shown["disposition"] == "defer"
+    assert "KEPT-WORDS" in shown["because"] and "MORE-WORDS" in shown["would_change_it"]
+    assert discovery.BLANKED in shown["because"]
+    text = discovery._yaml_text(discovery.history(ledger)).lower()
+    for word in ("case-0000abcd", "steward", "proposal"):
+        assert word not in text, word
+
+
+def test_phase_s_answers_blank_the_question_text_phase_b_wrote():
+    rows = discovery.answer_rows([{
+        "id": "st-1", "ref": "case-0000abcd", "date": "2026-10-20",
+        "asked": "Should the steward's skill-proposal in case-0000abcd be built?",
+        "verbatim": "yes, build it",
+    }])
+    (row,) = rows
+    assert row["verbatim"] == "yes, build it"  # the user's own words, as they are
+    assert row["asked"].startswith("Should the ")  # positive control: the question is shown
+    for key in ("asked", "ref"):
+        for word in ("case-0000abcd", "steward", "proposal"):
+            assert word not in row[key].lower(), (key, word)
 
 
 def test_the_week_file_keeps_each_runs_entry(tmp_path):
@@ -737,6 +787,11 @@ def test_phase_b_formats_carry_the_dispositions_section_and_example(tmp_path):
         candidates=[formats.EXAMPLE_CANDIDATE], proposals=[formats.EXAMPLE_PARKED_CASE],
     )
     assert checked.valid, checked.notes
+    # Fix round 1: the example teaches a candidate's because that names no
+    # proposal, case or steward, and the rule says so.
+    (cand,) = [e for e in checked.entries if e["source"] == "candidate"]
+    assert discovery._blind(cand["because"]) == cand["because"]
+    assert "never name a proposal, a case or the steward" in " ".join(readme.split())
     broken = discovery.read_dispositions(
         root / discovery.DISPOSITIONS_FILE, candidates=[formats.EXAMPLE_CANDIDATE], proposals=[],
     )
