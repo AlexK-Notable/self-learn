@@ -333,12 +333,13 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     # 2026-10-30 (tests-fix, S-NEXT-tests-fix; 11-telemetry-and-lifecycle.md §2.5, the `defer --until` rule):
     # `test_defer_cli_until_date` deferred to the fixed date 2027-01-01 and goes red once that date is past
-    # (`defer` refuses a past --until); it now derives the date from today. The `dump_sha` below and the
-    # EXM3/BEH3 census values are NOT remeasured here; the landing step does that on master's tip.
+    # (`defer` refuses a past --until); it now derives the date from today. `nodes`/`dump_sha` are
+    # anchor-side and unchanged by a HEAD edit; EXM3.census_edited (0 -> 1) and BEH3.control_edited
+    # (175 -> 176) are bumped below with dated reasons.
     "test_route_cli.py": Behaviour(
         nodes=59, dump_sha="0558051df890c86d53fe8592c00fcc902d7db04e3a379235db739bf28ebf3150",
         edited={
-            "test_defer_cli_until_date": (
+            "func:test_defer_cli_until_date": (
                 "2026-10-30 tests-fix (S-NEXT-tests-fix): the deferral date is computed from today, "
                 "not hard-coded 2027-01-01 (11-telemetry-and-lifecycle.md §2.5)"
             ),
@@ -936,9 +937,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=1,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-30 tests-fix (S-NEXT-tests-fix; 11-telemetry-and-lifecycle.md §2.5): 0 -> 1; "
+            "test_route_cli.py gains an `edited` door on `func:test_defer_cli_until_date` (relative date). "
+            "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
             "STALE refusal (stmt-role): 2 -> 0; the retirement's deleted and edited tests "
             "are anchor-side now. Previous entry: "
@@ -1008,9 +1012,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=175,
+        value=176,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-30 tests-fix (S-NEXT-tests-fix; 11-telemetry-and-lifecycle.md §2.5): 175 -> 176; "
+            "`func:test_defer_cli_until_date` is edited against c3b48e7. Previous entry: "
             "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 179 -> 175, the retirement's edits counted against c3b48e7 (nodes it deleted no longer count as edited). "
             "Previous entry: "
             "2026-10-24 kl8 exec race (drafts/u-sdk-backend-spec.md §3.7): 178 -> 179; "

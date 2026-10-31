@@ -344,10 +344,14 @@ def test_hp1_serve_exits_0_on_sigterm_and_sigint_within_a_bound(tmp_path, sig):
         # the child's XDG_CACHE_HOME) rather than a fixed sleep. Bounded, and
         # stops early if the child died, so a broken serve fails the rc check.
         deadline = time.time() + 15.0
+        seen = False
         while time.time() < deadline and proc.poll() is None:
             if any((tmp_path / "cache").rglob(serve.HEARTBEAT_FILENAME)):
+                seen = True
                 break
             time.sleep(0.05)
+        if proc.poll() is None:
+            assert seen, "serve never wrote a heartbeat within 15 s"
         t0 = time.time()
         proc.send_signal(sig)
         rc = proc.wait(timeout=10)
