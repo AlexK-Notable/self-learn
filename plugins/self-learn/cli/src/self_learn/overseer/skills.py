@@ -650,9 +650,37 @@ def _refusal(name: str, kind: str | None, problems: tuple[str, ...] | list[str])
     )
 
 
+def _refuse_a_retire_that_leaves_lessons(
+    home: Path, name: str, sheet_ids: Collection[str],
+) -> None:
+    """Fix round 2 (gate r2 MINOR): a case with ``outcome: retire`` naming
+    an owned skill in ``decision.skill`` retires the skill, which ``skill
+    retire`` refuses while a lesson routes into it. A sheet that names
+    none of some lesson routed there now cannot move it out, so the pair is
+    dropped here, saying so, rather than reported as "would retire" (writing
+    not in effect) or retired in name only after its lines apply. A case
+    that retires lessons out of a skill it keeps does not name the skill."""
+    try:
+        routed = skill_writer.routed_lessons(home, name)
+    except Exception as exc:  # noqa: BLE001 -- this pair, not the run
+        raise SkillPairError(
+            f"the lessons routed into {name} could not be read ({type(exc).__name__}), "
+            "so its retirement cannot be checked"
+        ) from exc
+    left = [rid for rid in routed if rid not in sheet_ids]
+    if left:
+        raise SkillPairError(
+            f"a case with outcome: retire that names {name} in decision.skill retires that "
+            f"skill, but its sheet has no line for {', '.join(left)}, which "
+            + ("routes" if len(left) == 1 else "route")
+            + f" into it, so {name} cannot be retired; a case that retires lessons out of a "
+            "skill it keeps does not name the skill in decision.skill"
+        )
+
+
 def step_for_case(
     home: Path | str, stage: Path, case_data: dict, *, staged: StagedSkills, deploy: bool,
-    sheet_dests: Collection[str] = (),
+    sheet_dests: Collection[str] = (), sheet_ids: Collection[str] = (),
 ) -> SkillStep | None:
     """The skill step a staged case carries, checked; ``None`` when it
     carries none. Raises :class:`SkillPairError` (the pair is dropped) when
@@ -670,7 +698,14 @@ def step_for_case(
     it was dropped whole, and a declined proposal's parked case stayed open
     week after week). Only a case whose sheet routes a lesson into
     ``new-skill:<name>`` is building that skill, so only then is the missing
-    folder a refusal."""
+    folder a refusal.
+
+    *sheet_ids* is the lesson ``id`` of every line of the pair's sheet (fix
+    round 2, gate r2 MINOR). A case with ``outcome: retire`` naming a skill
+    self-learn does not own is an ordinary pair when its sheet has a line,
+    and is refused when it has none; one naming an owned skill retires it,
+    and is refused when its sheet has no line for some lesson routed into
+    the skill (:func:`_refuse_a_retire_that_leaves_lessons`)."""
     name = claimed_name(case_data)
     if name is None:
         return None
@@ -688,7 +723,15 @@ def step_for_case(
                 f"a case that retires {name} writes no {STAGE_SKILLS_DIR}/{name}/ folder"
             )
         if not owned:
+            if sheet_ids:
+                # Fix round 2 (gate r2 MINOR): a case that retires lessons
+                # and names a skill self-learn does not own (a declined
+                # proposal's successor keeps the proposal's decision.skill)
+                # is an ordinary pair, as for any other outcome. With no
+                # line, it can only mean retiring the skill: refused.
+                return None
             raise SkillPairError(f"{name} is not a skill self-learn owns, so it cannot be retired")
+        _refuse_a_retire_that_leaves_lessons(home, name, sheet_ids)
         return SkillStep(action="retire", name=name, updating=True, deploy=deploy)
     if not folder.is_dir():
         if owned:
@@ -776,14 +819,37 @@ def unclaimed_folders(
 _NOT_OWNED_YET = "is not a skill self-learn owns"
 
 
-def _preview_once_written(home: Path, item: Any, line: Any, name: str) -> Any:
+def _is_placed(home: Path, record_id: str) -> bool:
+    """Whether the lesson is routed now; ``False`` when it cannot be read
+    (``route --dry-run`` then names why)."""
+    from ..ledger_ops import find_record_path
+    from ..records import Record
+
+    try:
+        return Record.from_path(find_record_path(home, record_id)).status == "routed"
+    except Exception:  # noqa: BLE001 -- unreadable: left to route --dry-run's own refusal
+        return False
+
+
+def _preview_once_written(
+    home: Path, item: Any, line: Any, name: str, reconsidered: Collection[str] = (),
+) -> Any:
     """A ``would-refuse`` preview item whose only refusal said the skill
     being built is not owned yet, judged as it will be once the skill is
-    written. A ``route`` line is previewed again by ``route --dry-run``'s
-    own checks (the lesson's status, its scope, the destination), which the
-    batch runs after the ownership check and so never reached; its refusal
-    there is believed. Any other verb goes on to apply, where it is checked
-    for real."""
+    written. A ``route`` line of a pending or deferred lesson is previewed
+    again by ``route --dry-run``'s own checks (the lesson's status, its
+    scope, the destination), which the batch runs after the ownership check
+    and so never reached; its refusal there is believed.
+
+    A ``route`` line of a placed (routed) lesson that the pair's own ``kind:
+    reconsider`` case covers (*reconsidered*, ``steward._reconsidered_by``)
+    is that lesson's reroute at apply time (``batch._dispatch_reroute``,
+    S-72), not a route: ``route --dry-run``'s status check refuses every
+    routed lesson, so it is not asked (fix round 2, gate r2 MAJOR: before,
+    every reroute into the skill being built was believed refused, and a
+    skill made of placed lessons could never be built). The reroute's own
+    checks need the skill to exist, so the line goes on to apply, where
+    they run for real, as does any other verb."""
     from dataclasses import replace
 
     from .. import batch, verbs
@@ -791,6 +857,11 @@ def _preview_once_written(home: Path, item: Any, line: Any, name: str) -> Any:
     once = f"previewed before {name} is written; checked when it applies"
     if item.verb != "route":
         return replace(item, state="would-apply", kind=None, detail=once)
+    if item.id in reconsidered and _is_placed(home, item.id):
+        return replace(
+            item, state="would-apply", kind=None,
+            detail=f"reconsider: reroute; {once}",
+        )
     try:
         dr = verbs.route_dry_run(
             home, item.id, dest=line.fields.get("dest"),
@@ -809,7 +880,10 @@ def _preview_once_written(home: Path, item: Any, line: Any, name: str) -> Any:
     return replace(item, state="would-apply", kind=None, detail=once)
 
 
-def preview_for_step(home: Path | str, preview: Any, sheet: Any, step: SkillStep | None) -> Any:
+def preview_for_step(
+    home: Path | str, preview: Any, sheet: Any, step: SkillStep | None,
+    *, reconsidered: Collection[str] = (),
+) -> Any:
     """The preview a build pair's sheet is judged by.
 
     A line that routes a lesson into the skill this pair builds (``dest:
@@ -819,7 +893,9 @@ def preview_for_step(home: Path | str, preview: Any, sheet: Any, step: SkillStep
     will be once the skill is written (:func:`_preview_once_written`). Any
     other refusal is believed, as S-101 believes every preview refusal (fix
     round 1, gate r1: before, every refused line into the skill became
-    would-apply, whatever the reason).
+    would-apply, whatever the reason). *reconsidered* is the record ids the
+    pair's ``kind: reconsider`` case covers: a placed one among them moves
+    in by reroute (fix round 2).
 
     Raises :class:`SkillPairError` when no line would move a lesson into the
     new skill: the skill would be written first and then stand live and
@@ -839,7 +915,7 @@ def preview_for_step(home: Path | str, preview: Any, sheet: Any, step: SkillStep
             and line.fields.get("dest") == target
             and f"{target} {_NOT_OWNED_YET}" in (item.detail or "")
         ):
-            item = _preview_once_written(home, item, line, step.name)
+            item = _preview_once_written(home, item, line, step.name, reconsidered)
         items.append(item)
     from .. import batch
 
@@ -914,6 +990,9 @@ class StepOutcome:
     state: str
     line: str
     warning: str | None = None
+    #: The writer's refusal kind on a refused step (fix round 2, gate r2
+    #: NIT): a ``git`` refusal is tried again by the run's resume.
+    kind: str | None = None
 
 
 def _already_written(home: Path, case_id: str, step: SkillStep) -> bool:
@@ -958,11 +1037,18 @@ def apply_write(home: Path | str, case_id: str, step: SkillStep, *, case_name: s
             "applied", _done_line(step, case_id),
             warning=short_hashes(f"{step.name}: " + "; ".join(result.problems)),
         )
+    if result.kind == skill_writer.KIND_GIT:
+        # Fix round 2 (gate r2 NIT): git trouble says nothing about the
+        # skill and often clears, as for a sheet line of that kind (Q19).
+        tail = "; the pair waits, and the run's resume writes the skill again"
+    else:
+        tail = "; the pair was dropped, so no lesson moved"
     return StepOutcome(
         "refused",
         f"{STAGE_SKILLS_DIR}/{step.name}/ ({case_name}): "
         + _refusal(step.name, result.kind, result.problems).replace("would be", "was")
-        + "; the pair was dropped, so no lesson moved",
+        + tail,
+        kind=result.kind,
     )
 
 

@@ -968,3 +968,239 @@ def test_b_a_folder_whose_case_was_dropped_is_not_said_to_be_named_by_no_case(en
     assert f"skills/{NAME}/: not written — the case that names it" in refused
     assert "no case names it" not in refused
     assert env.row() is None
+
+
+# ============================================================ fix round 2 (gate r2)
+
+
+def _old_skill_md(env: sk1.Env) -> str:
+    """The SKILL.md of the sandbox host's skill ``s``, where a lesson routed
+    ``dest: skill-md`` is placed."""
+    return next(env.root.glob("plugins/s-plugin/skills/s/SKILL.md")).read_text(encoding="utf-8")
+
+
+def test_a_reconsider_build_pair_moves_a_placed_lesson_into_the_new_skill(env, monkeypatch):
+    """Gate r2 MAJOR: plan §2 step 6, a placed lesson moves into a new skill
+    by reroute: a ``route`` line under the pair's ``kind: reconsider`` case
+    over a routed lesson, which the batch applies as a reroute. Before the
+    skill exists the preview refuses that line as "not a skill self-learn
+    owns" (SK2); fix round 1 then asked ``route --dry-run``, whose status
+    check refuses every routed lesson, and believed it, so the pair was
+    dropped ("no line of the sheet would move a lesson into ..."). Red on
+    893996b with SK2 merged. Needs SK2 (`w31-sk2-routes`) to pass: without
+    it, RER4 refuses every reroute into new-skill, before and at apply."""
+    from test_u3b_steward_authority import _route_through_a_case
+
+    _set_writing(env, '"on"')
+    setup = env.tmp / "setup"
+    setup.mkdir()
+    placed_by = _route_through_a_case(env.home, setup, RID)
+    assert RID in _old_skill_md(env)  # control: placed where the first case put it
+
+    def write_b(stage):
+        _write_folder(stage, NAME, sk1.draft())
+        case = _case([RID], kind="reconsider", supersedes=placed_by)
+        case["evidence"] = [{"ref": f"record:{RID}", "quote": "status: routed"}]
+        _dump(stage / "case-build.yaml", case)
+        _dump(stage / "sheet-build.yaml", _route_sheet([RID]))
+
+    _phases(monkeypatch, write_b)
+
+    result = _run(env)
+
+    report = _report(result)
+    refused = _section(report, "Refused / could not do")  # control: the section rendered
+    assert "case-build.yaml" not in refused, refused
+    row = env.row()
+    assert row is not None and row["status"] == "live", refused
+    record = Record.from_path(find_record_path(env.home, RID))
+    assert record.status == "routed"
+    assert (record.routing or {}).get("destination") == "new-skill"
+    assert f"({RID})" in env.skill_md().read_text(encoding="utf-8")
+    assert RID not in _old_skill_md(env)  # the old placement was retired
+    assert f"[new skill] {NAME}" in _section(report, "Decided in the user's stead")
+
+
+def test_a_build_preview_lets_a_reconsidered_placed_lesson_move_in_by_reroute(env):
+    """Gate r2 MAJOR, the preview alone (no SK2 needed: the preview is
+    built by hand). A routed lesson the pair's reconsider case covers is
+    not sent to ``route --dry-run``; the control, the same line with no
+    reconsider case, still is, and its routed-status refusal is believed."""
+    from test_u3b_steward_authority import _route_through_a_case
+
+    setup = env.tmp / "setup"
+    setup.mkdir()
+    _route_through_a_case(env.home, setup, RID)
+    target = f"new-skill:{NAME}"
+    sheet = [batch.SheetItem(n=1, id=RID, verb="route", fields={"dest": target})]
+    preview = batch.DryRunResult(items=[
+        batch.DryRunItem(n=1, id=RID, verb="route", state="would-refuse",
+                         detail=_sk2_refusal(RID), kind="bad-line"),
+    ])
+    step = skills.SkillStep(action="write", name=NAME)
+
+    out = skills.preview_for_step(env.home, preview, sheet, step, reconsidered={RID})
+    assert [item.state for item in out.items] == ["would-apply"]
+    assert "reroute" in (out.items[0].detail or "")
+
+    # control: not reconsidered, the routed lesson cannot be routed again
+    with pytest.raises(skills.SkillPairError, match="no line of the sheet would move"):
+        skills.preview_for_step(env.home, preview, sheet, step)
+
+
+def _retire_case_data(name: str) -> dict:
+    return _case([RID], outcome="retire", name=name, lessons=[RID])
+
+
+def test_a_retire_case_naming_a_skill_it_does_not_own_with_lines_is_an_ordinary_pair(env):
+    """Gate r2 MINOR: a declining successor that keeps the proposal's
+    decision.skill and retires the proposal's lessons carries no skill
+    step. Red on 893996b ("not a skill self-learn owns, so it cannot be
+    retired"). Control: with no line it can only mean retiring the skill,
+    and is still refused."""
+    stage = env.tmp / "stage"
+    stage.mkdir()
+    data = _retire_case_data(UNOWNED)
+    staged = skills.StagedSkills()
+    assert skills.step_for_case(
+        env.home, stage, data, staged=staged, deploy=True, sheet_ids={RID},
+    ) is None
+    with pytest.raises(skills.SkillPairError, match="cannot be retired"):
+        skills.step_for_case(env.home, stage, data, staged=staged, deploy=True, sheet_ids=set())
+
+
+def test_a_retire_case_whose_sheet_leaves_a_lesson_in_the_owned_skill_is_dropped(env):
+    """Gate r2 MINOR: a case with outcome: retire naming an owned skill
+    retires it; a sheet with no line for a lesson routed there cannot move
+    it out, so the pair is refused here by name instead of reported as
+    "would retire" or retired in name only. Red on 893996b (a retire step
+    came back). Control: a sheet with a line for it gets the retire step."""
+    assert env.write().ok
+    _lesson(env, RID)
+    verbs.route(env.home, RID, dest=f"new-skill:{NAME}", no_push=True)
+    assert skill_writer.routed_lessons(env.home, NAME) == [RID]  # control: it routes there
+    stage = env.tmp / "stage"
+    stage.mkdir()
+    data = _retire_case_data(NAME)
+    staged = skills.StagedSkills()
+
+    with pytest.raises(skills.SkillPairError, match=f"no line for {RID}"):
+        skills.step_for_case(env.home, stage, data, staged=staged, deploy=False, sheet_ids={RID2})
+
+    step = skills.step_for_case(env.home, stage, data, staged=staged, deploy=False, sheet_ids={RID})
+    assert step is not None and step.action == "retire" and step.name == NAME
+
+
+def _git_refusal(name: str) -> skill_writer.WriteResult:
+    return skill_writer.WriteResult(
+        name=name, ok=False, kind=skill_writer.KIND_GIT,
+        problems=("the skills-root write failed (a git commit failed)",),
+    )
+
+
+def test_a_skill_write_met_with_git_trouble_waits_for_the_resume(env, monkeypatch):
+    """Gate r2 NIT: a ``git`` refusal of the skill write is tried again by
+    the run's resume, as a sheet line refused with that kind is (Q19); a
+    stale --expect (``target-busy``, D4) stays final. Red on 893996b: the
+    git refusal was final for the run."""
+    calls: list[str] = []
+    kinds = [skill_writer.KIND_GIT, skill_writer.KIND_GIT, skill_writer.KIND_TARGET_BUSY]
+
+    def write(home, name, files, **kwargs):
+        calls.append(name)
+        return skill_writer.WriteResult(name=name, ok=False, kind=kinds[len(calls) - 1],
+                                        problems=("refused for the test",))
+
+    monkeypatch.setattr(skill_writer, "write", write)
+    step = skills.SkillStep(action="write", name=NAME, files=sk1.draft())
+    recipe = {"case_name": "case-build.yaml", "skill": step.to_json()}
+
+    with pytest.raises(overseer_run._SkillRefused) as first:
+        overseer_run._apply_skill_write(env.home, "abcd1234", "case-1a2b3c4d", recipe, [], [])
+    assert first.value.kind == "git"
+    assert recipe["skill"]["state"] == "retry"
+    assert "resume writes the skill again" in first.value.line
+    with pytest.raises(overseer_run._SkillRefused):  # the next attempt writes again
+        overseer_run._apply_skill_write(env.home, "abcd1234", "case-1a2b3c4d", recipe, [], [])
+    assert len(calls) == 2
+
+    # control: target-busy is final, and never written again
+    with pytest.raises(overseer_run._SkillRefused) as busy:
+        overseer_run._apply_skill_write(env.home, "abcd1234", "case-1a2b3c4d", recipe, [], [])
+    assert busy.value.kind is None and recipe["skill"]["state"] == "refused"
+    with pytest.raises(overseer_run._SkillRefused):
+        overseer_run._apply_skill_write(env.home, "abcd1234", "case-1a2b3c4d", recipe, [], [])
+    assert len(calls) == 3
+
+
+def test_a_build_whose_write_met_git_trouble_is_finished_by_the_resume(env, monkeypatch):
+    """Gate r2 NIT, end to end: the first attempt's write fails with git
+    trouble, so the pair waits and the run stays unfinished; the resume
+    writes the skill and applies the pair."""
+    _set_writing(env, '"on"')
+    _lesson(env, RID)
+    _phases(monkeypatch, _build_b([RID]))
+    real_write = skill_writer.write
+    calls: list[str] = []
+
+    def write(home, name, files, **kwargs):
+        calls.append(name)
+        if len(calls) == 1:
+            return _git_refusal(name)
+        return real_write(home, name, files, **kwargs)
+
+    monkeypatch.setattr(skill_writer, "write", write)
+
+    first = _run(env)
+    assert calls == [NAME]  # control: the write was tried
+    assert env.row() is None and _status(env, RID) == "pending"
+    assert overseer_run._unfinished_manifest(env.home) is not None, _report(first)
+
+    _run(env)
+
+    assert len(calls) == 2
+    assert env.row() is not None and env.row()["status"] == "live"
+    assert _status(env, RID) == "routed"
+    assert overseer_run._unfinished_manifest(env.home) is None
+
+
+def test_a_case_refused_after_its_skill_was_written_is_named_in_the_report(env, monkeypatch):
+    """Gate r2 NIT: `_execute_manifest` names a skill written before the
+    case writer refused its case (`_skill_written_case_refused`). Deleting
+    that call kept every test green before this one."""
+    _set_writing(env, '"on"')
+    _lesson(env, RID)
+    _phases(monkeypatch, _build_b([RID]))
+    real_record = cases.record
+
+    def record(home, path, *args, **kwargs):
+        if Path(path).name == "case-build.yaml":
+            raise cases.CaseError("refused by the test's case writer")
+        return real_record(home, path, *args, **kwargs)
+
+    monkeypatch.setattr(cases, "record", record)
+
+    result = _run(env)
+
+    refused = _section(_report(result), "Refused / could not do")
+    assert "refused by the case writer" in refused  # control: the case was refused
+    assert env.row() is not None  # the write stood
+    assert "stays as written" in refused and NAME in refused
+    assert _status(env, RID) == "pending"
+
+
+@pytest.mark.parametrize("raw", ["false", "null", '""', '"maybe"'])
+def test_doctor_settings_names_a_skill_writing_value_the_overseer_reads_as_off(env, raw):
+    """Gate r2 MINOR (S-NEXT-skills part 6): `doctor settings` showed the
+    default, auto, for a YAML boolean, null or an empty string, while the
+    overseer reads each as off. Red on 893996b (an INFO row). Control: a
+    valid value is an ordinary INFO row."""
+    _set_writing(env, raw)
+    assert skills.writing_mode(env.home)[0] == "off"  # what the overseer obeys
+    (row,) = [r for r in settings.preflight(env.home) if r.name == "overseer.skill_writing"]
+    assert row.verdict == "WARN"
+    assert "= 'off'" in row.detail and "reads it as off" in row.detail
+
+    _set_writing(env, '"on"')
+    (row,) = [r for r in settings.preflight(env.home) if r.name == "overseer.skill_writing"]
+    assert row.verdict == "INFO" and "= 'on'" in row.detail

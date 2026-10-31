@@ -1893,6 +1893,14 @@ def preflight(home: Path | str) -> list[SettingRow]:
     (`unknown_override_vars`, MINOR-3(a))."""
     rows: list[SettingRow] = []
     for setting in REGISTRY:
+        if setting.name == "overseer.skill_writing":
+            # SK3 fix round 2 (gate r2 MINOR; S-NEXT-skills part 6): a
+            # value the overseer reads as `off` while `resolve_setting`
+            # falls through to the default is named, with what is obeyed.
+            misread = _skill_writing_misread(home)
+            if misread is not None:
+                rows.append(SettingRow(name=setting.name, verdict="WARN", detail=misread))
+                continue
         value, source = resolve_setting(home, setting)
         note = _fold_note(home, setting, source)
         note_suffix = f" [{note}]" if note else ""
@@ -1935,6 +1943,30 @@ def preflight(home: Path | str) -> list[SettingRow]:
                 for key in retired_keys(home))
     rows.extend(_intents_preflight_rows(home))
     return rows
+
+
+def _skill_writing_misread(home: Path | str) -> str | None:
+    """`doctor settings`' WARN for an ``overseer.skill_writing`` value in
+    config.yaml that is not ``auto``, ``on`` or ``off`` -- a YAML boolean,
+    ``null``, an empty string, a typo -- or ``None`` (SK3 fix round 2, gate
+    r2 MINOR; S-NEXT-skills part 6). The overseer reads such a value as
+    ``off`` (`overseer.skills.writing_mode`), while :func:`resolve_setting`
+    would show the default, ``auto``, for a boolean, ``null`` or an empty
+    string; this row says what the overseer obeys. Mirrors
+    ``writing_mode``'s rule; it cannot call it (that module imports this
+    one)."""
+    found = config.settings_leaf(home, "overseer", "skill_writing")
+    if found is None:
+        return None
+    raw = found[1]
+    if isinstance(raw, str) and raw in SKILL_WRITING_MODES:
+        return None
+    return (
+        f"overseer.skill_writing = 'off' (config:overseer.skill_writing) -- config.yaml holds "
+        f"{raw!r}, which is not auto, on or off, so the overseer reads it as off and keeps "
+        "every skill it builds or changes as a draft; a person sets it with `self-learn "
+        "config set overseer.skill_writing auto|on|off`"
+    )
 
 
 def _intents_preflight_rows(home: Path | str) -> list[SettingRow]:

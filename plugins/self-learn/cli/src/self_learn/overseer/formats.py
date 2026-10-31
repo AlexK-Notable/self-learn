@@ -344,7 +344,9 @@ To build a skill: write {skills.STAGE_SKILLS_DIR}/<name>/{k1a.SKILL_ENTRY_FILE} 
 {k1a.SKILL_REFERENCES_DIR}/<file>{k1a.SKILL_SUPPORT_FILE_SUFFIX} when the detail is long), and a
 named pair: a case with outcome: route and decision.skill {{name, why, lessons}}
 (kind: maintenance, or the successor of a skill-proposal parked case), whose sheet
-routes each lesson in with dest: new-skill:<name>. See {SKILL_EXAMPLE_DIR}/,
+routes each lesson in with dest: new-skill:<name>. A lesson already placed elsewhere moves
+in by the same route line in a kind: reconsider successor of the case that placed it,
+which the runner applies as a reroute once the skill is written. See {SKILL_EXAMPLE_DIR}/,
 case-skill-example.yaml and sheet-skill-example.yaml. The runner writes the skill
 first, then records the case and applies the sheet; if the write is refused, the whole
 pair is dropped and named under "Refused / could not do", and no lesson moves. The
@@ -381,9 +383,11 @@ new-skill:<name> for a skill self-learn does not own is building it, and needs t
 To retire a skill self-learn owns: a pair whose case has outcome: retire and
 decision.skill naming it. Its sheet first moves every lesson routed into it somewhere
 else (each lesson's history in {run.LESSONS_DIR}/ says where it was before); moving a routed
-lesson is a kind: reconsider successor of the case that moved it in. The runner retires
+lesson is a kind: reconsider successor of the case that moved it in. A sheet with no line
+for a lesson routed into the skill drops the pair. The runner retires
 the skill only after every line of the sheet applied. A skill with no lessons left is
-retired with an empty sheet. A request to retire in {skills.VETOES_FILE} is the user's: retire
+retired with an empty sheet. A case that retires lessons out of a skill it keeps does not
+name the skill in decision.skill. A request to retire in {skills.VETOES_FILE} is the user's: retire
 that skill this run, or ask the user in questions.yaml why you did not.
 
 A vetoed name is never used again, and a skill whose name was vetoed cannot be written

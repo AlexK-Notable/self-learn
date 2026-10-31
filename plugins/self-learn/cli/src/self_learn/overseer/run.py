@@ -31,7 +31,7 @@ from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
 
-from .. import always_loaded, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, statements, user_model, verbs, worker
+from .. import always_loaded, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, skill_writer, statements, user_model, verbs, worker
 from ..ledger import discover_buckets, resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
@@ -3674,11 +3674,14 @@ def _item_settled(row: dict[str, Any]) -> bool:
 
 class _SkillRefused(Exception):
     """SK3: a pair's skill write was refused at execute time (or was in an
-    earlier attempt of this run); the pair is dropped."""
+    earlier attempt of this run); the pair is dropped. *kind* is set only
+    for a refusal the run's resume tries again (``git``, fix round 2, gate
+    r2 NIT): the pair then waits, unapplied, instead of being dropped."""
 
-    def __init__(self, line: str) -> None:
+    def __init__(self, line: str, kind: str | None = None) -> None:
         super().__init__(line)
         self.line = line
+        self.kind = kind
 
 
 def _skill_step(recipe: dict[str, Any]) -> "skills_mod.SkillStep | None":
@@ -3704,7 +3707,8 @@ def _apply_skill_write(
 ) -> None:
     """SK3: write the pair's skill before its case is recorded. A step made
     or refused in an earlier attempt of this run is not made again; a
-    refusal raises :class:`_SkillRefused` so the pair stays dropped."""
+    refusal raises :class:`_SkillRefused` so the pair stays dropped. A
+    ``git`` refusal (fix round 2) leaves the step open for the resume."""
     step = _skill_step(recipe)
     if step is None or step.action != "write" or not step.deploy:
         return
@@ -3715,10 +3719,18 @@ def _apply_skill_write(
         return
     outcome = skills_mod.apply_write(home, case_id, step, case_name=str(recipe["case_name"]))
     line = _failure_detail(outcome.line) or outcome.line
-    raw.update(state=outcome.state, line=line)
+    # Fix round 2 (gate r2 NIT): a `git` refusal is not final. The step is
+    # left open ("retry" is neither "refused" nor "applied", so the next
+    # attempt writes again) and the pair waits for the resume, as a sheet
+    # line refused with that kind does (Q19). A stale --expect
+    # (`target-busy`, D4) stays final: the skill changed under the draft.
+    retried = outcome.state == "refused" and outcome.kind == skill_writer.KIND_GIT
+    raw.update(state="retry" if retried else outcome.state, line=line)
     _journal(home, {"at": chrono.now_iso(), "run": run_id,
         "status": f"skill-{step.label}", "skill": step.name, "case": case_id,
-        "state": outcome.state})
+        "state": raw["state"]})
+    if retried:
+        raise _SkillRefused(line, kind=outcome.kind)
     if outcome.state == "refused":
         raise _SkillRefused(line)
     cue_outcomes.append(_skill_cue(step))
@@ -3790,15 +3802,26 @@ def _skill_written_case_refused(recipe: dict[str, Any], case_id: str) -> str | N
     )
 
 
-def _skill_refused_result(case_id: str, recipe: dict[str, Any], line: str) -> batch.BatchResult:
-    """SK3: the dropped pair's items, each a final refusal naming why."""
+def _skill_refused_result(
+    case_id: str, recipe: dict[str, Any], line: str, kind: str | None = None,
+) -> batch.BatchResult:
+    """SK3: the dropped pair's items, each a final refusal naming why. With
+    a retried *kind* (fix round 2, gate r2 NIT), each carries that kind, so
+    the resume dispatches it again once the skill is written."""
+    del line
+    why = (
+        f"its pair {recipe['case_name']}'s skill write met {kind} trouble; the run's resume "
+        "tries again"
+        if kind is not None
+        else f"the skill write of its pair {recipe['case_name']} was refused"
+    )
     items = [
         batch.ItemResult(
             n=int(row["n"]), id=str(row["id"]), verb=str(row["verb"]), rc=1,
-            state="refused",
+            state="refused", kind=kind,
             detail=(
                 f"{recipe['sheet_name']} item {row['n']} ({row['verb']} {row['id']}): not "
-                f"applied — the skill write of its pair {recipe['case_name']} was refused"
+                f"applied — {why}"
             ),
         )
         for row in recipe.get("items") or []
@@ -4160,12 +4183,21 @@ def _execute_manifest(
             # SK3: the skill write was refused, so the pair is dropped:
             # its case is not recorded and no line of its sheet is applied.
             # Each item is a final refusal (no resume re-drives it, and
-            # A12's expected-key check below sees every item).
-            result = _skill_refused_result(case_id, recipe, exc.line)
+            # A12's expected-key check below sees every item) -- unless the
+            # refusal is `git` trouble (fix round 2, gate r2 NIT): then each
+            # item carries that retried kind, and the pair is named in
+            # `retry_pending` (a sheetless pair has no item to keep the run
+            # open), so the resume writes the skill and applies the pair.
+            result = _skill_refused_result(case_id, recipe, exc.line, kind=exc.kind)
             receipt = {"state": "skill-refused", "reason": exc.line}
             effective = batch.Sheet()
             pair_refused = True
             refusals.append(exc.line)
+            if exc.kind is not None:
+                retry_pending.append(
+                    f"{recipe['case_name']}: the skill write for "
+                    f"{recipe['skill'].get('name')} [{exc.kind}]"
+                )
         except Exception as exc:
             halted = True
             halt_reason = f"run ended early: {exc}"
@@ -5443,9 +5475,17 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                                 for row in (sheet_rows if isinstance(sheet_rows, list) else [])
                                 if isinstance(row, dict) and row.get("dest") is not None
                             }
+                            # Fix round 2 (gate r2 MINOR): a retire case's
+                            # lines say whether it retires the skill.
+                            sheet_ids = {
+                                str(row.get("id"))
+                                for row in (sheet_rows if isinstance(sheet_rows, list) else [])
+                                if isinstance(row, dict) and row.get("id") is not None
+                            }
                             skill_step = skills_mod.step_for_case(
                                 home, stage, case_data, staged=skill_stage,
                                 deploy=skill_state.deploy, sheet_dests=sheet_dests,
+                                sheet_ids=sheet_ids,
                             )
                         if skill_step is not None and skill_step.name in skill_pairs:
                             raise OverseerError(
@@ -5504,6 +5544,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         continue
                     from ..steward import _reconsidered_by  # one definition, the steward's
 
+                    reconsidered = _reconsidered_by(_yaml_mapping(case_file))
                     preview = batch.dry_run(
                         home, sheet, actor="overseer",
                         hook_activation=config.hook_activation_enabled(home),
@@ -5514,14 +5555,18 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         # lesson previews as the reroute it will be), not
                         # as the routed-status refusal. 2026-10-05: before,
                         # every reconsider reroute counted "would refuse".
-                        reconsidered=_reconsidered_by(_yaml_mapping(case_file)),
+                        reconsidered=reconsidered,
                     )
                     # SK3: a line routing a lesson into the skill this pair
                     # builds is previewed before the skill exists; only
                     # the "not owned yet" refusal is set aside, and a build
                     # no line would move a lesson into is dropped (fix
-                    # round 1, gate r1).
-                    preview = skills_mod.preview_for_step(home, preview, sheet, skill_step)
+                    # round 1, gate r1). A placed lesson the pair's
+                    # reconsider case covers moves in by reroute (fix
+                    # round 2, gate r2 MAJOR).
+                    preview = skills_mod.preview_for_step(
+                        home, preview, sheet, skill_step, reconsidered=reconsidered,
+                    )
                     _refuse_doomed_reconsider(case_file, predecessor, preview)
                     # S-101: a preview that says would-refuse is
                     # believed. A maintenance pair with such a line is not
