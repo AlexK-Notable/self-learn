@@ -257,6 +257,18 @@ def _subject_matches(ref: ExecutionRef, subject: str) -> bool:
         return subject == exact[ref.verb]
     if ref.verb == "link-contradicts":
         return subject.startswith(f"self-learn: link {rid} contradicts ")
+    if ref.verb == "premises":
+        # S-NEXT-u4-steward: the action sits between the verb and the id
+        # (`self-learn: premises set lrn-…`, 11 §2.5). The sweep's code-only
+        # `premises refresh` commit carries no execution trailers and is
+        # never a sheet item's proof. Any one-word action (U8 adds
+        # `restore-region`) but `refresh`.
+        words = subject.split(" ")
+        return (
+            len(words) == 4 and words[:2] == ["self-learn:", "premises"]
+            and words[3] == rid and words[2] != "refresh"
+            and re.fullmatch(r"[a-z]+(?:-[a-z]+)*", words[2]) is not None
+        )
     prefixes = [f"self-learn: {ref.verb} {rid}"]
     # The compatibility alias delegates to retire when `covered_by` is
     # supplied, and therefore deliberately uses retire's subject.

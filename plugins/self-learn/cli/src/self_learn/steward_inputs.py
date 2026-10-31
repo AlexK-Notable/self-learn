@@ -9,7 +9,7 @@ it reads the lesson itself and what CODE can check about it.
 
 This module builds, for one run:
 
-1. **The inputs.** Three kinds (:data:`INPUT_KINDS`): a pending ``lesson``
+1. **The inputs.** Four kinds (:data:`INPUT_KINDS`): a pending ``lesson``
    (selected by :mod:`steward`, identity = the record's committed blob), a
    ``reconsider`` input (unchanged, :func:`steward._reconsider_proposals`),
    and a ``suspected-violation``: every ``fire`` telemetry event with
@@ -18,7 +18,11 @@ This module builds, for one run:
    collected per record (:func:`suspected_violations`). The user's words
    (2026-09-26 19:32, of the audit's two options): "do both a and b" --
    (b) being that suspected rule violations the miner records go to the
-   steward.
+   steward. The fourth, ``premise-moved`` (S-NEXT-u3-followup, the premise
+   check's unit U3), is a ROUTED lesson something the lesson rested on has
+   moved for; today the one thing that moves it is a closed follow-up
+   (:func:`moved_followups`), and the premise sweep adds its own movers
+   later through the same kind (:func:`premise_moved_version`).
 2. **The batches.** U2's :func:`index.related.group_for_steward` over the
    run's input ids: at most 10 per packet, at most 5 unrelated
    (:func:`plan_packets`). The lesson index is brought up to date
@@ -47,29 +51,47 @@ a verdict's detail never carries transcript or quote text.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from . import refs, telemetry
 from .index import hybrid
 from .index.related import MAX_GROUP, MAX_UNRELATED, Relatedness, group_for_steward
 from .index.store import LessonIndex
+from .primitives import chrono
 from .records import Record
 
 __all__ = [
     "INPUT_LESSON",
     "INPUT_RECONSIDER",
     "INPUT_SUSPECTED_VIOLATION",
+    "INPUT_PREMISE_MOVED",
     "INPUT_KINDS",
     "LessonBrief",
+    "MovedFollowup",
+    "PREMISE_MOVED_PER_RUN",
     "PacketPlan",
     "build_briefs",
     "fires_version",
+    "last_decision",
+    "moved_followups",
     "packet_stats",
     "plan_packets",
+    "premise_moved_version",
+    "premise_moves",
+    "premises_enabled",
+    "PremiseMoves",
+    "confirmed_move",
+    "moved_premises",
+    "observations_path",
+    "probe_words",
+    "read_observations",
+    "routed_with_premises",
     "refresh_index",
     "suspected_violations",
     "tool_reads",
@@ -78,7 +100,15 @@ __all__ = [
 INPUT_LESSON = "lesson"
 INPUT_RECONSIDER = "reconsider"
 INPUT_SUSPECTED_VIOLATION = "suspected-violation"
-INPUT_KINDS = (INPUT_LESSON, INPUT_RECONSIDER, INPUT_SUSPECTED_VIOLATION)
+#: S-NEXT-u3-followup (premise-check design D6): a routed lesson a premise of
+#: its own moved for. The one constant every producer of this kind and the
+#: premise units that build on it (U4's brief, U8's placement premises) name.
+INPUT_PREMISE_MOVED = "premise-moved"
+INPUT_KINDS = (INPUT_LESSON, INPUT_RECONSIDER, INPUT_SUSPECTED_VIOLATION, INPUT_PREMISE_MOVED)
+
+#: Design D7.5: at most this many ``premise-moved`` inputs in one run, oldest
+#: first; the rest wait for the next run (the backlog carries over).
+PREMISE_MOVED_PER_RUN = 10
 
 # ------------------------------------------------------------ the budgets
 #
@@ -378,6 +408,699 @@ def fires_version(events: Iterable[dict]) -> str:
     return "fires:" + ",".join(sorted(str(e.get("nonce")) for e in events))
 
 
+# ----------------------------------------------- premise-moved (U3, S-NEXT-u3-followup)
+
+
+def premises_enabled(home: Path) -> bool:
+    """Whether the premise check is on (design D12, as the user changed it on
+    2026-10-30: ``premises.enabled`` is TRUE unless set false). The setting
+    belongs to the sweep's unit (U2), which registers it as a tier C switch
+    (agents never set it); until it is registered this reads the code default,
+    on, so the one thing U3 does -- offer a lesson whose follow-up closed
+    after its last decision -- works from landing with no human step."""
+    from . import settings  # late: settings is a registry module, not an input
+
+    try:
+        setting = settings.by_name("premises.enabled")
+    except KeyError:
+        return True
+    value, _source = settings.resolve_setting(home, setting)
+    return bool(value)
+
+
+def premise_moved_version(
+    *,
+    followup_done: Mapping[str, Any] | None = None,
+    moved: Iterable[tuple[str, str]] = (),
+) -> str:
+    """The identity of a ``premise-moved`` input: a hash of what moved. The
+    closed follow-up (its action, gate, notes and ``done_at``) and, when the
+    premise sweep adds them, the ``(premise id, new value hash)`` pairs.
+    A run that decided this identity (applied, parked, refused, abandoned)
+    is never offered it again; a follow-up closed again, or a premise that
+    moves again, is a new version. The same pattern as :func:`fires_version`."""
+    block = None
+    if followup_done is not None:
+        block = {
+            key: str(followup_done.get(key) or "")
+            for key in ("action", "unblocks_on", "note", "done_at", "done_note")
+        }
+    pairs = sorted([str(pid), str(value)] for pid, value in moved)
+    blob = json.dumps({"followup": block, "moved": pairs}, sort_keys=True)
+    return "premise:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+#: The case outcomes that placed, moved, rewrote or retired a lesson: what
+#: counts as "decided" when asking whether a follow-up closed AFTER the last
+#: decision. A case that deferred, parked or only recorded a recurrence
+#: (`no-action`) did not look at the lesson's premises.
+_DECIDING_OUTCOMES = frozenset({"route", "reject", "retire", "replaced", "rehome", "revise"})
+#: ... and the history entries a verb writes when a lesson's placement was
+#: displaced or the overseer reconsidered it.
+_DECIDING_HISTORY = frozenset({"routing", "reconsidered"})
+
+
+def last_decision(home: Path, record: Record) -> tuple[datetime | None, str]:
+    """When a ROUTED lesson was last decided, and by what evidence, from the
+    ledger alone: ``(time, label)`` with the newest of its ``routed_at``, a
+    ``routing`` or ``reconsidered`` history entry, a ``last_confirmed`` date
+    (a person observed the rule working), and the ``opened_at`` of a case
+    that placed, moved, rewrote or retired it (:data:`_DECIDING_OUTCOMES`).
+    ``(None, "")`` when nothing is dated. A case index that cannot be read
+    contributes nothing: the answer then errs toward OFFERING the lesson."""
+    from . import cases  # late: cases pulls the cache and the worker
+
+    found: list[tuple[datetime, str]] = []
+
+    def add(value: object, label: str) -> None:
+        when = chrono.to_dt(value)
+        if when is not None:
+            found.append((when, label))
+
+    routing = record.routing if isinstance(record.routing, dict) else {}
+    add(routing.get("routed_at"), "routed_at")
+    for entry in record.history:
+        if isinstance(entry, dict) and entry.get("event") in _DECIDING_HISTORY:
+            add(entry.get("at"), f"history:{entry.get('event')}")
+    add(record.last_confirmed, "last_confirmed")
+    try:
+        rows = cases.list_cases(home, record_id=record.id)
+    except (cases.CaseError, OSError, ValueError):
+        rows = []
+    for row in rows:
+        if row.get("kind") != "parked" and row.get("outcome") in _DECIDING_OUTCOMES:
+            add(row.get("opened_at"), f"case:{row.get('case')}")
+    if not found:
+        return None, ""
+    return max(found, key=lambda item: item[0])
+
+
+@dataclass(frozen=True)
+class MovedFollowup:
+    """One routed lesson whose follow-up was closed after it was last decided."""
+
+    record_id: str
+    done: dict
+    done_on: date
+    decided_at: datetime | None
+    decided_by: str
+
+
+def moved_followups(home: Path) -> list[MovedFollowup]:
+    """Every ROUTED lesson whose ``follow_up_done.done_at`` is not earlier
+    than the day it was last decided (:func:`last_decision`), oldest closing
+    first. This ONE predicate is both the live trigger (``followup-done`` on
+    a lesson) and the one-time pass for follow-ups closed before the check
+    existed: today it names `lrn-9b4250f5` (closed 2026-10-29, last decided
+    2026-09-22) and not `lrn-25968266` (closed 2026-07-17, a case decided
+    it later).
+
+    ``done_at`` is a DATE (the verb writes the day), so the comparison is by
+    day, and the same day counts as after: a lesson decided and closed on one
+    day is offered once rather than missed. The input's own version
+    (:func:`premise_moved_version`) keeps it from being offered twice."""
+    from . import ledger_ops  # late: ledger_ops imports far more
+
+    out: list[MovedFollowup] = []
+    for record in ledger_ops.closed_followups(home):
+        done = record.follow_up_done or {}
+        done_when = chrono.to_dt(done.get("done_at"))
+        if done_when is None:
+            continue
+        decided_at, decided_by = last_decision(home, record)
+        if decided_at is not None and decided_at.date() > done_when.date():
+            continue
+        out.append(MovedFollowup(record.id, done, done_when.date(), decided_at, decided_by))
+    out.sort(key=lambda item: (item.done_on, item.record_id))
+    return out
+
+
+# --------------------------------- moved premises (U4, S-NEXT-u4-steward)
+#
+# 02 §3a.10.4 events 1 and 3: a WRITTEN premise of a placed lesson moved.
+# Three ways, each read here from the record and the cache, never by a model:
+#
+# * a probe premise the daily sweep (U2) saw fail its `holds_if` against the
+#   recorded baseline on its last two observations, both made after that
+#   baseline was recorded and agreeing on the value (two sweeps in a row);
+# * a premise recorded as `contradicts-claim` (its first value already said
+#   the claim was false), from the night after it was recorded;
+# * a `ledger` premise, checked here and now (a ledger read, no command):
+#   a lesson it names was retired or replaced, a statement it names was
+#   corrected, a follow-up it names was closed. These wait for no sweep.
+#
+# `unavailable` never makes a move (`premises.verdict` reads it as neither
+# holds nor moved); three in a row is a broken probe the brief shows.
+
+#: Where the premise sweep (U2) keeps its observations, under the cache
+#: (02 §3a.10.6; ``NOT_REPO_TRUTH``): JSON lines, oldest first, each
+#: ``{"record": "lrn-…", "premise": "p1", "observation": {…}}`` with the
+#: observation as :meth:`premises.Observation.as_dict` writes it (its keys
+#: may also sit at the top level of the line). A missing or unreadable
+#: file is "no observations": a probe premise then waits, and nothing else.
+OBSERVATIONS_FILE = Path("premises") / "observations.jsonl"
+#: Design D7.5: a re-decision a probe triggers waits until the premise was
+#: decided (written or re-baselined) at least this many days ago. Follow-up,
+#: ledger and `contradicts-claim` events do not wait.
+PROBE_REDECIDE_DAYS = 7
+#: Design D7.3: this many `unavailable` observations in a row is a broken
+#: probe, shown in the lesson's brief for the steward to fix or drop.
+BROKEN_PROBE_SWEEPS = 3
+
+
+def observations_path(home: Path) -> Path:
+    """The sweep's observation file for *home*'s cache namespace (the path
+    `worker.cache_dir` resolves, computed without creating anything)."""
+    from .serve import cache_dir_readonly  # late: serve imports the steward
+
+    return cache_dir_readonly(home) / OBSERVATIONS_FILE
+
+
+def _as_observation(row: Mapping[str, Any]) -> Any:
+    """One stored observation as a :class:`premises.Observation`, or
+    ``None`` when the row is not one."""
+    from . import premises
+
+    state = row.get("state")
+    if state not in (premises.OBS_OK, premises.OBS_UNAVAILABLE):
+        return None
+    sha = row.get("value_sha")
+    return premises.Observation(
+        state=str(state),
+        value_sha=str(sha) if isinstance(sha, str) and sha else None,
+        shown=str(row.get("shown") or ""),
+        claim=str(row.get("claim") or premises.CLAIM_UNJUDGED),
+        reason=str(row.get("reason") or ""),
+        observed_at=str(row.get("observed_at") or ""),
+    )
+
+
+def read_observations(home: Path) -> dict[tuple[str, str], list[Any]]:
+    """``(record id, premise id) -> [Observation, ...]``, oldest first, from
+    the sweep's cache file (:data:`OBSERVATIONS_FILE`)."""
+    try:
+        text = observations_path(home).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    out: dict[tuple[str, str], list[Any]] = {}
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        rid, pid = row.get("record"), row.get("premise")
+        if not isinstance(rid, str) or not isinstance(pid, str):
+            continue
+        body = row.get("observation")
+        observation = _as_observation(body if isinstance(body, dict) else row)
+        if observation is not None:
+            out.setdefault((rid, pid), []).append(observation)
+    for rows in out.values():
+        # stable: equal or unreadable times keep the file's order
+        rows.sort(key=lambda o: chrono.to_dt(o.observed_at) or datetime.min.replace(tzinfo=timezone.utc))
+    return out
+
+
+def confirmed_move(premise: Mapping[str, Any], observations: Sequence[Any]) -> tuple[Any, Any] | None:
+    """The two observations that confirm *premise* moved, or ``None``: the
+    last two made after its baseline was recorded both judge it ``moved``
+    (`premises.verdict`) and agree on the value. Older observations, made
+    before a decision re-recorded the baseline, never count: a decided
+    change does not come back from a stale cache line."""
+    from . import premises
+
+    baseline = premise.get("baseline")
+    if not isinstance(baseline, Mapping):
+        return None
+    since = chrono.to_dt(baseline.get("observed_at"))
+    after = []
+    for observation in observations:
+        when = chrono.to_dt(observation.observed_at)
+        if when is not None and (since is None or when > since):
+            after.append(observation)
+    if len(after) < 2:
+        return None
+    first, last = after[-2], after[-1]
+    if any(premises.verdict(premise, o) != premises.VERDICT_MOVED for o in (first, last)):
+        return None
+    if first.value_sha != last.value_sha:
+        return None
+    return first, last
+
+
+def _broken_reason(observations: Sequence[Any]) -> str | None:
+    """Why a probe is broken -- its last :data:`BROKEN_PROBE_SWEEPS`
+    observations all `unavailable` -- or ``None``."""
+    from . import premises
+
+    last = list(observations)[-BROKEN_PROBE_SWEEPS:]
+    if len(last) < BROKEN_PROBE_SWEEPS or any(o.state != premises.OBS_UNAVAILABLE for o in last):
+        return None
+    return last[-1].reason or "unavailable"
+
+
+def probe_words(probe: object) -> str:
+    """A probe as one short line for a brief: its kind and its fields."""
+    if not isinstance(probe, Mapping):
+        return "no probe"
+    fields = " ".join(
+        f"{key}={_one_line(value)}" for key, value in probe.items() if key != "kind"
+    )
+    return f"{probe.get('kind')} {fields}".strip()
+
+
+@dataclass(frozen=True)
+class PremiseMoves:
+    """What moved for one placed lesson's written premises: ``items`` (the
+    brief's ``moved`` entries, ``source: premise``), ``broken`` (probes
+    `unavailable` three sweeps running), and ``since`` (when the oldest
+    move was first seen, for the oldest-first order)."""
+
+    record_id: str
+    items: list[dict]
+    broken: list[dict]
+    since: str
+
+
+def _premise_item(
+    premise: Mapping[str, Any], how: str, now: Any | None, since: str
+) -> dict:
+    """One ``moved`` entry (``source: premise``) as the brief and the run
+    record carry it: claim, probe, recorded value and today's, all short
+    and scan-clean (`premises` stores nothing else)."""
+    baseline = premise.get("baseline") if isinstance(premise.get("baseline"), Mapping) else {}
+    assert isinstance(baseline, Mapping)
+    item: dict = {
+        "source": "premise",
+        "premise": str(premise.get("id")),
+        "how": how,
+        "claim": _one_line(premise.get("claim")),
+        "probe": probe_words(premise.get("probe")),
+        "holds_if": str(premise.get("holds_if") or "changed"),
+        "recorded": str(baseline.get("shown", "")),
+        "recorded_state": str(baseline.get("state") or ""),
+        "recorded_at": str(baseline.get("observed_at") or ""),
+        "since": since,
+    }
+    if premise.get("match") is not None:
+        item["match"] = _one_line(premise.get("match"))
+    if now is not None:
+        item["now"] = now.shown
+        item["now_at"] = now.observed_at
+        item["value_sha"] = now.value_sha or ""
+    else:
+        item["now"] = item["recorded"]
+        item["now_at"] = item["recorded_at"]
+        item["value_sha"] = str(baseline.get("value_sha") or "")
+    return item
+
+
+def premise_moves(
+    home: Path,
+    record: Record,
+    *,
+    observations: Mapping[tuple[str, str], Sequence[Any]] | None = None,
+    today: date | None = None,
+) -> PremiseMoves | None:
+    """The moves of *record*'s written premises (see the block comment
+    above), or ``None`` when nothing moved and no probe is broken. A
+    premise with ``on_change: refresh`` is never a move: code re-records
+    it (the sweep's refresh) without asking the steward."""
+    from . import premises
+
+    observations = observations if observations is not None else {}
+    today = today or datetime.now(timezone.utc).date()
+    env = premises.ProbeEnv(ledger_home=home)
+    items: list[dict] = []
+    broken: list[dict] = []
+    for premise in record.premises or []:
+        probe = premise.get("probe")
+        baseline = premise.get("baseline")
+        if not isinstance(probe, Mapping) or not isinstance(baseline, Mapping):
+            continue
+        pid = str(premise.get("id"))
+        rows = list(observations.get((record.id, pid), ()))
+        reason = _broken_reason(rows)
+        if reason is not None:
+            broken.append({"premise": pid, "probe": probe_words(probe), "reason": _one_line(reason)})
+        if premise.get("on_change") == "refresh":
+            continue
+        recorded_at = chrono.to_dt(baseline.get("observed_at"))
+        if baseline.get("state") == "contradicts-claim":
+            # Counts from the night after it was recorded (02 §3a.10.4 (1)).
+            if recorded_at is not None and recorded_at.date() < today:
+                later = [o for o in rows if o.state == premises.OBS_OK and o.value_sha]
+                items.append(_premise_item(
+                    premise, "contradicts-claim", later[-1] if later else None,
+                    str(baseline.get("observed_at")),
+                ))
+            continue
+        if probe.get("kind") == "ledger":
+            observation = premises.observe(premise, env)
+            if premises.verdict(premise, observation) == premises.VERDICT_MOVED:
+                assert observation is not None
+                items.append(_premise_item(premise, "ledger", observation, observation.observed_at))
+            continue
+        pair = confirmed_move(premise, rows)
+        if pair is None:
+            continue
+        decided = chrono.to_dt(premise.get("decided_at"))
+        if decided is not None and (today - decided.date()).days < PROBE_REDECIDE_DAYS:
+            continue  # D7.5: it was decided less than a week ago; it waits
+        items.append(_premise_item(premise, "probe", pair[1], pair[0].observed_at))
+    if not items and not broken:
+        return None
+    since = min((item["since"] for item in items), default="")
+    return PremiseMoves(record.id, items, broken, since)
+
+
+def routed_with_premises(home: Path) -> list[Record]:
+    """Every ROUTED record that carries a written ``premises`` list, in
+    bucket and file order. Like `ledger_ops.closed_followups` it reads the
+    file text first and parses only a file that names the field, because
+    the steward's due check calls this on every scheduler tick."""
+    from .ledger import discover_buckets
+    from .records import RecordError
+
+    out: list[Record] = []
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                if "\npremises:" not in path.read_text(encoding="utf-8"):
+                    continue
+                record = Record.from_path(path)
+            except (RecordError, OSError, UnicodeDecodeError):
+                continue
+            if record.status == "routed" and record.premises:
+                out.append(record)
+    return out
+
+
+def moved_premises(home: Path, *, today: date | None = None) -> dict[str, PremiseMoves]:
+    """``record id -> PremiseMoves`` for every placed lesson whose written
+    premises moved or whose probe is broken (:func:`premise_moves`)."""
+    records = routed_with_premises(home)
+    if not records:
+        return {}
+    observations = read_observations(home)
+    out: dict[str, PremiseMoves] = {}
+    for record in records:
+        found = premise_moves(home, record, observations=observations, today=today)
+        if found is not None:
+            out[record.id] = found
+    return out
+
+
+#: A closed follow-up's fields as the brief labels them, in reading order.
+_FOLLOWUP_LABELS = (
+    ("action", "what the follow-up asked for"),
+    ("unblocks_on", "it was to be closed when"),
+    ("note", "its note"),
+    ("done_note", "the note it was closed with"),
+)
+_MOVED_FIELD_CHARS = 1_500
+_WOULD_CHANGE_HEADING = "What would change this decision:"
+
+
+def _cut(text: str, limit: int) -> str:
+    """*text* cut to *limit* characters, whitespace untouched."""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _clip(text: object, limit: int = _MOVED_FIELD_CHARS) -> str:
+    return _cut(_one_line(text), limit)
+
+
+def _block_lines(record: Record, key: str) -> tuple[int, list[tuple[int, str]]] | None:
+    """The record file's top-level ``<key>:`` block as ``(first line,
+    [(file line, text), ...])`` so a case can cite it as a ledger ref with a
+    line span, or ``None`` when the text has none."""
+    lines = record.to_text().splitlines()
+    for at, line in enumerate(lines):
+        if line.rstrip() != f"{key}:":
+            continue
+        end = at + 1
+        while end < len(lines) and lines[end][:1] in (" ", "\t"):
+            end += 1
+        return at + 1, [(n + 1, lines[n]) for n in range(at, end)]
+    return None
+
+
+def _done_block_lines(record: Record) -> tuple[int, list[tuple[int, str]]] | None:
+    """The record file's ``follow_up_done:`` block (:func:`_block_lines`)."""
+    return _block_lines(record, "follow_up_done")
+
+
+def _cited_block(
+    record: Record, key: str, label: str, *, path: str | None, head: str | None
+) -> list[str]:
+    """A record block with its file lines and the ledger ref to cite it by,
+    as brief lines, or ``[]`` when the record has no such block."""
+    block = _block_lines(record, key)
+    if block is None:
+        return []
+    first, body = block
+    span = f"L{first}-{body[-1][0]}" if len(body) > 1 else f"L{first}"
+    cite = f"ledger@{(head or 'HEAD')[:12]}:{path}#{span}" if path else f"the record's {span}"
+    out = [f"  {label} ({cite}):"]
+    # indentation kept: it is the block's structure; only a very long line is cut
+    out += [f"    L{n}: {_cut(text, 400)}" for n, text in body]
+    return out
+
+
+def _would_change_lines(home: Path, case_id: str) -> list[str]:
+    """The bullets under "What would change this decision:" in a case's
+    Decision section (the one place a case says what its own facts would
+    have to do for it to be wrong), or ``[]``. Only that list is shown, never
+    the rest of the decision."""
+    from . import cases
+
+    try:
+        view = cases.show(home, case_id, evidence_only=False)
+    except (cases.CaseError, OSError):
+        return []
+    lines = view.sections.get("Decision", "").splitlines()
+    if _WOULD_CHANGE_HEADING not in lines:
+        return []
+    out: list[str] = []
+    for line in lines[lines.index(_WOULD_CHANGE_HEADING) + 1:]:
+        if not line.startswith("- "):
+            break
+        out.append(line[2:].strip())
+    return out
+
+
+#: At most this many covering cases besides the predecessor have their
+#: "what would change" lines shown (newest first).
+_OTHER_COVERING_CASES = 3
+
+
+def _other_covering_cases(home: Path, record_id: str, predecessor: object) -> list[str]:
+    """The cases that cover *record_id*, are not superseded and are not
+    *predecessor*, newest first (02 §3a.10.7: the brief shows the "what
+    would change" lines of every covering case still standing, so a case
+    that only recorded something never hides the placing case's
+    prediction)."""
+    from . import cases
+
+    try:
+        rows = cases.list_cases(home, record_id=record_id, only_ok=True)
+    except (cases.CaseError, OSError, ValueError):
+        return []
+    found = sorted(
+        (
+            (str(row.get("opened_at") or ""), str(row.get("case")))
+            for row in rows
+            if isinstance(row.get("case"), str) and not row.get("superseded_by")
+            and row.get("case") != predecessor
+        ),
+        reverse=True,
+    )
+    return [case_id for _opened, case_id in found[:_OTHER_COVERING_CASES]]
+
+
+#: How each way a written premise moves reads in the brief.
+_PREMISE_HOW = {
+    "probe": "the daily check saw it change on two checks in a row",
+    "ledger": "the ledger entry it rests on changed",
+    "contradicts-claim": "its first recorded value already said the claim was false",
+}
+
+
+def _premise_item_lines(item: Mapping[str, Any]) -> list[str]:
+    """A ``source: premise`` mover as brief lines."""
+    how = _PREMISE_HOW.get(str(item.get("how")), str(item.get("how")))
+    holds = str(item.get("holds_if") or "changed")
+    judged = f"holds_if {holds}" + (f", match {_clip(item.get('match'), 200)!r}" if item.get("match") else "")
+    return [
+        f"  premise {item.get('premise')} moved: {how}",
+        f"    claim: {_clip(item.get('claim'), 300)}",
+        f"    probe: {_clip(item.get('probe'), 300)} ({judged})",
+        f"    recorded value: {item.get('recorded')!r} ({item.get('recorded_state') or 'holds'}, "
+        f"seen {item.get('recorded_at')})",
+        f"    value now: {item.get('now')!r} (seen {item.get('now_at')}; first seen changed "
+        f"{item.get('since')})",
+    ]
+
+
+def _lesson_premise_lines(record: Record) -> list[str]:
+    """Every premise the lesson records, as one line each -- a premise with
+    no probe (a behaviour) included, since this is where it is read."""
+    out: list[str] = []
+    for premise in record.premises or []:
+        probe = premise.get("probe")
+        what = "no probe (a behaviour, written down)" if probe is None else probe_words(probe)
+        out.append(f"  {premise.get('id')}: {_clip(premise.get('claim'), 300)} [{what}]")
+    return out
+
+
+def _decide_lines(
+    predecessor: object, moved_ids: list[str], followup_only: bool
+) -> list[str]:
+    """The brief's [how to decide it] block: which case kind, which
+    outcomes, and the rebaseline a decision that keeps the lesson owes."""
+    if predecessor:
+        kind = (
+            "a `kind: reconsider` case (the runner fills in `supersedes: "
+            f"{predecessor}`)"
+        )
+    else:
+        kind = (
+            "no case covers this lesson, so decide it in a `kind: resolution` case that "
+            "supersedes nothing"
+        )
+    out = [f"[how to decide it] {kind}, with the lesson's lines on its sheet:"]
+    if followup_only:
+        out.append(
+            "  - every sentence still true: outcome `no-action` with one `note` item saying "
+            "which sentence you checked against which cited line;"
+        )
+    else:
+        ids = ", ".join(moved_ids)
+        out.append(
+            "  - every sentence still true: outcome `no-action` with a `premises` line "
+            f"`action: rebaseline`, `ids: [{ids}]` (every moved premise the lesson keeps; the "
+            "runner refuses a `no-action` case that leaves one out, because the same change "
+            "would come back every night);"
+        )
+    out.append(
+        "  - a sentence now false but the lesson's point stands: a `replace` line that narrows "
+        "or corrects the words, every idea of the old text in `decision.rewrite`"
+        + (
+            "" if followup_only else
+            ", and the `premises` rebaseline (or a `set`) on this lesson BEFORE the `replace` "
+            "line, so the new lesson starts from today's values"
+        )
+        + ";"
+    )
+    out.append(
+        "  - all of it false, or loaded text now covers it: `retire` with `covered_by`"
+        + (
+            "; what it asked for is now done by the system itself: `reject` with a `note`;"
+            if predecessor else ";"
+        )
+    )
+    if not followup_only:
+        out.append(
+            "  - the probe is wrong, not the lesson: fix or drop it with a `premises` line "
+            "`action: set` (the whole list), and decide the lesson on what you find;"
+        )
+    if predecessor:
+        out.append("  - you cannot tell: park it.")
+    else:
+        out.append(
+            "  - it must move to another destination, or you cannot tell: park it "
+            "(`authority-unclear`) with your tentative answer; with no case to supersede, a "
+            "placed lesson cannot be moved or rejected here."
+        )
+    out.append(
+        "  Narrowing, rewriting or retiring this placed lesson is yours here without the "
+        "overseer (method section 17); merging it with another placed lesson is not."
+    )
+    return out
+
+
+def render_premise_moved(
+    home: Path, record: Record, row: Mapping[str, Any], *, path: str | None, head: str | None
+) -> tuple[str, dict]:
+    """The part of a ``premise-moved`` brief that is not the lesson itself:
+    what moved -- a closed follow-up (U3), a written premise (U4: its claim,
+    probe, recorded value and today's), or a mover another unit adds (U8's
+    placement premises), each with the record lines to cite -- the lesson's
+    premises, its `env` pins, broken probes, what the cases that cover it
+    said would change them, and how to decide. Code never judges whether
+    the lesson is still true: the brief gives the steward the facts and the
+    deciding case's own prediction."""
+    lines = [
+        "[what moved] something this lesson rested on has changed since it was last "
+        "decided; the facts below are recorded, not guessed"
+    ]
+    items = [m for m in row.get("moved") or [] if isinstance(m, dict)]
+    followups = [m for m in items if m.get("source") == "follow-up-done"]
+    written = [m for m in items if m.get("source") == "premise"]
+    for item in followups:
+        lines.append(f"  the follow-up on this lesson was closed on {item.get('done_at')}")
+        for key, label in _FOLLOWUP_LABELS:
+            if item.get(key):
+                lines.append(f"    {label}: {_clip(item[key])}")
+    for item in written:
+        lines += _premise_item_lines(item)
+    for item in items:
+        if item.get("source") in ("follow-up-done", "premise"):
+            continue
+        # A mover another unit adds (the placement premises of U8): shown as
+        # recorded until that unit gives it its own lines.
+        detail = ", ".join(
+            f"{key}: {_clip(value, 400)}" for key, value in sorted(item.items()) if key != "source"
+        )
+        lines.append(f"  moved ({item.get('source') or 'unknown source'}): {detail}")
+    if followups:
+        lines += _cited_block(
+            record, "follow_up_done", "the closed follow-up as the record holds it",
+            path=path, head=head,
+        )
+    if record.premises:
+        # each premise is listed with the lesson itself (`render_record`)
+        lines += _cited_block(
+            record, "premises", "the premises as the record holds them", path=path, head=head,
+        )
+    broken = [b for b in row.get("broken") or [] if isinstance(b, dict)]
+    if broken:
+        lines.append(
+            f"[broken probes] could not observe on {BROKEN_PROBE_SWEEPS} checks running: fix "
+            "or drop each with `premises` `action: set`"
+        )
+        lines += [
+            f"  {b.get('premise')}: {_clip(b.get('probe'), 300)} ({_clip(b.get('reason'), 200)})"
+            for b in broken
+        ]
+    if record.env:
+        pins = ", ".join(f"{key} {value}" for key, value in sorted(record.env.items()))
+        lines.append(
+            f"[tool versions when it was taught] {_clip(pins, 600)} (context only: a changed "
+            "version is not itself a reason to change the lesson)"
+        )
+    predecessor = row.get("predecessor")
+    wanted = _would_change_lines(home, str(predecessor)) if predecessor else []
+    if wanted:
+        lines.append(f"[what the deciding case ({predecessor}) said would change it]")
+        lines += [f"  - {_clip(w, 600)}" for w in wanted]
+    for case_id in _other_covering_cases(home, record.id, predecessor):
+        others = _would_change_lines(home, case_id)
+        if others:
+            lines.append(f"[what another case that covers it ({case_id}) said would change it]")
+            lines += [f"  - {_clip(w, 600)}" for w in others]
+    moved_ids = [str(m.get("premise")) for m in written]
+    lines += _decide_lines(predecessor, moved_ids, followup_only=not written)
+    stats = {"items": 0, "excerpted": 0, "excerpt_chars": 0, "verdicts": {}, "moved": len(items)}
+    return "\n".join(lines), stats
+
+
 # -------------------------------------------------------------- the record
 
 
@@ -440,6 +1163,14 @@ def render_record(record: Record, *, path: str | None, head: str | None, bucket:
             "  verification as the miner wrote it (no ref; not checked by code): "
             + _one_line(record.verified_how)
         )
+    # S-NEXT-u4-steward (02 §3a.10.2): what the lesson rests on, whatever
+    # brought it here -- a premise with no probe (a behaviour) is read
+    # nowhere else.
+    if record.premises == []:
+        lines.append("  premises: none (decided: it rests on no fact about the machine)")
+    elif record.premises:
+        lines.append("  premises (what it rests on):")
+        lines += [f"  {line}" for line in _lesson_premise_lines(record)]
     return "\n".join(lines)
 
 
@@ -852,12 +1583,17 @@ def build_briefs(
         # S-88: a lesson input carries a reason only when it is a deferred
         # lesson no case covers (`steward._deferred_unresolved`): its
         # deferral came due, and the card says how it is decided.
-        if kind in (INPUT_RECONSIDER, INPUT_LESSON) and row.get("reason"):
+        if kind in (INPUT_RECONSIDER, INPUT_LESSON, INPUT_PREMISE_MOVED) and row.get("reason"):
             parts.append(f"[why it is back] {_one_line(row['reason'])}")
         parts.append(render_record(record, path=rel, head=head, bucket=_bucket_of(home, path)))
         if kind == INPUT_SUSPECTED_VIOLATION:
             events = [e for e in row.get("events") or [] if isinstance(e, dict)]
             text, pack_stats = fire_pack(events, roots=resolved_roots, budget=share)
+            parts.append(text)
+        elif kind == INPUT_PREMISE_MOVED:
+            # What moved is the evidence: the lesson's own transcript pack
+            # says what it was taught from, not what has changed since.
+            text, pack_stats = render_premise_moved(home, record, row, path=rel, head=head)
             parts.append(text)
         else:
             items, pack_stats = evidence_pack(record, roots=resolved_roots, budget=share)
