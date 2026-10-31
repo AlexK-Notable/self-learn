@@ -1546,8 +1546,9 @@ def _refuse_reexec(
     tried again after `REEXEC_RETRY_SECS` or on the next change; one journal
     row and one stderr line per attempt; and one project notice for the
     checkout (S-106), so a session working there sees that the host process
-    is held on its old code and why. The notice is marked done when a later
-    re-exec goes ahead. Never raises."""
+    is held on its old code and why. The notice is marked done when the next
+    image starts (`_clear_refused_notice`: a fresh start runs what is on
+    disk) or the code on disk is back to what this one runs. Never raises."""
     watch.refused, watch.refused_at = current, now
     _append_serve_journal(cache_dir, {
         "status": "reexec-refused", "from": watch.running, "to": current, "error": why,
@@ -1558,20 +1559,45 @@ def _refuse_reexec(
         f"{REEXEC_RETRY_SECS // 60} minutes.",
         file=sys.stderr,
     )
+    _hold_notice(home, why)
+
+
+def _hold_notice(home: Path, why: str) -> None:
+    """The one project notice saying the host process is held on its old
+    code, with the current reason. A live notice with another reason is
+    replaced (fix r2, gate NIT 5): the notice names why the process is held
+    now, not why it was first held. Never raises."""
     short = " ".join(why.split())
     short = "".join(ch for ch in short if ch.isprintable())[:90]
+    text = (
+        "the self-learn host process is held on its old code: the new code "
+        f"cannot run ({short}); it retries hourly"
+    )
     try:
-        notices.add(
-            home,
-            project=_checkout_of_code(),
-            text=(
-                "the self-learn host process is held on its old code: the new code "
-                f"cannot run ({short}); it retries hourly"
-            ),
-            source=notices.SOURCE_CODE,
-            key=_REFUSED_NOTICE_KEY,
-            renew=True,
+        project = _checkout_of_code()
+        held = notices.add(
+            home, project=project, text=text, source=notices.SOURCE_CODE,
+            key=_REFUSED_NOTICE_KEY, renew=True,
         )
+        if held is not None and held.text != text and held.done_at is None:
+            # `add` leaves a live notice as it is; once done, `renew`
+            # replaces it with the words of this refusal.
+            notices.mark_done(home, held.id)
+            notices.add(
+                home, project=project, text=text, source=notices.SOURCE_CODE,
+                key=_REFUSED_NOTICE_KEY, renew=True,
+            )
+    except Exception:  # noqa: BLE001 -- a hint never widens anything
+        pass
+
+
+def _clear_refused_notice(home: Path) -> None:
+    """Fix r2 (gate finding 2): the hold has ended -- this process has just
+    started on the code on disk, or the code on disk is again the code it
+    runs -- so the "held on its old code" notice is marked done. Never
+    raises."""
+    try:
+        notices.mark_done(home, _refused_notice_id())
     except Exception:  # noqa: BLE001 -- a hint never widens anything
         pass
 
@@ -1653,15 +1679,21 @@ def _consider_reexec(
     - then write a heartbeat and a journal row saying so, and replace this
       process with the same command (`os.execve`), which loads the new code.
 
-    A refusal (no sync, no import) leaves a project notice and is tried
-    again on the next change or after `REEXEC_RETRY_SECS`. Returns only when
-    it does not re-exec."""
+    A refusal (no sync, no import, a failed exec) leaves a project notice and
+    is tried again on the next change or after `REEXEC_RETRY_SECS`; the
+    notice is done once the code on disk is back to the running code or the
+    next image starts. Returns only when it does not re-exec."""
     moment = now if now is not None else time.time()
     _check_unit_file(home, watch)
     env_now = env_fingerprint()
     current = _fingerprint(code_fingerprint(), env_now)
     if current is None or current == watch.running:
         watch.candidate, watch.seen = None, 0
+        if current is not None and watch.refused is not None:
+            # Fix r2 (gate finding 2): the code on disk is back to what this
+            # process runs (a revert), so nothing is held any more.
+            watch.refused, watch.refused_at = None, 0.0
+            _clear_refused_notice(home)
         return
     if current != watch.candidate:
         watch.candidate, watch.seen = current, 1
@@ -1693,10 +1725,9 @@ def _consider_reexec(
     if not ok:
         _refuse_reexec(home, cache_dir, watch, current, why, moment)
         return
-    try:
-        notices.mark_done(home, _refused_notice_id())
-    except Exception:  # noqa: BLE001 -- a hint never widens anything
-        pass
+    # Fix r2 (gate NIT 5): the hold notice is not marked done here; the new
+    # image marks it done as it starts (`run_forever`), so a failed exec
+    # below leaves it live.
     _append_serve_journal(cache_dir, {"status": "reexec", "from": watch.running, "to": current})
     try:
         write_heartbeat(
@@ -1724,6 +1755,7 @@ def _consider_reexec(
         })
         print(f"serve: the restart failed ({_short_cause(exc)}); staying on the running code.",
               file=sys.stderr)
+        _hold_notice(home, f"the restart failed: {_short_cause(exc)}")
 
 
 # --------------------------------------------------------------- the loop
@@ -1810,6 +1842,10 @@ def run_forever(
         started_at=_start_time_from_env(time.time()),
         running_env=running_env,
     )
+    # Fix r2 (gate finding 2): whatever held an earlier image on its old
+    # code, this one runs the code on disk (a re-exec, a reboot, a restart
+    # of the unit), so the hold notice is done.
+    _clear_refused_notice(home)
 
     def _handler(signum: int, frame: Any) -> None:  # noqa: ARG001
         stop.set()

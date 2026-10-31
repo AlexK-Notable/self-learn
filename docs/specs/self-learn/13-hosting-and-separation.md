@@ -621,7 +621,14 @@ sync, or code that still does not import) keeps the running code, is tried
 again when the code changes or after an hour (an environment fixed meanwhile
 is picked up), and writes one project notice for the checkout the code lives
 in (source `code`, renewed on a later refusal) saying the host process is held
-on its old code and why; the re-exec that finally goes ahead marks it done.
+on its old code and why. *Amended 2026-10-31 (S-NEXT-self-maint, gate r2):* the
+notice follows the hold. A later refusal for another reason replaces its words;
+an `os.execve` that fails leaves it (or writes it, "the restart failed"); and it
+is marked done when the hold ends, by whichever way it ends: the code on disk is
+back to the running code (a revert), or a process starts (`run_forever`'s
+start-up: the new image after a re-exec, a reboot, or a restart of the unit,
+each of which runs the code on disk). It is never marked done before the exec,
+so a failed exec cannot leave a done notice over a held process.
 
 **A daily maintenance recompile joins the tick** *(Added 2026-10-31,
 S-NEXT-self-maint)*. A `maintenance` job, due once a day (marker in

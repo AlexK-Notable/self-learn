@@ -967,7 +967,8 @@ commit of the last seven days that no job made. A commit is a job's when its sub
 begins `self-learn: steward manifest|telemetry flush|case |worker |mine |overseer`
 (the runners' own), `capture |statement add|user-model ` (new knowledge, not upkeep)
 or `premises refresh ` (reported on the row above), or when it carries a `Case:`
-trailer or `By: steward|overseer|analyst`; everything else is a hand step, whoever's
+trailer or `By: steward|overseer|analyst|maintenance` (`maintenance`: the daily
+recompile job, 13 §5, S-NEXT-self-maint); everything else is a hand step, whoever's
 shell ran it, including a subject no list anticipated. Each step is `{commit, at,
 subject, by, note}`: `by` is `human` or `agent` from a `By:` trailer, `none` when the
 commit has no trailer (the commit cannot say whether a person or an agent ran it); the
