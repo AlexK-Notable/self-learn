@@ -3732,6 +3732,14 @@ def _steward_owns_queue(home: Path | str) -> bool:
     return bool(enabled)
 
 
+def _notify_proposals(home: Path | str, line: str, ids: list[str]) -> None:
+    """The new-proposals popup, unless the steward owns the queue (L3)."""
+    if _steward_owns_queue(home):
+        log("notify: proposals popup skipped — the steward owns the queue")
+        return
+    _notify_with_ids(line, ids)
+
+
 def _maybe_escalate(home: Path, total_pending: int, per_bucket: list[dict]) -> bool:
     """Worker-run-end-only escalation, debounced 24 h (pinned). Silent
     while the steward owns the queue (L3)."""
@@ -4376,18 +4384,16 @@ def run(
                     aggregate = {"pending": total_pending, "buckets": per_bucket}
                     if ids:
                         append_event("proposals", ids, aggregate)
-                        if _steward_owns_queue(home):
-                            log("notify: proposals popup skipped — the steward owns the queue")
-                        else:
-                            _notify_with_ids(
-                                render_notification(
-                                    n,
-                                    sorted(result.buckets) or ["(unknown)"],
-                                    total_pending,
-                                    len(per_bucket),
-                                ),
-                                ids,
-                            )
+                        _notify_proposals(
+                            home,
+                            render_notification(
+                                n,
+                                sorted(result.buckets) or ["(unknown)"],
+                                total_pending,
+                                len(per_bucket),
+                            ),
+                            ids,
+                        )
                     log(
                         f"run: ok — {len(result.proposed)} proposal(s), "
                         f"{len(result.merge_proposed)} merge, "

@@ -12,21 +12,11 @@ import time
 from pathlib import Path
 
 import pytest
+from support import make_env
 
 from self_learn import steward, worker
 from self_learn.overseer import notify as overseer_notify
 
-# The worker suite's fixtures (an autouse cache/notify sandbox, the fake
-# model session, the notify shim) are reused as they are.
-from test_worker import (  # noqa: F401  (fixtures)
-    redirect,
-    _wait_for_file,
-    env,
-    notify_shim,
-    sdk_fake_worker,
-    seed_pending,
-    shim_writes,
-)
 from test_pending_hook import _base_payload, _run_hook
 
 HOUR = 3600.0
@@ -192,31 +182,37 @@ def test_stranded_count_is_absent_unless_known(led, tmp_path):
 # ------------------------------------------------------------------ worker
 
 
-def test_escalation_is_silent_while_the_steward_owns_the_queue(env, monkeypatch):
+@pytest.fixture()
+def ledger(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    home = make_env(tmp_path).ledger
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    return home
+
+
+def test_escalation_is_silent_while_the_steward_owns_the_queue(ledger, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr(worker, "_notify", sent.append)
     # control: steward off, over threshold -> escalates and touches the marker
-    assert worker._maybe_escalate(env.home, worker.ESCALATE_PENDING, []) is True
+    assert worker._maybe_escalate(ledger, worker.ESCALATE_PENDING, []) is True
     assert len(sent) == 1 and "backlog needs attention" in sent[0]
     marker = worker._p("worker.last-escalated")
     marker.unlink()
     # steward on: no popup, no marker
-    _enable(env.home)
-    assert worker._maybe_escalate(env.home, worker.ESCALATE_PENDING, []) is False
+    _enable(ledger)
+    assert worker._maybe_escalate(ledger, worker.ESCALATE_PENDING, []) is False
     assert len(sent) == 1
     assert not marker.exists()
 
 
-def test_proposals_popup_follows_the_owner(env, sdk_fake_worker, notify_shim, monkeypatch):
-    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
-    _enable(env.home)
-    rid = seed_pending(env)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
-    worker.run(env.home)
-    events = (worker.cache_dir() / "events.jsonl").read_text(encoding="utf-8")
-    assert '"proposals"' in events  # the run landed a proposal (positive control)
-    time.sleep(0.5)  # the helper is spawned detached: give it the time a popup would take
-    assert not notify_shim["log"].exists()
+def test_proposals_popup_follows_the_owner(ledger, monkeypatch):
+    sent: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(worker, "_notify_with_ids", lambda line, ids: sent.append((line, ids)))
+    worker._notify_proposals(ledger, "line", ["lrn-1"])  # control: steward off
+    assert sent == [("line", ["lrn-1"])]
+    _enable(ledger)
+    worker._notify_proposals(ledger, "line", ["lrn-2"])
+    assert sent == [("line", ["lrn-1"])]
 
 
 # ------------------------------------------------------------ parked wording
