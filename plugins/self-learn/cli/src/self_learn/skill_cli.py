@@ -1,20 +1,25 @@
-"""``self-learn skill write|retire|list`` (SK1, S-NEXT-sk1-writer).
+"""``self-learn skill write|retire|rename|list`` (SK1, S-NEXT-sk1-writer;
+``rename``: SK8, S-NEXT-sk8-rename).
 
 The person's door to :mod:`self_learn.skill_writer`; the overseer's runner
-calls the same functions in-process. ``write`` and ``retire`` change the
-ledger and the skills root, so they are a person's commands: from an agent
-shell (``settings.agent_caller``) they are refused before anything is read
-or locked, the way a tier-C ``config set`` is. ``write --check`` and
-``list`` only read, and run anywhere.
+calls the same functions in-process. ``write``, ``retire`` and ``rename``
+change the ledger and the skills root, so they are a person's commands:
+from an agent shell (``settings.agent_caller``) they are refused before
+anything is read or locked, the way a tier-C ``config set`` is. ``write
+--check`` and ``list`` only read, and run anywhere.
 
     self-learn skill write <name> --from <dir> --case <id> [--by human]
                                   [--expect <sha>] [--check] [--no-push] [--json]
     self-learn skill retire <name> --case <id> [--by human] [--no-push] [--json]
+    self-learn skill rename <old> <new> --case <id> [--veto <stmt-id>]
+                                  [--expect <sha>] [--no-push] [--json]
+    self-learn skill list [--json]
 
 ``--by`` takes only ``human``: the command is a person's, and only the
 overseer's runner, in-process, records a write or a retirement as the
-overseer's.
-    self-learn skill list [--json]
+overseer's. ``rename`` has no ``--by``: run from the CLI it is always the person's and
+records ``by: human`` (the skills spec row: the CLI never records the
+overseer, whose runner calls :func:`skill_writer.rename` itself).
 
 Exit status: 0 done (or nothing to do), 1 refused, 6 a git step failed
 (``gitops.EXIT_GIT_FAILED``), 64 the draft folder could not be read.
@@ -49,7 +54,7 @@ def _exit_for(ok: bool, kind: str | None) -> int:
 
 def add_parser(subparsers) -> argparse.ArgumentParser:
     parser = subparsers.add_parser(
-        "skill", help="the skills self-learn owns: write | retire | list"
+        "skill", help="the skills self-learn owns: write | retire | rename | list"
     )
     commands = parser.add_subparsers(dest="skill_command", required=True)
 
@@ -89,7 +94,29 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     retire_p.add_argument("--no-push", action="store_true", dest="no_push")
     retire_p.add_argument("--json", action="store_true", dest="as_json")
 
-    list_p = commands.add_parser("list", help="the skills self-learn owns, and their state")
+    rename_p = commands.add_parser(
+        "rename",
+        help=(
+            "give a skill self-learn owns a new name: its folder, marketplace entry and link "
+            "move, and every lesson routed to it follows"
+        ),
+    )
+    rename_p.add_argument("old", help="the skill's name now")
+    rename_p.add_argument("new", help="its new name (kebab-case)")
+    rename_p.add_argument("--case", required=True, help="the case this rename belongs to")
+    rename_p.add_argument(
+        "--veto", dest="veto_statement", metavar="STMT", default=None,
+        help="the statement id of the user's veto of the old name: the old name is banned for ever",
+    )
+    rename_p.add_argument(
+        "--expect", dest="expect_sha", default=None,
+        help="the authored sha256 the skill's files have now, when they changed since "
+        "self-learn last wrote them (compare-and-swap)",
+    )
+    rename_p.add_argument("--no-push", action="store_true", dest="no_push")
+    rename_p.add_argument("--json", action="store_true", dest="as_json")
+
+    list_p =commands.add_parser("list", help="the skills self-learn owns, and their state")
     list_p.add_argument("--json", action="store_true", dest="as_json")
 
     parser.set_defaults(_skill_dispatch=dispatch)
@@ -100,7 +127,7 @@ def dispatch(args) -> int:
     command = args.skill_command
     if command == "list":
         return _list(resolve_home(), args)
-    mutating = command == "retire" or (command == "write" and not args.check)
+    mutating = command in ("retire", "rename") or (command == "write" and not args.check)
     if mutating and settings.agent_caller():
         print(
             f"self-learn skill {command}: {command} is a person's command (the overseer's "
@@ -113,6 +140,8 @@ def dispatch(args) -> int:
     home = resolve_home()
     if command == "write":
         return _write(home, args)
+    if command == "rename":
+        return _rename(home, args)
     return _retire(home, args)
 
 
@@ -199,6 +228,43 @@ def _retire(home: Path, args) -> int:
     else:
         print(f"self-learn skill retire: {result.name}: refused ({result.kind})", file=sys.stderr)
         _print_lines("  - ", result.problems, sys.stderr)
+    return _exit_for(result.ok, result.kind)
+
+
+def _rename(home: Path, args) -> int:
+    result = skill_writer.rename(
+        home, args.old, args.new, case=args.case, by="human",
+        veto_statement=args.veto_statement, expect_sha=args.expect_sha, no_push=args.no_push,
+    )
+    if args.as_json:
+        print(json.dumps({
+            "command": "skill rename", "old": result.old, "new": result.new, "ok": result.ok,
+            "kind": result.kind, "problems": list(result.problems),
+            "notes": list(result.notes), "warnings": list(result.warnings),
+            "rerouted": list(result.rerouted), "ledger_commits": list(result.ledger_shas),
+            "skills_root_commit": result.host_sha, "recompile_commit": result.settle_sha,
+            "link": result.link, "unlinked": result.unlinked, "vetoed": result.vetoed,
+            "authored_sha256": result.authored_sha256,
+        }, sort_keys=True))
+    elif result.ok:
+        if result.changed:
+            print(f"self-learn skill rename: {result.old} is now {result.new} "
+                  f"({len(result.rerouted)} lesson(s) re-routed)")
+        else:
+            print(f"self-learn skill rename: {result.old} is already {result.new}; nothing changed")
+        if result.vetoed:
+            print(f"self-learn skill rename: the name {result.old} is vetoed for ever")
+        _print_lines("  note: ", result.notes, sys.stdout)
+        _print_lines("  warning: ", result.warnings, sys.stderr)
+        for label, push in (("ledger", result.ledger_push), ("skills root", result.host_push)):
+            if push is not None and not push.ok:
+                print(f"self-learn skill rename: {label} push failed ({push.detail}); "
+                      "the commit is kept", file=sys.stderr)
+    else:
+        print(f"self-learn skill rename: {result.old} → {result.new}: refused ({result.kind})",
+              file=sys.stderr)
+        _print_lines("  - ", result.problems, sys.stderr)
+        _print_lines("  note: ", result.notes, sys.stderr)
     return _exit_for(result.ok, result.kind)
 
 
