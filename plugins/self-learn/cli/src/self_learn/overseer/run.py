@@ -78,8 +78,7 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 #: asked "do we need a size limit at all?"; the orchestrator answered no).
 #: A model report longer than this is kept whole and the runner says so.
 _REPORT_LINE_GUIDE = 60
-#: A `kind: ask` question's id (2026-09-24). A `kind: reading`'s id is a
-#: user-model proposition, `conversation._PROPOSITION_RE`.
+#: A `kind: ask` question's id (2026-09-24).
 _ASK_ID_RE = re.compile(r"^q-[a-z0-9][a-z0-9-]{1,62}$")
 _CASE_ID_RE = re.compile(r"^case-[0-9a-f]{8}$")
 #: 2026-09-28: the closed sets and required fields the runner enforces on
@@ -97,7 +96,24 @@ FINDING_KINDS = ("examined", "dependency-moved")
 NOTICES_FILE = "notices.yaml"
 PROJECTS_FILE = "projects.yaml"
 NOTICE_KEYS = ("project", "text", "case")
-QUESTION_KINDS = ("reading", "ask")
+#: S-NEXT-overseer-asks (decision 4 of the 2026-10-31b round): an ask is the
+#: only question kind. A `kind: reading` entry (confirm or correct one of the
+#: overseer's readings of the user) is dropped and named: a reading is
+#: evidence the overseer acts on, shown in the report's User model section.
+QUESTION_KINDS = ("ask",)
+#: The keys a staged ask may carry. `default` is required unless the ask is
+#: about the user's system (`system: true`) or carries `register`: those
+#: take no default of their own, and the runner writes the fixed
+#: change-nothing default (`conversation.SYSTEM_DEFAULT` / `REGISTER_DEFAULT`).
+ASK_KEYS = ("id", "kind", "cases", "text", "why", "default", "system", "register")
+#: The runner's one line in the report's User model section: no reading is
+#: put to the user as a question, so the report says how to correct one.
+READING_CORRECTION_LINE = (
+    "None of these readings is asked about. To correct one, tell any session in your "
+    "own words; it records them with `self-learn statement add --verbatim \"<your words>\" "
+    "--ref transcript:<session>#L<line> --recorded-by human --answers-kind proposition "
+    "--answers-ref <um-id>@r<revision>`, and the next overseer run acts on them."
+)
 REQUIRED_OUTPUT_FILES = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
 MAINTENANCE_CASE_FIELDS = ("kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision")
 SUCCESSOR_CASE_FIELDS = (*MAINTENANCE_CASE_FIELDS, "supersedes")
@@ -761,7 +777,8 @@ def _phase_b_prompt(
 You may now read the steward rationale and full decided account in full/*.md.
 This folder, {stage}, is your workspace: you can read and write only inside it.
 {_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
-answers.yaml (the user's answers to earlier overseer questions, newest first; it may be empty);
+answers.yaml (the user's answers to earlier overseer questions and corrections of your readings,
+newest first, each with its kind: question or proposition; it may be empty);
 projects.yaml lists the projects a notice may name.
 {LESSONS_DIR}/lrn-<id>.md is the current record of every lesson in the ledger: its status, routing,
 history, and loaded text (## Trigger and ## Instruction). Read the record of any lesson you name or
@@ -828,19 +845,29 @@ yourself from the evidence. If you can decide it, decide it: that is your job, a
 instead hands the work back. Never ask the user to approve a lesson decision you are entitled
 to make; make it and report it under "Decided in the user's stead". A hook you decided belongs
 under Hooks, not here.
-Two kinds, each {{id, kind, cases}}:
-- kind: reading asks the user to confirm or correct one of your readings of them. id is that
-  reading's current proposition exactly as in user-model.yaml, um-<4 hex>@r<revision>. Only a
-  reading that already exists can be asked about; one you add this run can be asked next week.
-- kind: ask is a decision or fact only the user has. id is q-<short-kebab-slug>. Add text: ONE
-  question, answerable in a sentence, written for someone who has not read the cases (say what
-  would be built or changed and what yes and no each lead to), and why: what the answer changes.
-  Never bundle two decisions into one ask. If only the user can do something (it needs their
-  hands, credentials, or a command agents may not run), you may ask whether they will; say
-  exactly what and why.
+Every question is {{id, kind: ask, cases, text, why, default}}, a decision or fact only the user
+has. id is q-<short-kebab-slug>. text: ONE question, answerable in a sentence, written for someone
+who has not read the cases (say what would be built or changed and what yes and no each lead to).
+why: what the answer changes. Never bundle two decisions into one ask. If only the user can do
+something (it needs their hands, credentials, or a command agents may not run), you may ask
+whether they will; say exactly what and why.
+You never wait for an answer. default is ONE sentence saying what you did this run in the user's
+stead, as you would act if no answer ever came: decide the lessons and cases the question is about
+by that default in this same run (stage the cases and sheets it calls for), and never defer a
+lesson to wait for the answer. The runner reports every default under "Decided in the user's
+stead" and hands each lesson a cited case deferred back to the steward with your default as its
+context; the user's answer, whenever it comes, can overturn it, and you act on such an answer in
+answers.yaml like any other evidence.
+An ask whose answer would change the user's system outside self-learn (their files, services,
+settings or repositories; anything but the ledger and what self-learn deploys) adds system: true
+and writes no default: its default is always to change nothing, and the runner says so.
+Never ask the user to confirm or correct one of your readings of them: a reading is evidence you
+act on and show under User model, and the user corrects one when they choose to (any entry of
+answers.yaml whose kind is proposition is such a correction). A kind: reading entry is dropped.
   An ask whose whole point is registering a repository as a canon host (you cannot register
   one yourself) may add register: {{path: <absolute path>, mode: git or plain, kind: project or
-  skills-root, default project}}. The user's typed yes then registers it for them. The text
+  skills-root, default project}}, and writes no default: until a yes, nothing is registered. The
+  user's typed yes then registers it for them. The text
   must name that path exactly and that mode as a phrase such as "in git mode" or "a plain skills
   root" (not just a word like "git repository"), and never name the other mode, because the user sees the text and a yes means
   exactly that registration; the question and its register must agree. A question that is not
@@ -1191,18 +1218,29 @@ def _environment_hold(home: Path, run_id: str, phase: str, outcome: Any) -> str:
 
 
 def _question_answers(home: Path) -> list[dict[str, Any]]:
-    """The user's answers to earlier `kind: ask` questions, newest first,
-    for phase B (2026-09-24). Phase B saw no user statement before this:
-    `user-model.yaml` carries statement ids, never their words."""
+    """The user's answers to earlier `kind: ask` questions and corrections
+    of the overseer's readings, newest first, for phase B (2026-09-24).
+    Phase B saw no user statement before this: `user-model.yaml` carries
+    statement ids, never their words. A proposition answer whose `ref` is not
+    a reading's id (every statement without an `answers` block reads as a
+    proposition answer with no ref) answers no reading and is left out."""
     rows = [
         row for row in statements.list_statements(home)
         if isinstance(row.get("answers"), dict)
-        and row["answers"].get("kind") == "question"
+        and (
+            row["answers"].get("kind") == "question"
+            or (
+                row["answers"].get("kind") == "proposition"
+                and isinstance(row["answers"].get("ref"), str)
+                and _PROPOSITION_RE.fullmatch(row["answers"]["ref"]) is not None
+            )
+        )
     ]
     rows.sort(key=lambda row: str(row.get("at") or ""), reverse=True)
     return [
         {
             "id": row.get("id"),
+            "kind": row["answers"].get("kind"),
             "ref": row["answers"].get("ref"),
             "asked": row["answers"].get("text"),
             "verbatim": row.get("verbatim"),
@@ -1261,8 +1299,9 @@ def _stage_lessons(home: Path, stage: Path) -> int:
 
 
 def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Write phase B's inputs; answer the user-model document it was given,
-    which is what a `kind: reading` question is validated against."""
+    """Write phase B's inputs; answer the user-model document it was given
+    (which a `kind: reading` question was validated against until readings
+    stopped being asked, S-NEXT-overseer-asks)."""
     full_dir = stage / "full"
     parked_dir = stage / "parked"
     full_dir.mkdir(parents=True, exist_ok=True)
@@ -1301,18 +1340,6 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
     return model_doc
 
 
-def _current_propositions(model_doc: dict[str, Any]) -> set[tuple[str, int]]:
-    found: set[tuple[str, int]] = set()
-    for entries in (model_doc.get("containers") or {}).values():
-        for entry in entries or []:
-            if not isinstance(entry, dict):
-                continue
-            entry_id, revision = entry.get("id"), entry.get("r")
-            if isinstance(entry_id, str) and isinstance(revision, int) and not isinstance(revision, bool):
-                found.add((entry_id, revision))
-    return found
-
-
 def _flat(text: str) -> str:
     return " ".join(text.split())
 
@@ -1329,11 +1356,17 @@ def _question_label(value: object, ordinal: int) -> str:
     return f"entry {ordinal}"
 
 
-def _question_problem(
-    item: dict[str, Any], kind: str, propositions: set[tuple[str, int]],
-    known_cases: set[str],
-) -> str | None:
-    """Why one questions.yaml entry cannot be indexed, or ``None``."""
+#: Why a `kind: reading` entry is dropped (S-NEXT-overseer-asks; decision 4
+#: of the 2026-10-31b round: "Questions that only ask the user to confirm the
+#: overseer's reading of them are dropped").
+_READING_DROPPED = (
+    "a reading is not asked: show it under User model and act on it; the user "
+    "corrects one when they choose to"
+)
+
+
+def _question_problem(item: dict[str, Any], known_cases: set[str]) -> str | None:
+    """Why one questions.yaml ask cannot be indexed, or ``None``."""
     qid = item.get("id")
     cited = item.get("cases", [])
     if not isinstance(cited, list) or not all(isinstance(case_id, str) for case_id in cited):
@@ -1344,17 +1377,6 @@ def _question_problem(
     unknown = [case_id for case_id in cited if case_id not in known_cases]
     if unknown:
         return f"cites unknown case(s) {', '.join(unknown)}"
-    if kind == "reading":
-        match = _PROPOSITION_RE.fullmatch(qid) if isinstance(qid, str) else None
-        if match is None:
-            return "a reading's id must be um-<4 hex>@r<revision>"
-        entry_id, revision = match.group(1), int(match.group(2))
-        if (entry_id, revision) not in propositions:
-            return (
-                f"{entry_id} at revision {revision} is not a current reading in "
-                "the user model this run was given"
-            )
-        return None
     if not isinstance(qid, str) or not _ASK_ID_RE.fullmatch(qid):
         return "an ask's id must be q-<short-kebab-slug>"
     for field_name in ("text", "why"):
@@ -1370,7 +1392,49 @@ def _question_problem(
         register, problem = conversation.normalize_register(item["register"], item["text"])
         if register is None:
             return problem
+    return _default_problem(item)
+
+
+def _default_problem(item: dict[str, Any]) -> str | None:
+    """S-NEXT-overseer-asks: why an ask's default is unusable, or ``None``.
+
+    The overseer never waits on the user (decision 4 of the 2026-10-31b
+    round): every ask states the default it acted on this run. An ask about
+    the user's system (`system: true`) or one carrying `register` writes NO
+    default of its own -- its default is always to change nothing, and the
+    runner writes that sentence itself, so a model-written default there
+    could only contradict it."""
+    system = item.get("system", False)
+    if not isinstance(system, bool):
+        return "system must be true or false"
+    if system or "register" in item:
+        if "default" in item:
+            which = "system: true" if system else "register"
+            return (
+                f"an ask with {which} takes no default: its default is always to "
+                "change nothing"
+            )
+        return None
+    value = item.get("default")
+    if not isinstance(value, str) or not value.strip():
+        return (
+            "an ask needs a default: one sentence on what you did this run in the "
+            "user's stead"
+        )
+    hits = scan.scan(value)
+    if hits:
+        return f"default matched the secret scan ({hits[0].rule})"
     return None
+
+
+def _ask_default(item: dict[str, Any]) -> str:
+    """The default an indexed ask carries: the model's own sentence, or the
+    fixed change-nothing sentence for a system or register ask."""
+    if "register" in item:
+        return conversation.REGISTER_DEFAULT
+    if item.get("system") is True:
+        return conversation.SYSTEM_DEFAULT
+    return _flat(cast(str, item["default"]))
 
 
 def _questions(
@@ -1384,7 +1448,15 @@ def _questions(
     "Refused / could not do" section; a file that is not a mapping with a
     `questions` list reads as zero questions plus one such line. Answers
     ``({"questions": [...]}, dropped_lines)``, the index in the model's
-    order."""
+    order.
+
+    S-NEXT-overseer-asks: a `kind: reading` entry (or a legacy `{id, cases}`
+    entry with a proposition id) is dropped and named, and every kept ask
+    carries `default` -- the model's sentence, or the fixed change-nothing
+    one for a `system: true` or `register` ask -- and `system: true` when it
+    was set. *model_doc* is no longer read (it was what a reading was
+    validated against); the parameter stays for the callers."""
+    del model_doc
     try:
         data = _yaml_mapping(path)
     except OverseerError:
@@ -1393,7 +1465,6 @@ def _questions(
         return {"questions": []}, [
             "question questions.yaml: dropped — not a mapping with a questions list"
         ]
-    propositions = _current_propositions(model_doc)
     clean: list[dict[str, Any]] = []
     dropped: list[str] = []
     seen: set[str] = set()
@@ -1405,10 +1476,13 @@ def _questions(
         kind = item.get("kind")
         if kind is None and isinstance(item.get("id"), str) and item["id"].startswith("um-"):
             kind = "reading"  # a legacy entry: `{id, cases}` with a proposition id
-        if kind not in QUESTION_KINDS:
-            dropped.append(f"question {label}: dropped — kind must be reading or ask")
+        if kind == "reading":
+            dropped.append(f"question {label}: dropped — {_READING_DROPPED}")
             continue
-        problem = _question_problem(item, kind, propositions, known_cases)
+        if kind not in QUESTION_KINDS:
+            dropped.append(f"question {label}: dropped — kind must be ask")
+            continue
+        problem = _question_problem(item, known_cases)
         if problem is None and item["id"] in seen:
             problem = "duplicate id"
         if problem is not None:
@@ -1416,18 +1490,20 @@ def _questions(
             continue
         seen.add(item["id"])
         row: dict[str, Any] = {"id": item["id"], "kind": kind, "cases": list(item.get("cases") or [])}
-        if kind == "ask":
-            row["text"] = _flat(item["text"])
-            row["why"] = _flat(item["why"])
-            if "register" in item:
-                # S-103: validated against the ask's own text in
-                # `_question_problem`; re-checked against the flattened text
-                # the index will carry, so the two cannot drift.
-                register, problem = conversation.normalize_register(item["register"], row["text"])
-                if register is None:
-                    dropped.append(f"question {label}: dropped — {problem}")
-                    continue
-                row["register"] = register
+        row["text"] = _flat(item["text"])
+        row["why"] = _flat(item["why"])
+        if "register" in item:
+            # S-103: validated against the ask's own text in
+            # `_question_problem`; re-checked against the flattened text
+            # the index will carry, so the two cannot drift.
+            register, problem = conversation.normalize_register(item["register"], row["text"])
+            if register is None:
+                dropped.append(f"question {label}: dropped — {problem}")
+                continue
+            row["register"] = register
+        row["default"] = _ask_default(item)
+        if item.get("system") is True:
+            row["system"] = True
         clean.append(row)
     return {"questions": clean}, dropped
 
@@ -1701,6 +1777,10 @@ def _finalize_model_report(
     else:
         existing = [line for line in lines[user_model_at:next_heading] if line.strip()]
         replacement = existing or ["- none"]
+    # S-NEXT-overseer-asks: readings are no longer asked about; the
+    # section says once how the user corrects one when they choose to.
+    replacement = [line for line in replacement if line.strip() != "- none"]
+    replacement.append(f"- {READING_CORRECTION_LINE}")
     lines[user_model_at:next_heading] = replacement
     # No truncation (2026-09-24): the report is kept whole. Before, a report
     # over 60 lines lost model prose here to fit.
@@ -4055,6 +4135,81 @@ def _observation_id(run_id: str, index: int) -> str:
     return "obs-" + hashlib.sha256(f"{run_id}:{index}".encode()).hexdigest()[:8]
 
 
+def _defaulted_asks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """The run's indexed asks that carry a default (every ask this runner
+    indexes since S-NEXT-overseer-asks; none in a record made before)."""
+    index = manifest.get("questions")
+    rows = index.get("questions") if isinstance(index, dict) else None
+    return [
+        row for row in rows or []
+        if isinstance(row, dict) and row.get("kind") == "ask"
+        and isinstance(row.get("default"), str) and row["default"].strip()
+        and isinstance(row.get("id"), str)
+    ]
+
+
+def _record_defaults(home: Path, manifest: dict[str, Any]) -> list[str]:
+    """S-NEXT-overseer-asks (decision 4 of the 2026-10-31b round: "every
+    question carries a stated default and the overseer acts on it in the same
+    run, reports it as a decision, and releases the waiting lessons").
+
+    For every ask the run indexed, record on each case it cites -- or on the
+    case that has since superseded it, this run's own successor included --
+    the observation `ask defaulted q-…; default applied: <default>`, by the
+    overseer, with ref `overseer-run:<run>`. A case that DEFERRED its lessons
+    then hands them back to the steward with the default as their context
+    (`steward._reconsider_proposals`), exactly as an answer would (S-96), so
+    no lesson waits on the user. Each observation id is derived from the run,
+    the ask and the case, so a resumed run records nothing twice. Answers the
+    cases observed, in order."""
+    run_id = cast(str, manifest["run_id"])
+    links = conversation.superseded_links(home)
+    observed: list[str] = []
+    for row in _defaulted_asks(manifest):
+        seen: set[str] = set()
+        for cited in row.get("cases") or []:
+            if not isinstance(cited, str):
+                continue
+            case_id = conversation.current_case(home, cited, links)
+            if case_id in seen:
+                continue
+            seen.add(case_id)
+            reserved = "obs-" + hashlib.sha256(
+                f"{run_id}:ask-default:{row['id']}:{case_id}".encode()
+            ).hexdigest()[:8]
+            cases.observe(
+                home, case_id, "statement",
+                text=conversation.ask_defaulted_text(row["id"], row["default"]),
+                by="overseer", ref=f"overseer-run:{run_id}", reserved_id=reserved,
+            )
+            observed.append(case_id)
+    return observed
+
+
+def _default_lines(manifest: dict[str, Any]) -> list[str]:
+    """The report's "Decided in the user's stead" lines for the run's asks:
+    each default applied, and, listed apart, the asks that would change the
+    user's system or register a host, where the default changed nothing."""
+    applied: list[str] = []
+    unchanged: list[str] = []
+    for row in _defaulted_asks(manifest):
+        if row.get("register"):
+            unchanged.append(
+                f"{row['id']} would register a host, so nothing was registered: "
+                f"{row['default']}"
+            )
+        elif row.get("system") is True:
+            unchanged.append(
+                f"{row['id']} would change your system, so nothing was changed: "
+                f"{row['default']}"
+            )
+        else:
+            applied.append(
+                f"{row['id']} asked and not waited for; applied its default: {row['default']}"
+            )
+    return [*applied, *unchanged]
+
+
 #: The run-record fields the finalize write OWNS (A17). Everything else on
 #: the record is whatever HEAD already says, so the publish can never carry
 #: a stale in-memory copy back over committed truth.
@@ -4898,6 +5053,7 @@ def _execute_manifest(
                     text=cast(str, finding.get("text") or "examined"), by="overseer",
                     ref=finding.get("ref"), reserved_id=_observation_id(run_id, index),
                 )
+            _record_defaults(home, manifest)
         except Exception as exc:
             halted = True
             halt_reason = f"run ended early: {exc}"
@@ -5052,6 +5208,9 @@ def _execute_manifest(
             questions=questions,
             notes=runner_notes,
             decided=[
+                # S-NEXT-overseer-asks: each ask's default, applied by
+                # `_record_defaults` above (not yet, on a halted attempt).
+                *([] if halted else _default_lines(manifest)),
                 *decided_lines,
                 *skills_mod.report_lines(manifest, trial_written=trial is not None),
                 # SK4: one line per disposition phase B recorded.

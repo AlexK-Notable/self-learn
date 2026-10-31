@@ -113,6 +113,26 @@ _ASK_ANSWER_OBSERVATION_RE = re.compile(
     r"^- obs-[0-9a-f]{8} \S+ overseer statement: user answered "
     r"q-[a-z0-9][a-z0-9-]{1,62} \(ref: stmt-[0-9a-f]+\)$"
 )
+#: S-NEXT-overseer-asks: the observation the overseer's runner records on a
+#: case its ask cites when it applies the ask's default in the same run
+#: (`overseer.run._record_defaults`, text from
+#: `overseer.conversation.ask_defaulted_text`). Like an answer (S-96) it
+#: brings back a case that DEFERRED its lessons, with the default as the
+#: card's context, so no lesson waits on the user.
+_ASK_DEFAULTED_OBSERVATION_RE = re.compile(
+    r"^- obs-[0-9a-f]{8} \S+ overseer statement: ask defaulted "
+    r"(?P<question>q-[a-z0-9][a-z0-9-]{1,62}); default applied: (?P<default>.+) "
+    r"\(ref: overseer-run:[0-9a-f]+\)$"
+)
+#: S-NEXT-overseer-asks: the user's answer to an ask whose default was
+#: applied (`overseer.conversation.respond`), recorded on the case each cited
+#: case's line of successors ends at. It brings that case back WHATEVER it
+#: decided: the default already decided it, and the answer may overturn that.
+_ASK_OVERTURN_OBSERVATION_RE = re.compile(
+    r"^- obs-[0-9a-f]{8} \S+ overseer statement: user answered "
+    r"(?P<question>q-[a-z0-9][a-z0-9-]{1,62}) after its default was applied "
+    r"\(ref: (?P<statement>stmt-[0-9a-f]+)\)$"
+)
 
 
 @dataclass(frozen=True)
@@ -1542,6 +1562,50 @@ def _reconsider_unresolved(home: Path, record: Record) -> str:
     return _RECONSIDER_UNRESOLVED
 
 
+def _ask_context(home: Path, line: str) -> str | None:
+    """S-NEXT-overseer-asks: the card sentence for a reconsider input that an
+    overseer ask brought back -- its default applied without waiting, or the
+    user's later answer to it -- else `None`."""
+    defaulted = _ASK_DEFAULTED_OBSERVATION_RE.match(line)
+    if defaulted is not None:
+        return (
+            f"The overseer asked the user {defaulted.group('question')} and did not wait: "
+            f"it applied its stated default, \"{defaulted.group('default')}\" Re-decide this "
+            "lesson on that default; the user's answer may still overturn it."
+        )
+    overturn = _ASK_OVERTURN_OBSERVATION_RE.match(line)
+    if overturn is not None:
+        words = _statement_words(home, overturn.group("statement"))
+        said = f" Their words: \"{words}\"" if words else ""
+        return (
+            f"The user has now answered {overturn.group('question')}, whose default the "
+            f"overseer had applied ({overturn.group('statement')}): re-decide this lesson "
+            f"against their answer, keeping the decision if the answer agrees.{said}"
+        )
+    return None
+
+
+#: How much of the user's answer a reconsider card quotes.
+_ANSWER_QUOTE_MAX = 600
+
+
+def _statement_words(home: Path, statement_id: str) -> str | None:
+    """The verbatim words of one statement, on one line and cut at
+    `_ANSWER_QUOTE_MAX` characters, or `None` when it cannot be read. The
+    words were secret-scanned when the statement was recorded."""
+    try:
+        rows = statements.list_statements(home)
+    except Exception:  # noqa: BLE001 -- a card line never fails a run
+        return None
+    for row in rows:
+        if row.get("id") == statement_id and isinstance(row.get("verbatim"), str):
+            words = " ".join(row["verbatim"].split())
+            if len(words) > _ANSWER_QUOTE_MAX:
+                words = words[: _ANSWER_QUOTE_MAX - 1] + "…"
+            return words
+    return None
+
+
 def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]], dict[str, str]]:
     """Every lesson a case's new statement or dependency observation brings
     back, as a reconsider input. An observation counts when its `ref` is one
@@ -1589,12 +1653,17 @@ def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]
                 match.group(4) in dependencies
                 or (
                     row.get("outcome") == "defer"
-                    and _ASK_ANSWER_OBSERVATION_RE.match(match.group(0)) is not None
+                    and (
+                        _ASK_ANSWER_OBSERVATION_RE.match(match.group(0)) is not None
+                        or _ASK_DEFAULTED_OBSERVATION_RE.match(match.group(0)) is not None
+                    )
                 )
+                or _ASK_OVERTURN_OBSERVATION_RE.match(match.group(0)) is not None
             )
         ]
         if not matches:
             continue
+        context = _ask_context(home, matches[-1].group(0))
         if any(rid in held for rid in row.get("records") or []):
             continue
         for rid in row.get("records") or []:
@@ -1619,7 +1688,9 @@ def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]
                         "id": rid,
                         "card": {
                             "headline": "A dependency of the prior decision changed.",
-                            "unresolved": _reconsider_unresolved(home, record),
+                            "unresolved": " ".join(
+                                part for part in (_reconsider_unresolved(home, record), context) if part
+                            ),
                         },
                         "recommendation": "reconsider",
                     },

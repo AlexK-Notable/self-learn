@@ -914,7 +914,8 @@ def test_runner_added_lines_remove_bare_none_placeholders(tmp_path):
     hooks = text.split("## Hooks\n", 1)[1].split("\n## User model", 1)[0]
     model = text.split("## User model\n", 1)[1].split("\n## Catalogue health", 1)[0]
     assert hooks == "- lrn-0123abcd: route applied"
-    assert model == "- um-abcd: add applied"
+    # S-NEXT-overseer-asks: the runner's one line on correcting a reading.
+    assert model == f"- um-abcd: add applied\n- {overseer_run.READING_CORRECTION_LINE}"
 
 
 def test_runner_template_refused_section_has_no_placeholder_beside_a_reason():
@@ -2437,6 +2438,7 @@ def _ask(qid, case_id, n=1):
         "id": qid, "kind": "ask", "cases": [case_id],
         "text": f"Should lesson {n} become a skill? Yes scaffolds it; no parks it.",
         "why": f"decides where lesson {n} is routed",
+        "default": f"I left lesson {n} where it is this week.",
     }
 
 
@@ -2492,12 +2494,16 @@ def test_a_mixed_questions_file_keeps_the_valid_and_names_the_dropped(tmp_path, 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
     assert (result.status, result.code, result.refused) == ("applied", 0, 0), result
-    assert [row["id"] for row in _index(home)] == [f"{reading}@r1", "q-diagram-skill"]
+    # S-NEXT-overseer-asks: a reading is no longer asked, current or not.
+    assert [row["id"] for row in _index(home)] == ["q-diagram-skill"]
     refused = _refused_section(home)
-    assert f"- question {reading}@r2: dropped — {reading} at revision 2 is not a current reading" in refused
+    for revision in (1, 2):
+        assert (
+            f"- question {reading}@r{revision}: dropped — {overseer_run._READING_DROPPED}"
+        ) in refused
     assert "- question q-no-text: dropped — an ask needs non-empty text" in refused
     assert "- question q-diagram-skill: dropped — duplicate id" in refused
-    assert refused.count("dropped") == 3
+    assert refused.count("dropped") == 4
 
 
 def test_a_malformed_questions_file_is_zero_questions_and_one_line(tmp_path, monkeypatch):
@@ -2760,8 +2766,11 @@ def test_both_prompts_carry_the_journal_and_phase_b_the_question_bar(tmp_path, m
     assert "There is no limit on\nhow many you ask" in b
     assert "A question clears the bar only when all three hold" in b
     assert "clears the bar" not in a
-    assert "- kind: reading asks the user to confirm or correct" in b
-    assert "- kind: ask is a decision or fact only the user has" in b
+    # S-NEXT-overseer-asks: one kind, a default on every ask, no readings asked.
+    assert "Every question is {id, kind: ask, cases, text, why, default}" in b
+    assert "You never wait for an answer." in b
+    assert "Never ask the user to confirm or correct one of your readings of them" in b
+    assert "kind: reading asks" not in b
     assert "structured ids and affected case ids only" not in b
     assert "answers.yaml" in b
 
@@ -2784,6 +2793,13 @@ def test_phase_b_sees_the_users_answers_to_earlier_asks(tmp_path, monkeypatch):
     seen = _wrap_phases(monkeypatch)
     overseer_run.run(home, dry_run=True, no_push=True)
     answers = YAML(typ="safe").load(seen["b_stage"]["answers.yaml"])["answers"]
+    # S-NEXT-overseer-asks: a correction of a reading reaches phase B too,
+    # now that readings are no longer asked; each row says which it is.
+    by_ref = {row["ref"]: row for row in answers}
+    assert set(by_ref) == {"q-diagram-skill", "um-1a2b@r1"}
+    assert by_ref["um-1a2b@r1"]["kind"] == "proposition"
+    assert by_ref["um-1a2b@r1"]["verbatim"] == "Not a question answer."
+    answers = [row for row in answers if row["kind"] == "question"]
     assert [row["ref"] for row in answers] == ["q-diagram-skill"]
     assert answers[0]["verbatim"] == "Yes, build it."
     assert answers[0]["asked"] == "- q-diagram-skill: build it?"
