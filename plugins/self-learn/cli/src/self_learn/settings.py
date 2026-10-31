@@ -128,7 +128,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from . import config, gitops, intents, ledger
+from . import attribution, config, gitops, intents, ledger
 
 __all__ = [
     "Kind",
@@ -2148,10 +2148,11 @@ def agent_caller() -> bool:
 class AgentSettingRefusal(SettingsError):
     """A tier-C write from an agent shell; CLI business-rule refusal (exit 1)."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, message: str | None = None) -> None:
         super().__init__(
-            f"{name} is the human's switch; run the same command in your own "
-            "terminal (not through an agent) "
+            message
+            or f"{name} is a person-only switch; from an agent's shell it is set under "
+            "the user's standing grant with --note saying why "
             f"(agent shell detected: {', '.join(agent_caller_markers())})"
         )
 
@@ -2349,8 +2350,13 @@ def config_set(
     except KeyError:
         raise UnknownSettingError(name) from None
 
-    if setting.tier == "C" and agent_caller():
-        raise AgentSettingRefusal(name)
+    if setting.tier == "C":
+        # S-NEXT-attribution: the CLI puts the user's standing grant in force
+        # (grants.authorize) before it calls this; without it an agent's
+        # shell is refused here, as before.
+        attribution.refuse_unless_authorized(
+            f"config set {name}", lambda message: AgentSettingRefusal(name, message)
+        )
 
     # MINOR-4 (review r1 2026-09-01): this used to be a bare `assert`
     # AFTER value-parsing -- checked first now, both because "can this
@@ -2482,8 +2488,10 @@ def config_unset(home: Path | str, name: str, *, note: str | None = None) -> tup
             config_key=name.partition(".")[2], kind="str", default="",
             description="retired backend selector", operator_facing=False,
         )
-    if setting.tier == "C" and agent_caller():
-        raise AgentSettingRefusal(name)
+    if setting.tier == "C":
+        attribution.refuse_unless_authorized(
+            f"config unset {name}", lambda message: AgentSettingRefusal(name, message)
+        )
 
     if setting.config_section is None or setting.config_key is None:
         raise NoConfigRungError(name)  # MINOR-4, same fix as config_set

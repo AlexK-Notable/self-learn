@@ -38,6 +38,7 @@ a different owner.
 from __future__ import annotations
 
 import argparse
+import contextvars
 import json
 import os
 import re
@@ -50,10 +51,12 @@ from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
 from . import (
+    attribution,
     batch,
     cases,
     config,
     gitops,
+    grants,
     intents,
     miner,
     notices,
@@ -281,6 +284,86 @@ def _add_statement_parser(sub) -> None:
     slist.add_argument("--since", metavar="T")
     slist.add_argument("--answers-ref", dest="answers_ref")
     slist.add_argument("--json", action="store_true", dest="as_json")
+
+
+def _add_grant_parser(sub) -> None:
+    """`grant add|revoke|list` (S-NEXT-attribution): the user's standing
+    grant, under which an agent's shell runs person-only commands."""
+    grant_p = sub.add_parser(
+        "grant",
+        help="the user's standing grant: what lets an agent run person-only commands",
+    )
+    grant_sub = grant_p.add_subparsers(dest="grant_command", metavar="<verb>")
+    gadd = grant_sub.add_parser(
+        "add", help="record the user's standing grant from a statement they typed"
+    )
+    gadd.add_argument("--statement", required=True, metavar="stmt-...")
+    gadd.add_argument(
+        "--note", default=None,
+        help="why it is recorded (required from an agent's shell)",
+    )
+    gadd.add_argument("--json", action="store_true", dest="as_json")
+    grev = grant_sub.add_parser("revoke", help="end a grant; anyone may")
+    grev.add_argument("id", metavar="grant-...")
+    grev.add_argument(
+        "--note", default=None, help="why (required from an agent's shell)"
+    )
+    glist = grant_sub.add_parser("list", help="every grant, and which one is in force")
+    glist.add_argument("--json", action="store_true", dest="as_json")
+
+
+def _cmd_grant(args: argparse.Namespace) -> int:
+    """`grant add|revoke|list` (S-NEXT-attribution)."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        if args.grant_command == "add":
+            granted, created = grants.add(home, statement=args.statement, note=args.note)
+            if args.as_json:
+                print(json.dumps({"grant": granted.id, "statement": granted.statement,
+                                  "created": created}))
+            elif created:
+                print(f"grant add → {granted.id} (from {granted.statement}: {granted.verbatim!r})")
+            else:
+                print(f"grant add: {granted.id} from {granted.statement} is already in force; nothing changed")
+            return EXIT_OK
+        if args.grant_command == "revoke":
+            ended = grants.revoke(home, args.id, note=args.note)
+            print(f"grant revoke: {args.id} {'ended' if ended else 'was already revoked; nothing changed'}")
+            return EXIT_OK
+        if args.grant_command == "list":
+            rows = grants.list_rows(home)
+            current = grants.active(home)
+            if args.as_json:
+                print(json.dumps({"in_force": current.id if current else None, "rows": rows}))
+                return EXIT_OK
+            if not rows:
+                print("no grant recorded: an agent's shell cannot run person-only commands")
+            for row in rows:
+                if row.get("op") == "grant":
+                    mark = "IN FORCE" if current is not None and row["id"] == current.id else "        "
+                    print(f"{mark} {row['id']}  {row['statement']}  {row['message_ref']}  "
+                          f"by {row['by']}  {row['verbatim']!r}")
+                else:
+                    print(f"         {row['id']}  revokes {row['grant']}  by {row['by']}")
+            return EXIT_OK
+    except grants.GrantError as exc:
+        print(f"self-learn grant {args.grant_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except statements.StatementError as exc:
+        print(f"self-learn grant {args.grant_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except intents.LedgerStoppedError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written(f"grant {args.grant_command}", exc)
+    except gitops.GitOpsError as exc:
+        print(f"self-learn grant {args.grant_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    print("usage: self-learn grant add|revoke|list", file=sys.stderr)
+    return EXIT_USAGE
 
 
 def _add_user_model_parser(sub) -> None:
@@ -850,6 +933,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     hact.add_argument("id", metavar="ID")
     hact.add_argument(
+        "--note", default=None,
+        help="why (the commit body); required from an agent's shell, which is "
+        "recorded By: agent",
+    )
+    hact.add_argument(
         "--json", action="store_true", dest="as_json",
         help="machine-readable outcome envelope, including the exact "
         "registered hook entry (PreToolUse, or PostToolUse for a warning "
@@ -868,6 +956,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "whole-file restore — every other registration is untouched)",
     )
     hdeact.add_argument("id", metavar="ID")
+    hdeact.add_argument(
+        "--note", default=None,
+        help="why (the commit body); required from an agent's shell, which is "
+        "recorded By: agent",
+    )
     hdeact.add_argument(
         "--json", action="store_true", dest="as_json",
         help="machine-readable outcome envelope (§4 pin: no other "
@@ -1129,6 +1222,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     _add_case_parser(sub)
     _add_statement_parser(sub)
+    _add_grant_parser(sub)
     _add_user_model_parser(sub)
 
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
@@ -1248,6 +1342,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     hadd.add_argument("path", metavar="PATH")
     hadd.add_argument(
+        "--note",
+        default=None,
+        help="a reason for the record (the commit body). From an agent's shell it is "
+        "required: host add|remove|rebind|set-mode are person-only and run there under "
+        "the user's standing grant (`self-learn grant list`), recorded By: agent",
+    )
+    hadd.add_argument(
         "--skills-root",
         action="store_true",
         dest="skills_root",
@@ -1282,10 +1383,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     hrebind.add_argument("ref", metavar="SLUG-OR-OLD-PATH")
     hrebind.add_argument("new_path", metavar="NEW-PATH")
+    hrebind.add_argument(
+        "--note",
+        default=None,
+        help="a reason for the record (the commit body). From an agent's shell it is "
+        "required: host add|remove|rebind|set-mode are person-only and run there under "
+        "the user's standing grant (`self-learn grant list`), recorded By: agent",
+    )
     hrm = host_sub.add_parser(
         "remove", help="deregister a host (records and buckets are untouched)"
     )
     hrm.add_argument("path", metavar="PATH")
+    hrm.add_argument(
+        "--note",
+        default=None,
+        help="a reason for the record (the commit body). From an agent's shell it is "
+        "required: host add|remove|rebind|set-mode are person-only and run there under "
+        "the user's standing grant (`self-learn grant list`), recorded By: agent",
+    )
     hrm_which = hrm.add_mutually_exclusive_group()
     hrm_which.add_argument(
         "--skills-root",
@@ -1317,11 +1432,18 @@ def _build_parser() -> argparse.ArgumentParser:
     hsm = host_sub.add_parser(
         "set-mode",
         help="change a registered host's mode in place (S-103); a "
-        "person's command: refused from an agent's shell, like a tier-C "
-        "config set",
+        "person-only command: from an agent's shell it runs under the user's "
+        "standing grant with --note, like a tier-C config set",
     )
     hsm.add_argument("path", metavar="PATH")
     hsm.add_argument("mode", metavar="MODE", choices=hosts_mod.HOST_MODES)
+    hsm.add_argument(
+        "--note",
+        default=None,
+        help="a reason for the record (the commit body). From an agent's shell it is "
+        "required: host add|remove|rebind|set-mode are person-only and run there under "
+        "the user's standing grant (`self-learn grant list`), recorded By: agent",
+    )
     hsm_which = hsm.add_mutually_exclusive_group()
     hsm_which.add_argument(
         "--skills-root",
@@ -2339,6 +2461,15 @@ def _cmd_config_inner(args: argparse.Namespace, home: Path) -> int:
     return EXIT_USAGE
 
 
+def _is_tier_c(name: str) -> bool:
+    """Whether *name* is a tier-C (person-only) setting; an unknown name is
+    not, and ``config set`` refuses it on its own terms."""
+    try:
+        return settings.by_name(name).tier == "C"
+    except KeyError:
+        return False
+
+
 def _cmd_config(args: argparse.Namespace) -> int:
     """The `config` surface (U-settings Phase 2). `get` is read-only,
     ungated, exactly like `doctor` (`Doc-c`'s reasoning: it must work on
@@ -2365,8 +2496,21 @@ def _cmd_config(args: argparse.Namespace) -> int:
     home = resolve_home()
     if args.config_command in ("set", "unset") and (code := _home_gate(home)) is not None:
         return code
+    granted: attribution.Authority | None = None
+    if args.config_command in ("set", "unset") and _is_tier_c(args.name):
+        # S-NEXT-attribution: a tier-C switch is person-only (S-92); an agent's
+        # shell sets it under the user's standing grant with --note, recorded
+        # By: agent with the grant and the reason.
+        try:
+            granted = grants.authorize(
+                home, f"config {args.config_command} {args.name}", note=args.note
+            )
+        except grants.GrantError as exc:
+            print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
+            return exc.exit_code
     try:
-        return _cmd_config_inner(args, home)
+        with attribution.acting(granted):
+            return _cmd_config_inner(args, home)
     except settings.UnknownSettingError as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -2908,6 +3052,36 @@ def _agent_attribution(args: argparse.Namespace, surface: str) -> tuple[str | No
     return None, EXIT_USAGE
 
 
+#: Verbs whose ``--by`` names who CHOSE (``routing.by``, a reconsideration's
+#: decider), apart from who ran the verb (the trailer). S-NEXT-attribution
+#: (cures CU-2): from an agent's shell they must say which.
+_BY_REQUIRED_SURFACES = frozenset({"route", "reroute", "replace", "revise", "reconsider"})
+#: What an agent's shell may say chose: the person accepting the proposal as
+#: shown (``analyst``), the person choosing (``human``), or the agent itself
+#: (``agent``). ``steward``/``overseer`` are the sheet runners' identities.
+_AGENT_BY_VALUES = ("agent", "analyst", "human")
+
+
+def _agent_chooser(args: argparse.Namespace, surface: str) -> int | None:
+    """From an agent's shell, the verbs in :data:`_BY_REQUIRED_SURFACES`
+    need ``--by`` naming who chose, from :data:`_AGENT_BY_VALUES`; refused
+    (exit 64, before any lock) otherwise. A person's terminal is unchanged
+    (the verb's own default applies). Returns the refusal code or None."""
+    if surface not in _BY_REQUIRED_SURFACES or not settings.agent_caller():
+        return None
+    by = getattr(args, "by", None)
+    if by in _AGENT_BY_VALUES:
+        return None
+    print(
+        f"self-learn {surface}: from an agent shell say who chose: `--by analyst` "
+        "(the person accepted the proposal as shown), `--by human` (the person chose "
+        "it), `--by agent` (you chose it)"
+        + (f"; {by!r} is a sheet runner's identity, not yours" if by else ""),
+        file=sys.stderr,
+    )
+    return EXIT_USAGE
+
+
 def _route_verb_dry_run(home: Path, args: argparse.Namespace) -> int:
     """``route --dry-run``, the preview leg of :func:`_cmd_verb`. Factored
     out at the 2026-10-31 integration: with cures-a's agent-shell
@@ -2962,7 +3136,9 @@ def _route_verb(home: Path, args: argparse.Namespace, runner: str | None) -> int
         home,
         args.id,
         dest=args.dest,
-        by=args.by or runner,
+        # S-NEXT-attribution (cures CU-2): `by` is who chose; who ran the
+        # verb is `stamp_by` (the trailer), never folded into `by`.
+        by=args.by,
         note=args.note,
         no_push=args.no_push,
         follow_up=follow_up,
@@ -2993,6 +3169,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
             return _route_verb_dry_run(home, args)
         runner, refusal = _agent_attribution(args, args.command)
         if refusal is not None:
+            return refusal
+        if (refusal := _agent_chooser(args, args.command)) is not None:
             return refusal
         if args.command == "route":
             return _route_verb(home, args, runner)
@@ -3099,8 +3277,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
             return _finish_verb(result, "pending")
         if args.command == "reconsider":
             result = verbs.reconsider(
-                home, args.id, case=args.case, by=args.by or runner,
-                note=args.note, no_push=args.no_push,
+                home, args.id, case=args.case, by=args.by,
+                note=args.note, no_push=args.no_push, stamp_by=runner,
             )
             return _finish_verb(result, "reconsidered", as_json=args.as_json)
         if args.command == "note":
@@ -3111,7 +3289,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
             return _finish_verb(result, "noted")
         if args.command == "reroute":
             result = verbs.reroute(
-                home, args.id, dest=args.dest, by=args.by or runner, note=args.note,
+                home, args.id, dest=args.dest, by=args.by, note=args.note,
                 no_push=args.no_push, rules_paths=args.rules_paths,
                 allow_empty_glob=args.allow_empty_glob,
                 allow_unpathed=args.allow_unpathed, stamp_by=runner,
@@ -3131,7 +3309,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 trigger=args.trigger, instruction=args.instruction, fact=args.fact,
                 context=args.context, text_from=args.text_from, type=args.type,
                 kind=args.kind, to=args.to, dest=args.dest, rules_paths=args.rules_paths,
-                note=args.note, by=args.by or runner, no_push=args.no_push,
+                note=args.note, by=args.by, no_push=args.no_push,
                 stamp_by=runner,
             )
             return _finish_verb(
@@ -3140,7 +3318,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "revise":
             result = verbs.revise(
                 home, args.id, section=args.section, text=args.text,
-                because=args.because, by=args.by or runner, no_push=args.no_push,
+                because=args.because, by=args.by, no_push=args.no_push,
                 stamp_by=runner,
             )
             return _finish_verb(result, "revised")
@@ -3198,8 +3376,19 @@ def _cmd_host(args: argparse.Namespace) -> int:
         (code := _home_gate(home)) is not None
     ):
         return code
+    granted: attribution.Authority | None = None
+    if args.host_command in ("add", "rebind", "remove", "set-mode"):
+        # S-NEXT-attribution: person-only; an agent's shell runs it under the
+        # user's standing grant with a reason, recorded By: agent.
+        try:
+            args.note = grants.clean_note(getattr(args, "note", None), f"host {args.host_command}")
+            granted = grants.authorize(home, f"host {args.host_command}", note=args.note)
+        except grants.GrantError as exc:
+            print(f"self-learn host {args.host_command}: {exc}", file=sys.stderr)
+            return exc.exit_code
     try:
-        return _cmd_host_inner(args, home)
+        with attribution.acting(granted):
+            return _cmd_host_inner(args, home)
     except gitops.HalfWrittenError as exc:
         return _report_half_written(f"host {args.host_command}", exc)
     except intents.LedgerStoppedError as exc:
@@ -3269,7 +3458,9 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         # registry-wide setting a human may have opted into.
         mode = args.mode if args.mode is not None else hosts_mod.effective_default_mode(home)
         try:
-            result = hosts_mod.host_add(home, args.path, kind, init=args.init, mode=mode)
+            result = hosts_mod.host_add(
+                home, args.path, kind, init=args.init, mode=mode, note=args.note
+            )
         except hosts_mod.HostsError as exc:
             print(f"self-learn host add: {exc}", file=sys.stderr)
             return EXIT_USAGE
@@ -3301,7 +3492,7 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
     if args.host_command == "set-mode":
         try:
             changed = hosts_mod.host_set_mode(
-                home, args.path, args.mode, registration=args.registration
+                home, args.path, args.mode, registration=args.registration, note=args.note
             )
         except hosts_mod.HostModeAgentRefusal as exc:
             # S-103: a business-rule refusal (exit 1, like
@@ -3339,15 +3530,15 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         elif changed.changed:
             print(
                 "  note: self-learn commits canon in this host again. The "
-                f"{hosts_mod.MARKER_FILENAME} marker is left in place, and "
-                "self-learn never removes a line from .git/info/exclude: if git "
-                "should now track a file it wrote while this host was plain, "
-                "remove that file's line yourself"
+                f"{hosts_mod.MARKER_FILENAME} marker is left in place, and so is "
+                "every .git/info/exclude line outside self-learn's own block"
             )
+            for line in changed.unexcluded:
+                print(f"  no longer excluded (git mode commits it): {line}")
         return EXIT_OK
     if args.host_command == "rebind":
         try:
-            bucket = hosts_mod.host_rebind(home, args.ref, args.new_path)
+            bucket = hosts_mod.host_rebind(home, args.ref, args.new_path, note=args.note)
         except (hosts_mod.HostsError, LedgerOpsError) as exc:
             print(f"self-learn host rebind: {exc}", file=sys.stderr)
             return EXIT_USAGE
@@ -3370,7 +3561,8 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         )
         try:
             registry = hosts_mod.host_remove(
-                home, args.path, gate_only=gate_only, registration=registration
+                home, args.path, gate_only=gate_only, registration=registration,
+                note=args.note,
             )
         except hosts_mod.HostRemoveRefused as exc:
             print(f"self-learn host remove: {exc}", file=sys.stderr)
@@ -4604,11 +4796,16 @@ def _cmd_hook(args: argparse.Namespace) -> int:
     if (code := _home_gate(resolve_home())) is not None:  # see _cmd_verb
         return code
     verb_fn = verbs.hook_activate if args.hook_command == "activate" else verbs.hook_deactivate
-    # M5.2: `hook` has no --note flag, so an agent shell is stamped
-    # `By: agent` but is not asked for a reason here.
-    runner = "agent" if settings.agent_caller() else None
+    # S-NEXT-attribution (cures CU-2): an agent shell says why, like every
+    # other ledger verb, and is stamped `By: agent`.
+    runner, refusal = _agent_attribution(args, f"hook {args.hook_command}")
+    if refusal is not None:
+        return refusal
     try:
-        result = verb_fn(resolve_home(), args.id, no_push=args.no_push, by=runner)
+        result = verb_fn(
+            resolve_home(), args.id, no_push=args.no_push, by=runner,
+            note=getattr(args, "note", None),
+        )
     except verbs.VerbError as exc:
         print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -4634,6 +4831,21 @@ def _cmd_hook(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """One command line, in its own copy of the context, with the process
+    actor set (S-NEXT-attribution): ``agent`` in an agent's shell, ``human``
+    otherwise, so every ledger commit it makes says who made it. The copy
+    keeps an actor, a job or a standing grant one in-process call puts in
+    force from reaching the next (the tests run ``main`` many times in one
+    process)."""
+    return contextvars.copy_context().run(_attributed_main, argv)
+
+
+def _attributed_main(argv: list[str] | None) -> int:
+    with attribution.process("agent" if settings.agent_caller() else "human"):
+        return _netted_main(argv)
+
+
+def _netted_main(argv: list[str] | None = None) -> int:
     """Dispatch, with the last-resort ``GitOpsError`` net (audit
     2026-07-16 round 7 BLOCKER 1).
 
@@ -4903,6 +5115,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "statement":
         return _cmd_statement(args)
+
+    if args.command == "grant":
+        return _cmd_grant(args)
 
     if args.command == "user-model":
         return _cmd_user_model(args)

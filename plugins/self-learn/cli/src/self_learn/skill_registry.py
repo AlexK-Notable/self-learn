@@ -138,8 +138,10 @@ STATUS_LIVE = "live"
 STATUS_RETIRED = "retired"
 STATUSES = (STATUS_LIVE, STATUS_RETIRED)
 
-#: Who made a registry change: the overseer's runner, or a person through the CLI.
-BY_VALUES = ("overseer", "human")
+#: Who made a registry change: the overseer's runner, a person through the CLI,
+#: or an agent's shell running the CLI under the user's standing grant
+#: (S-NEXT-attribution: an agent's act is never recorded as the person's).
+BY_VALUES = ("overseer", "human", "agent")
 
 _TOP_KEYS = ("version", "skills", "vetoed")
 _ROW_KEYS = ("status", "plugin", "created", "last_write", "retired", "renamed_from")

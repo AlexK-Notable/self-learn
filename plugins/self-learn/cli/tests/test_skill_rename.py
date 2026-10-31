@@ -521,7 +521,12 @@ def test_cli_rename_is_refused_from_an_agent_shell(env, monkeypatch, capsys, mar
 
     monkeypatch.setattr(intents, "ledger_write", no_lock)
     capsys.readouterr()
-    assert cli.main(["skill", "rename", NAME, NEW, "--case", CASE2, "--no-push"]) == 1
+    # S-NEXT-attribution: person-only; an agent's shell needs --note (64) and
+    # the user's standing grant (1), and gets neither here.
+    argv = ["skill", "rename", NAME, NEW, "--case", CASE2, "--no-push"]
+    assert cli.main(argv) == 64
     err = capsys.readouterr().err
-    assert "person's command" in err and marker in err
+    assert "person-only" in err and marker in err
+    assert cli.main([*argv, "--note", "asked"]) == 1
+    assert "no standing grant" in capsys.readouterr().err
     assert env.snapshot() == before
