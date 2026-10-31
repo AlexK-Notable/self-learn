@@ -2983,6 +2983,7 @@ def reroute_record(
     allow_empty_glob: bool = False,
     glob_bypass_reason: str | None = None,
     hook: dict | None = None,
+    new_skill: str | None = None,
 ) -> list[Path]:
     """File-op half of ``reroute`` (U-verbs S-54 / §4.5, Phase 2):
     correct a wrong routing DESTINATION on an already-ROUTED record. The
@@ -3023,6 +3024,10 @@ def reroute_record(
         # U3b: a reroute INTO a hook carries the generated script and its
         # examples, exactly as `route`'s routing block does.
         routing["hook"] = dict(hook)
+    if new_skill is not None:
+        # SK2 (S-NEXT-sk2-routes): a reroute INTO a skill self-learn owns
+        # names it, exactly as `route`'s routing block does.
+        routing["new_skill"] = new_skill
     record.set_routing(routing)
     record.write(path)
     return [path]
