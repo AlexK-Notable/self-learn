@@ -80,6 +80,24 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
           inferred, except the user host, which is never registered.
 ```
 
+*(Added 2026-10-30, S-NEXT-skills.)* **Skills self-learn owns live in the
+skills root, and self-learn links them.** A skill self-learn makes (`skill
+write`, `03-decisions.md` S-NEXT-skills) is an ordinary plugin of the
+registered skills root (claude-skills), `plugins/<name>/skills/<name>/`, with
+its `marketplace.json` entry, committed and pushed by self-learn with the
+autosync pause sentinel held, exactly as a `skill-md` route's write is. There
+is no second skill store: the skills root's files are the source of truth for
+the skill's text, and the ledger keeps only the registry row
+(`owned-skills.yaml`, `02-schema.md` §3) and the drafts. Self-learn also makes
+the link Claude Code loads the skill through, `~/.claude/skills/<name>` →
+`<skills root>/plugins/<name>/skills/<name>`, the same link the skills root's
+own `install.sh` makes, so `install.sh` stays correct over it and no person
+has to run it after a skill is made or scaffolded (a person's `new-skill`
+route makes the link too). `~/.claude` is not a git repository, so S-80's
+tracked-file guard does not apply to the link. Retiring or renaming an owned
+skill removes or moves its folder, its entry and its link in one skills-root
+commit. Codex's skill folder is not linked.
+
 ## 3. Ledger home layout
 
 ```
@@ -94,8 +112,11 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
                                        # evidence and unfinished obligations
   user-statements.jsonl               # append-only, the user's own words
   user-model.md                       # CURRENT/LAPSED readings (02 §3a)
+  owned-skills.yaml                   # skills self-learn owns (02 §3; S-NEXT-skills)
   overseer/{<date>-report.md, latest-report.md, coverage.yaml,
     open-questions.yaml, evaluation-<date>.md}   # the overseer's own subtree
+  overseer/skills/{<week>.yaml, <week>/drafts/<name>/,
+    writing-trial.yaml}                # candidates, dispositions, drafts (S-NEXT-skills)
 ```
 
 `cases/runs/<run_id>.json` is ledger truth, not runner cache. Its schema and
