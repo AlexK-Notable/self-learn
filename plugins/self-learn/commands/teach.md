@@ -72,10 +72,14 @@ to stop the container").
   record — a preference they expressed, a scope, an answer to a standing
   question the system has been carrying — pass `--statement "<verbatim
   words>"` (requires `--session`, the same transcript reference the
-  lesson's evidence uses). This appends one line to the user-statement
-  store (`statement add --verbatim … --ref
-  transcript:<session>#L<n>`, recorded as `recorded_by: human` — you
-  typed the command, so it is never attributed to an agent), completely
+  lesson's evidence uses). The CLI finds the transcript row the user typed
+  that holds those words (the latest one) and cites it itself: you pass
+  the words and the session, never a line number, and a statement it
+  cannot find in that session's transcript refuses the whole command
+  before anything is written. It appends one line to the user-statement
+  store after the lesson lands (the same line `statement add --verbatim …
+  --ref transcript:<session>#L<n>` writes, recorded as `recorded_by:
+  human` — you typed the command, so it is never attributed to an agent), completely
   separate from the lesson record itself: a statement is the user's own
   words on the record, not a
   lesson to route. It is never inferred or paraphrased — capture it only

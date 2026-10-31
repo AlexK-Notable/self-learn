@@ -661,7 +661,7 @@ def _check_drift(
     # REC5's seventh row). The per-record `plain_notes` line above
     # already names each one; this is the SUMMARY count doc 17's
     # migration paragraph promises.
-    unknown_provenance_count = 0
+    unknown_targets: list[str] = []  # S-NEXT-cures-a: named, in first-seen order
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
@@ -785,7 +785,8 @@ def _check_drift(
                         )
                         continue
                     if verdict == "unknown":
-                        unknown_provenance_count += 1
+                        if str(target) not in unknown_targets:
+                            unknown_targets.append(str(target))
                         plain_notes.append(
                             f"{record.id}: {target} has no compile record "
                             "yet (unknown provenance) — SKIP, tracking "
@@ -854,11 +855,20 @@ def _check_drift(
     if not checked:
         return Verdict.PASS, "no routed managed-destination records — no drift possible"
     ok_message = f"{checked} routed record(s) present in their compiled targets"
-    if unknown_provenance_count:
-        n = unknown_provenance_count
+    if unknown_targets:
+        # S-NEXT-cures-a (M2.3): `recompile --adopt` takes a TARGET (the
+        # option is `--adopt TARGET`), so the old bare "run `self-learn
+        # recompile --adopt`" failed with "expected one argument". A plain
+        # `recompile` records a region that is already correct (M2.4); a
+        # target it refuses as hand-edited is adopted by name.
+        n = len(unknown_targets)
+        adopt = "; ".join(
+            f"`self-learn recompile --adopt {t}`" for t in unknown_targets
+        )
         ok_message = ok_message + (
             f" — {n} target(s) carry self-learn markers with no compile "
-            "record — run `self-learn recompile --adopt`"
+            "record — run `self-learn recompile` to record them; if it "
+            f"refuses one as hand-edited, adopt that target: {adopt}"
         )
     if plain_notes:
         ok_message = ok_message + " — " + "; ".join(plain_notes)

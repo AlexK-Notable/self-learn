@@ -21,6 +21,11 @@ Flag surface (01 §3.2 + 08 §1 pins):
     evidence   ``--quote <text>`` + ``--session <id>``
                (``--evidence-session`` is an alias for ``--session`` —
                01 §3.2 names the long form)
+    statement  ``--statement <words>`` (needs ``--session``) — also appends
+               the user's own words to the user-statement store (S-65):
+               the transcript row the user typed that holds them is found
+               by the CLI and cited, ``recorded_by: human``; separate from
+               the lesson record, written after it lands
     links      ``--supersedes <lrn-id>`` — capture half only: records the
                link on the NEW record; the old record is untouched until
                the replacement routes (T7/T8; 08 §1 gate-check F5)
@@ -65,6 +70,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import sys
 from typing import Any
 
@@ -73,7 +79,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from . import analyst, gitops, intents, telemetry, verbs
+from . import analyst, gitops, intents, statements, telemetry, verbs
 from .primitives import chrono
 from .compilers import CompileError
 from .gitops import EXIT_GIT_FAILED as _EXIT_GIT_FAILED
@@ -178,6 +184,15 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
         dest="session",
         metavar="ID",
         help="evidence session id (--evidence-session is an alias)",
+    )
+    p.add_argument(
+        "--statement",
+        metavar="WORDS",
+        help="also record the user's own words, verbatim, in the user-"
+        "statement store (S-65; needs --session): the row the user typed "
+        "that holds these words is found in that session's transcript and "
+        "cited as transcript:<session>#L<n>; recorded_by human; separate "
+        "from the lesson record",
     )
     p.add_argument(
         "--supersedes",
@@ -435,6 +450,104 @@ def _capture_txn(
 
 
 def run_teach(args: argparse.Namespace) -> int:
+    """``self-learn teach``. With ``--statement`` the user's own words are
+    also recorded in the user-statement store (S-65, S-NEXT-cures-a): found
+    and checked BEFORE the lesson is written (a statement that cannot be
+    cited refuses the whole command, nothing written), appended AFTER the
+    lesson lands or is captured to pending (exit 0 or 4). A failure of that
+    last step is printed with the command that retries it and does NOT change
+    the exit code, which stays the lesson's own."""
+    statement = _clean(getattr(args, "statement", None))
+    message_ref: str | None = None
+    if statement is not None:
+        session = _clean(args.session)
+        if not session:
+            return _fail(
+                "--statement needs --session <id>: the words are cited from "
+                "that session's transcript"
+            )
+        stmt_hits = scan(statement)
+        if stmt_hits:
+            print(format_refusal(stmt_hits), file=sys.stderr)
+            return EXIT_SCAN
+        home = resolve_home()
+        if (code := _home_gate(home)) is not None:
+            return code
+        try:
+            message_ref = statements.user_message_ref(home, session, statement)
+        except statements.StatementError as exc:
+            return _fail(str(exc))
+    code = _run_teach_lesson(args)
+    if statement is None or message_ref is None:
+        return code
+    if code not in (EXIT_OK, EXIT_ANALYST):
+        # Exit 4 is NOT a failure to land: the lesson was captured to
+        # pending/ (the analysis or the --route step failed after that), so
+        # the statement is recorded for it exactly as on exit 0.
+        print(
+            "self-learn teach: --statement was not recorded, because the "
+            f"lesson did not land (exit {code})",
+            file=sys.stderr,
+        )
+        return code
+    # The lesson's own code is what the caller gets back, whatever the
+    # statement leg does: a failure there must not turn a landed lesson into
+    # a non-zero exit (that skips the worker kick, and a person who reads a
+    # failure re-runs teach and writes the lesson twice). The statement leg
+    # reports its own failure, with the command that retries it.
+    _record_statement(statement, message_ref)
+    return code
+
+
+def _statement_retry_hint(statement: str, message_ref: str) -> str:
+    """The one command that records the statement alone; the lesson is
+    already written, so teach must not be run again."""
+    return (
+        "  Do not run teach again (the lesson is already written). To record "
+        "the statement alone:\n"
+        f"    self-learn statement add --verbatim {shlex.quote(statement)} "
+        f"--ref {message_ref} --recorded-by human"
+    )
+
+
+def _record_statement(statement: str, message_ref: str) -> int:
+    """The ``--statement`` leg, after the lesson landed: one line in the
+    user-statement store, ``recorded_by: human`` (the person typed these
+    words and ran this command, so it is never attributed to an agent)."""
+    home = resolve_home()
+    try:
+        stmt_id = statements.add(
+            home,
+            verbatim=statement,
+            source={"message_ref": message_ref, "surface": "conversation"},
+            recorded_by="human",
+        )
+    except statements.StatementError as exc:
+        print(
+            f"self-learn teach: the lesson was captured, but --statement "
+            f"failed: {exc}\n{_statement_retry_hint(statement, message_ref)}",
+            file=sys.stderr,
+        )
+        return exc.exit_code
+    except intents.LedgerStoppedError as exc:
+        print(
+            f"{exc}\nself-learn teach: the lesson was captured, but --statement "
+            f"was not recorded\n{_statement_retry_hint(statement, message_ref)}",
+            file=sys.stderr,
+        )
+        return EXIT_GIT_FAILED
+    except gitops.GitOpsError as exc:
+        print(
+            f"self-learn teach: the lesson was captured, but --statement "
+            f"failed: {exc}\n{_statement_retry_hint(statement, message_ref)}",
+            file=sys.stderr,
+        )
+        return EXIT_GIT_FAILED
+    print(f"statement add → {stmt_id} ({message_ref})")
+    return EXIT_OK
+
+
+def _run_teach_lesson(args: argparse.Namespace) -> int:
     # ---- --route flag-family validation (before anything composes)
     for flag, given in (
         ("--dest", args.dest is not None),

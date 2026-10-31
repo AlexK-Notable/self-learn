@@ -2537,6 +2537,19 @@ def _reports_no_change(compile_result: object) -> bool:
     return False  # unrecognized result type: never silently claim no_op
 
 
+#: Verbs whose whole effect is on the ledger (or the Claude runtime dir) and
+#: never attempt a host write, so "no `compile_result`" cannot mean "the host
+#: write failed" for them (S-NEXT-cures-a; see :func:`_outcome_state`).
+_LEDGER_ONLY_ACTIONS = frozenset({
+    "reject", "defer", "reconsider",
+    "hook-activate", "hook-deactivate",
+    "rehome", "rescope",
+    "undefer", "reopen", "note", "reclassify", "revise",
+    "followup-add", "followup-done",
+    "confirm-recurrence", "confirm-held", "dismiss-suspect", "link-contradicts",
+})
+
+
 def _outcome_state(result: verbs.VerbResult) -> str:
     """§3.3's four states plus `unknown`, derived CLI-side.
 
@@ -2567,7 +2580,13 @@ def _outcome_state(result: verbs.VerbResult) -> str:
     retirement failure still surfaces via `warnings` regardless (§3.7
     renders it on the success leg unconditionally) — this function only
     controls the summary label, never the repair text."""
-    if result.action in ("reject", "defer", "reconsider"):
+    if result.action in _LEDGER_ONLY_ACTIONS:
+        # S-NEXT-cures-a (M2.2): the ledger-only actions beyond the three
+        # the original check named -- `hook-activate`/`hook-deactivate`
+        # (the runtime-dir write IS the whole verb; no `compile_result`
+        # ever exists, so they used to read `drift` on every success and
+        # tell a consumer to `recompile`), `rehome`/`rescope` (a record
+        # moves buckets; no host write), and the record-bookkeeping verbs.
         # Fold r1 (F4): `reconsider` shares `reject`/`defer`'s exact
         # shape here — it never attempts a host write at all (it only
         # ever appends a `reconsidered` history entry and commits the
@@ -2579,6 +2598,19 @@ def _outcome_state(result: verbs.VerbResult) -> str:
         return "landed"
     if result.action == "retire":
         return "landed" if result.host_commit_sha is not None else "no_op"
+    if (
+        result.action == "replace"
+        and result.compile_result is None
+        and result.host_commit_sha is None
+        and result.destination is None
+    ):
+        # S-NEXT-cures-a (M2.2): a `replace` of a pending or deferred
+        # lesson writes the new lesson to `pending/` and supersedes the
+        # old one in one ledger commit (`_replace_pending`): no host write
+        # was attempted, so `compile_result is None` does not mean one
+        # failed. A routed replace names its `destination`, and keeps the
+        # full predicate below.
+        return "landed"
     # route: the full 4-state predicate.
     if result.host_commit_sha is not None:
         return "landed"
@@ -2726,6 +2758,43 @@ def _routed_destination(result: verbs.VerbResult) -> str:
     return result.commit_message.split("→", 1)[1].strip().split(" ")[0]
 
 
+#: Attributes of a verb's parsed arguments that carry its stated reason. Most
+#: verbs say it in ``--note``; a few have a required text of their own that
+#: plays the same part (``replace``/``revise`` ``--because``, ``note``
+#: ``--append``, ``reconsider`` ``--case``, ``followup add`` ``--action``).
+_REASON_ATTRS = ("note", "because", "append", "case", "action")
+
+
+def _agent_attribution(args: argparse.Namespace, surface: str) -> tuple[str | None, int | None]:
+    """M5.2 (S-NEXT-cures-a): who ran this ledger-writing verb, and whether
+    it may run.
+
+    Returns ``(runner, refusal_code)``. In a person's own terminal
+    ``runner`` is ``None`` and nothing changes. In an agent shell
+    (:func:`settings.agent_caller`, the same detection that keeps tier-C
+    config switches the human's) ``runner`` is ``"agent"``: the verb stamps
+    ``By: agent`` in its commit, so the ledger can tell an agent's hand
+    maintenance from a person's; and a verb with no stated reason is refused
+    BEFORE anything is written (exit 64, like any missing argument), because
+    the record needs the reason most when an agent acts for the user. No
+    override flag: an agent could pass it (the detection is best-effort, not
+    a security boundary)."""
+    if not settings.agent_caller():
+        return None, None
+    if any(
+        isinstance(getattr(args, attr, None), str) and getattr(args, attr).strip()
+        for attr in _REASON_ATTRS
+    ):
+        return "agent", None
+    print(
+        f"self-learn {surface}: from an agent shell this verb needs --note "
+        "TEXT saying why; the ledger records it as By: agent "
+        f"(agent shell detected: {', '.join(settings.agent_caller_markers())})",
+        file=sys.stderr,
+    )
+    return None, EXIT_USAGE
+
+
 def _cmd_verb(args: argparse.Namespace) -> int:
     """Home-gated like every other surface (doc 13 B-11). Two reasons, one
     line: a bad home used to reach ``find_record_path`` and come back "no
@@ -2764,6 +2833,9 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                     if dr.unified_diff:
                         print(dr.unified_diff)
             return EXIT_OK if dr.ok else 1
+        runner, refusal = _agent_attribution(args, args.command)
+        if refusal is not None:
+            return refusal
         if args.command == "route":
             follow_up = None
             if args.follow_up is not None:
@@ -2783,7 +2855,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 home,
                 args.id,
                 dest=args.dest,
-                by=args.by,
+                by=args.by or runner,
                 note=args.note,
                 no_push=args.no_push,
                 follow_up=follow_up,
@@ -2791,12 +2863,15 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 allow_empty_glob=args.allow_empty_glob,
                 rules_paths=args.rules_paths,
                 allow_unpathed=args.allow_unpathed,
+                stamp_by=runner,
             )
             return _finish_verb(
                 result, _routed_destination(result), as_json=args.as_json
             )
         if args.command == "reject":
-            result = verbs.reject(home, args.id, note=args.note, no_push=args.no_push)
+            result = verbs.reject(
+                home, args.id, note=args.note, by=runner, no_push=args.no_push
+            )
             return _finish_verb(result, "rejected", as_json=args.as_json)
         if args.command == "defer":
             until = None
@@ -2811,7 +2886,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                     )
                     return EXIT_USAGE
             result = verbs.defer(
-                home, args.id, until=until, note=args.note, no_push=args.no_push
+                home, args.id, until=until, note=args.note, by=runner,
+                no_push=args.no_push,
             )
             # pinned subject: "self-learn: defer lrn-… until <date>"
             until_str = result.commit_message.rsplit(" until ", 1)[1]
@@ -2821,18 +2897,20 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "retire":
             result = verbs.retire(
                 home, args.id, covered_by=args.covered_by, note=args.note,
-                no_push=args.no_push,
+                by=runner, no_push=args.no_push,
             )
             return _finish_verb(result, args.covered_by, as_json=args.as_json)
         if args.command == "rehome":
             result = verbs.rehome(
-                home, args.id, to=args.to, note=args.note, no_push=args.no_push
+                home, args.id, to=args.to, note=args.note, by=runner,
+                no_push=args.no_push,
             )
             # pinned subject: "self-learn: rehome lrn-… → projects/<slug>"
             return _finish_verb(result, _routed_destination(result))
         if args.command == "rescope":
             result = verbs.rescope(
-                home, args.id, to=args.to, note=args.note, no_push=args.no_push
+                home, args.id, to=args.to, note=args.note, by=runner,
+                no_push=args.no_push,
             )
             # U-verbs §3.2: `rescope --to` now accepts the same UNION
             # grammar `rehome` does, so `args.to` is no longer always a
@@ -2850,6 +2928,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 args.old_id,
                 args.new_id,
                 note=args.note,
+                by=runner,
                 no_push=args.no_push,
             )
             return _finish_verb(result, args.new_id)
@@ -2860,12 +2939,13 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 event_ref=args.event,
                 tolerate=args.tolerate,
                 note=args.note,
+                by=runner,
                 no_push=args.no_push,
             )
             return _finish_verb(result, "recurrence confirmed")
         if args.command == "confirm-held":
             result = verbs.confirm_held(
-                home, args.id, note=args.note, no_push=args.no_push
+                home, args.id, note=args.note, by=runner, no_push=args.no_push
             )
             return _finish_verb(result, "confirmed holding")
         if args.command == "dismiss-suspect":
@@ -2875,31 +2955,38 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 event_ref=args.event,
                 why=args.why,
                 note=args.note,
+                by=runner,
                 no_push=args.no_push,
             )
             return _finish_verb(result, "suspect dismissed")
         if args.command == "undefer":
-            result = verbs.undefer(home, args.id, note=args.note, no_push=args.no_push)
+            result = verbs.undefer(
+                home, args.id, note=args.note, by=runner, no_push=args.no_push
+            )
             return _finish_verb(result, "pending")
         if args.command == "reopen":
-            result = verbs.reopen(home, args.id, note=args.note, no_push=args.no_push)
+            result = verbs.reopen(
+                home, args.id, note=args.note, by=runner, no_push=args.no_push
+            )
             return _finish_verb(result, "pending")
         if args.command == "reconsider":
             result = verbs.reconsider(
-                home, args.id, case=args.case, by=args.by, no_push=args.no_push
+                home, args.id, case=args.case, by=args.by or runner,
+                no_push=args.no_push,
             )
             return _finish_verb(result, "reconsidered", as_json=args.as_json)
         if args.command == "note":
             result = verbs.note(
-                home, args.id, append=args.append, key=args.key, no_push=args.no_push
+                home, args.id, append=args.append, key=args.key, by=runner,
+                no_push=args.no_push,
             )
             return _finish_verb(result, "noted")
         if args.command == "reroute":
             result = verbs.reroute(
-                home, args.id, dest=args.dest, by=args.by, note=args.note,
+                home, args.id, dest=args.dest, by=args.by or runner, note=args.note,
                 no_push=args.no_push, rules_paths=args.rules_paths,
                 allow_empty_glob=args.allow_empty_glob,
-                allow_unpathed=args.allow_unpathed,
+                allow_unpathed=args.allow_unpathed, stamp_by=runner,
             )
             return _finish_verb(
                 result, _routed_destination(result), as_json=args.as_json
@@ -2907,7 +2994,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "reclassify":
             result = verbs.reclassify(
                 home, args.id, kind=args.kind, type=args.type, note=args.note,
-                no_push=args.no_push,
+                by=runner, no_push=args.no_push,
             )
             return _finish_verb(result, "reclassified")
         if args.command == "replace":
@@ -2916,7 +3003,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 trigger=args.trigger, instruction=args.instruction, fact=args.fact,
                 context=args.context, text_from=args.text_from, type=args.type,
                 kind=args.kind, to=args.to, dest=args.dest, rules_paths=args.rules_paths,
-                note=args.note, by=args.by, no_push=args.no_push,
+                note=args.note, by=args.by or runner, no_push=args.no_push,
+                stamp_by=runner,
             )
             return _finish_verb(
                 result, result.new_record_id or "replaced", as_json=args.as_json
@@ -2924,7 +3012,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "revise":
             result = verbs.revise(
                 home, args.id, section=args.section, text=args.text,
-                because=args.because, by=args.by, no_push=args.no_push,
+                because=args.because, by=args.by or runner, no_push=args.no_push,
+                stamp_by=runner,
             )
             return _finish_verb(result, "revised")
     except verbs.VerbError as exc:  # incl. SecretRefusal
@@ -3616,15 +3705,18 @@ def _cmd_followup(args: argparse.Namespace) -> int:
     if (code := _home_gate(home)) is not None:  # see _cmd_verb
         return code
     surface = f"followup {args.followup_command}"
+    runner, refusal = _agent_attribution(args, surface)
+    if refusal is not None:
+        return refusal
     try:
         if args.followup_command == "add":
             result = verbs.followup_add(
                 home, args.id, action=args.action, unblocks_on=args.unblocks_on,
-                note=args.note, no_push=args.no_push,
+                note=args.note, by=runner, no_push=args.no_push,
             )
         else:
             result = verbs.followup_done(
-                home, args.id, note=args.note, no_push=args.no_push
+                home, args.id, note=args.note, by=runner, no_push=args.no_push
             )
     except verbs.VerbError as exc:
         print(f"self-learn {surface}: {exc}", file=sys.stderr)
@@ -4291,12 +4383,16 @@ def _cmd_link(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     if (code := _home_gate(resolve_home())) is not None:  # see _cmd_verb
         return code
+    runner, refusal = _agent_attribution(args, "link contradicts")
+    if refusal is not None:
+        return refusal
     try:
         result = verbs.link_contradicts(
             resolve_home(),
             args.id,
             args.target,
             note=args.note,
+            by=runner,
             no_push=args.no_push,
         )
     except verbs.VerbError as exc:
@@ -4326,8 +4422,11 @@ def _cmd_hook(args: argparse.Namespace) -> int:
     if (code := _home_gate(resolve_home())) is not None:  # see _cmd_verb
         return code
     verb_fn = verbs.hook_activate if args.hook_command == "activate" else verbs.hook_deactivate
+    # M5.2: `hook` has no --note flag, so an agent shell is stamped
+    # `By: agent` but is not asked for a reason here.
+    runner = "agent" if settings.agent_caller() else None
     try:
-        result = verb_fn(resolve_home(), args.id, no_push=args.no_push)
+        result = verb_fn(resolve_home(), args.id, no_push=args.no_push, by=runner)
     except verbs.VerbError as exc:
         print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
         return exc.exit_code

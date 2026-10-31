@@ -94,7 +94,11 @@ limit; free-text "Other" is always there beyond them):
   preview. On choice:
   `self-learn route <id>` (proposal's destination) or
   `self-learn route <id> --dest <target>` if the user overrides; add
-  `--note "…"` if they give a why.
+  `--note "…"` if they give a why. **You run these verbs from an agent
+  shell, so every one of them needs `--note "<why>"`** (the CLI refuses
+  without it, before writing anything) and is recorded `By: agent` in the
+  ledger commit; the user's own terminal is unchanged. Put the user's
+  decision and reason in the note, in their words where you can.
   **Hook proposals are the one exception to regenerate-at-apply
   (M3-2):** the preview must show the proposal's `script` field IN FULL
   — the exact executable bytes the route will commit verbatim (P9: eyes
@@ -132,9 +136,11 @@ limit; free-text "Other" is always there beyond them):
   reads it, though as of U7 that function has no caller in the analyst
   prompt path — prior decisions arrive there as cited cases instead) —
   encourage it, never gate on it. Then `self-learn reject <id> --note "…"`
-  (or without `--note` if they decline).
-- **Defer** — `self-learn defer <id>` (default +30 days) or
-  `self-learn defer <id> --until YYYY-MM-DD` if they name a date.
+  (from your agent shell the `--note` is required, so if they decline to
+  say why, write that in it: `--note "user gave no reason"`).
+- **Defer** — `self-learn defer <id> --note "<why>"` (default +30 days) or
+  `self-learn defer <id> --until YYYY-MM-DD --note "<why>"` if they name a
+  date.
 
 **Applying decisions — `self-learn batch`, never a hand-written script
 (U-verbs S-54, R3).** Each bullet above names the verb call ONE decision
@@ -227,8 +233,8 @@ destination the lesson already has is "already routed — nothing to
 change".
 
 **Two different undo paths — do not confuse them.** Among supersessions,
-`reopen` is for a mistaken retirement only: `self-learn reopen <id>`
-restores a wrongly retired record to `pending` with no successor case
+`reopen` is for a mistaken retirement only: `self-learn reopen <id> --note
+"<why>"` restores a wrongly retired record to `pending` with no successor case
 needed, because the named surface never actually covered it, so there is
 nothing to supersede. A wrong `route` or other resolution is revisited
 with `reconsider` instead, which opens a new case and a new verb rather
@@ -249,14 +255,14 @@ sheet.
 if a pending record's firing range clearly belongs to a different scope
 than the bucket it's filed in (captured at user scope but really only
 fires inside one skill, or vice versa), `self-learn rescope <id> --to
-<scope>` (`user` or `skill:<name>`) is the repair. Say plainly that using
+<scope> --note "<why>"` (`user` or `skill:<name>`) is the repair. Say plainly that using
 it **discards the current proposal and re-analyzes the record in the new
 bucket** — the analyst's judgment is bucket-relative, so a carried
 proposal would render a stale card reasoning from the wrong scope.
 
 **Retire** — when the proposal sets `already_canon: true` on a single
 card, the right resolution is retirement, not routing: replace Apply with
-**Retire** (`self-learn retire <id> --covered-by <surface>`), naming the
+**Retire** (`self-learn retire <id> --covered-by <surface> --note "<why>"`), naming the
 surface that already covers it (a `claude-md`, a `SKILL.md`, a reference
 file, or an output style), and showing `already_canon_reason`. Never
 reject an already-canon record for being redundant — the lesson won.
@@ -336,7 +342,7 @@ invalidated — never show its card; the worker sweeps the file.
 **Contradiction edges.** If a proposal carries `contradicts:`, say so on
 the card in plain words ("this conflicts with <target>"). After a route
 the user approves, apply each edge they accept with
-`self-learn link contradicts <id> <target>` — proposed by the analyst,
+`self-learn link contradicts <id> <target> --note "<why>"` — proposed by the analyst,
 written only by the verb (11 §2.4).
 
 **"Not holding" cards (11 §2.2).** After the queue cards, read
@@ -351,16 +357,16 @@ tolerate, or retire?"* The resolutions map to verbs:
 - **Tolerate** → `self-learn confirm-recurrence <id> --event <nonce>
   --tolerate --note "<why the rule stays>"`.
 - **Retire** → discuss; retirement without a successor is
-  `self-learn retire <id> --covered-by <surface>` (something already
+  `self-learn retire <id> --covered-by <surface> --note "<why>"` (something already
   loaded covers it) — or, if a rewritten successor exists, `supersede`
   (which displays as **replaced**, `replaced by lrn-…`) — the user
   chooses, you never guess.
 - **Dismiss** → `self-learn dismiss-suspect <id> --event <nonce> --why
-  <reason> [--note "<why it's false>"]` — the sighting was a matcher
+  <reason> --note "<why it's false>"` — the sighting was a matcher
   false-positive, not a recurrence at all; the telemetry event is
   preserved, only the card clears.
 A plain confirmation (recurrence is real, fix comes later) is
-`confirm-recurrence` without `--tolerate`. Read `basis` before choosing
+`confirm-recurrence <id> --event <nonce> --note "<why>"` without `--tolerate`. Read `basis` before choosing
 Tolerate vs Dismiss: `fire-suspected-violation` (renamed from
 `fire-violated` — a fire is always a suspicion for the steward to check
 against the transcript line, never a confirmed violation by itself) is
