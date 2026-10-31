@@ -164,7 +164,7 @@ _DESCRIPTION = (
     "Probe kinds and their fields: path {path} (exists, type, symlink "
     "target); file-match {path, and exactly one of contains | line | "
     "lines} (a literal anywhere, a whole line, or the hash of lines "
-    "'A' or 'A-B'; a literal, not a regular expression); json-key / "
+    "'A' or 'A-B'; a literal, not a regular expression; the value is the token present or absent, so a premise on it is holds_if equals with match present or absent, or changed); json-key / "
     "yaml-key / toml-key {path, key} (key: dotted, or a list); "
     "systemd-show {scope: user|system, unit, property} (`systemctl show "
     "--value`; an unbound or unset property reads as an empty value); "

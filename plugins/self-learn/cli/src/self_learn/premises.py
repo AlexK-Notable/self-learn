@@ -854,6 +854,28 @@ def _baseline_problem(baseline: object, *, policy: bool = True) -> str | None:
     return None
 
 
+def _file_match_problem(pid: str, probe: Mapping, effective: str, match: object) -> str | None:
+    """The `holds_if` forms a `file-match`/`git-file` probe can honour."""
+    if "lines" in probe:
+        if effective != HOLDS_IF_DEFAULT:
+            return (
+                f"premise {pid}: a lines probe reads a hash, so only "
+                "holds_if changed can be judged"
+            )
+        return None
+    if effective == HOLDS_IF_DEFAULT:
+        return None
+    if effective == "equals" and match in (PRESENT, ABSENT):
+        return None
+    return (
+        f"premise {pid}: a {probe.get('kind')} probe reads the token present "
+        "or absent, never the file's text, so holds_if "
+        f"{effective} with that match can never be judged: write "
+        "`holds_if: equals` with `match: absent` (or `present`); the literal "
+        "belongs in the probe's `contains` or `line`"
+    )
+
+
 def _premise_problem(premise: object, *, record_id: str | None, policy: bool) -> str | None:
     if not isinstance(premise, Mapping):
         return f"each premise must be a mapping, got {type(premise).__name__}"
@@ -894,6 +916,14 @@ def _premise_problem(premise: object, *, record_id: str | None, policy: bool) ->
                 return f"premise {pid}: holds_if changed takes no match"
         else:
             problem = _text_problem(match, f"premise {pid} match", policy=policy)
+            if problem is not None:
+                return problem
+        if probe.get("kind") in ("file-match", "git-file"):
+            # These probes read the token present/absent (or a line-range
+            # hash), never the file's text: a literal in `match` can never
+            # be found in the value, so `absent` would always hold (a dead
+            # check) and `present` would always be contradicted.
+            problem = _file_match_problem(pid, probe, effective, match)
             if problem is not None:
                 return problem
         if effective == "version":
