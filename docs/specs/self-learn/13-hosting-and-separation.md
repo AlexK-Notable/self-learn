@@ -277,6 +277,15 @@ revert). Doc 13 promotes that to the general rule:
    it is never registered, carries no marker, and its mode cannot be
    anything else.
 
+   **The marker and git (S-NEXT-hosts).** The marker is the one path a plain
+   host registration writes itself, so registration (and every re-registration,
+   marker present or repaired) puts its line in the repo's private
+   `.git/info/exclude` (self-learn's own block, idempotent), never the tracked
+   `.gitignore`. Unlike the item's tracked-file refusal, the marker is not
+   refused when tracked or re-admitted by `.gitignore`: a tracked marker gets no
+   exclude line (an ignore line cannot hide a tracked file) and is still
+   (over)written; a marker git already ignores gets no duplicate line.
+
    **What replaces git for a plain host, and what does not.** Item 2's
    drift check is unaffected: it was never a git check — it compares the
    ledger's routed records against `(lrn-…)` entry markers in the target,
