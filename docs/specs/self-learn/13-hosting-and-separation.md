@@ -286,7 +286,8 @@ revert). Doc 13 promotes that to the general rule:
    `git` host behaves exactly as items 1–4 describe. A **`plain`** host
    requires no repository: nothing is staged, committed, or pushed there,
    and the two-phase rule of item 1 collapses to its ledger half. The mode
-   is set ONCE, by `self-learn host add --mode git|plain`;
+   is chosen at registration, by `self-learn host add --mode git|plain`, and
+   changed in place only by `self-learn host set-mode` (below);
    `config.yaml`'s `hosts.default_mode` sets the default for new
    registrations, fail-closed to `git` (the `S-10` discipline). `host add
    --init` is unchanged and remains a **git**-mode convenience — `--mode
@@ -306,6 +307,61 @@ revert). Doc 13 promotes that to the general rule:
    refused when tracked or re-admitted by `.gitignore`: a tracked marker gets no
    exclude line (an ignore line cannot hide a tracked file) and is still
    (over)written; a marker git already ignores gets no duplicate line.
+
+   **Changing a mode, and registering on a yes (S-NEXT-cures-b, 2026-10-31).**
+   `host add` never changes a mode: re-adding a registered host with a
+   different mode still refuses. Before this, the only way across was `host
+   remove` then `host add --mode` (two commits, with the compile gate shut
+   between them, done by hand at least three times). Now
+   `self-learn host set-mode <path> git|plain [--skills-root | --project]`
+   changes one registration's mode in one ledger commit (subject
+   `self-learn: host set-mode <kind> <path> <old> → <new>`). `--skills-root` or
+   `--project` is needed only for a path registered both ways (S-82), where
+   each registration has its own mode. Going to `plain` writes the marker and
+   its `info/exclude` line before the commit, exactly as `host add --mode
+   plain` does; going to `git` needs a git work tree at the path (the same
+   check) and leaves the marker in place, as `host remove` does. The bucket, the
+   records and the compile records are never touched, and the command names how
+   many routed records compile into the registration. A host already in the
+   asked mode writes nothing (a plain host's missing marker is restored). It is
+   a **person's command**: from an agent's shell (the markers S-92 reads for a
+   tier-C `config set`) it exits 1 before the lock, before any marker is written
+   and also for a request that would change nothing, naming the markers and never
+   their values; there is no override, and no sheet can run it (every `host` verb
+   is refused in a sheet), because a registration is disclosed consent (S-29,
+   Y-17) and a mode change is the same kind of act. Like S-92 it is not a
+   security boundary. A person's yes can also carry a registration: the
+   overseer may put `register: {path, mode, kind?}` on an ask whose whole point is
+   registering a repository it cannot register itself (the 2026-10-25 report:
+   "I cannot register a host (no verb)"). The ask's text must name the path as a
+   whole path (not the front or the tail of a longer one) and the mode as a
+   phrase ("in git mode", "a plain skills root"; not "git repository" or "a
+   plain yes"), the index keeps the field, and `overseer open` prints "a plain yes
+   registers: <kind> host <path> in <mode> mode" under the ask. `overseer
+   respond` with a bare yes (`yes`, `y`, with optional final punctuation; "yes,
+   but git mode" is not one) runs `host add` for that registration BEFORE the
+   answer is recorded and prints what it did. The person typing the answer is
+   the consent; nothing else registers anything. A registration `host add`
+   refuses (a path that is gone, not a git repo in `git` mode, already
+   registered in the other mode) refuses the whole `respond`: nothing is
+   recorded and the question stays open. A `skills-root` registration that
+   would replace a DIFFERENT registered skills root is refused the same way (the
+   question never said so). An agent relaying the person's answer is how an
+   answer normally reaches the ledger, so from an agent's shell `respond`
+   registers when its own session's transcript proves the typing: the session is
+   `$CLAUDE_CODE_SESSION_ID` (so the agent need not know it), a `--session`
+   naming a different session is refused, and `--session` is for a shell without
+   that variable. The LAST row the person typed there must be a plain yes (an
+   AskUserQuestion click, an earlier yes, an agent-written turn, a line another
+   agent typed into the pane and anything typed after the yes do not count;
+   `statements.latest_user_typed`, which judges a row as `statement add` does).
+   When the agent's shell cannot prove it, `respond` records NOTHING and the
+   question stays open (the same as a refused `host add`: an answered question
+   whose registration never happened would read as done); the error says to have
+   the person type a plain yes and answer again, answer in their own terminal, or
+   run the `host add` line themselves (a registration already in place is left as
+   it is and needs no proof). A "yes" that is not a plain yes is still recorded
+   and the overseer reads it.
 
    **What replaces git for a plain host, and what does not.** Item 2's
    drift check is unaffected: it was never a git check — it compares the

@@ -895,6 +895,10 @@ questions:
     text: "Do you want …?"  # one question, plain words
     why: "…"                # what the answer changes
     cases: [case-…]         # an ask needs at least one
+    register:               # optional, an ask only (S-NEXT-cures-b)
+      path: /abs/path       # the repository a plain yes registers as a canon host
+      mode: plain           # git | plain
+      kind: project         # project (default) | skills-root
 ```
 
 An index row written before this date is `{id, cases}` and reads as
@@ -906,6 +910,19 @@ cited cases exist — and DROPS an entry that fails, naming it in the report's
 reply to an ask is a statement with `answers.kind: question` and `answers.ref`
 the ask's id; phase B receives every such answer, newest first, as the staged
 `answers.yaml`.
+
+*(Added 2026-10-31, S-NEXT-cures-b.)* **A question that registers a host.** An
+ask may carry `register: {path, mode, kind?}`: a plain yes to it registers that
+repository (13 §4 item 5). The runner drops the entry (naming it in "Refused /
+could not do") unless `path` is one absolute path, `mode` is `git` or `plain`,
+`kind` is `project` or `skills-root`, and the ask's `text` names the path
+as a whole path and the mode as a phrase ("in git mode", "a plain skills root";
+"in plain words" or "in git history" is not one), and names no other mode,
+because the user sees the text and a yes means exactly
+that registration. A reading never carries `register`. The index keeps the
+field as `{kind, path, mode}`; `overseer open` prints "a plain yes registers:
+…" under the ask, and the one-line text recorded on each cited case's
+presentation carries the same words.
 
 *(Added 2026-10-30, S-101.)* **Lesson records and the preview.**
 Phase B's stage also holds `lessons/<id>.md`, every lesson record in the ledger

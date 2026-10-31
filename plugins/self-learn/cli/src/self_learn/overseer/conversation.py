@@ -42,12 +42,24 @@ a request met with "would retire", or an answer to the question the overseer
 asked instead, does not clear them. The names of drafts and of ``build``
 dispositions that were vetoed are read from the registry's ``vetoed`` list
 (``skill write`` and the template check refuse them).
+
+An ask may carry `register: {path, mode, kind?}` (S-NEXT-cures-b): the user's
+typed plain "yes" to it registers that repository as a canon host in the same
+command (`respond`). The person typing the answer is the consent
+(S-29 / Y-17); `overseer open` shows what a yes will register, and the ask's
+own text must name the path and the mode. An agent relaying the answer from
+its own shell registers only when its own session (`$CLAUDE_CODE_SESSION_ID`,
+or `--session` where that is not set) shows the person's last typed row to be
+a plain yes (`statements.latest_user_typed`); a yes it cannot prove records
+nothing and leaves the question open.
 """
 
 from __future__ import annotations
 
 import functools
+import os
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -56,7 +68,7 @@ from typing import TextIO
 
 from ruamel.yaml import YAML
 
-from .. import cases, gitops, intents, sentinel, skill_registry, statements, user_model
+from .. import cases, gitops, hosts, intents, sentinel, settings, skill_registry, statements, user_model
 from ..primitives import chrono, fsops
 from ..skill_scaffold import SKILL_NAME_MAX_CHARS, SKILL_NAME_RE
 
@@ -73,6 +85,12 @@ class ConversationUsageError(ConversationError):
 class ResponseResult:
     statement_id: str | None
     observed_cases: tuple[str, ...] = ()
+    #: S-NEXT-cures-b: one plain sentence on what the answer did about a
+    #: host registration the ask carried (registered, already registered, not
+    #: done and why); `None` when the question carried none.
+    registration: str | None = None
+    #: True when the registration was carried out (or already was in place).
+    registered: bool = False
 
 
 _PROPOSITION_RE = re.compile(r"^(um-[0-9a-f]{4})@r?(\d+)$")
@@ -83,7 +101,69 @@ _OBS_LINE_RE = re.compile(
 )
 
 
-_INDEX_KEYS = frozenset({"id", "kind", "cases", "text", "why"})
+_INDEX_KEYS = frozenset({"id", "kind", "cases", "text", "why", "register"})
+
+_REGISTER_KEYS = frozenset({"path", "mode", "kind"})
+
+
+def normalize_register(raw: object, text: str) -> tuple[dict[str, str] | None, str | None]:
+    """Check an ask's `register` field. Returns `(register, None)` with the
+    kind defaulted to `project`, or `(None, problem)`.
+
+    The user's "yes" carries out the registration, so what it registers must
+    be what the question says: `path` must be an absolute path, `mode` and
+    `kind` must be ones `host add` knows, and the ask's `text` must name the
+    path exactly and the mode. A question that hid its path in a field the
+    user was never shown would turn an unrelated "yes" into a registration."""
+    if not isinstance(raw, dict) or not _REGISTER_KEYS >= set(raw) or not {"path", "mode"} <= set(raw):
+        return None, "register must be a mapping with path and mode (and optionally kind)"
+    path, mode, kind = raw.get("path"), raw.get("mode"), raw.get("kind", "project")
+    if not isinstance(path, str) or not path.startswith("/") or path != path.strip() or any(
+        ch in path for ch in "\n\r\x00"
+    ):
+        return None, "register.path must be one absolute path"
+    if mode not in hosts.HOST_MODES:
+        return None, f"register.mode must be one of {list(hosts.HOST_MODES)}"
+    if kind not in hosts.HOST_KINDS:
+        return None, f"register.kind must be one of {list(hosts.HOST_KINDS)}"
+    if not _names_path(text, path) or not _names_mode(text, mode):
+        return None, "the ask's text must name register.path exactly and its mode"
+    return {"kind": kind, "path": path, "mode": mode}, None
+
+
+def _names_path(text: str, path: str) -> bool:
+    """True when *text* holds *path* as a whole path: not the front of a longer
+    one (`/srv/app` inside `/srv/app-old` or `/srv/app/sub`), not the tail of
+    one (`/home/x/srv/app`). A closing `?`, `,`, `.` or quote is fine."""
+    return (
+        re.search(rf"(?<![\w/.~-]){re.escape(path)}(?![\w/-])(?!\.\w)", text) is not None
+    )
+
+
+def _names_mode(text: str, mode: str) -> bool:
+    """True when *text* names the mode the way a person reads one: "git mode",
+    "in git mode", "plain skills root", "plain host", "mode: plain". A bare
+    "git repository", "in plain words", "in git history" or "a plain yes" does
+    not name a mode, and a text that also names the OTHER mode names neither
+    (a yes must not register a mode the text only mentioned in passing)."""
+    others = [other for other in hosts.HOST_MODES if other != mode]
+    return _says_mode(text, mode) and not any(_says_mode(text, other) for other in others)
+
+
+def _says_mode(text: str, mode: str) -> bool:
+    return (
+        re.search(
+            rf"\b{mode}[ -](?:mode|host|skills[ -]root|registration)\b"
+            rf"|\bmode\s*[:=]?\s*{mode}\b",
+            text,
+            re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _register_phrase(register: dict[str, str]) -> str:
+    return f"{register['kind']} host {register['path']} in {register['mode']} mode"
 
 
 def _load_questions(home: Path) -> list[dict]:
@@ -113,14 +193,26 @@ def _load_questions(home: Path) -> list[dict]:
             )
         kind = row.get("kind", "reading")
         if kind == "reading":
+            if "register" in row:
+                raise ConversationError(
+                    f"overseer open: indexed reading {row['id']} cannot carry a register"
+                )
             rows.append({"id": row["id"], "kind": "reading", "cases": list(row["cases"])})
         elif kind == "ask" and all(
             isinstance(row.get(key), str) and row[key].strip() for key in ("text", "why")
         ):
-            rows.append({
+            ask_row = {
                 "id": row["id"], "kind": "ask", "cases": list(row["cases"]),
                 "text": row["text"], "why": row["why"],
-            })
+            }
+            if "register" in row:
+                register, problem = normalize_register(row["register"], row["text"])
+                if register is None:
+                    raise ConversationError(
+                        f"overseer open: indexed question {row['id']} has a bad register: {problem}"
+                    )
+                ask_row["register"] = register
+            rows.append(ask_row)
         else:
             raise ConversationError(
                 f"overseer open: indexed question {row['id']} has kind {kind!r}; "
@@ -203,12 +295,18 @@ def _names(line: str, question_id: str) -> bool:
 
 
 def _ask_display(row: dict) -> list[str]:
-    return [f"- {row['id']}: {row['text']}", f"  why: {row['why']}"]
+    lines = [f"- {row['id']}: {row['text']}", f"  why: {row['why']}"]
+    if row.get("register"):
+        lines.append(f"  a plain yes registers: {_register_phrase(row['register'])}")
+    return lines
 
 
 def _ask_recorded_text(row: dict) -> str:
     """The displayed ask as ONE line: a case observation is one line."""
-    return " ".join(f"- {row['id']}: {row['text']} (why: {row['why']})".split())
+    shown = f"- {row['id']}: {row['text']} (why: {row['why']})"
+    if row.get("register"):
+        shown += f" (a plain yes registers: {_register_phrase(row['register'])})"
+    return " ".join(shown.split())
 
 
 def _display_line(block: str, proposition: str, cases_for_question: list[str]) -> str:
@@ -794,6 +892,144 @@ def _dependent_cases(home: Path, proposition: str, statement_id: str) -> list[tu
     return matches
 
 
+_PLAIN_YES_RE = re.compile(r"\s*y(es)?\s*[.!]?\s*", re.IGNORECASE)
+
+
+_OWN_SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
+
+
+def _hand_command(register: dict[str, str]) -> str:
+    """The `host add` line a person (or an agent they told to) can run, with
+    the path quoted for a shell."""
+    return (
+        f"`self-learn host add {shlex.quote(register['path'])}"
+        f"{' --skills-root' if register['kind'] == 'skills-root' else ''} "
+        f"--mode {register['mode']}`"
+    )
+
+
+def _agent_shell_proof(
+    home: Path, session: str | None, phrase: str, register: dict[str, str]
+) -> tuple[str | None, str | None]:
+    """From an agent's shell a yes registers only when the person's own typing
+    is proved. Returns `(problem, proof_ref)`: `problem` is None when proved,
+    else the sentence saying why; `proof_ref` is the transcript line that held
+    the yes.
+
+    The session is the agent's OWN: `$CLAUDE_CODE_SESSION_ID` when that is set
+    (the agent need not know its id, and `--session` naming another session is
+    refused, so an older session where the person said yes to something else
+    cannot be borrowed); `--session` is for a shell that has no such variable.
+    The LAST row the person typed in that session's transcript must be a plain
+    yes. Nothing older counts (a yes to another question), nothing typed after
+    it, and no tool result (an AskUserQuestion click is not typing)."""
+    own = (os.environ.get(_OWN_SESSION_ENV) or "").strip()
+    named = (session or "").strip()
+    if own and named and named != own:
+        return (
+            f"`--session` names a session other than this shell's own, and a yes "
+            f"is proved only in the session it was typed in ({phrase})",
+            None,
+        )
+    chosen = named or own
+    if not chosen:
+        return (
+            f"this is an agent's shell with no session to check the typing in "
+            f"({phrase}); pass `--session <the session id the person typed the yes in>`",
+            None,
+        )
+    try:
+        ref, typed = statements.latest_user_typed(home, chosen)
+    except statements.StatementError as exc:
+        return f"the typing could not be checked ({exc}) ({phrase})", None
+    if _PLAIN_YES_RE.fullmatch(typed) is None:
+        return (
+            f"the last thing the person typed in session {chosen} is not a plain "
+            f"yes ({phrase})",
+            None,
+        )
+    return None, ref
+
+
+def _carry_out_registration(
+    home: Path, row: dict, text: str, session: str | None = None
+) -> tuple[str, bool]:
+    """S-NEXT-cures-b: what the answer *text* does about the registration an
+    ask carries. Returns `(sentence, registered)`.
+
+    Only a bare yes registers: "yes, but use git mode" or "not yet" is an
+    answer the overseer reads, not a consent to what the question named.
+    From an agent's shell (the detection that keeps tier-C settings the
+    person's) the registration also needs proof that the person typed the yes
+    (see :func:`_agent_shell_proof`), because the agent relaying the answer is
+    how it normally reaches the ledger. A bare yes the agent's shell cannot
+    prove, like a registration `host add` refuses (a path that is gone, a
+    path already registered in the other mode, a path that is not a git repo
+    for `git` mode), raises, so the answer is NOT recorded and the question
+    stays open: an answered question whose registration never happened would
+    read as done. A registration already in place needs no proof (nothing is
+    being done), so "register it by hand, then answer" works."""
+    register = row["register"]
+    phrase = _register_phrase(register)
+    if _PLAIN_YES_RE.fullmatch(text) is None:
+        return f"nothing registered: the answer was not a plain yes ({phrase})", False
+    proof_ref: str | None = None
+    try:
+        before = hosts.load_hosts(home)
+        target = Path(register["path"]).expanduser().resolve()
+        already = (
+            hosts.is_project_host(before, target)
+            if register["kind"] == "project"
+            else before.skills_root is not None
+            and Path(before.skills_root).expanduser().resolve() == target
+        )
+        if (
+            register["kind"] == "skills-root"
+            and before.skills_root is not None
+            and Path(before.skills_root).expanduser().resolve() != target
+        ):
+            # `host add` would silently replace the registered root, and the
+            # question never said so: that is a person's decision, made by hand.
+            raise ConversationError(
+                f"overseer respond: your yes would register {phrase}, but "
+                f"{before.skills_root} is already the skills root and registering "
+                "this one would replace it. Nothing was recorded and the question "
+                f"stays open; if you want the swap, run {_hand_command(register)} yourself"
+            )
+        if not already and settings.agent_caller():
+            # A registration already in place needs no proof (nothing is
+            # being done); one still to be done does.
+            problem, proof_ref = _agent_shell_proof(home, session, phrase, register)
+            if problem is not None:
+                raise ConversationError(
+                    f"overseer respond: NOT registered, {problem}. Nothing was recorded and "
+                    "the question stays open. Have the person type a plain yes in this "
+                    "session and answer again straight away, have them answer in their "
+                    f"own terminal, or run {_hand_command(register)} (only if they told "
+                    "you to) and answer again: a registration already done is left as it is"
+                )
+        hosts.host_add(home, register["path"], register["kind"], mode=register["mode"])
+    except hosts.HostsError as exc:
+        raise ConversationError(
+            f"overseer respond: your yes would register {phrase}, and that was refused: {exc}. "
+            "Nothing was recorded and the question stays open; fix that and answer again, "
+            "or answer in words that say what you want instead"
+        ) from exc
+    except gitops.HalfWrittenError as exc:
+        raise ConversationError(
+            f"overseer respond: registering {phrase} was written but NOT committed ({exc}). "
+            f"Repair: {exc.repair}. The answer was not recorded."
+        ) from exc
+    except (gitops.GitOpsError, intents.LedgerStoppedError) as exc:
+        raise ConversationError(
+            f"overseer respond: registering {phrase} failed ({exc}); the answer was not recorded"
+        ) from exc
+    proved = f" (the yes is at {proof_ref})" if proof_ref else ""
+    return (
+        f"already registered, left as it was: {phrase}{proved}" if already else f"registered {phrase}{proved}"
+    ), True
+
+
 def respond(
     home: Path | str,
     *,
@@ -801,6 +1037,7 @@ def respond(
     scope: str,
     text: str,
     as_asked: str | None = None,
+    session: str | None = None,
 ) -> ResponseResult:
     resolved = Path(home)
     parsed_scope = _scope(scope)
@@ -810,6 +1047,14 @@ def respond(
     presentations = _presentations(resolved, row)
     _case_id, observation_id, displayed = presentations[-1]
     answer_text = as_asked if as_asked and as_asked.strip() else displayed
+    registration: str | None = None
+    registered = False
+    if row["kind"] == "ask" and row.get("register"):
+        # The consent carries the action: do it BEFORE the answer is
+        # recorded, so a registration that is refused leaves the question
+        # open (nothing recorded) instead of an answered question whose
+        # promised registration never happened.
+        registration, registered = _carry_out_registration(resolved, row, text, session)
     statement_id = statements.add(
         resolved,
         verbatim=text,
@@ -836,7 +1081,9 @@ def respond(
                 by="overseer",
                 ref=statement_id,
             )
-        return ResponseResult(statement_id, tuple(row["cases"]))
+        return ResponseResult(
+            statement_id, tuple(row["cases"]), registration=registration, registered=registered
+        )
     dependent = _dependent_cases(resolved, proposition, statement_id)
     for case_id, dependency_ref in dependent:
         cases.observe(

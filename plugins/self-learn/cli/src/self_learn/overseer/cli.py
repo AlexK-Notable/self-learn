@@ -43,10 +43,24 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
         "(needs --text and --scope)",
     )
     reply = respond_parser.add_mutually_exclusive_group(required=True)
-    reply.add_argument("--text")
+    reply.add_argument(
+        "--text",
+        help="your answer, in your own words. For a question that says a plain "
+        "yes registers a host, typing yes registers it in this command "
+        "(from your own terminal; an agent's shell registers only when its own session "
+        "shows the person typed the yes)",
+    )
     reply.add_argument("--decline", action="store_true")
     respond_parser.add_argument("--scope")
     respond_parser.add_argument("--as-asked")
+    respond_parser.add_argument(
+        "--session", metavar="ID",
+        help="an agent's shell only, and only where $CLAUDE_CODE_SESSION_ID is not set "
+        "(it is the default): the session the person typed their plain yes in, so a "
+        "host registration the question carries can be checked against that "
+        "transcript (the last thing they typed there must be the yes). A session "
+        "other than $CLAUDE_CODE_SESSION_ID is refused",
+    )
     parser.set_defaults(_overseer_dispatch=dispatch)
     return parser
 
@@ -133,11 +147,14 @@ def dispatch(args) -> int:
                     scope=args.scope or "",
                     text=args.text,
                     as_asked=args.as_asked,
+                    session=args.session,
                 )
                 print(
                     f"self-learn overseer: recorded {result.statement_id}; "
                     f"reconsidered={len(result.observed_cases)}"
                 )
+                if result.registration is not None:
+                    print(f"self-learn overseer: {result.registration}")
             return 0
         print(runner.report(home, date=args.date), end="")
         return 0

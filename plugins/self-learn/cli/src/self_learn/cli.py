@@ -1215,7 +1215,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     host_p = sub.add_parser(
         "host",
-        help="compile-host registry (doc 13 §3): add | rebind | remove | list",
+        help="compile-host registry (doc 13 §3): add | set-mode | rebind | remove | list",
     )
     host_sub = host_p.add_subparsers(dest="host_command", metavar="<verb>")
     hadd = host_sub.add_parser(
@@ -1288,6 +1288,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "loud (a post-note names the count and the `recompile` "
         "WARN-and-skip consequence). Without this flag, host remove "
         "REFUSES on any such record.",
+    )
+    hsm = host_sub.add_parser(
+        "set-mode",
+        help="change a registered host's mode in place (S-NEXT-cures-b); a "
+        "person's command: refused from an agent's shell, like a tier-C "
+        "config set",
+    )
+    hsm.add_argument("path", metavar="PATH")
+    hsm.add_argument("mode", metavar="MODE", choices=hosts_mod.HOST_MODES)
+    hsm_which = hsm.add_mutually_exclusive_group()
+    hsm_which.add_argument(
+        "--skills-root",
+        action="store_const",
+        const="skills-root",
+        dest="registration",
+        help="change only PATH's skills-root registration (needed when the "
+        "path is registered both ways, each with its own mode, S-82)",
+    )
+    hsm_which.add_argument(
+        "--project",
+        action="store_const",
+        const="project",
+        dest="registration",
+        help="change only PATH's project registration",
     )
     host_sub.add_parser("list", help="show the registered hosts")
 
@@ -3068,7 +3092,7 @@ def _cmd_host(args: argparse.Namespace) -> int:
     ``commit_lock_path`` raise), and every git failure now lands on the
     same two documented codes as every other verb."""
     home = resolve_home()
-    if args.host_command in ("add", "rebind", "remove") and (
+    if args.host_command in ("add", "rebind", "remove", "set-mode") and (
         (code := _home_gate(home)) is not None
     ):
         return code
@@ -3102,6 +3126,36 @@ def _report_half_written(surface: str, exc: gitops.HalfWrittenError) -> int:
         file=sys.stderr,
     )
     return gitops.EXIT_HALF_WRITTEN
+
+
+def _print_plain_consent(host_path: Path) -> None:
+    """The consent line and the repository note a plain registration prints,
+    shared by ``host add --mode plain`` and ``host set-mode <path> plain``."""
+    # PLAIN7: name what plain mode does NOT do, plus §4.11's
+    # residual (a plain host is only ever unpublished until a
+    # human's own later `git init` + push change that).
+    print(
+        "  consent (plain mode): self-learn makes NO commit, NO "
+        "push, and keeps NO off-machine backup of this host's own "
+        "file — every write lands uncommitted; committing and "
+        "publishing it is entirely yours to do, or not"
+    )
+    if gitops.work_tree_of(
+        host_path.expanduser().resolve() / hosts_mod.MARKER_FILENAME
+    ) is None:
+        print(
+            "  note: a claude-md:local file written here is NOT "
+            "gitignore-protected (nothing is tracked) — if you later "
+            "git init and push this host yourself, anything already "
+            "written here publishes with it"
+        )
+    else:
+        print(
+            "  note: this is a git repository; self-learn lists each "
+            "file it writes here in the repo's local .git/info/exclude "
+            "(never the tracked .gitignore), so none shows in git "
+            "status and none is committed or pushed by self-learn"
+        )
 
 
 def _cmd_host_inner(args: argparse.Namespace, home) -> int:
@@ -3140,31 +3194,54 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
             "targets and analyst-readable"
         )
         if mode == "plain":
-            # PLAIN7: name what plain mode does NOT do, plus §4.11's
-            # residual (a plain host is only ever unpublished until a
-            # human's own later `git init` + push change that).
-            print(
-                "  consent (plain mode): self-learn makes NO commit, NO "
-                "push, and keeps NO off-machine backup of this host's own "
-                "file — every write lands uncommitted; committing and "
-                "publishing it is entirely yours to do, or not"
+            _print_plain_consent(Path(args.path))
+        return EXIT_OK
+    if args.host_command == "set-mode":
+        try:
+            changed = hosts_mod.host_set_mode(
+                home, args.path, args.mode, registration=args.registration
             )
-            if gitops.work_tree_of(
-                Path(args.path).expanduser().resolve() / hosts_mod.MARKER_FILENAME
-            ) is None:
+        except hosts_mod.HostModeAgentRefusal as exc:
+            # S-NEXT-cures-b: a business-rule refusal (exit 1, like
+            # AgentSettingRefusal), not a usage mistake.
+            print(f"self-learn host set-mode: {exc}", file=sys.stderr)
+            return 1
+        except hosts_mod.HostsError as exc:
+            print(f"self-learn host set-mode: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        shown = Path(args.path).expanduser().resolve()
+        if changed.changed:
+            print(
+                f"host set-mode: {changed.kind} {shown}: "
+                f"{changed.old_mode} → {changed.new_mode}"
+            )
+        else:
+            print(
+                f"host set-mode: {changed.kind} {shown} is already "
+                f"{changed.new_mode} — nothing changed"
+            )
+        if changed.marker_restored:
+            print(f"host set-mode: marker restored at {shown / hosts_mod.MARKER_FILENAME}")
+        print(
+            "  the bucket, its records and the compile records are untouched; "
+            f"{len(changed.routed)} routed record(s) compile into this registration"
+        )
+        if changed.changed and changed.new_mode == "plain":
+            _print_plain_consent(shown)
+            if changed.routed:
                 print(
-                    "  note: a claude-md:local file written here is NOT "
-                    "gitignore-protected (nothing is tracked) — if you later "
-                    "git init and push this host yourself, anything already "
-                    "written here publishes with it"
+                    "  note: a lesson already compiled into a file git tracks "
+                    "cannot be changed or replaced there while this host is "
+                    "plain (S-80); it can only be removed or moved"
                 )
-            else:
-                print(
-                    "  note: this is a git repository; self-learn lists each "
-                    "file it writes here in the repo's local .git/info/exclude "
-                    "(never the tracked .gitignore), so none shows in git "
-                    "status and none is committed or pushed by self-learn"
-                )
+        elif changed.changed:
+            print(
+                "  note: self-learn commits canon in this host again. The "
+                f"{hosts_mod.MARKER_FILENAME} marker is left in place, and "
+                "self-learn never removes a line from .git/info/exclude: if git "
+                "should now track a file it wrote while this host was plain, "
+                "remove that file's line yourself"
+            )
         return EXIT_OK
     if args.host_command == "rebind":
         try:
@@ -3259,6 +3336,7 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         return EXIT_OK
     print(
         "usage: self-learn host add <path> [--skills-root] | "
+        "host set-mode <path> git|plain [--skills-root | --project] | "
         "host rebind <slug-or-old-path> <new-path> | "
         "host remove <path> [--skills-root | --project] | "
         "host commit-drift <id> [--dest TARGET] [--dry-run] [--json] | "

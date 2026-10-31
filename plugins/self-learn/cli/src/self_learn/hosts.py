@@ -74,6 +74,8 @@ __all__ = [
     "MARKER_FILENAME",
     "Hosts",
     "HostAddResult",
+    "HostModeAgentRefusal",
+    "HostSetModeResult",
     "HostsError",
     "ancestors_of",
     "canon_read_roots",
@@ -85,6 +87,7 @@ __all__ = [
     "host_rebind",
     "host_remove",
     "host_path_problem",
+    "host_set_mode",
     "host_slug",
     "hosts_path",
     "is_project_host",
@@ -128,6 +131,15 @@ class HostRemoveRefused(HostsError):
     usage mistake — an unknown/malformed host argument) maps to."""
 
 
+class HostModeAgentRefusal(HostsError):
+    """S-NEXT-cures-b: ``host set-mode`` called from an agent's shell. A
+    mode is the person's choice (registration is disclosed consent, S-29 /
+    Y-17, and a mode change is the same kind of act), so the CLI refuses it
+    the way it refuses a tier-C ``config set`` (S-92): exit 1, before the
+    lock, before any write. Distinguished from the other
+    :class:`HostsError` refusals, which are usage mistakes (64)."""
+
+
 @dataclass(frozen=True)
 class Hosts:
     """The parsed registry: one optional skills root + registered
@@ -161,6 +173,25 @@ class HostAddResult:
 
     hosts: Hosts
     marker_restored: bool = False
+
+
+@dataclass(frozen=True)
+class HostSetModeResult:
+    """What :func:`host_set_mode` did: the updated registry, which
+    registration it changed, the mode before and after, whether anything was
+    written (``changed`` is False when the host already carried the mode), the
+    plain marker repair signal (the same one :class:`HostAddResult` carries),
+    and the routed records that compile into this registration (named so the
+    CLI can say what the new mode means for them; the records themselves are
+    never touched)."""
+
+    hosts: Hosts
+    kind: str
+    old_mode: str
+    new_mode: str
+    changed: bool
+    marker_restored: bool = False
+    routed: tuple[str, ...] = ()
 
 
 def slug_for(path: Path | str) -> str:
@@ -688,8 +719,9 @@ def host_add(
     ``self-learn: host add <kind> <path>``. Idempotent: re-adding an
     already-registered host with the SAME mode changes nothing and
     commits nothing; re-adding with a DIFFERENT mode REFUSES (MODE6,
-    U-hostmode R-f — the ruled "set once" shape: change is
-    ``host remove`` + ``host add --mode``).
+    U-hostmode R-f: ``host add`` never changes a mode; a person changes
+    one in place with ``host set-mode``, S-NEXT-cures-b, or by ``host
+    remove`` + ``host add --mode``).
 
     ``init`` (09 §11 Y-17, 2026-07-18): run the ``--init`` leg
     (:func:`_init_for_registration`) between the pure-argument refusals
@@ -768,9 +800,11 @@ def host_add(
         add_flag = " --skills-root" if kind == "skills-root" else ""
         raise HostsError(
             f"{kind} host {target} is already registered as "
-            f"{existing_mode!r} — `self-learn host remove {target} {which}` "
-            f"then `self-learn host add {target}{add_flag} --mode {mode}` to "
-            "change it (MODE is set once; there is no in-place flip)"
+            f"{existing_mode!r}; `host add` never changes a mode. Run "
+            f"`self-learn host set-mode {target} {mode} {which}` in your own "
+            "terminal to change it in place (S-NEXT-cures-b), or `self-learn "
+            f"host remove {target} {which}` then `self-learn host add "
+            f"{target}{add_flag} --mode {mode}`"
         )
 
     # N-2 (code gate r2 fold): the git-repo-soundness and ledger-home
@@ -850,6 +884,141 @@ def host_add(
     return HostAddResult(hosts=hosts, marker_restored=False)
 
 
+def host_set_mode(
+    home: Path | str,
+    path: Path | str,
+    mode: str,
+    *,
+    registration: str | None = None,
+) -> HostSetModeResult:
+    """``host set-mode <path> <mode>`` (S-NEXT-cures-b, cures M6.1): change a
+    registered host's mode in place, in one ledger commit (pinned subject
+    ``self-learn: host set-mode <kind> <path> <old> → <new>``). Before this,
+    the only route was ``host remove`` then ``host add --mode``, two commits
+    with the compile gate shut between them.
+
+    It is a PERSON'S command. From an agent's shell
+    (:func:`settings.agent_caller`, the detection S-92 uses for tier-C
+    settings) it raises :class:`HostModeAgentRefusal` before anything else:
+    before the lock, before a marker is written, and also for a request that
+    would change nothing. Registration is disclosed consent (S-29 / Y-17) and
+    changing the mode is the same kind of act. No override: an agent could
+    pass it. Never part of a sheet (``batch`` refuses every ``host`` verb).
+
+    What it changes: the registration's ``mode`` in ``hosts.yaml``, and, going
+    to ``plain``, the :data:`MARKER_FILENAME` marker (with its private
+    ``info/exclude`` line, exactly as ``host add --mode plain`` writes it,
+    BEFORE the ledger commit). What it never touches: the bucket, the
+    records, the compile records, and, going to ``git``, the marker, which is
+    left in place like ``host remove`` leaves it (a later flip back needs
+    it). Going to ``git`` needs a git work tree at the path, the same check
+    ``host add`` makes.
+
+    *registration* names which of a path's registrations changes
+    (``"skills-root"`` or ``"project"``); it is required only when the path
+    is registered both ways (S-82), because each carries its own mode.
+    Idempotent: a host already in *mode* writes nothing (a plain host's
+    missing marker is restored, as ``host add`` does). Lock discipline is
+    ``host_add``'s: the ledger lock opens before ``hosts.yaml`` is rewritten."""
+    from . import settings as _settings  # lazy: settings imports ledger, which imports this module
+
+    if _settings.agent_caller():
+        raise HostModeAgentRefusal(
+            "host set-mode is the person's command; run the same command in "
+            "your own terminal (not through an agent) "
+            f"(agent shell detected: {', '.join(_settings.agent_caller_markers())})"
+        )
+    _check_registration(registration)
+    home = Path(home)
+    if mode not in HOST_MODES:
+        raise HostsError(f"mode must be one of {list(HOST_MODES)}, got {mode!r}")
+    if not home.is_dir():
+        raise HostsError(f"ledger home {home} does not exist")
+    target = Path(path).expanduser()
+    if not target.is_dir():
+        raise HostsError(
+            f"host {target} does not exist on disk — the repo moved or was "
+            f"removed; re-point it with `self-learn host rebind {target} "
+            "<new-path>` (or `self-learn host remove` it)"
+        )
+    target = target.resolve()
+
+    hosts = load_hosts(home)
+    root_hit = hosts.skills_root is not None and Path(hosts.skills_root).expanduser().resolve() == target
+    project_hit = is_project_host(hosts, target)
+    if not root_hit and not project_hit:
+        raise HostsError(
+            f"{target} is not a registered host — `self-learn host add {target} "
+            f"--mode {mode}` registers it (set-mode changes a registered host only)"
+        )
+    if registration is None:
+        if root_hit and project_hit:
+            raise HostsError(
+                f"{target} is registered twice (the skills root and a project "
+                "host, each with its own mode, S-82) — name the one to change: "
+                "--skills-root or --project"
+            )
+        kind = "skills-root" if root_hit else "project"
+    else:
+        kind = registration
+        if not (root_hit if kind == "skills-root" else project_hit):
+            raise HostsError(f"{target} has no {kind} registration — nothing to change")
+    old_mode = hosts.skills_root_mode if kind == "skills-root" else hosts.project_modes.get(str(target), "git")
+
+    problem = host_path_problem(home, target, kind, mode=mode, check_marker=False)
+    if problem is not None:
+        raise HostsError(problem)
+    routed = tuple(records_targeting(home, target, registration=kind))
+
+    if old_mode == mode:
+        marker_restored = False
+        if mode == "plain" and not (target / MARKER_FILENAME).is_file():
+            _write_host_marker(home, target)
+            marker_restored = True
+        elif mode == "plain":
+            _exclude_host_marker(target / MARKER_FILENAME)
+        return HostSetModeResult(
+            hosts=hosts, kind=kind, old_mode=old_mode, new_mode=mode,
+            changed=False, marker_restored=marker_restored, routed=routed,
+        )
+
+    if mode == "plain":
+        _write_host_marker(home, target)
+
+    new_modes = dict(hosts.project_modes)
+    if kind == "skills-root":
+        hosts = Hosts(
+            skills_root=hosts.skills_root,
+            projects=hosts.projects,
+            skills_root_mode=mode,
+            project_modes=new_modes,
+        )
+    else:
+        if mode == "git":
+            new_modes.pop(str(target), None)
+        else:
+            new_modes[str(target)] = mode
+        hosts = Hosts(
+            skills_root=hosts.skills_root,
+            projects=hosts.projects,
+            skills_root_mode=hosts.skills_root_mode,
+            project_modes=new_modes,
+        )
+
+    message = f"self-learn: host set-mode {kind} {target} {old_mode} → {mode}"
+    with intents.ledger_write(home) as recovered:
+        intents.announce_recovered(recovered)
+        intent = intents.begin(home, "host_set_mode", [hosts_path(home)], message)
+        yaml_path = save_hosts(home, hosts)
+        intents.complete(intent)
+        _commit_or_half_written(home, [yaml_path], message)
+        intents.finish(intent)
+    return HostSetModeResult(
+        hosts=hosts, kind=kind, old_mode=old_mode, new_mode=mode,
+        changed=True, routed=routed,
+    )
+
+
 def _commit_or_half_written(
     home: Path, touched: list[Path], message: str
 ) -> None:
@@ -892,8 +1061,8 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
     commit, pinned subject ``self-learn: host rebind <old> → <new>``.
 
     The MODE carries over from the old entry unchanged — rebind is a path
-    move, never a mode change (that is ``host remove`` + ``host add
-    --mode``, R-f).
+    move, never a mode change (that is ``host set-mode``, a person's
+    command; ``host add`` never changes a mode).
 
     Returns the bucket's new directory. The new path is gate-validated
     (:func:`validate_host_path`, mode-aware); the OLD path is deliberately
@@ -1158,9 +1327,9 @@ def host_remove(
     ``registration`` (S-82, ``host remove --skills-root | --project``):
     drop only that one registration of *path* -- the skills root, or the
     project entry -- and keep the other with its own mode. One repo may be
-    registered both ways in two modes, and MODE is set once per
-    registration (MODE6), so changing one registration's mode is this
-    call followed by ``host add``; without it, a bare ``host remove``
+    registered both ways in two modes, and ``host add`` never changes a
+    registration's mode (MODE6), so changing one is ``host set-mode``
+    (S-NEXT-cures-b), or this call followed by ``host add``; without it, a bare ``host remove``
     dropped both. The routed-record refusal then counts only the records
     that registration compiles (:func:`records_targeting`). ``None`` (the
     bare verb) drops every registration of *path*, unchanged.

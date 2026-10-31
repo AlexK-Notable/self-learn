@@ -1194,7 +1194,9 @@ loudly, not a verb's problem to route around silently.
 mechanism; this section is the operator-facing summary.)*
 
 **What `--mode plain` does and does not do.** A registered host's mode
-is set once, at `self-learn host add --mode git|plain <path>`. A
+is chosen at `self-learn host add --mode git|plain <path>` and changed
+afterwards only by a person's `self-learn host set-mode` (see "How to change
+a host's mode" below), never by a second `host add`. A
 **`plain`** host gets NO commit, NO push, and NO off-machine backup of
 its own file, ever, from self-learn — every write lands on disk
 uncommitted, and publishing it (or not) is entirely the operator's own
@@ -1209,11 +1211,13 @@ self-learn commits and pushes canon there exactly as it always has.
 does NOT do, at registration time — read it once; it does not repeat on
 every route.
 
-**How to change a host's mode.** The mode is set ONCE and never flips in
-place — `self-learn host remove <path>` followed by
-`self-learn host add --mode <new-mode> <path>` is the only path from one
-to the other. This is deliberate (a silent mode flip mid-flight is a
-worse hazard than the two extra commands).
+**How to change a host's mode.** `host add` never changes a mode. Run
+`self-learn host set-mode <path> git|plain` (add `--skills-root` or
+`--project` for a path registered both ways) in your own terminal: one ledger
+commit, the records and compile records untouched, and an agent's shell is
+refused (S-NEXT-cures-b; 13 §4 item 5). Before that command existed the only
+route was `self-learn host remove <path>` then `self-learn host add --mode
+<new-mode> <path>`, which still works.
 
 **The `.self-learn-host` marker.** A plain host is gated at registration
 and at every route by a `.self-learn-host` marker file the registering

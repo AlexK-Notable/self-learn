@@ -1343,10 +1343,13 @@ def _check_hosts(home: Path) -> tuple[Verdict, str]:
             advice = (
                 "a plain skills root's SKILL.md takes no lesson while git "
                 "tracks it (S-80), so a reroute is refused too; switch the "
-                f"skills root to git mode (`self-learn host remove {resolved_root} "
-                f"--skills-root --gate-only`, then `self-learn host add "
-                f"{resolved_root} --skills-root --mode git`), after which the "
-                "two modes agree and the destination is no longer refused"
+                f"skills root to git mode (`self-learn host set-mode "
+                f"{resolved_root} git --skills-root`, in your own terminal), "
+                "after which the two modes agree and the destination is no "
+                "longer refused (self-learn never removes a line from "
+                ".git/info/exclude, and the command says so: if git should "
+                "now track a file self-learn wrote while the root was plain, "
+                "remove that file's line there yourself)"
             )
         return Verdict.FAIL, (
             f"{shown} — {len(stranded)} routed skill lesson(s) on the skills "
