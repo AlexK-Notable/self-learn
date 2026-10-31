@@ -742,7 +742,104 @@ older home):*
     open-questions.yaml, evaluation-<date>.md,
     journal/<date>-<run>.md}        # the overseer's own
                                     # subtree, owned by the overseer plan
+  owned-skills.yaml                # skills self-learn owns (S-NEXT-skills)
+  overseer/skills/{<week>.yaml,    # candidates + dispositions (S-NEXT-skills)
+    <week>/drafts/<name>/,         # skills kept as drafts, never deployed
+    writing-trial.yaml}            # auto's drafts-only run, written once
 ```
+
+*(Added 2026-10-30, S-NEXT-skills.)* **Skills self-learn owns.** One
+registry file at the top of the ledger, `owned-skills.yaml`, committed under
+the ledger's commit lock by `skill_registry.with_update` and by nothing else.
+A missing file reads as an empty registry; an unknown key or an unknown
+`status` is refused by name.
+
+```yaml
+version: 1
+skills:
+  <name>:
+    status: live            # live | retired
+    plugin: plugins/<name>  # relative to the skills root
+    created: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human}
+    last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human,
+                 authored_sha256: <hex>}
+    retired: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human}  # only when retired
+    renamed_from: [<old name>, ...]                                 # optional
+vetoed:
+  - {name: <name>, at: <iso>, statement: stmt-xxxxxxxx}
+```
+
+A skill is owned when it has a `live` row; a retired row keeps its history
+and owns nothing. `by` is `overseer` only when the overseer's runner calls
+the writer itself (a Python call, not the CLI), and `human` for every write,
+retirement or rename made through the CLI; an agent's shell cannot make one
+(`03-decisions.md` S-NEXT-skills part 2), so no third value is needed.
+`case` is `null` only with `by: human`, for a person's CLI step given no
+`--case` because it answers no case; the runner always names its case. `authored_sha256` is the sha256 of the skill's authored
+files, everything outside the managed section (`SKILL.md` less that
+section, and every `references/*.md`), as the last `skill write` left
+them (`skill_registry.authored_sha256`); `skill write --expect` compares against the files as they are now.
+A name in `vetoed` is refused by every later `skill write` and `skill rename`,
+for ever (`skill_scaffold.check_skill`'s `vetoed_names`). The skill's own
+files live in the skills root, not in the ledger: `plugins/<name>/` with
+`.claude-plugin/plugin.json` and `skills/<name>/SKILL.md` (plus optional
+`references/*.md`), one `marketplace.json` entry, and the link
+`~/.claude/skills/<name>` → `plugins/<name>/skills/<name>`. The writer stamps
+the frontmatter's `metadata.self-learn` with `authored_by`, `case` and
+`created`; a draft that already carries that key is refused, as today
+(`skill_scaffold.SKILL_RUNNER_METADATA_KEY`). The stamp is a signal for a
+reader; the registry row is the authority.
+
+**The overseer's skill files.** `overseer/skills/<week>.yaml` holds the
+week's phase-S candidates and phase B's disposition of each candidate and
+each `skill-proposal` case (`build`, `add-to-existing`, `defer` with what
+would change it, `decline` with a reason). Each disposition names its
+source, `candidate` or `skill-proposal` with the case id. Phase S's
+`history.yaml` is built from earlier weeks' files with every
+`skill-proposal` entry left out, so phase S never sees the steward's
+proposals, not even a week late. `overseer/skills/<week>/drafts/<name>/` holds a skill
+checked by `skill write --check` but not deployed, because
+`overseer.skill_writing` was `off` or this was `auto`'s drafts-only run.
+`overseer/skills/writing-trial.yaml` is
+`{week: <date>, run: <run id>, completed_at: <iso>, drafts: [<name>, ...]}`:
+the first run to complete with `overseer.skill_discovery` on while the file
+is absent and writing is not in effect (`off`, or `auto`'s trial), and whose
+phase S gave a valid `skill-candidates.yaml` (its own or a kept copy) and
+whose phase B gave a valid `skill-dispositions.yaml`, writes it, with an
+empty `drafts` list when it had nothing to build, in the commit that
+completes the run, and nothing rewrites it. Under `auto`
+its absence makes the run drafts-only and its presence lets the run write.
+A failed attempt, a closed-out week, a dry run, a run with discovery off,
+and a completed run whose phase S failed, timed out or did not validate,
+or whose dispositions did not validate, never write it
+(`03-decisions.md` S-NEXT-skills part 6).
+
+**The overseer's workspace for skills.** Phase S's stage holds `catalogue/`,
+`neighbourhoods.md`, `skills-index.yaml`, `history.yaml`, `briefs/` and
+`answers.yaml`, and never `full/` or `parked/`; it writes
+`skill-candidates.yaml`. Phase B's stage adds `owned-skills/<name>/` (the
+skill's files as they are now, its registry row,
+`changed-since-last-write.diff` and the ids of the lessons routed into it),
+`vetoes.yaml` (the vetoed names, and the open retirement requests: for
+each live skill, its newest `overseer respond --retire-skill` request made
+since the skill was created, with its statement id, staged in every run
+until the skill is retired) and `skill-proposals.yaml`; it writes
+`skills/<name>/` (one folder per skill to build or rewrite: `SKILL.md`,
+optional `references/*.md`) and `skill-dispositions.yaml`.
+
+Phase S runs by phase A's rules unless named here. Before it the runner
+writes `formats/` holding only the phase-S files and their closed sets (the
+candidates format), so phase S stays blind to decision vocabulary and to
+`skill-proposal`. Its time limit is
+`max(overseer.timeout_secs, 30 s × the lessons in its catalogue)`. It writes
+in the run's `journal.md` like the other phases. A validated phase S is kept
+in the cache (`overseer/phase-s/<week>/`, keyed by a hash of every file of its
+stage except `formats/` and `journal.md`) and reused by the week's next
+attempt only when that hash is unchanged, so a changed catalogue, neighbour
+list or answer is never met with an earlier attempt's candidates; a reused
+phase S's journal entries are appended as a kept phase A's are, and the kept
+copy is dropped once a run record is published. A phase S that failed, timed
+out or did not validate is not kept, and phase B runs without candidates.
 
 *(Added 2026-09-24.)* **Questions.** Phase B's staged `questions.yaml` and
 the committed index `overseer/open-questions.yaml` share one shape, in the
@@ -1000,7 +1097,8 @@ parked_for: null               # overseer, always (only when kind: parked)
 parked_reason: null            # hook | always-loaded-user-scope |
                                 #   broad-removal | authority-unclear |
                                 #   scope-conflict | plain-host-committed-file |
-                                #   attempts-exhausted | ledger-refused
+                                #   attempts-exhausted | ledger-refused |
+                                #   skill-proposal (S-NEXT-skills)
                                 #   (closed set; only when
                                 #   kind: parked)
 decided_sha256: "a3c1…"        # hash of sections 1-4 as committed
@@ -1088,6 +1186,12 @@ name. A case with a `replace` item needs `decision.rewrite`, and every lesson th
 name (`cases.replace_items_problem`, S-86). In the steward's coverage rule an `also` id counts as an item of its
 sheet, so a merge case's `records` are exactly `{id} ∪ also`.
 The always-loaded test reads `replace` items, a dest-less one through the first lesson's placement.
+*(Added 2026-10-30, S-NEXT-skills.)* A parked case with `parked_reason: skill-proposal` must carry
+`decision.skill` in the shape above (the steward's draft of a skill; the overseer decides it);
+without it the case is refused by name. A skill-building pair is `outcome: route` with
+`decision.skill`, and a skill retirement is `outcome: retire` with `decision.skill`. The overseer's
+runner writes the skill before it applies a building pair's sheet (a refused write drops the pair),
+and retires the skill only after the retirement pair's sheet has moved its lessons out.
 
 **Section 4, Dependencies** — everything the decision rests on, each cited
 from the evidence table:
@@ -1223,8 +1327,10 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   from a reported turn count, which counts something else: revision log,
   2026-09-20. The overseer's record uses it the same way since
   2026-09-24: its runaway guard, `overseer.max_model_calls`, counts
-  MODEL CALLS, two per run, as S-66 says, and a guard below two holds
-  the run before its first call; revision log, 2026-09-24),
+  MODEL CALLS, as S-66 says: two per run until 2026-10-30, three since
+  S-NEXT-skills added phase S (two with `overseer.skill_discovery` off),
+  and a guard below the run's own call count holds the run before its
+  first call; revision log, 2026-09-24),
   `schema-repair` (a
   second staged-output validation failure), and one genuinely new value,
   `no-progress`, for an attempt that ran and moved nothing. A ledger stop
