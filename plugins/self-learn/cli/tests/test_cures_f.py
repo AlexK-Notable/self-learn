@@ -205,7 +205,12 @@ def test_a_restate_of_an_open_placed_or_replaced_lesson_is_refused_by_name(env, 
 
     assert (got.state, got.kind) == ("refused", "bad-line"), got
     assert fragment in (got.detail or ""), got.detail
-    assert _head(env.home) == head
+    # Nothing written. The run flushes the telemetry the `route` above left
+    # buffered, so a telemetry flush may ride on top (as in test_replace);
+    # integration 2026-10-31: the bare HEAD comparison failed on that flush.
+    made = git(env.home, "log", "--format=%s", f"{head}..HEAD").stdout.splitlines()
+    assert all(s.startswith("self-learn: telemetry flush") for s in made), made
+    assert git(env.home, "diff", "--name-only", head, "HEAD", "--", ".", ":!telemetry").stdout == ""
     (shown,) = preview.items
     assert (shown.state, shown.kind) == ("would-refuse", "bad-line"), shown
     assert fragment in (shown.detail or ""), shown.detail
