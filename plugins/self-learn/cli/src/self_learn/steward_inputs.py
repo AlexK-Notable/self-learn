@@ -1157,16 +1157,23 @@ def render_closed_followup(record: Record, *, path: str | None, head: str | None
     (:func:`render_premise_moved`) and does not use this. It is context for
     a decision about something else (a dismissed suspect, a recurrence): it
     is not what keeps the lesson in front of the steward, and it gives that
-    decision no new authority over the lesson (:func:`last_decision`)."""
+    decision no new authority over the lesson (:func:`last_decision`). A
+    case on that other input that places, moves, rewrites or retires the
+    lesson IS its last decision (02 §3a.10.4 (2)) and ends the follow-up
+    check, so the block asks for the check in that decision rather than
+    promising a later `premise-moved` input that would never come
+    (integration 2026-10-31, the u3 gate's MAJOR 2)."""
     done = record.follow_up_done
     if not isinstance(done, Mapping) or not done:
         return ""
     lines = [
         "[closed follow-up] this lesson was placed while it waited on a condition, and "
-        "its follow-up has since been closed; what it waited on has happened. This is "
-        "context for this decision; the lesson itself comes to you again on its own "
-        "`premise-moved` input, which is where a sentence that rested on that wait is "
-        "checked."
+        "its follow-up has since been closed; what it waited on has happened. If this "
+        "case places, moves, rewrites or retires the lesson, that decision ends the "
+        "follow-up check: before you write it, check that every sentence of the lesson "
+        "that rested on that wait is still true. If it decides anything else about the "
+        "lesson, the lesson comes to you again on its own `premise-moved` input, where "
+        "that check is made."
     ]
     lines += _followup_fact_lines({**done, "done_at": _done_day(done.get("done_at"))})
     lines += _followup_cite_lines(record, path=path, head=head)

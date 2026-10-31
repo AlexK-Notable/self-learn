@@ -315,13 +315,16 @@ def test_a_no_action_case_opened_after_the_closing_leaves_the_lesson_offered_to_
     assert len(seen) == 1 and "[input] premise-moved" in seen[0] and f"### brief: {A}" in seen[0]
     assert f"`supersedes: {dismissed}`" in seen[0]
 
-    # another lesson gets a case that DID decide it: that ends the offer
+    # another lesson gets a case that DID decide it: that ends the offer for
+    # it. A stays offered throughout: its only case is the no-action one, and
+    # the dry run above published no manifest, so nothing made A's version
+    # terminal (integration 2026-10-31: the lane's `[B]` / `[]` left A out).
     _routed(env, B)
     _age_routing(home, B, days=10)
     _close(home, B, done_at=_day(-1))
-    assert _moved(home) == [B]
+    assert set(_moved(home)) == {A, B}
     _record_case(home, setup, _case([B], "route", "route"))
-    assert _moved(home) == []
+    assert _moved(home) == [A]
 
 
 def test_a_history_entry_or_a_confirmation_is_not_a_decision(tmp_path):
@@ -571,8 +574,11 @@ def test_every_brief_of_a_lesson_with_an_undecided_follow_up_shows_it(tmp_path, 
     first = lines.index("follow_up_done:") + 1
     assert f":{path.relative_to(home).as_posix()}#L{first}-" in body
     assert f"L{first}: follow_up_done:" in body
-    # it is context only: it hands the decision no authority over the lesson
-    assert "comes to you again on its own `premise-moved` input" in body
+    # it is context only: it hands the decision no authority over the lesson,
+    # and it says which decisions end the follow-up check (integration
+    # 2026-10-31: the earlier text promised a later input unconditionally)
+    assert "If this case places, moves, rewrites or retires the lesson, that decision ends the follow-up check" in body
+    assert "If it decides anything else about the lesson, the lesson comes to you again on its own `premise-moved` input" in body
     # a premise-moved input is not one of these: it carries the facts in its own
     # block, once
     (row,) = steward._premise_moved_inputs(home)
@@ -580,6 +586,39 @@ def test_every_brief_of_a_lesson_with_an_undecided_follow_up_shows_it(tmp_path, 
     assert "[closed follow-up]" not in moved_body
     assert moved_body.count("the follow-up on this lesson was closed on") == 1
     assert moved_body.count("L%d: follow_up_done:" % first) == 1
+
+
+def test_a_deciding_case_on_another_input_ends_the_follow_up_so_its_brief_asks_for_the_check_now(tmp_path):
+    """The u3 gate's MAJOR 2 (fixed at the 2026-10-31 integration): a
+    reconsider input on a lesson whose follow-up closed shows the
+    `[closed follow-up]` block. A case on that input that places, moves,
+    rewrites or retires the lesson is its last decision (02 §3a.10.4 (2)),
+    so no `premise-moved` input follows. The block must therefore ask for the
+    check in THAT decision, never promise a later input unconditionally."""
+    from test_steward_refusals import _case
+    from test_u3b_steward_authority import _record_case
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    _age_routing(home, A, days=10)
+    _close(home, A, done_at=_day(-1))
+    # control: the follow-up is undecided, so it is offered and shown
+    assert _moved(home) == [A]
+    body = _brief(home, {"record": A, "kind": "reconsider"})
+    assert "[closed follow-up]" in body
+    # the block asks for the check in this decision when it changes the lesson
+    assert "that decision ends the follow-up check: before you write it, check" in body
+    assert "comes to you again on its own `premise-moved` input, which is where" not in body
+
+    # a route case on that input, opened after the closing, is the last
+    # decision: the lesson is not offered again and the block is gone
+    setup = tmp_path / "setup"
+    setup.mkdir()
+    _record_case(home, setup, _case([A], "route", "route"))
+    assert _moved(home) == []
+    assert steward_inputs.open_followup_ids(home) == set()
+    assert "[closed follow-up]" not in _brief(home, {"record": A, "kind": "reconsider"})
 
 
 def test_the_closed_follow_up_is_not_shown_once_it_was_decided(tmp_path, monkeypatch):
