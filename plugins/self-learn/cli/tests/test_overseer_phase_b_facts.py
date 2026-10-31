@@ -91,6 +91,20 @@ def test_a_switched_off_check_claims_nothing(env, tmp_path):
         assert key not in off, key
 
 
+def test_a_sweep_that_started_and_never_finished_does_not_read_as_finished(env, tmp_path):
+    _seed(env, A, [WATCHED])
+    cache = tmp_path / "cache"
+    premise_sweep._store_state(cache, {"last_attempt_at": SWEEP_3, "last_status": "running"})
+    row = health.premise_facts(env.ledger, cache_dir=cache, now=NOW)
+    assert row["sweep"]["last_attempt_at"] == SWEEP_3  # control: the state was read
+    assert row["sweep"]["last_finished_at"] is None
+    premise_sweep._store_state(
+        cache, {"last_attempt_at": SWEEP_3, "last_finished_at": SWEEP_2, "last_status": "ok"}
+    )
+    done = health.premise_facts(env.ledger, cache_dir=cache, now=NOW)
+    assert done["sweep"]["last_finished_at"] == SWEEP_2
+
+
 def test_it_counts_the_lessons_that_record_no_premises(env, tmp_path):
     _seed(env, A)  # no premises field: counted
     _seed(env, B, [])  # decided-none: not counted
@@ -141,6 +155,42 @@ def test_a_placement_failing_on_two_sweeps_is_named_and_one_is_not(env, tmp_path
     ])
     row = health.premise_facts(env.ledger, cache_dir=cache, now=NOW)
     assert row["failing_placements"] == [f"{A}@reach"]
+
+
+def test_a_probe_reason_that_trips_the_secret_scan_is_withheld(env, tmp_path):
+    token = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+    _seed(env, A, [WATCHED])
+    cache = tmp_path / "cache"
+    _store(cache, [_probe_row(A, s, premises.OBS_UNAVAILABLE, reason="read failed") for s in (SWEEP_1, SWEEP_2)]
+           + [_probe_row(A, SWEEP_3, premises.OBS_UNAVAILABLE, reason=f"token = {token}")])
+    row = health.premise_facts(env.ledger, cache_dir=cache, now=NOW)
+    (broken,) = row["broken_probes"]  # control: the probe is named
+    assert broken["reason"].startswith("(withheld: the secret scan matched")
+    assert token not in repr(row)
+
+
+def test_placements_that_could_not_be_measured_are_counted_not_dropped(env, tmp_path):
+    _seed(env, A)
+    _seed(env, B)
+    cache = tmp_path / "cache"
+    unread = {**_placement_row(A, "@reach", SWEEP_3), "state": premises.OBS_UNAVAILABLE, "value_sha": None}
+    _store(cache, [unread, _placement_row(B, "@reach", SWEEP_3, failing=False)])
+    row = health.premise_facts(env.ledger, cache_dir=cache, now=NOW)
+    assert row["unmeasurable_placements"] == 1
+    assert row["failing_placements"] == []  # an unread placement is not a failing one
+
+
+def test_a_refresh_whose_changes_trip_the_secret_scan_is_withheld(env):
+    token = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+    _seed(env, A, [WATCHED])
+    _commit(env.ledger, f"self-learn: premises refresh {A} p1", days_ago=2,
+            note=f"Re-baselined by the premise sweep.\np1: old -> {token}")
+    _commit(env.ledger, f"self-learn: premises refresh {B} p1", days_ago=1,
+            note="Re-baselined by the premise sweep.\np1: 1 -> 2")
+    commits = {c["lesson"]: c for c in health.premise_refreshes(env.ledger, now=NOW)["commits"]}
+    assert commits[B]["changes"] == ["p1: 1 -> 2"]  # control: the rows are read
+    assert commits[A]["changes"][0].startswith("(withheld: the secret scan matched")
+    assert token not in repr(commits)
 
 
 def test_the_weeks_code_only_refreshes_are_listed_and_older_ones_are_not(env, tmp_path):
@@ -409,3 +459,38 @@ def test_a_run_whose_census_could_not_be_read_says_so_in_its_report(tmp_path, mo
     assert (result.status, result.code) == ("applied", 0), result
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     assert "could not be read (git failed)" in _section(report)
+
+
+def test_a_resumed_run_publishes_the_census_phase_b_was_given(tmp_path, monkeypatch):
+    """The run record carries the census because a resumed run's rebuilt stage
+    has no health.yaml. Run 2 is handed a DIFFERENT census and no model; its
+    report must still list run 1's steps, read from the run record."""
+    from test_overseer_run import (
+        _dispatch_returning, _fake_hook_phases, _seed_parked_hook, _wrap_phases,
+    )
+
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked)
+    _wrap_phases(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _dispatch_returning(monkeypatch, 6, only_first=True)
+    first_row = {"kind": "hand-steps-this-week", **_census(_step("abc1234", note="the first run's step"))}
+    monkeypatch.setattr(health, "hand_steps_row", lambda _home, now=None: first_row)
+
+    first = overseer_run.run(home, dry_run=False, no_push=True)
+    assert first.status == "partial", "positive control: run 1 really did stall"
+
+    monkeypatch.setattr(
+        overseer_run.invocation, "write_session",
+        lambda spec: pytest.fail("a resume must not invoke the model"),
+    )
+    other_row = {"kind": "hand-steps-this-week", **_census(_step("fff9999", note="a later census"))}
+    monkeypatch.setattr(health, "hand_steps_row", lambda _home, now=None: other_row)
+    second = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (second.run, second.status) == (first.run, "applied")
+    body = _section((home / "overseer" / "latest-report.md").read_text(encoding="utf-8"))
+    assert "abc1234" in body and "the first run's step" in body
+    assert "fff9999" not in body and "could not be read" not in body

@@ -18,6 +18,10 @@ from support import make_home
 from test_overseer_run import _enabled, _fake_two_phase, _refused_block, _silence_notifications
 
 HEADINGS = overseer_run._REPORT_SECTIONS
+#: S-NEXT-u7c: a real run always stages a week's census (at worst one that says
+#: it could not be read), so the runner always adds the eighth heading to what
+#: it publishes. The seven above are still what the MODEL writes.
+PUBLISHED_HEADINGS = overseer_run._REPORT_SECTIONS_WITH_HAND_STEPS
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +62,7 @@ def test_a_missing_heading_is_inserted_and_the_run_goes_on(tmp_path, monkeypatch
 
     assert (result.status, result.code) == ("applied", 0), result
     report = _published(home)
-    assert _heading_order(report) == list(HEADINGS)
+    assert _heading_order(report) == list(PUBLISHED_HEADINGS)
     hooks = report.split("## Hooks\n", 1)[1].split("\n## ", 1)[0]
     assert hooks.strip() == "(the overseer wrote nothing under this heading)", hooks
     block = _refused_block(home)
@@ -76,7 +80,7 @@ def test_misordered_headings_are_put_back_in_order_with_their_text(tmp_path, mon
 
     assert (result.status, result.code) == ("applied", 0), result
     report = _published(home)
-    assert _heading_order(report) == list(HEADINGS)
+    assert _heading_order(report) == list(PUBLISHED_HEADINGS)
     examined = report.split("## Examined\n", 1)[1].split("\n## ", 1)[0]
     assert "- the examined line" in examined, examined
     block = _refused_block(home)

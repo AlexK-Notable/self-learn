@@ -775,7 +775,8 @@ field is absent; `[]`, a decision that nothing is checkable, counts as having
 premises); `broken_probes` (a written probe `unavailable` on the last three sweeps in
 a row, named by lesson, premise and reason); `failing_placements` (a placement premise,
 `<lesson>@reach`, `@writable` or `@intact`, failing on two sweeps running);
-`unmeasurable_placements`; `sweep` (when it last finished, its last status, how many
+`unmeasurable_placements`; `sweep` (`last_finished_at`, which is empty until a sweep has finished, never the
+time of an unfinished attempt; `last_attempt_at`; its last status; how many
 problems it logged); and `refreshed_this_week` (the `self-learn: premises refresh`
 commits of the last seven days, each with the premise ids and their
 `<before> -> <after>` lines, the sweep's code-only re-baselines, so a change made with
@@ -794,7 +795,9 @@ subject, by, note}`: `by` is `human` or `agent` from a `By:` trailer, `none` whe
 commit has no trailer (the commit cannot say whether a person or an agent ran it); the
 note is the commit body without its trailer paragraph, one line, at most 240
 characters, `(no reason recorded)` when empty, and a stub naming the rule when the
-secret scan matches it (a hit in any stage file refuses the whole run). At most 60
+secret scan matches it, and a subject the scan matches is replaced whole by
+`(withheld)` (a hit in any stage file refuses the whole run, so none may reach one; a
+broken probe's reason and a refresh's change lines are scanned and withheld the same way). At most 60
 steps ride in the packet, newest first, and `total` counts all of them. `state:
 unavailable` (git could not be read) is never an empty week.
 

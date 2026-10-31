@@ -146,6 +146,19 @@ def test_a_note_that_trips_the_secret_scan_is_withheld(repo):
     assert token not in repr(census)
 
 
+def test_a_short_secret_in_a_subject_is_withheld_with_the_whole_subject(repo):
+    """A hit the old 40-character rule left in place (an AWS key is 20): the
+    subject would reach health.yaml and the run's own secret scan would refuse
+    the overseer every week until the commit left the window."""
+    key = "AK" + "IA" + "ABCDEFGHIJKLMNOP"
+    _commit(repo, f"self-learn: note {key}", days_ago=2)
+    _commit(repo, "self-learn: note lrn-0000a002", days_ago=1)
+    census = _census(repo)
+    assert "self-learn: note lrn-0000a002" in _subjects(census)  # control: the scan reads subjects
+    assert "(withheld)" in _subjects(census)
+    assert key not in repr(census)
+
+
 def test_the_cap_keeps_the_newest_and_counts_the_rest(repo):
     for n in range(5):
         _commit(repo, f"self-learn: reject lrn-0000a00{n}", days_ago=5 - n)

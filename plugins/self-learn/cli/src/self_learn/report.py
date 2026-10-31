@@ -299,7 +299,11 @@ def hand_steps(
         hits = scan.scan(text) or scan.scan(subject)
         if hits:
             text = f"(withheld: the secret scan matched {hits[0].rule})"
-            subject = re.sub(r"\S{40,}", "...", subject)
+            # The whole subject goes, not only its long runs: a short hit
+            # (a credential assignment, a 20-character key) would otherwise
+            # reach health.yaml and make the run's own secret scan refuse
+            # the overseer every week until the commit leaves the window.
+            subject = "(withheld)"
         steps.append(
             {
                 "commit": short.strip(),

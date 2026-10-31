@@ -381,10 +381,12 @@ def premise_facts(
         placed, unparseable = premise_sweep.routed_lessons(home)
         history = premise_sweep.read_history(cache)
         state = premise_sweep.read_state(cache)
-        finished = state.get("last_finished_at") or state.get("last_attempt_at")
         errors = state.get("errors")
         row["sweep"] = {
-            "last_finished_at": finished,
+            # Never the attempt time in its place: a sweep that started and
+            # never finished must not read as one that did.
+            "last_finished_at": state.get("last_finished_at"),
+            "last_attempt_at": state.get("last_attempt_at"),
             "last_status": state.get("last_status"),
             "problems_last_time": len(errors) if isinstance(errors, list) else 0,
         }
@@ -405,7 +407,7 @@ def premise_facts(
                 if len(tail) == need and all(r.get("state") == premises.OBS_UNAVAILABLE for r in tail):
                     broken.append(
                         {"lesson": rec.id, "premise": pid,
-                         "reason": _one_line(str(tail[-1].get("reason") or ""), 100)}
+                         "reason": _staged_reason(tail[-1].get("reason"))}
                     )
             for pid in premises.PLACEMENT_PREMISE_IDS:
                 rows_ = history.get((rec.id, pid), [])
@@ -425,6 +427,14 @@ def premise_facts(
     row["state"] = "ok"
     row["refreshed_this_week"] = premise_refreshes(home, now=now)
     return row
+
+
+def _staged_reason(raw: Any) -> str:
+    """A probe's reason as staged: one short line, and withheld whole when the
+    secret scan matches it (a probe's error text can echo what it read)."""
+    text = _one_line(str(raw or ""), 100)
+    hits = scan.scan(text)
+    return f"(withheld: the secret scan matched {hits[0].rule})" if hits else text
 
 
 def hand_steps_row(home: Path | str, *, now: datetime | None = None) -> dict[str, Any]:
