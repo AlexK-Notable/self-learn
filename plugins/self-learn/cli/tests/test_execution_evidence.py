@@ -204,6 +204,9 @@ _THREADED_VERBS = (
     # E1 (2026-10-10): replace threads the execution ref to its own route
     # commit, whose subject starts `self-learn: replace <first id> `.
     "replace",
+    # S-NEXT-cures-f: restate threads the ref to its own commit, whose subject
+    # starts `self-learn: restate <closed id> `.
+    "restate",
 )
 
 
@@ -288,6 +291,17 @@ def _invoke_threaded_verb(home, verb: str):
             no_push=True,
             execution=ref,
             actor="steward",
+        )
+    elif verb == "restate":
+        verbs.reject(home, rid, no_push=True)
+        result = verbs.restate_lesson(
+            home,
+            rid,
+            because="the rejected line named the wrong cause",
+            trigger="When a check runs",
+            instruction="read its own pass line.",
+            no_push=True,
+            execution=ref,
         )
     else:
         assert verb == "revise"

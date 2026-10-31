@@ -69,6 +69,7 @@ the skills root hosts its own CLAUDE.md canon).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import shutil
@@ -262,6 +263,9 @@ __all__ = [
     "replace_destination",
     "replace_lesson",
     "replace_applied_as",
+    "restate_applied",
+    "restate_key_of",
+    "restate_lesson",
     "reroute",
     "rescope",
     "reject",
@@ -7140,6 +7144,7 @@ def _replace_text_sections(
     context: str | None,
     text_from: str | None,
     type: str | None,
+    verb: str = "replace",
 ) -> tuple[str, dict[str, str], Record | None]:
     """The new lesson's type and its sections (heading -> stripped text) as
     the line names them, or -- with ``text_from`` -- as the named lesson
@@ -7154,7 +7159,7 @@ def _replace_text_sections(
     }
     for key, value in given.items():
         if not isinstance(value, str) or not value.strip():
-            raise SheetLineUsageError(f"replace: {key} must be non-empty text")
+            raise SheetLineUsageError(f"{verb}: {key} must be non-empty text")
     if text_from is not None:
         if given:
             raise SheetLineUsageError(
@@ -7172,12 +7177,12 @@ def _replace_text_sections(
     behavior = "trigger" in given or "instruction" in given
     if behavior and "fact" in given:
         raise SheetLineUsageError(
-            "replace: a lesson is behavior (trigger + instruction) or knowledge "
+            f"{verb}: a lesson is behavior (trigger + instruction) or knowledge "
             "(fact), never both"
         )
     if behavior:
         if "trigger" not in given or "instruction" not in given:
-            raise SheetLineUsageError("replace: a behavior lesson needs both trigger and instruction")
+            raise SheetLineUsageError(f"{verb}: a behavior lesson needs both trigger and instruction")
         new_type = "behavior"
         sections = {"Trigger": given["trigger"].strip(), "Instruction": given["instruction"].strip()}
     elif "fact" in given:
@@ -7185,10 +7190,11 @@ def _replace_text_sections(
         sections = {"Fact": given["fact"].strip()}
     else:
         raise SheetLineUsageError(
-            "replace needs the new text (trigger + instruction, or fact) or text_from"
+            f"{verb} needs the new text (trigger + instruction, or fact)"
+            + (" or text_from" if verb == "replace" else "")
         )
     if type is not None and type != new_type:
-        raise SheetLineError(f"replace: the text given is a {new_type} lesson, not {type}")
+        raise SheetLineError(f"{verb}: the text given is a {new_type} lesson, not {type}")
     if "context" in given:
         sections["Context"] = given["context"].strip()
     return new_type, sections, None
@@ -7870,6 +7876,295 @@ def replace_result(
         result, action="replace", record_id=record_id, warnings=warnings,
         new_record_id=made.id, compiled_line=line,
     )
+
+
+# ------------------------------------------------------- cures-f restate
+#
+# S-NEXT-cures-f (the 2026-10-30 hand-maintenance cures, C4): the overseer may
+# write a corrected lesson as a NEW PENDING lesson, which the steward then
+# decides the way it decides a mined one. `restate` names a lesson that is
+# closed -- rejected, or retired -- and leaves it exactly as it is: a
+# rejection a person made stands, and nothing here reopens it. The new lesson
+# is `source: rewrite`, carries the old lesson's evidence, and holds one note
+# written by the actor (`by: overseer`) that names the lesson it restates and
+# the reason. The old lesson gets one note back (`restated as lrn-new`), whose
+# key is the state read `batch.classify` and the overseer's crash recovery use.
+# A lesson that is still open (pending, deferred) or placed (routed) is
+# corrected with `replace`, which takes over from it; `restate` refuses those
+# by name. Only the overseer and a person's own sheet may write one
+# (`batch.RESTATE_REFUSED_ACTORS`).
+
+#: The text keys of a `restate` line: the same four as a `replace` line.
+RESTATE_TEXT_KEYS = REPLACE_TEXT_KEYS
+
+
+@dataclass
+class _RestatePlan:
+    """What :func:`_preflight_restate` resolved. ``record`` is the composed new
+    lesson, in memory only, or ``None`` when the closed lesson already carries
+    this restatement (``done``)."""
+
+    anchor_id: str
+    key: str
+    record: Record | None
+    project_path: Path | None
+    done: bool
+    note_by: str
+
+
+def _restate_key(
+    new_type: str, kind: str | None, sections: dict[str, str], to: str | None
+) -> str:
+    """The idempotence token of a `restate` line: a digest of the new lesson's
+    type, kind, bucket and text, so the same line applied twice writes one
+    lesson. Stored as the `key` of the closed lesson's note."""
+    payload = json.dumps(
+        [new_type, kind, to, sorted(sections.items())], ensure_ascii=False
+    )
+    return "restate-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def restate_key_of(home: Path | str, fields: dict) -> str | None:
+    """The idempotence token for a `restate` line's own fields, or ``None``
+    when its text is malformed (that is the verb's refusal, at dispatch)."""
+    try:
+        new_type, sections, _source = _replace_text_sections(
+            Path(home), trigger=fields.get("trigger"),
+            instruction=fields.get("instruction"), fact=fields.get("fact"),
+            context=fields.get("context"), text_from=None, type=fields.get("type"),
+            verb="restate",
+        )
+    except VerbError:
+        return None
+    return _restate_key(new_type, fields.get("kind"), sections, fields.get("to"))
+
+
+def restate_applied(home: Path | str, record_id: str, fields: dict) -> bool:
+    """``batch.classify``'s state read for a ``restate`` line: the closed
+    lesson already carries the note this line's text would leave. Never
+    raises."""
+    key = restate_key_of(home, fields)
+    if key is None:
+        return False
+    try:
+        anchor = read_record_or_refuse(find_record_path(Path(home), record_id))
+    except (LedgerOpsError, VerbError):
+        return False
+    return anchor.note_has_key(key)
+
+
+def _compose_restatement(
+    anchor: Record,
+    *,
+    scope: str,
+    new_type: str,
+    kind: str | None,
+    sections: dict[str, str],
+    record_id: str,
+    note_by: str,
+    because: str,
+    key: str,
+) -> Record:
+    """The restated lesson, in memory: ``source: rewrite``, pending, no
+    ``supersedes`` (the old lesson is left alone), the old lesson's evidence
+    (so the steward's pack has real material to check), and one note by
+    *note_by* naming the lesson it restates. Never written here."""
+    evidence = [dict(entry) for entry in anchor.evidence]
+    if new_type == "behavior":
+        if kind is None and anchor.type == "behavior":
+            kind = anchor.kind
+        record = Record.create(
+            type="behavior", scope=scope, source="rewrite", kind=kind,
+            trigger=sections.get("Trigger"), instruction=sections.get("Instruction"),
+            context=sections.get("Context"), evidence=evidence, record_id=record_id,
+        )
+    else:
+        if kind is not None:
+            raise SheetLineError("restate: kind applies to behavior lessons only")
+        record = Record.create(
+            type="knowledge", scope=scope, source="rewrite", fact=sections.get("Fact"),
+            context=sections.get("Context"), evidence=evidence, record_id=record_id,
+        )
+    record.append_note(
+        f"restates {anchor.id} ({anchor.status}): {' '.join(because.split())}",
+        by=note_by, key=key,
+    )
+    return record
+
+
+def _restated_words(sections: dict[str, str]) -> dict[str, str]:
+    """The words of a lesson that decide whether a restatement is a new
+    version: trigger, instruction and fact, with each run of white space read
+    as one space. Context is left out: a lesson with the same trigger and
+    instruction and a new context is still the same lesson."""
+    return {
+        key: " ".join(str(sections[key]).split())
+        for key in ("Trigger", "Instruction", "Fact")
+        if sections.get(key)
+    }
+
+
+def _preflight_restate(
+    home: Path,
+    record_id: str,
+    *,
+    trigger: str | None,
+    instruction: str | None,
+    fact: str | None,
+    context: str | None,
+    type: str | None,
+    kind: str | None,
+    to: str | None,
+    because: str,
+    note: str | None,
+    by: str | None,
+    actor: str = "human",
+) -> _RestatePlan:
+    """Every check `restate` makes before any lock, in the order the verb runs
+    them -- shared with ``batch.dry_run`` (S-71 §6), so the preview refuses
+    what the run would. Writes nothing.
+
+    1. The line: ``because``, ``by``, the text keys (one type), the line's own
+       text secret-scanned.
+    2. The closed lesson: its file scanned, read, and the idempotence read (it
+       already carries this line's note: ``done``).
+    3. Its status: a rejected or retired lesson only. An open or placed lesson
+       is corrected with ``replace``; a replaced one with its successor.
+    4. The text: it must differ from the closed lesson's own words (the same
+       words back in the queue are a reopen by another route).
+    5. The composed lesson, its bucket (``to``, else the closed lesson's own),
+       its whole-record secret scan, and the loaded-text check."""
+    if not isinstance(because, str) or not because.strip():
+        raise SheetLineUsageError("restate needs `because` (it rides the commit body)")
+    if by is not None and by not in ROUTING_BY_VALUES:
+        raise VerbUsageError(f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}")
+    new_type, sections, _source = _replace_text_sections(
+        home, trigger=trigger, instruction=instruction, fact=fact, context=context,
+        text_from=None, type=type, verb="restate",
+    )
+    _scan_or_refuse([], note, texts=(
+        *((key, value) for key, value in (
+            ("trigger", trigger), ("instruction", instruction),
+            ("fact", fact), ("context", context),
+        )), ("because", because),
+    ))
+    anchor_path = find_record_path(home, record_id)
+    _scan_or_refuse([anchor_path], None)
+    anchor = read_record_or_refuse(anchor_path)
+    key = _restate_key(new_type, kind, sections, to)
+    # An agent's note names the agent: the runner's actor, never the line's own
+    # `by:` (the steward's brief and the By: trailer read it; a line cannot
+    # sign a restatement as a person's). A person's own sheet may name `by`.
+    note_by = actor if actor != "human" else (by or "human")
+    if anchor.note_has_key(key):
+        return _RestatePlan(record_id, key, None, None, True, note_by)
+    if anchor.status in RESOLVABLE_STATUSES:
+        raise SheetLineError(
+            f"restate: {record_id} is {anchor.status!r}, not closed -- an open or placed "
+            "lesson is corrected with `replace`, which takes over from it; `restate` is "
+            "for a lesson that was rejected or retired and must stay as it is"
+        )
+    if anchor.status == "superseded" and records_mod.is_replacement(anchor.superseded_by):
+        raise SheetLineError(
+            f"restate: {record_id} was replaced by {anchor.superseded_by} -- restate or "
+            "replace that lesson instead"
+        )
+    if new_type == anchor.type and _restated_words(sections) == _restated_words(
+        _body_sections(anchor)
+    ):
+        raise SheetLineError(
+            f"restate: the text given for {record_id} is the same as the lesson's own "
+            f"({anchor.status}); that would put the same words back in the queue, which "
+            "is a reopen by another route. Write a version that answers what the "
+            "evidence shows, or leave the lesson closed"
+        )
+    scope, _bucket_dir, project_path = _replace_bucket(home, anchor_path, to)
+    record = _compose_restatement(
+        anchor, scope=scope, new_type=new_type, kind=kind, sections=sections,
+        record_id=records_mod.generate_id(), note_by=note_by, because=because, key=key,
+    )
+    findings = secret_scan(record.to_text())
+    if findings:
+        raise SecretRefusal(
+            "secret scan hit in the composed lesson -- refusing this restate "
+            "(P2-7; no bypass):\n" + format_refusal(findings),
+            findings,
+        )
+    _abort_if_loaded_text_cut(record, "claude-md")
+    return _RestatePlan(record_id, key, record, project_path, False, note_by)
+
+
+def restate_lesson(
+    home: Path | str,
+    record_id: str,
+    *,
+    because: str,
+    trigger: str | None = None,
+    instruction: str | None = None,
+    fact: str | None = None,
+    context: str | None = None,
+    type: str | None = None,
+    kind: str | None = None,
+    to: str | None = None,
+    note: str | None = None,
+    by: str | None = None,
+    no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
+    actor: str = "human",
+) -> VerbResult:
+    """The sheet verb ``restate`` (S-NEXT-cures-f, C4): write a corrected
+    version of the closed lesson *record_id* as a new PENDING lesson, and
+    leave *record_id* as it is (status, resolution and text untouched; it only
+    gains one note naming the new lesson). One ledger commit, subject
+    ``self-learn: restate lrn-old → lrn-new (pending)``, under the ledger lock
+    from the first write. ``because`` rides the commit body and both notes.
+    The returned :class:`VerbResult` names the new lesson (``new_record_id``)."""
+    home = Path(home)
+    plan = _preflight_restate(
+        home, record_id, trigger=trigger, instruction=instruction, fact=fact,
+        context=context, type=type, kind=kind, to=to, because=because, note=note,
+        by=by, actor=actor,
+    )
+    if plan.done or plan.record is None:
+        raise VerbError(
+            f"restate: {record_id} already carries this restatement -- nothing to do"
+        )
+    record = plan.record
+    body = because.strip() + (f"\n\n{note.strip()}" if note and note.strip() else "")
+    message = f"self-learn: restate {record_id} → {record.id} (pending)"
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            anchor_path = find_record_path(home, record_id)
+            anchor = Record.from_path(anchor_path)
+            if anchor.note_has_key(plan.key):
+                raise VerbError(
+                    f"restate: {record_id} already carries this restatement -- nothing to do"
+                )
+            path = create_record(home, record, project_path=plan.project_path)
+            touched = [path]
+            meta = path.parent.parent / "meta.yaml"
+            if meta.is_file():
+                touched.append(meta)
+            anchor.append_note(
+                f"restated as {record.id}: {' '.join(because.split())}",
+                by=plan.note_by, key=plan.key,
+            )
+            anchor.write(anchor_path)
+            touched.append(anchor_path)
+            staged, sha = _commit_ledger(
+                home, touched, message, _body_with_by_trailer(body, None, execution)
+            )
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="restate", record_id=record_id, commit_message=message,
+            commit_sha=sha, staged=staged, push=push, sentinel_owned=hold.owned,
+            new_record_id=record.id,
+        )
+    finally:
+        hold.release()
 
 
 # --------------------------------------------------------- U20 commit-drift
@@ -8900,6 +9195,7 @@ def reconsider(
     case: str,
     by: str | None = None,
     no_push: bool = False,
+    any_status: bool = False,
 ) -> VerbResult:
     """U5 (`commands/review.md` ~160-186, `02-schema.md` §2/§3a): record
     a successor decision against a record whose prior resolution (route,
@@ -8933,7 +9229,15 @@ def reconsider(
     status (:data:`_OUTCOME_APPLICABLE_STATUSES`). A genuinely UNKNOWN
     id stays a bare :class:`LedgerOpsError` (exit 64, unwrapped) —
     `find_record_path` runs first, outside every wrap, the same
-    contract `reject`/`defer`/`reopen` pin."""
+    contract `reject`/`defer`/`reopen` pin.
+
+    S-NEXT-cures-f (C8): *any_status* skips the two status checks above and
+    writes the pointer for a lesson in any status. The overseer applies its own
+    ``kind: reconsider`` successor's sheet, and that sheet may re-decide a
+    lesson whose earlier decision failed to apply (still ``pending``), which
+    the status checks refuse; the pointer is a trace, and whether the sheet's
+    line then changes the lesson is that line's own preview. The case check
+    (:func:`cases.require_reconsider_case`) and the idempotence read still run."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _by_trailer(by)  # validates `by` before any lock/mutation
@@ -8953,19 +9257,22 @@ def reconsider(
             commit_message=f"self-learn: reconsider {record_id} (case {case})",
             commit_sha=gitops.head_sha(home), staged=[], push=None,
         )
-    try:
-        _, record = require_status(
-            home, record_id, RECONSIDERABLE_STATUSES, verb="reconsider"
-        )
-    except LedgerOpsError as exc:
-        raise VerbError(str(exc)) from exc
-    outcome = str(case_fm.get("outcome") or "")
-    applicable = _OUTCOME_APPLICABLE_STATUSES.get(outcome, frozenset())
-    if record.status not in applicable:
-        raise VerbError(
-            f"reconsider {record_id}: {case}'s outcome {outcome!r} does not "
-            f"apply to a {record.status!r} record"
-        )
+    if any_status:
+        record = existing_record
+    else:
+        try:
+            _, record = require_status(
+                home, record_id, RECONSIDERABLE_STATUSES, verb="reconsider"
+            )
+        except LedgerOpsError as exc:
+            raise VerbError(str(exc)) from exc
+        outcome = str(case_fm.get("outcome") or "")
+        applicable = _OUTCOME_APPLICABLE_STATUSES.get(outcome, frozenset())
+        if record.status not in applicable:
+            raise VerbError(
+                f"reconsider {record_id}: {case}'s outcome {outcome!r} does not "
+                f"apply to a {record.status!r} record"
+            )
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -9010,16 +9317,119 @@ REOPEN_ADMITTED_STATUSES = REOPENABLE_STATUSES | frozenset({"superseded"})
 _REOPEN_ADMITTED_STATUSES = REOPEN_ADMITTED_STATUSES
 
 
+#: S-NEXT-cures-f (C4): the actors a `reopen` of a lesson a PERSON rejected is
+#: refused for. The overseer may not put a person's rejection back in the
+#: queue; it writes a corrected lesson with `restate`, or asks the user a
+#: question that names the reject. The steward is not listed: its inputs
+#: never include a rejected lesson, and it reopens only ones it or the
+#: overseer rejected. Keyed on the runner's actor, never the line's `by:`.
+REOPEN_PERSON_REJECT_REFUSED_ACTORS = frozenset({"overseer"})
+
+
+def person_reject_case(
+    home: Path, record_id: str, *, history: Iterable[dict] | None = None
+) -> str:
+    """Why a rejected lesson counts as a person's decision, in words, or the
+    empty string when the steward or the overseer decided it.
+
+    The ledger does not store who rejected a lesson, so this reads the cases.
+    A case speaks for the lesson's CURRENT rejection when all of these hold:
+
+    * its OUTCOME is `reject` and it names the lesson (any other case that
+      merely names it, such as a `no-action` case the overseer writes beside a
+      `restate`, a `defer` or a `parked` case, says nothing about who rejected
+      it);
+    * it is open, or every case after it in its supersede chain is a
+      `reconsider` case whose own outcome is not `reject`. That is the S-76
+      way the overseer corrects a steward's wrong reject: its reconsider case
+      supersedes the steward's reject case and its sheet is [reopen, route].
+      The reconsider case is recorded before the sheet applies, so at the
+      moment of the reopen the steward's case is already superseded but the
+      lesson is still the one that case rejected. A chain that runs through
+      any other case (or through a reconsider whose outcome is another
+      reject) is not followed: that case is no longer behind the rejection;
+    * it was opened AFTER the lesson's latest displaced rejection. A `reopen`
+      (or a reconsider-widened `defer`/`retire`/`replaced`) displaces the
+      rejection into `history` as a `resolution` entry whose status is
+      `rejected`, with the time it happened; a reject case opened at or before
+      that time belongs to the rejection that entry displaced, not to a later
+      one. (So an agent's reject, a reopen, then a person's hand reject leaves
+      the agent's old case out, and the hand reject stands as a person's.)
+      *history* is the lesson's own, read from the record when not passed.
+
+    Of the cases left the newest decides: one a person recorded is the
+    person's decision; one the steward or the overseer recorded is the
+    agent's. With none left (a hand reject through the CLI, which writes no
+    case) the ledger cannot show that an agent decided it, so it is the
+    person's. A tie in time between a person's reject case and an agent's goes
+    to the person; so does a case opened in the same second as the latest
+    displacement (times have second precision). A lesson an agent rejected is
+    the overseer's to reconsider (S-76); only a person's is protected here."""
+    hand = "no case an agent recorded covers it, so it was rejected by hand"
+    try:
+        if history is None:
+            history = Record.from_path(find_record_path(home, record_id)).history
+        rows = cases.list_cases(home, record_id=record_id)
+    except (cases.CaseError, LedgerOpsError, RecordError, OSError, ValueError):
+        return hand
+    by_id = {str(row.get("case")): row for row in rows}
+    displaced = max(
+        (
+            str(entry.get("at") or "")
+            for entry in history
+            if entry.get("event") == "resolution" and entry.get("status") == "rejected"
+        ),
+        default="",
+    )
+
+    def behind_the_rejection(row: dict) -> bool:
+        if row.get("outcome") != "reject":
+            return False
+        if displaced and str(row.get("opened_at") or "") <= displaced:
+            return False
+        seen = {str(row.get("case"))}
+        current = row
+        while current.get("superseded_by"):
+            successor = by_id.get(str(current["superseded_by"]))
+            if (
+                successor is None
+                or str(successor.get("case")) in seen
+                or successor.get("kind") != "reconsider"
+                or successor.get("outcome") == "reject"
+            ):
+                return False
+            seen.add(str(successor.get("case")))
+            current = successor
+        return True
+
+    standing = [row for row in rows if behind_the_rejection(row)]
+    if not standing:
+        return hand
+    newest = max(str(row.get("opened_at") or "") for row in standing)
+    latest = [row for row in standing if str(row.get("opened_at") or "") == newest]
+    for row in latest:
+        if row.get("actor") == "human":
+            return f"case {row.get('case')}, which a person recorded"
+    if any(row.get("actor") in ("steward", "overseer") for row in latest):
+        return ""
+    return hand
+
+
 def _preflight_reopen(
     home: Path,
     record_id: str,
     *,
     note: str | None,
     by: str | None,
+    actor: str = "human",
 ) -> None:
     """S-71 §6: `reopen`'s checks before any lock (status, then the replacement
     gate) — moved here verbatim so the verb and `batch.dry_run` run the SAME
-    checks, in the same order."""
+    checks, in the same order. *actor* is the runner's own (`batch.run`'s,
+    never a sheet line's `by`): an actor in
+    :data:`REOPEN_PERSON_REJECT_REFUSED_ACTORS` may not reopen a lesson a
+    person rejected (S-NEXT-cures-f), checked after the status gate so its
+    words name a rejected lesson."""
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
     _by_trailer(by)  # validates `by` before any lock/mutation
@@ -9042,6 +9452,16 @@ def _preflight_reopen(
             f"a replacement ({record.superseded_by}); a live successor "
             f"exists, use reconsider instead of reopen"
         )
+    if record.status == "rejected" and actor in REOPEN_PERSON_REJECT_REFUSED_ACTORS:
+        why = person_reject_case(home, record_id, history=record.history)
+        if why:
+            raise NeedsPerson(
+                f"record {record_id} is 'rejected' by a person ({why}); the {actor} "
+                "does not reopen a person's rejection. Write the corrected lesson "
+                "with `restate` (a new pending lesson; this one stays rejected), or "
+                "ask the user a question in questions.yaml that names "
+                f"{record_id} and its reject"
+            )
 
 
 def reopen(
@@ -9052,6 +9472,7 @@ def reopen(
     by: str | None = None,
     no_push: bool = False,
     execution: execution_evidence.ExecutionRef | None = None,
+    actor: str = "human",
 ) -> VerbResult:
     """Return a REJECTED record, or a wrongly RETIRED one, to the draft
     plane (U-verbs §4.2; retirement admitted S-67) — the inverse motion
@@ -9076,9 +9497,11 @@ def reopen(
     unlike a replacement's live successor.
 
     Fold r1 (F3): *by*, when given, rides the commit body as its own
-    trailing ``By:`` paragraph."""
+    trailing ``By:`` paragraph. *actor* is the runner's (`batch.run`'s): the
+    overseer is refused a lesson a person rejected
+    (:data:`REOPEN_PERSON_REJECT_REFUSED_ACTORS`, S-NEXT-cures-f)."""
     home = Path(home)
-    _preflight_reopen(home, record_id, note=note, by=by)
+    _preflight_reopen(home, record_id, note=note, by=by, actor=actor)
 
     hold = sentinel.hold()
     sentinel.heartbeat()

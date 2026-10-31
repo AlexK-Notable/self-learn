@@ -732,6 +732,9 @@ recorded by the steward or the overseer, never by a person (formats/case-correct
 A catalogue change that decides no parked case (a shortening, a merge, a correction no case
 covers) is a kind: maintenance case in its own case-<name>.yaml/sheet-<name>.yaml pair, as many
 as you need; a `replace` line rewrites a lesson's words (formats/README.md says how).
+A lesson a person rejected is never reopened by you: a `restate` line writes a corrected
+version as a new pending lesson for the steward to decide, and a question names the reject
+(formats/README.md says how).
 The runner alone records cases and applies sheets. Never run a verb.
 Never route a lesson to `reference` (a references/ shelf file): the runner refuses it from you.
 {formats.FORMATS_DIR}/README.md says where such a lesson goes instead, and how a lesson already
@@ -1774,7 +1777,8 @@ def _pair_rules_problem(
     always-loaded combined test (the steward's rule, one copy), then E3b's
     two `replace` rules (`cases.replace_items_problem`: every lesson a
     replace line changes is in the case's records, and the case accounts
-    for the old text in `decision.rewrite`)."""
+    for the old text in `decision.rewrite`), and the same first rule for a
+    `restate` line (`_restate_items_problem`)."""
     case_data = _yaml_mapping(case_file)
     lines = [{"id": item.id, "verb": item.verb, **item.fields} for item in sheet]
     return _held_pair_problem(
@@ -1784,7 +1788,23 @@ def _pair_rules_problem(
         resolve=always_loaded.proposal_resolver(home),
         placement=always_loaded.placement_resolver(home),
         label=case_file.name,
-    ) or cases.replace_items_problem(case_data, lines, label=case_file.name)
+    ) or cases.replace_items_problem(
+        case_data, lines, label=case_file.name
+    ) or _restate_items_problem(case_data, lines, label=case_file.name)
+
+
+def _restate_items_problem(case_data: dict, lines: list[dict], *, label: str) -> str | None:
+    """A `restate` line's lesson is one of the case's records: the case is the
+    account of why the rejected lesson gets a corrected version, so it must
+    name that lesson (the case writer's own `replace` rule, for `restate`)."""
+    records = {str(rid) for rid in case_data.get("records") or []}
+    for line in lines:
+        if line.get("verb") == "restate" and str(line.get("id")) not in records:
+            return (
+                f"{label}: a restate line names {line.get('id')}, which the case does not "
+                "name in its records -- the case must cover every lesson it restates"
+            )
+    return None
 
 
 def _validate_maintenance_case(path: Path) -> None:
@@ -3300,11 +3320,20 @@ def _manifest_introduction(home: Path, run_id: str) -> str:
     return commits[0]
 
 
+#: C8 (S-NEXT-cures-f): the ledger roots a lesson's record file lives under --
+#: a skill bucket (`skills/`), a project bucket (`projects/`) or the user
+#: bucket (`user/`), the first three members of `ledger._LAYOUT`. Crash
+#: recovery looked in `skills` alone, so a lesson in a project or the user
+#: scope was never found at its proof commit and every verb but a move was
+#: reported as not established.
+_RECORD_ROOTS = ("skills", "projects", "user")
+
+
 def _record_at_commit(
     home: Path, sha: str, record_id: str
 ) -> tuple[Path, Record] | None:
     paths = gitops._git(  # noqa: SLF001 -- immutable candidate content
-        home, "ls-tree", "-r", "--name-only", sha, "--", "skills"
+        home, "ls-tree", "-r", "--name-only", sha, "--", *_RECORD_ROOTS
     ).stdout.splitlines()
     matches = [path for path in paths if Path(path).name == f"{record_id}.md"]
     if len(matches) != 1:
@@ -3358,6 +3387,12 @@ def _candidate_establishes(
         # Whether the whole line applied is `_mutation_proven_completed`'s
         # state read (`batch.replace_made`), never this commit's.
         return record.status == "superseded" and bool(record.superseded_by)
+    if verb == "restate":
+        # C4 (S-NEXT-cures-f): the proof commit left the closed lesson with the
+        # note this line's text carries (`verbs.restate_key_of`); the lesson's
+        # own status is untouched by design, so the note is the only evidence.
+        key = verbs.restate_key_of(home, item)
+        return key is not None and record.note_has_key(key)
     if verb == "note":
         key = item.get("key")
         return key is not None and record.note_has_key(cast(str, key))
@@ -3594,6 +3629,37 @@ def _item_settled(row: dict[str, Any]) -> bool:
     return state != "refused" or row.get("kind") not in _RETRIED_REFUSAL_KINDS
 
 
+def _stamp_reconsidered(home: Path, case_path: Path, case_id: str) -> None:
+    """C8 (S-NEXT-cures-f): give each lesson a ``kind: reconsider`` successor
+    covers its ``reconsidered`` history entry, the pointer from the lesson to
+    the case that revisited it -- what the steward's apply and a person's
+    `self-learn reconsider` already write (`verbs.reconsider`). Before this the
+    overseer's reconsider corrected the lesson through its sheet and left the
+    lesson's own history silent.
+
+    Run once the case is recorded, before its sheet applies, as the steward
+    does. It writes the pointer for a lesson in ANY status (`any_status`): the
+    overseer's reconsider may re-decide a lesson whose earlier decision never
+    applied (still pending), which `verbs.reconsider`'s status checks refuse;
+    whether the sheet's line then changes the lesson is that line's own
+    preview. Idempotent: a re-drive finds the entry and writes nothing.
+
+    This runs AFTER the case is recorded (and its predecessor superseded), so
+    it never refuses the case: a failure here (the ledger not being what it was
+    a moment ago) propagates, ends the run early, and the next resume drives
+    the stamp again. Refusing the case and its sheet at this point would leave
+    the predecessor superseded and the correction never applied."""
+    data = _yaml_mapping(case_path)
+    if data.get("kind") != "reconsider":
+        return
+    records = data.get("records")
+    for record_id in dict.fromkeys(records if isinstance(records, list) else []):
+        verbs.reconsider(
+            home, str(record_id), case=case_id, by="overseer",
+            no_push=True, any_status=True,
+        )
+
+
 def _run_manifest_sheet(
     home: Path,
     stage: Path,
@@ -3617,6 +3683,7 @@ def _run_manifest_sheet(
         raise OverseerError(
             f"reserved successor {case_id} returned unexpected id {successor}"
         )
+    _stamp_reconsidered(home, case_path, case_id)
     effective = batch.load_sheet(sheet_path, home=home)
     if (
         effective.sheet_sha != recipe["sheet_sha"]

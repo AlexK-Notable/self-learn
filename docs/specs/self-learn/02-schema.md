@@ -12,7 +12,7 @@ id: lrn-4c1e9a2f
 type: behavior            # behavior | knowledge
 scope: skill:home-assistant   # skill:<name> | project | user
 kind: anti-pattern        # behavior only: anti-pattern | surface-rule | reasoning-pattern
-source: teach             # teach | auto-memory | backlog | session | rewrite (S-79, S-85: written through replace)
+source: teach             # teach | auto-memory | backlog | session | rewrite (S-79, S-85: written through replace; S-NEXT-cures-f: also through restate)
 status: pending           # pending | routed | rejected | deferred | superseded
 created_at: 2026-07-12T09:14:00Z
 sightings: 2              # set when a merge proposal is collapsed at review
@@ -84,7 +84,7 @@ optional `## Context`. One lesson per record; a capture containing two
 lessons becomes two records. *Amended 2026-10-07 (S-79):* a `behavior`
 record may carry an optional `## Context` too (any number of lines, at
 most one such section), and `source: rewrite` marks a lesson
-written through `replace` (S-85; the actor stays in `routing.by` and the case). *Amended (S-84):* `teach --context` writes that section for a
+written through `replace` (S-85; the actor stays in `routing.by` and the case). *Amended (S-NEXT-cures-f):* `restate` also writes `source: rewrite`: a new `pending` lesson with no `supersedes`, beside a closed lesson it leaves alone; its one note by the actor names that lesson (see the `restate` verb under §3a.1). *Amended (S-84):* `teach --context` writes that section for a
 behavior lesson as it does for a knowledge lesson; the loaded text (Trigger and
 Instruction, or Fact) is the core of the lesson and `## Context` holds the
 background, as `skills/self-learn/references/lesson-writing.md` tells every writer.
@@ -422,6 +422,46 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   the field to the new lesson (`cases.REWRITE_FIELDS`), and by the sweep's code-only `refresh` re-baseline. Verbs
   and commit subjects: 11 §2.5. Shape, probe catalog, triggers and the
   three placement premises code derives (`@reach`, `@writable`, `@intact`, never stored): §3a.10.
+- **`restate`** *(S-NEXT-cures-f, C4)*: keys `trigger, instruction, fact, context, type, kind, to, because, note, by`
+  (`because` required; no `dest`, no `also`, no `text_from`). The line's `id` names a CLOSED lesson: `rejected`, or
+  retired (`superseded` with a `covered_by:` or `canon` value). It writes the corrected text as a NEW lesson in the
+  closed lesson's bucket (or `to`'s): `status: pending`, `source: rewrite`, `supersedes: null`, the closed lesson's
+  evidence copied, and one `notes[]` entry by the actor (`by: overseer`) `restates <old> (<status>): <because>` whose
+  `key` is `restate-` plus a digest of the new text. The closed lesson changes in one way only: it gains a `notes[]`
+  entry `restated as <new>: <because>` with the same key (annotation, any status; `resolution_note`, status and text
+  untouched). One ledger commit, subject `self-learn: restate lrn-old → lrn-new (pending)`, `because` as the body.
+  Refused by name (`bad-line`): a lesson that is `pending`, `deferred` or `routed` (corrected with `replace`), a
+  lesson replaced by a successor (restate or replace that lesson), text whose trigger and instruction (or fact) read
+  the same as the closed lesson's own once white space is folded (the same words back in the queue are a reopen by
+  another route; the context does not count), text of two types, a secret. A missing `because` is refused earlier,
+  when the sheet loads (`BatchError`, "missing required"). In the overseer's pairs a `restate` line's lesson must be
+  one of its case's `records` (`overseer.run._restate_items_problem`, the `replace` rule's first half; the pair is
+  dropped otherwise).
+  Idempotence: applied iff the closed lesson already carries a note with this text's key (the new lesson may be
+  decided, or rejected again, by then); the overseer's crash recovery reads the same note
+  (`overseer.run._candidate_establishes`). Open to the overseer and a person's sheet; the steward is refused by name
+  (`batch.RESTATE_REFUSED_ACTORS = {steward}`, and the verb is left out of its generated contract), so no actor both
+  writes and decides the lesson. The steward's brief shows the note on a pending lesson as
+  `[restated by the overseer] …`. `restate` joins the sheet verbs (`batch.PERMITTED_VERBS`; the count is not kept
+  here, as under `replace`).
+- **`reopen` and a person's rejection** *(S-NEXT-cures-f, C4)*: the overseer may not `reopen` a `rejected` lesson a
+  person rejected, in the run or in the preview: `NeedsPerson` (kind `needs-person`), naming the case and saying to
+  write the corrected lesson with `restate` or to ask the user a question that names the reject. "A person rejected
+  it" is read from the case ledger (`verbs.person_reject_case`), because a record does not store who rejected it. A case
+  speaks for the lesson's CURRENT rejection when it names the lesson, its outcome is `reject`, and (a) it is open, or
+  every case after it in its supersede chain is a `reconsider` case whose own outcome is not `reject` (the S-76
+  correction: the overseer's reconsider case supersedes the steward's reject case and is recorded before its
+  `[reopen, route]` sheet applies, so at the reopen no open case rejects; the chain is followed to the steward's case),
+  and (b) it was opened after the lesson's latest displaced rejection (a `reopen`, or a reconsider-widened
+  `defer`/`retire`/`replaced`, writes a `resolution` history entry with status `rejected` and its time; a case opened at
+  or before that time belongs to the rejection that entry displaced, so an agent's reject, a reopen and then a person's
+  hand reject leaves the agent's old case out). A case of any other outcome that names the lesson (the overseer's
+  `no-action` case beside a `restate`, a steward `defer`) says nothing about who rejected it. Of the cases left the
+  newest decides: one a person recorded makes it a person's rejection, one only the steward or the overseer recorded
+  does not (a tie in time goes to the person, and so does a case in the same second as the displacement). With none
+  left (a hand reject, which writes no case) it counts as a person's. A lesson an agent rejected stays the overseer's to
+  reopen or reconsider as before (S-76). Keyed on the runner's actor, never the line's `by:`; a person's sheet and
+  `self-learn reopen` are unchanged; the steward is not listed (its inputs never include a rejected lesson).
 - **`evidence` is append-only** — it may *gain* entries (cluster merges add
   the merged record's provenance) but existing entries are never rewritten
   or removed. *(Draft 1 listed `evidence` as immutable while also having the
@@ -1901,7 +1941,10 @@ covers every record the reconsider names and passes its freeze hash (what
 when it is not parked, was recorded by the steward or the overseer —
 never a case a person recorded (`actor: human`), which before S-76 could
 not happen because such a case is never parked; any other actor is a
-per-pair drop naming it. Phase B checks all of these before anything is
+per-pair drop naming it. *(Amended S-NEXT-cures-f:)* nor may the overseer
+`reopen` a lesson a person rejected; it writes the corrected lesson as a new
+pending one with `restate`, or asks the user a question that names the reject.
+Phase B checks all of these before anything is
 recorded. A reconsider whose phase-B preview (`batch.dry_run`, given the
 records the reconsider covers) refuses any of its lines is dropped there
 too, naming the refused line, so it never supersedes its predecessor
@@ -2713,9 +2756,15 @@ lesson (`batch` applies it as `reroute`), including to a path-scoped rule
 or, with the line's compile input, a hook — the fix may be a stronger
 surface or a hook, decided by the steward itself; the case's `outcome:
 route` now applies to a `routed` record (`verbs.reconsider`). The
-overseer's `kind: reconsider` successors do the same (its runner, unlike
-the steward's, writes no `reconsidered` history entry; the case's
-`supersedes` link is the record), and may name a case that is not parked
+overseer's `kind: reconsider` successors do the same (*amended
+S-NEXT-cures-f, C8:* its runner now writes the `reconsidered` history entry
+too, once the case is recorded and before its sheet applies —
+`verbs.reconsider(…, any_status=True)`, which skips the status and outcome
+checks so a lesson whose earlier decision never applied, still `pending`,
+is stamped as well; before, the case's `supersedes` link was the only
+record; the stamp runs after the case is recorded, so a failure in it ends the
+run early and the resume stamps again, never refusing the case and its sheet),
+and may name a case that is not parked
 — one that covers the same records, has not been superseded, passes its
 freeze hash, and was recorded by the steward or the overseer (§3a, S-76).
 
