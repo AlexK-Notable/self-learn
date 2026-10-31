@@ -204,6 +204,11 @@ _THREADED_VERBS = (
     # E1 (2026-10-10): replace threads the execution ref to its own route
     # commit, whose subject starts `self-learn: replace <first id> `.
     "replace",
+    # S-108: restate threads the ref to its own commit, whose subject
+    # starts `self-learn: restate <closed id> `.
+    "restate",
+    # S-104: `self-learn: premises <action> <id>`.
+    "premises",
 )
 
 
@@ -277,6 +282,13 @@ def _invoke_threaded_verb(home, verb: str):
         result = verbs.link_contradicts(
             home, rid, other, no_push=True, execution=ref
         )
+    elif verb == "premises":
+        # A premise with no probe: nothing is run on this machine.
+        result = verbs.premises(
+            home, rid, action="set",
+            premises=[{"id": "p1", "claim": "the store is not shared", "probe": None}],
+            no_push=True, execution=ref,
+        )
     elif verb == "replace":
         result = verbs.replace_lesson(
             home,
@@ -288,6 +300,17 @@ def _invoke_threaded_verb(home, verb: str):
             no_push=True,
             execution=ref,
             actor="steward",
+        )
+    elif verb == "restate":
+        verbs.reject(home, rid, no_push=True)
+        result = verbs.restate_lesson(
+            home,
+            rid,
+            because="the rejected line named the wrong cause",
+            trigger="When a check runs",
+            instruction="read its own pass line.",
+            no_push=True,
+            execution=ref,
         )
     else:
         assert verb == "revise"

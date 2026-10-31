@@ -57,6 +57,8 @@ CASE FILE's shape, not the CLI's input format for ``case record``):
           - {idea: <text>, now: loaded | context | field:<name> | dropped,
              why: <text>}              # `why` required for dropped
       skill: {name: <kebab>, why: <text>, lessons: [lrn-...]}
+                                       # required, lessons included, when
+                                       # parked_reason is skill-proposal
     dependencies:
       statements: [stmt-...]
       user_model: [um-...@r...]
@@ -106,6 +108,7 @@ __all__ = [
     "TRIGGERS",
     "OUTCOMES",
     "PARKED_REASONS",
+    "SKILL_PROPOSAL_REASON",
     "OBSERVE_KINDS",
     "PRESENTED_OUTCOMES",
     "COVERING_VALUES",
@@ -154,6 +157,8 @@ OUTCOMES = frozenset(
         "revise", "no-action", "parked",
     }
 )
+#: S-107: the parked reason of a skill proposal.
+SKILL_PROPOSAL_REASON = "skill-proposal"
 PARKED_REASONS = frozenset(
     {
         "hook", "always-loaded-user-scope", "broad-removal",
@@ -169,6 +174,14 @@ PARKED_REASONS = frozenset(
         # the steward decided and the ledger refused the decision's line for
         # a reason neither a retry nor a fresh decision can fix.
         "ledger-refused",
+        # S-107 (skill-writing plan D6, SK-b): chosen
+        # by the steward's model when lessons would be better held by one
+        # skill. The steward proposes a skill and never makes one; the
+        # lessons wait, held like every parked case's (S-81), for the
+        # overseer to build the skill, add them to an existing one, defer or
+        # decline. A case parked for this reason must carry the proposal in
+        # `decision.skill` (:func:`_skill_proposal_problem`).
+        SKILL_PROPOSAL_REASON,
     }
 )
 CONFIDENCE_VALUES = frozenset({"settled", "provisional"})
@@ -192,8 +205,14 @@ REWRITE_NOW_VALUES = frozenset({"loaded", "context", "dropped"})
 #: grounding fields ``replace`` carries over (D-AUTHOR §2.11) and the
 #: lesson's notes (the build plan's amended writing guidance, §1.4: "a note
 #: attached to the lesson").
+#: S-104: ``premises`` joins them -- what a lesson rests on
+#: belongs to the lesson, not to one wording of it, so a rewrite keeps it
+#: (``verbs._compose_replacement`` carries it over).
 REWRITE_FIELDS = frozenset(
-    {"verified_how", "incident_cost", "env", "generality", "evidence", "follow_up", "notes"}
+    {
+        "verified_how", "incident_cost", "env", "generality", "evidence", "follow_up",
+        "notes", "premises",
+    }
 )
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 OBSERVE_KINDS = frozenset(
@@ -635,6 +654,40 @@ def _skill_problem(block: object) -> str | None:
     return None
 
 
+def _skill_proposal_problem(decision: dict, records: list[str]) -> str | None:
+    """What a ``parked_reason: skill-proposal`` case lacks, or ``None``
+    (S-107; the skill-writing plan's §4.0 case shape:
+    "`parked_reason: skill-proposal` requires `decision.skill`"). Called
+    after :func:`_skill_problem` has checked the block's shape.
+
+    The proposal names every lesson the skill would hold, and that list
+    includes each lesson of the case's own ``records``: a lesson parked as
+    part of a proposed skill that the proposal leaves out would be held for
+    the overseer with nothing in the case asking about it. The list may
+    also name lessons outside ``records`` (placed lessons the steward does
+    not decide); they are part of the proposal, and the hold covers only
+    the case's ``records``, as for every parked case."""
+    block = decision.get("skill")
+    if block is None:
+        return (
+            f"parked_reason {SKILL_PROPOSAL_REASON} needs decision.skill: "
+            "{name, why, lessons} -- the skill you propose, why, and every lesson it would hold"
+        )
+    lessons = block.get("lessons") if isinstance(block, dict) else None
+    if not lessons:
+        return (
+            f"decision.skill.lessons is required on a {SKILL_PROPOSAL_REASON} case: "
+            "every lesson the proposed skill would hold"
+        )
+    missing = [rid for rid in records if rid not in lessons]
+    if missing:
+        return (
+            "decision.skill.lessons must name every lesson in the case's records; "
+            f"it leaves out {missing}"
+        )
+    return None
+
+
 def rewrite_required_problem(case_data: dict, items: object, *, label: str = "case") -> str | None:
     """Why a runner refuses this case, or ``None`` (E1, D-AUTHOR §6.2
     "required on a case with a `replace` item"): a case whose sheet carries
@@ -862,6 +915,11 @@ def check_case_data(data: dict, *, withhold_spans: bool = False) -> CaseFields:
             problem = problem_of(decision[key])
             if problem is not None:
                 raise CaseUsageError(f"case record: {problem}")
+    if parked_reason == SKILL_PROPOSAL_REASON:
+        # S-107: a skill proposal carries the skill.
+        problem = _skill_proposal_problem(decision, list(records_field))
+        if problem is not None:
+            raise CaseUsageError(f"case record: {problem}")
     confidence = decision.get("confidence")
     if confidence not in CONFIDENCE_VALUES:
         raise CaseUsageError(
@@ -1830,7 +1888,7 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
                     detail = item.get("detail")
                     made_suffix = (
                         f"; {' '.join(str(detail).split())}"
-                        if verb == "replace" and detail
+                        if verb in ("replace", "restate") and detail
                         and state in ("applied", "already-applied")
                         else ""
                     )

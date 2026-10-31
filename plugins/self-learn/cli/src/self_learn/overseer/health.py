@@ -7,6 +7,7 @@ ledger.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any, Iterable
 
 from ruamel.yaml import YAML
 
-from .. import conditions, gitops, report, settings, telemetry
+from .. import conditions, gitops, report, scan, settings, telemetry
 from ..always_loaded import is_always_loaded
 from ..ledger import discover_buckets
 from ..records import Record, RecordError, is_replacement
@@ -272,6 +273,187 @@ def _current_condition_items(home: Path) -> list[Any]:
     return items
 
 
+#: S-105 (premise-check design D11, unit U7): the lookback for the
+#: premise sweep's code-only refreshes, the same week the hand-step census
+#: covers (:data:`report.HAND_STEP_WINDOW_DAYS`).
+_REFRESH_WINDOW_DAYS = report.HAND_STEP_WINDOW_DAYS
+#: At most this many refresh commits ride in the packet; the rest are counted.
+_REFRESH_LIMIT = 30
+_REFRESH_SUBJECT_RE = re.compile(r"^self-learn: premises refresh (lrn-[0-9a-f]{8}) (.+)$")
+_PREMISE_CAUTION = (
+    "A list here is empty when the sweep has not run or its cache was lost, as well as "
+    "when nothing is wrong: read sweep.last_finished_at before taking an empty list as "
+    "good news. Placement premises are judged by current state; a broken probe is a "
+    "written probe with no reading on three sweeps in a row."
+)
+
+
+def _one_line(text: str, limit: int) -> str:
+    one = " ".join(str(text).split())
+    return one if len(one) <= limit else one[: limit - 1] + "…"
+
+
+def premise_refreshes(
+    home: Path | str, *, now: datetime | None = None, days: int = _REFRESH_WINDOW_DAYS,
+    limit: int = _REFRESH_LIMIT,
+) -> dict[str, Any]:
+    """The week's ``self-learn: premises refresh`` commits: baselines the
+    premise sweep re-recorded by CODE, with no model call and no decision, so
+    this row is the only place a person or the overseer can review them
+    (design D11). ``state`` is ``unavailable`` when git cannot be read: never
+    "no refreshes"."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    since = now - timedelta(days=days)
+    out: dict[str, Any] = {"state": "ok", "window_days": days, "total": 0, "commits": []}
+    try:
+        proc = gitops._git(
+            Path(home), "log", "--no-merges", f"--since={(since - timedelta(days=1)).date().isoformat()}",
+            "--grep=^self-learn: premises refresh ", "--format=%x1e%h%x1f%aI%x1f%s%x1f%b",
+        )
+    except (gitops.GitOpsError, OSError, UnicodeDecodeError) as exc:
+        return {**out, "state": "unavailable", "reason": _one_line(str(exc), 200)}
+    if proc.returncode != 0:
+        return {**out, "state": "unavailable",
+                "reason": _one_line(proc.stderr or proc.stdout or "git log failed", 200)}
+    rows: list[dict[str, Any]] = []
+    for chunk in proc.stdout.split("\x1e"):
+        if not chunk.strip():
+            continue
+        short, _, rest = chunk.partition("\x1f")
+        stamp, _, rest = rest.partition("\x1f")
+        subject, _, body = rest.partition("\x1f")
+        match = _REFRESH_SUBJECT_RE.match(subject.strip())
+        if match is None:
+            continue
+        try:
+            when = datetime.fromisoformat(stamp.strip()).astimezone(timezone.utc)
+        except ValueError:
+            continue
+        if when < since:
+            continue
+        # The body's first line is the runner's fixed sentence; the rest are
+        # "<premise id>: <before> -> <after>" (secret-scan clean by the
+        # premise rules, scanned again here because this is a stage file).
+        changes = [
+            _one_line(line, 200) for line in body.strip().splitlines()[1:] if line.strip()
+        ]
+        hits = scan.scan("\n".join(changes))
+        rows.append(
+            {
+                "commit": short.strip(),
+                "at": when.strftime("%Y-%m-%d %H:%MZ"),
+                "lesson": match.group(1),
+                "premises": match.group(2).split(),
+                "changes": [f"(withheld: the secret scan matched {hits[0].rule})"] if hits else changes,
+            }
+        )
+    rows.sort(key=lambda row: row["at"], reverse=True)
+    out["total"] = len(rows)
+    out["commits"] = rows[: max(int(limit), 0)]
+    return out
+
+
+def premise_facts(
+    home: Path | str, *, cache_dir: Path | None = None, now: datetime | None = None,
+) -> dict[str, Any]:
+    """The overseer's phase-B facts about the premise check (design D11,
+    ``02-schema.md`` §3a.10.8): how many placed lessons record no premises,
+    which written probes were `unavailable` on three sweeps in a row, which
+    placement premises are failing and how many could not be measured, when
+    the sweep last ran, and the week's code-only refreshes.
+
+    Reads the premise sweep's own cache and the ledger's git history; calls no
+    model and writes nothing. Every part that cannot be read says so
+    (``state: unavailable`` and a reason) instead of reading as zero, and with
+    ``premises.enabled`` false the row says the check is off and claims
+    nothing (lrn-6d21607e: an unreadable target must never read as clean)."""
+    from .. import premise_sweep, premises
+
+    home = Path(home)
+    row: dict[str, Any] = {"kind": "premise-check", "caution": _PREMISE_CAUTION}
+    try:
+        if not premise_sweep.enabled(home):
+            row.update(enabled=False, state="off",
+                       value="premises.enabled is false: no sweep runs and nothing is claimed here")
+            return row
+        row["enabled"] = True
+        cache = cache_dir if cache_dir is not None else premise_sweep.default_cache_dir(home)
+        placed, unparseable = premise_sweep.routed_lessons(home)
+        history = premise_sweep.read_history(cache)
+        state = premise_sweep.read_state(cache)
+        errors = state.get("errors")
+        row["sweep"] = {
+            # Never the attempt time in its place: a sweep that started and
+            # never finished must not read as one that did.
+            "last_finished_at": state.get("last_finished_at"),
+            "last_attempt_at": state.get("last_attempt_at"),
+            "last_status": state.get("last_status"),
+            "problems_last_time": len(errors) if isinstance(errors, list) else 0,
+        }
+        row["placed_lessons"] = len(placed)
+        row["unparseable_records"] = unparseable
+        row["without_premises"] = sum(1 for _bucket, rec in placed if rec.premises is None)
+        broken: list[dict[str, str]] = []
+        failing: list[str] = []
+        unmeasurable = 0
+        need = premise_sweep.BROKEN_PROBE_SWEEPS
+        for _bucket, rec in placed:
+            for premise in rec.premises or []:
+                if premise.get("probe") is None:
+                    continue
+                pid = str(premise.get("id"))
+                sig = premise_sweep._premise_sig(premise)  # noqa: SLF001 -- the sweep's own key
+                tail = [r for r in history.get((rec.id, pid), []) if r.get("psha") == sig][-need:]
+                if len(tail) == need and all(r.get("state") == premises.OBS_UNAVAILABLE for r in tail):
+                    broken.append(
+                        {"lesson": rec.id, "premise": pid,
+                         "reason": _staged_reason(tail[-1].get("reason"))}
+                    )
+            for pid in premises.PLACEMENT_PREMISE_IDS:
+                rows_ = history.get((rec.id, pid), [])
+                if not rows_:
+                    continue
+                judged = premise_sweep.judge_placement(rows_)
+                if judged.verdict == premises.VERDICT_UNAVAILABLE:
+                    unmeasurable += 1
+                elif judged.verdict == premises.VERDICT_MOVED and judged.confirmed:
+                    failing.append(f"{rec.id}{pid}")
+        row["broken_probes"] = broken
+        row["failing_placements"] = failing
+        row["unmeasurable_placements"] = unmeasurable
+    except Exception as exc:  # noqa: BLE001 -- health facts degrade, never break a run
+        row.update(state="unavailable", reason=_one_line(f"{type(exc).__name__}: {exc}", 200))
+        return row
+    row["state"] = "ok"
+    row["refreshed_this_week"] = premise_refreshes(home, now=now)
+    return row
+
+
+def _staged_reason(raw: Any) -> str:
+    """A probe's reason as staged: one short line, and withheld whole when the
+    secret scan matches it (a probe's error text can echo what it read)."""
+    text = _one_line(str(raw or ""), 100)
+    hits = scan.scan(text)
+    return f"(withheld: the secret scan matched {hits[0].rule})" if hits else text
+
+
+def hand_steps_row(home: Path | str, *, now: datetime | None = None) -> dict[str, Any]:
+    """The week's census of hand steps (``report.hand_steps``) as a phase-B
+    fact row (S-105, lane C): every ledger change made from a person's
+    or an agent's shell rather than by a job, so the overseer can name, for
+    each, the gap in self-learn that made the hand step necessary."""
+    census = report.hand_steps(home, now=now)
+    return {
+        "kind": "hand-steps-this-week",
+        **census,
+        "caution": (
+            "by: none means the commit carries no By trailer, so a person or an agent ran "
+            "it and the commit cannot say which. A step the user alone may take (a tier C "
+            "switch, an answer they typed) is by design."
+        ),
+    }
+
+
 def gather(home: Path | str) -> list[dict[str, Any]]:
     """Read and render the bounded catalogue-health packet."""
     resolved = Path(home)
@@ -303,6 +485,10 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         recurrence_suspects(gathered),
         never_fired_always_loaded(_always_loaded_ids(resolved), fired),
         condition_row,
+        # S-105: the premise check's facts (design D11) and the week's
+        # census of hand steps (hand-maintenance cures, lane C).
+        premise_facts(resolved),
+        hand_steps_row(resolved),
         {
             "kind": "consolidation-policy",
             "value": (

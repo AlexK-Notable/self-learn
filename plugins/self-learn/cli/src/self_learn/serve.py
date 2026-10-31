@@ -15,6 +15,12 @@ the cache ROOT, per-home cache directories whose ledger home no longer
 exists and host lock files nobody holds -- cache only, never the home it
 serves.
 
+A daily PREMISES job (S-104, `premise_sweep.py`) also runs, before
+the steward: it re-reads what placed lessons rest on, writes only its own cache
+folder (`<cache>/premises/`) and, for a premise marked `on_change: refresh`, one
+ledger commit under the commit lock (the job commits its own writes, as the
+others do); it never calls a model.
+
 Jobs run SERIALLY (orchestrator ruling, spec §5.2a): the producers this
 unit schedules are already serialised by their own locks
 (``worker.lock``, ``miner.spawn.lock``), so a daemon that runs one job at
@@ -48,7 +54,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import cache_gc, cases, gitops, intents, miner, overseer, settings, steward, worker
+from . import cache_gc, cases, gitops, intents, miner, overseer, premise_sweep, settings, steward, worker
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
 from .primitives import chrono, fsops
@@ -540,7 +546,7 @@ def _holds_text(cache_dir: Path, now: float) -> str:
     job currently held by a failing due check."""
     held = [
         f"{job} ({_held_cause(cache_dir, job, now)})"
-        for job in ("mine", "steward", "overseer")
+        for job in ("mine", "premises", "steward", "overseer")
         if _held_cause(cache_dir, job, now) is not None
     ]
     return f"; holding: {', '.join(held)}" if held else ""
@@ -773,6 +779,15 @@ def _input_commit_epoch(home: Path, path: Path) -> float:
         return 0.0
 
 
+def _premise_extract_waiting(home: Path) -> bool:
+    """S-104: whether the steward's next run would take at
+    least one `premise-extract` input (a placed lesson with no premises,
+    not held, its version undecided, the backfill not paused). Unordered
+    and stopped at one row: the ordering reads case files, and this runs
+    on every scheduler tick."""
+    return bool(steward._premise_extract_inputs(home, limit=1, ordered=False))
+
+
 def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     """Apply the committed-obligation OR predicate outside cooldown and STOP.
 
@@ -797,8 +812,22 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     # U3a: an unhandled suspected rule violation is an input too; like a
     # reconsider input it is due once the cooldown has passed.
     violations = steward._suspected_violation_inputs(home)
-    if not unfinished and not reconsider and not input_paths and not violations:
-        return False
+    # S-104: a placed lesson whose follow-up closed after it was
+    # last decided is an input too, due like a reconsider input once the
+    # cooldown has passed (the premise-check design, U3).
+    premise_moved = steward._premise_moved_inputs(home, manifests=manifests)
+    # S-104: a placed lesson with no premises is an input too
+    # (the backfill), due like a reconsider input once the cooldown has
+    # passed. Asked only when it can change the answer, and unordered (the
+    # ordering reads case files; this runs on every tick).
+    premise_extract: bool | None = None
+    if (
+        not unfinished and not reconsider and not input_paths
+        and not violations and not premise_moved
+    ):
+        premise_extract = _premise_extract_waiting(home)
+        if not premise_extract:
+            return False
     attempts = [str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")]
     last_iso = max(attempts) if attempts else steward.last_run_iso(home)
     if last_iso is None:
@@ -810,7 +839,11 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     cooldown = cast(int | float | str, cooldown_value)
     if now - last_epoch < float(cooldown):
         return False
-    if unfinished or reconsider or violations:
+    if unfinished or reconsider or violations or premise_moved:
+        return True
+    if premise_extract is None:
+        premise_extract = _premise_extract_waiting(home)
+    if premise_extract:
         return True
     # S-81 (gate S1d R2): an input is new work when no run has SELECTED
     # inputs since its record -- or the overseer's release of it -- was
@@ -1084,6 +1117,23 @@ def _run_worker_job(home: Path) -> "worker.RunResult":
     return worker.run(home, coalesce=True, no_push=False)
 
 
+def _premises_is_due(home: Path, cache_dir: Path, now: float) -> bool:
+    """S-104 (premise-check design D5): the daily premise sweep is
+    due when ``premises.enabled`` is on, it was last attempted at least a day
+    ago, and the ledger has a resolved lesson to look at. Reads the cache and
+    directory names only, so it is cheap every tick."""
+    return premise_sweep.is_due(home, cache_dir, now)
+
+
+def _run_premises_job(home: Path, cache_dir: Path, now: float) -> "premise_sweep.SweepResult":
+    """The sweep itself: code only, never a model call. It writes the cache
+    (``<cache>/premises/``) and, for a premise marked ``on_change: refresh``,
+    one ledger commit under the commit lock. The cache directory and the clock
+    are the ones the due check read, so the attempt marker it leaves is the one
+    that stops the job being due again the same day."""
+    return premise_sweep.run(home, cache_dir, now=now)
+
+
 def _run_steward_job(home: Path) -> "steward.RunResult":
     return steward.run(home)
 
@@ -1157,6 +1207,23 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 )
                 ran.append(worker_record)
                 _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
+        # S-104: the premise sweep runs BEFORE the steward, so a
+        # change it confirms is decided the same night (design D5). It is a
+        # job like the others (serial, one at a time) and calls no model.
+        if _due_or_hold(
+            "premises", home, cache_dir, now, lambda: _premises_is_due(home, cache_dir, now)
+        ):
+            premises_record = run_one_job(
+                cache_dir,
+                Job("premises", "premises", lambda: _run_premises_job(home, cache_dir, now)),
+                pid=pid,
+                tick_secs=tick_secs,
+                home=home,
+            )
+            ran.append(premises_record)
+            _log_stopped_refusal(
+                "premises", getattr(premises_record.result, "stopped", None) or []
+            )
         if _due_or_hold(
             "steward", home, cache_dir, now, lambda: _steward_is_due(home, cache_dir, now)
         ):

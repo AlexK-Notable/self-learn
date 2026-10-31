@@ -259,6 +259,27 @@ def test_a_pending_first_lesson_gives_a_pending_replacement_in_one_commit(env):
     assert result.compiled_line is None
 
 
+def test_stamp_by_is_the_commit_trailer_on_both_replace_paths_and_by_is_not(env):
+    """S-102 (M5.2): an agent shell's `replace` is recorded `By:
+    agent` through `stamp_by`; `by` is who chose the destination and never
+    reaches the trailer. Pending path first, then the routed one."""
+    old = _seed(env.home, "lrn-e1000a01")
+    verbs.replace_lesson(env.home, old, fact="The yield per round decides it.",
+                         because="a fact", by="analyst", no_push=True)
+    assert "By:" not in git(env.home, "log", "-1", "--format=%B").stdout
+    old2 = _seed(env.home, "lrn-e1000a02")
+    verbs.replace_lesson(env.home, old2, fact="The yield per round decides it.",
+                         because="a fact", by="analyst", stamp_by="agent", no_push=True)
+    assert git(env.home, "log", "-1", "--format=%B").stdout.rstrip().endswith("By: agent")
+    # the routed path: the route sequence writes the commit
+    old3 = _seed(env.home, "lrn-e1000a03")
+    _place(env.home, old3, "skill-md")
+    verbs.replace_lesson(env.home, old3, trigger=NEW_TRIGGER, instruction=NEW_INSTRUCTION,
+                         because="shorter", stamp_by="agent", no_push=True)
+    assert "replace" in git(env.home, "log", "-1", "--format=%s").stdout  # control
+    assert git(env.home, "log", "-1", "--format=%B").stdout.rstrip().endswith("By: agent")
+
+
 def test_a_pending_replacement_may_not_retire_a_placed_lesson(env):
     """A design call D-AUTHOR leaves open: a pending first lesson with no
     dest would leave a placed `also` lesson's line with no successor loaded.

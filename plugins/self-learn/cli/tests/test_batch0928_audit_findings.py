@@ -241,6 +241,10 @@ def test_a_bad_phase_a_entry_costs_that_entry_not_the_attempt(tmp_path, monkeypa
 
     def invoke(spec):
         stage = spec.cwd
+        if spec.label == "phase-s":
+            # integration 2026-10-31 (SK4): skill discovery runs in its own
+            # workspace, which holds no selection.yaml; nothing to stage here.
+            return _ok()
         if spec.label == "phase-a":
             _dump(stage / "selection.yaml", {
                 "cases": [{"id": good}, {"id": good}, {"id": "case-0dd0dd00"}, {"id": shaky}],

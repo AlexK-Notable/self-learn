@@ -113,7 +113,11 @@ def test_selftest_exits_9_on_healthy_sandbox_no_real_claude_dir(env, capsys):
     assert "worker" not in out
     assert "UNMEASURED surface" in out
     # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
-    assert "9 passed, 1 unmeasured, 0 failed" in out
+    # S-107 (2026-10-31): the `owned_skills` row joined it, one
+    # more PASS (no registry, no stamped strays in this host: nothing owed);
+    # S-104's `premises` row is the other new PASS (integration).
+    assert "PASS owned_skills" in out
+    assert "11 passed, 1 unmeasured, 0 failed" in out
 
 
 def test_selftest_leaves_no_scratch_litter(env, capsys):
@@ -811,12 +815,15 @@ def test_selftest_survives_corrupt_resolved_record_prints_every_row(env, capsys)
     # corrupt resolved record is skipped, not counted) -- exit 0.
     assert rc == 0
     # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
-    assert "10 passed, 0 unmeasured, 0 failed" in out
+    # S-107 (2026-10-31): the `owned_skills` row joined the
+    # selftest, one more PASS beside S-104's `premises` (ten before
+    # both).
+    assert "12 passed, 0 unmeasured, 0 failed" in out
     # S-82 (GM fold, 2026-10-08): the `hosts` row is named here too, not
     # only counted, and the test no longer says "nine rows".
     for check in (
         "capture", "compiler", "markers", "drift", "reach", "hooks", "surface",
-        "hosts", "sentinel",
+        "hosts", "owned_skills", "sentinel",
     ):
         assert f"PASS {check}" in out
 

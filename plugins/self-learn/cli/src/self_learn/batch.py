@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -67,11 +67,14 @@ from .records import (
 )
 
 __all__ = [
+    "NEW_SKILL_OWNED_ONLY_ACTORS",
     "PERMITTED_KEYS",
     "PERMITTED_VERBS",
     "REFUSAL_KINDS",
     "REFUSED_HOOK_DESTINATION",
+    "REGION_WRITE_ACTORS",
     "REPLACE_REFUSED_ACTORS",
+    "RESTATE_REFUSED_ACTORS",
     "BatchError",
     "BatchContinuation",
     "BookkeepingHalt",
@@ -82,6 +85,7 @@ __all__ = [
     "Sheet",
     "SheetItem",
     "UnreadableRecord",
+    "agent_refused_keys",
     "agent_refused_verbs",
     "classify",
     "decision_code",
@@ -164,8 +168,29 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
         {
             "also", "trigger", "instruction", "fact", "context", "text_from",
             "type", "kind", "to", "dest", "rules_paths", "because", "note", "by",
+            # S-104 (02 §3a.10.7): `adopt_region: true` folds a
+            # person's hand edit in the lesson's managed block into the
+            # new lesson -- the steward's only (`REGION_WRITE_ACTORS`).
+            "adopt_region",
         }
     ),
+    # S-108 (C4): a corrected version of a CLOSED lesson (rejected or
+    # retired), written as a new pending lesson; the closed lesson stays as it
+    # is. The text keys as on `replace`; `to` in the rehome grammar names the
+    # new lesson's bucket (default: the closed lesson's own). No `dest`: the
+    # steward places it. The overseer's verb (`RESTATE_REFUSED_ACTORS`).
+    "restate": frozenset(
+        {
+            "trigger", "instruction", "fact", "context", "type", "kind", "to",
+            "because", "note", "by",
+        }
+    ),
+    # S-104 (02 §3a.10.7): a lesson's `premises` -- `action:
+    # set` writes the whole list (`premises`), `action: rebaseline` re-records
+    # the premises named in `ids`. An annotation, like `note`: no `by` (the
+    # runner's execution trailer names who ran it). The line's shape is
+    # `verbs.premises_line_problem`'s, checked with the rest of the sheet.
+    "premises": frozenset({"action", "premises", "ids", "because", "note"}),
 }
 PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
 #: No sheet aliases remain after graduate was removed on 2026-10-24.
@@ -203,6 +228,11 @@ REQUIRED_KEYS: dict[str, frozenset[str]] = {
     # E1: `because` plays revise's role (the commit body); the one-of check
     # on the text keys is the verb's (`verbs._replace_text_sections`).
     "replace": frozenset({"because"}),
+    # S-108: `because` plays `replace`'s role (the commit body and the
+    # two notes); the one-of check on the text keys is the verb's.
+    "restate": frozenset({"because"}),
+    # S-104: which list the line carries depends on the action.
+    "premises": frozenset({"action"}),
 }
 
 #: S-29 / Y-17: never accepted inside a sheet, by name — a hook route
@@ -248,13 +278,120 @@ REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
 #: again, in the run, the preview and the contract alike. A person's sheet
 #: (`human`) and `self-learn replace` never pass through here.
 REPLACE_REFUSED_ACTORS: frozenset[str] = frozenset()
+#: S-108 (C4): the actors a `restate` line is refused for by name,
+#: and for whom it is hidden from the generated contract. The steward decides
+#: pending lessons and never writes one: a restated lesson is the overseer's to
+#: write (or a person's, through a sheet run as `human`) and the steward's to
+#: decide, so no actor both writes and decides it. `_dispatch` and `dry_run`
+#: both read this ONE set.
+RESTATE_REFUSED_ACTORS: frozenset[str] = frozenset({"steward"})
+
+#: SK2 (S-107, 2026-10-31; skill-writing plan D5 and §1.3 fact 1):
+#: the actors whose route into `new-skill:<name>` is accepted only when
+#: <name> is a skill self-learn owns and has deployed
+#: (:func:`verbs.owned_skill_refusal`). Before this, nothing in the batch,
+#: the steward's runner or the overseer's runner refused such a route -- only
+#: their instructions said never -- so a steward sheet could scaffold a new
+#: skill in the skills root. A route into an owned skill adds a line to a
+#: skill that exists; `self-learn skill write` is the only way an agent
+#: creates one. A person's sheet (`human`) and `self-learn route --dest
+#: new-skill:<name>` still scaffold. `_dispatch` and `dry_run` both read
+#: this ONE set, as for the shelf.
+NEW_SKILL_OWNED_ONLY_ACTORS = frozenset({"overseer", "steward"})
+
+
+def _refuse_agent_new_skill(
+    home: Path, record_id: str, resolved: tuple[str, str | None] | None, actor: str
+) -> None:
+    """Raise the refusal of a route that resolves to ``new-skill`` when
+    *actor* is one :data:`NEW_SKILL_OWNED_ONLY_ACTORS` names and the skill
+    is not one self-learn owns (or its files are missing). The class carries
+    the S-71 kind (``bad-line`` for a skill self-learn does not own, so the
+    line is sent back). Keyed on the runner's *actor*, never on the line's
+    own ``by:``. The ONE sentence `_dispatch` and `dry_run` both show.
+
+    A ``new-skill`` with no name is left to the verb, which refuses it as
+    before ("new-skill needs a name"): it can scaffold nothing, and its
+    refusal kind (``unclassified``, which parks) is one the steward's
+    runner already relies on."""
+    if actor not in NEW_SKILL_OWNED_ONLY_ACTORS or resolved is None:
+        return
+    destination, name = resolved
+    if destination != "new-skill" or not name:
+        return
+    refusal = verbs.owned_skill_refusal(home, name)
+    if refusal is not None:
+        raise type(refusal)(
+            f"{record_id}: a route to new-skill:{name} is refused for the {actor} — {refusal}"
+        ) from refusal
 
 
 def agent_refused_verbs(actor: str) -> frozenset[str]:
     """The sheet verbs refused for *actor* by name, and so left out of the
     contract its runner shows it: ``replace`` while
-    :data:`REPLACE_REFUSED_ACTORS` names the actor (E1 fold 1)."""
-    return frozenset({"replace"}) if actor in REPLACE_REFUSED_ACTORS else frozenset()
+    :data:`REPLACE_REFUSED_ACTORS` names the actor (E1 fold 1), and
+    ``restate`` while :data:`RESTATE_REFUSED_ACTORS` does (S-108)."""
+    refused: set[str] = set()
+    if actor in REPLACE_REFUSED_ACTORS:
+        refused.add("replace")
+    if actor in RESTATE_REFUSED_ACTORS:
+        refused.add("restate")
+    return frozenset(refused)
+
+
+def _refuse_agent_restate(item: "SheetItem", actor: str) -> None:
+    """Raise the refusal of a ``restate`` line for an actor
+    :data:`RESTATE_REFUSED_ACTORS` names -- a :class:`verbs.SheetLineError`,
+    kind ``bad-line``. Keyed on the runner's *actor*, never the line's
+    ``by:``. The ONE sentence `_dispatch` and `dry_run` both show."""
+    if item.verb == "restate" and actor in RESTATE_REFUSED_ACTORS:
+        raise verbs.SheetLineError(
+            f"{item.id}: `restate` is refused for the {actor} "
+            "(batch.RESTATE_REFUSED_ACTORS); decide this lesson with route, revise, "
+            "reject, defer or replace, or park it"
+        )
+
+
+#: S-104 (02 §3a.10.7): the actors a line that writes a
+#: lesson's whole managed block over a person's hand edit is open to -- a
+#: `replace` with `adopt_region: true` (fold the edit into the lesson) and a
+#: `premises` line `action: restore-region` (put the ledger's text back).
+#: Only the steward, and only on an `@intact` `premise-moved` input for that
+#: lesson, which its runner checks before anything is applied
+#: (`steward._placement_decision_problem`). The overseer and a person's
+#: sheet are refused it by name: a person has `recompile --adopt` and
+#: `recompile` for the same two answers.
+REGION_WRITE_ACTORS = frozenset({"steward"})
+
+
+def _region_line(item: "SheetItem") -> str | None:
+    """Which block-writing line *item* is (`adopt_region` or
+    `restore-region`), or ``None``."""
+    if item.verb == "replace" and item.fields.get("adopt_region"):
+        return "adopt_region"
+    if item.verb == "premises" and item.fields.get("action") == "restore-region":
+        return "restore-region"
+    return None
+
+
+def _refuse_region_lines(item: "SheetItem", actor: str) -> None:
+    """Raise the refusal (kind ``bad-line``) of a block-writing line for an
+    actor :data:`REGION_WRITE_ACTORS` does not name. Keyed on the runner's
+    *actor*; `_dispatch` and `dry_run` both run it before the verb reads
+    anything."""
+    which = _region_line(item)
+    if which is not None and actor not in REGION_WRITE_ACTORS:
+        raise verbs.SheetLineError(
+            f"{item.id}: `{which}` is the steward's alone, on a hand edit in the lesson's "
+            f"managed block that its daily check confirmed; refused for the {actor}"
+        )
+
+
+def agent_refused_keys(actor: str) -> dict[str, frozenset[str]]:
+    """The sheet keys refused for *actor* by name, per verb, and so left out
+    of the contract its runner shows it (S-104):
+    ``adopt_region`` on ``replace`` for every actor but the steward."""
+    return {} if actor in REGION_WRITE_ACTORS else {"replace": frozenset({"adopt_region"})}
 
 
 def _refuse_agent_replace(item: "SheetItem", actor: str) -> None:
@@ -763,7 +900,9 @@ def load_sheet(path: Path | str, *, home: Path | str | None = None) -> Sheet:
             )
         shape = (
             _route_shape_problem(raw) if verb == "route"
-            else _replace_shape_problem(raw) if verb == "replace"
+            else _replace_shape_problem(raw) if verb in ("replace", "restate")
+            else verbs.premises_line_problem(raw.get("action"), raw.get("premises"), raw.get("ids"))
+            if verb == "premises"
             else None
         )
         if shape is not None:
@@ -817,6 +956,16 @@ def _replace_shape_problem(raw: dict) -> str | None:
         value = raw.get(key)
         if value is not None and not isinstance(value, str):
             return f"`{key}` must be text, got {value!r}"
+    if "adopt_region" in raw:
+        # S-104: a fold keeps the lesson where it sits.
+        if raw.get("adopt_region") is not True:
+            return f"`adopt_region` is `true` or absent, got {raw.get('adopt_region')!r}"
+        mixed = sorted(key for key in ("also", "to", "dest", "rules_paths") if raw.get(key) is not None)
+        if mixed:
+            return (
+                f"`adopt_region` folds a hand edit into the lesson where it sits; it takes "
+                f"no {mixed}"
+            )
     if raw.get("rules_paths") is not None:
         problem = verbs.sheet_rules_paths_problem(raw.get("dest"), raw.get("rules_paths"))
         if problem is not None:
@@ -1049,12 +1198,34 @@ def classify(
         return target in record.contradicts
     if verb == "followup-done":
         return record.follow_up is None and record.follow_up_done is not None
+    if verb == "premises" and f.get("action") == "restore-region":
+        # S-104: applied iff the lesson's managed block is
+        # `clean` and holds exactly the ledger's rendering -- so a re-run
+        # after an earlier line of the same case put the block right is
+        # never refused, and a crash after the ledger commit is finished by
+        # the post-run recompile, not by a second restore.
+        return verbs.region_restored(home, item.id)
+    if verb == "premises":
+        # S-104: every `set` or `rebaseline` runs its probes
+        # and records what they saw NOW, so its effect is not derivable from
+        # state (like a key-less `note`), with one exception: `set` of `[]`
+        # on a lesson that already records `[]` has nothing left to write.
+        return (
+            f.get("action") == "set" and f.get("premises") == []
+            and record.premises == []
+        )
     if verb == "replace":
         # E1 (D-AUTHOR §2.2): applied iff the line's lesson reads
         # `superseded_by` a lesson that `supersedes` it with this line's
         # text, and every `also` lesson reads `superseded_by` that same lesson. A
         # half-applied merge is not applied: the verb finishes it.
         return replace_made(home, item.id, f) is not None
+    if verb == "restate":
+        # S-108 (C4): applied iff the closed lesson already carries
+        # the note this line's text leaves (`verbs.restate_applied`). The state
+        # is the old lesson's, not the new one's: the new lesson may be decided
+        # (or rejected again) by now, and the line is still applied.
+        return verbs.restate_applied(home, item.id, f)
     if verb == "revise":
         # U3 (carried from the U4 gate, gate-u4-r1.md F5): `revise` was
         # added to PERMITTED_VERBS by U4 without a `classify` branch, so
@@ -1193,6 +1364,82 @@ def _reconsider_case_for(
     return case
 
 
+def _resolution_reroute_for(
+    home: Path,
+    record_id: str,
+    case: str | None,
+    verb: str,
+    actor: str,
+    rerouted: frozenset[str] = frozenset(),
+) -> bool:
+    """S-104 (02 §3a.10.7, "`route`: the lesson moves (`batch`
+    applies it as `reroute`)"): a steward's `route` line on a ROUTED lesson
+    under a `kind: resolution` case that names the lesson and supersedes
+    nothing is that lesson's move, applied as :func:`_dispatch_reroute`. It
+    is the case-less half of the `premise-moved` input: a placed lesson no
+    case covers has no case for a `kind: reconsider` to supersede, so its
+    decision is a resolution case (S-88's rule, extended), and without this
+    its `route` line reached `verbs.route`, which refuses a routed lesson.
+
+    Only the steward, only for a resolution case, and only while no OTHER
+    case covers the lesson (one a `kind: reconsider` could supersede,
+    :func:`_covered_by_another_case`): a covered placed lesson moves through
+    a reconsider case and nothing else, as U3b pinned
+    (`test_a_route_on_a_routed_lesson_without_a_reconsider_case_is_still_refused`).
+    The steward's stage check (`steward._steward_move_problem`) also refuses
+    such a line on every placed lesson but a `premise-moved` input no case
+    covers, before the case is recorded. A person's or the overseer's sheet
+    is unchanged (a person reroutes with `self-learn reroute`). *rerouted*
+    (:func:`dry_run` only, like ``reconsidered``): the record ids a staged
+    resolution case covers when it is not recorded yet; :func:`run` never
+    passes it and reads the recorded case instead."""
+    if verb != "route" or actor != "steward":
+        return False
+    if case is None and record_id not in rerouted:
+        return False
+    try:
+        record = Record.from_path(find_record_path(home, record_id))
+    except (LedgerOpsError, RecordError, OSError):
+        return False
+    if record.status != "routed":
+        return False
+    if case is not None:
+        try:
+            view = cases.show(home, case, evidence_only=True)
+        except (cases.CaseError, OSError, ValueError):
+            return False
+        front = view.frontmatter
+        if (
+            front.get("kind") != "resolution" or front.get("supersedes")
+            or record_id not in [str(rid) for rid in front.get("records") or []]
+        ):
+            return False
+    return not _covered_by_another_case(home, record_id, case)
+
+
+def _covered_by_another_case(home: Path, record_id: str, case: str | None) -> bool:
+    """Whether a case other than *case* covers *record_id* the way a `kind:
+    reconsider` case could supersede it: not superseded, passes its
+    freeze-hash check, names the lesson (`cases.require_reconsider_predecessor`,
+    the test `steward._covering_cases` uses). An unreadable case index errs
+    toward "covered", which keeps the reroute refused."""
+    try:
+        rows = cases.list_cases(home, record_id=record_id, only_ok=True)
+    except (cases.CaseError, OSError, ValueError):
+        return True
+    for row in rows:
+        other = row.get("case")
+        if not isinstance(other, str) or other == case or row.get("superseded_by"):
+            continue
+        try:
+            predecessor = cases.require_reconsider_predecessor(home, other, [record_id])
+        except (cases.CaseError, OSError):
+            continue
+        if not predecessor.get("superseded_by"):
+            return True
+    return False
+
+
 def _dispatch_hook_activation(
     home: Path,
     item: SheetItem,
@@ -1218,8 +1465,9 @@ def _dispatch_hook_activation(
     :func:`hook_activation.activate` itself by the time this catches
     it. On success, F9: both commits' worth of post-notes ride the ONE
     item result when *route_result* is given — route's own (the
-    exact-bytes preview and manual-steps text a human reviewing this
-    route sees today) alongside hook_activate's; route's own commit sha
+    exact-bytes preview a human reviewing this route sees today; its
+    manual-steps text is dropped, S-102, because the activation
+    right after it already did those steps) alongside hook_activate's; route's own commit sha
     rides `detail` since :class:`ItemResult` has only one `sha` slot
     and hook_activate's is the more RECENT of the two commits."""
     verb = item.verb
@@ -1253,7 +1501,14 @@ def _dispatch_hook_activation(
             "; " + "; ".join(notes) if notes else ""
         )
     else:
-        notes = list(route_result.post_notes) + list(hook_result.post_notes)
+        # S-102: the route's own "two manual steps remain" text is
+        # dropped here. The activation that ran after it either did both
+        # steps (registered) or says, in its own receipt, the one step it
+        # left (placed only). Joining the two printed advice that was
+        # already done -- or never needed.
+        notes = verbs.without_hook_manual_steps(
+            list(route_result.post_notes)
+        ) + list(hook_result.post_notes)
         detail = f"route commit {route_result.commit_sha}" + (
             "; " + "; ".join(notes) if notes else ""
         )
@@ -1274,9 +1529,13 @@ def _dispatch_reroute(
     actor: str,
     hook_activation: bool,
     is_hook_dest: bool,
+    execution: execution_evidence.ExecutionRef | None = None,
+    why: str = "reconsider",
 ) -> "ItemResult":
     """U3b (S-72, 2026-09-28): a `route` line under a valid `kind:
-    reconsider` case over a ROUTED lesson re-decides where it lives --
+    reconsider` case over a ROUTED lesson re-decides where it lives (*why*,
+    the receipt's word for it: S-104's case-less
+    `premise-moved` move, :func:`_resolution_reroute_for`, says so) --
     `verbs.reroute`, which retires the old placement and writes the new
     one in one motion. Factored out of :func:`_dispatch` for the same
     complexity reason as its siblings. A reroute INTO a hook needs the
@@ -1291,6 +1550,7 @@ def _dispatch_reroute(
         home, item.id, dest=_reroute_dest(item), by=by, note=f.get("note"),
         no_push=True, hook_input=f.get("hook"), rules_paths=f.get("rules_paths"),
         allow_empty_glob=bool(f.get("allow_empty_glob", False)),
+        execution=execution,
     )
     if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
         return _dispatch_hook_activation(
@@ -1299,9 +1559,41 @@ def _dispatch_reroute(
         )
     return ItemResult(
         n=item.n, id=item.id, verb=item.verb, rc=0, sha=result.commit_sha,
-        state="applied", detail=f"rerouted (reconsider): {result.commit_message}",
+        state="applied", detail=f"rerouted ({why}): {result.commit_message}",
         warnings=list(result.warnings),
     )
+
+
+def _dispatch_reroute_if_moved(
+    home: Path,
+    item: SheetItem,
+    *,
+    case: str | None,
+    verb: str,
+    actor: str,
+    hook_activation: bool,
+    is_hook_dest: bool,
+    execution: execution_evidence.ExecutionRef | None,
+) -> "ItemResult | None":
+    """The `route` line that MOVES a routed lesson, applied as
+    :func:`_dispatch_reroute`: under a valid `kind: reconsider` case (U3b,
+    S-72), or under the `kind: resolution` case of a `premise-moved` input
+    no case covers (S-104, :func:`_resolution_reroute_for`);
+    ``None`` for every other route, which :func:`_dispatch` applies as a
+    route. Factored out of :func:`_dispatch` (S-104 fix
+    round 1): with cures-a's execution trailer and u4's resolution reroute
+    both merged in, pyright found that function too complex to analyse."""
+    if _reconsider_case_for(home, item.id, case, verb) is not None:
+        return _dispatch_reroute(
+            home, item, actor=actor, hook_activation=hook_activation,
+            is_hook_dest=is_hook_dest, execution=execution,
+        )
+    if _resolution_reroute_for(home, item.id, case, verb, actor):
+        return _dispatch_reroute(
+            home, item, actor=actor, hook_activation=hook_activation,
+            is_hook_dest=is_hook_dest, why="premise moved", execution=execution,
+        )
+    return None
 
 
 def _dispatch_retire(
@@ -1324,6 +1616,20 @@ def _dispatch_retire(
     )
 
 
+def _fold_context(home: Path, item: SheetItem) -> AbstractContextManager[object]:
+    """S-104: :func:`verbs.fold_region` for a ``replace`` line
+    with ``adopt_region: true`` (its checks, then the approval of exactly the
+    hand-edited block the daily check confirmed), else nothing. The run and
+    its preview both wrap the replace in it."""
+    f = item.fields
+    if item.verb != "replace" or not f.get("adopt_region"):
+        return nullcontext()
+    return verbs.fold_region(
+        home, item.id, also=f.get("also"), to=f.get("to"), dest=f.get("dest"),
+        rules_paths=f.get("rules_paths"),
+    )
+
+
 def _dispatch_replace(
     home: Path,
     item: SheetItem,
@@ -1339,20 +1645,25 @@ def _dispatch_replace(
     runner's actor for a non-human runner, as on `route`. A refusal raises
     to :func:`_dispatch`, which maps it like every other verb's."""
     _refuse_agent_replace(item, actor)
+    _refuse_region_lines(item, actor)
     f = item.fields
     _refuse_agent_reference(
         item.id, verbs.replace_destination(home, item.id, f.get("dest")), actor
     )
     try:
-        result = verbs.replace_lesson(
-            home, item.id, because=f["because"], also=f.get("also"),
-            trigger=f.get("trigger"), instruction=f.get("instruction"),
-            fact=f.get("fact"), context=f.get("context"), text_from=f.get("text_from"),
-            type=f.get("type"), kind=f.get("kind"), to=f.get("to"), dest=f.get("dest"),
-            rules_paths=f.get("rules_paths"), note=f.get("note"),
-            by=(f.get("by") or (actor if actor != "human" else None)),
-            no_push=True, execution=execution, actor=actor,
-        )
+        # S-104: a fold (`adopt_region: true`) runs inside
+        # `verbs.fold_region`, which checks the block and lets the replace
+        # compile over exactly the hand edit the daily check confirmed.
+        with _fold_context(home, item):
+            result = verbs.replace_lesson(
+                home, item.id, because=f["because"], also=f.get("also"),
+                trigger=f.get("trigger"), instruction=f.get("instruction"),
+                fact=f.get("fact"), context=f.get("context"), text_from=f.get("text_from"),
+                type=f.get("type"), kind=f.get("kind"), to=f.get("to"), dest=f.get("dest"),
+                rules_paths=f.get("rules_paths"), note=f.get("note"),
+                by=(f.get("by") or (actor if actor != "human" else None)),
+                no_push=True, execution=execution, actor=actor,
+            )
     except (verbs.VerbError, LedgerOpsError) as exc:
         made = getattr(exc, "replace_made", None)
         if not isinstance(made, str):
@@ -1372,6 +1683,57 @@ def _dispatch_replace(
         n=item.n, id=item.id, verb=item.verb, rc=0, sha=result.commit_sha,
         state="applied", warnings=list(result.warnings),
         detail=_replace_detail(result.new_record_id, result.compiled_line),
+    )
+
+
+def _dispatch_restate(
+    home: Path,
+    item: SheetItem,
+    *,
+    actor: str,
+    execution: execution_evidence.ExecutionRef | None,
+) -> "ItemResult":
+    """S-108 (C4): the ``restate`` leg of :func:`_dispatch`, factored
+    out like its siblings. The actor's by-name refusal runs first
+    (:data:`RESTATE_REFUSED_ACTORS`). ``by`` defaults to the runner's actor for
+    a non-human runner (it names the author of the new lesson's note). A
+    refusal raises to :func:`_dispatch`, which maps it like every other
+    verb's. The receipt line names the lesson it made, as a replace's does."""
+    _refuse_agent_restate(item, actor)
+    f = item.fields
+    result = verbs.restate_lesson(
+        home, item.id, because=f["because"],
+        trigger=f.get("trigger"), instruction=f.get("instruction"),
+        fact=f.get("fact"), context=f.get("context"),
+        type=f.get("type"), kind=f.get("kind"), to=f.get("to"), note=f.get("note"),
+        by=(actor if actor != "human" else f.get("by")),
+        no_push=True, execution=execution, actor=actor,
+    )
+    return ItemResult(
+        n=item.n, id=item.id, verb=item.verb, rc=0, sha=result.commit_sha,
+        state="applied", warnings=list(result.warnings),
+        detail=_replace_detail(result.new_record_id, None),
+    )
+
+
+def _dispatch_record_metadata(
+    home: Path, item: SheetItem, execution: execution_evidence.ExecutionRef | None
+) -> "verbs.VerbResult":
+    """The ``followup-done`` and ``premises`` legs of :func:`_dispatch`
+    (S-104), kept out of it for pyright's per-function
+    complexity ceiling, as its siblings were: adding the ``premises`` branch
+    inline tipped it over. Both write a placed lesson's metadata and take no
+    ``by``. A refusal raises to :func:`_dispatch`, which maps it."""
+    f = item.fields
+    if item.verb == "followup-done":
+        return verbs.followup_done(
+            home, item.id, note=f.get("note"), no_push=True,
+            execution=execution,
+        )
+    return verbs.premises(
+        home, item.id, action=f["action"], premises=f.get("premises"),
+        ids=f.get("ids"), because=f.get("because"), note=f.get("note"),
+        no_push=True, execution=execution,
     )
 
 
@@ -1412,6 +1774,108 @@ def _replace_applied_detail(home: Path, item: SheetItem) -> str | None:
 
     line = entry_line(made) if destination in ("claude-md", "skill-md", "new-skill") else None
     return _replace_detail(made.id, line)
+
+
+def _dispatch_route(
+    home: Path,
+    item: SheetItem,
+    *,
+    case: str | None,
+    actor: str,
+    hook_activation: bool,
+    execution: execution_evidence.ExecutionRef | None,
+) -> "ItemResult | verbs.VerbResult":
+    """The ``route`` leg of :func:`_dispatch`: an :class:`ItemResult` when
+    the line is finished here (a hook activation, a reroute), else the
+    route's :class:`verbs.VerbResult` for :func:`_dispatch` to receipt.
+    Factored out at the 2026-10-31 integration: with SK2's new-skill
+    refusal, U8's reroute helper and the restate and premises branches all
+    merged, pyright found :func:`_dispatch` too complex to analyse. Its
+    refusals raise to :func:`_dispatch`, which maps them as before."""
+    verb = item.verb
+    f = item.fields
+    route_path = find_record_path(home, item.id)
+    resolved = _resolved_route_dest(home, route_path, item)
+    # 2026-10-06: before the reconsider branch below, so a fresh
+    # route, a reroute and a reconsider's correcting route are
+    # all refused alike.
+    _refuse_agent_reference(item.id, resolved, actor)
+    # SK2: likewise, before the reconsider branch.
+    _refuse_agent_new_skill(home, item.id, resolved, actor)
+    is_hook_dest = resolved == (REFUSED_HOOK_DESTINATION, None)
+    if is_hook_dest and actor not in HOOK_ROUTING_ACTORS:
+        raise verbs.VerbError(_hook_refused_detail(item.id))
+    if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
+        # Fold r1 (F4): a hook-dest item reaches HERE, under
+        # `actor="overseer"`, in one of two shapes -- a fresh
+        # route (record still `pending`, falls through below)
+        # or a RETRY (`classify` already decided the record is
+        # already routed to `hook` but the activation leg does
+        # not match the current gate: a failed attempt, or one
+        # parked under a gate that has since flipped). The
+        # second shape must never call `verbs.route` again --
+        # it would refuse against an already-routed record --
+        # so it is detected here and only the activation leg
+        # (through the SAME idempotent `verbs.hook_activate` —
+        # a placed symlink is re-verified, not re-placed) runs,
+        # via `_dispatch_hook_activation`.
+        pre_record = Record.from_path(route_path)
+        already_routed_to_hook = (
+            pre_record.status == "routed"
+            and (pre_record.routing or {}).get("destination")
+            == REFUSED_HOOK_DESTINATION
+        )
+        if already_routed_to_hook:
+            return _dispatch_hook_activation(
+                home, item, actor=actor, hook_activation=hook_activation,
+                route_result=None,
+            )
+    rerouted = _dispatch_reroute_if_moved(
+        home, item, case=case, verb=verb, actor=actor,
+        hook_activation=hook_activation, is_hook_dest=is_hook_dest,
+        execution=execution,
+    )
+    if rerouted is not None:
+        return rerouted
+    follow_up = _sheet_follow_up(f)
+    result = verbs.route(
+        home, item.id,
+        dest=f.get("dest"),
+        # Fold r1 (F3, ruling 6): the actor is the default `by`
+        # here TOO, but only for a non-human caller -- a
+        # default-`"human"` run keeps `route`'s own
+        # dest-is-not-None heuristic byte-for-byte (S-29's
+        # `resolved_by` fallback below still decides it), since
+        # `route`/`revise` are the two verbs excluded from the
+        # EIGHT-verb widening above (their own `by` feeds a
+        # DIFFERENT mechanism — `Record.set_routing`'s schema
+        # field, never the commit trailer).
+        by=(f.get("by") or (actor if actor != "human" else None)),
+        note=f.get("note"), no_push=True, follow_up=follow_up,
+        collapse=f.get("collapse"),
+        allow_empty_glob=bool(f.get("allow_empty_glob", False)),
+        execution=execution,
+        hook_input=f.get("hook"),
+        rules_paths=f.get("rules_paths"),
+    )
+    if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
+        # 13 §7.4 "The path" — the overseer's own runner call is
+        # the ONE caller that carries a hook route through to
+        # activation: route's own commit above is unchanged from
+        # the human path (the script it commits is identical
+        # either way); `_dispatch_hook_activation` runs the SAME
+        # `hook_activation` module O-2a built, inside
+        # `verbs.hook_activate`'s own lock/handoff/undo, and
+        # (F5) wraps any failure so it refuses THIS item rather
+        # than escaping `run` — route's own commit stands
+        # (exactly the state a human's own two-step sequence —
+        # route now, `hook activate` later — already leaves it
+        # in) either way.
+        return _dispatch_hook_activation(
+            home, item, actor=actor, hook_activation=hook_activation,
+            route_result=result,
+        )
+    return result
 
 
 def _dispatch(
@@ -1479,83 +1943,13 @@ def _dispatch(
     f = item.fields
     try:
         if verb == "route":
-            route_path = find_record_path(home, item.id)
-            resolved = _resolved_route_dest(home, route_path, item)
-            # 2026-10-06: before the reconsider branch below, so a fresh
-            # route, a reroute and a reconsider's correcting route are
-            # all refused alike.
-            _refuse_agent_reference(item.id, resolved, actor)
-            is_hook_dest = resolved == (REFUSED_HOOK_DESTINATION, None)
-            if is_hook_dest and actor not in HOOK_ROUTING_ACTORS:
-                raise verbs.VerbError(_hook_refused_detail(item.id))
-            if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
-                # Fold r1 (F4): a hook-dest item reaches HERE, under
-                # `actor="overseer"`, in one of two shapes -- a fresh
-                # route (record still `pending`, falls through below)
-                # or a RETRY (`classify` already decided the record is
-                # already routed to `hook` but the activation leg does
-                # not match the current gate: a failed attempt, or one
-                # parked under a gate that has since flipped). The
-                # second shape must never call `verbs.route` again --
-                # it would refuse against an already-routed record --
-                # so it is detected here and only the activation leg
-                # (through the SAME idempotent `verbs.hook_activate` —
-                # a placed symlink is re-verified, not re-placed) runs,
-                # via `_dispatch_hook_activation`.
-                pre_record = Record.from_path(route_path)
-                already_routed_to_hook = (
-                    pre_record.status == "routed"
-                    and (pre_record.routing or {}).get("destination")
-                    == REFUSED_HOOK_DESTINATION
-                )
-                if already_routed_to_hook:
-                    return _dispatch_hook_activation(
-                        home, item, actor=actor, hook_activation=hook_activation,
-                        route_result=None,
-                    )
-            if _reconsider_case_for(home, item.id, case, verb) is not None:
-                return _dispatch_reroute(
-                    home, item, actor=actor, hook_activation=hook_activation,
-                    is_hook_dest=is_hook_dest,
-                )
-            follow_up = _sheet_follow_up(f)
-            result = verbs.route(
-                home, item.id,
-                dest=f.get("dest"),
-                # Fold r1 (F3, ruling 6): the actor is the default `by`
-                # here TOO, but only for a non-human caller -- a
-                # default-`"human"` run keeps `route`'s own
-                # dest-is-not-None heuristic byte-for-byte (S-29's
-                # `resolved_by` fallback below still decides it), since
-                # `route`/`revise` are the two verbs excluded from the
-                # EIGHT-verb widening above (their own `by` feeds a
-                # DIFFERENT mechanism — `Record.set_routing`'s schema
-                # field, never the commit trailer).
-                by=(f.get("by") or (actor if actor != "human" else None)),
-                note=f.get("note"), no_push=True, follow_up=follow_up,
-                collapse=f.get("collapse"),
-                allow_empty_glob=bool(f.get("allow_empty_glob", False)),
-                execution=execution,
-                hook_input=f.get("hook"),
-                rules_paths=f.get("rules_paths"),
+            routed = _dispatch_route(
+                home, item, case=case, actor=actor,
+                hook_activation=hook_activation, execution=execution,
             )
-            if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
-                # 13 §7.4 "The path" — the overseer's own runner call is
-                # the ONE caller that carries a hook route through to
-                # activation: route's own commit above is unchanged from
-                # the human path (the script it commits is identical
-                # either way); `_dispatch_hook_activation` runs the SAME
-                # `hook_activation` module O-2a built, inside
-                # `verbs.hook_activate`'s own lock/handoff/undo, and
-                # (F5) wraps any failure so it refuses THIS item rather
-                # than escaping `run` — route's own commit stands
-                # (exactly the state a human's own two-step sequence —
-                # route now, `hook activate` later — already leaves it
-                # in) either way.
-                return _dispatch_hook_activation(
-                    home, item, actor=actor, hook_activation=hook_activation,
-                    route_result=result,
-                )
+            if isinstance(routed, ItemResult):
+                return routed
+            result = routed
         elif verb == "reject":
             result = verbs.reject(
                 home, item.id, note=f.get("note"), by=(f.get("by") or actor),
@@ -1583,6 +1977,9 @@ def _dispatch(
                 home, item.id, note=f.get("note"), by=(f.get("by") or actor),
                 no_push=True,
                 execution=execution,
+                # S-108: the runner's actor (never the line's `by:`)
+                # decides whether a person's rejection may be reopened.
+                actor=actor,
             )
         elif verb == "retire":
             # Keep retirement dispatch in a helper to stay within pyright's
@@ -1641,13 +2038,13 @@ def _dispatch(
                 home, item.id, f["target"], note=f.get("note"), no_push=True,
                 execution=execution,
             )
-        elif verb == "followup-done":
-            result = verbs.followup_done(
-                home, item.id, note=f.get("note"), no_push=True,
-                execution=execution,
-            )
+        elif verb in ("followup-done", "premises"):
+            _refuse_region_lines(item, actor)  # S-104: restore-region
+            result = _dispatch_record_metadata(home, item, execution)
         elif verb == "replace":
             return _dispatch_replace(home, item, actor=actor, execution=execution)
+        elif verb == "restate":
+            return _dispatch_restate(home, item, actor=actor, execution=execution)
         elif verb == "revise":
             # U3 (carried from the U4 gate): U4 added `revise` to
             # PERMITTED_VERBS/PERMITTED_KEYS/REQUIRED_KEYS but this
@@ -1716,6 +2113,10 @@ def _dispatch(
     return ItemResult(
         n=item.n, id=item.id, verb=verb, rc=0, sha=result.commit_sha,
         state="applied", warnings=list(result.warnings),
+        # S-104: a `premises` line's subject names its action,
+        # which tells the post-run recompile a restore-region's host write
+        # may be owed (`verbs.host_result_ids`).
+        detail=result.commit_message if verb == "premises" else None,
     )
 
 
@@ -1733,6 +2134,17 @@ _STOP_CODES = frozenset({5, 6, 7})
 _HOST_OUTCOME_VERBS = frozenset(
     {"route", "reject", "retire", "supersede", "replace"}
 )
+
+
+def _host_outcome(item: "SheetItem") -> bool:
+    """Whether *item* commits the ledger and then writes a host file: a
+    :data:`_HOST_OUTCOME_VERBS` line, or (S-104, fix round 1)
+    a `premises` line `action: restore-region` -- its ledger commit lands
+    first and its block is written after (`verbs.restore_region`), so one
+    that fails after the commit is the same half-state a route's is and
+    halts the sheet the same way. Every other `premises` action writes the
+    ledger alone."""
+    return item.verb in _HOST_OUTCOME_VERBS or _region_line(item) == "restore-region"
 
 
 def _validate_continuation(
@@ -1914,9 +2326,15 @@ def _preview_undefer(
 
 
 def _preview_reopen(
-    home: Path, item: SheetItem, by: str | None, rc: str | None
+    home: Path, item: SheetItem, by: str | None, rc: str | None,
+    actor: str = "human",
 ) -> None:
-    verbs._preflight_reopen(home, item.id, note=item.fields.get("note"), by=by)
+    """`reopen`'s own pre-lock checks. *actor* as `_dispatch` passes it
+    (:func:`_preview_checks` gives it): the overseer is refused a lesson a
+    person rejected, in the preview as in the run (S-108)."""
+    verbs._preflight_reopen(
+        home, item.id, note=item.fields.get("note"), by=by, actor=actor
+    )
 
 
 def _preview_retire(
@@ -1997,6 +2415,26 @@ def _preview_followup_done(
     verbs._preflight_followup_done(home, item.id, note=item.fields.get("note"))
 
 
+def _preview_premises(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    """S-104: the verb's own pre-lock checks, which run the
+    line's probes (read-only by construction) -- so a probe that cannot
+    observe is a `would-refuse` here exactly as it is a refusal at apply."""
+    f = item.fields
+    if f.get("action") == "restore-region":
+        # S-104: the restore's own checks (the block, its
+        # writability, the daily check's confirmation); nothing is written.
+        verbs._preflight_restore_region(
+            home, item.id, because=f.get("because"), note=f.get("note"),
+        )
+        return
+    verbs._preflight_premises(
+        home, item.id, action=f.get("action"), premises=f.get("premises"),
+        ids=f.get("ids"), because=f.get("because"), note=f.get("note"),
+    )
+
+
 def _preview_revise(
     home: Path, item: SheetItem, by: str | None, rc: str | None,
     record_override: Record | None = None,
@@ -2020,12 +2458,32 @@ def _preview_replace(
     the S-81 gates on every lesson it rewrites included. *actor* as
     `_dispatch_replace` passes it (:func:`_preview_checks` gives it)."""
     f = item.fields
-    verbs._preflight_replace(
-        home, item.id, also=f.get("also"), trigger=f.get("trigger"),
-        instruction=f.get("instruction"), fact=f.get("fact"), context=f.get("context"),
-        text_from=f.get("text_from"), type=f.get("type"), kind=f.get("kind"),
-        to=f.get("to"), dest=f.get("dest"), rules_paths=f.get("rules_paths"),
-        because=f["because"], note=f.get("note"), by=by, actor=actor,
+    # S-104: a fold previews inside the same approval its run
+    # gets (`_fold_context`), so the preview neither refuses the confirmed
+    # hand edit nor lets a newer one through.
+    with _fold_context(home, item):
+        verbs._preflight_replace(
+            home, item.id, also=f.get("also"), trigger=f.get("trigger"),
+            instruction=f.get("instruction"), fact=f.get("fact"), context=f.get("context"),
+            text_from=f.get("text_from"), type=f.get("type"), kind=f.get("kind"),
+            to=f.get("to"), dest=f.get("dest"), rules_paths=f.get("rules_paths"),
+            because=f["because"], note=f.get("note"), by=by, actor=actor,
+        )
+
+
+def _preview_restate(
+    home: Path, item: SheetItem, by: str | None, rc: str | None,
+    actor: str = "human",
+) -> None:
+    """S-108: the restate's own pre-lock checks
+    (`verbs._preflight_restate`), the closed lesson's status among them.
+    *actor* as `_dispatch_restate` passes it."""
+    f = item.fields
+    verbs._preflight_restate(
+        home, item.id, trigger=f.get("trigger"), instruction=f.get("instruction"),
+        fact=f.get("fact"), context=f.get("context"), type=f.get("type"),
+        kind=f.get("kind"), to=f.get("to"), because=f["because"], note=f.get("note"),
+        by=by, actor=actor,
     )
 
 
@@ -2048,8 +2506,10 @@ _PREVIEW_CHECKS: dict[str, _PreviewCheck] = {
     "confirm-held": _preview_confirm_held,
     "link-contradicts": _preview_link_contradicts,
     "followup-done": _preview_followup_done,
+    "premises": _preview_premises,
     "revise": _preview_revise,
     "replace": _preview_replace,
+    "restate": _preview_restate,
 }
 
 #: What `_dispatch` turns into a refused item — a preview check raising one
@@ -2080,12 +2540,14 @@ def _preview_checks(
     returns: for a `revise`, the lesson as it would leave it."""
     _refuse_agent_shelf_cover(item, actor)
     _refuse_agent_replace(item, actor)
+    _refuse_agent_restate(item, actor)
+    _refuse_region_lines(item, actor)
     f = item.fields
     if item.verb == "replace":
         _refuse_agent_reference(
             item.id, verbs.replace_destination(home, item.id, f.get("dest")), actor
         )
-    if item.verb in ("revise", "replace"):
+    if item.verb in ("revise", "replace", "restate"):
         by = f.get("by") or (actor if actor != "human" else None)
     else:
         by = f.get("by") or actor
@@ -2098,6 +2560,10 @@ def _preview_checks(
         )
     if item.verb == "replace":
         return _preview_replace(home, item, by, reconsider_case, actor=actor)
+    if item.verb == "restate":
+        return _preview_restate(home, item, by, reconsider_case, actor=actor)
+    if item.verb == "reopen":
+        return _preview_reopen(home, item, by, reconsider_case, actor=actor)
     return _PREVIEW_CHECKS[item.verb](home, item, by, reconsider_case)
 
 
@@ -2191,6 +2657,7 @@ def dry_run(
     actor: str = "human",
     hook_activation: bool = False,
     reconsidered: frozenset[str] | set[str] = frozenset(),
+    rerouted: frozenset[str] | set[str] = frozenset(),
 ) -> DryRunResult:
     """:func:`_dry_run_items` under an actor scope for *actor*
     (:func:`ledger_ops.acting_as`, S-81): the preview runs the verbs' own
@@ -2199,7 +2666,7 @@ def dry_run(
     with acting_as(actor, home):
         return _dry_run_items(
             home, items, actor=actor, hook_activation=hook_activation,
-            reconsidered=reconsidered,
+            reconsidered=reconsidered, rerouted=rerouted,
         )
 
 
@@ -2210,6 +2677,7 @@ def _dry_run_items(
     actor: str = "human",
     hook_activation: bool = False,
     reconsidered: frozenset[str] | set[str] = frozenset(),
+    rerouted: frozenset[str] | set[str] = frozenset(),
 ) -> DryRunResult:
     """BAT9: writes nothing at all — ledger AND hosts (O-2b: this
     includes the runtime directory — a hook item's preview below never
@@ -2240,6 +2708,11 @@ def _dry_run_items(
     will be -- hook shape, replay, destination -- rather than stopping at
     the routed-status refusal. Nothing is written.
 
+    ``rerouted`` (S-104): the same for a staged ``kind:
+    resolution`` case on a ``premise-moved`` input no case covers -- its
+    ``route`` line on a routed lesson previews as the reroute
+    :func:`_resolution_reroute_for` will make of it at apply time.
+
     E0b (S-79 as amended): each line is previewed against its lesson as
     the EARLIER lines of the same sheet would leave it, when those lines
     would apply. A ``revise`` that previews ``would-apply`` puts the
@@ -2259,6 +2732,7 @@ def _dry_run_items(
     home = Path(home)
     sheet_case = getattr(items, "case", None)
     reconsidered = frozenset(reconsidered)
+    rerouted = frozenset(rerouted)
     result = DryRunResult(
         case=sheet_case,
         sheet_sha=getattr(items, "sheet_sha", None),
@@ -2299,7 +2773,10 @@ def _dry_run_items(
                 # 2026-10-06: the SAME refusal `_dispatch` raises, before
                 # the reconsider branch, as there.
                 _refuse_agent_reference(item.id, resolved, actor)
-            except verbs.SheetLineError as exc:
+                # SK2: the same, for a skill self-learn does not own. Its
+                # refusal may be any VerbError kind, so the catch is wider.
+                _refuse_agent_new_skill(home, item.id, resolved, actor)
+            except verbs.VerbError as exc:
                 result.items.append(
                     DryRunItem(n=item.n, id=item.id, verb=item.verb,
                                state="would-refuse", detail=refusal_text(exc),
@@ -2309,7 +2786,9 @@ def _dry_run_items(
             is_hook_dest = resolved is not None and resolved[0] == REFUSED_HOOK_DESTINATION
             if _reconsider_case_for(
                 home, item.id, sheet_case, item.verb, reconsidered
-            ) is not None:
+            ) is not None or _resolution_reroute_for(
+                home, item.id, sheet_case, item.verb, actor, rerouted
+            ):
                 # E0b: no overlay can reach a reroute. This branch needs the
                 # lesson ROUTED on disk, and a revise previews would-apply
                 # only for a pending or deferred one (DRAFT_STATUSES).
@@ -2716,7 +3195,7 @@ def _run_items(
                         if checkpoint_required
                         else False
                     )
-                    if continuation is not None and item.verb in _HOST_OUTCOME_VERBS:
+                    if continuation is not None and _host_outcome(item):
                         item_result.evidence = (
                             f"host result returned by {item.verb}"
                             if item_result.rc == 0
@@ -2743,7 +3222,7 @@ def _run_items(
                         if (
                             no_mutation
                             or item_result.rc != 0
-                            or item.verb in _HOST_OUTCOME_VERBS
+                            or _host_outcome(item)
                         ):
                             _checkpoint_or_halt(
                                 checkpoint, result, list(items[idx + 1:])
@@ -2763,7 +3242,7 @@ def _run_items(
                         # lost five prepared cases to a halt over a route
                         # that had refused at preflight.)
                         if (
-                            item.verb in _HOST_OUTCOME_VERBS
+                            _host_outcome(item)
                             and item_result.rc != 0
                             and not no_mutation
                         ):

@@ -257,11 +257,30 @@ def _subject_matches(ref: ExecutionRef, subject: str) -> bool:
         return subject == exact[ref.verb]
     if ref.verb == "link-contradicts":
         return subject.startswith(f"self-learn: link {rid} contradicts ")
+    if ref.verb == "premises":
+        # S-104: the action sits between the verb and the id
+        # (`self-learn: premises set lrn-…`, 11 §2.5). The sweep's code-only
+        # `premises refresh` commit carries no execution trailers and is
+        # never a sheet item's proof. Any one-word action (U8 adds
+        # `restore-region`) but `refresh`.
+        words = subject.split(" ")
+        return (
+            len(words) == 4 and words[:2] == ["self-learn:", "premises"]
+            and words[3] == rid and words[2] != "refresh"
+            and re.fullmatch(r"[a-z]+(?:-[a-z]+)*", words[2]) is not None
+        )
     prefixes = [f"self-learn: {ref.verb} {rid}"]
     # The compatibility alias delegates to retire when `covered_by` is
     # supplied, and therefore deliberately uses retire's subject.
     if ref.verb == "graduate":
         prefixes.append(f"self-learn: retire {rid}")
+    if ref.verb == "route":
+        # S-102 (M5.1): a `route` line under a reconsider case over
+        # an already-routed lesson runs `verbs.reroute`, whose subject is
+        # "self-learn: reroute <id> → <dest>". Now that the reroute commit
+        # carries the runner's trailers, crash recovery can prove it; without
+        # this alias the subject check would still refuse to recognise it.
+        prefixes.append(f"self-learn: reroute {rid}")
     return any(subject == prefix or subject.startswith(prefix + " ") for prefix in prefixes)
 
 

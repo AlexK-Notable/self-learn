@@ -53,14 +53,29 @@ def _seed_fresh_proposals(home: Path, count: int, offset: int = 0) -> list[str]:
     return ids
 
 
-def _enable_steward(home: Path) -> None:
-    (home / "config.yaml").write_text("steward:\n  enabled: true\n", encoding="utf-8")
+#: S-104: the steward's shared test setup pauses the premise
+#: backfill (`premises.backfill_per_night: 0`). With it on (the product
+#: default, 10), every placed lesson a test makes without premises becomes a
+#: `premise-extract` input on the next run, which these tests -- about other
+#: inputs -- never meant to decide. `test_steward_premise_extract.py` turns
+#: it on with ``premise_backfill``.
+_BACKFILL_LINES = "premises:\n  backfill_per_night: {n}\n"
+
+
+def _enable_steward(home: Path, *, premise_backfill: int = 0) -> None:
+    (home / "config.yaml").write_text(
+        "steward:\n  enabled: true\n" + _BACKFILL_LINES.format(n=premise_backfill),
+        encoding="utf-8",
+    )
     commit_all(home, "enable steward")
 
 
-def _configure_steward(home: Path, *, packet_size: int = 10) -> None:
+def _configure_steward(
+    home: Path, *, packet_size: int = 10, premise_backfill: int = 0
+) -> None:
     (home / "config.yaml").write_text(
-        f"steward:\n  enabled: true\n  packet_size: {packet_size}\n",
+        f"steward:\n  enabled: true\n  packet_size: {packet_size}\n"
+        + _BACKFILL_LINES.format(n=premise_backfill),
         encoding="utf-8",
     )
     commit_all(home, "configure steward")
@@ -391,7 +406,9 @@ def test_session_spec_and_doctor_share_the_required_steward_containment(
     assert spec.containment.write_globs == (f"{spec.cwd}/steward/**",)
     assert spec.containment.write_exact == ()
     assert spec.containment.strict_mcp is True
-    assert spec.containment.allowed_tools == "Read,Grep,Glob,Write,Edit"
+    assert spec.containment.allowed_tools == "Read,Grep,Glob,Write,Edit,mcp__premises__premise_probe"
+    assert spec.mcp_toolset is not None
+    assert spec.mcp_toolset.qualified_names == ("mcp__premises__premise_probe",)
     assert spec.containment.disallowed_tools == "Bash,NotebookEdit,Task,WebFetch,WebSearch"
 
     row = provider._steward_containment_row(home)

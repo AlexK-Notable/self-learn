@@ -54,6 +54,10 @@ def test_a_reused_phase_a_brings_its_journal_entries_into_the_new_run(tmp_path, 
     def invoke(spec):
         labels.append(spec.label)
         journal = spec.cwd / overseer_run.MODEL_JOURNAL_NAME
+        if spec.label == "phase-s":
+            # SK4 (2026-10-31): skill discovery, in its own workspace, writes
+            # nothing here; only phases A and B log entries in this test.
+            return _ok()
         if spec.label == "phase-a":
             _phase_a(spec.cwd)
             _append(journal, "\n## phase A · population read\nkept-phase-a-entry\n")
@@ -71,7 +75,8 @@ def test_a_reused_phase_a_brings_its_journal_entries_into_the_new_run(tmp_path, 
     first = overseer_run.run(home, no_push=True)
     assert first.status == "timed-out"
     second = overseer_run.run(home, no_push=True)
-    assert labels == ["phase-a", "phase-b", "phase-b"]  # phase A was reused
+    # phase A was reused; SK4 (2026-10-31): phase S runs in both attempts
+    assert labels == ["phase-a", "phase-s", "phase-b", "phase-s", "phase-b"]
     assert second.status in {"applied", "partial"}
     committed = overseer_run.model_journal_ledger_path(home, _today(), second.run)
     text = committed.read_text(encoding="utf-8")

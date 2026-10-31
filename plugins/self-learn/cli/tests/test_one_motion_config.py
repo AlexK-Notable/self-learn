@@ -293,7 +293,10 @@ class TestEnabledNewSkill:
         routed = Record.from_path(env.bucket / "resolved" / f"{record.id}.md")
         assert routed.routing["new_skill"] == "storage-guard"
         assert result.commit_message.endswith("→ new-skill:storage-guard")
-        assert any("install.sh" in n for n in result.post_notes)
+        # SK2 (S-107, 2026-10-31, D7): the route links the
+        # skill itself; its note no longer asks for ./install.sh.
+        assert any("linked at" in n for n in result.post_notes), result.post_notes
+        assert not any("install.sh" in n for n in result.post_notes)
 
     def test_hook_enabled_does_not_unlock_new_skill(self, env):
         env.enable("hook")  # per-destination gates are independent

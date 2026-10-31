@@ -277,13 +277,18 @@ MEASURED_CENSUS_MODULES = frozenset(
         "hosts.py",
         "ledger.py",
         "miner.py",
+        "notices.py",  # S-106: `git status` of a notice's file
         "overseer/notify.py",
         "primitives/procs.py",
         "provider.py",
+        "skill_writer.py",  # S-107: `git show HEAD:<file>`
         "worker.py",
     }
 )
-MEASURED_CENSUS_SITE_COUNT = 16  # O-6: detached overseer companion notification
+# O-6 (16): detached overseer companion notification. 2026-10-31 (18): two
+# bounded `subprocess.run` sites, `notices.condition_holds` (S-106) and
+# `skill_writer._head_file_text` (S-107), both with `timeout=`.
+MEASURED_CENSUS_SITE_COUNT = 18
 
 
 def test_p3_gate_census_matches_the_measured_count():

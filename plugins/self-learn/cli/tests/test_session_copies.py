@@ -262,10 +262,11 @@ def test_the_overseer_run_record_and_journal_carry_each_phases_transcript_copy(t
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
     assert result.status == "applied"
-    assert [spec.transcript_group for spec in calls] == [result.run, result.run]
+    # SK4 (2026-10-31): three sessions -- phase A, phase S, phase B.
+    assert [spec.transcript_group for spec in calls] == [result.run] * 3
     sessions = execution_evidence.read_manifest(home, result.run)["sessions"]
     assert [(row["phase"], row["session_id"]) for row in sessions] == [
-        ("phase-a", "sid-1"), ("phase-b", "sid-2"),
+        ("phase-a", "sid-1"), ("phase-s", "sid-2"), ("phase-b", "sid-3"),
     ]
     journal = [
         json.loads(line)
@@ -273,7 +274,8 @@ def test_the_overseer_run_record_and_journal_carry_each_phases_transcript_copy(t
     ]
     returned = {row["status"]: row for row in journal if row.get("run") == result.run}
     assert returned["phase-a-returned"]["session"]["session_id"] == "sid-1"
-    assert returned["phase-b-returned"]["session"]["session_id"] == "sid-2"
+    assert returned["phase-s-returned"]["session"]["session_id"] == "sid-2"
+    assert returned["phase-b-returned"]["session"]["session_id"] == "sid-3"
 
 
 # ------------------------------------------------ never fed to a model

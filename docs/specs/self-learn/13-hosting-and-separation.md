@@ -80,6 +80,24 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
           inferred, except the user host, which is never registered.
 ```
 
+*(Added 2026-10-30, S-107.)* **Skills self-learn owns live in the
+skills root, and self-learn links them.** A skill self-learn makes (`skill
+write`, `03-decisions.md` S-107) is an ordinary plugin of the
+registered skills root (claude-skills), `plugins/<name>/skills/<name>/`, with
+its `marketplace.json` entry, committed and pushed by self-learn with the
+autosync pause sentinel held, exactly as a `skill-md` route's write is. There
+is no second skill store: the skills root's files are the source of truth for
+the skill's text, and the ledger keeps only the registry row
+(`owned-skills.yaml`, `02-schema.md` §3) and the drafts. Self-learn also makes
+the link Claude Code loads the skill through, `~/.claude/skills/<name>` →
+`<skills root>/plugins/<name>/skills/<name>`, the same link the skills root's
+own `install.sh` makes, so `install.sh` stays correct over it and no person
+has to run it after a skill is made or scaffolded (a person's `new-skill`
+route makes the link too). `~/.claude` is not a git repository, so S-80's
+tracked-file guard does not apply to the link. Retiring or renaming an owned
+skill removes or moves its folder, its entry and its link in one skills-root
+commit. Codex's skill folder is not linked.
+
 ## 3. Ledger home layout
 
 ```
@@ -94,8 +112,11 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
                                        # evidence and unfinished obligations
   user-statements.jsonl               # append-only, the user's own words
   user-model.md                       # CURRENT/LAPSED readings (02 §3a)
+  owned-skills.yaml                   # skills self-learn owns (02 §3; S-107)
   overseer/{<date>-report.md, latest-report.md, coverage.yaml,
     open-questions.yaml, evaluation-<date>.md}   # the overseer's own subtree
+  overseer/skills/{<week>.yaml, <week>/drafts/<name>/,
+    writing-trial.yaml}                # candidates, dispositions, drafts (S-107)
 ```
 
 `cases/runs/<run_id>.json` is ledger truth, not runner cache. Its schema and
@@ -265,7 +286,8 @@ revert). Doc 13 promotes that to the general rule:
    `git` host behaves exactly as items 1–4 describe. A **`plain`** host
    requires no repository: nothing is staged, committed, or pushed there,
    and the two-phase rule of item 1 collapses to its ledger half. The mode
-   is set ONCE, by `self-learn host add --mode git|plain`;
+   is chosen at registration, by `self-learn host add --mode git|plain`, and
+   changed in place only by `self-learn host set-mode` (below);
    `config.yaml`'s `hosts.default_mode` sets the default for new
    registrations, fail-closed to `git` (the `S-10` discipline). `host add
    --init` is unchanged and remains a **git**-mode convenience — `--mode
@@ -285,6 +307,61 @@ revert). Doc 13 promotes that to the general rule:
    refused when tracked or re-admitted by `.gitignore`: a tracked marker gets no
    exclude line (an ignore line cannot hide a tracked file) and is still
    (over)written; a marker git already ignores gets no duplicate line.
+
+   **Changing a mode, and registering on a yes (S-103, 2026-10-31).**
+   `host add` never changes a mode: re-adding a registered host with a
+   different mode still refuses. Before this, the only way across was `host
+   remove` then `host add --mode` (two commits, with the compile gate shut
+   between them, done by hand at least three times). Now
+   `self-learn host set-mode <path> git|plain [--skills-root | --project]`
+   changes one registration's mode in one ledger commit (subject
+   `self-learn: host set-mode <kind> <path> <old> → <new>`). `--skills-root` or
+   `--project` is needed only for a path registered both ways (S-82), where
+   each registration has its own mode. Going to `plain` writes the marker and
+   its `info/exclude` line before the commit, exactly as `host add --mode
+   plain` does; going to `git` needs a git work tree at the path (the same
+   check) and leaves the marker in place, as `host remove` does. The bucket, the
+   records and the compile records are never touched, and the command names how
+   many routed records compile into the registration. A host already in the
+   asked mode writes nothing (a plain host's missing marker is restored). It is
+   a **person's command**: from an agent's shell (the markers S-92 reads for a
+   tier-C `config set`) it exits 1 before the lock, before any marker is written
+   and also for a request that would change nothing, naming the markers and never
+   their values; there is no override, and no sheet can run it (every `host` verb
+   is refused in a sheet), because a registration is disclosed consent (S-29,
+   Y-17) and a mode change is the same kind of act. Like S-92 it is not a
+   security boundary. A person's yes can also carry a registration: the
+   overseer may put `register: {path, mode, kind?}` on an ask whose whole point is
+   registering a repository it cannot register itself (the 2026-10-25 report:
+   "I cannot register a host (no verb)"). The ask's text must name the path as a
+   whole path (not the front or the tail of a longer one) and the mode as a
+   phrase ("in git mode", "a plain skills root"; not "git repository" or "a
+   plain yes"), the index keeps the field, and `overseer open` prints "a plain yes
+   registers: <kind> host <path> in <mode> mode" under the ask. `overseer
+   respond` with a bare yes (`yes`, `y`, with optional final punctuation; "yes,
+   but git mode" is not one) runs `host add` for that registration BEFORE the
+   answer is recorded and prints what it did. The person typing the answer is
+   the consent; nothing else registers anything. A registration `host add`
+   refuses (a path that is gone, not a git repo in `git` mode, already
+   registered in the other mode) refuses the whole `respond`: nothing is
+   recorded and the question stays open. A `skills-root` registration that
+   would replace a DIFFERENT registered skills root is refused the same way (the
+   question never said so). An agent relaying the person's answer is how an
+   answer normally reaches the ledger, so from an agent's shell `respond`
+   registers when its own session's transcript proves the typing: the session is
+   `$CLAUDE_CODE_SESSION_ID` (so the agent need not know it), a `--session`
+   naming a different session is refused, and `--session` is for a shell without
+   that variable. The LAST row the person typed there must be a plain yes (an
+   AskUserQuestion click, an earlier yes, an agent-written turn, a line another
+   agent typed into the pane and anything typed after the yes do not count;
+   `statements.latest_user_typed`, which judges a row as `statement add` does).
+   When the agent's shell cannot prove it, `respond` records NOTHING and the
+   question stays open (the same as a refused `host add`: an answered question
+   whose registration never happened would read as done); the error says to have
+   the person type a plain yes and answer again, answer in their own terminal, or
+   run the `host add` line themselves (a registration already in place is left as
+   it is and needs no proof). A "yes" that is not a plain yes is still recorded
+   and the overseer reads it.
 
    **What replaces git for a plain host, and what does not.** Item 2's
    drift check is unaffected: it was never a git check — it compares the
@@ -473,6 +550,18 @@ line (full field list: §7.2a.7 as amended).
 `Persistent=true`) join the miner/host unit pair; `install.sh` links but
 never enables them, unchanged from every other unit this repo ships
 (`CLAUDE.md` § Layout).
+
+**A premises job joins the tick** *(Added 2026-10-31, `03-decisions.md`
+S-104; `02-schema.md` §3a.10.6)*. A `premises` job, due once a day
+and run before the steward's nightly slot, runs every premise probe and the
+three placement checks and writes its observations to the cache
+(`<cache>/premises/observations.jsonl`, `NOT_REPO_TRUTH`). Its one ledger
+write is a `refresh` premise's code-only re-baseline, under its own
+`commit_lock` span and pinned subject (`self-learn: premises refresh …`),
+pushed the way a steward run pushes; `serve` itself still never stages,
+commits or pushes. It needs no model call, no new unit and no timer.
+`premises.enabled` (tier C, default true) gates it; `_steward_is_due` counts
+the `premise-moved` and `premise-extract` inputs it makes selectable.
 
 **The overseer's catch-up rule and the same-week guard** *(Added 2026-09-19,
 `03-decisions.md` S-68)*. The weekly job is due on the first tick at or after
@@ -1728,6 +1817,8 @@ other verb's receipt there (`02-schema.md` §3a.2 §5); the human path opens
 no case, so no Application section exists to write to. `batch`'s flush
 epilogue remains the Application section's one writer.
 
+**What a delegated item prints (S-102, 2026-10-31).** The route's own "two manual steps remain" text is for the person who ran it. When the overseer or the steward routes a hook, the activation that follows in the same item either did both steps (it registered the hook) or placed the symlink and, with `overseer.hook_activation` off, says in its own "delegated" receipt that one step is left (the `settings.json` entry; `./install.sh` is no longer owed once the symlink is placed). The item's text therefore never carries the route's two-step block (`batch._dispatch_hook_activation`, `verbs.without_hook_manual_steps`).
+
 **What stays true regardless of actor.** The two manual steps this file's
 existing hook-compile path already requires — the exact-bytes preview and a
 diff-approved step — are the human's `hook activate` unconditionally, and
@@ -1745,6 +1836,90 @@ that is `FW-161`'s own scope, sequenced independently of this section (S-73
 built the warning hooks; activation handles their event); O-2
 only decides *who* may approve and install a hook already compiled under
 whatever destination grammar exists at build time.
+
+## 7.5 Project notices (added 2026-10-31, S-106)
+
+**What problem.** Two facts end up outside the ledger with nobody to read them,
+both about ONE project: an overseer finding about a project's own code (the
+2026-10-25 finding on a shutdown watchdog sat five days until a person opened the
+weekly report), and the change S-89 leaves in a tracked file of a plain host when
+a retirement takes a lesson's line out of it ("a person commits it", with nothing
+telling the person). The weekly report and the pending count are the wrong place:
+a session working in that project needs the line, and a session elsewhere does
+not. The user agreed on 2026-10-30 ("i reviewed checkpoint 90. i agree with the
+decisions.") to the design's question Q3: one-line project notices at session
+start, shown only in sessions inside the project they name, each ending when
+done, when its condition clears, or after 14 days.
+
+**What a notice is.** One line about one project: `{id, project, text, source,
+created_at, run?, condition?, done_at?}` in one JSON file under
+`<cache>/home-<digest>/notices/<id>.json` (`notices.py`). It is CACHE, never the
+ledger: it carries a machine path, ends by itself, and is a hint, not a record. A
+lost cache loses the hint and nothing the ledger holds (the report still has the
+finding; the removal's warning still printed). One file per notice, so two writers
+never read-modify-write one file. Its id is `ntc-` and eight hex digits of a hash
+of the project, the source and a key (an overseer notice: its words; a code
+notice: the file), so the same finding written again by the next weekly run is
+the same notice: it does not start a new 14 days and does not come back after a
+person marked it done. A code notice is written only right after a removal changed
+the file: while the notice for that file is live a further removal leaves it as it
+is (two removals before a commit are one line, not two), and one that was marked
+done or ran out its days is replaced by a fresh one.
+
+**Where a session sees it.** A notice shows in a session whose working directory
+is the notice's project (a real path) or inside it, a git worktree of the project
+included, and nowhere else (containment is by path, so `proj2` is not inside
+`proj`). `self-learn status --fast` (the SessionStart hook's one call) carries
+`project_notices` (`{id, text, line}`, newest first, at most three) and
+`project_notices_more` (a count) ONLY when there is something to show; the hook
+`self-learn-pending.sh` prints each `line` and, when there are more, one line
+naming `self-learn notice list`. The line's wording lives in
+`notices.format_line`, once. A hook cannot fail a session on this: an absent or
+malformed field prints nothing.
+
+**How a notice ends.** Whichever comes first: (1) `self-learn notice done <id>`
+(a person's or an agent's word; cache only); (2) its condition clears; (3) 14 days
+after it was first made. A file older than 30 days is deleted by the next writer.
+
+**Two sources.**
+
+1. `source: overseer`. Phase B may write an optional `notices.yaml`,
+   `{notices: [{project, text, case?}]}`, beside its other files, and is given
+   `projects.yaml` (`{projects: [{name, path, showing?}]}`: every project bucket's recorded
+   path and every registered host, as real paths that exist; `showing` holds the words of the
+   overseer notices still up in that project, so the overseer does not write a reworded copy,
+   which would be a new notice with a fresh 14 days). Each entry is
+   validated on its own, as findings are: `project` must be a path in that list (a
+   model cannot point a notice at a directory the ledger has never heard of),
+   `text` one sentence, one line of printable characters, at most 200, secret-
+   scanned (asked for as a double-quoted one-line string; a wrapped block scalar has its line
+   breaks joined with single spaces, so a notice is not lost to wrapping), `case` a case id, at most five a run, no duplicates, and a project path the secret scan matches is dropped (the run record is scanned whole). An entry that
+   fails is dropped and named by its ordinal in the report's "Refused / could not
+   do" (never its words); a file that does not parse, or that the secret scan
+   matched, drops whole; none of it refuses a run. The notice rides in the run
+   record as `notices` and is written first thing when the record is executed (before any sheet is applied), idempotently, so a
+   resumed run writes the same ones. A dry run writes none.
+2. `source: code`. When a plain host's retirement or reroute leaves a TRACKED file
+   changed (S-89, `verbs._settle_tracked_removals` answers the changed files), the
+   host phase writes one notice per file: "a lesson was taken out of this repo's
+   `<file>` and the change is uncommitted: review it and commit it." (printed after
+   the `self-learn:` prefix, so the words do not repeat it) Its
+   condition is that `git status --porcelain` still reports the file changed.
+
+**What reading costs.** `status --fast` stays git-free in every directory outside a
+notice's project: a notice for another project costs a path comparison. Only a
+`code` notice INSIDE the current project asks git one bounded question (that one
+file, `GIT_OPTIONAL_LOCKS=0` so no index lock, 1.5 s, at most six asks, and 2 s for all of a
+call's asks together, because the hook allows `status --fast` 4 s and loses every one of its
+lines when it times out); an answer that cannot be had (git missing, a timeout, the budget
+spent) keeps the notice, and the 14 days bound it.
+
+**What it does not do.** Decide anything, write the ledger, or touch a host file.
+`notice list [--all] [--json]` and `notice done` take no commit lock: they only
+read and mark the cache. The text of an overseer notice is model output printed
+into a session, so it is held to one clean line, secret-scanned, validated again
+when read, and printed with the `self-learn:` prefix; it is the overseer's reading
+and is not a user instruction.
 
 ## 8. Invariants
 

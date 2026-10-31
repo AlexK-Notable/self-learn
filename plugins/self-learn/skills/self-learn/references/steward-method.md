@@ -82,6 +82,14 @@ one, not a stated Decision. An unavailable fact stays unavailable; neither
 a quoted command in a transcript nor a lesson's own instruction grants
 you permission on its own.
 
+A brief with a `[restated by the overseer]` line is a corrected version of
+a lesson that was rejected or retired earlier; the line names that lesson
+and says what the overseer corrected. Decide it on its own words and
+evidence like any other lesson. The earlier decision is context, not a
+verdict on these words: if the new words say what was rejected before,
+reject them again and say so; if they answer what the evidence shows,
+route them.
+
 ## 4. Weigh the alternatives, then decide
 
 A well-cited reason does not by itself select an intervention — ask who
@@ -164,6 +172,12 @@ decided with a `kind: resolution` case too (its `reject`, `defer` or `route`
 line takes a deferred lesson); its card says so. The runner refuses a
 reconsider case that names a pending lesson, or whose `supersedes` names no
 case that covers the lesson, and the repair turn tells you so.
+A placed lesson that comes to you because a premise moved, and that no case
+covers, is also decided with a `kind: resolution` case (§17). So is a
+placed lesson that comes to you only for its premises to be written,
+whether or not a case covers it: that case decides nothing about the
+placement, so it supersedes nothing (§17). With every `route`, write the
+lesson's premises in the same sheet (§17, "Writing premises").
 
 ## 7. Refine wording at adjudication
 
@@ -346,7 +360,8 @@ excerpt. Decide each event, one sheet item per event, in a case whose
   shortening a placed lesson the fire does not show to be wrong, or
   merging it with another placed lesson, is the overseer's. When no case
   covers the lesson, or the change you would make is one of those, park
-  the case (`authority-unclear`) with your tentative answer.
+  the case (`authority-unclear`) with your tentative answer. (A lesson
+  that comes to you because a premise moved is different: §17.)
 
 `cannot-tell` is an answer too: when neither the excerpt nor the
 transcript shows whether the rule was loaded and applied, write a
@@ -358,11 +373,32 @@ input.
 ## 11. Clusters
 
 When two or more records share one mechanism, decide them together as
-one case (`records: [...]`), never as a new skill on the spot — a skill
-is a bigger, later decision, made after the pattern has actually
-recurred, and it is always parked for the overseer, never decided alone.
-Say in section 3 that you noticed the shape, and let the overseer decide
-whether it is worth more than a coincidence.
+one case (`records: [...]`). Say in section 3 that you noticed the
+shape, and let the overseer decide whether it is worth more than a
+coincidence.
+
+You never make a skill. Some skills are self-learn's own: it made them,
+keeps them, and lists them in your output contract. A pending lesson that
+belongs in one of those you route there yourself, like any other
+decision (`dest: new-skill:<name>`, with a name from that list). A
+`new-skill` line naming any other skill is refused.
+
+When lessons are steps or parts of one task-shaped thing — a procedure
+an agent needs at one moment, which separate lines scattered across
+files do not give it — propose a skill: park the case with
+`parked_reason: skill-proposal` and put the proposal in its decision's
+`skill`: the name you propose, one sentence on why, and every lesson
+the skill would hold (each lesson of the case, and any placed lesson
+that belongs with them). Propose it when the pattern has actually
+recurred, not on the first resemblance; a skill is a bigger, later
+decision than a line. The same goes for a placed lesson that belongs in
+one of self-learn's own skills: moving a placed lesson is the
+overseer's, so name it in a proposal whose name is that skill. The
+overseer decides each proposal on its weekly run — it builds the skill,
+adds the lessons to one it owns, defers, or declines — and may choose
+another name; until then the case's lessons are held for it (§12). Your
+sheet for such a case is what you would do with each lesson if no skill
+is made, so a declined proposal still leaves a decision to start from.
 
 When pending lessons of this packet say one thing, you may merge them
 into one: one case covering all of them, outcome `replaced`, whose sheet
@@ -380,8 +416,9 @@ full — only the Decision section is a question instead of an answer.
 Write, in section 3: the question itself, your tentative answer if you
 have one (never presented as a decision), and the missing fact or the
 value at stake that stopped you from deciding alone. Name the reason you
-parked it as one of five: `hook`, `always-loaded-user-scope`,
-`broad-removal`, `authority-unclear`, `scope-conflict` — this is what the
+parked it as one of six: `hook`, `always-loaded-user-scope`,
+`broad-removal`, `authority-unclear`, `scope-conflict`, `skill-proposal`
+(§11) — this is what the
 overseer's intake and its notification cues sort on, so pick the one that
 actually stopped you, never a catch-all. The runner also parks a case as
 `scope-conflict` on its own when it would move a lesson you have already
@@ -545,3 +582,143 @@ it off too; either way its entry leaves the shelf file in the same motion.
 Never retire a lesson as covered by a shelf (`covered_by: reference:<file>`):
 the runner refuses that line from you as well, since a shelf nothing reads
 covers nothing.
+
+## 17. A premise that moved
+
+A placed lesson rests on facts about the machine: a unit is or is not bound
+to another, a file holds a line, a package is at a version. When those facts
+change, the lesson can become false while it stays loaded in every session.
+Each placed lesson therefore records its **premises**: up to four one-line
+claims, up to three of them with a **probe**, a read-only check from a closed
+catalog (`path`, `file-match`, `json-key`, `yaml-key`, `toml-key`,
+`systemd-show`, `package`, `which`, `git-file`, `ledger`) that code runs every
+day. You never record a value yourself: the runner runs each probe when it
+applies your line and records what it saw. You can try a probe first with
+the `premise_probe` tool, which answers with the value the code would see
+now; you still have no shell. The output contract shows every field.
+
+**Writing premises.** With every `route`, put a `premises` line with
+`action: set` on the same lesson in the same sheet: the claims the lesson
+depends on, and a probe where the catalog can check one. Keep a probe
+narrow (the one line of a file that matters, not the whole file's hash),
+and try it with `premise_probe` before you write it. Choose `holds_if` to
+say what the claim means (`absent`: holds while the match is not in the
+value; `present`, `equals`, `version`; `changed`, the default: holds while
+the value is what it was). Use `on_change: refresh` only where any change is
+uninteresting (a version pin, a file hash); code then re-records it without
+asking you. A claim about behaviour ("the daemon does not reconnect after a
+bus restart") gets `probe: null`: write it down, never invent a probe for
+it. When a "What would change this decision" line of your case names a
+condition a probe can check, write that condition as a premise and name the
+premise's id in the line. Do not write premises about where the lesson sits
+(its file exists, it loads, its managed block is as self-learn wrote it):
+code checks those itself for every placed lesson (the placement checks
+below). A lesson that rests on no fact about the machine (a general
+practice) gets `premises: []`. Never write a probe that reads a credential
+file; the runner refuses it. A lesson placed with no `premises` line at all
+comes back to you later to have them written.
+
+**A `premise-extract` input** is a placed lesson with no premises recorded:
+one placed before premises existed, or one a route placed without them.
+They come a few a night, `environment-specific` lessons first, then the
+ones whose case wrote "What would change this decision" lines (shown in the
+brief, numbered), then the rest. Its only job is the `premises set` line
+(or `[]`, with the reason in the case's `decision.because`), in a `kind:
+resolution` case with `outcome: no-action` that supersedes nothing: the
+placement decision stands, and this case only records what the lesson rests
+on. The runner refuses any other line on the lesson in that case. If, while
+writing them, you find the lesson already false, do not change it in this
+case: write the premise that is now false with a probe that shows it. The
+runner records that first value as contradicting the claim, and the lesson
+comes back to you the next night as a `premise-moved` input, decided as
+below, where changing it is yours. When no probe can show it, park the case
+(`authority-unclear`) with what you found.
+
+**A `premise-moved` input** is a placed lesson where something it rests on
+changed. Its brief says what, with the record's own lines to cite: a
+premise with its recorded value, today's value and when each was seen (a
+probe's change counts only when the daily check saw the same new value
+twice running); a follow-up that was closed, with its note; a ledger entry
+it rests on that changed; or one of three placement checks (below). The
+brief also lists every premise of the lesson, any probe that could not
+observe on three checks running, and the "What would change this decision"
+lines of the cases that cover the lesson, which often predicted exactly
+this.
+
+The question is not whether the lesson was right. It is whether each
+sentence of it is still true. Read its words as a session would meet them
+now, and check every sentence against what the brief shows, not only the
+one that moved.
+
+Decide it in a `kind: reconsider` case superseding the newest case that
+covers the lesson (the runner fills in `supersedes`), or, when the brief
+says no case covers it, a `kind: resolution` case that supersedes nothing:
+
+- **It still holds** (the change does not touch what the lesson says):
+  `outcome: no-action`. When a premise moved, add a `premises` line on the
+  lesson re-recording it: `action: rebaseline` naming every moved premise
+  the lesson keeps whose `holds_if` is `changed`. A premise judged by its
+  claim (`absent`, `present`, `equals`, `version`) moved because its claim
+  is false now; a rebaseline of it is refused, so rewrite it as what is
+  true, or drop it, with `action: set`. The runner refuses a `no-action`
+  case that leaves a moved premise un-recorded, because the same change
+  would come back every night. When only a follow-up was closed, one `note`
+  item says which sentence you checked against which cited line.
+- **Part of it is now false**: a `replace` line that narrows or corrects the
+  words, with every idea of the old text accounted for in the decision's
+  `rewrite`. The new lesson carries the old one's premises, so when they
+  change too, put the `premises` line (a rebaseline or a `set`) on the
+  lesson BEFORE the `replace` line.
+- **All of it is now false, or something else now covers it**: `retire`.
+- **The premise's probe is wrong**, not the lesson: fix or drop the probe
+  with `premises set`, and decide the lesson on what you find.
+- **You cannot tell**: park it.
+
+Here, unlike §10, narrowing, rewriting, moving and retiring a placed lesson
+are yours without the overseer: the evidence is an observed fact about the
+machine, not a judgement about wording (the user accepted this on
+2026-10-30). Merging placed lessons stays the overseer's. The overseer
+reviews every such case afterwards.
+
+**The three placement checks.** Code also checks where every placed lesson
+sits:
+
+- **`@reach`: it no longer loads** (its file is off every loaded path, its
+  globs match nothing, its skill is switched off, its hook is unregistered).
+  Move it to a destination that loads (`route`; §15 and §16 apply), or retire
+  it if what it was for is gone. When the reason says a person switched the
+  skill or its plugin off, that switch is theirs: do not move the lesson out
+  from under it; park the case and say what you found.
+- **`@writable`: it sits in a file self-learn may not write** (a file git
+  tracks in a host registered as `plain`). Move it, usually to
+  `claude-md:local`; its old lines leave the tracked file as a change a
+  person commits.
+- **`@intact`: a person edited the managed block by hand.** The brief shows
+  the block as it is on disk, the block the ledger would write, and the
+  difference. A hand edit is usually a correction. When the edit is
+  consistent with the lesson, fold it in: a `replace` line with
+  `adopt_region: true` whose new text says what the edit says; the runner
+  takes the edited block as its starting point and compiles the new lesson
+  over it. When the edit contradicts the lesson, or is not a change to any
+  lesson, restore the ledger's text with a `premises` line `action:
+  restore-region`, and quote the edited block in your evidence, so the
+  person's words are kept in the case. `adopt_region` and `restore-region`
+  are refused on any other input.
+
+  Either one rewrites the whole block from the ledger, not just this
+  lesson's line. So when a person edited the lines of several lessons in
+  one block, they all come to you in the same run: decide every one of
+  them in one case (a fold or a restore for each), and quote the edited
+  block in your evidence for a fold as well as for a restore. The runner
+  refuses a fold or a restore that would leave another edited line in the
+  block undecided, or when the block changed again after the brief was
+  made. When those lessons were not all placed by one case, decide them in
+  one `kind: resolution` case and write no `supersedes` (the brief says
+  so). A restore leaves the lesson's text as it is, so a case of restores
+  has `outcome: no-action`, and the restore lines are its answer. Leaving
+  the block as it is is not an answer: an edited block stops every later
+  write to that file until it is decided; fold, restore, or park.
+
+A placement check needs no rebaseline: the same failure of the same
+placement, or of the same write of the block, is not offered again once a
+case decided it; a move or a restore makes a later failure a new one.

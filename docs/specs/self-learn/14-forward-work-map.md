@@ -63,7 +63,7 @@ building early is the failure mode).
 | FW-4 | DP-2 live recall test (the deliberately-uncaptured lesson) | DRILL | Standing; scored when the miner meets it |
 | FW-5 | Supply-mix + queue-health accounting | DRILL | **2026-08-17** (O-3/O-7 revisit) |
 | FW-6 | Over-cap graduation pressure: first-firing readiness | DRILL→BUILD | First 02 §4 over-cap WARNING |
-| FW-7 | G-6 staleness revalidation | BUILD (gated) | First routed lesson observed stale (03 G-6) |
+| FW-7 | ✅ **CLOSED 2026-10-31 into `03-decisions.md` S-104** (the trigger fired: `lrn-9b4250f5` was observed stale in live canon on 2026-10-30) — G-6 staleness revalidation, built as premises a daily code-only sweep re-checks and the steward re-decides (02 §3a.10) | BUILD (gated) | First routed lesson observed stale (03 G-6) |
 | FW-8 | Recurrence resolution flows: first-firing readiness | DRILL | First confirmed recurrence |
 | FW-9 | Supersession end-to-end drill (correct a routed lesson) | DRILL | First genuinely wrong routed lesson |
 | FW-10 | Distribution shape | **DECIDE** | Opens the packaging phase |
@@ -297,7 +297,7 @@ readiness, not rebuilding; details in `forward/canon-lifecycle.md`.
 | First occurrence of… | Activates | FW |
 |---|---|---|
 | 02 §4 over-cap WARNING on a route | Graduation-pressure flow (oldest-entries card) | FW-6 |
-| A routed lesson observed stale in live canon | G-6 gate (03) — staleness revalidation build | FW-7 |
+| A routed lesson observed stale in live canon *(fired 2026-10-30, `lrn-9b4250f5`)* | G-6 gate (03) — staleness revalidation build, closed into S-104 | FW-7 |
 | A confirmed recurrence (`confirm-recurrence`) | Revise/escalate/tolerate/retire resolution flow | FW-8 |
 | A routed lesson found wrong | Supersede-and-recompile path (S-12) end-to-end | FW-9 |
 | A second host/user wanting an install | G-2 proper + FW-21/FW-22 | — |

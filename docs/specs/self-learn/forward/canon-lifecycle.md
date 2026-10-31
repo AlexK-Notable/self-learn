@@ -42,6 +42,17 @@ gap — the web surface may prove sufficient as-is.
 
 ## 3. FW-7 — G-6 staleness revalidation (the one genuine build)
 
+> **Closed 2026-10-31 into `03-decisions.md` S-104.** The trigger
+> fired on 2026-10-30: `lrn-9b4250f5` stayed loaded with a sentence a
+> drop-in had made false, after its own follow-up was closed. The build is
+> premises on the record, a daily code-only sweep and a `premise-moved`
+> input the steward decides (`02-schema.md` §3a.10). The narrowing proposed
+> below is adopted (existence checks first, behaviour through recurrence),
+> with config values and file contents added because they are the commonest
+> premises on this host; the "supersession cards, never auto-edits" output
+> gives way to the steward's delegated judgment (S-29 as amended). The text
+> below is the 2026-07-18 record.
+
 **The gate** (03 G-6): compiler/`--selftest` checks each routed
 lesson's referenced target still exists; trigger = first routed lesson
 observed stale, or a shared-repo deployment.
@@ -117,6 +128,6 @@ accident.
 One combined sandbox session covers FW-6 + FW-8 + FW-9 (they share
 setup); order FW-6 first (most likely to fire soonest — caps are finite
 and routing is ongoing). FW-7 stays gated; its pre-work is one
-paragraph in the runbook. Any BUILD that falls out goes through the
+paragraph in the runbook *(closed 2026-10-31 into S-104, §3)*. Any BUILD that falls out goes through the
 normal spec→gate→build chain; the drills themselves need no gate (they
 are trials, logged in fixtures, same as every DoD walk).

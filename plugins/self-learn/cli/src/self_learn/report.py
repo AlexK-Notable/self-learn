@@ -31,6 +31,7 @@ from ruamel.yaml.error import YAMLError
 
 from . import domain
 from . import gitops
+from . import scan
 from .compilers import _iso, compile_managed_text
 from .hosts import HostsError, load_hosts
 from .ledger import discover_buckets
@@ -49,8 +50,11 @@ __all__ = [
     "REFERENCE_READ_RATE_STATES",
     "SESSION_BASELINE_WORDS_ADVISORY",
     "TOKENS_PER_WORD_EST",
+    "HAND_STEP_LIMIT",
+    "HAND_STEP_WINDOW_DAYS",
     "context_budget",
     "gather",
+    "hand_steps",
     "ledger_metrics",
     "recurrence_suspects",
     "reference_read_verdict",
@@ -169,6 +173,153 @@ def _resolution_dates(home: Path) -> dict[str, str]:
         for rid in _LRN_ID_RE.findall(subject):
             dates.setdefault(rid, _utc_date(ts))
     return dates
+
+
+#: S-105 (hand-maintenance cures, lane C): the census of hand steps.
+#: How far back it looks, and how many steps one packet carries (the rest
+#: are counted, never silently dropped).
+HAND_STEP_WINDOW_DAYS = 7
+HAND_STEP_LIMIT = 60
+#: One note is clipped to this many characters in the packet.
+_HAND_STEP_NOTE_CHARS = 240
+#: Commit subjects written by a JOB (or that record new knowledge rather than
+#: upkeep): not a hand step whoever's shell ran them. The mine and the worker
+#: (``mine N candidate(s)``, ``worker N proposals``), the steward's manifest
+#: and every case file, telemetry, the overseer's own commits, a captured or
+#: stated input (``capture``, ``statement add``, ``user-model``), and the
+#: premise sweep's code-only refresh (reported on its own row). A subject not
+#: named here counts, so a NEW kind of hand maintenance shows up in the census
+#: instead of being filtered out by a list that never heard of it.
+_JOB_SUBJECT_RE = re.compile(
+    r"^self-learn: (?:steward manifest|telemetry flush|case |worker |mine |overseer"
+    r"|capture |statement add|user-model |premises refresh )"
+)
+#: Actors whose ``By:`` trailer says a job, not a shell, made the commit.
+_JOB_ACTORS = frozenset({"steward", "overseer", "analyst"})
+_TRAILER_LINE_RE = re.compile(r"^[A-Za-z][A-Za-z-]*: \S")
+_NO_NOTE = "(no reason recorded)"
+
+
+def _split_trailers(body: str) -> tuple[str, dict[str, str]]:
+    """The commit body without its final trailer paragraph, and that
+    paragraph's ``Key: value`` lines. A final paragraph is a trailer block
+    only when EVERY line of it looks like ``Key: value`` and it holds a
+    ``By:`` line (the shape ``verbs._body_with_by_trailer`` and
+    ``execution_evidence`` write); anything else is the verb's own note."""
+    text = body.strip()
+    head, sep, tail = text.rpartition("\n\n")
+    lines = [line for line in tail.splitlines() if line.strip()]
+    if not lines or not all(_TRAILER_LINE_RE.match(line) for line in lines):
+        return text, {}
+    pairs = dict(line.split(": ", 1) for line in lines)
+    if "By" not in pairs:
+        return text, {}
+    return head, pairs
+
+
+def _clip_one_line(text: str, limit: int) -> str:
+    one = " ".join(text.split())
+    return one if len(one) <= limit else one[: limit - 1] + "…"
+
+
+def hand_steps(
+    home: Path | str,
+    *,
+    now: datetime | None = None,
+    days: int = HAND_STEP_WINDOW_DAYS,
+    limit: int = HAND_STEP_LIMIT,
+) -> dict:
+    """The week's hand steps: every ledger commit of the last *days* days
+    that no job made (S-105; ``design-manual-maintenance-cures.md`` M5.3).
+
+    A commit is a **hand step** when its subject is not a job's
+    (:data:`_JOB_SUBJECT_RE`) and it carries no job's identity: no ``Case:``
+    trailer and no ``By: steward|overseer|analyst``. What is left was run
+    from a person's or an agent's shell. ``by`` says which when the commit
+    says: ``human`` or ``agent`` from a ``By:`` trailer, ``none`` when there
+    is no trailer (every hand verb before the agent shell stamped its own).
+
+    Answers ``{"window_days", "since", "state", "reason", "total", "steps":
+    [...]}``, newest first, *steps* capped at *limit* (``total`` counts them
+    all). Each step is ``{"commit", "at", "subject", "by", "note"}``; the
+    note is the commit body without its trailer, one line, clipped, and
+    replaced by a stub naming the rule when the secret scan matches it (the
+    packet is a stage file, and a hit in a stage file refuses the whole run).
+    ``state`` is ``ok`` or ``unavailable`` (git could not be read): an
+    unreadable history is never reported as an empty week."""
+    home = Path(home)
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    since = now - timedelta(days=days)
+    result: dict = {
+        "window_days": days,
+        "since": since.strftime("%Y-%m-%dT%H:%MZ"),
+        "state": "ok",
+        "reason": None,
+        "total": 0,
+        "steps": [],
+    }
+    # git's own date cut is only a coarse first filter (a day wider than the
+    # window); the exact cut is made below on the parsed author date.
+    coarse = (since - timedelta(days=1)).date().isoformat()
+    try:
+        proc = gitops._git(  # noqa: SLF001 -- same module family
+            home, "log", "--no-merges", f"--since={coarse}",
+            "--format=%x1e%h%x1f%aI%x1f%s%x1f%b",
+        )
+    except (gitops.GitOpsError, OSError, UnicodeDecodeError) as exc:
+        result.update(state="unavailable", reason=_clip_one_line(str(exc), 200))
+        return result
+    if proc.returncode != 0:
+        result.update(
+            state="unavailable",
+            reason=_clip_one_line(proc.stderr or proc.stdout or "git log failed", 200),
+        )
+        return result
+    steps: list[dict] = []
+    for chunk in proc.stdout.split("\x1e"):
+        if not chunk.strip():
+            continue
+        short, _, rest = chunk.partition("\x1f")
+        stamp, _, rest = rest.partition("\x1f")
+        subject, _, body = rest.partition("\x1f")
+        try:
+            when = datetime.fromisoformat(stamp.strip()).astimezone(timezone.utc)
+        except ValueError:
+            continue
+        if when < since:
+            continue
+        subject = subject.strip()
+        if _JOB_SUBJECT_RE.match(subject):
+            continue
+        note, trailers = _split_trailers(body)
+        by = trailers.get("By")
+        if "Case" in trailers or by in _JOB_ACTORS:
+            continue
+        text = _clip_one_line(note, _HAND_STEP_NOTE_CHARS) or _NO_NOTE
+        subject_hits = scan.scan(subject)
+        hits = scan.scan(text) or subject_hits
+        if hits:
+            text = f"(withheld: the secret scan matched {hits[0].rule})"
+        if subject_hits:
+            # The whole subject goes, not only its long runs: a short hit
+            # (a credential assignment, a 20-character key) would otherwise
+            # reach health.yaml and make the run's own secret scan refuse
+            # the overseer every week until the commit leaves the window.
+            # A hit in the note alone withholds the note, not the subject.
+            subject = "(withheld)"
+        steps.append(
+            {
+                "commit": short.strip(),
+                "at": when.strftime("%Y-%m-%d %H:%MZ"),
+                "subject": _clip_one_line(subject, 160),
+                "by": by or "none",
+                "note": text,
+            }
+        )
+    steps.sort(key=lambda row: row["at"], reverse=True)
+    result["total"] = len(steps)
+    result["steps"] = steps[: max(int(limit), 0)]
+    return result
 
 
 def ledger_metrics(home: Path | str, *, today: date | None = None) -> dict:

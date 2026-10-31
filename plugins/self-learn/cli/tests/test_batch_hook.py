@@ -217,11 +217,16 @@ class TestPlacedOnlyReceiptNamesTheManualSteps:
 
         for surface_name, text in (("item detail", detail), ("history note", history_note)):
             assert "registration" in text, surface_name
-            assert "check are" in text, surface_name
             assert "manual step" in text, surface_name
-            assert "two manual" in text, surface_name
-            assert "install.sh" in text, surface_name
             assert "settings.json" in text, surface_name
+            # S-102: the symlink WAS placed, so the text names the
+            # ONE step left, never "two" and never `./install.sh`.
+            assert "one manual step" in text, surface_name
+            assert "two manual" not in text, surface_name
+            assert "install.sh" not in text, surface_name
+        # the item detail carries the route's own preview/commit text too,
+        # but not the route's "two manual steps remain" block
+        assert "two manual steps remain" not in detail
 
     def test_cmd_batch_print_line_is_a_bare_echo_of_item_detail(self):
         """Structural proof, read directly from the source, that the
@@ -296,10 +301,17 @@ class TestHookItemCarriesBothCommitsWorthOfNotes:
         assert item.sha is not None
         route_sha = detail.split("route commit ", 1)[1].split(";", 1)[0].strip()
         assert route_sha and route_sha != item.sha
-        # route's own manual-steps text (present on EVERY hook route,
-        # human or overseer — `verbs.route`'s own Apply text) rides
-        # `detail` too, not just hook_activate's receipts.
-        assert "two manual steps" in detail
+        # S-102: the route's own manual-steps text (printed by
+        # EVERY hook route a human runs) is dropped when the activation
+        # that follows in the same item registered the hook: both steps
+        # are done, so "two manual steps remain" would be false output
+        # (the overseer's 2026-10-18 report said it after doing both).
+        # hook_activate's own receipts still ride `detail`.
+        assert "two manual steps" not in detail
+        assert "manual step" not in detail
+        assert "INERT" not in detail
+        assert "./install.sh" not in detail
+        assert "registered" in detail
 
 
 # ---------------------------------------------------------------- test 4

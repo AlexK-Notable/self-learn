@@ -804,7 +804,10 @@ def test_the_mode_flip_refusal_names_the_registration_on_both_commands(
         host_add(home, repo, "project", mode="git")
     assert f"`self-learn host remove {repo} --project`" in str(project_flip.value)
     assert f"`self-learn host add {repo} --mode git`" in str(project_flip.value)
-    remove, add = re.findall(r"`self-learn (host [^`]*)`", str(root_flip.value))
+    # S-103: the refusal now names three commands, in this order: the
+    # one-step `set-mode` first, then the remove + add pair it replaces.
+    set_mode, remove, add = re.findall(r"`self-learn (host [^`]*)`", str(root_flip.value))
+    assert set_mode == f"host set-mode {repo} plain --skills-root"
     assert remove == f"host remove {repo} --skills-root"
     assert add == f"host add {repo} --skills-root --mode plain"
     git(repo, "rm", "-q", "--cached", "CLAUDE.md")  # nothing here blocks a plain root
@@ -925,11 +928,19 @@ def test_the_hosts_row_names_the_way_out_for_a_plain_root(tmp_path, monkeypatch)
     assert "--dest skill-md" not in msg
     with pytest.raises(verbs.NeedsPerson, match="SKILL.md is tracked by git"):
         verbs.reroute(home, rid, dest="skill-md", no_push=True)  # why the row says so
-    remove, add = re.findall(r"`self-learn (host [^`]*)`", msg)
+    # S-103: one command now (a person's `host set-mode`), not a
+    # remove then an add.
+    (set_mode,) = re.findall(r"`self-learn (host [^`]*)`", msg)
+    assert set_mode.startswith("host set-mode ")
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    # `host set-mode` is a person's command (an agent's shell is refused), so
+    # this models a person's terminal whatever shell runs the test
+    # (integration 2026-10-31, cures-b gate MINOR).
+    from self_learn import settings as _settings
+    for marker in _settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
 
-    assert cli.main(shlex.split(remove)) == 0
-    assert cli.main(shlex.split(add)) == 0
+    assert cli.main(shlex.split(set_mode)) == 0
 
     assert host_mode(home, repo, registration="skills-root") == "git"
     assert host_mode(home, repo, registration="project") == "git"

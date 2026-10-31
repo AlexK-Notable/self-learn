@@ -2983,6 +2983,7 @@ def reroute_record(
     allow_empty_glob: bool = False,
     glob_bypass_reason: str | None = None,
     hook: dict | None = None,
+    new_skill: str | None = None,
 ) -> list[Path]:
     """File-op half of ``reroute`` (U-verbs S-54 / §4.5, Phase 2):
     correct a wrong routing DESTINATION on an already-ROUTED record. The
@@ -3023,6 +3024,10 @@ def reroute_record(
         # U3b: a reroute INTO a hook carries the generated script and its
         # examples, exactly as `route`'s routing block does.
         routing["hook"] = dict(hook)
+    if new_skill is not None:
+        # SK2 (S-107): a reroute INTO a skill self-learn owns
+        # names it, exactly as `route`'s routing block does.
+        routing["new_skill"] = new_skill
     record.set_routing(routing)
     record.write(path)
     return [path]
@@ -3136,6 +3141,33 @@ def open_followups(home: Path) -> list[dict]:
                     "routed_at": _ts_str((record.routing or {}).get("routed_at")),
                 }
             )
+    return out
+
+
+def closed_followups(home: Path) -> list[Record]:
+    """Every ROUTED record whose follow-up was closed (``follow_up_done``
+    present), as the parsed records, in bucket and file order (S-104).
+
+    The mirror of :func:`open_followups`: ``resolved/`` only, the same status
+    gate (a superseded or graduated record may still carry the block, but
+    the successor owns what survives). It reads the file text first and
+    parses only a file that names the block, because the steward's due
+    check calls this on every scheduler tick and nearly every routed
+    record has none. An unreadable file is skipped, as there."""
+    out: list[Record] = []
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                if "follow_up_done:" not in path.read_text(encoding="utf-8"):
+                    continue
+                record = Record.from_path(path)
+            except (RecordError, OSError, UnicodeDecodeError):
+                continue
+            if record.status == "routed" and record.follow_up_done is not None:
+                out.append(record)
     return out
 
 

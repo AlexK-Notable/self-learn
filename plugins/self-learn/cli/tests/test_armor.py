@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "39f9126"
+ANCHOR = "5596021"
 
 
 # ===================================================================== #
@@ -296,19 +296,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # test_reader_contract.py::test_sw1_* (three `missing` doors). `nodes` and
     # `dump_sha` below are NOT yet re-measured for this deletion: the landing
     # step's --remeasure does that (the lane never runs it).
+    # 2026-10-31, ANCHOR 5596021 (2026-10-31 batch landing): this row's 3 `missing` doors (the 2026-10-30 fix wave's test edits)
+    # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_invocation.py": Behaviour(
-        nodes=75, dump_sha="37437e97c3031e7c7e17079be73d487cb76679e8003a49bad9e736f217ba4f63",
-        missing={
-            'func:test_wr2_miner_early_returns_precede_the_stray_sweep': (
-                '2026-10-30 test audit L1-1 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.11. Dated exemption per armor §4.5/§4.7; the test merged into test_reader_contract.py::test_sw1_early_return_precedes_the_sweep_when_the_sdk_is_unavailable (its three Popen legs controlled nothing under sdk_absent).'
-            ),
-            'class:_FakePopen': (
-                '2026-10-30 test audit L1-1 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.11. Dated exemption per armor §4.5/§4.7; the Popen stand-in was used only by test_wr2.'
-            ),
-            'class:_PopenRaises': (
-                '2026-10-30 test audit L1-1 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.11. Dated exemption per armor §4.5/§4.7; the Popen stand-in was used only by test_wr2.'
-            ),
-        },
+        nodes=72, dump_sha="c3866dd19651b97d7eba9c126d36b3a51290b8028376e3a8a4759c6699e8314b",
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
@@ -329,16 +320,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # 2026-10-30, S-100: two `edited` doors (test audit L1-1 took
     # test_wr2 out of _SIM_2_NINE; L1-17 dropped an unasserted case from test_kl6).
     # `dump_sha` below is NOT yet re-measured; the landing step's --remeasure does that.
+    # 2026-10-31, ANCHOR 5596021 (2026-10-31 batch landing): this row's 2 `edited` doors (the 2026-10-30 fix wave's test edits)
+    # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_invocation_sdk.py": Behaviour(
-        nodes=139, dump_sha="b1ee64cd9f959dc125a4dbdbb38b1257ebf3918d62424f15848bd7ab95291e45",
-        edited={
-            'assign:_SIM_2_NINE': (
-                '2026-10-30 test audit L1-1 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.13. Dated exemption per armor §4.5/§4.7; test_wr2 left the set when it was merged into test_reader_contract.py.'
-            ),
-            'func:test_kl6_child_pid_of_is_defensive': (
-                '2026-10-30 test audit L1-17 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.9. Dated exemption per armor §4.5/§4.7; an unasserted _WrongType case was removed.'
-            ),
-        },
+        nodes=139, dump_sha="972fd53200074d879f5cd4ef85282573a75e0cfca5a0deacb2c808fecc1514b7",
     ),
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
@@ -362,14 +347,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # (`defer` refuses a past --until); it now derives the date from today. `nodes`/`dump_sha` are
     # anchor-side and unchanged by a HEAD edit; EXM3.census_edited (0 -> 1) and BEH3.control_edited
     # (175 -> 176) are bumped below with dated reasons.
+    # 2026-10-31, ANCHOR 5596021 (2026-10-31 batch landing): this row's 1 `edited` doors (the 2026-10-30 fix wave's test edits)
+    # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_route_cli.py": Behaviour(
-        nodes=59, dump_sha="0558051df890c86d53fe8592c00fcc902d7db04e3a379235db739bf28ebf3150",
-        edited={
-            "func:test_defer_cli_until_date": (
-                "2026-10-30 tests-fix (S-98): the deferral date is computed from today, "
-                "not hard-coded 2027-01-01 (11-telemetry-and-lifecycle.md §2.5)"
-            ),
-        },
+        nodes=59, dump_sha="64de0b46f124f0d9d07466034c651626409282127b6a5d57e4ab7edfabf305b3",
     ),
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): A12's `edited` door (U7's cases block in the
     # batch prompt) was dropped as VACUOUS by this landing's own refusal; U7
@@ -834,9 +815,12 @@ class Measured:
 
 MEASURED: dict[str, Measured] = {
     "BEH7.node_counts": Measured(
-        value=(75, 139, 83, 84, 61, 59, 63, 26),
+        value=(72, 139, 83, 84, 61, 59, 63, 26),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-10-31, transcribed at ANCHOR 5596021 from this module's own "
+            "STALE refusal (2026-10-31 batch landing): (75, 139, 83, 84, 61, 59, 63, 26) -> (72, 139, 83, 84, 61, 59, 63, 26); the 2026-10-30 fix wave's test edits "
+            "are anchor-side now. Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
             "STALE refusal (stmt-role): (86, 139, 83, 84, 61, 59, 63, 26) -> (75, 139, 83, 84, 61, 59, 63, 26); the retirement's deleted and edited tests "
             "are anchor-side now. Previous entry: "
@@ -861,9 +845,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_node_counts,
     ),
     "BEH7.dump_prefixes": Measured(
-        value=('37437e97c303', 'b1ee64cd9f95', '0d4ac5f2300d', '1a6ef0d78003', 'd9bd2a6a44e5', '0558051df890', '95bbfe93d6c0', '3002f84a40b7'),
+        value=('c3866dd19651', '972fd5320007', '0d4ac5f2300d', '1a6ef0d78003', 'd9bd2a6a44e5', '64de0b46f124', '95bbfe93d6c0', '3002f84a40b7'),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-10-31, transcribed at ANCHOR 5596021 from this module's own "
+            "STALE refusal (2026-10-31 batch landing): (37437e97c303, b1ee64cd9f95, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, 0558051df890, 95bbfe93d6c0, 3002f84a40b7) -> (c3866dd19651, 972fd5320007, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7); the 2026-10-30 fix wave's test edits "
+            "are anchor-side now. Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
             "STALE refusal (stmt-role): (8e56cf5d5e00, 3681b7d89f5c, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, c61c80a0b91b, 95bbfe93d6c0, 3002f84a40b7) -> (37437e97c303, b1ee64cd9f95, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, 0558051df890, 95bbfe93d6c0, 3002f84a40b7); the retirement's deleted and edited tests "
             "are anchor-side now. Previous entry: "
@@ -893,9 +880,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_dump_prefixes,
     ),
     "BEH7.node_total": Measured(
-        value=590,
+        value=587,
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-10-31, transcribed at ANCHOR 5596021 from this module's own "
+            "STALE refusal (2026-10-31 batch landing): 590 -> 587; the 2026-10-30 fix wave's test edits "
+            "are anchor-side now. Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
             "STALE refusal (stmt-role): 601 -> 590; the retirement's deleted and edited tests "
             "are anchor-side now. Previous entry: "
@@ -941,9 +931,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=3,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-31, transcribed at ANCHOR 5596021 from this module's own "
+            "STALE refusal (2026-10-31 batch landing): 3 -> 0; the 2026-10-30 fix wave's test edits "
+            "are anchor-side now. Previous entry: "
             "2026-10-30 audit-merges (S-100; test audit L1-1): 0 -> 3, the three `missing` doors on test_invocation.py (`test_wr2_...`, `_FakePopen`, `_PopenRaises`), counted against ANCHOR 3ebc194. "
             "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
@@ -965,9 +958,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=3,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-31, transcribed at ANCHOR 5596021 from this module's own "
+            "STALE refusal (2026-10-31 batch landing): 3 -> 0; the 2026-10-30 fix wave's test edits "
+            "are anchor-side now. Previous entry: "
             "2026-10-30 tests-fix + audit-merges: 0 -> 3. tests-fix (S-98; 11-telemetry-and-lifecycle.md §2.5) adds an `edited` door on test_route_cli.py `func:test_defer_cli_until_date` (relative date); audit-merges (S-100; test audit L1-1, L1-17) adds two `edited` doors on test_invocation_sdk.py (`_SIM_2_NINE`, `test_kl6_child_pid_of_is_defensive`). Counted by reading; the landing remeasure confirms. "
             "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "

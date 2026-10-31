@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # self-learn-pending.sh — SessionStart hook (08 §7.1 pin).
 #
-# Prints the pending line, the staleness alarm, and the escalation line
-# into session context. ALL queue semantics come from
+# Prints the pending line, the staleness alarm, the escalation line and,
+# only in a session inside a project a live notice names, that project's
+# notice lines (S-106) into session context. ALL queue semantics come from
 # `self-learn status --json --fast` — a guaranteed-cheap CLI path
 # (pending/-only frontmatter scan, no git, <500 ms warm budget). This
 # script only formats; it never reimplements queue rules and NEVER calls
@@ -151,6 +152,22 @@ fi
 overseer_open_questions="$(jq -r '.overseer_open_questions // 0' <<<"$out" 2>/dev/null)" || exit 0
 if [ "$overseer_open_questions" -gt 0 ] 2>/dev/null; then
   echo "self-learn: the overseer has ${overseer_open_questions} interpretation questions — /self-learn:overseer"
+fi
+
+# S-106: project notices. `self-learn status --fast` carries
+# `project_notices` ONLY when this session's directory is inside a project a
+# live notice names (an overseer finding about that project, or a tracked file
+# of a plain host that self-learn left changed); each entry's `line` is the
+# whole line, formatted by the CLI, so the wording lives in one place. At most
+# three arrive; `project_notices_more` counts the rest. An absent or malformed
+# field prints nothing -- the normal case in every other project.
+notice_lines="$(jq -r '(.project_notices // [])[] | .line // empty' <<<"$out" 2>/dev/null)" || notice_lines=""
+if [ -n "$notice_lines" ]; then
+  printf '%s\n' "$notice_lines"
+  notices_more="$(jq -r '.project_notices_more // 0' <<<"$out" 2>/dev/null)" || notices_more=0
+  if [ "$notices_more" -gt 0 ] 2>/dev/null; then
+    echo "self-learn: ${notices_more} more notice(s) for this project — self-learn notice list"
+  fi
 fi
 
 exit 0

@@ -127,8 +127,11 @@ class TestScaffold:
 
         routed = Record.from_path(env.bucket / "resolved" / f"{RID}.md")
         assert routed.routing["new_skill"] == "mouse-firmware"
-        # install.sh prints "run ./install.sh" guidance (M3-11)
-        assert any("install.sh" in n for n in result.post_notes)
+        # M3-11's note, as SK2 (S-107, 2026-10-31, D7) changed
+        # it: the route links the skill itself, so the note says where it
+        # is linked and asks for no "run ./install.sh" step any more.
+        assert any("linked at" in n for n in result.post_notes), result.post_notes
+        assert not any("install.sh" in n for n in result.post_notes)
 
     def test_second_route_appends_lesson_without_duplicating_entry(self, env):
         seed(env)
@@ -227,12 +230,15 @@ def test_selftest_drift_covers_new_skill(env, tmp_path, monkeypatch, capsys):
     # U-pointer's `surface` row (--selftest) checks whether the compiled
     # skill is actually INDEXED, not merely present -- the healthy-install
     # premise this test relies on needs a personal-skill symlink into the
-    # sandbox claude_dir's skills index, exactly as an operator registers
-    # a self-learn-hosted skill (§2.2/§5.1B row 6 of the reachability spec).
-    (claude / "skills").mkdir(parents=True)
-    (claude / "skills" / "mouse-firmware").symlink_to(
+    # sandbox claude_dir's skills index (§2.2/§5.1B row 6 of the
+    # reachability spec). 2026-10-31, SK2 (S-107, D7): the route
+    # makes that link itself now; the hand-made link this test used to add
+    # is gone, and the test checks the route's link instead.
+    link = claude / "skills" / "mouse-firmware"
+    assert link.is_symlink()
+    assert link.resolve() == (
         env.host / "plugins" / "mouse-firmware" / "skills" / "mouse-firmware"
-    )
+    ).resolve()
     # fold r1, 2026-09-04: a fully healthy home (all 9 real checks PASS,
     # no worker placeholder row) exits 0 again.
     assert cli.main(["--selftest"]) == 0

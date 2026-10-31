@@ -56,6 +56,8 @@ from . import (
     gitops,
     intents,
     miner,
+    notices,
+    premise_sweep,
     provider,
     refread,
     selfcheck,
@@ -76,6 +78,7 @@ from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
 from .index import cli as index_cli
 from .overseer import cli as overseer_cli
+from . import skill_cli
 from .overseer import conversation as overseer_conversation
 from .overseer import run as overseer_run
 from .ledger import (
@@ -911,6 +914,48 @@ def _build_parser() -> argparse.ArgumentParser:
         help="commit exactly as pinned, skip only the push",
     )
 
+    premises_p = sub.add_parser(
+        "premises",
+        help="the premise check (S-104): check -- run every probe now, "
+        "read-only, and print each premise's baseline, current value and verdict",
+    )
+    premises_sub = premises_p.add_subparsers(dest="premises_command", metavar="<verb>")
+    pcheck = premises_sub.add_parser(
+        "check",
+        help="run the probes and placement checks now and print premise, baseline, "
+        "current value and verdict (holds, moved, unavailable, no-probe); writes nothing",
+    )
+    pcheck.add_argument(
+        "--id", dest="record_id", metavar="ID", help="only this lesson (lrn-xxxxxxxx)"
+    )
+    pcheck.add_argument(
+        "--json", action="store_true", dest="as_json", help="machine-readable rows"
+    )
+
+    notice_p = sub.add_parser(
+        "notice",
+        help="project notices (S-106): one line about a project, shown at "
+        "session start only in sessions inside that project -- list | done",
+    )
+    notice_sub = notice_p.add_subparsers(dest="notice_command", metavar="<verb>")
+    nlist = notice_sub.add_parser(
+        "list",
+        help="the notices that show now in this directory (live, for a project that "
+        "holds it, condition still true); --all lists every notice on file",
+    )
+    nlist.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_notices",
+        help="every notice on file for this ledger, done and expired ones included",
+    )
+    nlist.add_argument("--json", action="store_true", dest="as_json")
+    ndone = notice_sub.add_parser(
+        "done",
+        help="a notice is dealt with: it stops showing (cache only, writes no ledger)",
+    )
+    ndone.add_argument("notice_id", metavar="ID", help="ntc-xxxxxxxx")
+
     telemetry_p = sub.add_parser(
         "telemetry", help="observation plane (11 §4): note (spool) | flush"
     )
@@ -984,6 +1029,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     overseer_cli.add_parser(sub)
     index_cli.add_parser(sub)
+    skill_cli.add_parser(sub)
 
     steward_p = sub.add_parser(
         "steward", help="autonomous decision runner: run"
@@ -1103,7 +1149,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "doctor",
         help="read-only diagnostics: invocation (provider/backend config), "
         "settings (the U-settings registry), miner (the session miner's "
-        "waiting answers); bare `doctor` defaults to `doctor invocation`",
+        "waiting answers), premises (the premise check); bare `doctor` "
+        "defaults to `doctor invocation`",
     )
     doctor_sub = doctor_p.add_subparsers(dest="doctor_command", metavar="[<verb>]")
     doctor_sub.add_parser(
@@ -1120,6 +1167,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "miner",
         help="the session miner's waiting answers: how many items still "
         "wait to land, and each stuck one (a write that failed on 3 runs)",
+    )
+    doctor_sub.add_parser(
+        "premises",
+        help="the premise check: written probes that are broken, placement "
+        "premises failing, lessons with no premises yet, when the sweep last ran",
     )
     # Bare `doctor` (no <verb>) behaves exactly as `doctor invocation` —
     # there is only one verb today, and forcing operators to spell it out
@@ -1188,7 +1240,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     host_p = sub.add_parser(
         "host",
-        help="compile-host registry (doc 13 §3): add | rebind | remove | list",
+        help="compile-host registry (doc 13 §3): add | set-mode | rebind | remove | list",
     )
     host_sub = host_p.add_subparsers(dest="host_command", metavar="<verb>")
     hadd = host_sub.add_parser(
@@ -1261,6 +1313,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "loud (a post-note names the count and the `recompile` "
         "WARN-and-skip consequence). Without this flag, host remove "
         "REFUSES on any such record.",
+    )
+    hsm = host_sub.add_parser(
+        "set-mode",
+        help="change a registered host's mode in place (S-103); a "
+        "person's command: refused from an agent's shell, like a tier-C "
+        "config set",
+    )
+    hsm.add_argument("path", metavar="PATH")
+    hsm.add_argument("mode", metavar="MODE", choices=hosts_mod.HOST_MODES)
+    hsm_which = hsm.add_mutually_exclusive_group()
+    hsm_which.add_argument(
+        "--skills-root",
+        action="store_const",
+        const="skills-root",
+        dest="registration",
+        help="change only PATH's skills-root registration (needed when the "
+        "path is registered both ways, each with its own mode, S-82)",
+    )
+    hsm_which.add_argument(
+        "--project",
+        action="store_const",
+        const="project",
+        dest="registration",
+        help="change only PATH's project registration",
     )
     host_sub.add_parser("list", help="show the registered hosts")
 
@@ -1544,6 +1620,18 @@ def _cmd_status_fast() -> int:
     data["overseer_last_run"] = overseer_run.last_run_iso_from_cache(
         serve.cache_dir_readonly(home)
     )
+    # S-106: project notices -- ABSENT unless this directory is inside
+    # a project a live notice names (absence is the normal case, like
+    # `overseer_open_questions`). `visible` never raises and reads only the
+    # cache; the one git question a `code` notice asks is bounded.
+    shown = notices.visible(home)
+    if shown:
+        data["project_notices"] = [
+            {"id": n.id, "text": n.text, "line": notices.format_line(n)}
+            for n in shown[: notices.MAX_SHOWN]
+        ]
+        if len(shown) > notices.MAX_SHOWN:
+            data["project_notices_more"] = len(shown) - notices.MAX_SHOWN
     # S-62 (§7.2a.7): additive fields only, so the fact survives
     # `2>/dev/null` by the route the hook already reads on stdout —
     # this is what closes the gap the pending hook's own discard used
@@ -2061,6 +2149,96 @@ def _cmd_doctor_miner(home: Path) -> int:
     return EXIT_OK
 
 
+def _cmd_notice(args: argparse.Namespace) -> int:
+    """`notice list [--all] [--json]` and `notice done ID` (S-106).
+    Both touch only the cache (`<cache>/notices/`): a notice is a hint about
+    one project, never ledger content, so neither verb takes the commit lock
+    or writes the ledger."""
+    if args.notice_command not in ("list", "done"):
+        print("usage: self-learn notice list [--all] [--json] | done ID", file=sys.stderr)
+        return EXIT_USAGE
+    home = resolve_home()
+    if args.notice_command == "done":
+        if not re.fullmatch(r"ntc-[0-9a-f]{8}", args.notice_id):
+            print(
+                f"self-learn notice done: {args.notice_id!r} is not a notice id (ntc-xxxxxxxx)",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+        try:
+            done = notices.mark_done(home, args.notice_id)
+        except OSError as exc:
+            print(f"self-learn notice done: could not write the cache: {exc}", file=sys.stderr)
+            return 1
+        if done is None:
+            print(f"self-learn notice done: no notice {args.notice_id} on file", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"notice {done.id}: done")
+        return EXIT_OK
+    if args.all_notices:
+        rows = notices.all_notices(home)
+    else:
+        rows = notices.visible(home)
+    if args.as_json:
+        print(json.dumps([row.as_dict() for row in rows]))
+        return EXIT_OK
+    if not rows:
+        print("notice list: none" if args.all_notices else "notice list: none for this directory")
+        return EXIT_OK
+    for row in rows:
+        state = "done" if row.done_at else "live"
+        print(f"{row.id} [{state}, {row.source}] {row.project}\n    {row.text}")
+    return EXIT_OK
+
+
+def _cmd_doctor_premises(home: Path) -> int:
+    """`doctor premises` (S-104): the same rows as the selftest's
+    `premises` row, one per line, from :func:`premise_sweep.doctor_rows`. A
+    broken probe is a WARN, never a FAIL, so this verb always exits 0; it
+    reads the cache and the ledger and writes nothing."""
+    for row in premise_sweep.doctor_rows(home):
+        print(f"doctor: {row.verdict} {row.name} — {row.detail}")
+    return EXIT_OK
+
+
+def _cmd_premises(args: argparse.Namespace) -> int:
+    """`premises check [--id ID] [--json]`: a READ verb. It runs the probes and
+    the placement checks now (they only read: `systemctl show`, `pacman -Q`,
+    file reads, the compile record) and prints each premise against its
+    baseline. It writes nothing -- not the ledger, not even the sweep's cache,
+    so that running it twice cannot make a value that flaps look stable -- and
+    it works with `premises.enabled` false."""
+    if args.premises_command != "check":
+        print("usage: self-learn premises check [--id ID] [--json]", file=sys.stderr)
+        return EXIT_USAGE
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    record_id = args.record_id
+    if record_id is not None and not re.fullmatch(r"lrn-[0-9a-f]{8}", record_id):
+        print(
+            f"self-learn premises check: {record_id!r} is not a lesson id (lrn-xxxxxxxx)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    try:
+        rows = premise_sweep.check(home, record_id=record_id)
+    except LookupError as exc:
+        print(f"self-learn premises check: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if args.as_json:
+        print(json.dumps([row.as_dict() for row in rows]))
+        return EXIT_OK
+    if not rows:
+        print("premises check: no placed lesson records a premise, and no placement check applies")
+        return EXIT_OK
+    print(premise_sweep.render_check(rows))
+    moved = sum(1 for row in rows if row.verdict == "moved")
+    broken = sum(1 for row in rows if row.verdict == "unavailable")
+    print(f"premises check: {len(rows)} premise(s); {moved} moved, {broken} could not be observed")
+    return EXIT_OK
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """`Doc-0` -- a THIN PRINTER. Computes no verdict of its own and
     calls no probe directly: every verdict comes from
@@ -2075,6 +2253,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         return _cmd_doctor_settings(home)
     if args.doctor_command == "miner":
         return _cmd_doctor_miner(home)
+    if args.doctor_command == "premises":
+        return _cmd_doctor_premises(home)
     if args.doctor_command != "invocation":
         print("usage: self-learn doctor invocation", file=sys.stderr)
         return EXIT_USAGE
@@ -2462,6 +2642,19 @@ def _reports_no_change(compile_result: object) -> bool:
     return False  # unrecognized result type: never silently claim no_op
 
 
+#: Verbs whose whole effect is on the ledger (or the Claude runtime dir) and
+#: never attempt a host write, so "no `compile_result`" cannot mean "the host
+#: write failed" for them (S-102; see :func:`_outcome_state`).
+_LEDGER_ONLY_ACTIONS = frozenset({
+    "reject", "defer", "reconsider",
+    "hook-activate", "hook-deactivate",
+    "rehome", "rescope",
+    "undefer", "reopen", "note", "reclassify", "revise",
+    "followup-add", "followup-done",
+    "confirm-recurrence", "confirm-held", "dismiss-suspect", "link-contradicts",
+})
+
+
 def _outcome_state(result: verbs.VerbResult) -> str:
     """§3.3's four states plus `unknown`, derived CLI-side.
 
@@ -2492,7 +2685,13 @@ def _outcome_state(result: verbs.VerbResult) -> str:
     retirement failure still surfaces via `warnings` regardless (§3.7
     renders it on the success leg unconditionally) — this function only
     controls the summary label, never the repair text."""
-    if result.action in ("reject", "defer", "reconsider"):
+    if result.action in _LEDGER_ONLY_ACTIONS:
+        # S-102 (M2.2): the ledger-only actions beyond the three
+        # the original check named -- `hook-activate`/`hook-deactivate`
+        # (the runtime-dir write IS the whole verb; no `compile_result`
+        # ever exists, so they used to read `drift` on every success and
+        # tell a consumer to `recompile`), `rehome`/`rescope` (a record
+        # moves buckets; no host write), and the record-bookkeeping verbs.
         # Fold r1 (F4): `reconsider` shares `reject`/`defer`'s exact
         # shape here — it never attempts a host write at all (it only
         # ever appends a `reconsidered` history entry and commits the
@@ -2504,6 +2703,19 @@ def _outcome_state(result: verbs.VerbResult) -> str:
         return "landed"
     if result.action == "retire":
         return "landed" if result.host_commit_sha is not None else "no_op"
+    if (
+        result.action == "replace"
+        and result.compile_result is None
+        and result.host_commit_sha is None
+        and result.destination is None
+    ):
+        # S-102 (M2.2): a `replace` of a pending or deferred
+        # lesson writes the new lesson to `pending/` and supersedes the
+        # old one in one ledger commit (`_replace_pending`): no host write
+        # was attempted, so `compile_result is None` does not mean one
+        # failed. A routed replace names its `destination`, and keeps the
+        # full predicate below.
+        return "landed"
     # route: the full 4-state predicate.
     if result.host_commit_sha is not None:
         return "landed"
@@ -2651,6 +2863,120 @@ def _routed_destination(result: verbs.VerbResult) -> str:
     return result.commit_message.split("→", 1)[1].strip().split(" ")[0]
 
 
+#: Attributes of a verb's parsed arguments that carry its stated reason. Most
+#: verbs say it in ``--note``; a few have a required text of their own that
+#: plays the same part (``replace``/``revise`` ``--because``, ``note``
+#: ``--append``, ``reconsider`` ``--case``, ``followup add`` ``--action``;
+#: the last two are in :data:`_NOTE_REQUIRED_SURFACES`).
+_REASON_ATTRS = ("note", "because", "append", "case", "action")
+
+#: Surfaces whose own required text (`reconsider --case`, `followup add
+#: --action`) names WHAT is done, not WHY: from an agent shell they need
+#: `--note` all the same (integration 2026-10-31, decision 7). Only the
+#: note counts as their stated reason.
+_NOTE_REQUIRED_SURFACES = frozenset({"reconsider", "followup add"})
+
+
+def _agent_attribution(args: argparse.Namespace, surface: str) -> tuple[str | None, int | None]:
+    """M5.2 (S-102): who ran this ledger-writing verb, and whether
+    it may run.
+
+    Returns ``(runner, refusal_code)``. In a person's own terminal
+    ``runner`` is ``None`` and nothing changes. In an agent shell
+    (:func:`settings.agent_caller`, the same detection that keeps tier-C
+    config switches the human's) ``runner`` is ``"agent"``: the verb stamps
+    ``By: agent`` in its commit, so the ledger can tell an agent's hand
+    maintenance from a person's; and a verb with no stated reason is refused
+    BEFORE anything is written (exit 64, like any missing argument), because
+    the record needs the reason most when an agent acts for the user. No
+    override flag: an agent could pass it (the detection is best-effort, not
+    a security boundary)."""
+    if not settings.agent_caller():
+        return None, None
+    attrs = ("note",) if surface in _NOTE_REQUIRED_SURFACES else _REASON_ATTRS
+    if any(
+        isinstance(getattr(args, attr, None), str) and getattr(args, attr).strip()
+        for attr in attrs
+    ):
+        return "agent", None
+    print(
+        f"self-learn {surface}: from an agent shell this verb needs --note "
+        "TEXT saying why; the ledger records it as By: agent "
+        f"(agent shell detected: {', '.join(settings.agent_caller_markers())})",
+        file=sys.stderr,
+    )
+    return None, EXIT_USAGE
+
+
+def _route_verb_dry_run(home: Path, args: argparse.Namespace) -> int:
+    """``route --dry-run``, the preview leg of :func:`_cmd_verb`. Factored
+    out at the 2026-10-31 integration: with cures-a's agent-shell
+    attribution in it, pyright found :func:`_cmd_verb` too complex to
+    analyse. Its errors are :func:`_cmd_verb`'s, raised to it."""
+    # U-verbs §4.3 (DRY3): no sentinel, no lock — a preview only.
+    dr = verbs.route_dry_run(
+        home,
+        args.id,
+        dest=args.dest,
+        allow_empty_glob=args.allow_empty_glob,
+        rules_paths=args.rules_paths,
+        allow_unpathed=args.allow_unpathed,
+    )
+    if args.as_json:
+        print(json.dumps(dr.to_json()))
+    else:
+        if dr.would_refuse:
+            for reason in dr.would_refuse:
+                print(f"self-learn route --dry-run: {reason}", file=sys.stderr)
+        else:
+            print(
+                f"route --dry-run {args.id} → {dr.destination} "
+                f"@ {dr.target or '(no single target)'} "
+                f"(+{dr.added_lines}/-{dr.removed_lines}"
+                f"{', already present' if dr.already_present else ''})"
+            )
+            if dr.unified_diff:
+                print(dr.unified_diff)
+    return EXIT_OK if dr.ok else 1
+
+
+def _route_verb(home: Path, args: argparse.Namespace, runner: str | None) -> int:
+    """``route``, the applying leg of :func:`_cmd_verb` (factored out with
+    :func:`_route_verb_dry_run`, for the same reason). Its errors are
+    :func:`_cmd_verb`'s, raised to it."""
+    follow_up = None
+    if args.follow_up is not None:
+        follow_up = {"action": args.follow_up}
+        if args.unblocks_on is not None:
+            follow_up["unblocks_on"] = args.unblocks_on
+        if args.follow_up_note is not None:
+            follow_up["note"] = args.follow_up_note
+    elif args.unblocks_on is not None or args.follow_up_note is not None:
+        print(
+            "self-learn route: --unblocks-on/--follow-up-note need "
+            "--follow-up",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    result = verbs.route(
+        home,
+        args.id,
+        dest=args.dest,
+        by=args.by or runner,
+        note=args.note,
+        no_push=args.no_push,
+        follow_up=follow_up,
+        collapse=args.collapse,
+        allow_empty_glob=args.allow_empty_glob,
+        rules_paths=args.rules_paths,
+        allow_unpathed=args.allow_unpathed,
+        stamp_by=runner,
+    )
+    return _finish_verb(
+        result, _routed_destination(result), as_json=args.as_json
+    )
+
+
 def _cmd_verb(args: argparse.Namespace) -> int:
     """Home-gated like every other surface (doc 13 B-11). Two reasons, one
     line: a bad home used to reach ``find_record_path`` and come back "no
@@ -2664,64 +2990,16 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         return code
     try:
         if args.command == "route" and getattr(args, "dry_run", False):
-            # U-verbs §4.3 (DRY3): no sentinel, no lock — a preview only.
-            dr = verbs.route_dry_run(
-                home,
-                args.id,
-                dest=args.dest,
-                allow_empty_glob=args.allow_empty_glob,
-                rules_paths=args.rules_paths,
-                allow_unpathed=args.allow_unpathed,
-            )
-            if args.as_json:
-                print(json.dumps(dr.to_json()))
-            else:
-                if dr.would_refuse:
-                    for reason in dr.would_refuse:
-                        print(f"self-learn route --dry-run: {reason}", file=sys.stderr)
-                else:
-                    print(
-                        f"route --dry-run {args.id} → {dr.destination} "
-                        f"@ {dr.target or '(no single target)'} "
-                        f"(+{dr.added_lines}/-{dr.removed_lines}"
-                        f"{', already present' if dr.already_present else ''})"
-                    )
-                    if dr.unified_diff:
-                        print(dr.unified_diff)
-            return EXIT_OK if dr.ok else 1
+            return _route_verb_dry_run(home, args)
+        runner, refusal = _agent_attribution(args, args.command)
+        if refusal is not None:
+            return refusal
         if args.command == "route":
-            follow_up = None
-            if args.follow_up is not None:
-                follow_up = {"action": args.follow_up}
-                if args.unblocks_on is not None:
-                    follow_up["unblocks_on"] = args.unblocks_on
-                if args.follow_up_note is not None:
-                    follow_up["note"] = args.follow_up_note
-            elif args.unblocks_on is not None or args.follow_up_note is not None:
-                print(
-                    "self-learn route: --unblocks-on/--follow-up-note need "
-                    "--follow-up",
-                    file=sys.stderr,
-                )
-                return EXIT_USAGE
-            result = verbs.route(
-                home,
-                args.id,
-                dest=args.dest,
-                by=args.by,
-                note=args.note,
-                no_push=args.no_push,
-                follow_up=follow_up,
-                collapse=args.collapse,
-                allow_empty_glob=args.allow_empty_glob,
-                rules_paths=args.rules_paths,
-                allow_unpathed=args.allow_unpathed,
-            )
-            return _finish_verb(
-                result, _routed_destination(result), as_json=args.as_json
-            )
+            return _route_verb(home, args, runner)
         if args.command == "reject":
-            result = verbs.reject(home, args.id, note=args.note, no_push=args.no_push)
+            result = verbs.reject(
+                home, args.id, note=args.note, by=runner, no_push=args.no_push
+            )
             return _finish_verb(result, "rejected", as_json=args.as_json)
         if args.command == "defer":
             until = None
@@ -2736,7 +3014,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                     )
                     return EXIT_USAGE
             result = verbs.defer(
-                home, args.id, until=until, note=args.note, no_push=args.no_push
+                home, args.id, until=until, note=args.note, by=runner,
+                no_push=args.no_push,
             )
             # pinned subject: "self-learn: defer lrn-… until <date>"
             until_str = result.commit_message.rsplit(" until ", 1)[1]
@@ -2746,18 +3025,20 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "retire":
             result = verbs.retire(
                 home, args.id, covered_by=args.covered_by, note=args.note,
-                no_push=args.no_push,
+                by=runner, no_push=args.no_push,
             )
             return _finish_verb(result, args.covered_by, as_json=args.as_json)
         if args.command == "rehome":
             result = verbs.rehome(
-                home, args.id, to=args.to, note=args.note, no_push=args.no_push
+                home, args.id, to=args.to, note=args.note, by=runner,
+                no_push=args.no_push,
             )
             # pinned subject: "self-learn: rehome lrn-… → projects/<slug>"
             return _finish_verb(result, _routed_destination(result))
         if args.command == "rescope":
             result = verbs.rescope(
-                home, args.id, to=args.to, note=args.note, no_push=args.no_push
+                home, args.id, to=args.to, note=args.note, by=runner,
+                no_push=args.no_push,
             )
             # U-verbs §3.2: `rescope --to` now accepts the same UNION
             # grammar `rehome` does, so `args.to` is no longer always a
@@ -2775,6 +3056,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 args.old_id,
                 args.new_id,
                 note=args.note,
+                by=runner,
                 no_push=args.no_push,
             )
             return _finish_verb(result, args.new_id)
@@ -2785,12 +3067,13 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 event_ref=args.event,
                 tolerate=args.tolerate,
                 note=args.note,
+                by=runner,
                 no_push=args.no_push,
             )
             return _finish_verb(result, "recurrence confirmed")
         if args.command == "confirm-held":
             result = verbs.confirm_held(
-                home, args.id, note=args.note, no_push=args.no_push
+                home, args.id, note=args.note, by=runner, no_push=args.no_push
             )
             return _finish_verb(result, "confirmed holding")
         if args.command == "dismiss-suspect":
@@ -2800,31 +3083,38 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 event_ref=args.event,
                 why=args.why,
                 note=args.note,
+                by=runner,
                 no_push=args.no_push,
             )
             return _finish_verb(result, "suspect dismissed")
         if args.command == "undefer":
-            result = verbs.undefer(home, args.id, note=args.note, no_push=args.no_push)
+            result = verbs.undefer(
+                home, args.id, note=args.note, by=runner, no_push=args.no_push
+            )
             return _finish_verb(result, "pending")
         if args.command == "reopen":
-            result = verbs.reopen(home, args.id, note=args.note, no_push=args.no_push)
+            result = verbs.reopen(
+                home, args.id, note=args.note, by=runner, no_push=args.no_push
+            )
             return _finish_verb(result, "pending")
         if args.command == "reconsider":
             result = verbs.reconsider(
-                home, args.id, case=args.case, by=args.by, no_push=args.no_push
+                home, args.id, case=args.case, by=args.by or runner,
+                note=args.note, no_push=args.no_push,
             )
             return _finish_verb(result, "reconsidered", as_json=args.as_json)
         if args.command == "note":
             result = verbs.note(
-                home, args.id, append=args.append, key=args.key, no_push=args.no_push
+                home, args.id, append=args.append, key=args.key, by=runner,
+                no_push=args.no_push,
             )
             return _finish_verb(result, "noted")
         if args.command == "reroute":
             result = verbs.reroute(
-                home, args.id, dest=args.dest, by=args.by, note=args.note,
+                home, args.id, dest=args.dest, by=args.by or runner, note=args.note,
                 no_push=args.no_push, rules_paths=args.rules_paths,
                 allow_empty_glob=args.allow_empty_glob,
-                allow_unpathed=args.allow_unpathed,
+                allow_unpathed=args.allow_unpathed, stamp_by=runner,
             )
             return _finish_verb(
                 result, _routed_destination(result), as_json=args.as_json
@@ -2832,7 +3122,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "reclassify":
             result = verbs.reclassify(
                 home, args.id, kind=args.kind, type=args.type, note=args.note,
-                no_push=args.no_push,
+                by=runner, no_push=args.no_push,
             )
             return _finish_verb(result, "reclassified")
         if args.command == "replace":
@@ -2841,7 +3131,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 trigger=args.trigger, instruction=args.instruction, fact=args.fact,
                 context=args.context, text_from=args.text_from, type=args.type,
                 kind=args.kind, to=args.to, dest=args.dest, rules_paths=args.rules_paths,
-                note=args.note, by=args.by, no_push=args.no_push,
+                note=args.note, by=args.by or runner, no_push=args.no_push,
+                stamp_by=runner,
             )
             return _finish_verb(
                 result, result.new_record_id or "replaced", as_json=args.as_json
@@ -2849,7 +3140,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "revise":
             result = verbs.revise(
                 home, args.id, section=args.section, text=args.text,
-                because=args.because, by=args.by, no_push=args.no_push,
+                because=args.because, by=args.by or runner, no_push=args.no_push,
+                stamp_by=runner,
             )
             return _finish_verb(result, "revised")
     except verbs.VerbError as exc:  # incl. SecretRefusal
@@ -2902,7 +3194,7 @@ def _cmd_host(args: argparse.Namespace) -> int:
     ``commit_lock_path`` raise), and every git failure now lands on the
     same two documented codes as every other verb."""
     home = resolve_home()
-    if args.host_command in ("add", "rebind", "remove") and (
+    if args.host_command in ("add", "rebind", "remove", "set-mode") and (
         (code := _home_gate(home)) is not None
     ):
         return code
@@ -2936,6 +3228,36 @@ def _report_half_written(surface: str, exc: gitops.HalfWrittenError) -> int:
         file=sys.stderr,
     )
     return gitops.EXIT_HALF_WRITTEN
+
+
+def _print_plain_consent(host_path: Path) -> None:
+    """The consent line and the repository note a plain registration prints,
+    shared by ``host add --mode plain`` and ``host set-mode <path> plain``."""
+    # PLAIN7: name what plain mode does NOT do, plus §4.11's
+    # residual (a plain host is only ever unpublished until a
+    # human's own later `git init` + push change that).
+    print(
+        "  consent (plain mode): self-learn makes NO commit, NO "
+        "push, and keeps NO off-machine backup of this host's own "
+        "file — every write lands uncommitted; committing and "
+        "publishing it is entirely yours to do, or not"
+    )
+    if gitops.work_tree_of(
+        host_path.expanduser().resolve() / hosts_mod.MARKER_FILENAME
+    ) is None:
+        print(
+            "  note: a claude-md:local file written here is NOT "
+            "gitignore-protected (nothing is tracked) — if you later "
+            "git init and push this host yourself, anything already "
+            "written here publishes with it"
+        )
+    else:
+        print(
+            "  note: this is a git repository; self-learn lists each "
+            "file it writes here in the repo's local .git/info/exclude "
+            "(never the tracked .gitignore), so none shows in git "
+            "status and none is committed or pushed by self-learn"
+        )
 
 
 def _cmd_host_inner(args: argparse.Namespace, home) -> int:
@@ -2974,31 +3296,54 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
             "targets and analyst-readable"
         )
         if mode == "plain":
-            # PLAIN7: name what plain mode does NOT do, plus §4.11's
-            # residual (a plain host is only ever unpublished until a
-            # human's own later `git init` + push change that).
-            print(
-                "  consent (plain mode): self-learn makes NO commit, NO "
-                "push, and keeps NO off-machine backup of this host's own "
-                "file — every write lands uncommitted; committing and "
-                "publishing it is entirely yours to do, or not"
+            _print_plain_consent(Path(args.path))
+        return EXIT_OK
+    if args.host_command == "set-mode":
+        try:
+            changed = hosts_mod.host_set_mode(
+                home, args.path, args.mode, registration=args.registration
             )
-            if gitops.work_tree_of(
-                Path(args.path).expanduser().resolve() / hosts_mod.MARKER_FILENAME
-            ) is None:
+        except hosts_mod.HostModeAgentRefusal as exc:
+            # S-103: a business-rule refusal (exit 1, like
+            # AgentSettingRefusal), not a usage mistake.
+            print(f"self-learn host set-mode: {exc}", file=sys.stderr)
+            return 1
+        except hosts_mod.HostsError as exc:
+            print(f"self-learn host set-mode: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        shown = Path(args.path).expanduser().resolve()
+        if changed.changed:
+            print(
+                f"host set-mode: {changed.kind} {shown}: "
+                f"{changed.old_mode} → {changed.new_mode}"
+            )
+        else:
+            print(
+                f"host set-mode: {changed.kind} {shown} is already "
+                f"{changed.new_mode} — nothing changed"
+            )
+        if changed.marker_restored:
+            print(f"host set-mode: marker restored at {shown / hosts_mod.MARKER_FILENAME}")
+        print(
+            "  the bucket, its records and the compile records are untouched; "
+            f"{len(changed.routed)} routed record(s) compile into this registration"
+        )
+        if changed.changed and changed.new_mode == "plain":
+            _print_plain_consent(shown)
+            if changed.routed:
                 print(
-                    "  note: a claude-md:local file written here is NOT "
-                    "gitignore-protected (nothing is tracked) — if you later "
-                    "git init and push this host yourself, anything already "
-                    "written here publishes with it"
+                    "  note: a lesson already compiled into a file git tracks "
+                    "cannot be changed or replaced there while this host is "
+                    "plain (S-80); it can only be removed or moved"
                 )
-            else:
-                print(
-                    "  note: this is a git repository; self-learn lists each "
-                    "file it writes here in the repo's local .git/info/exclude "
-                    "(never the tracked .gitignore), so none shows in git "
-                    "status and none is committed or pushed by self-learn"
-                )
+        elif changed.changed:
+            print(
+                "  note: self-learn commits canon in this host again. The "
+                f"{hosts_mod.MARKER_FILENAME} marker is left in place, and "
+                "self-learn never removes a line from .git/info/exclude: if git "
+                "should now track a file it wrote while this host was plain, "
+                "remove that file's line yourself"
+            )
         return EXIT_OK
     if args.host_command == "rebind":
         try:
@@ -3093,6 +3438,7 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         return EXIT_OK
     print(
         "usage: self-learn host add <path> [--skills-root] | "
+        "host set-mode <path> git|plain [--skills-root | --project] | "
         "host rebind <slug-or-old-path> <new-path> | "
         "host remove <path> [--skills-root | --project] | "
         "host commit-drift <id> [--dest TARGET] [--dry-run] [--json] | "
@@ -3541,15 +3887,18 @@ def _cmd_followup(args: argparse.Namespace) -> int:
     if (code := _home_gate(home)) is not None:  # see _cmd_verb
         return code
     surface = f"followup {args.followup_command}"
+    runner, refusal = _agent_attribution(args, surface)
+    if refusal is not None:
+        return refusal
     try:
         if args.followup_command == "add":
             result = verbs.followup_add(
                 home, args.id, action=args.action, unblocks_on=args.unblocks_on,
-                note=args.note, no_push=args.no_push,
+                note=args.note, by=runner, no_push=args.no_push,
             )
         else:
             result = verbs.followup_done(
-                home, args.id, note=args.note, no_push=args.no_push
+                home, args.id, note=args.note, by=runner, no_push=args.no_push
             )
     except verbs.VerbError as exc:
         print(f"self-learn {surface}: {exc}", file=sys.stderr)
@@ -4216,12 +4565,16 @@ def _cmd_link(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     if (code := _home_gate(resolve_home())) is not None:  # see _cmd_verb
         return code
+    runner, refusal = _agent_attribution(args, "link contradicts")
+    if refusal is not None:
+        return refusal
     try:
         result = verbs.link_contradicts(
             resolve_home(),
             args.id,
             args.target,
             note=args.note,
+            by=runner,
             no_push=args.no_push,
         )
     except verbs.VerbError as exc:
@@ -4251,8 +4604,11 @@ def _cmd_hook(args: argparse.Namespace) -> int:
     if (code := _home_gate(resolve_home())) is not None:  # see _cmd_verb
         return code
     verb_fn = verbs.hook_activate if args.hook_command == "activate" else verbs.hook_deactivate
+    # M5.2: `hook` has no --note flag, so an agent shell is stamped
+    # `By: agent` but is not asked for a reason here.
+    runner = "agent" if settings.agent_caller() else None
     try:
-        result = verb_fn(resolve_home(), args.id, no_push=args.no_push)
+        result = verb_fn(resolve_home(), args.id, no_push=args.no_push, by=runner)
     except verbs.VerbError as exc:
         print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -4527,6 +4883,12 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "telemetry":
         return _cmd_telemetry(args)
 
+    if args.command == "premises":
+        return _cmd_premises(args)
+
+    if args.command == "notice":
+        return _cmd_notice(args)
+
     if args.command == "report":
         return _cmd_report(as_json=args.as_json)
 
@@ -4586,6 +4948,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "index":
         return args._index_dispatch(args)
+
+    if args.command == "skill":
+        return args._skill_dispatch(args)
 
     if args.command == "serve":
         return _cmd_serve(args)

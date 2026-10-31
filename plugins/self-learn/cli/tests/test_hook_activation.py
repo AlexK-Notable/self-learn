@@ -2268,3 +2268,29 @@ class TestDeactivateChecksRoutingHookToolsSameAsActivate:
 
         with pytest.raises(hook_activation.HookActivationError, match="incomplete"):
             hook_activation.deactivate(env.home, RID, claude_dir=env.claude)
+
+
+class TestAgentShellIsStamped:
+    """S-102 (M5.2): `hook activate|deactivate` have no `--note`, so
+    an agent shell is stamped `By: agent` but not asked for a reason."""
+
+    def test_activate_and_deactivate_record_by_agent_only_from_an_agent_shell(
+        self, env, monkeypatch
+    ):
+        route_hook(env, RID)
+
+        def last_body():
+            return git(env.home, "log", "-1", "--format=%B").stdout
+
+        # a person's terminal: unchanged, no trailer (positive control for the
+        # absence assertion: the activation did commit a new head)
+        head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+        assert cli.main(["hook", "activate", RID, "--no-push"]) == 0
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() != head
+        assert "By:" not in last_body()
+
+        monkeypatch.setenv("CLAUDECODE", "1")
+        assert cli.main(["hook", "deactivate", RID, "--no-push"]) == 0
+        assert last_body().rstrip().endswith("By: agent")
+        assert cli.main(["hook", "activate", RID, "--no-push"]) == 0
+        assert last_body().rstrip().endswith("By: agent")

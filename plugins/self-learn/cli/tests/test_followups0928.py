@@ -282,7 +282,9 @@ def test_a_secret_in_an_output_file_costs_that_file_not_the_run(tmp_path, monkey
 
     def leaky(spec):
         outcome = phases(spec)
-        if spec.label != "phase-a":
+        # integration 2026-10-31 (SK4): phase B's files only; phase S runs in
+        # its own workspace, which the run never reads these files from.
+        if spec.label == "phase-b":
             path = spec.cwd / where
             path.write_text(path.read_text(encoding="utf-8") + f"# {token}\n", encoding="utf-8")
         return outcome

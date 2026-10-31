@@ -95,6 +95,15 @@ MCP_HANDLER_TIMEOUT_SECS: float = 60
 #: built-in tool, and its containment fences no reads.
 _OWN_TOOLS_ONLY = frozenset({"miner-session"})
 
+#: Surfaces whose own tools ride BESIDE Claude Code's built-in tools
+#: (2026-10-31, U5 of the premise batch): the steward keeps Read, Grep, Glob,
+#: Write and Edit and gains the read-only `premise_probe` tool. For these
+#: the options carry no `tools` key (the built-ins stay as the containment
+#: leaves them: `disallowed_tools` and the charter), and the containment
+#: must allow every one of the session's own tools and no other `mcp__`
+#: tool. Any other surface with a toolset keeps the exact-names rule.
+_OWN_TOOLS_WITH_BUILTINS = frozenset({"steward"})
+
 #: 2026-10-06 (U4-seam): the longest reply one of a session's own tools
 #: may give, in characters. Claude Code cuts a longer tool result silently
 #: (measured near 50,000 characters); a reply over this bound becomes an
@@ -427,7 +436,31 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
             f"a {spec.surface} session runs only on its own tools, and this one has "
             "no mcp_toolset; refusing the session"
         )
-    if toolset is not None:
+    if spec.surface in _OWN_TOOLS_WITH_BUILTINS:
+        # 2026-10-31 (U5): own tools BESIDE the built-ins. Nothing is
+        # switched off, so `tools` is not touched and an SDK without it is
+        # fine; the server itself still needs `mcp_servers`. The check runs
+        # with or without a toolset: a containment that names an `mcp__`
+        # tool the session does not serve is refused too (a session built
+        # by hand that dropped its toolset would otherwise allow a tool
+        # that does not exist).
+        allowed = frozenset(t for t in (containment.allowed_tools or "").split(",") if t)
+        own = frozenset(toolset.qualified_names) if toolset is not None else frozenset()
+        foreign = sorted(t for t in allowed if t.startswith("mcp__") and t not in own)
+        if own - allowed or foreign:
+            raise ValueError(
+                "a session with its own tools must allow each of them and no other "
+                f"mcp tool; its own but not allowed: {sorted(own - allowed)}; "
+                f"allowed but not its own: {foreign}"
+            )
+        if toolset is not None:
+            if "mcp_servers" not in supported:
+                raise ValueError(
+                    "this claude-agent-sdk has no mcp_servers; cannot give the session its "
+                    "own tools, refusing the session"
+                )
+            kwargs["mcp_servers"] = {toolset.server: _build_mcp_server(toolset)}
+    elif toolset is not None:
         unsupported = [name for name in ("tools", "mcp_servers") if name not in supported]
         if unsupported:
             # Fail closed: without `tools` the session would be offered

@@ -184,7 +184,8 @@ def test_overseer_a_transient_phase_a_failure_is_retried_and_the_run_goes_on(tmp
 
     monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
     result = overseer_run.run(home, no_push=True)
-    assert labels == ["phase-a", "phase-a", "phase-b"]
+    # SK4 (2026-10-31): phase S (skill discovery) runs between A and B.
+    assert labels == ["phase-a", "phase-a", "phase-s", "phase-b"]
     assert result.status == "applied"
     rows = overseer_run.read_journal(home, limit=100)
     assert any(row.get("status") == "transient-retry" for row in rows)
@@ -243,7 +244,9 @@ def test_overseer_a_safeguard_flag_is_counted_and_its_note_names_class_and_tag(t
     monkeypatch.setattr(overseer_run.invocation, "write_session",
                         lambda spec: (calls.append(spec.label), invoke(spec))[1])
     result = overseer_run.run(home, no_push=True)
-    assert calls == ["phase-a", "phase-b"]  # no retry
+    # SK4 (2026-10-31): phase S fails the same way, never fails the run, and
+    # is not retried either.
+    assert calls == ["phase-a", "phase-s", "phase-b"]  # no retry
     assert result.status == "refused"
     assert overseer_run.week_attempts(home, _week(home)) == 1
     (note,) = overseer_run._committed_failure_notes(home, _week(home))

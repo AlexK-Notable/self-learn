@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 import shutil
 import textwrap
@@ -31,12 +32,14 @@ from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
 
-from .. import always_loaded, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, statements, user_model, verbs, worker
+from .. import always_loaded, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, skill_writer, statements, user_model, verbs, worker
+from .. import notices as project_notices
 from ..ledger import discover_buckets, resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
 from ..records import Record, build_covered_by
-from . import formats, health, notify, population as population_mod
+from . import discovery as discovery_mod, formats, health, notify, population as population_mod, skills as skills_mod
+from . import conversation
 from .conversation import _PROPOSITION_RE
 
 EXIT_OK = 0
@@ -57,6 +60,19 @@ _REPORT_SECTIONS = (
     "Questions for you",
     "Refused / could not do",
 )
+#: S-105 (hand-maintenance cures, lane C): the eighth heading. It is
+#: OPTIONAL in the model's report (a report without it is still valid, so a
+#: model that forgets it costs nothing) and, when present, sits directly
+#: after "Catalogue health". The runner adds it to the published report when
+#: the week's census was staged (:func:`_finalize_model_report`), so a hand
+#: step never goes unlisted because the model skipped the section.
+HAND_STEPS_SECTION = "Hand steps this week"
+_HAND_STEPS_AFTER = "Catalogue health"
+_REPORT_SECTIONS_WITH_HAND_STEPS = (
+    *_REPORT_SECTIONS[: _REPORT_SECTIONS.index(_HAND_STEPS_AFTER) + 1],
+    HAND_STEPS_SECTION,
+    *_REPORT_SECTIONS[_REPORT_SECTIONS.index(_HAND_STEPS_AFTER) + 1 :],
+)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 #: 2026-09-24: the report's length is GUIDANCE, not a refusal (the user
 #: asked "do we need a size limit at all?"; the orchestrator answered no).
@@ -74,6 +90,13 @@ INITIAL_VIEW_KEYS = ("id", "what_i_would_do", "why", "what_evidence_decides_it",
 INITIAL_CONFIDENCE = ("clear", "close-call")
 FINDING_KEYS = ("case", "kind", "text", "ref")
 FINDING_KINDS = ("examined", "dependency-moved")
+#: S-106 (hand-maintenance cures, lane D): the optional phase B file
+#: of one-line project notices, and the phase B input listing the projects a
+#: notice may name. Neither is in `REQUIRED_OUTPUT_FILES`: a run with no
+#: notices.yaml is complete.
+NOTICES_FILE = "notices.yaml"
+PROJECTS_FILE = "projects.yaml"
+NOTICE_KEYS = ("project", "text", "case")
 QUESTION_KINDS = ("reading", "ask")
 REQUIRED_OUTPUT_FILES = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
 MAINTENANCE_CASE_FIELDS = ("kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision")
@@ -142,9 +165,17 @@ def _failure_detail(text: object) -> str | None:
 
 
 #: S-66: "About 50 model calls per run is a runaway guard, not a ration."
-#: A run makes exactly this many: phase A, then phase B. A resumed run makes
-#: none. `overseer.max_model_calls` is compared with THIS count.
-_MODEL_CALLS_PER_RUN = 2
+#: A run makes exactly this many: phase A, phase S (skill discovery, SK4,
+#: S-107), then phase B -- one fewer with
+#: `overseer.skill_discovery` off (:func:`_model_calls_per_run`). A resumed
+#: run makes none. `overseer.max_model_calls` is compared with that count.
+#: (2 before SK4.)
+_MODEL_CALLS_PER_RUN = 3
+
+
+def _model_calls_per_run(discovery_on: bool) -> int:
+    """The model calls a run makes: three, or two with discovery off."""
+    return _MODEL_CALLS_PER_RUN if discovery_on else _MODEL_CALLS_PER_RUN - 1
 
 
 def _reported_turns(outcome: Any) -> int | None:
@@ -680,6 +711,8 @@ or a wrapped line (a block scalar keeps a line break): every free-text value in
 user-model-delta.yaml (the user model refuses a line break), and every loaded value on a sheet
 line -- trigger, instruction, fact, and a revise line's text for one of those sections (a lesson
 whose loaded text spans lines is refused when it is placed).
+A notice's text in notices.yaml is held to one line as well: write it as a double-quoted string on
+one line, never a block scalar and never wrapped (a notice is printed as one line).
 """
 
 
@@ -704,12 +737,32 @@ what_evidence_decides_it, and confidence (clear or close-call).
 """
 
 
-def _phase_b_prompt(stage: Path, selected: tuple[str, ...], parked: tuple[str, ...]) -> str:
+def _discovery_prompt_lines(discovery: bool) -> str:
+    """SK4 (S-107): phase B's rule for the skill candidates
+    and the steward's skill proposals."""
+    if discovery:
+        return (
+            f"Skill discovery: {discovery_mod.CANDIDATES_FILE} holds the skill candidates this run's discovery\n"
+            f"phase found (it may be empty, or say that phase failed), and {skills_mod.PROPOSALS_FILE} the\n"
+            f"steward's skill proposals. Write {discovery_mod.DISPOSITIONS_FILE} giving every candidate and every\n"
+            "proposal exactly one disposition, even when both lists are empty "
+            f"({formats.FORMATS_DIR}/README.md's\n\"Skill dispositions\" section).\n"
+        )
+    return (
+        f"Skill discovery is off this run: write no {discovery_mod.DISPOSITIONS_FILE}, and leave every case in\n"
+        f"{skills_mod.PROPOSALS_FILE} parked: write no successor for it.\n"
+    )
+
+
+def _phase_b_prompt(
+    stage: Path, selected: tuple[str, ...], parked: tuple[str, ...], *, discovery: bool = True,
+) -> str:
     return f"""You are the self-learn overseer. The evidence-first view is complete.
 You may now read the steward rationale and full decided account in full/*.md.
 This folder, {stage}, is your workspace: you can read and write only inside it.
 {_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
-answers.yaml (the user's answers to earlier overseer questions, newest first; it may be empty).
+answers.yaml (the user's answers to earlier overseer questions, newest first; it may be empty);
+projects.yaml lists the projects a notice may name.
 {LESSONS_DIR}/lrn-<id>.md is the current record of every lesson in the ledger: its status, routing,
 history, and loaded text (## Trigger and ## Instruction). Read the record of any lesson you name or
 compare, such as both members of a near-duplicate pair in health.yaml, before you decide on it; a
@@ -723,6 +776,20 @@ resolved -- say so and move on rather than treating it as an error.
 A parked case whose parked_reason is ledger-refused means the steward decided the lesson and the
 ledger refused its line for a reason only a person or a different decision can fix; the case
 quotes the ledger's words.
+health.yaml's catalogue_health also holds two rows the runner measured from the ledger and its
+history, and you report on both. premise-check: how many placed lessons record no premises yet,
+written probes with no reading on three sweeps in a row, placement premises that are failing, and
+the baselines the premise sweep re-recorded this week by code alone (no model, no decision); say
+under Catalogue health which of these needs a person, and read the week's code-only refreshes as
+you would a decision. A list in that row is empty when the sweep has not run as well as when
+nothing is wrong: check its sweep.last_finished_at first. hand-steps-this-week: every ledger change
+this week made from a person's or an agent's shell instead of by a job; a state of unavailable means
+the history could not be read, so say that and list nothing. In a section headed Hand steps this
+week, directly after Catalogue health, write one line per step, as
+- <commit> <what was done>: <the gap in self-learn that made the hand step necessary>.
+Read the step's note first, and the record in lessons/ when the step names a lesson. A step only the
+user may take (a setting only they set, an answer they typed) is by design: say so instead of
+naming a gap. When the evidence does not show what the gap was, say that.
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
 case you decide. To correct a case that is not parked (for example a decision whose line the
@@ -732,11 +799,16 @@ recorded by the steward or the overseer, never by a person (formats/case-correct
 A catalogue change that decides no parked case (a shortening, a merge, a correction no case
 covers) is a kind: maintenance case in its own case-<name>.yaml/sheet-<name>.yaml pair, as many
 as you need; a `replace` line rewrites a lesson's words (formats/README.md says how).
+A lesson a person rejected is never reopened by you: a `restate` line writes a corrected
+version as a new pending lesson for the steward to decide, and a question names the reject
+(formats/README.md says how).
 The runner alone records cases and applies sheets. Never run a verb.
 Never route a lesson to `reference` (a references/ shelf file): the runner refuses it from you.
 {formats.FORMATS_DIR}/README.md says where such a lesson goes instead, and how a lesson already
 on a shelf is taken off it.
-{_YAML_TEXT_RULE_B}In a case file no line of any text field may start with `## `. To quote a heading line, quote
+Skills self-learn owns: {formats.FORMATS_DIR}/README.md's "Skills self-learn owns" section says when and how to
+build, change or retire one; {skills_mod.OWNED_DIR}/, {skills_mod.VETOES_FILE}, {skills_mod.PROPOSALS_FILE} and {skills_mod.WRITING_FILE} are its inputs.
+{_discovery_prompt_lines(discovery)}{_YAML_TEXT_RULE_B}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
 an evidence item with such a line is dropped, and any other field with one refuses the case.
 Every text field is secret-scanned: an evidence item whose quote or ref matches is dropped (with
@@ -766,11 +838,28 @@ Two kinds, each {{id, kind, cases}}:
   Never bundle two decisions into one ask. If only the user can do something (it needs their
   hands, credentials, or a command agents may not run), you may ask whether they will; say
   exactly what and why.
+  An ask whose whole point is registering a repository as a canon host (you cannot register
+  one yourself) may add register: {{path: <absolute path>, mode: git or plain, kind: project or
+  skills-root, default project}}. The user's typed yes then registers it for them. The text
+  must name that path exactly and that mode as a phrase such as "in git mode" or "a plain skills
+  root" (not just a word like "git repository"), and never name the other mode, because the user sees the text and a yes means
+  exactly that registration; the question and its register must agree. A question that is not
+  about that registration never carries register.
 cases lists the case-… ids the question comes from, exactly as they appear in this stage; an
 ask needs at least one, because the user's answer is recorded against those cases.
 Order questions most consequential first. An empty list is a good answer when nothing clears
 the bar. A question that breaks these rules is dropped and listed in the report, and the run
 goes on.
+notices.yaml is optional: {{notices: [{{project, text, case?}}]}}. A notice is one line shown at the start of
+a session that works inside one project, and nowhere else, for something about that project's own code or
+setup that the sessions there should see (a defect you found in it; a change an agent left uncommitted in
+it). project is a path listed in projects.yaml; any other path is dropped. text is ONE sentence of at most
+{project_notices.MAX_TEXT} characters in plain words on ONE line (a double-quoted string, never a block scalar),
+written for someone who has not read this report; case is the case it comes from. A notice ends by itself
+after {project_notices.NOTICE_DAYS} days, or sooner when the user marks it done. At most {project_notices.MAX_PER_RUN} a run. The report is where findings go: write a notice only when a
+session in that project would act differently for knowing it, and none when nothing meets that. The same words
+for the same project one week later are the same notice. A project's `showing` list in projects.yaml holds
+the notices still showing there: do not write one of them again, not even reworded.
 user-model-delta.yaml is {{updates: [...]}}. Each update is either
 {{action: add, container, title, because, source: system-reading, ref, held_since?, conditions?, statements?, basis?}}
 or {{action: lapse, id, changed_condition?|contrary?|consolidated_into?}}. Adds are provisional
@@ -779,8 +868,8 @@ system readings only. A lapse must name exactly one changed condition, contrary 
 report.md should stay under about 60 lines: it is the summary, not the record. Its
 "Questions for you" section lists each question as - <id>: <a few words>; the full text lives
 in questions.yaml. It has these headings, in this exact order: Examined; Decided in the user's
-stead; Hooks; User model; Catalogue health; Questions for you; Refused / could not do. Use
-``- none`` for an empty section.
+stead; Hooks; User model; Catalogue health; Hand steps this week; Questions for you; Refused /
+could not do. Use ``- none`` for an empty section.
 {_journal_block("B")}"""
 
 
@@ -885,6 +974,122 @@ def _carry_kept_journal(source: Path, stage: Path) -> None:
         "this run instead of a new phase A.)"
     )
     _write_stage(stage, journal, current.rstrip("\n") + f"\n\n{marker}\n\n{body}\n")
+
+
+def _append_journal_entries(stage: Path, text: str | None, marker: str | None = None) -> None:
+    """SK4: append another workspace's journal entries -- everything after
+    its header line -- to the run's journal in *stage*, after *marker* when
+    one is given. Never fatal, as :func:`_carry_kept_journal`; the
+    commit-time secret scan still covers the text."""
+    if not text:
+        return
+    lines = text.splitlines()
+    body = "\n".join(lines[1:] if lines and lines[0].startswith("# ") else lines).strip()
+    if not body:
+        return
+    journal = stage / MODEL_JOURNAL_NAME
+    try:
+        current = journal.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    addition = f"\n\n{marker}\n\n{body}\n" if marker else f"\n\n{body}\n"
+    _write_stage(stage, journal, current.rstrip("\n") + addition)
+
+
+def _phase_s_journal(workspace: Path) -> str | None:
+    """Phase S's own journal, read only when it is a file inside its
+    workspace (as :func:`_model_journal_text` reads the run's)."""
+    path = workspace / MODEL_JOURNAL_NAME
+    try:
+        if path.resolve().parent != workspace.resolve():
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _run_phase_s(
+    home: Path, stage: Path, *, run_id: str, week: str, date: str, timeout_floor: float,
+    sessions: list[dict[str, Any]], dry_run: bool,
+) -> "discovery_mod.PhaseS":
+    """SK4 (S-107): phase S, skill discovery, between phases
+    A and B. It runs in its own workspace (``discovery.workspace_dir``),
+    never the one phases A and B share, so it reads neither phase A's blind
+    case views and journal nor anything of the steward's. Its journal
+    entries join the run's journal in *stage* afterwards.
+
+    Never raises and never fails the run: inputs that could not be
+    prepared, a failed or timed-out call, or a file that does not validate
+    is a failed phase S, and phase B runs without candidates. The caller
+    holds the run on a call of the environment class, as for phase A. A
+    validated phase S is kept for the week's next attempt and reused while
+    its stage is unchanged; a dry run neither keeps nor reuses one."""
+    workspace = discovery_mod.workspace_reset(home)
+    try:
+        _start_model_journal(workspace, run_id, date)
+        formats.write(workspace, "S")
+        inputs = discovery_mod.stage_inputs(
+            home, workspace, _write_stage, answers=_question_answers(home),
+        )
+        prompt = discovery_mod.phase_s_prompt(workspace, inputs)
+        _write_stage(workspace, workspace / discovery_mod.PROMPT_FILE, prompt)
+        key = discovery_mod.stage_key(workspace)
+    except Exception as exc:  # noqa: BLE001 -- a failed phase S, never a failed run
+        why = _failure_detail(f"its inputs could not be prepared ({type(exc).__name__}: {exc})")
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-failed",
+            "reason": (why or "")[:300]})
+        return discovery_mod.PhaseS.failed(why or "its inputs could not be prepared")
+    for note in inputs.notes:
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-input",
+            "reason": (_failure_detail(note) or "")[:300]})
+    timeout = phase_timeout(timeout_floor, inputs.lesson_count)
+    _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-staged",
+        "lessons": inputs.lesson_count, "groups": inputs.groups, "timeout_secs": timeout})
+    reused_from = None if dry_run else discovery_mod.reuse(home, workspace, week, key, _write_stage)
+    if reused_from is not None:
+        model_calls = 0
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-reused",
+            "week": week, "from": reused_from})
+        _append_journal_entries(
+            stage, discovery_mod.kept_journal(home, week),
+            f"(The entries below are phase S of attempt {reused_from}, kept and reused by "
+            "this run instead of a new phase S.)",
+        )
+    else:
+        outcome = _invoke(home, workspace, prompt, timeout, "phase-s", run_id, sessions)
+        model_calls = 1
+        record = _session_record(outcome, "phase-s")
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-returned",
+            "ok": bool(outcome.ok), "tool_turns": _reported_turns(outcome),
+            **({"session": record} if record is not None else {})})
+        # Whatever happens next, what phase S logged is part of the run.
+        _append_journal_entries(stage, _phase_s_journal(workspace))
+        if not outcome.ok:
+            classified = model_failures.failure_fields(outcome)
+            state = "timed out" if outcome.failure == "timeout" else "failed"
+            why = f"its call {state} ({_failure_kind(outcome)})"
+            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-failed",
+                "reason": why, **classified})
+            return discovery_mod.PhaseS.failed(
+                why, model_calls=model_calls,
+                environment=outcome if classified.get("failure_class") == "environment" else None,
+            )
+    checked = discovery_mod.read_candidates(workspace / discovery_mod.CANDIDATES_FILE, inputs)
+    if not checked.valid:
+        why = _failure_detail(checked.why) or "its file did not validate"
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-failed",
+            "reason": why[:300]})
+        return discovery_mod.PhaseS.failed(why, model_calls=model_calls)
+    drops = tuple(_failure_detail(line) or line for line in checked.drops)
+    for line in drops:
+        _journal(home, {"at": chrono.now_iso(), "run": run_id,
+            "status": "skill-candidate-dropped", "reason": line[:300]})
+    if not dry_run and model_calls:
+        discovery_mod.keep(home, workspace, week, key, run_id)
+    return discovery_mod.PhaseS(
+        discovery_mod.STATE_OK, candidates=checked.entries, notes=drops,
+        model_calls=model_calls, reused_from=reused_from,
+    )
 
 
 def _session_record(outcome: Any, phase: str) -> dict[str, Any] | None:
@@ -1071,6 +1276,18 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
     model_doc = user_model.show(home)
     _write_stage(stage, stage / "user-model.yaml", _yaml_text(model_doc))
     _write_stage(stage, stage / "answers.yaml", _yaml_text({"answers": _question_answers(home)}))
+    # S-106: the projects a notice may name (names and real paths only).
+    # Each project also carries `showing`: the overseer notices still up there, so
+    # the model does not write a reworded copy (a new notice, a fresh 14 days).
+    showing = project_notices.showing_by_project(home)
+    project_rows = [
+        {**row, "showing": showing[row["path"]]} if showing.get(row["path"]) else row
+        for row in project_notices.known_projects(home)
+    ]
+    projects_text = _yaml_text({"projects": project_rows})
+    if scan.scan(projects_text):
+        projects_text = "projects: []\n"  # an input file's hit would refuse the run
+    _write_stage(stage, stage / PROJECTS_FILE, projects_text)
     _write_stage(
         stage,
         stage / "health.yaml",
@@ -1149,6 +1366,10 @@ def _question_problem(
             return f"{field_name} matched the secret scan ({hits[0].rule})"
     if not cited:
         return "an ask needs at least one case to record the answer against"
+    if "register" in item:
+        register, problem = conversation.normalize_register(item["register"], item["text"])
+        if register is None:
+            return problem
     return None
 
 
@@ -1198,6 +1419,15 @@ def _questions(
         if kind == "ask":
             row["text"] = _flat(item["text"])
             row["why"] = _flat(item["why"])
+            if "register" in item:
+                # S-103: validated against the ask's own text in
+                # `_question_problem`; re-checked against the flattened text
+                # the index will carry, so the two cannot drift.
+                register, problem = conversation.normalize_register(item["register"], row["text"])
+                if register is None:
+                    dropped.append(f"question {label}: dropped — {problem}")
+                    continue
+                row["register"] = register
         clean.append(row)
     return {"questions": clean}, dropped
 
@@ -1244,7 +1474,7 @@ def _validate_model_report(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     headings = [line[3:].partition(" (")[0] for line in lines if line.startswith("## ")]
-    if headings != list(_REPORT_SECTIONS):
+    if headings not in (list(_REPORT_SECTIONS), list(_REPORT_SECTIONS_WITH_HAND_STEPS)):
         raise OverseerError("report.md: section headings are missing or out of order")
     return lines
 
@@ -1273,11 +1503,11 @@ def _repair_report_headings(path: Path) -> list[str]:
     lines = path.read_text(encoding="utf-8").splitlines()
     starts = [i for i, line in enumerate(lines) if line.startswith("## ")]
     names = [_heading_name(lines[i]) for i in starts]
-    if names == list(_REPORT_SECTIONS):
+    if names in (list(_REPORT_SECTIONS), list(_REPORT_SECTIONS_WITH_HAND_STEPS)):
         return []
     if (
         not names
-        or any(name not in _REPORT_SECTIONS for name in names)
+        or any(name not in _REPORT_SECTIONS_WITH_HAND_STEPS for name in names)
         or len(set(names)) != len(names)
     ):
         _validate_model_report(path)  # raises: not a heading-only problem
@@ -1285,15 +1515,20 @@ def _repair_report_headings(path: Path) -> list[str]:
     sections = {names[k]: lines[bounds[k]:bounds[k + 1]] for k in range(len(names))}
     out = lines[: starts[0]]
     notes: list[str] = []
+    # The optional eighth heading is kept, in its place, when the model wrote
+    # it, and never reported missing when it did not (S-105).
+    order = (
+        _REPORT_SECTIONS_WITH_HAND_STEPS if HAND_STEPS_SECTION in sections else _REPORT_SECTIONS
+    )
     missing = [name for name in _REPORT_SECTIONS if name not in sections]
-    present = [name for name in names if name in _REPORT_SECTIONS]
-    for name in _REPORT_SECTIONS:
+    present = [name for name in names if name in order]
+    for name in order:
         out.extend(sections.get(name) or [f"## {name}", _EMPTY_SECTION])
     notes.extend(
         f"report: the heading \"{name}\" was missing; the runner added it, empty"
         for name in missing
     )
-    if present != [name for name in _REPORT_SECTIONS if name in sections]:
+    if present != [name for name in order if name in sections]:
         notes.append("report: the headings were out of order; the runner put them back in order")
     _write_stage(path.parent, path, "\n".join(out) + "\n")
     _validate_model_report(path)
@@ -1316,6 +1551,90 @@ def _drop_bare_none(lines: list[str], section_start: int) -> None:
         lines.pop(bare_none)
 
 
+#: The packet row phase B's `health.yaml` carries the census in
+#: (`health.hand_steps_row`), read back by :func:`_staged_hand_steps`.
+HAND_STEPS_ROW_KIND = "hand-steps-this-week"
+#: What the runner writes for a hand step the overseer did not name a gap for.
+_GAP_NOT_NAMED = "the overseer did not name the gap"
+
+
+def _staged_hand_steps(stage: Path) -> dict[str, Any]:
+    """The week's census of hand steps as phase B was given it: the
+    ``hand-steps-this-week`` row of the staged ``health.yaml`` (S-105).
+    A stage with no such row, or a file that does not read, answers a census
+    of state ``unavailable`` -- which the report says in words -- and never
+    an empty week: an unread packet must not read as "nothing happened"."""
+    try:
+        data = _yaml_mapping(stage / "health.yaml")
+    except (OSError, OverseerError):
+        data = None
+    rows = data.get("catalogue_health") if isinstance(data, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and row.get("kind") == HAND_STEPS_ROW_KIND:
+            return {
+                key: row.get(key)
+                for key in ("window_days", "since", "state", "reason", "total", "steps")
+            }
+    return {"state": "unavailable", "reason": "this run's inputs carried no census", "steps": []}
+
+
+def _hand_step_line(step: dict[str, Any], gap: str | None = None) -> str:
+    note = str(step.get("note") or "").strip()
+    # The census's own stubs ("(no reason recorded)", "(withheld: ...)") are
+    # already in parentheses.
+    shown = note if note.startswith("(") else f"({note})"
+    tail = f" — {gap}" if gap else ""
+    return (
+        f"- {step.get('commit')} {step.get('at')} by {step.get('by')}: "
+        f"{step.get('subject')} {shown}{tail}"
+    )
+
+
+def _put_hand_steps_section(lines: list[str], census: dict[str, Any]) -> None:
+    """Make the published report carry every hand step of the census
+    (S-105). The overseer's own section, when it wrote one, stays as it
+    is; for each step of the census whose commit the section does not name,
+    the runner adds one line saying the overseer did not name the gap, so no
+    step goes unlisted. When the overseer wrote no section the runner writes
+    it, directly after "Catalogue health". Edits *lines* in place."""
+    start = next(
+        (i for i, line in enumerate(lines)
+         if line.startswith("## ") and _heading_name(line) == HAND_STEPS_SECTION),
+        None,
+    )
+    if start is None:
+        after = next(i for i, line in enumerate(lines) if line.startswith(f"## {_HAND_STEPS_AFTER}"))
+        end = next((i for i in range(after + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+        lines[end:end] = [f"## {HAND_STEPS_SECTION}"]
+        start = end
+    body_at = start + 1
+    end = next((i for i in range(body_at, len(lines)) if lines[i].startswith("## ")), len(lines))
+    written = "\n".join(lines[body_at:end])
+    added: list[str] = []
+    if census.get("state") != "ok":
+        reason = str(census.get("reason") or "no reason given")
+        added.append(
+            f"- the census of hand steps could not be read ({reason}); "
+            "nothing is claimed about this week's hand steps"
+        )
+    else:
+        steps = [row for row in census.get("steps") or [] if isinstance(row, dict)]
+        for step in steps:
+            if str(step.get("commit")) not in written:
+                added.append(_hand_step_line(step, _GAP_NOT_NAMED))
+        total = int(census.get("total") or 0)
+        if total > len(steps):
+            added.append(
+                f"- {total - len(steps)} more hand step(s) this week were not in the packet "
+                f"(it carries the newest {len(steps)})"
+            )
+    if added:
+        lines[end:end] = added
+        _drop_bare_none(lines, body_at)
+    elif not [line for line in lines[body_at:end] if line.strip()]:
+        lines[end:end] = ["- none"]
+
+
 def _finalize_model_report(
     path: Path, *, date: str, run_id: str, model: str, selected: tuple[str, ...],
     population_count: int, excluded: int, model_calls: int, guard: int,
@@ -1324,6 +1643,7 @@ def _finalize_model_report(
     questions: list[str] | None = None,
     notes: list[str] | None = None,
     decided: list[str] | None = None,
+    hand_steps: dict[str, Any] | None = None,
 ) -> str:
     """The published report: the model's own text, whole, with the
     runner's factual lines added. *notes* are runner lines for "Refused /
@@ -1357,6 +1677,8 @@ def _finalize_model_report(
     if refusals or runner_notes:
         lines[refused_at:refused_at] = [f"- {item}" for item in [*refusals, *runner_notes]]
         _drop_bare_none(lines, refused_at)
+    if hand_steps is not None:
+        _put_hand_steps_section(lines, hand_steps)
     if hooks:
         hooks_at = next(i for i, line in enumerate(lines) if line.startswith("## Hooks")) + 1
         lines[hooks_at:hooks_at] = [f"- {item}" for item in hooks]
@@ -1462,6 +1784,116 @@ def _validate_findings(
         for case_id in selected if case_id not in examined
     )
     return clean, tuple(case_id for case_id in selected if case_id in examined), dropped
+
+
+def _validate_notices(
+    data: object, known_paths: Iterable[str]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Validate notices.yaml ENTRY BY ENTRY (S-106), as findings are:
+    a notice that breaks a rule costs that notice, never the run, and each
+    drop is named in one runner line for "Refused / could not do" -- by its
+    ordinal only, never its text. A file that is not a mapping holding just a
+    notices list drops whole. A project must be one of *known_paths* (real
+    paths the ledger knows, :func:`notices.known_projects`): a model cannot
+    point a notice at a directory the ledger has never heard of. Answers
+    ``(kept, dropped_lines)``; each kept entry is ``{project, text[, case]}``
+    with the project as a real path and the text's whitespace collapsed to
+    single spaces (a wrapped block scalar is one line). At most
+    :data:`notices.MAX_PER_RUN` are kept; the rest are dropped and counted."""
+    if not isinstance(data, dict) or set(data) != {"notices"} or not isinstance(data["notices"], list):
+        return [], ["notices.yaml: dropped — expected only a notices list"]
+    known = {str(path) for path in known_paths}
+    kept: list[dict[str, str]] = []
+    dropped: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for ordinal, entry in enumerate(data["notices"], start=1):
+        label = f"notice {ordinal}"
+        problem: str | None = None
+        project = text = ""
+        if not isinstance(entry, dict) or set(entry) - set(NOTICE_KEYS):
+            problem = "an entry permits project, text, and case only"
+        elif not isinstance(entry.get("project"), str) or not entry["project"].strip():
+            problem = "a notice needs a project path"
+        else:
+            project = os.path.realpath(Path(entry["project"].strip()).expanduser())
+            raw_text = entry.get("text")
+            # A wrapped block scalar holds a line break in the middle of one
+            # sentence: join the lines with single spaces, so a model that
+            # wraps its words still gets its notice (the printed line is one).
+            text = " ".join(raw_text.split()) if isinstance(raw_text, str) else ""
+            if project not in known:
+                problem = "project is not one of the projects in projects.yaml"
+            elif scan.scan(project):
+                # The run record is secret-scanned whole and a hit refuses the
+                # run; a notice's path must never be the thing that does it.
+                problem = "the secret scan matched the project path"
+            elif (reason := project_notices.text_problem(text)) is not None:
+                problem = reason
+            elif entry.get("case") is not None and not (
+                isinstance(entry["case"], str) and _CASE_ID_RE.match(entry["case"])
+            ):
+                problem = "case must be a case-… id"
+            elif (project, text) in seen:
+                problem = "the same notice twice"
+            elif len(kept) >= project_notices.MAX_PER_RUN:
+                problem = f"more than {project_notices.MAX_PER_RUN} notices in one run"
+        if problem is not None:
+            dropped.append(f"{label}: dropped — {problem}")
+            continue
+        seen.add((project, text))
+        row = {"project": project, "text": text}
+        if isinstance(entry, dict) and isinstance(entry.get("case"), str):
+            row["case"] = entry["case"]
+        kept.append(row)
+    return kept, dropped
+
+
+def _read_notices(
+    stage: Path, withheld: dict[str, str], known_paths: Iterable[str]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """The run's project notices from the stage's optional notices.yaml, and
+    the runner lines for what was dropped. Never raises and never costs the
+    run: no file is no notices; a file that does not parse, cannot be read or
+    was withheld by the secret scan drops every notice and says so;
+    :func:`_validate_notices` drops one entry at a time."""
+    path = stage / NOTICES_FILE
+    lines: list[str] = []
+    if NOTICES_FILE in withheld:
+        return [], [
+            f"{NOTICES_FILE}: withheld — the secret scan matched {withheld[NOTICES_FILE]}: "
+            "every notice dropped"
+        ]
+    if not path.is_file():
+        return [], lines
+    try:
+        data: object = _yaml_mapping(path)
+    except OverseerError as exc:
+        return [], [f"{exc}: every notice dropped"]
+    kept, dropped = _validate_notices(data, known_paths)
+    return kept, [*lines, *dropped]
+
+
+def _write_project_notices(home: Path, manifest: dict[str, Any]) -> int:
+    """Put the run record's project notices where a session in each project
+    will see them (:mod:`notices`: the cache, never the ledger). Idempotent:
+    the same words for the same project are the same notice, so a resumed run
+    that writes them again changes nothing, and a notice a person marked done
+    stays done. Never raises. Answers how many rows were offered."""
+    rows = manifest.get("notices")
+    if not isinstance(rows, list):
+        return 0
+    run_id = manifest.get("run_id")
+    offered = 0
+    for row in rows:
+        if not (isinstance(row, dict) and isinstance(row.get("project"), str) and isinstance(row.get("text"), str)):
+            continue
+        offered += 1
+        project_notices.add(
+            home, project=row["project"], text=row["text"],
+            source=project_notices.SOURCE_OVERSEER,
+            run=run_id if isinstance(run_id, str) else None,
+        )
+    return offered
 
 
 def _coverage_text(
@@ -1774,7 +2206,8 @@ def _pair_rules_problem(
     always-loaded combined test (the steward's rule, one copy), then E3b's
     two `replace` rules (`cases.replace_items_problem`: every lesson a
     replace line changes is in the case's records, and the case accounts
-    for the old text in `decision.rewrite`)."""
+    for the old text in `decision.rewrite`), and the same first rule for a
+    `restate` line (`_restate_items_problem`)."""
     case_data = _yaml_mapping(case_file)
     lines = [{"id": item.id, "verb": item.verb, **item.fields} for item in sheet]
     return _held_pair_problem(
@@ -1784,7 +2217,23 @@ def _pair_rules_problem(
         resolve=always_loaded.proposal_resolver(home),
         placement=always_loaded.placement_resolver(home),
         label=case_file.name,
-    ) or cases.replace_items_problem(case_data, lines, label=case_file.name)
+    ) or cases.replace_items_problem(
+        case_data, lines, label=case_file.name
+    ) or _restate_items_problem(case_data, lines, label=case_file.name)
+
+
+def _restate_items_problem(case_data: dict, lines: list[dict], *, label: str) -> str | None:
+    """A `restate` line's lesson is one of the case's records: the case is the
+    account of why the rejected lesson gets a corrected version, so it must
+    name that lesson (the case writer's own `replace` rule, for `restate`)."""
+    records = {str(rid) for rid in case_data.get("records") or []}
+    for line in lines:
+        if line.get("verb") == "restate" and str(line.get("id")) not in records:
+            return (
+                f"{label}: a restate line names {line.get('id')}, which the case does not "
+                "name in its records -- the case must cover every lesson it restates"
+            )
+    return None
 
 
 def _validate_maintenance_case(path: Path) -> None:
@@ -2177,9 +2626,14 @@ def _drop_secret_pairs(
 _WITHHELD_ON_SECRET = {
     "findings.yaml": "findings: []\n",
     "user-model-delta.yaml": "updates: []\n",
+    NOTICES_FILE: "notices: []\n",
     "report.md": "# Overseer report\n" + "".join(
         f"## {name}\n- none\n" for name in _REPORT_SECTIONS
     ),
+    # SK4: phase B's dispositions (recorded as withheld: none this run) and
+    # its staged copy of the candidates (the runner keeps its own).
+    discovery_mod.DISPOSITIONS_FILE: "dispositions: []\n",
+    discovery_mod.CANDIDATES_FILE: "candidates: []\n",
 }
 
 
@@ -2998,6 +3452,14 @@ def _progress_signature(manifest: dict[str, Any]) -> dict[str, int]:
         signature[f"maintenance:{operation.get('id')}"] = (
             2 if operation.get("state") in {"applied", "refused"} else 1
         )
+    for case_id, recipe in (manifest.get("cases") or {}).items():
+        # SK3: a skill step made (or finally refused) is movement too; a
+        # sheetless skill pair has no item to show it.
+        step = recipe.get("skill")
+        if isinstance(step, dict):
+            signature[f"skill:{case_id}"] = (
+                2 if step.get("state") in {"applied", "refused"} else 0
+            )
     return signature
 
 
@@ -3049,7 +3511,9 @@ def _scan_manifest_or_refuse(manifest: dict[str, Any]) -> None:
             for child in value:
                 visit(child, key)
         elif isinstance(value, str) and key not in {
-            "sheet_sha", "sheet_digest", "start_head", "prepared_head"
+            "sheet_sha", "sheet_digest", "start_head", "prepared_head",
+            # SK3: a skill step's compare-and-swap hash (64 hex digits).
+            "expect_sha",
         }:
             if scan.scan(value):
                 hits.append(key or "value")
@@ -3085,13 +3549,16 @@ def _prepare_manifest(
     coverage_text: str,
     questions: dict[str, Any],
     findings: list[dict[str, Any]],
-    prepared: list[tuple[Path | None, Path, batch.Sheet]],
+    prepared: list[tuple[Path | None, Path, batch.Sheet | None]],
     model_updates: list[dict[str, Any]] | tuple[()] = (),
     runner_notes: list[str] | None = None,
     journal_text: str | None = None,
     trigger: str = TRIGGER_SCHEDULED,
     sessions: list[dict[str, Any]] | None = None,
     decisions: dict[str, int] | None = None,
+    skill_steps: dict[Path, "skills_mod.SkillStep"] | None = None,
+    skills_info: dict[str, Any] | None = None,
+    project_notice_rows: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -3114,6 +3581,26 @@ def _prepare_manifest(
             for row in dropped_evidence
         )
         case_text = _yaml_text(case_data)
+        step = (skill_steps or {}).get(case_file)
+        if loaded is None:
+            # SK3: a sheetless skill pair -- a rewrite or a retirement that
+            # moves no lesson. Its case is recorded and its step made; there
+            # is no sheet to apply.
+            recipes[case_id] = {
+                "case_name": case_file.name,
+                "case_text": case_text,
+                "sheet_name": sheet_file.name,
+                "sheet": None,
+                "sheet_sha": None,
+                "sheet_digest": None,
+                "items": [],
+                "maintenance": [],
+                "dispositions": [],
+                "dropped_evidence": dropped_evidence,
+                **({"skill": step.to_json()} if step is not None else {}),
+            }
+            order.append(case_id)
+            continue
         sheet_data = _yaml_mapping(sheet_file)
         sheet_data["case"] = case_id
         for item in sheet_data.get("items") or []:
@@ -3145,6 +3632,9 @@ def _prepare_manifest(
             "maintenance": [],
             "dispositions": [],
             "dropped_evidence": dropped_evidence,
+            # SK3: the skill step this pair carries (made before the case is
+            # recorded for a write, after the sheet for a retirement).
+            **({"skill": step.to_json()} if step is not None else {}),
         }
         order.append(case_id)
     manifest: dict[str, Any] = {
@@ -3187,6 +3677,16 @@ def _prepare_manifest(
         # a resume can put it back in the rebuilt stage the way the report
         # is put back. `None` when it holds only its header line.
         "journal": journal_text,
+        # S-105: the week's census of hand steps, as phase B was given
+        # it (`health.yaml`'s `hand-steps-this-week` row), so a resume's
+        # published report lists the same steps the overseer read. The rebuilt
+        # stage of a resume has no `health.yaml`. A record made before this
+        # field has none and its report is left as the model wrote it.
+        "hand_steps": _staged_hand_steps(stage),
+        # S-106: the run's validated project notices ({project, text,
+        # case?}), kept in the record so a resumed run writes the same ones.
+        # A record made before this field has none.
+        "notices": [dict(row) for row in (project_notice_rows or [])],
         "findings": findings,
         "case_order": order,
         "cases": recipes,
@@ -3211,6 +3711,11 @@ def _prepare_manifest(
             # their preview said they would be refused (not pairs).
             "lines_dropped": int(decisions.get("lines_dropped") or 0),
         }
+    if skills_info is not None:
+        # SK3 (S-107 part 6): what overseer.skill_writing meant for
+        # this run, the steps kept as drafts (committed with this record),
+        # and whether the run may be auto's drafts-only run.
+        manifest["skills"] = {**skills_info, "week": manifest["week"]}
     _scan_manifest_or_refuse(manifest)
     return manifest
 
@@ -3231,12 +3736,70 @@ def _publish_manifest(
         journal[0].parent.mkdir(parents=True, exist_ok=True)
         fsops.atomic_write(journal[0], journal[1], fsync=True)
         paths.append(journal[0])
+    paths += _write_skill_drafts(home, intent, manifest)
+    paths += _write_discovery_week(home, intent, manifest)
     intents.complete(intent)
     gitops.stage_and_commit(
         home, paths, intent.commit_subject, None
     )
     intents.finish(intent)
     return path
+
+
+def _write_skill_drafts(
+    home: Path, intent: intents.Intent, manifest: dict[str, Any]
+) -> list[Path]:
+    """SK3 (S-107 part 6, D10): the skills phase B built or changed
+    while writing was not in effect, each checked by the writer's rules
+    and kept in the ledger at ``overseer/skills/<week>/drafts/<name>/``. They
+    go in the run record's own commit, under its intent; a file an earlier
+    run of the same week left in a draft's folder and this draft no longer
+    has is taken out. Answers the paths to commit. The caller holds the
+    ledger lock."""
+    info = manifest.get("skills")
+    if not isinstance(info, dict):
+        return []
+    week = str(info.get("week") or manifest.get("week"))
+    drafts = [d for d in info.get("drafts") or [] if isinstance(d, dict)]
+    paths: list[Path] = []
+    for path in skills_mod.stale_draft_files(home, week, drafts):
+        intents.add_step(intent, path)
+        path.unlink()
+        paths.append(path)
+    for path, text in skills_mod.draft_files(home, week, drafts):
+        intents.add_step(intent, path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(path, text, fsync=True)
+        paths.append(path)
+    return paths
+
+
+def _write_discovery_week(
+    home: Path, intent: intents.Intent, manifest: dict[str, Any]
+) -> list[Path]:
+    """SK4 (S-107): this run's skill candidates and phase B's
+    dispositions, added to ``overseer/skills/<week>.yaml`` in the run
+    record's own commit, under its intent; next week's phase S reads them
+    back as ``history.yaml``. A run with neither writes nothing. Answers the
+    paths to commit. The caller holds the ledger lock."""
+    info = (manifest.get("skills") or {}).get("discovery")
+    if not isinstance(info, dict):
+        return []
+    entry = discovery_mod.week_entry(
+        cast(str, manifest["run_id"]), cast(str, manifest.get("started") or chrono.now_iso()), info,
+    )
+    if entry is None:
+        return []
+    week = str((manifest.get("skills") or {}).get("week") or manifest.get("week"))
+    path = discovery_mod.week_path(home, week)
+    try:
+        existing: str | None = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        existing = None
+    intents.add_step(intent, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fsops.atomic_write(path, discovery_mod.week_text(existing, week, entry), fsync=True)
+    return [path]
 
 
 def _manifest_journal(home: Path, manifest: dict[str, Any]) -> tuple[Path, str] | None:
@@ -3300,11 +3863,20 @@ def _manifest_introduction(home: Path, run_id: str) -> str:
     return commits[0]
 
 
+#: C8 (S-108): the ledger roots a lesson's record file lives under --
+#: a skill bucket (`skills/`), a project bucket (`projects/`) or the user
+#: bucket (`user/`), the first three members of `ledger._LAYOUT`. Crash
+#: recovery looked in `skills` alone, so a lesson in a project or the user
+#: scope was never found at its proof commit and every verb but a move was
+#: reported as not established.
+_RECORD_ROOTS = ("skills", "projects", "user")
+
+
 def _record_at_commit(
     home: Path, sha: str, record_id: str
 ) -> tuple[Path, Record] | None:
     paths = gitops._git(  # noqa: SLF001 -- immutable candidate content
-        home, "ls-tree", "-r", "--name-only", sha, "--", "skills"
+        home, "ls-tree", "-r", "--name-only", sha, "--", *_RECORD_ROOTS
     ).stdout.splitlines()
     matches = [path for path in paths if Path(path).name == f"{record_id}.md"]
     if len(matches) != 1:
@@ -3358,6 +3930,12 @@ def _candidate_establishes(
         # Whether the whole line applied is `_mutation_proven_completed`'s
         # state read (`batch.replace_made`), never this commit's.
         return record.status == "superseded" and bool(record.superseded_by)
+    if verb == "restate":
+        # C4 (S-108): the proof commit left the closed lesson with the
+        # note this line's text carries (`verbs.restate_key_of`); the lesson's
+        # own status is untouched by design, so the note is the only evidence.
+        key = verbs.restate_key_of(home, item)
+        return key is not None and record.note_has_key(key)
     if verb == "note":
         key = item.get("key")
         return key is not None and record.note_has_key(cast(str, key))
@@ -3371,6 +3949,10 @@ def _candidate_establishes(
         return item.get("target") in record.contradicts
     if verb == "followup-done":
         return record.follow_up is None and record.follow_up_done is not None
+    if verb == "premises":
+        # S-104: the commit wrote the field; what values its
+        # probes saw is the commit's own, not something to compare again.
+        return record.premises is not None
     if verb in {"rehome", "rescope"}:
         try:
             _scope, bucket, _project = verbs._resolve_move_target(
@@ -3517,6 +4099,7 @@ def _write_manifest_truth(
     closed: bool = False,
     week: str | None = None,
     closed_text: str | None = None,
+    trial: tuple[Path, str] | None = None,
 ) -> tuple[dict[str, Any], Path, Path]:
     path = execution_evidence.manifest_path(home, manifest["run_id"])
     record = _finalized_record(
@@ -3541,6 +4124,9 @@ def _write_manifest_truth(
     )
     if closed_note is not None:
         paths.append(closed_note)
+    if trial is not None and complete:
+        # SK3: auto's drafts-only run, recorded once, in this commit.
+        paths.append(trial[0])
     with intents.ledger_write(home):
         intent = intents.begin(
             home, "overseer-run-finalize", paths,
@@ -3556,6 +4142,9 @@ def _write_manifest_truth(
         if closed_note is not None and closed_text is not None:
             closed_note.parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(closed_note, closed_text, fsync=True)
+        if trial is not None and complete and not trial[0].exists():
+            trial[0].parent.mkdir(parents=True, exist_ok=True)
+            fsops.atomic_write(trial[0], trial[1], fsync=True)
         if journal is not None:
             journal[0].parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(journal[0], journal[1], fsync=True)
@@ -3594,6 +4183,238 @@ def _item_settled(row: dict[str, Any]) -> bool:
     return state != "refused" or row.get("kind") not in _RETRIED_REFUSAL_KINDS
 
 
+def _stamp_reconsidered(home: Path, case_path: Path, case_id: str) -> None:
+    """C8 (S-108): give each lesson a ``kind: reconsider`` successor
+    covers its ``reconsidered`` history entry, the pointer from the lesson to
+    the case that revisited it -- what the steward's apply and a person's
+    `self-learn reconsider` already write (`verbs.reconsider`). Before this the
+    overseer's reconsider corrected the lesson through its sheet and left the
+    lesson's own history silent.
+
+    Run once the case is recorded, before its sheet applies, as the steward
+    does. It writes the pointer for a lesson in ANY status (`any_status`): the
+    overseer's reconsider may re-decide a lesson whose earlier decision never
+    applied (still pending), which `verbs.reconsider`'s status checks refuse;
+    whether the sheet's line then changes the lesson is that line's own
+    preview. Idempotent: a re-drive finds the entry and writes nothing.
+
+    This runs AFTER the case is recorded (and its predecessor superseded), so
+    it never refuses the case: a failure here (the ledger not being what it was
+    a moment ago) propagates, ends the run early, and the next resume drives
+    the stamp again. Refusing the case and its sheet at this point would leave
+    the predecessor superseded and the correction never applied."""
+    data = _yaml_mapping(case_path)
+    if data.get("kind") != "reconsider":
+        return
+    records = data.get("records")
+    for record_id in dict.fromkeys(records if isinstance(records, list) else []):
+        verbs.reconsider(
+            home, str(record_id), case=case_id, by="overseer",
+            no_push=True, any_status=True,
+        )
+
+
+class _SkillRefused(Exception):
+    """SK3: a pair's skill write was refused at execute time (or was in an
+    earlier attempt of this run); the pair is dropped. *kind* is set only
+    for a refusal the run's resume tries again (``git``, fix round 2, gate
+    r2 NIT): the pair then waits, unapplied, instead of being dropped."""
+
+    def __init__(self, line: str, kind: str | None = None) -> None:
+        super().__init__(line)
+        self.line = line
+        self.kind = kind
+
+
+def _skill_step(recipe: dict[str, Any]) -> "skills_mod.SkillStep | None":
+    raw = recipe.get("skill")
+    return skills_mod.SkillStep.from_json(raw) if isinstance(raw, dict) else None
+
+
+def _skill_cue(step: "skills_mod.SkillStep") -> dict[str, Any]:
+    """A deployed skill change for the run's notification cue: a new or
+    changed skill's description is read in every session's skill listing
+    (D-AUTHOR §3.5: "the higher-risk cue"); a retirement is a removal."""
+    return {
+        "verb": "retire" if step.action == "retire" else "skill-write",
+        "hook_activated": False,
+        "always_loaded_user_scope": step.action != "retire",
+        "close_call": False,
+    }
+
+
+def _apply_skill_write(
+    home: Path, run_id: str, case_id: str, recipe: dict[str, Any],
+    cue_outcomes: list[dict[str, Any]], notes: list[str],
+) -> None:
+    """SK3: write the pair's skill before its case is recorded. A step made
+    or refused in an earlier attempt of this run is not made again; a
+    refusal raises :class:`_SkillRefused` so the pair stays dropped. A
+    ``git`` refusal (fix round 2) leaves the step open for the resume."""
+    step = _skill_step(recipe)
+    if step is None or step.action != "write" or not step.deploy:
+        return
+    raw = cast(dict[str, Any], recipe["skill"])
+    if raw.get("state") == "refused":
+        raise _SkillRefused(str(raw.get("line") or f"the skill write for {step.name} was refused"))
+    if raw.get("state") == "applied":
+        return
+    outcome = skills_mod.apply_write(home, case_id, step, case_name=str(recipe["case_name"]))
+    line = _failure_detail(outcome.line) or outcome.line
+    # Fix round 2 (gate r2 NIT): a `git` refusal is not final. The step is
+    # left open ("retry" is neither "refused" nor "applied", so the next
+    # attempt writes again) and the pair waits for the resume, as a sheet
+    # line refused with that kind does (Q19). A stale --expect
+    # (`target-busy`, D4) stays final: the skill changed under the draft.
+    retried = outcome.state == "refused" and outcome.kind == skill_writer.KIND_GIT
+    raw.update(state="retry" if retried else outcome.state, line=line)
+    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+        "status": f"skill-{step.label}", "skill": step.name, "case": case_id,
+        "state": raw["state"]})
+    if retried:
+        raise _SkillRefused(line, kind=outcome.kind)
+    if outcome.state == "refused":
+        raise _SkillRefused(line)
+    cue_outcomes.append(_skill_cue(step))
+    if outcome.warning:
+        notes.append(_failure_detail(outcome.warning) or outcome.warning)
+
+
+def _apply_skill_retire(
+    home: Path, run_id: str, case_id: str, recipe: dict[str, Any], result: batch.BatchResult,
+    refusals: list[str], cue_outcomes: list[dict[str, Any]],
+) -> None:
+    """SK3: retire the pair's skill once its sheet moved every lesson out.
+    A sheet that stopped part-way leaves the step for the resume; one with
+    a refused line leaves the skill live, said in the report."""
+    step = _skill_step(recipe)
+    if step is None or step.action != "retire" or not step.deploy:
+        return
+    raw = cast(dict[str, Any], recipe["skill"])
+    if raw.get("state") in ("applied", "refused"):
+        return
+    states = {item.state for item in result.items}
+    if states & {"stopped", "not-attempted", "unresolved-host"}:
+        return  # the run halts here; the resume finishes the sheet first
+    if any(
+        item.state == "refused" and item.kind in _RETRIED_REFUSAL_KINDS
+        for item in result.items
+    ):
+        # Fix round 1 (gate r1): a line refused with a retried kind (git or
+        # lock trouble) is dispatched again by the resume; the step stays
+        # open so that resume retires the skill once the line applies.
+        return
+    if states - {"applied", "already-applied"}:
+        line = (
+            f"{step.name} ({recipe['case_name']}): not retired — its sheet did not move every "
+            "lesson out, so lessons still route into it"
+        )
+        raw.update(state="refused", line=line)
+        refusals.append(line)
+        return
+    outcome = skills_mod.apply_retire(home, case_id, step, case_name=str(recipe["case_name"]))
+    line = _failure_detail(outcome.line) or outcome.line
+    raw.update(state=outcome.state, line=line)
+    _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "skill-retire", "skill": step.name,
+        "case": case_id, "state": outcome.state})
+    if outcome.state == "refused":
+        refusals.append(line)
+    else:
+        cue_outcomes.append(_skill_cue(step))
+
+
+def _skill_written_case_refused(recipe: dict[str, Any], case_id: str) -> str | None:
+    """SK3 (fix round 1, gate r1): the "Refused / could not do" line for a
+    pair whose skill was written (before its case, as every write is) and
+    whose case the case writer then refused. The skill stays in the skills
+    root, linked and owned; its registry row names *case_id*, which is not
+    on record. ``None`` when the pair wrote no skill."""
+    step = _skill_step(recipe)
+    raw = recipe.get("skill")
+    if step is None or step.action != "write" or not isinstance(raw, dict):
+        return None
+    if raw.get("state") != "applied":
+        return None
+    return (
+        f"{step.name} ({recipe['case_name']}): the skill was "
+        + ("rewritten" if step.updating else "written to the skills root and linked")
+        + f" before its case was refused, and it stays as written; its registry row names "
+        f"{case_id}, which is not on record. Next week's run sees it among the skills "
+        "self-learn owns and may change or retire it"
+    )
+
+
+def _skill_refused_result(
+    case_id: str, recipe: dict[str, Any], line: str, kind: str | None = None,
+) -> batch.BatchResult:
+    """SK3: the dropped pair's items, each a final refusal naming why. With
+    a retried *kind* (fix round 2, gate r2 NIT), each carries that kind, so
+    the resume dispatches it again once the skill is written."""
+    del line
+    why = (
+        f"its pair {recipe['case_name']}'s skill write met {kind} trouble; the run's resume "
+        "tries again"
+        if kind is not None
+        else f"the skill write of its pair {recipe['case_name']} was refused"
+    )
+    items = [
+        batch.ItemResult(
+            n=int(row["n"]), id=str(row["id"]), verb=str(row["verb"]), rc=1,
+            state="refused", kind=kind,
+            detail=(
+                f"{recipe['sheet_name']} item {row['n']} ({row['verb']} {row['id']}): not "
+                f"applied — {why}"
+            ),
+        )
+        for row in recipe.get("items") or []
+    ]
+    return batch.BatchResult(
+        items=items, process_code=EXIT_REFUSED if items else 0, case=case_id,
+        sheet_sha=recipe.get("sheet_sha"), actor="overseer",
+    )
+
+
+def _record_sheetless(
+    home: Path, stage: Path, case_id: str, recipe: dict[str, Any]
+) -> tuple[batch.BatchResult, dict | None, batch.Sheet]:
+    """SK3: record a sheetless skill pair's case (a rewrite or a retirement
+    that moves no lesson). ``cases.record`` is idempotent under the reserved
+    id, so a resume records nothing twice."""
+    case_path = stage / cast(str, recipe["case_name"])
+    _write_stage(stage, case_path, cast(str, recipe["case_text"]))
+    try:
+        recorded = cases.record(home, case_path, actor="overseer", reserved_id=case_id)
+    except cases.CaseError as exc:
+        raise _CaseRefused(exc) from exc
+    if recorded != case_id:
+        raise OverseerError(f"reserved successor {case_id} returned unexpected id {recorded}")
+    result = batch.BatchResult(items=[], process_code=0, case=case_id, actor="overseer")
+    return result, {"state": "no-sheet"}, batch.Sheet()
+
+
+def _skill_trial(home: Path, manifest: dict[str, Any], run_id: str) -> tuple[Path, str] | None:
+    """SK3 (S-107 part 6): the trial file this completing run
+    writes, or ``None``. Written once, by the first run to complete while
+    writing was not in effect and whose discovery steps were seen working
+    (``discovery_mod.trial_readiness``, recorded when the run was prepared)."""
+    info = manifest.get("skills")
+    if not isinstance(info, dict) or not info.get("trial_ready"):
+        return None
+    if (info.get("state") or {}).get("deploy", True):
+        return None
+    path = skills_mod.trial_path(home)
+    if path.exists():
+        return None
+    drafts = [
+        str(d.get("name")) for d in info.get("drafts") or []
+        if isinstance(d, dict) and isinstance(d.get("files"), dict)
+    ]
+    return path, skills_mod.trial_text(
+        week=str(info.get("week") or manifest.get("week")), run_id=run_id,
+        completed_at=chrono.now_iso(), drafts=drafts,
+    )
+
+
 def _run_manifest_sheet(
     home: Path,
     stage: Path,
@@ -3617,6 +4438,7 @@ def _run_manifest_sheet(
         raise OverseerError(
             f"reserved successor {case_id} returned unexpected id {successor}"
         )
+    _stamp_reconsidered(home, case_path, case_id)
     effective = batch.load_sheet(sheet_path, home=home)
     if (
         effective.sheet_sha != recipe["sheet_sha"]
@@ -3808,6 +4630,9 @@ def _execute_manifest(
         # Carried exactly as the report is: the rebuilt stage gets the
         # run's own journal back, never another run's.
         _write_stage(stage, stage / MODEL_JOURNAL_NAME, carried_journal)
+    # S-106: the run's project notices, first thing and idempotent, so
+    # a run that halts or resumes later still leaves them (cache only).
+    _write_project_notices(home, manifest)
     runner_notes = [
         str(line) for line in cast(list[Any], manifest.get("runner_notes") or [])
     ]
@@ -3839,10 +4664,19 @@ def _execute_manifest(
 
     for position, case_id in enumerate(order):
         recipe = recipes[case_id]
+        #: SK3: the pair was refused whole (its case or its skill write), so
+        #: a retirement it carries is never made.
+        pair_refused = False
         try:
-            result, receipt, effective = _run_manifest_sheet(
-                home, stage, manifest, case_id, recipe, gate=gate
-            )
+            # SK3: a pair that builds or rewrites a skill writes it first; a
+            # refused write drops the pair (`_SkillRefused`, below).
+            _apply_skill_write(home, run_id, case_id, recipe, cue_outcomes, runner_notes)
+            if recipe.get("sheet") is None:
+                result, receipt, effective = _record_sheetless(home, stage, case_id, recipe)
+            else:
+                result, receipt, effective = _run_manifest_sheet(
+                    home, stage, manifest, case_id, recipe, gate=gate
+                )
         except batch.BookkeepingHalt as exc:
             result = exc.result
             receipt = {"state": "halted", "reason": str(exc)}
@@ -3860,7 +4694,11 @@ def _execute_manifest(
             rule = _case_rule(exc.cause)
             kind = batch.refusal_kind(exc.cause, rc=1, state="refused")
             effective_path = stage / f"effective-{recipe['sheet_name']}"
-            effective = batch.load_sheet(effective_path)
+            # SK3: a sheetless skill pair has no effective sheet.
+            effective = (
+                batch.load_sheet(effective_path) if recipe.get("sheet") is not None
+                else batch.Sheet()
+            )
             result = batch.BatchResult(
                 items=[
                     batch.ItemResult(
@@ -3877,10 +4715,35 @@ def _execute_manifest(
                 sheet_sha=effective.sheet_sha, actor="overseer",
             )
             receipt = {"state": "case-refused", "reason": rule}
+            pair_refused = True
             refusals.append(
                 f"{recipe['case_name']} (successor {case_id}): refused by the case "
                 f"writer — {rule}; its sheet {recipe['sheet_name']} was not applied"
             )
+            # SK3 fix round 1 (gate r1): the pair's skill was written before
+            # its case was refused. The write is not undone; say so.
+            skill_line = _skill_written_case_refused(recipe, case_id)
+            if skill_line is not None:
+                refusals.append(skill_line)
+        except _SkillRefused as exc:
+            # SK3: the skill write was refused, so the pair is dropped:
+            # its case is not recorded and no line of its sheet is applied.
+            # Each item is a final refusal (no resume re-drives it, and
+            # A12's expected-key check below sees every item) -- unless the
+            # refusal is `git` trouble (fix round 2, gate r2 NIT): then each
+            # item carries that retried kind, and the pair is named in
+            # `retry_pending` (a sheetless pair has no item to keep the run
+            # open), so the resume writes the skill and applies the pair.
+            result = _skill_refused_result(case_id, recipe, exc.line, kind=exc.kind)
+            receipt = {"state": "skill-refused", "reason": exc.line}
+            effective = batch.Sheet()
+            pair_refused = True
+            refusals.append(exc.line)
+            if exc.kind is not None:
+                retry_pending.append(
+                    f"{recipe['case_name']}: the skill write for "
+                    f"{recipe['skill'].get('name')} [{exc.kind}]"
+                )
         except Exception as exc:
             halted = True
             halt_reason = f"run ended early: {exc}"
@@ -3900,6 +4763,11 @@ def _execute_manifest(
             for item in result.items
         ]
         application_count += result.summary.get("applied", 0)
+        # SK3: a pair that retires a skill retires it once its sheet has
+        # moved every lesson out (never when the pair was refused or the
+        # sheet halted: the resume finishes the sheet first).
+        if not pair_refused and not halted:
+            _apply_skill_retire(home, run_id, case_id, recipe, result, refusals, cue_outcomes)
         for item in result.items:
             if item.state in ("refused", "stopped", "unresolved-host"):
                 # "Refused / could not do" is the report's question to the
@@ -4075,6 +4943,18 @@ def _execute_manifest(
         ]
         if decisions_dropped else []
     )
+    skills_info = manifest.get("skills")
+    drafted_pairs = (
+        sum(isinstance(d, dict) for d in skills_info.get("drafts") or [])
+        if isinstance(skills_info, dict) else 0
+    )
+    if decisions_dropped and drafted_pairs:
+        # SK3 fix round 1 (gate r1 NIT): a pair kept as a skill draft is
+        # in neither count above; each is named by its "[skill drafted]" line.
+        decided_lines.append(
+            f"decisions: {drafted_pairs} more pair(s) were kept as skill drafts and not "
+            "applied; they are not counted above"
+        )
     if decisions_lines_dropped:
         # S-101: a line taken off a kept sheet is neither a
         # refusal at apply (the run's code) nor a dropped pair (the counts
@@ -4157,6 +5037,9 @@ def _execute_manifest(
             "week": week, "attempts": attempts, "failure": kind,
             "applied": application_count,
         })
+    # SK3 (S-107 part 6): the run that completes as auto's
+    # drafts-only run writes the trial file in its completing commit.
+    trial = None if halted or closed else _skill_trial(home, manifest, run_id)
     try:
         text = _finalize_model_report(
             stage / "report.md", date=cast(str, manifest["date"]), run_id=run_id,
@@ -4168,11 +5051,17 @@ def _execute_manifest(
             user_model_lines=user_model_lines,
             questions=questions,
             notes=runner_notes,
-            decided=decided_lines,
+            decided=[
+                *decided_lines,
+                *skills_mod.report_lines(manifest, trial_written=trial is not None),
+                # SK4: one line per disposition phase B recorded.
+                *discovery_mod.report_lines(manifest),
+            ],
+            hand_steps=cast("dict[str, Any] | None", manifest.get("hand_steps")),
         )
         manifest, report_path, latest = _write_manifest_truth(
             home, manifest, report_text=text, complete=not halted, closed=closed,
-            week=week, closed_text=closed_text,
+            week=week, closed_text=closed_text, trial=trial,
         )
         if closed:
             _notify_week_closed(home, week, attempts, _failure_kind_text(manifest), [run_id])
@@ -4493,14 +5382,17 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     model = provider.model_for("overseer", home=home)
     guard = cast(int, guard)
     timeout_seconds = cast(float, timeout)
-    if guard < _MODEL_CALLS_PER_RUN:
+    # SK4 (S-107): whether this run makes phase S, read once.
+    discovery_on = discovery_mod.enabled(home)
+    calls_per_run = _model_calls_per_run(discovery_on)
+    if guard < calls_per_run:
         # A guard below the calls every run makes admits no complete run:
         # hold before the first call rather than spend one whose output
         # could never be applied. The attempt-start line above has already
         # armed the scheduler's cooldown, so this cannot re-run every tick,
         # and no failure note is written: no model call was made.
         reason = (
-            f"runaway guard {guard} is below the {_MODEL_CALLS_PER_RUN} model "
+            f"runaway guard {guard} is below the {calls_per_run} model "
             "calls a run makes; no model call was started"
         )
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "runaway", "reason": reason})
@@ -4637,6 +5529,25 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     if not dry_run and model_calls:
         _keep_phase_a(home, stage, week, population_key, run_id)
 
+    # SK4 (S-107): phase S, skill discovery, in its own
+    # workspace; it never fails the run. Before the lock, as phase A is: it
+    # writes nothing to the ledger.
+    if discovery_on:
+        phase_s = _run_phase_s(
+            home, stage, run_id=run_id, week=week, date=started[:10],
+            timeout_floor=timeout_seconds, sessions=sessions, dry_run=dry_run,
+        )
+        model_calls += phase_s.model_calls
+        if phase_s.environment is not None and not dry_run:
+            # The model or the installed Claude Code cannot run a call at
+            # all: phase B would meet the same wall. A hold, as for phase A:
+            # nothing counted, nothing committed; phase A stays kept.
+            _environment_hold(home, run_id, "s", phase_s.environment)
+            return RunResult(model_failures.HELD_ENVIRONMENT, EXIT_REFUSED, run_id, model_calls,
+                selected, excluded)
+    else:
+        phase_s = discovery_mod.PhaseS.off()
+
     coverage_before: bytes | None = None
     intent: intents.Intent | None = None
     # 2026-09-28 (fail-state audit finding 12), kept as it is on purpose:
@@ -4665,8 +5576,21 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         # whole verified parked queue; no count or prompt budget truncates it.
         # S-81: the one definition the steward's hold reads too.
         parked_rows = cases.awaiting_overseer(home)
+        # SK3 (S-107 part 6): whether this run deploys the skills
+        # phase B writes, read once; the run record keeps it, so a resume
+        # makes the same choice.
+        skill_state = skills_mod.writing_state(home)
         try:
             model_doc = _full_inputs(home, stage, selected, parked_rows)
+            # SK3: the skills self-learn owns, the vetoes and the steward's
+            # skill proposals, as phase B's inputs (never raises for the
+            # ledger's content; what it could not show is a note).
+            skill_stage = skills_mod.stage_phase_b(
+                home, stage, parked_rows, skill_state, _write_stage,
+            )
+            # SK4: phase S's candidates (or what it came to), for phase B's
+            # dispositions.
+            discovery_mod.stage_phase_b(stage, phase_s, _write_stage)
         except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes
             # 2026-09-27 (fail-state audit finding 5).
             return _refuse_in_span(
@@ -4679,7 +5603,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 kind="invocation", reason=f"phase B inputs could not be prepared: {exc}",
             )
         formats.write(stage, "B")
-        prompt_b = _phase_b_prompt(stage, selected, tuple(row["case"] for row in parked_rows))
+        prompt_b = _phase_b_prompt(
+            stage, selected, tuple(row["case"] for row in parked_rows), discovery=discovery_on,
+        )
         _write_stage(stage, stage / "prompt-b.md", prompt_b)
         timeout_b = phase_timeout(timeout_seconds, len(blind) + len(parked_rows))
         outcome_b = _invoke(home, stage, prompt_b, timeout_b, "phase-b", run_id, sessions)
@@ -4762,6 +5688,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         secret_files = _secret_files(
             stage, frozenset(case for case, _sheet in pairs if case is not None),
         )
+        # SK3: a hit in a skills/<name>/ file costs that skill's pair (the
+        # writer's own secret scan refuses it in `skills_mod.step_for_case`),
+        # or the folder alone when no case names it -- never the run.
+        secret_files = [
+            name for name in secret_files
+            if not name.startswith(f"{skills_mod.STAGE_SKILLS_DIR}/")
+        ]
         # 2026-09-28 (fail-state audit finding 9): a scan hit in a pair's
         # case or sheet drops that pair (nothing of it reaches the ledger);
         # a hit in any other file still refuses the run.
@@ -4953,6 +5886,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     f"{withheld['findings.yaml']}: every finding dropped"
                 )
             finding_drops = [*findings_parse, *finding_drops]
+            # S-106: the optional notices.yaml. A bad notice costs
+            # that notice; it is said in "Refused / could not do".
+            notice_rows, notice_drops = _read_notices(
+                stage, withheld,
+                {row["path"] for row in project_notices.known_projects(home)},
+            )
+            finding_drops = [*finding_drops, *notice_drops]
             if examined_ids != selected:
                 # Coverage was advanced from phase A's selection before
                 # phase B ran; a selected case with no valid examined
@@ -4987,7 +5927,14 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 case_drops.append(f"{exc}: no user-model updates this run")
                 _journal(home, {"at": chrono.now_iso(), "run": run_id,
                     "status": "file-dropped", "file": "user-model-delta.yaml", "reason": str(exc)})
-            prepared: list[tuple[Path | None, Path, batch.Sheet]] = []
+            prepared: list[tuple[Path | None, Path, batch.Sheet | None]] = []
+            # SK3: each kept pair's skill step (a build, a rewrite or a
+            # retirement), the steps kept as drafts while writing is not in
+            # effect, and the skills/<name>/ folders some case names.
+            skill_steps: dict[Path, skills_mod.SkillStep] = {}
+            skill_drafts: list[dict[str, Any]] = []
+            skill_claimed: set[str] = set()
+            skill_pairs: dict[str, str] = {}
             # 2026-09-28 (follow-up 4): pairs dropped before the ledger --
             # by pairing or the secret scan (`pair_drops`), and below.
             pairs_dropped = len(pair_drops)
@@ -4996,6 +5943,22 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             preview_refused = 0
             seen_predecessors: set[str] = set()
             held_now = cases.held_lessons(home)
+            # SK3 fix round 1 (gate r1 NIT): every skill a staged case names
+            # in decision.skill, read before any pair is checked, so a
+            # skills/<name>/ folder whose case is dropped before its skill
+            # step is looked at is not reported as named by no case.
+            skill_named: set[str] = set()
+            for staged_case, _staged_sheet in pairs:
+                if staged_case is None:
+                    continue
+                try:
+                    named = skills_mod.claimed_name(_yaml_mapping(staged_case))
+                except OverseerError:
+                    continue  # the pair loop below names the file's trouble
+                if named is not None:
+                    skill_named.add(named)
+            # SK4: the steward's skill proposals in the parked queue.
+            proposals_now = discovery_mod.proposal_ids(parked_rows)
             for case_file, sheet_file in pairs:
                 # 2026-09-27 (run c2b9192b): a case or sheet file that does
                 # not parse costs that pair alone, named by file and parse
@@ -5059,6 +6022,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     elif case_file is not None:
                         _validate_successor(case_file, {row["case"] for row in parked_rows}, home)
                         predecessor = str(_yaml_mapping(case_file)["supersedes"])
+                        if not discovery_on and predecessor in proposals_now:
+                            # SK4 (S-107 part 6): with discovery off
+                            # the steward's skill proposals wait parked.
+                            raise OverseerError(
+                                f"{case_file.name}: {predecessor} is a skill proposal, which "
+                                "waits parked while overseer.skill_discovery is off"
+                            )
                         rule = _case_rule_problem(case_file, run_id)
                         if rule is not None:
                             # 2026-09-27 (audit finding 1): a decided case the
@@ -5076,11 +6046,52 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                             continue
                         if predecessor in seen_predecessors:
                             raise OverseerError(f"{case_file.name}: a second successor for {predecessor}")
+                    # SK3: a case whose decision.skill names a skill carries
+                    # a skill step -- a build or rewrite from skills/<name>/,
+                    # or a retirement -- checked here by the writer's own
+                    # rules; a step that cannot be made drops the pair.
+                    skill_step: skills_mod.SkillStep | None = None
+                    case_data: dict[str, Any] = {}
+                    if case_file is not None:
+                        case_data = _yaml_mapping(case_file)
+                        skill_name = skills_mod.claimed_name(case_data)
+                        if skill_name is not None:
+                            skill_claimed.add(skill_name)
+                            # Fix round 1 (gate r1 MAJOR): whether the sheet
+                            # routes into new-skill:<name> tells a build
+                            # without its folder from a case that names a
+                            # skill it does not build. The sheet parsed above.
+                            sheet_rows = _yaml_mapping(sheet_file).get("items")
+                            sheet_dests = {
+                                str(row.get("dest"))
+                                for row in (sheet_rows if isinstance(sheet_rows, list) else [])
+                                if isinstance(row, dict) and row.get("dest") is not None
+                            }
+                            # Fix round 2 (gate r2 MINOR): a retire case's
+                            # lines say whether it retires the skill.
+                            sheet_ids = {
+                                str(row.get("id"))
+                                for row in (sheet_rows if isinstance(sheet_rows, list) else [])
+                                if isinstance(row, dict) and row.get("id") is not None
+                            }
+                            skill_step = skills_mod.step_for_case(
+                                home, stage, case_data, staged=skill_stage,
+                                deploy=skill_state.deploy, sheet_dests=sheet_dests,
+                                sheet_ids=sheet_ids,
+                            )
+                        if skill_step is not None and skill_step.name in skill_pairs:
+                            raise OverseerError(
+                                f"{case_file.name}: a second pair for the skill "
+                                f"{skill_step.name} (the first is {skill_pairs[skill_step.name]})"
+                            )
                     sheet = _load_sheet_allow_empty(sheet_file, home)
                     if sheet is None:
-                        if case_file is not None:
+                        if case_file is None:
+                            continue
+                        if skill_step is None or not skill_step.sheetless_ok:
+                            # SK3: only a pair that changes or retires a
+                            # skill may move no lesson.
                             raise OverseerError(f"{sheet_file.name}: a successor case needs a non-empty sheet")
-                        continue
                     if case_file is None:
                         raise OverseerError(
                             "sheet.yaml: a non-empty catalogue-change sheet needs a "
@@ -5091,12 +6102,41 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     # evidenced in the case -- the steward's rule, one copy;
                     # E3b: and a replace line's records and rewrite account.
                     rules = _pair_rules_problem(
-                        case_file, sheet, home, held=held_now, predecessor=predecessor
+                        case_file, sheet if sheet is not None else batch.Sheet(), home,
+                        held=held_now, predecessor=predecessor,
                     )
                     if rules is not None:
                         raise OverseerError(rules)
+                    if skill_step is not None and not skill_step.deploy:
+                        # SK3 (S-107 part 6): writing is not in
+                        # effect, so the step is kept, checked, as a draft
+                        # and the pair is not applied; the report says what
+                        # it would have done.
+                        skill_drafts.append(skills_mod.draft_entry(
+                            skill_step, case_file.name,
+                            [item.id for item in sheet or []] + skills_mod.decision_lessons(case_data),
+                        ))
+                        if predecessor is not None:
+                            seen_predecessors.add(predecessor)
+                        skill_pairs[skill_step.name] = case_file.name
+                        _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                            "status": "skill-drafted", "skill": skill_step.name,
+                            "action": skill_step.label, "case_file": case_file.name})
+                        continue
+                    if sheet is None:
+                        # SK3: a sheetless skill pair (a rewrite or a
+                        # retirement that moves no lesson): nothing to
+                        # preview; its case is recorded and its step made.
+                        assert skill_step is not None
+                        skill_steps[case_file] = skill_step
+                        skill_pairs[skill_step.name] = case_file.name
+                        if predecessor is not None:
+                            seen_predecessors.add(predecessor)
+                        prepared.append((case_file, sheet_file, None))
+                        continue
                     from ..steward import _reconsidered_by  # one definition, the steward's
 
+                    reconsidered = _reconsidered_by(_yaml_mapping(case_file))
                     preview = batch.dry_run(
                         home, sheet, actor="overseer",
                         hook_activation=config.hook_activation_enabled(home),
@@ -5107,7 +6147,17 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         # lesson previews as the reroute it will be), not
                         # as the routed-status refusal. 2026-10-05: before,
                         # every reconsider reroute counted "would refuse".
-                        reconsidered=_reconsidered_by(_yaml_mapping(case_file)),
+                        reconsidered=reconsidered,
+                    )
+                    # SK3: a line routing a lesson into the skill this pair
+                    # builds is previewed before the skill exists; only
+                    # the "not owned yet" refusal is set aside, and a build
+                    # no line would move a lesson into is dropped (fix
+                    # round 1, gate r1). A placed lesson the pair's
+                    # reconsider case covers moves in by reroute (fix
+                    # round 2, gate r2 MAJOR).
+                    preview = skills_mod.preview_for_step(
+                        home, preview, sheet, skill_step, reconsidered=reconsidered,
                     )
                     _refuse_doomed_reconsider(case_file, predecessor, preview)
                     # S-101: a preview that says would-refuse is
@@ -5120,7 +6170,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         sheet, refused_lines = _drop_preview_refused(
                             sheet_file, sheet, preview, home, stage,
                         )
-                except (OverseerError, batch.BatchError) as exc:
+                except (OverseerError, batch.BatchError, skills_mod.SkillPairError) as exc:
                     reason = _pair_problem_text(exc, stage)
                     case_drops.append(
                         f"{case_file.name if case_file is not None else sheet_file.name}: "
@@ -5141,6 +6191,50 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 preview_apply += sum(item.state == "would-apply" for item in preview.items)
                 preview_refused += sum(item.state == "would-refuse" for item in preview.items)
                 prepared.append((case_file, sheet_file, sheet))
+                if skill_step is not None:
+                    skill_steps[case_file] = skill_step
+                    skill_pairs[skill_step.name] = case_file.name
+            # SK3: a skills/<name>/ folder no case names is not written; what
+            # the skills staging could not show, and an unknown
+            # overseer.skill_writing value, are said in the report.
+            # Each is bounded and secret-scanned like a failure note's
+            # detail: a folder name or a config value is the model's or a
+            # person's text, and the run record is scanned whole.
+            for line in skills_mod.unclaimed_folders(
+                stage, skill_claimed, skill_named - skill_claimed,
+            ):
+                line = _failure_detail(line) or line
+                case_drops.append(line)
+                _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                    "status": "skill-folder-dropped", "reason": line})
+            case_drops.extend(
+                _failure_detail(note) or note for note in skill_stage.notes
+            )
+            if skill_state.note:
+                case_drops.append(_failure_detail(skill_state.note) or skill_state.note)
+            # SK4 (S-107): what phase S came to, and phase B's
+            # dispositions of its candidates and of the steward's skill
+            # proposals; a missing or dropped one is named.
+            case_drops.extend(phase_s.notes)
+            if discovery_on:
+                dispositions = discovery_mod.read_dispositions(
+                    stage / discovery_mod.DISPOSITIONS_FILE,
+                    candidates=[str(c["id"]) for c in phase_s.candidates],
+                    proposals=proposals_now,
+                    withheld=withheld.get(discovery_mod.DISPOSITIONS_FILE),
+                )
+                for line in dispositions.notes:
+                    line = _failure_detail(line) or line
+                    case_drops.append(line)
+                    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                        "status": "skill-disposition-note", "reason": line[:300]})
+            else:
+                dispositions = None
+            # S-107 part 6: whether this run's discovery steps were
+            # seen working, so that it may count as auto's drafts-only run.
+            trial_ready, trial_why = discovery_mod.trial_readiness(
+                phase_s, dispositions or discovery_mod.Dispositions(False, why="discovery is off"),
+            )
         except (OverseerError, batch.BatchError) as exc:
             detail = _failure_detail(exc)
             closed_text, close_questions = (None, [])
@@ -5185,6 +6279,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 questions=questions, findings=findings, prepared=prepared,
                 model_updates=model_updates,
                 sessions=sessions,
+                project_notice_rows=notice_rows,
                 runner_notes=[
                     *phase_a_drops,
                     *report_notes, *question_drops, *finding_drops, *case_drops,
@@ -5194,6 +6289,16 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 decisions={
                     "staged": len(prepared) + pairs_dropped, "dropped": pairs_dropped,
                     "lines_dropped": lines_dropped,
+                },
+                skill_steps=skill_steps,
+                skills_info={
+                    "state": skill_state.to_json(),
+                    "drafts": skill_drafts,
+                    "trial_ready": bool(trial_ready),
+                    "trial_why": None if trial_ready else trial_why,
+                    # SK4: phase S and phase B's dispositions, for the week
+                    # file this record's commit writes and for the report.
+                    "discovery": discovery_mod.manifest_info(phase_s, dispositions),
                 },
             )
         except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes
@@ -5214,6 +6319,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         # one purpose (a failed phase B's next attempt) and is dropped, so a
         # later manual run looks at the week afresh.
         shutil.rmtree(_phase_a_keep_dir(home, week), ignore_errors=True)
+        # SK4: so is a kept phase S (02-schema §3).
+        discovery_mod.drop_kept(home, week)
 
     return _execute_manifest(
         home, manifest, boundary_no_push=boundary_no_push, manual=manual,

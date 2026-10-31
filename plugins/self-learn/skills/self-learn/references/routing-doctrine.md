@@ -44,7 +44,7 @@ Exactly five, the `destination` enum — unchanged by anything below:
 | `skill-md` | managed section in the owning skill's SKILL.md |
 | `claude-md` | managed section in the repo `CLAUDE.md` (project) or `~/.claude/CLAUDE.md` (user) — or, via `variant`, a rules-topic file (§2's search-only gate) or a personal `CLAUDE.local.md` (§2a) |
 | `reference` | append to the skill's `references/LEARNINGS.md` (or another **existing** references file, named explicitly) |
-| `new-skill` | scaffold a new skill (M3 compiler) |
+| `new-skill` | scaffold a new skill (M3 compiler; a person's route), or add the lesson to a skill self-learn owns (any decider) |
 | `hook` | PreToolUse/etc. guard script (M3 compiler) |
 
 **`reference` is a person's destination only (2026-10-06).** The steward
@@ -255,7 +255,14 @@ two member records and a proposed name (`kebab-case`, validated
 mechanically at route time — propose your best name and let the human
 correct it, never leave it blank); `no` needs at most one member;
 `indeterminate` is available when the clustering is genuinely unclear.
-`yes` fires `NEW_SKILL` and ends the procedure here.
+`yes` fires `NEW_SKILL` and ends the procedure here. `NEW_SKILL` is a
+**proposal** of a skill, never the making of one (S-107):
+a person who agrees routes the lesson with `route --dest new-skill:<name>`,
+which scaffolds the skill; an agent never does. The steward, deciding the
+lesson, either routes it into a skill self-learn already owns (its output
+contract lists them) or parks it for the overseer as `skill-proposal`; the
+overseer decides whether the skill is made. Answer T-N on the cluster
+either way: whether a skill gets made is not yours to settle here.
 
 **T4 — only when T2 answered `no`, T3 answered `no`, and T-N did not
 answer `yes`.** The record has no path trigger, no owning skill, and no

@@ -11,9 +11,10 @@ run and sent as the appended system prompt; then the PER-PACKET part --
 user message. Each part keeps §4.1's relative order.
 
 **The briefs (U3a, 2026-09-27).** A brief is no longer the analyst's card.
-Each input -- a pending lesson, a reconsider input, or a suspected rule
-violation -- is rendered by :mod:`steward_inputs`: the record's own lesson
-sections, an evidence pack built by code (every quote checked against its
+Each input -- a pending lesson, a reconsider input, a suspected rule
+violation, a routed lesson whose premise moved, or a placed lesson whose
+premises are to be written -- is rendered by
+:mod:`steward_inputs`: the record's own lesson sections, an evidence pack built by code (every quote checked against its
 transcript, a bounded excerpt around it), the closest existing lessons and
 the links that batched it. The runner builds those (it holds the index and
 the packet's group) and passes them as ``briefs``; a caller that passes
@@ -26,9 +27,11 @@ ledger, takes no lock, and never reads ``hosts.yaml`` or ``settings.json``
 **Input shape.** Each dict in ``inputs`` carries ``"id"`` (the record id)
 and optionally ``"kind"`` (:data:`steward_inputs.INPUT_KINDS`, default
 ``lesson``), ``"reason"`` (a reconsider input's; since S-88 also a
-deferred lesson's that no case covers) and ``"events"`` (a
-suspected violation's fire events). **Ordering is the caller's job.**
-``assemble`` renders ``inputs`` in the exact order the caller passes
+deferred lesson's that no case covers), ``"events"`` (a suspected
+violation's fire events), ``"moved"`` (a ``premise-moved`` input's facts,
+for instance a closed follow-up) and ``"predecessor"`` (the case whose own
+"what would change this decision" that brief quotes). **Ordering is the
+caller's job.** ``assemble`` renders ``inputs`` in the exact order the caller passes
 them -- it never sorts or reorders.
 
 **"Later observations", evidence-only view, and the blind default
@@ -54,6 +57,7 @@ from __future__ import annotations
 import io
 import re
 import textwrap
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,7 +69,9 @@ from . import cases
 from . import conditions
 from . import ledger_ops
 from . import lesson_writing
+from . import premises
 from . import records
+from . import skill_registry
 from . import verbs
 from . import statements
 from . import steward_inputs
@@ -81,6 +87,7 @@ __all__ = [
     "RUNNER_ONLY_PARKED_REASONS",
     "STAGE_EXAMPLES",
     "AUTHORITY_EXAMPLES",
+    "SKILL_PROPOSAL_EXAMPLES",
     "assemble",
     "withheld",
 ]
@@ -636,6 +643,62 @@ items:
 """,
 }
 
+#: S-107 (skill-writing plan D6, SK-b): one worked
+#: skill proposal -- a case parked as `skill-proposal` with its
+#: `decision.skill`, and the sheet that is the steward's tentative answer
+#: if no skill is made. Kept apart from `AUTHORITY_EXAMPLES`, whose pairs
+#: are all decided cases checked as such; this pair is fed through the
+#: case writer and the stage check in `tests/test_steward_skill_proposal.py`.
+SKILL_PROPOSAL_EXAMPLES: dict[str, str] = {
+    "cases/cutting-a-release.yaml": """\
+kind: parked
+trigger: nightly
+outcome: parked
+parked_for: overseer
+parked_reason: skill-proposal
+records: [lrn-a1b2c3d4, lrn-b2c3d4e5]
+scope: user
+question: >-
+  Should these two lessons, with the placed lrn-c3d4e5f6, become one skill for cutting a release?
+evidence:
+  - ref: "ledger@4f2a9c1:user/release/lrn-a1b2c3d4.yaml#L3-5"
+    quote: "push the tag to origin before running the release script"
+  - ref: "ledger@4f2a9c1:user/release/lrn-b2c3d4e5.yaml#L3-5"
+    quote: "write the changelog entry before bumping the version"
+decision:
+  verb: propose a skill
+  because: >-
+    Both lessons are steps of one task, cutting a release, and the placed lrn-c3d4e5f6 is a
+    third step of the same task. Read together they are one procedure an agent needs when it
+    starts a release, which separate lines do not give it. Whether a skill is worth making is
+    the overseer's call. Tentative answer if no skill is made, held loosely: defer both until
+    a release shows whether they still apply.
+  confidence: provisional
+  what_would_change:
+    - "a release made without these steps going wrong would weaken the case for a skill"
+  skill:
+    name: cutting-a-release
+    why: three lessons are steps of one release procedure and are needed at the same moment
+    lessons: [lrn-a1b2c3d4, lrn-b2c3d4e5, lrn-c3d4e5f6]
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/cutting-a-release.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-a1b2c3d4
+    verb: defer
+    note: tentative only, if no skill is made; parked as a skill proposal, so not applied
+  - id: lrn-b2c3d4e5
+    verb: defer
+    note: tentative only, if no skill is made; parked as a skill proposal, so not applied
+""",
+}
+
 
 def withheld() -> tuple[str, ...]:
     """§4.1's withheld list, verbatim in substance -- never installed as
@@ -1028,11 +1091,17 @@ def _sheet_verb_lines() -> list[str]:
     return lines
 
 
-def _render_output_contract() -> str:
+def _render_output_contract(owned_skills: Sequence[str] | None = ()) -> str:
     """The brief's last block: the exact shape of every file the steward
     writes. Closed sets and key tables are read from the checkers' own
     constants; the examples are `STAGE_EXAMPLES`, which the suite feeds
-    through those same checkers."""
+    through those same checkers.
+
+    *owned_skills* (S-107): the live skills
+    self-learn owns, the only ones a `new-skill` line of the steward may
+    name (:func:`_skill_lines`); `None` when the registry could not be
+    read. `_ordered_blocks` passes :func:`_owned_skills`; a caller that
+    passes nothing renders a ledger that owns no skill."""
     model_parked_reasons = cases.PARKED_REASONS - RUNNER_ONLY_PARKED_REASONS
     lesson_sections = sorted({name for names in records.REQUIRED_SECTIONS.values() for name in names})
     out = [
@@ -1174,7 +1243,8 @@ def _render_output_contract() -> str:
         "  names the case that covered it, a `route` line on a lesson that is already routed",
         "  MOVES it to the `dest` it names (the runner applies it as a reroute; the old placement",
         "  is retired in the same motion; `dest` is required; a hook needs its compile input;",
-        "  never `new-skill` or `reference`). A `reject` or `defer` line in such a case removes the",
+        "  never `new-skill` or `reference`; a placed lesson that belongs in a skill is proposed,",
+        "  see SKILLS below). A `reject` or `defer` line in such a case removes the",
         "  lesson's placement in the same motion; on a reference shelf that removes its entry from",
         "  the shelf file, so a `route`, `reject` or `defer` line each takes a lesson off a reference",
         "  shelf. A lesson routed to a hook cannot be rejected or deferred this way; move it with a",
@@ -1201,6 +1271,7 @@ def _render_output_contract() -> str:
         "  per event you decide. `confirm-recurrence` with `tolerate: true` needs a `note`",
         "  saying why the rule stays; `dismiss-suspect`'s `why` is one of",
         f"  {_words(verbs.DISMISS_REASONS)}.",
+        *_premise_lines(),
         f"  These are never sheet verbs and are refused: {', '.join(sorted(batch.REFUSED_VERBS_LITERAL))}, and",
         "  anything starting `host `.",
         *_hook_lines(),
@@ -1243,6 +1314,8 @@ def _render_output_contract() -> str:
         "  answer even when you hold it loosely, and say how loosely in `because`.",
         "  A parked case still counts toward the every-lesson-in-one-case rule.",
         "",
+        *_skill_lines(owned_skills),
+        "",
         "parked.yaml -- a FURTHER question for the overseer, never the way to park a lesson of",
         "  this packet. `entries:` list. Each entry is a case mapping with the keys above, minus",
         "  kind, outcome and parked_for (the runner sets them), plus a `parked_reason` you may",
@@ -1265,7 +1338,140 @@ def _render_output_contract() -> str:
     for name, body in AUTHORITY_EXAMPLES.items():
         out.append(f"\n--- {name}")
         out.append(body.rstrip("\n"))
+    out.append("")
+    out.append("A SKILL PROPOSAL: one case/sheet pair (all ids and text invented)")
+    for name, body in SKILL_PROPOSAL_EXAMPLES.items():
+        out.append(f"\n--- {name}")
+        out.append(body.rstrip("\n"))
     return "\n".join(out)
+
+
+def _owned_skills(home: Path) -> tuple[str, ...] | None:
+    """S-107: the live skills self-learn owns
+    (:func:`skill_registry.load`), or ``None`` when the registry cannot be
+    read. Read per packet from the ledger. Nothing a steward run does
+    changes it -- only the overseer or a person writes or retires a skill --
+    so the packets of one run read the same list unless a person writes a
+    skill while the run is going, which costs the later packets the shared
+    part's prompt cache and nothing else."""
+    try:
+        return tuple(skill_registry.load(home).live())
+    except skill_registry.SkillRegistryError:
+        return None
+
+
+def _skill_lines(owned_skills: Sequence[str] | None) -> list[str]:
+    """S-107 (skill-writing plan D6, SK-b): what the
+    steward may do with skills -- route a pending lesson into a skill
+    self-learn owns, named from *owned_skills*, and propose any other skill
+    by parking its case (`cases.SKILL_PROPOSAL_REASON`) -- never make one.
+    *owned_skills* is ``None`` when the registry could not be read: the
+    brief then names no skill to route into."""
+    reason = cases.SKILL_PROPOSAL_REASON
+    if owned_skills is None:
+        owned = [
+            "    (the list of skills self-learn owns could not be read this run: route into",
+            "    none of them; a proposal is still yours to write)",
+        ]
+    elif owned_skills:
+        owned = textwrap.wrap(
+            ", ".join(owned_skills), width=90, initial_indent="    ", subsequent_indent="    "
+        )
+    else:
+        owned = ["    (none yet)"]
+    return [
+        "SKILLS (method section 11) -- you never make a skill; you may route into one self-learn",
+        "  owns, and you may propose one.",
+        "  The skills self-learn owns (it made them and keeps them; a lesson routed into one is",
+        "  compiled into the skill's managed section like any routed lesson):",
+        *owned,
+        "  A PENDING lesson that belongs in one of these: a `route` line with",
+        "  `dest: new-skill:<name>`, <name> from the list above. That adds the lesson to the",
+        "  skill and creates nothing. A `new-skill` line naming anything else is refused: only",
+        "  the overseer or a person creates a skill. Moving a PLACED lesson into a skill is the",
+        "  overseer's too: propose it.",
+        f"  PROPOSING A SKILL: park the case with `parked_reason: {reason}` when lessons of this",
+        "  packet are steps or parts of one task-shaped thing -- with each other, or with lessons",
+        "  already placed -- and one skill would serve them better than separate lines. The case",
+        "  carries `decision.skill`, a mapping of three keys, all required here:",
+        "    name     the kebab-case name you propose (the overseer may choose another; a name",
+        "             already owned, from the list above, proposes adding these lessons to it)",
+        "    why      one sentence: what task the skill is for and why these lessons belong",
+        "    lessons  every lesson id the skill would hold: each of the case's `records` (the",
+        "             runner refuses a proposal that leaves one out), plus any placed lesson",
+        "             that belongs with them",
+        "  The overseer decides it each week: it builds the skill, adds the lessons to one it",
+        "  owns, defers or declines. Until then the case's lessons are held for it. The case's",
+        "  sheet is your tentative answer IF NO SKILL IS MADE -- what you would do with each",
+        "  lesson on its own -- so a declined proposal still has a decision to start from. Never",
+        "  a `new-skill` line for a name that is not in the list above.",
+    ]
+
+
+def _premise_lines() -> list[str]:
+    """S-104: a `premise-moved` input and the `premises` verb,
+    from the constants the checkers read (`premises.py`'s catalog and
+    vocabularies, `verbs.PREMISES_ACTIONS`). S-104: writing
+    premises with every route, and the `premise-extract` input whose case
+    only writes them (`steward._premise_extract_problem`)."""
+    probe_fields = [
+        f"      {kind:<13} {', '.join(sorted(premises._PROBE_FIELDS[kind] - {'kind'}))}"
+        for kind in sorted(premises.PROBE_KINDS)
+    ]
+    return [
+        "  A PREMISE-MOVED INPUT (method section 17) is a placed lesson where something it rests",
+        "  on changed. Decide it in a `kind: reconsider` case superseding the case that covers it",
+        "  (the runner fills it in), or, when its brief says no case covers it, in a `kind:",
+        "  resolution` case: on this input, and only here, a `replace`, `retire` or `route` (a",
+        "  move, applied as a reroute; give `dest`) of a placed lesson in a resolution case is",
+        "  yours. Outcomes: `no-action`, `replaced`, `retire`, `route`, or park. A `no-action`",
+        "  decision needs a `premises` line on the lesson re-recording every moved premise the",
+        "  brief names, or the runner refuses the case: the same change would come back every",
+        "  night. `rebaseline` re-records a premise judged by its value (`holds_if: changed`); a",
+        "  premise judged by its claim moved because the claim is false now, and a rebaseline of",
+        "  it is refused: rewrite or drop it with `set`. A `replace` carries the lesson's",
+        "  premises to the new lesson; put a `premises` line BEFORE it when they change too.",
+        f"  `premises` takes `action`: {_words(verbs.PREMISES_ACTIONS)}. `action: set` with `premises:`, the",
+        "  whole list (`[]` for a lesson that rests on no fact about the machine), at most",
+        f"  {premises.MAX_PREMISES} entries and at most {premises.MAX_PROBED} with a probe. An entry: `id` "
+        f"(p1..p{premises.MAX_PREMISES}), `claim` (one",
+        "  line), and optionally `probe` (null for a behaviour no check can see), `holds_if`",
+        f"  ({_words(premises.HOLDS_IF_VALUES)}; default changed), `match` (the literal text the",
+        "  value must contain, lack, equal or satisfy; none for changed), `on_change`",
+        f"  ({_words(premises.ON_CHANGE_VALUES)}; refresh only with changed), `source`. A probe is a",
+        "  mapping with `kind` and that kind's fields:",
+        *probe_fields,
+        "  `action: rebaseline` with `ids:` (a list of premise ids) re-records those premises'",
+        "  values now. Never write `baseline` or `decided_at`: the runner runs each probe once",
+        "  and records them. A probe that cannot observe anything now refuses the line; a",
+        "  probe never reads a credential file.",
+        # S-104 (02 §3a.10.7): route-time premises and the backfill.
+        "  WRITING PREMISES (method section 17). With every `route`, put a `premises` line with",
+        "  `action: set` on the same lesson in the same sheet: what the lesson rests on, a probe",
+        "  where the catalog can check one (try it with the `premise_probe` tool first), or",
+        "  `premises: []` for a lesson that rests on no fact about the machine. A placed lesson",
+        "  left with no premises comes back to you as a premise-extract input.",
+        "  A PREMISE-EXTRACT INPUT is a placed lesson with no premises recorded. Decide it in a",
+        "  `kind: resolution` case with `outcome: no-action` and no `supersedes`, whose sheet has",
+        "  exactly ONE line for it: `premises` with `action: set`. Nothing else may change the",
+        "  lesson there; the runner refuses any other line on it. A premise you find already",
+        "  false: write it with the probe that shows it; its first value is recorded as",
+        "  contradicting the claim and the lesson comes back the next night as a premise-moved",
+        "  input. When no probe can show it, park the case (`authority-unclear`).",
+        # S-104 (02 §3a.10.3, §3a.10.7)
+        "  A PLACEMENT premise (`@reach`, `@writable`, `@intact`; method section 17) is derived",
+        "  by code for every placed lesson and never written: nothing to rebaseline. On an",
+        "  `@intact` input (a person hand-edited the lesson's managed block) every lesson of the",
+        "  block the brief lists goes in ONE case, each with either a `replace` line with",
+        "  `adopt_region: true` (fold the edit into the lesson; no also, to, dest or",
+        "  rules_paths) or a `premises` line `action: restore-region` (no other key but",
+        "  because and note: put the ledger's text back), and the case's `evidence` quotes",
+        "  every line the brief lists as written by a person. When those lessons were not all",
+        "  placed by one case, that one case is `kind: resolution` and you write no",
+        "  `supersedes` (the runner fills one in only when exactly one earlier case covers any",
+        "  of them). Both lines are refused on any other input. On an `@reach` or `@writable`",
+        "  input the lesson moves with a `route` line (applied as a reroute), or is retired.",
+    ]
 
 
 def _hook_lines() -> list[str]:
@@ -1346,7 +1552,7 @@ def _ordered_blocks(
     return (
         ("method", _render_method()),
         ("conditions", _render_conditions(items)),
-        ("output_contract", _render_output_contract()),
+        ("output_contract", _render_output_contract(_owned_skills(home))),
         ("containment", _render_containment(run)),
         ("user_model", _render_user_model(home)),
         ("open_cases", _render_open_cases(home, run)),

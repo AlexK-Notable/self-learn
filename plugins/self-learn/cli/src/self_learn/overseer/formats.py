@@ -32,6 +32,17 @@ EXAMPLE_PARKED_CASE = "case-0000000a"
 EXAMPLE_CASE = "case-0000000b"
 #: E3b: the lessons a merge example folds into EXAMPLE_RECORD's successor.
 EXAMPLE_MERGED = ("lrn-0000000b", "lrn-0000000c")
+#: S-106: the project the notices example names. Not a real path; a
+#: test hands the validator a known-projects set that holds it.
+EXAMPLE_PROJECT = "/srv/example-project"
+
+#: SK3 (S-107): the example skill phase B's formats carry, in
+#: ``skill-example/`` (a folder shaped like ``skills/<name>/``), and the
+#: lessons its example pair moves in.
+SKILL_EXAMPLE_DIR = "skill-example"
+EXAMPLE_SKILL = "example-release-notes"
+EXAMPLE_SKILL_LESSONS = ("lrn-0000000a", "lrn-0000000b")
+EXAMPLE_SKILL_REFERENCE = "references/procedure.md"
 
 #: S-73: a WARNING hook's compile input, as a sheet line carries it (the
 #: shape `batch.HOOK_INPUT_KEYS` and `ledger_ops._validate_hook_extension`
@@ -122,7 +133,8 @@ def closed_sets() -> dict[str, Any]:
     """Every closed set the runner and the case writer enforce, read from
     the modules that enforce them."""
     from .. import batch, cases, user_model, verbs
-    from . import population, run
+    from .. import notices as project_notices
+    from . import discovery, population, run
 
     overseer_containers = sorted(
         name for name, who in user_model._WHO_MAY_ADD.items() if "overseer" in who
@@ -141,6 +153,13 @@ def closed_sets() -> dict[str, Any]:
             "kind": list(run.FINDING_KINDS),
         },
         "questions": {"kind": list(run.QUESTION_KINDS)},
+        # S-106: the optional project notices.
+        "notices": {
+            "entry_keys": list(run.NOTICE_KEYS),
+            "max_text_chars": project_notices.MAX_TEXT,
+            "max_per_run": project_notices.MAX_PER_RUN,
+            "ends_after_days": project_notices.NOTICE_DAYS,
+        },
         "case": {
             "kind": sorted(cases.KINDS - {"parked"}),
             "trigger": sorted(cases.TRIGGERS),
@@ -155,7 +174,9 @@ def closed_sets() -> dict[str, Any]:
             "version": 1,
             "verbs": {
                 verb: {
-                    "keys": sorted(keys),
+                    # S-104: a key the batch refuses the
+                    # overseer by name (`adopt_region`) is not offered.
+                    "keys": sorted(keys - batch.agent_refused_keys("overseer").get(verb, frozenset())),
                     "required": sorted(batch.REQUIRED_KEYS.get(verb, frozenset())),
                 }
                 for verb, keys in sorted(batch.PERMITTED_KEYS.items())
@@ -185,7 +206,35 @@ def closed_sets() -> dict[str, Any]:
             },
         },
         "report_headings_in_order": list(run._REPORT_SECTIONS),
+        # S-105: one more heading, optional, right after Catalogue health.
+        "report_hand_steps_heading": run.HAND_STEPS_SECTION,
         "hook": _hook_closed_sets(),
+        "skill_template": _skill_template_sets(),
+        # SK4 (S-107): the discovery phase's candidates, as
+        # phase B reads them, and the dispositions phase B writes.
+        "skill_candidates": discovery.candidate_closed_sets(),
+        "skill_dispositions": discovery.disposition_closed_sets(),
+    }
+
+
+def _skill_template_sets() -> dict[str, Any]:
+    """SK3: the skill template's fixed rules, read from the constants the
+    checker (`skill_scaffold.check_skill`, K1a) enforces."""
+    from .. import skill_scaffold as k1a
+
+    return {
+        "name_max_chars": k1a.SKILL_NAME_MAX_CHARS,
+        "name_reserved_words": list(k1a.SKILL_NAME_RESERVED_WORDS),
+        "description_max_chars": k1a.SKILL_DESCRIPTION_MAX_CHARS,
+        "listing_max_chars": k1a.SKILL_LISTING_MAX_CHARS,
+        "frontmatter_keys_allowed": list(k1a.SKILL_FRONTMATTER_ALLOWED_KEYS),
+        "frontmatter_keys_refused": sorted(k1a.SKILL_FRONTMATTER_REFUSED_KEYS),
+        "metadata_key_the_runner_writes": k1a.SKILL_RUNNER_METADATA_KEY,
+        "entry_file": k1a.SKILL_ENTRY_FILE,
+        "references_dir": k1a.SKILL_REFERENCES_DIR,
+        "references_suffix": k1a.SKILL_SUPPORT_FILE_SUFFIX,
+        "references_max_depth": k1a.SKILL_REFERENCES_MAX_DEPTH,
+        "body_soft_max_lines": k1a.SKILL_BODY_SOFT_MAX_LINES,
     }
 
 
@@ -269,8 +318,200 @@ _REPLACE_RULES = (
 )
 
 
+#: C4 (S-108): what the overseer may do about a lesson a person
+#: rejected. Phase B's README only.
+_RESTATE_RULES = (
+    "A lesson a person rejected stays rejected: a `reopen` line for one is refused, and a",
+    "kind: reconsider successor may not supersede a case a person recorded. When you think",
+    "such a lesson is right, or right in a corrected form, you have two ways. (1) A",
+    "`restate` line, in a named kind: maintenance pair, writes the corrected lesson as a NEW",
+    "pending lesson (trigger + instruction, or fact; `because` says what you corrected and",
+    "why); the old lesson is left exactly as it is, gains a note pointing at the new one,",
+    "and the steward decides the new lesson like any other pending lesson, with the old",
+    "lesson's evidence. Use it only for a lesson that is rejected or retired: a pending,",
+    "deferred or placed lesson is corrected with `replace`. Give the case outcome",
+    "no-action, name the old lesson in its records, and quote the old text and the evidence",
+    "that shows what was wrong. Never write the same words the person rejected; restate",
+    "only a version that answers what the evidence shows. (2) A question in questions.yaml",
+    "(kind: ask) that names the lesson and the case that rejected it, when what decides it",
+    "is the user's own preference. See case-restate-example.yaml with",
+    "sheet-restate-example.yaml.",
+)
+
+
+def _skills_rules() -> list[str]:
+    """SK3 (S-107 parts 3-6; D-AUTHOR §3.2-§3.5): phase B's section
+    on the skills self-learn owns. The template's numbers are read from the
+    checker's constants (`skill_scaffold`), the workspace names from
+    `overseer.skills`."""
+    from .. import skill_scaffold as k1a
+    from . import run, skills
+
+    allowed = ", ".join(k1a.SKILL_FRONTMATTER_ALLOWED_KEYS)
+    refused = ", ".join(sorted(k1a.SKILL_FRONTMATTER_REFUSED_KEYS))
+    reserved = " or ".join(f'"{w}"' for w in k1a.SKILL_NAME_RESERVED_WORDS)
+    text = f"""\
+## Skills self-learn owns
+
+Lessons that are parts of one task can become one skill that self-learn writes, keeps
+up to date and can retire. The lessons stay lessons inside it: they compile into the
+skill's managed section, as they do in any skill, and keep their history. The text
+you write around them is the coherent part: when to use the skill, the procedure,
+how its rules relate.
+
+Your inputs: {skills.OWNED_DIR}/<name>/ for each skill self-learn owns, as it is now --
+{skills.FILES_DIR}/ (its {k1a.SKILL_ENTRY_FILE} without the managed section, and its
+{k1a.SKILL_REFERENCES_DIR}/ files: start a change from these), {skills.ROW_FILE} (who made
+it, when, from which case), {skills.LESSONS_FILE} (the lessons routed into it) and
+{skills.DIFF_FILE} (what changed in its text since self-learn last wrote it).
+{skills.VETOES_FILE} lists the names the user vetoed, the skills whose name the user
+vetoed, and the user's requests to retire a skill. {skills.PROPOSALS_FILE} lists the
+steward's skill proposals; each is a parked case in parked/, decided like any other.
+{skills.WRITING_FILE} says whether this run deploys what you write.
+
+When to make a skill rather than add to one (judgment, not a rule with numbers):
+- Prefer an existing skill: if one already owns the moment (its name and description
+  match the task), route the lessons there.
+- Make one when all of these hold: the lessons share one task-shaped trigger a
+  description can name; the content is more than a line (a procedure, a format,
+  examples); no existing skill owns it.
+- Signs a skill is right: always-loaded lines are paid for in every session but matter
+  only for that task; the user named the skill's shape; the pattern has recurred.
+- Not a skill: a lesson tied to files (a path-scoped rule), a lesson tied to one
+  command (a warning hook), one line that fits where it is.
+
+To build a skill: write {skills.STAGE_SKILLS_DIR}/<name>/{k1a.SKILL_ENTRY_FILE} (and
+{k1a.SKILL_REFERENCES_DIR}/<file>{k1a.SKILL_SUPPORT_FILE_SUFFIX} when the detail is long), and a
+named pair: a case with outcome: route and decision.skill {{name, why, lessons}}
+(kind: maintenance, or the successor of a skill-proposal parked case), whose sheet
+routes each lesson in with dest: new-skill:<name>. A lesson already placed elsewhere moves
+in by the same route line in a kind: reconsider successor of the case that placed it,
+which the runner applies as a reroute once the skill is written. See {SKILL_EXAMPLE_DIR}/,
+case-skill-example.yaml and sheet-skill-example.yaml. The runner writes the skill
+first, then records the case and applies the sheet; if the write is refused, the whole
+pair is dropped and named under "Refused / could not do", and no lesson moves. The
+runner adds the managed section and the metadata.{k1a.SKILL_RUNNER_METADATA_KEY} stamp: never
+write either.
+
+The template (the runner refuses a skill that breaks it, naming the rule): the name is
+the folder's name, kebab-case, at most {k1a.SKILL_NAME_MAX_CHARS} characters, without {reserved},
+and not the name of any skill already loaded on this machine or any vetoed name; the
+description is not empty, at most {k1a.SKILL_DESCRIPTION_MAX_CHARS} characters, says what the skill
+does and when to use it, in the third person, with no XML tags; frontmatter keys only
+{allowed} ({refused} are refused); supporting files are markdown only, in
+{k1a.SKILL_REFERENCES_DIR}/, one level deep, each linked from {k1a.SKILL_ENTRY_FILE}; every file is
+secret-scanned. Keep the body under {k1a.SKILL_BODY_SOFT_MAX_LINES} lines and concise: the reader is
+a capable agent. closed-sets.yaml has these under skill_template.
+
+To change a skill self-learn owns: write the whole new text in
+{skills.STAGE_SKILLS_DIR}/<name>/, starting from {skills.OWNED_DIR}/<name>/{skills.FILES_DIR}/, in a pair whose
+case carries decision.skill naming it. Read {skills.DIFF_FILE} first and keep what a person
+wrote unless your case says why not. If the skill changes again before the runner
+writes it, the write is refused and you see it next week. A pair that only changes a
+skill's text may have an empty sheet (items: []).
+
+To route a pending lesson into a skill self-learn owns, write a route line with dest:
+new-skill:<name> in a case whose decision.skill names it; no folder is needed.
+
+A case may name in decision.skill a skill it does not build: the successor that declines
+a skill-proposal parked case may keep the proposal's decision.skill, and a case may name a
+linked skill self-learn does not own whose lessons it routes the ordinary way. With
+no {skills.STAGE_SKILLS_DIR}/<name>/ folder and no line routing into new-skill:<name>, such a
+case carries no skill step and its pair applies as any other. A sheet that routes into
+new-skill:<name> for a skill self-learn does not own is building it, and needs the folder.
+
+To retire a skill self-learn owns: a pair whose case has outcome: retire and
+decision.skill naming it. Its sheet first moves every lesson routed into it somewhere
+else (each lesson's history in {run.LESSONS_DIR}/ says where it was before); moving a routed
+lesson is a kind: reconsider successor of the case that moved it in. A sheet with no line
+for a lesson routed into the skill drops the pair. The runner retires
+the skill only after every line of the sheet applied. A skill with no lessons left is
+retired with an empty sheet. A case that retires lessons out of a skill it keeps does not
+name the skill in decision.skill. A request to retire in {skills.VETOES_FILE} is the user's: retire
+that skill this run, or ask the user in questions.yaml why you did not.
+
+A vetoed name is never used again, and a skill whose name was vetoed cannot be written
+under it. While {skills.WRITING_FILE} says deploy: false, every skill you build or change is
+checked by the same rules and kept as a draft, nothing is retired, and those pairs are
+not applied; write them exactly as you would otherwise.
+"""
+    return text.splitlines()
+
+
+def _discovery_rules_s() -> list[str]:
+    """SK4 (S-107): phase S's one file. Phase S is blind to
+    the steward: nothing here names cases, sheets, verbs or what a later
+    phase decides."""
+    from ..skill_scaffold import SKILL_NAME_MAX_CHARS
+    from . import discovery
+
+    return f"""\
+Phase S file: {discovery.CANDIDATES_FILE} (the example beside this file shows its shape).
+
+- Top level: candidates (a list; an empty list is a good answer) and, optionally,
+  why_stopped (why you stopped where you did).
+- Each candidate:
+  - id: sc-<a short slug of lowercase letters, digits and hyphens>, unique in the file.
+  - lessons: the lesson ids (lrn-...) that would go into the skill, each exactly as
+    {discovery.CATALOGUE_DIR}/ or {discovery.NEIGHBOURHOODS_FILE} shows it. A candidate naming a lesson you were not
+    shown is dropped.
+  - moment: the one task-shaped moment a skill description could name: when the skill
+    is needed.
+  - why: why these lessons are parts of that one task, and what makes a skill right for
+    them (their content is more than a line; it matters only for that task; the pattern
+    recurs).
+  - name: the name you would give a new skill: lowercase letters, digits and single
+    hyphens, at most {SKILL_NAME_MAX_CHARS} characters, not a name already in {discovery.SKILLS_INDEX_FILE} and not
+    one of its vetoed_names. Or into: the name of a skill in {discovery.SKILLS_INDEX_FILE} that already
+    owns the moment, exactly as it is listed there. One of the two, never both.
+  - checked (optional): the skills in {discovery.SKILLS_INDEX_FILE} you looked at, each {{skill, why_not}}.
+- A candidate that breaks one of these is dropped and named in the report; the others
+  stand. A file that does not parse, or is not this shape, counts as no candidates.
+""".splitlines()
+
+
+def _discovery_rules_b() -> list[str]:
+    """SK4 (S-107): phase B's section on the candidates and
+    the steward's proposals, and the dispositions it writes."""
+    from . import discovery, skills
+
+    text: str = f"""\
+## Skill dispositions
+
+{discovery.CANDIDATES_FILE} holds the candidates this run's discovery phase found, reading the
+catalogue of placed lessons on its own, never the steward's proposals: each with an id
+(sc-...), its lessons, the moment it serves, why, and either a name for a new skill or
+into: a skill already on this machine. {skills.PROPOSALS_FILE} lists the steward's skill
+proposals, each a parked case.
+
+Give every candidate and every proposal exactly one disposition in
+{discovery.DISPOSITIONS_FILE}. Write the file even when both lists are empty
+(dispositions: []). Each entry: source (candidate or skill-proposal), id (the
+candidate's sc-... id, or the proposal's case-... id), disposition, because, and:
+- build: you build the skill this run (its {skills.STAGE_SKILLS_DIR}/<name>/ folder and its pair,
+  above); skill names it.
+- add-to-existing: the lessons belong in a skill that exists; skill names it. Route
+  them there this run when you can.
+- defer: not now; would_change_it says what evidence would change that.
+- decline: not a skill; because says why.
+When a candidate and a proposal are the same group, decide it once: give both the same
+disposition, and say so only in the proposal's because. A candidate's because and
+would_change_it never name a proposal, a case or the steward: next week's discovery
+phase reads them, and it decides without the steward's proposals (the runner blanks any
+such mention there). A disposition does not decide a parked case: a
+proposal is decided by its successor case, as every parked case is. An entry that breaks
+these rules is dropped and named in the report, and so is a candidate or proposal left
+without a disposition. The dispositions are kept in the ledger, and next week's
+discovery phase reads what was decided for each candidate. See {discovery.DISPOSITIONS_FILE}
+here; closed-sets.yaml has the sets under skill_dispositions.
+If {discovery.CANDIDATES_FILE} says discovery: off, write no {discovery.DISPOSITIONS_FILE} and leave
+every proposal parked.
+"""
+    return [str(line) for line in text.splitlines()]
+
+
 def _rules(phase: str) -> str:
-    from . import run
+    from . import discovery, run
 
     lines = [
         "# Output formats",
@@ -282,7 +523,10 @@ def _rules(phase: str) -> str:
         "Rules the runner enforces:",
         "",
         # E3b fold (gate N1): phase B's rule names its two exceptions.
-        "- " + " ".join((run._YAML_TEXT_RULE_B if phase == "B" else run._YAML_TEXT_RULE).split()),
+        # SK4: phase S's names none (it writes one file).
+        "- " + " ".join({
+            "B": run._YAML_TEXT_RULE_B, "S": discovery._YAML_TEXT_RULE_S,
+        }.get(phase, run._YAML_TEXT_RULE).split()),
         "- Every file you write stays in this workspace; nothing outside it can be",
         "  read or written.",
     ]
@@ -292,6 +536,8 @@ def _rules(phase: str) -> str:
             "Phase A files: selection.yaml, initial-views.yaml (one entry per selected",
             "case, every field non-empty text).",
         ]
+    elif phase == "S":
+        lines += ["", *_discovery_rules_s()]
     else:
         lines += [
             "- In a case file no line of any text field may start with `## `.",
@@ -318,10 +564,28 @@ def _rules(phase: str) -> str:
                 break_long_words=False, break_on_hyphens=False,
             ),
             "",
+            "report.md: the headings in report_headings_in_order, and between",
+            "Catalogue health and Questions for you the heading in",
+            "report_hand_steps_heading, one line per hand step in health.yaml's",
+            "hand-steps-this-week row (the runner adds any step you leave out).",
+            "",
             "Phase B files: report.md, findings.yaml, questions.yaml,",
-            "user-model-delta.yaml, case-example.yaml + sheet-example.yaml (a",
+            "user-model-delta.yaml, notices.yaml (optional), case-example.yaml +",
+            "sheet-example.yaml (a",
             "successor), case.yaml + sheet.yaml shapes in maintenance-case.yaml and",
             "maintenance-sheet.yaml.",
+            "",
+            "notices.yaml (optional): one-line notices about one project, shown at the",
+            "start of a session that works inside it and nowhere else. Each entry is",
+            "{project, text, case?}: project is a path from projects.yaml (any other is",
+            "dropped; a project's showing list holds the notices still up there: do not",
+            "write one again, even reworded), text one sentence of at most 200",
+            "characters on one line (a double-quoted string, never a block scalar),",
+            "case the case it comes from. A notice ends after 14 days or when the user",
+            "marks it done; the same words for the same project are one notice; at most",
+            "5 a run. Write one only when a session in that project would act",
+            "differently for knowing it.",
+            "See notices.yaml here.",
             "",
             "Moving a lesson that is ALREADY routed to a different destination",
             "(a path-scoped rule, a stronger surface, a hook): a successor with",
@@ -386,6 +650,12 @@ def _rules(phase: str) -> str:
             "",
             *_REPLACE_RULES,
             "",
+            *_RESTATE_RULES,
+            "",
+            *_skills_rules(),
+            "",
+            *_discovery_rules_b(),
+            "",
             # E3a: the passage on writing a lesson, inlined (never a pointer).
             # Phase B only: phase A selects cases and writes no lesson text.
             lesson_writing.inlined(),
@@ -417,13 +687,22 @@ def phase_b_examples() -> dict[str, str]:
     from .. import always_loaded
     from . import run
 
-    headings = "\n".join(f"## {name}\n- none" for name in run._REPORT_SECTIONS)
+    headings = "\n".join(
+        f"## {name}\n- none" for name in run._REPORT_SECTIONS_WITH_HAND_STEPS
+    )
     evidence = [{"ref": f"record:{EXAMPLE_RECORD}", "quote": "status: pending"}]
     return {
         "report.md": f"# Overseer report\n\n{headings}\n",
         "findings.yaml": _dump({"findings": [{
             "case": EXAMPLE_CASE, "kind": run.FINDING_KINDS[0],
             "text": "The decision follows from its evidence: the record names one repository.",
+        }]}),
+        "notices.yaml": _dump({"notices": [{
+            "project": EXAMPLE_PROJECT, "case": EXAMPLE_CASE,
+            "text": (
+                "Its shutdown watchdog is not wired to the daemon it guards, so a stuck "
+                "shutdown is not caught until the next manual restart."
+            ),
         }]}),
         "questions.yaml": _dump({"questions": [{
             "id": "q-example-question", "kind": "ask", "cases": [EXAMPLE_CASE],
@@ -640,6 +919,34 @@ def phase_b_examples() -> dict[str, str]:
                 "close_call": False,
             }],
         }),
+        # C4 (S-108): a corrected version of a rejected lesson, as a
+        # new pending lesson. The old lesson is left as it is, so the case
+        # decides nothing about it (`no-action`).
+        "case-restate-example.yaml": _dump({
+            "kind": "maintenance", "trigger": "weekly", "outcome": "no-action",
+            "records": [EXAMPLE_RECORD], "scope": "skill:example",
+            "question": "A person rejected this lesson; the evidence shows it was right about the problem and wrong about the cause. Should a corrected version be proposed?",
+            "evidence": [
+                {"ref": f"record:{EXAMPLE_RECORD}", "quote": "Instruction: delete the cache directory before every build"},
+                {"ref": "transcript:example-session#L52", "quote": "the stale object file was the cause, not the cache"},
+            ],
+            "decision": {
+                "because": "The rejected line blamed the cache; the transcript shows a stale object file. The corrected lesson names the real cause and leaves the person's reject in place.",
+                "confidence": "provisional",
+            },
+        }),
+        "sheet-restate-example.yaml": _dump({
+            "version": 1,
+            "items": [{
+                "id": EXAMPLE_RECORD, "verb": "restate",
+                "trigger": DoubleQuotedScalarString("A build fails with an error that names an object file."),
+                "instruction": DoubleQuotedScalarString(
+                    "Delete that object file and rebuild before suspecting the cache."
+                ),
+                "because": DoubleQuotedScalarString("the rejected lesson named the wrong cause; the transcript shows the right one"),
+                "close_call": False,
+            }],
+        }),
         "maintenance-case.yaml": _dump({
             "kind": "maintenance", "trigger": "weekly", "outcome": "no-action",
             "records": [EXAMPLE_RECORD], "scope": "skill:example",
@@ -652,17 +959,208 @@ def phase_b_examples() -> dict[str, str]:
             "version": 1,
             "items": [{"id": EXAMPLE_RECORD, "verb": "note", "append": "Checked this week."}],
         }),
+        **skill_examples(),
+        **discovery_examples_b(),
+    }
+
+
+#: SK4 (S-107): the example candidates' ids, the lesson the
+#: second one moves, and the skill already on the machine it names.
+EXAMPLE_CANDIDATE = "sc-example-release-notes"
+EXAMPLE_INTO_CANDIDATE = "sc-example-diagram-rules"
+EXAMPLE_INTO_LESSON = "lrn-0000000c"
+EXAMPLE_EXISTING_SKILL = "example-diagrams"
+
+
+def discovery_examples_s() -> dict[str, str]:
+    """SK4: phase S's one file, ``skill-candidates.yaml``: a candidate for a
+    new skill and one for a skill already on the machine."""
+    from . import discovery
+
+    return {
+        discovery.CANDIDATES_FILE: _dump({
+            "candidates": [
+                {
+                    "id": EXAMPLE_CANDIDATE,
+                    "name": EXAMPLE_SKILL,
+                    "lessons": list(EXAMPLE_SKILL_LESSONS),
+                    "moment": "Writing release notes or a changelog entry for a version about to ship.",
+                    "why": (
+                        "Both lessons are steps of writing release notes: one says what to leave "
+                        "out, one how to group the rest. Together with a procedure they are more "
+                        "than a line, and they matter only when notes are written, yet both are "
+                        "loaded in every session."
+                    ),
+                    "checked": [{
+                        "skill": EXAMPLE_EXISTING_SKILL,
+                        "why_not": "It draws diagrams; it says nothing about release notes.",
+                    }],
+                },
+                {
+                    "id": EXAMPLE_INTO_CANDIDATE,
+                    "into": EXAMPLE_EXISTING_SKILL,
+                    "lessons": [EXAMPLE_INTO_LESSON],
+                    "moment": "Drawing a diagram for the user.",
+                    "why": (
+                        "The lesson is a rule about diagram labels; the diagrams skill already "
+                        "owns that moment, so the lesson belongs there rather than in a new skill."
+                    ),
+                },
+            ],
+            "why_stopped": "The other neighbourhood groups share words but not one task.",
+        }),
+    }
+
+
+def discovery_examples_b() -> dict[str, str]:
+    """SK4: phase B's ``skill-dispositions.yaml``: one disposition for a
+    candidate and one for a steward's proposal."""
+    from . import discovery
+
+    return {
+        discovery.DISPOSITIONS_FILE: _dump({
+            "dispositions": [
+                {
+                    "source": "candidate",
+                    "id": EXAMPLE_CANDIDATE,
+                    "disposition": "build",
+                    "skill": EXAMPLE_SKILL,
+                    "because": "No skill owns writing release notes, and its two lessons are one procedure.",
+                },
+                {
+                    "source": "skill-proposal",
+                    "id": EXAMPLE_PARKED_CASE,
+                    "disposition": "defer",
+                    "because": "Two lessons are not yet a procedure; the proposal names no steps.",
+                    "would_change_it": "A third lesson about the same task, or a lesson that gives the steps.",
+                },
+            ],
+        }),
+    }
+
+
+def skill_example_files() -> dict[str, str]:
+    """SK3: a valid skill folder, keyed as phase B's ``skills/<name>/`` is
+    (``SKILL.md``, ``references/<file>.md``); it passes
+    ``skill_scaffold.check_skill`` (`tests/test_overseer_skill_build.py`)."""
+    skill_md = (
+        "---\n"
+        f"name: {EXAMPLE_SKILL}\n"
+        'description: "Drafts release notes from merged changes. Use when the user asks for '
+        'release notes, a changelog entry, or a summary of what shipped in a version."\n'
+        "---\n\n"
+        "# Release notes\n\n"
+        "Use this when a version is about to ship and its notes are wanted. Each lesson in the\n"
+        "section at the end of this file says one rule; this text says how they fit together.\n\n"
+        "## Procedure\n\n"
+        "1. Collect the changes merged since the last release.\n"
+        "2. Group them by what a reader of the notes cares about, not by where the code changed.\n"
+        "3. Write one line per change; [the procedure](" + EXAMPLE_SKILL_REFERENCE + ") has\n"
+        "   the full steps and a worked example.\n\n"
+        "## How the rules relate\n\n"
+        "A line that is wrong is worse than a missing line, so accuracy comes before brevity.\n"
+    )
+    reference = (
+        "# Procedure\n\n"
+        "1. List the merged changes since the last release, with their titles.\n"
+        "2. Drop the changes no reader would notice (internal refactors, test-only changes).\n"
+        "3. Group the rest: new, changed, fixed.\n"
+        "4. Write each line as what the reader can now do, in one sentence.\n\n"
+        "## Worked example\n\n"
+        "A merged change titled \"cache parsed config\" becomes: \"Starting is faster when the\n"
+        "configuration file is large.\"\n"
+    )
+    return {"SKILL.md": skill_md, EXAMPLE_SKILL_REFERENCE: reference}
+
+
+def skill_examples() -> dict[str, str]:
+    """SK3: phase B's skill examples -- the skill folder, a pair that
+    builds it, and a pair that retires it."""
+    evidence = [
+        {"ref": f"record:{rid}", "quote": "Instruction: group release notes by what the reader notices"}
+        for rid in EXAMPLE_SKILL_LESSONS
+    ]
+    skill = {
+        "name": EXAMPLE_SKILL,
+        "why": (
+            "Both lessons are steps of one task, writing release notes, which a description "
+            "can name; together with the procedure they are more than a line."
+        ),
+        "lessons": list(EXAMPLE_SKILL_LESSONS),
+    }
+    files = {
+        f"{SKILL_EXAMPLE_DIR}/{rel}": text for rel, text in skill_example_files().items()
+    }
+    return {
+        **files,
+        "case-skill-example.yaml": _dump({
+            "kind": "maintenance", "trigger": "weekly", "outcome": "route",
+            "records": list(EXAMPLE_SKILL_LESSONS), "scope": "user",
+            "question": "Two lessons are steps of writing release notes; should they become one skill?",
+            "evidence": evidence,
+            "decision": {
+                "verb": "route",
+                "because": (
+                    "No skill owns writing release notes; the lessons share that trigger and need "
+                    "a procedure around them, which a skill holds and a single line does not."
+                ),
+                "confidence": "settled",
+                "skill": skill,
+            },
+        }),
+        "sheet-skill-example.yaml": _dump({
+            "version": 1,
+            "items": [
+                {"id": rid, "verb": "route", "dest": f"new-skill:{EXAMPLE_SKILL}", "close_call": False}
+                for rid in EXAMPLE_SKILL_LESSONS
+            ],
+        }),
+        # A retirement: a reconsider of the case that built the skill moves
+        # its lessons out (applied as reroutes), then the runner retires it.
+        "case-skill-retire-example.yaml": _dump({
+            "kind": "reconsider", "trigger": "weekly", "outcome": "retire",
+            "records": list(EXAMPLE_SKILL_LESSONS), "scope": "user",
+            "question": "The release-notes skill has not been used in months; should it be retired?",
+            "supersedes": EXAMPLE_CASE,
+            "evidence": evidence,
+            "decision": {
+                "verb": "retire",
+                "because": (
+                    "Releases are no longer made from this machine; the lessons go back to a "
+                    "path-scoped rule on the changelog, where they still apply."
+                ),
+                "confidence": "settled",
+                "skill": {**skill, "why": "Retired: no release has been made here in months."},
+            },
+        }),
+        "sheet-skill-retire-example.yaml": _dump({
+            "version": 1,
+            "items": [
+                {"id": rid, "verb": "route", "dest": "claude-md:rules:release-notes",
+                 "rules_paths": ["CHANGELOG.md"], "close_call": False}
+                for rid in EXAMPLE_SKILL_LESSONS
+            ],
+        }),
     }
 
 
 def write(workspace: Path, phase: str) -> Path:
-    """Write the formats for *phase* (``"A"`` or ``"B"``) into
+    """Write the formats for *phase* (``"A"``, ``"S"`` or ``"B"``) into
     ``<workspace>/formats/``; phase B adds its files to phase A's. Phase A
     sees no case or sheet vocabulary: it is blind to the steward's
-    decisions."""
-    from . import run
+    decisions. Phase S (SK4) writes into its own workspace and sees only
+    its one file and its closed set: no case or sheet vocabulary, nothing
+    of phase A's, and nothing of what phase B decides."""
+    from . import discovery, run
 
     root = workspace / FORMATS_DIR
+    if phase == "S":
+        files = dict(discovery_examples_s())
+        files["closed-sets.yaml"] = _dump({"skill_candidates": discovery.candidate_closed_sets()})
+        files["README.md"] = _rules("S")
+        for name, text in files.items():
+            run._write_stage(workspace, root / name, text)
+        return root
     files = dict(phase_a_examples())
     if phase == "B":
         files.update(phase_b_examples())
