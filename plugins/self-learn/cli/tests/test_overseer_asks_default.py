@@ -30,6 +30,7 @@ from test_overseer_run import (
     _dispatch_scripted,
     _enabled,
     _fake_hook_phases,
+    _fake_phases_by_label,
     _fake_two_phase,
     _index,
     _refused_block,
@@ -364,7 +365,7 @@ def test_a_correction_of_a_reading_reaches_phase_b_and_a_stray_statement_does_no
         home, verbatim="Some lesson words.", recorded_by="human",
         source={"message_ref": "conversation:obs-0000abce", "surface": "conversation"},
     )
-    rows = overseer_run._question_answers(home)
+    rows = overseer_run._question_answers(home, since=None)
     assert [(row["kind"], row["ref"]) for row in rows] == [("proposition", "um-1a2b@r1")]
 
 
@@ -483,16 +484,13 @@ def test_the_close_out_question_states_its_default():
     )
 
 
-def _set_last_run(home: Path, at: str) -> None:
-    (home / "overseer").mkdir(parents=True, exist_ok=True)
-    _dump_yaml(home / "overseer" / "coverage.yaml", {"last_run_at": at})
-
-
 def test_a_correction_of_a_reading_reaches_phase_b_only_once(tmp_path):
     """Gate r1 MINOR 5: a correction recorded before the last completed run
     was already in front of a phase B (or applied by the old `respond`),
     so it is not offered again; an answer to an ask is offered as before.
-    Mutation checked: `_fresh` answering True always fails this test."""
+    The stamp is the caller's (gate r2 MAJOR 1); the full-run test below
+    covers which stamp `run()` passes. Mutation checked: `_fresh` answering
+    True always fails this test."""
     home = make_home(tmp_path)
     statements.add(
         home, verbatim="That reading is wrong for this repo.", recorded_by="human",
@@ -505,12 +503,14 @@ def test_a_correction_of_a_reading_reaches_phase_b_only_once(tmp_path):
         answers={"kind": "question", "ref": "q-diagram-skill", "text": None},
     )
 
-    _set_last_run(home, "2000-01-01T00:00:00Z")  # the correction came after it
-    assert sorted(row["kind"] for row in overseer_run._question_answers(home)) == [
-        "proposition", "question",
-    ]
-    _set_last_run(home, "2999-01-01T00:00:00Z")  # the correction came before it
-    assert [row["kind"] for row in overseer_run._question_answers(home)] == ["question"]
+    # the correction came after the last completed run
+    assert sorted(
+        row["kind"] for row in overseer_run._question_answers(home, since="2000-01-01T00:00:00Z")
+    ) == ["proposition", "question"]
+    # the correction came before it
+    assert [
+        row["kind"] for row in overseer_run._question_answers(home, since="2999-01-01T00:00:00Z")
+    ] == ["question"]
 
 
 def test_a_proposition_answer_whose_ref_is_not_a_reading_is_left_out(tmp_path):
@@ -528,7 +528,7 @@ def test_a_proposition_answer_whose_ref_is_not_a_reading_is_left_out(tmp_path):
         source={"message_ref": "conversation:obs-0000abce", "surface": "conversation"},
         answers={"kind": "proposition", "ref": "um-1a2b@r1", "text": None},
     )
-    assert [row["ref"] for row in overseer_run._question_answers(home)] == ["um-1a2b@r1"]
+    assert [row["ref"] for row in overseer_run._question_answers(home, since=None)] == ["um-1a2b@r1"]
 
 
 def test_current_case_stops_where_a_cycle_closes(tmp_path):
@@ -554,3 +554,57 @@ def test_an_index_row_with_a_bad_default_or_system_flag_is_refused(tmp_path, fie
     _report_and_index(home, [row], ["- q-diagram-skill: build it?"])
     with pytest.raises(conversation.ConversationError, match=message):
         conversation.open_questions(home, out=io.StringIO())
+
+
+# ------------------------------------------------------------- fix round 2
+
+
+def _correction(home: Path, at: str, words: str, ref: str) -> None:
+    """Record a correction of a reading stamped *at* (the clock is pinned
+    for this one write only, so the test never depends on two writes
+    landing in different seconds)."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(statements.chrono, "now_iso", lambda *_a, **_k: at)
+        statements.add(
+            home, verbatim=words, recorded_by="human",
+            source={"message_ref": f"conversation:obs-{ref[3:7]}abcd", "surface": "conversation"},
+            answers={"kind": "proposition", "ref": ref, "text": None},
+        )
+
+
+def _staged_refs(seen: dict) -> list[str]:
+    rows = YAML(typ="safe").load(seen["b_stage"]["answers.yaml"])["answers"]
+    return sorted(row["ref"] for row in rows if row["kind"] == "proposition")
+
+
+def test_a_real_run_offers_a_correction_once_and_the_next_run_does_not(tmp_path, monkeypatch):
+    """Gate r2 MAJOR 1: a real run writes THIS run's coverage (its own
+    `last_run_at`) before it stages phase B, so reading the stamp from
+    `coverage.yaml` at staging time filtered out every correction recorded
+    since the previous run. The stamp is the one the run found. Run 1
+    (real, scheduled, no earlier run) must offer the correction recorded
+    before it; run 2 (real, manual -- never held by a done week) must not
+    offer it again, and must offer one recorded after run 1 (its positive
+    control). Mutations checked: reading the stamp from `coverage.yaml`
+    again (`_question_answers(home, since=_coverage_last_run_at(home))` in
+    `_full_inputs`) fails run 1; `_fresh` answering True always fails
+    run 2."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_phases_by_label(monkeypatch)  # keyed on the label: two runs in one test
+    _correction(home, "2000-01-01T00:00:00Z", "That reading is wrong.", "um-1a2b@r1")
+    seen = _wrap_phases(monkeypatch)
+
+    first = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert first.status == "applied", first
+    stamp = overseer_run._coverage_last_run_at(home)
+    assert stamp is not None and stamp > "2000-01-01T00:00:00Z"  # control: run 1 moved it
+    assert _staged_refs(seen) == ["um-1a2b@r1"]
+
+    _correction(home, "2999-01-01T00:00:00Z", "This one is wrong too.", "um-3c4d@r1")
+    second = overseer_run.run(home, dry_run=False, no_push=True, manual=True)
+
+    assert second.status == "applied", second
+    assert _staged_refs(seen) == ["um-3c4d@r1"]

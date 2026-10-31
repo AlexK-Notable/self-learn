@@ -456,7 +456,7 @@ def test_coverage_precedes_uncapped_parked_intake(tmp_path, monkeypatch):
     monkeypatch.setattr(
         overseer_run,
         "_full_inputs",
-        lambda home, stage, selected, parked_rows: captured.extend(parked_rows) or {},
+        lambda home, stage, selected, parked_rows, **_: captured.extend(parked_rows) or {},
     )
     result = overseer_run.run(home, dry_run=False, no_push=True)
     assert result.status == "applied"

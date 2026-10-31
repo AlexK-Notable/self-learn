@@ -1040,7 +1040,7 @@ def _phase_s_journal(workspace: Path) -> str | None:
 
 def _run_phase_s(
     home: Path, stage: Path, *, run_id: str, week: str, date: str, timeout_floor: float,
-    sessions: list[dict[str, Any]], dry_run: bool,
+    sessions: list[dict[str, Any]], dry_run: bool, answers_since: str | None,
 ) -> "discovery_mod.PhaseS":
     """SK4 (S-107): phase S, skill discovery, between phases
     A and B. It runs in its own workspace (``discovery.workspace_dir``),
@@ -1053,13 +1053,16 @@ def _run_phase_s(
     is a failed phase S, and phase B runs without candidates. The caller
     holds the run on a call of the environment class, as for phase A. A
     validated phase S is kept for the week's next attempt and reused while
-    its stage is unchanged; a dry run neither keeps nor reuses one."""
+    its stage is unchanged; a dry run neither keeps nor reuses one.
+
+    *answers_since* is the `last_run_at` the run found in coverage before
+    it wrote its own (gate r2 MAJOR 1); see :func:`_question_answers`."""
     workspace = discovery_mod.workspace_reset(home)
     try:
         _start_model_journal(workspace, run_id, date)
         formats.write(workspace, "S")
         inputs = discovery_mod.stage_inputs(
-            home, workspace, _write_stage, answers=_question_answers(home),
+            home, workspace, _write_stage, answers=_question_answers(home, since=answers_since),
         )
         prompt = discovery_mod.phase_s_prompt(workspace, inputs)
         _write_stage(workspace, workspace / discovery_mod.PROMPT_FILE, prompt)
@@ -1220,7 +1223,7 @@ def _environment_hold(home: Path, run_id: str, phase: str, outcome: Any) -> str:
     return cause
 
 
-def _question_answers(home: Path) -> list[dict[str, Any]]:
+def _question_answers(home: Path, *, since: str | None) -> list[dict[str, Any]]:
     """The user's answers to earlier `kind: ask` questions and corrections
     of the overseer's readings, newest first, for phase B (2026-09-24).
     Phase B saw no user statement before this: `user-model.yaml` carries
@@ -1235,8 +1238,18 @@ def _question_answers(home: Path) -> list[dict[str, Any]]:
     the old `overseer respond` on a reading). Before, every reply to a
     reading ever recorded came in each week as a live correction, a reading
     revised since included. A stamp that does not parse is kept: a
-    correction is never silently lost. Answers to asks are unchanged."""
-    since = _coverage_last_run_at(home)
+    correction is never silently lost. Answers to asks are unchanged.
+
+    Fix round 2 (gate r2 MAJOR 1): *since* is passed in, never read from
+    `coverage.yaml` here. A real run writes its OWN coverage, stamped with
+    its own `last_run_at`, before it stages phase B, so a read at staging
+    time answered this run's stamp and dropped every correction recorded
+    since the previous run. `run()` passes the `last_run_at` it found
+    before that write (`previous`), to phase S and phase B alike; ``None``
+    (no completed run yet) offers every correction. A manual run leaves
+    `last_run_at` where it was, so a correction a manual run's phase B saw
+    is offered once more by the next counted run: offered twice, never
+    lost."""
     since_epoch = _iso_epoch(since) if since is not None else None
 
     def _fresh(row: dict[str, Any]) -> bool:
@@ -1320,10 +1333,15 @@ def _stage_lessons(home: Path, stage: Path) -> int:
     return len(staged)
 
 
-def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _full_inputs(
+    home: Path, stage: Path, selected: tuple[str, ...], parked_rows: list[dict[str, Any]],
+    *, answers_since: str | None,
+) -> dict[str, Any]:
     """Write phase B's inputs; answer the user-model document it was given
     (which a `kind: reading` question was validated against until readings
-    stopped being asked, S-NEXT-overseer-asks)."""
+    stopped being asked, S-NEXT-overseer-asks). *answers_since*: the
+    `last_run_at` the run found before writing its own coverage
+    (:func:`_question_answers`)."""
     full_dir = stage / "full"
     parked_dir = stage / "parked"
     full_dir.mkdir(parents=True, exist_ok=True)
@@ -1336,7 +1354,7 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
     _stage_lessons(home, stage)
     model_doc = user_model.show(home)
     _write_stage(stage, stage / "user-model.yaml", _yaml_text(model_doc))
-    _write_stage(stage, stage / "answers.yaml", _yaml_text({"answers": _question_answers(home)}))
+    _write_stage(stage, stage / "answers.yaml", _yaml_text({"answers": _question_answers(home, since=answers_since)}))
     # S-106: the projects a notice may name (names and real paths only).
     # Each project also carries `showing`: the overseer notices still up there, so
     # the model does not write a reworded copy (a new notice, a fresh 14 days).
@@ -5675,6 +5693,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     formats.write(stage, "A")
     coverage_path = home / "overseer" / "coverage.yaml"
     previous = population_mod.load_coverage(coverage_path)
+    # Gate r2 MAJOR 1: the last completed run's stamp, read before this run
+    # writes its own coverage; the cut-off for corrections of readings that
+    # phase S and phase B are shown (`_question_answers`).
+    previous_last_run = previous.get("last_run_at")
+    answers_since = previous_last_run if isinstance(previous_last_run, str) and previous_last_run else None
     since = previous.get("last_run_at") or chrono.now_iso(datetime.now(timezone.utc) - timedelta(days=7))
     all_week = cases.list_cases(home, since=since)
     week_rows = cases.list_cases(home, since=since, only_ok=True)
@@ -5804,6 +5827,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         phase_s = _run_phase_s(
             home, stage, run_id=run_id, week=week, date=started[:10],
             timeout_floor=timeout_seconds, sessions=sessions, dry_run=dry_run,
+            answers_since=answers_since,
         )
         model_calls += phase_s.model_calls
         if phase_s.environment is not None and not dry_run:
@@ -5849,7 +5873,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         # makes the same choice.
         skill_state = skills_mod.writing_state(home)
         try:
-            model_doc = _full_inputs(home, stage, selected, parked_rows)
+            model_doc = _full_inputs(
+                home, stage, selected, parked_rows, answers_since=answers_since,
+            )
             # SK3: the skills self-learn owns, the vetoes and the steward's
             # skill proposals, as phase B's inputs (never raises for the
             # ledger's content; what it could not show is a note).

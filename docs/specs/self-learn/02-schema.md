@@ -971,7 +971,14 @@ questions:
   stamped before it staged phase B's inputs) comes in, so a reply to a
   reading already in front of a phase B, or applied by the old `overseer
   respond` on a reading, is not offered again as a live correction. A stamp
-  that does not parse is kept. Answers to asks are unchanged.
+  that does not parse is kept. Answers to asks are unchanged. *(Fix round
+  2.)* The stamp is the one the run FOUND in coverage before writing its
+  own: a real run writes this run's coverage (its own `last_run_at`) before
+  it stages phase B, so the runner never re-reads `coverage.yaml` for this
+  cut-off; phase S and phase B use the same value. No completed run yet
+  offers every correction. A manual run leaves `last_run_at` where it was,
+  so a correction a manual run's phase B saw is offered again by the next
+  counted run (twice, never lost).
 - Every ask needs `default`: one sentence, secret-scanned, on what the
   overseer did this run in the user's stead; an ask without one is dropped.
   The overseer decides the lessons the ask is about by that default in the
@@ -995,7 +1002,14 @@ questions:
   for a retried refusal (A14: only a completed run publishes
   `open-questions.yaml`) records none and reports none, so no lesson is
   released on a default the user was never shown; the resume that completes
-  records them. A cited case whose line of successors still ends at a case
+  records them. "Will publish" is the runner's knowledge when it records:
+  an exception in the finalization after that (writing the report or the
+  run's truth) leaves the attempt partial, unpublished, with its defaults
+  already recorded and their lessons already released to the steward. The
+  resume that completes publishes them; only a week that then closes at the
+  attempt cap leaves a default applied that the report never showed. This is
+  accepted as narrow (it needs a finalization exception and the cap); the
+  `ask defaulted` observation on the case still records it. A cited case whose line of successors still ends at a case
   parked for the overseer after this run's apply (`cases.awaiting_overseer`:
   no successor of this run decided it, or its successor was refused) is NOT
   observed: the default decided none of its lessons and the hold keeps them.
