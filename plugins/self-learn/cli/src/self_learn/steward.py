@@ -97,6 +97,18 @@ _RECONSIDER_OBSERVATION_RE = re.compile(
     re.MULTILINE,
 )
 
+#: S-NEXT-overseer-answers: the observation `overseer respond` writes on each
+#: case an ASK cited when the user answers it
+#: (`overseer.conversation.respond`). Its `ref` is the new statement, which
+#: no case could have listed among its dependencies beforehand, so the
+#: dependency match in `_reconsider_proposals` could never bring the case
+#: back; this line is the case's own link to the answer (used for a case
+#: whose outcome is `defer` only).
+_ASK_ANSWER_OBSERVATION_RE = re.compile(
+    r"^- obs-[0-9a-f]{8} \S+ overseer statement: user answered "
+    r"q-[a-z0-9][a-z0-9-]{1,62} \(ref: stmt-[0-9a-f]+\)$"
+)
+
 
 @dataclass(frozen=True)
 class _QueuedProposal:
@@ -1102,8 +1114,14 @@ def _reconsider_unresolved(home: Path, record: Record) -> str:
 
 def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]], dict[str, str]]:
     """Every lesson a case's new statement or dependency observation brings
-    back, as a reconsider input. A lesson the overseer holds is not (S-81):
-    its observation stays unconsumed.
+    back, as a reconsider input. An observation counts when its `ref` is one
+    of the case's dependencies, or, for a case that DEFERRED its lessons,
+    when it records the user's answer to a question the overseer asked about
+    the case (S-NEXT-overseer-answers): a deferral waits on that answer, and
+    the answers to earlier questions on cases that decided something else
+    were acted on long ago.
+    A lesson the overseer holds is not (S-81): its observation stays
+    unconsumed.
 
     Gate S1c R2: nor is any other lesson of a case that names a held one.
     An observation is consumed for its whole case, and the decision that
@@ -1137,7 +1155,13 @@ def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]
             match
             for match in _RECONSIDER_OBSERVATION_RE.finditer(observations)
             if match.group(1) not in consumed_observations
-            and match.group(4) in dependencies
+            and (
+                match.group(4) in dependencies
+                or (
+                    row.get("outcome") == "defer"
+                    and _ASK_ANSWER_OBSERVATION_RE.match(match.group(0)) is not None
+                )
+            )
         ]
         if not matches:
             continue

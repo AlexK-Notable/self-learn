@@ -1365,6 +1365,14 @@ fail the stage; apply time handles them by kind, as above. A repair turn
 already spent on a format error is not spent again. A dry run does the
 same, writing only to the cache.
 
+*(Amended S-NEXT-overseer-answers.)* A case whose outcome is `defer` and
+that the overseer asked the user about comes back to the steward when the
+user answers: `overseer respond` observes the cited case with `statement:
+user answered q-<slug> (ref: stmt-...)`, and the steward's reconsider input
+(§3a.8) counts that observation although its `ref` is not among the case's
+dependencies (a statement made afterwards cannot be). Cases that decided
+anything other than `defer` do not come back on an answer.
+
 *(Amended 2026-10-16, S-88.)* A staged `kind: reconsider` case is also
 checked for the predecessor apply time needs, for each lesson it names,
 read as the case will be recorded: its own `supersedes`, else the one the
@@ -1925,6 +1933,12 @@ clause above, worked example):
 ```
 with `um-0012` and `um-0019` marked `LAPSED`,
 `changed_condition: consolidated-into:um-00c4`.
+
+A list field of an entry (`conditions`, `statements`, `basis`) given as one
+string is stored as one item, never as its characters
+*(S-NEXT-overseer-answers; um-cea0's `basis` was written one character per
+item)*. A stored `basis` of two or more one-character items reads back as the
+one string it spells and is rewritten that way by the next write.
 
 `um-<4hex>` ids are stable for the life of the entry; every write that changes
 the claim bumps its `r<n>` (a presentation flipping `provisional` is not a

@@ -1307,7 +1307,14 @@ overseer's own cadence — `status --fast` and `doctor serve` gain
 committed `overseer/open-questions.yaml` machine index (one entry per
 question — its id, kind and affected case ids, plus an ask's text and why;
 no count limit since 2026-09-24), never by parsing the report's
-prose or walking the case store. These are additive JSON fields on an existing read-only surface,
+prose or walking the case store. *(Amended S-NEXT-overseer-answers:
+the count, and `overseer open`, leave out a question the user has answered
+since the index was written -- a statement whose `answers.ref` is its id,
+recorded at or after the index file's last write -- so an answer takes
+effect when `overseer respond` records it, not when the next weekly run
+rewrites the index. A later run that asks the same id again writes a newer
+index, so the question is open again. The statement store is only read;
+the next run still sees the answer.)* These are additive JSON fields on an existing read-only surface,
 not a new command; a `status`/`doctor` run that omits them is not this
 section's fault, but a build that never wires them through is.
 
