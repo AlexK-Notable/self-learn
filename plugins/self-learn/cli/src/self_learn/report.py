@@ -296,13 +296,16 @@ def hand_steps(
         if "Case" in trailers or by in _JOB_ACTORS:
             continue
         text = _clip_one_line(note, _HAND_STEP_NOTE_CHARS) or _NO_NOTE
-        hits = scan.scan(text) or scan.scan(subject)
+        subject_hits = scan.scan(subject)
+        hits = scan.scan(text) or subject_hits
         if hits:
             text = f"(withheld: the secret scan matched {hits[0].rule})"
+        if subject_hits:
             # The whole subject goes, not only its long runs: a short hit
             # (a credential assignment, a 20-character key) would otherwise
             # reach health.yaml and make the run's own secret scan refuse
             # the overseer every week until the commit leaves the window.
+            # A hit in the note alone withholds the note, not the subject.
             subject = "(withheld)"
         steps.append(
             {
