@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 import shutil
 import textwrap
@@ -32,6 +33,7 @@ from typing import Any, cast
 from ruamel.yaml import YAML, YAMLError
 
 from .. import always_loaded, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, skill_writer, statements, user_model, verbs, worker
+from .. import notices as project_notices
 from ..ledger import discover_buckets, resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
@@ -88,6 +90,13 @@ INITIAL_VIEW_KEYS = ("id", "what_i_would_do", "why", "what_evidence_decides_it",
 INITIAL_CONFIDENCE = ("clear", "close-call")
 FINDING_KEYS = ("case", "kind", "text", "ref")
 FINDING_KINDS = ("examined", "dependency-moved")
+#: S-NEXT-cures-d (hand-maintenance cures, lane D): the optional phase B file
+#: of one-line project notices, and the phase B input listing the projects a
+#: notice may name. Neither is in `REQUIRED_OUTPUT_FILES`: a run with no
+#: notices.yaml is complete.
+NOTICES_FILE = "notices.yaml"
+PROJECTS_FILE = "projects.yaml"
+NOTICE_KEYS = ("project", "text", "case")
 QUESTION_KINDS = ("reading", "ask")
 REQUIRED_OUTPUT_FILES = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
 MAINTENANCE_CASE_FIELDS = ("kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision")
@@ -694,6 +703,8 @@ or a wrapped line (a block scalar keeps a line break): every free-text value in
 user-model-delta.yaml (the user model refuses a line break), and every loaded value on a sheet
 line -- trigger, instruction, fact, and a revise line's text for one of those sections (a lesson
 whose loaded text spans lines is refused when it is placed).
+A notice's text in notices.yaml is held to one line as well: write it as a double-quoted string on
+one line, never a block scalar and never wrapped (a notice is printed as one line).
 """
 
 
@@ -723,7 +734,8 @@ def _phase_b_prompt(stage: Path, selected: tuple[str, ...], parked: tuple[str, .
 You may now read the steward rationale and full decided account in full/*.md.
 This folder, {stage}, is your workspace: you can read and write only inside it.
 {_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
-answers.yaml (the user's answers to earlier overseer questions, newest first; it may be empty).
+answers.yaml (the user's answers to earlier overseer questions, newest first; it may be empty);
+projects.yaml lists the projects a notice may name.
 {LESSONS_DIR}/lrn-<id>.md is the current record of every lesson in the ledger: its status, routing,
 history, and loaded text (## Trigger and ## Instruction). Read the record of any lesson you name or
 compare, such as both members of a near-duplicate pair in health.yaml, before you decide on it; a
@@ -811,6 +823,16 @@ ask needs at least one, because the user's answer is recorded against those case
 Order questions most consequential first. An empty list is a good answer when nothing clears
 the bar. A question that breaks these rules is dropped and listed in the report, and the run
 goes on.
+notices.yaml is optional: {{notices: [{{project, text, case?}}]}}. A notice is one line shown at the start of
+a session that works inside one project, and nowhere else, for something about that project's own code or
+setup that the sessions there should see (a defect you found in it; a change an agent left uncommitted in
+it). project is a path listed in projects.yaml; any other path is dropped. text is ONE sentence of at most
+{project_notices.MAX_TEXT} characters in plain words on ONE line (a double-quoted string, never a block scalar),
+written for someone who has not read this report; case is the case it comes from. A notice ends by itself
+after {project_notices.NOTICE_DAYS} days, or sooner when the user marks it done. At most {project_notices.MAX_PER_RUN} a run. The report is where findings go: write a notice only when a
+session in that project would act differently for knowing it, and none when nothing meets that. The same words
+for the same project one week later are the same notice. A project's `showing` list in projects.yaml holds
+the notices still showing there: do not write one of them again, not even reworded.
 user-model-delta.yaml is {{updates: [...]}}. Each update is either
 {{action: add, container, title, because, source: system-reading, ref, held_since?, conditions?, statements?, basis?}}
 or {{action: lapse, id, changed_condition?|contrary?|consolidated_into?}}. Adds are provisional
@@ -1111,6 +1133,18 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
     model_doc = user_model.show(home)
     _write_stage(stage, stage / "user-model.yaml", _yaml_text(model_doc))
     _write_stage(stage, stage / "answers.yaml", _yaml_text({"answers": _question_answers(home)}))
+    # S-NEXT-cures-d: the projects a notice may name (names and real paths only).
+    # Each project also carries `showing`: the overseer notices still up there, so
+    # the model does not write a reworded copy (a new notice, a fresh 14 days).
+    showing = project_notices.showing_by_project(home)
+    project_rows = [
+        {**row, "showing": showing[row["path"]]} if showing.get(row["path"]) else row
+        for row in project_notices.known_projects(home)
+    ]
+    projects_text = _yaml_text({"projects": project_rows})
+    if scan.scan(projects_text):
+        projects_text = "projects: []\n"  # an input file's hit would refuse the run
+    _write_stage(stage, stage / PROJECTS_FILE, projects_text)
     _write_stage(
         stage,
         stage / "health.yaml",
@@ -1607,6 +1641,116 @@ def _validate_findings(
         for case_id in selected if case_id not in examined
     )
     return clean, tuple(case_id for case_id in selected if case_id in examined), dropped
+
+
+def _validate_notices(
+    data: object, known_paths: Iterable[str]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Validate notices.yaml ENTRY BY ENTRY (S-NEXT-cures-d), as findings are:
+    a notice that breaks a rule costs that notice, never the run, and each
+    drop is named in one runner line for "Refused / could not do" -- by its
+    ordinal only, never its text. A file that is not a mapping holding just a
+    notices list drops whole. A project must be one of *known_paths* (real
+    paths the ledger knows, :func:`notices.known_projects`): a model cannot
+    point a notice at a directory the ledger has never heard of. Answers
+    ``(kept, dropped_lines)``; each kept entry is ``{project, text[, case]}``
+    with the project as a real path and the text's whitespace collapsed to
+    single spaces (a wrapped block scalar is one line). At most
+    :data:`notices.MAX_PER_RUN` are kept; the rest are dropped and counted."""
+    if not isinstance(data, dict) or set(data) != {"notices"} or not isinstance(data["notices"], list):
+        return [], ["notices.yaml: dropped — expected only a notices list"]
+    known = {str(path) for path in known_paths}
+    kept: list[dict[str, str]] = []
+    dropped: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for ordinal, entry in enumerate(data["notices"], start=1):
+        label = f"notice {ordinal}"
+        problem: str | None = None
+        project = text = ""
+        if not isinstance(entry, dict) or set(entry) - set(NOTICE_KEYS):
+            problem = "an entry permits project, text, and case only"
+        elif not isinstance(entry.get("project"), str) or not entry["project"].strip():
+            problem = "a notice needs a project path"
+        else:
+            project = os.path.realpath(Path(entry["project"].strip()).expanduser())
+            raw_text = entry.get("text")
+            # A wrapped block scalar holds a line break in the middle of one
+            # sentence: join the lines with single spaces, so a model that
+            # wraps its words still gets its notice (the printed line is one).
+            text = " ".join(raw_text.split()) if isinstance(raw_text, str) else ""
+            if project not in known:
+                problem = "project is not one of the projects in projects.yaml"
+            elif scan.scan(project):
+                # The run record is secret-scanned whole and a hit refuses the
+                # run; a notice's path must never be the thing that does it.
+                problem = "the secret scan matched the project path"
+            elif (reason := project_notices.text_problem(text)) is not None:
+                problem = reason
+            elif entry.get("case") is not None and not (
+                isinstance(entry["case"], str) and _CASE_ID_RE.match(entry["case"])
+            ):
+                problem = "case must be a case-… id"
+            elif (project, text) in seen:
+                problem = "the same notice twice"
+            elif len(kept) >= project_notices.MAX_PER_RUN:
+                problem = f"more than {project_notices.MAX_PER_RUN} notices in one run"
+        if problem is not None:
+            dropped.append(f"{label}: dropped — {problem}")
+            continue
+        seen.add((project, text))
+        row = {"project": project, "text": text}
+        if isinstance(entry, dict) and isinstance(entry.get("case"), str):
+            row["case"] = entry["case"]
+        kept.append(row)
+    return kept, dropped
+
+
+def _read_notices(
+    stage: Path, withheld: dict[str, str], known_paths: Iterable[str]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """The run's project notices from the stage's optional notices.yaml, and
+    the runner lines for what was dropped. Never raises and never costs the
+    run: no file is no notices; a file that does not parse, cannot be read or
+    was withheld by the secret scan drops every notice and says so;
+    :func:`_validate_notices` drops one entry at a time."""
+    path = stage / NOTICES_FILE
+    lines: list[str] = []
+    if NOTICES_FILE in withheld:
+        return [], [
+            f"{NOTICES_FILE}: withheld — the secret scan matched {withheld[NOTICES_FILE]}: "
+            "every notice dropped"
+        ]
+    if not path.is_file():
+        return [], lines
+    try:
+        data: object = _yaml_mapping(path)
+    except OverseerError as exc:
+        return [], [f"{exc}: every notice dropped"]
+    kept, dropped = _validate_notices(data, known_paths)
+    return kept, [*lines, *dropped]
+
+
+def _write_project_notices(home: Path, manifest: dict[str, Any]) -> int:
+    """Put the run record's project notices where a session in each project
+    will see them (:mod:`notices`: the cache, never the ledger). Idempotent:
+    the same words for the same project are the same notice, so a resumed run
+    that writes them again changes nothing, and a notice a person marked done
+    stays done. Never raises. Answers how many rows were offered."""
+    rows = manifest.get("notices")
+    if not isinstance(rows, list):
+        return 0
+    run_id = manifest.get("run_id")
+    offered = 0
+    for row in rows:
+        if not (isinstance(row, dict) and isinstance(row.get("project"), str) and isinstance(row.get("text"), str)):
+            continue
+        offered += 1
+        project_notices.add(
+            home, project=row["project"], text=row["text"],
+            source=project_notices.SOURCE_OVERSEER,
+            run=run_id if isinstance(run_id, str) else None,
+        )
+    return offered
 
 
 def _coverage_text(
@@ -2339,6 +2483,7 @@ def _drop_secret_pairs(
 _WITHHELD_ON_SECRET = {
     "findings.yaml": "findings: []\n",
     "user-model-delta.yaml": "updates: []\n",
+    NOTICES_FILE: "notices: []\n",
     "report.md": "# Overseer report\n" + "".join(
         f"## {name}\n- none\n" for name in _REPORT_SECTIONS
     ),
@@ -3266,6 +3411,7 @@ def _prepare_manifest(
     decisions: dict[str, int] | None = None,
     skill_steps: dict[Path, "skills_mod.SkillStep"] | None = None,
     skills_info: dict[str, Any] | None = None,
+    project_notice_rows: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -3390,6 +3536,10 @@ def _prepare_manifest(
         # stage of a resume has no `health.yaml`. A record made before this
         # field has none and its report is left as the model wrote it.
         "hand_steps": _staged_hand_steps(stage),
+        # S-NEXT-cures-d: the run's validated project notices ({project, text,
+        # case?}), kept in the record so a resumed run writes the same ones.
+        # A record made before this field has none.
+        "notices": [dict(row) for row in (project_notice_rows or [])],
         "findings": findings,
         "case_order": order,
         "cases": recipes,
@@ -4304,6 +4454,9 @@ def _execute_manifest(
         # Carried exactly as the report is: the rebuilt stage gets the
         # run's own journal back, never another run's.
         _write_stage(stage, stage / MODEL_JOURNAL_NAME, carried_journal)
+    # S-NEXT-cures-d: the run's project notices, first thing and idempotent, so
+    # a run that halts or resumes later still leaves them (cache only).
+    _write_project_notices(home, manifest)
     runner_notes = [
         str(line) for line in cast(list[Any], manifest.get("runner_notes") or [])
     ]
@@ -5528,6 +5681,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     f"{withheld['findings.yaml']}: every finding dropped"
                 )
             finding_drops = [*findings_parse, *finding_drops]
+            # S-NEXT-cures-d: the optional notices.yaml. A bad notice costs
+            # that notice; it is said in "Refused / could not do".
+            notice_rows, notice_drops = _read_notices(
+                stage, withheld,
+                {row["path"] for row in project_notices.known_projects(home)},
+            )
+            finding_drops = [*finding_drops, *notice_drops]
             if examined_ids != selected:
                 # Coverage was advanced from phase A's selection before
                 # phase B ran; a selected case with no valid examined
@@ -5885,6 +6045,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 questions=questions, findings=findings, prepared=prepared,
                 model_updates=model_updates,
                 sessions=sessions,
+                project_notice_rows=notice_rows,
                 runner_notes=[
                     *phase_a_drops,
                     *report_notes, *question_drops, *finding_drops, *case_drops,

@@ -32,6 +32,9 @@ EXAMPLE_PARKED_CASE = "case-0000000a"
 EXAMPLE_CASE = "case-0000000b"
 #: E3b: the lessons a merge example folds into EXAMPLE_RECORD's successor.
 EXAMPLE_MERGED = ("lrn-0000000b", "lrn-0000000c")
+#: S-NEXT-cures-d: the project the notices example names. Not a real path; a
+#: test hands the validator a known-projects set that holds it.
+EXAMPLE_PROJECT = "/srv/example-project"
 
 #: SK3 (S-NEXT-skills): the example skill phase B's formats carry, in
 #: ``skill-example/`` (a folder shaped like ``skills/<name>/``), and the
@@ -130,6 +133,7 @@ def closed_sets() -> dict[str, Any]:
     """Every closed set the runner and the case writer enforce, read from
     the modules that enforce them."""
     from .. import batch, cases, user_model, verbs
+    from .. import notices as project_notices
     from . import population, run
 
     overseer_containers = sorted(
@@ -149,6 +153,13 @@ def closed_sets() -> dict[str, Any]:
             "kind": list(run.FINDING_KINDS),
         },
         "questions": {"kind": list(run.QUESTION_KINDS)},
+        # S-NEXT-cures-d: the optional project notices.
+        "notices": {
+            "entry_keys": list(run.NOTICE_KEYS),
+            "max_text_chars": project_notices.MAX_TEXT,
+            "max_per_run": project_notices.MAX_PER_RUN,
+            "ends_after_days": project_notices.NOTICE_DAYS,
+        },
         "case": {
             "kind": sorted(cases.KINDS - {"parked"}),
             "trigger": sorted(cases.TRIGGERS),
@@ -478,9 +489,22 @@ def _rules(phase: str) -> str:
             "hand-steps-this-week row (the runner adds any step you leave out).",
             "",
             "Phase B files: report.md, findings.yaml, questions.yaml,",
-            "user-model-delta.yaml, case-example.yaml + sheet-example.yaml (a",
+            "user-model-delta.yaml, notices.yaml (optional), case-example.yaml +",
+            "sheet-example.yaml (a",
             "successor), case.yaml + sheet.yaml shapes in maintenance-case.yaml and",
             "maintenance-sheet.yaml.",
+            "",
+            "notices.yaml (optional): one-line notices about one project, shown at the",
+            "start of a session that works inside it and nowhere else. Each entry is",
+            "{project, text, case?}: project is a path from projects.yaml (any other is",
+            "dropped; a project's showing list holds the notices still up there: do not",
+            "write one again, even reworded), text one sentence of at most 200",
+            "characters on one line (a double-quoted string, never a block scalar),",
+            "case the case it comes from. A notice ends after 14 days or when the user",
+            "marks it done; the same words for the same project are one notice; at most",
+            "5 a run. Write one only when a session in that project would act",
+            "differently for knowing it.",
+            "See notices.yaml here.",
             "",
             "Moving a lesson that is ALREADY routed to a different destination",
             "(a path-scoped rule, a stronger surface, a hook): a successor with",
@@ -589,6 +613,13 @@ def phase_b_examples() -> dict[str, str]:
         "findings.yaml": _dump({"findings": [{
             "case": EXAMPLE_CASE, "kind": run.FINDING_KINDS[0],
             "text": "The decision follows from its evidence: the record names one repository.",
+        }]}),
+        "notices.yaml": _dump({"notices": [{
+            "project": EXAMPLE_PROJECT, "case": EXAMPLE_CASE,
+            "text": (
+                "Its shutdown watchdog is not wired to the daemon it guards, so a stuck "
+                "shutdown is not caught until the next manual restart."
+            ),
         }]}),
         "questions.yaml": _dump({"questions": [{
             "id": "q-example-question", "kind": "ask", "cases": [EXAMPLE_CASE],

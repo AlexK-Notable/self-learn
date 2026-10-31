@@ -93,6 +93,7 @@ from . import (
     intents,
     ledger_ops,
     model_failures,
+    notices,
     sentinel,
     telemetry,
 )
@@ -4423,7 +4424,10 @@ def _retire_reference_host_phase(
                 warnings.append(f"removed {ref_path} (it held only its header)")
             if tracked:
                 try:
-                    _settle_tracked_removals(tracked, warnings, restore=touched)
+                    _notice_tracked_removals(
+                        home, spec,
+                        _settle_tracked_removals(tracked, warnings, restore=touched),
+                    )
                 except NeedsPerson:
                     step = "check"  # every touched file is back as it was
                     raise
@@ -5158,7 +5162,7 @@ def _settle_tracked_removals(
     warnings: list[str],
     *,
     restore: _TrackedSnapshot | None = None,
-) -> None:
+) -> list[Path]:
     """S-89, after a plain host's removal writes -- the backstop behind
     :func:`_refuse_unsafe_tracked_removal`'s prediction: every tracked file
     in *snapshot* must still exist and hold its old lines with some taken
@@ -5168,7 +5172,8 @@ def _settle_tracked_removals(
     :class:`NeedsPerson` is raised -- a plain host never gains a line in,
     or loses, a tracked file. Each tracked file the write did change is
     named in *warnings*: self-learn never commits in a plain host, so its
-    commit is a person's."""
+    commit is a person's. Answers those changed files, so the caller can
+    leave the person a project notice (:func:`_notice_tracked_removals`)."""
     problems: list[str] = []
     changed: list[Path] = []
     for path, (old, _mode) in snapshot.items():
@@ -5195,6 +5200,18 @@ def _settle_tracked_removals(
             f"{path} is tracked by git: self-learn took its own lines out of it "
             "and left the change uncommitted -- a person commits it"
         )
+    return changed
+
+
+def _notice_tracked_removals(home: Path, spec: TargetSpec, changed: list[Path]) -> None:
+    """S-NEXT-cures-d (M6 part 3): the person S-89 leaves a commit to is told
+    where they will be looking -- one project notice per tracked file the
+    removal left changed, shown at the start of a session inside that host
+    (:mod:`notices`). Cache only: no ledger write, no host write, so it needs
+    no lock of its own and runs inside the host's. Never raises, never refuses
+    the removal it follows."""
+    for path in changed:
+        notices.add_uncommitted(home, project=spec.host_path, file=path)
 
 
 def _refuse_unsafe_plain_paths(
@@ -5502,7 +5519,9 @@ def _host_phase(
                 keep_empty_rules=keep_empty_rules,
             )
             if tracked:
-                _settle_tracked_removals(tracked, warnings)
+                _notice_tracked_removals(
+                    home, spec, _settle_tracked_removals(tracked, warnings)
+                )
             host_sha = None
             if spec.mode == "git" and host_paths:
                 changed = getattr(compile_result, "changed", None)

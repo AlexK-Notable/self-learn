@@ -56,6 +56,7 @@ from . import (
     gitops,
     intents,
     miner,
+    notices,
     premise_sweep,
     provider,
     refread,
@@ -931,6 +932,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", dest="as_json", help="machine-readable rows"
     )
 
+    notice_p = sub.add_parser(
+        "notice",
+        help="project notices (S-NEXT-cures-d): one line about a project, shown at "
+        "session start only in sessions inside that project -- list | done",
+    )
+    notice_sub = notice_p.add_subparsers(dest="notice_command", metavar="<verb>")
+    nlist = notice_sub.add_parser(
+        "list",
+        help="the notices that show now in this directory (live, for a project that "
+        "holds it, condition still true); --all lists every notice on file",
+    )
+    nlist.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_notices",
+        help="every notice on file for this ledger, done and expired ones included",
+    )
+    nlist.add_argument("--json", action="store_true", dest="as_json")
+    ndone = notice_sub.add_parser(
+        "done",
+        help="a notice is dealt with: it stops showing (cache only, writes no ledger)",
+    )
+    ndone.add_argument("notice_id", metavar="ID", help="ntc-xxxxxxxx")
+
     telemetry_p = sub.add_parser(
         "telemetry", help="observation plane (11 §4): note (spool) | flush"
     )
@@ -1595,6 +1620,18 @@ def _cmd_status_fast() -> int:
     data["overseer_last_run"] = overseer_run.last_run_iso_from_cache(
         serve.cache_dir_readonly(home)
     )
+    # S-NEXT-cures-d: project notices -- ABSENT unless this directory is inside
+    # a project a live notice names (absence is the normal case, like
+    # `overseer_open_questions`). `visible` never raises and reads only the
+    # cache; the one git question a `code` notice asks is bounded.
+    shown = notices.visible(home)
+    if shown:
+        data["project_notices"] = [
+            {"id": n.id, "text": n.text, "line": notices.format_line(n)}
+            for n in shown[: notices.MAX_SHOWN]
+        ]
+        if len(shown) > notices.MAX_SHOWN:
+            data["project_notices_more"] = len(shown) - notices.MAX_SHOWN
     # S-62 (§7.2a.7): additive fields only, so the fact survives
     # `2>/dev/null` by the route the hook already reads on stdout —
     # this is what closes the gap the pending hook's own discard used
@@ -2109,6 +2146,48 @@ def _cmd_doctor_miner(home: Path) -> int:
     engine, _source = settings.resolve_setting(home, settings.by_name("miner.engine"))
     for row in mining_waiting.preflight(worker.cache_dir() / "miner", engine=str(engine)):
         print(f"doctor: {row.verdict} {row.name} — {row.detail}")
+    return EXIT_OK
+
+
+def _cmd_notice(args: argparse.Namespace) -> int:
+    """`notice list [--all] [--json]` and `notice done ID` (S-NEXT-cures-d).
+    Both touch only the cache (`<cache>/notices/`): a notice is a hint about
+    one project, never ledger content, so neither verb takes the commit lock
+    or writes the ledger."""
+    if args.notice_command not in ("list", "done"):
+        print("usage: self-learn notice list [--all] [--json] | done ID", file=sys.stderr)
+        return EXIT_USAGE
+    home = resolve_home()
+    if args.notice_command == "done":
+        if not re.fullmatch(r"ntc-[0-9a-f]{8}", args.notice_id):
+            print(
+                f"self-learn notice done: {args.notice_id!r} is not a notice id (ntc-xxxxxxxx)",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+        try:
+            done = notices.mark_done(home, args.notice_id)
+        except OSError as exc:
+            print(f"self-learn notice done: could not write the cache: {exc}", file=sys.stderr)
+            return 1
+        if done is None:
+            print(f"self-learn notice done: no notice {args.notice_id} on file", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"notice {done.id}: done")
+        return EXIT_OK
+    if args.all_notices:
+        rows = notices.all_notices(home)
+    else:
+        rows = notices.visible(home)
+    if args.as_json:
+        print(json.dumps([row.as_dict() for row in rows]))
+        return EXIT_OK
+    if not rows:
+        print("notice list: none" if args.all_notices else "notice list: none for this directory")
+        return EXIT_OK
+    for row in rows:
+        state = "done" if row.done_at else "live"
+        print(f"{row.id} [{state}, {row.source}] {row.project}\n    {row.text}")
     return EXIT_OK
 
 
@@ -4783,6 +4862,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "premises":
         return _cmd_premises(args)
+
+    if args.command == "notice":
+        return _cmd_notice(args)
 
     if args.command == "report":
         return _cmd_report(as_json=args.as_json)
