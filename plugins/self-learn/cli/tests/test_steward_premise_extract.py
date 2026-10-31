@@ -73,6 +73,7 @@ from test_steward_premise_moved import (
     FakeSystemctl,
     _case,
     _iso,
+    _observe,
     _pair,
     _premised,
     _rec,
@@ -544,7 +545,9 @@ def test_a_run_writes_premises_and_a_false_one_comes_back_the_next_night(
     assert len(seen) == 1
 
     # the next night: the contradicting first value makes it a premise-moved input
-    _premised(home, A, _with_baseline(P_ABSENT, BUS, at=_iso(-1.2), decided=p1["decided_at"],
+    _premised(home, A, _with_baseline(P_ABSENT, BUS, at=_iso(-1.5), decided=p1["decided_at"],
                                       state="contradicts-claim"), P_BEHAVIOUR)
+    assert steward._premise_moved_inputs(home) == []  # the sweep has not looked since
+    _observe(home, A, P_ABSENT, BUS, _iso(-0.5))  # the night's sweep: the claim is still false
     (row,) = steward._premise_moved_inputs(home)
     assert row["record"] == A and row["moved"][0]["how"] == "contradicts-claim"
