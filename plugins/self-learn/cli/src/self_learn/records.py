@@ -20,6 +20,10 @@ Mutation rules (02 §2) are enforced in code paths, not by convention:
   ``sightings``, ``scope``/``kind`` (the filing is never frozen),
   ``deferred_until``/``deferred_count``, ``superseded_by`` (corrective
   supersession targets already-routed records by design).
+- ``premises`` (S-NEXT-u1-premises, ``premises.py``) is metadata like
+  ``env``: mutable in every status through :meth:`Record.set_premises`,
+  which validates the whole list; :meth:`Record.validate` checks it on
+  every load and write.
 - ``resolution_note`` is write-ONCE: a second write raises.
 - ``superseded_by`` accepts ``None``, a ``lrn-xxxxxxxx`` id (a **replacement**
   — a rewritten successor record), a ``covered_by:<kind>:<name>`` reference
@@ -43,6 +47,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
 
+from . import premises as _premises
 from .primitives import chrono, fsops, text, yamlio
 
 __all__ = [
@@ -497,6 +502,17 @@ class Record:
         return copy.deepcopy(dict(value)) if value is not None else None
 
     @property
+    def premises(self) -> list[dict] | None:
+        """What the lesson rests on (S-NEXT-u1-premises; ``premises.py``):
+        plain deep copies, so callers cannot poke entries in place.
+        ``None`` when the field is absent; ``[]`` when a decision recorded
+        that the lesson rests on nothing checkable."""
+        value = self._fm.get("premises")
+        if value is None:
+            return None
+        return _premises._plain(value)
+
+    @property
     def follow_up(self) -> dict | None:
         """The OPEN follow-up on the routing block (11 §2.1), if any."""
         routing = self._fm.get("routing")
@@ -780,6 +796,23 @@ class Record:
         _validate_env(value)
         self._fm["env"] = dict(value)
 
+    def set_premises(self, value: list | None) -> None:
+        """Replace the whole ``premises`` list (S-NEXT-u1-premises).
+        Metadata class, like ``env``: allowed in every status, because
+        premises are written and re-baselined after a lesson is placed.
+        ``None`` removes the field; ``[]`` records "nothing checkable".
+        Validated and stored in the field's canonical key order
+        (:func:`premises.normalize_premises`); a malformed list raises
+        :class:`ValidationError` and leaves the record unchanged."""
+        if value is None:
+            self._fm.pop("premises", None)
+            return
+        try:
+            normalized = _premises.normalize_premises(value, record_id=self.id)
+        except _premises.PremiseError as exc:
+            raise ValidationError(f"premises: {exc}") from None
+        self._fm["premises"] = normalized
+
     def set_last_confirmed(self, value) -> None:
         """Written by ``confirm-held`` (11 §2.2): a human observed the rule
         working. Age-since-confirmation is the staleness metric."""
@@ -1026,6 +1059,12 @@ class Record:
         env = fm.get("env")
         if env is not None:
             _validate_env(env)
+        premises = fm.get("premises")
+        if premises is not None:
+            try:
+                _premises.validate_premises(premises, record_id=fm.get("id"))
+            except _premises.PremiseError as exc:
+                raise ValidationError(f"premises: {exc}") from None
         done = fm.get("follow_up_done")
         if done is not None:
             _validate_follow_up(done)

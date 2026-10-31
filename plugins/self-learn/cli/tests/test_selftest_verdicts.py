@@ -110,7 +110,7 @@ def test_healthy_home_exits_0_no_worker_placeholder_row(env, capsys):
     assert "FAIL" not in out
     assert "worker" not in out
     # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
-    assert "10 passed, 0 unmeasured, 0 failed" in out
+    assert "11 passed, 0 unmeasured, 0 failed" in out
 
 
 def test_hosts_yaml_absent_is_unmeasured_not_a_silent_pass(tmp_path, monkeypatch):

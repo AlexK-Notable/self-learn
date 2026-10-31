@@ -192,8 +192,14 @@ REWRITE_NOW_VALUES = frozenset({"loaded", "context", "dropped"})
 #: grounding fields ``replace`` carries over (D-AUTHOR §2.11) and the
 #: lesson's notes (the build plan's amended writing guidance, §1.4: "a note
 #: attached to the lesson").
+#: S-NEXT-u1-premises: ``premises`` joins them -- what a lesson rests on
+#: belongs to the lesson, not to one wording of it, so a rewrite keeps it
+#: (``verbs._compose_replacement`` carries it over).
 REWRITE_FIELDS = frozenset(
-    {"verified_how", "incident_cost", "env", "generality", "evidence", "follow_up", "notes"}
+    {
+        "verified_how", "incident_cost", "env", "generality", "evidence", "follow_up",
+        "notes", "premises",
+    }
 )
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 OBSERVE_KINDS = frozenset(
