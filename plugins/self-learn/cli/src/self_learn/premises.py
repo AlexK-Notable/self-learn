@@ -180,6 +180,9 @@ __all__ = [
     "VERDICT_NO_BASELINE",
     "VERDICT_NO_PROBE",
     "VERDICT_UNAVAILABLE",
+    "CAUSE_MOUNT_ABSENT",
+    "CAUSE_MOUNT_UNKNOWN",
+    "MountTable",
     "blocked_probe_count",
     "check_record",
     "credential_path_problem",
@@ -192,6 +195,7 @@ __all__ = [
     "observation_from_value",
     "observe",
     "plain_value",
+    "read_mount_table",
     "run_probe",
     "unavailable_observation",
     "validate_premises",
@@ -315,6 +319,18 @@ NOT_INSTALLED = "not-installed"
 NOT_FOUND = "not-found"
 MISSING_KEY = "<missing-key>"
 OUT_OF_RANGE = "out-of-range"
+
+#: Why an observation is ``unavailable``, when that is more than "could not
+#: look" (``Observation.cause``; S-NEXT-probes-chain, 02 §3a.10.2 rule 4).
+#: ``mount-absent``: the target lies on a filesystem that is declared (fstab,
+#: a ``.mount`` unit) or removable and is not mounted now -- the probe is
+#: waiting for it, not broken (02 §3a.10.5 (3)). ``mount-unknown``: such a
+#: filesystem covers the target but the mount table could not be read, so
+#: whether it is mounted cannot be told; that one counts as broken like any
+#: other unavailable answer (an unreadable mount table is an instrument
+#: problem, not a disk that is away).
+CAUSE_MOUNT_ABSENT = "mount-absent"
+CAUSE_MOUNT_UNKNOWN = "mount-unknown"
 
 _PREMISE_KEYS = (
     "id", "claim", "probe", "holds_if", "match", "on_change", "source",
@@ -1201,6 +1217,99 @@ def _process_home() -> Path:
 
 
 @dataclass(frozen=True)
+class MountTable:
+    """What the mount table says, for telling a deleted path from one whose
+    filesystem is not there (02 §3a.10.2 rule 4). ``current``: mount point
+    -> filesystem type of the topmost mount there (an ``autofs`` entry with
+    nothing mounted on top is an automount that did not mount).
+    ``declared``: the mount points the system is configured to have
+    (``/etc/fstab``'s second field, and ``Where=`` of the ``.mount`` and
+    ``.automount`` units in ``/etc/systemd/system``). ``readable``: whether
+    ``current`` could be read at all."""
+
+    current: Mapping[str, str]
+    declared: frozenset[str]
+    readable: bool
+
+
+_OCTAL_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
+
+
+def _unescape_mount(text: str) -> str:
+    """``\\040`` and friends, as the kernel and fstab write a space, a tab,
+    a newline or a backslash inside a mount point."""
+    return _OCTAL_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 8)), text)
+
+
+def _mount_point(text: str) -> str | None:
+    point = _unescape_mount(text)
+    if not point.startswith("/"):
+        return None
+    return os.path.normpath(point)
+
+
+def _read_text(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read(4 * 1024 * 1024)
+    except OSError:
+        return None
+
+
+def read_mount_table(
+    mountinfo: str = "/proc/self/mountinfo",
+    fstab: str = "/etc/fstab",
+    units_dir: str = "/etc/systemd/system",
+) -> MountTable:
+    """Read the mount table: three plain file reads, never a command and
+    never a write, so the "never acts on the system" rule holds. Total:
+    an unreadable piece is left empty (``readable`` false for the live
+    table), never an exception."""
+    current: dict[str, str] = {}
+    text = _read_text(mountinfo)
+    readable = text is not None
+    for line in (text or "").splitlines():
+        fields = line.split(" ")
+        try:
+            sep = fields.index("-", 6)
+        except ValueError:
+            continue
+        if len(fields) <= sep + 1:
+            continue
+        point = _mount_point(fields[4])
+        if point is not None:
+            # Later lines are mounted on top of earlier ones at the same point.
+            current[point] = fields[sep + 1]
+    declared: set[str] = set()
+    for line in (_read_text(fstab) or "").splitlines():
+        fields = line.split()
+        if len(fields) < 2 or fields[0].startswith("#"):
+            continue
+        if fields[1] in ("none", "swap") or (len(fields) > 2 and fields[2] == "swap"):
+            continue
+        point = _mount_point(fields[1])
+        if point is not None:
+            declared.add(point)
+    try:
+        units = sorted(
+            p for p in Path(units_dir).iterdir() if p.suffix in (".mount", ".automount")
+        )
+    except OSError:
+        units = []
+    for unit in units:
+        for line in (_read_text(str(unit)) or "").splitlines():
+            key, sep_, value = line.strip().partition("=")
+            if sep_ and key.strip() == "Where":
+                point = _mount_point(value.strip())
+                if point is not None:
+                    declared.add(point)
+    return MountTable(current=current, declared=frozenset(declared), readable=readable)
+
+
+_UNREADABLE_MOUNTS = MountTable(current={}, declared=frozenset(), readable=False)
+
+
+@dataclass(frozen=True)
 class ProbeEnv:
     """Everything a probe reads from outside its own fields.
 
@@ -1210,7 +1319,9 @@ class ProbeEnv:
     probes are unavailable). ``runtime_dir``: ``XDG_RUNTIME_DIR`` for
     ``systemctl --user``. ``timeout``: per-probe bound in seconds, capped
     at :data:`PROBE_TIMEOUT`. ``now``: the clock observations are stamped
-    with."""
+    with. ``mounts``: reads the :class:`MountTable` (tests inject one);
+    it is read at most once per env (:meth:`mount_table`), and the sweep
+    makes one env per sweep."""
 
     home: Path = field(default_factory=_process_home)
     path_env: str = field(default_factory=_process_path)
@@ -1219,6 +1330,19 @@ class ProbeEnv:
     runtime_dir: str | None = field(default_factory=lambda: os.environ.get("XDG_RUNTIME_DIR"))
     timeout: float = PROBE_TIMEOUT
     now: Callable[[], str] = chrono.now_iso
+    mounts: Callable[[], MountTable] = read_mount_table
+    _mount_cache: list = field(default_factory=list, init=False, repr=False, compare=False)
+
+    def mount_table(self) -> MountTable:
+        """The mount table, read on first use and kept for this env's life.
+        A reader that raises reads as an unreadable table."""
+        if not self._mount_cache:
+            try:
+                table = self.mounts()
+            except Exception:  # noqa: BLE001 -- an injected reader must not take a probe down
+                table = _UNREADABLE_MOUNTS
+            self._mount_cache.append(table if isinstance(table, MountTable) else _UNREADABLE_MOUNTS)
+        return self._mount_cache[0]
 
     def bounded_timeout(self) -> float:
         try:
@@ -1475,6 +1599,8 @@ def _canonical(value: Any) -> str:
 @dataclass(frozen=True)
 class _Unavailable:
     reason: str
+    cause: str = ""
+    mount: str = ""
 
 
 def _home_problem(path: str, env: ProbeEnv) -> _Unavailable | None:
@@ -1490,6 +1616,69 @@ def _resolved_problem(real: str, *, reads_content: bool) -> _Unavailable | None:
     problem = credential_path_problem(real, reads_content=reads_content)
     if problem is not None:
         return _Unavailable(f"the path resolves to a refused location: {problem}")
+    return None
+
+
+def _covers(point: str, target: str) -> bool:
+    """Is *point* a component-wise prefix of *target* (``/mnt/x`` covers
+    ``/mnt/x/a`` and ``/mnt/x``, never ``/mnt/xy``)?"""
+    return target == point or target.startswith(point.rstrip("/") + "/")
+
+
+def _removable_root(target: str) -> str | None:
+    """The removable-media mount root *target* lies under, if any:
+    ``/run/media/<user>/<label>`` (udisks) or ``/media/<label>``."""
+    parts = PurePosixPath(target).parts
+    if len(parts) >= 5 and parts[1:3] == ("run", "media"):
+        return str(PurePosixPath(*parts[:5]))
+    if len(parts) >= 3 and parts[1] == "media":
+        return str(PurePosixPath(*parts[:3]))
+    return None
+
+
+def _absent_mount(target: str, env: ProbeEnv) -> _Unavailable | None:
+    """``unavailable`` (cause ``mount-absent``) when *target* lies on a
+    filesystem that ought to be there and is not mounted now, else
+    ``None`` (02 §3a.10.2 rule 4). Called only once the target was found
+    not to exist, so a real deletion is never hidden: with its filesystem
+    mounted, a gone path keeps its own answer.
+
+    The filesystem is the longest mount point covering *target* that is
+    declared (fstab, a ``.mount``/``.automount`` unit) or a removable-media
+    root. It is absent when the live table does not list it, or lists only
+    an ``autofs`` trap there (an automount that did not mount). When the
+    live table cannot be read, a covering declared mount makes the answer
+    ``unavailable`` too (cause ``mount-unknown``): whether it is mounted
+    cannot be told. ``/`` never counts: the root filesystem is mounted
+    while this process runs."""
+    if not target.startswith("/"):
+        return None
+    norm = os.path.normpath(target)
+    table = env.mount_table()
+    candidates = {point for point in table.declared if point != "/" and _covers(point, norm)}
+    removable = _removable_root(norm)
+    if removable is not None:
+        candidates.add(removable)
+    if not candidates:
+        return None
+    point = max(candidates, key=len)
+    if not table.readable:
+        return _Unavailable(
+            f"cannot tell whether the filesystem at {point} is mounted "
+            "(the mount table could not be read)",
+            cause=CAUSE_MOUNT_UNKNOWN, mount=point,
+        )
+    fstype = table.current.get(point)
+    if fstype is None:
+        return _Unavailable(
+            f"the filesystem mounted at {point} is not mounted",
+            cause=CAUSE_MOUNT_ABSENT, mount=point,
+        )
+    if fstype == "autofs":
+        return _Unavailable(
+            f"the filesystem mounted at {point} is not mounted (its automount did not mount it)",
+            cause=CAUSE_MOUNT_ABSENT, mount=point,
+        )
     return None
 
 
@@ -1517,7 +1706,8 @@ def _read_file(path: str, env: ProbeEnv) -> bytes | _Unavailable:
     try:
         fd = os.open(real, flags)
     except (FileNotFoundError, NotADirectoryError):
-        return _Unavailable("the file does not exist")
+        absent = _absent_mount(real, env)
+        return absent if absent is not None else _Unavailable("the file does not exist")
     except OSError as exc:
         return _Unavailable(f"cannot open the file ({type(exc).__name__})")
     try:
@@ -1585,7 +1775,10 @@ def _probe_path(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     try:
         st = os.lstat(target)
     except (FileNotFoundError, NotADirectoryError):
-        return MISSING
+        # A gone path is the value `missing` only while its filesystem is
+        # mounted: an absent disk must not read as a deletion.
+        absent = _absent_mount(target, env)
+        return absent if absent is not None else MISSING
     except OSError as exc:
         return _Unavailable(f"cannot stat the path ({type(exc).__name__})")
     if stat.S_ISLNK(st.st_mode):
@@ -1709,8 +1902,21 @@ def _probe_package(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
 
 
 def _probe_which(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
-    found = shutil.which(str(probe["name"]), path=env.path_env)
-    return found if found else NOT_FOUND
+    name = str(probe["name"])
+    found = shutil.which(name, path=env.path_env)
+    if found:
+        return found
+    # `not-found` is a value only when every PATH directory could be looked
+    # in: one on a filesystem that is not mounted may hold the program.
+    for entry in env.path_env.split(os.pathsep):
+        absent = _absent_mount(entry, env) if entry.startswith("/") else None
+        if absent is not None:
+            return _Unavailable(
+                f"{name} is not on the PATH, and the PATH directory {entry} cannot be "
+                f"looked in: {absent.reason}",
+                cause=absent.cause, mount=absent.mount,
+            )
+    return NOT_FOUND
 
 
 def _git_step(argv: list[str], env: ProbeEnv, deadline: float) -> CommandResult | _Unavailable:
@@ -1741,7 +1947,8 @@ def _probe_git_file(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     if problem is not None:
         return _Unavailable(f"the repository resolves to a refused location: {problem}")
     if not os.path.isdir(real_repo):
-        return _Unavailable("the repository path is not a directory")
+        absent = _absent_mount(real_repo, env) if not os.path.lexists(real_repo) else None
+        return absent if absent is not None else _Unavailable("the repository path is not a directory")
     resolved = _git_step(_git_resolve_argv(real_repo, str(probe["path"])), env, deadline)
     if isinstance(resolved, _Unavailable):
         return resolved
@@ -1935,7 +2142,9 @@ class Observation:
     :data:`OBS_UNAVAILABLE`; ``claim`` is the premise's ``holds_if``
     judged against the value (:data:`CLAIM_UNJUDGED` with no
     ``holds_if``, or when unavailable); ``reason`` says why a probe was
-    unavailable."""
+    unavailable. ``cause`` names a kind of unavailability the readers treat
+    apart (:data:`CAUSE_MOUNT_ABSENT`, :data:`CAUSE_MOUNT_UNKNOWN`; ``""``
+    otherwise) and ``mount`` the mount point it is about."""
 
     state: str
     value_sha: str | None
@@ -1943,6 +2152,8 @@ class Observation:
     claim: str
     reason: str
     observed_at: str
+    cause: str = ""
+    mount: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -1952,14 +2163,19 @@ class Observation:
             "claim": self.claim,
             "reason": self.reason,
             "observed_at": self.observed_at,
+            "cause": self.cause,
+            "mount": self.mount,
         }
 
 
-def unavailable_observation(reason: str, *, observed_at: str | None = None) -> Observation:
+def unavailable_observation(
+    reason: str, *, observed_at: str | None = None, cause: str = "", mount: str = ""
+) -> Observation:
     """An observation that could not be made (U8's ``unmeasurable`` too)."""
     return Observation(
         state=OBS_UNAVAILABLE, value_sha=None, shown="", claim=CLAIM_UNJUDGED,
         reason=reason or "unavailable", observed_at=observed_at or chrono.now_iso(),
+        cause=cause, mount=mount,
     )
 
 
@@ -2020,7 +2236,7 @@ def run_probe(probe: Mapping, env: ProbeEnv, *, premise: Mapping | None = None) 
     except Exception as exc:  # noqa: BLE001 -- a probe never takes a sweep down
         return unavailable_observation(f"probe failed ({type(exc).__name__})", observed_at=at)
     if isinstance(raw, _Unavailable):
-        return unavailable_observation(raw.reason, observed_at=at)
+        return unavailable_observation(raw.reason, observed_at=at, cause=raw.cause, mount=raw.mount)
     return observation_from_value(raw, premise=premise, observed_at=at)
 
 

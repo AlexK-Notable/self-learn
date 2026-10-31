@@ -92,6 +92,7 @@ from .records import Record, RecordError
 
 __all__ = [
     "BROKEN_PROBE_SWEEPS",
+    "MOUNT_WAIT_DAYS",
     "CheckRow",
     "DoctorRow",
     "HISTORY_KEEP",
@@ -100,6 +101,7 @@ __all__ = [
     "STABLE_SWEEPS",
     "SWEEP_INTERVAL_SECS",
     "SweepResult",
+    "broken_tail",
     "check",
     "confirmed_intact_values",
     "confirmed_moves",
@@ -117,6 +119,7 @@ __all__ = [
     "routed_lessons",
     "run",
     "state_path",
+    "waiting_for_mount",
 ]
 
 # ------------------------------------------------------------- vocabulary
@@ -135,6 +138,13 @@ STABLE_SWEEPS = 2
 #: is "broken" in doctor and selftest. Equal to :data:`HISTORY_KEEP`: the
 #: history cannot show a longer run.
 BROKEN_PROBE_SWEEPS = 3
+#: S-NEXT-probes-chain (02 §3a.10.5 (3)): a written probe `unavailable`
+#: only because its filesystem is not mounted (cause `mount-absent`) is
+#: waiting, not broken, for this many days from the first sweep that found
+#: the mount absent. After that it counts as broken again: a disk removed
+#: for good whose fstab line was kept has become a question about the
+#: lesson, not about the probe.
+MOUNT_WAIT_DAYS = 30
 
 CACHE_SUBDIR = "premises"
 OBSERVATIONS_FILENAME = "observations.jsonl"
@@ -365,6 +375,13 @@ def _row(
         "claim": obs.claim,
         "reason": obs.reason,
         "observed_at": obs.observed_at,
+        # S-NEXT-probes-chain: why it was unavailable, when that matters to
+        # the broken-probe count (`mount-absent` is waiting, not broken), the
+        # mount point it names, and since when that mount has been absent
+        # (set by `run` from the previous row, so it outlives the history).
+        "cause": obs.cause,
+        "mount": obs.mount,
+        "absent_since": None,
         "failing": failing,
         "detail": detail,
         "group": group,
@@ -379,7 +396,70 @@ def _obs(row: Mapping) -> premises.Observation:
         claim=str(row.get("claim") or premises.CLAIM_UNJUDGED),
         reason=str(row.get("reason") or ""),
         observed_at=str(row.get("observed_at") or row.get("sweep")),
+        cause=str(row.get("cause") or ""),
+        mount=str(row.get("mount") or ""),
     )
+
+
+def _absent_since(prev: Mapping | None, row: Mapping) -> str:
+    """When the mount *row* finds absent was first found absent: carried
+    from the previous row of the same premise while that row was absent on
+    the same mount under the same question, else this row's own time."""
+    if (
+        prev is not None
+        and prev.get("cause") == premises.CAUSE_MOUNT_ABSENT
+        and prev.get("mount") == row.get("mount")
+        and prev.get("psha") == row.get("psha")
+    ):
+        carried = prev.get("absent_since") or prev.get("observed_at") or prev.get("sweep")
+        if isinstance(carried, str) and carried:
+            return carried
+    return str(row.get("observed_at") or row.get("sweep"))
+
+
+def _waiting(row: Mapping, ref_epoch: float | None) -> bool:
+    """Is *row* a `mount-absent` row still inside :data:`MOUNT_WAIT_DAYS`,
+    judged at *ref_epoch* (the newest row's time)? An age that cannot be
+    told is not waiting: it counts, so it is never hidden for good."""
+    if row.get("cause") != premises.CAUSE_MOUNT_ABSENT:
+        return False
+    since = _epoch(row.get("absent_since") or row.get("observed_at") or row.get("sweep"))
+    if since is None or ref_epoch is None:
+        return False
+    return ref_epoch - since < MOUNT_WAIT_DAYS * 86400
+
+
+def _question_tail(premise: Mapping, rows: Iterable[Mapping]) -> list[dict]:
+    sig = _premise_sig(premise)
+    return [dict(r) for r in rows if r.get("psha") == sig][-BROKEN_PROBE_SWEEPS:]
+
+
+def broken_tail(premise: Mapping, rows: Iterable[Mapping]) -> list[dict] | None:
+    """THE broken-probe test (02 §3a.10.5 (3)), shared by ``doctor``, the
+    steward's briefs (``steward_inputs.broken_probes``) and the overseer's
+    facts: the last :data:`BROKEN_PROBE_SWEEPS` rows of *premise* under
+    its current question, when every one of them is `unavailable` and none
+    is merely waiting for a filesystem (a `mount-absent` row younger than
+    :data:`MOUNT_WAIT_DAYS`, measured to the newest row); else ``None``."""
+    tail = _question_tail(premise, rows)
+    if len(tail) < BROKEN_PROBE_SWEEPS:
+        return None
+    ref = _epoch(tail[-1].get("observed_at") or tail[-1].get("sweep"))
+    if all(r.get("state") == premises.OBS_UNAVAILABLE and not _waiting(r, ref) for r in tail):
+        return tail
+    return None
+
+
+def waiting_for_mount(premise: Mapping, rows: Iterable[Mapping]) -> dict | None:
+    """The newest row of *premise* under its current question when it is a
+    `mount-absent` row still waiting (see :func:`broken_tail`), else
+    ``None``: what doctor's `waiting-for-filesystem` row counts."""
+    tail = _question_tail(premise, rows)
+    if not tail:
+        return None
+    last = tail[-1]
+    ref = _epoch(last.get("observed_at") or last.get("sweep"))
+    return last if _waiting(last, ref) else None
 
 
 def _failed_probe_rows(record: Record, sweep: str, why: str) -> list[dict]:
@@ -1150,7 +1230,10 @@ def run(
     }
     for row in rows:
         key = (str(row["record"]), str(row["premise"]))
-        fresh[key] = [*fresh.get(key, []), row][-HISTORY_KEEP:]
+        prior = fresh.get(key, [])
+        if row.get("cause") == premises.CAUSE_MOUNT_ABSENT:
+            row["absent_since"] = _absent_since(prior[-1] if prior else None, row)
+        fresh[key] = [*prior, row][-HISTORY_KEEP:]
     _store_history(cache_dir, fresh)
 
     result.moved = len(confirmed_moves(home, cache_dir, placed=placed, history=fresh))
@@ -1378,21 +1461,33 @@ def doctor_rows(
     rows: list[DoctorRow] = []
 
     broken: list[str] = []
+    waiting: dict[str, list[str]] = {}
     for _bucket, record in placed:
         for pid, premise in _premise_by_id(record).items():
             if premise.get("probe") is None:
                 continue
-            tail = [r for r in history.get((record.id, pid), []) if r.get("psha") == _premise_sig(premise)]
-            tail = tail[-BROKEN_PROBE_SWEEPS:]
-            if len(tail) == BROKEN_PROBE_SWEEPS and all(
-                r.get("state") == premises.OBS_UNAVAILABLE for r in tail
-            ):
+            prior = history.get((record.id, pid), [])
+            tail = broken_tail(premise, prior)
+            if tail is not None:
                 broken.append(f"{record.id}/{pid} ({_clip(str(tail[-1].get('reason') or ''), 60)})")
+                continue
+            held = waiting_for_mount(premise, prior)
+            if held is not None:
+                since = str(held.get("absent_since") or held.get("observed_at") or "")
+                waiting.setdefault(str(held.get("mount") or "?"), []).append(since)
     if broken:
         rows.append(
             DoctorRow("WARN", "broken-probes",
                       f"{len(broken)} probe(s) unavailable on {BROKEN_PROBE_SWEEPS} sweeps in a row: "
                       + "; ".join(broken))
+        )
+    for mount in sorted(waiting):
+        sinces = sorted(s for s in waiting[mount] if s)
+        first = sinces[0] if sinces else "an unknown time"
+        rows.append(
+            DoctorRow("INFO", "waiting-for-filesystem",
+                      f"{mount} not mounted ({len(waiting[mount])} probe(s), since {first}); "
+                      f"they count as broken after {MOUNT_WAIT_DAYS} days")
         )
 
     failing: list[str] = []
