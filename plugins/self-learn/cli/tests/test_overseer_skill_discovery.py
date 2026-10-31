@@ -664,6 +664,23 @@ def test_a_bad_disposition_is_dropped_and_its_candidate_named_missing(tmp_path, 
     assert discovery.read_dispositions(path, candidates=[GOOD], proposals=[]).valid  # control
 
 
+def test_an_optional_key_written_as_null_reads_as_absent(tmp_path):
+    """Integration 2026-10-31 (sk4 gate MINOR): `skill: null` on a decline is
+    JSON-safe; refusing it dropped the entry, left the candidate with no
+    disposition and put the drafts-only trial off a week. A build still needs
+    its skill, so a null there is refused."""
+    path = tmp_path / discovery.DISPOSITIONS_FILE
+    _dump(path, {"dispositions": [
+        {"source": "candidate", "id": GOOD, "disposition": "decline", "because": "x",
+         "skill": None, "would_change_it": None},
+    ]})
+    assert discovery.read_dispositions(path, candidates=[GOOD], proposals=[]).valid
+    _dump(path, {"dispositions": [
+        {"source": "candidate", "id": GOOD, "disposition": "build", "because": "x", "skill": None},
+    ]})
+    assert not discovery.read_dispositions(path, candidates=[GOOD], proposals=[]).valid  # control
+
+
 def test_an_absent_dispositions_file_with_nothing_owed_says_nothing_but_is_not_valid(tmp_path):
     checked = discovery.read_dispositions(tmp_path / "absent.yaml", candidates=[], proposals=[])
     assert not checked.valid and checked.notes == ()

@@ -934,8 +934,11 @@ def _disposition_problem(
     # Fix round 1: every field is copied into the run record whole, so an
     # optional one that is present must be text too; a YAML date there
     # (`would_change_it: 2026-11-07`) would otherwise reach json.dumps.
+    # Integration 2026-10-31 (sk4 gate MINOR): an optional key written as
+    # null (`skill: null` on a decline) is JSON-safe and reads as absent;
+    # refusing it dropped the entry and put the drafts-only trial off a week.
     for key in ("skill", "would_change_it"):
-        if key in entry and not _text_ok(entry[key]):
+        if entry.get(key) is not None and not _text_ok(entry[key]):
             return f"{key} must be non-empty text"
     return None
 
