@@ -20,7 +20,10 @@ What is pinned here:
     (the newest open `reject` case is a person's, or there is no open reject
     case, as after a hand reject; a case of another outcome says nothing), in
     the run and in the preview, and stays allowed for a person and for a lesson the
-    steward or the overseer rejected.
+    steward or the overseer rejected. The case behind a rejection is read through
+    an overseer's reconsider case that superseded it (the S-76 [reopen, route]
+    correction of a steward's reject still applies), and a case opened before
+    the lesson's latest displaced rejection is not behind the current one.
 (3) Crash recovery (`overseer.run._record_at_commit`) finds a lesson in a
     project or the user bucket, not only a skill bucket.
 (4) The overseer's reconsider case stamps a `reconsidered` history entry on
@@ -49,6 +52,7 @@ from self_learn.records import Record
 from test_replace import (
     OLD_INSTRUCTION, OLD_TRIGGER, Env, _head, _place, _rec, _seed, _sheet, _subjects,
 )
+from support import git
 from test_steward import _dump_yaml
 from test_steward_refusals import _case
 
@@ -495,6 +499,105 @@ def test_a_persons_reject_case_is_not_displaced_by_a_later_case_of_another_outco
     why = verbs.person_reject_case(env.home, A)
 
     assert "which a person recorded" in why, why
+
+
+def test_the_overseers_reconsider_of_a_stewards_reject_can_reopen_it(env):
+    """S-76, the way the overseer corrects a steward's wrong reject: a
+    `kind: reconsider` case (outcome `route`) supersedes the steward's reject
+    case, and its sheet is [reopen, route]. The reconsider case is recorded
+    BEFORE the sheet applies, so at the reopen the steward's case is already
+    superseded and no open case has outcome `reject`. The fix-round-1 reading
+    (open reject cases only) called that a hand reject and refused the reopen
+    as `needs-person`, finally; the preview, taken first, agreed with the run
+    only because the case did not exist yet. The reading now follows the
+    supersede chain through a reconsider case."""
+    _rejected(env, A)
+    prior = _record_case(env, "steward-reject", [A], "reject", actor="steward")
+    assert verbs.person_reject_case(env.home, A) == ""  # control: the steward's case is read
+    stage = env.tmp / "overseer-reconsider.yaml"
+    data = _case([A], "route", "route")
+    data.update(kind="reconsider", trigger="reconsider", supersedes=prior)
+    _dump_yaml(stage, data)
+    successor = cases.record(env.home, stage, actor="overseer")
+    # Positive control: the steward's case is superseded and no open case rejects.
+    rows = {r["case"]: r for r in cases.list_cases(env.home, record_id=A)}
+    assert rows[prior]["superseded_by"] == successor and rows[successor]["outcome"] == "route"
+    assert verbs.person_reject_case(env.home, A) == ""
+    items = [_reopen(A), {"id": A, "verb": "route", "dest": "skill-md"}]
+
+    shown = _preview(env, items[:1], name="reconsider-preview")
+    got = batch.run(
+        env.home, _sheet(env.tmp, items, case=successor, name="reconsider-run"),
+        no_push=True, actor="overseer",
+    )
+
+    assert [(i.state, i.kind) for i in shown.items] == [("would-apply", None)], shown.items
+    assert [(i.state, i.rc) for i in got.items] == [("applied", 0), ("applied", 0)], got.items
+    assert _rec(env.home, A).status == "routed"
+
+
+def test_the_overseers_reconsider_of_a_persons_reject_still_cannot_reopen_it(env):
+    """The chain is followed to the case behind the rejection and its actor
+    decides: a reconsider that supersedes a PERSON's reject case does not
+    hand the lesson to the overseer."""
+    _rejected(env, A)
+    prior = _record_case(env, "person-reject", [A], "reject", actor="human")
+    stage = env.tmp / "overseer-reconsider.yaml"
+    data = _case([A], "route", "route")
+    data.update(kind="reconsider", trigger="reconsider", supersedes=prior)
+    _dump_yaml(stage, data)
+    successor = cases.record(env.home, stage, actor="overseer")
+
+    got = batch.run(
+        env.home, _sheet(env.tmp, [_reopen(A)], case=successor, name="reconsider-run"),
+        no_push=True, actor="overseer",
+    )
+
+    (item,) = got.items
+    assert (item.state, item.kind) == ("refused", "needs-person"), item
+    assert prior in (item.detail or ""), item.detail
+    assert _rec(env.home, A).status == "rejected"
+
+
+def test_an_agents_old_reject_case_does_not_cover_a_later_hand_reject(env):
+    """The steward rejected the lesson, it was reopened, and a person then
+    rejected it by hand (no case). The steward's case is still open and still
+    has outcome `reject`, but the reopen displaced the rejection it covered
+    (a `resolution` history entry with status `rejected`), so the case is not
+    behind the current one and the overseer may not reopen it. Without the
+    displacement filter this reopen applies."""
+    _rejected(env, A)
+    _record_case(env, "steward-reject", [A], "reject", actor="steward")
+    assert verbs.person_reject_case(env.home, A) == ""  # control: it covers the first reject
+    verbs.reopen(env.home, A, no_push=True)
+    verbs.reject(env.home, A, no_push=True)  # a person's hand reject, no case
+    assert any(
+        e.get("event") == "resolution" and e.get("status") == "rejected"
+        for e in _rec(env.home, A).history
+    )  # control: the displacement the filter reads is there
+
+    (got,) = _run(env, [_reopen(A)]).items
+    (shown,) = _preview(env, [_reopen(A)], name="hand-reject-preview").items
+
+    assert (got.state, got.kind) == ("refused", "needs-person"), got
+    assert "rejected by hand" in (got.detail or ""), got.detail
+    assert (shown.state, shown.kind) == ("would-refuse", "needs-person"), shown
+    assert _rec(env.home, A).status == "rejected"
+
+
+def test_a_line_cannot_sign_an_overseers_restatement_as_a_person(env):
+    """`by: human` on an overseer's restate line is the line's own text: the
+    note on the new lesson (which the steward's brief reads for the
+    `[restated by the overseer]` line) and the trailer name the runner's
+    actor. Without the change the note reads `human`."""
+    _rejected(env, A)
+
+    (item,) = _run(env, [_line(A, by="human")]).items
+
+    assert (item.state, item.rc) == ("applied", 0), item
+    (note,) = _rec(env.home, _made(item)).notes
+    assert note["by"] == "overseer", note
+    assert "By: human" not in git(env.home, "log", "-1", "--format=%B").stdout
 
 
 # ================================ (3) crash recovery finds every scope's lessons

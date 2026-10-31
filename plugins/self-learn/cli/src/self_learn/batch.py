@@ -1442,7 +1442,7 @@ def _dispatch_restate(
         trigger=f.get("trigger"), instruction=f.get("instruction"),
         fact=f.get("fact"), context=f.get("context"),
         type=f.get("type"), kind=f.get("kind"), to=f.get("to"), note=f.get("note"),
-        by=(f.get("by") or (actor if actor != "human" else None)),
+        by=(actor if actor != "human" else f.get("by")),
         no_push=True, execution=execution, actor=actor,
     )
     return ItemResult(

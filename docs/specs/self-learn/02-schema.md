@@ -432,12 +432,19 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 - **`reopen` and a person's rejection** *(S-NEXT-cures-f, C4)*: the overseer may not `reopen` a `rejected` lesson a
   person rejected, in the run or in the preview: `NeedsPerson` (kind `needs-person`), naming the case and saying to
   write the corrected lesson with `restate` or to ask the user a question that names the reject. "A person rejected
-  it" is read from the case ledger (`verbs.person_reject_case`), because a record does not store who rejected it. Only
-  an open (not superseded) case whose outcome is `reject` and that names the lesson speaks for its rejection; a case of
-  any other outcome that names it (the overseer's `no-action` case beside a `restate`, a steward `defer`) says nothing
-  about who rejected it. The newest such reject case decides: one a person recorded makes it a person's rejection, one
-  only the steward or the overseer recorded does not (a tie in time goes to the person). With no open reject case at
-  all (a hand reject, which writes no case) it counts as a person's. A lesson an agent rejected stays the overseer's to
+  it" is read from the case ledger (`verbs.person_reject_case`), because a record does not store who rejected it. A case
+  speaks for the lesson's CURRENT rejection when it names the lesson, its outcome is `reject`, and (a) it is open, or
+  every case after it in its supersede chain is a `reconsider` case whose own outcome is not `reject` (the S-76
+  correction: the overseer's reconsider case supersedes the steward's reject case and is recorded before its
+  `[reopen, route]` sheet applies, so at the reopen no open case rejects; the chain is followed to the steward's case),
+  and (b) it was opened after the lesson's latest displaced rejection (a `reopen`, or a reconsider-widened
+  `defer`/`retire`/`replaced`, writes a `resolution` history entry with status `rejected` and its time; a case opened at
+  or before that time belongs to the rejection that entry displaced, so an agent's reject, a reopen and then a person's
+  hand reject leaves the agent's old case out). A case of any other outcome that names the lesson (the overseer's
+  `no-action` case beside a `restate`, a steward `defer`) says nothing about who rejected it. Of the cases left the
+  newest decides: one a person recorded makes it a person's rejection, one only the steward or the overseer recorded
+  does not (a tie in time goes to the person, and so does a case in the same second as the displacement). With none
+  left (a hand reject, which writes no case) it counts as a person's. A lesson an agent rejected stays the overseer's to
   reopen or reconsider as before (S-76). Keyed on the runner's actor, never the line's `by:`; a person's sheet and
   `self-learn reopen` are unchanged; the steward is not listed (its inputs never include a rejected lesson).
 - **`evidence` is append-only** — it may *gain* entries (cluster merges add

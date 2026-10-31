@@ -7951,7 +7951,10 @@ def _preflight_restate(
     _scan_or_refuse([anchor_path], None)
     anchor = read_record_or_refuse(anchor_path)
     key = _restate_key(new_type, kind, sections, to)
-    note_by = by or (actor if actor != "human" else "human")
+    # An agent's note names the agent: the runner's actor, never the line's own
+    # `by:` (the steward's brief and the By: trailer read it; a line cannot
+    # sign a restatement as a person's). A person's own sheet may name `by`.
+    note_by = actor if actor != "human" else (by or "human")
     if anchor.note_has_key(key):
         return _RestatePlan(record_id, key, None, None, True, note_by)
     if anchor.status in RESOLVABLE_STATUSES:
@@ -9222,39 +9225,93 @@ _REOPEN_ADMITTED_STATUSES = REOPEN_ADMITTED_STATUSES
 REOPEN_PERSON_REJECT_REFUSED_ACTORS = frozenset({"overseer"})
 
 
-def person_reject_case(home: Path, record_id: str) -> str:
+def person_reject_case(
+    home: Path, record_id: str, *, history: Iterable[dict] | None = None
+) -> str:
     """Why a rejected lesson counts as a person's decision, in words, or the
     empty string when the steward or the overseer decided it.
 
     The ledger does not store who rejected a lesson, so this reads the cases.
-    Only an open (not superseded) case whose OUTCOME is `reject` and that names
-    the lesson speaks for its rejection: any other case that merely names it (a
-    `no-action` case the overseer writes beside a `restate`, a `defer`, a
-    `parked` case) says nothing about who rejected it. Of those reject cases the
-    newest decides: one a person recorded is the person's decision; one the
-    steward or the overseer recorded is the agent's. With no open reject case
-    at all (a hand reject through the CLI, which writes no case) the ledger
-    cannot show that an agent decided it, so it is the person's. A tie in time
-    between a person's reject case and an agent's goes to the person. A lesson
-    an agent rejected is the overseer's to reconsider (S-76); only a person's
-    is protected here."""
+    A case speaks for the lesson's CURRENT rejection when all of these hold:
+
+    * its OUTCOME is `reject` and it names the lesson (any other case that
+      merely names it, such as a `no-action` case the overseer writes beside a
+      `restate`, a `defer` or a `parked` case, says nothing about who rejected
+      it);
+    * it is open, or every case after it in its supersede chain is a
+      `reconsider` case whose own outcome is not `reject`. That is the S-76
+      way the overseer corrects a steward's wrong reject: its reconsider case
+      supersedes the steward's reject case and its sheet is [reopen, route].
+      The reconsider case is recorded before the sheet applies, so at the
+      moment of the reopen the steward's case is already superseded but the
+      lesson is still the one that case rejected. A chain that runs through
+      any other case (or through a reconsider whose outcome is another
+      reject) is not followed: that case is no longer behind the rejection;
+    * it was opened AFTER the lesson's latest displaced rejection. A `reopen`
+      (or a reconsider-widened `defer`/`retire`/`replaced`) displaces the
+      rejection into `history` as a `resolution` entry whose status is
+      `rejected`, with the time it happened; a reject case opened at or before
+      that time belongs to the rejection that entry displaced, not to a later
+      one. (So an agent's reject, a reopen, then a person's hand reject leaves
+      the agent's old case out, and the hand reject stands as a person's.)
+      *history* is the lesson's own, read from the record when not passed.
+
+    Of the cases left the newest decides: one a person recorded is the
+    person's decision; one the steward or the overseer recorded is the
+    agent's. With none left (a hand reject through the CLI, which writes no
+    case) the ledger cannot show that an agent decided it, so it is the
+    person's. A tie in time between a person's reject case and an agent's goes
+    to the person; so does a case opened in the same second as the latest
+    displacement (times have second precision). A lesson an agent rejected is
+    the overseer's to reconsider (S-76); only a person's is protected here."""
+    hand = "no case an agent recorded covers it, so it was rejected by hand"
     try:
-        rows = [
-            row for row in cases.list_cases(home, record_id=record_id)
-            if not row.get("superseded_by") and row.get("outcome") == "reject"
-        ]
-    except (cases.CaseError, OSError, ValueError):
-        rows = []
-    if not rows:
-        return "no case an agent recorded covers it, so it was rejected by hand"
-    newest = max(str(row.get("opened_at") or "") for row in rows)
-    latest = [row for row in rows if str(row.get("opened_at") or "") == newest]
+        if history is None:
+            history = Record.from_path(find_record_path(home, record_id)).history
+        rows = cases.list_cases(home, record_id=record_id)
+    except (cases.CaseError, LedgerOpsError, RecordError, OSError, ValueError):
+        return hand
+    by_id = {str(row.get("case")): row for row in rows}
+    displaced = max(
+        (
+            str(entry.get("at") or "")
+            for entry in history
+            if entry.get("event") == "resolution" and entry.get("status") == "rejected"
+        ),
+        default="",
+    )
+
+    def behind_the_rejection(row: dict) -> bool:
+        if row.get("outcome") != "reject":
+            return False
+        if displaced and str(row.get("opened_at") or "") <= displaced:
+            return False
+        seen = {str(row.get("case"))}
+        current = row
+        while current.get("superseded_by"):
+            successor = by_id.get(str(current["superseded_by"]))
+            if (
+                successor is None
+                or str(successor.get("case")) in seen
+                or successor.get("kind") != "reconsider"
+                or successor.get("outcome") == "reject"
+            ):
+                return False
+            seen.add(str(successor.get("case")))
+            current = successor
+        return True
+
+    standing = [row for row in rows if behind_the_rejection(row)]
+    if not standing:
+        return hand
+    newest = max(str(row.get("opened_at") or "") for row in standing)
+    latest = [row for row in standing if str(row.get("opened_at") or "") == newest]
     for row in latest:
         if row.get("actor") == "human":
             return f"case {row.get('case')}, which a person recorded"
     if any(row.get("actor") in ("steward", "overseer") for row in latest):
         return ""
-    return "no case an agent recorded covers it, so it was rejected by hand"
+    return hand
 
 
 def _preflight_reopen(
@@ -9295,7 +9352,7 @@ def _preflight_reopen(
             f"exists, use reconsider instead of reopen"
         )
     if record.status == "rejected" and actor in REOPEN_PERSON_REJECT_REFUSED_ACTORS:
-        why = person_reject_case(home, record_id)
+        why = person_reject_case(home, record_id, history=record.history)
         if why:
             raise NeedsPerson(
                 f"record {record_id} is 'rejected' by a person ({why}); the {actor} "
