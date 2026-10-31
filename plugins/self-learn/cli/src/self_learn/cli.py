@@ -2983,7 +2983,9 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
                 "file — every write lands uncommitted; committing and "
                 "publishing it is entirely yours to do, or not"
             )
-            if gitops.work_tree_of(Path(args.path)) is None:
+            if gitops.work_tree_of(
+                Path(args.path).expanduser().resolve() / hosts_mod.MARKER_FILENAME
+            ) is None:
                 print(
                     "  note: a claude-md:local file written here is NOT "
                     "gitignore-protected (nothing is tracked) — if you later "

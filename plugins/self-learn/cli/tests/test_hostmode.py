@@ -352,7 +352,7 @@ class TestMode8SkillsRootShapeValidation:
 
 
 class TestHostListModeColumn:
-    def test_mode_shown_only_for_non_git(self, tmp_path, capsys, monkeypatch):
+    def test_mode_shown_for_every_host(self, tmp_path, capsys, monkeypatch):
         """MODE11: `self-learn host list` renders each host's mode; every host line, git included, states its mode (S-NEXT-hosts)."""
         from self_learn import cli
 
@@ -5014,6 +5014,15 @@ class TestChez6CensusZeroRetiredModuleLiterals:
 # ----------------------------------------------- S-NEXT-hosts: marker excluded
 
 
+@pytest.fixture
+def _no_global_git_excludes(monkeypatch, tmp_path_factory):
+    # S-NEXT-hosts: keep the developer's global ignore file out of these tests.
+    empty = tmp_path_factory.mktemp("gitcfg") / "gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
 def _git_init(path: Path) -> None:
     subprocess.run(["git", "init", "-q", str(path)], check=True)
 
@@ -5025,7 +5034,7 @@ def _status(path: Path) -> str:
     ).stdout
 
 
-def test_plain_add_in_git_repo_excludes_marker_locally(tmp_path):
+def test_plain_add_in_git_repo_excludes_marker_locally(tmp_path, _no_global_git_excludes):
     env = make_env(tmp_path)
     repo = tmp_path / "plain-repo"
     repo.mkdir()
@@ -5038,7 +5047,7 @@ def test_plain_add_in_git_repo_excludes_marker_locally(tmp_path):
     assert not (repo / ".gitignore").exists()  # never the tracked ignore file
 
 
-def test_plain_add_does_not_duplicate_when_gitignore_covers_marker(tmp_path):
+def test_plain_add_does_not_duplicate_when_gitignore_covers_marker(tmp_path, _no_global_git_excludes):
     env = make_env(tmp_path)
     repo = tmp_path / "covered-repo"
     repo.mkdir()
@@ -5050,16 +5059,24 @@ def test_plain_add_does_not_duplicate_when_gitignore_covers_marker(tmp_path):
     assert "/.self-learn-host" not in text
 
 
-def test_plain_add_marker_repair_is_idempotent(tmp_path):
+def test_plain_add_marker_repair_is_idempotent(tmp_path, _no_global_git_excludes):
     env = make_env(tmp_path)
     repo = tmp_path / "repair-repo"
     repo.mkdir()
     _git_init(repo)
     host_add(env.ledger, repo, "project", mode="plain")
+    info = repo / ".git" / "info" / "exclude"
+    info.write_text("", encoding="utf-8")  # as if registered before this change
+    assert ".self-learn-host" in _status(repo)  # positive: shows again
     (repo / ".self-learn-host").unlink()
     host_add(env.ledger, repo, "project", mode="plain")  # repairs the marker
-    exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    exclude = info.read_text(encoding="utf-8")
     assert exclude.count("/.self-learn-host") == 1
+    assert ".self-learn-host" not in _status(repo)
+    # re-add with the marker present also restores a missing exclude line
+    info.write_text("", encoding="utf-8")
+    host_add(env.ledger, repo, "project", mode="plain")
+    assert info.read_text(encoding="utf-8").count("/.self-learn-host") == 1
 
 
 def test_host_add_note_depends_on_whether_path_is_a_repo(tmp_path, monkeypatch, capsys):

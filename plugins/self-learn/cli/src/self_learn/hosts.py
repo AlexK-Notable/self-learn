@@ -801,6 +801,10 @@ def host_add(
         if mode == "plain" and not (target / MARKER_FILENAME).is_file():
             _write_host_marker(home, target)
             marker_restored = True
+        elif mode == "plain":
+            # S-NEXT-hosts: a plain host registered before the exclude
+            # line existed gets it on re-registration (idempotent).
+            _exclude_host_marker(target / MARKER_FILENAME)
         # already registered, same mode — nothing else to do
         return HostAddResult(hosts=hosts, marker_restored=marker_restored)
 
