@@ -164,6 +164,9 @@ decided with a `kind: resolution` case too (its `reject`, `defer` or `route`
 line takes a deferred lesson); its card says so. The runner refuses a
 reconsider case that names a pending lesson, or whose `supersedes` names no
 case that covers the lesson, and the repair turn tells you so.
+A placed lesson that comes to you because a premise moved, or for its
+premises to be written, and that no case covers, is also decided with a
+`kind: resolution` case (§17).
 
 ## 7. Refine wording at adjudication
 
@@ -346,7 +349,8 @@ excerpt. Decide each event, one sheet item per event, in a case whose
   shortening a placed lesson the fire does not show to be wrong, or
   merging it with another placed lesson, is the overseer's. When no case
   covers the lesson, or the change you would make is one of those, park
-  the case (`authority-unclear`) with your tentative answer.
+  the case (`authority-unclear`) with your tentative answer. (A lesson
+  that comes to you because a premise moved is different: §17.)
 
 `cannot-tell` is an answer too: when neither the excerpt nor the
 transcript shows whether the rule was loaded and applied, write a
@@ -545,3 +549,93 @@ it off too; either way its entry leaves the shelf file in the same motion.
 Never retire a lesson as covered by a shelf (`covered_by: reference:<file>`):
 the runner refuses that line from you as well, since a shelf nothing reads
 covers nothing.
+
+## 17. A premise that moved
+
+A placed lesson rests on facts about the machine: a unit is or is not bound
+to another, a file holds a line, a package is at a version. When those facts
+change, the lesson can become false while it stays loaded in every session.
+Each placed lesson therefore records its **premises**: up to four one-line
+claims, up to three of them with a **probe**, a read-only check from a closed
+catalog (`path`, `file-match`, `json-key`, `yaml-key`, `toml-key`,
+`systemd-show`, `package`, `which`, `git-file`, `ledger`) that code runs every
+day. You can run one yourself with the `premise_probe` tool, which answers
+with the value the code would see; you still have no shell. The output
+contract shows every field.
+
+**Writing premises.** With every `route`, add a `premises` line with
+`action: set` to the same sheet: the claims the lesson depends on, and a probe
+where the catalog can check one. Keep a probe narrow (the one line of a file
+that matters, not the whole file's hash). Choose `holds_if` to say what the
+claim means (`absent`: holds while the match is not in the value; `present`,
+`equals`, `version`; `changed`, the default: holds while the value is what it
+was). Use `on_change: refresh` only where any change is uninteresting (a
+version pin, a file hash); code then re-records it without asking you. A
+claim about behaviour ("the daemon does not reconnect after a bus restart")
+gets `probe: null`: write it down, never invent a probe for it. A "What would
+change this decision" line whose condition a probe can check should name the
+premise. A lesson that rests on no fact about the machine (a general
+practice) gets `premises: []`. Never write a probe that reads a credential
+file; the runner refuses it.
+
+**A `premise-extract` input** is a lesson placed before premises existed. Its
+only job is the `premises set` line (or `[]`), in a `kind: resolution` case
+with `outcome: no-action` that supersedes nothing: the placement decision
+stands, and this case only records what the lesson rests on. If, while
+writing them, you find the lesson already false, decide it instead as a
+moved premise, below.
+
+**A `premise-moved` input** is a placed lesson where something it rests on
+changed. Its brief says what: a premise with its recorded value, today's
+value and when each was seen; a follow-up that was closed, with its note;
+a ledger entry it rests on that changed; or one of three placement checks
+(below). The brief also shows the "What would change this decision" lines
+of the cases that cover the lesson, which often predicted exactly this.
+Decide it in a `kind: reconsider` case superseding the newest case that
+covers the lesson, or, when no case covers it, a `kind: resolution` case:
+
+- **It still holds** (the change does not touch what the lesson says):
+  `outcome: no-action`, with a `premises` line `action: rebaseline` naming
+  every moved premise the lesson keeps. The runner refuses a `no-action` case
+  that leaves a moved premise un-rebaselined, because the same change would
+  come back every night.
+- **Part of it is now false**: a `replace` line that narrows or corrects the
+  words, with every idea of the old text accounted for in the decision's
+  `rewrite`, and a `premises set` line for the new lesson when its premises
+  change.
+- **All of it is now false, or something else now covers it**: `retire`.
+- **The premise's probe is wrong**, not the lesson: fix or drop the probe
+  with `premises set`, and decide the lesson on what you find.
+- **You cannot tell**: park it.
+
+Here, unlike §10, narrowing, rewriting, moving and retiring a placed lesson
+are yours without the overseer: the evidence is an observed fact about the
+machine, not a judgement about wording (the user accepted this on
+2026-10-30). Merging placed lessons stays the overseer's. The overseer
+reviews every such case afterwards.
+
+**The three placement checks.** Code also checks where every placed lesson
+sits:
+
+- **`@reach`: it no longer loads** (its file is off every loaded path, its
+  globs match nothing, its skill is switched off, its hook is unregistered).
+  Move it to a destination that loads (`route`; §15 and §16 apply), or retire
+  it if what it was for is gone.
+- **`@writable`: it sits in a file self-learn may not write** (a file git
+  tracks in a host registered as `plain`). Move it, usually to
+  `claude-md:local`; its old lines leave the tracked file as a change a
+  person commits.
+- **`@intact`: a person edited the managed block by hand.** The brief shows
+  the block as it is on disk, the block the ledger would write, and the
+  difference. A hand edit is usually a correction. When the edit is
+  consistent with the lesson, fold it in: a `replace` line with
+  `adopt_region: true` whose new text says what the edit says; the runner
+  takes the edited block as its starting point and compiles the new lesson
+  over it. When the edit contradicts the lesson, or is not a change to any
+  lesson, restore the ledger's text with a `premises` line `action:
+  restore-region`, and quote the edited block in your evidence, so the
+  person's words are kept in the case. `adopt_region` and `restore-region`
+  are refused on any other input.
+
+A placement check needs no rebaseline: the same failure is not offered
+again once a case decided it.
