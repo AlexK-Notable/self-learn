@@ -64,11 +64,12 @@ from self_learn import (
     serve,
     steward,
     steward_inputs,
+    telemetry,
     verbs,
 )
 from self_learn.invocation.contract import Outcome
 from self_learn.records import Record
-from support import commit_all, git, make_behavior, make_env, proposal_dict
+from support import commit_all, git, last_verb_sha, make_behavior, make_env, proposal_dict
 from test_steward import _configure_steward, _dump_yaml, _stage_dir
 
 A = "lrn-f6a00001"
@@ -121,6 +122,9 @@ def _routed(env, rid: str, **route_kwargs) -> str:
     ledger_ops.write_proposal(ledger, rid, proposal_dict(scope="skill:s"))
     commit_all(ledger, f"seed {rid}")
     verbs.route(ledger, rid, dest="skill-md", no_push=True, **route_kwargs)
+    # `route` spools two telemetry events; the first batch would flush them in
+    # a commit of their own and move HEAD under a test that compares it
+    telemetry.flush(ledger, push=False)
     return rid
 
 
@@ -241,11 +245,13 @@ def _apply(home: Path, tmp_path: Path, items: list[dict]) -> batch.ItemResult:
 
 
 def _subject(home: Path) -> str:
-    return git(home, "log", "-1", "--format=%s").stdout.strip()
+    """The newest verb commit's subject: the telemetry flush a batch ends with
+    rides on top of it (`support.last_verb_sha`)."""
+    return git(home, "log", "-1", "--format=%s", last_verb_sha(home)).stdout.strip()
 
 
 def _body(home: Path) -> str:
-    return git(home, "log", "-1", "--format=%B").stdout
+    return git(home, "log", "-1", "--format=%B", last_verb_sha(home)).stdout
 
 
 # ================================================ 1. the `premises` verb

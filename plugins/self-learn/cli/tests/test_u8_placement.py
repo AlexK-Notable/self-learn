@@ -57,6 +57,7 @@ from ruamel.yaml import YAML
 
 from self_learn import (
     batch,
+    compilers,
     gitops,
     premise_sweep,
     premises,
@@ -82,6 +83,9 @@ from test_steward_premise_moved import (
     _subject,
 )
 
+#: the compiler lowercases a lesson's leading letter when the second is lowercase
+#: (`compilers._lower_first`), so the compiled line reads "stop when ..."
+_COMPILED_INSTRUCTION = compilers._lower_first(NEW_INSTRUCTION)
 A = "lrn-a8000001"
 B = "lrn-a8000002"
 C = "lrn-a8000003"
@@ -557,7 +561,7 @@ def test_a_fold_replaces_the_lesson_over_exactly_the_confirmed_edit(tmp_path, mo
     old = _rec(home, A)
     assert old.status == "superseded" and old.superseded_by
     text = env.skill_md.read_text(encoding="utf-8")
-    assert f"({old.superseded_by})" in text and NEW_INSTRUCTION in text
+    assert f"({old.superseded_by})" in text and _COMPILED_INSTRUCTION in text
     assert EDIT not in text and f"({A})" not in text
     region = verbs.lesson_region(home, old.superseded_by)
     assert region.verdict == "clean" and region.observed == region.expected
@@ -822,7 +826,7 @@ def test_a_run_decides_a_block_two_cases_placed_in_one_resolution_case(tmp_path,
     old = _rec(home, A)
     assert old.status == "superseded" and old.superseded_by
     text = env.skill_md.read_text(encoding="utf-8")
-    assert NEW_INSTRUCTION in text and f"({B})" in text and f"({A})" not in text
+    assert _COMPILED_INSTRUCTION in text and f"({B})" in text and f"({A})" not in text
     assert EDIT not in text and "(another note)" not in text
     assert verbs.lesson_region(home, B).verdict == "clean"
     (decided,) = [c for c in cases.list_cases(home, record_id=B) if c["case"] != placed_b]

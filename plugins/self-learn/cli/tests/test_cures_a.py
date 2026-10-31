@@ -249,7 +249,7 @@ class TestRerouteAttribution:
             execution=ref,
         )
         body = _body(env2.home, result.commit_sha)
-        assert body.startswith("moved")
+        assert "\nmoved\n" in body  # `%B` carries the subject first
         # on master the body was just the note: no `By:`, `Case:`, `Sheet:`, `Item:`
         assert execution_evidence.parse_trailers(body) == ref.trailer_identity()
         # crash recovery proves a mutation by its trailers AND a subject the
