@@ -461,14 +461,17 @@ def uncommitted_host_removals_row(home: Path | str) -> dict[str, Any]:
     ``code`` notice whose condition git still answers "holds". Asked here, in
     the run, so the overseer's report names it weekly even if no session
     opens in that project. The notice's own words carry the commit command."""
-    items = project_notices.uncommitted_removals(home)
+    found = project_notices.uncommitted_removals(home)
     return {
         "kind": "uncommitted-host-removals",
-        "items": items,
+        **found,
         "caution": (
             "Self-learn never commits in a plain-mode project. The next agent working in the "
-            "project commits the file (the notice shows it the exact git commit line); an empty "
-            "list means nothing is waiting."
+            "project commits the file (the notice shows it the exact git commit line). items "
+            "are removals still uncommitted; unknown are notices git could not answer (say "
+            "so, they may be waiting); state unavailable means the notices could not be "
+            "read, so say that and list nothing. Only state ok with both lists empty means "
+            "nothing is waiting."
         ),
     }
 

@@ -208,6 +208,14 @@ def _tracked_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _remove(home, repo, claude, new, *, now=T0):
+    """What a plain host's removal does: the bytes before are kept, the file is
+    rewritten, then the notice is made from both."""
+    old = claude.read_bytes()
+    claude.write_text(new, encoding="utf-8")
+    return notices.add_uncommitted(home, project=repo, file=claude, before=old, now=now)
+
+
 def test_an_uncommitted_notice_clears_when_the_person_commits_the_file(tmp_path):
     """The condition is git's own word: the notice shows while the file has an
     uncommitted change and stops showing once it is committed -- though it is
@@ -215,10 +223,9 @@ def test_an_uncommitted_notice_clears_when_the_person_commits_the_file(tmp_path)
     home = tmp_path / "ledger"
     repo = _tracked_repo(tmp_path)
     claude = repo / "CLAUDE.md"
-    claude.write_text("one\n", encoding="utf-8")  # a lesson's line taken out
-    note = notices.add_uncommitted(home, project=repo, file=claude, now=T0)
+    note = _remove(home, repo, claude, "one\n", now=T0)  # a lesson's line taken out
     assert note is not None and note.source == notices.SOURCE_CODE
-    assert "CLAUDE.md" in note.text and "git commit" in note.text
+    assert "CLAUDE.md" in note.text and " commit -m " in note.text
     assert [n.id for n in notices.visible(home, repo, now=T0)] == [note.id]  # control
 
     commit_all(repo, "the person commits it")
@@ -233,18 +240,16 @@ def test_two_removals_before_a_commit_are_one_notice_and_a_done_one_is_renewed(t
     home = tmp_path / "ledger"
     repo = _tracked_repo(tmp_path)
     claude = repo / "CLAUDE.md"
-    claude.write_text("one\n", encoding="utf-8")
-    first = notices.add_uncommitted(home, project=repo, file=claude, now=T0)
-    claude.write_text("", encoding="utf-8")  # a second removal, still uncommitted
-    same = notices.add_uncommitted(home, project=repo, file=claude, now=T0 + timedelta(hours=1))
+    first = _remove(home, repo, claude, "one\n", now=T0)
+    same = _remove(home, repo, claude, "", now=T0 + timedelta(hours=1))  # a second removal, still uncommitted
     assert first is not None and same is not None and same.id == first.id
     assert same.created_at == first.created_at  # the live notice was left alone
+    assert same.condition["hash"] != first.condition["hash"]  # ... but follows the file
     assert [n.id for n in notices.visible(home, repo, now=T0)] == [first.id]  # one line, not two
 
     notices.mark_done(home, first.id, now=T0)
     assert notices.visible(home, repo, now=T0) == []  # control: done is done
-    claude.write_text("one\ntwo\nthree\n", encoding="utf-8")  # a later change
-    later = notices.add_uncommitted(home, project=repo, file=claude, now=T0 + timedelta(days=1))
+    later = _remove(home, repo, claude, "one\ntwo\nthree\n", now=T0 + timedelta(days=1))  # a later change
     assert later is not None and later.id == first.id and later.done_at is None
     assert later.created_at != first.created_at  # fresh days
     assert [n.id for n in notices.visible(home, repo, now=T0 + timedelta(days=1))] == [first.id]
@@ -667,7 +672,7 @@ def test_writing_a_run_records_notices_is_idempotent(tmp_path):
     assert overseer_run._write_project_notices(home, {"run_id": "x"}) == 0  # an old record
 
 
-def _notice_run(tmp_path, monkeypatch, entries, *, dry_run=False, before=None):
+def _notice_run(tmp_path, monkeypatch, entries, *, dry_run=False, before=None, setup=None):
     """One overseer run on a sandbox ledger whose fake phase B writes the
     notices.yaml that ``entries(env, parked_case_id)`` answers (*before* runs
     first, with the env)."""
@@ -678,6 +683,8 @@ def _notice_run(tmp_path, monkeypatch, entries, *, dry_run=False, before=None):
     seen: dict[str, str] = {}
     if before is not None:
         before(env)
+    if setup is not None:
+        setup(env, parked_a)  # with the id of the case the run will examine
 
     def invoke(spec):
         stage = spec.cwd
@@ -779,8 +786,7 @@ def _dirty_notice(tmp_path, now=T0):
     home = tmp_path / "ledger"
     repo = _tracked_repo(tmp_path)
     claude = repo / "CLAUDE.md"
-    claude.write_text("one\n", encoding="utf-8")  # a lesson's line taken out
-    note = notices.add_uncommitted(home, project=repo, file=claude, now=now)
+    note = _remove(home, repo, claude, "one\n", now=now)  # a lesson's line taken out
     assert note is not None
     return home, repo, claude, note
 
@@ -811,8 +817,7 @@ def test_prune_keeps_a_dirty_condition_notice_and_deletes_a_done_one(tmp_path):
     assert notices.prune(home, now=day40) == 0 and path.is_file()
     commit_all(repo, "committed")
     assert notices.prune(home, now=day40) == 1 and not path.exists()  # cleared: goes
-    claude.write_text("", encoding="utf-8")
-    again = notices.add_uncommitted(home, project=repo, file=claude, now=T0)
+    again = _remove(home, repo, claude, "", now=T0)
     assert again is not None
     notices.mark_done(home, again.id, now=T0)
     assert notices.prune(home, now=day40) == 1  # done: goes even though the file is dirty
@@ -821,23 +826,25 @@ def test_prune_keeps_a_dirty_condition_notice_and_deletes_a_done_one(tmp_path):
 
 def test_a_second_removal_after_fourteen_days_leaves_the_dirty_notice_as_it_is_and_it_shows(tmp_path):
     home, repo, claude, first = _dirty_notice(tmp_path)
-    same = notices.add_uncommitted(home, project=repo, file=claude, now=LATE)
+    same = notices.add_uncommitted(
+        home, project=repo, file=claude, before=claude.read_bytes(), now=LATE)
     assert same is not None and same.created_at == first.created_at  # dirty: left alone
     assert [n.id for n in notices.visible(home, repo, now=LATE)] == [first.id]
     notices.mark_done(home, first.id, now=LATE)
-    claude.write_text("", encoding="utf-8")
-    fresh = notices.add_uncommitted(home, project=repo, file=claude, now=LATE)  # done: renewed
+    fresh = _remove(home, repo, claude, "", now=LATE)  # done: renewed
     assert fresh is not None and fresh.done_at is None and fresh.created_at != first.created_at
 
 
 def test_a_code_notice_names_the_exact_commit_for_its_one_file(tmp_path):
     home, repo, claude, note = _dirty_notice(tmp_path)
-    assert "git commit" in note.text and "-- :/CLAUDE.md" in note.text
+    assert f"git -C {os.path.realpath(repo)} commit" in note.text and "-- CLAUDE.md" in note.text
+    assert "nothing else changed" in note.text
     assert len(note.text) <= notices.MAX_TEXT and "self-learn" not in note.text
-    words = notices.uncommitted_text("dir with space/a b.md", ":/dir with space/a b.md")
+    words = notices.uncommitted_text("dir with space/a b.md", repo="/r", repo_rel="dir with space/a b.md")
     assert "'" in words and "a b.md'" in words  # quoted for a shell
     deep = "d/" * 60 + "x.md"
-    assert len(notices.uncommitted_text(deep, ":/" + deep)) <= notices.MAX_TEXT
+    assert len(notices.uncommitted_text(deep, repo="/r", repo_rel=deep)) <= notices.MAX_TEXT
+    assert len(notices.uncommitted_text(deep, repo="/r", repo_rel=deep, clean=False)) <= notices.MAX_TEXT
 
 
 def test_the_commit_line_in_the_notice_commits_only_that_file(tmp_path):
@@ -849,9 +856,9 @@ def test_the_commit_line_in_the_notice_commits_only_that_file(tmp_path):
     (repo / "other.md").write_text("x\n", encoding="utf-8")
     git(repo, "add", "other.md")
     (repo / "sub").mkdir()
-    command = note.text.split("Commit it: ", 1)[1]
+    command = note.text[note.text.index("git -C"):]
     argv = shlex.split(command)
-    assert argv[:2] == ["git", "commit"]
+    assert argv[:2] == ["git", "-C"] and argv[3] == "commit"
     subprocess.run(argv, cwd=repo / "sub", check=True, capture_output=True)
     status = subprocess.run(
         ["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True,
@@ -944,15 +951,145 @@ def test_phase_b_is_shown_the_done_notices_of_each_project(tmp_path, monkeypatch
 
 
 def test_a_run_names_a_notice_already_marked_done_in_refused(tmp_path, monkeypatch):
+    """No monkeypatch: a REAL case-keyed notice is marked done for the run's
+    case (other words), and the run's own keying finds it. Control: another
+    case's notice is written."""
+
     def entries(env, parked):
         return [{"project": str(env.host), "text": "Said in new words.", "case": parked}]
 
-    def done(env):
-        pass  # the case id is known only inside the run: mark it done at validation time
+    def done(env, case):
+        note = notices.add(
+            env.ledger, project=env.host, text="The first words.", source=notices.SOURCE_OVERSEER,
+            key=notices.overseer_key("The first words.", case), case=case,
+        )
+        assert note is not None
+        notices.mark_done(env.ledger, note.id)
 
-    monkeypatch.setattr(notices, "is_done_key", lambda *a, **k: True)
-    _env, home, result, _seen = _notice_run(tmp_path, monkeypatch, entries, before=done)
+    _env, home, result, _seen = _notice_run(tmp_path, monkeypatch, entries, setup=done)
     assert result.status == "applied", result
-    assert notices.all_notices(home) == []
+    assert [n.text for n in notices.all_notices(home)] == ["The first words."]  # nothing new
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     assert "notice 1: dropped — already marked done" in report.split("## Refused / could not do", 1)[1]
+
+    other = tmp_path / "other"
+    other.mkdir()
+
+    def done_elsewhere(env, case):
+        note = notices.add(
+            env.ledger, project=env.host, text="Another case.", source=notices.SOURCE_OVERSEER,
+            key=notices.overseer_key("Another case.", "case-00000000"), case="case-00000000",
+        )
+        assert note is not None
+        notices.mark_done(env.ledger, note.id)
+
+    _e, home2, result2, _s = _notice_run(other, monkeypatch, entries, setup=done_elsewhere)
+    assert result2.status == "applied", result2
+    assert "Said in new words." in [n.text for n in notices.all_notices(home2)]  # control
+
+
+# ----------------------------------------- gate r1: the condition is the removal
+
+
+def test_a_file_that_held_edits_before_the_removal_is_not_offered_as_a_whole_file_commit(tmp_path):
+    """MAJOR 1(a): the person had an uncommitted line in CLAUDE.md; the removal
+    must not tell the next agent that nothing else changed and to commit it."""
+    home = tmp_path / "ledger"
+    repo = _tracked_repo(tmp_path)
+    claude = repo / "CLAUDE.md"
+    _clean = _remove(home, repo, claude, "one\n", now=T0)  # control: a clean file gets the commit line
+    assert _clean is not None and "nothing else changed" in _clean.text and "commit -m" in _clean.text
+    notices.mark_done(home, _clean.id, now=T0)
+    commit_all(repo, "seed again")
+    claude.write_text("one\nthe person's own line\n", encoding="utf-8")  # work in progress
+    note = _remove(home, repo, claude, "the person's own line\n", now=T0)
+    assert note is not None and note.condition["clean"] == "0"
+    assert "nothing else changed" not in note.text and "commit -m" not in note.text
+    assert "diff" in note.text and "other" in note.text and len(note.text) <= notices.MAX_TEXT
+
+
+def test_a_removal_committed_and_then_the_file_edited_again_does_not_come_back(tmp_path):
+    """MAJOR 1(b): the notice is about the removal, and the removal is
+    committed; a later edit is not it, on day 20 or in the health row."""
+    from self_learn.overseer import health
+
+    home, repo, claude, note = _dirty_notice(tmp_path)
+    assert [n.id for n in notices.visible(home, repo, now=LATE)] == [note.id]  # control: holds
+    commit_all(repo, "the agent commits it")
+    assert notices.visible(home, repo, now=LATE) == []
+    claude.write_text("one\nand then somebody typed this\n", encoding="utf-8")
+    assert notices.visible(home, repo, now=LATE) == []
+    assert notices.visible(home, repo, now=T0 + timedelta(days=5)) == []  # not even young
+    assert health.uncommitted_host_removals_row(home)["items"] == []
+    assert notices.prune(home, now=T0 + timedelta(days=40)) == 1
+
+
+def test_an_edit_after_the_removal_ends_the_notice_in_the_health_row_too(tmp_path):
+    from self_learn.overseer import health
+
+    home, repo, claude, note = _dirty_notice(tmp_path)
+    assert len(health.uncommitted_host_removals_row(home)["items"]) == 1  # control
+    claude.write_text("one\nanother edit\n", encoding="utf-8")
+    assert health.uncommitted_host_removals_row(home)["items"] == []
+    assert notices.condition_state(note) == "changed"
+
+
+def test_the_commit_line_works_from_a_linked_worktree_of_the_project(tmp_path):
+    """MINOR 2: a session in the project's worktree is shown the line; running
+    it there commits the checkout the removal was made in, not the worktree's
+    own copy of the file."""
+    import shlex
+
+    home, repo, claude, note = _dirty_notice(tmp_path)
+    tree = repo / ".claude" / "worktrees" / "w"
+    git(repo, "worktree", "add", "-q", str(tree), "-b", "w")
+    (shown,) = notices.visible(home, tree, now=T0)  # the worktree session is shown it
+    assert shown.id == note.id
+    argv = shlex.split(note.text[note.text.index("git -C"):])
+    done = subprocess.run(argv, cwd=tree, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain", "--", "CLAUDE.md"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert status.strip() == ""  # the main checkout's file is committed
+    assert notices.visible(home, repo, now=T0) == []
+
+
+def test_a_done_notice_stays_done_for_thirty_days_from_the_day_it_was_marked(tmp_path):
+    """MINOR 3: made on day 0, marked done on day 10: still done on day 35."""
+    home = tmp_path / "ledger"
+    proj = _project(tmp_path)
+    note = _add(home, proj, now=T0)
+    assert note is not None
+    notices.mark_done(home, note.id, now=T0 + timedelta(days=10))
+    key = WORDS
+    assert notices.prune(home, now=T0 + timedelta(days=35)) == 0
+    assert notices.is_done_key(home, proj, key, now=T0 + timedelta(days=35))
+    assert notices.prune(home, now=T0 + timedelta(days=41)) == 1  # control: it does go
+    assert not notices.is_done_key(home, proj, key, now=T0 + timedelta(days=41))
+
+
+def test_the_health_row_says_so_when_git_cannot_answer_or_the_notices_cannot_be_read(
+    tmp_path, monkeypatch
+):
+    """MINOR 4: a question that could not be asked is not 'nothing waiting'."""
+    from self_learn.overseer import health
+
+    home, repo, _claude, note = _dirty_notice(tmp_path)
+    assert health.uncommitted_host_removals_row(home)["state"] == "ok"  # control
+
+    def timed_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(notices.subprocess, "run", timed_out)
+    row = health.uncommitted_host_removals_row(home)
+    assert row["items"] == [] and [u["file"].endswith("CLAUDE.md") for u in row["unknown"]] == [True]
+    assert row["state"] == "ok" and "unknown" in row["caution"]
+
+    def broken(home_):
+        raise RuntimeError("cache unreadable")
+
+    monkeypatch.setattr(notices, "all_notices", broken)
+    row = health.uncommitted_host_removals_row(home)
+    assert row["state"] == "unavailable" and "cache unreadable" in row["reason"]

@@ -946,7 +946,7 @@ not recorded.
 
 *(Added 2026-10-31, S-105.)* **Phase B's premise-check facts and the hand-step
 census.** Phase B's `health.yaml` `catalogue_health` list (`overseer/health.py`
-`gather`) gains two rows, both measured by code from the ledger and its git history,
+`gather`) gains three rows, all measured by code from the ledger and its git history,
 neither calling a model nor writing anything. **`premise-check`** (premise design
 D11, `§3a.10.8`): `placed_lessons` and `without_premises` (a lesson whose `premises`
 field is absent; `[]`, a decision that nothing is checkable, counts as having
@@ -966,7 +966,9 @@ labelled by the row's `caution`: an unreadable target is never reported as zero.
 per not-done `code` notice (S-106, 13 §7.5) whose condition git still answers "holds": a plain-mode project's
 tracked file that a lesson retirement left changed and nobody has committed. Asked in the run, so it does not depend on
 a session opening in that project. The overseer's report names each under Catalogue health; the agent working in
-that project commits the file with the line the notice carries. An empty list means none are waiting.
+that project commits the file with the line the notice carries. `unknown` lists, in the same shape, the
+notices git could not answer (a timeout, an error); `state: unavailable` with a `reason` means the notices could not
+be read. Only both lists empty under `state: ok` means none are waiting; an unreadable target is never reported as zero.
 **`hand-steps-this-week`** (hand-maintenance cures, lane C; design M5.3): every ledger
 commit of the last seven days that no job made. A commit is a job's when its subject
 begins `self-learn: steward manifest|telemetry flush|case |worker |mine |overseer`

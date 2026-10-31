@@ -148,7 +148,7 @@ SOURCE_OVERSEER = "overseer"
 SOURCE_CODE = "code"
 SOURCES = (SOURCE_OVERSEER, SOURCE_CODE)
 
-#: A ``code`` notice's condition: its file still has an uncommitted change.
+#: A ``code`` notice's condition: the removal's bytes are still uncommitted.
 COND_UNCOMMITTED = "uncommitted"
 
 CACHE_SUBDIR = "notices"
@@ -166,7 +166,7 @@ class Notice:
     source: str
     created_at: str
     run: str | None = None
-    #: ``{"kind": "uncommitted", "repo": <path>, "file": <path>}`` or ``None``.
+    #: ``{"kind": "uncommitted", "repo", "file", "hash", "clean"}`` or ``None``.
     condition: dict[str, str] | None = None
     done_at: str | None = None
     #: The case an overseer notice comes from, when it named one.
@@ -335,12 +335,64 @@ def _asks_git(notice: Notice) -> bool:
     )
 
 
+def _git(repo: str, args: list[str], *, timeout: float, data: bytes | None = None) -> tuple[int, str] | None:
+    """One read-only git question: ``(returncode, stdout stripped)``, or
+    ``None`` when git is missing, timed out or could not run."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, *args], input=data, capture_output=True, timeout=timeout,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out: Any = proc.stdout  # bytes; a str only from a test's stand-in
+    text: str = out if isinstance(out, str) else out.decode("utf-8", "replace")
+    return proc.returncode, text.strip()
+
+
+def _rel_to(repo: str, file: str) -> str | None:
+    try:
+        return Path(_real(file)).relative_to(_real(repo)).as_posix()
+    except ValueError:
+        return None
+
+
+def blob_hash(repo: str, file: str, data: bytes, *, timeout: float = GIT_CHECK_TIMEOUT) -> str | None:
+    """The git blob id *data* would have as *file* in *repo* (filters of that
+    path applied, as ``git add`` would). ``None`` when it cannot be had."""
+    rel = _rel_to(repo, file)
+    if rel is None:
+        return None
+    got = _git(repo, ["hash-object", f"--path={rel}", "--stdin"], timeout=timeout, data=data)
+    return got[1] if got is not None and got[0] == 0 and got[1] else None
+
+
+def head_blob(repo: str, file: str, *, timeout: float = GIT_CHECK_TIMEOUT) -> str | None:
+    """The blob id ``HEAD`` holds for *file*: ``""`` when ``HEAD`` has no such
+    file, ``None`` when git could not answer."""
+    rel = _rel_to(repo, file)
+    if rel is None:
+        return None
+    got = _git(repo, ["rev-parse", "--verify", "-q", f"HEAD:{rel}"], timeout=timeout)
+    if got is None:
+        return None
+    if got[0] == 0:
+        return got[1]
+    return "" if got[0] == 1 else None
+
+
 def condition_state(notice: Notice, *, timeout: float = GIT_CHECK_TIMEOUT) -> str:
-    """The notice's condition, asked once: ``"holds"``, ``"clear"`` or
-    ``"unknown"`` (git missing, a timeout, a git error). No condition git can
-    answer: it holds. An ``uncommitted`` condition: its file still shows in
-    ``git status``; a repo that is gone clears it. *timeout* is the most
-    seconds the one git question may take. Reads only: git runs with
+    """The notice's condition, asked once: ``"holds"``, ``"clear"``,
+    ``"changed"`` or ``"unknown"`` (git missing, a timeout, a git error). No
+    condition git can answer: it holds. An ``uncommitted`` condition names the
+    REMOVAL, not the file: the file's bytes as the removal left them (the
+    ``hash`` stored with the notice) are still what the working tree holds and
+    ``HEAD`` does not -- ``"clear"`` once ``HEAD`` holds the file as it is,
+    ``"changed"`` when the working file is neither (someone edited it since;
+    the notice's claim about it no longer stands and it ends). A notice stored
+    without a hash (made before 2026-10-31) is asked the old way: the file
+    shows in ``git status``. A repo that is gone clears it. *timeout* is the
+    most seconds the whole question may take. Reads only: git runs with
     ``GIT_OPTIONAL_LOCKS=0`` so it takes no index lock."""
     if not _asks_git(notice):
         return "holds"
@@ -348,24 +400,35 @@ def condition_state(notice: Notice, *, timeout: float = GIT_CHECK_TIMEOUT) -> st
     repo, file = str(cond["repo"]), str(cond["file"])
     if not Path(repo).is_dir():
         return "clear"
-    try:
-        proc = subprocess.run(
-            ["git", "-C", repo, "status", "--porcelain", "--", file],
-            capture_output=True, text=True, timeout=timeout,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
-        )
-    except (OSError, subprocess.SubprocessError):
+    deadline = time.monotonic() + timeout
+    recorded = cond.get("hash")
+    if not recorded:
+        got = _git(repo, ["status", "--porcelain", "--", file], timeout=timeout)
+        if got is None or got[0] != 0:
+            return "unknown"
+        return "holds" if got[1] else "clear"
+    if not Path(file).is_file():
+        return "changed"
+    rel = _rel_to(repo, file)
+    if rel is None:
         return "unknown"
-    if proc.returncode != 0:
+    work = _git(repo, ["hash-object", f"--path={rel}", "--", file], timeout=max(deadline - time.monotonic(), 0.05))
+    if work is None or work[0] != 0 or not work[1]:
         return "unknown"
-    return "holds" if proc.stdout.strip() else "clear"
+    head = head_blob(repo, file, timeout=max(deadline - time.monotonic(), 0.05))
+    if head is None:
+        return "unknown"
+    if work[1] == head:
+        return "clear"
+    return "holds" if work[1] == recorded else "changed"
 
 
 def condition_holds(notice: Notice, *, timeout: float = GIT_CHECK_TIMEOUT) -> bool:
     """Whether the notice's condition still holds, counting an answer that
-    cannot be had as "holds" (inside its first 14 days that keeps the notice).
-    See :func:`condition_state` for the three-way answer."""
-    return condition_state(notice, timeout=timeout) != "clear"
+    cannot be had as "holds" (inside its first 14 days that keeps the notice),
+    and a file changed since the removal as not holding. See
+    :func:`condition_state` for the answers."""
+    return condition_state(notice, timeout=timeout) not in ("clear", "changed")
 
 
 def is_showing(notice: Notice, now: datetime, *, timeout: float = GIT_CHECK_TIMEOUT) -> bool:
@@ -409,7 +472,7 @@ def visible(
                     condition_state(notice, timeout=min(GIT_CHECK_TIMEOUT, left))
                     if left > 0 else "unknown"
                 )
-                if state == "clear" or (state == "unknown" and not young):
+                if state in ("clear", "changed") or (state == "unknown" and not young):
                     continue
             out.append(notice)
         return out
@@ -467,44 +530,68 @@ def add(
         return None
 
 
-def uncommitted_text(rel: str, commit_path: str | None = None) -> str:
+def uncommitted_text(
+    rel: str, *, repo: str | None = None, repo_rel: str | None = None, clean: bool = True
+) -> str:
     """The words of a ``code`` notice for a tracked file left changed. They
     name the step, so whoever reads the line (usually the agent working in the
-    project) can do it: the exact ``git commit`` for the one file. *rel* is the
-    file's path in the project, *commit_path* the pathspec for the command
-    (default *rel*; the caller passes a repo-root one, ``:/<path>``, so it works
-    from any directory). The command is never clipped: a path too long for the
-    line makes the words fall back to naming the file and saying to commit it."""
+    project) can do it. *rel* is the file's path in the project; *repo* the
+    work tree and *repo_rel* the file's path from its root: the command
+    ``git -C <repo> commit -m ... -- <repo_rel>`` commits that one file from
+    wherever it is run, a linked worktree included (``git -C`` names the
+    checkout the removal was made in). *clean* is whether the file held no
+    other change before the removal; when it did (or that is unknown) the
+    words must not offer the whole-file commit, which would commit the
+    person's work in progress under self-learn's message: they say to review
+    the diff instead. A command too long for the line falls back to naming the
+    file."""
     # No "self-learn" in the words: the printed line already starts with it
     # (:func:`format_line`).
-    spec = shlex.quote(commit_path if commit_path is not None else rel)
-    command = f'git commit -m "remove retired lesson lines" -- {spec}'
-    text = (
-        f"a retired lesson's lines were taken out of {rel}; nothing else changed. "
-        f"Commit it: {command}"
-    )
-    if len(text) > MAX_TEXT and "/" in rel:
-        text = (
-            f"a retired lesson's lines were taken out of {rel.rsplit('/', 1)[1]}; "
-            f"nothing else changed. Commit it: {command}"
-        )
-    if len(text) > MAX_TEXT:
-        text = f"a retired lesson's lines were taken out of {rel}; the change is uncommitted: commit that file."
-    if len(text) > MAX_TEXT:
-        text = text[: MAX_TEXT - 3].rstrip() + "..."
-    return text
+    where = repo_rel if repo_rel is not None else rel
+    if repo is not None:
+        base = f"git -C {shlex.quote(repo)}"
+        spec = shlex.quote(where)
+    else:
+        base = "git"
+        spec = shlex.quote(where)
+    if not clean:
+        review = f"{base} diff -- {spec}"
+        texts = [
+            f"a retired lesson's lines were taken out of {rel}, which held other uncommitted "
+            f"changes too. Review them ({review}) and commit what you mean to.",
+            f"lines were taken out of {rel}, which held other changes too: review {review} first.",
+            f"lines were taken out of {rel}, which held other uncommitted changes: review it first.",
+        ]
+    else:
+        command = f'{base} commit -m "remove retired lesson lines" -- {spec}'
+        texts = [
+            f"a retired lesson's lines were taken out of {rel}; nothing else changed. Commit it: {command}",
+            f"lines of a retired lesson were taken out of {rel}; nothing else changed. Commit: {command}",
+            f"retired lesson's lines out of {rel}; nothing else changed: {command}",
+            f"a retired lesson's lines were taken out of {rel}; the change is uncommitted: commit that file.",
+        ]
+    for text in texts:
+        if len(text) <= MAX_TEXT:
+            return text
+    return texts[-1][: MAX_TEXT - 3].rstrip() + "..."
 
 
 def add_uncommitted(
-    home: Path | str, *, project: Path | str, file: Path | str, now: datetime | None = None
+    home: Path | str, *, project: Path | str, file: Path | str,
+    before: bytes | None = None, now: datetime | None = None,
 ) -> Notice | None:
     """The ``code`` notice for one tracked file of a plain host that a
     removal left changed (S-89). *project* is the host's path; the notice
-    shows in sessions inside it. Its condition is that git still reports the
-    file changed. Its key is the file: while a notice for it is live a further
-    removal leaves it as it is, and one that was marked done or ran out its
-    days is replaced by a fresh one (``renew``). Never raises; ``None`` when
-    nothing could be made."""
+    shows in sessions inside it. *before* is the file's bytes before the
+    removal. Its condition is the removal itself: the hash of the bytes the
+    removal left, kept while ``HEAD`` does not hold them (:func:`condition_state`);
+    ``clean`` records whether the file equalled ``HEAD`` before the removal, so
+    that a file that already held someone's edits is never offered as a
+    whole-file commit. Its key is the file: a further removal that starts from
+    the bytes the live notice recorded moves its hash on and leaves it
+    otherwise as it is; one that starts from anything else, or from a notice
+    that was marked done, is a fresh notice (``renew``). Never raises; ``None``
+    when nothing could be made."""
     try:
         real_file = Path(_real(file))
         real_project = _real(project)
@@ -517,15 +604,40 @@ def add_uncommitted(
         repo = gitops.work_tree_of(real_file)
         if repo is None:
             return None
+        real_repo = _real(repo)
         try:
-            commit_path = ":/" + real_file.relative_to(Path(_real(repo))).as_posix()
+            repo_rel = real_file.relative_to(Path(real_repo)).as_posix()
         except ValueError:
-            commit_path = None
+            repo_rel = None
+        after = blob_hash(real_repo, str(real_file), real_file.read_bytes())
+        before_hash = (
+            blob_hash(real_repo, str(real_file), before) if before is not None else None
+        )
+        head = head_blob(real_repo, str(real_file)) if before_hash is not None else None
+        clean = before_hash is not None and head is not None and before_hash == head
+        nid = notice_id(real_project, SOURCE_CODE, str(real_file))
+        existing = _load(_path_for(home, nid))
+        cond0 = (existing.condition or {}) if existing is not None else {}
+        if (
+            existing is not None and existing.done_at is None and after
+            and before_hash is not None and cond0.get("hash") == before_hash
+        ):
+            # the same removal, going on: move the recorded bytes, keep the rest
+            moved = Notice(
+                id=existing.id, project=existing.project, text=existing.text,
+                source=existing.source, created_at=existing.created_at, run=existing.run,
+                condition={**cond0, "hash": after}, done_at=None, case=existing.case,
+            )
+            _store(_path_for(home, nid), moved, home)
+            return moved
+        condition = {"kind": COND_UNCOMMITTED, "repo": real_repo, "file": str(real_file)}
+        if after:
+            condition["hash"] = after
+            condition["clean"] = "1" if clean else "0"
         return add(
-            home, project=real_project, text=uncommitted_text(rel, commit_path), source=SOURCE_CODE,
-            key=str(real_file), renew=True,
-            condition={"kind": COND_UNCOMMITTED, "repo": str(repo), "file": str(real_file)},
-            now=now,
+            home, project=real_project,
+            text=uncommitted_text(rel, repo=real_repo, repo_rel=repo_rel, clean=clean),
+            source=SOURCE_CODE, key=str(real_file), renew=True, condition=condition, now=now,
         )
     except Exception:  # noqa: BLE001
         return None
@@ -554,13 +666,20 @@ def mark_done(home: Path | str, notice_id_: str, *, now: datetime | None = None)
 def prune(home: Path | str, *, now: datetime | None = None) -> int:
     """Delete notice files made more than :data:`RETAIN_DAYS` ago -- except a
     notice with a condition that is not done, whose repo and file still exist
-    and whose condition git has not answered "clear" (it outlives the age
-    limit, :func:`is_showing`). Answers how many were deleted. Never raises."""
+    and whose condition git has not answered "clear" or "changed" (it outlives
+    the age limit, :func:`is_showing`), and a done notice, kept until its
+    :data:`DONE_DAYS` of "already done" memory (:func:`is_done_key`) have run
+    from the day it was marked, however old it is. Answers how many were
+    deleted. Never raises."""
     try:
         moment = now if now is not None else datetime.now(timezone.utc)
         cutoff = moment - timedelta(days=RETAIN_DAYS)
         removed = 0
         for notice in all_notices(home):
+            if notice.done_at is not None:
+                done = chrono.to_dt(notice.done_at)
+                if done is not None and moment - done < timedelta(days=DONE_DAYS):
+                    continue
             made = chrono.to_dt(notice.created_at)
             if made is None or made >= cutoff:
                 continue
@@ -569,7 +688,7 @@ def prune(home: Path | str, *, now: datetime | None = None) -> int:
                 if (
                     Path(str(cond["repo"])).is_dir()
                     and Path(str(cond["file"])).exists()
-                    and condition_state(notice) != "clear"
+                    and condition_state(notice) not in ("clear", "changed")
                 ):
                     continue
             _discard(_path_for(home, notice.id))
@@ -647,26 +766,34 @@ def done_by_project(
 
 def uncommitted_removals(
     home: Path | str, *, timeout: float = GIT_CHECK_TIMEOUT
-) -> list[dict[str, str]]:
+) -> dict[str, Any]:
     """Every not-done ``code`` notice whose condition git answers "holds":
-    ``{project, file, since}`` -- a plain host's tracked file that a lesson
-    removal left changed and nobody has committed. Asked by the overseer's
-    run (no session-start budget). Oldest first. Never raises."""
+    ``items`` of ``{project, file, since}`` -- a plain host's tracked file that
+    a lesson removal left changed and nobody has committed -- and ``unknown``
+    of the same shape for those git could not answer (a timeout, an error): a
+    question that could not be asked is never read as nothing waiting. A
+    notice whose file was edited since the removal has ended and is in
+    neither. ``state`` is ``ok``, or ``unavailable`` with a ``reason`` when
+    the notices could not be read at all. Asked by the overseer's run (no
+    session-start budget). Oldest first. Never raises."""
+    items: list[dict[str, str]] = []
+    unknown: list[dict[str, str]] = []
     try:
-        found: list[dict[str, str]] = []
         for notice in reversed(all_notices(home)):
-            if notice.source != SOURCE_CODE or notice.done_at is not None:
+            if notice.source != SOURCE_CODE or notice.done_at is not None or not _asks_git(notice):
                 continue
-            if not _asks_git(notice) or condition_state(notice, timeout=timeout) != "holds":
+            state = condition_state(notice, timeout=timeout)
+            if state not in ("holds", "unknown"):
                 continue
-            found.append({
+            (items if state == "holds" else unknown).append({
                 "project": notice.project,
                 "file": str((notice.condition or {}).get("file", "")),
                 "since": notice.created_at,
             })
-        return found
-    except Exception:  # noqa: BLE001
-        return []
+    except Exception as exc:  # noqa: BLE001
+        return {"state": "unavailable", "reason": f"{type(exc).__name__}: {exc}"[:200],
+                "items": [], "unknown": []}
+    return {"state": "ok", "items": items, "unknown": unknown}
 
 
 def known_projects(home: Path | str) -> list[dict[str, str]]:

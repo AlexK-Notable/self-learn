@@ -776,8 +776,8 @@ resolved -- say so and move on rather than treating it as an error.
 A parked case whose parked_reason is ledger-refused means the steward decided the lesson and the
 ledger refused its line for a reason only a person or a different decision can fix; the case
 quotes the ledger's words.
-health.yaml's catalogue_health also holds two rows the runner measured from the ledger and its
-history, and you report on both. premise-check: how many placed lessons record no premises yet,
+health.yaml's catalogue_health also holds three rows the runner measured from the ledger and its
+history, and you report on all three. premise-check: how many placed lessons record no premises yet,
 written probes with no reading on three sweeps in a row, placement premises that are failing, and
 the baselines the premise sweep re-recorded this week by code alone (no model, no decision); say
 under Catalogue health which of these needs a person, and read the week's code-only refreshes as
@@ -792,8 +792,9 @@ user may take (a setting only they set, an answer they typed) is by design: say 
 naming a gap. When the evidence does not show what the gap was, say that.
 uncommitted-host-removals: plain-mode projects where self-learn took a retired lesson's lines out of a
 tracked file and nobody has committed it yet ({{project, file, since}}). Under Catalogue health name each,
-with its file and how long it has waited; the agent working in that project commits it. An empty list
-means none are waiting.
+with its file and how long it has waited; the agent working in that project commits it. Also name
+the unknown list (git could not answer, so they may be waiting). A state of unavailable means the
+notices could not be read: say that. Only both lists empty under state ok means none are waiting.
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
 case you decide. To correct a case that is not parked (for example a decision whose line the

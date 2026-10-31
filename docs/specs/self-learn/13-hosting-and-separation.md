@@ -1872,9 +1872,12 @@ done, or ended (its days are past and git no longer says the file is changed), i
 replaced by a fresh one. The words name the step for whoever reads the line,
 usually the agent working in the project: "a retired lesson's lines were taken out
 of <rel>; nothing else changed. Commit it: `git commit -m "remove retired lesson
-lines" -- ':/<path from the repo root>'`" (a pathspec from the repo root, so it
-works from any directory; the command is never clipped, and a path too long for
-the 200 characters falls back to naming the file). Self-learn itself never commits
+lines" -- <path from the repo root>` run as `git -C <the checkout the removal was
+made in>`, so it commits that checkout's file from any directory, a linked worktree
+included; a path too long for the 200 characters falls back to naming the file). The
+whole-file commit is offered only when the file held no other change before the
+removal; otherwise the words say the file held other uncommitted changes too and to
+review the diff and commit what is meant. Self-learn itself never commits
 in a plain-mode repo; the next agent working there does (decision 7 of the
 2026-10-31b round), and the weekly report lists any left (below).
 
@@ -1890,19 +1893,28 @@ naming `self-learn notice list`. The line's wording lives in
 malformed field prints nothing.
 
 **How a notice ends.** Whichever comes first: (1) `self-learn notice done <id>`
-(a person's or an agent's word; cache only); (2) its condition clears; (3) for a
-notice WITHOUT a condition, 14 days after it was first made. A notice WITH a
-condition has no age limit: it is live while git answers that the condition still
+(a person's or an agent's word; cache only); (2) its condition clears, and a
+cleared condition does not come back; (3) for a notice WITHOUT a condition, 14 days
+after it was first made. The `uncommitted` condition names the removal, not the
+file: the notice stores the hash of the bytes the removal left, and holds only while
+the working file still has that hash and `HEAD` does not. `HEAD` holding the file
+clears it; the working file being something else (edited since, by anyone) ends it
+(`changed`): the notice's claim, "nothing else changed", is no longer true of that
+file. A further removal that starts from the recorded bytes moves the hash on. A
+notice WITH a condition has no age limit: it is live while git answers that the condition still
 holds (an uncommitted removal outlives 14 days, and so must the note about it).
 Past 14 days a condition git cannot answer (missing, a timeout, the session
 budget spent) hides it; inside the 14 days it still keeps the notice. A notice
 file older than 30 days is deleted by the next writer, except a not-done condition
 notice whose repo and file still exist and whose condition git has not answered
-clear. **The overseer sees what is left:** phase B's `health.yaml` carries an
+clear or changed, and a done notice, which is kept until 30 days after it was marked
+done (its "already done" memory, below). **The overseer sees what is left:** phase B's `health.yaml` carries an
 `uncommitted-host-removals` row, `{project, file, since}` for every not-done `code`
 notice whose condition holds (asked in the run, not at session start, so there is
-no 2-second budget), and the weekly report names each under Catalogue health, so
-a removal is not forgotten when no session opens in that project.
+no 2-second budget), `unknown` for those git could not answer, and `state:
+unavailable` with a reason when the notices could not be read; the weekly report
+names each under Catalogue health, so a removal is not forgotten when no session
+opens in that project, and an unanswerable question is never read as nothing waiting.
 
 **Two sources.**
 
