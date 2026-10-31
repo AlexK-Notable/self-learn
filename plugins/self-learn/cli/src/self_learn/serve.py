@@ -803,7 +803,14 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     # U3a: an unhandled suspected rule violation is an input too; like a
     # reconsider input it is due once the cooldown has passed.
     violations = steward._suspected_violation_inputs(home)
-    if not unfinished and not reconsider and not input_paths and not violations:
+    # S-NEXT-u3-followup: a placed lesson whose follow-up closed after it was
+    # last decided is an input too, due like a reconsider input once the
+    # cooldown has passed (the premise-check design, U3).
+    premise_moved = steward._premise_moved_inputs(home)
+    if (
+        not unfinished and not reconsider and not input_paths
+        and not violations and not premise_moved
+    ):
         return False
     attempts = [str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")]
     last_iso = max(attempts) if attempts else steward.last_run_iso(home)
@@ -816,7 +823,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     cooldown = cast(int | float | str, cooldown_value)
     if now - last_epoch < float(cooldown):
         return False
-    if unfinished or reconsider or violations:
+    if unfinished or reconsider or violations or premise_moved:
         return True
     # S-81 (gate S1d R2): an input is new work when no run has SELECTED
     # inputs since its record -- or the overseer's release of it -- was

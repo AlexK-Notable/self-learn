@@ -3139,6 +3139,33 @@ def open_followups(home: Path) -> list[dict]:
     return out
 
 
+def closed_followups(home: Path) -> list[Record]:
+    """Every ROUTED record whose follow-up was closed (``follow_up_done``
+    present), as the parsed records, in bucket and file order (S-NEXT-u3-followup).
+
+    The mirror of :func:`open_followups`: ``resolved/`` only, the same status
+    gate (a superseded or graduated record may still carry the block, but
+    the successor owns what survives). It reads the file text first and
+    parses only a file that names the block, because the steward's due
+    check calls this on every scheduler tick and nearly every routed
+    record has none. An unreadable file is skipped, as there."""
+    out: list[Record] = []
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                if "follow_up_done:" not in path.read_text(encoding="utf-8"):
+                    continue
+                record = Record.from_path(path)
+            except (RecordError, OSError, UnicodeDecodeError):
+                continue
+            if record.status == "routed" and record.follow_up_done is not None:
+                out.append(record)
+    return out
+
+
 def defer_until(record_id: str, until=None, *, now: datetime | None = None) -> str:
     """The date a ``defer`` of *record_id* would write, as ``YYYY-MM-DD`` —
     the default (+:data:`DEFAULT_DEFER_DAYS`) when *until* is ``None`` —

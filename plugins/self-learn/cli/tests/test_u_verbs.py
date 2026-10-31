@@ -247,7 +247,9 @@ class TestPhaseBoundary:
         assert "revise" in batch.PERMITTED_VERBS  # U4: the one deliberate addition
         assert "retire" in batch.PERMITTED_VERBS  # S-67: the other deliberate addition
         assert "replace" in batch.PERMITTED_VERBS  # E1 (2026-10-10): the third
-        assert len(batch.PERMITTED_VERBS) == 17
+        # S-NEXT-u4-steward (2026-10-31): `premises`, the fourth (02 §3a.10.7).
+        assert "premises" in batch.PERMITTED_VERBS
+        assert len(batch.PERMITTED_VERBS) == 18
 
     def test_phase1_touches_no_host(self, tmp_path, monkeypatch):
         """PH2: a fixture with a registered host (env's ``host_a``) runs
