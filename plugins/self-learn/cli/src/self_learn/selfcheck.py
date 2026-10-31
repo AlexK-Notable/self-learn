@@ -1382,6 +1382,28 @@ def _check_invocation(home: Path) -> tuple[Verdict, str]:
     return Verdict.PASS, "run `self-learn doctor invocation` for details"
 
 
+def _check_premises(home: Path) -> tuple[Verdict, str]:
+    """S-NEXT-u2-sweep (02 §3a.10.6): the premise check's health, one row. WARN
+    names each written probe that has been `unavailable` on three sweeps in a
+    row (a broken probe: the steward fixes or drops it); everything else
+    (placement premises failing, how many could not be measured, how many
+    placed lessons record no premises yet, when the sweep last ran) is
+    information in the same line. It never FAILs and is never UNMEASURED: it
+    reads the cache and the ledger and judges nothing the sweep has not. A
+    reader that cannot read is a WARN, so a broken instrument does not pass for
+    a healthy one."""
+    from . import premise_sweep
+
+    try:
+        rows = premise_sweep.doctor_rows(home)
+    except Exception as exc:  # noqa: BLE001 -- a broken row must not end the selftest
+        return Verdict.WARN, f"the premise check could not be read ({type(exc).__name__})"
+    detail = "; ".join(f"{row.name}: {row.detail}" for row in rows)
+    if any(row.verdict == "WARN" for row in rows):
+        return Verdict.WARN, detail
+    return Verdict.PASS, detail
+
+
 def run_selftest(home: Path) -> int:
     """All checks, each loud, tri-state (M-K): PASS, FAIL, or UNMEASURED
     — a check that could not measure anything must never render or exit
@@ -1393,7 +1415,8 @@ def run_selftest(home: Path) -> int:
     time this function actually RUNS, :mod:`cli` has always finished
     loading) on any UNMEASURED with no FAIL; else 0.
 
-    Ten checks since S-82 added ``hosts`` (2026-10-08). There is no
+    Eleven checks since S-NEXT-u2-sweep added ``premises`` (ten since S-82 added
+    ``hosts``, 2026-10-08). There is no
     ``worker`` row (fold r1, 2026-09-04). M-K originally shipped one as an unconditional, COUNTED
     UNMEASURED entry, which made every home — healthy or not — exit 9
     forever, since UNMEASURED means an instrument exists and could not
@@ -1426,6 +1449,7 @@ def run_selftest(home: Path) -> int:
         ("hosts", *_check_hosts(home)),
         ("sentinel", *_check_sentinel()),
         ("invocation", *_check_invocation(home)),
+        ("premises", *_check_premises(home)),
     ]
 
     passed = failed = unmeasured = warned = 0
