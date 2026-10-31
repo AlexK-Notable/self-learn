@@ -596,7 +596,10 @@ def _watch_now() -> "serve._CodeWatch":
     )
 
 
-def test_a_changed_lock_file_syncs_the_venv_before_the_re_exec(tmp_path, monkeypatch):
+@pytest.mark.parametrize("changed", ["uv.lock", "pyproject.toml"])
+def test_a_changed_lock_file_syncs_the_venv_before_the_re_exec(tmp_path, monkeypatch, changed):
+    """Fix r2 (gate NIT 4): either project file alone is a change the venv
+    must follow."""
     project, pkg = _project_tree(tmp_path)
     monkeypatch.setattr(serve, "_code_root", lambda: pkg)
     assert serve._project_root() == project  # control: the layout is found
@@ -608,7 +611,8 @@ def test_a_changed_lock_file_syncs_the_venv_before_the_re_exec(tmp_path, monkeyp
     home, cache = tmp_path / "home", tmp_path / "cache"
     watch = _watch_now()
     code_before = serve.code_fingerprint()
-    (project / "uv.lock").write_text("version = 1\n# a new dependency\n", encoding="utf-8")
+    with (project / changed).open("a", encoding="utf-8") as fh:
+        fh.write("# a new dependency\n")
     assert serve.code_fingerprint() == code_before  # no Python file changed
 
     serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
@@ -748,10 +752,16 @@ def test_a_refused_fingerprint_is_tried_again_after_the_retry_interval(tmp_path,
         serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0,
                                now=t0 + serve.REEXEC_RETRY_SECS + 5)
     assert len(asked) == 2 and len(calls) == 1
-    (after,) = [n for n in notices.all_notices(home) if n.id == held.id]
-    assert after.done_at is not None
     rows = [json.loads(line) for line in (cache / serve.SERVE_JOURNAL_FILENAME).read_text().splitlines()]
     assert [r["status"] for r in rows] == ["reexec-refused", "reexec"]
+    # fix r2 (gate NIT 5): the exec itself does not mark it done ...
+    (pending,) = [n for n in notices.all_notices(home) if n.id == held.id]
+    assert pending.done_at is None
+    # ... the new image does, as it starts
+    monkeypatch.setattr(serve, "_run_tick", lambda *a, **k: [])
+    assert serve.run_forever(home, cache_dir=cache, tick_secs=0.01, max_ticks=1) == 0
+    (after,) = [n for n in notices.all_notices(home) if n.id == held.id]
+    assert after.done_at is not None
 
 
 def test_the_sync_runs_the_uv_that_started_the_process(tmp_path, monkeypatch):
@@ -822,7 +832,7 @@ def test_a_retired_lesson_on_a_registered_host_whose_path_vanished_still_warns(t
     assert [w for w in result.warnings if w.startswith(f"{rid}:") and str(host) in w], result.warnings
 
 
-def _retired_new_skill(tmp_path, rid, name):
+def _retired_new_skill(tmp_path, rid, name, *, retire=True):
     env = make_env(tmp_path)
     marketplace = env.host / ".claude-plugin" / "marketplace.json"
     marketplace.parent.mkdir()
@@ -836,7 +846,8 @@ def _retired_new_skill(tmp_path, rid, name):
     create_record(env.ledger, make_behavior(scope="skill:s", record_id=rid))
     verbs.route(env.ledger, rid, dest=f"new-skill:{name}", no_push=True)
     assert (env.host / "plugins" / name).is_dir()  # control: it was scaffolded
-    verbs.retire(env.ledger, rid, covered_by="skill-md:s", no_push=True)
+    if retire:
+        verbs.retire(env.ledger, rid, covered_by="skill-md:s", no_push=True)
     return env
 
 
@@ -913,3 +924,112 @@ def test_selftest_names_a_failed_maintenance_run(tmp_path):
                                      "refused": {}, "error": "HostsError: boom"})
     _verdict, reason = selfcheck._check_drift(env.ledger)
     assert "its last run failed (HostsError: boom)" in reason
+
+
+# ================================================================ fix round 2
+
+
+def _held(tmp_path, monkeypatch, why="ImportError: cannot import name 'x'"):
+    """A stand-in checkout whose new code is refused: the watch, the home
+    and the cache, with the hold notice live (checked here, so every test
+    below starts from that positive control)."""
+    pkg = _code_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    monkeypatch.setattr(serve, "_new_code_imports", lambda timeout=120.0: (False, why))
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    home, cache = tmp_path / "home", tmp_path / "cache"
+    watch = _watch_now()
+    (pkg / "serve.py").write_text("from os import x\n", encoding="utf-8")
+    for _ in range(serve.REEXEC_STABLE_TICKS):
+        serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+    assert calls == [] and watch.refused is not None
+    (held,) = notices.all_notices(home)
+    assert held.done_at is None and why.split(":")[0] in held.text
+    return pkg, home, cache, watch, calls, held
+
+
+def _notice(home, nid):
+    (found,) = [n for n in notices.all_notices(home) if n.id == nid]
+    return found
+
+
+# Gate r2 finding 1 (MINOR): the `retired` guard on the new-skill gone branch.
+
+
+def test_a_live_new_skill_lesson_whose_plugin_is_gone_is_rebuilt_not_counted_gone(tmp_path):
+    """The other side of the retired-and-gone skip: a LIVE lesson routed to a
+    new skill whose plugin folder was deleted is compiled again (its plugin
+    comes back), never counted gone."""
+    rid = "lrn-0000d0c4"
+    env = _retired_new_skill(tmp_path, rid, "live-new", retire=False)
+    shutil.rmtree(env.host / "plugins" / "live-new")
+    git(env.host, "add", "-A")
+    git(env.host, "commit", "-q", "-m", "drop the live plugin")
+    skill_md = env.host / "plugins" / "live-new" / "skills" / "live-new" / "SKILL.md"
+    assert not skill_md.exists()
+
+    result = verbs.recompile(env.ledger, no_push=True)
+
+    assert result.gone == []
+    assert not [w for w in result.warnings if rid in w], result.warnings
+    assert skill_md.is_file()
+    assert [e for e in result.entries if e.target == skill_md], result.entries
+
+
+# Gate r2 finding 2 (MINOR): the hold notice ends when the hold ends.
+
+
+def test_a_fresh_start_marks_the_hold_notice_done(tmp_path, monkeypatch):
+    """A reboot or a restart of the unit starts the process on the code on
+    disk: the notice an earlier image left is done at start-up."""
+    _pkg, home, cache, _watch, _calls, held = _held(tmp_path, monkeypatch)
+    monkeypatch.setattr(serve, "_run_tick", lambda *a, **k: [])
+    assert serve.run_forever(home, cache_dir=cache, tick_secs=0.01, max_ticks=1) == 0
+    assert _notice(home, held.id).done_at is not None
+
+
+def test_code_reverted_to_the_running_code_marks_the_hold_notice_done(tmp_path, monkeypatch):
+    pkg, home, cache, watch, calls, held = _held(tmp_path, monkeypatch)
+    # control: another check with the code still changed keeps it live
+    serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+    assert _notice(home, held.id).done_at is None
+    (pkg / "serve.py").write_text("X = 1\n", encoding="utf-8")  # the committed code again
+    serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+    assert _notice(home, held.id).done_at is not None
+    assert watch.refused is None and calls == []
+
+
+# Gate r2 NIT 5: the notice's reason and its done-ness follow the real state.
+
+
+def test_a_later_refusal_for_another_reason_replaces_the_notice_words(tmp_path, monkeypatch):
+    pkg, home, cache, watch, _calls, held = _held(tmp_path, monkeypatch)
+    monkeypatch.setattr(serve, "_new_code_imports",
+                        lambda timeout=120.0: (False, "SyntaxError: invalid syntax"))
+    (pkg / "serve.py").write_text("X = (\n", encoding="utf-8")
+    for _ in range(serve.REEXEC_STABLE_TICKS):
+        serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+    now = _notice(home, held.id)
+    assert now.done_at is None
+    assert "SyntaxError" in now.text and "ImportError" not in now.text
+
+
+def test_a_failed_exec_leaves_the_hold_notice_live(tmp_path, monkeypatch):
+    pkg = _code_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    monkeypatch.setattr(serve, "_new_code_imports", lambda timeout=120.0: (True, ""))
+
+    def fail(argv, env):
+        raise OSError("exec format error")
+
+    monkeypatch.setattr(serve, "_reexec", fail)
+    home, cache = tmp_path / "home", tmp_path / "cache"
+    watch = _watch_now()
+    (pkg / "serve.py").write_text("X = 9\n", encoding="utf-8")
+    for _ in range(serve.REEXEC_STABLE_TICKS):
+        serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+    rows = [json.loads(line) for line in (cache / serve.SERVE_JOURNAL_FILENAME).read_text().splitlines()]
+    assert [r["status"] for r in rows] == ["reexec", "reexec-failed"]
+    (held,) = notices.all_notices(home)
+    assert held.done_at is None and "restart failed" in held.text
