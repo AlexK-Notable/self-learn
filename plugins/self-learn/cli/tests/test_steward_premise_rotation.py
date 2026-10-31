@@ -420,7 +420,9 @@ def test_rotation_per_night_takes_auto_or_a_whole_number(tmp_path):
     assert setting.accepts is not None and setting.accepts("7") and not setting.accepts("x")
     home = make_env(tmp_path).ledger
     _config(home, "premises:\n  rotation_per_night: lots\n")
-    assert settings.resolve_setting(home, setting) == ("auto", "default")
+    assert settings.resolve_setting(home, setting) == (
+        "auto", "config:premises.rotation_per_night"
+    )
 
 
 # ===================================================== 11. doctor

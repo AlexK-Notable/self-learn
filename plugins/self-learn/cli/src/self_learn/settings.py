@@ -189,8 +189,8 @@ SKILL_WRITING_MODES: tuple[str, ...] = ("auto", "on", "off")
 def _rotation_per_night_value(value: object) -> str | None:
     """`premises.rotation_per_night` as stored: ``"auto"`` or a whole
     number >= 0 written as text, stripped; ``None`` for anything else (the
-    resolver then falls back to ``auto`` with a warning, and `config set`
-    refuses it). S-NEXT-rotation."""
+    setting's clamp then reads it as ``auto``, and `config set` refuses
+    it). S-NEXT-rotation."""
     text = str(value).strip() if isinstance(value, str) else ""
     if text == "auto" or (text.isascii() and text.isdigit()):
         return text
@@ -1163,8 +1163,9 @@ REGISTRY: tuple[Setting, ...] = (
     # number never needs a person; a non-negative integer (as text, the
     # `config set` form) overrides it. The `overseer.skill_writing`
     # precedent for a str setting with an `auto` value; the 2026-09-20 rule
-    # that numbers sizing a step are not hardcoded. A malformed value folds
-    # to `auto`.
+    # that numbers sizing a step are not hardcoded. A malformed value in
+    # config.yaml folds to `auto` in place (like every `accepts` entry's
+    # clamp); `config set` refuses it.
     Setting(
         name="premises.rotation_per_night",
         env_var=None,
@@ -1172,7 +1173,7 @@ REGISTRY: tuple[Setting, ...] = (
         config_key="rotation_per_night",
         kind="str",
         default="auto",
-        validate=lambda v: _rotation_per_night_value(v),
+        validate=lambda v: _rotation_per_night_value(v) or "auto",
         accepts=lambda v: _rotation_per_night_value(v) is not None,
         accepts_hint="auto, or a whole number >= 0",
         description=(
