@@ -102,7 +102,8 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
   (`$SELF_LEARN_HOME/cases/**`, `$SELF_LEARN_HOME/overseer/**`) and never
   appears in this repository, exactly like every other lesson.
 - Agents never set `overseer.skill_writing` or `overseer.skill_discovery`
-  (the skills batch), nor `premises.enabled` (the premise check). All three
+  (skill writing, S-NEXT-skills), nor `premises.enabled` (the premise
+  check). All three
   are tier C and ship on (`skill_writing` as `auto`: one drafts-only run,
   then writing); changing one is the human's.
 - The miner's session engine (S-91) is switched by `miner.engine`; agents

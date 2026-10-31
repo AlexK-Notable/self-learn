@@ -755,7 +755,10 @@ vetoed:
 ```
 
 A skill is owned when it has a `live` row; a retired row keeps its history
-and owns nothing. `authored_sha256` is the sha256 of the skill's authored
+and owns nothing. `by` is `overseer` only when the overseer's runner calls
+the writer itself (a Python call, not the CLI), and `human` for every write,
+retirement or rename made through the CLI; an agent's shell cannot make one
+(`03-decisions.md` S-NEXT-skills part 2), so no third value is needed. `authored_sha256` is the sha256 of the skill's authored
 files, everything outside the managed section (`SKILL.md` less that
 section, and every `references/*.md`), as the last `skill write` left
 them (`skill_registry.authored_sha256`); `skill write --expect` compares against the files as they are now.
@@ -779,12 +782,13 @@ checked by `skill write --check` but not deployed, because
 `overseer.skill_writing` was `off` or this was `auto`'s drafts-only run.
 `overseer/skills/writing-trial.yaml` is
 `{week: <date>, run: <run id>, completed_at: <iso>, drafts: [<name>, ...]}`:
-the first run to complete while the file is absent and writing is not in
-effect (`off`, or `auto`'s trial) writes it, with an empty `drafts` list when
-it had nothing to build, in the commit that completes the run, and nothing
-rewrites it. Under `auto`
+the first run to complete with `overseer.skill_discovery` on while the file
+is absent and writing is not in effect (`off`, or `auto`'s trial) writes it,
+with an empty `drafts` list when it had nothing to build, in the commit that
+completes the run, and nothing rewrites it. Under `auto`
 its absence makes the run drafts-only and its presence lets the run write.
-A failed attempt, a closed-out week and a dry run never write it.
+A failed attempt, a closed-out week, a dry run and a run with discovery off
+never write it.
 
 **The overseer's workspace for skills.** Phase S's stage holds `catalogue/`,
 `neighbourhoods.md`, `skills-index.yaml`, `history.yaml`, `briefs/` and
@@ -792,9 +796,25 @@ A failed attempt, a closed-out week and a dry run never write it.
 `skill-candidates.yaml`. Phase B's stage adds `owned-skills/<name>/` (the
 skill's files as they are now, its registry row,
 `changed-since-last-write.diff` and the ids of the lessons routed into it),
-`vetoes.yaml` and `skill-proposals.yaml`; it writes `skills/<name>/` (one
-folder per skill to build or rewrite: `SKILL.md`, optional
-`references/*.md`) and `skill-dispositions.yaml`.
+`vetoes.yaml` (the vetoed names, and the retirement requests the person
+made through `overseer respond --retire-skill` since the last completed
+run, each with its statement id) and `skill-proposals.yaml`; it writes
+`skills/<name>/` (one folder per skill to build or rewrite: `SKILL.md`,
+optional `references/*.md`) and `skill-dispositions.yaml`.
+
+Phase S runs by phase A's rules unless named here. Before it the runner
+writes `formats/` holding only the phase-S files and their closed sets (the
+candidates format), so phase S stays blind to decision vocabulary and to
+`skill-proposal`. Its time limit is
+`max(overseer.timeout_secs, 30 s × the lessons in its catalogue)`. It writes
+in the run's `journal.md` like the other phases. A validated phase S is kept
+in the cache (`overseer/phase-s/<week>/`, keyed by a hash of every file of its
+stage except `formats/` and `journal.md`) and reused by the week's next
+attempt only when that hash is unchanged, so a changed catalogue, neighbour
+list or answer is never met with an earlier attempt's candidates; a reused
+phase S's journal entries are appended as a kept phase A's are, and the kept
+copy is dropped once a run record is published. A phase S that failed, timed
+out or did not validate is not kept, and phase B runs without candidates.
 
 *(Added 2026-09-24.)* **Questions.** Phase B's staged `questions.yaml` and
 the committed index `overseer/open-questions.yaml` share one shape, in the
@@ -1282,8 +1302,10 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   from a reported turn count, which counts something else: revision log,
   2026-09-20. The overseer's record uses it the same way since
   2026-09-24: its runaway guard, `overseer.max_model_calls`, counts
-  MODEL CALLS, two per run, as S-66 says, and a guard below two holds
-  the run before its first call; revision log, 2026-09-24),
+  MODEL CALLS, as S-66 says: two per run until 2026-10-30, three since
+  S-NEXT-skills added phase S (two with `overseer.skill_discovery` off),
+  and a guard below the run's own call count holds the run before its
+  first call; revision log, 2026-09-24),
   `schema-repair` (a
   second staged-output validation failure), and one genuinely new value,
   `no-progress`, for an attempt that ran and moved nothing. A ledger stop
