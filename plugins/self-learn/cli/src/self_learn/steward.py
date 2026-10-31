@@ -1162,10 +1162,10 @@ def _premise_moved_inputs(
     A broken probe is not an input by itself: every brief of the lesson
     shows it (:func:`steward_inputs.broken_probes`).
 
-    S-NEXT-u6-backfill: *capped* false returns every waiting row, the
-    ones past the nightly cap included -- what the backfill reads so that
-    a lesson whose move waits is not offered to have its premises written
-    meanwhile (:func:`_premise_inputs`).
+    S-NEXT-u6-backfill: *capped* false returns every unit's rows, the
+    ones past the nightly cap included. The backfill reads
+    :func:`_premise_moved_unit_lists` instead, which also names the lessons
+    of a group that waits whole (:func:`_premise_inputs`).
 
     S-NEXT-u8-placement: a placement premise the sweep confirmed as failing
     (:func:`steward_inputs.placement_moves`: `@reach`, `@writable`,
@@ -1175,13 +1175,29 @@ def _premise_moved_inputs(
     GROUP (02 §3a.10.3): offered together or not at all -- when an earlier
     input of the run takes one of them, or the overseer holds one, the
     whole group waits -- and counted as one against the nightly cap."""
+    units, _undecided = _premise_moved_unit_lists(home, exclude, manifests=manifests)
+    kept = units[: steward_inputs.PREMISE_MOVED_PER_RUN] if capped else units
+    return [row for unit in kept for row in unit]
+
+
+def _premise_moved_unit_lists(
+    home: Path, exclude: set[str] | None = None, *, manifests: list[dict] | None = None,
+) -> tuple[list[list[dict]], set[str]]:
+    """The work of :func:`_premise_moved_inputs` before its cap: the units
+    (one lesson, or one `@intact` group) oldest first, uncapped, and the
+    id of EVERY lesson with an undecided move -- also one whose group waits
+    whole because an earlier input of the run took another of its lessons.
+    The backfill (:func:`_premise_inputs`) leaves all of those out, so a
+    lesson whose move waits is never offered to have its premises written
+    meanwhile (u6 open question to U8, settled at the 2026-10-31
+    integration: the cap counts units, not rows)."""
     if not steward_inputs.premises_enabled(home):
-        return []
+        return [], set()
     followups = {moved.record_id: moved for moved in steward_inputs.moved_followups(home)}
     premise_moves = steward_inputs.moved_premises(home)
     placement = steward_inputs.placement_moves(home)
     if not followups and not premise_moves and not placement:
-        return []
+        return [], set()
     terminal = _terminal_versions(home, manifests=manifests)
     held = cases.held_lessons(home)
     rows: dict[str, tuple[str, dict]] = {}
@@ -1193,7 +1209,7 @@ def _premise_moved_inputs(
         )
         if built is not None and (rid, built[1]["version"]) not in terminal:
             rows[rid] = built
-    return _premise_moved_units(rows, placement, exclude or set(), held, capped=capped)
+    return _premise_moved_units(rows, placement, exclude or set(), held), set(rows)
 
 
 def _premise_moved_row(
@@ -1256,13 +1272,12 @@ def _premise_moved_units(
     placement: Mapping[str, steward_inputs.PlacementMoves],
     exclude: set[str],
     held: Iterable[str],
-    *,
-    capped: bool = True,
-) -> list[dict]:
+) -> list[list[dict]]:
     """S-NEXT-u8-placement: the rows of :func:`_premise_moved_inputs` in
     units -- one lesson, or one `@intact` group (every placed lesson whose
     `@intact` mover names the same managed block, offered or not as one) --
-    oldest first, at most `steward_inputs.PREMISE_MOVED_PER_RUN` units. A
+    oldest first, each unit a list of rows; the caller applies the cap of
+    `steward_inputs.PREMISE_MOVED_PER_RUN` units. A
     group any lesson of which another input of the run takes (*exclude*) or
     the overseer holds (*held*) waits whole. Each `@intact` mover names the
     group's other lessons (`members`), which its brief lists, and says when
@@ -1298,8 +1313,7 @@ def _premise_moved_units(
             continue
         units.append((since, rid, [row]))
     units.sort(key=lambda unit: (unit[0], unit[1]))
-    kept = units[: steward_inputs.PREMISE_MOVED_PER_RUN] if capped else units
-    return [row for _since, _key, members in kept for row in members]
+    return [members for _since, _key, members in units]
 
 
 # ------------------------- premise-extract: the backfill (S-NEXT-u6-backfill)
@@ -1431,9 +1445,8 @@ def _premise_inputs(home: Path, exclude: set[str]) -> list[dict]:
     tonight or waiting past the cap -- is not offered for its premises to
     be written (02 §3a.10.7): its move is decided first, and that decision
     writes or re-records them."""
-    moved = _premise_moved_inputs(home, exclude=exclude, capped=False)
-    taken = moved[: steward_inputs.PREMISE_MOVED_PER_RUN]
-    waiting = {str(row["record"]) for row in moved}
+    units, waiting = _premise_moved_unit_lists(home, exclude)
+    taken = [row for unit in units[: steward_inputs.PREMISE_MOVED_PER_RUN] for row in unit]
     return taken + _premise_extract_inputs(home, exclude=set(exclude) | waiting)
 
 
