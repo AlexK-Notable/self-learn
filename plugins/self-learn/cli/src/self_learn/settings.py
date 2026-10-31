@@ -175,6 +175,16 @@ SettingValue = str | int | float | bool | None
 #: (one call per session). `miner.run` reads the setting.
 MINER_ENGINES: tuple[str, ...] = ("digest", "session")
 
+#: `overseer.skill_writing`'s three values (S-NEXT-skills part 6, SK3):
+#: ``auto`` (the default: the first overseer run to complete keeps every
+#: skill it builds as a checked draft, every later run writes), ``on`` and
+#: ``off`` (drafts only). The runner reads the setting through
+#: `overseer.skills.writing_mode`, never through `resolve_setting`: any
+#: other value in config.yaml, a YAML boolean included, must read as
+#: ``off`` (a mistyped rollback fails closed), and the generic resolver
+#: would read a boolean as the default.
+SKILL_WRITING_MODES: tuple[str, ...] = ("auto", "on", "off")
+
 
 def _warn(message: str) -> None:
     print(f"self-learn: settings — {message}", file=sys.stderr)
@@ -1130,6 +1140,31 @@ REGISTRY: tuple[Setting, ...] = (
         default=3,
         description="removal actions above this count raise the overseer notification cue",
         validate=lambda v: max(cast(int, v), 0),
+    ),
+    # SK3 (S-NEXT-skills part 6): whether the overseer deploys the skills it
+    # writes. Tier C, config.yaml only (no env var, no override channel),
+    # like `miner.engine`: agents never set it (`CLAUDE.md`). The runner
+    # reads it with `overseer.skills.writing_mode`, which reads an unknown
+    # value -- a YAML boolean included -- as `off`; `validate` folds an
+    # unknown string to `off` here too, so `doctor settings` agrees for
+    # every string value.
+    Setting(
+        name="overseer.skill_writing",
+        env_var=None,
+        config_section="overseer",
+        config_key="skill_writing",
+        kind="str",
+        default="auto",
+        description=(
+            "whether the overseer deploys the skills it writes: auto (its first completed run "
+            "keeps them as drafts, every later run writes), on, or off (drafts only); the "
+            "user's switch"
+        ),
+        validate=lambda v: v if v in SKILL_WRITING_MODES else "off",
+        accepts=lambda v: v in SKILL_WRITING_MODES,
+        accepts_hint="auto, on or off",
+        tier="C",
+        override_channel=False,
     ),
     # ----------------------------------------------------------- sdk
     Setting(

@@ -154,6 +154,9 @@ class TestConfigGet:
             # the digest and the session engine is the user's, like
             # `steward.enabled`.
             "miner.engine",
+            # SK3 (S-NEXT-skills part 6): whether the overseer deploys the
+            # skills it writes is the user's switch.
+            "overseer.skill_writing",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 

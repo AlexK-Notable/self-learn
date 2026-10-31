@@ -1,0 +1,907 @@
+"""The overseer builds, changes and retires the skills self-learn owns
+(SK3, S-NEXT-sk3-overseer-build; skill-writing plan §2 steps 4, 7 and 10,
+decisions D4 and D10; ``03-decisions.md`` S-NEXT-skills parts 4-6).
+
+This module is the overseer runner's half of skill writing. The writer
+itself (template check, name check, secret scan, deploy, registry row,
+link) is :mod:`self_learn.skill_writer`; the runner calls it in-process with
+``by="overseer"``. What lives here:
+
+**Phase B's inputs** (:func:`stage_phase_b`), in the workspace:
+
+- ``owned-skills/<name>/`` for every live skill self-learn owns: ``files/``
+  (its ``SKILL.md`` without the runner's stamp and the managed section, and
+  its ``references/*.md`` -- exactly what phase B edits and hands back),
+  ``row.yaml`` (its registry row, less the 64-hex hash, which the whole-stage
+  secret scan would match), ``lessons.yaml`` (the lessons routed into it)
+  and ``changed-since-last-write.diff`` (what changed in its authored text
+  since self-learn last wrote it, read from the skills root's history);
+- ``vetoes.yaml``: the vetoed names, the live skills whose name is vetoed,
+  and the user's open retirement requests (SK7's readers in
+  ``overseer/conversation.py``);
+- ``skill-proposals.yaml``: the steward's parked ``skill-proposal`` cases
+  (their files are in ``parked/``);
+- ``skill-writing.yaml``: whether this run deploys what phase B writes.
+
+A staged file the secret scan matches is replaced by a one-line stub, as
+``run._stage_lessons`` does, and that skill cannot be rewritten this run
+(phase B never saw its whole text, so a rewrite could carry the stub over
+the real file).
+
+**Phase B's output.** ``skills/<name>/`` is one skill to build or rewrite.
+It belongs to the case/sheet pair whose case carries ``decision.skill``
+naming it (:func:`step_for_case`). A case whose ``decision.skill`` names an
+owned skill and that wrote no folder routes lessons into that skill: no
+skill step, ordinary routing. A case with ``outcome: retire`` and
+``decision.skill`` retires the skill once its sheet has moved every lesson
+out. Each step is checked here with ``skill_writer.check`` before anything
+reaches the ledger; a refused check drops the pair. A folder no case names
+is dropped and named (:func:`unclaimed_folders`).
+
+**Writing on or off** (:func:`writing_state`). ``overseer.skill_writing``
+is ``auto`` (the default), ``on`` or ``off``, read from ``config.yaml``
+only, with any other value (a YAML boolean included) read as ``off``.
+``on`` deploys; ``off`` keeps every build or rewrite as a checked draft in
+the ledger (``overseer/skills/<week>/drafts/<name>/``), makes no
+retirement, and applies none of those pairs. ``auto`` behaves as ``off``
+until ``overseer/skills/writing-trial.yaml`` exists, and as ``on`` after.
+That file is written once, in the commit that completes the run, by the
+first run to complete while writing is not in effect and whose discovery
+steps were seen working (:func:`trial_readiness`, which phase S fills in;
+see its docstring).
+
+**Applying** (:func:`apply_write`, :func:`apply_retire`). The runner writes
+a skill BEFORE it records the pair's case and applies its sheet (a refused
+write drops the pair: nothing of it reaches the ledger), and retires a
+skill AFTER the sheet has moved its lessons out. Both are idempotent, so a
+resumed run finishes what an interrupted one started.
+
+Nothing here takes a lock or writes the ledger itself: the writer takes its
+own locks, the stage is the runner's (``run._write_stage``), and the drafts
+and the trial file are written by the runner inside its own locked commits.
+"""
+
+from __future__ import annotations
+
+import copy
+import difflib
+import io
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Mapping, cast
+
+from ruamel.yaml import YAML
+
+from .. import config, gitops, scan, settings, skill_registry, skill_writer
+from ..hosts import HostsError, load_hosts
+from ..skill_registry import STATUS_LIVE, SkillRegistryError
+
+__all__ = [
+    "DIFF_FILE",
+    "FILES_DIR",
+    "LESSONS_FILE",
+    "LEDGER_DIR",
+    "MODE_AUTO",
+    "MODE_OFF",
+    "MODE_ON",
+    "OWNED_DIR",
+    "PROPOSALS_FILE",
+    "ROW_FILE",
+    "SKILL_PROPOSAL_REASON",
+    "STAGE_SKILLS_DIR",
+    "TRIAL_FILE",
+    "VETOES_FILE",
+    "WRITING_FILE",
+    "SkillPairError",
+    "SkillStep",
+    "StagedSkills",
+    "StepOutcome",
+    "WritingState",
+    "apply_retire",
+    "apply_write",
+    "claimed_name",
+    "decision_lessons",
+    "draft_entry",
+    "draft_files",
+    "drafts_dir",
+    "preview_for_step",
+    "report_lines",
+    "short_hashes",
+    "stage_phase_b",
+    "stale_draft_files",
+    "step_for_case",
+    "trial_path",
+    "trial_readiness",
+    "trial_text",
+    "unclaimed_folders",
+    "writing_mode",
+    "writing_state",
+]
+
+MODE_AUTO, MODE_ON, MODE_OFF = settings.SKILL_WRITING_MODES
+
+# ------------------------------------------------------------- the workspace
+
+#: Phase B's output: ``skills/<name>/`` per skill to build or rewrite.
+STAGE_SKILLS_DIR = "skills"
+#: Phase B's input: ``owned-skills/<name>/`` per live skill self-learn owns.
+OWNED_DIR = "owned-skills"
+FILES_DIR = "files"
+ROW_FILE = "row.yaml"
+LESSONS_FILE = "lessons.yaml"
+DIFF_FILE = "changed-since-last-write.diff"
+VETOES_FILE = "vetoes.yaml"
+PROPOSALS_FILE = "skill-proposals.yaml"
+WRITING_FILE = "skill-writing.yaml"
+
+#: The steward's parked reason for a skill it proposes (SK6 adds it to
+#: ``cases.PARKED_REASONS``; until then no such case can exist).
+SKILL_PROPOSAL_REASON = "skill-proposal"
+
+# ---------------------------------------------------------------- the ledger
+
+#: ``overseer/skills/`` under the ledger home: ``<week>/drafts/<name>/`` and
+#: the trial file (``02-schema.md`` §3, S-NEXT-skills).
+LEDGER_DIR = "overseer/skills"
+TRIAL_FILE = "writing-trial.yaml"
+
+#: What a step does, in the report's words.
+_LABEL_BUILD = "build"
+_LABEL_CHANGE = "change"
+_LABEL_RETIRE = "retire"
+_DONE_TAGS = {
+    _LABEL_BUILD: "[new skill]",
+    _LABEL_CHANGE: "[skill changed]",
+    _LABEL_RETIRE: "[skill retired]",
+}
+_WOULD = {
+    _LABEL_BUILD: "would build",
+    _LABEL_CHANGE: "would change",
+    _LABEL_RETIRE: "would retire",
+}
+
+
+#: A git or authored-content hash in a message. The writer names full
+#: sha256 values (a stale ``--expect``), and the run's secret scan reads any
+#: run of 48 or more hex digits as a likely secret, which would redact the
+#: whole line; the report needs the reason, not the full hash.
+_LONG_HEX_RE = re.compile(r"[0-9a-f]{40,}")
+
+
+def short_hashes(text: str) -> str:
+    """*text* with every long hex run cut to its first 12 digits."""
+    return _LONG_HEX_RE.sub(lambda m: m.group(0)[:12] + "…", text)
+
+
+class SkillPairError(Exception):
+    """A pair's skill step cannot be made: the pair is dropped and the
+    message is its "Refused / could not do" line."""
+
+
+def _yaml_text(data: Any) -> str:
+    stream = io.StringIO()
+    yaml = YAML()
+    yaml.default_flow_style = False
+    yaml.width = 4096
+    yaml.dump(data, stream)
+    return stream.getvalue()
+
+
+# ------------------------------------------------------------ writing on/off
+
+
+def writing_mode(home: Path | str) -> tuple[str, str | None]:
+    """``overseer.skill_writing`` as the runner obeys it, and a sentence
+    when the value in ``config.yaml`` is not one of the three.
+
+    Read from ``config.yaml`` only: no environment variable and no override
+    channel (S-NEXT-skills part 6). A missing key is the default, ``auto``.
+    Any other value -- a typo, ``null``, a YAML boolean such as ``false`` --
+    reads as ``off``, never as the default, so a mistyped rollback fails
+    closed. (``settings.resolve_setting`` would read a boolean as the
+    default; that is why the runner does not use it here.)"""
+    found = config.settings_leaf(home, "overseer", "skill_writing")
+    if found is None:
+        return MODE_AUTO, None
+    raw = found[1]
+    if isinstance(raw, str) and raw in settings.SKILL_WRITING_MODES:
+        return raw, None
+    return MODE_OFF, (
+        f"overseer.skill_writing is {raw!r} in config.yaml, which is not auto, on or off; "
+        "it reads as off, so every skill this run builds or changes is kept as a draft"
+    )
+
+
+def trial_path(home: Path | str) -> Path:
+    """``overseer/skills/writing-trial.yaml``: ``auto``'s drafts-only run,
+    written once."""
+    return Path(home) / LEDGER_DIR / TRIAL_FILE
+
+
+def drafts_dir(home: Path | str, week: str, name: str) -> Path:
+    """``overseer/skills/<week>/drafts/<name>/``."""
+    return Path(home) / LEDGER_DIR / week / "drafts" / name
+
+
+@dataclass(frozen=True)
+class WritingState:
+    """What ``overseer.skill_writing`` means for one run."""
+
+    #: ``auto``, ``on`` or ``off``, as the runner reads it.
+    mode: str
+    #: Whether this run deploys what phase B builds, changes or retires.
+    deploy: bool
+    #: Whether the trial file exists.
+    trial_done: bool
+    #: The sentence for a value that is not one of the three.
+    note: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode, "deploy": self.deploy, "trial_done": self.trial_done,
+            **({"note": self.note} if self.note else {}),
+        }
+
+    def stage_text(self) -> str:
+        if self.deploy:
+            says = (
+                "This run deploys what you write: a skill you build or change is written to the "
+                "skills root and linked, and a skill you retire is removed."
+            )
+        else:
+            says = (
+                "This run deploys nothing. Every skill you build or change is checked by the same "
+                "rules as a real write and kept as a draft in the ledger; a retirement is not made; "
+                "the pairs that would move lessons for them are not applied. The report says what "
+                "would have been built, changed or retired. Write each skill exactly as you would if "
+                "it were deployed."
+            )
+        return _yaml_text({"mode": self.mode, "deploy": self.deploy, "says": says})
+
+
+def writing_state(home: Path | str) -> WritingState:
+    """``on`` deploys; ``off`` does not; ``auto`` deploys once the trial
+    file exists."""
+    mode, note = writing_mode(home)
+    done = trial_path(home).is_file()
+    deploy = mode == MODE_ON or (mode == MODE_AUTO and done)
+    return WritingState(mode=mode, deploy=deploy, trial_done=done, note=note)
+
+
+def trial_readiness(home: Path | str, stage: Path) -> tuple[bool, str]:
+    """Whether this run's discovery steps were seen working, so that, if it
+    completes while writing is not in effect and no trial file exists, it
+    counts as ``auto``'s drafts-only run (S-NEXT-skills part 6): skill
+    discovery on, a valid ``skill-candidates.yaml`` from phase S and a valid
+    ``skill-dispositions.yaml`` from phase B. Answers ``(ready, why not)``.
+
+    Phase S and the dispositions are unit SK4's. Until SK4 replaces this
+    body, no run is ready, so ``auto`` stays drafts-only: it fails closed,
+    which is the spec's rule for a week in which the new model steps were
+    not seen working."""
+    del home, stage
+    return False, "skill discovery (phase S) is not built yet, so this run cannot be the trial"
+
+
+def trial_text(*, week: str, run_id: str, completed_at: str, drafts: list[str]) -> str:
+    """The trial file: ``{week, run, completed_at, drafts}``."""
+    return _yaml_text({
+        "week": week, "run": run_id, "completed_at": completed_at, "drafts": list(drafts),
+    })
+
+
+# ---------------------------------------------------------------- staging
+
+
+@dataclass
+class StagedSkills:
+    """What :func:`stage_phase_b` showed phase B, for the checks after it."""
+
+    #: Each live skill's authored sha256 as staged: the ``expect_sha`` of a
+    #: rewrite (D4's compare-and-swap). Absent for a skill with no files.
+    expect: dict[str, str] = field(default_factory=dict)
+    #: Live skills a staged file of which was replaced by a stub.
+    withheld: set[str] = field(default_factory=set)
+    #: Live skills with no ``SKILL.md`` in the skills root.
+    missing: set[str] = field(default_factory=set)
+    #: Lines for "Refused / could not do" (nothing here refuses the run).
+    notes: list[str] = field(default_factory=list)
+
+
+Writer = Callable[[Path, Path, str], None]
+
+
+def _stub(rule: str, where: str) -> str:
+    return (
+        f"withheld: the secret scan matched {rule}; the text is in {where}. "
+        "This skill cannot be rewritten this run.\n"
+    )
+
+
+def _row_for_stage(row: dict) -> dict:
+    """The registry row without its 64-hex hash (the whole-stage secret
+    scan would match it), with ``case`` and ``by`` kept."""
+    out = copy.deepcopy(row)
+    last = out.get("last_write")
+    if isinstance(last, dict):
+        last.pop("authored_sha256", None)
+    return out
+
+
+def stage_phase_b(
+    home: Path | str, stage: Path, parked_rows: list[dict], state: WritingState, write: Writer,
+) -> StagedSkills:
+    """Write phase B's skill inputs into *stage* with *write* (the runner's
+    ``_write_stage``). Never raises for the ledger's content: a registry or a
+    skills root that cannot be read is said in a note, and the files say
+    what could not be shown."""
+    home = Path(home)
+    staged = StagedSkills()
+    write(stage, stage / WRITING_FILE, state.stage_text())
+    try:
+        registry = skill_registry.load(home)
+    except SkillRegistryError as exc:
+        why = short_hashes(str(exc))
+        if scan.scan(why):
+            why = "its text matched the secret scan"
+        staged.notes.append(
+            f"owned-skills.yaml could not be read ({why}); no skill self-learn owns was shown "
+            "to phase B, and none can be built, changed or retired this run"
+        )
+        write(stage, stage / VETOES_FILE, _yaml_text({"unreadable": why}))
+        _stage_proposals(stage, parked_rows, write)
+        return staged
+    for name in registry.live():
+        try:
+            _stage_owned(home, stage, registry, name, staged, write)
+        except Exception as exc:  # noqa: BLE001 -- one skill's trouble never costs the run
+            staged.missing.add(name)
+            why = short_hashes(f"{type(exc).__name__}: {exc}")
+            if scan.scan(why):
+                why = f"{type(exc).__name__} (its message matched the secret scan)"
+            staged.notes.append(
+                f"owned skill {name}: could not be shown to phase B ({why}); "
+                "it cannot be changed this run"
+            )
+            write(stage, stage / OWNED_DIR / name / ROW_FILE, _yaml_text({
+                "name": name, "shown": False, "why": why,
+            }))
+    _stage_vetoes(home, stage, registry, staged, write)
+    _stage_proposals(stage, parked_rows, write)
+    return staged
+
+
+def _stage_owned(
+    home: Path, stage: Path, registry: skill_registry.Registry, name: str,
+    staged: StagedSkills, write: Writer,
+) -> None:
+    folder = stage / OWNED_DIR / name
+    row = registry.row(name) or {}
+    lessons = skill_writer.routed_lessons(home, name)
+    write(stage, folder / LESSONS_FILE, _yaml_text({"lessons": lessons}))
+    deployed = skill_writer.deployed_files(home, name)
+    if deployed is None:
+        staged.missing.add(name)
+        write(stage, folder / ROW_FILE, _yaml_text({
+            "name": name, "row": _row_for_stage(row), "deployed": False,
+            "says": (
+                "This skill's SKILL.md is not in the skills root. It cannot be changed until a "
+                "person restores it; the selftest names it."
+            ),
+        }))
+        return
+    withheld: list[str] = []
+    for rel, text in sorted(skill_writer.draft_view(deployed).items()):
+        hits = scan.scan(text)
+        if hits:
+            withheld.append(rel)
+            text = _stub(hits[0].rule, "the skills root")
+        write(stage, folder / FILES_DIR / rel, text)
+    current = skill_writer.deployed_authored_sha256(home, name)
+    recorded = (row.get("last_write") or {}).get("authored_sha256")
+    diff = _changed_since_last_write(home, name, row, deployed, current, recorded)
+    hits = scan.scan(diff)
+    if hits:
+        withheld.append(DIFF_FILE)
+        diff = _stub(hits[0].rule, "the skills root's history")
+    write(stage, folder / DIFF_FILE, diff)
+    if current is not None:
+        staged.expect[name] = current
+    if withheld:
+        staged.withheld.add(name)
+    write(stage, folder / ROW_FILE, _yaml_text({
+        "name": name,
+        "row": _row_for_stage(row),
+        "deployed": True,
+        "changed_since_last_write": current != recorded,
+        **({"withheld": withheld} if withheld else {}),
+    }))
+
+
+def _skills_root(home: Path) -> Path | None:
+    try:
+        return load_hosts(home).skills_root
+    except HostsError:
+        return None
+
+
+def _files_at_last_write(home: Path, name: str, row: dict) -> dict[str, str] | None:
+    """The skill's files as self-learn's last write committed them to the
+    skills root, found by that commit's subject; ``None`` when the commit
+    or its ``SKILL.md`` cannot be found."""
+    case = (row.get("last_write") or {}).get("case")
+    root = _skills_root(home)
+    if not isinstance(case, str) or root is None:
+        return None
+    # The writer's own subject (one definition: `skill_writer._subject`).
+    subject = skill_writer._subject("write", name, case)  # noqa: SLF001
+    proc = gitops._git(  # noqa: SLF001 -- a read
+        root, "log", "-1", "--format=%H", "--fixed-strings", f"--grep={subject}",
+        "--", f"plugins/{name}",
+    )
+    sha = proc.stdout.strip() if proc.returncode == 0 else ""
+    if not sha:
+        return None
+    prefix = f"plugins/{name}/skills/{name}/"
+    listing = gitops._git(root, "ls-tree", "-r", "-z", "--name-only", sha, "--", prefix)  # noqa: SLF001
+    if listing.returncode != 0:
+        return None
+    files: dict[str, str] = {}
+    for path in listing.stdout.split("\0"):
+        if not path.startswith(prefix):
+            continue
+        shown = gitops._git(root, "show", f"{sha}:{path}")  # noqa: SLF001
+        if shown.returncode == 0:
+            files[path[len(prefix):]] = shown.stdout
+    return files if "SKILL.md" in files else None
+
+
+def _diff_lines(old: str, new: str, rel: str) -> list[str]:
+    lines = []
+    for line in difflib.unified_diff(
+        old.splitlines(keepends=True), new.splitlines(keepends=True),
+        fromfile=f"last-write/{rel}", tofile=f"now/{rel}",
+    ):
+        lines.append(line if line.endswith("\n") else line + "\n")
+    return lines
+
+
+def _changed_since_last_write(
+    home: Path, name: str, row: dict, deployed: dict[str, str],
+    current: str | None, recorded: str | None,
+) -> str:
+    """D4's view for phase B: what a person (or another agent) changed in
+    the skill's authored text since self-learn last wrote it."""
+    case = (row.get("last_write") or {}).get("case")
+    if current is not None and current == recorded:
+        return (
+            f"# Unchanged: {name}'s text is as self-learn last wrote it (case {case}).\n"
+        )
+    old = _files_at_last_write(home, name, row)
+    if old is None:
+        return (
+            f"# Changed: {name}'s text is not as self-learn last wrote it (case {case}), and that "
+            "version could not be found in the skills root's history, so no diff can be shown. "
+            f"{FILES_DIR}/ holds the text as it is now. Keep what a person wrote unless your case "
+            "says why not.\n"
+        )
+    before = skill_writer.draft_view(old)
+    after = skill_writer.draft_view(deployed)
+    lines = [
+        f"# Changed since self-learn last wrote {name} (case {case}): lines starting with + are "
+        "new since then, lines starting with - were taken out. Keep what a person wrote unless "
+        "your case says why not.\n"
+    ]
+    for rel in sorted(set(before) | set(after)):
+        if before.get(rel, "") != after.get(rel, ""):
+            lines += _diff_lines(before.get(rel, ""), after.get(rel, ""), rel)
+    return "".join(lines)
+
+
+def _stage_vetoes(
+    home: Path, stage: Path, registry: skill_registry.Registry, staged: StagedSkills,
+    write: Writer,
+) -> None:
+    from . import conversation  # SK7's readers; local, conversation imports run
+
+    data: dict[str, Any] = {
+        "vetoed": [
+            {"name": entry["name"], "at": entry["at"], "statement": entry["statement"]}
+            for entry in registry.vetoed
+        ],
+        "renames_owed": [],
+        "retire_requests": [],
+    }
+    try:
+        data["renames_owed"] = conversation.pending_renames(home)
+    except Exception as exc:  # noqa: BLE001 -- a note, never a refused run
+        staged.notes.append(f"vetoes.yaml: the vetoed live skills could not be listed ({exc})")
+    try:
+        data["retire_requests"] = conversation.pending_retire_requests(home)
+    except Exception as exc:  # noqa: BLE001
+        staged.notes.append(
+            f"vetoes.yaml: the user's retirement requests could not be read ({exc}); "
+            "they reach a later run"
+        )
+    text = _yaml_text(data)
+    hits = scan.scan(text)
+    if hits:
+        # Words the user typed went through the statement store's own scan;
+        # this is the backstop, so the stage scan never refuses the run.
+        for request in data["retire_requests"]:
+            request["verbatim"] = f"withheld: the secret scan matched {hits[0].rule}"
+        text = _yaml_text(data)
+    write(stage, stage / VETOES_FILE, text)
+
+
+def _stage_proposals(stage: Path, parked_rows: list[dict], write: Writer) -> None:
+    proposals = [
+        {
+            "case": row.get("case"),
+            "records": list(row.get("records") or []),
+            "file": f"parked/{row.get('case')}.md",
+        }
+        for row in parked_rows
+        if row.get("parked_reason") == SKILL_PROPOSAL_REASON
+    ]
+    write(stage, stage / PROPOSALS_FILE, _yaml_text({"proposals": proposals}))
+
+
+# ------------------------------------------------------- phase B's output
+
+
+@dataclass(frozen=True)
+class SkillStep:
+    """One skill step a pair carries: ``write`` (build or rewrite, with the
+    folder phase B wrote) or ``retire``. Kept in the run record, so a
+    resumed run makes the same step."""
+
+    action: str
+    name: str
+    updating: bool = False
+    files: dict[str, str] = field(default_factory=dict)
+    expect_sha: str | None = None
+    deploy: bool = True
+
+    @property
+    def label(self) -> str:
+        if self.action == "retire":
+            return _LABEL_RETIRE
+        return _LABEL_CHANGE if self.updating else _LABEL_BUILD
+
+    @property
+    def sheetless_ok(self) -> bool:
+        """A pair that only changes or retires a skill may have an empty
+        sheet (a skill whose lessons were all folded into its text has none
+        to move); a new skill is built with the lessons it takes in."""
+        return self.action == "retire" or self.updating
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "action": self.action, "name": self.name, "updating": self.updating,
+            "files": dict(self.files), "expect_sha": self.expect_sha, "deploy": self.deploy,
+        }
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "SkillStep":
+        return cls(
+            action=str(data["action"]), name=str(data["name"]),
+            updating=bool(data.get("updating")), files=dict(data.get("files") or {}),
+            expect_sha=data.get("expect_sha"), deploy=bool(data.get("deploy", True)),
+        )
+
+
+def decision_lessons(case_data: dict) -> list[str]:
+    """The lessons a staged case's ``decision.skill`` names."""
+    decision = case_data.get("decision")
+    skill = decision.get("skill") if isinstance(decision, dict) else None
+    lessons = skill.get("lessons") if isinstance(skill, dict) else None
+    return [str(rid) for rid in lessons] if isinstance(lessons, list) else []
+
+
+def claimed_name(case_data: dict) -> str | None:
+    """The skill a staged case names in ``decision.skill``, or ``None``."""
+    decision = case_data.get("decision")
+    skill = decision.get("skill") if isinstance(decision, dict) else None
+    name = skill.get("name") if isinstance(skill, dict) else None
+    return name if isinstance(name, str) and name else None
+
+
+def _refusal(name: str, kind: str | None, problems: tuple[str, ...] | list[str]) -> str:
+    return short_hashes(
+        f"the skill write for {name} would be refused"
+        + (f" [{kind}]" if kind else "")
+        + ": " + "; ".join(problems)
+    )
+
+
+def step_for_case(
+    home: Path | str, stage: Path, case_data: dict, *, staged: StagedSkills, deploy: bool,
+) -> SkillStep | None:
+    """The skill step a staged case carries, checked; ``None`` when it
+    carries none. Raises :class:`SkillPairError` (the pair is dropped) when
+    the step cannot be made: a new skill without its folder, a retirement of
+    a skill self-learn does not own, a folder the template check, the name
+    check, the secret scan or the compare-and-swap refuses."""
+    name = claimed_name(case_data)
+    if name is None:
+        return None
+    home = Path(home)
+    folder = stage / STAGE_SKILLS_DIR / name
+    try:
+        registry = skill_registry.load(home)
+    except SkillRegistryError as exc:
+        raise SkillPairError(f"owned-skills.yaml could not be read ({exc})") from exc
+    owned = registry.is_owned(name)
+    outcome = case_data.get("outcome")
+    if outcome == "retire":
+        if folder.exists():
+            raise SkillPairError(
+                f"a case that retires {name} writes no {STAGE_SKILLS_DIR}/{name}/ folder"
+            )
+        if not owned:
+            raise SkillPairError(f"{name} is not a skill self-learn owns, so it cannot be retired")
+        return SkillStep(action="retire", name=name, updating=True, deploy=deploy)
+    if not folder.is_dir():
+        if owned:
+            return None  # lessons routed into an owned skill: ordinary routing
+        raise SkillPairError(
+            f"decision.skill names {name}, which is not a skill self-learn owns, and no "
+            f"{STAGE_SKILLS_DIR}/{name}/ folder was written to build it from"
+        )
+    if not owned and outcome != "route":
+        raise SkillPairError(
+            f"a new skill ({name}) is built by a case with outcome: route whose sheet moves "
+            f"lessons into it, not outcome: {outcome}"
+        )
+    if owned and name in staged.withheld:
+        raise SkillPairError(
+            f"{name} cannot be rewritten this run: part of its text matched the secret scan, so "
+            "it was not shown to you in full; a person must remove that text first"
+        )
+    if owned and name in staged.missing:
+        raise SkillPairError(
+            f"{name} cannot be rewritten this run: its files could not be read from the skills root"
+        )
+    try:
+        files = skill_writer.read_draft_dir(folder)
+    except (ValueError, OSError) as exc:
+        raise SkillPairError(f"{STAGE_SKILLS_DIR}/{name}/ cannot be read as a skill: {exc}") from exc
+    expect = staged.expect.get(name) if owned else None
+    try:
+        # A file that is not UTF-8 comes back as bytes; the template check names it.
+        checked = skill_writer.check(
+            home, name, cast(Mapping[str, str], files), expect_sha=expect, updating=owned,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a git or hosts read failed: this pair, not the run
+        raise SkillPairError(
+            f"the skill write for {name} could not be checked ({type(exc).__name__}: {exc})"
+        ) from exc
+    if not checked.ok:
+        raise SkillPairError(_refusal(name, checked.kind, checked.problems))
+    text_files = {key: value for key, value in files.items() if isinstance(value, str)}
+    return SkillStep(
+        action="write", name=name, updating=owned, files=text_files, expect_sha=expect,
+        deploy=deploy,
+    )
+
+
+def unclaimed_folders(stage: Path, claimed: set[str]) -> list[str]:
+    """One line per entry under ``skills/`` that no staged case names in
+    ``decision.skill``: it is not written."""
+    root = stage / STAGE_SKILLS_DIR
+    if not root.is_dir():
+        return []
+    lines = []
+    for entry in sorted(root.iterdir()):
+        if entry.name in claimed:
+            continue
+        lines.append(
+            f"{STAGE_SKILLS_DIR}/{entry.name}{'/' if entry.is_dir() else ''}: not written — no "
+            "case names it in decision.skill (a skill is written with the case/sheet pair that "
+            "builds or changes it)"
+        )
+    return lines
+
+
+def preview_for_step(preview: Any, sheet: Any, step: SkillStep | None) -> Any:
+    """The preview a build pair's sheet is judged by. A line that routes a
+    lesson into the skill this pair builds (``dest: new-skill:<name>``) is
+    previewed before the skill exists, so a refusal of it there says
+    nothing about the line after the write: such a line goes on to apply,
+    where it is checked for real. Every other line is judged as previewed."""
+    if step is None or step.action != "write" or step.updating:
+        return preview
+    from dataclasses import replace
+
+    target = f"new-skill:{step.name}"
+    dests = {item.n: item.fields.get("dest") for item in sheet}
+    items = [
+        replace(item, state="would-apply", kind=None,
+                detail=f"previewed before {step.name} is written; checked when it applies")
+        if item.state == "would-refuse" and dests.get(item.n) == target else item
+        for item in preview.items
+    ]
+    return replace(preview, items=items)
+
+
+def draft_entry(step: SkillStep, case_name: str, lessons: list[str]) -> dict[str, Any]:
+    """A skill step kept, not made (writing not in effect), for the run
+    record and the report. A build or a change carries its files, which
+    the runner commits as a draft."""
+    return {
+        "name": step.name,
+        "action": step.label,
+        "case_name": case_name,
+        "lessons": sorted(dict.fromkeys(lessons)),
+        **({"files": dict(step.files)} if step.action == "write" else {}),
+    }
+
+
+def draft_files(home: Path | str, week: str, drafts: list[dict]) -> list[tuple[Path, str]]:
+    """``(ledger path, text)`` for every file of every draft that carries
+    files: ``overseer/skills/<week>/drafts/<name>/<file>``."""
+    out: list[tuple[Path, str]] = []
+    for draft in drafts:
+        files = draft.get("files")
+        if not isinstance(files, dict):
+            continue
+        folder = drafts_dir(home, week, str(draft["name"]))
+        for rel, text in sorted(files.items()):
+            out.append((folder / rel, str(text)))
+    return out
+
+
+def stale_draft_files(home: Path | str, week: str, drafts: list[dict]) -> list[Path]:
+    """Files left in a draft's folder by an earlier run of the same week
+    that this run's draft of that skill no longer has."""
+    stale: list[Path] = []
+    for draft in drafts:
+        files = draft.get("files")
+        if not isinstance(files, dict):
+            continue
+        folder = drafts_dir(home, week, str(draft["name"]))
+        if not folder.is_dir():
+            continue
+        keep = {folder / rel for rel in files}
+        stale += sorted(p for p in folder.rglob("*") if p.is_file() and p not in keep)
+    return stale
+
+
+# ---------------------------------------------------------------- applying
+
+
+@dataclass(frozen=True)
+class StepOutcome:
+    """What one skill step did. ``state`` is ``applied`` or ``refused``;
+    ``line`` is its report line ("Decided in the user's stead" when
+    applied, "Refused / could not do" when refused); ``warning`` is a
+    "Refused / could not do" line for an applied step that left something
+    for a person (a link it could not make)."""
+
+    state: str
+    line: str
+    warning: str | None = None
+
+
+def _already_written(home: Path, case_id: str, step: SkillStep) -> bool:
+    """A resumed run: this case's write already landed (its registry row
+    names the case and the deployed files are what that write left)."""
+    try:
+        row = skill_registry.load(home).row(step.name)
+    except SkillRegistryError:
+        return False
+    if row is None or row.get("status") != STATUS_LIVE:
+        return False
+    last = row.get("last_write") or {}
+    if last.get("case") != case_id:
+        return False
+    return skill_writer.deployed_authored_sha256(home, step.name) == last.get("authored_sha256")
+
+
+def _done_line(step: SkillStep, case_id: str) -> str:
+    what = {
+        _LABEL_BUILD: "written to the skills root and linked",
+        _LABEL_CHANGE: "its text rewritten",
+        _LABEL_RETIRE: "removed from the skills root, with its link",
+    }[step.label]
+    return f"{_DONE_TAGS[step.label]} {step.name}: {what} ({case_id})"
+
+
+def apply_write(home: Path | str, case_id: str, step: SkillStep, *, case_name: str) -> StepOutcome:
+    """Write the skill before its pair is recorded (``by: overseer``,
+    ``no_push``: the run's own push publishes both repositories)."""
+    home = Path(home)
+    if _already_written(home, case_id, step):
+        return StepOutcome("applied", _done_line(step, case_id))
+    result = skill_writer.write(
+        home, step.name, step.files, case=case_id, by="overseer",
+        expect_sha=step.expect_sha, updating=step.updating, no_push=True,
+    )
+    if result.ok:
+        return StepOutcome("applied", _done_line(step, case_id))
+    if result.authored_sha256 is not None and (result.ledger_sha or result.host_sha):
+        # The files and the row landed; only the link could not be made.
+        return StepOutcome(
+            "applied", _done_line(step, case_id),
+            warning=short_hashes(f"{step.name}: " + "; ".join(result.problems)),
+        )
+    return StepOutcome(
+        "refused",
+        f"{STAGE_SKILLS_DIR}/{step.name}/ ({case_name}): "
+        + _refusal(step.name, result.kind, result.problems).replace("would be", "was")
+        + "; the pair was dropped, so no lesson moved",
+    )
+
+
+def apply_retire(home: Path | str, case_id: str, step: SkillStep, *, case_name: str) -> StepOutcome:
+    """Retire the skill after its pair's sheet moved every lesson out."""
+    result = skill_writer.retire(
+        Path(home), step.name, case=case_id, by="overseer", no_push=True,
+    )
+    if result.ok:
+        return StepOutcome("applied", _done_line(step, case_id))
+    return StepOutcome(
+        "refused",
+        f"{step.name} ({case_name}): not retired"
+        + (f" [{result.kind}]" if result.kind else "")
+        + ": " + short_hashes("; ".join(result.problems)),
+    )
+
+
+# ----------------------------------------------------------------- report
+
+
+def report_lines(manifest: dict[str, Any], *, trial_written: bool) -> list[str]:
+    """The run's skill lines for "Decided in the user's stead": every skill
+    built, changed or retired (from the run record's steps, so a resumed
+    run reports what an earlier attempt did), every draft with its "would
+    ..." line, and what ``overseer.skill_writing`` did this run."""
+    info = manifest.get("skills")
+    if not isinstance(info, dict):
+        return []
+    lines: list[str] = []
+    recipes = manifest.get("cases") or {}
+    for case_id in manifest.get("case_order") or []:
+        raw = (recipes.get(case_id) or {}).get("skill")
+        if not isinstance(raw, dict) or raw.get("state") != "applied":
+            continue
+        lines.append(_done_line(SkillStep.from_json(raw), case_id))
+    drafts = [d for d in info.get("drafts") or [] if isinstance(d, dict)]
+    week = info.get("week") or manifest.get("week")
+    for draft in drafts:
+        name = draft.get("name")
+        label = draft.get("action")
+        where = (
+            f"; kept as a draft at {LEDGER_DIR}/{week}/drafts/{name}/"
+            if isinstance(draft.get("files"), dict) else ""
+        )
+        lessons = draft.get("lessons") or []
+        moving = f"; it would move {', '.join(lessons)}" if lessons and label != _LABEL_RETIRE else ""
+        lines.append(
+            f"[skill drafted] {name}: {_WOULD.get(str(label), 'would change')} it "
+            f"({draft.get('case_name')}){where}{moving}"
+        )
+    state = info.get("state") or {}
+    if not state.get("deploy", True):
+        mode = state.get("mode")
+        if mode == MODE_AUTO and trial_written:
+            lines.append(
+                "skill writing (overseer.skill_writing: auto): this was the drafts-only week. "
+                + ("Every skill above was kept as a checked draft; " if drafts else
+                   "There was nothing to build; ")
+                + "from the next run on, the skills the overseer builds are written"
+            )
+        elif mode == MODE_AUTO:
+            why = info.get("trial_why") or "the run did not complete"
+            lines.append(
+                "skill writing (overseer.skill_writing: auto): every skill was kept as a draft; "
+                f"the drafts-only week is still to come: {why}"
+            )
+        else:
+            lines.append(
+                "skill writing is off (overseer.skill_writing): every skill phase B built or "
+                "changed was kept as a checked draft; nothing was deployed or retired"
+            )
+    return lines
