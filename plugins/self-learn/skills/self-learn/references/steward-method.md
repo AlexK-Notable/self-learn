@@ -362,11 +362,32 @@ input.
 ## 11. Clusters
 
 When two or more records share one mechanism, decide them together as
-one case (`records: [...]`), never as a new skill on the spot — a skill
-is a bigger, later decision, made after the pattern has actually
-recurred, and it is always parked for the overseer, never decided alone.
-Say in section 3 that you noticed the shape, and let the overseer decide
-whether it is worth more than a coincidence.
+one case (`records: [...]`). Say in section 3 that you noticed the
+shape, and let the overseer decide whether it is worth more than a
+coincidence.
+
+You never make a skill. Some skills are self-learn's own: it made them,
+keeps them, and lists them in your output contract. A pending lesson that
+belongs in one of those you route there yourself, like any other
+decision (`dest: new-skill:<name>`, with a name from that list). A
+`new-skill` line naming any other skill is refused.
+
+When lessons are steps or parts of one task-shaped thing — a procedure
+an agent needs at one moment, which separate lines scattered across
+files do not give it — propose a skill: park the case with
+`parked_reason: skill-proposal` and put the proposal in its decision's
+`skill`: the name you propose, one sentence on why, and every lesson
+the skill would hold (each lesson of the case, and any placed lesson
+that belongs with them). Propose it when the pattern has actually
+recurred, not on the first resemblance; a skill is a bigger, later
+decision than a line. The same goes for a placed lesson that belongs in
+one of self-learn's own skills: moving a placed lesson is the
+overseer's, so name it in a proposal whose name is that skill. The
+overseer decides each proposal on its weekly run — it builds the skill,
+adds the lessons to one it owns, defers, or declines — and may choose
+another name; until then the case's lessons are held for it (§12). Your
+sheet for such a case is what you would do with each lesson if no skill
+is made, so a declined proposal still leaves a decision to start from.
 
 When pending lessons of this packet say one thing, you may merge them
 into one: one case covering all of them, outcome `replaced`, whose sheet
@@ -384,8 +405,9 @@ full — only the Decision section is a question instead of an answer.
 Write, in section 3: the question itself, your tentative answer if you
 have one (never presented as a decision), and the missing fact or the
 value at stake that stopped you from deciding alone. Name the reason you
-parked it as one of five: `hook`, `always-loaded-user-scope`,
-`broad-removal`, `authority-unclear`, `scope-conflict` — this is what the
+parked it as one of six: `hook`, `always-loaded-user-scope`,
+`broad-removal`, `authority-unclear`, `scope-conflict`, `skill-proposal`
+(§11) — this is what the
 overseer's intake and its notification cues sort on, so pick the one that
 actually stopped you, never a catch-all. The runner also parks a case as
 `scope-conflict` on its own when it would move a lesson you have already

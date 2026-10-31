@@ -472,7 +472,7 @@ what an unattended run decided, and how you correct it:
   index; use it to find what ran overnight or what is waiting on the
   overseer. `--parked-reason` filters on the closed set (`hook`,
   `always-loaded-user-scope`, `broad-removal`, `authority-unclear`,
-  `scope-conflict` — the five the steward chooses — plus
+  `scope-conflict`, `skill-proposal` — the six the steward chooses — plus
   `plain-host-committed-file`, `attempts-exhausted` and `ledger-refused`,
   which its runner writes for it; the runner also writes `scope-conflict`
   for a case that would move a lesson the steward already moved, or one a
@@ -504,7 +504,7 @@ what an unattended run decided, and how you correct it:
 
 A parked case (`kind: parked`, `parked_for: overseer`) is a question the
 steward could not settle alone — its `parked_reason` names which of the
-five kinds stopped it, and section 3 holds its tentative answer, if it
+six kinds stopped it, and section 3 holds its tentative answer, if it
 has one, and its reason for stopping there. Three further reasons are
 written by the runner rather than chosen by the steward, and
 `--parked-reason` accepts them too: `plain-host-committed-file`;
@@ -527,6 +527,21 @@ the overseer's intake and draws a refused attempt every week. This is
 the same order the overseer's own
 runner uses when it decides a parked item in the user's stead — a human
 resolving one is not a special case.
+
+A `skill-proposal` case is the steward proposing a skill
+(S-NEXT-sk6-steward-proposes): it never makes one. Its decision's
+`skill` block names the skill it proposes, why, and every lesson the
+skill would hold — each lesson of the case's `records`, which the case
+writer checks, and any placed lessons that belong with them — and its
+sheet is what the steward would do with each lesson if no skill is made.
+The overseer decides it on its weekly run (build the skill, add the
+lessons to a skill self-learn owns, defer, or decline); until then the
+case's lessons are held like any parked case's. The steward may itself
+route a pending lesson into a skill self-learn already owns
+(`dest: new-skill:<name>`); a `new-skill` line from it naming any other
+skill is refused. Deciding a proposal in a human session follows the
+successor-case order above; `self-learn route --dest new-skill:<name>`
+remains how a person makes a new skill.
 
 ## Steward run
 

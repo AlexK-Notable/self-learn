@@ -239,6 +239,10 @@ _REDACTED_DETAIL = "<redacted: secret-scan>"
 #: (`steward_prompt._render_output_contract`).
 _RUNNER_ONLY_PARKED_REASONS = steward_prompt.RUNNER_ONLY_PARKED_REASONS
 #: ... and the reasons the model MAY park a lesson with: every other one.
+#: S-NEXT-sk6-steward-proposes: that includes `skill-proposal`
+#: (`cases.SKILL_PROPOSAL_REASON`), the steward's one way to ask for a
+#: skill; the case writer requires its `decision.skill`, so a proposal
+#: without one reaches the repair turn through `_case_rule_message`.
 _MODEL_PARKED_REASONS = cases.PARKED_REASONS - _RUNNER_ONLY_PARKED_REASONS
 _NO_PROGRESS_DETAIL = (
     "the attempt ran and moved no disposition, case phase, packet phase or "
