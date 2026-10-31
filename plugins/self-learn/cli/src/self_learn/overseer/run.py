@@ -27,7 +27,7 @@ import uuid
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
@@ -790,6 +790,10 @@ week, directly after Catalogue health, write one line per step, as
 Read the step's note first, and the record in lessons/ when the step names a lesson. A step only the
 user may take (a setting only they set, an answer they typed) is by design: say so instead of
 naming a gap. When the evidence does not show what the gap was, say that.
+uncommitted-host-removals: plain-mode projects where self-learn took a retired lesson's lines out of a
+tracked file and nobody has committed it yet ({{project, file, since}}). Under Catalogue health name each,
+with its file and how long it has waited; the agent working in that project commits it. An empty list
+means none are waiting.
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
 case you decide. To correct a case that is not parked (for example a decision whose line the
@@ -859,7 +863,9 @@ written for someone who has not read this report; case is the case it comes from
 after {project_notices.NOTICE_DAYS} days, or sooner when the user marks it done. At most {project_notices.MAX_PER_RUN} a run. The report is where findings go: write a notice only when a
 session in that project would act differently for knowing it, and none when nothing meets that. The same words
 for the same project one week later are the same notice. A project's `showing` list in projects.yaml holds
-the notices still showing there: do not write one of them again, not even reworded.
+the notices still showing there: do not write one of them again, not even reworded. Its `done` list holds
+the ones a person marked done in the last 30 days: a notice for the same case is not shown again however
+it is worded, so do not write one.
 user-model-delta.yaml is {{updates: [...]}}. Each update is either
 {{action: add, container, title, because, source: system-reading, ref, held_since?, conditions?, statements?, basis?}}
 or {{action: lapse, id, changed_condition?|contrary?|consolidated_into?}}. Adds are provisional
@@ -1279,11 +1285,18 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
     # S-106: the projects a notice may name (names and real paths only).
     # Each project also carries `showing`: the overseer notices still up there, so
     # the model does not write a reworded copy (a new notice, a fresh 14 days).
+    # `done` holds the words of the ones a person marked done in the last
+    # 30 days: a notice for the same case is not made again (cures lane CU-6).
     showing = project_notices.showing_by_project(home)
-    project_rows = [
-        {**row, "showing": showing[row["path"]]} if showing.get(row["path"]) else row
-        for row in project_notices.known_projects(home)
-    ]
+    done = project_notices.done_by_project(home)
+    project_rows = []
+    for row in project_notices.known_projects(home):
+        extra: dict[str, Any] = {}
+        if showing.get(row["path"]):
+            extra["showing"] = showing[row["path"]]
+        if done.get(row["path"]):
+            extra["done"] = done[row["path"]]
+        project_rows.append({**row, **extra})
     projects_text = _yaml_text({"projects": project_rows})
     if scan.scan(projects_text):
         projects_text = "projects: []\n"  # an input file's hit would refuse the run
@@ -1787,7 +1800,8 @@ def _validate_findings(
 
 
 def _validate_notices(
-    data: object, known_paths: Iterable[str]
+    data: object, known_paths: Iterable[str],
+    is_done: Callable[[str, str, str | None], bool] | None = None,
 ) -> tuple[list[dict[str, str]], list[str]]:
     """Validate notices.yaml ENTRY BY ENTRY (S-106), as findings are:
     a notice that breaks a rule costs that notice, never the run, and each
@@ -1799,7 +1813,11 @@ def _validate_notices(
     ``(kept, dropped_lines)``; each kept entry is ``{project, text[, case]}``
     with the project as a real path and the text's whitespace collapsed to
     single spaces (a wrapped block scalar is one line). At most
-    :data:`notices.MAX_PER_RUN` are kept; the rest are dropped and counted."""
+    :data:`notices.MAX_PER_RUN` are kept; the rest are dropped and counted.
+    *is_done(project, text, case)* answers whether a person already marked
+    that notice done (its key is the case when one is named, else the words):
+    it is dropped and said so, in the report's "Refused / could not do"
+    (cures lane CU-6)."""
     if not isinstance(data, dict) or set(data) != {"notices"} or not isinstance(data["notices"], list):
         return [], ["notices.yaml: dropped — expected only a notices list"]
     known = {str(path) for path in known_paths}
@@ -1833,6 +1851,8 @@ def _validate_notices(
                 isinstance(entry["case"], str) and _CASE_ID_RE.match(entry["case"])
             ):
                 problem = "case must be a case-… id"
+            elif is_done is not None and is_done(project, text, entry.get("case")):
+                problem = "already marked done"
             elif (project, text) in seen:
                 problem = "the same notice twice"
             elif len(kept) >= project_notices.MAX_PER_RUN:
@@ -1849,7 +1869,8 @@ def _validate_notices(
 
 
 def _read_notices(
-    stage: Path, withheld: dict[str, str], known_paths: Iterable[str]
+    stage: Path, withheld: dict[str, str], known_paths: Iterable[str],
+    is_done: Callable[[str, str, str | None], bool] | None = None,
 ) -> tuple[list[dict[str, str]], list[str]]:
     """The run's project notices from the stage's optional notices.yaml, and
     the runner lines for what was dropped. Never raises and never costs the
@@ -1869,7 +1890,7 @@ def _read_notices(
         data: object = _yaml_mapping(path)
     except OverseerError as exc:
         return [], [f"{exc}: every notice dropped"]
-    kept, dropped = _validate_notices(data, known_paths)
+    kept, dropped = _validate_notices(data, known_paths, is_done)
     return kept, [*lines, *dropped]
 
 
@@ -1888,9 +1909,11 @@ def _write_project_notices(home: Path, manifest: dict[str, Any]) -> int:
         if not (isinstance(row, dict) and isinstance(row.get("project"), str) and isinstance(row.get("text"), str)):
             continue
         offered += 1
+        case = row.get("case") if isinstance(row.get("case"), str) else None
         project_notices.add(
             home, project=row["project"], text=row["text"],
             source=project_notices.SOURCE_OVERSEER,
+            key=project_notices.overseer_key(row["text"], case), case=case,
             run=run_id if isinstance(run_id, str) else None,
         )
     return offered
@@ -5891,6 +5914,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             notice_rows, notice_drops = _read_notices(
                 stage, withheld,
                 {row["path"] for row in project_notices.known_projects(home)},
+                lambda project, text, case: project_notices.is_done_key(
+                    home, project, project_notices.overseer_key(
+                        " ".join(text.split()), case if isinstance(case, str) else None,
+                    ),
+                ),
             )
             finding_drops = [*finding_drops, *notice_drops]
             if examined_ids != selected:

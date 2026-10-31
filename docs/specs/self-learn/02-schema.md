@@ -962,6 +962,11 @@ no model and no case can still be reviewed). With `premises.enabled` false the r
 `state: off` and carries no counts. A part that cannot be read says `state:
 unavailable` with a reason, and an empty list beside a sweep that has not run is
 labelled by the row's `caution`: an unreadable target is never reported as zero.
+**`uncommitted-host-removals`** (hand-maintenance round b, lane CU-6): `items` is `[{project, file, since}]`, one
+per not-done `code` notice (S-106, 13 §7.5) whose condition git still answers "holds": a plain-mode project's
+tracked file that a lesson retirement left changed and nobody has committed. Asked in the run, so it does not depend on
+a session opening in that project. The overseer's report names each under Catalogue health; the agent working in
+that project commits the file with the line the notice carries. An empty list means none are waiting.
 **`hand-steps-this-week`** (hand-maintenance cures, lane C; design M5.3): every ledger
 commit of the last seven days that no job made. A commit is a job's when its subject
 begins `self-learn: steward manifest|telemetry flush|case |worker |mine |overseer`
@@ -995,10 +1000,10 @@ made before this field has none and its report is published as the overseer wrot
 The report's length guide counts the overseer's own lines, not the runner's.
 
 *(Added 2026-10-31, S-106.)* **Phase B's optional `notices.yaml`.** Phase B's
-stage also holds `projects.yaml` (`{projects: [{name, path, showing?}]}`: the paths of every
+stage also holds `projects.yaml` (`{projects: [{name, path, showing?, done?}]}`: the paths of every
 project bucket (`projects/<slug>/meta.yaml`) and registered host that exist, as real
 paths, each with `showing`, the words of the overseer notices still up there, when it has any, so a finding
-is not written again reworded; a secret-scan hit makes it `projects: []`), and phase B MAY write
+is not written again reworded, and `done`, the words of those a person marked done in the last 30 days (a notice for the same case is not shown again however worded; the runner drops it and says "already marked done"); a secret-scan hit makes it `projects: []`), and phase B MAY write
 `notices.yaml`, `{notices: [{project, text, case?}]}`. It is not a required output
 file: a run without it is complete. The runner keeps an entry whose `project` is one
 of those paths (and that the secret scan does not match: the run record is scanned whole and a hit would

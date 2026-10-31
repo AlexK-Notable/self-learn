@@ -16,6 +16,7 @@ from typing import Any, Iterable
 from ruamel.yaml import YAML
 
 from .. import conditions, gitops, report, scan, settings, telemetry
+from .. import notices as project_notices
 from ..always_loaded import is_always_loaded
 from ..ledger import discover_buckets
 from ..records import Record, RecordError, is_replacement
@@ -454,6 +455,24 @@ def hand_steps_row(home: Path | str, *, now: datetime | None = None) -> dict[str
     }
 
 
+def uncommitted_host_removals_row(home: Path | str) -> dict[str, Any]:
+    """Plain-mode projects where a lesson removal left a tracked file changed
+    and nobody has committed it (cures lane CU-6, decision 7): every not-done
+    ``code`` notice whose condition git still answers "holds". Asked here, in
+    the run, so the overseer's report names it weekly even if no session
+    opens in that project. The notice's own words carry the commit command."""
+    items = project_notices.uncommitted_removals(home)
+    return {
+        "kind": "uncommitted-host-removals",
+        "items": items,
+        "caution": (
+            "Self-learn never commits in a plain-mode project. The next agent working in the "
+            "project commits the file (the notice shows it the exact git commit line); an empty "
+            "list means nothing is waiting."
+        ),
+    }
+
+
 def gather(home: Path | str) -> list[dict[str, Any]]:
     """Read and render the bounded catalogue-health packet."""
     resolved = Path(home)
@@ -489,6 +508,7 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         # census of hand steps (hand-maintenance cures, lane C).
         premise_facts(resolved),
         hand_steps_row(resolved),
+        uncommitted_host_removals_row(resolved),
         {
             "kind": "consolidation-policy",
             "value": (

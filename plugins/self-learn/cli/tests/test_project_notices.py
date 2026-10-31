@@ -218,7 +218,7 @@ def test_an_uncommitted_notice_clears_when_the_person_commits_the_file(tmp_path)
     claude.write_text("one\n", encoding="utf-8")  # a lesson's line taken out
     note = notices.add_uncommitted(home, project=repo, file=claude, now=T0)
     assert note is not None and note.source == notices.SOURCE_CODE
-    assert "CLAUDE.md" in note.text and "uncommitted" in note.text
+    assert "CLAUDE.md" in note.text and "git commit" in note.text
     assert [n.id for n in notices.visible(home, repo, now=T0)] == [note.id]  # control
 
     commit_all(repo, "the person commits it")
@@ -764,3 +764,195 @@ def test_phase_b_is_shown_the_overseer_notices_still_up_in_each_project(tmp_path
     data = YAML(typ="safe").load(seen["projects"])
     (row,) = [r for r in data["projects"] if r["path"] == os.path.realpath(_e.host)]
     assert row["showing"] == [WORDS]
+
+
+# ============================ hand-maintenance round b, lane CU-6 (S-NEXT-notices)
+#
+# A condition notice outlives 14 days while its condition holds; its words name
+# the exact commit; the overseer sees the waiting ones; a notice marked done is
+# keyed by its case, so other words do not bring it back.
+
+LATE = T0 + timedelta(days=20)
+
+
+def _dirty_notice(tmp_path, now=T0):
+    home = tmp_path / "ledger"
+    repo = _tracked_repo(tmp_path)
+    claude = repo / "CLAUDE.md"
+    claude.write_text("one\n", encoding="utf-8")  # a lesson's line taken out
+    note = notices.add_uncommitted(home, project=repo, file=claude, now=now)
+    assert note is not None
+    return home, repo, claude, note
+
+
+def test_a_code_notice_on_a_still_dirty_file_shows_on_day_twenty(tmp_path):
+    home, repo, claude, note = _dirty_notice(tmp_path)
+    assert [n.id for n in notices.visible(home, repo, now=T0 + timedelta(days=5))] == [note.id]  # control
+    assert [n.id for n in notices.visible(home, repo, now=LATE)] == [note.id]
+    commit_all(repo, "the agent commits it")
+    assert notices.visible(home, repo, now=LATE) == []  # the condition cleared
+
+
+def test_past_fourteen_days_a_condition_git_cannot_answer_hides_the_notice(tmp_path, monkeypatch):
+    home, repo, _claude, note = _dirty_notice(tmp_path)
+
+    def timed_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(notices.subprocess, "run", timed_out)
+    assert [n.id for n in notices.visible(home, repo, now=T0 + timedelta(days=5))] == [note.id]  # young: kept
+    assert notices.visible(home, repo, now=LATE) == []  # old: hidden
+
+
+def test_prune_keeps_a_dirty_condition_notice_and_deletes_a_done_one(tmp_path):
+    home, repo, claude, note = _dirty_notice(tmp_path)
+    path = notices.notices_dir(home) / f"{note.id}.json"
+    day40 = T0 + timedelta(days=40)
+    assert notices.prune(home, now=day40) == 0 and path.is_file()
+    commit_all(repo, "committed")
+    assert notices.prune(home, now=day40) == 1 and not path.exists()  # cleared: goes
+    claude.write_text("", encoding="utf-8")
+    again = notices.add_uncommitted(home, project=repo, file=claude, now=T0)
+    assert again is not None
+    notices.mark_done(home, again.id, now=T0)
+    assert notices.prune(home, now=day40) == 1  # done: goes even though the file is dirty
+    assert notices.all_notices(home) == []
+
+
+def test_a_second_removal_after_fourteen_days_leaves_the_dirty_notice_as_it_is_and_it_shows(tmp_path):
+    home, repo, claude, first = _dirty_notice(tmp_path)
+    same = notices.add_uncommitted(home, project=repo, file=claude, now=LATE)
+    assert same is not None and same.created_at == first.created_at  # dirty: left alone
+    assert [n.id for n in notices.visible(home, repo, now=LATE)] == [first.id]
+    notices.mark_done(home, first.id, now=LATE)
+    claude.write_text("", encoding="utf-8")
+    fresh = notices.add_uncommitted(home, project=repo, file=claude, now=LATE)  # done: renewed
+    assert fresh is not None and fresh.done_at is None and fresh.created_at != first.created_at
+
+
+def test_a_code_notice_names_the_exact_commit_for_its_one_file(tmp_path):
+    home, repo, claude, note = _dirty_notice(tmp_path)
+    assert "git commit" in note.text and "-- :/CLAUDE.md" in note.text
+    assert len(note.text) <= notices.MAX_TEXT and "self-learn" not in note.text
+    words = notices.uncommitted_text("dir with space/a b.md", ":/dir with space/a b.md")
+    assert "'" in words and "a b.md'" in words  # quoted for a shell
+    deep = "d/" * 60 + "x.md"
+    assert len(notices.uncommitted_text(deep, ":/" + deep)) <= notices.MAX_TEXT
+
+
+def test_the_commit_line_in_the_notice_commits_only_that_file(tmp_path):
+    """Run the notice's own command from a subdirectory: it must commit the
+    one file and leave another dirty file alone."""
+    import shlex
+
+    home, repo, claude, note = _dirty_notice(tmp_path)
+    (repo / "other.md").write_text("x\n", encoding="utf-8")
+    git(repo, "add", "other.md")
+    (repo / "sub").mkdir()
+    command = note.text.split("Commit it: ", 1)[1]
+    argv = shlex.split(command)
+    assert argv[:2] == ["git", "commit"]
+    subprocess.run(argv, cwd=repo / "sub", check=True, capture_output=True)
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True,
+    ).stdout
+    assert "CLAUDE.md" not in status and "other.md" in status
+
+
+def test_the_health_row_lists_a_dirty_notice_and_not_a_committed_one(tmp_path):
+    from self_learn.overseer import health
+
+    home, repo, _claude, note = _dirty_notice(tmp_path)
+    row = health.uncommitted_host_removals_row(home)
+    assert row["kind"] == "uncommitted-host-removals"
+    (item,) = row["items"]
+    assert item["project"] == os.path.realpath(repo) and item["file"].endswith("CLAUDE.md")
+    assert item["since"] == note.created_at
+    assert "uncommitted-host-removals" in [r["kind"] for r in health.gather(home)]
+    commit_all(repo, "committed")
+    assert health.uncommitted_host_removals_row(home)["items"] == []
+    notices.mark_done(home, note.id)
+    assert health.uncommitted_host_removals_row(home)["items"] == []
+
+
+def test_a_done_overseer_notice_is_not_made_again_in_other_words_for_the_same_case(tmp_path):
+    home = tmp_path / "ledger"
+    proj = _project(tmp_path)
+    manifest = {"run_id": "run-0000000000aa", "notices": [
+        {"project": str(proj), "text": WORDS, "case": "case-0000000b"}]}
+    overseer_run._write_project_notices(home, manifest)
+    (note,) = notices.all_notices(home)
+    assert note.case == "case-0000000b"
+    notices.mark_done(home, note.id)
+    reworded = {"run_id": "run-0000000000bb", "notices": [
+        {"project": str(proj), "text": "The watchdog is older than its daemon; leave it be.",
+         "case": "case-0000000b"}]}
+    overseer_run._write_project_notices(home, reworded)
+    assert [n.id for n in notices.all_notices(home)] == [note.id]  # nothing new
+    other = {"run_id": "run-0000000000cc", "notices": [
+        {"project": str(proj), "text": "The watchdog is older than its daemon; leave it be.",
+         "case": "case-0000000c"}]}
+    overseer_run._write_project_notices(home, other)
+    assert len(notices.all_notices(home)) == 2  # control: another case is news
+
+
+def test_validation_names_a_notice_a_person_already_marked_done(tmp_path):
+    home = tmp_path / "ledger"
+    proj = _project(tmp_path)
+    overseer_run._write_project_notices(home, {"notices": [
+        {"project": str(proj), "text": WORDS, "case": "case-0000000b"}]})
+    (note,) = notices.all_notices(home)
+    notices.mark_done(home, note.id)
+    real = os.path.realpath(proj)
+    done = lambda project, text, case: notices.is_done_key(  # noqa: E731
+        home, project, notices.overseer_key(text, case))
+    data = {"notices": [
+        {"project": real, "text": "Said again, in other words.", "case": "case-0000000b"},
+        {"project": real, "text": "A different case.", "case": "case-0000000c"},
+    ]}
+    kept, dropped = overseer_run._validate_notices(data, [real], done)
+    assert [row["text"] for row in kept] == ["A different case."]
+    assert dropped == ["notice 1: dropped — already marked done"]
+    kept_all, none = overseer_run._validate_notices(data, [real])  # control: no check, both kept
+    assert len(kept_all) == 2 and none == []
+
+
+def test_notices_marked_done_show_in_projects_yaml_for_thirty_days(tmp_path):
+    home = tmp_path / "ledger"
+    proj = _project(tmp_path)
+    note = _add(home, proj, now=T0)
+    assert note is not None
+    assert notices.done_by_project(home, now=T0) == {}  # control: not done yet
+    notices.mark_done(home, note.id, now=T0)
+    assert notices.done_by_project(home, now=T0 + timedelta(days=29)) == {os.path.realpath(proj): [WORDS]}
+    assert notices.done_by_project(home, now=T0 + timedelta(days=31)) == {}
+
+
+def test_phase_b_is_shown_the_done_notices_of_each_project(tmp_path, monkeypatch):
+    def entries(env, parked):
+        return []
+
+    def done(env):
+        note = notices.add(env.ledger, project=env.host, text=WORDS, source=notices.SOURCE_OVERSEER)
+        assert note is not None
+        notices.mark_done(env.ledger, note.id)
+
+    _e, _h, _r, seen = _notice_run(tmp_path, monkeypatch, entries, before=done)
+    data = YAML(typ="safe").load(seen["projects"])
+    (row,) = [r for r in data["projects"] if r["path"] == os.path.realpath(_e.host)]
+    assert row["done"] == [WORDS] and "showing" not in row
+
+
+def test_a_run_names_a_notice_already_marked_done_in_refused(tmp_path, monkeypatch):
+    def entries(env, parked):
+        return [{"project": str(env.host), "text": "Said in new words.", "case": parked}]
+
+    def done(env):
+        pass  # the case id is known only inside the run: mark it done at validation time
+
+    monkeypatch.setattr(notices, "is_done_key", lambda *a, **k: True)
+    _env, home, result, _seen = _notice_run(tmp_path, monkeypatch, entries, before=done)
+    assert result.status == "applied", result
+    assert notices.all_notices(home) == []
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert "notice 1: dropped — already marked done" in report.split("## Refused / could not do", 1)[1]

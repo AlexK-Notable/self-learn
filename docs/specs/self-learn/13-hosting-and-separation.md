@@ -1858,13 +1858,25 @@ ledger: it carries a machine path, ends by itself, and is a hint, not a record. 
 lost cache loses the hint and nothing the ledger holds (the report still has the
 finding; the removal's warning still printed). One file per notice, so two writers
 never read-modify-write one file. Its id is `ntc-` and eight hex digits of a hash
-of the project, the source and a key (an overseer notice: its words; a code
-notice: the file), so the same finding written again by the next weekly run is
-the same notice: it does not start a new 14 days and does not come back after a
-person marked it done. A code notice is written only right after a removal changed
+of the project, the source and a key (an overseer notice: `case:<case id>` when
+it names a case, else its words; a code notice: the file), so the same finding
+written again by the next weekly run is the same notice: it does not start a new
+14 days and does not come back after a person marked it done. A notice marked
+done keeps its key done for 30 days: the overseer is shown those notices
+(`done` in `projects.yaml`), and a run that writes one for the same case, however
+worded, has it dropped and named "already marked done" in "Refused / could not
+do" (S-NEXT-notices). A code notice is written only right after a removal changed
 the file: while the notice for that file is live a further removal leaves it as it
 is (two removals before a commit are one line, not two), and one that was marked
-done or ran out its days is replaced by a fresh one.
+done, or ended (its days are past and git no longer says the file is changed), is
+replaced by a fresh one. The words name the step for whoever reads the line,
+usually the agent working in the project: "a retired lesson's lines were taken out
+of <rel>; nothing else changed. Commit it: `git commit -m "remove retired lesson
+lines" -- ':/<path from the repo root>'`" (a pathspec from the repo root, so it
+works from any directory; the command is never clipped, and a path too long for
+the 200 characters falls back to naming the file). Self-learn itself never commits
+in a plain-mode repo; the next agent working there does (decision 7 of the
+2026-10-31b round), and the weekly report lists any left (below).
 
 **Where a session sees it.** A notice shows in a session whose working directory
 is the notice's project (a real path) or inside it, a git worktree of the project
@@ -1878,8 +1890,19 @@ naming `self-learn notice list`. The line's wording lives in
 malformed field prints nothing.
 
 **How a notice ends.** Whichever comes first: (1) `self-learn notice done <id>`
-(a person's or an agent's word; cache only); (2) its condition clears; (3) 14 days
-after it was first made. A file older than 30 days is deleted by the next writer.
+(a person's or an agent's word; cache only); (2) its condition clears; (3) for a
+notice WITHOUT a condition, 14 days after it was first made. A notice WITH a
+condition has no age limit: it is live while git answers that the condition still
+holds (an uncommitted removal outlives 14 days, and so must the note about it).
+Past 14 days a condition git cannot answer (missing, a timeout, the session
+budget spent) hides it; inside the 14 days it still keeps the notice. A notice
+file older than 30 days is deleted by the next writer, except a not-done condition
+notice whose repo and file still exist and whose condition git has not answered
+clear. **The overseer sees what is left:** phase B's `health.yaml` carries an
+`uncommitted-host-removals` row, `{project, file, since}` for every not-done `code`
+notice whose condition holds (asked in the run, not at session start, so there is
+no 2-second budget), and the weekly report names each under Catalogue health, so
+a removal is not forgotten when no session opens in that project.
 
 **Two sources.**
 
