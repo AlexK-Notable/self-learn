@@ -312,8 +312,10 @@ revert). Doc 13 promotes that to the general rule:
    security boundary. A person's yes can also carry a registration: the
    overseer may put `register: {path, mode, kind?}` on an ask whose whole point is
    registering a repository it cannot register itself (the 2026-10-25 report:
-   "I cannot register a host (no verb)"). The ask's text must name the path and
-   the mode, the index keeps the field, and `overseer open` prints "a plain yes
+   "I cannot register a host (no verb)"). The ask's text must name the path as a
+   whole path (not the front or the tail of a longer one) and the mode as a
+   phrase ("in git mode", "a plain skills root"; not "git repository" or "a
+   plain yes"), the index keeps the field, and `overseer open` prints "a plain yes
    registers: <kind> host <path> in <mode> mode" under the ask. `overseer
    respond` with a bare yes (`yes`, `y`, with optional final punctuation; "yes,
    but git mode" is not one) runs `host add` for that registration BEFORE the
@@ -321,9 +323,17 @@ revert). Doc 13 promotes that to the general rule:
    the consent; nothing else registers anything. A registration `host add`
    refuses (a path that is gone, not a git repo in `git` mode, already
    registered in the other mode) refuses the whole `respond`: nothing is
-   recorded and the question stays open. From an agent's shell the answer is
-   still recorded (as before) but nothing is registered, and the output says so
-   and names the `host add` line a person or the agent they told can run.
+   recorded and the question stays open. A `skills-root` registration that
+   would replace a DIFFERENT registered skills root is refused the same way (the
+   question never said so). An agent relaying the person's answer is how an
+   answer normally reaches the ledger, so from an agent's shell `respond
+   --session <id>` registers when that session's transcript proves the typing:
+   the LAST row the person typed there is a plain yes (an AskUserQuestion click,
+   an earlier yes, an agent-written turn and anything typed after the yes do not
+   count; `statements.latest_user_typed`). Without `--session`, or when the check
+   fails, the answer is still recorded (as before) but nothing is registered, and
+   the output says why and names the `host add` line a person or the agent they
+   told can run.
 
    **What replaces git for a plain host, and what does not.** Item 2's
    drift check is unaffected: it was never a git check — it compares the

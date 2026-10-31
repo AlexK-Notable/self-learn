@@ -15,7 +15,9 @@ An ask may carry `register: {path, mode, kind?}` (S-NEXT-cures-b): the user's
 typed plain "yes" to it registers that repository as a canon host in the same
 command (`respond`). The person typing the answer is the consent
 (S-29 / Y-17); `overseer open` shows what a yes will register, and the ask's
-own text must name the path and the mode.
+own text must name the path and the mode. An agent relaying the answer from
+its own shell registers only with `--session`: the last row the person typed
+in that session must be a plain yes (`statements.latest_user_typed`).
 """
 
 from __future__ import annotations
@@ -86,9 +88,33 @@ def normalize_register(raw: object, text: str) -> tuple[dict[str, str] | None, s
         return None, f"register.mode must be one of {list(hosts.HOST_MODES)}"
     if kind not in hosts.HOST_KINDS:
         return None, f"register.kind must be one of {list(hosts.HOST_KINDS)}"
-    if path not in text or re.search(rf"\b{mode}\b", text, re.IGNORECASE) is None:
+    if not _names_path(text, path) or not _names_mode(text, mode):
         return None, "the ask's text must name register.path exactly and its mode"
     return {"kind": kind, "path": path, "mode": mode}, None
+
+
+def _names_path(text: str, path: str) -> bool:
+    """True when *text* holds *path* as a whole path: not the front of a longer
+    one (`/srv/app` inside `/srv/app-old` or `/srv/app/sub`), not the tail of
+    one (`/home/x/srv/app`). A closing `?`, `,`, `.` or quote is fine."""
+    return (
+        re.search(rf"(?<![\w/.~-]){re.escape(path)}(?![\w/-])(?!\.\w)", text) is not None
+    )
+
+
+def _names_mode(text: str, mode: str) -> bool:
+    """True when *text* names the mode the way a person reads one: "git mode",
+    "plain skills root", "plain host", "mode: plain". A bare "git repository"
+    or "a plain yes" does not name a mode."""
+    return (
+        re.search(
+            rf"\b{mode}[ -](?:mode|host|skills[ -]root|registration)\b"
+            rf"|\bin {mode}\b|\bmode\s*[:=]?\s*{mode}\b",
+            text,
+            re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 def _register_phrase(register: dict[str, str]) -> str:
@@ -470,32 +496,61 @@ def _dependent_cases(home: Path, proposition: str, statement_id: str) -> list[tu
 _PLAIN_YES_RE = re.compile(r"\s*y(es)?\s*[.!]?\s*", re.IGNORECASE)
 
 
-def _carry_out_registration(home: Path, row: dict, text: str) -> tuple[str, bool]:
+def _agent_shell_proof(home: Path, session: str | None, phrase: str, register: dict[str, str]) -> str | None:
+    """From an agent's shell a yes registers only when the person's own typing
+    is proved: the agent names the session (`--session`), and the LAST row the
+    person typed in that session's transcript is a plain yes. Returns `None`
+    when proved, else the sentence saying why nothing was registered. Nothing
+    older counts (a yes to another question), nothing typed after it, and no
+    tool result (an AskUserQuestion click is not typing)."""
+    hand = (
+        f"`self-learn host add {register['path']}"
+        f"{' --skills-root' if register['kind'] == 'skills-root' else ''} "
+        f"--mode {register['mode']}`"
+    )
+    if not session or not session.strip():
+        return (
+            f"NOT registered ({phrase}): this is an agent's shell, and a registration "
+            "carries the person's own typed yes. Run the same command with "
+            "`--session <the session id the person typed the yes in>` so the typing can be "
+            f"checked, answer in your own terminal, or run {hand} yourself"
+        )
+    try:
+        _ref, typed = statements.latest_user_typed(home, session.strip())
+    except statements.StatementError as exc:
+        return f"NOT registered ({phrase}): the typing could not be checked ({exc}); run {hand} yourself"
+    if _PLAIN_YES_RE.fullmatch(typed) is None:
+        return (
+            f"NOT registered ({phrase}): the last thing the person typed in session "
+            f"{session.strip()} is not a plain yes. Ask again, or run {hand} yourself"
+        )
+    return None
+
+
+def _carry_out_registration(
+    home: Path, row: dict, text: str, session: str | None = None
+) -> tuple[str, bool]:
     """S-NEXT-cures-b: what the answer *text* does about the registration an
     ask carries. Returns `(sentence, registered)`.
 
     Only a bare yes registers: "yes, but use git mode" or "not yet" is an
     answer the overseer reads, not a consent to what the question named.
     From an agent's shell (the detection that keeps tier-C settings the
-    person's) the answer is still recorded but nothing is registered: the
-    person typing it is the consent, and an agent can register by `host add`
-    when the person has told it to. A registration `host add` refuses (a
-    path that is gone, a path already registered in the other mode, a path
-    that is not a git repo for `git` mode) raises, so the answer is NOT
-    recorded and the question stays open."""
+    person's) the registration also needs proof that the person typed the yes
+    (`session`, see :func:`_agent_shell_proof`), because the agent relaying
+    the answer is how it normally reaches the ledger; without the proof the
+    answer is still recorded and nothing is registered. A registration `host
+    add` refuses (a path that is gone, a path already registered in the other
+    mode, a path that is not a git repo for `git` mode) raises, so the answer
+    is NOT recorded and the question stays open."""
     register = row["register"]
     phrase = _register_phrase(register)
     if _PLAIN_YES_RE.fullmatch(text) is None:
         return f"nothing registered: the answer was not a plain yes ({phrase})", False
     if settings.agent_caller():
-        return (
-            f"NOT registered ({phrase}): this is an agent's shell, and a registration "
-            "carries the person's own typed yes. Answer in your own terminal, or run "
-            f"`self-learn host add {register['path']}"
-            f"{' --skills-root' if register['kind'] == 'skills-root' else ''} "
-            f"--mode {register['mode']}` yourself",
-            False,
-        )
+        unproved = _agent_shell_proof(home, session, phrase, register)
+        if unproved is not None:
+            return unproved, False
     try:
         before = hosts.load_hosts(home)
         target = Path(register["path"]).expanduser().resolve()
@@ -505,6 +560,20 @@ def _carry_out_registration(home: Path, row: dict, text: str) -> tuple[str, bool
             else before.skills_root is not None
             and Path(before.skills_root).expanduser().resolve() == target
         )
+        if (
+            register["kind"] == "skills-root"
+            and before.skills_root is not None
+            and Path(before.skills_root).expanduser().resolve() != target
+        ):
+            # `host add` would silently replace the registered root, and the
+            # question never said so: that is a person's decision, made by hand.
+            raise ConversationError(
+                f"overseer respond: your yes would register {phrase}, but "
+                f"{before.skills_root} is already the skills root and registering "
+                "this one would replace it. Nothing was recorded and the question "
+                "stays open; if you want the swap, run `self-learn host add "
+                f"{register['path']} --skills-root --mode {register['mode']}` yourself"
+            )
         hosts.host_add(home, register["path"], register["kind"], mode=register["mode"])
     except hosts.HostsError as exc:
         raise ConversationError(
@@ -531,6 +600,7 @@ def respond(
     scope: str,
     text: str,
     as_asked: str | None = None,
+    session: str | None = None,
 ) -> ResponseResult:
     resolved = Path(home)
     parsed_scope = _scope(scope)
@@ -547,7 +617,7 @@ def respond(
         # recorded, so a registration that is refused leaves the question
         # open (nothing recorded) instead of an answered question whose
         # promised registration never happened.
-        registration, registered = _carry_out_registration(resolved, row, text)
+        registration, registered = _carry_out_registration(resolved, row, text, session)
     statement_id = statements.add(
         resolved,
         verbatim=text,

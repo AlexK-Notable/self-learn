@@ -1331,7 +1331,9 @@ def _check_hosts(home: Path) -> tuple[Verdict, str]:
                 f"skills root to git mode (`self-learn host set-mode "
                 f"{resolved_root} git --skills-root`, in your own terminal), "
                 "after which the two modes agree and the destination is no "
-                "longer refused"
+                "longer refused (the command also says if a file self-learn "
+                "wrote while the root was plain still sits in "
+                ".git/info/exclude, a line only you can remove)"
             )
         return Verdict.FAIL, (
             f"{shown} — {len(stranded)} routed skill lesson(s) on the skills "

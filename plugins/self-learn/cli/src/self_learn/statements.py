@@ -34,6 +34,7 @@ __all__ = [
     "StatementError",
     "StatementUsageError",
     "add",
+    "latest_user_typed",
     "list_statements",
     "user_message_ref",
 ]
@@ -328,6 +329,38 @@ def user_message_ref(home: Path | str, session: str, verbatim: str) -> str:
             "these words; pass the words exactly as the user said them"
         )
     return f"transcript:{session}#L{hits[-1]}"
+
+
+def latest_user_typed(home: Path | str, session: str) -> tuple[str, str]:
+    """``(message_ref, text)`` of the LAST row of *session*'s transcript that
+    the user typed (S-NEXT-cures-b). The proof an agent's shell needs before a
+    registration may ride on a "yes": the words the person typed most recently
+    must be that yes, so an older "yes" (to another question) or anything the
+    person typed after it never counts.
+
+    Read-only. Only a row whose role is ``user`` counts, as in
+    :func:`user_message_ref`; a tool result (an AskUserQuestion click), an
+    agent-written turn, a skill text or a subagent's reply is never "typed".
+    Raises :class:`StatementUsageError` when the session has no transcript or
+    holds no typed row."""
+    roots = refs.transcript_roots(home)
+    try:
+        ref = refs.resolve(session, roots=roots)
+        lines = refs._lines(refs.locate(ref, roots=roots))  # noqa: SLF001
+    except refs.RefError as error:
+        raise StatementUsageError(
+            f"statement: no transcript found for session {session!r} under "
+            "the configured transcript roots (refs.transcript_roots)"
+        ) from error
+    except (OSError, UnicodeError) as error:
+        raise _transcript_problem(error) from error
+    for number in range(len(lines), 0, -1):
+        entry = refs._entry(lines[number - 1])  # noqa: SLF001
+        if entry is not None and refs.role_of(entry) == "user":
+            return f"transcript:{session}#L{number}", refs._raw_text(entry).strip()  # noqa: SLF001
+    raise StatementUsageError(
+        f"statement: session {session!r} holds no row the user typed"
+    )
 
 
 def add(

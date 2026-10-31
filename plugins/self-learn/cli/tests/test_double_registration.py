@@ -804,7 +804,10 @@ def test_the_mode_flip_refusal_names_the_registration_on_both_commands(
         host_add(home, repo, "project", mode="git")
     assert f"`self-learn host remove {repo} --project`" in str(project_flip.value)
     assert f"`self-learn host add {repo} --mode git`" in str(project_flip.value)
-    remove, add = re.findall(r"`self-learn (host [^`]*)`", str(root_flip.value))
+    # S-NEXT-cures-b: the refusal now names three commands, in this order: the
+    # one-step `set-mode` first, then the remove + add pair it replaces.
+    set_mode, remove, add = re.findall(r"`self-learn (host [^`]*)`", str(root_flip.value))
+    assert set_mode == f"host set-mode {repo} plain --skills-root"
     assert remove == f"host remove {repo} --skills-root"
     assert add == f"host add {repo} --skills-root --mode plain"
     git(repo, "rm", "-q", "--cached", "CLAUDE.md")  # nothing here blocks a plain root

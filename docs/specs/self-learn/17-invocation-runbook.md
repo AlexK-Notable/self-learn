@@ -1126,7 +1126,9 @@ loudly, not a verb's problem to route around silently.
 mechanism; this section is the operator-facing summary.)*
 
 **What `--mode plain` does and does not do.** A registered host's mode
-is set once, at `self-learn host add --mode git|plain <path>`. A
+is chosen at `self-learn host add --mode git|plain <path>` and changed
+afterwards only by a person's `self-learn host set-mode` (see "How to change
+a host's mode" below), never by a second `host add`. A
 **`plain`** host gets NO commit, NO push, and NO off-machine backup of
 its own file, ever, from self-learn — every write lands on disk
 uncommitted, and publishing it (or not) is entirely the operator's own

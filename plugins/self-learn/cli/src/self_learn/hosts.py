@@ -74,6 +74,8 @@ __all__ = [
     "MARKER_FILENAME",
     "Hosts",
     "HostAddResult",
+    "HostModeAgentRefusal",
+    "HostSetModeResult",
     "HostsError",
     "ancestors_of",
     "canon_read_roots",
@@ -85,6 +87,7 @@ __all__ = [
     "host_rebind",
     "host_remove",
     "host_path_problem",
+    "host_set_mode",
     "host_slug",
     "hosts_path",
     "is_project_host",
@@ -716,8 +719,9 @@ def host_add(
     ``self-learn: host add <kind> <path>``. Idempotent: re-adding an
     already-registered host with the SAME mode changes nothing and
     commits nothing; re-adding with a DIFFERENT mode REFUSES (MODE6,
-    U-hostmode R-f — the ruled "set once" shape: change is
-    ``host remove`` + ``host add --mode``).
+    U-hostmode R-f: ``host add`` never changes a mode; a person changes
+    one in place with ``host set-mode``, S-NEXT-cures-b, or by ``host
+    remove`` + ``host add --mode``).
 
     ``init`` (09 §11 Y-17, 2026-07-18): run the ``--init`` leg
     (:func:`_init_for_registration`) between the pure-argument refusals
@@ -1323,9 +1327,9 @@ def host_remove(
     ``registration`` (S-82, ``host remove --skills-root | --project``):
     drop only that one registration of *path* -- the skills root, or the
     project entry -- and keep the other with its own mode. One repo may be
-    registered both ways in two modes, and MODE is set once per
-    registration (MODE6), so changing one registration's mode is this
-    call followed by ``host add``; without it, a bare ``host remove``
+    registered both ways in two modes, and ``host add`` never changes a
+    registration's mode (MODE6), so changing one is ``host set-mode``
+    (S-NEXT-cures-b), or this call followed by ``host add``; without it, a bare ``host remove``
     dropped both. The routed-record refusal then counts only the records
     that registration compiles (:func:`records_targeting`). ``None`` (the
     bare verb) drops every registration of *path*, unchanged.

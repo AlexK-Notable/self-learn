@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,7 @@ from self_learn.hosts import (
 from self_learn.overseer import cli as overseer_cli
 from self_learn.overseer import conversation
 from self_learn.overseer import run as overseer_run
-from support import git, init_repo, make_env, verb_subject
+from support import commit_all, git, init_repo, make_env, verb_subject
 from test_overseer_conversation import _case, _report_and_index
 
 
@@ -304,7 +305,9 @@ def test_anything_but_a_bare_yes_records_the_answer_and_registers_nothing(tmp_pa
     assert _answers(home) == answers + 1  # the words are still the answer
 
 
-def test_from_an_agent_shell_the_answer_is_recorded_but_nothing_is_registered(tmp_path, monkeypatch):
+def test_from_an_agent_shell_without_a_session_the_answer_is_recorded_but_nothing_is_registered(
+    tmp_path, monkeypatch
+):
     new = tmp_path / "new-host"
     init_repo(new)
     home, ask, _shown = _seed_registration_question(tmp_path, new)
@@ -315,9 +318,138 @@ def test_from_an_agent_shell_the_answer_is_recorded_but_nothing_is_registered(tm
 
     assert result.registered is False
     assert result.registration.startswith("NOT registered")
+    assert "--session" in result.registration  # it says how to get the typing checked
     assert f"self-learn host add {new}" in result.registration
     assert not is_project_host(load_hosts(home), new)
     assert _answers(home) == answers + 1
+
+
+def _typed(text: str) -> dict:
+    return {"type": "user", "message": {"content": text}}
+
+
+def _transcript(home: Path, tmp_path: Path, rows: list[dict], session: str = "sess-yes") -> str:
+    """A synthetic transcript under a configured root; returns the session id."""
+    root = tmp_path / "transcripts"
+    path = root / "project" / f"{session}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    with (home / "config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(f"\nrefs:\n  transcript_roots: {json.dumps(str(root))}\n")
+    commit_all(home, "configure synthetic transcript roots")
+    return session
+
+
+_ASSISTANT = {"type": "assistant", "message": {"content": "Register it?"}}
+_CLICK = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "yes"}]}}
+
+
+def test_from_an_agent_shell_a_session_whose_last_typed_row_is_a_yes_registers(tmp_path, monkeypatch):
+    """The 10-28 hand step: the user answered in chat and an agent ran `host
+    add`. The agent relaying the answer is the product's normal path, so it
+    must register when the transcript proves the typing."""
+    new = tmp_path / "new-host"
+    init_repo(new)
+    home, ask, _shown = _seed_registration_question(tmp_path, new)
+    session = _transcript(home, tmp_path, [_typed("go ahead and register it"), _ASSISTANT, _typed("yes")])
+    # control: the proof itself reads the last typed row
+    assert statements.latest_user_typed(home, session) == (f"transcript:{session}#L3", "yes")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    answers = _answers(home)
+
+    result = conversation.respond(
+        home, proposition=ask["id"], scope="user", text="yes", session=session
+    )
+
+    assert result.registered is True
+    assert result.registration == f"registered project host {new} in git mode"
+    assert is_project_host(load_hosts(home), new)
+    assert _answers(home) == answers + 1
+
+
+@pytest.mark.parametrize(
+    "rows, why",
+    [
+        ([_typed("yes"), _ASSISTANT, _typed("wait, not that one")], "words typed after the yes"),
+        ([_typed("no"), _ASSISTANT, _CLICK], "an AskUserQuestion click is not typing"),
+        ([_typed("yes, but use plain mode")], "a conditional yes is not a plain yes"),
+        (
+            [{"type": "user", "message": {"content": "<agent-message>yes</agent-message>"}}],
+            "an agent-written turn is not the person",
+        ),
+    ],
+    ids=["typed-after", "click-only", "conditional", "agent-turn"],
+)
+def test_from_an_agent_shell_a_yes_the_transcript_does_not_show_registers_nothing(
+    rows, why, tmp_path, monkeypatch
+):
+    new = tmp_path / "new-host"
+    init_repo(new)
+    home, ask, _shown = _seed_registration_question(tmp_path, new)
+    session = _transcript(home, tmp_path, rows)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    answers = _answers(home)
+
+    result = conversation.respond(
+        home, proposition=ask["id"], scope="user", text="yes", session=session
+    )
+
+    assert result.registered is False, why
+    assert result.registration.startswith("NOT registered")
+    assert not is_project_host(load_hosts(home), new)
+    assert _answers(home) == answers + 1  # the answer is still recorded
+
+
+def test_from_an_agent_shell_an_unknown_session_registers_nothing(tmp_path, monkeypatch):
+    new = tmp_path / "new-host"
+    init_repo(new)
+    home, ask, _shown = _seed_registration_question(tmp_path, new)
+    _transcript(home, tmp_path, [_typed("yes")])  # control: transcripts are configured
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    result = conversation.respond(
+        home, proposition=ask["id"], scope="user", text="yes", session="no-such-session"
+    )
+
+    assert result.registered is False
+    assert "could not be checked" in result.registration
+    assert not is_project_host(load_hosts(home), new)
+
+
+def test_a_person_s_own_terminal_needs_no_session(tmp_path):
+    """The proof is for an agent's shell only: the person typing the command
+    is the consent (no session, no transcript configured)."""
+    new = tmp_path / "new-host"
+    init_repo(new)
+    home, ask, _shown = _seed_registration_question(tmp_path, new)
+
+    result = conversation.respond(home, proposition=ask["id"], scope="user", text="yes")
+
+    assert result.registered is True and is_project_host(load_hosts(home), new)
+
+
+def test_a_skills_root_yes_that_would_replace_the_registered_root_is_refused(tmp_path):
+    env = make_env(tmp_path)  # registers host-repo as the git skills root
+    new = tmp_path / "other-root"
+    init_repo(new)
+    ask = {
+        "id": "q-register-newhost", "kind": "ask", "cases": [_case(env.ledger, tmp_path, "7", {})],
+        "text": f"Make {new} the skills root in git mode? Yes registers it; no leaves things as they are.",
+        "why": "decides where skills are compiled",
+        "register": {"kind": "skills-root", "path": str(new), "mode": "git"},
+    }
+    _report_and_index(env.ledger, [ask], ["- q-register-newhost: the skills root"])
+    conversation.open_questions(env.ledger, out=io.StringIO())
+    root_before = load_hosts(env.ledger).skills_root
+    assert root_before is not None and root_before.resolve() != new.resolve()  # control
+    answers = _answers(env.ledger)
+    head = _head(env.ledger)
+
+    with pytest.raises(conversation.ConversationError, match="would replace it"):
+        conversation.respond(env.ledger, proposition=ask["id"], scope="user", text="yes")
+
+    assert load_hosts(env.ledger).skills_root == root_before
+    assert _answers(env.ledger) == answers and _head(env.ledger) == head
 
 
 def test_a_registration_host_add_refuses_leaves_the_question_open_and_records_nothing(tmp_path):
@@ -385,6 +517,27 @@ def test_the_overseer_respond_command_prints_what_the_yes_did(tmp_path, monkeypa
     assert is_project_host(load_hosts(home), new)
 
 
+def test_the_overseer_respond_command_takes_a_session_for_an_agent_shell(tmp_path, monkeypatch, capsys):
+    new = tmp_path / "new-host"
+    init_repo(new)
+    home, ask, _shown = _seed_registration_question(tmp_path, new)
+    session = _transcript(home, tmp_path, [_typed("yes")])
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    monkeypatch.setenv("CLAUDECODE", "1")
+    parser = argparse.ArgumentParser()
+    overseer_cli.add_parser(parser.add_subparsers(dest="verb", required=True))
+
+    args = parser.parse_args(
+        ["overseer", "respond", "--proposition", ask["id"], "--scope", "user", "--text", "yes",
+         "--session", session]
+    )
+    assert args.session == session
+    assert overseer_cli.dispatch(args) == 0
+
+    assert f"registered project host {new} in git mode" in capsys.readouterr().out
+    assert is_project_host(load_hosts(home), new)
+
+
 # ------------------------------------------------ the register field's rules
 
 
@@ -399,6 +552,15 @@ def _register(path, mode="git", kind="project"):
         (_register("/srv/app", "plain", "skills-root"), "Make /srv/app a PLAIN skills root?", None),
         ({"path": "/srv/app", "mode": "git"}, "Register /srv/app in git mode?", None),
         (_register("/srv/app"), "Enable the new feature? Yes turns it on (git mode).", "text must name"),
+        # the path must be the whole path, and the mode a phrase, not a stray word
+        (_register("/srv/app"), "Register /srv/app-old in git mode?", "text must name"),
+        (_register("/srv/app"), "Register /srv/app/sub in git mode?", "text must name"),
+        (_register("/srv/app"), "Register /home/x/srv/app in git mode?", "text must name"),
+        (_register("/srv/app"), "Register /srv/app.git in git mode?", "text must name"),
+        (_register("/srv/app"), "Register /srv/app, a git repository?", "text must name"),
+        (_register("/srv/app", "plain"), "Register /srv/app? A plain yes will do.", "text must name"),
+        (_register("/srv/app"), "Register /srv/app (git mode).", None),
+        (_register("/srv/app", "plain"), "Register /srv/app as a plain host.", None),
         (_register("/srv/app", "plain"), "Register /srv/app?", "text must name"),
         (_register("srv/app"), "Register srv/app in git mode?", "absolute path"),
         (_register("/srv/app\n/etc"), "Register /srv/app in git mode?", "absolute path"),
