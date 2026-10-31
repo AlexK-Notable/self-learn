@@ -79,7 +79,19 @@ UNMEASURED; else 0:
         FAILs on an unreadable ``hosts.yaml`` and on routed skill lessons
         left on the skills root's own ``claude-md`` while the two modes
         differ (that destination is refused then); UNMEASURED with no
-        ``hosts.yaml``.
+        ``hosts.yaml``;
+    (h) owned_skills (S-NEXT-sk9-selftest) — the owned-skills registry
+        (``owned-skills.yaml``, skill_registry) against the disk: each LIVE
+        row must have its skill folder in the skills root, an entry in the
+        skills root's ``marketplace.json``, the ``metadata.self-learn``
+        stamp in its SKILL.md and a ``~/.claude/skills/<name>`` link that
+        resolves to that folder; a stamped skill in the skills root with NO
+        row (live or retired) is named too. A retired row expects nothing
+        on disk. FAILs name the skill and what is missing, and an
+        unreadable registry FAILs. With no live rows and no stamped strays
+        the row PASSes ("no owned skills": nothing is owed, so nothing is
+        unmeasured); it is UNMEASURED only with no ``hosts.yaml`` and no
+        live rows (no skills root could be looked in), like the drift row.
 
     There is no ``worker`` row (fold r1, 2026-09-04 — M-K originally
     shipped one as a real, COUNTED UNMEASURED entry reading
@@ -98,6 +110,7 @@ from __future__ import annotations
 import enum
 import json
 import os
+import posixpath
 import re
 import shlex
 import sys
@@ -112,6 +125,7 @@ from . import intents
 from . import provider
 from . import scan as scan_mod
 from . import sentinel
+from . import skill_registry
 from .compilers import (
     BEGIN_MARKER,
     END_MARKER,
@@ -134,6 +148,7 @@ from .ledger_ops import (
 )
 from .reachability import reachability_rows
 from .records import Record, RecordError
+from .skill_scaffold import SKILL_ENTRY_FILE, SKILL_RUNNER_METADATA_KEY, _read_frontmatter
 from .verbs import DEFAULT_USER_CLAUDE_MD, _user_reachability_roots, managed_target_for
 
 __all__ = ["proposal_validate", "run_selftest", "Verdict"]
@@ -1341,6 +1356,205 @@ def _check_hosts(home: Path) -> tuple[Verdict, str]:
     return Verdict.PASS, shown
 
 
+def _skill_stamp(skill_md: Path) -> tuple[bool, str | None]:
+    """Whether *skill_md* carries the runner's ``metadata.self-learn``
+    stamp, as ``(stamped, why_not_read)``. ``why_not_read`` is set (and
+    ``stamped`` is False) when the file cannot be read or its frontmatter
+    cannot be parsed; such a file is neither stamped nor unstamped here."""
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return False, f"{SKILL_ENTRY_FILE} cannot be read ({type(exc).__name__})"
+    front = _read_frontmatter(text)
+    if front.mapping is None:
+        return False, f"{SKILL_ENTRY_FILE} has no readable frontmatter"
+    meta = front.mapping.get("metadata")
+    stamp = meta.get(SKILL_RUNNER_METADATA_KEY) if isinstance(meta, dict) else None
+    return bool(stamp), None
+
+
+def _skills_root_marketplace(root: Path) -> tuple[list[dict] | None, str | None]:
+    """The skills root's marketplace entries, or ``(None, why)``."""
+    path = root / ".claude-plugin" / "marketplace.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, f"{path} is missing"
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None, f"{path} cannot be read as JSON"
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, list):
+        return None, f"{path} has no plugins list"
+    return [entry for entry in plugins if isinstance(entry, dict)], None
+
+
+def _owned_skill_problems(
+    name: str,
+    row: dict,
+    root: Path,
+    entries: list[dict] | None,
+    claude_dir: Path,
+) -> list[str]:
+    """What is wrong on disk with one LIVE registry row; empty when nothing.
+    The registry validated ``name`` and ``row['plugin']`` (kebab names, the
+    plugin path ``plugins/<kebab>``), so joining them onto a root cannot
+    leave it."""
+    plugin_name = row["plugin"].split("/", 1)[1]
+    folder = root / row["plugin"] / "skills" / name
+    skill_md = folder / SKILL_ENTRY_FILE
+    problems: list[str] = []
+
+    if not folder.is_dir():
+        problems.append(f"skill folder {folder} is missing")
+    elif not skill_md.is_file():
+        problems.append(f"{SKILL_ENTRY_FILE} is missing from {folder}")
+    else:
+        stamped, unreadable = _skill_stamp(skill_md)
+        if unreadable:
+            problems.append(f"{unreadable}, so its stamp cannot be checked")
+        elif not stamped:
+            problems.append(f"no metadata.{SKILL_RUNNER_METADATA_KEY} stamp in {skill_md}")
+
+    if entries is not None:
+        matching = [entry for entry in entries if entry.get("name") == plugin_name]
+        if not matching:
+            problems.append(f"no marketplace entry named {plugin_name}")
+        elif len(matching) > 1:
+            problems.append(f"{len(matching)} marketplace entries named {plugin_name}")
+        else:
+            source = matching[0].get("source")
+            if isinstance(source, str) and posixpath.normpath(source) != row["plugin"]:
+                problems.append(
+                    f"marketplace entry {plugin_name} has source {source!r}, "
+                    f"not ./{row['plugin']}"
+                )
+
+    link = claude_dir / "skills" / name
+    if link.is_symlink():
+        if not link.exists():
+            problems.append(f"link {link} is dangling (it points at {os.readlink(link)})")
+        elif link.resolve() != folder.resolve():
+            problems.append(f"link {link} points at {link.resolve()}, not {folder}")
+    elif link.exists():
+        problems.append(f"{link} is not a link to {folder}")
+    else:
+        problems.append(f"link {link} is missing")
+    return problems
+
+
+def _check_owned_skills(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
+    """(h) owned_skills (S-NEXT-sk9-selftest): ``owned-skills.yaml`` against
+    the disk, read-only. See the module docstring's row (h).
+
+    Refusal posture first, like the hosts row: a ``missing`` or
+    ``not-a-repo`` home FAILs loud. The registry is read with
+    :func:`skill_registry.load`, which refuses by name; the row FAILs on
+    that refusal rather than treating an unreadable registry as an empty
+    one (an empty reading would pass a home whose skills were all lost).
+
+    A LIVE row is checked against the skills root registered in
+    ``hosts.yaml`` (folder, SKILL.md, stamp, marketplace entry) and
+    against ``<claude_dir>/skills/<name>`` (the link self-learn makes,
+    skill-writing plan D7). A RETIRED row is read as "expects nothing on
+    disk" and checked for nothing. Then every ``plugins/*/skills/*`` in
+    the skills root whose SKILL.md carries the stamp but has no registry
+    row at all is named: the stamp says self-learn wrote it and the
+    registry, which is the authority, does not know it."""
+    state = home_state(home)
+    if state in ("missing", "not-a-repo"):
+        return Verdict.FAIL, home_state_message(state, home)
+    try:
+        registry = skill_registry.load(home)
+    except skill_registry.SkillRegistryError as exc:
+        return Verdict.FAIL, f"{skill_registry.REGISTRY_FILENAME} unreadable: {exc}"
+    live = registry.live()
+    retired = sorted(set(registry.skills) - set(live))
+
+    root: Path | None = None
+    root_problem: str | None = None
+    if hosts_path(home).is_file():
+        try:
+            registered = load_hosts(home).skills_root
+        except HostsError as exc:
+            root_problem = f"hosts.yaml unreadable: {exc}"
+        else:
+            root = Path(registered).expanduser() if registered is not None else None
+    else:
+        root_problem = "hosts.yaml absent"
+
+    if root is None:
+        if live:
+            why = root_problem or "no skills root is registered"
+            return Verdict.FAIL, (
+                f"{len(live)} live owned skill(s) ({', '.join(live[:5])}) but "
+                f"the skills root cannot be found: {why}"
+            )
+        if root_problem == "hosts.yaml absent":
+            return Verdict.UNMEASURED, (
+                "hosts.yaml absent — no skills root to look for owned skills in"
+            )
+        if root_problem:
+            return Verdict.UNMEASURED, f"{root_problem} — no skills root to look in"
+        return Verdict.PASS, "no owned skills (no skills root is registered)"
+
+    problems: list[str] = []
+    broken = 0
+    entries: list[dict] | None = None
+    if live:
+        if not root.is_dir():
+            return Verdict.FAIL, (
+                f"{len(live)} live owned skill(s) ({', '.join(live[:5])}) but the "
+                f"skills root {root} is not a directory"
+            )
+        entries, market_problem = _skills_root_marketplace(root)
+        if market_problem:
+            problems.append(market_problem)
+        for name in live:
+            found = _owned_skill_problems(name, registry.skills[name], root, entries, claude_dir)
+            if found:
+                broken += 1
+                problems.append(f"{name}: " + "; ".join(found))
+
+    strays: list[str] = []
+    if root.is_dir():
+        for skill_md in sorted(root.glob(f"plugins/*/skills/*/{SKILL_ENTRY_FILE}")):
+            skill = skill_md.parent.name
+            if skill in registry.skills:
+                continue
+            try:
+                # The key must appear as text for a stamp to exist at all;
+                # this keeps the strict frontmatter reader off every file
+                # that cannot carry it.
+                if SKILL_RUNNER_METADATA_KEY not in skill_md.read_text(encoding="utf-8"):
+                    continue
+            except (OSError, UnicodeDecodeError):
+                continue
+            if _skill_stamp(skill_md)[0]:
+                strays.append(skill)
+    if strays:
+        problems.append(
+            f"stamped by self-learn (metadata.{SKILL_RUNNER_METADATA_KEY}) but with "
+            f"no row in {skill_registry.REGISTRY_FILENAME}: {', '.join(strays)}"
+        )
+
+    if problems:
+        if broken:
+            head = f"{broken} of {len(live)} live owned skill(s) broken"
+        elif live:
+            head = f"{len(live)} live owned skill(s)"
+        else:
+            head = "no live owned skills"
+        return Verdict.FAIL, f"{head} — " + "; ".join(problems)
+    if not live:
+        note = f" ({len(retired)} retired, nothing expected on disk)" if retired else ""
+        return Verdict.PASS, "no owned skills" + note
+    note = f"; {len(retired)} retired (nothing expected on disk)" if retired else ""
+    return Verdict.PASS, (
+        f"{len(live)} live owned skill(s) intact (folder, stamp, marketplace entry, "
+        f"link)" + note
+    )
+
+
 def _check_sentinel() -> tuple[Verdict, str]:
     """(d) Hold + release a probe at the real cache-path resolution. A
     pre-existing LIVE sentinel belongs to another flow: heartbeat it as
@@ -1415,8 +1629,9 @@ def run_selftest(home: Path) -> int:
     time this function actually RUNS, :mod:`cli` has always finished
     loading) on any UNMEASURED with no FAIL; else 0.
 
-    Eleven checks since S-NEXT-u2-sweep added ``premises`` (ten since S-82 added
-    ``hosts``, 2026-10-08). There is no
+    Twelve checks since S-NEXT-sk9-selftest added ``owned_skills`` and
+    S-NEXT-u2-sweep added ``premises`` (ten since S-82 added ``hosts``,
+    2026-10-08). There is no
     ``worker`` row (fold r1, 2026-09-04). M-K originally shipped one as an unconditional, COUNTED
     UNMEASURED entry, which made every home — healthy or not — exit 9
     forever, since UNMEASURED means an instrument exists and could not
@@ -1447,6 +1662,7 @@ def run_selftest(home: Path) -> int:
         ("hooks", *_check_hooks(home, claude_runtime_dir())),
         ("surface", *_check_surface(home, claude_runtime_dir())),
         ("hosts", *_check_hosts(home)),
+        ("owned_skills", *_check_owned_skills(home, claude_runtime_dir())),
         ("sentinel", *_check_sentinel()),
         ("invocation", *_check_invocation(home)),
         ("premises", *_check_premises(home)),
