@@ -115,8 +115,8 @@ commit. Codex's skill folder is not linked.
   owned-skills.yaml                   # skills self-learn owns (02 §3; S-107)
   overseer/{<date>-report.md, latest-report.md, coverage.yaml,
     open-questions.yaml, evaluation-<date>.md}   # the overseer's own subtree
-  overseer/skills/{<week>.yaml, <week>/drafts/<name>/,
-    writing-trial.yaml}                # candidates, dispositions, drafts (S-107)
+  overseer/skills/{<week>.yaml,
+    <week>/drafts/<name>/}             # candidates, dispositions, drafts (S-107)
 ```
 
 `cases/runs/<run_id>.json` is ledger truth, not runner cache. Its schema and

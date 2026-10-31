@@ -3713,8 +3713,7 @@ def _prepare_manifest(
         }
     if skills_info is not None:
         # SK3 (S-107 part 6): what overseer.skill_writing meant for
-        # this run, the steps kept as drafts (committed with this record),
-        # and whether the run may be auto's drafts-only run.
+        # this run and the steps kept as drafts (committed with this record).
         manifest["skills"] = {**skills_info, "week": manifest["week"]}
     _scan_manifest_or_refuse(manifest)
     return manifest
@@ -4099,7 +4098,6 @@ def _write_manifest_truth(
     closed: bool = False,
     week: str | None = None,
     closed_text: str | None = None,
-    trial: tuple[Path, str] | None = None,
 ) -> tuple[dict[str, Any], Path, Path]:
     path = execution_evidence.manifest_path(home, manifest["run_id"])
     record = _finalized_record(
@@ -4124,9 +4122,6 @@ def _write_manifest_truth(
     )
     if closed_note is not None:
         paths.append(closed_note)
-    if trial is not None and complete:
-        # SK3: auto's drafts-only run, recorded once, in this commit.
-        paths.append(trial[0])
     with intents.ledger_write(home):
         intent = intents.begin(
             home, "overseer-run-finalize", paths,
@@ -4142,9 +4137,6 @@ def _write_manifest_truth(
         if closed_note is not None and closed_text is not None:
             closed_note.parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(closed_note, closed_text, fsync=True)
-        if trial is not None and complete and not trial[0].exists():
-            trial[0].parent.mkdir(parents=True, exist_ok=True)
-            fsops.atomic_write(trial[0], trial[1], fsync=True)
         if journal is not None:
             journal[0].parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(journal[0], journal[1], fsync=True)
@@ -4392,27 +4384,22 @@ def _record_sheetless(
     return result, {"state": "no-sheet"}, batch.Sheet()
 
 
-def _skill_trial(home: Path, manifest: dict[str, Any], run_id: str) -> tuple[Path, str] | None:
-    """SK3 (S-107 part 6): the trial file this completing run
-    writes, or ``None``. Written once, by the first run to complete while
-    writing was not in effect and whose discovery steps were seen working
-    (``discovery_mod.trial_readiness``, recorded when the run was prepared)."""
-    info = manifest.get("skills")
-    if not isinstance(info, dict) or not info.get("trial_ready"):
-        return None
-    if (info.get("state") or {}).get("deploy", True):
-        return None
-    path = skills_mod.trial_path(home)
-    if path.exists():
-        return None
-    drafts = [
-        str(d.get("name")) for d in info.get("drafts") or []
-        if isinstance(d, dict) and isinstance(d.get("files"), dict)
-    ]
-    return path, skills_mod.trial_text(
-        week=str(info.get("week") or manifest.get("week")), run_id=run_id,
-        completed_at=chrono.now_iso(), drafts=drafts,
-    )
+def _keep_skill_draft(
+    home: Path,
+    run_id: str,
+    drafts: list[dict[str, Any]],
+    step: skills_mod.SkillStep,
+    case_name: str,
+    lessons: list[str],
+) -> None:
+    """SK3 (S-107 part 6): with ``overseer.skill_writing`` off, a pair's
+    checked skill step is kept as a draft (its files are committed with the
+    run record) and the pair is not applied; the report says what it would
+    have done. Writes nothing itself: the draft is an entry in *drafts*."""
+    drafts.append(skills_mod.draft_entry(step, case_name, lessons))
+    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+        "status": "skill-drafted", "skill": step.name,
+        "action": step.label, "case_file": case_name})
 
 
 def _run_manifest_sheet(
@@ -5037,9 +5024,6 @@ def _execute_manifest(
             "week": week, "attempts": attempts, "failure": kind,
             "applied": application_count,
         })
-    # SK3 (S-107 part 6): the run that completes as auto's
-    # drafts-only run writes the trial file in its completing commit.
-    trial = None if halted or closed else _skill_trial(home, manifest, run_id)
     try:
         text = _finalize_model_report(
             stage / "report.md", date=cast(str, manifest["date"]), run_id=run_id,
@@ -5053,7 +5037,7 @@ def _execute_manifest(
             notes=runner_notes,
             decided=[
                 *decided_lines,
-                *skills_mod.report_lines(manifest, trial_written=trial is not None),
+                *skills_mod.report_lines(manifest),
                 # SK4: one line per disposition phase B recorded.
                 *discovery_mod.report_lines(manifest),
             ],
@@ -5061,7 +5045,7 @@ def _execute_manifest(
         )
         manifest, report_path, latest = _write_manifest_truth(
             home, manifest, report_text=text, complete=not halted, closed=closed,
-            week=week, closed_text=closed_text, trial=trial,
+            week=week, closed_text=closed_text,
         )
         if closed:
             _notify_week_closed(home, week, attempts, _failure_kind_text(manifest), [run_id])
@@ -6107,27 +6091,21 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     )
                     if rules is not None:
                         raise OverseerError(rules)
-                    if skill_step is not None and not skill_step.deploy:
-                        # SK3 (S-107 part 6): writing is not in
-                        # effect, so the step is kept, checked, as a draft
-                        # and the pair is not applied; the report says what
-                        # it would have done.
-                        skill_drafts.append(skills_mod.draft_entry(
-                            skill_step, case_file.name,
-                            [item.id for item in sheet or []] + skills_mod.decision_lessons(case_data),
-                        ))
-                        if predecessor is not None:
-                            seen_predecessors.add(predecessor)
-                        skill_pairs[skill_step.name] = case_file.name
-                        _journal(home, {"at": chrono.now_iso(), "run": run_id,
-                            "status": "skill-drafted", "skill": skill_step.name,
-                            "action": skill_step.label, "case_file": case_file.name})
-                        continue
                     if sheet is None:
                         # SK3: a sheetless skill pair (a rewrite or a
                         # retirement that moves no lesson): nothing to
-                        # preview; its case is recorded and its step made.
+                        # preview; its case is recorded and its step made
+                        # (or, with writing off, kept as a draft).
                         assert skill_step is not None
+                        if not skill_step.deploy:
+                            _keep_skill_draft(
+                                home, run_id, skill_drafts, skill_step, case_file.name,
+                                skills_mod.decision_lessons(case_data),
+                            )
+                            if predecessor is not None:
+                                seen_predecessors.add(predecessor)
+                            skill_pairs[skill_step.name] = case_file.name
+                            continue
                         skill_steps[case_file] = skill_step
                         skill_pairs[skill_step.name] = case_file.name
                         if predecessor is not None:
@@ -6188,6 +6166,19 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 for line in refused_lines:
                     _journal(home, {"at": chrono.now_iso(), "run": run_id,
                         "status": "line-dropped", "reason": line})
+                if skill_step is not None and not skill_step.deploy:
+                    # SK3 (S-107 part 6; S-107 amended 2026-10-31): writing is
+                    # off, so the step is kept, checked, as a draft and the
+                    # pair is not applied. It is drafted only after the same
+                    # preview a writing run makes, so a pair the preview
+                    # drops is dropped, not drafted, and a draft never says
+                    # it would move a lesson a writing run would not.
+                    _keep_skill_draft(
+                        home, run_id, skill_drafts, skill_step, case_file.name,
+                        [item.id for item in sheet or []] + skills_mod.decision_lessons(case_data),
+                    )
+                    skill_pairs[skill_step.name] = case_file.name
+                    continue
                 preview_apply += sum(item.state == "would-apply" for item in preview.items)
                 preview_refused += sum(item.state == "would-refuse" for item in preview.items)
                 prepared.append((case_file, sheet_file, sheet))
@@ -6230,11 +6221,6 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         "status": "skill-disposition-note", "reason": line[:300]})
             else:
                 dispositions = None
-            # S-107 part 6: whether this run's discovery steps were
-            # seen working, so that it may count as auto's drafts-only run.
-            trial_ready, trial_why = discovery_mod.trial_readiness(
-                phase_s, dispositions or discovery_mod.Dispositions(False, why="discovery is off"),
-            )
         except (OverseerError, batch.BatchError) as exc:
             detail = _failure_detail(exc)
             closed_text, close_questions = (None, [])
@@ -6294,8 +6280,6 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 skills_info={
                     "state": skill_state.to_json(),
                     "drafts": skill_drafts,
-                    "trial_ready": bool(trial_ready),
-                    "trial_why": None if trial_ready else trial_why,
                     # SK4: phase S and phase B's dispositions, for the week
                     # file this record's commit writes and for the report.
                     "discovery": discovery_mod.manifest_info(phase_s, dispositions),

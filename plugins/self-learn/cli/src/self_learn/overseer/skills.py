@@ -41,15 +41,13 @@ reaches the ledger; a refused check drops the pair. A folder no case names
 is dropped and named (:func:`unclaimed_folders`).
 
 **Writing on or off** (:func:`writing_state`). ``overseer.skill_writing``
-is ``auto`` (the default), ``on`` or ``off``, read from ``config.yaml``
-only, with any other value (a YAML boolean included) read as ``off``.
-``on`` deploys; ``off`` keeps every build or rewrite as a checked draft in
-the ledger (``overseer/skills/<week>/drafts/<name>/``), makes no
-retirement, and applies none of those pairs. ``auto`` behaves as ``off``
-until ``overseer/skills/writing-trial.yaml`` exists, and as ``on`` after.
-That file is written once, in the commit that completes the run, by the
-first run to complete while writing is not in effect and whose discovery
-steps were seen working (``overseer.discovery.trial_readiness``, SK4).
+is ``on`` (the default) or ``off``, read from ``config.yaml`` only;
+``auto``, the old default, reads as ``on``, and any other value (a YAML
+boolean included) reads as ``off``. ``on`` deploys from the first run;
+``off`` keeps every build or rewrite as a checked draft in the ledger
+(``overseer/skills/<week>/drafts/<name>/``), makes no retirement, and
+applies none of those pairs (S-107 part 6 as amended by
+S-107 amended 2026-10-31: the one-week drafts-only trial is gone).
 
 **Applying** (:func:`apply_write`, :func:`apply_retire`). The runner writes
 a skill BEFORE it records the pair's case and applies its sheet (a refused
@@ -59,7 +57,7 @@ resumed run finishes what an interrupted one started.
 
 Nothing here takes a lock or writes the ledger itself: the writer takes its
 own locks, the stage is the runner's (``run._write_stage``), and the drafts
-and the trial file are written by the runner inside its own locked commits.
+are written by the runner inside its own locked commits.
 """
 
 from __future__ import annotations
@@ -83,7 +81,6 @@ __all__ = [
     "FILES_DIR",
     "LESSONS_FILE",
     "LEDGER_DIR",
-    "MODE_AUTO",
     "MODE_OFF",
     "MODE_ON",
     "OWNED_DIR",
@@ -91,7 +88,6 @@ __all__ = [
     "ROW_FILE",
     "SKILL_PROPOSAL_REASON",
     "STAGE_SKILLS_DIR",
-    "TRIAL_FILE",
     "VETOES_FILE",
     "WRITING_FILE",
     "SkillPairError",
@@ -112,14 +108,12 @@ __all__ = [
     "stage_phase_b",
     "stale_draft_files",
     "step_for_case",
-    "trial_path",
-    "trial_text",
     "unclaimed_folders",
     "writing_mode",
     "writing_state",
 ]
 
-MODE_AUTO, MODE_ON, MODE_OFF = settings.SKILL_WRITING_MODES
+MODE_ON, MODE_OFF = settings.SKILL_WRITING_MODES
 
 # ------------------------------------------------------------- the workspace
 
@@ -141,10 +135,10 @@ SKILL_PROPOSAL_REASON = "skill-proposal"
 
 # ---------------------------------------------------------------- the ledger
 
-#: ``overseer/skills/`` under the ledger home: ``<week>/drafts/<name>/`` and
-#: the trial file (``02-schema.md`` §3, S-107).
+#: ``overseer/skills/`` under the ledger home: ``<week>/drafts/<name>/``
+#: (``02-schema.md`` §3, S-107). A ``writing-trial.yaml`` an older run left
+#: here is history: nothing reads it (S-107 amended 2026-10-31).
 LEDGER_DIR = "overseer/skills"
-TRIAL_FILE = "writing-trial.yaml"
 
 #: What a step does, in the report's words.
 _LABEL_BUILD = "build"
@@ -193,18 +187,20 @@ def _yaml_text(data: Any) -> str:
 
 def writing_mode(home: Path | str) -> tuple[str, str | None]:
     """``overseer.skill_writing`` as the runner obeys it, and a sentence
-    when the value in ``config.yaml`` is not one of the three.
+    when the value in ``config.yaml`` is not one it knows.
 
     Read from ``config.yaml`` only: no environment variable and no override
-    channel (S-107 part 6). A missing key is the default, ``auto``;
-    a ``config.yaml`` that cannot be read reads as ``off``.
-    Any other value -- a typo, ``null``, a YAML boolean such as ``false`` --
-    reads as ``off``, never as the default, so a mistyped rollback fails
-    closed. (``settings.resolve_setting`` would read a boolean as the
-    default; that is why the runner does not use it here.)"""
+    channel (S-107 part 6). A missing key is the default, ``on``, and so is
+    ``auto``, the old default (S-107 amended 2026-10-31: it meant "write" after
+    one week, so reading it as ``off`` would turn writing off for the person
+    who never touched the switch). A ``config.yaml`` that cannot be read
+    reads as ``off``. Any other value -- a typo, ``null``, a YAML boolean
+    such as ``false`` -- reads as ``off``, never as the default, so a
+    mistyped rollback fails closed. (``settings.resolve_setting`` would read
+    a boolean as the default; that is why the runner does not use it here.)"""
     found = config.settings_leaf(home, "overseer", "skill_writing")
     if found is None:
-        broken = _config_unreadable(home)
+        broken = settings.skill_writing_config_unreadable(home)
         if broken is not None:
             # Fix round 1 (gate r1 NIT): `settings_leaf` answers None for a
             # config.yaml it cannot read as it does for a missing key; a
@@ -213,42 +209,16 @@ def writing_mode(home: Path | str) -> tuple[str, str | None]:
                 f"config.yaml {broken}, so overseer.skill_writing cannot be read; it reads as "
                 "off, so every skill this run builds or changes is kept as a draft"
             )
-        return MODE_AUTO, None
+        return MODE_ON, None
     raw = found[1]
+    if raw == settings.SKILL_WRITING_LEGACY_ON:
+        return MODE_ON, None
     if isinstance(raw, str) and raw in settings.SKILL_WRITING_MODES:
         return raw, None
     return MODE_OFF, (
-        f"overseer.skill_writing is {raw!r} in config.yaml, which is not auto, on or off; "
+        f"overseer.skill_writing is {raw!r} in config.yaml, which is not on or off; "
         "it reads as off, so every skill this run builds or changes is kept as a draft"
     )
-
-
-def _config_unreadable(home: Path | str) -> str | None:
-    """Why ``config.yaml`` cannot be read for ``overseer.skill_writing`` --
-    it does not parse, its top level is not a mapping, or ``overseer`` is
-    not a mapping -- or ``None`` when it reads (or is absent or empty, which
-    is the default). Says what is wrong, never the file's text."""
-    path = config.config_path(home)
-    if not path.is_file():
-        return None
-    try:
-        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 -- YAMLError, OSError, UnicodeDecodeError
-        return f"could not be read ({type(exc).__name__})"
-    if data is None:
-        return None
-    if not isinstance(data, dict):
-        return "has a top level that is not a mapping"
-    section = data.get("overseer")
-    if section is not None and not isinstance(section, dict):
-        return "has an overseer section that is not a mapping"
-    return None
-
-
-def trial_path(home: Path | str) -> Path:
-    """``overseer/skills/writing-trial.yaml``: ``auto``'s drafts-only run,
-    written once."""
-    return Path(home) / LEDGER_DIR / TRIAL_FILE
 
 
 def drafts_dir(home: Path | str, week: str, name: str) -> Path:
@@ -260,18 +230,16 @@ def drafts_dir(home: Path | str, week: str, name: str) -> Path:
 class WritingState:
     """What ``overseer.skill_writing`` means for one run."""
 
-    #: ``auto``, ``on`` or ``off``, as the runner reads it.
+    #: ``on`` or ``off``, as the runner reads it.
     mode: str
     #: Whether this run deploys what phase B builds, changes or retires.
     deploy: bool
-    #: Whether the trial file exists.
-    trial_done: bool
-    #: The sentence for a value that is not one of the three.
+    #: The sentence for a value the runner does not know.
     note: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "mode": self.mode, "deploy": self.deploy, "trial_done": self.trial_done,
+            "mode": self.mode, "deploy": self.deploy,
             **({"note": self.note} if self.note else {}),
         }
 
@@ -293,19 +261,9 @@ class WritingState:
 
 
 def writing_state(home: Path | str) -> WritingState:
-    """``on`` deploys; ``off`` does not; ``auto`` deploys once the trial
-    file exists."""
+    """``on`` deploys; ``off`` does not."""
     mode, note = writing_mode(home)
-    done = trial_path(home).is_file()
-    deploy = mode == MODE_ON or (mode == MODE_AUTO and done)
-    return WritingState(mode=mode, deploy=deploy, trial_done=done, note=note)
-
-
-def trial_text(*, week: str, run_id: str, completed_at: str, drafts: list[str]) -> str:
-    """The trial file: ``{week, run, completed_at, drafts}``."""
-    return _yaml_text({
-        "week": week, "run": run_id, "completed_at": completed_at, "drafts": list(drafts),
-    })
+    return WritingState(mode=mode, deploy=mode == MODE_ON, note=note)
 
 
 # ---------------------------------------------------------------- staging
@@ -1053,11 +1011,13 @@ def apply_retire(home: Path | str, case_id: str, step: SkillStep, *, case_name: 
 # ----------------------------------------------------------------- report
 
 
-def report_lines(manifest: dict[str, Any], *, trial_written: bool) -> list[str]:
+def report_lines(manifest: dict[str, Any]) -> list[str]:
     """The run's skill lines for "Decided in the user's stead": every skill
     built, changed or retired (from the run record's steps, so a resumed
     run reports what an earlier attempt did), every draft with its "would
-    ..." line, and what ``overseer.skill_writing`` did this run."""
+    ..." line, and, when writing was off, one line saying so. A run record
+    written before S-107 amended 2026-10-31 may carry ``trial_ready`` and
+    ``trial_why``; they are ignored."""
     info = manifest.get("skills")
     if not isinstance(info, dict):
         return []
@@ -1085,23 +1045,8 @@ def report_lines(manifest: dict[str, Any], *, trial_written: bool) -> list[str]:
         )
     state = info.get("state") or {}
     if not state.get("deploy", True):
-        mode = state.get("mode")
-        if mode == MODE_AUTO and trial_written:
-            lines.append(
-                "skill writing (overseer.skill_writing: auto): this was the drafts-only week. "
-                + ("Every skill above was kept as a checked draft; " if drafts else
-                   "There was nothing to build; ")
-                + "from the next run on, the skills the overseer builds are written"
-            )
-        elif mode == MODE_AUTO:
-            why = info.get("trial_why") or "the run did not complete"
-            lines.append(
-                "skill writing (overseer.skill_writing: auto): every skill was kept as a draft; "
-                f"the drafts-only week is still to come: {why}"
-            )
-        else:
-            lines.append(
-                "skill writing is off (overseer.skill_writing): every skill phase B built or "
-                "changed was kept as a checked draft; nothing was deployed or retired"
-            )
+        lines.append(
+            "skill writing is off (overseer.skill_writing): every skill phase B built or "
+            "changed was kept as a checked draft; nothing was deployed or retired"
+        )
     return lines

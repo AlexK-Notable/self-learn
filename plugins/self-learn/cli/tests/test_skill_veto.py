@@ -16,7 +16,8 @@ Skill-writing plan, unit SK7, decision D15 (except the rename itself, SK8):
     changes nothing else;
 (d) a veto or retirement naming a skill that self-learn does not own is
     refused by name, and nothing is recorded. A veto may also name a draft
-    ``open`` showed (the drafts-only week); a retirement may not.
+    ``open`` showed (kept while ``overseer.skill_writing`` is off); a
+    retirement may not.
 
 Written under the user's 2026-10-30 rule (tests run only for a significant
 change): the orchestrator runs these once over the combined landing. Every

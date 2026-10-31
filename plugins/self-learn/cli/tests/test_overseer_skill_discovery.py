@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -558,40 +559,32 @@ def test_a_dry_run_neither_keeps_nor_writes_a_week_file(home, monkeypatch):
     assert not discovery.week_path(home, _this_week()).exists()
 
 
-# ========================================= the trial reads phase S and B
+# ======================== no trial: a working discovery week writes no trial file
 
 
-def test_a_run_whose_discovery_steps_validate_is_autos_drafts_only_run(home, monkeypatch):
+@pytest.mark.parametrize("value", [None, "off"])
+def test_a_run_whose_discovery_steps_validate_writes_no_trial_file(home, monkeypatch, value):
+    """S-107 amended 2026-10-31 (test 4): the run that used to count as
+    ``auto``'s drafts-only week -- discovery steps validated, writing not in
+    effect -- writes no ``overseer/skills/writing-trial.yaml``, on the
+    default or under ``off``. Positive control first: the run completed,
+    its finalize commit published the run record, and the record says the
+    dispositions validated (the old trial condition held)."""
+    if value is not None:
+        (home / "config.yaml").write_text(f"overseer:\n  skill_writing: {value}\n", encoding="utf-8")
+        commit_all(home, "test: skill_writing")
     _model(monkeypatch, candidates={"candidates": []}, dispositions={"dispositions": []})
     result = _run(home)
-    trial = skills.trial_path(home)
-    assert trial.is_file(), _section(_report(result), "Decided in the user's stead")
-    assert _load(trial)["run"] == result.run
-    assert "this was the drafts-only week" in _report(result)
-
-
-def test_a_run_whose_phase_b_wrote_no_dispositions_is_not_the_trial(home, monkeypatch):
-    _model(monkeypatch, candidates={"candidates": []})
-    result = _run(home)
-    assert result.status == "applied"  # positive control: the run completed
-    assert not skills.trial_path(home).exists()
-    assert "phase B wrote no skill-dispositions.yaml" in _report(result)
-
-
-def test_a_run_whose_phase_s_failed_is_not_the_trial(home, monkeypatch):
-    _model(monkeypatch, candidates=None, dispositions={"dispositions": []})
-    result = _run(home)
     assert result.status == "applied"
-    assert not skills.trial_path(home).exists()
-
-
-def test_trial_readiness_needs_discovery_on_phase_s_and_valid_dispositions():
-    good = discovery.Dispositions(True)
-    ok = discovery.PhaseS(discovery.STATE_OK)
-    assert discovery.trial_readiness(ok, good) == (True, "")
-    assert not discovery.trial_readiness(discovery.PhaseS.off(), good)[0]
-    assert not discovery.trial_readiness(discovery.PhaseS.failed("x"), good)[0]
-    assert not discovery.trial_readiness(ok, discovery.Dispositions(False, why="y"))[0]
+    subject = git(home, "log", "-1", "--format=%s").stdout.strip()
+    assert subject == f"self-learn: overseer finalize {result.run}"
+    record = json.loads(
+        overseer_run.execution_evidence.manifest_path(home, result.run).read_text(encoding="utf-8")
+    )
+    assert record["skills"]["discovery"]["dispositions_valid"] is True
+    assert "trial_ready" not in record["skills"] and "trial_why" not in record["skills"]
+    assert not (home / skills.LEDGER_DIR / "writing-trial.yaml").exists()
+    assert "drafts-only" not in _report(result)
 
 
 # ===================================================== the file checks
@@ -667,7 +660,7 @@ def test_a_bad_disposition_is_dropped_and_its_candidate_named_missing(tmp_path, 
 def test_an_optional_key_written_as_null_reads_as_absent(tmp_path):
     """Integration 2026-10-31 (sk4 gate MINOR): `skill: null` on a decline is
     JSON-safe; refusing it dropped the entry, left the candidate with no
-    disposition and put the drafts-only trial off a week. A build still needs
+    disposition (then also putting the drafts-only trial off a week). A build still needs
     its skill, so a null there is refused."""
     path = tmp_path / discovery.DISPOSITIONS_FILE
     _dump(path, {"dispositions": [
@@ -701,7 +694,9 @@ def test_history_leaves_out_every_skill_proposal_disposition(tmp_path):
              "skill": "PROPOSED-NAME", "because": "STEWARD-MARK"},
         ],
     }), encoding="utf-8")
-    (path.parent / skills.TRIAL_FILE).write_text("week: x\n", encoding="utf-8")  # not a week file
+    # an old trial file (S-107 amended 2026-10-31 removed the trial; a ledger may
+    # still hold one) is not a week file
+    (path.parent / "writing-trial.yaml").write_text("week: x\n", encoding="utf-8")
     history = discovery.history(ledger)
     (earlier,) = history["earlier"]
     assert earlier["candidates"][0]["disposition"]["because"] == "seen"  # positive control

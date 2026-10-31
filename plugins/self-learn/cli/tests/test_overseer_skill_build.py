@@ -1,7 +1,8 @@
 """SK3 -- the overseer builds, changes and retires the skills self-learn
 owns, in phase B (skill-writing plan §2 steps 4, 7 and 10, D4, D10, §4.1
 row SK3 tests (a)-(f); ``03-decisions.md`` S-107 parts 4-6, with
-``overseer.skill_writing`` taking auto|on|off, default auto).
+``overseer.skill_writing`` taking on|off, default on, ``auto`` read as on --
+S-107 amended 2026-10-31 removed the one-week drafts-only trial).
 
 Every run here is scripted: the model is the fake ``write_session``
 (phase A selects nothing; phase B writes the files each test names), and
@@ -198,18 +199,20 @@ def _build_b(rids, *, files=None, name=NAME):
 # ===================================================== writing on/off: reading
 
 
-def test_skill_writing_defaults_to_auto_and_reads_its_three_values(env):
-    assert skills.writing_mode(env.home) == ("auto", None)
-    for value in ("auto", "on", "off"):
+def test_skill_writing_defaults_to_on_reads_on_and_off_and_reads_auto_as_on(env):
+    """S-107 amended 2026-10-31: two values, ``on`` the default; ``auto``, the
+    old default, reads as on (it meant "write" after one week)."""
+    assert skills.writing_mode(env.home) == ("on", None)
+    for value, mode in (("on", "on"), ("off", "off"), ("auto", "on")):
         _set_writing(env, f'"{value}"')
-        assert skills.writing_mode(env.home) == (value, None)
+        assert skills.writing_mode(env.home) == (mode, None), value
 
 
-@pytest.mark.parametrize("raw", ["false", "true", "maybe", "null", "1"])
+@pytest.mark.parametrize("raw", ["false", "true", "maybe", "null", "1", '"of"'])
 def test_any_other_value_reads_as_off_with_a_note(env, raw):
     """S-107 part 6: a mistyped rollback fails closed -- a YAML
     boolean included, which the generic resolver would read as the
-    default (``auto``)."""
+    default (``on``)."""
     _set_writing(env, raw)
     mode, note = skills.writing_mode(env.home)
     assert mode == "off"
@@ -217,36 +220,40 @@ def test_any_other_value_reads_as_off_with_a_note(env, raw):
     assert skills.writing_state(env.home).deploy is False
 
 
-def test_auto_deploys_only_once_the_trial_file_exists(env):
+def test_writing_state_deploys_exactly_when_on_and_an_old_trial_file_changes_nothing(env):
+    """S-107 amended 2026-10-31: ``deploy`` is ``mode == "on"``; the trial and
+    its file are gone, and a ``writing-trial.yaml`` an older run left in a
+    ledger turns nothing on or off."""
     state = skills.writing_state(env.home)
-    assert state.mode == "auto" and not state.deploy and not state.trial_done
-    path = skills.trial_path(env.home)
-    path.parent.mkdir(parents=True)
-    path.write_text("week: x\n", encoding="utf-8")
-    state = skills.writing_state(env.home)
-    assert state.deploy and state.trial_done
+    assert state.mode == "on" and state.deploy
+    assert set(state.to_json()) == {"mode", "deploy"}
+    old_trial = env.home / skills.LEDGER_DIR / "writing-trial.yaml"
+    old_trial.parent.mkdir(parents=True)
+    old_trial.write_text("week: x\n", encoding="utf-8")
+    assert skills.writing_state(env.home).deploy  # still on
     _set_writing(env, '"off"')
-    assert not skills.writing_state(env.home).deploy  # off wins over the trial
-    _set_writing(env, '"on"')
-    path.unlink()
-    assert skills.writing_state(env.home).deploy  # on needs no trial
+    assert not skills.writing_state(env.home).deploy  # off is off, trial file or not
+    assert not hasattr(skills, "trial_path") and not hasattr(discovery, "trial_readiness")
 
 
 def test_the_setting_is_tier_c_config_only_with_no_override_and_refuses_other_values(
     env, monkeypatch,
 ):
     setting = settings.by_name("overseer.skill_writing")
-    assert setting.default == "auto" and setting.tier == "C"
+    assert setting.default == "on" and setting.tier == "C"
     assert setting.env_var is None and setting.override_channel is False
     assert (setting.config_section, setting.config_key) == ("overseer", "skill_writing")
     settings.config_set(env.home, "overseer.skill_writing", "off")  # control: a person may
     assert skills.writing_mode(env.home) == ("off", None)
+    settings.config_set(env.home, "overseer.skill_writing", "auto")  # still taken; means on
+    assert skills.writing_mode(env.home) == ("on", None)
+    assert settings.resolve_setting(env.home, setting)[0] == "on"
     with pytest.raises(settings.SettingsError):
         settings.config_set(env.home, "overseer.skill_writing", "maybe")
     monkeypatch.setenv("CODEX_THREAD_ID", "synthetic")
     with pytest.raises(settings.AgentSettingRefusal):
-        settings.config_set(env.home, "overseer.skill_writing", "on")
-    assert skills.writing_mode(env.home) == ("off", None)
+        settings.config_set(env.home, "overseer.skill_writing", "off")
+    assert skills.writing_mode(env.home) == ("on", None)
 
 
 # ========================================================= (a) writing on
@@ -374,11 +381,10 @@ def test_b_a_secret_in_a_skill_folder_costs_its_pair_not_the_run(env, monkeypatc
 # =========================================== (c) writing not in effect: drafts
 
 
-@pytest.mark.parametrize("value, line", [
-    (None, "the drafts-only week is still to come"),
-    ('"off"', "skill writing is off"),
-])
-def test_c_writing_not_in_effect_commits_a_draft_and_deploys_nothing(env, monkeypatch, value, line):
+@pytest.mark.parametrize("value", ['"off"', "false", '"of"'])
+def test_c_writing_not_in_effect_commits_a_draft_and_deploys_nothing(env, monkeypatch, value):
+    """Off, and the values that read as off (a YAML boolean, a typo), keep a
+    checked draft and deploy nothing (S-107 amended 2026-10-31 test 3)."""
     _set_writing(env, value)
     _lesson(env, RID)
     _phases(monkeypatch, _build_b([RID]))
@@ -397,9 +403,8 @@ def test_c_writing_not_in_effect_commits_a_draft_and_deploys_nothing(env, monkey
     assert _status(env, RID) == "pending"
     decided = _section(_report(result), "Decided in the user's stead")
     assert f"[skill drafted] {NAME}: would build it" in decided
-    assert line in decided
-    # this branch has no phase S, so no run is the trial (fail closed)
-    assert not skills.trial_path(env.home).exists()
+    assert "skill writing is off" in decided
+    assert not (env.home / skills.LEDGER_DIR / "writing-trial.yaml").exists()
 
 
 def test_c_a_dry_run_writes_no_draft(env, monkeypatch):
@@ -410,64 +415,58 @@ def test_c_a_dry_run_writes_no_draft(env, monkeypatch):
     assert not (env.home / skills.LEDGER_DIR).exists()
 
 
-# ============================================================ the trial
+# ================================================ writing from the first run
 
 
-def test_the_first_ready_completed_run_records_the_trial_and_the_next_writes(env, monkeypatch):
+@pytest.mark.parametrize("value", [None, '"auto"'])
+def test_the_first_completed_run_deploys_its_build_pair(env, monkeypatch, value):
+    """S-107 amended 2026-10-31 tests 1 and 2: with no ``skill_writing`` key, and
+    with the old default ``auto`` left in config.yaml, the very first run
+    writes: the skill is in the skills root, its registry row is live, the
+    lesson moved, and no drafts-only week and no trial file exist."""
+    _set_writing(env, value)
     _lesson(env, RID)
     _phases(monkeypatch, _build_b([RID]))
-    monkeypatch.setattr(discovery, "trial_readiness", lambda *args: (True, ""))
 
-    first = _run(env)
+    result = _run(env)
 
-    trial = skills.trial_path(env.home)
-    assert trial.is_file()
-    data = _load(trial)
-    assert set(data) == {"week", "run", "completed_at", "drafts"}
-    assert data["run"] == first.run and data["drafts"] == [NAME] and data["week"] == _week()
-    # written in the commit that completes the run
-    subject = git(env.home, "log", "-1", "--format=%s", "--", str(trial)).stdout.strip()
-    assert subject == f"self-learn: overseer finalize {first.run}"
-    assert "this was the drafts-only week" in _report(first)
-    assert env.row() is None and _status(env, RID) == "pending"
-
-    second = _run(env)  # auto, the trial done: this run writes
-
-    assert env.row() is not None and env.row()["status"] == "live"
+    assert result.status == "applied", _report(result)
+    row = env.row()
+    assert row is not None and row["status"] == "live"
+    assert env.skill_md().is_file() and env.link().is_symlink()
     assert _status(env, RID) == "routed"
-    assert f"[new skill] {NAME}" in _report(second)
-    assert _load(trial)["run"] == first.run  # written once, never rewritten
+    decided = _section(_report(result), "Decided in the user's stead")
+    assert f"[new skill] {NAME}" in decided
+    assert "drafted" not in decided and "drafts-only" not in _report(result)
+    assert not (env.home / skills.LEDGER_DIR).exists()  # no draft, no trial file
 
 
-def test_a_run_not_ready_never_records_the_trial(env, monkeypatch):
-    """Control for the test above: the same run with the shipped
-    readiness leaves auto drafts-only (phase B here writes no
-    skill-dispositions.yaml, so the discovery steps were not seen working;
-    SK4, 2026-10-31)."""
-    _lesson(env, RID)
-    _phases(monkeypatch, _build_b([RID]))
-    _run(env)
-    assert not skills.trial_path(env.home).exists()
-    _run(env)
-    assert env.row() is None and _status(env, RID) == "pending"
+def test_no_run_records_a_trial_file(env, monkeypatch):
+    """S-107 amended 2026-10-31 test 4: no run, on or off, writes
+    ``overseer/skills/writing-trial.yaml``. Positive control first: each
+    run completed and its finalize commit published a run record."""
+    for value in ('"off"', '"on"'):
+        _set_writing(env, value)
+        _phases(monkeypatch, lambda stage: None)
+        result = _run(env)
+        assert result.status == "applied", _report(result)
+        subject = git(env.home, "log", "-1", "--format=%s").stdout.strip()
+        assert subject == f"self-learn: overseer finalize {result.run}"
+        assert not (env.home / skills.LEDGER_DIR / "writing-trial.yaml").exists()
 
 
-def test_an_off_run_with_a_ready_discovery_also_records_the_trial(env, monkeypatch):
-    """The trial is written while writing is not in effect -- under off
-    too -- and off still writes nothing after it."""
-    _set_writing(env, '"off"')
-    _phases(monkeypatch, lambda stage: None)
-    monkeypatch.setattr(discovery, "trial_readiness", lambda *args: (True, ""))
-    _run(env)
-    assert _load(skills.trial_path(env.home))["drafts"] == []
-    assert not skills.writing_state(env.home).deploy
-
-
-def test_a_dry_run_never_records_the_trial(env, monkeypatch):
-    _phases(monkeypatch, lambda stage: None)
-    monkeypatch.setattr(discovery, "trial_readiness", lambda *args: (True, ""))
-    _run(env, dry_run=True)
-    assert not skills.trial_path(env.home).exists()
+def test_a_run_record_from_before_the_change_with_trial_keys_reports_without_error():
+    """A run record written while the trial existed may carry
+    ``trial_ready`` / ``trial_why``; they are read without error and
+    ignored (S-107 amended 2026-10-31)."""
+    manifest = {"week": "2026-10-25", "case_order": [], "cases": {}, "skills": {
+        "state": {"mode": "auto", "deploy": False, "trial_done": False},
+        "drafts": [], "trial_ready": True, "trial_why": None,
+    }}
+    assert skills.report_lines(manifest) == [
+        "skill writing is off (overseer.skill_writing): every skill phase B built or "
+        "changed was kept as a checked draft; nothing was deployed or retired"
+    ]
 
 
 # ============================================= (d) a skill changed by hand
@@ -961,9 +960,9 @@ def test_a_config_yaml_that_cannot_be_read_reads_as_off(env, text):
 
 
 @pytest.mark.parametrize("text", ["", "other: 1\n", "overseer:\n  enabled: false\n"])
-def test_control_a_readable_config_without_the_key_reads_as_auto(env, text):
+def test_control_a_readable_config_without_the_key_reads_as_on(env, text):
     (env.home / "config.yaml").write_text(text, encoding="utf-8")
-    assert skills.writing_mode(env.home) == ("auto", None)
+    assert skills.writing_mode(env.home) == ("on", None)
 
 
 def test_b_a_folder_whose_case_was_dropped_is_not_said_to_be_named_by_no_case(env, monkeypatch):
@@ -1248,7 +1247,7 @@ def test_a_case_refused_after_its_skill_was_written_is_named_in_the_report(env, 
 @pytest.mark.parametrize("raw", ["false", "null", '""', '"maybe"'])
 def test_doctor_settings_names_a_skill_writing_value_the_overseer_reads_as_off(env, raw):
     """Gate r2 MINOR (S-107 part 6): `doctor settings` showed the
-    default, auto, for a YAML boolean, null or an empty string, while the
+    default (then auto, now on) for a YAML boolean, null or an empty string, while the
     overseer reads each as off. Red on 893996b (an INFO row). Control: a
     valid value is an ordinary INFO row."""
     _set_writing(env, raw)
@@ -1260,3 +1259,111 @@ def test_doctor_settings_names_a_skill_writing_value_the_overseer_reads_as_off(e
     _set_writing(env, '"on"')
     (row,) = [r for r in settings.preflight(env.home) if r.name == "overseer.skill_writing"]
     assert row.verdict == "INFO" and "= 'on'" in row.detail
+
+
+# =========================================== S-107 amended 2026-10-31: the health views
+
+
+@pytest.mark.parametrize("text", [
+    "overseer: [\n",            # does not parse
+    "overseer: 5\n",            # the section not a mapping
+])
+def test_doctor_settings_shows_off_with_a_warn_for_an_unreadable_config_yaml(env, text):
+    """Test 6: before, `doctor settings` showed the default for a
+    config.yaml that cannot be read, while the runner read it as off. Now
+    both say off. Control: a readable file without the key is an INFO row
+    showing on."""
+    (env.home / "config.yaml").write_text(text, encoding="utf-8")
+    assert skills.writing_mode(env.home)[0] == "off"  # what the runner obeys
+    (row,) = [r for r in settings.preflight(env.home) if r.name == "overseer.skill_writing"]
+    assert row.verdict == "WARN"
+    assert "= 'off'" in row.detail and "reads it as off" in row.detail
+
+    (env.home / "config.yaml").write_text("other: 1\n", encoding="utf-8")
+    (row,) = [r for r in settings.preflight(env.home) if r.name == "overseer.skill_writing"]
+    assert row.verdict == "INFO" and "= 'on'" in row.detail
+
+
+@pytest.mark.parametrize("refuse", [False, True])
+def test_off_drops_not_drafts_a_build_pair_the_preview_refuses(env, monkeypatch, refuse):
+    """Test 7: with writing off, a pair is drafted only after the same
+    preview a writing run makes. A build pair one of whose lines the
+    preview refuses for a reason the build does not set aside is dropped
+    (a catalogue change with a refused line is not recorded,
+    `_refuse_doomed_maintenance`; a reconsider pair the same way,
+    `_refuse_doomed_reconsider`), named in "Refused / could not do", and
+    leaves no draft folder. Before, the draft was kept before the preview
+    ran, so it said it "would move" lessons a writing run would have
+    dropped with the pair. The refusal is put on the real preview's answer
+    for ``RID2`` (the shape `verbs` gives, e.g. "a hook route is corrected
+    by hand"). Control (``refuse=False``): the same pair, the real preview
+    untouched, is drafted."""
+    from dataclasses import replace
+
+    _set_writing(env, '"off"')
+    _lesson(env, RID)
+    _lesson(env, RID2)
+    real_dry_run = batch.dry_run
+
+    def dry_run(home, sheet, **kwargs):
+        result = real_dry_run(home, sheet, **kwargs)
+        if refuse:
+            result.items = [
+                replace(item, state="would-refuse", kind="bad-line",
+                        detail="a hook route is corrected by hand")
+                if item.id == RID2 else item
+                for item in result.items
+            ]
+        return result
+
+    monkeypatch.setattr(batch, "dry_run", dry_run)
+    _phases(monkeypatch, _build_b([RID, RID2]))
+
+    result = _run(env)
+
+    assert result.status == "applied", _report(result)  # positive control: the run completed
+    report = _report(result)
+    refused = _section(report, "Refused / could not do")
+    decided = _section(report, "Decided in the user's stead")
+    draft = skills.drafts_dir(env.home, _week(), NAME)
+    if not refuse:
+        assert f"[skill drafted] {NAME}: would build it" in decided, report
+        assert RID in decided and RID2 in decided
+        assert (draft / "SKILL.md").is_file()
+        return
+    assert "case-build.yaml" in refused and "preview refuses a line" in refused, refused
+    assert "[skill drafted]" not in report
+    assert not draft.exists()
+    assert env.row() is None and _status(env, RID) == "pending" and _status(env, RID2) == "pending"
+
+
+def test_off_keeps_a_sheetless_rewrite_as_a_draft_and_records_no_case(env, monkeypatch):
+    """Fix round 1 (gate r1 MINOR): the sheetless half of the off path. A
+    rewrite of an owned skill moves no lesson, so it has nothing to
+    preview; with writing off it is kept as a draft where a writing run
+    would apply it. Its case is not recorded and the deployed skill is
+    untouched. Before this test, turning that branch off left every other
+    test green: the pair went on to be recorded, and only the deploy guard
+    in `_apply_skill_write` kept the skill root unchanged."""
+    _set_writing(env, '"on"')
+    _lesson(env, RID)
+    assert env.write().ok  # self-learn's own skill, written under on
+    recorded = env.row()["last_write"]
+    deployed = env.skill_md().read_text(encoding="utf-8")
+    _set_writing(env, '"off"')
+    before = {row["case"] for row in cases.list_cases(env.home)}
+    _phases(monkeypatch, _rewrite_b("The rewritten closing line."))
+
+    result = _run(env)
+
+    assert result.status == "applied", _report(result)  # positive control: the run completed
+    decided = _section(_report(result), "Decided in the user's stead")
+    assert f"[skill drafted] {NAME}: would change it" in decided, decided
+    draft_md = skills.drafts_dir(env.home, _week(), NAME) / "SKILL.md"
+    assert "The rewritten closing line." in draft_md.read_text(encoding="utf-8")
+    assert git(env.home, "ls-files", "--error-unmatch", str(draft_md)).returncode == 0
+    # nothing deployed, no case recorded for the pair
+    assert env.skill_md().read_text(encoding="utf-8") == deployed
+    assert env.row()["last_write"] == recorded
+    assert {row["case"] for row in cases.list_cases(env.home)} == before
+    assert "[skill changed]" not in _report(result)

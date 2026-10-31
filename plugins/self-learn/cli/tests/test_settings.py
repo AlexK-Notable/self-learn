@@ -520,8 +520,9 @@ def test_accepts_entries_clamp_on_read_exactly_like_any_other_validate(name, tmp
 
 #: Entries whose clamp folds an off-whitelist value to a fixed value that is
 #: NOT the default, on purpose: `overseer.skill_writing` reads any value but
-#: auto/on/off as `off`, never as its default `auto`, so a mistyped rollback
-#: fails closed (03-decisions.md S-107 part 6).
+#: on/off (and `auto`, the old default, read as on) as `off`, never as its
+#: default `on`, so a mistyped rollback fails closed (03-decisions.md S-107
+#: part 6).
 _FAIL_CLOSED_FOLDS = {"overseer.skill_writing": "off"}
 
 
