@@ -17,12 +17,24 @@ on this machine. Each is data first, then a renderer over the data:
    description, where it lives, and how many routed lessons are compiled into
    it. A dict ready to dump as ``skills-index.yaml``.
 
-:func:`build_catalogue` runs both and returns what a later unit stages
-(``catalogue/<surface key>.md`` and ``skills-index.yaml``).
+3. **Lesson neighbourhoods** (:func:`lesson_neighbourhoods`,
+   :func:`render_neighbourhoods`; S-NEXT-sk5-neighbourhoods, D12): groups of placed or pending
+   lessons that sit near each other, across every bucket, so a reader who
+   looks for "several lessons that are really one task" reads a short list
+   instead of searching ~150 lessons. Computed from the lesson index (the
+   cache's ``index/lessons.sqlite``) with no model call. One markdown text.
+
+:func:`build_catalogue` runs the first two and returns what a later unit
+stages (``catalogue/<surface key>.md`` and ``skills-index.yaml``). The
+neighbourhoods are a separate pair of calls (the unit that stages them calls
+both), so ``build_catalogue`` and its tests are unchanged.
 
 Read-only, by construction: this module opens files for reading only, runs no
 ``git`` command, flushes no telemetry spool, and creates no directory and no
-cache file. It calls no model.
+cache file. It calls no model. The neighbourhoods open the index file with
+SQLite's ``mode=ro`` and never build or refresh it; when no index has been
+built (or it cannot be read) they build a throwaway one in MEMORY from the
+ledger, words only, and say so in the text.
 
 Where it differs from the skills index ``report.py`` builds
 (``_skill_description_row``): that row reads ``~/.claude/skills`` only, off an
@@ -40,11 +52,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .. import domain, hosts as hosts_mod, reachability, telemetry
 from ..compilers import _iso, _reference_block, entry_line
@@ -53,6 +66,9 @@ from ..ledger_ops import UNREADABLE_RECORD_ERRORS, bucket_project_path
 from ..primitives import chrono
 from ..records import Record
 from .health import _replacement_successors
+
+if TYPE_CHECKING:  # the index is imported where it is used
+    from ..index.store import LessonIndex
 
 # ============================================================== THE KNOBS ==
 # Everything the discovery step's view of the machine depends on is in this
@@ -163,6 +179,37 @@ BUILT_IN_SKILLS: tuple[str, ...] = (
 #: fit. ``KEY_DIGEST_CHARS`` is how many hex digits of the digest are kept.
 KEY_MAX = 120
 KEY_DIGEST_CHARS = 8
+
+#: Lesson neighbourhoods (SK5, D12). A lesson is LISTED, so it can be in a
+#: group, when it is placed (``domain.is_canon_live``: routed, not
+#: superseded) or when it still waits for a decision: a record with one of
+#: these statuses and no ``superseded_by``. Rejected and superseded lessons
+#: are never listed; that is a rule, not a setting, for the same reason
+#: "placed" is not a knob above.
+NEIGHBOUR_PENDING_STATUSES: tuple[str, ...] = ("pending", "deferred")
+
+#: How many of its nearest listed lessons each lesson is compared with
+#: (``index.hybrid.nearest``, which fuses word match and embeddings).
+NEIGHBOUR_LIMIT = 10
+
+#: Two lessons are neighbours when their similarity is at or above the
+#: threshold of the scale they were compared on. ``None`` means the value
+#: ``index/related.py`` measured: ``COSINE_THRESHOLDS[<the index's model>]``
+#: for a pair that both have a vector, ``LEXICAL_THRESHOLD`` otherwise
+#: (a model with no measured threshold is compared on words). A number here
+#: replaces the measured one for that scale.
+NEIGHBOUR_COSINE_THRESHOLD: float | None = None
+NEIGHBOUR_LEXICAL_THRESHOLD: float | None = None
+
+#: A lesson's line in the neighbourhoods text is cut to this many characters.
+#: The full line is in ``catalogue/<surface key>.md``.
+NEIGHBOUR_LINE_CHARS = 300
+
+#: Under each lesson, its nearest neighbours inside the group, at most this many.
+NEIGHBOUR_NEAR_SHOWN = 3
+
+#: Seconds to wait for a busy index file before reading words only.
+NEIGHBOUR_INDEX_TIMEOUT_SECS = 5.0
 
 # ============================================================ end of knobs ==
 
@@ -963,3 +1010,331 @@ def build_catalogue(
         unlisted=placed.unlisted,
         unreadable=placed.unreadable,
     )
+
+
+# ================================================== lesson neighbourhoods ===
+#
+# Which lessons sit near each other (SK5, D12). The skill-discovery step looks
+# for "several lessons that are really one task"; across ~150 lessons and
+# several buckets that is a search, so this precomputes it from the lesson
+# index (``self_learn.index``) with no model call.
+#
+# Method: for every LISTED lesson (see :data:`NEIGHBOUR_PENDING_STATUSES`), take
+# its nearest listed lessons by ``index.hybrid.nearest``, keep the pairs whose
+# similarity reaches the threshold of the scale they were compared on
+# (``index.related.Relatedness``: the same per-pair scale choice and measured
+# thresholds the steward's batching uses, but across buckets, where
+# ``related`` itself stays inside one), and join the kept pairs into connected
+# groups. A lesson with no kept pair is in no group.
+
+
+@dataclass(frozen=True)
+class NeighbourLesson:
+    """One listed lesson, as the neighbourhoods text shows it."""
+
+    id: str
+    bucket: str  # ``user``, ``project <label>`` or ``skill <name>``
+    state: str  # ``placed`` (routed, not superseded), ``pending`` or ``deferred``
+    line: str  # the compiler's line, without its leading dash, cut to NEIGHBOUR_LINE_CHARS
+
+
+@dataclass(frozen=True)
+class NeighbourLink:
+    """Two lessons that reached the threshold of the scale they were compared on."""
+
+    a: str  # the lower id
+    b: str
+    score: float
+    basis: str  # ``cosine`` or ``lexical``
+
+
+@dataclass(frozen=True)
+class Neighbourhood:
+    lessons: tuple[NeighbourLesson, ...]  # by id; at least two
+    links: tuple[NeighbourLink, ...]  # strongest first
+
+
+@dataclass(frozen=True)
+class Neighbourhoods:
+    groups: tuple[Neighbourhood, ...]  # largest first, then by lowest id
+    basis: str  # ``cosine``, ``mixed`` or ``lexical``: what the pairs were compared on
+    #: Said in the text: ``word match only (index not built)``, ``word match
+    #: only (<why embeddings are missing>)``, or the embeddings in use.
+    basis_note: str
+    considered: int  # lessons listed
+    thresholds: dict[str, float | None]  # ``cosine`` / ``lexical`` actually applied
+    #: Listed lessons the index does not hold yet (made or changed after its
+    #: last build): not compared.
+    not_indexed: tuple[str, ...] = ()
+    #: Record files that did not read back, ``<scope>/<bucket>/<file>``.
+    unreadable: tuple[str, ...] = ()
+
+
+def lesson_neighbourhoods(
+    home: Path | str,
+    *,
+    index: LessonIndex | None = None,
+    cosine_threshold: float | None = None,
+    lexical_threshold: float | None = None,
+    limit: int | None = None,
+) -> Neighbourhoods:
+    """The groups of listed lessons that sit near each other in the ledger *home*.
+
+    Writes nothing and calls no model. With no *index* given, the lesson
+    index in the cache is opened read-only; it is never built or refreshed
+    here. When there is none, or it cannot be read, a throwaway index is
+    built in memory from the ledger (words only) and ``basis_note`` says so.
+    A given *index* is used as it stands and left open for the caller.
+
+    *cosine_threshold*, *lexical_threshold* and *limit* default to the knobs
+    (:data:`NEIGHBOUR_COSINE_THRESHOLD`, :data:`NEIGHBOUR_LEXICAL_THRESHOLD`,
+    :data:`NEIGHBOUR_LIMIT`).
+    """
+    from ..index import hybrid
+    from ..index.related import Relatedness
+
+    ledger = Path(home)
+    lessons, unreadable = _listed_lessons(ledger)
+    cos = NEIGHBOUR_COSINE_THRESHOLD if cosine_threshold is None else cosine_threshold
+    lex = NEIGHBOUR_LEXICAL_THRESHOLD if lexical_threshold is None else lexical_threshold
+    per_lesson = NEIGHBOUR_LIMIT if limit is None else limit
+
+    own_index = index is None
+    memory_reason: str | None = None
+    if index is None:
+        index, problem = _open_index_readonly(ledger)
+        if index is None:
+            index = _memory_index(ledger)
+            memory_reason = (
+                "index not built" if problem is None else f"index could not be read: {problem}"
+            )
+    try:
+        rel = Relatedness(index, cosine_threshold=cos, lexical_threshold=lex)
+        listed = {lesson.id: lesson for lesson in lessons}
+        indexed = [i for i in sorted(listed) if i in rel.docs]
+        not_indexed = tuple(i for i in sorted(listed) if i not in rel.docs)
+        # Records the index holds that are not listed (superseded, rejected)
+        # can crowd a lesson's nearest list: a replaced lesson's old text is
+        # its nearest neighbour. Ask for that many extra.
+        extra = len(rel.docs) - len(indexed)
+        edges: dict[tuple[str, str], NeighbourLink] = {}
+        for a in indexed:
+            kept = 0
+            for hit in hybrid.nearest(index, a, limit=per_lesson + extra).hits:
+                if hit.id == a or hit.id not in listed or hit.id not in rel.docs:
+                    continue
+                kept += 1
+                score, scale = rel.similarity(a, hit.id)
+                if score is not None and scale is not None and score >= rel.threshold_for(scale):
+                    low, high = sorted((a, hit.id))
+                    edges[(low, high)] = NeighbourLink(low, high, score, scale)
+                if kept >= per_lesson:
+                    break
+        if memory_reason is not None:
+            note = f"word match only ({memory_reason})"
+        elif rel.basis == "cosine":
+            note = f"embeddings, model {rel.model}"
+        elif rel.basis == "mixed":
+            note = f"embeddings where both lessons have one, word match otherwise ({rel.basis_reason})"
+        else:
+            note = f"word match only ({index.mode()[1] or rel.basis_reason})"
+        thresholds = {"cosine": rel.cosine_threshold, "lexical": rel.lexical_threshold}
+        basis = "lexical" if memory_reason is not None else rel.basis
+    finally:
+        if own_index:
+            index.close()
+
+    groups = []
+    for members in _components(indexed, edges):
+        inside = set(members)
+        links = sorted(
+            (link for link in edges.values() if link.a in inside),
+            key=lambda link: (-link.score, link.a, link.b),
+        )
+        groups.append(
+            Neighbourhood(lessons=tuple(listed[i] for i in members), links=tuple(links))
+        )
+    groups.sort(key=lambda g: (-len(g.lessons), g.lessons[0].id))
+    return Neighbourhoods(
+        groups=tuple(groups),
+        basis=basis,
+        basis_note=note,
+        considered=len(listed),
+        thresholds=thresholds,
+        not_indexed=not_indexed,
+        unreadable=tuple(unreadable),
+    )
+
+
+def render_neighbourhoods(hoods: Neighbourhoods, placed: PlacedLessons | None = None) -> str:
+    """The neighbourhoods as one markdown text (staged as ``neighbourhoods.md``).
+
+    With *placed* (what :func:`placed_lessons` returned), a placed lesson names
+    the surface key its line is on, i.e. the ``catalogue/<key>.md`` file that
+    shows it in full. Without it the lesson says only ``placed``.
+    """
+    surface_of: dict[str, str] = {}
+    if placed is not None:
+        for surface in placed.surfaces.values():
+            for row in surface.lessons:
+                surface_of[row.id] = surface.key
+
+    lines = ["# Lesson neighbourhoods", ""]
+    lines.append(f"Compared by: {hoods.basis_note}.")
+    shown = [
+        f"{name} {value:g}"
+        for name, value in (
+            ("embeddings, cosine at least", hoods.thresholds.get("cosine")),
+            ("words, similarity at least", hoods.thresholds.get("lexical")),
+        )
+        if value is not None
+    ]
+    if shown:
+        lines.append(f"Two lessons are neighbours at: {'; '.join(shown)}.")
+    lines.append(f"Lessons compared: {hoods.considered}. Groups found: {len(hoods.groups)}.")
+    if hoods.not_indexed:
+        lines.append("Not in the index yet, so not compared: " + ", ".join(hoods.not_indexed) + ".")
+    if hoods.unreadable:
+        lines.append("Did not read back: " + ", ".join(hoods.unreadable) + ".")
+    lines += [
+        "",
+        "A group is a set of lessons that each sit near another member, whatever bucket "
+        "or surface they are on. It is a lead, not a verdict: read the lines.",
+        "",
+    ]
+    if not hoods.groups:
+        lines.append("No lesson sits near enough another to form a group.")
+    for number, group in enumerate(hoods.groups, 1):
+        buckets = sorted({lesson.bucket for lesson in group.lessons})
+        lines.append(f"## Group {number}: {len(group.lessons)} lessons in {len(buckets)} bucket(s)")
+        lines.append("")
+        lines.append("Buckets: " + "; ".join(buckets))
+        lines.append("")
+        for lesson in group.lessons:
+            if lesson.state != "placed":
+                where = lesson.state
+            elif placed is None:
+                where = "placed"
+            elif lesson.id in surface_of:
+                where = f"placed, surface {surface_of[lesson.id]}"
+            else:
+                where = "placed, on no loaded surface"
+            lines.append(f"- {lesson.id} [{lesson.bucket}; {where}] {lesson.line}")
+            near = sorted(
+                (link for link in group.links if lesson.id in (link.a, link.b)),
+                key=lambda link: (-link.score, link.a, link.b),
+            )[:NEIGHBOUR_NEAR_SHOWN]
+            if near:
+                lines.append("  near: " + ", ".join(_near_text(lesson.id, link) for link in near))
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _near_text(own: str, link: NeighbourLink) -> str:
+    other = link.b if link.a == own else link.a
+    how = "embeddings" if link.basis == "cosine" else "words"
+    return f"{other} {link.score:.2f} ({how})"
+
+
+def _bucket_label(bucket: Bucket) -> str:
+    if bucket.scope == "user":
+        return "user"
+    if bucket.scope == "project":
+        return f"project {_project_label(bucket)}"
+    return f"skill {bucket.name}"
+
+
+def _listed_lessons(home: Path) -> tuple[list[NeighbourLesson], list[str]]:
+    """Every lesson that can be in a neighbourhood, by id, and the record
+    files that did not read back. The ledger is the authority for which
+    lessons are listed; the index (which may be a day old) only measures."""
+    listed: dict[str, NeighbourLesson] = {}
+    unreadable: list[str] = []
+    for bucket in discover_buckets(home):
+        label = _bucket_label(bucket)
+        for sub in ("pending", "resolved"):
+            folder = bucket.path / sub
+            if not folder.is_dir():
+                continue
+            for path in sorted(folder.glob("lrn-*.md")):
+                try:
+                    record = Record.from_path(path)
+                except UNREADABLE_RECORD_ERRORS:
+                    unreadable.append(f"{bucket.scope}/{bucket.name}/{path.name}")
+                    continue
+                if domain.is_canon_live(record):
+                    state = "placed"
+                elif record.status in NEIGHBOUR_PENDING_STATUSES and record.superseded_by is None:
+                    state = record.status
+                else:
+                    continue
+                if record.id in listed:
+                    continue
+                listed[record.id] = NeighbourLesson(
+                    id=record.id, bucket=label, state=state, line=_neighbour_line(record)
+                )
+    return [listed[i] for i in sorted(listed)], sorted(unreadable)
+
+
+def _neighbour_line(record: Record) -> str:
+    line = entry_line(record)
+    if line.startswith("- "):
+        line = line[2:]
+    if len(line) > NEIGHBOUR_LINE_CHARS:
+        line = line[: NEIGHBOUR_LINE_CHARS - 1].rstrip() + "…"
+    return line
+
+
+def _open_index_readonly(home: Path) -> tuple[LessonIndex | None, str | None]:
+    """The cache's lesson index opened with ``mode=ro``: ``(index, None)``;
+    ``(None, None)`` when none was ever built; ``(None, why)`` when the file
+    is there and cannot be read (locked mid-build, damaged). Never builds,
+    never creates the cache directory."""
+    from ..index.store import LessonIndex, index_path
+
+    path = index_path(home, create=False)
+    if not path.is_file():
+        return None, None
+    try:
+        conn = sqlite3.connect(
+            f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=NEIGHBOUR_INDEX_TIMEOUT_SECS
+        )
+    except sqlite3.Error as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    try:
+        index = LessonIndex(conn, path, home)
+        index.docs()  # a damaged or half-built file fails here, not mid-comparison
+    except sqlite3.Error as exc:
+        conn.close()
+        return None, f"{type(exc).__name__}: {exc}"
+    return index, None
+
+
+def _memory_index(home: Path) -> LessonIndex:
+    """A word-only index of the ledger held in memory: no file, no cache."""
+    from ..index.store import LessonIndex
+
+    index = LessonIndex.open_at(Path(":memory:"), home)
+    index.build(None)
+    return index
+
+
+def _components(ids: list[str], edges: dict[tuple[str, str], NeighbourLink]) -> list[list[str]]:
+    """The connected groups of two or more, each sorted, found from the
+    lowest id so the result does not depend on the order edges were met."""
+    parent = {i: i for i in ids}
+    for a, b in sorted(edges):
+        root_a, root_b = _root(parent, a), _root(parent, b)
+        if root_a != root_b:
+            parent[max(root_a, root_b)] = min(root_a, root_b)
+    grouped: dict[str, list[str]] = {}
+    for i in ids:
+        grouped.setdefault(_root(parent, i), []).append(i)
+    return [sorted(members) for members in grouped.values() if len(members) > 1]
+
+
+def _root(parent: dict[str, str], node: str) -> str:
+    while parent[node] != node:
+        parent[node] = parent[parent[node]]
+        node = parent[node]
+    return node
