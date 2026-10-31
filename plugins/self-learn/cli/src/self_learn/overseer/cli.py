@@ -22,11 +22,25 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     report_parser = commands.add_parser("report", help="print an overseer report")
     report_parser.add_argument("--date")
     commands.add_parser("open", help="show every open question from the latest report")
-    respond_parser = commands.add_parser("respond", help="answer or decline a displayed question")
-    respond_parser.add_argument(
-        "--proposition", required=True,
+    respond_parser = commands.add_parser(
+        "respond",
+        help="answer or decline a displayed question, or veto or retire a skill it showed",
+    )
+    target = respond_parser.add_mutually_exclusive_group(required=True)
+    target.add_argument(
+        "--proposition",
         help="the question's id as `overseer open` showed it: a reading's "
         "um-<4 hex>@r<revision>, or an ask's q-<slug>",
+    )
+    target.add_argument(
+        "--veto-skill", metavar="NAME",
+        help="ban the name of a skill self-learn built, for ever; the next overseer run "
+        "gives the skill a new name (needs --text and --scope)",
+    )
+    target.add_argument(
+        "--retire-skill", metavar="NAME",
+        help="ask the next overseer run to retire a skill self-learn built "
+        "(needs --text and --scope)",
     )
     reply = respond_parser.add_mutually_exclusive_group(required=True)
     reply.add_argument("--text")
@@ -80,6 +94,33 @@ def dispatch(args) -> int:
             conversation.open_questions(home)
             return 0
         if command == "respond":
+            if args.veto_skill or args.retire_skill:
+                if args.decline:
+                    raise conversation.ConversationUsageError(
+                        "overseer respond: --decline answers a question; it does not apply to "
+                        "--veto-skill or --retire-skill"
+                    )
+                vetoing = bool(args.veto_skill)
+                skill = args.veto_skill if vetoing else args.retire_skill
+                result = conversation.respond_skill(
+                    home,
+                    action="veto" if vetoing else "retire",
+                    name=skill,
+                    scope=args.scope or "",
+                    text=args.text,
+                    as_asked=args.as_asked,
+                )
+                if vetoing:
+                    print(
+                        f"self-learn overseer: recorded {result.statement_id}; the name {skill} "
+                        "is vetoed for ever, and the next overseer run gives that skill a new name"
+                    )
+                else:
+                    print(
+                        f"self-learn overseer: recorded {result.statement_id}; retirement of "
+                        f"{skill} is asked of the next overseer run"
+                    )
+                return 0
             if args.decline:
                 conversation.decline(home, proposition=args.proposition)
                 print(f"self-learn overseer: declined {args.proposition}")

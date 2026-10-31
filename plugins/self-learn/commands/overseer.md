@@ -10,9 +10,9 @@ is a user-model proposition, `um-<4 hex>@r<revision>`), and an **ask** puts
 a decision or fact only the user has (its id is `q-<slug>`, and it comes
 with its own text and a line saying what the answer changes). You are a
 **thin caller**: every write is a `self-learn` CLI verb (`overseer open`,
-`overseer respond`) — you never edit the ledger, a case, or the user
-model yourself, and you never paraphrase what the user says back into
-the statement store.
+`overseer respond`) — you never edit the ledger, a case, the skills
+registry, or the user model yourself, and you never paraphrase what the
+user says back into the statement store.
 
 This is not a review session. Nothing here approves a lesson, a route, or
 a hook — those are decisions the overseer (or, since S-72, the steward:
@@ -80,10 +80,25 @@ and nothing about the report's other sections clears `provisional`. This
 step does not ask the user anything yet — "shown" is the only thing it
 ever means (never assent).
 
+After the questions the same command may print a `## Skills this week`
+section. It lists, one `- skill <name>: …` line each, the skills self-learn
+built, changed or retired since the latest report began; skills the
+overseer kept as drafts and did not deploy (a week in which skill writing
+was held back); a skill whose name the user vetoed and that is waiting for
+a new name; and a retirement the user asked for that the overseer has not
+acted on yet. Relay that section verbatim too. A skill is a text that is
+loaded into sessions by what its description says; the section's `[new
+skill]` and `[skill changed]` lines are the ones the user can act on (step
+3). It prints nothing when no skill moved. Showing a built or changed
+skill is recorded as a presentation, like an ask is, and it is what a
+veto or a retirement request in step 4 is attached to.
+
 ## 3. Discuss them in order of consequence, for as long as the user wants
 
 If the command output has no indexed question — the machine index is
-empty and the report block says "none" — stop here and say so plainly.
+empty and the report block says "none" — and no `Skills this week`
+section, stop here and say so plainly. With no question but a skills
+section, go straight to "For a skill" below.
 When the prose says "none" but the command prints indexed fallback lines,
 those lines are the questions: do not discard them because the report and
 its committed index disagreed.
@@ -99,6 +114,20 @@ the answer changes (its `why`), and name the cases it came from. Do not
 restate it as a reading of the user or ask for approval of anything; it
 is a decision or fact only the user has. If they answer, record it with
 step 4's command using the ask's `q-` id.
+
+**For a skill**, after the questions: say in one sentence what each
+`[new skill]` or `[skill changed]` line means (self-learn wrote or rewrote
+that skill, which Claude Code now loads when its description matches a
+task), and that the user may veto its **name** or ask for the skill to be
+**retired**. Nothing is asked of them: silence leaves the skill as it is. A
+`[… draft]` line is not deployed and nothing can be vetoed on it yet; say
+so if they ask. A veto bans the name for ever (the overseer's next run gives
+the skill a new name; a skill cannot be renamed here, and its words stay
+as they were); a retirement request is carried to the overseer's next run,
+which moves the skill's lessons out first and decides, so say that it is a
+request and not an instant removal. A veto or a retirement request can only
+name a skill the section showed as built or changed; anything else is
+refused by name, and you relay that refusal as it is.
 
 **For a reading**, cover these parts, in your own words but never skipping
 one:
@@ -149,6 +178,23 @@ self-learn overseer respond --proposition <um-id@r | q-id> \
   [--as-asked "<question as narrowed in conversation>"]
 ```
 
+To veto a skill's name, or to ask for a skill to be retired, when the user
+says so about a skill step 2 showed, call one of:
+
+```
+self-learn overseer respond --veto-skill <skill-name> \
+  --scope "<user|project:<host>>" --text "<verbatim>"
+self-learn overseer respond --retire-skill <skill-name> \
+  --scope "<user|project:<host>>" --text "<verbatim>"
+```
+
+The skill name is exactly as the section printed it. The words are stored
+as typed, like every other reply, and a skill's scope is `user` unless the
+user said otherwise. `--decline` does not apply to a skill; if the user
+declines to say anything about one, record nothing. Never run either command
+because the section exists, or because you think a name is poor: only the
+user's own words about a named skill start one.
+
 `--proposition` takes either kind's id exactly as `overseer open` printed
 it. An answer to an ask is stored as a statement answering that question
 (`answers.kind: question`), and the overseer reads it on its next run.
@@ -178,7 +224,8 @@ only means no reply was recorded, nothing about the entry itself.
 
 ## 5. Close
 
-Summarize, in one line per question actually discussed: answered (and
+Summarize, in one line per question actually discussed (and per skill the
+user vetoed or asked to retire, with the words recorded): answered (and
 what was recorded) or left with no statement of the user's recorded
 against it — the presentation from step 2 stands, and nothing else about
 the entry changed. Do not offer to re-ask an answered question in the
@@ -195,5 +242,7 @@ never an automatic expiry.
   state.
 - `overseer open` / `overseer respond` — `0` displayed/recorded; `1` refused (an
   empty scope, a proposition id that does not resolve, a secret-scan
-  hit on the verbatim text — show the CLI's own message, never guess at
-  the reason yourself).
+  hit on the verbatim text, or for a skill: a name self-learn does not
+  own, a skill `overseer open` never showed, or words already recorded for
+  the other request — show the CLI's own message, never guess at the
+  reason yourself).
