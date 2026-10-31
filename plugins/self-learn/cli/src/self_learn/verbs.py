@@ -994,6 +994,39 @@ def _write_compile_record_entry(
         return None
 
 
+def _unrecorded_region_is_current(
+    home: Path, spec: TargetSpec, observed_hash: str | None
+) -> bool:
+    """S-NEXT-cures-a (M2.4): True when *spec*'s managed region has no
+    compile-record entry (verdict ``unknown``) and the bytes on disk are
+    exactly the region the ledger's current records would render -- the
+    same equality :func:`_abort_if_region_unsound` already applies before
+    it lets such a region through as "adopting". Anything that cannot be
+    read answers False (write nothing); a region with an entry, a hand
+    edit, and a non-``managed`` kind all answer False too."""
+    if observed_hash is None or spec.target is None:
+        return False
+    region_kind = _region_kind_for(spec)
+    if region_kind != "managed":
+        return False
+    try:
+        slug = host_slug(home, spec.host_path, scope_kind=spec.scope_kind)
+        entry = compiled.entry_for(
+            compiled.load_record(home, slug),
+            compiled.region_key(spec.host_path, spec.target, region_kind),
+            region=region_kind,
+        )
+        if compiled.verdict_for(entry, observed_hash) != "unknown":
+            return False
+        expected = _expected_managed_region(home, spec)
+    except (
+        OSError, UnicodeDecodeError, compiled.CompiledRecordError, CompileError,
+        HostsError,
+    ):
+        return False
+    return expected is not None and compiled.sha256_hex(expected) == observed_hash
+
+
 def _adopt_list(adopt: "Path | str | Iterable[Path | str] | None") -> list[Path | str]:
     if adopt is None:
         return []
@@ -2956,20 +2989,64 @@ def _prepare_sheet_hook(
         raise SheetLineError(str(exc)) from exc
 
 
-def _hook_manual_steps(snippet: str, name: str) -> list[str]:
+#: The three lines a hook ROUTE prints as its manual steps. The prefixes are
+#: shared with :func:`without_hook_manual_steps`, which removes them from a
+#: route's notes when the activation that follows has already done the work
+#: (S-NEXT-cures-a): one place renders the text and one place recognises it,
+#: so the two cannot drift.
+_HOOK_MANUAL_HEADER = (
+    "hook routed — two manual steps remain (the guard is INERT until both):"
+)
+_HOOK_MANUAL_STEP1 = "  1. run ./install.sh"
+_HOOK_MANUAL_STEP2 = "  2. add this to ~/.claude/settings.json"
+_HOOK_PLACED_HEADER = (
+    "hook placed — one manual step remains (the guard is INERT until it is done):"
+)
+_HOOK_PLACED_STEP = "  add this to ~/.claude/settings.json"
+
+
+def _hook_manual_steps(
+    snippet: str, name: str, *, placed: bool = False
+) -> list[str]:
     """M3-11: the route ends by printing the required manual steps — the
     hook is inert by design until both are done. S-73: step 2 names the
     event the snippet registers under (a warning hook may be
     ``PostToolUse``), read back from the snippet itself so the two can
-    never disagree."""
+    never disagree.
+
+    ``placed=True`` (S-NEXT-cures-a): the symlink is already in place (an
+    activation ran), so only the settings.json step is still owed — the
+    text says one step, never "two", and never asks for ``./install.sh``."""
     event = next(iter(json.loads("{" + snippet + "}")))
+    if placed:
+        return [
+            _HOOK_PLACED_HEADER,
+            f"{_HOOK_PLACED_STEP} (hooks, under {event}):\n     {snippet}",
+        ]
     return [
-        "hook routed — two manual steps remain (the guard is INERT until "
-        "both):",
-        f"  1. run ./install.sh — the ~/.claude/hooks/{name} symlink "
+        _HOOK_MANUAL_HEADER,
+        f"{_HOOK_MANUAL_STEP1} — the ~/.claude/hooks/{name} symlink "
         "materializes only then",
-        f"  2. add this to ~/.claude/settings.json (hooks, under {event}):\n"
-        f"     {snippet}",
+        f"{_HOOK_MANUAL_STEP2} (hooks, under {event}):\n     {snippet}",
+    ]
+
+
+def without_hook_manual_steps(notes: list[str]) -> list[str]:
+    """*notes* minus the route's manual-steps lines (S-NEXT-cures-a).
+
+    A hook route that an activation follows in the same item has nothing
+    left for a person to do that the activation's own receipts do not say:
+    when the activation registered the hook, nothing; when it only placed
+    it (``overseer.hook_activation`` off), its own "delegated" receipt names
+    the one step left. Printing the route's "two manual steps remain" next
+    to that was false output (the 2026-10-18 overseer report said it after
+    doing both). Every other note line is kept."""
+    return [
+        n
+        for n in notes
+        if not n.startswith(
+            (_HOOK_MANUAL_HEADER, _HOOK_MANUAL_STEP1, _HOOK_MANUAL_STEP2)
+        )
     ]
 
 
@@ -3064,9 +3141,9 @@ def _hook_commit_or_undo(
     (:func:`hook_activate`, before any lock) — rides the commit body as
     its own final ``By: <actor>`` paragraph, through the SAME
     :func:`_body_with_by_trailer` every other resolution verb already
-    uses; ``None`` (the human path, and :func:`hook_deactivate`'s own
-    call, which passes none) leaves the body exactly as before this
-    fold.
+    uses; ``None`` (a person's own terminal) leaves the body exactly as
+    before this fold. S-NEXT-cures-a: :func:`hook_deactivate` takes *by*
+    too, so an agent shell's call is stamped ``By: agent`` like the rest.
 
     Fold r2, item B: wraps the ledger-side write
     (``Record.write``/:func:`_commit_ledger`) around a runtime
@@ -3249,6 +3326,7 @@ def hook_deactivate(
     record_id: str,
     *,
     no_push: bool = False,
+    by: str | None = None,
 ) -> VerbResult:
     """13 §7.4: reverses :func:`hook_activate` — removes the symlink
     (only if it points at the expected target) and surgically removes
@@ -3266,6 +3344,8 @@ def hook_deactivate(
     home = Path(home)
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
+    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
+
     claude_dir = selfcheck.claude_runtime_dir()
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -3281,7 +3361,7 @@ def hook_deactivate(
                 raise VerbError(_residual_message(exc)) from exc
             message = f"self-learn: hook deactivate {record_id}"
             staged, sha = _hook_commit_or_undo(
-                home, record_id, result, "hook-deactivated", message
+                home, record_id, result, "hook-deactivated", message, by=by,
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -6059,6 +6139,7 @@ def _execute_route(
     capture_diff: bool = False,
     execution: execution_evidence.ExecutionRef | None = None,
     subject: str | None = None,
+    stamp_by: str | None = None,
 ) -> VerbResult:
     """THE pinned route sequence (M-R, lane L7): every step `route`
     (pending-file input, git-mv) and `route_direct` (in-memory record,
@@ -6425,13 +6506,13 @@ def _execute_route(
                 ) from exc
             _, sha = _commit_ledger(
                 home, touched, message,
-                _body_with_by_trailer(note, None, execution),
+                _body_with_by_trailer(note, stamp_by, execution),
             )
         else:
             diff_text = None
             staged, sha = _commit_ledger(
                 home, touched, message,
-                _body_with_by_trailer(note, None, execution),
+                _body_with_by_trailer(note, stamp_by, execution),
             )
 
         if intent is not None:
@@ -6564,6 +6645,7 @@ def route(
     hook_input: dict | None = None,
     rules_paths: list[str] | None = None,
     allow_unpathed: bool = False,
+    stamp_by: str | None = None,
 ) -> VerbResult:
     """Route a pending record into canon. See the module docstring for the
     pinned sequence (M-R: the post-preflight half now lives once, in
@@ -6600,8 +6682,15 @@ def route(
     distinguish "the analyst's proposal, displayed and accepted" from "the
     human cycled to a different one"). Terminal/bare-CLI callers leave this
     ``None`` and get the unchanged heuristic (an explicit ``--dest`` typed
-    at a terminal IS the human's own choice)."""
+    at a terminal IS the human's own choice).
+
+    ``stamp_by`` (S-NEXT-cures-a, M5.2): the actor to name in the commit's
+    ``By:`` trailer -- who RAN the verb, which is not what *by* means
+    (*by* is who chose the destination, so the review UI sends the
+    analyst there while a person clicks approve). Only the CLI sets it,
+    and only from an agent shell. Left ``None`` the body is unchanged."""
     home = Path(home)
+    _by_trailer(stamp_by)  # a bad value refuses before any lock
     if by is not None and by not in ROUTING_BY_VALUES:
         raise VerbError(
             f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}"
@@ -6738,6 +6827,7 @@ def route(
             collapse=collapse_ctx,
             capture_diff=False,
             execution=execution,
+            stamp_by=stamp_by,
         )
     finally:
         hold.release()  # (g) release iff owned
@@ -6761,6 +6851,7 @@ def route_direct(
     one_motion_gate: bool = True,
     subject: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
+    stamp_by: str | None = None,
 ) -> VerbResult:
     """``teach --route``'s writer (02 §2 lifecycle note): the composed,
     not-yet-on-disk record is written DIRECTLY into its bucket's
@@ -6991,6 +7082,7 @@ def route_direct(
             user_claude_md=user_claude_md,
             capture_diff=True,
             execution=execution,
+            stamp_by=stamp_by,
             subject=subject,
         )
     finally:
@@ -7599,6 +7691,7 @@ def _replace_pending(
     body: str,
     no_push: bool,
     execution: execution_evidence.ExecutionRef | None,
+    stamp_by: str | None = None,
 ) -> VerbResult:
     """D-AUTHOR §2.2 step 4: the first lesson is a draft and no ``dest`` is
     named -- the new lesson is captured to ``pending/`` and the first one is
@@ -7625,7 +7718,7 @@ def _replace_pending(
                 touched.append(meta)
             touched = touched + supersede_record(home, plan.first_id, record.id, verb="replace")
             staged, sha = _commit_ledger(
-                home, touched, message, _body_with_by_trailer(body, None, execution)
+                home, touched, message, _body_with_by_trailer(body, stamp_by, execution)
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -7658,6 +7751,7 @@ def replace_lesson(
     user_claude_md: Path | str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
     actor: str = "human",
+    stamp_by: str | None = None,
 ) -> VerbResult:
     """``self-learn replace`` (D-AUTHOR §2.2, E1): write a new lesson that
     takes over from *record_id* (and every ``also`` lesson), in one motion.
@@ -7685,6 +7779,7 @@ def replace_lesson(
     and, for a managed destination, the line the compiler wrote
     (``compiled_line``) -- the case's after-text (D-AUTHOR §2.4)."""
     home = Path(home)
+    _by_trailer(stamp_by)  # S-NEXT-cures-a: refuses before any lock
     plan = _preflight_replace(
         home, record_id, also=also, trigger=trigger, instruction=instruction,
         fact=fact, context=context, text_from=text_from, type=type, kind=kind,
@@ -7709,11 +7804,12 @@ def replace_lesson(
                 follow_up=plan.follow_up, allow_empty_glob=False,
                 rules_paths=rules_paths, allow_unpathed=False, one_motion_gate=False,
                 subject=_replace_subject(record_id, plan.new_id, plan.dest),
-                execution=execution,
+                execution=execution, stamp_by=stamp_by,
             )
         else:
             result = _replace_pending(
-                home, plan, body=body, no_push=no_push, execution=execution
+                home, plan, body=body, no_push=no_push, execution=execution,
+                stamp_by=stamp_by,
             )
         warnings += result.warnings
     for n, also_id in enumerate(plan.also_todo):
@@ -9031,6 +9127,7 @@ def note(
     append: str,
     key: str | None = None,
     no_push: bool = False,
+    by: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Append one commentary entry to a record's `notes[]` (U-verbs
@@ -9046,6 +9143,7 @@ def note(
     message. A human call at a terminal omits `key` and every call
     appends (two identical observations on two days are two facts)."""
     home = Path(home)
+    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
     path = _preflight_note(home, record_id, append=append)
 
     if key is not None and Record.from_path(path).note_has_key(key):
@@ -9072,7 +9170,7 @@ def note(
             record.write(path)
             staged, sha = _commit_ledger(
                 home, [path], message,
-                _body_with_by_trailer(append, None, execution),
+                _body_with_by_trailer(append, by, execution),
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -9243,6 +9341,8 @@ def reroute(
     rules_paths: list[str] | None = None,
     allow_empty_glob: bool = False,
     allow_unpathed: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
+    stamp_by: str | None = None,
 ) -> VerbResult:
     """Correct a wrong routing DESTINATION on an already-ROUTED record
     (U-verbs S-54 / §4.5, Phase 2) — the live-motivated half of what
@@ -9274,8 +9374,23 @@ def reroute(
     replayed exactly as for a fresh sheet-carried hook route
     (:func:`_prepare_sheet_hook`), and the host phase writes it. Without
     the compile input `--dest hook` stays refused. The checks before any
-    lock are :func:`_reroute_plan`, which `batch.dry_run` previews too."""
+    lock are :func:`_reroute_plan`, which `batch.dry_run` previews too.
+
+    S-NEXT-cures-a (M5.1): the commit body ends with the attribution
+    paragraph every other sheet-run verb already writes -- the delegated
+    runner's ``execution`` trailers (``Case:``/``Sheet:``/``Item:``/``By:``)
+    when the sheet runner passes them, else a ``By:`` line for *stamp_by*.
+    A reroute used to carry neither, so a steward's or overseer's reroute
+    read like a hand commit in the ledger, and the overseer's crash
+    recovery (which proves a mutation by those trailers) could not see it.
+
+    *stamp_by* is who RAN the verb (the CLI sets it, only from an agent
+    shell); *by* is who CHOSE the destination, as on ``route`` -- the review
+    UI sends ``--by analyst`` while a person clicks Re-route, so *by* never
+    feeds the trailer."""
     home = Path(home)
+    _by_trailer(by)  # a bad `by` refuses before any lock (the routing field)
+    _by_trailer(stamp_by)  # likewise a bad `stamp_by`
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -9402,7 +9517,10 @@ def reroute(
                     home, old_retire.reference, record_id, by=message, then_route=new_shelf
                 )
 
-            staged, sha = _commit_ledger(home, touched, message, note)
+            staged, sha = _commit_ledger(
+                home, touched, message,
+                _body_with_by_trailer(note, stamp_by, execution),
+            )
 
             # M-1 (U-verbs Phase 2 code gate r1): `reroute` writes a
             # routing block via `ledger_ops.reroute_record` (its own
@@ -10001,6 +10119,7 @@ def followup_done(
     *,
     note: str | None = None,
     no_push: bool = False,
+    by: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Clear a routed record's open follow-up (11 §2.5): move
@@ -10009,6 +10128,7 @@ def followup_done(
     lrn-…``; the note lands in ``follow_up_done.done_note`` + the commit
     body — ``resolution_note`` stays write-once and untouched (02 §2)."""
     home = Path(home)
+    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
     path, record = _preflight_followup_done(home, record_id, note=note)
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -10023,7 +10143,7 @@ def followup_done(
             record.write(path)
             staged, sha = _stage_and_commit(
                 home, [path], message,
-                _body_with_by_trailer(note, None, execution),
+                _body_with_by_trailer(note, by, execution),
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -10121,6 +10241,7 @@ def confirm_recurrence(
     tolerate: bool = False,
     note: str | None = None,
     no_push: bool = False,
+    by: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Human confirmation of a recurrence suspect (11 §2.2/§2.5): append
@@ -10131,6 +10252,7 @@ def confirm_recurrence(
     ``recurrences[].note`` — NEVER ``resolution_note`` (write-once, 02 §2).
     Commit: ``self-learn: recurrence confirmed on lrn-…``."""
     home = Path(home)
+    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
     event, path, record = _preflight_confirm_recurrence(
         home, record_id, event_ref=event_ref, tolerate=tolerate, note=note
     )
@@ -10154,7 +10276,7 @@ def confirm_recurrence(
             record.write(path)
             staged, sha = _stage_and_commit(
                 home, [path], message,
-                _body_with_by_trailer(note, None, execution),
+                _body_with_by_trailer(note, by, execution),
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -10199,6 +10321,7 @@ def confirm_held(
     *,
     note: str | None = None,
     no_push: bool = False,
+    by: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """A human observed the rule working (11 §2.2): write
@@ -10206,6 +10329,7 @@ def confirm_held(
     age-since-capture, is the staleness metric. Commit:
     ``self-learn: confirmed holding lrn-…``."""
     home = Path(home)
+    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
     path, record = _preflight_confirm_held(home, record_id, note=note)
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -10217,7 +10341,7 @@ def confirm_held(
             record.write(path)
             staged, sha = _stage_and_commit(
                 home, [path], message,
-                _body_with_by_trailer(note, None, execution),
+                _body_with_by_trailer(note, by, execution),
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -10308,6 +10432,7 @@ def dismiss_suspect(
     why: str,
     note: str | None = None,
     no_push: bool = False,
+    by: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """The third door out of ``recurrence_suspects`` (11 §2.2, U-dismiss
@@ -10321,6 +10446,7 @@ def dismiss_suspect(
     telemetry, preserved as analyst fuel. Commit:
     ``self-learn: suspect dismissed on lrn-…``."""
     home = Path(home)
+    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
     event, path, record = _preflight_dismiss_suspect(
         home, record_id, event_ref=event_ref, note=note, why=why
     )
@@ -10348,7 +10474,7 @@ def dismiss_suspect(
             record.write(path)
             staged, sha = _stage_and_commit(
                 home, [path], message,
-                _body_with_by_trailer(note, None, execution),
+                _body_with_by_trailer(note, by, execution),
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -10402,12 +10528,14 @@ def link_contradicts(
     *,
     note: str | None = None,
     no_push: bool = False,
+    by: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """First-class contradiction edge (11 §2.4): append ``target`` (a
     record id or canon anchor) to ``links.contradicts``. Commit:
     ``self-learn: link lrn-… contradicts <target>``."""
     home = Path(home)
+    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
     path, record = _preflight_link_contradicts(home, record_id, target, note=note)
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -10422,7 +10550,7 @@ def link_contradicts(
             record.write(path)
             staged, sha = _stage_and_commit(
                 home, [path], message,
-                _body_with_by_trailer(note, None, execution),
+                _body_with_by_trailer(note, by, execution),
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -11457,7 +11585,9 @@ def recompile(
                         record_path = _drop_rules_entry(home, spec, by=f"recompile {target}")
                         if record_path is not None and record_path not in resync_touched:
                             resync_touched.append(record_path)
-                elif changed and region_kind is not None:
+                elif region_kind is not None and (
+                    changed or _unrecorded_region_is_current(home, spec, observed_hash)
+                ):
                     # The render just made disk and the ledger's
                     # canonical content agree — re-sync the record to
                     # match in the SAME breath, under the ledger's own
@@ -11465,10 +11595,20 @@ def recompile(
                     # ever see the record and disk disagree because of
                     # a render THIS TOOL performed. A no-op render
                     # (`changed=False`, the common "already clean" case)
-                    # skips this entirely — the record was already
-                    # truthful, and writing a no-op ledger commit would
-                    # be its own unwanted divergence from REC9's "the
-                    # record rides its OWN resolution's commit" shape.
+                    # skips this when the record is already truthful —
+                    # writing a no-op ledger commit would be its own
+                    # unwanted divergence from REC9's "the record rides
+                    # its OWN resolution's commit" shape.
+                    #
+                    # S-NEXT-cures-a (M2.4): the one no-op render that
+                    # DOES write is a region with NO record entry at all
+                    # (verdict `unknown`) whose bytes already equal what
+                    # the ledger would render -- self-learn's own prior
+                    # output, missing only its receipt. Skipping it left
+                    # the target "unknown provenance" for ever, and the
+                    # selftest asked for a hand `--adopt` every night
+                    # (`_abort_if_region_unsound` already let this exact
+                    # state through as "adopting"; nothing then wrote it).
                     with _ledger_write(home, earlier_commits=span_commits) as recovered:
                         intents.announce_recovered(recovered)
                         record_path = _write_compile_record_entry(
@@ -12209,6 +12349,7 @@ def followup_add(
     unblocks_on: str | None = None,
     note: str | None = None,
     no_push: bool = False,
+    by: str | None = None,
 ) -> VerbResult:
     """``self-learn followup add`` (U-verbs S-54 / §4.7, Phase 2, META1-
     META2): open a follow-up on a ROUTED record — the verb `daad648`'s
@@ -12231,6 +12372,7 @@ def followup_add(
     :meth:`Record.complete_follow_up` already gives ``followup done``
     below."""
     home = Path(home)
+    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
     try:
@@ -12280,7 +12422,9 @@ def followup_add(
                 # fresh one -- that, and only that, is what this catches.
                 raise VerbError(str(exc)) from exc
             record.write(path)
-            staged, sha = _commit_ledger(home, [path], message, note)
+            staged, sha = _commit_ledger(
+                home, [path], message, _body_with_by_trailer(note, by)
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="followup-add",
@@ -12355,6 +12499,7 @@ def reclassify(
     type: str | None = None,
     note: str | None = None,
     no_push: bool = False,
+    by: str | None = None,
 ) -> VerbResult:
     """``self-learn reclassify`` (U-verbs S-54 / §4.7, Phase 2, META3-
     META5): re-file a record's ``kind``/``type`` — at least one of the
@@ -12382,6 +12527,7 @@ def reclassify(
     unreachable through this CLI (``--kind`` cannot name a clear). One
     gap, three faces, one fix — see :func:`_reclassify_apply`."""
     home = Path(home)
+    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
     if kind is None and type is None:
         raise VerbUsageError("reclassify needs --kind and/or --type")
     path = find_record_path(home, record_id)  # pending OR resolved
@@ -12490,7 +12636,9 @@ def reclassify(
                     f"{type!r}); recoverable from the ledger's git history"
                 )
             record.write(path)
-            staged, sha = _commit_ledger(home, [path], message, note)
+            staged, sha = _commit_ledger(
+                home, [path], message, _body_with_by_trailer(note, by)
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="reclassify",
@@ -12651,6 +12799,7 @@ def revise(
     by: str | None = None,
     no_push: bool = False,
     execution: execution_evidence.ExecutionRef | None = None,
+    stamp_by: str | None = None,
 ) -> VerbResult:
     """``self-learn revise`` (02 §2 as amended 2026-09-13 / S-54 as
     amended / S-65; `commands/review.md` ~:154-160): the ONE sanctioned
@@ -12696,6 +12845,7 @@ def revise(
     saw the new wording, so re-stamping it fresh would misreport the
     proposal as re-validated against text it was not."""
     home = Path(home)
+    _by_trailer(stamp_by)  # S-NEXT-cures-a: refuses before any lock
     path, _revised = _preflight_revise(
         home, record_id, section=section, text=text, because=because, by=by
     )
@@ -12730,7 +12880,10 @@ def revise(
                 touched.append(proposal_path)
             staged, sha = _commit_ledger(
                 home, touched, message,
-                _body_with_by_trailer(because, None, execution),
+                # `by` rides the proposal's `revised_by`, never the commit
+                # trailer (as for `route`); `stamp_by` (S-NEXT-cures-a,
+                # M5.2: the CLI's agent shell) is who RAN the verb.
+                _body_with_by_trailer(because, stamp_by, execution),
             )
         push = _push_ledger(home, no_push)
         return VerbResult(

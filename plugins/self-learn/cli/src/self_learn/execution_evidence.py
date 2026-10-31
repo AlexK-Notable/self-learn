@@ -262,6 +262,13 @@ def _subject_matches(ref: ExecutionRef, subject: str) -> bool:
     # supplied, and therefore deliberately uses retire's subject.
     if ref.verb == "graduate":
         prefixes.append(f"self-learn: retire {rid}")
+    if ref.verb == "route":
+        # S-NEXT-cures-a (M5.1): a `route` line under a reconsider case over
+        # an already-routed lesson runs `verbs.reroute`, whose subject is
+        # "self-learn: reroute <id> → <dest>". Now that the reroute commit
+        # carries the runner's trailers, crash recovery can prove it; without
+        # this alias the subject check would still refuse to recognise it.
+        prefixes.append(f"self-learn: reroute {rid}")
     return any(subject == prefix or subject.startswith(prefix + " ") for prefix in prefixes)
 
 

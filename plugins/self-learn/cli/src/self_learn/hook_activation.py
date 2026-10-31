@@ -928,19 +928,25 @@ def activate(
             # `ItemResult.detail` (via `hook_result.post_notes`), the
             # `hook-activated` history entry's own `note`, and the CLI's
             # printed line (which just echoes `ItemResult.detail`) --
-            # must name the two manual steps a human still owes (route's
-            # own Apply text already names them for the human path;
-            # `verbs._hook_manual_steps` is the one place that renders
-            # them, reused here so the two can never drift apart).
+            # must name what a human still owes (route's own Apply text
+            # names it for the human path; `verbs._hook_manual_steps` is the
+            # one place that renders it, reused here so the two can never
+            # drift apart). Since S-NEXT-cures-a that is ONE step here: the
+            # symlink is already placed.
             manual_snippet = settings_snippet(
                 list(tools), name, claude_dir=claude_dir, event=hook_event(meta)
             )
-            manual_steps = verbs._hook_manual_steps(manual_snippet, name)  # noqa: SLF001
+            # S-NEXT-cures-a: the symlink was just placed (step 1 above), so
+            # "run ./install.sh" is no longer owed -- only the settings.json
+            # registration is, and the text says ONE step.
+            manual_steps = verbs._hook_manual_steps(  # noqa: SLF001
+                manual_snippet, name, placed=True
+            )
             delegated_note = (
                 "activation is delegated but switched off "
                 "(overseer.hook_activation is false) — placed only; "
-                "registration and check are the human's two manual "
-                "steps: " + " ".join(manual_steps[1:])
+                "registration is the human's one manual step: "
+                + " ".join(manual_steps[1:])
             )
             steps.append(StepReceipt("delegated", delegated_note))
             return ActivationResult(

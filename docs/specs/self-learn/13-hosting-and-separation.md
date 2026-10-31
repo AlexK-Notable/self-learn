@@ -1761,6 +1761,8 @@ other verb's receipt there (`02-schema.md` §3a.2 §5); the human path opens
 no case, so no Application section exists to write to. `batch`'s flush
 epilogue remains the Application section's one writer.
 
+**What a delegated item prints (S-NEXT-cures-a, 2026-10-31).** The route's own "two manual steps remain" text is for the person who ran it. When the overseer or the steward routes a hook, the activation that follows in the same item either did both steps (it registered the hook) or placed the symlink and, with `overseer.hook_activation` off, says in its own "delegated" receipt that one step is left (the `settings.json` entry; `./install.sh` is no longer owed once the symlink is placed). The item's text therefore never carries the route's two-step block (`batch._dispatch_hook_activation`, `verbs.without_hook_manual_steps`).
+
 **What stays true regardless of actor.** The two manual steps this file's
 existing hook-compile path already requires — the exact-bytes preview and a
 diff-approved step — are the human's `hook activate` unconditionally, and
