@@ -321,7 +321,12 @@ def test_a_block_removed_again_after_a_restore_is_offered_again(tmp_path, monkey
     removed = "# s skill\n\nAuthored prose stays put.\n"
     env.skill_md.write_text(removed, encoding="utf-8")
     commit_all(env.host, "a person removed the block")
-    _sweeps(env, monkeypatch, tmp_path, [A], days=(4, 3))
+    # integration 2026-10-31 (u8 gate r3 MAJOR): the sweep keeps
+    # HISTORY_KEEP=3 rows per premise, so the schedule is days 3 and 2, then
+    # day 1 after the restore -- three rows in all, and `since` (the first
+    # row of the failing run) stays day 3. With (4, 3) then (2, 1) the day-4
+    # row was trimmed and `since` moved.
+    _sweeps(env, monkeypatch, tmp_path, [A], days=(3, 2))
     (first,) = _intact_rows(home)
     # undecided, or parked (nothing written): the same version on every read
     assert _intact_rows(home)[0]["version"] == first["version"]
@@ -334,7 +339,7 @@ def test_a_block_removed_again_after_a_restore_is_offered_again(tmp_path, monkey
     assert verbs.lesson_region(home, A).verdict == "clean"
     env.skill_md.write_text(removed, encoding="utf-8")
     commit_all(env.host, "a person removed the block again")
-    _sweeps(env, monkeypatch, tmp_path, [A], days=(2, 1))
+    _sweeps(env, monkeypatch, tmp_path, [A], days=(1,))
 
     monkeypatch.setattr(steward, "_terminal_versions", lambda *a, **k: {(A, first["version"])})
     (second,) = _intact_rows(home)
