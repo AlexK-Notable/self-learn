@@ -814,11 +814,20 @@ and owns nothing. `by` is `overseer` only when the overseer's runner calls
 the writer itself (a Python call, not the CLI), and `human` for every write,
 retirement or rename made through the CLI; an agent's shell cannot make one
 (`03-decisions.md` S-NEXT-skills part 2), so no third value is needed.
-`case` is `null` only with `by: human`, for a person's CLI step given no
-`--case` because it answers no case; the runner always names its case. `authored_sha256` is the sha256 of the skill's authored
-files, everything outside the managed section (`SKILL.md` less that
-section, and every `references/*.md`), as the last `skill write` left
-them (`skill_registry.authored_sha256`); `skill write --expect` compares against the files as they are now.
+`case` always names a case in this build: the CLI's `write`, `retire` and
+`rename` require `--case`, and the registry refuses any other value
+(`skill_registry._check_case`). A person's step that answers no case
+(`case: null` with `by: human`, which the skills plan allows) is not built;
+until it is, a person names the case the step belongs to. The runner always
+names its case. `authored_sha256` is the sha256 of the skill's authored
+files as the last `skill write` left them, frontmatter stamp included:
+`SKILL.md` with its managed section, its pointer block and trailing white
+space taken out, and every `references/*.md` in full except the compilers'
+shelf `references/LEARNINGS.md` (`skill_registry.authored_sha256`; a lesson
+routed with an explicit `--dest` into another reference file adds an entry
+that counts as authored text, and `skill write` refuses a write that would
+change or remove the file holding it); `skill write --expect` compares
+against the files as they are now.
 A name in `vetoed` is refused by every later `skill write` and `skill rename`,
 for ever (`skill_scaffold.check_skill`'s `vetoed_names`). The skill's own
 files live in the skills root, not in the ledger: `plugins/<name>/` with
