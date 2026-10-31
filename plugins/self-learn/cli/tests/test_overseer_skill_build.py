@@ -1067,6 +1067,43 @@ def test_a_build_preview_lets_a_reconsidered_placed_lesson_move_in_by_reroute(en
         skills.preview_for_step(env.home, preview, sheet, step)
 
 
+def test_the_run_hands_the_batch_preview_the_records_its_reconsider_covers(env, monkeypatch):
+    """Integration mutation gap (side finding of item 73): the run passes
+    `reconsidered=` to `batch.dry_run` as well as to `skills.preview_for_step`.
+    Dropping it from the `dry_run` call alone left the build pair above green,
+    because that pair's route line is refused by SK2's "not owned yet" either
+    way and `preview_for_step` sets the refusal aside. Pinned at the call; the
+    real `dry_run` still runs behind the spy (the control that it was reached)."""
+    from test_u3b_steward_authority import _route_through_a_case
+
+    _set_writing(env, '"on"')
+    setup = env.tmp / "setup"
+    setup.mkdir()
+    placed_by = _route_through_a_case(env.home, setup, RID)
+    seen: list[frozenset[str]] = []
+    real = batch.dry_run
+
+    def spy(*args, **kwargs):
+        seen.append(frozenset(kwargs.get("reconsidered") or ()))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(batch, "dry_run", spy)
+
+    def write_b(stage):
+        _write_folder(stage, NAME, sk1.draft())
+        case = _case([RID], kind="reconsider", supersedes=placed_by)
+        case["evidence"] = [{"ref": f"record:{RID}", "quote": "status: routed"}]
+        _dump(stage / "case-build.yaml", case)
+        _dump(stage / "sheet-build.yaml", _route_sheet([RID]))
+
+    _phases(monkeypatch, write_b)
+
+    _run(env)
+
+    assert seen, "the pair was never previewed by batch.dry_run"
+    assert frozenset({RID}) in seen, seen
+
+
 def _retire_case_data(name: str) -> dict:
     return _case([RID], outcome="retire", name=name, lessons=[RID])
 
