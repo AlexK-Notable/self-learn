@@ -703,7 +703,9 @@ def test_the_brief_says_when_no_one_case_covers_the_block(predecessors, differ):
         rid: steward_inputs.PlacementMoves(rid, list(row["moved"]), since)
         for rid, (since, row) in rows.items()
     }
-    offered = steward._premise_moved_units(rows, placement, set(), [])
+    units = steward._premise_moved_units(rows, placement, set(), [])
+    assert len(units) == 1  # the group is ONE unit (a list of its lessons' rows)
+    offered = [row for unit in units for row in unit]
     assert sorted(row["record"] for row in offered) == [A, B]
     for row in offered:
         (item,) = row["moved"]
