@@ -3421,7 +3421,7 @@ premises:
   forever and `present` would always be contradicted. Validation therefore
   accepts only `changed`, or `equals` with `match` `present` or `absent`, for
   `contains` / `line`, and only `changed` for `lines`. The refusal names the
-  form (S-NEXT-ft-file-match).
+  form (S-104 (amended 2026-10-31)).
 - **An explicit empty list** (`premises: []`) means "decided: this lesson
   rests on no fact about the machine" (a general practice). It is not offered
   for the backfill again. The reason lives in the case that wrote it.
