@@ -930,9 +930,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=0,
+        value=3,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-30 audit-merges (S-NEXT-audit-merges; test audit L1-1): 0 -> 3, the three `missing` doors on test_invocation.py (`test_wr2_...`, `_FakePopen`, `_PopenRaises`), counted against ANCHOR 3ebc194. "
+            "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
             "STALE refusal (stmt-role): 11 -> 0; the retirement's deleted and edited tests "
             "are anchor-side now. Previous entry: "
@@ -952,9 +954,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-30 audit-merges (S-NEXT-audit-merges; test audit L1-1, L1-17): 0 -> 2, the two `edited` doors on test_invocation_sdk.py (`_SIM_2_NINE`, `test_kl6_child_pid_of_is_defensive`), counted against ANCHOR 3ebc194. "
+            "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
             "STALE refusal (stmt-role): 2 -> 0; the retirement's deleted and edited tests "
             "are anchor-side now. Previous entry: "
@@ -1008,9 +1012,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_edited,
     ),
     "BEH1.control_missing": Measured(
-        value=97,
+        value=100,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-30 audit-merges (S-NEXT-audit-merges; test audit L1-1): 97 -> 100, `test_wr2_...`, `_FakePopen` and `_PopenRaises` are absent at HEAD and present at the retired control anchor c3b48e7. "
+            "Previous entry: "
             "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 91 -> 97, the deleted backend-selector tests, counted against the retired control anchor c3b48e7. "
             "Previous entry: "
             "2026-10-24 test audit L1/L2, per §4.5/§4.7: 68 -> 91; "

@@ -1,9 +1,10 @@
 """Content assertions on the authored ``pane-charter.md`` (10 §3 task U5
 bullet 5): its job, its limits, and the Y-9 communication-register pin
 must all actually be present in the shipped file — not just described in
-a commit message. Deliberately light-touch (substring/structure checks,
-not a prose-quality grader): the file is prose for a model, and its exact
-wording is expected to evolve.
+a commit message. Mostly light-touch (substring/structure checks, not a
+prose-quality grader), except the two L10-2 tests, which pin the policy
+sentences whole (whitespace and emphasis normalised): rewording one of
+those sentences in the charter is meant to break them and be updated here.
 """
 
 from __future__ import annotations
