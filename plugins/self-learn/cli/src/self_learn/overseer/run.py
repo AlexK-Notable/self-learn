@@ -1626,10 +1626,22 @@ def _preview_refusals(preview: batch.DryRunResult) -> list[batch.DryRunItem]:
     """The preview items that say ``would-refuse`` and that nothing will
     retry: a refusal of a retried kind (`batch.RETRIED_REFUSAL_KINDS`) is git
     or lock trouble that often clears, so it is left to the S-68 retry path
-    exactly as `_refuse_doomed_reconsider` leaves it."""
+    exactly as `_refuse_doomed_reconsider` leaves it.
+
+    The preview carries an earlier line's effect forward only for ``revise``
+    (`batch._dry_run_items`), so a line on a lesson an earlier non-revise
+    line of the same sheet already acts on (a ``rehome`` after a ``route``)
+    can preview a refusal it would not meet at apply: such a line is not
+    trusted to the preview and goes ahead to apply."""
+    touched_before: dict[str, int] = {}
+    for item in preview.items:
+        if item.verb != "revise" and item.id not in touched_before:
+            touched_before[item.id] = item.n
     return [
         item for item in preview.items
-        if item.state == "would-refuse" and item.kind not in batch.RETRIED_REFUSAL_KINDS
+        if item.state == "would-refuse"
+        and item.kind not in batch.RETRIED_REFUSAL_KINDS
+        and not (item.id in touched_before and touched_before[item.id] < item.n)
     ]
 
 

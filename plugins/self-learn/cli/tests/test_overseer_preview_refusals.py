@@ -171,3 +171,24 @@ def test_a_lesson_record_the_secret_scan_matches_is_staged_as_a_stub(tmp_path, m
     assert "withheld: the secret scan matched" in staged
     assert "ghp_" not in staged
     assert result.status == "dry-run", result  # a hit in an input file would have refused the run
+
+
+def test_a_line_after_an_earlier_non_revise_line_on_its_lesson_is_not_dropped():
+    """The preview overlays only `revise`, so a later line on a lesson an
+    earlier `route` already acts on can preview a refusal it would not meet
+    at apply; it goes ahead. A line on an untouched lesson is still dropped
+    (the positive control)."""
+    from self_learn import batch
+
+    preview = batch.DryRunResult(items=[
+        batch.DryRunItem(n=1, id="lrn-a", verb="route", state="would-apply"),
+        batch.DryRunItem(n=2, id="lrn-a", verb="rehome", state="would-refuse", detail="not routed"),
+        batch.DryRunItem(n=3, id="lrn-b", verb="reject", state="would-refuse", detail="no"),
+    ])
+    assert [item.n for item in overseer_run._preview_refusals(preview)] == [3]
+
+    revised = batch.DryRunResult(items=[
+        batch.DryRunItem(n=1, id="lrn-a", verb="revise", state="would-apply"),
+        batch.DryRunItem(n=2, id="lrn-a", verb="rehome", state="would-refuse", detail="no"),
+    ])
+    assert [item.n for item in overseer_run._preview_refusals(revised)] == [2]
