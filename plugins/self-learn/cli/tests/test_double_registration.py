@@ -933,6 +933,12 @@ def test_the_hosts_row_names_the_way_out_for_a_plain_root(tmp_path, monkeypatch)
     (set_mode,) = re.findall(r"`self-learn (host [^`]*)`", msg)
     assert set_mode.startswith("host set-mode ")
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    # `host set-mode` is a person's command (an agent's shell is refused), so
+    # this models a person's terminal whatever shell runs the test
+    # (integration 2026-10-31, cures-b gate MINOR).
+    from self_learn import settings as _settings
+    for marker in _settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
 
     assert cli.main(shlex.split(set_mode)) == 0
 

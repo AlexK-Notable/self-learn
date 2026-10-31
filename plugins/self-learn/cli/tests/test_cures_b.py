@@ -4,8 +4,9 @@ Written under the user's 2026-10-30 rule (tests run only for a significant
 change): the orchestrator runs these once over the combined landing. Each
 test names the master behaviour it fails on.
 
-Agent markers are cleared for the whole suite by the conftest fixture, so
-every call here models a person's own terminal unless a test sets one.
+Agent markers are cleared for every test in this module by its `redirect`
+fixture, so every call here models a person's own terminal unless a test
+sets one.
 """
 
 from __future__ import annotations
