@@ -1218,8 +1218,9 @@ def _dispatch_hook_activation(
     :func:`hook_activation.activate` itself by the time this catches
     it. On success, F9: both commits' worth of post-notes ride the ONE
     item result when *route_result* is given — route's own (the
-    exact-bytes preview and manual-steps text a human reviewing this
-    route sees today) alongside hook_activate's; route's own commit sha
+    exact-bytes preview a human reviewing this route sees today; its
+    manual-steps text is dropped, S-NEXT-cures-a, because the activation
+    right after it already did those steps) alongside hook_activate's; route's own commit sha
     rides `detail` since :class:`ItemResult` has only one `sha` slot
     and hook_activate's is the more RECENT of the two commits."""
     verb = item.verb
@@ -1253,7 +1254,14 @@ def _dispatch_hook_activation(
             "; " + "; ".join(notes) if notes else ""
         )
     else:
-        notes = list(route_result.post_notes) + list(hook_result.post_notes)
+        # S-NEXT-cures-a: the route's own "two manual steps remain" text is
+        # dropped here. The activation that ran after it either did both
+        # steps (registered) or says, in its own receipt, the one step it
+        # left (placed only). Joining the two printed advice that was
+        # already done -- or never needed.
+        notes = verbs.without_hook_manual_steps(
+            list(route_result.post_notes)
+        ) + list(hook_result.post_notes)
         detail = f"route commit {route_result.commit_sha}" + (
             "; " + "; ".join(notes) if notes else ""
         )
@@ -1274,6 +1282,7 @@ def _dispatch_reroute(
     actor: str,
     hook_activation: bool,
     is_hook_dest: bool,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> "ItemResult":
     """U3b (S-72, 2026-09-28): a `route` line under a valid `kind:
     reconsider` case over a ROUTED lesson re-decides where it lives --
@@ -1291,6 +1300,7 @@ def _dispatch_reroute(
         home, item.id, dest=_reroute_dest(item), by=by, note=f.get("note"),
         no_push=True, hook_input=f.get("hook"), rules_paths=f.get("rules_paths"),
         allow_empty_glob=bool(f.get("allow_empty_glob", False)),
+        execution=execution,
     )
     if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
         return _dispatch_hook_activation(
@@ -1516,7 +1526,7 @@ def _dispatch(
             if _reconsider_case_for(home, item.id, case, verb) is not None:
                 return _dispatch_reroute(
                     home, item, actor=actor, hook_activation=hook_activation,
-                    is_hook_dest=is_hook_dest,
+                    is_hook_dest=is_hook_dest, execution=execution,
                 )
             follow_up = _sheet_follow_up(f)
             result = verbs.route(
