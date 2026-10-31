@@ -691,3 +691,46 @@ def test_the_doctor_row_reads_doctor_rows_own_cache_and_clock(tmp_path):
     empty = tmp_path / "another-cache"
     empty.mkdir()
     assert "0 due, none overdue" in rotation(cache_dir=empty).detail
+
+
+# ================================================= fix round 2 (gate r2)
+
+
+def test_a_broken_probe_alone_makes_the_steward_due_counted_from_its_last_look(
+    tmp_path, monkeypatch,
+):
+    """Gate r2 MINOR 1: the due check's grace reads `overdue` (for a
+    broken-probe review, days since the lesson's last look; 02 §3a.10.4),
+    never the doctor's `past_due` (days past the age, 0 here). A lesson
+    looked at 8 days ago whose probe broke makes a quiet steward due by
+    itself; read from `past_due`, it would wait until it was 97 days old."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _configure_steward(home)
+    _placed(env, A, 6, P_CHANGED, P_BEHAVIOUR)
+    cache = tmp_path / "cache"
+    now = time.time()
+    _broken(home, A)
+    # positive control: it is offered as a broken-probe review, and nothing
+    # else is waiting (no move, no pending lesson, no extract candidate)
+    (offered,) = steward._premise_review_inputs(home)
+    assert (offered["record"], offered["review"]["rank"]) == (A, "broken-probe")
+    assert steward._premise_moved_inputs(home) == []
+    assert serve._eligible_input_paths(home) == []
+    assert serve._premise_extract_waiting(home) is False
+    (candidate,) = steward._premise_review_candidates(home)[0]
+    assert (candidate.overdue, candidate.past_due) == (6, 0)
+
+    # the last run was 2 days ago (the cooldown has passed)
+    monkeypatch.setattr(steward, "last_run_iso", lambda h: _iso(-2))
+    assert serve._steward_is_due(home, cache, now) is False  # six days: rides along
+    _age(home, A, 8)  # eight days since its last look, 0 days past its age
+    assert steward._premise_review_candidates(home)[0][0].past_due == 0
+    assert serve._steward_is_due(home, cache, now) is True
+
+    # no run ever: the due check's first path asks the same question
+    monkeypatch.setattr(steward, "last_run_iso", lambda h: None)
+    _age(home, A, 5)
+    assert serve._steward_is_due(home, cache, now) is False
+    _age(home, A, 8)
+    assert serve._steward_is_due(home, cache, now) is True
