@@ -795,10 +795,41 @@ def _files_record(recipe: object, record_id: str) -> bool:
     )
 
 
+def _defers_record(recipe: object, record_id: str) -> bool:
+    """True when this committed case recipe's sheet holds a `defer` item for
+    *record_id* (S-NEXT-steward). The mirror of :func:`_files_record`."""
+    if not isinstance(recipe, dict):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("id") == record_id
+        and item.get("verb") == "defer"
+        for item in recipe.get("items") or []
+    )
+
+
 def _terminal_versions(
-    home: Path, states: frozenset[str] = _DECIDED_DISPOSITIONS
+    home: Path,
+    states: frozenset[str] = _DECIDED_DISPOSITIONS,
+    *,
+    defers_decide: bool = True,
 ) -> set[tuple[str, str]]:
     """Every ``(record, input version)`` a committed steward run decided.
+
+    S-NEXT-steward (2026-10-30): with ``defers_decide=False`` an `applied`
+    row whose case DEFERRED the lesson (:func:`_defers_record`) is not a
+    decision either: a deferral is a decision to look again on a date, and
+    once that date passes the lesson is the steward's to decide again, with
+    no manual `undefer`. :func:`_eligible_lessons` asks it that way. Under
+    the record identity the deferral itself already makes a new version (it
+    rewrites the record), so the skip changes nothing there; under the
+    PROPOSAL identity a pre-U3a run recorded (the legacy bridge) the
+    version is the proposal blob, which a deferral never touches, so
+    without the skip such a lesson stayed decided for ever (live:
+    lrn-f55e9e47 and lrn-e92861b2, deferred by run-3dfa8bebd36b on
+    2026-09-22, still selected for nothing on 2026-10-28 after a manual
+    `undefer`). The default keeps every other reader (the suspected-
+    violation inputs) as it was.
 
     2026-10-06: an `applied` row whose case moved the lesson (a filing
     move, :func:`_files_record`) is not a decision: the lesson is still
@@ -818,6 +849,12 @@ def _terminal_versions(
                 if disposition.get("state") in states:
                     if disposition.get("state") == "applied" and _files_record(
                         recipes.get(disposition.get("case")), str(rid)
+                    ):
+                        continue
+                    if (
+                        not defers_decide
+                        and disposition.get("state") == "applied"
+                        and _defers_record(recipes.get(disposition.get("case")), str(rid))
                     ):
                         continue
                     version = disposition.get("input_version")
@@ -928,7 +965,16 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
     S-81 (2026-10-08): a lesson the overseer holds (`cases.held_lessons`)
     is not selected, whatever parked it; once the overseer's decision
     supersedes its parked case it is selected again if its version is
-    still undecided."""
+    still undecided.
+
+    S-NEXT-steward (2026-10-30): a lesson the steward DEFERRED is selected
+    again once its deferral comes due, whichever identity the deferring run
+    recorded (:func:`_terminal_versions`, ``defers_decide=False``); the
+    queue itself (`ledger_ops.queue`) is what keeps it out until then. It
+    is one queue entry, so it is offered once: a reconsider input for the
+    same lesson wins (`run`'s ``reconsider_ids``), and a lesson a case
+    covers or one no case covers differs only by its card line
+    (:func:`_deferred_unresolved`), never by being selected twice."""
     held = cases.held_lessons(home)
     entries: list[ledger_ops.QueueEntry] = []
     for bucket in discover_buckets(home):
@@ -942,8 +988,10 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
             entry.record.id,
         )
     )
-    terminal = _terminal_versions(home)
-    legacy_terminal = _terminal_versions(home, _LEGACY_DECIDED_DISPOSITIONS)
+    terminal = _terminal_versions(home, defers_decide=False)
+    legacy_terminal = _terminal_versions(
+        home, _LEGACY_DECIDED_DISPOSITIONS, defers_decide=False
+    )
     out: list[tuple[ledger_ops.QueueEntry, dict]] = []
     for entry in entries:
         try:

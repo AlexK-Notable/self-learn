@@ -1440,7 +1440,10 @@ unit around it:
   (overloaded, 5xx, rate limit, network) is retried once within the same
   attempt after a 30 s backoff (the steward's decision call from an empty
   stage) and journaled `transient-retry`; `environment` (an unsupported model
-  or Claude Code version, authentication, a model or binary not found, a
+  or Claude Code version, authentication — an expired, revoked or missing
+  login included, "Failed to authenticate: OAuth session expired and could
+  not be refreshed" *(2026-10-30, S-NEXT-steward; before it read
+  `unclassified`)* — a model or binary not found, a
   refused provider) is a HOLD — the steward puts the packet's
   `attempt_count` back and stops the run, the overseer writes no failure
   note (phase B also puts coverage back) — journaled `held-environment` and
@@ -2369,7 +2372,16 @@ the machinery refusing a write, not a judgment on the lesson (orchestrator
 review 2026-09-27: two live lessons were refused over the secret-scan false
 positive fixed on 2026-09-26 and could never be offered again). Such a
 lesson gets one fresh attempt under the record identity; a refusal there is
-terminal, as every refusal was before. An event is **handled**
+terminal, as every refusal was before. *(2026-10-30, S-NEXT-steward.)* A
+deferral is not a decision either, under either identity: an `applied`
+disposition whose case deferred the lesson (a `defer` item for it) is
+skipped when the eligible lessons are read, so a lesson the steward deferred
+is selected again once `deferred_until` passes, with no manual `undefer`.
+Under the record identity the deferral already made a new version; under the
+legacy proposal identity it did not (the proposal is untouched), so such a
+lesson stayed decided for ever (live: `lrn-f55e9e47`, `lrn-e92861b2`,
+deferred by `run-3dfa8bebd36b` on 2026-09-22). The suspected-violation
+inputs read decisions as before. An event is **handled**
 when a record's `recurrences[]` or `dismissed_suspects[]` holds its nonce;
 handled events are dropped before the version is taken, so a new fire about
 the same record is a new input carrying only itself, and a run that decided

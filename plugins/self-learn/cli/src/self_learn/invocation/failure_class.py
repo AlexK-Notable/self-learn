@@ -18,6 +18,13 @@ Classes:
 * ``environment`` -- the model or the installed Claude Code cannot run the
   call at all: an unsupported model or Claude Code version, authentication,
   a model or binary not found, a refused provider. Held: not an attempt.
+  Authentication is a login that no longer works: an expired or revoked
+  OAuth session ("Failed to authenticate: OAuth session expired and could
+  not be refreshed", run-c5fa4e3c0a78, 2026-10-30, which read as
+  ``unclassified`` and cost an attempt before S-NEXT-steward), an invalid key
+  or token, or no login at all. It is the one class that tells the user: the
+  runners' environment hold (``model_failures.HELD_ENVIRONMENT``) notifies
+  once per distinct cause, and only they can log in again.
 * ``content`` -- Claude Code stopped the session at its own turn or spend
   limit. Counted as always.
 * ``unclassified`` -- anything else (a timeout, an unrecognised message).
@@ -51,8 +58,11 @@ _ENVIRONMENT = re.compile(
     r"|claude code (?:version )?[0-9][0-9.]* (?:does not|is too old|is not supported)"
     r"|please (?:update|upgrade) claude code"
     r"|authentication(?:_error| error| failed)"
+    r"|failed to authenticate"
     r"|invalid (?:x-)?api[ -]?key"
-    r"|oauth token (?:has )?expired"
+    r"|oauth (?:session|token)\b[^.\n]{0,60}\b(?:expired|invalid|revoked)"
+    r"|invalid (?:bearer|access) token"
+    r"|not (?:logged|signed) in\b"
     r"|please run /login"
     r"|not_found_error"
     r"|model not found"
