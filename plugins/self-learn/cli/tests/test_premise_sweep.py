@@ -905,6 +905,77 @@ class TestWritable:
         assert premise_sweep._host_for(env.ledger, bucket, record, verdict, sw.claude) == (env.host, "git")
         assert premise_sweep._writable_fact(env.ledger, bucket, record, verdict, sw.claude).state == "holds"
 
+    # ---- lane P5: a new-skill lesson is judged through the skills root, as the writer does
+
+    def _new_skill(self, env, scope: str, root_mode: str):
+        """A tracked new-skill SKILL.md under the skills root, the root registered in
+        ``root_mode`` and the same repo also a (git) project host."""
+        (env.ledger / "hosts.yaml").write_text(
+            f"skills_root:\n  path: {env.host}\n  mode: {root_mode}\n"
+            f"projects:\n  - path: {env.host}\n",
+            encoding="utf-8",
+        )
+        target = env.host / "plugins" / "ns" / "skills" / "ns" / "SKILL.md"
+        target.parent.mkdir(parents=True)
+        from self_learn.compilers import BEGIN_MARKER
+        from self_learn.hosts import MARKER_FILENAME
+
+        target.write_text(f"# ns\n{BEGIN_MARKER}\n", encoding="utf-8")
+        (env.host / MARKER_FILENAME).write_text(f"{env.ledger}\n", encoding="utf-8")
+        market = env.host / ".claude-plugin" / "marketplace.json"
+        market.parent.mkdir(exist_ok=True)
+        market.write_text('{"name": "m", "plugins": []}\n', encoding="utf-8")
+        commit_all(env.host, "tracked new skill")
+        bucket = Bucket(path=env.ledger / scope, scope=scope, name=scope)
+        record = make_behavior(scope="skill:s" if scope == "skill" else scope, record_id=A)
+        verdict = reachability.Verdict(
+            record_id=A, bucket=scope, scope=scope, destination="new-skill", variant=None,
+            target=str(target), state="reachable", reason="registered", detail="",
+        )
+        return bucket, record, verdict
+
+    def test_a_user_scope_new_skill_lesson_in_a_git_skills_root_holds(self, env, sw):
+        bucket, record, verdict = self._new_skill(env, "user", "git")
+        assert premise_sweep._host_for(env.ledger, bucket, record, verdict, sw.claude) == (env.host, "git")
+        fact = premise_sweep._writable_fact(env.ledger, bucket, record, verdict, sw.claude)
+        assert fact.state == "holds"
+
+    def test_a_plain_skills_root_fails_a_new_skill_lesson_with_the_writers_reason(self, env, sw):
+        bucket, record, verdict = self._new_skill(env, "user", "plain")
+        fact = premise_sweep._writable_fact(env.ledger, bucket, record, verdict, sw.claude)
+        assert fact.state == "failing"
+        assert "registered plain" in fact.detail and "git-mode skills root" in fact.detail
+        assert "tracked by git" not in fact.detail
+
+    @pytest.mark.parametrize("root_mode", ["git", "plain"])
+    @pytest.mark.parametrize("scope", ["user", "skill", "project"])
+    def test_the_sweeps_mode_for_a_new_skill_is_the_writers(self, env, sw, scope, root_mode):
+        """Parity (hosts.py MODE9): the sweep never decides a posture the writer does not."""
+        from self_learn import verbs
+
+        bucket, record, verdict = self._new_skill(env, scope, root_mode)
+        spec = verbs._resolve_target_unguarded(
+            env.ledger, bucket.path, "skill:s" if scope == "skill" else scope, "new-skill", "ns",
+            check_dirty=False,
+        )
+        host, mode = premise_sweep._host_for(env.ledger, bucket, record, verdict, sw.claude)
+        assert mode == spec.mode == root_mode
+        assert Path(host) == Path(spec.host_path)
+
+    def test_a_skill_md_lesson_in_a_plain_root_still_meets_the_tracked_file_check(self, env, sw, monkeypatch):
+        """Control: the new-skill branch did not swallow skill-md."""
+        seed(env, A)
+        self._plain_root(env)
+        verdict = reachability.Verdict(
+            record_id=A, bucket="skills/s", scope="skill", destination="skill-md", variant=None,
+            target=str(env.skill_md.resolve()), state="reachable", reason="registered", detail="",
+        )
+        fact = premise_sweep._writable_fact(
+            env.ledger, Bucket(path=env.ledger / "skills" / "s", scope="skill", name="s"),
+            make_behavior(scope="skill:s", record_id=A), verdict, sw.claude,
+        )
+        assert fact.state == "failing" and "tracked by git" in fact.detail
+
     def test_an_unresolved_target_is_unavailable_not_failing(self, env, sw, monkeypatch):
         seed(env, A)
         fake_reach(monkeypatch, env, [A], target="")

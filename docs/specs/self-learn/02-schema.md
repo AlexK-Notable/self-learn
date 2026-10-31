@@ -3489,7 +3489,7 @@ lesson's own premises do not.
 | id | Holds while | Moves when | `unavailable` when |
 |---|---|---|---|
 | `@reach` | `reachability.reachability_rows` says `reachable` for the lesson | it says `unreachable` | it says `unmeasurable` |
-| `@writable` | a write to the lesson's target through its registration would pass S-80's check (`verbs._plain_write_check`, run read-only: the target is not a file git tracks in a `plain` host) | that check would refuse the write | the host or the target cannot be resolved |
+| `@writable` | a write to the lesson's target through the registration the write uses (the skills root for `new-skill` and `hook` whatever the lesson's scope, and for every skill-scope lesson; the project host or the user host otherwise) would pass S-80's check (`verbs._plain_write_check`, run read-only: the target is not a file git tracks in a `plain` host); a `new-skill` target is judged as the writer judges it: it holds when the skills root is `git`, and the tracked-file check is not asked (a plain root fails on the writer's own reason, which the route's G1 check on its tracked skill files would reach too) | that check would refuse the write; or, for `new-skill`, the skills root is registered `plain` ("self-learn writes the skills it owns only into a git-mode skills root") | the host or the target cannot be resolved |
 | `@intact` | the compile record's verdict for the lesson's region (`compiled.verdict_for`) is `clean` or `stale` | the verdict is `edited`, or `missing` (the region is gone) | the verdict is `unknown` or `fresh` (nothing to compare against) |
 
 - **They are judged by their current state, not against a stored baseline.**
