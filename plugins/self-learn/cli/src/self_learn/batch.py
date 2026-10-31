@@ -67,6 +67,7 @@ from .records import (
 )
 
 __all__ = [
+    "NEW_SKILL_OWNED_ONLY_ACTORS",
     "PERMITTED_KEYS",
     "PERMITTED_VERBS",
     "REFUSAL_KINDS",
@@ -248,6 +249,44 @@ REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
 #: again, in the run, the preview and the contract alike. A person's sheet
 #: (`human`) and `self-learn replace` never pass through here.
 REPLACE_REFUSED_ACTORS: frozenset[str] = frozenset()
+#: SK2 (S-NEXT-sk2-routes, 2026-10-31; skill-writing plan D5 and §1.3 fact 1):
+#: the actors whose route into `new-skill:<name>` is accepted only when
+#: <name> is a skill self-learn owns and has deployed
+#: (:func:`verbs.owned_skill_refusal`). Before this, nothing in the batch,
+#: the steward's runner or the overseer's runner refused such a route -- only
+#: their instructions said never -- so a steward sheet could scaffold a new
+#: skill in the skills root. A route into an owned skill adds a line to a
+#: skill that exists; `self-learn skill write` is the only way an agent
+#: creates one. A person's sheet (`human`) and `self-learn route --dest
+#: new-skill:<name>` still scaffold. `_dispatch` and `dry_run` both read
+#: this ONE set, as for the shelf.
+NEW_SKILL_OWNED_ONLY_ACTORS = frozenset({"overseer", "steward"})
+
+
+def _refuse_agent_new_skill(
+    home: Path, record_id: str, resolved: tuple[str, str | None] | None, actor: str
+) -> None:
+    """Raise the refusal of a route that resolves to ``new-skill`` when
+    *actor* is one :data:`NEW_SKILL_OWNED_ONLY_ACTORS` names and the skill
+    is not one self-learn owns (or its files are missing). The class carries
+    the S-71 kind (``bad-line`` for a skill self-learn does not own, so the
+    line is sent back). Keyed on the runner's *actor*, never on the line's
+    own ``by:``. The ONE sentence `_dispatch` and `dry_run` both show.
+
+    A ``new-skill`` with no name is left to the verb, which refuses it as
+    before ("new-skill needs a name"): it can scaffold nothing, and its
+    refusal kind (``unclassified``, which parks) is one the steward's
+    runner already relies on."""
+    if actor not in NEW_SKILL_OWNED_ONLY_ACTORS or resolved is None:
+        return
+    destination, name = resolved
+    if destination != "new-skill" or not name:
+        return
+    refusal = verbs.owned_skill_refusal(home, name)
+    if refusal is not None:
+        raise type(refusal)(
+            f"{record_id}: a route to new-skill:{name} is refused for the {actor} — {refusal}"
+        ) from refusal
 
 
 def agent_refused_verbs(actor: str) -> frozenset[str]:
@@ -1485,6 +1524,8 @@ def _dispatch(
             # route, a reroute and a reconsider's correcting route are
             # all refused alike.
             _refuse_agent_reference(item.id, resolved, actor)
+            # SK2: likewise, before the reconsider branch.
+            _refuse_agent_new_skill(home, item.id, resolved, actor)
             is_hook_dest = resolved == (REFUSED_HOOK_DESTINATION, None)
             if is_hook_dest and actor not in HOOK_ROUTING_ACTORS:
                 raise verbs.VerbError(_hook_refused_detail(item.id))
@@ -2299,7 +2340,10 @@ def _dry_run_items(
                 # 2026-10-06: the SAME refusal `_dispatch` raises, before
                 # the reconsider branch, as there.
                 _refuse_agent_reference(item.id, resolved, actor)
-            except verbs.SheetLineError as exc:
+                # SK2: the same, for a skill self-learn does not own. Its
+                # refusal may be any VerbError kind, so the catch is wider.
+                _refuse_agent_new_skill(home, item.id, resolved, actor)
+            except verbs.VerbError as exc:
                 result.items.append(
                     DryRunItem(n=item.n, id=item.id, verb=item.verb,
                                state="would-refuse", detail=refusal_text(exc),
