@@ -1154,7 +1154,8 @@ def _premise_moved_inputs(
     rewrote or retired it, not parked) opened on a later day than the
     closing takes a closed follow-up out of the list
     (:func:`steward_inputs.last_decision`). At most
-    `steward_inputs.PREMISE_MOVED_PER_RUN` rows, the longest-moved first.
+    `steward_inputs.PREMISE_MOVED_PER_RUN` UNITS (one lesson, or one whole
+    `@intact` group, below), the longest-moved first; a unit is never cut.
     Off when `premises.enabled` is false. *manifests*: the committed steward
     manifests the caller has already read (the due check reads them once
     per tick).
@@ -3482,8 +3483,9 @@ def _prepared_recipe(
             # tentative answer, on record and not acted on. The reason
             # was checked by `_validate_declared_stage`. When the runner's
             # own check fires too (a plain host's committed file), its
-            # reason wins. (Until U3b a hook route was one of the runner's
-            # own checks; since S-72 the steward decides hooks.)
+            # reason wins, except for a `skill-proposal`, which keeps its own
+            # (the block above). (Until U3b a hook route was one of the
+            # runner's own checks; since S-72 the steward decides hooks.)
             parking_reason = str(case_data.get("parked_reason"))
         if parking_reason is None:
             # 2026-10-06: a case that would move a lesson the steward has
