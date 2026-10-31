@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gitops, intents
+from . import attribution, gitops, intents
 from .ledger import discover_buckets
 from .records import Record, RecordError
 
@@ -117,6 +117,7 @@ def commit_import(home: Path, report: ImportReport) -> bool:
             gitops.commit(
                 home,
                 f"self-learn: import {n} record(s) --{report.source}",
+                body=attribution.stamp(None),
                 paths=report.touched,
             )
     except gitops.GitOpsError as exc:

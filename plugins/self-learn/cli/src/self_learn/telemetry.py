@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterable
 
-from . import settings
+from . import attribution, settings
 from .ledger import resolve_home
 from .primitives import chrono
 from .scan import scan as secret_scan
@@ -607,6 +607,7 @@ def _commit_flush(home: Path, report: FlushReport) -> None:
     gitops.commit(
         home,
         f"self-learn: telemetry flush {report.events} event{plural}",
+        body=attribution.stamp(None),
         paths=report.files,
     )
 

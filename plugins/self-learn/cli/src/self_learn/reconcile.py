@@ -115,7 +115,7 @@ from pathlib import Path
 
 from ruamel.yaml.error import YAMLError
 
-from . import compiled, config, gitops, hosts, intents, ledger_ops
+from . import attribution, compiled, config, gitops, hosts, intents, ledger_ops
 from .records import Record, RecordError
 
 __all__ = [
@@ -610,7 +610,7 @@ def reconcile(home: Path, *, no_push: bool = False) -> ReconcileResult:
             message = RECONCILE_SUBJECT.format(n=len(to_commit))
             try:
                 gitops.stage(home, to_commit)
-                sha = gitops.commit(home, message, paths=to_commit)
+                sha = gitops.commit(home, message, body=attribution.stamp(None), paths=to_commit)
             except gitops.GitOpsError as exc:
                 # Post-mutation by construction (the paths are staged now).
                 raise gitops.HalfWrittenError.for_commit(
