@@ -7308,6 +7308,11 @@ def _compose_replacement(
         record.set_generality(first.generality)
     if first.env is not None:
         record.set_env(dict(first.env))
+    if first.premises is not None:
+        # S-NEXT-u1-premises: premises (with their baselines) belong to the
+        # lesson, not to one wording of it. A ledger probe on the new id
+        # itself cannot occur: the id is fresh.
+        record.set_premises(first.premises)
     record.set_sightings(sum(rec.sightings for rec in (first, *also)))
     return record
 
