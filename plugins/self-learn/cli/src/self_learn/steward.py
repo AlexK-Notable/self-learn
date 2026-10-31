@@ -1069,6 +1069,89 @@ def _suspected_violation_inputs(home: Path, exclude: set[str] | None = None) -> 
     return out
 
 
+def _premise_predecessor(home: Path, record_id: str) -> str | None:
+    """The case a `premise-moved` decision of *record_id* supersedes: the
+    newest case that covers it and that `kind: reconsider` could take as its
+    predecessor (:func:`_reconsider_predecessor_problem` -- the apply-time
+    test, so the runner never fills in a predecessor the ledger would
+    refuse), or `None` when no case does (a lesson routed before cases
+    existed)."""
+    best: tuple[tuple[str, str], str] | None = None
+    for row in cases.list_cases(home, record_id=record_id, only_ok=True):
+        case_id = row.get("case")
+        if not isinstance(case_id, str) or row.get("superseded_by"):
+            continue
+        if _reconsider_predecessor_problem(home, case_id, record_id) is not None:
+            continue
+        key = (str(row.get("opened_at") or ""), case_id)
+        if best is None or key > best[0]:
+            best = (key, case_id)
+    return best[1] if best else None
+
+
+#: The card line a `premise-moved` input from a closed follow-up carries.
+_FOLLOWUP_MOVED_REASON = (
+    "This lesson's follow-up was closed after the lesson was last decided: what it "
+    "waited on has happened. Decide whether the lesson is still true as written."
+)
+
+
+def _premise_moved_inputs(home: Path, exclude: set[str] | None = None) -> list[dict]:
+    """S-NEXT-u3-followup (premise-check design U3): one `premise-moved` input
+    per ROUTED lesson whose follow-up was closed after the lesson was last
+    decided (:func:`steward_inputs.moved_followups`). That is the live
+    trigger (`followup-done`) and the one-time pass for the follow-ups
+    closed before it existed, by one predicate.
+
+    The version is a hash of the closed follow-up
+    (:func:`steward_inputs.premise_moved_version`), so a run that decided it
+    -- applied, parked, refused or abandoned -- never sees it again, and the
+    follow-up being closed again with other words is a new input. A lesson
+    the overseer holds is not offered (S-81); a lesson another input of the
+    run already names is not offered twice (the premise input comes back on
+    the next run). At most `steward_inputs.PREMISE_MOVED_PER_RUN` rows,
+    oldest closing first. Off when `premises.enabled` is false."""
+    if not steward_inputs.premises_enabled(home):
+        return []
+    found = steward_inputs.moved_followups(home)
+    if not found:
+        return []
+    terminal = _terminal_versions(home)
+    held = cases.held_lessons(home)
+    out: list[dict] = []
+    for moved in found:
+        rid = moved.record_id
+        if (exclude and rid in exclude) or rid in held:
+            continue
+        version = steward_inputs.premise_moved_version(followup_done=moved.done)
+        if (rid, version) in terminal:
+            continue
+        row: dict = {
+            "path": f"followup-done:{rid}",
+            "blob": version,
+            "version": version,
+            "record": rid,
+            "kind": steward_inputs.INPUT_PREMISE_MOVED,
+            "record_status": "routed",
+            "reason": _FOLLOWUP_MOVED_REASON,
+            "moved": [
+                {"source": "follow-up-done", "done_at": moved.done_on.isoformat()}
+                | {
+                    key: str(moved.done[key])
+                    for key in ("action", "unblocks_on", "note", "done_note")
+                    if moved.done.get(key) is not None
+                }
+            ],
+        }
+        predecessor = _premise_predecessor(home, rid)
+        if predecessor:
+            row["predecessor"] = predecessor
+        out.append(row)
+        if len(out) >= steward_inputs.PREMISE_MOVED_PER_RUN:
+            break
+    return out
+
+
 #: A reconsider input's card line (`_reconsider_proposals`): the lesson an
 #: earlier case placed, rejected or deferred is re-decided ...
 _RECONSIDER_UNRESOLVED = "Re-decide against the new statement or dependency observation."
@@ -1270,7 +1353,9 @@ def _brief_input(row: dict) -> dict:
     row written before U3a has no ``kind`` and reads as a lesson; its
     ``proposal`` is never passed on."""
     out = {"id": row.get("record"), "kind": row.get("kind") or steward_inputs.INPUT_LESSON}
-    for key in ("reason", "events"):
+    # `moved` and `predecessor`: a `premise-moved` input's facts and the case
+    # whose own "what would change this" the brief quotes.
+    for key in ("reason", "events", "moved", "predecessor"):
         if row.get(key):
             out[key] = row[key]
     return out
@@ -4912,6 +4997,12 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             row for entry, row in _eligible_lessons(home) if entry.record.id not in reconsider_ids
         ]
         eligible += _suspected_violation_inputs(
+            home, exclude={row["record"] for row in eligible}
+        )
+        # S-NEXT-u3-followup: a placed lesson whose follow-up closed after it was
+        # last decided. Last, so a lesson another input already names is
+        # decided on that one now and on this one next run.
+        eligible += _premise_moved_inputs(
             home, exclude={row["record"] for row in eligible}
         )
         if not dry_run:
