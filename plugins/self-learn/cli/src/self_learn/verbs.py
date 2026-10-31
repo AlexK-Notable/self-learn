@@ -2352,7 +2352,10 @@ def _resolve_target(
     plain-host refusal a ``needs-person``; it also lets a lesson leave the skills root's own
     ``claude-md`` while that destination refuses additions (S-82). Pure —
     writes nothing; ``check_dirty=False`` (recompile, ``list --json``,
-    commit-drift) resolves exactly as before and runs its own checks."""
+    commit-drift) resolves exactly as before and runs its own checks. One
+    gate runs in both modes (SK2, S-NEXT-sk2-routes): a ``new-skill``
+    target that would scaffold the name of a skill self-learn owns is
+    refused, with ``check_dirty`` or without."""
     spec = _resolve_target_unguarded(
         home, bucket_dir, scope, destination, ref_name,
         user_claude_md=user_claude_md, project_path=project_path,
@@ -2526,10 +2529,17 @@ def _resolve_target_unguarded(
             )
         plugin_dir = root / "plugins" / name
         target = plugin_dir / "skills" / name / "SKILL.md"
-        if check_dirty and not removal and not target.is_file():
+        if not removal and not target.is_file():
             # SK2 (S-NEXT-sk2-routes): this write would scaffold. Ahead of
             # M3-9, so an owned skill that lost its SKILL.md is named as
-            # such, not as a foreign plugin.
+            # such, not as a foreign plugin. Not gated on `check_dirty`
+            # (fix round 1, 2026-10-31): `recompile` resolves with
+            # `check_dirty=False`, and must skip such a target with this
+            # sentence (its resolve-time `except VerbError` does), never
+            # reach `_apply_new_skill` with it. The read-only callers that
+            # also pass `check_dirty=False` (`replace_route_preview`,
+            # `commit-drift`) already treat a refusal here as "cannot
+            # resolve", as they do M3-9's.
             _refuse_rescaffolding_an_owned_skill(home, name)
         if plugin_dir.exists():
             # M3-9 collision rule: append only into a self-learn-scaffolded
@@ -4730,8 +4740,10 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
     changed = False
     scaffolded = False
     if name and not target.is_file():
-        # SK2: also checked at pre-flight; here it covers the writes that
-        # skip it (a recompile), so no path re-seeds an owned skill.
+        # SK2: also checked when the target is resolved (route and recompile
+        # alike); here it is the last stop, for a SKILL.md that went missing
+        # between that check and this write, so no path re-seeds an owned
+        # skill. Recompile's git leg catches the refusal per target.
         _refuse_rescaffolding_an_owned_skill(home, name)
     if not manifest.is_file():
         manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -11706,7 +11718,13 @@ def recompile(
                         home, spec, None, notes=result.warnings,
                         keep_empty_rules=keep_rules,
                     )
-                except (CompileError, OSError) as exc:
+                except (CompileError, OSError, VerbError) as exc:
+                    # SK2 fix round 1 (2026-10-31): `VerbError` too -- e.g.
+                    # `_apply_new_skill`'s refusal to re-seed an owned skill.
+                    # A refusal costs THIS target only; every later target
+                    # still repairs, and the steward's and the overseer's
+                    # recovery recompile (`only_records`) does not raise.
+                    # The plain leg already gets this from `_host_phase`.
                     result.entries.append(
                         RecompileEntry(target=target, changed=False, skipped=str(exc))
                     )

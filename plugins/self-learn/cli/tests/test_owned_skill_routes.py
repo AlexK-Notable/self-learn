@@ -33,6 +33,7 @@ no link is made and the install.sh note prints.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -401,14 +402,91 @@ def test_an_owned_skill_whose_files_are_missing_is_refused_to_everyone(env, tmp_
     assert _record(env.home, RID).status == "pending"
     assert last_verb_sha(env.home) == before
 
-    # a recompile (which skips the route's pre-flight) does not re-seed it
-    # either: RID2 is routed there, so its compile set is not empty
+    # a recompile (which resolves with `check_dirty=False`) does not re-seed
+    # it either, and names it as an owned skill, not as M3-9's foreign
+    # plugin (its folder is still there): RID2 is routed there, so its
+    # compile set is not empty
     assert skill_writer.routed_lessons(env.home, NAME) == [RID2]
     result = verbs.recompile(env.home, no_push=True)
     assert not env.skill_md().exists()
     assert any(f"new-skill:{NAME} is a skill self-learn owns" in w for w in result.warnings), (
         result.warnings
     )
+    assert not any("foreign authored plugin" in w for w in result.warnings)
+
+
+def _owned_and_a_later_drifted_target(env: Env) -> Path:
+    """Fix round 1 (2026-10-31) setup: RID2 is routed into the owned skill,
+    RID3 into skill ``s``'s SKILL.md, and RID3's line there is then cut out
+    by hand and committed, so a recompile has a real repair to make on a
+    target that sorts AFTER the owned skill's. Returns that SKILL.md."""
+    _owned(env)
+    _pending(env, RID2)
+    _pending(env, RID3)
+    verbs.route(env.home, RID2, dest=f"new-skill:{NAME}", no_push=True)
+    verbs.route(env.home, RID3, dest="skill-md", no_push=True)
+    other = env.root / "plugins" / "s-plugin" / "skills" / "s" / "SKILL.md"
+    assert f"*({RID3})*" in other.read_text(encoding="utf-8")  # control: placed
+    assert str(env.skill_md()) < str(other)  # control: recompile reaches it later
+    other.write_text(
+        other.read_text(encoding="utf-8").replace(f"*({RID3})*", "*(gone)*"), encoding="utf-8"
+    )
+    commit_all(env.root, "RID3's line cut out by hand")
+    assert f"*({RID3})*" not in other.read_text(encoding="utf-8")  # control: drifted
+    return other
+
+
+def test_a_recompile_skips_an_owned_skill_whose_folder_is_gone_and_repairs_the_rest(env):
+    """The whole plugin folder is gone, so M3-9 cannot fire. Before fix
+    round 1 the target resolved (`check_dirty=False` skipped SK2's check),
+    `_apply_new_skill` raised, and the error escaped `recompile`: no later
+    target was repaired, and the steward's recovery recompile raised too.
+    Now the owned skill is skipped with SK2's sentence, nothing re-seeds
+    it, and the later target is repaired."""
+    other = _owned_and_a_later_drifted_target(env)
+    shutil.rmtree(env.plugin_dir())
+    commit_all(env.root, "the owned skill's whole folder went missing")
+
+    result = verbs.recompile(env.home, no_push=True)
+
+    assert not env.plugin_dir().exists()  # nothing scaffolded in its place
+    assert any(
+        w.startswith(f"{RID2}:") and f"new-skill:{NAME} is a skill self-learn owns" in w
+        for w in result.warnings
+    ), result.warnings
+    assert f"*({RID3})*" in other.read_text(encoding="utf-8")  # the later target repaired
+
+    # the narrow form the steward's and the overseer's crash recovery uses
+    # returns too, and names the refusal for the owned skill's record
+    narrow = verbs.recompile(env.home, no_push=True, only_records=[RID2])
+    assert any(
+        f"new-skill:{NAME} is a skill self-learn owns" in r
+        for r in verbs.recompile_refusals(narrow, RID2)
+    )
+
+
+def test_a_refusal_while_recompile_writes_one_git_target_skips_only_that_target(env, monkeypatch):
+    """Recompile's git leg catches a `VerbError` from the write (fix round
+    1): it costs that target alone. `_apply_target` is made to refuse the
+    owned skill's write, as `_apply_new_skill`'s last-stop guard would for a
+    SKILL.md that went missing after the target was resolved."""
+    other = _owned_and_a_later_drifted_target(env)
+    real_apply = verbs._apply_target
+
+    def refuse_the_owned_skill(home, spec, *args, **kwargs):
+        if spec.destination == "new-skill":
+            raise verbs.DestinationUnavailable("simulated: refused while writing")
+        return real_apply(home, spec, *args, **kwargs)
+
+    monkeypatch.setattr(verbs, "_apply_target", refuse_the_owned_skill)
+    result = verbs.recompile(env.home, no_push=True)
+
+    skipped = [e for e in result.entries if e.skipped and "simulated" in e.skipped]
+    assert len(skipped) == 1
+    assert Path(skipped[0].target).resolve() == env.skill_md().resolve()
+    assert any("simulated: refused while writing" in w for w in result.warnings)
+    assert f"*({RID3})*" in other.read_text(encoding="utf-8")  # the later target repaired
+    assert env.skill_md().is_file()  # the owned skill itself left as it was
 
 
 def test_an_unreadable_registry_refuses_an_agent_route_as_needs_person(env, tmp_path):
