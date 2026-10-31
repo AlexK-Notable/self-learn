@@ -127,6 +127,20 @@ def test_an_unfinished_run_one_hour_after_its_attempt_is_not_due(tmp_path, monke
     assert serve._steward_is_due(home, cache, NOW + HOUR + 1) is True
 
 
+def test_a_committed_attempt_newer_than_the_cache_journal_still_holds_the_run(
+    tmp_path, monkeypatch
+):
+    """The clock is the later of the two: a cache journal whose newest
+    attempt is three hours old (an attempt made from another cache) does not
+    make a run retried an hour after its committed attempt. Would catch: the
+    journal read as the whole clock."""
+    home, cache = _home(tmp_path, monkeypatch)
+    _unfinished(monkeypatch, NOW - HOUR)
+    _journal(cache, {"ts": _iso(NOW - 3 * HOUR), "run_id": "run-held", "status": "attempt-start"})
+    assert serve._steward_is_due(home, cache, NOW) is False
+    assert serve._steward_is_due(home, cache, NOW + HOUR) is True  # control
+
+
 def test_with_the_cache_lost_the_committed_attempt_is_the_retry_clock(tmp_path, monkeypatch):
     home, cache = _home(tmp_path, monkeypatch)
     _unfinished(monkeypatch, NOW - HOUR)

@@ -962,19 +962,26 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
         # environment hold, a partial run -- is retried `steward.RETRY_SECS`
         # (2 h) after its last attempt, the overseer's rule (13 §5), never
         # after the 20 hours a new run waited: a login the user restored
-        # cost them a day. The cache attempt journal, tested above, is the
-        # clock when it holds an attempt; the committed `last_attempt_at`
-        # stands in when the cache was lost. The attempt cap still bounds a
+        # cost them a day. The cache attempt journal (tested above too) and
+        # the committed `last_attempt_at` both count; the committed stamp
+        # stands alone when the cache was lost. The attempt cap still bounds a
         # run that keeps failing on its content; a hold counts nothing and
         # makes one fast failing call per 2 h.
-        if _journal_attempt_epoch(_steward_journal(cache_dir), now) is not None:
-            return True
-        attempts = [
-            str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")
+        # The clock is the LATER of the two: an attempt's journal rows (its
+        # end and push rows) are written after its committed stamp, so the
+        # journal is normally the later one and the cache-only preview names
+        # this same instant; a lost or foreign cache can never make a retry
+        # come sooner than two hours after the committed attempt.
+        epochs = [
+            _attempt_epoch(str(row.get("last_attempt_at")), now)
+            for row in unfinished if row.get("last_attempt_at")
         ]
-        if not attempts:
+        journal = _journal_attempt_epoch(_steward_journal(cache_dir), now)
+        if journal is not None:
+            epochs.append(journal)
+        if not epochs:
             return True
-        return now - _attempt_epoch(max(attempts), now) >= steward.RETRY_SECS
+        return now - max(epochs) >= steward.RETRY_SECS
     reconsider, _predecessors = steward._reconsider_proposals(home)
     input_paths = _eligible_input_paths(home)
     # U3a: an unhandled suspected rule violation is an input too; like a
