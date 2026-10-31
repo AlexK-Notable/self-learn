@@ -24,7 +24,7 @@ import pytest
 from ruamel.yaml import YAML
 
 import test_skill_write as sk1
-from self_learn import batch, cases, settings, skill_registry, skill_writer, verbs
+from self_learn import batch, cases, scan, settings, skill_registry, skill_writer, verbs
 from self_learn.compilers import BEGIN_MARKER
 from self_learn.ledger_ops import create_record, find_record_path
 from self_learn.overseer import discovery, formats, skills
@@ -547,7 +547,10 @@ def test_d_control_a_rewrite_of_an_owned_skill_applies_from_an_empty_sheet(env, 
     assert "The rewritten closing line." in env.skill_md().read_text(encoding="utf-8")
     row = env.row()
     assert row["last_write"]["case"] != sk1.CASE and row["created"]["case"] == sk1.CASE
-    assert cases.show(env.home, row["last_write"]["case"]).frontmatter["outcome"] == "no-action"
+    # `cases.show` defaults to the blind view, which leaves `outcome` out
+    # (cases._BLIND_FRONTMATTER_ALLOW); the full view carries it.
+    shown = cases.show(env.home, row["last_write"]["case"], evidence_only=False)
+    assert shown.frontmatter["outcome"] == "no-action"
     assert f"[skill changed] {NAME}" in _section(_report(result), "Decided in the user's stead")
 
 
@@ -575,13 +578,20 @@ def test_d_a_skill_changed_after_it_was_staged_refuses_the_write(env, monkeypatc
     assert "[skill changed]" not in _report(result)
 
 
+SCANNED_LINE = "token = placeholder-the-secret-scan-matches"
+
+
 def test_d_a_skill_whose_text_matched_the_secret_scan_is_stubbed_and_not_rewritten(
     env, monkeypatch,
 ):
     _set_writing(env, '"on"')
     _lesson(env, RID)
     assert env.write().ok
-    _person_edits(env, "key = ghp_abcdefghijklmnopqrstuvwxyz123456")
+    # `key = ghp_<32 characters>` (this test's first fixture) matched no
+    # rule: `github-token` wants 36+ characters after `ghp_`, and `key` is
+    # not a credential-assignment keyword. `token = <8+ characters>` is.
+    assert scan.scan(SCANNED_LINE)  # positive control: the scan matches it
+    _person_edits(env, SCANNED_LINE)
     seen: dict = {}
     _phases(monkeypatch, _rewrite_b("The rewritten closing line."), seen=seen)
 
@@ -591,7 +601,7 @@ def test_d_a_skill_whose_text_matched_the_secret_scan_is_stubbed_and_not_rewritt
     assert shown.startswith("withheld: the secret scan matched")
     assert seen["secret_files"] == []
     assert result.status != "refused"
-    assert "ghp_abcdefghijklmnopqrstuvwxyz123456" in env.skill_md().read_text(encoding="utf-8")
+    assert SCANNED_LINE in env.skill_md().read_text(encoding="utf-8")
     assert "cannot be rewritten this run" in _section(_report(result), "Refused / could not do")
 
 
