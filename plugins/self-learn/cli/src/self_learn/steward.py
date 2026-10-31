@@ -3459,6 +3459,17 @@ def _prepared_recipe(
         parking_reason = _forced_parking_reason(
             home, sheet_path, _reconsidered_by(case_data), _rerouted_by(case_data)
         )
+        if (
+            case_data.get("kind") == "parked"
+            and case_data.get("parked_reason") == cases.SKILL_PROPOSAL_REASON
+        ):
+            # Integration 2026-10-31 (sk6 gate MINOR): a skill proposal keeps
+            # its reason even when the runner's own check fires on its
+            # tentative sheet (a plain host's committed file). That sheet is
+            # never applied, so the override gained nothing, and a proposal
+            # recorded under another reason is one phase B never sees as a
+            # proposal (every skill-proposal case owes a disposition).
+            parking_reason = cases.SKILL_PROPOSAL_REASON
         if parking_reason is None and case_data.get("kind") == "parked":
             # The MODEL parked this case (method section 12): it could not
             # decide alone. Until 2026-09-20 only the runner's own two
