@@ -859,14 +859,19 @@ def test_reject_cli_note_in_commit_body(env, capsys):
 
 
 def test_defer_cli_until_date(env, capsys):
+    import datetime as _dt
+
+    # Relative to now: `defer` refuses a past --until, so a fixed date goes red
+    # once the calendar passes it.
+    until = (_dt.date.today() + _dt.timedelta(days=365)).isoformat()
     record = seed_pending(env)
-    rc = cli.main(["defer", record.id, "--until", "2027-01-01"])
+    rc = cli.main(["defer", record.id, "--until", until])
     out = capsys.readouterr().out
     assert rc == 0
     after = Record.from_path(env.pending(record.id))  # defer stays pending
-    assert str(after.deferred_until) == "2027-01-01"
-    assert env.local_subject() == f"self-learn: defer {record.id} until 2027-01-01"
-    assert f"defer {record.id} → deferred until 2027-01-01 @" in out
+    assert str(after.deferred_until) == until
+    assert env.local_subject() == f"self-learn: defer {record.id} until {until}"
+    assert f"defer {record.id} → deferred until {until} @" in out
 
 
 def test_defer_cli_bad_date_is_usage_error(env, capsys):
