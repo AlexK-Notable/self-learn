@@ -10,6 +10,10 @@ D-2): ``serve.heartbeat`` (the heartbeat itself), ``serve.poke`` (a
 verb's watchdog handoff, a separate file so a write never races the
 heartbeat), and ``serve.schedule`` (today's jittered mine target). All
 three are ``NOT_REPO_TRUTH``, mirroring ``worker.log``/``miner.spool_dir``.
+Once a day (S-NEXT-cache) it also asks ``cache_gc.prune`` to delete, from
+the cache ROOT, per-home cache directories whose ledger home no longer
+exists and host lock files nobody holds -- cache only, never the home it
+serves.
 
 Jobs run SERIALLY (orchestrator ruling, spec §5.2a): the producers this
 unit schedules are already serialised by their own locks
@@ -44,7 +48,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import cases, gitops, intents, miner, overseer, settings, steward, worker
+from . import cache_gc, cases, gitops, intents, miner, overseer, settings, steward, worker
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
 from .primitives import chrono, fsops
@@ -1200,6 +1204,25 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
 # --------------------------------------------------------------- the loop
 
 
+#: S-NEXT-cache: how often the serving daemon sweeps the cache root for
+#: orphaned per-home directories and idle host lock files.
+CACHE_GC_INTERVAL_SECS = 24 * 3600
+
+
+def _sweep_cache(home: Path) -> None:
+    """One `cache_gc.prune` pass, keeping the cache of the home this daemon
+    serves. Never raises (`prune` contains its own failures); says what it
+    removed on stderr so the journal shows it."""
+    result = cache_gc.prune(keep_homes=[home])
+    if result.removed_homes or result.removed_locks:
+        print(
+            f"serve: cache sweep removed {len(result.removed_homes)} orphaned "
+            f"home cache dir(s) and {len(result.removed_locks)} idle host lock "
+            "file(s).",
+            file=sys.stderr,
+        )
+
+
 def run_forever(
     home: Path | str,
     *,
@@ -1262,7 +1285,11 @@ def run_forever(
     prev_int = signal.signal(signal.SIGINT, _handler)
     try:
         ticks = 0
+        next_sweep = 0.0
         while not stop.is_set():
+            if time.time() >= next_sweep:
+                next_sweep = time.time() + CACHE_GC_INTERVAL_SECS
+                _sweep_cache(home)
             # A13 backstop: `_due_or_hold` already contains every due
             # check, and `run_one_job` already contains every job, so
             # nothing is EXPECTED to reach here -- but an exception that
