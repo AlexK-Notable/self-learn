@@ -360,6 +360,26 @@ def test_a_merge_of_three_with_a_refused_middle_step_then_a_retry(env, tmp_path,
     assert _head(env.home) == head
 
 
+def test_every_leg_of_an_agent_shell_merge_carries_the_runner_s_trailer(env):
+    """S-NEXT-attribution (cures CU-2 item 3): `replace --also` writes the
+    main commit and one `supersede` commit per merged lesson; each carries
+    the runner (`stamp_by`), never the chooser (`by`). Mutation: pass
+    `by=by` to the also-leg's `supersede` again -> the leg says `By: human`."""
+    a, b = _seed(env.home, "lrn-e1000031"), _seed(env.home, "lrn-e1000032")
+    for rid in (a, b):
+        _place(env.home, rid, "skill-md")
+    head = _head(env.home)
+    verbs.replace_lesson(env.home, a, also=[b], trigger=NEW_TRIGGER, instruction=NEW_INSTRUCTION,
+                         because="merged", by="human", stamp_by="agent", no_push=True)
+    shas = git(env.home, "rev-list", f"{head}..HEAD").stdout.split()
+    subjects = [git(env.home, "log", "-1", "--format=%s", sha).stdout.strip() for sha in shas]
+    assert any("supersede" in s for s in subjects) and any("replace" in s for s in subjects)  # control
+    for sha in shas:
+        body = git(env.home, "log", "-1", "--format=%B", sha).stdout
+        assert body.rstrip().endswith("By: agent"), (sha, body)
+        assert "By: human" not in body
+
+
 def test_the_merge_carries_every_lesson_s_evidence(env):
     a = _seed(env.home, "lrn-e1000011", evidence=[{"session": "s-a", "quote": "qa"}])
     b = _seed(env.home, "lrn-e1000012", evidence=[{"session": "s-b", "quote": "qb"}])

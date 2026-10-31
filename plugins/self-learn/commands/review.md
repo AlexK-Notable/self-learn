@@ -92,13 +92,17 @@ limit; free-text "Other" is always there beyond them):
   gains. Honesty note on the card: the compiler regenerates from the
   record at apply time, so what lands may differ in detail from the
   preview. On choice:
-  `self-learn route <id>` (proposal's destination) or
-  `self-learn route <id> --dest <target>` if the user overrides; add
-  `--note "…"` if they give a why. **You run these verbs from an agent
-  shell, so every one of them needs `--note "<why>"`** (the CLI refuses
-  without it, before writing anything) and is recorded `By: agent` in the
-  ledger commit; the user's own terminal is unchanged. Put the user's
-  decision and reason in the note, in their words where you can.
+  `self-learn route <id> --by analyst` (proposal's destination, the user
+  accepted it as shown) or `self-learn route <id> --dest <target> --by
+  human` if the user chose another; `--by agent` when you decided an easy
+  item yourself. **You run these verbs from an agent shell, so every one
+  of them needs `--note "<why>"`** (the CLI refuses without it, before
+  writing anything) and is recorded `By: agent` in the ledger commit; and
+  `route`, `reroute`, `replace`, `revise` and `reconsider` also need
+  `--by analyst|human|agent` saying who chose (refused without it; never
+  `steward` or `overseer`, which are the sheet runners'). The user's own
+  terminal is unchanged. Put the user's decision and reason in the note,
+  in their words where you can.
   **Hook proposals are the one exception to regenerate-at-apply
   (M3-2):** the preview must show the proposal's `script` field IN FULL
   — the exact executable bytes the route will commit verbatim (P9: eyes
@@ -108,7 +112,8 @@ limit; free-text "Other" is always there beyond them):
   relay them verbatim — the guard is inert until both are done. Inside a
   *human* review session the two manual steps stay exactly as printed —
   with one shortcut: `self-learn hook activate <id>` performs both by
-  hand (and `hook deactivate <id>` reverses it), no setting required.
+  hand (and `hook deactivate <id>` reverses it), no setting required;
+  run from your shell, both need `--note "<why>"` like every ledger verb.
   Separately, when the user's delegation switch
   (`overseer.hook_activation`) is on, the overseer — and, since S-72
   (2026-09-28), the steward — places and activates a hook route it
@@ -182,7 +187,8 @@ every other write:
   the lesson is right and its sentence is wrong.
 
 `reconsider` is not a sheet verb — it is a command,
-`self-learn reconsider <lrn-…> --case case-…`, run by the steward's
+`self-learn reconsider <lrn-…> --case case-… --by <who decided> --note "<why>"`
+(from an agent shell both are required), run by the steward's
 runner or by hand against a successor case (`kind: reconsider`, naming
 the record's original case in `supersedes`). The sheet that then carries
 the corrected verb names that same case with the top-level `case:` key;

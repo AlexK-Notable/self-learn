@@ -1956,6 +1956,7 @@ def _dispatch(
                 no_push=True,
                 reconsider_case=_reconsider_case_for(home, item.id, case, verb),
                 execution=execution,
+                runner=actor,  # S-NEXT-attribution: who rejects is the runner, not the line
             )
         elif verb == "defer":
             until = f.get("until")
