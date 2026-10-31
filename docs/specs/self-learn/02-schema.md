@@ -755,6 +755,17 @@ reply to an ask is a statement with `answers.kind: question` and `answers.ref`
 the ask's id; phase B receives every such answer, newest first, as the staged
 `answers.yaml`.
 
+*(Added 2026-10-30, S-NEXT-overseer-run.)* **Lesson records and the preview.**
+Phase B's stage also holds `lessons/<id>.md`, every lesson record in the ledger
+as it stands (status, routing, history, `## Trigger`, `## Instruction`), so a
+lesson the overseer names can be read; a record the secret scan matches is a stub
+naming the rule. Phase A's stage has none. A sheet item of a resolution pair whose
+preview says `would-refuse` (a retried kind, `git` or `target-busy`, excepted) is
+not applied: the runner takes it off the staged sheet and names it, with the
+preview's reason, in "Refused / could not do"; a sheet whose every item is refused
+is left whole and refused at apply. A `kind: maintenance` pair with such a line is
+not recorded.
+
 *(Added 2026-09-27.)* **Findings.** Phase B's staged `findings.yaml` is
 `{findings: [{case, kind: examined|dependency-moved, text, ref?}]}`. The runner
 validates each finding on its own and DROPS one that fails (unknown keys, a case
@@ -1566,7 +1577,11 @@ PDT: "fix the rest of 3".)*
   parked), so the overseer may record several `kind: maintenance` cases in
   one run, each in its own named pair, beside its successors; every other
   named case is a successor (`SUCCESSOR_CASE_FIELDS`, unchanged). A pair
-  is one decision, so it is dropped whole, never item by item. A
+  is one decision, so it is dropped whole, never item by item, with one
+  exception: in a resolution pair, a line whose own preview says
+  would-refuse is dropped and reported and the rest of the pair stands
+  (S-NEXT-overseer-run, "Lesson records and the preview" above); a maintenance pair with such a line is
+  dropped whole. A
   secret-scan hit in a pair's case or sheet drops that pair — nothing of
   it reaches the ledger. *(2026-09-28, follow-up 3)* A hit in
   `findings.yaml`, `user-model-delta.yaml` or `report.md` costs that
@@ -1590,6 +1605,14 @@ PDT: "fix the rest of 3".)*
   machine `status` value (`applied`) and its exit code are unchanged; the
   JSON also carries `decisions_staged` and `decisions_dropped`. The
   steward has no such case: a dropped steward case is counted `refused`.
+  *(Added 2026-10-30, S-NEXT-overseer-run.)* The record's `decisions` also
+  carries `lines_dropped`: the lines taken off KEPT sheets because their
+  preview said `would-refuse`. When it is above zero the report's "Decided
+  in the user's stead" gets `- decisions: <n> line(s) of kept sheets were not
+  applied because their preview said they would be refused (named under
+  Refused / could not do)` and the journal gets a `line-dropped` row per line.
+  They are not pairs, so `staged`, `dropped` and `status_text` are unchanged,
+  and neither the status nor the exit code counts them.
 - *Steward reconsider misfit (audit finding 10).* When `verbs.reconsider`
   refuses a reconsider case the case writer accepted (its outcome does not
   apply to the lesson's status, or the lesson is gone), that case's sheet is receipted refused and nothing of it is dispatched. The refusal takes its S-71 kind from the exception's type: the verb's status check is `status`, and a raise site that names no type is `unclassified`. Each of the case's lessons follows §4.2 with the case named, and the run goes on. *(Amended 2026-10-08.)*; before, the
