@@ -1060,10 +1060,19 @@ REGISTRY: tuple[Setting, ...] = (
         config_section="steward",
         config_key="cooldown_secs",
         kind="int",
-        default=72000,
+        # S-NEXT-cadence: was 72000 (20 h) and rolled from the last run, so
+        # the run drifted 4 h earlier every day and a failed run waited 20 h.
+        # The steward now runs nightly after the mine and retries a failed or
+        # held run after 2 h; this is only the minimum gap between two starts,
+        # short enough that a hand run in the afternoon leaves that night's run
+        # alone, long enough that two scheduled runs can never pile up.
+        default=43200,
         validate=lambda v: max(cast(int, v), 0),
         validate_hint="must be >= 0",
-        description="minimum seconds between scheduled steward runs",
+        description=(
+            "minimum seconds between two steward run starts (the run itself is "
+            "nightly, after the mine; a failed or held run retries after 2 h)"
+        ),
     ),
     Setting(
         name="steward.enabled",

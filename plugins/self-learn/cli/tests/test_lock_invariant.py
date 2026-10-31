@@ -244,6 +244,7 @@ NOT_REPO_TRUTH = {
     "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",
     "serve._log_job_crash": "XDG cache: cache_dir()/serve.journal.jsonl, one row per crashed job with no journal of its own (2026-09-27, fail-state audit finding 6)",
     "serve._write_holds": "XDG cache: cache_dir()/serve.holds.json (U1/A13 -- which job a failing due check is currently holding, and its cause, so the heartbeat and `doctor`'s serve row can name it and the notification fires once per cause; no ledger path, no commit)",
+    "serve._write_stranded": "XDG cache: cache_dir()/steward/stranded.json (S-NEXT-cadence -- the last stranded-lesson census, read by the session-start status; rebuildable by the next census, no ledger path, no commit)",
     "steward._journal": "XDG cache: steward/journal.jsonl, never ledger truth",
     # S-104: the premise sweep's two cache files, written by this ONE
     # function -- <cache>/premises/observations.jsonl (the last three

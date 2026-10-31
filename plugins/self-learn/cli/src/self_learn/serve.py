@@ -54,7 +54,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import cache_gc, cases, gitops, intents, miner, overseer, premise_sweep, settings, steward, worker
+from . import cache_gc, cases, gitops, intents, miner, notices, overseer, premise_sweep, settings, steward, worker
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
 from .primitives import chrono, fsops
@@ -597,11 +597,18 @@ def _journal_attempt_epoch(path: Path, now: float) -> float | None:
     return None
 
 
+def _steward_journal(cache_dir: Path) -> Path:
+    return cache_dir / "steward" / "journal.jsonl"
+
+
 def _steward_recently_attempted(cache_dir: Path, now: float) -> bool:
     """S-68's ordering rule: the steward's cooldown test reads the cache
-    attempt journal ONLY, so it can be evaluated before any git read."""
-    epoch = _journal_attempt_epoch(cache_dir / "steward" / "journal.jsonl", now)
-    return epoch is not None and now - epoch < miner.ATTEMPT_COOLDOWN_SECS
+    attempt journal ONLY, so it can be evaluated before any git read.
+    S-NEXT-cadence: the interval is `steward.RETRY_SECS` (2 h, the same as
+    `miner.ATTEMPT_COOLDOWN_SECS`), and it is the whole retry rule for an
+    unfinished run."""
+    epoch = _journal_attempt_epoch(_steward_journal(cache_dir), now)
+    return epoch is not None and now - epoch < steward.RETRY_SECS
 
 
 def _target_for(now: float) -> float:
@@ -732,18 +739,15 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     except Exception as exc:  # noqa: BLE001 — a preview must never raise
         when = f"held: {_short_cause(exc)}"
     try:
-        # This heartbeat preview reads one small cached marker, never the case store.
-        last_iso = steward.last_run_iso(home)
-        # S-68: the preview reads its timestamp through the SAME rule the
-        # real predicate uses, so "steward at ..." cannot disagree with it.
-        last_epoch = _attempt_epoch(last_iso, now) if last_iso is not None else 0.0
-        cooldown_value, _source = settings.resolve_setting(
-            home, settings.by_name("steward.cooldown_secs")
+        # S-NEXT-cadence: cache-only, like the overseer's preview -- the
+        # attempt journal and the last-run marker, never the case store -- and
+        # through the same rules the predicate uses, so the instant it prints
+        # is the instant the steward becomes due.
+        steward_epoch, steward_why = _steward_next(home, cache_dir, now)
+        steward_when = (
+            datetime.fromtimestamp(steward_epoch).isoformat(timespec="seconds")
+            + f" {steward_why}"
         )
-        cooldown = cast(int | float | str, cooldown_value)
-        steward_when = datetime.fromtimestamp(
-            max(now, last_epoch + float(cooldown))
-        ).isoformat(timespec="seconds")
     except Exception as exc:  # noqa: BLE001 — a preview must never raise
         steward_when = f"held: {_short_cause(exc)}"
     try:
@@ -754,9 +758,155 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     except Exception as exc:  # noqa: BLE001 — a preview must never raise
         overseer_when = f"held: {_short_cause(exc)}"
     return (
-        f"mine at {when}; steward at {steward_when} when committed obligations exist; "
+        f"mine at {when}; steward at {steward_when}; "
         f"overseer at {overseer_when}" + _holds_text(cache_dir, now)
     )
+
+
+#: S-NEXT-cadence: the steward's nightly slot opens when the night's mine
+#: pass has finished, or this long after the mine target when it has not
+#: (the mine failed, is off, or is still running), so a broken mine never
+#: costs the steward its night.
+STEWARD_MINE_GRACE_SECS = 3 * 60 * 60
+
+
+def _mine_finished_epoch() -> float | None:
+    """When the last mine pass finished (`miner.last-run`), or ``None``."""
+    iso = miner.last_run_iso()
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _day_target(now: float, days: int) -> float:
+    """The jittered mine target *days* calendar days from *now*'s date
+    (noon of that day picks the date, so a 23- or 25-hour day cannot pick
+    the wrong one). Pure, like :func:`_target_for`."""
+    local = time.localtime(now)
+    noon = time.mktime(
+        (local.tm_year, local.tm_mon, local.tm_mday + days, 12, 0, 0, 0, 0, -1)
+    )
+    return _target_for(noon)
+
+
+def _mine_target_today(cache_dir: Path, now: float) -> float:
+    """Today's mine target as the mine itself reads it (the schedule state),
+    or computed when the cache cannot be written: the steward's due check
+    must not fail on a cache the mine's own check would have created."""
+    try:
+        return _today_mine_target(cache_dir, now)
+    except OSError:
+        return _target_for(now)
+
+
+def _steward_slot(cache_dir: Path, now: float) -> float:
+    """S-NEXT-cadence: the START of the newest nightly steward slot that is
+    open at *now* -- the mine target that begins it. Today's slot opens
+    once today's mine pass has finished after its target (`miner.last-run`
+    newer than the target), or at the target plus
+    :data:`STEWARD_MINE_GRACE_SECS` whatever the mine did; until then the
+    newest open slot is yesterday's (always open by now). A run that started
+    at or after the returned instant has taken that slot."""
+    today = _mine_target_today(cache_dir, now)
+    if now >= today:
+        finished = _mine_finished_epoch()
+        if (finished is not None and finished >= today) or now >= today + STEWARD_MINE_GRACE_SECS:
+            return today
+    return _day_target(now, -1)
+
+
+def _next_slot_open(cache_dir: Path, now: float, taken_from: float | None) -> float:
+    """The preview's half of :func:`_steward_slot`: the earliest instant at
+    or after *now* at which a slot not yet taken by a start at
+    *taken_from* is open. Today's slot, before the mine has finished, is
+    shown at the mine target: the slot opens between it and the grace."""
+    today = _mine_target_today(cache_dir, now)
+    if taken_from is None or taken_from < _steward_slot(cache_dir, now):
+        return now
+    if taken_from >= today:
+        return _day_target(now, 1)
+    return max(now, today)
+
+
+def _journal_run_start_epoch(path: Path, now: float) -> float | None:
+    """The first `attempt-start` of the newest run in the steward's cache
+    journal -- the cache's view of when the last run selected its inputs --
+    or ``None``. Dry-run rows are never attempts."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    newest: str | None = None
+    first: float | None = None
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("status") != "attempt-start":
+            continue
+        if row.get("dry_run") is True:
+            continue
+        run_id = row.get("run_id")
+        stamp = row.get("at") or row.get("ts")
+        if not isinstance(stamp, str):
+            continue
+        if newest is None:
+            newest = run_id if isinstance(run_id, str) else ""
+        elif run_id != newest:
+            break
+        first = _attempt_epoch(stamp, now)
+    return first
+
+
+def _steward_next(home: Path, cache_dir: Path, now: float) -> tuple[float, str]:
+    """When the steward is next due, from the cache alone (the heartbeat
+    preview, S-NEXT-cadence), and why. When the newest attempt in the
+    attempt journal is newer than the last COMPLETED run (`steward.last-run`),
+    a run is unfinished: it retries :data:`steward.RETRY_SECS` after that
+    attempt, exactly where `_steward_recently_attempted` stops holding it.
+    Otherwise the next run is the next nightly slot not yet taken, no sooner
+    than `steward.cooldown_secs` after the last run's start, and only if there
+    is work then."""
+    journal = _steward_journal(cache_dir)
+    attempt = _journal_attempt_epoch(journal, now)
+    last_iso = steward.last_run_iso(home)
+    last = _attempt_epoch(last_iso, now) if last_iso is not None else None
+    if attempt is not None and (last is None or last < attempt):
+        return max(now, attempt + steward.RETRY_SECS), "to retry its unfinished run"
+    start = _journal_run_start_epoch(journal, now)
+    if start is None:
+        start = last
+    when = _next_slot_open(cache_dir, now, start)
+    if start is not None:
+        cooldown_value, _source = settings.resolve_setting(
+            home, settings.by_name("steward.cooldown_secs")
+        )
+        when = max(when, start + float(cast(int | float | str, cooldown_value)))
+    return when, "after the night's mine, when there is work"
+
+
+def _deferral_due_epochs(paths: list[Path], now: float) -> dict[str, float]:
+    """S-NEXT-cadence: lesson id -> when its deferral came due, for each
+    eligible lesson whose `deferred_until` has passed. A record that cannot
+    be read is left out (it is then no newer than before)."""
+    from .records import Record  # late: a record parse is only needed here
+
+    due: dict[str, float] = {}
+    for path in paths:
+        try:
+            until = chrono.to_dt(getattr(Record.from_path(path), "deferred_until", None))
+        except Exception:  # noqa: BLE001 -- a hint for the due check, never a raise
+            continue
+        if until is None:
+            continue
+        epoch = until.timestamp()
+        if epoch <= now:
+            due[path.stem] = epoch
+    return due
 
 
 def _eligible_input_paths(home: Path) -> list[Path]:
@@ -807,6 +957,24 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
         return False
     manifests = steward.committed_manifests(home)
     unfinished = [row for row in manifests if row.get("status") != "complete"]
+    if unfinished:
+        # S-NEXT-cadence: committed unfinished work -- a failed attempt, an
+        # environment hold, a partial run -- is retried `steward.RETRY_SECS`
+        # (2 h) after its last attempt, the overseer's rule (13 §5), never
+        # after the 20 hours a new run waited: a login the user restored
+        # cost them a day. The cache attempt journal, tested above, is the
+        # clock when it holds an attempt; the committed `last_attempt_at`
+        # stands in when the cache was lost. The attempt cap still bounds a
+        # run that keeps failing on its content; a hold counts nothing and
+        # makes one fast failing call per 2 h.
+        if _journal_attempt_epoch(_steward_journal(cache_dir), now) is not None:
+            return True
+        attempts = [
+            str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")
+        ]
+        if not attempts:
+            return True
+        return now - _attempt_epoch(max(attempts), now) >= steward.RETRY_SECS
     reconsider, _predecessors = steward._reconsider_proposals(home)
     input_paths = _eligible_input_paths(home)
     # U3a: an unhandled suspected rule violation is an input too; like a
@@ -821,25 +989,31 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     # passed. Asked only when it can change the answer, and unordered (the
     # ordering reads case files; this runs on every tick).
     premise_extract: bool | None = None
-    if (
-        not unfinished and not reconsider and not input_paths
-        and not violations and not premise_moved
-    ):
+    if not reconsider and not input_paths and not violations and not premise_moved:
         premise_extract = _premise_extract_waiting(home)
         if not premise_extract:
             return False
-    attempts = [str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")]
-    last_iso = max(attempts) if attempts else steward.last_run_iso(home)
-    if last_iso is None:
-        return True
-    last_epoch = _attempt_epoch(last_iso, now)
+    # S-NEXT-cadence: new work. The steward runs once a night, after the
+    # mine (`_steward_slot`), and never twice within `steward.cooldown_secs`
+    # of a start. Before, the 20-hour cooldown rolled from the last run, so
+    # the run drifted about 4 hours earlier every day.
+    starts = [str(row.get("started_at")) for row in manifests if row.get("started_at")]
+    if starts:
+        selected_epoch = _attempt_epoch(max(starts), now)
+    else:
+        last_iso = steward.last_run_iso(home)
+        if last_iso is None:
+            return True  # never run: the first run takes the queue now
+        selected_epoch = _attempt_epoch(last_iso, now)
     cooldown_value, _source = settings.resolve_setting(
         home, settings.by_name("steward.cooldown_secs")
     )
     cooldown = cast(int | float | str, cooldown_value)
-    if now - last_epoch < float(cooldown):
-        return False
-    if unfinished or reconsider or violations or premise_moved:
+    if now - selected_epoch < float(cooldown):
+        return False  # the minimum gap between two starts
+    if selected_epoch >= _steward_slot(cache_dir, now):
+        return False  # tonight's run has already selected
+    if reconsider or violations or premise_moved:
         return True
     if premise_extract is None:
         premise_extract = _premise_extract_waiting(home)
@@ -851,15 +1025,18 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     # run resumed later selects none, so measuring from the last run's END
     # left a lesson committed or released while an earlier run was
     # unfinished behind that end, waiting for an unrelated input.
-    starts = [str(row.get("started_at")) for row in manifests if row.get("started_at")]
-    selected_epoch = _attempt_epoch(max(starts), now) if starts else last_epoch
+    # S-NEXT-cadence: and a lesson whose deferral came due since then is new
+    # work too -- its record is older than that selection, so before, a due
+    # deferral waited for an unrelated input to make the steward due.
     released = _release_epochs(home, {path.stem for path in input_paths})
+    came_due = _deferral_due_epochs(input_paths, now)
     return any(
         _input_commit_epoch(home, path) > selected_epoch
         # Not before the last selection: both clocks count whole seconds,
         # and an eligible lesson the overseer let go no earlier than that
         # selection is one no run has had the chance to select.
         or released.get(path.stem, -1.0) >= selected_epoch
+        or came_due.get(path.stem, -1.0) >= selected_epoch
         for path in input_paths
     )
 
@@ -1142,6 +1319,118 @@ def _run_overseer_job(home: Path) -> "overseer_run.RunResult":
     return overseer_run.run(home)
 
 
+# ------------------------------------------- the stranded-lesson census
+
+#: S-NEXT-cadence: where the last census of stranded queued lessons is kept,
+#: under ``<cache>/steward/`` (`NOT_REPO_TRUTH`): the session-start status
+#: reads its count without walking the ledger.
+STRANDED_FILENAME = "stranded.json"
+#: The key of the census's `health` notice (one per checkout).
+STRANDED_NOTICE_KEY = "steward-stranded-lessons"
+
+
+def stranded_path(cache_dir: Path) -> Path:
+    return cache_dir / "steward" / STRANDED_FILENAME
+
+
+def read_stranded(cache_dir: Path) -> dict[str, Any] | None:
+    """The last census as written (``{"at", "count", "lessons"}``), or
+    ``None`` when there is none or it cannot be read. Never raises."""
+    try:
+        data = json.loads(stranded_path(cache_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("count"), int) else None
+
+
+def _write_stranded(cache_dir: Path, rows: list["steward.Stranded"], at: str) -> None:
+    """THE census writer (`NOT_REPO_TRUTH`: one cache file, atomic)."""
+    path = stranded_path(cache_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fsops.atomic_write(
+        path,
+        json.dumps(
+            {"at": at, "count": len(rows), "lessons": [row.as_dict() for row in rows]},
+            sort_keys=True,
+        ) + "\n",
+        fsync=False,
+        preserve_mode=False,
+    )
+
+
+def _installed_checkout(home: Path) -> Path | None:
+    """The self-learn checkout this process runs -- the git work tree of
+    the real path of this module -- when it is a registered project host,
+    else ``None``: a health notice is shown in sessions inside it, where the
+    people who can change self-learn's code work."""
+    root = gitops.work_tree_of(Path(__file__))
+    if root is None:
+        return None
+    from .hosts import load_hosts  # late: hosts is only needed here
+
+    registered = {os.path.realpath(path) for path in load_hosts(home).projects}
+    return root if os.path.realpath(root) in registered else None
+
+
+def stranded_notice_text(rows: list["steward.Stranded"]) -> str:
+    """The `health` notice's words: the count, the oldest lesson and what
+    makes it terminal, and where the full list is."""
+    oldest = rows[0]
+    if oldest.run:
+        why = f"terminal by {oldest.run}"
+    elif oldest.reason.startswith("identity unreadable"):
+        why = "identity unreadable"
+    else:
+        why = "no deciding run found"
+    text = (
+        f"{len(rows)} queued lesson(s) the steward never selects (oldest {oldest.record}, "
+        f"{why}); see `self-learn --selftest`"
+    )
+    return text if len(text) <= notices.MAX_TEXT else text[: notices.MAX_TEXT - 3] + "..."
+
+
+def census_stranded(
+    home: Path, cache_dir: Path, *, now: float | None = None
+) -> list["steward.Stranded"] | None:
+    """S-NEXT-cadence: take the stranded-lesson census
+    (`steward.stranded_lessons`), keep it in the cache, and keep the
+    `health` notice for the installed self-learn checkout in step with it:
+    written (or its words updated) while the census finds a lesson, removed
+    when it finds none. Run after every steward job and once a day after the
+    premises job. Answers the rows, or ``None`` when the census could not be
+    taken -- then the cache file and the notice are left as they were (an
+    unreadable ledger is not a clean census). Never raises."""
+    moment = time.time() if now is None else now
+    try:
+        rows = steward.stranded_lessons(home)
+    except Exception as exc:  # noqa: BLE001 -- a census must never end a tick
+        print(f"serve: the stranded-lesson census failed — {_short_cause(exc)}", file=sys.stderr)
+        return None
+    at = datetime.fromtimestamp(moment).astimezone().isoformat(timespec="seconds")
+    try:
+        _write_stranded(cache_dir, rows, at)
+    except OSError as exc:
+        print(f"serve: the stranded-lesson census was not kept — {_short_cause(exc)}", file=sys.stderr)
+    try:
+        checkout = _installed_checkout(home)
+    except Exception:  # noqa: BLE001 -- the notice is a hint
+        checkout = None
+    if checkout is not None:
+        if rows:
+            notices.set_health(
+                home, project=checkout, key=STRANDED_NOTICE_KEY, text=stranded_notice_text(rows)
+            )
+        else:
+            notices.clear_health(home, project=checkout, key=STRANDED_NOTICE_KEY)
+    if rows:
+        print(
+            f"serve: {len(rows)} queued lesson(s) the steward never selects: "
+            + ", ".join(f"{row.record} ({row.reason})" for row in rows[:5]),
+            file=sys.stderr,
+        )
+    return rows
+
+
 def _log_stopped_refusal(job_name: str, stopped: list[str]) -> None:
     """§7.2a.7 (REQUIRED): "a job refused by the guard logs the refusal
     on its own line naming the intent id ... a refusal that reaches
@@ -1224,6 +1513,10 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             _log_stopped_refusal(
                 "premises", getattr(premises_record.result, "stopped", None) or []
             )
+            # S-NEXT-cadence: the daily census, whether or not a steward
+            # job follows (with the steward off, or nothing due, this is
+            # the only one that day).
+            census_stranded(home, cache_dir, now=now)
         if _due_or_hold(
             "steward", home, cache_dir, now, lambda: _steward_is_due(home, cache_dir, now)
         ):
@@ -1238,6 +1531,9 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             _log_stopped_refusal(
                 "steward", getattr(steward_record.result, "stopped", None) or []
             )
+            # S-NEXT-cadence: and after every steward job, which is when
+            # the selection changes.
+            census_stranded(home, cache_dir, now=now)
         if _due_or_hold(
             "overseer", home, cache_dir, now, lambda: _overseer_is_due(home, cache_dir, now)
         ):
