@@ -1212,6 +1212,82 @@ def _reconsider_case_for(
     return case
 
 
+def _resolution_reroute_for(
+    home: Path,
+    record_id: str,
+    case: str | None,
+    verb: str,
+    actor: str,
+    rerouted: frozenset[str] = frozenset(),
+) -> bool:
+    """S-NEXT-u4-steward (02 §3a.10.7, "`route`: the lesson moves (`batch`
+    applies it as `reroute`)"): a steward's `route` line on a ROUTED lesson
+    under a `kind: resolution` case that names the lesson and supersedes
+    nothing is that lesson's move, applied as :func:`_dispatch_reroute`. It
+    is the case-less half of the `premise-moved` input: a placed lesson no
+    case covers has no case for a `kind: reconsider` to supersede, so its
+    decision is a resolution case (S-88's rule, extended), and without this
+    its `route` line reached `verbs.route`, which refuses a routed lesson.
+
+    Only the steward, only for a resolution case, and only while no OTHER
+    case covers the lesson (one a `kind: reconsider` could supersede,
+    :func:`_covered_by_another_case`): a covered placed lesson moves through
+    a reconsider case and nothing else, as U3b pinned
+    (`test_a_route_on_a_routed_lesson_without_a_reconsider_case_is_still_refused`).
+    The steward's stage check (`steward._steward_move_problem`) also refuses
+    such a line on every placed lesson but a `premise-moved` input no case
+    covers, before the case is recorded. A person's or the overseer's sheet
+    is unchanged (a person reroutes with `self-learn reroute`). *rerouted*
+    (:func:`dry_run` only, like ``reconsidered``): the record ids a staged
+    resolution case covers when it is not recorded yet; :func:`run` never
+    passes it and reads the recorded case instead."""
+    if verb != "route" or actor != "steward":
+        return False
+    if case is None and record_id not in rerouted:
+        return False
+    try:
+        record = Record.from_path(find_record_path(home, record_id))
+    except (LedgerOpsError, RecordError, OSError):
+        return False
+    if record.status != "routed":
+        return False
+    if case is not None:
+        try:
+            view = cases.show(home, case, evidence_only=True)
+        except (cases.CaseError, OSError, ValueError):
+            return False
+        front = view.frontmatter
+        if (
+            front.get("kind") != "resolution" or front.get("supersedes")
+            or record_id not in [str(rid) for rid in front.get("records") or []]
+        ):
+            return False
+    return not _covered_by_another_case(home, record_id, case)
+
+
+def _covered_by_another_case(home: Path, record_id: str, case: str | None) -> bool:
+    """Whether a case other than *case* covers *record_id* the way a `kind:
+    reconsider` case could supersede it: not superseded, passes its
+    freeze-hash check, names the lesson (`cases.require_reconsider_predecessor`,
+    the test `steward._covering_cases` uses). An unreadable case index errs
+    toward "covered", which keeps the reroute refused."""
+    try:
+        rows = cases.list_cases(home, record_id=record_id, only_ok=True)
+    except (cases.CaseError, OSError, ValueError):
+        return True
+    for row in rows:
+        other = row.get("case")
+        if not isinstance(other, str) or other == case or row.get("superseded_by"):
+            continue
+        try:
+            predecessor = cases.require_reconsider_predecessor(home, other, [record_id])
+        except (cases.CaseError, OSError):
+            continue
+        if not predecessor.get("superseded_by"):
+            return True
+    return False
+
+
 def _dispatch_hook_activation(
     home: Path,
     item: SheetItem,
@@ -1293,9 +1369,12 @@ def _dispatch_reroute(
     actor: str,
     hook_activation: bool,
     is_hook_dest: bool,
+    why: str = "reconsider",
 ) -> "ItemResult":
     """U3b (S-72, 2026-09-28): a `route` line under a valid `kind:
-    reconsider` case over a ROUTED lesson re-decides where it lives --
+    reconsider` case over a ROUTED lesson re-decides where it lives (*why*,
+    the receipt's word for it: S-NEXT-u4-steward's case-less
+    `premise-moved` move, :func:`_resolution_reroute_for`, says so) --
     `verbs.reroute`, which retires the old placement and writes the new
     one in one motion. Factored out of :func:`_dispatch` for the same
     complexity reason as its siblings. A reroute INTO a hook needs the
@@ -1318,7 +1397,7 @@ def _dispatch_reroute(
         )
     return ItemResult(
         n=item.n, id=item.id, verb=item.verb, rc=0, sha=result.commit_sha,
-        state="applied", detail=f"rerouted (reconsider): {result.commit_message}",
+        state="applied", detail=f"rerouted ({why}): {result.commit_message}",
         warnings=list(result.warnings),
     )
 
@@ -1557,6 +1636,11 @@ def _dispatch(
                 return _dispatch_reroute(
                     home, item, actor=actor, hook_activation=hook_activation,
                     is_hook_dest=is_hook_dest,
+                )
+            if _resolution_reroute_for(home, item.id, case, verb, actor):
+                return _dispatch_reroute(
+                    home, item, actor=actor, hook_activation=hook_activation,
+                    is_hook_dest=is_hook_dest, why="premise moved",
                 )
             follow_up = _sheet_follow_up(f)
             result = verbs.route(
@@ -2242,6 +2326,7 @@ def dry_run(
     actor: str = "human",
     hook_activation: bool = False,
     reconsidered: frozenset[str] | set[str] = frozenset(),
+    rerouted: frozenset[str] | set[str] = frozenset(),
 ) -> DryRunResult:
     """:func:`_dry_run_items` under an actor scope for *actor*
     (:func:`ledger_ops.acting_as`, S-81): the preview runs the verbs' own
@@ -2250,7 +2335,7 @@ def dry_run(
     with acting_as(actor, home):
         return _dry_run_items(
             home, items, actor=actor, hook_activation=hook_activation,
-            reconsidered=reconsidered,
+            reconsidered=reconsidered, rerouted=rerouted,
         )
 
 
@@ -2261,6 +2346,7 @@ def _dry_run_items(
     actor: str = "human",
     hook_activation: bool = False,
     reconsidered: frozenset[str] | set[str] = frozenset(),
+    rerouted: frozenset[str] | set[str] = frozenset(),
 ) -> DryRunResult:
     """BAT9: writes nothing at all — ledger AND hosts (O-2b: this
     includes the runtime directory — a hook item's preview below never
@@ -2291,6 +2377,11 @@ def _dry_run_items(
     will be -- hook shape, replay, destination -- rather than stopping at
     the routed-status refusal. Nothing is written.
 
+    ``rerouted`` (S-NEXT-u4-steward): the same for a staged ``kind:
+    resolution`` case on a ``premise-moved`` input no case covers -- its
+    ``route`` line on a routed lesson previews as the reroute
+    :func:`_resolution_reroute_for` will make of it at apply time.
+
     E0b (S-79 as amended): each line is previewed against its lesson as
     the EARLIER lines of the same sheet would leave it, when those lines
     would apply. A ``revise`` that previews ``would-apply`` puts the
@@ -2310,6 +2401,7 @@ def _dry_run_items(
     home = Path(home)
     sheet_case = getattr(items, "case", None)
     reconsidered = frozenset(reconsidered)
+    rerouted = frozenset(rerouted)
     result = DryRunResult(
         case=sheet_case,
         sheet_sha=getattr(items, "sheet_sha", None),
@@ -2360,7 +2452,9 @@ def _dry_run_items(
             is_hook_dest = resolved is not None and resolved[0] == REFUSED_HOOK_DESTINATION
             if _reconsider_case_for(
                 home, item.id, sheet_case, item.verb, reconsidered
-            ) is not None:
+            ) is not None or _resolution_reroute_for(
+                home, item.id, sheet_case, item.verb, actor, rerouted
+            ):
                 # E0b: no overlay can reach a reroute. This branch needs the
                 # lesson ROUTED on disk, and a revise previews would-apply
                 # only for a pending or deferred one (DRAFT_STATUSES).
