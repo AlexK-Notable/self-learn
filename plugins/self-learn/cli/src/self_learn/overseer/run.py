@@ -32,7 +32,7 @@ from typing import Any, cast
 from ruamel.yaml import YAML, YAMLError
 
 from .. import always_loaded, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, statements, user_model, verbs, worker
-from ..ledger import resolve_home
+from ..ledger import discover_buckets, resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
 from ..records import Record, build_covered_by
@@ -710,6 +710,10 @@ You may now read the steward rationale and full decided account in full/*.md.
 This folder, {stage}, is your workspace: you can read and write only inside it.
 {_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
 answers.yaml (the user's answers to earlier overseer questions, newest first; it may be empty).
+{LESSONS_DIR}/lrn-<id>.md is the current record of every lesson in the ledger: its status, routing,
+history, and loaded text (## Trigger and ## Instruction). Read the record of any lesson you name or
+compare, such as both members of a near-duplicate pair in health.yaml, before you decide on it; a
+record the secret scan matched holds only a stub saying so.
 Selected cases: {', '.join(selected) if selected else 'none'}.
 Parked cases (the entire queue, never truncated): {', '.join(parked) if parked else 'none'}.
 A parked case whose parked_reason is attempts-exhausted means the steward's machinery failed three
@@ -740,6 +744,9 @@ a trace) and the case records with its remaining evidence; a hit in any other fi
 case. Quote the part of a line that proves the point and leave out long tokens, hashes or ids
 that are not the point (a folder path is fine).
 findings.yaml is {{findings: [{{case, kind: examined|dependency-moved, text, ref?}}]}}.
+A finding's case must be one of the selected cases; the runner drops a finding that names any
+other case, a parked case included (what you found about a parked case goes in its successor
+case and the report).
 questions.yaml is where you ask the user what only the user can settle. There is no limit on
 how many you ask: ask every question that clears this bar and none that does not.
 A question clears the bar only when all three hold: (1) it turns on the user's own preference,
@@ -1001,6 +1008,53 @@ def _question_answers(home: Path) -> list[dict[str, Any]]:
     ]
 
 
+#: S-NEXT-overseer-run: the folder phase B finds every lesson record in.
+LESSONS_DIR = "lessons"
+
+
+def _stage_lessons(home: Path, stage: Path) -> int:
+    """Write every lesson record of the ledger, as it is now, to
+    ``lessons/<id>.md`` in the phase B stage; answer how many.
+
+    The session is confined to its stage (Read, Grep and Glob inside it), and
+    before this the stage held only cases and `health.yaml`'s ids and scores,
+    so a lesson the overseer named -- both members of a near-duplicate pair, a
+    record a parked case points at -- could not be read: the 2026-10-18 and
+    2026-10-25 reports say "the full loaded text ... was not in the evidence"
+    and "I could not read the ledger state of lrn-c583160e". A record file is
+    the lesson's status, routing, history and loaded text (`## Trigger`,
+    `## Instruction`). Phase B only: phase A is blind to what became of a
+    lesson (a record carries its routing and its cases).
+
+    A record is copied byte for byte unless the secret scan matches it; the
+    whole stage is scanned after phase B and a hit in an input file would
+    refuse the run, so such a record is replaced by a stub naming the rule."""
+    lessons = stage / LESSONS_DIR
+    lessons.mkdir(parents=True, exist_ok=True)
+    staged: set[str] = set()
+    for sub in ("pending", "resolved"):  # pending first, as `find_record_path`
+        for bucket in discover_buckets(home):
+            folder = bucket.path / sub
+            if not folder.is_dir():
+                continue
+            for path in sorted(folder.glob("lrn-*.md")):
+                if path.stem in staged:
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    text = f"---\nid: {path.stem}\n---\nunreadable: this record could not be read\n"
+                hits = scan.scan(text)
+                if hits:
+                    text = (
+                        f"---\nid: {path.stem}\n---\nwithheld: the secret scan "
+                        f"matched {hits[0].rule}; the record is in the ledger\n"
+                    )
+                _write_stage(stage, lessons / f"{path.stem}.md", text)
+                staged.add(path.stem)
+    return len(staged)
+
+
 def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Write phase B's inputs; answer the user-model document it was given,
     which is what a `kind: reading` question is validated against."""
@@ -1013,6 +1067,7 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
     for row in parked_rows:
         case_id = row["case"]
         _write_stage(stage, parked_dir / f"{case_id}.md", cases.show(home, case_id, evidence_only=False).to_text() + "\n")
+    _stage_lessons(home, stage)
     model_doc = user_model.show(home)
     _write_stage(stage, stage / "user-model.yaml", _yaml_text(model_doc))
     _write_stage(stage, stage / "answers.yaml", _yaml_text({"answers": _question_answers(home)}))
@@ -1560,6 +1615,91 @@ def _refuse_doomed_reconsider(
         f"so {predecessor} is not superseded by a decision that would change nothing "
         f"— {lines}"
     )
+
+
+def _preview_refusals(preview: batch.DryRunResult) -> list[batch.DryRunItem]:
+    """The preview items that say ``would-refuse`` and that nothing will
+    retry: a refusal of a retried kind (`batch.RETRIED_REFUSAL_KINDS`) is git
+    or lock trouble that often clears, so it is left to the S-68 retry path
+    exactly as `_refuse_doomed_reconsider` leaves it."""
+    return [
+        item for item in preview.items
+        if item.state == "would-refuse" and item.kind not in batch.RETRIED_REFUSAL_KINDS
+    ]
+
+
+def _preview_refusal_line(sheet_name: str, item: batch.DryRunItem) -> str:
+    """One "Refused / could not do" line for an item whose preview said it
+    would be refused: which item it is and the preview's own reason, bounded
+    and secret-scanned like a failure note's detail."""
+    text = f"{sheet_name} item {item.n} ({item.verb} {item.id}): not applied — its preview said it would be refused"
+    if item.kind:
+        text += f" [{item.kind}]"
+    detail = _failure_detail(item.detail)
+    if detail:
+        text += f": {detail}"
+    return text
+
+
+def _refuse_doomed_maintenance(
+    case_file: Path, sheet_name: str, preview: batch.DryRunResult
+) -> None:
+    """S-NEXT-overseer-run: a ``kind: maintenance`` pair whose preview
+    refuses one of its lines is not recorded (a maintenance case describes a
+    catalogue change; recorded, it would claim a change its sheet cannot make).
+    The raise names every refused line; the pair loop puts it in "Refused /
+    could not do" and the run journal, so a drop is never silent."""
+    refused = _preview_refusals(preview)
+    if not refused:
+        return
+    lines = "; ".join(_preview_refusal_line(sheet_name, item) for item in refused)
+    raise OverseerError(
+        f"{case_file.name}: a catalogue change whose preview refuses a line is "
+        f"not recorded — {lines}"
+    )
+
+
+def _drop_preview_refused(
+    sheet_file: Path,
+    sheet: batch.Sheet,
+    preview: batch.DryRunResult,
+    home: Path,
+    stage: Path,
+) -> tuple[batch.Sheet, list[str]]:
+    """S-NEXT-overseer-run: an item whose preview says ``would-refuse`` is
+    NOT applied. It is taken out of the staged sheet before the sheet's
+    identity is frozen into the run record, and answered with one "Refused /
+    could not do" line carrying the preview's reason. The sheet's other
+    items go ahead.
+
+    A sheet whose every item is refused is left whole and says nothing here:
+    a successor case is the decision itself ("refused lines and all", as
+    `_refuse_doomed_reconsider` says), a sheet cannot be empty, and the
+    apply-time refusal of each line is reported with its own reason, as it
+    was before. Returns the sheet to record and the lines to report; a
+    sheet with no refused item comes back unchanged."""
+    refused = _preview_refusals(preview)
+    if not refused:
+        return sheet, []
+    lines = [_preview_refusal_line(sheet_file.name, item) for item in refused]
+    refused_ns = {item.n for item in refused}
+    data = _yaml_mapping(sheet_file)
+    kept_indexes = [
+        index for index, _row in enumerate(data.get("items") or [], start=1)
+        if index not in refused_ns
+    ]
+    if not kept_indexes:
+        return sheet, []
+    rows = data.get("items") or []
+    data["items"] = [rows[index - 1] for index in kept_indexes]
+    _write_stage(stage, sheet_file, _yaml_text(data))
+    kept = batch.load_sheet(sheet_file, home=home)
+    old_close_calls = getattr(sheet, "close_calls", {})
+    cast(Any, kept).close_calls = {
+        new: bool(old_close_calls.get(old, False))
+        for new, old in enumerate(kept_indexes, start=1)
+    }
+    return kept, lines
 
 
 def _is_maintenance_pair(case_file: Path) -> bool:
@@ -4932,6 +5072,16 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         reconsidered=_reconsidered_by(_yaml_mapping(case_file)),
                     )
                     _refuse_doomed_reconsider(case_file, predecessor, preview)
+                    # S-NEXT-overseer-run: a preview that says would-refuse is
+                    # believed. A maintenance pair with such a line is not
+                    # recorded; a decision's refused lines are not applied.
+                    refused_lines: list[str] = []
+                    if _is_maintenance_pair(case_file):
+                        _refuse_doomed_maintenance(case_file, sheet_file.name, preview)
+                    else:
+                        sheet, refused_lines = _drop_preview_refused(
+                            sheet_file, sheet, preview, home, stage,
+                        )
                 except (OverseerError, batch.BatchError) as exc:
                     reason = _pair_problem_text(exc, stage)
                     case_drops.append(
@@ -4945,6 +5095,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     continue
                 if predecessor is not None:
                     seen_predecessors.add(predecessor)
+                case_drops.extend(refused_lines)
                 preview_apply += sum(item.state == "would-apply" for item in preview.items)
                 preview_refused += sum(item.state == "would-refuse" for item in preview.items)
                 prepared.append((case_file, sheet_file, sheet))

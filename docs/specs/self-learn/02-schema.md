@@ -755,6 +755,17 @@ reply to an ask is a statement with `answers.kind: question` and `answers.ref`
 the ask's id; phase B receives every such answer, newest first, as the staged
 `answers.yaml`.
 
+*(Added 2026-10-30, S-NEXT-overseer-run.)* **Lesson records and the preview.**
+Phase B's stage also holds `lessons/<id>.md`, every lesson record in the ledger
+as it stands (status, routing, history, `## Trigger`, `## Instruction`), so a
+lesson the overseer names can be read; a record the secret scan matches is a stub
+naming the rule. Phase A's stage has none. A sheet item of a resolution pair whose
+preview says `would-refuse` (a retried kind, `git` or `target-busy`, excepted) is
+not applied: the runner takes it off the staged sheet and names it, with the
+preview's reason, in "Refused / could not do"; a sheet whose every item is refused
+is left whole and refused at apply. A `kind: maintenance` pair with such a line is
+not recorded.
+
 *(Added 2026-09-27.)* **Findings.** Phase B's staged `findings.yaml` is
 `{findings: [{case, kind: examined|dependency-moved, text, ref?}]}`. The runner
 validates each finding on its own and DROPS one that fails (unknown keys, a case
