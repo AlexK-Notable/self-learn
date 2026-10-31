@@ -285,6 +285,50 @@ def test_the_steward_parks_a_skill_proposal_for_the_overseer_and_applies_nothing
     assert _packet(home)["dispositions"][ids[1]]["state"] == "parked"
 
 
+@pytest.mark.parametrize("reason, recorded", [
+    (REASON, REASON),
+    # control: the same park by the model under another reason loses it to the
+    # runner's own check, so the stub below is live (the override is not a no-op)
+    ("authority-unclear", "plain-host-committed-file"),
+])
+def test_a_skill_proposal_keeps_its_reason_when_the_runners_own_check_fires(
+    tmp_path, monkeypatch, reason, recorded
+):
+    """Gate M3 (d44ae76): the runner's own check (the tentative sheet routes
+    into a plain host's committed file, `_forced_parking_reason`) must not
+    re-label a skill proposal: phase B sees a proposal only by its reason.
+    The check itself is stubbed to fire for the proposed lesson's sheet; its
+    real rule is pinned in test_steward.py
+    (`test_plain_host_route_to_a_committed_file_is_parked`)."""
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 2)
+    _enable_steward(home)
+    real = steward._forced_parking_reason
+
+    def fires_for_the_proposal(home_, sheet_path, *args, **kwargs):
+        if sheet_path.stem == ids[1]:
+            return "plain-host-committed-file"
+        return real(home_, sheet_path, *args, **kwargs)
+
+    monkeypatch.setattr(steward, "_forced_parking_reason", fires_for_the_proposal)
+
+    def rewrite(stage):
+        _propose(stage, ids[1], _skill([ids[1], "lrn-0000c0de"]))
+        if reason != REASON:
+            path = stage / "cases" / f"{ids[1]}.yaml"
+            data = _load(path)
+            data["parked_reason"] = reason
+            data["decision"].pop("skill", None)
+            _dump_yaml(path, data)
+
+    _run_with(home, monkeypatch, rewrite)
+
+    assert _status(home, ids[0]) == "rejected"  # the run did real work
+    (parked,) = cases.list_cases(home, parked_for="overseer")
+    assert parked["records"] == [ids[1]]
+    assert parked["parked_reason"] == recorded
+
+
 def test_a_staged_skill_proposal_without_its_skill_gets_the_repair_turn(tmp_path, monkeypatch):
     """Master: the reason itself is refused; here the reason is accepted
     and the missing `decision.skill` is what the repair turn names."""
