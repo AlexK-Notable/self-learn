@@ -472,6 +472,13 @@ def _reach_fact(verdict: reachability.Verdict, hook_gate: bool) -> _Fact:
     return _Fact(rid, REACH, "unavailable", detail=f"unmeasurable: {verdict.reason}")
 
 
+#: Destinations whose write goes through the skills-root registration whatever
+#: the lesson's scope (``verbs._resolve_target_unguarded`` computes a
+#: ``new-skill`` target's mode with ``registration="skills-root"``; hooks live
+#: in the skills root too).
+_SKILLS_ROOT_DESTINATIONS = ("hook", "new-skill")
+
+
 def _host_for(
     home: Path, bucket: Bucket, record: Record, verdict: reachability.Verdict, claude_dir: Path
 ):
@@ -483,10 +490,10 @@ def _host_for(
     from .selfcheck import _managed_host_for
 
     user_md = claude_dir / "CLAUDE.md"  # the sandbox's, never the operator's (N-8)
-    if record.scope == "user" and verdict.destination != "hook":
+    if record.scope == "user" and verdict.destination not in _SKILLS_ROOT_DESTINATIONS:
         host = _managed_host_for(home, bucket, record, user_claude_md=user_md)
         return (host, "plain") if host is not None else None
-    if verdict.destination == "hook" or bucket.scope == "skill":
+    if verdict.destination in _SKILLS_ROOT_DESTINATIONS or bucket.scope == "skill":
         root = load_hosts(home).skills_root
         host = Path(root) if root is not None else None
         registration = "skills-root"
@@ -510,7 +517,20 @@ def _writable_fact(
         return _Fact(rid, WRITABLE, "unavailable", detail=f"hosts.yaml cannot be read ({type(exc).__name__})")
     if placed is None:
         return _Fact(rid, WRITABLE, "unavailable", detail="the lesson's host is not registered")
-    _host, mode = placed
+    host, mode = placed
+    if verdict.destination == "new-skill":
+        # Judged as the writer judges it (skill_writer: self-learn writes the
+        # skills it owns only into a git-mode skills root). In a plain root the
+        # route verb's G1 check would refuse the tracked SKILL.md too, so the
+        # answer is the same; the writer's own sentence is the clearer reason,
+        # so ``_plain_write_check`` is not asked here.
+        if mode == "git":
+            return _Fact(rid, WRITABLE, "holds", "git-host", "git-mode skills root")
+        reason = (
+            f"the skills root {host} is registered plain; self-learn writes the "
+            "skills it owns only into a git-mode skills root"
+        )
+        return _Fact(rid, WRITABLE, "failing", f"refused:{reason}", reason, reason)
     if mode != "plain":
         # S-80's refusal is a plain-host rule; a git host commits its writes.
         return _Fact(rid, WRITABLE, "holds", "git-host", "git-mode host")
