@@ -2900,7 +2900,7 @@ def _agent_attribution(args: argparse.Namespace, surface: str) -> tuple[str | No
     return None, EXIT_USAGE
 
 
-def _cmd_route_dry_run(home: Path, args: argparse.Namespace) -> int:
+def _route_verb_dry_run(home: Path, args: argparse.Namespace) -> int:
     """``route --dry-run``, the preview leg of :func:`_cmd_verb`. Factored
     out at the 2026-10-31 integration: with cures-a's agent-shell
     attribution in it, pyright found :func:`_cmd_verb` too complex to
@@ -2932,9 +2932,9 @@ def _cmd_route_dry_run(home: Path, args: argparse.Namespace) -> int:
     return EXIT_OK if dr.ok else 1
 
 
-def _cmd_route(home: Path, args: argparse.Namespace, runner: str | None) -> int:
+def _route_verb(home: Path, args: argparse.Namespace, runner: str | None) -> int:
     """``route``, the applying leg of :func:`_cmd_verb` (factored out with
-    :func:`_cmd_route_dry_run`, for the same reason). Its errors are
+    :func:`_route_verb_dry_run`, for the same reason). Its errors are
     :func:`_cmd_verb`'s, raised to it."""
     follow_up = None
     if args.follow_up is not None:
@@ -2982,12 +2982,12 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         return code
     try:
         if args.command == "route" and getattr(args, "dry_run", False):
-            return _cmd_route_dry_run(home, args)
+            return _route_verb_dry_run(home, args)
         runner, refusal = _agent_attribution(args, args.command)
         if refusal is not None:
             return refusal
         if args.command == "route":
-            return _cmd_route(home, args, runner)
+            return _route_verb(home, args, runner)
         if args.command == "reject":
             result = verbs.reject(
                 home, args.id, note=args.note, by=runner, no_push=args.no_push
