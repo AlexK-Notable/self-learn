@@ -49,6 +49,7 @@ __all__ = [
     "MaintenanceResult",
     "is_due",
     "job_on",
+    "last_failure",
     "last_refusals",
     "read_state",
     "run",
@@ -59,6 +60,10 @@ __all__ = [
 INTERVAL_SECS = 24 * 3600
 CACHE_SUBDIR = "maintenance"
 STATE_FILENAME = "recompile.json"
+#: The trailer this job's recompile commit carries, so the overseer's
+#: hand-step census (`report.hand_steps`, S-105) reads it as a job's act,
+#: not a shell's (`report._JOB_ACTORS` names `maintenance`).
+COMMIT_NOTE = "By: maintenance"
 #: A refusal's reason is cut to this many characters in the cache file and
 #: in the drift row.
 _REASON_LIMIT = 240
@@ -152,7 +157,9 @@ def run(home: Path | str, cache_dir: Path, *, now: float | None = None) -> Maint
     ids = list(dict.fromkeys(rid for rids in found.values() for rid in rids))
     head_before = verbs.ledger_head(home)
     try:
-        result = verbs.recompile(home, no_push=True, only_records=ids)
+        result = verbs.recompile(
+            home, no_push=True, only_records=ids, commit_note=COMMIT_NOTE
+        )
     except Exception as exc:  # noqa: BLE001 -- recorded; serve's crash row is for the unexpected
         error = _clip(f"{type(exc).__name__}: {exc}")
         _store_state(cache_dir, {
@@ -220,3 +227,18 @@ def last_refusals(home: Path | str) -> dict[str, str]:
     if not isinstance(refused, dict):
         return {}
     return {str(k): str(v) for k, v in refused.items()}
+
+
+def last_failure(home: Path | str) -> str | None:
+    """The error of the last maintenance recompile when it FAILED (the
+    recompile raised), else ``None`` (fix r1, gate NIT 5): the drift row
+    must not say the job records targets while its last run failed."""
+    from .serve import cache_dir_readonly  # late: serve imports this module
+
+    try:
+        state = read_state(cache_dir_readonly(Path(home)))
+    except Exception:  # noqa: BLE001
+        return None
+    if state.get("status") != "failed":
+        return None
+    return str(state.get("error") or "no error recorded")

@@ -283,7 +283,8 @@ revert). Doc 13 promotes that to the general rule:
    project lesson whose host is not registered and whose bucket's recorded path
    no longer exists; a `skill-md` lesson whose skill folder
    (`plugins/*/skills/<name>`) is gone from a registered skills root that is on
-   disk; a `new-skill` lesson whose `plugins/<name>` folder is gone. Such a
+   disk; a `new-skill` lesson whose `plugins/<name>` folder is gone (its target
+always resolves, so this one is checked after resolution). Such a
    lesson is skipped and counted once in the result (`gone`; the CLI prints
    one line, the post-run recompile's journal row carries the count). A
    retired lesson whose unregistered path still exists still warns (its file
@@ -590,7 +591,7 @@ count is above zero), it hashes again. A changed hash that reads the same on
 two consecutive checks, so a merge still writing files is not caught half-way,
 is first imported in a fresh interpreter (`python -P -c "import
 self_learn.cli, self_learn.serve"`); if that fails, `serve` stays on the code
-it runs and does not try that hash again (`reexec-refused`). Otherwise it
+it runs (`reexec-refused`). Otherwise it
 writes the heartbeat ("restarting on new code") and a `reexec` row in
 `serve.journal.jsonl`, and replaces itself with the same command line
 (`os.execve` of `sys.orig_argv`): same pid, so systemd sees no restart, and
@@ -600,10 +601,27 @@ never kill a running mine. `serve.restart_on_new_code` (tier A, default
 itself: when the host unit file changed after the process started (read only
 under systemd, `INVOCATION_ID` set, and only when the unit is linked), `serve`
 writes one project notice (§7.5, source `code`) for the checkout the unit file
-lives in, naming `systemctl --user daemon-reload && systemctl --user restart
-self-learn-host.service`, and marks it done once the service has been
-restarted onto that file. A dependency change in the venv still needs `uv
-sync`; the re-exec runs the interpreter directly, not `uv run`.
+lives in, naming `systemctl --user daemon-reload` and then a restart of
+`self-learn-host.service` while no job runs (the heartbeat file has no
+`running` key; a restart mid-job kills the job), and marks it done once the
+service has been restarted onto that file. `serve` itself never runs
+`systemctl` (the module's host-safety and portability rule, stated at
+`serve.unit_dir`).
+
+*Amended 2026-10-31 (S-NEXT-self-maint, gate r1):* the venv. The unit starts
+`serve` through the wrapper's `uv run`, which syncs the venv to the lock; a
+re-exec runs the interpreter directly and syncs nothing. So the hash also
+covers the uv project's `pyproject.toml` and `uv.lock`. When they changed,
+`serve` first runs `uv sync --project <cli> --inexact` (the `uv` in `UV`, which
+`uv run` sets, else the one on `PATH`; `--inexact` because `uv run` never
+removes packages either), then the import check, then the re-exec. When the
+import check fails with `ModuleNotFoundError` or `ImportError` and the venv
+was not synced yet, `serve` syncs it and checks again. A refusal (a failed
+sync, or code that still does not import) keeps the running code, is tried
+again when the code changes or after an hour (an environment fixed meanwhile
+is picked up), and writes one project notice for the checkout the code lives
+in (source `code`, renewed on a later refusal) saying the host process is held
+on its old code and why; the re-exec that finally goes ahead marks it done.
 
 **A daily maintenance recompile joins the tick** *(Added 2026-10-31,
 S-NEXT-self-maint)*. A `maintenance` job, due once a day (marker in
@@ -622,8 +640,11 @@ host policy or the steward's `@writable` input. While the host process runs
 (its heartbeat is fresh), `--selftest`'s drift row says the daily maintenance
 recompile records such targets instead of telling a person to run `self-learn
 recompile`, and names `recompile --adopt <target>` only for a target the last
-run could not record. The job never calls a model. Its two cache writes (the
-marker file and the re-exec rows) are `NOT_REPO_TRUTH`.
+run could not record, and says when its last run failed, with the error. The
+job's ledger commit carries `By: maintenance`, so the overseer's hand-step
+census (S-105) counts it as a job's act, not a shell's. The job never calls a
+model. Its two cache writes (the marker file and the re-exec rows) are
+`NOT_REPO_TRUTH`.
 
 **The overseer's catch-up rule and the same-week guard** *(Added 2026-09-19,
 `03-decisions.md` S-68)*. The weekly job is due on the first tick at or after

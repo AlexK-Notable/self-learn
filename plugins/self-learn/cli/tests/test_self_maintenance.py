@@ -32,6 +32,7 @@ from self_learn import (
     config,
     maintenance,
     notices,
+    report,
     selfcheck,
     serve,
     settings,
@@ -167,7 +168,7 @@ def test_a_running_job_holds_the_re_exec_until_it_ends(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_new_code_that_does_not_import_is_not_run_and_not_retried(tmp_path, monkeypatch):
+def test_new_code_that_does_not_import_is_not_run_and_not_retried_within_the_hour(tmp_path, monkeypatch):
     pkg = _code_tree(tmp_path)
     monkeypatch.setattr(serve, "_code_root", lambda: pkg)
     asked: list[int] = []
@@ -558,3 +559,336 @@ def test_the_registry_and_the_reader_agree(tmp_path, text, expected):
     assert config.hook_activation_enabled(home) is expected
     setting = settings.by_name("overseer.hook_activation")
     assert setting.tier == "C" and setting.env_var is None and setting.override_channel is False
+
+
+# ================================================================ fix round 1
+#
+# Gate r1 finding 1 (MAJOR): a landing that changes dependencies must not
+# leave `serve` on old code. The project files (`pyproject.toml`, `uv.lock`)
+# are in the fingerprint; a change to them syncs the venv before the import
+# check; an import that fails on a dependency syncs and checks again; and a
+# refused fingerprint is tried again after `REEXEC_RETRY_SECS`, with a
+# project notice while it is held.
+
+
+def _project_tree(tmp_path: Path) -> tuple[Path, Path]:
+    """A stand-in uv project in a git checkout: `cli/pyproject.toml`,
+    `cli/uv.lock` and `cli/src/self_learn/`, the shipped layout."""
+    checkout = tmp_path / "checkout"
+    init_repo(checkout)
+    project = checkout / "cli"
+    pkg = project / "src" / "self_learn"
+    pkg.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "serve.py").write_text("X = 1\n", encoding="utf-8")
+    git(checkout, "add", "-A")
+    git(checkout, "commit", "-q", "-m", "seed")
+    return project, pkg
+
+
+def _watch_now() -> "serve._CodeWatch":
+    env = serve.env_fingerprint()
+    return serve._CodeWatch(
+        running=serve._fingerprint(serve.code_fingerprint(), env),
+        started_at=time.time(), running_env=env,
+    )
+
+
+def test_a_changed_lock_file_syncs_the_venv_before_the_re_exec(tmp_path, monkeypatch):
+    project, pkg = _project_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    assert serve._project_root() == project  # control: the layout is found
+    order: list[str] = []
+    monkeypatch.setattr(serve, "_sync_venv", lambda p, timeout=600.0: (order.append(f"sync {p}"), (True, ""))[1])
+    monkeypatch.setattr(serve, "_new_code_imports", lambda timeout=120.0: (order.append("import"), (True, ""))[1])
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    home, cache = tmp_path / "home", tmp_path / "cache"
+    watch = _watch_now()
+    code_before = serve.code_fingerprint()
+    (project / "uv.lock").write_text("version = 1\n# a new dependency\n", encoding="utf-8")
+    assert serve.code_fingerprint() == code_before  # no Python file changed
+
+    serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+    with pytest.raises(_Execed):
+        serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+
+    assert order == [f"sync {project}", "import"]
+    assert len(calls) == 1
+
+
+def test_a_code_only_change_does_not_sync(tmp_path, monkeypatch):
+    """Control for the test above: same tree, a Python edit only."""
+    project, pkg = _project_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    synced: list[Path] = []
+    monkeypatch.setattr(serve, "_sync_venv", lambda p, timeout=600.0: (synced.append(p), (True, ""))[1])
+    monkeypatch.setattr(serve, "_new_code_imports", lambda timeout=120.0: (True, ""))
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    watch = _watch_now()
+    (pkg / "serve.py").write_text("X = 2\n", encoding="utf-8")
+    with pytest.raises(_Execed):
+        for _ in range(3):
+            serve._consider_reexec(tmp_path / "h", tmp_path / "c", watch, pid=os.getpid(), tick_secs=60.0)
+    assert synced == [] and len(calls) == 1
+
+
+def test_a_missing_dependency_syncs_the_venv_and_then_runs(tmp_path, monkeypatch):
+    """The venv is behind the lock with the lock unchanged (a sync skipped
+    since the last start): the import fails on the dependency, the venv is
+    synced, the check passes, the re-exec goes ahead."""
+    project, pkg = _project_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    state = {"synced": False}
+    order: list[str] = []
+
+    def sync(p, timeout=600.0):
+        order.append("sync")
+        state["synced"] = True
+        return True, ""
+
+    def imports(timeout=120.0):
+        order.append("import")
+        if state["synced"]:
+            return True, ""
+        return False, "ModuleNotFoundError: No module named 'newdep'"
+
+    monkeypatch.setattr(serve, "_sync_venv", sync)
+    monkeypatch.setattr(serve, "_new_code_imports", imports)
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    watch = _watch_now()
+    (pkg / "serve.py").write_text("import newdep\n", encoding="utf-8")
+    with pytest.raises(_Execed):
+        for _ in range(3):
+            serve._consider_reexec(tmp_path / "h", tmp_path / "c", watch, pid=os.getpid(), tick_secs=60.0)
+    assert order == ["import", "sync", "import"]
+    assert len(calls) == 1
+
+
+def test_a_syntax_error_is_not_synced_for(tmp_path, monkeypatch):
+    """Only a dependency failure is worth a sync: broken code is refused
+    as it is."""
+    project, pkg = _project_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    synced: list[Path] = []
+    monkeypatch.setattr(serve, "_sync_venv", lambda p, timeout=600.0: (synced.append(p), (True, ""))[1])
+    monkeypatch.setattr(serve, "_new_code_imports", lambda timeout=120.0: (False, "SyntaxError: x"))
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    watch = _watch_now()
+    (pkg / "serve.py").write_text("X = (\n", encoding="utf-8")
+    for _ in range(3):
+        serve._consider_reexec(tmp_path / "h", tmp_path / "c", watch, pid=os.getpid(), tick_secs=60.0)
+    assert synced == [] and calls == []
+    assert watch.refused is not None
+
+
+def test_a_refused_fingerprint_is_tried_again_after_the_retry_interval(tmp_path, monkeypatch):
+    """The environment is fixed while the code stays the same: the refused
+    code is tried again once `REEXEC_RETRY_SECS` have passed, not before.
+    While it is held, a project notice for the checkout says so; the
+    re-exec that finally goes ahead marks it done."""
+    pkg = _code_tree(tmp_path)
+    checkout = pkg.parent
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    result = {"ok": False}
+    asked: list[float] = []
+
+    def imports(timeout=120.0):
+        asked.append(1)
+        return (True, "") if result["ok"] else (False, "ImportError: cannot import name 'x'")
+
+    monkeypatch.setattr(serve, "_new_code_imports", imports)
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    home, cache = tmp_path / "home", tmp_path / "cache"
+    watch = _watch_now()
+    (pkg / "serve.py").write_text("from os import x\n", encoding="utf-8")
+    t0 = time.time()
+    for i in range(4):
+        serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0, now=t0 + i)
+    assert len(asked) == 1 and calls == []
+    (held,) = [n for n in notices.all_notices(home) if n.project == os.path.realpath(checkout)]
+    assert "held on its old code" in held.text and "ImportError" in held.text
+    assert notices.is_live(held, notices.datetime.now(notices.timezone.utc))
+
+    # still inside the interval: not asked again
+    serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0,
+                           now=t0 + serve.REEXEC_RETRY_SECS - 10)
+    assert len(asked) == 1
+
+    # the venv got fixed (nothing in the code changed); past the interval
+    result["ok"] = True
+    with pytest.raises(_Execed):
+        serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0,
+                               now=t0 + serve.REEXEC_RETRY_SECS + 5)
+    assert len(asked) == 2 and len(calls) == 1
+    (after,) = [n for n in notices.all_notices(home) if n.id == held.id]
+    assert after.done_at is not None
+    rows = [json.loads(line) for line in (cache / serve.SERVE_JOURNAL_FILENAME).read_text().splitlines()]
+    assert [r["status"] for r in rows] == ["reexec-refused", "reexec"]
+
+
+def test_the_sync_runs_the_uv_that_started_the_process(tmp_path, monkeypatch):
+    """`_sync_venv` against a stand-in `uv` named by `UV` (what `uv run`
+    sets): the exact command, and a failure's last line as the reason."""
+    log = tmp_path / "uv-argv.txt"
+    fake = tmp_path / "fake-uv"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$@\" > {log}\n"
+        "if [ -n \"$FAKE_UV_FAIL\" ]; then echo 'error: no network' >&2; exit 2; fi\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("UV", str(fake))
+    project = tmp_path / "proj"
+    project.mkdir()
+    assert serve._sync_venv(project) == (True, "")
+    assert log.read_text().split("\n")[:4] == ["sync", "--project", str(project), "--inexact"]
+    monkeypatch.setenv("FAKE_UV_FAIL", "1")
+    assert serve._sync_venv(project) == (False, "error: no network")
+
+
+# Gate r1 finding 2 (MINOR): the maintenance job's ledger commit is a job's.
+
+
+def test_the_maintenance_commit_is_not_a_hand_step(tmp_path):
+    env, plain_host = _routed_plain_without_a_record(tmp_path)
+    result = maintenance.run(env.ledger, tmp_path / "cache", now=time.time())
+    assert result.recorded == [str(plain_host / "CLAUDE.md")]
+    job_sha = git(env.ledger, "rev-parse", "--short", "HEAD").stdout.strip()
+    assert "By: maintenance" in git(env.ledger, "log", "-1", "--format=%B").stdout
+
+    # positive control: the same repair run by hand is a hand step
+    shutil.rmtree(env.ledger / "compiled")
+    git(env.ledger, "add", "-A")
+    git(env.ledger, "commit", "-q", "-m", "drop the record again")
+    verbs.recompile(env.ledger, no_push=True)
+    hand_sha = git(env.ledger, "rev-parse", "--short", "HEAD").stdout.strip()
+    assert "recompile resync record" in git(env.ledger, "log", "-1", "--format=%s").stdout
+
+    census = report.hand_steps(env.ledger)
+    commits = {step["commit"]: step for step in census["steps"]}
+    assert census["state"] == "ok"
+    assert hand_sha in commits and commits[hand_sha]["by"] == "none"
+    assert job_sha not in commits
+
+
+# Gate r1 finding 3 (MINOR): three stated behaviours, pinned.
+
+
+def test_a_retired_lesson_on_a_registered_host_whose_path_vanished_still_warns(tmp_path):
+    """13 §4 item 2 as amended: a registered host whose path vanished is a
+    broken registration (`host rebind` repairs it), so its warning stays."""
+    env = make_env(tmp_path)
+    host = tmp_path / "moved-host"
+    host.mkdir()
+    host_add(env.ledger, host, "project", mode="plain")
+    rid = "lrn-0000d0c1"
+    create_record(env.ledger, make_behavior(scope="project", record_id=rid), project_path=host)
+    verbs.route(env.ledger, rid, dest="claude-md", no_push=True)
+    verbs.retire(env.ledger, rid, covered_by="claude-md:elsewhere", no_push=True)
+    shutil.rmtree(host)  # still registered in hosts.yaml
+
+    result = verbs.recompile(env.ledger, no_push=True)
+
+    assert result.gone == []
+    assert [w for w in result.warnings if w.startswith(f"{rid}:") and str(host) in w], result.warnings
+
+
+def _retired_new_skill(tmp_path, rid, name):
+    env = make_env(tmp_path)
+    marketplace = env.host / ".claude-plugin" / "marketplace.json"
+    marketplace.parent.mkdir()
+    marketplace.write_text(json.dumps({
+        "name": "m", "owner": {"name": "o"},
+        "plugins": [{"name": "s-plugin", "source": "./plugins/s-plugin",
+                     "description": "seeded plugin", "version": "1.0.0"}],
+    }) + "\n", encoding="utf-8")
+    git(env.host, "add", "-A")
+    git(env.host, "commit", "-q", "-m", "marketplace seed")
+    create_record(env.ledger, make_behavior(scope="skill:s", record_id=rid))
+    verbs.route(env.ledger, rid, dest=f"new-skill:{name}", no_push=True)
+    assert (env.host / "plugins" / name).is_dir()  # control: it was scaffolded
+    verbs.retire(env.ledger, rid, covered_by="skill-md:s", no_push=True)
+    return env
+
+
+def test_a_retired_new_skill_lesson_whose_plugin_is_gone_is_counted_not_warned(tmp_path):
+    rid = "lrn-0000d0c2"
+    env = _retired_new_skill(tmp_path, rid, "doomed-new")
+    shutil.rmtree(env.host / "plugins" / "doomed-new")
+    git(env.host, "add", "-A")
+    git(env.host, "commit", "-q", "-m", "drop the doomed plugin")
+
+    result = verbs.recompile(env.ledger, no_push=True)
+
+    assert result.gone == [rid]
+    assert not [w for w in result.warnings if rid in w or "doomed-new" in w], result.warnings
+
+
+def test_a_retired_new_skill_lesson_whose_plugin_is_still_there_is_not_gone(tmp_path):
+    """The narrow side: the plugin is on disk, so its SKILL.md is still
+    compiled for the retired lesson (here: the existing "nothing to compile"
+    warning for a skill whose every lesson retired), never counted gone."""
+    rid = "lrn-0000d0c3"
+    env = _retired_new_skill(tmp_path, rid, "kept-new")
+    skill_md = env.host / "plugins" / "kept-new" / "skills" / "kept-new" / "SKILL.md"
+    assert skill_md.is_file()
+
+    result = verbs.recompile(env.ledger, no_push=True)
+
+    assert result.gone == []
+    assert [e for e in result.entries if e.target == skill_md], result.entries
+
+
+def test_the_start_time_carried_across_a_re_exec_keeps_the_unit_notice(tmp_path, monkeypatch):
+    """`run_forever` reads its start from `SELF_LEARN_SERVE_STARTED_AT` (set
+    by the re-exec): the unit file changed after the FIRST start, so the
+    notice must stay live even though this image began after the change."""
+    units = tmp_path / "units"
+    units.mkdir()
+    checkout = tmp_path / "checkout"
+    init_repo(checkout)
+    unit_src = checkout / "systemd" / serve.HOST_UNIT_NAME
+    unit_src.parent.mkdir()
+    unit_src.write_text("[Service]\n", encoding="utf-8")
+    (units / serve.HOST_UNIT_NAME).symlink_to(unit_src)
+    monkeypatch.setenv("SELF_LEARN_SERVE_UNIT_DIR", str(units))
+    monkeypatch.setenv("INVOCATION_ID", "test")
+    monkeypatch.setattr(serve, "_run_tick", lambda *a, **k: [])
+    home = tmp_path / "home"
+    home.mkdir()
+
+    # positive control: no carried start -> this image began after the
+    # change, so no notice is live
+    assert serve.run_forever(home, cache_dir=tmp_path / "c1", tick_secs=0.01, max_ticks=2) == 0
+    assert not [n for n in notices.all_notices(home)
+                if notices.is_live(n, notices.datetime.now(notices.timezone.utc))]
+
+    monkeypatch.setenv("SELF_LEARN_SERVE_STARTED_AT", repr(unit_src.stat().st_mtime - 60))
+    assert serve.run_forever(home, cache_dir=tmp_path / "c2", tick_secs=0.01, max_ticks=2) == 0
+    live = [n for n in notices.all_notices(home)
+            if notices.is_live(n, notices.datetime.now(notices.timezone.utc))]
+    assert len(live) == 1 and "daemon-reload" in live[0].text
+
+
+# Gate r1 NIT 5: the drift row names a failed maintenance run.
+
+
+def test_selftest_names_a_failed_maintenance_run(tmp_path):
+    env, _plain_host = _routed_plain_without_a_record(tmp_path)
+    cache = serve.cache_dir_readonly(env.ledger)
+    serve.write_heartbeat(cache, pid=os.getpid(), next_job="x", tick_secs=60.0)
+    _verdict, reason = selfcheck._check_drift(env.ledger)
+    assert "daily maintenance recompile records them" in reason
+    assert "its last run failed" not in reason  # control: no run on file, no failure named
+    maintenance._store_state(cache, {"last_attempt_at": "2026-10-31T00:00:00Z", "status": "failed",
+                                     "refused": {}, "error": "HostsError: boom"})
+    _verdict, reason = selfcheck._check_drift(env.ledger)
+    assert "its last run failed (HostsError: boom)" in reason

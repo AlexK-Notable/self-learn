@@ -195,7 +195,9 @@ _JOB_SUBJECT_RE = re.compile(
     r"|capture |statement add|user-model |premises refresh )"
 )
 #: Actors whose ``By:`` trailer says a job, not a shell, made the commit.
-_JOB_ACTORS = frozenset({"steward", "overseer", "analyst"})
+#: ``maintenance`` (L6, 2026-10-31): the host process's daily maintenance
+#: recompile (``maintenance.COMMIT_NOTE``).
+_JOB_ACTORS = frozenset({"steward", "overseer", "analyst", "maintenance"})
 _TRAILER_LINE_RE = re.compile(r"^[A-Za-z][A-Za-z-]*: \S")
 _NO_NOTE = "(no reason recorded)"
 
@@ -234,7 +236,7 @@ def hand_steps(
 
     A commit is a **hand step** when its subject is not a job's
     (:data:`_JOB_SUBJECT_RE`) and it carries no job's identity: no ``Case:``
-    trailer and no ``By: steward|overseer|analyst``. What is left was run
+    trailer and no ``By: steward|overseer|analyst|maintenance``. What is left was run
     from a person's or an agent's shell. ``by`` says which when the commit
     says: ``human`` or ``agent`` from a ``By:`` trailer, ``none`` when there
     is no trailer (every hand verb before the agent shell stamped its own).

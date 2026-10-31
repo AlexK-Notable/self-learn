@@ -725,6 +725,11 @@ def _unrecorded_advice(home: Path, unknown_targets: list[str]) -> str:
         )
     refused = maintenance.last_refusals(home)
     words = head + " — the host process's daily maintenance recompile records them"
+    failure = maintenance.last_failure(home)
+    if failure is not None:
+        # Fix r1 (gate NIT 5): say so when its last run failed; it tries
+        # again the next day.
+        words += f", but its last run failed ({failure}); it tries again tomorrow"
     stuck = [t for t in unknown_targets if t in refused]
     if stuck:
         words += "; its last run could not record " + "; ".join(

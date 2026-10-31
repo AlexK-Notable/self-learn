@@ -12456,6 +12456,7 @@ def recompile(
     adopt: "Path | str | Iterable[Path | str] | None" = None,
     only_records: Iterable[str] | None = None,
     moved_from: Iterable[tuple[str, Path]] = (),
+    commit_note: str | None = None,
 ) -> RecompileResult:
     """The doc-13 drift repair (H-2: recompile is always safe and repairs
     any two-phase interruption). For every ROUTED record, recompute each
@@ -12509,7 +12510,12 @@ def recompile(
 
     Idempotent overall: a second run compiles byte-identical content and
     commits nothing. Unregistered/unsound hosts and dirty targets are
-    skipped LOUDLY, never guessed at (H-3)."""
+    skipped LOUDLY, never guessed at (H-3).
+
+    ``commit_note`` (L6 fix r1): the body of the resync ledger commit, for
+    a job that runs recompile and stamps its own ``By:`` trailer (the
+    host process's maintenance job: ``By: maintenance``). ``None`` (every
+    hand run) leaves the body empty, as before."""
     home = Path(home)
     result = RecompileResult()
     # Gate r1 MAJOR-1 (§7.2a.5(4), multi-span): `recompile` takes several
@@ -12648,6 +12654,18 @@ def recompile(
                     result.gone.append(record.id)
                     continue
                 result.warnings.append(f"{record.id}: {exc}")
+                continue
+            if (
+                retired
+                and destination == "new-skill"
+                and _retired_target_gone(home, bucket.path, record, destination)
+            ):
+                # L6 fix r1 (gate finding 3b): a new-skill target always
+                # resolves (it names a path under the skills root whether or
+                # not the plugin is there), so the gone check for it runs
+                # here; left to the compile below, a deleted plugin's
+                # SKILL.md warned "nothing to compile" on every run.
+                result.gone.append(record.id)
                 continue
             if destination == "reference":
                 probe = reference_target_path(spec.refs_dir, spec.ref_name)
@@ -13698,6 +13716,9 @@ def recompile(
                     resync_touched,
                     "self-learn: recompile resync record(s) "
                     f"({len(resync_touched)})",
+                    # L6 fix r1: a job's recompile says so (`By: maintenance`),
+                    # so the hand-step census never counts it as a shell's.
+                    commit_note,
                 )
 
         if not no_push:
