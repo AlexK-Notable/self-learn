@@ -1102,18 +1102,18 @@ def _premise_moved_inputs(
     trigger (`followup-done`) and the one-time pass for the follow-ups
     closed before it existed, by one predicate.
 
-    The version is `follow_up:<done_at>`
-    (:func:`steward_inputs.premise_moved_version`), so a run that decided it
-    -- applied, parked, refused or abandoned -- never sees it again, and a
-    follow-up closed on another day is a new input. A lesson the overseer
-    holds is not offered (S-81). A lesson another input of the run already
-    names is not offered twice: that input's case, opened on a later day than
-    the closing, decides the lesson (:func:`steward_inputs.moved_followups`),
-    with the closed follow-up shown in its brief
-    (:func:`steward_inputs.render_closed_followup`) -- the premise input does
-    NOT come back after it. A case opened the SAME day does not decide it
-    (the day is the closing's only precision), so there the premise input
-    comes back on the next run. At most `steward_inputs.PREMISE_MOVED_PER_RUN`
+    The version is `premise:<12 hex>`
+    (:func:`steward_inputs.premise_moved_version`, a hash of the closed
+    follow-up block), so a run that decided it -- applied, parked, refused
+    or abandoned -- never sees it again, and a follow-up closed again with
+    other words is a new input. A lesson the overseer holds is not offered
+    (S-81). A lesson another input of the run already names is not offered
+    twice: it waits for the next run. Only a case that decided what the lesson
+    says (placed, moved, rewrote or retired it, not parked) opened on a later
+    day than the closing takes the lesson out of the list
+    (:func:`steward_inputs.last_decision`); a suspected-violation case that
+    dismissed its events, a recurrence case or a parked case leaves it
+    offered. At most `steward_inputs.PREMISE_MOVED_PER_RUN`
     rows, oldest closing first. Off when `premises.enabled` is false.
     *manifests*: the committed steward manifests the caller has already read
     (the due check reads them once per tick)."""

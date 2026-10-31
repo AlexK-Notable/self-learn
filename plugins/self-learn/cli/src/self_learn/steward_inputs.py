@@ -51,6 +51,7 @@ a verdict's detail never carries transcript or quote text.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -79,6 +80,7 @@ __all__ = [
     "fires_version",
     "last_decision",
     "moved_followups",
+    "open_followup_ids",
     "packet_stats",
     "plan_packets",
     "premise_moved_version",
@@ -431,57 +433,68 @@ def premise_moved_version(
     followup_done: Mapping[str, Any] | None = None,
     moved: Iterable[tuple[str, str]] = (),
 ) -> str:
-    """The identity of a ``premise-moved`` input (02 section 3a.10.7): the
-    sorted ``(premise id, current value hash)`` pairs of the premises that
-    moved, written ``premises:<id>=<hash>,...``, and ``follow_up:<done_at>``
-    when a closed follow-up is the trigger, joined by ``;``. A closed
-    follow-up alone is ``follow_up:2026-10-29``. A run that decided this
-    identity (applied, parked, refused, abandoned) is never offered it
-    again; a premise that moves again, or a follow-up closed on another day,
-    is a new version. The same pattern as :func:`fires_version`. U2/U4 pass
-    ``moved=`` for the sweep's premises; this lane passes ``followup_done=``."""
-    parts: list[str] = []
-    pairs = sorted((str(pid), str(value)) for pid, value in moved)
-    if pairs:
-        parts.append("premises:" + ",".join(f"{pid}={value}" for pid, value in pairs))
+    """The identity of a ``premise-moved`` input (02 section 3a.10.7): a hash
+    of what moved, ``premise:<12 hex>``. The closed follow-up (its action,
+    gate, notes and ``done_at``) and, when the premise sweep adds them, the
+    sorted ``(premise id, current value hash)`` pairs. A run that decided
+    this identity (applied, parked, refused, abandoned) is never offered it
+    again; a follow-up closed again with other words, or a premise that
+    moves again, is a new version. The same pattern as :func:`fires_version`.
+    U2/U4 pass ``moved=`` for the sweep's premises; this lane passes
+    ``followup_done=``."""
+    block = None
     if followup_done is not None:
-        parts.append("follow_up:" + _done_day(followup_done.get("done_at")))
-    if not parts:
-        raise ValueError("a premise-moved input names what moved: a follow-up or a premise")
-    return ";".join(parts)
+        block = {
+            key: str(followup_done.get(key) or "")
+            for key in ("action", "unblocks_on", "note", "done_at", "done_note")
+        }
+    pairs = sorted([str(pid), str(value)] for pid, value in moved)
+    blob = json.dumps({"followup": block, "moved": pairs}, sort_keys=True)
+    return "premise:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+#: The case outcomes that placed, moved, rewrote or retired a lesson: what
+#: counts as a decision of it when asking whether a follow-up closed AFTER
+#: the last one (02 section 3a.10.4, event 2). A case that deferred, parked
+#: or only recorded a recurrence or dismissed a suspect (`no-action`) did
+#: not look at what the lesson rests on.
+_DECIDING_OUTCOMES = frozenset({"route", "reject", "retire", "replaced", "rehome", "revise"})
 
 
 def last_decision(home: Path, record: Record) -> tuple[datetime | None, str]:
     """When a ROUTED lesson was last decided, from the ledger alone: ``(time,
-    label)``. The ``opened_at`` of the newest case whose ``records`` name the
-    lesson (any kind or outcome: the case froze its facts when it was
-    opened, so a follow-up closed after that is something it did not see)
-    or, when no case names it, the time the lesson was routed -- the rule of
-    02 section 3a.10.4. ``(None, "")`` when nothing is dated.
+    label)``, the newest of its ``routing.routed_at`` and the ``opened_at``
+    of a case that is not parked, whose ``records`` name the lesson, and
+    whose outcome placed, moved, rewrote or retired it
+    (:data:`_DECIDING_OUTCOMES`). ``(None, "")`` when nothing is dated.
 
-    Not counted, on purpose: a ``reconsidered`` or ``routing`` history entry
-    (the case that wrote it is counted, at the time it froze its facts, and
-    the entry is dated when it APPLIED, which can be weeks later), and
-    ``last_confirmed`` (a person saw the rule working; that says nothing
-    about the facts a follow-up closed on). A case whose file fails its
-    freeze-hash check, or an index that cannot be read, contributes nothing:
-    the answer then errs toward OFFERING the lesson."""
+    Not counted, on purpose: a parked case, a ``no-action`` case (a dismissed
+    suspect, a recorded recurrence) and a deferring case: none of them
+    decided what the lesson rests on, and a closed follow-up must stay in
+    front of the steward until one does. Neither a ``routing`` or
+    ``reconsidered`` history entry (the case that wrote it is counted, at the
+    time it froze its facts; the entry is dated when it APPLIED, which can be
+    weeks later) nor ``last_confirmed`` (a person saw the rule working; that
+    says nothing about the facts a follow-up closed on). A case whose file
+    fails its freeze-hash check, or an index that cannot be read, contributes
+    nothing: the answer then errs toward OFFERING the lesson."""
     from . import cases  # late: cases pulls the cache and the worker
 
     found: list[tuple[datetime, str]] = []
+    routing = record.routing if isinstance(record.routing, dict) else {}
+    routed = chrono.to_dt(routing.get("routed_at"))
+    if routed is not None:
+        found.append((routed, "routed_at"))
     try:
         rows = cases.list_cases(home, record_id=record.id, only_ok=True)
     except (cases.CaseError, OSError, ValueError):
         rows = []
     for row in rows:
+        if row.get("kind") == "parked" or row.get("outcome") not in _DECIDING_OUTCOMES:
+            continue
         when = chrono.to_dt(row.get("opened_at"))
         if when is not None:
             found.append((when, f"case:{row.get('case')}"))
-    if not found:
-        routing = record.routing if isinstance(record.routing, dict) else {}
-        when = chrono.to_dt(routing.get("routed_at"))
-        if when is not None:
-            found.append((when, "routed_at"))
     if not found:
         return None, ""
     return max(found, key=lambda item: item[0])
@@ -498,6 +511,20 @@ class MovedFollowup:
     decided_by: str
 
 
+def _followup_is_open(home: Path, record: Record) -> MovedFollowup | None:
+    """The lesson as a :class:`MovedFollowup` when its closed follow-up is
+    not earlier than the day of its last decision, else ``None``. The one
+    test :func:`moved_followups` and :func:`open_followup_ids` share."""
+    done = record.follow_up_done or {}
+    done_when = chrono.to_dt(done.get("done_at"))
+    if done_when is None:
+        return None
+    decided_at, decided_by = last_decision(home, record)
+    if decided_at is not None and decided_at.date() > done_when.date():
+        return None
+    return MovedFollowup(record.id, done, done_when.date(), decided_at, decided_by)
+
+
 def moved_followups(home: Path) -> list[MovedFollowup]:
     """Every ROUTED lesson whose ``follow_up_done.done_at`` is not earlier
     than the day it was last decided (:func:`last_decision`), oldest closing
@@ -512,27 +539,41 @@ def moved_followups(home: Path) -> list[MovedFollowup]:
     day is offered once rather than missed. The input's own version
     (:func:`premise_moved_version`) keeps it from being offered twice.
 
-    A case opened AFTER the closing takes the lesson out of this list, even
-    one that was about something else (a reconsider input, a suspected
-    violation): that is safe only because every brief that reaches a lesson
-    shows its closed follow-up (:func:`render_closed_followup`), so such a
-    case decided the lesson with the closing in front of it. A new kind of
-    brief for a routed lesson must show it too, or this predicate loses the
-    lesson silently."""
+    Only a case that decided what the lesson says takes the lesson out of
+    this list (:func:`last_decision`): a suspected-violation case that
+    dismissed its events, a recurrence case and a parked case leave it
+    offered, because the method gives them no authority to narrow or retire a
+    placed lesson. A brief that reaches the lesson while the follow-up is
+    undecided still shows it (:func:`open_followup_ids`), as context."""
     from . import ledger_ops  # late: ledger_ops imports far more
 
-    out: list[MovedFollowup] = []
-    for record in ledger_ops.closed_followups(home):
-        done = record.follow_up_done or {}
-        done_when = chrono.to_dt(done.get("done_at"))
-        if done_when is None:
-            continue
-        decided_at, decided_by = last_decision(home, record)
-        if decided_at is not None and decided_at.date() > done_when.date():
-            continue
-        out.append(MovedFollowup(record.id, done, done_when.date(), decided_at, decided_by))
+    out = [
+        item for item in
+        (_followup_is_open(home, record) for record in ledger_ops.closed_followups(home))
+        if item is not None
+    ]
     out.sort(key=lambda item: (item.done_on, item.record_id))
     return out
+
+
+def open_followup_ids(home: Path) -> set[str]:
+    """The ids of the routed lessons whose closed follow-up is still
+    undecided: :func:`moved_followups`, minus a lesson whose ``premise-moved``
+    input for the follow-up as it stands was already decided by a committed
+    steward run (applied, parked, refused or abandoned). Only these show the
+    ``[closed follow-up]`` block in their other briefs: once the question
+    was settled it is not put back in front of the steward on an unrelated
+    input. Empty, and cheap, when no routed lesson has a closed follow-up."""
+    found = moved_followups(home)
+    if not found:
+        return set()
+    from . import steward  # late: steward imports this module
+
+    terminal = steward._terminal_versions(home)
+    return {
+        item.record_id for item in found
+        if (item.record_id, premise_moved_version(followup_done=item.done)) not in terminal
+    }
 
 
 #: A closed follow-up's fields as the brief labels them, in reading order.
@@ -596,22 +637,23 @@ def _followup_cite_lines(record: Record, *, path: str | None, head: str | None) 
 
 
 def render_closed_followup(record: Record, *, path: str | None, head: str | None) -> str:
-    """What every brief of a ROUTED lesson shows when its follow-up was
-    closed: the facts and the record's own lines to cite, or ``""`` when the
-    lesson has no closed follow-up. The ``premise-moved`` brief carries the
-    same facts in its own block (:func:`render_premise_moved`) and does not
-    use this. :func:`moved_followups` leans on it: a case that decided the
-    lesson after the closing counts as having seen it (S-NEXT-u3-followup,
-    the review's first finding: a reconsider input on the same lesson
-    decided first would otherwise take the lesson out of the premise check
-    without ever showing what moved)."""
+    """What a brief of a ROUTED lesson shows while its closed follow-up is
+    undecided (:func:`open_followup_ids`): the facts and the record's own
+    lines to cite, or ``""`` when the lesson has no closed follow-up. The
+    ``premise-moved`` brief carries the same facts in its own block
+    (:func:`render_premise_moved`) and does not use this. It is context for
+    a decision about something else (a dismissed suspect, a recurrence): it
+    is not what keeps the lesson in front of the steward, and it gives that
+    decision no new authority over the lesson (:func:`last_decision`)."""
     done = record.follow_up_done
     if not isinstance(done, Mapping) or not done:
         return ""
     lines = [
         "[closed follow-up] this lesson was placed while it waited on a condition, and "
-        "its follow-up has since been closed; what it waited on has happened. If any "
-        "sentence of the lesson rested on that wait, check it in this decision."
+        "its follow-up has since been closed; what it waited on has happened. This is "
+        "context for this decision; the lesson itself comes to you again on its own "
+        "`premise-moved` input, which is where a sentence that rested on that wait is "
+        "checked."
     ]
     lines += _followup_fact_lines({**done, "done_at": _done_day(done.get("done_at"))})
     lines += _followup_cite_lines(record, path=path, head=head)
@@ -742,14 +784,16 @@ def _one_line(text: object) -> str:
 
 def render_record(
     record: Record, *, path: str | None, head: str | None, bucket: str,
-    closed_followup: bool = True,
+    closed_followup: bool = False,
 ) -> str:
     """The lesson as the steward reads it: its facts on one line, then its
     lesson sections with their file lines (citable as
     ``ledger@<commit>:<path>#L<a>-<b>``), then, when its follow-up was
-    closed, what that says (:func:`render_closed_followup`;
-    ``closed_followup=False`` for a ``premise-moved`` brief, which carries
-    the same facts in its own block)."""
+    closed and not yet decided, what that says
+    (:func:`render_closed_followup`; ``closed_followup`` is off by default and
+    for a ``premise-moved`` brief, which carries the same facts in its own
+    block; :func:`build_briefs` turns it on for a lesson in
+    :func:`open_followup_ids`)."""
     lines = [
         f"[lesson] {record.type}, scope {record.scope}, bucket {bucket}, "
         f"status {record.status}, sightings {record.sightings}, created {record.created_at}"
@@ -1172,6 +1216,9 @@ def build_briefs(
         except Exception:  # noqa: BLE001 -- a missing record is shown as missing
             return None
 
+    # The routed lessons whose closed follow-up is still undecided: their
+    # briefs of any kind but `premise-moved` show it as context.
+    undecided = open_followup_ids(home)
     out: dict[str, LessonBrief] = {}
     for row in inputs:
         rid = str(row.get("id"))
@@ -1196,7 +1243,7 @@ def build_briefs(
             parts.append(f"[why it is back] {_one_line(row['reason'])}")
         parts.append(render_record(
             record, path=rel, head=head, bucket=_bucket_of(home, path),
-            closed_followup=kind != INPUT_PREMISE_MOVED,
+            closed_followup=kind != INPUT_PREMISE_MOVED and rid in undecided,
         ))
         if kind == INPUT_SUSPECTED_VIOLATION:
             events = [e for e in row.get("events") or [] if isinstance(e, dict)]
