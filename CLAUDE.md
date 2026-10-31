@@ -27,7 +27,8 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
 - `plugins/self-learn/ui/` — the web UI (uv project; package `src/self_learn_ui/`).
 - `plugins/self-learn/{skills,commands,hooks,scripts}/` — the plugin surfaces.
 - `systemd/` — the host, UI, and legacy miner units. `install.sh` deploys everything
-  as live symlinks and deliberately never enables a unit; that is the human's step.
+  as live symlinks and deliberately never enables a unit; that is a separate step
+  (the human's, or an agent's under the user's standing grant, below).
 - Scratch (audit reports, handoffs, one-off scripts) goes in an untracked `misc/`
   directory rather than a temp directory, and stays out of commits.
 
@@ -86,34 +87,43 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
   across a session boundary. Do mutation testing in a git worktree, and prove the
   venv resolves there with `realpath(self_learn.__file__)` — a worktree venv can
   resolve back to the original tree.
-- Agents never enable, start, stop, or restart systemd units, never run
-  `daemon-reload`, and never signal the host process. Unit-file edits are inert
-  until the human reloads; say so in the commit body.
+- **The user's standing grant** (S-NEXT-attribution, `02-schema.md` §3a.3a):
+  when the ledger holds one (`self-learn grant list` shows it IN FORCE), an
+  agent may do what the rules below reserve to the human, giving its reason
+  (`--note` on the CLI, where the commit records `By: agent` and the grant) and
+  reporting it; without one, those rules bind as written. It never covers
+  anything that needs sudo, spending real money, or pushing to someone else's
+  project. A multi-agent round's builders and reviewers still follow their
+  briefs, which keep units and services the orchestrator's.
+- Without the grant, agents never enable, start, stop, or restart systemd
+  units, never run `daemon-reload`, and never signal the host process; under it
+  they may enable and restart **user** units (`systemctl --user`, never sudo).
+  Unit-file edits are inert until a reload; say so in the commit body.
 - The steward (S-29 as amended) and the overseer (S-66) run as jobs
   inside the same `serve` process as the miner and the worker — nothing
   here adds a standalone process for an agent to start or stop. The
-  cases they write follow S-65's content contract. Agents never set
-  `steward.enabled` or `overseer.enabled` to `true`, and never set
-  `overseer.hook_activation` to `true` — the human sets these true and
-  starts that agent's maiden run by hand, watching it; there is no later
-  switch from a supervised phase to an unattended one, and after the
-  maiden run the same setting is only the human's rollback switch.
+  cases they write follow S-65's content contract. Agents set
+  `steward.enabled`, `overseer.enabled` or `overseer.hook_activation` only
+  under the user's standing grant, with a reason, and report it; there is no
+  later switch from a supervised phase to an unattended one, and each setting
+  stays the rollback switch.
   Every case either agent writes is ledger content
   (`$SELF_LEARN_HOME/cases/**`, `$SELF_LEARN_HOME/overseer/**`) and never
   appears in this repository, exactly like every other lesson.
-- Agents never set `overseer.skill_writing` or `overseer.skill_discovery`
-  (skill writing, S-107), nor `premises.enabled` or
-  `premises.backfill_per_night` (the premise check). All four are tier C
+- Agents set `overseer.skill_writing` or `overseer.skill_discovery`
+  (skill writing, S-107), `premises.enabled` or
+  `premises.backfill_per_night` (the premise check) only under the user's
+  standing grant, with a reason, and report it. All four are tier C
   and ship working: `skill_writing` as `auto` (drafts only, up to and
   including the first completed overseer run whose skill-discovery steps
   validated, then writing), `skill_discovery` and `premises.enabled` on,
-  `backfill_per_night` at 10. Changing one is the human's.
+  `backfill_per_night` at 10.
 - The miner's session engine (S-91) is switched by `miner.engine`; agents
-  never set it to `session`, and never run `mine run --preview` outside
-  the test suite: a preview makes real model calls, and both are the
-  human's. The CLI refuses a tier-C `config set` or `config unset`
-  from an agent's shell, detected by environment markers; the rule still
-  binds because an agent can unset them. Answers the engine saved under
+  set it only under the user's standing grant, with a reason, and never run
+  `mine run --preview` outside the test suite: a preview makes real model
+  calls (ask before spending). The CLI runs a tier-C `config set` or `config
+  unset` from an agent's shell only with the grant in force and `--note`,
+  detected by environment markers; never unset the markers to get around it. Answers the engine saved under
   `<cache>/miner/pending/` are the miner's to land; never edit or delete
   one by hand outside a test's scratch cache.
 - Revert probes by inverse edit and verify with `sha256sum` against

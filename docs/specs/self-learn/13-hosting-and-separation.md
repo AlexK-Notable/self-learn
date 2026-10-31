@@ -320,16 +320,24 @@ revert). Doc 13 promotes that to the general rule:
    each registration has its own mode. Going to `plain` writes the marker and
    its `info/exclude` line before the commit, exactly as `host add --mode
    plain` does; going to `git` needs a git work tree at the path (the same
-   check) and leaves the marker in place, as `host remove` does. The bucket, the
+   check) and leaves the marker in place, as `host remove` does, and takes out
+   of self-learn's own `info/exclude` block the lines under the path for files
+   git mode now commits (git refuses to stage an ignored file), keeping
+   `CLAUDE.local.md`, the marker and every line outside the block, unless the
+   path's other registration is still plain (S-NEXT-attribution). The bucket, the
    records and the compile records are never touched, and the command names how
    many routed records compile into the registration. A host already in the
    asked mode writes nothing (a plain host's missing marker is restored). It is
-   a **person's command**: from an agent's shell (the markers S-92 reads for a
-   tier-C `config set`) it exits 1 before the lock, before any marker is written
-   and also for a request that would change nothing, naming the markers and never
-   their values; there is no override, and no sheet can run it (every `host` verb
-   is refused in a sheet), because a registration is disclosed consent (S-29,
-   Y-17) and a mode change is the same kind of act. Like S-92 it is not a
+   a **person-only command**: from an agent's shell (the markers S-92 reads for a
+   tier-C `config set`) it runs only under the user's standing grant with
+   `--note <reason>` (S-NEXT-attribution, `02-schema.md` §3a.3a; so are `host
+   add`, `host remove` and `host rebind`), committed `By: agent` and `Grant:
+   <statement>`; without the note it exits 64 and without a grant in force 1,
+   before the lock, before any marker is written and also for a request that
+   would change nothing, naming the markers and never their values; no sheet
+   can run it (every `host` verb is refused in a sheet), because a registration
+   is disclosed consent (S-29, Y-17) and a mode change is the same kind of act.
+   Like S-92 it is not a
    security boundary. A person's yes can also carry a registration: the
    overseer may put `register: {path, mode, kind?}` on an ask whose whole point is
    registering a repository it cannot register itself (the 2026-10-25 report:
@@ -354,13 +362,22 @@ revert). Doc 13 promotes that to the general rule:
    that variable. The LAST row the person typed there must be a plain yes (an
    AskUserQuestion click, an earlier yes, an agent-written turn, a line another
    agent typed into the pane and anything typed after the yes do not count;
-   `statements.latest_user_typed`, which judges a row as `statement add` does).
+   `statements.typed_turn`, which judges a row as `statement add` does), and
+   *(S-NEXT-attribution)* the assistant's own visible text between the person's
+   previous typed row and that yes (text blocks only, never a tool call's input
+   or a tool's output) must name the ask's id, the path and the mode, and no
+   other open ask carrying a `register` (`consent.prove_typed_yes`): a yes to
+   "shall I run the tests?" never registers a host. A proved registration
+   commits `Answers: <id>` in its body and `By: agent`, `Proof: <transcript
+   line>` as its trailer; the subject is unchanged. An ask's `register` may
+   carry `action: set-mode`, and its yes then runs `host set-mode` instead.
    When the agent's shell cannot prove it, `respond` records NOTHING and the
    question stays open (the same as a refused `host add`: an answered question
-   whose registration never happened would read as done); the error says to have
-   the person type a plain yes and answer again, answer in their own terminal, or
-   run the `host add` line themselves (a registration already in place is left as
-   it is and needs no proof). A "yes" that is not a plain yes is still recorded
+   whose registration never happened would read as done); the error says what
+   was missing and to ask again naming the question, have the person answer in
+   their own terminal, or run the `host add` / `host set-mode` line under the
+   standing grant with `--note` (what is already done is left as it is and needs
+   no proof). A "yes" that is not a plain yes is still recorded
    and the overseer reads it.
 
    **What replaces git for a plain host, and what does not.** Item 2's
