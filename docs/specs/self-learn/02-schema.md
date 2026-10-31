@@ -2376,7 +2376,7 @@ re-derived what the miner knew (117 record-file reads and 94 transcript
 calls over 9 runs), and approved a lesson on a verification the transcript
 contradicts; `suspected-violation` fires reached no consumer.
 
-**Inputs.** A run selects three kinds of input, each a row of the run
+**Inputs.** A run selects four kinds of input, each a row of the run
 record's `inputs` with a `kind`:
 
 | `kind` | What | Identity (`version`) |
@@ -2384,6 +2384,62 @@ record's `inputs` with a `kind`:
 | `lesson` | a queued record (pending, not deferred) whose version no committed run has decided — **with or without an analyst proposal** | the record file's committed blob; `legacy_version` carries the proposal file's blob when there is one |
 | `reconsider` | a record a later observation brought back (unchanged) | `observation:<obs-id>` |
 | `suspected-violation` | a ROUTED record that unhandled `fire` events with outcome `suspected-violation` name (a legacy `violated` reads as it, §4.3 of `11-telemetry-and-lifecycle.md`); the row carries the events (`nonce`, `ts`, `outcome`, `origin`, optional `moment`, optional `line_format`) | `fires:<nonce>,<nonce>…`, sorted |
+| `premise-moved` *(S-NEXT-u3-followup)* | a ROUTED record something it rested on has moved for. Today the one mover is a closed follow-up: `follow_up_done.done_at` is not earlier than the day the lesson was last decided. The row carries `moved` (a list of `{source: follow-up-done, done_at, action, unblocks_on?, note?, done_note?}`), a `reason`, and, when a case covers the lesson, `predecessor` (see below) | `premise:<12 hex>`, a hash of the closed follow-up block (and, later, the premise sweep's `(premise id, value hash)` pairs) |
+
+**`premise-moved` from a closed follow-up** *(S-NEXT-u3-followup; the premise-check design's unit U3, named
+in its decision D13).* Closing a follow-up (`followup-done`) records what the lesson was waiting on, and
+before this nothing put the lesson in front of anyone: the live case was a routed claude-md lesson that said
+"nothing binds this daemon to the bus", whose follow-up was met and closed on 2026-10-29 with the proof in
+`done_note` while the always-loaded line stayed false. One predicate is both the live trigger and the
+one-time pass for follow-ups closed before the input existed: a ROUTED record carrying `follow_up_done` is
+offered when `done_at` (a date) is not earlier than the date of the lesson's **last decision**, the newest
+of its `routing.routed_at`, a `routing` or `reconsidered` history entry, `last_confirmed`, and the
+`opened_at` of a case that placed, moved, rewrote or retired it (outcome `route`, `reject`, `retire`,
+`replaced`, `rehome` or `revise`; a `defer`, a parked case and a recurrence `no-action` decided nothing about
+what the lesson rests on, and a `moved` history entry is filing, not a decision). The comparison is by
+day and the same day counts as after, so a lesson decided and closed on one day is offered once, never
+missed. Closing an OPEN follow-up is not a mover until it is closed. The input is never offered twice
+(its version is the closed block; a run that decided it, as any input, ends it), a follow-up closed again
+with other words is a new version, at most ten rows are offered per run (oldest closing first; the rest wait),
+a lesson the overseer holds is skipped (S-81), a lesson another input of the run names is offered next run, and
+the scheduler's due check counts it like a reconsider input (due once the cooldown has passed).
+`premises.enabled` switches it; the switch is registered by the sweep's unit, tier C (an agent never sets it),
+and **defaults on in code** (the user, 2026-10-30), so until it is registered the input is on.
+
+The brief for a `premise-moved` input is the lesson, then `[what moved]`: the follow-up as recorded and the
+record file's own `follow_up_done` lines with a citable span (`ledger@<commit>:<path>#L<a>-<b>`), then, when a
+case covers the lesson, the bullets under that case's "What would change this decision" and nothing else of its
+decision, then `[how to decide it]`. No transcript evidence pack is built (what moved is the evidence). With a
+covering case the row's `predecessor` is the newest unsuperseded case that `kind: reconsider` could take
+(`steward._premise_predecessor`, the apply-time test), and the runner fills in `supersedes` as for a reconsider
+input; the outcomes are `no-action` (one `note` item), `replace`, `retire` or `reject`. With none
+*(S-NEXT-u4-steward, design D6)*, the lesson is decided in a `kind: resolution` case that supersedes nothing
+(S-88's rule for a deferred lesson no case covers, extended to this input): `no-action`, `replace` or `retire`
+(a `reject` or a move needs a case to supersede, so those are parked). The steward may narrow, rewrite or retire a placed
+lesson on this input without waiting for the overseer, because the evidence is a recorded fact (the user, 2026-10-30,
+the premise design's Q2: yes); merging it with another placed lesson stays the overseer's. Steward method §17.
+
+**`premise-moved` from a written premise, and the `premises` sheet verb** *(S-NEXT-u4-steward; unit U4; the
+field and its catalog are `premises.py`, S-NEXT-u1-premises).* A routed record's written premise moves in three
+ways, all read by code: a probe premise whose last two observations by the daily sweep (U2's
+`<cache>/premises/observations.jsonl`, one JSON line per observation `{record, premise, observation}`), both made
+after its baseline was recorded, judge it moved and agree on the value; a baseline recorded as
+`contradicts-claim`, from the night after it was recorded; a `ledger` premise, read at selection time. An
+`unavailable` observation moves nothing; three in a row are a broken probe the brief shows. A probe move waits
+until the premise was decided at least seven days ago (D7.5); the others do not. A premise with `on_change:
+refresh` never reaches the steward. A lesson is ONE input whatever moved: its `moved` list carries the closed
+follow-up (while the rule above holds) and one `{source: premise, premise, how, claim, probe, holds_if, match?,
+recorded, recorded_state, recorded_at, now, now_at, since, value_sha}` per moved premise, its version hashes both,
+and the rows are offered oldest move first, ten per run. The brief adds each moved premise, the lesson's premises
+(shown on every brief), the record's `premises:` block with a citable span, broken probes, the `env` pins as
+context, and the "What would change this decision" bullets of every covering case still standing. A decision
+that KEEPS the lesson -- `no-action`, or a `replace` (the new lesson carries the premises) -- must re-record every
+moved written premise with a `premises` line on the lesson (before the `replace`), or the runner refuses the pair
+(`steward._premise_decision_problem`). The sheet verb `premises` takes `action` (required): `set` with `premises`
+(the whole list, `[]` allowed) or `rebaseline` with `ids`; the runner runs each probe once and writes `baseline`
+and `decided_at` (a line that writes either is refused when the sheet loads), a probe that cannot observe refuses
+the line (`bad-line`), and each line is one commit, `self-learn: premises <action> lrn-<id>`, under the commit
+lock. It is open to the steward, the overseer and a person's `batch`; there is no CLI writer.
 
 For `fire` and `recurrence-suspect` event payloads, `moment` is the cited
 entry UUID, emitted by session landing when available. `line_format:

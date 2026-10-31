@@ -204,6 +204,8 @@ _THREADED_VERBS = (
     # E1 (2026-10-10): replace threads the execution ref to its own route
     # commit, whose subject starts `self-learn: replace <first id> `.
     "replace",
+    # S-NEXT-u4-steward: `self-learn: premises <action> <id>`.
+    "premises",
 )
 
 
@@ -276,6 +278,13 @@ def _invoke_threaded_verb(home, verb: str):
     elif verb == "link-contradicts":
         result = verbs.link_contradicts(
             home, rid, other, no_push=True, execution=ref
+        )
+    elif verb == "premises":
+        # A premise with no probe: nothing is run on this machine.
+        result = verbs.premises(
+            home, rid, action="set",
+            premises=[{"id": "p1", "claim": "the store is not shared", "probe": None}],
+            no_push=True, execution=ref,
         )
     elif verb == "replace":
         result = verbs.replace_lesson(
