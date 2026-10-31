@@ -210,6 +210,7 @@ from .ledger_ops import (
 # `stamp_proposal_fields` wrapper is the alternative if it spreads.
 from .ledger_ops import _dump_yaml
 from .ledger_ops import _compile_glob_pattern, _validate_rules_fields
+from . import premises as premises_mod
 from . import records as records_mod
 from .records import (
     RECORD_ID_RE,
@@ -256,6 +257,7 @@ __all__ = [
     "link_contradicts",
     "managed_target_for",
     "note",
+    "premises",
     "push_pending",
     "recompile",
     "rehome",
@@ -10769,6 +10771,281 @@ def confirm_held(
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="confirm-held",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+# ------------------------------------------- premises (S-NEXT-u4-steward)
+#
+# 02 §3a.10.7: the `premises` sheet verb writes a placed lesson's
+# `premises` field (`premises.py`). `set` writes the whole list, `rebaseline`
+# re-records named premises' values. Either way the RUNNER runs each probe
+# once, now, and writes `baseline` and `decided_at` itself: a sheet never
+# writes either, so a recorded value is always one code observed. A probe
+# that cannot observe now (`unavailable`) cannot be a baseline, and the line
+# is refused (`bad-line`): the writer fixes or drops the probe. One commit
+# per line, under the commit lock. No CLI writer in this build: a sheet
+# (the steward's, the overseer's or a person's `batch`) is the one way in.
+
+#: The actions this build carries. U8 (placement premises) adds
+#: `restore-region` here, with its own branch in :func:`premises`.
+PREMISES_ACTIONS = ("set", "rebaseline")
+#: The keys of one premise that only the runner writes.
+PREMISE_RUNNER_KEYS = frozenset({"baseline", "decided_at"})
+
+
+def _premise_probe_env(home: Path) -> premises_mod.ProbeEnv:
+    """The environment the verb's probes run in: this machine, and *home*
+    as the ledger a ``ledger`` probe reads. The one seam tests replace (a
+    fake command runner), so no test ever runs ``systemctl`` or ``pacman``."""
+    return premises_mod.ProbeEnv(ledger_home=home)
+
+
+def premises_line_problem(action: object, premises: object, ids: object) -> str | None:
+    """What is wrong with the SHAPE of a ``premises`` line, or ``None``:
+    the action, which of ``premises``/``ids`` it takes, and no runner-only
+    key on an entry. :func:`batch.load_sheet` refuses the whole sheet on
+    it (BAT1) and the verb refuses the line on it, from this one function.
+    What an entry says (its claim, its probe) is
+    :func:`premises.validate_premises`'s, at the verb."""
+    if action not in PREMISES_ACTIONS:
+        return f"`action` must be one of {list(PREMISES_ACTIONS)}, got {action!r}"
+    if action == "set":
+        if ids is not None:
+            return "`ids` belongs to action rebaseline; action set writes the whole list in `premises`"
+        if not isinstance(premises, list):
+            return (
+                "action set needs `premises`, a list (`[]` for a lesson that rests on no "
+                "fact about the machine)"
+            )
+        for entry in premises:
+            if isinstance(entry, dict):
+                written = sorted(PREMISE_RUNNER_KEYS & set(entry))
+                if written:
+                    return (
+                        f"premise {entry.get('id')!r} writes {written}: the runner records "
+                        "those when it runs the probe, never a sheet"
+                    )
+        return None
+    if premises is not None:
+        return "`premises` belongs to action set; action rebaseline names premise ids in `ids`"
+    if (
+        not isinstance(ids, list) or not ids
+        or not all(isinstance(pid, str) for pid in ids) or len(set(ids)) != len(ids)
+    ):
+        return "action rebaseline needs `ids`, a non-empty list of distinct premise ids (p1..p4)"
+    return None
+
+
+def _premise_observed(
+    record_id: str, premise: dict, env: premises_mod.ProbeEnv
+) -> dict:
+    """Run *premise*'s probe once and return the ``baseline`` to record.
+    An ``unavailable`` observation refuses the line (``bad-line``): a
+    baseline is a value code saw, never a guess (`premises.make_baseline`)."""
+    observation = premises_mod.observe(premise, env)
+    if observation is None:  # a premise with no probe has no baseline
+        raise SheetLineError(f"premises {record_id}: {premise.get('id')} has no probe to observe")
+    try:
+        return premises_mod.make_baseline(observation)
+    except premises_mod.PremiseError:
+        raise SheetLineError(
+            f"premises {record_id}: the probe of {premise.get('id')} could not observe "
+            f"anything now ({observation.reason}), so it cannot be a baseline; fix the "
+            "probe or drop it with action set"
+        ) from None
+
+
+def _premise_summary(pid: object, old: object, new: dict) -> str:
+    """One commit-body line: what a premise's recorded value was and is.
+    Only the short, scan-clean ``shown`` values; never file text."""
+    was = old.get("shown", "(not shown)") if isinstance(old, dict) else "(none)"
+    now = new.get("shown", "(not shown)")
+    return f"{pid}: was {was!r}, now {now!r} ({new.get('state')})"
+
+
+def _false_claim_refusal(record_id: str, pid: object, baseline: dict) -> str:
+    """Why a ``rebaseline`` of a premise whose claim is false now is refused
+    (gate round 1 on c82e783, MINOR): a premise judged by its claim
+    (``holds_if`` absent, present, equals or version) would be re-recorded
+    as ``contradicts-claim``, and the lesson would stand on a premise that
+    says its own claim is false, for good. Rewriting the claim, or dropping
+    it, is ``set``'s job. A first value against the claim through ``set`` is
+    still recorded, as 02 §3a.10.1 says: that is how a lesson already false
+    is brought back to the steward."""
+    seen = repr(baseline.get("shown")) if baseline.get("shown") is not None else "a value"
+    return (
+        f"premises {record_id}: {pid}'s claim is false now (its probe sees {seen}, which "
+        "contradicts it), so a rebaseline would keep a false premise; rewrite the claim as "
+        "what is true now, or drop it, with action set"
+    )
+
+
+def _preflight_premises(
+    home: Path,
+    record_id: str,
+    *,
+    action: object,
+    premises: object,
+    ids: object,
+    because: str | None,
+    note: str | None,
+) -> tuple[Path, Record, list[dict], list[str]]:
+    """`premises`' checks before any lock, shared with `batch.dry_run`
+    (S-71 §6): the line's shape, the record's secret scan and the S-81
+    hold (:func:`_scan_or_refuse`), its status, and the new list with every
+    probe run once. Returns ``(path, record, new list, body lines)``.
+
+    Probes are read-only by construction (`premises.py`), so running them
+    here, in a preview as at apply time, changes nothing."""
+    problem = premises_line_problem(action, premises, ids)
+    if problem is not None:
+        raise SheetLineError(f"premises {record_id}: {problem}")
+    path = find_record_path(home, record_id)
+    _scan_or_refuse([path], note, texts=(("because", because),))
+    try:
+        _, record = require_status(
+            home, record_id, RESOLVABLE_STATUSES, verb="premises",
+            reason="premises belong to a lesson that is pending, deferred or placed",
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    env = _premise_probe_env(home)
+    today = _now_iso()[:10]
+    current = record.premises
+    lines: list[str] = []
+    if action == "set":
+        try:
+            entries = premises_mod.normalize_premises(premises, record_id=record_id)
+        except premises_mod.PremiseError as exc:
+            raise SheetLineError(f"premises {record_id}: {exc}") from None
+        if not entries and current == []:
+            raise SheetLineError(
+                f"premises {record_id}: the lesson already records that it rests on no "
+                "fact about the machine (`premises: []`); nothing to set"
+            )
+        old = {p.get("id"): p.get("baseline") for p in current or []}
+        for entry in entries:
+            entry["decided_at"] = today
+            if entry.get("probe") is None:
+                lines.append(f"{entry['id']}: no probe (written down, not checked by code)")
+                continue
+            entry["baseline"] = _premise_observed(record_id, entry, env)
+            lines.append(_premise_summary(entry["id"], old.get(entry["id"]), entry["baseline"]))
+        if not entries:
+            lines.append("premises: [] (the lesson rests on no fact about the machine)")
+        return path, record, entries, lines
+    assert isinstance(ids, list)  # premises_line_problem
+    if not current:
+        raise SheetLineError(
+            f"premises {record_id}: the lesson has no premises to rebaseline; write them "
+            "with action set"
+        )
+    by_id = {str(p.get("id")): p for p in current}
+    unknown = [pid for pid in ids if pid not in by_id]
+    if unknown:
+        raise SheetLineError(
+            f"premises {record_id}: no premise {unknown} on the lesson (it has {sorted(by_id)})"
+        )
+    unprobed = [pid for pid in ids if by_id[pid].get("probe") is None]
+    if unprobed:
+        raise SheetLineError(
+            f"premises {record_id}: {unprobed} has no probe, so it has no value to rebaseline"
+        )
+    for pid in ids:
+        premise = by_id[pid]
+        old_baseline = premise.get("baseline")
+        premise["baseline"] = _premise_observed(record_id, premise, env)
+        if premise["baseline"].get("state") == "contradicts-claim":
+            raise SheetLineError(_false_claim_refusal(record_id, pid, premise["baseline"]))
+        premise["decided_at"] = today
+        lines.append(_premise_summary(pid, old_baseline, premise["baseline"]))
+    return path, record, current, lines
+
+
+def _premises_record_under_lock(
+    home: Path, record_id: str, path: Path, before: Record
+) -> Record:
+    """The lesson as it stands NOW, read inside the commit lock, that the
+    ``premises`` line writes onto (gate round 1 on c82e783, MINOR). The
+    probes run before the lock (up to three, five seconds each), and a
+    person's sheet or CLI write to the same record in that window used to be
+    overwritten by the copy read before it. Now every other field keeps
+    what that write left; only the ``premises`` field is this line's. When
+    the ``premises`` field itself changed meanwhile, or the lesson left the
+    statuses the verb accepts, the line is refused and writes nothing: its
+    values were taken against a list that no longer stands."""
+    current = read_record_or_refuse(path)
+    if current.premises != before.premises:
+        raise VerbError(
+            f"premises {record_id}: the lesson's premises changed while its probes ran; "
+            "nothing was written -- decide it again against the list as it stands now"
+        )
+    if current.status not in RESOLVABLE_STATUSES:
+        raise VerbError(
+            f"premises {record_id}: the lesson became {current.status!r} while its probes "
+            "ran; nothing was written"
+        )
+    return current
+
+
+def premises(
+    home: Path | str,
+    record_id: str,
+    *,
+    action: str,
+    premises: list | None = None,
+    ids: list | None = None,
+    because: str | None = None,
+    note: str | None = None,
+    no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> VerbResult:
+    """Write a lesson's ``premises`` (02 §3a.10.7; S-NEXT-u4-steward).
+
+    ``action: set`` replaces the whole list with *premises* (``[]`` records
+    "rests on no fact about the machine"); ``action: rebaseline`` re-records
+    the premises named in *ids*. The runner runs each probe once and writes
+    ``baseline`` and ``decided_at`` itself; a first value that contradicts
+    the claim is recorded as ``contradicts-claim`` (`premises.make_baseline`),
+    which makes the lesson a ``premise-moved`` input the next night. Commit
+    ``self-learn: premises <action> lrn-…``; the body carries *because*,
+    *note* and each premise's old and new shown value."""
+    home = Path(home)
+    path, record, new_list, lines = _preflight_premises(
+        home, record_id, action=action, premises=premises, ids=ids,
+        because=because, note=note,
+    )
+    try:
+        premises_mod.normalize_premises(new_list, record_id=record_id)
+    except premises_mod.PremiseError as exc:
+        raise SheetLineError(f"premises {record_id}: {exc}") from None
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: premises {action} {record_id}"
+        body = "\n\n".join(
+            part.strip() for part in (because, note, "\n".join(lines)) if part and part.strip()
+        )
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            current = _premises_record_under_lock(home, record_id, path, record)
+            current.set_premises(new_list)
+            current.write(path)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(body or None, None, execution),
+            )
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="premises",
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,

@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field, replace as dataclass_replace
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import cast
 
 from ruamel.yaml import YAML, YAMLError
@@ -1095,71 +1095,111 @@ _FOLLOWUP_MOVED_REASON = (
     "This lesson's follow-up was closed after the lesson was last decided: what it "
     "waited on has happened. Decide whether the lesson is still true as written."
 )
+#: ... and one whose written premises moved (S-NEXT-u4-steward).
+_PREMISE_MOVED_REASON = (
+    "Something this lesson rests on was observed to have changed since it was last "
+    "decided ({ids}). Decide whether the lesson is still true as written."
+)
+
+
+def _premise_moved_reason(followup: bool, moved_ids: list[str]) -> str:
+    """The card line: the follow-up's, the premises', or both."""
+    parts = []
+    if moved_ids:
+        parts.append(_PREMISE_MOVED_REASON.format(ids=", ".join(moved_ids)))
+    if followup:
+        parts.append(_FOLLOWUP_MOVED_REASON)
+    if len(parts) < 2:
+        return " ".join(parts)
+    # both: one "Decide ..." sentence, the follow-up's, at the end
+    return parts[0].rsplit(" Decide", 1)[0] + " " + parts[1]
+
+
+def _followup_item(moved: steward_inputs.MovedFollowup) -> dict:
+    """A closed follow-up as the input's `moved` item (U3)."""
+    return {"source": "follow-up-done", "done_at": moved.done_on.isoformat()} | {
+        key: str(moved.done[key])
+        for key in ("action", "unblocks_on", "note", "done_note")
+        if moved.done.get(key) is not None
+    }
 
 
 def _premise_moved_inputs(
     home: Path, exclude: set[str] | None = None, *, manifests: list[dict] | None = None
 ) -> list[dict]:
-    """S-NEXT-u3-followup (premise-check design U3): one `premise-moved` input
-    per ROUTED lesson whose follow-up was closed after the lesson was last
-    decided (:func:`steward_inputs.moved_followups`). That is the live
-    trigger (`followup-done`) and the one-time pass for the follow-ups
-    closed before it existed, by one predicate.
+    """S-NEXT-u3-followup and S-NEXT-u4-steward (premise-check design U3, U4):
+    one `premise-moved` input per ROUTED lesson where something it rests on
+    moved -- its follow-up was closed after the lesson was last decided
+    (:func:`steward_inputs.moved_followups`: the live trigger and the
+    one-time pass for the follow-ups closed before it existed, by one
+    predicate), or one of its written premises moved
+    (:func:`steward_inputs.moved_premises`, which reads the daily sweep's
+    :func:`premise_sweep.confirmed_moves`). One lesson is one input: a
+    closed follow-up that still stands rides along with a later premise
+    move.
 
-    The version is `premise:<12 hex>`
-    (:func:`steward_inputs.premise_moved_version`, a hash of the closed
-    follow-up block), so a run that decided it -- applied, parked, refused
-    or abandoned -- never sees it again, and a follow-up closed again with
-    other words is a new input. A lesson the overseer holds is not offered
-    (S-81). A lesson another input of the run already names is not offered
-    twice: it waits for the next run. Only a case that decided what the lesson
-    says (placed, moved, rewrote or retired it, not parked) opened on a later
-    day than the closing takes the lesson out of the list
-    (:func:`steward_inputs.last_decision`); a suspected-violation case that
-    dismissed its events, a recurrence case or a parked case leaves it
-    offered. At most `steward_inputs.PREMISE_MOVED_PER_RUN`
-    rows, oldest closing first. Off when `premises.enabled` is false.
-    *manifests*: the committed steward manifests the caller has already read
-    (the due check reads them once per tick)."""
+    The version (:func:`steward_inputs.premise_moved_version`) is
+    `premise:<12 hex>`, a hash of the closed follow-up block and the moved
+    premises, so a run that decided it -- applied, parked, refused or
+    abandoned -- never sees it again, and a new move is a new input. A
+    lesson the overseer holds is not offered (S-81); a lesson another input
+    of the run already names is not offered twice (it waits for the next
+    run). Only a case that decided what the lesson says (placed, moved,
+    rewrote or retired it, not parked) opened on a later day than the
+    closing takes a closed follow-up out of the list
+    (:func:`steward_inputs.last_decision`). At most
+    `steward_inputs.PREMISE_MOVED_PER_RUN` rows, the longest-moved first.
+    Off when `premises.enabled` is false. *manifests*: the committed steward
+    manifests the caller has already read (the due check reads them once
+    per tick).
+
+    A broken probe is not an input by itself: every brief of the lesson
+    shows it (:func:`steward_inputs.broken_probes`)."""
     if not steward_inputs.premises_enabled(home):
         return []
-    found = steward_inputs.moved_followups(home)
-    if not found:
+    followups = {moved.record_id: moved for moved in steward_inputs.moved_followups(home)}
+    premise_moves = steward_inputs.moved_premises(home)
+    if not followups and not premise_moves:
         return []
     terminal = _terminal_versions(home, manifests=manifests)
     held = cases.held_lessons(home)
-    out: list[dict] = []
-    for moved in found:
-        rid = moved.record_id
+    candidates: list[tuple[str, str, dict]] = []
+    for rid in sorted(set(followups) | set(premise_moves)):
         if (exclude and rid in exclude) or rid in held:
             continue
-        version = steward_inputs.premise_moved_version(followup_done=moved.done)
+        followup = followups.get(rid)
+        found = premise_moves.get(rid)
+        written = list(found.items) if found is not None else []
+        version = steward_inputs.premise_moved_version(
+            followup_done=followup.done if followup is not None else None,
+            moved=[
+                (item["premise"], item["value_sha"], item["recorded_at"]) for item in written
+            ],
+        )
         if (rid, version) in terminal:
             continue
+        moved = ([_followup_item(followup)] if followup is not None else []) + written
         row: dict = {
-            "path": f"followup-done:{rid}",
+            "path": f"followup-done:{rid}" if not written else f"premise-moved:{rid}",
             "blob": version,
             "version": version,
             "record": rid,
             "kind": steward_inputs.INPUT_PREMISE_MOVED,
             "record_status": "routed",
-            "reason": _FOLLOWUP_MOVED_REASON,
-            "moved": [
-                {"source": "follow-up-done", "done_at": moved.done_on.isoformat()}
-                | {
-                    key: str(moved.done[key])
-                    for key in ("action", "unblocks_on", "note", "done_note")
-                    if moved.done.get(key) is not None
-                }
-            ],
+            "reason": _premise_moved_reason(
+                followup is not None, [str(item["premise"]) for item in written]
+            ),
+            "moved": moved,
         }
         predecessor = _premise_predecessor(home, rid)
         if predecessor:
             row["predecessor"] = predecessor
-        out.append(row)
-        if len(out) >= steward_inputs.PREMISE_MOVED_PER_RUN:
-            break
-    return out
+        since = [found.since] if written and found is not None and found.since else []
+        if followup is not None:
+            since.append(f"{followup.done_on.isoformat()}T00:00:00Z")
+        candidates.append((min(since) if since else "", rid, row))
+    candidates.sort(key=lambda entry: (entry[0], entry[1]))
+    return [row for _since, _rid, row in candidates[: steward_inputs.PREMISE_MOVED_PER_RUN]]
 
 
 #: A reconsider input's card line (`_reconsider_proposals`): the lesson an
@@ -1401,7 +1441,10 @@ def _declared_stage_file(rel: str) -> bool:
     )
 
 
-def _pair_problem(stage: Path, case_path: Path, home: Path | None = None) -> str | None:
+def _pair_problem(
+    stage: Path, case_path: Path, home: Path | None = None,
+    inputs: Mapping[str, Mapping] | None = None,
+) -> str | None:
     """What is wrong with ONE case/sheet pair, judged on its own, or `None`
     (2026-09-27, audit finding 3): the case's parked-reason rules, the
     sheet's own schema, and one sheet item for every lesson the case
@@ -1410,7 +1453,14 @@ def _pair_problem(stage: Path, case_path: Path, home: Path | None = None) -> str
     U3b (2026-09-28): a decided case that routes a lesson to an
     always-loaded line must evidence all three tests of the combined test
     (:mod:`always_loaded`); *home*, when given, resolves a dest-less
-    route's destination from the lesson's proposal."""
+    route's destination from the lesson's proposal.
+
+    S-NEXT-u4-steward: *inputs* (record id -> the packet's input row, when
+    the caller has the packet) carries the rules of a `premise-moved`
+    input: a placed lesson no case covers may be replaced or moved in a
+    `kind: resolution` case (:func:`_steward_replace_problem`,
+    :func:`_steward_move_problem`), and a `no-action` decision re-records
+    every moved premise (:func:`_premise_decision_problem`)."""
     try:
         case_data = _read_yaml(case_path)
     except ValueError as exc:
@@ -1495,7 +1545,19 @@ def _pair_problem(stage: Path, case_path: Path, home: Path | None = None) -> str
     # `decision.rewrite`; then the steward's own limits on `replace` (§2.8).
     replace_problem = cases.replace_items_problem(case_data, lines, label=case_path.name)
     if replace_problem is None and home is not None:
-        replace_problem = _steward_replace_problem(home, case_data, lines, label=case_path.name)
+        replace_problem = _steward_replace_problem(
+            home, case_data, lines, label=case_path.name,
+            uncovered_moved=_uncovered_premise_moved(inputs),
+        )
+    if replace_problem is None and home is not None:
+        replace_problem = _steward_move_problem(
+            home, case_data, lines, label=case_path.name,
+            uncovered_moved=_uncovered_premise_moved(inputs),
+        )
+    if replace_problem is None:
+        replace_problem = _premise_decision_problem(
+            case_data, lines, inputs, label=case_path.name
+        )
     if replace_problem is not None:
         return replace_problem
     return always_loaded.route_problem(
@@ -1523,8 +1585,101 @@ def _lesson_status(home: Path, record_id: str) -> str | None:
         return None
 
 
+def _uncovered_premise_moved(inputs: Mapping[str, Mapping] | None) -> frozenset[str]:
+    """The packet's `premise-moved` inputs that no case covers (the input
+    row names no `predecessor`): the placed lessons a `kind: resolution`
+    case may change (S-NEXT-u4-steward)."""
+    return frozenset(
+        str(rid) for rid, row in (inputs or {}).items()
+        if row.get("kind") == steward_inputs.INPUT_PREMISE_MOVED and not row.get("predecessor")
+    )
+
+
+def _moved_premises(row: Mapping | None) -> list[Mapping]:
+    """The written premises a `premise-moved` input says moved, in order
+    (its `moved` items with `source: premise`)."""
+    if not row or row.get("kind") != steward_inputs.INPUT_PREMISE_MOVED:
+        return []
+    return [
+        item for item in row.get("moved") or []
+        if isinstance(item, Mapping) and item.get("source") == "premise"
+    ]
+
+
+def _premise_decision_problem(
+    case_data: dict, items: list, inputs: Mapping[str, Mapping] | None, *, label: str
+) -> str | None:
+    """S-NEXT-u4-steward (02 §3a.10.7): a `no-action` decision on a
+    `premise-moved` input -- the lesson stands -- must re-record every
+    written premise that moved, or the same change comes back every night.
+    Re-recording is a `premises` line on the lesson: `action: set` (which
+    records every premise it keeps afresh and drops the rest) covers every
+    moved premise; `action: rebaseline` covers the ids it names, but only
+    for a premise judged by its value (`holds_if: changed`). A premise
+    judged by its claim (`absent`, `present`, `equals`, `version`) moved
+    because its claim is false now: a rebaseline would record that false
+    claim (`contradicts-claim`) and the lesson would stand on it for good,
+    so the verb refuses it (`verbs._preflight_premises`), and here only a
+    `set` that rewrites or drops it covers it (gate round 1 on c82e783,
+    MINOR).
+
+    Only `no-action` owes this (02 §3a.10.7 lists it for that outcome
+    alone). A `replace` carries the old lesson's premises to the new one
+    (`cases.REWRITE_FIELDS`); the brief advises a `premises` line before
+    the `replace` when they change too, and a moved premise left as it is
+    brings the new lesson back as its own input. A retire or a move owes
+    nothing; neither does a parked case (its sheet is never applied), a
+    follow-up, or a placement premise (U8): a placement premise is judged
+    by its state, not against a recorded value."""
+    if case_data.get("kind") == "parked" or not inputs:
+        return None
+    if case_data.get("outcome") != "no-action":
+        return None
+    lines = [item for item in items if isinstance(item, dict)]
+    for rid in case_data.get("records") or []:
+        moved = _moved_premises(inputs.get(str(rid)))
+        if not moved:
+            continue
+        ids = [str(item.get("premise")) for item in moved]
+        claimed = [
+            str(item.get("premise")) for item in moved
+            if item.get("holds_if") not in (None, "", "changed")
+        ]
+        covered: set[str] = set()
+        for item in lines:
+            if item.get("id") != rid or item.get("verb") != "premises":
+                continue
+            if item.get("action") == "set":
+                covered.update(ids)
+            elif item.get("action") == "rebaseline":
+                covered.update(
+                    str(pid) for pid in _listed(item.get("ids")) if str(pid) not in claimed
+                )
+        missing = [pid for pid in ids if pid not in covered]
+        if not missing:
+            continue
+        values = [pid for pid in missing if pid not in claimed]
+        claims = [pid for pid in missing if pid in claimed]
+        owed = []
+        if values:
+            owed.append(f"`action: rebaseline` with `ids: {values}`")
+        if claims:
+            owed.append(
+                f"`action: set` with the list it rests on now ({claims} judged its claim, "
+                "and that claim is false now: rewrite it as what is true, or drop it; a "
+                "rebaseline of a false claim is refused)"
+            )
+        return (
+            f"{label}: {rid}'s premises {missing} moved, and this `no-action` case keeps the "
+            f"lesson; add a `premises` line on {rid} with " + " or ".join(owed)
+            + ", or the same change comes back every night"
+        )
+    return None
+
+
 def _steward_replace_problem(
-    home: Path, case_data: dict, items: list, *, label: str
+    home: Path, case_data: dict, items: list, *, label: str,
+    uncovered_moved: frozenset[str] = frozenset(),
 ) -> str | None:
     """E3b, D-AUTHOR §2.8 ("Who may do what"), the steward's column, as far
     as code can tell it: a placed (routed) lesson is replaced only by a
@@ -1540,7 +1695,15 @@ def _steward_replace_problem(
     method says it (§7, §11). A parked case is never applied, so its
     tentative `replace` is not judged here. Which lessons a case may cover
     at all -- only this packet's -- is `_check_stage`'s rule, and the
-    S-81 hold is the ledger's."""
+    S-81 hold is the ledger's.
+
+    S-NEXT-u4-steward (02 §3a.10.7, the user's 2026-10-30 yes to the
+    design's Q2): a lesson in *uncovered_moved* -- a `premise-moved` input
+    no case covers, so there is no case for a reconsider to supersede -- is
+    the one placed lesson a `kind: resolution` case may replace (S-88's
+    rule for a deferred lesson no case covers, extended to this input; its
+    move is :func:`_steward_move_problem`'s). Merging stays refused for it
+    as for every placed lesson."""
     if case_data.get("kind") == "parked":
         return None
     for item in items:
@@ -1562,12 +1725,48 @@ def _steward_replace_problem(
                 "lesson; park the case (authority-unclear) with the merge as your "
                 "tentative answer"
             )
-        if case_data.get("kind") != "reconsider" and _lesson_status(home, rid) == "routed":
+        if (
+            case_data.get("kind") != "reconsider"
+            and not (case_data.get("kind") == "resolution" and rid in uncovered_moved)
+            and _lesson_status(home, rid) == "routed"
+        ):
             return (
                 f"{label}: replace {rid}: {rid} is placed -- the steward corrects a placed "
                 "lesson only through a kind: reconsider case that supersedes the case that "
                 "placed it; with no such case, park this one (authority-unclear) with your "
                 "tentative answer"
+            )
+    return None
+
+
+def _steward_move_problem(
+    home: Path, case_data: dict, items: list, *, label: str,
+    uncovered_moved: frozenset[str] = frozenset(),
+) -> str | None:
+    """S-NEXT-u4-steward (02 §3a.10.7, "`route`: the lesson moves (`batch`
+    applies it as `reroute`)"): a `route` line on a placed (routed) lesson
+    is that lesson's move. A `kind: reconsider` case may carry it (U3b,
+    S-72: `batch._reconsider_case_for`). A `kind: resolution` case may
+    carry it only for a lesson in *uncovered_moved*, a `premise-moved`
+    input no case covers; `batch._resolution_reroute_for` applies it as a
+    reroute for the steward and trusts this check to have refused every
+    other placed lesson, so that widening never reaches a lesson the
+    steward has no authority to move. A parked case is never applied."""
+    kind = case_data.get("kind")
+    if kind in ("parked", "reconsider"):
+        return None
+    for item in items:
+        if not isinstance(item, dict) or item.get("verb") != "route":
+            continue
+        rid = str(item.get("id"))
+        if kind == "resolution" and rid in uncovered_moved:
+            continue
+        if _lesson_status(home, rid) == "routed":
+            return (
+                f"{label}: route {rid}: {rid} is placed -- the steward moves a placed lesson "
+                "only through a kind: reconsider case that supersedes the case that placed "
+                "it, or on a premise-moved input no case covers; with neither, park this one "
+                "(authority-unclear) with the move as your tentative answer"
             )
     return None
 
@@ -1624,7 +1823,7 @@ def _quarantine_move(stage: Path, path: Path, quarantine: Path) -> str:
 
 def _check_stage(
     stage: Path, selected_ids: set[str] | None, quarantine: Path,
-    home: Path | None = None,
+    home: Path | None = None, inputs: Mapping[str, Mapping] | None = None,
 ) -> _StageCheck:
     """The runner's stage check, per case/sheet pair (2026-09-27, audit
     finding 3). Before, one problem anywhere refused the whole packet, and
@@ -1657,7 +1856,7 @@ def _check_stage(
         if not case_path.is_file():
             problems[stem] = "cases/*.yaml and sheets/*.yaml must have matching stems"
             continue
-        problem = _pair_problem(stage, case_path, home)
+        problem = _pair_problem(stage, case_path, home, inputs)
         if problem is not None:
             problems[stem] = problem
             continue
@@ -1966,12 +2165,30 @@ def _reconsidered_by(case_data: object) -> frozenset[str]:
     return frozenset(str(rid) for rid in case_data.get("records") or [])
 
 
+def _rerouted_by(case_data: object) -> frozenset[str]:
+    """S-NEXT-u4-steward: the record ids a staged ``kind: resolution`` case
+    that supersedes nothing covers -- the lines whose `route` on a routed
+    lesson the preview widens to the reroute apply time will make
+    (`batch._resolution_reroute_for`). The stage check
+    (:func:`_steward_move_problem`) has already refused such a line on any
+    lesson but a `premise-moved` input no case covers."""
+    if (
+        not isinstance(case_data, dict) or case_data.get("kind") != "resolution"
+        or case_data.get("supersedes")
+    ):
+        return frozenset()
+    return frozenset(str(rid) for rid in case_data.get("records") or [])
+
+
 def _forced_parking_reason(
-    home: Path, sheet_path: Path, reconsidered: frozenset[str] = frozenset()
+    home: Path, sheet_path: Path, reconsidered: frozenset[str] = frozenset(),
+    rerouted: frozenset[str] = frozenset(),
 ) -> str | None:
     """Return the policy reason that prevents this sheet from dispatching.
     *reconsidered* (S-73 item 6): the lines a staged reconsider case covers
-    preview with its widening, the same as :func:`_ledger_repair_message`."""
+    preview with its widening, the same as :func:`_ledger_repair_message`;
+    *rerouted* (S-NEXT-u4-steward): likewise for a staged resolution case's
+    move of a placed lesson (:func:`_rerouted_by`)."""
     raw = _read_yaml(sheet_path)
     if not isinstance(raw, dict):
         return None
@@ -1982,7 +2199,7 @@ def _forced_parking_reason(
     preview = batch.dry_run(
         home, _sheet_without_case(sheet_path), actor="steward",
         hook_activation=config.hook_activation_enabled(home),
-        reconsidered=reconsidered,
+        reconsidered=reconsidered, rerouted=rerouted,
     )
     previews = [item.route_preview or {} for item in preview.items if item.verb == "route"]
     # E3b: a `replace` line writes its new lesson the way a route does, so
@@ -2314,7 +2531,8 @@ def _ledger_repair_message(
         if not isinstance(case_data, dict) or case_data.get("kind") == "parked":
             continue
         reconsidered = _reconsidered_by(case_data)
-        if _forced_parking_reason(home, sheet_path, reconsidered) is not None:
+        rerouted = _rerouted_by(case_data)
+        if _forced_parking_reason(home, sheet_path, reconsidered, rerouted) is not None:
             continue
         if _refiling_reason(home, sheet_path) is not None:
             continue
@@ -2339,7 +2557,7 @@ def _ledger_repair_message(
         preview = batch.dry_run(
             home, sheet, actor="steward",
             hook_activation=config.hook_activation_enabled(home),
-            reconsidered=reconsidered,
+            reconsidered=reconsidered, rerouted=rerouted,
         )
         for line in _held_refusals(preview, sheet):
             if line.get("n") in {held_line["n"] for held_line in held_lines}:
@@ -2697,7 +2915,7 @@ def _prepared_recipe(
         if predecessor_ids and not case_data.get("supersedes") and stem in fill:
             case_data["supersedes"] = fill[stem]
         parking_reason = _forced_parking_reason(
-            home, sheet_path, _reconsidered_by(case_data)
+            home, sheet_path, _reconsidered_by(case_data), _rerouted_by(case_data)
         )
         if parking_reason is None and case_data.get("kind") == "parked":
             # The MODEL parked this case (method section 12): it could not
@@ -5204,6 +5422,9 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             # lessons had no valid case keeps the ones already decided.
             open_inputs = _open_inputs(packet_record)
             open_records = {row["record"] for row in open_inputs}
+            # S-NEXT-u4-steward: the stage check reads each input's kind
+            # (the rules of a `premise-moved` input, `_pair_problem`).
+            open_by_record = {str(row["record"]): row for row in open_inputs}
             inputs = [_brief_input(row) for row in open_inputs]
             if needs_model:
                 context = steward_prompt.RunContext(
@@ -5406,7 +5627,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 #: first pass's too, when a repair turn followed it.
                 quarantined_all: list[str] = []
                 try:
-                    check = _check_stage(stage, open_records, quarantine, home)
+                    check = _check_stage(stage, open_records, quarantine, home, open_by_record)
                     quarantined_all.extend(check.quarantined)
                 except ValueError as first_error:
                     if packet_record.get("repair_remaining", 0) <= 0:
@@ -5462,7 +5683,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     try:
                         if not repair.ok:
                             raise ValueError(repair.detail or repair.failure or "repair invocation failed")
-                        check = _check_stage(stage, open_records, quarantine, home)
+                        check = _check_stage(stage, open_records, quarantine, home, open_by_record)
                         quarantined_all.extend(check.quarantined)
                     except ValueError as exc:
                         second_error = exc
@@ -5497,7 +5718,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                             shutil.copytree(first_pass, stage)
                             second_error = None
                             try:
-                                check = _check_stage(stage, open_records, quarantine, home)
+                                check = _check_stage(stage, open_records, quarantine, home, open_by_record)
                                 quarantined_all.extend(check.quarantined)
                             except ValueError as exc:  # it passed before; never expected
                                 second_error = exc

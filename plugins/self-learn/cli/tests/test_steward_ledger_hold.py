@@ -288,6 +288,13 @@ def _row_followup_done(env, tmp):
     return {"id": A, "verb": "followup-done"}, A, None
 
 
+def _row_premises(env, tmp):
+    """S-NEXT-u4-steward: `premises` writes its own lesson's `premises`
+    field (a premise with no probe, so nothing is run)."""
+    return {"id": _routed(env, A), "verb": "premises", "action": "set",
+            "premises": [{"id": "p1", "claim": "the store is not shared", "probe": None}]}, A, None
+
+
 def _row_revise(env, tmp):
     return {"id": _pending(env, A), "verb": "revise", "section": "Trigger",
             "text": "About to edit the store while it runs.", "because": "clearer"}, A, None
@@ -351,6 +358,7 @@ _ROWS = {
     "confirm-held": _row_confirm_held,
     "link-contradicts": _row_link_contradicts,
     "followup-done": _row_followup_done,
+    "premises": _row_premises,
     "revise": _row_revise,
     "replace": _row_replace,
     "replace-also": _row_replace_also,
@@ -377,6 +385,7 @@ _DISPATCH_FN_ROWS = {
     "confirm_held": ["confirm-held"],
     "link_contradicts": ["link-contradicts"],
     "followup_done": ["followup-done"],
+    "premises": ["premises"],
     "revise": ["revise"],
     "replace_lesson": ["replace", "replace-also"],
     "restate_lesson": ["restate"],
@@ -391,11 +400,16 @@ _SHEET_KEYS = {
     "target": "another lesson, read for its existence only (never written)",
     "also": "other lessons a replace supersedes -- row replace-also",
     "text_from": "another lesson, read for its text only (never written)",
+    # S-NEXT-u4-steward: a `ledger` probe in `premises` may name another
+    # lesson; the runner only READS it (`premises._probe_ledger`).
+    "premises": "a lesson's premises; a ledger probe in it reads another lesson (never written)",
     **{key: "no lesson" for key in (
         "dest", "by", "follow_up", "unblocks_on", "follow_up_note", "allow_empty_glob",
         "note", "hook", "rules_paths", "until", "covered_by", "to", "append", "key",
         "event", "tolerate", "why", "section", "text", "because",
         "trigger", "instruction", "fact", "context", "type", "kind",
+        # S-NEXT-u4-steward: the `premises` line's action and premise ids
+        "action", "ids",
     )},
 }
 

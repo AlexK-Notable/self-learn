@@ -67,6 +67,7 @@ from . import cases
 from . import conditions
 from . import ledger_ops
 from . import lesson_writing
+from . import premises
 from . import records
 from . import verbs
 from . import statements
@@ -1203,6 +1204,7 @@ def _render_output_contract() -> str:
         "  per event you decide. `confirm-recurrence` with `tolerate: true` needs a `note`",
         "  saying why the rule stays; `dismiss-suspect`'s `why` is one of",
         f"  {_words(verbs.DISMISS_REASONS)}.",
+        *_premise_lines(),
         f"  These are never sheet verbs and are refused: {', '.join(sorted(batch.REFUSED_VERBS_LITERAL))}, and",
         "  anything starting `host `.",
         *_hook_lines(),
@@ -1268,6 +1270,44 @@ def _render_output_contract() -> str:
         out.append(f"\n--- {name}")
         out.append(body.rstrip("\n"))
     return "\n".join(out)
+
+
+def _premise_lines() -> list[str]:
+    """S-NEXT-u4-steward: a `premise-moved` input and the `premises` verb,
+    from the constants the checkers read (`premises.py`'s catalog and
+    vocabularies, `verbs.PREMISES_ACTIONS`)."""
+    probe_fields = [
+        f"      {kind:<13} {', '.join(sorted(premises._PROBE_FIELDS[kind] - {'kind'}))}"
+        for kind in sorted(premises.PROBE_KINDS)
+    ]
+    return [
+        "  A PREMISE-MOVED INPUT (method section 17) is a placed lesson where something it rests",
+        "  on changed. Decide it in a `kind: reconsider` case superseding the case that covers it",
+        "  (the runner fills it in), or, when its brief says no case covers it, in a `kind:",
+        "  resolution` case: on this input, and only here, a `replace`, `retire` or `route` (a",
+        "  move, applied as a reroute; give `dest`) of a placed lesson in a resolution case is",
+        "  yours. Outcomes: `no-action`, `replaced`, `retire`, `route`, or park. A `no-action`",
+        "  decision needs a `premises` line on the lesson re-recording every moved premise the",
+        "  brief names, or the runner refuses the case: the same change would come back every",
+        "  night. `rebaseline` re-records a premise judged by its value (`holds_if: changed`); a",
+        "  premise judged by its claim moved because the claim is false now, and a rebaseline of",
+        "  it is refused: rewrite or drop it with `set`. A `replace` carries the lesson's",
+        "  premises to the new lesson; put a `premises` line BEFORE it when they change too.",
+        f"  `premises` takes `action`: {_words(verbs.PREMISES_ACTIONS)}. `action: set` with `premises:`, the",
+        "  whole list (`[]` for a lesson that rests on no fact about the machine), at most",
+        f"  {premises.MAX_PREMISES} entries and at most {premises.MAX_PROBED} with a probe. An entry: `id` "
+        f"(p1..p{premises.MAX_PREMISES}), `claim` (one",
+        "  line), and optionally `probe` (null for a behaviour no check can see), `holds_if`",
+        f"  ({_words(premises.HOLDS_IF_VALUES)}; default changed), `match` (the literal text the",
+        "  value must contain, lack, equal or satisfy; none for changed), `on_change`",
+        f"  ({_words(premises.ON_CHANGE_VALUES)}; refresh only with changed), `source`. A probe is a",
+        "  mapping with `kind` and that kind's fields:",
+        *probe_fields,
+        "  `action: rebaseline` with `ids:` (a list of premise ids) re-records those premises'",
+        "  values now. Never write `baseline` or `decided_at`: the runner runs each probe once",
+        "  and records them. A probe that cannot observe anything now refuses the line; a",
+        "  probe never reads a credential file.",
+    ]
 
 
 def _hook_lines() -> list[str]:

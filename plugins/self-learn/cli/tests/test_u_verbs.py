@@ -246,14 +246,20 @@ class TestPhaseBoundary:
         S-NEXT-cures-f (2026-10-31, C4): 17 grows to 18 -- `restate` joins,
         the overseer's way to write a corrected version of a closed lesson as
         a new pending lesson. Not a Phase-2 verb; the membership pin sits
-        beside the count."""
+        beside the count.
+
+        S-NEXT-u4-steward (2026-10-31, integration): 18 grows to 19 --
+        `premises` joins beside `restate`, the steward's way to write or
+        re-baseline a lesson's premises (02 §3a.10.7)."""
         phase2_verbs = {"reroute", "followup-add", "reclassify", "host remove", "bucket prune"}
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
         assert "revise" in batch.PERMITTED_VERBS  # U4: the one deliberate addition
         assert "retire" in batch.PERMITTED_VERBS  # S-67: the other deliberate addition
         assert "replace" in batch.PERMITTED_VERBS  # E1 (2026-10-10): the third
         assert "restate" in batch.PERMITTED_VERBS  # S-NEXT-cures-f (C4): the fourth
-        assert len(batch.PERMITTED_VERBS) == 18
+        # S-NEXT-u4-steward (2026-10-31): `premises`, the fifth (02 §3a.10.7).
+        assert "premises" in batch.PERMITTED_VERBS
+        assert len(batch.PERMITTED_VERBS) == 19
 
     def test_phase1_touches_no_host(self, tmp_path, monkeypatch):
         """PH2: a fixture with a registered host (env's ``host_a``) runs
