@@ -692,14 +692,26 @@ def _premise_item(premise: Mapping[str, Any], move: Any) -> dict:
     return item
 
 
-def _waits_a_week(premise: Mapping[str, Any], how: str, today: date) -> bool:
-    """D7.5: a probe-triggered move of a premise decided less than
-    :data:`PROBE_REDECIDE_DAYS` ago waits. A `ledger` move (an act by a
-    person or a ledger verb) and a `contradicts-claim` baseline (the
-    decision that wrote it asked for exactly this look) do not."""
+def _lesson_decided_at(record: Record) -> datetime | None:
+    """The newest ``decided_at`` among the lesson's written premises: when a
+    decision last wrote or re-recorded any of them."""
+    stamps = [chrono.to_dt(p.get("decided_at")) for p in record.premises or []]
+    found = [stamp for stamp in stamps if stamp is not None]
+    return max(found) if found else None
+
+
+def _waits_a_week(how: str, today: date, decided: datetime | None) -> bool:
+    """D7.5 and 02 §3a.10.5 (5): one re-decision per LESSON per
+    :data:`PROBE_REDECIDE_DAYS` days triggered by a probe, so a
+    probe-triggered move waits while any premise of the lesson was decided
+    less than that long ago (*decided*, :func:`_lesson_decided_at`;
+    integration 2026-10-31, the u4 gate's MINOR: it was counted per
+    premise, so a lesson's second premise was offered two days after its
+    first was decided). A `ledger` move (an act by a person or a ledger
+    verb) and a `contradicts-claim` baseline (the decision that wrote it
+    asked for exactly this look) do not wait."""
     if how != "probe":
         return False
-    decided = chrono.to_dt(premise.get("decided_at"))
     return decided is not None and (today - decided.date()).days < PROBE_REDECIDE_DAYS
 
 
@@ -763,7 +775,8 @@ def moved_premises(
         if premise is None:
             continue
         item = _premise_item(premise, move)
-        if _waits_a_week(premise, str(item["how"]), today):
+        assert record is not None  # a premise was found on it
+        if _waits_a_week(str(item["how"]), today, _lesson_decided_at(record)):
             continue
         found.setdefault(move.record_id, []).append(item)
     return {

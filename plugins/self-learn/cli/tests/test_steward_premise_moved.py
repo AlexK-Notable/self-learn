@@ -587,6 +587,24 @@ def test_a_probe_move_waits_a_week_after_the_premise_was_decided(tmp_path):
     assert _moved(home) == [A]  # control: a week on, the same move is offered
 
 
+def test_the_week_s_wait_is_per_lesson_not_per_premise(tmp_path):
+    """Integration 2026-10-31 (u4 gate MINOR): 02 §3a.10.5 (5) allows one
+    probe-triggered re-decision per LESSON per seven days. A lesson whose
+    other premise was decided two days ago waits, even though the premise
+    that moved was decided ten days ago."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    moved = _with_baseline(P_CHANGED, "", at=_iso(-10), decided=_day(-10))
+    _premised(home, A, moved)
+    _observe(home, A, P_CHANGED, BUS, _iso(-1))
+    _observe(home, A, P_CHANGED, BUS, _iso(-0.5))
+    assert _moved(home) == [A]  # control: alone, the ten-day-old premise moves it
+    other = {"id": "p2", "claim": "the agent unit's BindsTo was re-checked", "probe": PROBE}
+    _premised(home, A, moved, _with_baseline(other, BUS, at=_iso(-2), decided=_day(-2)))
+    assert _moved(home) == []
+
+
 def test_a_refresh_premise_never_reaches_the_steward(tmp_path):
     env = make_env(tmp_path)
     home = env.ledger
