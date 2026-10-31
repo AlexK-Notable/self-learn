@@ -218,7 +218,7 @@ def read_history(cache_dir: Path) -> History:
             continue
         if not isinstance(row, dict):
             continue
-        rid, pid = row.get("id"), row.get("premise")
+        rid, pid = row.get("record"), row.get("premise")
         if not isinstance(rid, str) or not isinstance(pid, str):
             continue
         if not isinstance(row.get("sweep"), str) or row.get("state") not in (
@@ -231,7 +231,7 @@ def read_history(cache_dir: Path) -> History:
 
 def _store_history(cache_dir: Path, history: History) -> None:
     rows = [row for key in sorted(history) for row in history[key]]
-    rows.sort(key=lambda row: (str(row.get("sweep")), str(row.get("id")), str(row.get("premise"))))
+    rows.sort(key=lambda row: (str(row.get("sweep")), str(row.get("record")), str(row.get("premise"))))
     text = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
     _write_cache_file(observations_path(cache_dir), text)
 
@@ -252,6 +252,19 @@ def _store_state(cache_dir: Path, state: Mapping[str, Any]) -> None:
 def _epoch(value: object) -> float | None:
     when = chrono.to_dt(value)
     return when.timestamp() if when is not None else None
+
+
+def _last_attempt(state: Mapping[str, Any], now: float) -> float | None:
+    """When the last attempt began, or ``None`` when there is no usable
+    marker. A future-dated stamp (a clock that was set wrong once) is not
+    usable: it would otherwise hold the sweep off until that date, which
+    may be a year away (S-68 found the same failure in the other jobs). It
+    is read as "no marker", so the sweep is due now and writes a good marker
+    when it starts. (``serve._attempt_epoch`` reads a future stamp as "now";
+    that suits the schedule-based jobs, where "now" is already past today's
+    slot, but an interval check against "now" would never come due.)"""
+    last = _epoch(state.get("last_attempt_at"))
+    return None if last is None or last > now else last
 
 
 # ------------------------------------------------------------ the lessons
@@ -324,9 +337,17 @@ def _row(
     detail: str = "",
     group: str | None = None,
 ) -> dict:
+    """One line of ``observations.jsonl``. The keys ``record``, ``premise``
+    and ``observed_at`` plus the :class:`premises.Observation` fields
+    (``state``, ``value_sha``, ``shown``, ``claim``, ``reason``) sit at the
+    top level on purpose: the steward's own reader
+    (``steward_inputs.read_observations``) reads this very file by those
+    names. Rename one and a confirmed probe move silently stops reaching the
+    steward; ``test_the_steward_reader_reads_what_the_sweep_wrote`` keeps
+    the two together."""
     return {
         "sweep": sweep,
-        "id": record_id,
+        "record": record_id,
         "premise": premise_id,
         "kind": kind,
         "psha": sig,
@@ -335,7 +356,7 @@ def _row(
         "shown": obs.shown,
         "claim": obs.claim,
         "reason": obs.reason,
-        "at": obs.observed_at,
+        "observed_at": obs.observed_at,
         "failing": failing,
         "detail": detail,
         "group": group,
@@ -349,8 +370,22 @@ def _obs(row: Mapping) -> premises.Observation:
         shown=str(row.get("shown") or ""),
         claim=str(row.get("claim") or premises.CLAIM_UNJUDGED),
         reason=str(row.get("reason") or ""),
-        observed_at=str(row.get("at") or row.get("sweep")),
+        observed_at=str(row.get("observed_at") or row.get("sweep")),
     )
+
+
+def _failed_probe_rows(record: Record, sweep: str, why: str) -> list[dict]:
+    """``unavailable`` rows for a lesson whose probes raised, so a failed
+    night is written down as "could not look" and not as silence."""
+    rows: list[dict] = []
+    for premise in record.premises or []:
+        probe = premise.get("probe")
+        if probe is None:
+            continue
+        kind = KIND_LEDGER if isinstance(probe, Mapping) and probe.get("kind") == "ledger" else KIND_PROBE
+        obs = premises.unavailable_observation(f"the probe raised ({why})", observed_at=sweep)
+        rows.append(_row(sweep, record.id, str(premise.get("id")), kind, obs, sig=_premise_sig(premise)))
+    return rows
 
 
 def _written_rows(record: Record, env: premises.ProbeEnv, sweep: str) -> list[dict]:
@@ -429,7 +464,9 @@ def _reach_fact(verdict: reachability.Verdict, hook_gate: bool) -> _Fact:
     return _Fact(rid, REACH, "unavailable", detail=f"unmeasurable: {verdict.reason}")
 
 
-def _host_for(home: Path, bucket: Bucket, record: Record, verdict: reachability.Verdict):
+def _host_for(
+    home: Path, bucket: Bucket, record: Record, verdict: reachability.Verdict, claude_dir: Path
+):
     """``(host path, mode)`` for the host a write of this lesson goes
     through, or ``None``. User scope is a plain host by design (§4.8, the
     same literal ``verbs._resolve_target`` uses); a skill-bucket lesson and a
@@ -437,15 +474,16 @@ def _host_for(home: Path, bucket: Bucket, record: Record, verdict: reachability.
     host. Raises :class:`HostsError` for a registry that cannot be read."""
     from .selfcheck import _managed_host_for
 
+    user_md = claude_dir / "CLAUDE.md"  # the sandbox's, never the operator's (N-8)
     if record.scope == "user" and verdict.destination != "hook":
-        host = _managed_host_for(home, bucket, record)
+        host = _managed_host_for(home, bucket, record, user_claude_md=user_md)
         return (host, "plain") if host is not None else None
     if verdict.destination == "hook" or bucket.scope == "skill":
         root = load_hosts(home).skills_root
         host = Path(root) if root is not None else None
         registration = "skills-root"
     else:
-        host = _managed_host_for(home, bucket, record)
+        host = _managed_host_for(home, bucket, record, user_claude_md=user_md)
         registration = "project"
     if host is None:
         return None
@@ -453,13 +491,13 @@ def _host_for(home: Path, bucket: Bucket, record: Record, verdict: reachability.
 
 
 def _writable_fact(
-    home: Path, bucket: Bucket, record: Record, verdict: reachability.Verdict
+    home: Path, bucket: Bucket, record: Record, verdict: reachability.Verdict, claude_dir: Path
 ) -> _Fact:
     rid = record.id
     if not verdict.target:
         return _Fact(rid, WRITABLE, "unavailable", detail="the lesson's target cannot be resolved")
     try:
-        placed = _host_for(home, bucket, record, verdict)
+        placed = _host_for(home, bucket, record, verdict, claude_dir)
     except HostsError as exc:
         return _Fact(rid, WRITABLE, "unavailable", detail=f"hosts.yaml cannot be read ({type(exc).__name__})")
     if placed is None:
@@ -490,7 +528,7 @@ class _Region:
 
 
 def _region_for(
-    home: Path, bucket: Bucket, record: Record, verdict: reachability.Verdict
+    home: Path, bucket: Bucket, record: Record, verdict: reachability.Verdict, claude_dir: Path
 ) -> _Region | None:
     """The compile record's verdict for this lesson's managed region, the
     way ``selfcheck._check_drift`` reads it. ``None``: no region applies
@@ -500,7 +538,7 @@ def _region_for(
     if not verdict.target:
         return None
     target = Path(verdict.target)
-    host = _managed_host_for(home, bucket, record)
+    host = _managed_host_for(home, bucket, record, user_claude_md=claude_dir / "CLAUDE.md")
     if host is None:
         return _Region(record, target, "", None, None, "the lesson's host cannot be resolved")
     scope_kind = "user" if bucket.scope == "user" else ("skill" if bucket.scope == "skill" else "project")
@@ -605,6 +643,24 @@ def _intact_facts(
     return facts
 
 
+def _unavailable_placement_rows(
+    placed: list[tuple[Bucket, Record]], reason: str, sweep: str
+) -> list[dict]:
+    """An ``unavailable`` row for every placement premise a placed lesson
+    has, for a sweep whose instrument failed outright. The row is written
+    (not left out) so the lesson's last real reading does not stay "latest":
+    a failing ``@intact`` from last week must not keep counting while
+    nothing could be measured. ``unavailable`` never counts either way."""
+    out: list[dict] = []
+    for _bucket, rec in placed:
+        destination = (rec.routing or {}).get("destination")
+        if destination not in _PLACED_DESTINATIONS:
+            continue
+        ids = [REACH, WRITABLE] + ([INTACT] if destination in _REGION_DESTINATIONS else [])
+        out.extend(_fact_row(_Fact(rec.id, pid, "unavailable", detail=reason), sweep) for pid in ids)
+    return out
+
+
 def _placement_rows(
     home: Path, placed: list[tuple[Bucket, Record]], claude_dir: Path, sweep: str
 ) -> list[dict]:
@@ -613,14 +669,9 @@ def _placement_rows(
     try:
         verdicts = {v.record_id: v for v in reachability.reachability_rows(home, claude_dir)}
     except Exception as exc:  # noqa: BLE001 -- the instrument failing is "unavailable", not a crash
-        verdicts = {}
-        reason = f"reachability could not be measured ({type(exc).__name__})"
-        return [
-            _fact_row(_Fact(rec.id, premise_id, "unavailable", detail=reason), sweep)
-            for _b, rec in placed
-            if (rec.routing or {}).get("destination") in _PLACED_DESTINATIONS
-            for premise_id in (REACH, WRITABLE)
-        ]
+        return _unavailable_placement_rows(
+            placed, f"reachability could not be measured ({type(exc).__name__})", sweep
+        )
     hook_gate = config.hook_activation_enabled(home)
     facts: list[_Fact] = []
     regions: list[_Region] = []
@@ -630,11 +681,11 @@ def _placement_rows(
         if verdict is None:  # not in the reachability domain (e.g. `reference`)
             continue
         facts.append(_reach_fact(verdict, hook_gate))
-        facts.append(_writable_fact(home, bucket, record, verdict))
+        facts.append(_writable_fact(home, bucket, record, verdict, claude_dir))
         if verdict.destination in _MANAGED_DESTINATIONS and verdict.target:
             members_by_target.setdefault(Path(verdict.target), []).append(record)
         if verdict.destination in _REGION_DESTINATIONS:
-            region = _region_for(home, bucket, record, verdict)
+            region = _region_for(home, bucket, record, verdict, claude_dir)
             if region is None:
                 facts.append(
                     _Fact(record.id, INTACT, "unavailable", detail="the lesson's target cannot be resolved")
@@ -672,18 +723,27 @@ def judge_probe(premise: Mapping, rows: list[dict]) -> Judgement:
     Rows made under another probe or judgment are ignored. See the module
     docstring for what counts as a confirmed move."""
     sig = _premise_sig(premise)
-    mine = [r for r in rows if r.get("psha") == sig]
+    baseline = premise.get("baseline") if isinstance(premise.get("baseline"), Mapping) else {}
+    # An observation made before the baseline was recorded describes the
+    # world the steward had already looked at (it re-recorded the baseline
+    # from a flapping apply-time probe, say): it never counts toward "two
+    # sweeps in a row". The steward's own reader drops them the same way.
+    since_baseline = chrono.to_dt(baseline.get("observed_at"))
+    mine = [
+        r for r in rows
+        if r.get("psha") == sig
+        and (since_baseline is None or _later_than(r.get("observed_at"), baseline.get("observed_at")))
+    ]
     if not mine:
         return Judgement("no-history")
     latest = mine[-1]
     verdict = premises.verdict(premise, _obs(latest))
     if verdict != premises.VERDICT_MOVED:
         return Judgement(verdict, False, latest)
-    baseline = premise.get("baseline") if isinstance(premise.get("baseline"), Mapping) else {}
     if latest.get("kind") == KIND_LEDGER:
         need = 1
     elif baseline.get("state") == "contradicts-claim" and _later_than(
-        latest.get("at"), baseline.get("observed_at")
+        latest.get("observed_at"), baseline.get("observed_at")
     ):
         need = 1  # the observation that wrote it was the first sighting
     else:
@@ -699,7 +759,7 @@ def judge_probe(premise: Mapping, rows: list[dict]) -> Judgement:
             break
     run_rows.reverse()
     confirmed = len(run_rows) >= need
-    since = str(run_rows[0].get("at") or run_rows[0].get("sweep")) if run_rows else None
+    since = str(run_rows[0].get("observed_at") or run_rows[0].get("sweep")) if run_rows else None
     return Judgement(premises.VERDICT_MOVED, confirmed, latest, since)
 
 
@@ -721,7 +781,7 @@ def judge_placement(rows: list[dict]) -> Judgement:
         else:
             break
     run_rows.reverse()
-    since = str(run_rows[0].get("at") or run_rows[0].get("sweep"))
+    since = str(run_rows[0].get("observed_at") or run_rows[0].get("sweep"))
     return Judgement(premises.VERDICT_MOVED, len(run_rows) >= STABLE_SWEEPS, latest, since)
 
 
@@ -781,7 +841,7 @@ def confirmed_moves(
                     claim=str(premise.get("claim")), value_sha=str(judged.row.get("value_sha")),
                     shown=str(judged.row.get("shown") or ""),
                     baseline_shown=str(baseline.get("shown") or ""),
-                    since=str(judged.since), observed_at=str(judged.row.get("at")),
+                    since=str(judged.since), observed_at=str(judged.row.get("observed_at")),
                     on_change="re-decide",
                 )
             )
@@ -795,7 +855,7 @@ def confirmed_moves(
                     record_id=record.id, premise_id=pid, kind=KIND_PLACEMENT,
                     claim=_PLACEMENT_CLAIMS[pid], value_sha=str(judged.row.get("value_sha")),
                     shown=str(judged.row.get("shown") or ""), baseline_shown="",
-                    since=str(judged.since), observed_at=str(judged.row.get("at")),
+                    since=str(judged.since), observed_at=str(judged.row.get("observed_at")),
                     detail=str(judged.row.get("detail") or ""), group=judged.row.get("group"),
                 )
             )
@@ -880,6 +940,9 @@ class SweepResult:
     moved: int = 0
     refreshed: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    #: ``"<intent id>: <reason>"`` per STOPPED intent that refused a refresh
+    #: (S-62): ``serve`` prints each on its own line (02 §7.2a.7).
+    stopped: list[str] = field(default_factory=list)
 
 
 def is_due(home: Path | str, cache_dir: Path, now: float) -> bool:
@@ -890,7 +953,7 @@ def is_due(home: Path | str, cache_dir: Path, now: float) -> bool:
     home = Path(home)
     if not enabled(home):
         return False
-    last = _epoch(read_state(cache_dir).get("last_attempt_at"))
+    last = _last_attempt(read_state(cache_dir), now)
     if last is not None and now - last < SWEEP_INTERVAL_SECS:
         return False
     return _has_resolved(home)
@@ -924,7 +987,7 @@ def run(
     if not force and not enabled(home):
         return SweepResult("disabled", sweep_at)
     state = read_state(cache_dir)
-    last = _epoch(state.get("last_attempt_at"))
+    last = _last_attempt(state, now_epoch)
     if not force and last is not None and now_epoch - last < MIN_SWEEP_GAP_SECS:
         return SweepResult("too-soon", sweep_at)
     # The attempt marker first: a sweep that dies waits for the next day.
@@ -949,22 +1012,33 @@ def run(
             rows.extend(_written_rows(record, probe_env, sweep_at))
         except Exception as exc:  # noqa: BLE001 -- one lesson never takes the sweep down
             result.errors.append(f"{record.id}: probes failed ({type(exc).__name__})")
+            rows.extend(_failed_probe_rows(record, sweep_at, type(exc).__name__))
     result.probes = len(rows)
     if placed:
         try:
             placement = _placement_rows(home, placed, _claude_dir(claude_dir), sweep_at)
         except Exception as exc:  # noqa: BLE001
-            placement = []
+            placement = _unavailable_placement_rows(
+                placed, f"placement premises could not be measured ({type(exc).__name__})", sweep_at
+            )
             result.errors.append(f"placement premises failed ({type(exc).__name__})")
         rows.extend(placement)
         result.placement = len(placement)
     result.unavailable = sum(1 for row in rows if row["state"] == premises.OBS_UNAVAILABLE)
 
     history = read_history(cache_dir)
-    fresh: History = {}
+    # Carry every earlier observation forward: a lesson whose sweep could not
+    # run (a probe that raised, a record that did not parse) must keep its
+    # history, or one bad night would reset the two-sweep count. Only a
+    # lesson that is no longer routed is dropped, and only when every record
+    # file parsed (else it may merely be one that did not parse tonight).
+    live = {rec.id for _b, rec in placed}
+    fresh: History = {
+        key: list(kept) for key, kept in history.items() if unparseable or key[0] in live
+    }
     for row in rows:
-        key = (str(row["id"]), str(row["premise"]))
-        fresh[key] = [*history.get(key, []), row][-HISTORY_KEEP:]
+        key = (str(row["record"]), str(row["premise"]))
+        fresh[key] = [*fresh.get(key, []), row][-HISTORY_KEEP:]
     _store_history(cache_dir, fresh)
 
     result.moved = len(confirmed_moves(home, cache_dir, placed=placed, history=fresh))
@@ -980,7 +1054,8 @@ def run(
         try:
             done = _refresh_record(home, record_id, updates)
         except intents.LedgerStoppedError as exc:
-            result.errors.append(f"{record_id}: refresh refused, the ledger is stopped ({exc})")
+            result.errors.append(f"{record_id}: refresh refused, the ledger is stopped")
+            result.stopped.extend(exc.result.stopped)
             break
         except Exception as exc:  # noqa: BLE001 -- the next sweep retries it
             result.errors.append(f"{record_id}: refresh failed ({type(exc).__name__}: {exc})")
@@ -1104,15 +1179,15 @@ def check(
             )
     if placed:
         for row in _placement_rows(home, placed, _claude_dir(claude_dir), at):
-            if record_id is not None and row["id"] != record_id:
+            if record_id is not None and row["record"] != record_id:
                 continue
-            prior = history.get((row["id"], row["premise"]), [])
+            prior = history.get((row["record"], row["premise"]), [])
             judged = judge_placement([*prior, row])
             verdict = judged.verdict if judged.verdict != "no-history" else premises.VERDICT_UNAVAILABLE
             out.append(
                 CheckRow(
-                    row["id"], row["premise"], KIND_PLACEMENT, _PLACEMENT_CLAIMS[row["premise"]], verdict,
-                    _confirmed_label(judged, None), "", "", str(row.get("shown") or ""), str(row.get("at")),
+                    row["record"], row["premise"], KIND_PLACEMENT, _PLACEMENT_CLAIMS[row["premise"]], verdict,
+                    _confirmed_label(judged, None), "", "", str(row.get("shown") or ""), str(row.get("observed_at")),
                     str(row.get("reason") or row.get("detail") or ""),
                 )
             )
