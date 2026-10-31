@@ -32,7 +32,9 @@ the real file).
 It belongs to the case/sheet pair whose case carries ``decision.skill``
 naming it (:func:`step_for_case`). A case whose ``decision.skill`` names an
 owned skill and that wrote no folder routes lessons into that skill: no
-skill step, ordinary routing. A case with ``outcome: retire`` and
+skill step, ordinary routing. So is a case that names a skill self-learn
+does not own, writes no folder and routes nothing into ``new-skill:<name>``
+(a declined proposal, a route into a linked skill). A case with ``outcome: retire`` and
 ``decision.skill`` retires the skill once its sheet has moved every lesson
 out. Each step is checked here with ``skill_writer.check`` before anything
 reaches the ledger; a refused check drops the pair. A folder no case names
@@ -69,7 +71,7 @@ import io
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, cast
+from typing import Any, Callable, Collection, Mapping, cast
 
 from ruamel.yaml import YAML
 
@@ -196,13 +198,23 @@ def writing_mode(home: Path | str) -> tuple[str, str | None]:
     when the value in ``config.yaml`` is not one of the three.
 
     Read from ``config.yaml`` only: no environment variable and no override
-    channel (S-NEXT-skills part 6). A missing key is the default, ``auto``.
+    channel (S-NEXT-skills part 6). A missing key is the default, ``auto``;
+    a ``config.yaml`` that cannot be read reads as ``off``.
     Any other value -- a typo, ``null``, a YAML boolean such as ``false`` --
     reads as ``off``, never as the default, so a mistyped rollback fails
     closed. (``settings.resolve_setting`` would read a boolean as the
     default; that is why the runner does not use it here.)"""
     found = config.settings_leaf(home, "overseer", "skill_writing")
     if found is None:
+        broken = _config_unreadable(home)
+        if broken is not None:
+            # Fix round 1 (gate r1 NIT): `settings_leaf` answers None for a
+            # config.yaml it cannot read as it does for a missing key; a
+            # broken file must not read as the default.
+            return MODE_OFF, (
+                f"config.yaml {broken}, so overseer.skill_writing cannot be read; it reads as "
+                "off, so every skill this run builds or changes is kept as a draft"
+            )
         return MODE_AUTO, None
     raw = found[1]
     if isinstance(raw, str) and raw in settings.SKILL_WRITING_MODES:
@@ -211,6 +223,28 @@ def writing_mode(home: Path | str) -> tuple[str, str | None]:
         f"overseer.skill_writing is {raw!r} in config.yaml, which is not auto, on or off; "
         "it reads as off, so every skill this run builds or changes is kept as a draft"
     )
+
+
+def _config_unreadable(home: Path | str) -> str | None:
+    """Why ``config.yaml`` cannot be read for ``overseer.skill_writing`` --
+    it does not parse, its top level is not a mapping, or ``overseer`` is
+    not a mapping -- or ``None`` when it reads (or is absent or empty, which
+    is the default). Says what is wrong, never the file's text."""
+    path = config.config_path(home)
+    if not path.is_file():
+        return None
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 -- YAMLError, OSError, UnicodeDecodeError
+        return f"could not be read ({type(exc).__name__})"
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        return "has a top level that is not a mapping"
+    section = data.get("overseer")
+    if section is not None and not isinstance(section, dict):
+        return "has an overseer section that is not a mapping"
+    return None
 
 
 def trial_path(home: Path | str) -> Path:
@@ -618,12 +652,25 @@ def _refusal(name: str, kind: str | None, problems: tuple[str, ...] | list[str])
 
 def step_for_case(
     home: Path | str, stage: Path, case_data: dict, *, staged: StagedSkills, deploy: bool,
+    sheet_dests: Collection[str] = (),
 ) -> SkillStep | None:
     """The skill step a staged case carries, checked; ``None`` when it
     carries none. Raises :class:`SkillPairError` (the pair is dropped) when
     the step cannot be made: a new skill without its folder, a retirement of
     a skill self-learn does not own, a folder the template check, the name
-    check, the secret scan or the compare-and-swap refuses."""
+    check, the secret scan or the compare-and-swap refuses.
+
+    *sheet_dests* is the ``dest`` of every line of the pair's sheet. A case
+    may name in ``decision.skill`` a skill self-learn does not own without
+    building it: it declines a steward's skill proposal (the successor of a
+    ``skill-proposal`` parked case carries the proposal's
+    ``decision.skill``), or it routes lessons into a linked skill a person
+    owns (D17). Such a case, with no ``skills/<name>/`` folder, carries no
+    skill step and is an ordinary pair (fix round 1, gate r1 MAJOR: before,
+    it was dropped whole, and a declined proposal's parked case stayed open
+    week after week). Only a case whose sheet routes a lesson into
+    ``new-skill:<name>`` is building that skill, so only then is the missing
+    folder a refusal."""
     name = claimed_name(case_data)
     if name is None:
         return None
@@ -646,10 +693,15 @@ def step_for_case(
     if not folder.is_dir():
         if owned:
             return None  # lessons routed into an owned skill: ordinary routing
-        raise SkillPairError(
-            f"decision.skill names {name}, which is not a skill self-learn owns, and no "
-            f"{STAGE_SKILLS_DIR}/{name}/ folder was written to build it from"
-        )
+        if f"new-skill:{name}" in sheet_dests:
+            raise SkillPairError(
+                f"decision.skill names {name}, which is not a skill self-learn owns, and its "
+                f"sheet routes lessons into new-skill:{name}, but no {STAGE_SKILLS_DIR}/{name}/ "
+                "folder was written to build it from"
+            )
+        # A skill this case names but does not build (a declined proposal,
+        # a route into a linked skill): no skill step, ordinary routing.
+        return None
     if not owned and outcome != "route":
         raise SkillPairError(
             f"a new skill ({name}) is built by a case with outcome: route whose sheet moves "
@@ -687,15 +739,25 @@ def step_for_case(
     )
 
 
-def unclaimed_folders(stage: Path, claimed: set[str]) -> list[str]:
-    """One line per entry under ``skills/`` that no staged case names in
-    ``decision.skill``: it is not written."""
+def unclaimed_folders(
+    stage: Path, claimed: set[str], named_by_dropped: Collection[str] = (),
+) -> list[str]:
+    """One line per entry under ``skills/`` that no kept staged case named
+    in ``decision.skill``: it is not written. *named_by_dropped* are the
+    names a case dropped before its skill step was looked at names (fix
+    round 1, gate r1 NIT: such a folder was said to be named by no case)."""
     root = stage / STAGE_SKILLS_DIR
     if not root.is_dir():
         return []
     lines = []
     for entry in sorted(root.iterdir()):
         if entry.name in claimed:
+            continue
+        if entry.name in named_by_dropped:
+            lines.append(
+                f"{STAGE_SKILLS_DIR}/{entry.name}{'/' if entry.is_dir() else ''}: not written — "
+                "the case that names it in decision.skill was dropped (its own line says why)"
+            )
             continue
         lines.append(
             f"{STAGE_SKILLS_DIR}/{entry.name}{'/' if entry.is_dir() else ''}: not written — no "
@@ -705,24 +767,93 @@ def unclaimed_folders(stage: Path, claimed: set[str]) -> list[str]:
     return lines
 
 
-def preview_for_step(preview: Any, sheet: Any, step: SkillStep | None) -> Any:
-    """The preview a build pair's sheet is judged by. A line that routes a
-    lesson into the skill this pair builds (``dest: new-skill:<name>``) is
-    previewed before the skill exists, so a refusal of it there says
-    nothing about the line after the write: such a line goes on to apply,
-    where it is checked for real. Every other line is judged as previewed."""
+#: The words of SK2's refusal of an agent's route into a skill self-learn
+#: does not own (`verbs.owned_skill_refusal`: "new-skill:<name> is not a
+#: skill self-learn owns ..."). In a build pair's preview, a line into the
+#: skill being built meets that refusal only because the skill is written
+#: later in the same pair. The build tests in
+#: `tests/test_overseer_skill_build.py` fail if these words drift.
+_NOT_OWNED_YET = "is not a skill self-learn owns"
+
+
+def _preview_once_written(home: Path, item: Any, line: Any, name: str) -> Any:
+    """A ``would-refuse`` preview item whose only refusal said the skill
+    being built is not owned yet, judged as it will be once the skill is
+    written. A ``route`` line is previewed again by ``route --dry-run``'s
+    own checks (the lesson's status, its scope, the destination), which the
+    batch runs after the ownership check and so never reached; its refusal
+    there is believed. Any other verb goes on to apply, where it is checked
+    for real."""
+    from dataclasses import replace
+
+    from .. import batch, verbs
+
+    once = f"previewed before {name} is written; checked when it applies"
+    if item.verb != "route":
+        return replace(item, state="would-apply", kind=None, detail=once)
+    try:
+        dr = verbs.route_dry_run(
+            home, item.id, dest=line.fields.get("dest"),
+            note=line.fields.get("note"),
+            hook_input=line.fields.get("hook"),
+            rules_paths=line.fields.get("rules_paths"),
+            allow_empty_glob=bool(line.fields.get("allow_empty_glob", False)),
+        )
+    except Exception as exc:  # noqa: BLE001 -- believed as a refusal, never the run's
+        return replace(item, detail=f"{item.id}: {type(exc).__name__}: {exc}")
+    if dr.would_refuse:
+        return replace(
+            item, detail="; ".join(dr.would_refuse),
+            kind=batch._preview_kind(dr.refusal_errors),  # noqa: SLF001 -- the batch's own classification
+        )
+    return replace(item, state="would-apply", kind=None, detail=once)
+
+
+def preview_for_step(home: Path | str, preview: Any, sheet: Any, step: SkillStep | None) -> Any:
+    """The preview a build pair's sheet is judged by.
+
+    A line that routes a lesson into the skill this pair builds (``dest:
+    new-skill:<name>``) is previewed before the skill exists, so the
+    refusal "not a skill self-learn owns" says nothing about the line after
+    the write: that one refusal is set aside and the line is judged as it
+    will be once the skill is written (:func:`_preview_once_written`). Any
+    other refusal is believed, as S-101 believes every preview refusal (fix
+    round 1, gate r1: before, every refused line into the skill became
+    would-apply, whatever the reason).
+
+    Raises :class:`SkillPairError` when no line would move a lesson into the
+    new skill: the skill would be written first and then stand live and
+    owned with no lesson in it."""
     if step is None or step.action != "write" or step.updating:
         return preview
     from dataclasses import replace
 
+    home = Path(home)
     target = f"new-skill:{step.name}"
-    dests = {item.n: item.fields.get("dest") for item in sheet}
-    items = [
-        replace(item, state="would-apply", kind=None,
-                detail=f"previewed before {step.name} is written; checked when it applies")
-        if item.state == "would-refuse" and dests.get(item.n) == target else item
-        for item in preview.items
-    ]
+    lines = {line.n: line for line in sheet}
+    items = []
+    for item in preview.items:
+        line = lines.get(item.n)
+        if (
+            item.state == "would-refuse" and line is not None
+            and line.fields.get("dest") == target
+            and f"{target} {_NOT_OWNED_YET}" in (item.detail or "")
+        ):
+            item = _preview_once_written(home, item, line, step.name)
+        items.append(item)
+    from .. import batch
+
+    # A refusal of a retried kind (git or lock trouble) may clear by apply
+    # time, as `run._preview_refusals` lets it.
+    if not any(
+        (item.state != "would-refuse" or item.kind in batch.RETRIED_REFUSAL_KINDS)
+        and (lines.get(item.n) is not None and lines[item.n].fields.get("dest") == target)
+        for item in items
+    ):
+        raise SkillPairError(
+            f"no line of the sheet would move a lesson into {target}, so {step.name} is not "
+            "built: a new skill is built with the lessons it takes in"
+        )
     return replace(preview, items=items)
 
 

@@ -791,3 +791,180 @@ def test_the_phase_b_prompt_points_at_the_skills_section(tmp_path):
     prompt = overseer_run._phase_b_prompt(tmp_path, (), ())
     assert '"Skills self-learn owns" section' in prompt
     assert skills.OWNED_DIR in prompt and skills.VETOES_FILE in prompt
+
+
+# ======================================================= fix round 1 (gate r1)
+
+
+UNOWNED = "never-built-skill"
+
+
+def test_a_case_naming_a_skill_it_does_not_build_is_an_ordinary_pair(env, monkeypatch):
+    """Gate r1 MAJOR: a case whose decision.skill names a skill self-learn
+    does not own, with no skills/<name>/ folder and no line routing into
+    new-skill:<name> (a declined proposal, a route into a linked skill),
+    carries no skill step and applies as any pair. Red on 270d0e7: the
+    pair was dropped ("not a skill self-learn owns ... no skills/ folder").
+    The control is test_b_a_new_skill_named_with_no_folder_drops_its_pair:
+    a sheet that routes into new-skill:<name> without the folder is still
+    dropped."""
+    _set_writing(env, '"on"')
+    _lesson(env, RID)
+
+    def write_b(stage):
+        _dump(stage / "case-decline.yaml",
+              _case([RID], name=UNOWNED, outcome="no-action", lessons=[RID]))
+        _dump(stage / "sheet-decline.yaml", {"version": 1, "items": [
+            {"id": RID, "verb": "note", "append": "Checked this week; no skill is built."},
+        ]})
+
+    _phases(monkeypatch, write_b)
+    before = {row["case"] for row in cases.list_cases(env.home)}
+
+    result = _run(env)
+
+    report = _report(result)
+    refused = _section(report, "Refused / could not do")  # control: the section rendered
+    assert UNOWNED not in refused and "case-decline.yaml" not in refused
+    assert len({row["case"] for row in cases.list_cases(env.home)} - before) == 1
+    assert skill_registry.load(env.home).row(UNOWNED) is None
+    assert not (env.root / "plugins" / UNOWNED).exists()
+
+
+def _sk2_refusal(rid: str, name: str = NAME) -> str:
+    """SK2's words for an agent's route into a skill self-learn does not
+    own (`verbs.owned_skill_refusal`, carried by the batch's refusal)."""
+    return (
+        f"{rid}: a route to new-skill:{name} is refused for the overseer — new-skill:{name} "
+        "is not a skill self-learn owns (no live row in owned-skills.yaml)"
+    )
+
+
+def test_a_build_preview_sets_aside_only_the_not_owned_yet_refusal(env):
+    """Gate r1 MINOR: in a build pair's preview only SK2's "not a skill
+    self-learn owns" refusal is set aside, and the line is judged again by
+    route's own checks; any other refusal is believed. Red on 270d0e7:
+    items 2 and 3 became would-apply."""
+    _lesson(env, RID)
+    target = f"new-skill:{NAME}"
+    sheet = [batch.SheetItem(n=n, id=rid, verb="route", fields={"dest": target})
+             for n, rid in ((1, RID), (2, RID2), (3, RID3))]
+    preview = batch.DryRunResult(items=[
+        # a pending lesson: only ownership stood in its way
+        batch.DryRunItem(n=1, id=RID, verb="route", state="would-refuse",
+                         detail=_sk2_refusal(RID), kind="bad-line"),
+        # another reason: believed as previewed
+        batch.DryRunItem(n=2, id=RID2, verb="route", state="would-refuse",
+                         detail=f"{RID2}: status is routed, not pending", kind="bad-line"),
+        # ownership refused first, but there is no such lesson: route's own
+        # checks refuse it once the ownership refusal is set aside
+        batch.DryRunItem(n=3, id=RID3, verb="route", state="would-refuse",
+                         detail=_sk2_refusal(RID3), kind="bad-line"),
+    ])
+    step = skills.SkillStep(action="write", name=NAME)
+
+    out = skills.preview_for_step(env.home, preview, sheet, step)
+
+    assert {item.n: item.state for item in out.items} == {
+        1: "would-apply", 2: "would-refuse", 3: "would-refuse",
+    }
+    # control: a rewrite of an owned skill is judged as previewed
+    rewrite = skills.SkillStep(action="write", name=NAME, updating=True)
+    assert skills.preview_for_step(env.home, preview, sheet, rewrite) is preview
+
+
+def test_a_build_no_line_of_which_would_move_a_lesson_in_drops_its_pair(env):
+    """Gate r1 MINOR: before, a build whose every line refused for another
+    reason was written first and stood live and owned with no lesson."""
+    target = f"new-skill:{NAME}"
+    sheet = [batch.SheetItem(n=1, id=RID2, verb="route", fields={"dest": target})]
+    preview = batch.DryRunResult(items=[
+        batch.DryRunItem(n=1, id=RID2, verb="route", state="would-refuse",
+                         detail=f"{RID2}: status is routed, not pending", kind="bad-line"),
+    ])
+    with pytest.raises(skills.SkillPairError, match="no line of the sheet would move"):
+        skills.preview_for_step(env.home, preview, sheet, skills.SkillStep(action="write", name=NAME))
+    # control: the same line refused with a retried kind may still apply
+    busy = batch.DryRunResult(items=[
+        batch.DryRunItem(n=1, id=RID2, verb="route", state="would-refuse",
+                         detail=f"{RID2}: the target is busy", kind="target-busy"),
+    ])
+    skills.preview_for_step(env.home, busy, sheet, skills.SkillStep(action="write", name=NAME))
+
+
+def test_e_a_retirement_whose_line_met_a_retried_refusal_waits_for_the_resume(env, monkeypatch):
+    """Gate r1 MINOR: a line refused with a retried kind is dispatched
+    again by the resume, so the retirement stays open for it. Red on
+    270d0e7: the step was marked refused for good."""
+    step = skills.SkillStep(action="retire", name=NAME, updating=True)
+    recipe = {"case_name": "case-retire.yaml", "skill": step.to_json()}
+    busy = batch.ItemResult(n=1, id=RID, verb="supersede", rc=1, state="refused",
+                            kind="target-busy")
+    result = batch.BatchResult(items=[busy], process_code=1)
+
+    def never(*args, **kwargs):
+        pytest.fail("not retired while a line waits for the resume")
+
+    monkeypatch.setattr(skill_writer, "retire", never)
+    refusals: list[str] = []
+    overseer_run._apply_skill_retire(env.home, "abcd1234", "case-1a2b3c4d", recipe, result, refusals, [])
+    assert "state" not in recipe["skill"]
+    assert refusals == []
+
+
+def test_a_skill_written_before_its_case_was_refused_is_named(env):
+    """Gate r1 MINOR: the write is not undone when the case writer refuses
+    the pair's case at execute time; the report says so."""
+    step = skills.SkillStep(action="write", name=NAME, files={"SKILL.md": "text\n"})
+    recipe = {"case_name": "case-build.yaml", "skill": {**step.to_json(), "state": "applied"}}
+    line = overseer_run._skill_written_case_refused(recipe, "case-1a2b3c4d")
+    assert line is not None
+    assert NAME in line and "case-1a2b3c4d" in line and "stays as written" in line
+    recipe["skill"]["state"] = "refused"  # control: no skill was written
+    assert overseer_run._skill_written_case_refused(recipe, "case-1a2b3c4d") is None
+    retire = {"case_name": "case-retire.yaml",
+              "skill": {**skills.SkillStep(action="retire", name=NAME).to_json(), "state": "applied"}}
+    assert overseer_run._skill_written_case_refused(retire, "case-1a2b3c4d") is None
+
+
+@pytest.mark.parametrize("text", [
+    "overseer: [\n",            # does not parse
+    "- a list\n",               # top level not a mapping
+    "overseer: 5\n",            # the section not a mapping
+])
+def test_a_config_yaml_that_cannot_be_read_reads_as_off(env, text):
+    """Gate r1 NIT: before, a broken config.yaml read as the default,
+    auto. Red on 270d0e7."""
+    (env.home / "config.yaml").write_text(text, encoding="utf-8")
+    mode, note = skills.writing_mode(env.home)
+    assert mode == "off"
+    assert note is not None and "cannot be read" in note
+
+
+@pytest.mark.parametrize("text", ["", "other: 1\n", "overseer:\n  enabled: false\n"])
+def test_control_a_readable_config_without_the_key_reads_as_auto(env, text):
+    (env.home / "config.yaml").write_text(text, encoding="utf-8")
+    assert skills.writing_mode(env.home) == ("auto", None)
+
+
+def test_b_a_folder_whose_case_was_dropped_is_not_said_to_be_named_by_no_case(env, monkeypatch):
+    """Gate r1 NIT: a skills/<name>/ folder whose case is dropped before
+    its skill step is looked at (here: the case writer's confidence rule)
+    is reported as such. Red on 270d0e7 ("no case names it")."""
+    _set_writing(env, '"on"')
+    _lesson(env, RID)
+
+    def write_b(stage):
+        _write_folder(stage, NAME, sk1.draft())
+        case = _case([RID])
+        case["decision"]["confidence"] = "not-a-confidence"
+        _dump(stage / "case-build.yaml", case)
+        _dump(stage / "sheet-build.yaml", _route_sheet([RID]))
+
+    _phases(monkeypatch, write_b)
+    result = _run(env)
+    refused = _section(_report(result), "Refused / could not do")
+    assert "case-build.yaml" in refused  # control: the case itself was dropped
+    assert f"skills/{NAME}/: not written — the case that names it" in refused
+    assert "no case names it" not in refused
+    assert env.row() is None

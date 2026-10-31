@@ -371,6 +371,13 @@ skill's text may have an empty sheet (items: []).
 To route a pending lesson into a skill self-learn owns, write a route line with dest:
 new-skill:<name> in a case whose decision.skill names it; no folder is needed.
 
+A case may name in decision.skill a skill it does not build: the successor that declines
+a skill-proposal parked case may keep the proposal's decision.skill, and a case may name a
+linked skill self-learn does not own whose lessons it routes the ordinary way. With
+no {skills.STAGE_SKILLS_DIR}/<name>/ folder and no line routing into new-skill:<name>, such a
+case carries no skill step and its pair applies as any other. A sheet that routes into
+new-skill:<name> for a skill self-learn does not own is building it, and needs the folder.
+
 To retire a skill self-learn owns: a pair whose case has outcome: retire and
 decision.skill naming it. Its sheet first moves every lesson routed into it somewhere
 else (each lesson's history in {run.LESSONS_DIR}/ says where it was before); moving a routed

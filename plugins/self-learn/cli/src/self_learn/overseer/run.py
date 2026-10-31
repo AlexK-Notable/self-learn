@@ -3742,6 +3742,14 @@ def _apply_skill_retire(
     states = {item.state for item in result.items}
     if states & {"stopped", "not-attempted", "unresolved-host"}:
         return  # the run halts here; the resume finishes the sheet first
+    if any(
+        item.state == "refused" and item.kind in _RETRIED_REFUSAL_KINDS
+        for item in result.items
+    ):
+        # Fix round 1 (gate r1): a line refused with a retried kind (git or
+        # lock trouble) is dispatched again by the resume; the step stays
+        # open so that resume retires the skill once the line applies.
+        return
     if states - {"applied", "already-applied"}:
         line = (
             f"{step.name} ({recipe['case_name']}): not retired — its sheet did not move every "
@@ -3759,6 +3767,27 @@ def _apply_skill_retire(
         refusals.append(line)
     else:
         cue_outcomes.append(_skill_cue(step))
+
+
+def _skill_written_case_refused(recipe: dict[str, Any], case_id: str) -> str | None:
+    """SK3 (fix round 1, gate r1): the "Refused / could not do" line for a
+    pair whose skill was written (before its case, as every write is) and
+    whose case the case writer then refused. The skill stays in the skills
+    root, linked and owned; its registry row names *case_id*, which is not
+    on record. ``None`` when the pair wrote no skill."""
+    step = _skill_step(recipe)
+    raw = recipe.get("skill")
+    if step is None or step.action != "write" or not isinstance(raw, dict):
+        return None
+    if raw.get("state") != "applied":
+        return None
+    return (
+        f"{step.name} ({recipe['case_name']}): the skill was "
+        + ("rewritten" if step.updating else "written to the skills root and linked")
+        + f" before its case was refused, and it stays as written; its registry row names "
+        f"{case_id}, which is not on record. Next week's run sees it among the skills "
+        "self-learn owns and may change or retire it"
+    )
 
 
 def _skill_refused_result(case_id: str, recipe: dict[str, Any], line: str) -> batch.BatchResult:
@@ -4122,6 +4151,11 @@ def _execute_manifest(
                 f"{recipe['case_name']} (successor {case_id}): refused by the case "
                 f"writer — {rule}; its sheet {recipe['sheet_name']} was not applied"
             )
+            # SK3 fix round 1 (gate r1): the pair's skill was written before
+            # its case was refused. The write is not undone; say so.
+            skill_line = _skill_written_case_refused(recipe, case_id)
+            if skill_line is not None:
+                refusals.append(skill_line)
         except _SkillRefused as exc:
             # SK3: the skill write was refused, so the pair is dropped:
             # its case is not recorded and no line of its sheet is applied.
@@ -4331,6 +4365,18 @@ def _execute_manifest(
         ]
         if decisions_dropped else []
     )
+    skills_info = manifest.get("skills")
+    drafted_pairs = (
+        sum(isinstance(d, dict) for d in skills_info.get("drafts") or [])
+        if isinstance(skills_info, dict) else 0
+    )
+    if decisions_dropped and drafted_pairs:
+        # SK3 fix round 1 (gate r1 NIT): a pair kept as a skill draft is
+        # in neither count above; each is named by its "[skill drafted]" line.
+        decided_lines.append(
+            f"decisions: {drafted_pairs} more pair(s) were kept as skill drafts and not "
+            "applied; they are not counted above"
+        )
     if decisions_lines_dropped:
         # S-101: a line taken off a kept sheet is neither a
         # refusal at apply (the run's code) nor a dropped pair (the counts
@@ -5282,6 +5328,20 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             preview_refused = 0
             seen_predecessors: set[str] = set()
             held_now = cases.held_lessons(home)
+            # SK3 fix round 1 (gate r1 NIT): every skill a staged case names
+            # in decision.skill, read before any pair is checked, so a
+            # skills/<name>/ folder whose case is dropped before its skill
+            # step is looked at is not reported as named by no case.
+            skill_named: set[str] = set()
+            for staged_case, _staged_sheet in pairs:
+                if staged_case is None:
+                    continue
+                try:
+                    named = skills_mod.claimed_name(_yaml_mapping(staged_case))
+                except OverseerError:
+                    continue  # the pair loop below names the file's trouble
+                if named is not None:
+                    skill_named.add(named)
             for case_file, sheet_file in pairs:
                 # 2026-09-27 (run c2b9192b): a case or sheet file that does
                 # not parse costs that pair alone, named by file and parse
@@ -5373,9 +5433,19 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         skill_name = skills_mod.claimed_name(case_data)
                         if skill_name is not None:
                             skill_claimed.add(skill_name)
+                            # Fix round 1 (gate r1 MAJOR): whether the sheet
+                            # routes into new-skill:<name> tells a build
+                            # without its folder from a case that names a
+                            # skill it does not build. The sheet parsed above.
+                            sheet_rows = _yaml_mapping(sheet_file).get("items")
+                            sheet_dests = {
+                                str(row.get("dest"))
+                                for row in (sheet_rows if isinstance(sheet_rows, list) else [])
+                                if isinstance(row, dict) and row.get("dest") is not None
+                            }
                             skill_step = skills_mod.step_for_case(
                                 home, stage, case_data, staged=skill_stage,
-                                deploy=skill_state.deploy,
+                                deploy=skill_state.deploy, sheet_dests=sheet_dests,
                             )
                         if skill_step is not None and skill_step.name in skill_pairs:
                             raise OverseerError(
@@ -5447,8 +5517,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         reconsidered=_reconsidered_by(_yaml_mapping(case_file)),
                     )
                     # SK3: a line routing a lesson into the skill this pair
-                    # builds is previewed before the skill exists.
-                    preview = skills_mod.preview_for_step(preview, sheet, skill_step)
+                    # builds is previewed before the skill exists; only
+                    # the "not owned yet" refusal is set aside, and a build
+                    # no line would move a lesson into is dropped (fix
+                    # round 1, gate r1).
+                    preview = skills_mod.preview_for_step(home, preview, sheet, skill_step)
                     _refuse_doomed_reconsider(case_file, predecessor, preview)
                     # S-101: a preview that says would-refuse is
                     # believed. A maintenance pair with such a line is not
@@ -5490,7 +5563,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             # Each is bounded and secret-scanned like a failure note's
             # detail: a folder name or a config value is the model's or a
             # person's text, and the run record is scanned whole.
-            for line in skills_mod.unclaimed_folders(stage, skill_claimed):
+            for line in skills_mod.unclaimed_folders(
+                stage, skill_claimed, skill_named - skill_claimed,
+            ):
                 line = _failure_detail(line) or line
                 case_drops.append(line)
                 _journal(home, {"at": chrono.now_iso(), "run": run_id,
