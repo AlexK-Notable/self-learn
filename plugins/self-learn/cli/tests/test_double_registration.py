@@ -925,11 +925,13 @@ def test_the_hosts_row_names_the_way_out_for_a_plain_root(tmp_path, monkeypatch)
     assert "--dest skill-md" not in msg
     with pytest.raises(verbs.NeedsPerson, match="SKILL.md is tracked by git"):
         verbs.reroute(home, rid, dest="skill-md", no_push=True)  # why the row says so
-    remove, add = re.findall(r"`self-learn (host [^`]*)`", msg)
+    # S-NEXT-cures-b: one command now (a person's `host set-mode`), not a
+    # remove then an add.
+    (set_mode,) = re.findall(r"`self-learn (host [^`]*)`", msg)
+    assert set_mode.startswith("host set-mode ")
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
 
-    assert cli.main(shlex.split(remove)) == 0
-    assert cli.main(shlex.split(add)) == 0
+    assert cli.main(shlex.split(set_mode)) == 0
 
     assert host_mode(home, repo, registration="skills-root") == "git"
     assert host_mode(home, repo, registration="project") == "git"

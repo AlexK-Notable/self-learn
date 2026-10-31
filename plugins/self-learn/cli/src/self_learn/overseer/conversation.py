@@ -10,6 +10,12 @@ correct one of the overseer's readings of them (its id is a user-model
 proposition), and an `ask` puts a decision or fact only the user has (its id
 is `q-<slug>`, and the index carries its `text` and `why`). There is no
 limit on how many are shown.
+
+An ask may carry `register: {path, mode, kind?}` (S-NEXT-cures-b): the user's
+typed plain "yes" to it registers that repository as a canon host in the same
+command (`respond`). The person typing the answer is the consent
+(S-29 / Y-17); `overseer open` shows what a yes will register, and the ask's
+own text must name the path and the mode.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from typing import TextIO
 
 from ruamel.yaml import YAML
 
-from .. import cases, gitops, intents, sentinel, statements, user_model
+from .. import cases, gitops, hosts, intents, sentinel, settings, statements, user_model
 from ..primitives import chrono, fsops
 
 
@@ -39,6 +45,12 @@ class ConversationUsageError(ConversationError):
 class ResponseResult:
     statement_id: str | None
     observed_cases: tuple[str, ...] = ()
+    #: S-NEXT-cures-b: one plain sentence on what the answer did about a
+    #: host registration the ask carried (registered, already registered, not
+    #: done and why); `None` when the question carried none.
+    registration: str | None = None
+    #: True when the registration was carried out (or already was in place).
+    registered: bool = False
 
 
 _PROPOSITION_RE = re.compile(r"^(um-[0-9a-f]{4})@r?(\d+)$")
@@ -49,7 +61,38 @@ _OBS_LINE_RE = re.compile(
 )
 
 
-_INDEX_KEYS = frozenset({"id", "kind", "cases", "text", "why"})
+_INDEX_KEYS = frozenset({"id", "kind", "cases", "text", "why", "register"})
+
+_REGISTER_KEYS = frozenset({"path", "mode", "kind"})
+
+
+def normalize_register(raw: object, text: str) -> tuple[dict[str, str] | None, str | None]:
+    """Check an ask's `register` field. Returns `(register, None)` with the
+    kind defaulted to `project`, or `(None, problem)`.
+
+    The user's "yes" carries out the registration, so what it registers must
+    be what the question says: `path` must be an absolute path, `mode` and
+    `kind` must be ones `host add` knows, and the ask's `text` must name the
+    path exactly and the mode. A question that hid its path in a field the
+    user was never shown would turn an unrelated "yes" into a registration."""
+    if not isinstance(raw, dict) or not _REGISTER_KEYS >= set(raw) or not {"path", "mode"} <= set(raw):
+        return None, "register must be a mapping with path and mode (and optionally kind)"
+    path, mode, kind = raw.get("path"), raw.get("mode"), raw.get("kind", "project")
+    if not isinstance(path, str) or not path.startswith("/") or path != path.strip() or any(
+        ch in path for ch in "\n\r\x00"
+    ):
+        return None, "register.path must be one absolute path"
+    if mode not in hosts.HOST_MODES:
+        return None, f"register.mode must be one of {list(hosts.HOST_MODES)}"
+    if kind not in hosts.HOST_KINDS:
+        return None, f"register.kind must be one of {list(hosts.HOST_KINDS)}"
+    if path not in text or re.search(rf"\b{mode}\b", text, re.IGNORECASE) is None:
+        return None, "the ask's text must name register.path exactly and its mode"
+    return {"kind": kind, "path": path, "mode": mode}, None
+
+
+def _register_phrase(register: dict[str, str]) -> str:
+    return f"{register['kind']} host {register['path']} in {register['mode']} mode"
 
 
 def _load_questions(home: Path) -> list[dict]:
@@ -79,14 +122,26 @@ def _load_questions(home: Path) -> list[dict]:
             )
         kind = row.get("kind", "reading")
         if kind == "reading":
+            if "register" in row:
+                raise ConversationError(
+                    f"overseer open: indexed reading {row['id']} cannot carry a register"
+                )
             rows.append({"id": row["id"], "kind": "reading", "cases": list(row["cases"])})
         elif kind == "ask" and all(
             isinstance(row.get(key), str) and row[key].strip() for key in ("text", "why")
         ):
-            rows.append({
+            ask_row = {
                 "id": row["id"], "kind": "ask", "cases": list(row["cases"]),
                 "text": row["text"], "why": row["why"],
-            })
+            }
+            if "register" in row:
+                register, problem = normalize_register(row["register"], row["text"])
+                if register is None:
+                    raise ConversationError(
+                        f"overseer open: indexed question {row['id']} has a bad register: {problem}"
+                    )
+                ask_row["register"] = register
+            rows.append(ask_row)
         else:
             raise ConversationError(
                 f"overseer open: indexed question {row['id']} has kind {kind!r}; "
@@ -169,12 +224,18 @@ def _names(line: str, question_id: str) -> bool:
 
 
 def _ask_display(row: dict) -> list[str]:
-    return [f"- {row['id']}: {row['text']}", f"  why: {row['why']}"]
+    lines = [f"- {row['id']}: {row['text']}", f"  why: {row['why']}"]
+    if row.get("register"):
+        lines.append(f"  a plain yes registers: {_register_phrase(row['register'])}")
+    return lines
 
 
 def _ask_recorded_text(row: dict) -> str:
     """The displayed ask as ONE line: a case observation is one line."""
-    return " ".join(f"- {row['id']}: {row['text']} (why: {row['why']})".split())
+    shown = f"- {row['id']}: {row['text']} (why: {row['why']})"
+    if row.get("register"):
+        shown += f" (a plain yes registers: {_register_phrase(row['register'])})"
+    return " ".join(shown.split())
 
 
 def _display_line(block: str, proposition: str, cases_for_question: list[str]) -> str:
@@ -406,6 +467,63 @@ def _dependent_cases(home: Path, proposition: str, statement_id: str) -> list[tu
     return matches
 
 
+_PLAIN_YES_RE = re.compile(r"\s*y(es)?\s*[.!]?\s*", re.IGNORECASE)
+
+
+def _carry_out_registration(home: Path, row: dict, text: str) -> tuple[str, bool]:
+    """S-NEXT-cures-b: what the answer *text* does about the registration an
+    ask carries. Returns `(sentence, registered)`.
+
+    Only a bare yes registers: "yes, but use git mode" or "not yet" is an
+    answer the overseer reads, not a consent to what the question named.
+    From an agent's shell (the detection that keeps tier-C settings the
+    person's) the answer is still recorded but nothing is registered: the
+    person typing it is the consent, and an agent can register by `host add`
+    when the person has told it to. A registration `host add` refuses (a
+    path that is gone, a path already registered in the other mode, a path
+    that is not a git repo for `git` mode) raises, so the answer is NOT
+    recorded and the question stays open."""
+    register = row["register"]
+    phrase = _register_phrase(register)
+    if _PLAIN_YES_RE.fullmatch(text) is None:
+        return f"nothing registered: the answer was not a plain yes ({phrase})", False
+    if settings.agent_caller():
+        return (
+            f"NOT registered ({phrase}): this is an agent's shell, and a registration "
+            "carries the person's own typed yes. Answer in your own terminal, or run "
+            f"`self-learn host add {register['path']}"
+            f"{' --skills-root' if register['kind'] == 'skills-root' else ''} "
+            f"--mode {register['mode']}` yourself",
+            False,
+        )
+    try:
+        before = hosts.load_hosts(home)
+        target = Path(register["path"]).expanduser().resolve()
+        already = (
+            hosts.is_project_host(before, target)
+            if register["kind"] == "project"
+            else before.skills_root is not None
+            and Path(before.skills_root).expanduser().resolve() == target
+        )
+        hosts.host_add(home, register["path"], register["kind"], mode=register["mode"])
+    except hosts.HostsError as exc:
+        raise ConversationError(
+            f"overseer respond: your yes would register {phrase}, and that was refused: {exc}. "
+            "Nothing was recorded and the question stays open; fix that and answer again, "
+            "or answer in words that say what you want instead"
+        ) from exc
+    except gitops.HalfWrittenError as exc:
+        raise ConversationError(
+            f"overseer respond: registering {phrase} was written but NOT committed ({exc}). "
+            f"Repair: {exc.repair}. The answer was not recorded."
+        ) from exc
+    except (gitops.GitOpsError, intents.LedgerStoppedError) as exc:
+        raise ConversationError(
+            f"overseer respond: registering {phrase} failed ({exc}); the answer was not recorded"
+        ) from exc
+    return (f"already registered, left as it was: {phrase}" if already else f"registered {phrase}"), True
+
+
 def respond(
     home: Path | str,
     *,
@@ -422,6 +540,14 @@ def respond(
     presentations = _presentations(resolved, row)
     _case_id, observation_id, displayed = presentations[-1]
     answer_text = as_asked if as_asked and as_asked.strip() else displayed
+    registration: str | None = None
+    registered = False
+    if row["kind"] == "ask" and row.get("register"):
+        # The consent carries the action: do it BEFORE the answer is
+        # recorded, so a registration that is refused leaves the question
+        # open (nothing recorded) instead of an answered question whose
+        # promised registration never happened.
+        registration, registered = _carry_out_registration(resolved, row, text)
     statement_id = statements.add(
         resolved,
         verbatim=text,
@@ -448,7 +574,9 @@ def respond(
                 by="overseer",
                 ref=statement_id,
             )
-        return ResponseResult(statement_id, tuple(row["cases"]))
+        return ResponseResult(
+            statement_id, tuple(row["cases"]), registration=registration, registered=registered
+        )
     dependent = _dependent_cases(resolved, proposition, statement_id)
     for case_id, dependency_ref in dependent:
         cases.observe(

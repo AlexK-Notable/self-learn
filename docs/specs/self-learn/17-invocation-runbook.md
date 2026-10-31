@@ -1141,11 +1141,13 @@ self-learn commits and pushes canon there exactly as it always has.
 does NOT do, at registration time — read it once; it does not repeat on
 every route.
 
-**How to change a host's mode.** The mode is set ONCE and never flips in
-place — `self-learn host remove <path>` followed by
-`self-learn host add --mode <new-mode> <path>` is the only path from one
-to the other. This is deliberate (a silent mode flip mid-flight is a
-worse hazard than the two extra commands).
+**How to change a host's mode.** `host add` never changes a mode. Run
+`self-learn host set-mode <path> git|plain` (add `--skills-root` or
+`--project` for a path registered both ways) in your own terminal: one ledger
+commit, the records and compile records untouched, and an agent's shell is
+refused (S-NEXT-cures-b; 13 §4 item 5). Before that command existed the only
+route was `self-learn host remove <path>` then `self-learn host add --mode
+<new-mode> <path>`, which still works.
 
 **The `.self-learn-host` marker.** A plain host is gated at registration
 and at every route by a `.self-learn-host` marker file the registering

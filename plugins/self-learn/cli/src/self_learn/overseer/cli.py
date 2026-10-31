@@ -29,7 +29,12 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
         "um-<4 hex>@r<revision>, or an ask's q-<slug>",
     )
     reply = respond_parser.add_mutually_exclusive_group(required=True)
-    reply.add_argument("--text")
+    reply.add_argument(
+        "--text",
+        help="your answer, in your own words. For a question that says a plain "
+        "yes registers a host, typing yes registers it in this command "
+        "(from your own terminal; an agent's shell only records the answer)",
+    )
     reply.add_argument("--decline", action="store_true")
     respond_parser.add_argument("--scope")
     respond_parser.add_argument("--as-asked")
@@ -95,6 +100,8 @@ def dispatch(args) -> int:
                     f"self-learn overseer: recorded {result.statement_id}; "
                     f"reconsidered={len(result.observed_cases)}"
                 )
+                if result.registration is not None:
+                    print(f"self-learn overseer: {result.registration}")
             return 0
         print(runner.report(home, date=args.date), end="")
         return 0

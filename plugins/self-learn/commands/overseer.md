@@ -100,6 +100,17 @@ restate it as a reading of the user or ask for approval of anything; it
 is a decision or fact only the user has. If they answer, record it with
 step 4's command using the ask's `q-` id.
 
+An ask whose printed block ends with "a plain yes registers: …" asks the
+user to register a repository as a canon host. The registration happens in
+`overseer respond` itself, but only for a bare yes typed in the person's own
+terminal: from your (an agent's) shell the answer is recorded and nothing is
+registered, and the command says so. Then tell the user plainly, and either
+have them run the same `respond` command in their own terminal or, if they
+told you to register it, run the `self-learn host add …` line the output
+names. A yes that carries a
+condition ("yes, but git mode") is not a plain yes: record it in their words
+and let the overseer read it.
+
 **For a reading**, cover these parts, in your own words but never skipping
 one:
 

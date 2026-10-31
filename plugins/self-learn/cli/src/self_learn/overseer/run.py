@@ -37,6 +37,7 @@ from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
 from ..records import Record, build_covered_by
 from . import formats, health, notify, population as population_mod
+from . import conversation
 from .conversation import _PROPOSITION_RE
 
 EXIT_OK = 0
@@ -766,6 +767,12 @@ Two kinds, each {{id, kind, cases}}:
   Never bundle two decisions into one ask. If only the user can do something (it needs their
   hands, credentials, or a command agents may not run), you may ask whether they will; say
   exactly what and why.
+  An ask whose whole point is registering a repository as a canon host (you cannot register
+  one yourself) may add register: {{path: <absolute path>, mode: git or plain, kind: project or
+  skills-root, default project}}. The user's typed yes then registers it for them. The text
+  must name that path exactly and that mode, because the user sees the text and a yes means
+  exactly that registration; the question and its register must agree. A question that is not
+  about that registration never carries register.
 cases lists the case-… ids the question comes from, exactly as they appear in this stage; an
 ask needs at least one, because the user's answer is recorded against those cases.
 Order questions most consequential first. An empty list is a good answer when nothing clears
@@ -1149,6 +1156,10 @@ def _question_problem(
             return f"{field_name} matched the secret scan ({hits[0].rule})"
     if not cited:
         return "an ask needs at least one case to record the answer against"
+    if "register" in item:
+        register, problem = conversation.normalize_register(item["register"], item["text"])
+        if register is None:
+            return problem
     return None
 
 
@@ -1198,6 +1209,15 @@ def _questions(
         if kind == "ask":
             row["text"] = _flat(item["text"])
             row["why"] = _flat(item["why"])
+            if "register" in item:
+                # S-NEXT-cures-b: validated against the ask's own text in
+                # `_question_problem`; re-checked against the flattened text
+                # the index will carry, so the two cannot drift.
+                register, problem = conversation.normalize_register(item["register"], row["text"])
+                if register is None:
+                    dropped.append(f"question {label}: dropped — {problem}")
+                    continue
+                row["register"] = register
         clean.append(row)
     return {"questions": clean}, dropped
 

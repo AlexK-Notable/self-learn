@@ -917,6 +917,10 @@ _ARGV_FOR = {
         ["host", "add", "{host}"],
         ["host", "rebind", "{project_slug}", "{host2}"],
         ["host", "remove", "{host}"],
+        # S-NEXT-cures-b: the fixture registers the host both ways, so the
+        # registration is named; without it the command refuses before the
+        # lock and this case would pass vacuously.
+        ["host", "set-mode", "{host}", "plain", "--project"],
     ],
     "_cmd_host_inner": None,  # driven through _cmd_host
     "_cmd_hook": [
