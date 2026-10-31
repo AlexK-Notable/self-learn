@@ -4853,7 +4853,7 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
 
     changed = False
     scaffolded = False
-    if name and not target.is_file():
+    if name and target is not None and not target.is_file():
         # SK2: also checked when the target is resolved (route and recompile
         # alike); here it is the last stop, for a SKILL.md that went missing
         # between that check and this write, so no path re-seeds an owned
@@ -7461,7 +7461,8 @@ def replace_applied_as(home: Path | str, record_id: str, fields: dict) -> Record
     try:
         first = read_record_or_refuse(find_record_path(home, record_id))
         _type, sections, source = _replace_text_sections(
-            home, **{key: fields.get(key) for key in REPLACE_TEXT_KEYS},
+            home, trigger=fields.get("trigger"), instruction=fields.get("instruction"),
+            fact=fields.get("fact"), context=fields.get("context"),
             text_from=fields.get("text_from"), type=fields.get("type"),
         )
     except (LedgerOpsError, VerbError):

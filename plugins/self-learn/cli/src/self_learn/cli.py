@@ -2900,6 +2900,75 @@ def _agent_attribution(args: argparse.Namespace, surface: str) -> tuple[str | No
     return None, EXIT_USAGE
 
 
+def _cmd_route_dry_run(home: Path, args: argparse.Namespace) -> int:
+    """``route --dry-run``, the preview leg of :func:`_cmd_verb`. Factored
+    out at the 2026-10-31 integration: with cures-a's agent-shell
+    attribution in it, pyright found :func:`_cmd_verb` too complex to
+    analyse. Its errors are :func:`_cmd_verb`'s, raised to it."""
+    # U-verbs §4.3 (DRY3): no sentinel, no lock — a preview only.
+    dr = verbs.route_dry_run(
+        home,
+        args.id,
+        dest=args.dest,
+        allow_empty_glob=args.allow_empty_glob,
+        rules_paths=args.rules_paths,
+        allow_unpathed=args.allow_unpathed,
+    )
+    if args.as_json:
+        print(json.dumps(dr.to_json()))
+    else:
+        if dr.would_refuse:
+            for reason in dr.would_refuse:
+                print(f"self-learn route --dry-run: {reason}", file=sys.stderr)
+        else:
+            print(
+                f"route --dry-run {args.id} → {dr.destination} "
+                f"@ {dr.target or '(no single target)'} "
+                f"(+{dr.added_lines}/-{dr.removed_lines}"
+                f"{', already present' if dr.already_present else ''})"
+            )
+            if dr.unified_diff:
+                print(dr.unified_diff)
+    return EXIT_OK if dr.ok else 1
+
+
+def _cmd_route(home: Path, args: argparse.Namespace, runner: str | None) -> int:
+    """``route``, the applying leg of :func:`_cmd_verb` (factored out with
+    :func:`_cmd_route_dry_run`, for the same reason). Its errors are
+    :func:`_cmd_verb`'s, raised to it."""
+    follow_up = None
+    if args.follow_up is not None:
+        follow_up = {"action": args.follow_up}
+        if args.unblocks_on is not None:
+            follow_up["unblocks_on"] = args.unblocks_on
+        if args.follow_up_note is not None:
+            follow_up["note"] = args.follow_up_note
+    elif args.unblocks_on is not None or args.follow_up_note is not None:
+        print(
+            "self-learn route: --unblocks-on/--follow-up-note need "
+            "--follow-up",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    result = verbs.route(
+        home,
+        args.id,
+        dest=args.dest,
+        by=args.by or runner,
+        note=args.note,
+        no_push=args.no_push,
+        follow_up=follow_up,
+        collapse=args.collapse,
+        allow_empty_glob=args.allow_empty_glob,
+        rules_paths=args.rules_paths,
+        allow_unpathed=args.allow_unpathed,
+        stamp_by=runner,
+    )
+    return _finish_verb(
+        result, _routed_destination(result), as_json=args.as_json
+    )
+
+
 def _cmd_verb(args: argparse.Namespace) -> int:
     """Home-gated like every other surface (doc 13 B-11). Two reasons, one
     line: a bad home used to reach ``find_record_path`` and come back "no
@@ -2913,66 +2982,12 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         return code
     try:
         if args.command == "route" and getattr(args, "dry_run", False):
-            # U-verbs §4.3 (DRY3): no sentinel, no lock — a preview only.
-            dr = verbs.route_dry_run(
-                home,
-                args.id,
-                dest=args.dest,
-                allow_empty_glob=args.allow_empty_glob,
-                rules_paths=args.rules_paths,
-                allow_unpathed=args.allow_unpathed,
-            )
-            if args.as_json:
-                print(json.dumps(dr.to_json()))
-            else:
-                if dr.would_refuse:
-                    for reason in dr.would_refuse:
-                        print(f"self-learn route --dry-run: {reason}", file=sys.stderr)
-                else:
-                    print(
-                        f"route --dry-run {args.id} → {dr.destination} "
-                        f"@ {dr.target or '(no single target)'} "
-                        f"(+{dr.added_lines}/-{dr.removed_lines}"
-                        f"{', already present' if dr.already_present else ''})"
-                    )
-                    if dr.unified_diff:
-                        print(dr.unified_diff)
-            return EXIT_OK if dr.ok else 1
+            return _cmd_route_dry_run(home, args)
         runner, refusal = _agent_attribution(args, args.command)
         if refusal is not None:
             return refusal
         if args.command == "route":
-            follow_up = None
-            if args.follow_up is not None:
-                follow_up = {"action": args.follow_up}
-                if args.unblocks_on is not None:
-                    follow_up["unblocks_on"] = args.unblocks_on
-                if args.follow_up_note is not None:
-                    follow_up["note"] = args.follow_up_note
-            elif args.unblocks_on is not None or args.follow_up_note is not None:
-                print(
-                    "self-learn route: --unblocks-on/--follow-up-note need "
-                    "--follow-up",
-                    file=sys.stderr,
-                )
-                return EXIT_USAGE
-            result = verbs.route(
-                home,
-                args.id,
-                dest=args.dest,
-                by=args.by or runner,
-                note=args.note,
-                no_push=args.no_push,
-                follow_up=follow_up,
-                collapse=args.collapse,
-                allow_empty_glob=args.allow_empty_glob,
-                rules_paths=args.rules_paths,
-                allow_unpathed=args.allow_unpathed,
-                stamp_by=runner,
-            )
-            return _finish_verb(
-                result, _routed_destination(result), as_json=args.as_json
-            )
+            return _cmd_route(home, args, runner)
         if args.command == "reject":
             result = verbs.reject(
                 home, args.id, note=args.note, by=runner, no_push=args.no_push

@@ -1776,6 +1776,108 @@ def _replace_applied_detail(home: Path, item: SheetItem) -> str | None:
     return _replace_detail(made.id, line)
 
 
+def _dispatch_route(
+    home: Path,
+    item: SheetItem,
+    *,
+    case: str | None,
+    actor: str,
+    hook_activation: bool,
+    execution: execution_evidence.ExecutionRef | None,
+) -> "ItemResult | verbs.VerbResult":
+    """The ``route`` leg of :func:`_dispatch`: an :class:`ItemResult` when
+    the line is finished here (a hook activation, a reroute), else the
+    route's :class:`verbs.VerbResult` for :func:`_dispatch` to receipt.
+    Factored out at the 2026-10-31 integration: with SK2's new-skill
+    refusal, U8's reroute helper and the restate and premises branches all
+    merged, pyright found :func:`_dispatch` too complex to analyse. Its
+    refusals raise to :func:`_dispatch`, which maps them as before."""
+    verb = item.verb
+    f = item.fields
+    route_path = find_record_path(home, item.id)
+    resolved = _resolved_route_dest(home, route_path, item)
+    # 2026-10-06: before the reconsider branch below, so a fresh
+    # route, a reroute and a reconsider's correcting route are
+    # all refused alike.
+    _refuse_agent_reference(item.id, resolved, actor)
+    # SK2: likewise, before the reconsider branch.
+    _refuse_agent_new_skill(home, item.id, resolved, actor)
+    is_hook_dest = resolved == (REFUSED_HOOK_DESTINATION, None)
+    if is_hook_dest and actor not in HOOK_ROUTING_ACTORS:
+        raise verbs.VerbError(_hook_refused_detail(item.id))
+    if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
+        # Fold r1 (F4): a hook-dest item reaches HERE, under
+        # `actor="overseer"`, in one of two shapes -- a fresh
+        # route (record still `pending`, falls through below)
+        # or a RETRY (`classify` already decided the record is
+        # already routed to `hook` but the activation leg does
+        # not match the current gate: a failed attempt, or one
+        # parked under a gate that has since flipped). The
+        # second shape must never call `verbs.route` again --
+        # it would refuse against an already-routed record --
+        # so it is detected here and only the activation leg
+        # (through the SAME idempotent `verbs.hook_activate` —
+        # a placed symlink is re-verified, not re-placed) runs,
+        # via `_dispatch_hook_activation`.
+        pre_record = Record.from_path(route_path)
+        already_routed_to_hook = (
+            pre_record.status == "routed"
+            and (pre_record.routing or {}).get("destination")
+            == REFUSED_HOOK_DESTINATION
+        )
+        if already_routed_to_hook:
+            return _dispatch_hook_activation(
+                home, item, actor=actor, hook_activation=hook_activation,
+                route_result=None,
+            )
+    rerouted = _dispatch_reroute_if_moved(
+        home, item, case=case, verb=verb, actor=actor,
+        hook_activation=hook_activation, is_hook_dest=is_hook_dest,
+        execution=execution,
+    )
+    if rerouted is not None:
+        return rerouted
+    follow_up = _sheet_follow_up(f)
+    result = verbs.route(
+        home, item.id,
+        dest=f.get("dest"),
+        # Fold r1 (F3, ruling 6): the actor is the default `by`
+        # here TOO, but only for a non-human caller -- a
+        # default-`"human"` run keeps `route`'s own
+        # dest-is-not-None heuristic byte-for-byte (S-29's
+        # `resolved_by` fallback below still decides it), since
+        # `route`/`revise` are the two verbs excluded from the
+        # EIGHT-verb widening above (their own `by` feeds a
+        # DIFFERENT mechanism — `Record.set_routing`'s schema
+        # field, never the commit trailer).
+        by=(f.get("by") or (actor if actor != "human" else None)),
+        note=f.get("note"), no_push=True, follow_up=follow_up,
+        collapse=f.get("collapse"),
+        allow_empty_glob=bool(f.get("allow_empty_glob", False)),
+        execution=execution,
+        hook_input=f.get("hook"),
+        rules_paths=f.get("rules_paths"),
+    )
+    if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
+        # 13 §7.4 "The path" — the overseer's own runner call is
+        # the ONE caller that carries a hook route through to
+        # activation: route's own commit above is unchanged from
+        # the human path (the script it commits is identical
+        # either way); `_dispatch_hook_activation` runs the SAME
+        # `hook_activation` module O-2a built, inside
+        # `verbs.hook_activate`'s own lock/handoff/undo, and
+        # (F5) wraps any failure so it refuses THIS item rather
+        # than escaping `run` — route's own commit stands
+        # (exactly the state a human's own two-step sequence —
+        # route now, `hook activate` later — already leaves it
+        # in) either way.
+        return _dispatch_hook_activation(
+            home, item, actor=actor, hook_activation=hook_activation,
+            route_result=result,
+        )
+    return result
+
+
 def _dispatch(
     home: Path,
     item: SheetItem,
@@ -1841,87 +1943,13 @@ def _dispatch(
     f = item.fields
     try:
         if verb == "route":
-            route_path = find_record_path(home, item.id)
-            resolved = _resolved_route_dest(home, route_path, item)
-            # 2026-10-06: before the reconsider branch below, so a fresh
-            # route, a reroute and a reconsider's correcting route are
-            # all refused alike.
-            _refuse_agent_reference(item.id, resolved, actor)
-            # SK2: likewise, before the reconsider branch.
-            _refuse_agent_new_skill(home, item.id, resolved, actor)
-            is_hook_dest = resolved == (REFUSED_HOOK_DESTINATION, None)
-            if is_hook_dest and actor not in HOOK_ROUTING_ACTORS:
-                raise verbs.VerbError(_hook_refused_detail(item.id))
-            if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
-                # Fold r1 (F4): a hook-dest item reaches HERE, under
-                # `actor="overseer"`, in one of two shapes -- a fresh
-                # route (record still `pending`, falls through below)
-                # or a RETRY (`classify` already decided the record is
-                # already routed to `hook` but the activation leg does
-                # not match the current gate: a failed attempt, or one
-                # parked under a gate that has since flipped). The
-                # second shape must never call `verbs.route` again --
-                # it would refuse against an already-routed record --
-                # so it is detected here and only the activation leg
-                # (through the SAME idempotent `verbs.hook_activate` —
-                # a placed symlink is re-verified, not re-placed) runs,
-                # via `_dispatch_hook_activation`.
-                pre_record = Record.from_path(route_path)
-                already_routed_to_hook = (
-                    pre_record.status == "routed"
-                    and (pre_record.routing or {}).get("destination")
-                    == REFUSED_HOOK_DESTINATION
-                )
-                if already_routed_to_hook:
-                    return _dispatch_hook_activation(
-                        home, item, actor=actor, hook_activation=hook_activation,
-                        route_result=None,
-                    )
-            rerouted = _dispatch_reroute_if_moved(
-                home, item, case=case, verb=verb, actor=actor,
-                hook_activation=hook_activation, is_hook_dest=is_hook_dest,
-                execution=execution,
+            routed = _dispatch_route(
+                home, item, case=case, actor=actor,
+                hook_activation=hook_activation, execution=execution,
             )
-            if rerouted is not None:
-                return rerouted
-            follow_up = _sheet_follow_up(f)
-            result = verbs.route(
-                home, item.id,
-                dest=f.get("dest"),
-                # Fold r1 (F3, ruling 6): the actor is the default `by`
-                # here TOO, but only for a non-human caller -- a
-                # default-`"human"` run keeps `route`'s own
-                # dest-is-not-None heuristic byte-for-byte (S-29's
-                # `resolved_by` fallback below still decides it), since
-                # `route`/`revise` are the two verbs excluded from the
-                # EIGHT-verb widening above (their own `by` feeds a
-                # DIFFERENT mechanism — `Record.set_routing`'s schema
-                # field, never the commit trailer).
-                by=(f.get("by") or (actor if actor != "human" else None)),
-                note=f.get("note"), no_push=True, follow_up=follow_up,
-                collapse=f.get("collapse"),
-                allow_empty_glob=bool(f.get("allow_empty_glob", False)),
-                execution=execution,
-                hook_input=f.get("hook"),
-                rules_paths=f.get("rules_paths"),
-            )
-            if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
-                # 13 §7.4 "The path" — the overseer's own runner call is
-                # the ONE caller that carries a hook route through to
-                # activation: route's own commit above is unchanged from
-                # the human path (the script it commits is identical
-                # either way); `_dispatch_hook_activation` runs the SAME
-                # `hook_activation` module O-2a built, inside
-                # `verbs.hook_activate`'s own lock/handoff/undo, and
-                # (F5) wraps any failure so it refuses THIS item rather
-                # than escaping `run` — route's own commit stands
-                # (exactly the state a human's own two-step sequence —
-                # route now, `hook activate` later — already leaves it
-                # in) either way.
-                return _dispatch_hook_activation(
-                    home, item, actor=actor, hook_activation=hook_activation,
-                    route_result=result,
-                )
+            if isinstance(routed, ItemResult):
+                return routed
+            result = routed
         elif verb == "reject":
             result = verbs.reject(
                 home, item.id, note=f.get("note"), by=(f.get("by") or actor),

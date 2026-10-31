@@ -475,7 +475,7 @@ def _discovery_rules_b() -> list[str]:
     the steward's proposals, and the dispositions it writes."""
     from . import discovery, skills
 
-    return f"""\
+    text: str = f"""\
 ## Skill dispositions
 
 {discovery.CANDIDATES_FILE} holds the candidates this run's discovery phase found, reading the
@@ -506,7 +506,8 @@ discovery phase reads what was decided for each candidate. See {discovery.DISPOS
 here; closed-sets.yaml has the sets under skill_dispositions.
 If {discovery.CANDIDATES_FILE} says discovery: off, write no {discovery.DISPOSITIONS_FILE} and leave
 every proposal parked.
-""".splitlines()
+"""
+    return [str(line) for line in text.splitlines()]
 
 
 def _rules(phase: str) -> str:

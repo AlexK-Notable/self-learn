@@ -1398,7 +1398,7 @@ def _check_case_by(case: object, by: object) -> None:
 def check(
     home: Path | str,
     name: str,
-    files: Mapping[str, str],
+    files: Mapping[str, str | bytes],
     *,
     expect_sha: str | None = None,
     updating: bool | None = None,
@@ -1583,7 +1583,7 @@ def _apply_write(home: Path, plan: _Plan, *, case: str, by: str, now: str) -> Wr
 def _write_locked(
     home: Path,
     name: str,
-    files: Mapping[str, str],
+    files: Mapping[str, str | bytes],
     root: Path,
     *,
     case: str,
@@ -1622,7 +1622,7 @@ def _push(home: Path, root: Path, ledger_sha: str | None, host_sha: str | None):
 def write(
     home: Path | str,
     name: str,
-    files: Mapping[str, str],
+    files: Mapping[str, str | bytes],
     *,
     case: str,
     by: str,
@@ -2195,7 +2195,7 @@ def _rename_name_check(home: Path, plan: _RenamePlan, vetoed: set[str]) -> None:
                 for name, ids in held
             ],
         )
-    loaded, catalogue_problems = _loaded_names(home, leaving_out=None)
+    loaded, catalogue_problems, _clashes = _loaded_names(home, leaving_out=None)
     plan.notes += [f"skills on this machine: {p}" for p in catalogue_problems]
     problems = [
         str(finding)

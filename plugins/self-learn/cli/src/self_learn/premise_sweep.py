@@ -742,7 +742,8 @@ def judge_probe(premise: Mapping, rows: list[dict]) -> Judgement:
     Rows made under another probe or judgment are ignored. See the module
     docstring for what counts as a confirmed move."""
     sig = _premise_sig(premise)
-    baseline = premise.get("baseline") if isinstance(premise.get("baseline"), Mapping) else {}
+    raw_baseline = premise.get("baseline")
+    baseline: Mapping = raw_baseline if isinstance(raw_baseline, Mapping) else {}
     # An observation made before the baseline was recorded describes the
     # world the steward had already looked at (it re-recorded the baseline
     # from a flapping apply-time probe, say): it never counts toward "two
@@ -1245,7 +1246,8 @@ def check(
     for _bucket, record in wanted:
         for premise in record.premises or []:
             pid = str(premise.get("id"))
-            baseline = premise.get("baseline") if isinstance(premise.get("baseline"), Mapping) else {}
+            raw_baseline = premise.get("baseline")
+            baseline: Mapping = raw_baseline if isinstance(raw_baseline, Mapping) else {}
             if premise.get("probe") is None:
                 out.append(
                     CheckRow(record.id, pid, "behaviour", str(premise.get("claim")), premises.VERDICT_NO_PROBE,
