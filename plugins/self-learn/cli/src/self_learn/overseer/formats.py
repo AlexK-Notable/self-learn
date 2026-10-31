@@ -185,6 +185,8 @@ def closed_sets() -> dict[str, Any]:
             },
         },
         "report_headings_in_order": list(run._REPORT_SECTIONS),
+        # S-NEXT-u7c: one more heading, optional, right after Catalogue health.
+        "report_hand_steps_heading": run.HAND_STEPS_SECTION,
         "hook": _hook_closed_sets(),
     }
 
@@ -339,6 +341,11 @@ def _rules(phase: str) -> str:
                 break_long_words=False, break_on_hyphens=False,
             ),
             "",
+            "report.md: the headings in report_headings_in_order, and between",
+            "Catalogue health and Questions for you the heading in",
+            "report_hand_steps_heading, one line per hand step in health.yaml's",
+            "hand-steps-this-week row (the runner adds any step you leave out).",
+            "",
             "Phase B files: report.md, findings.yaml, questions.yaml,",
             "user-model-delta.yaml, case-example.yaml + sheet-example.yaml (a",
             "successor), case.yaml + sheet.yaml shapes in maintenance-case.yaml and",
@@ -440,7 +447,9 @@ def phase_b_examples() -> dict[str, str]:
     from .. import always_loaded
     from . import run
 
-    headings = "\n".join(f"## {name}\n- none" for name in run._REPORT_SECTIONS)
+    headings = "\n".join(
+        f"## {name}\n- none" for name in run._REPORT_SECTIONS_WITH_HAND_STEPS
+    )
     evidence = [{"ref": f"record:{EXAMPLE_RECORD}", "quote": "status: pending"}]
     return {
         "report.md": f"# Overseer report\n\n{headings}\n",

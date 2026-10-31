@@ -935,6 +935,56 @@ preview's reason, in "Refused / could not do"; a sheet whose every item is refus
 is left whole and refused at apply. A `kind: maintenance` pair with such a line is
 not recorded.
 
+*(Added 2026-10-31, S-NEXT-u7c.)* **Phase B's premise-check facts and the hand-step
+census.** Phase B's `health.yaml` `catalogue_health` list (`overseer/health.py`
+`gather`) gains two rows, both measured by code from the ledger and its git history,
+neither calling a model nor writing anything. **`premise-check`** (premise design
+D11, `§3a.10.8`): `placed_lessons` and `without_premises` (a lesson whose `premises`
+field is absent; `[]`, a decision that nothing is checkable, counts as having
+premises); `broken_probes` (a written probe `unavailable` on the last three sweeps in
+a row, named by lesson, premise and reason); `failing_placements` (a placement premise,
+`<lesson>@reach`, `@writable` or `@intact`, failing on two sweeps running);
+`unmeasurable_placements`; `sweep` (`last_finished_at`, which is empty until a sweep has finished, never the
+time of an unfinished attempt; `last_attempt_at`; its last status; how many
+problems it logged); and `refreshed_this_week` (the `self-learn: premises refresh`
+commits of the last seven days, each with the premise ids and their
+`<before> -> <after>` lines, the sweep's code-only re-baselines, so a change made with
+no model and no case can still be reviewed). With `premises.enabled` false the row is
+`state: off` and carries no counts. A part that cannot be read says `state:
+unavailable` with a reason, and an empty list beside a sweep that has not run is
+labelled by the row's `caution`: an unreadable target is never reported as zero.
+**`hand-steps-this-week`** (hand-maintenance cures, lane C; design M5.3): every ledger
+commit of the last seven days that no job made. A commit is a job's when its subject
+begins `self-learn: steward manifest|telemetry flush|case |worker |mine |overseer`
+(the runners' own), `capture |statement add|user-model ` (new knowledge, not upkeep)
+or `premises refresh ` (reported on the row above), or when it carries a `Case:`
+trailer or `By: steward|overseer|analyst`; everything else is a hand step, whoever's
+shell ran it, including a subject no list anticipated. Each step is `{commit, at,
+subject, by, note}`: `by` is `human` or `agent` from a `By:` trailer, `none` when the
+commit has no trailer (the commit cannot say whether a person or an agent ran it); the
+note is the commit body without its trailer paragraph, one line, at most 240
+characters, `(no reason recorded)` when empty, and a stub naming the rule when the
+secret scan matches it, and a subject the scan matches is replaced whole by
+`(withheld)` (a hit in any stage file refuses the whole run, so none may reach one; a
+broken probe's reason and a refresh's change lines are scanned and withheld the same way). At most 60
+steps ride in the packet, newest first, and `total` counts all of them. `state:
+unavailable` (git could not be read) is never an empty week.
+
+The report (`report.md`) has one more heading than the seven the runner requires:
+**Hand steps this week**, directly after "Catalogue health". It is OPTIONAL in the
+overseer's own file (a report without it is valid; present, it must sit there) and
+the phase B prompt asks for it: one line per hand step naming the gap in self-learn
+that made the step necessary, or saying the step is by design (a switch only the user
+sets, an answer they typed), or that the evidence does not show the gap. The runner
+completes it in the published report: a step of the census the overseer's section
+does not name is added as `- <commit> <when> by <by>: <subject> (<note>) — the
+overseer did not name the gap`, steps past the packet's cap are counted in one line,
+an empty week reads `- none`, and a census that could not be read says so in words.
+The census is stored in the run record as `hand_steps` (`state`, `reason`, `total`,
+`steps`), because a resumed run rebuilds its stage without `health.yaml`; a record
+made before this field has none and its report is published as the overseer wrote it.
+The report's length guide counts the overseer's own lines, not the runner's.
+
 *(Added 2026-09-27.)* **Findings.** Phase B's staged `findings.yaml` is
 `{findings: [{case, kind: examined|dependency-moved, text, ref?}]}`. The runner
 validates each finding on its own and DROPS one that fails (unknown keys, a case
