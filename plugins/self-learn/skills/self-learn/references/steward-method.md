@@ -582,8 +582,12 @@ file; the runner refuses it.
 only job is the `premises set` line (or `[]`), in a `kind: resolution` case
 with `outcome: no-action` that supersedes nothing: the placement decision
 stands, and this case only records what the lesson rests on. If, while
-writing them, you find the lesson already false, decide it instead as a
-moved premise, below.
+writing them, you find the lesson already false, do not change it in this
+case: write the premise that is now false with a probe that shows it. The
+runner records that first value as contradicting the claim, and the lesson
+comes back to you the next night as a `premise-moved` input, decided as
+below. When no probe can show it, park the case (`authority-unclear`) with
+what you found.
 
 **A `premise-moved` input** is a placed lesson where something it rests on
 changed. Its brief says what: a premise with its recorded value, today's
@@ -636,6 +640,16 @@ sits:
   restore-region`, and quote the edited block in your evidence, so the
   person's words are kept in the case. `adopt_region` and `restore-region`
   are refused on any other input.
+
+  Either one rewrites the whole block from the ledger, not just this
+  lesson's line. So when a person edited the lines of several lessons in
+  one block, they all come to you in the same run: decide every one of
+  them in one case (a fold or a restore for each), and quote the edited
+  block in your evidence for a fold as well as for a restore. The runner
+  refuses a fold or a restore that would leave another edited line in the
+  block undecided, or when the block changed again after the brief was
+  made. `no-action` is not an answer here: an edited block stops every
+  later write to that file until it is decided; fold, restore, or park.
 
 A placement check needs no rebaseline: the same failure is not offered
 again once a case decided it.

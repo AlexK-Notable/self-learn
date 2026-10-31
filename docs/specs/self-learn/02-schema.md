@@ -407,16 +407,20 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   `superseded_by` that same lesson; recovery and the post-run recompile read it by the same state read. Carried
   fields as in S-85. Commit subject `self-learn: replace lrn-old → lrn-new (<dest>)`, with `because` (and `note`)
   as the body. A merge may leave the merged line and a not-yet-retired old line loaded together for the seconds
-  between commits, never neither. `replace` is the 18th sheet verb.
+  between commits, never neither. `replace` was the 18th sheet verb when it landed; the count is not kept here
+  (`batch.PERMITTED_VERBS` is the list, which `premises` joins with S-NEXT-premise).
   *(2026-10-31, S-NEXT-premise.)* `replace` also carries `premises` (`cases.REWRITE_FIELDS`), and takes one more
   key, `adopt_region: true`, open only to the steward on an `@intact` `premise-moved` input for the region of the
   lesson it replaces: the apply adopts that region as it stands on disk (S-83) before compiling the new lesson,
-  which folds a person's hand edit into the lesson (§3a.10.7).
+  which folds a person's hand edit into the lesson, and only when the same case decides every hand edit in that
+  region and quotes it (the whole-region rule, §3a.10.7).
 - **`premises`** *(2026-10-31, S-NEXT-premise)*: a list of at most four premises the lesson rests on, each a
   claim with an optional read-only probe and the baseline the runner recorded when it was last decided; metadata
   class like `follow_up_done` (verb-written, mutable in every status, outside the substance freeze, absent until a
-  verb writes it; `[]` means decided-none). Written only by the `premises` sheet verb (`set`, `rebaseline`,
-  `restore-region`) and by the sweep's code-only `refresh` re-baseline. Shape, probe catalog, triggers and the
+  verb writes it; `[]` means decided-none). Written only by the `premises` sheet verb's `set` and `rebaseline`
+  actions (its third action, `restore-region`, writes a host region and no premises), by `replace`, which carries
+  the field to the new lesson (`cases.REWRITE_FIELDS`), and by the sweep's code-only `refresh` re-baseline. Verbs
+  and commit subjects: 11 §2.5. Shape, probe catalog, triggers and the
   three placement premises code derives (`@reach`, `@writable`, `@intact`, never stored): §3a.10.
 - **`evidence` is append-only** — it may *gain* entries (cluster merges add
   the merged record's provenance) but existing entries are never rewritten
@@ -1424,7 +1428,9 @@ lesson was parked for the overseer and the steward's decision was lost
 steward as a `premise-moved` input (§3a.10.7) and that no case a reconsider
 may supersede covers is decided the same way, with a `kind: resolution`
 case; a `premise-extract` input is always decided with a `kind: resolution`
-case that supersedes nothing. Such a case may hold, for that routed lesson, the
+case that supersedes nothing and changes no placement (a lesson found false
+there gets a probe that records `contradicts-claim`, which makes it a
+`premise-moved` input the next night, or the case is parked; §3a.10.7). Such a case may hold, for that routed lesson, the
 items a reconsider could: `replace` (narrowing included, the one place
 outside a reconsider where the steward may replace a placed lesson),
 `retire`, `route` (applied as `reroute`) and `premises`, plus a `no-action`
@@ -1432,7 +1438,8 @@ outcome that rebaselines. The runner refuses those items on a routed lesson
 in a `kind: resolution` case that no such input selected. A `no-action` case
 on a `premise-moved` input that does not `rebaseline` every moved premise the
 lesson keeps is refused by name (§3a.10.7), and so is `adopt_region` or
-`restore-region` on any input but an `@intact` one for that lesson's region.
+`restore-region` on any input but an `@intact` one for that lesson's region,
+or that breaks the whole-region rule (§3a.10.7).
 
 *(Added 2026-09-26.)* The same repair turn also carries the case writer's
 own rules, run on every staged case and parked.yaml entry through
@@ -3107,7 +3114,7 @@ session. This section is the join.
 **probe**, a read-only check from a closed catalog that code runs (never a
 model). A code-only **sweep** runs every probe once a day and compares the
 value with the one recorded when the premise was last decided. Every routed
-lesson also has three **placement premises** that code derives and nobody
+lesson also has up to three **placement premises** that code derives and nobody
 writes (does its file still load, may self-learn still write there, is its
 managed region as self-learn left it). When a premise moves, or the lesson's
 follow-up is closed, or a ledger entry it rests on changes, the lesson goes
@@ -3212,9 +3219,10 @@ lesson comes up for any reason; recurrence handling (`suspected-violation`,
 #### 3a.10.3 Placement premises: does it load, may self-learn write there, is its block intact
 
 Every routed lesson whose destination is `claude-md` (any variant),
-`skill-md`, `new-skill` or `hook` has three placement premises. Code derives
-them on every sweep; they are never written on the record and never set by a
-sheet. They answer "does the lesson still work where it sits", which the
+`skill-md`, `new-skill` or `hook` has the placement premises `@reach` and
+`@writable`, and a `claude-md` or `skill-md` lesson also `@intact` (see the
+list below the table). Code derives them on every sweep; they are never
+written on the record and never set by a sheet. They answer "does the lesson still work where it sits", which the
 lesson's own premises do not.
 
 | id | Holds while | Moves when | `unavailable` when |
@@ -3242,6 +3250,28 @@ lesson's own premises do not.
   on the region's first lesson in file order and says so. A `stale` verdict
   is a ledger-side apply that never landed, which an ordinary `recompile`
   repairs; it is not a hand edit and moves nothing.
+- **Which lessons have an `@intact`.** Only those whose target has a
+  managed region the compile record tracks: `claude-md` (any variant) and
+  `skill-md` (`verbs._region_kind_for`). A `new-skill` lesson's file is
+  outside the compile record by design (a whole file created once; OUT-7
+  of `drafts/u-hostmode-git-optional-hosts-spec.md`), and a `hook`
+  lesson's script is not a block of lesson lines, so neither has an
+  `@intact`. Their `@reach` and `@writable` apply as above.
+- **One region, one decision.** When the lessons of one managed region
+  carry more than one `@intact` input (edits on several lessons' lines),
+  those inputs are a **group**: they are offered together in one run, count
+  as one against the nightly cap (3a.10.5), and are decided in one case
+  whose `records` name every lesson in the group. When an earlier-precedence
+  input takes any lesson of the group in a run (3a.10.7), the whole group
+  waits for the next run. The reason is that a fold or a restore rewrites
+  the whole region from the ledger (3a.10.7), so deciding one lesson's edit
+  alone would erase the others.
+- **A placement premise's `unavailable` is not a broken probe.** The WARN
+  for three `unavailable` sweeps in a row (3a.10.5) counts written probes
+  only. `@intact` is `unavailable` for every region that has no compile
+  record entry yet, which is common, and a placement premise has no probe a
+  steward could fix. `doctor` shows the count of placement premises that
+  are `unavailable`, as information, not a WARN.
 - `@reach` does not cover the `reference` destination: no lesson is routed
   there any more (S-77), and `reachability_rows` leaves it out by design.
 
@@ -3256,12 +3286,28 @@ Three kinds of event, and no clock:
    (3a.10.3). A baseline in state `contradicts-claim` counts from the night
    after it is written.
 2. **The lesson's follow-up was closed.** The record has a `follow_up_done`
-   whose `done_at` is later than the lesson's last decision: the `opened_at`
-   of the newest case whose `records` name the lesson or, when no case does,
-   the time the lesson was routed. This needs no premise and no sweep. It is a
-   standing rule, so a follow-up closed before this landed is picked up on its
-   first night (on 2026-10-30 that is `lrn-9b4250f5` only: `lrn-25968266` was
-   decided after its follow-up closed, and `lrn-6883f824` is superseded).
+   whose `done_at` falls on or after the day of the lesson's **last
+   decision** (`steward_inputs.last_decision`). The last decision is the
+   newest of: `routing.routed_at`; the `at` of a `routing` or `reconsidered`
+   history entry; `last_confirmed` (a person saw the rule working); and the
+   `opened_at` of a case that is not parked, whose `records` name the
+   lesson, and whose outcome placed, moved, rewrote or retired it (`route`,
+   `reject`, `retire`, `replaced`, `rehome`, `revise`). A case that deferred
+   it, a parked case, and a `no-action` case (a dismissed suspect, a
+   recorded recurrence, an extract case) did not decide what the lesson
+   rests on, so they do not count; nor does a `moved` history entry, which
+   is filing. `done_at` is a date (the verb writes the day), so the two are
+   compared by day, and the same day counts as after: a lesson decided and
+   closed on one day is offered once rather than missed. What stops the
+   input coming back is its version (3a.10.7): a run that decided it
+   (applied, parked, refused or abandoned) is never offered it again, while
+   a follow-up closed again with other words is a new version. Until a case
+   that counts dates after it, the closed follow-up rides along with any
+   later `premise-moved` input on the lesson, so the steward sees it again.
+   This needs no premise and no sweep. It is a standing rule, so a follow-up
+   closed before this landed is picked up on its first night (on 2026-10-30
+   that is `lrn-9b4250f5` only: `lrn-25968266` was decided by a case after
+   its follow-up closed, and `lrn-6883f824` is superseded).
 3. **A ledger premise moved.** A `ledger` probe's value changed: a lesson it
    names was retired, replaced or superseded, a statement it names was
    corrected, a follow-up it names was closed. These do not wait for a
@@ -3288,18 +3334,24 @@ sweep found.
 2. **Two sweeps in a row** before a probe or placement change counts (a
    service restarting, a file in the middle of an edit).
 3. **`unavailable` never makes an input.** Three `unavailable` sweeps in a row
-   for one probe show as a broken probe in `doctor` and `--selftest`, and in
-   that lesson's brief the next time it comes up, where the steward fixes or
-   drops the probe.
+   for one written probe show as a broken probe in `doctor` and `--selftest`,
+   and in that lesson's brief the next time it comes up, where the steward
+   fixes or drops the probe. Placement premises do not count toward it
+   (3a.10.3).
 4. **`on_change: refresh`** premises (a version pin, the hash of a file where
    any edit is uninteresting) are re-baselined by code, with no model call:
    the sweep writes the new baseline under the commit lock with the subject
-   `self-learn: premises refresh <lrn-id> <premise ids>` and the old and new
+   `self-learn: premises refresh lrn-<id> <premise ids>` and the old and new
    shown values in the body. These are the only ledger writes the sweep
    makes. The steward chooses `refresh` when it writes the premise.
 5. **Rates.** At most 10 `premise-moved` inputs a night (the rest wait, the
-   longest-moved first); at most one probe-triggered re-decision per lesson
-   per 7 days. Follow-up and ledger events are not held by the 7-day rule.
+   longest-moved first; an `@intact` group counts as one, 3a.10.3); at most
+   one re-decision per lesson per 7 days triggered by a probe, `@reach` or
+   `@writable`, since those follow values that can drift back and forth.
+   Follow-up, ledger and `@intact` events are not held by the 7-day rule:
+   each is an act by a person or a ledger verb, and an edited region refuses
+   every later write to its target until it is decided (the compile
+   record's `edited` verdict, `compiled.refuses`).
 
 Probes are written narrow: a `file-match` on the line that matters, not a
 whole file's hash; never `host.<path>.head`, which moves on every commit.
@@ -3323,6 +3375,7 @@ whole file's hash; never `host.<path>.head`, which moves on every commit.
   `premises.enabled` false.
 - `doctor` and `--selftest` gain one row: probes `unavailable` on three
   sweeps in a row (a WARN naming each), placement premises failing, how many
+  placement premises are `unavailable` (a count, not a WARN, 3a.10.3), how many
   placed lessons have no `premises` field yet, and when the sweep last ran.
 
 #### 3a.10.7 The steward's part
@@ -3331,16 +3384,20 @@ whole file's hash; never `host.<path>.head`, which moves on every commit.
 
 | `kind` | What | Identity (`version`) |
 |---|---|---|
-| `premise-moved` | a routed lesson with a moved premise, a closed follow-up, or a moved ledger premise (3a.10.4) | `premises:` the sorted `(premise id, current value hash)` pairs of the moved premises (a placement premise's failing state, 3a.10.3), plus `follow_up:<done_at>` when that is the trigger |
+| `premise-moved` | a routed lesson with a moved premise, a closed follow-up, or a moved ledger premise (3a.10.4) | `premise:<12 hex>`, a hash of the sorted `(premise id, current value hash)` pairs of the moved premises (a placement premise's failing state, 3a.10.3) and, while the follow-up rule holds (3a.10.4), the closed `follow_up_done` block (its action, gate, notes and `done_at`); `steward_inputs.premise_moved_version` |
 | `premise-extract` | a routed lesson with no `premises` field (the backfill) | the record file's committed blob |
 
 A record is still in at most one input per run, taken in the order
-reconsider, lesson, suspected violation, premise-moved, premise-extract. A
-lesson the overseer holds (S-81) is no input of either kind.
+reconsider, lesson, suspected violation, premise-moved, premise-extract. An
+`@intact` group (3a.10.3) is offered whole or not at all: when an earlier
+input takes one of its lessons, the group waits for the next run. A lesson
+the overseer holds (S-81) is no input of either kind, and an `@intact`
+group with a held lesson waits until the hold ends.
 
 **The `premise-moved` brief** shows the lesson with its line numbers; each
 premise with its baseline, its current value, and when each was observed;
-the follow-up's `done_note` when that is the trigger; the `what_would_change`
+the closed follow-up with its `done_note` while the follow-up rule holds
+(3a.10.4); the `what_would_change`
 lines of the case that covers the lesson; any `env` pins; every probe
 `unavailable` three sweeps running; and, for `@intact`, the two regions and
 their diff (3a.10.3).
@@ -3353,8 +3410,14 @@ this input (46 of the 149 placed lessons had no covering case on
 2026-10-30). For `premise-extract`: a `kind: resolution` case with outcome
 `no-action` and no `supersedes`, holding the `premises set` line; the
 placement decision stands, and this case only records what the lesson rests
-on (a steward who finds the lesson already false decides it as a moved
-premise instead). The `premise-moved` brief shows the `what_would_change`
+on. A steward who finds the lesson already false while writing its
+premises does not change it in this case, because the authority to change a
+placed lesson comes only with a `premise-moved` input. It writes the
+premise that is now false with a probe that shows it: the runner records
+that baseline as `contradicts-claim` (3a.10.1), and the lesson is a
+`premise-moved` input the next night, decided as below. When no probe in
+the catalog can show it, the steward parks the case (`authority-unclear`)
+with the evidence, for the overseer. The `premise-moved` brief shows the `what_would_change`
 lines of every case covering the lesson that is not superseded, so an
 extract case never hides the routing case's prediction. A lesson with a
 `premise-moved` input waiting under the nightly cap is not offered for
@@ -3364,6 +3427,9 @@ extract case never hides the routing case's prediction. A lesson with a
 - `no-action`: the lesson stands. The sheet must `rebaseline` every moved
   premise the lesson keeps, or the runner refuses the case (otherwise the same
   change comes back every night). A placement premise needs no rebaseline.
+  On an `@intact` input `no-action` is not an outcome: an edited region
+  refuses every later write to its target, so the case folds, restores or
+  parks.
 - `replaced`: a `replace` item narrows or corrects the words, with every idea
   of the old text accounted for in `decision.rewrite` (S-85).
 - `retire`: the premise is gone for good, or another surface now covers the
@@ -3397,11 +3463,20 @@ overseer's weekly sample like any other case.
 - `action: restore-region`, only on an `@intact` input for that lesson's
   region: the ledger's text wins over the hand edit. In one lock span the
   verb adopts the region as it stands (S-83's adopt, that one region key) and
-  re-renders that one target from the ledger. The case's evidence must quote
-  the edited region (the brief gives it), so the person's text survives in
-  the case even in a `plain` host with no git history.
+  re-renders that one target from the ledger. It writes no `premises`; it
+  belongs to this verb because it answers a placement premise. The
+  whole-region rule below binds it.
 
-One verb, one commit per line (`self-learn: premises <action> <lrn-id>`),
+  This is a narrow exception to the refusal of `recompile` inside a sheet
+  (`batch.REFUSED_VERBS_LITERAL`, S-29/Y-17). That refusal exists because
+  an adopt nobody named silently accepts a hand edit (S-75 (2)) and a full
+  recompile reaches every host (S-83). `restore-region` names its one
+  region key, runs only on an `@intact` input whose brief showed that
+  region's diff, re-renders only that target, and requires the edited
+  region quoted in the case, so the edit it overwrites is named, kept and
+  reviewed. `recompile` itself stays refused.
+
+One verb, one commit per line (`self-learn: premises <action> lrn-<id>`),
 under the commit lock, reachable in the lock-obligation walk like every other
 ledger-mutating surface; a dry run previews it. It is open to the steward,
 the overseer and a person's `batch`; a person has no other CLI writer for it
@@ -3418,6 +3493,29 @@ Folding is the expected answer when the edit is consistent with the lesson,
 because a hand edit is usually a correction (the keyboards path fix of
 2026-10-08 was); restoring is for an edit that contradicts the lesson or is
 not a change to a lesson.
+
+**The whole-region rule** (binds both a fold and `restore-region`). The
+compiler renders the whole managed region from the ledger
+(`verbs._expected_managed_region`), so either one overwrites every line of
+the region, not just the lesson's own. The runner therefore refuses
+(`bad-line`, naming the region and the lines) an `adopt_region` or a
+`restore-region` unless:
+
+1. the region on disk is still the one the input saw (its sha256 is the
+   input's version for `@intact`); a newer hand edit is a new input the next
+   night;
+2. every hand edit in the region is decided in the same case: each lesson
+   whose entry line differs or is gone has a fold or a `restore-region` line
+   there, and an edit that touches no lesson's line counts as decided by the
+   line for the lesson it was put on (3a.10.3); and
+3. the case's evidence quotes the edited region as the brief gave it, for
+   a fold as for a restore, so a person's words that the re-render drops (a
+   line added between entries, a part of an edit the new lesson does not
+   take) survive in the case even in a `plain` host with no git history.
+
+The group rule (3a.10.3) is what makes 2 reachable: every edited lesson of
+the region arrives in the same run. A fold and a restore may sit in one case
+for two lessons of one region; the adopt runs once.
 
 **Writing premises.** With every `route` the steward writes the lesson's
 premises in the same case: a `premises set` item with the claims, and a probe
@@ -3441,11 +3539,12 @@ refresh` commits (code-only changes, so they can be reviewed).
 - **`premises.enabled`** (tier C, default **true**) gates the sweep job and
   both input kinds. With the default, the sweep, the follow-up rule and the
   backfill run from the first night after landing, with no step by a person;
-  setting it false is the person's rollback. Agents never set it (CLAUDE.md's
-  rule for the person's switches; S-92 refuses a tier-C write from an agent's
-  shell). `premises check`, the `premises` sheet verb and a steward
+  setting it false is the person's rollback. Agents never set it: it is tier
+  C, and S-92 refuses a tier-C `config set` or `config unset` from an agent's
+  shell. `premises check`, the `premises` sheet verb and a steward
   `--dry-run` work with it false.
-- **`premises.rotation_days`** (tier C, default 0): 3a.10.4.
+- **`premises.rotation_days`** (tier C, default 0): 3a.10.4. Agents never
+  set it either (S-92).
 - No money budget (the user's 2026-09-13 ruling for the steward and the
   overseer). The sweep makes no model call; model calls grow only with real
   changes (10 a night at most) and with the backfill (10 a night for about
@@ -3456,7 +3555,10 @@ by code. The miner does not yet tell the sweep that a session touched a path,
 unit or package a premise names (planned for after a month of sweep data,
 code-only, with no change to `miner-output/1`). The sweep sees only the
 machine it runs on; a lesson about another machine has only `probe: null`
-and `ledger` premises.
+and `ledger` premises. A case on another input (a reconsider, a lesson, a
+suspected violation) that rewrites, moves or retires the lesson after its
+follow-up closed counts as its last decision (3a.10.4), although that
+input's brief does not show the closed follow-up.
 
 ## 4. Managed sections (the compile targets' contract)
 
