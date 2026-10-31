@@ -3787,12 +3787,14 @@ def last_run_iso() -> str | None:
     )
 
 
-def fast_status(home: Path | str) -> dict:
+def fast_status(home: Path | str, queued_ids: list[str] | None = None) -> dict:
     """`status --json --fast` (08 §7.1 SessionStart pin): a pending/-only
     frontmatter scan — no git, no network, no resolved/ walk (follow-up
     counts deliberately excluded), <500 ms warm on 100 records. Queue
     semantics are THE same rules as `list` (deferred hidden), computed
-    here once so the bash hook never reimplements them."""
+    here once so the bash hook never reimplements them. When *queued_ids*
+    is given, the id of every queued record is appended to it (a side
+    channel for the steward-stale check; the returned payload is unchanged)."""
     from ruamel.yaml import YAML  # local: keep module import cost flat
 
     yaml = YAML(typ="safe")
@@ -3833,6 +3835,8 @@ def fast_status(home: Path | str) -> dict:
             if not domain.is_queued(fm, now):
                 continue  # hidden or non-draft — same rule as the queue
             pending += 1
+            if queued_ids is not None and fm.get("id"):
+                queued_ids.append(str(fm["id"]))
             # Full-timestamp floor (domain.record_age_days) — the old
             # ``str(created_at)[:10]`` truncation here was the A1
             # divergence from ``list --json``/``status --json``'s ages.

@@ -5710,9 +5710,9 @@ _HOLD_FIXES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"authenticat|oauth|api[ -]?key|bearer|access token|(?:logged|signed) in|/login|\b40[13]\b", re.I),
      "run `claude`, then `/login`"),
     (re.compile(r"credit balance", re.I), "add credit to the Anthropic account"),
+    (re.compile(r"not[ _]found|\b404\b", re.I), "check the configured model name"),
     (re.compile(r"update|upgrade|version|does not support|unsupported|not supported", re.I),
      "update Claude Code (`claude update`)"),
-    (re.compile(r"not[ _]found|\b404\b", re.I), "check the configured model name"),
 )
 
 
@@ -5738,19 +5738,29 @@ def _stranded_count(resolved_cache_dir: Path) -> int | None:
     return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
 
 
-def _steward_takeable(home: Path | str, total_pending: int) -> int:
-    """Queued lessons the steward may take: the queue less the lessons the
-    overseer holds (they wait for the overseer, not for the steward).
-    A failed read leaves the queue whole."""
+def _steward_takeable(home: Path | str, total_pending: int, queued_ids: Iterable[str] | None) -> int:
+    """Queued lessons the steward may take: the queue less the QUEUED
+    lessons the overseer holds (they wait for the overseer, not for the
+    steward). `cases.held_lessons` also names placed (resolved) lessons,
+    which are not in the queue, so only held ids that are queued count.
+    Without the queued ids, or on a failed read, the queue stays whole."""
+    if queued_ids is None:
+        return total_pending
     try:
-        held = len(cases.held_lessons(home))
+        held = set(cases.held_lessons(home))
     except Exception:  # noqa: BLE001 -- a hint must not break the status probe
         return total_pending
-    return max(0, total_pending - held)
+    ids = set(queued_ids)
+    return max(0, total_pending - len(ids & held))
 
 
 def nudge_fields(
-    home: Path | str, resolved_cache_dir: Path, total_pending: int, *, now: float | None = None
+    home: Path | str,
+    resolved_cache_dir: Path,
+    total_pending: int,
+    *,
+    queued_ids: Iterable[str] | None = None,
+    now: float | None = None,
 ) -> dict:
     """`status --fast`'s steward facts (L3): whether the steward owns the
     queue, and whether it is not keeping up. One settings read and cache
@@ -5771,7 +5781,7 @@ def nudge_fields(
             or (now if now is not None else time.time()) - last_dt.timestamp() > STALE_AFTER_SECS
         )
         # the held-lesson read opens the case files: only when it can matter
-        stale = behind and _steward_takeable(home, total_pending) > 0
+        stale = behind and _steward_takeable(home, total_pending, queued_ids) > 0
     out["steward_stale"] = stale
     out["steward_stale_hours"] = STALE_AFTER_SECS // 3600
     hold = _hold_from_journal(resolved_cache_dir)

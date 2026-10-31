@@ -232,12 +232,35 @@ def test_a_queue_of_only_overseer_held_lessons_is_not_a_stale_steward(led, tmp_p
     cache = _cache(tmp_path)
     marker = cache / "steward" / "steward.last-run"
     marker.write_text(_iso(NOW - 72 * HOUR) + "\n", encoding="utf-8")
+    queued = ["a", "b", "c"]
     # control: nothing held, old marker -> stale
-    assert steward.nudge_fields(led, cache, 3, now=NOW)["steward_stale"] is True
+    assert steward.nudge_fields(led, cache, 3, queued_ids=queued, now=NOW)["steward_stale"] is True
     monkeypatch.setattr(steward.cases, "held_lessons", lambda home: {"a": [], "b": [], "c": []})
-    assert steward.nudge_fields(led, cache, 3, now=NOW)["steward_stale"] is False
-    # a lesson beyond the held ones is the steward's: stale again
-    assert steward.nudge_fields(led, cache, 4, now=NOW)["steward_stale"] is True
+    assert steward.nudge_fields(led, cache, 3, queued_ids=queued, now=NOW)["steward_stale"] is False
+    # a queued lesson beyond the held ones is the steward's: stale again
+    assert steward.nudge_fields(led, cache, 4, queued_ids=[*queued, "d"], now=NOW)["steward_stale"] is True
+
+
+def test_held_lessons_that_are_not_queued_do_not_hide_a_stale_steward(led, tmp_path, monkeypatch):
+    """Parked cases also name placed (resolved) lessons; those are not in the queue."""
+    _enable(led)
+    cache = _cache(tmp_path)
+    (cache / "steward" / "steward.last-run").write_text(_iso(NOW - 72 * HOUR) + "\n", encoding="utf-8")
+    monkeypatch.setattr(steward.cases, "held_lessons", lambda home: {"r1": [], "r2": [], "r3": []})
+    fields = steward.nudge_fields(led, cache, 3, queued_ids=["q1", "q2", "q3"], now=NOW)
+    assert fields["steward_stale"] is True
+
+
+def test_fast_status_reports_queued_ids_without_changing_the_payload(ledger):
+    ids: list[str] = []
+    with_ids = worker.fast_status(ledger, ids)
+    assert with_ids == worker.fast_status(ledger)
+    assert len(ids) == with_ids["total_pending"]
+
+
+def test_hold_fix_prefers_model_not_found_over_a_trailing_update_hint():
+    assert steward.hold_fix("model not found; please update your model setting") == "check the configured model name"
+    assert steward.hold_fix("this CLI version is unsupported") == "update Claude Code (`claude update`)"
 
 
 # ------------------------------------------------------------------ worker
