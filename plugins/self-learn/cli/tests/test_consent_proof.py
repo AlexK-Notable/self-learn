@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import gitops, settings, statements
+from self_learn import attribution, gitops, settings, statements
 from self_learn.hosts import MARKER_FILENAME, host_add, host_mode, host_set_mode, is_project_host, load_hosts
 from self_learn.overseer import conversation
 from support import git, init_repo, make_env
@@ -103,6 +103,21 @@ def test_a_yes_to_a_message_naming_the_question_registers(tmp_path, monkeypatch)
     assert commit.strip().splitlines()[0] == f"self-learn: host add project {new}"  # subject pinned
     assert "Answers: q-register-newhost" in commit
     assert commit.strip().splitlines()[-2:] == ["By: agent", f"Proof: transcript:{session}#L3"]
+
+
+def test_a_persons_own_yes_records_what_it_answered(tmp_path):
+    """In a person's terminal no proof is needed and the commit says `By:
+    human`; its body still names the question. Mutation: drop `note=` from
+    the `host_add` call in `_carry_out_registration` -> no `Answers:` line
+    (in an agent's shell the authority's reason carries the same words)."""
+    home, ask, new = _seed(tmp_path)
+    with attribution.process("human"):  # what `cli.main` sets for a person's terminal
+        result = conversation.respond(home, proposition=ask["id"], scope="user", text="yes")
+    assert result.registered is True
+    log = git(home, "log", "--format=%s%n%b%x00").stdout.split("\x00")
+    commit = next(entry for entry in log if "self-learn: host add project" in entry)
+    assert "Answers: q-register-newhost" in commit
+    assert commit.strip().splitlines()[-1] == "By: human"
 
 
 def test_a_message_naming_two_registration_questions_is_ambiguous(tmp_path, monkeypatch):
