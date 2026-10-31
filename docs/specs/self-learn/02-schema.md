@@ -755,6 +755,17 @@ reply to an ask is a statement with `answers.kind: question` and `answers.ref`
 the ask's id; phase B receives every such answer, newest first, as the staged
 `answers.yaml`.
 
+*(Added 2026-10-30, S-101.)* **Lesson records and the preview.**
+Phase B's stage also holds `lessons/<id>.md`, every lesson record in the ledger
+as it stands (status, routing, history, `## Trigger`, `## Instruction`), so a
+lesson the overseer names can be read; a record the secret scan matches is a stub
+naming the rule. Phase A's stage has none. A sheet item of a resolution pair whose
+preview says `would-refuse` (a retried kind, `git` or `target-busy`, excepted) is
+not applied: the runner takes it off the staged sheet and names it, with the
+preview's reason, in "Refused / could not do"; a sheet whose every item is refused
+is left whole and refused at apply. A `kind: maintenance` pair with such a line is
+not recorded.
+
 *(Added 2026-09-27.)* **Findings.** Phase B's staged `findings.yaml` is
 `{findings: [{case, kind: examined|dependency-moved, text, ref?}]}`. The runner
 validates each finding on its own and DROPS one that fails (unknown keys, a case
@@ -1365,6 +1376,14 @@ fail the stage; apply time handles them by kind, as above. A repair turn
 already spent on a format error is not spent again. A dry run does the
 same, writing only to the cache.
 
+*(Amended S-96.)* A case whose outcome is `defer` and
+that the overseer asked the user about comes back to the steward when the
+user answers: `overseer respond` observes the cited case with `statement:
+user answered q-<slug> (ref: stmt-...)`, and the steward's reconsider input
+(§3a.8) counts that observation although its `ref` is not among the case's
+dependencies (a statement made afterwards cannot be). Cases that decided
+anything other than `defer` do not come back on an answer.
+
 *(Amended 2026-10-16, S-88.)* A staged `kind: reconsider` case is also
 checked for the predecessor apply time needs, for each lesson it names,
 read as the case will be recorded: its own `supersedes`, else the one the
@@ -1440,7 +1459,10 @@ unit around it:
   (overloaded, 5xx, rate limit, network) is retried once within the same
   attempt after a 30 s backoff (the steward's decision call from an empty
   stage) and journaled `transient-retry`; `environment` (an unsupported model
-  or Claude Code version, authentication, a model or binary not found, a
+  or Claude Code version, authentication — an expired, revoked or missing
+  login included, "Failed to authenticate: OAuth session expired and could
+  not be refreshed" *(2026-10-30, S-95; before it read
+  `unclassified`)* — a model or binary not found, a
   refused provider) is a HOLD — the steward puts the packet's
   `attempt_count` back and stops the run, the overseer writes no failure
   note (phase B also puts coverage back) — journaled `held-environment` and
@@ -1555,7 +1577,11 @@ PDT: "fix the rest of 3".)*
   parked), so the overseer may record several `kind: maintenance` cases in
   one run, each in its own named pair, beside its successors; every other
   named case is a successor (`SUCCESSOR_CASE_FIELDS`, unchanged). A pair
-  is one decision, so it is dropped whole, never item by item. A
+  is one decision, so it is dropped whole, never item by item, with one
+  exception: in a resolution pair, a line whose own preview says
+  would-refuse is dropped and reported and the rest of the pair stands
+  (S-101, "Lesson records and the preview" above); a maintenance pair with such a line is
+  dropped whole. A
   secret-scan hit in a pair's case or sheet drops that pair — nothing of
   it reaches the ledger. *(2026-09-28, follow-up 3)* A hit in
   `findings.yaml`, `user-model-delta.yaml` or `report.md` costs that
@@ -1579,6 +1605,14 @@ PDT: "fix the rest of 3".)*
   machine `status` value (`applied`) and its exit code are unchanged; the
   JSON also carries `decisions_staged` and `decisions_dropped`. The
   steward has no such case: a dropped steward case is counted `refused`.
+  *(Added 2026-10-30, S-101.)* The record's `decisions` also
+  carries `lines_dropped`: the lines taken off KEPT sheets because their
+  preview said `would-refuse`. When it is above zero the report's "Decided
+  in the user's stead" gets `- decisions: <n> line(s) of kept sheets were not
+  applied because their preview said they would be refused (named under
+  Refused / could not do)` and the journal gets a `line-dropped` row per line.
+  They are not pairs, so `staged`, `dropped` and `status_text` are unchanged,
+  and neither the status nor the exit code counts them.
 - *Steward reconsider misfit (audit finding 10).* When `verbs.reconsider`
   refuses a reconsider case the case writer accepted (its outcome does not
   apply to the lesson's status, or the lesson is gone), that case's sheet is receipted refused and nothing of it is dispatched. The refusal takes its S-71 kind from the exception's type: the verb's status check is `status`, and a raise site that names no type is `unclassified`. Each of the case's lessons follows §4.2 with the case named, and the run goes on. *(Amended 2026-10-08.)*; before, the
@@ -1925,6 +1959,12 @@ clause above, worked example):
 ```
 with `um-0012` and `um-0019` marked `LAPSED`,
 `changed_condition: consolidated-into:um-00c4`.
+
+A list field of an entry (`conditions`, `statements`, `basis`) given as one
+string is stored as one item, never as its characters
+*(S-96; um-cea0's `basis` was written one character per
+item)*. A stored `basis` of two or more one-character items reads back as the
+one string it spells and is rewritten that way by the next write.
 
 `um-<4hex>` ids are stable for the life of the entry; every write that changes
 the claim bumps its `r<n>` (a presentation flipping `provisional` is not a
@@ -2369,7 +2409,16 @@ the machinery refusing a write, not a judgment on the lesson (orchestrator
 review 2026-09-27: two live lessons were refused over the secret-scan false
 positive fixed on 2026-09-26 and could never be offered again). Such a
 lesson gets one fresh attempt under the record identity; a refusal there is
-terminal, as every refusal was before. An event is **handled**
+terminal, as every refusal was before. *(2026-10-30, S-95.)* A
+deferral is not a decision either, under either identity: an `applied`
+disposition whose case deferred the lesson (a `defer` item for it) is
+skipped when the eligible lessons are read, so a lesson the steward deferred
+is selected again once `deferred_until` passes, with no manual `undefer`.
+Under the record identity the deferral already made a new version; under the
+legacy proposal identity it did not (the proposal is untouched), so such a
+lesson stayed decided for ever (live: `lrn-f55e9e47`, `lrn-e92861b2`,
+deferred by `run-3dfa8bebd36b` on 2026-09-22). The suspected-violation
+inputs read decisions as before. An event is **handled**
 when a record's `recurrences[]` or `dismissed_suspects[]` holds its nonce;
 handled events are dropped before the version is taken, so a new fire about
 the same record is a new input carrying only itself, and a run that decided

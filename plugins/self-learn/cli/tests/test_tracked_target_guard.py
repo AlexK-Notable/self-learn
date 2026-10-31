@@ -1262,7 +1262,10 @@ def test_a_host_whose_path_holds_glob_characters_gets_a_line_for_exactly_its_fil
     assert "pkg1xb/CLAUDE.local.md" in shown  # control: the listing is read right
     assert rel not in shown
     assert not _ignored(outer, "pkg1xb/CLAUDE.local.md")  # ... and nothing else
-    assert _block(outer) == ["/pkg\\[1]\\*\\?\\\\b/CLAUDE.local.md"]  # a lone ] is literal
+    assert _block(outer) == [  # a lone ] is literal; the host's own marker is excluded too
+        "/pkg\\[1]\\*\\?\\\\b/.self-learn-host",
+        "/pkg\\[1]\\*\\?\\\\b/CLAUDE.local.md",
+    ]
 
 
 def test_an_ignore_line_keeps_a_trailing_space_in_a_file_name(tmp_path):

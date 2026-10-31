@@ -237,14 +237,15 @@ def _test_invocation_py_source() -> str:
 #: `.undo()` in a `finally` block -- which is exactly what this test's own
 #: leg (iii)/docstring cares about (restored via monkeypatch, never a raw
 #: unrestored `del sys.modules[...]`); it just does not route through the
-#: named fixture to get there. `wr2` stays in the set (single-leg, sdk_absent
-#: for its whole body, no conflict).
+#: named fixture to get there. `wr2` left the set when the test audit (L1-1)
+#: merged it into `test_reader_contract.py::test_sw1_*`: its three `Popen`
+#: legs controlled nothing under `sdk_absent`, and its one real leg is
+#: `test_sw1_early_return_precedes_the_sweep_when_the_sdk_is_unavailable`.
 _SIM_2_NINE = {
     "test_rg5_write_session_returns_unavailable_without_raising",
     "test_rg5_text_session_returns_unavailable_without_raising",
     "test_rg5_analyst_analyze_converts_unavailable_to_analyst_error",
     "test_rg5_shimmed_worker_run_completes_under_sdk_selection",
-    "test_wr2_miner_early_returns_precede_the_stray_sweep",
 }
 
 
@@ -1522,19 +1523,11 @@ def test_kl6_child_pid_of_is_defensive(monkeypatch):
     class _Bad:
         pass
 
+    # The criterion's failure mode is a missing attribute, exercised by
+    # _Bad above. The walk is not a type check (a non-int pid is returned
+    # as found), and the case that built one was never asserted on --
+    # removed by the test audit (L1-17).
     assert lifecycle_mod.child_pid_of(_Bad()) is None
-
-    class _WrongType:
-        class _Transport:
-            class _Process:
-                pid = "not-an-int"
-            _process = _Process()
-        _transport = _Transport()
-
-    # a non-AttributeError/TypeError failure isn't expected here; the
-    # "wrong type" case still RETURNS whatever pid is (defensive walk,
-    # not a type check) -- the criterion's actual failure mode is a
-    # missing attribute, exercised by _Bad above.
 
 
 def test_kl6_logs_the_byte_exact_line_once(tmp_path, sdk_cli_path, monkeypatch):

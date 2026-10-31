@@ -885,8 +885,6 @@ class TestExitCodesAreUnified:
         assert ledger.EXIT_NO_HOME == teach_mod.EXIT_NO_HOME
         assert gitops.EXIT_GIT_FAILED is cli.EXIT_GIT_FAILED
         assert gitops.EXIT_GIT_FAILED == teach_mod.EXIT_GIT_FAILED
-        # and they collide with nothing else in either namespace
-        assert len({0, 1, 2, 3, 4, 5, 6, 64}) == 8
         assert teach_mod.EXIT_SCAN == 3 and teach_mod.EXIT_ANALYST == 4
 
 
@@ -1103,7 +1101,6 @@ class TestNoPushSurvivesSpawns:
         commit_all(env.ledger, "seed")
 
         seen: list[bool] = []
-        real_spawn = miner._spawn_run
         monkeypatch.setattr(
             miner, "_spawn_run", lambda h, **kw: seen.append(kw.get("no_push")) or 1
         )
@@ -1112,7 +1109,6 @@ class TestNoPushSurvivesSpawns:
             "the watchdog spawned a miner that was never told about "
             f"--no-push (got {seen}) — it publishes the whole branch"
         )
-        assert real_spawn is not None
 
     def test_the_worker_spawn_carries_no_push_to_a_real_child(self, tmp_path):
         """The worker path (the one that WAS fixed) must STAY fixed — the

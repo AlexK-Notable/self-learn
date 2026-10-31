@@ -32,10 +32,8 @@ import re
 import shutil
 import signal
 import stat
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -151,21 +149,6 @@ def _shadow_claude(shims_dir: Path, tmp_path: Path, tag: str) -> None:
         encoding="utf-8",
     )
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
-
-
-def _cli_reader_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """`T2-f`/U-fake `B-7a` -- sanitizes PATH first (an empty, existing
-    directory) so a missed `subprocess.Popen` patch fails deterministically
-    (`FileNotFoundError`) rather than PATH-dependently -- never a real
-    `claude`, per `HY4`/`K-e`."""
-    home = tmp_path / "reader-cli-home"
-    home.mkdir(exist_ok=True)
-    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "reader-cli-xdg-cache"))
-    empty_path = tmp_path / "reader-cli-empty-path"
-    empty_path.mkdir(exist_ok=True)
-    monkeypatch.setenv("PATH", str(empty_path))
-    return home
 
 
 def _drive_reader_sdk(
@@ -311,40 +294,6 @@ def reader_leg(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
     monkeypatch.setenv(BACKEND_VAR, "sdk")
     yield _ReaderLeg("sdk", home, out_path, monkeypatch, shim_dir=shadow_dir)
-
-
-class _FakePopenTO:
-    """Stand-in for `subprocess.Popen` used by the `TO` group's `cli`
-    leg -- recorder-only (`K-c`): never signals anything real."""
-
-    def __init__(self, *, raise_on_communicate=None, wait_hook: Callable[[], None] | None = None, pid: int = 4242):
-        self._raise_on_communicate = raise_on_communicate
-        self._wait_hook = wait_hook
-        self.pid = pid
-
-    def __call__(self, argv, **kwargs):
-        return self
-
-    def communicate(self, prompt, timeout=None):
-        if self._raise_on_communicate is not None:
-            raise self._raise_on_communicate
-        return ("", None)
-
-    def wait(self):
-        if self._wait_hook is not None:
-            self._wait_hook()
-        return 0
-
-
-class _PopenRaisesTO:
-    """Stand-in for `subprocess.Popen` that raises at CONSTRUCTION time
-    (`SW1`'s `not-found`/`os-error` kinds)."""
-
-    def __init__(self, exc: BaseException):
-        self._exc = exc
-
-    def __call__(self, argv, **kwargs):
-        raise self._exc
 
 
 # ===================================================================== #
@@ -733,34 +682,52 @@ def test_to7_pid_sidecar_present_during_absent_after(monkeypatch, tmp_path):
 # ===================================================================== #
 
 
-def test_sw1_early_returns_precede_the_sweep_all_four_kinds(monkeypatch, tmp_path, sdk_absent):
-    home = _cli_reader_home(tmp_path, monkeypatch)
+def test_sw1_early_returns_precede_the_sweep_transport_kinds(reader_leg, monkeypatch, tmp_path):
+    """The three transport failures (not-found, os-error, timeout) are
+    driven through the real SDK transport against the fake CLI, never
+    through a `subprocess.Popen` stand-in: the old version patched
+    `Popen` under `sdk_absent`, so every leg returned the one
+    "unavailable" early return and none of these three was ever reached
+    (test audit L1-1 / M-1). `outcome.failure == kind` is the positive
+    control that each leg really produced the kind it names."""
     spool = miner.spool_dir()
     stray = spool / "sw1-litter.txt"
+    monkeypatch.setenv("SELF_LEARN_READER_TIMEOUT_SECS", str(TIMEOUT_PATCH))
+    nonexec = tmp_path / "sw1-nonexec"
+    nonexec.write_text("", encoding="utf-8")
+    nonexec.chmod(0o644)
 
-    scenarios = [
-        ("timeout", _FakePopenTO(raise_on_communicate=subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=1))),
-        ("not-found", _PopenRaisesTO(FileNotFoundError())),
-        ("os-error", _PopenRaisesTO(OSError("boom"))),
-    ]
-    for kind, fake in scenarios:
+    def arm_not_found() -> None:
+        monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", "/nonexistent/claude-fake")
+
+    def arm_os_error() -> None:
+        monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(nonexec))
+
+    def arm_timeout() -> None:
+        monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
+        reader_leg.arm_timeout()
+
+    for kind, arm in (
+        ("not-found", arm_not_found),
+        ("os-error", arm_os_error),
+        ("timeout", arm_timeout),
+    ):
         stray.write_text("litter", encoding="utf-8")
-        monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
-        monkeypatch.setattr(subprocess, "Popen", fake)
-        out = miner._invoke_reader(home, "PROMPT")
-        assert out is None, kind
+        arm()
+        run = reader_leg.invoke()
+        assert run.outcome.failure == kind, (kind, run.outcome.failure)
+        assert run.out_path is None, kind
         assert stray.exists(), f"{kind}: stray sweep ran despite an early return"
 
-    # U-flip pins SELF_LEARN_BACKEND_MINER=cli at rung 1 (conftest's
-    # suite-wide default); clear it too, or it shadows this rung-2
-    # override and miner-reader never reaches "unavailable".
+
+def test_sw1_early_return_precedes_the_sweep_when_the_sdk_is_unavailable(reader_leg, sdk_absent):
+    spool = miner.spool_dir()
+    stray = spool / "sw1-unavailable-litter.txt"
     stray.write_text("litter", encoding="utf-8")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_MINER", raising=False)
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    out = miner._invoke_reader(home, "PROMPT")
-    assert out is None, "unavailable"
+    run = reader_leg.invoke()
+    assert run.outcome.failure == "unavailable"
+    assert run.out_path is None
     assert stray.exists(), "unavailable: stray sweep ran despite an early return"
-    monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
 
 
 def test_sw2_rc_nonzero_does_not_short_circuit(reader_leg):
@@ -943,7 +910,9 @@ def test_hy4_no_real_claude_reachable():
     setenv_pattern = re.compile(r'\.setenv\(\s*"SELF_LEARN_SDK_CLI_PATH"')
     for lineno, line in enumerate(src.splitlines(), start=1):
         if setenv_pattern.search(line):
-            assert "FAKE_CLI" in line, (lineno, line)
+            # A deliberately missing path or a non-executable scratch file is
+            # not a real claude either (test_sw1's not-found and os-error legs).
+            assert any(ok in line for ok in ("FAKE_CLI", "/nonexistent/", "str(nonexec)")), (lineno, line)
 
 
 def test_hy5_which_claude_resolves_exclusively_into_the_leg_shim_dir(reader_leg):

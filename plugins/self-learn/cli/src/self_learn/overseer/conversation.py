@@ -17,13 +17,14 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
 from ruamel.yaml import YAML
 
 from .. import cases, gitops, intents, sentinel, statements, user_model
-from ..primitives import fsops
+from ..primitives import chrono, fsops
 
 
 class ConversationError(Exception):
@@ -94,12 +95,60 @@ def _load_questions(home: Path) -> list[dict]:
     return rows
 
 
+#: The `answers.kind` values `respond` writes: an ask is answered as a
+#: `question`, a reading as a `proposition`.
+_ANSWER_KINDS = frozenset({"question", "proposition"})
+
+
+def _answered_ids(home: Path, ids: set[str]) -> set[str]:
+    """Which of the indexed question *ids* the user has answered since the
+    index was written.
+
+    The index (`open-questions.yaml`) is rewritten only by a complete weekly
+    run, so before 2026-10-30 a question stayed listed, and counted by the
+    session-start hook, for the rest of the week after `overseer respond`
+    recorded its answer. A question is answered when a statement whose
+    `answers.ref` is its id was recorded at or after the index file's last
+    write (second precision). The floor is what lets a later run ask the same
+    id again: its new index is newer than the old answer, so the question is
+    open once more. The statement store is only read, so the next weekly run
+    still sees the answer (`run._question_answers`). A store or index that
+    cannot be read answers nothing: the question stays listed."""
+    if not ids:
+        return set()
+    try:
+        floor = datetime.fromtimestamp(
+            int((home / "overseer" / "open-questions.yaml").stat().st_mtime),
+            tz=timezone.utc,
+        )
+        rows = statements.list_statements(home)
+    except (OSError, ValueError):
+        return set()
+    answered: set[str] = set()
+    for row in rows:
+        answers = row.get("answers")
+        if not isinstance(answers, dict) or answers.get("kind") not in _ANSWER_KINDS:
+            continue
+        ref = answers.get("ref")
+        at = chrono.to_dt(row.get("at"))
+        if isinstance(ref, str) and ref in ids and at is not None and at >= floor:
+            answered.add(ref)
+    return answered
+
+
+def _unanswered(home: Path, rows: list[dict]) -> tuple[list[dict], set[str]]:
+    """*rows* without the questions already answered, and the answered ids."""
+    answered = _answered_ids(home, {row["id"] for row in rows})
+    return [row for row in rows if row["id"] not in answered], answered
+
+
 def open_question_count(home: Path | str) -> int | None:
-    """Cheap status fact: absent index -> absent field; otherwise row count."""
+    """Cheap status fact: absent index -> absent field; otherwise the number
+    of indexed questions not yet answered."""
     resolved = Path(home)
     if not (resolved / "overseer" / "open-questions.yaml").is_file():
         return None
-    return len(_load_questions(resolved))
+    return len(_unanswered(resolved, _load_questions(resolved))[0])
 
 
 def _question_block(report: str) -> str:
@@ -157,8 +206,10 @@ def _entry_and_revision(home: Path, proposition: str) -> tuple[str, int, dict]:
 
 
 def open_questions(home: Path | str, *, out: TextIO | None = None) -> int:
-    """Print the report block with EVERY indexed question (no count limit
-    since 2026-09-24), then record only the indexed rows displayed.
+    """Print the report block with EVERY indexed question not yet answered
+    (no count limit since 2026-09-24; an answered one is left out, with its
+    line in the report block, from the moment its answer is recorded --
+    :func:`_answered_ids`), then record only the indexed rows displayed.
 
     A reading displays as before: the report's own line, or a fallback line
     when the prose omitted it. An ask displays from the index -- its text,
@@ -169,11 +220,13 @@ def open_questions(home: Path | str, *, out: TextIO | None = None) -> int:
     if not report_path.is_file():
         raise ConversationError("overseer open: no latest report exists")
     block = _question_block(report_path.read_text(encoding="utf-8"))
-    indexed = _load_questions(resolved)
+    indexed, answered = _unanswered(resolved, _load_questions(resolved))
     asks = [row for row in indexed if row["kind"] == "ask"]
     lines: list[str] = []
     shown_asks: set[str] = set()
     for line in block.rstrip().splitlines():
+        if any(_names(line, question_id) for question_id in answered):
+            continue
         named = next((row for row in asks if _names(line, row["id"])), None)
         if named is None:
             lines.append(line)
@@ -187,6 +240,9 @@ def open_questions(home: Path | str, *, out: TextIO | None = None) -> int:
                 shown_asks.add(row["id"])
         elif row["id"] not in block:
             lines.append(_display_line(block, row["id"], row["cases"]))
+    if answered and not any(line.startswith("- ") for line in lines):
+        # Every question the report listed has been answered.
+        lines.append("- none")
     display = "\n".join(lines).rstrip() + "\n"
 
     if out is None:

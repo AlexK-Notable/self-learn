@@ -770,25 +770,6 @@ class TestCacheAndSentinel:
         assert "claude-skills/self-learn/autosync-pause" not in text
 
 
-def _batch_permissions(home) -> dict:
-    """U-cleanup-B replacement for the deleted `worker.write_settings_
-    file` (§8.1: the batch round no longer writes a settings file at
-    all -- `settings=None` for the real sdk seam now, `WS1` in
-    `test_worker_contract.py`). Recomputes the SAME permissions dict
-    that function used to write, from the SAME still-live inputs
-    (`stage_permission_rules`/`write_permission_rules`,
-    `_stage_enabled`/`_enforce_scope`)."""
-    rules = (
-        worker.stage_permission_rules(home)
-        if worker._stage_enabled()
-        else worker.write_permission_rules(home)
-    )
-    permissions: dict[str, object] = {"allow": rules}
-    if worker._enforce_scope():
-        permissions["defaultMode"] = "default"
-    return permissions
-
-
 class TestWorkerContainment:
     def test_write_permission_rules_new_layout_only(self, env, monkeypatch):
         """U-attrib (CP8, §3.5 bucket 3): subject changes from "the batch
@@ -805,12 +786,14 @@ class TestWorkerContainment:
         # H-3: no rule may open any HOST path to the worker
         assert all(str(env.host) not in rule for rule in rules)
         assert all(".self-learn" not in rule for rule in rules)
-        # GR-c: SELF_LEARN_STAGE=0 makes write_settings_file emit exactly
-        # this fallback list.
+        # GR-c: SELF_LEARN_STAGE=0 is the switch that selects this fallback
+        # list. (The old tail rebuilt a permissions dict inside the test and
+        # compared it to `rules`, so it could not fail on a product change;
+        # what the batch session is really granted is asserted at the SDK
+        # seam by test_worker_contract.py::test_ha4_the_fence_and_silence
+        # and test_attrib.py -- test audit L8-1.)
         monkeypatch.setenv("SELF_LEARN_STAGE", "0")
-        monkeypatch.setenv("XDG_CACHE_HOME", str(env.ledger.parent / "xdg-fallback"))
-        data = _batch_permissions(env.ledger)
-        assert data["allow"] == rules
+        assert worker._stage_enabled() is False
 
     def test_package_skill_refs_resolves_to_shipped_references(self):
         refs = worker.package_skill_refs()
@@ -819,20 +802,20 @@ class TestWorkerContainment:
         assert (refs / "card-sections.yaml").is_file()
         assert (refs / "mining-rubric.md").is_file()
 
-    def test_settings_file_carries_the_new_rules(self, env, monkeypatch, tmp_path):
+    def test_stage_grant_is_one_rule_naming_no_ledger_or_host_path(self, env, monkeypatch, tmp_path):
         """U-attrib (CP8, §3.5 bucket 3): the batch allow list becomes
-        Grant-1's ONE stage rule (GR-b) — the settings file still carries
-        `defaultMode` (GR-a, the security hotfix, surviving relocation)."""
+        Grant-1's ONE stage rule (GR-b), and no rule names any ledger
+        path, any host path, or .self-learn. The old premise (a settings
+        file that carries `defaultMode`, GR-a) has no file left to read:
+        `permission_mode` is "default" unconditionally at the SDK seam,
+        asserted on the real `options_kwargs` by test_worker_contract.py::
+        test_ha4_the_fence_and_silence. The `data["defaultMode"]` line this
+        test used to end on read a literal the test's own helper had just
+        written (test audit L8-1)."""
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg2"))
-        data = _batch_permissions(env.ledger)
-        assert data["allow"] == worker.stage_permission_rules(env.ledger)
-        assert len(data["allow"]) == 1
-        # no rule may name any ledger path, any host path, or .self-learn
-        for rule in data["allow"]:
+        rules = worker.stage_permission_rules(env.ledger)
+        assert len(rules) == 1
+        for rule in rules:
             assert str(env.ledger) not in rule
             assert str(env.host) not in rule
             assert ".self-learn" not in rule
-        # security hotfix: without an explicit defaultMode, the session
-        # inherits the host's global permissions.defaultMode (which may be
-        # "bypassPermissions"), voiding every allow-rule above.
-        assert data["defaultMode"] == "default"

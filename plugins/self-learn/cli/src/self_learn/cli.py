@@ -2983,12 +2983,22 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
                 "file — every write lands uncommitted; committing and "
                 "publishing it is entirely yours to do, or not"
             )
-            print(
-                "  note: a claude-md:local file written here is NOT "
-                "gitignore-protected (nothing is tracked) — if you later "
-                "git init and push this host yourself, anything already "
-                "written here publishes with it"
-            )
+            if gitops.work_tree_of(
+                Path(args.path).expanduser().resolve() / hosts_mod.MARKER_FILENAME
+            ) is None:
+                print(
+                    "  note: a claude-md:local file written here is NOT "
+                    "gitignore-protected (nothing is tracked) — if you later "
+                    "git init and push this host yourself, anything already "
+                    "written here publishes with it"
+                )
+            else:
+                print(
+                    "  note: this is a git repository; self-learn lists each "
+                    "file it writes here in the repo's local .git/info/exclude "
+                    "(never the tracked .gitignore), so none shows in git "
+                    "status and none is committed or pushed by self-learn"
+                )
         return EXIT_OK
     if args.host_command == "rebind":
         try:
@@ -3132,15 +3142,14 @@ def _cmd_bucket(args: argparse.Namespace) -> int:
 def _host_line(home, path, kind: str) -> str:
     """One registry line, with any gate problem spelled out inline.
 
-    U-hostmode MODE11/UN4: the mode suffix appears ONLY for a non-git
-    host — a registry with no plain entries renders byte-identical to
-    50fa815's (git stays the silent, unannotated default everywhere else
-    in this line's shape)."""
+    U-hostmode MODE11: the mode suffix names every host's mode, git
+    included (S-97; UN4's silent git default is withdrawn here, so
+    the skills root and each project state theirs)."""
     if path is None:
         return "(none registered)"
     problem = hosts_mod.host_path_problem(home, path, kind)
     mode = hosts_mod.host_mode(home, path, registration=kind)
-    mode_suffix = f"  [mode={mode}]" if mode != "git" else ""
+    mode_suffix = f"  [mode={mode}]"
     if problem is None:
         return f"{path}{mode_suffix}"
     return f"{path}{mode_suffix}  ⚠ BROKEN — {problem}"

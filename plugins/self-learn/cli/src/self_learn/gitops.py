@@ -448,7 +448,6 @@ def _flock_lock(path: Path, timeout: float, wedged_by: str) -> Iterator[None]:
         while True:
             try:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
                     raise GitOpsError(
@@ -457,6 +456,21 @@ def _flock_lock(path: Path, timeout: float, wedged_by: str) -> Iterator[None]:
                         f"(worker/miner/verb) is wedged mid-{wedged_by}"
                     ) from None
                 time.sleep(0.02)
+                continue
+            # S-99: `cache_gc.prune` may unlink an idle lock file.
+            # A lock taken on a file that was unlinked after we opened it
+            # excludes nobody (the next opener creates a fresh file), so
+            # confirm the file we hold is still the one at `path`, and
+            # start over on a fresh one if not.
+            try:
+                same = os.fstat(fh.fileno()).st_ino == os.stat(path).st_ino
+            except OSError:
+                same = False
+            if same:
+                break
+            fh.close()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fh = open(path, "w", encoding="utf-8")
         _held_locks.add(key)
         try:
             with contextlib.suppress(OSError):

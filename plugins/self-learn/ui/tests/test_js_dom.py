@@ -811,37 +811,94 @@ class TestReloadDeferLegC:
         _assert_reloaded(page)
 
 
+def _render_action_bar(*, error: str | None = None, commit_drift: dict | None = None) -> tuple[str, str]:
+    """The REAL ``partials/action_bar.html`` rendered with the context
+    ``routes._unarmed_context`` builds (the same helper every failed-
+    confirm / commit-drift POST uses), returned as ``(dom_id, html)``.
+
+    The two tests below used to type the bar's markup by hand, so they
+    set the very attributes (``data-armed``, ``data-verb-error``) whose
+    omission from the template was the regression they claim to guard --
+    deleting either from ``action_bar.html`` left them green (test audit
+    L10-8, mutation runs M-18/M-19). Rendering the template closes that
+    gap: the attribute is now there only if the template emits it."""
+    from self_learn_ui import routes
+    from self_learn_ui.app import _build_templates
+
+    ctx = routes._unarmed_context(
+        kind="detail",
+        record_id=REC_BRIEF,
+        dest=None,
+        event=None,
+        target=None,
+        scope="skill:s",
+    )
+    ctx["error"] = error
+    ctx["commit_drift"] = commit_drift
+    html = _build_templates().env.get_template("partials/action_bar.html").render(**ctx)
+    return ctx["dom_id"], html
+
+
+def _commit_drift_ctx(*, armed: bool) -> dict:
+    from self_learn_ui import routes
+
+    return routes._commit_drift_ctx(
+        record_id=REC_BRIEF,
+        kind="detail",
+        error_text="route failed",
+        retry=routes._commit_drift_retry_ctx(
+            dest=None, collapse=None, note=None, until=None, event=None,
+            tolerate=False, target=None,
+        ),
+        armed={"repo": "/sandbox/repo", "files": ["SKILL.md"]} if armed else None,
+    )
+
+
 class TestCommitDriftArmedSurvivesRefresh:
     """U20 §2.2 (F5-5 guided commit-first): the commit-drift armed
     sub-state — a `.action-bar[data-armed="true"]` shape rendered INSIDE
     the existing error strip (no new region, O-9) — reuses leg (c)
-    verbatim: no new JS, per the round spec's own pin. This drives the
-    EXACT markup ``action_bar.html`` renders once armed (rather than a
-    synthetic stand-in), closing the loop that the template's shape
-    really does carry the attribute app.js's selector reads."""
+    verbatim: no new JS, per the round spec's own pin. This injects the
+    markup ``action_bar.html`` ITSELF renders once armed (the template is
+    rendered, not typed by hand), closing the loop that the template's
+    shape really does carry the attribute app.js's selector reads."""
 
     def test_armed_flow_survives_the_refresh_push(
         self, page: "Page", server: ServerHandle
     ) -> None:
         _open(page, server, "/")
-        page.evaluate(
-            "document.body.insertAdjacentHTML('beforeend', "
-            "'<div id=\"t-commit-drift\" class=\"action-bar\" data-armed=\"true\">"
-            "<p class=\"error-strip\" role=\"alert\">route failed</p>"
-            "<form><p class=\"commit-drift-armed\">Commit repo (1 file(s)): "
-            "SKILL.md</p><button data-key-action=\"commit_drift_confirm\">"
-            "Confirm</button></form></div>')"
+        dom_id, armed_html = _render_action_bar(
+            error="route failed", commit_drift=_commit_drift_ctx(armed=True)
         )
+        _, unarmed_html = _render_action_bar()
+        # Positive control: the rendered fragment really is the armed one.
+        assert 'data-armed="true"' in armed_html
+        assert 'data-key-action="commit_drift_confirm"' in armed_html
+        page.evaluate(
+            "html => document.body.insertAdjacentHTML('beforeend', html)", armed_html
+        )
+        # The real error strip also carries `data-verb-error` (leg (a)),
+        # which would defer the reload on its own. Strip it in the page so
+        # leg (c) -- the armed attribute this test is about -- is the only
+        # thing left that can hold the reload.
+        page.evaluate(
+            "() => document.querySelectorAll('[data-verb-error]')"
+            ".forEach(e => e.removeAttribute('data-verb-error'))"
+        )
+        assert page.query_selector("[data-verb-error]") is None
+        assert page.query_selector('.action-bar[data-armed="true"]') is not None
         _arm_reload_sentinel(page)
 
         server.push_refresh("front")
         _assert_deferred(page)  # leg (c) holds the armed guided-commit bar
 
         # Confirm/second-refusal always re-renders the WHOLE #dom_id
-        # element unarmed (never a partial patch) — simulate that swap,
-        # then a settle re-checks the predicate and releases.
+        # element unarmed (never a partial patch) — swap in the template's
+        # own unarmed render, then a settle re-checks the predicate and
+        # releases.
         page.evaluate(
-            'document.getElementById("t-commit-drift").setAttribute("data-armed", "false")'
+            "([id, html]) => { document.getElementById(id).outerHTML = html; }",
+            [dom_id, unarmed_html],
         )
         _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/commit-drift/confirm")
         _assert_reloaded(page)
@@ -872,11 +929,23 @@ class TestErrorStripSurvivesInFlightRefresh:
         self, page: "Page", server: ServerHandle
     ) -> None:
         _open(page, server, "/")
+        # The failed-verb response is the template's OWN render (not typed
+        # by hand): the error strip with its `data-verb-error` marker and
+        # the commit-drift button.
+        dom_id, failed_html = _render_action_bar(
+            error="compile target has unrelated uncommitted changes",
+            commit_drift=_commit_drift_ctx(armed=False),
+        )
+        # Positive control: the rendered fragment carries both the marker
+        # and the button this test goes on to look for in the live page.
+        assert "data-verb-error" in failed_html
+        assert 'data-key-action="commit_drift_arm"' in failed_html
         # The pre-confirm armed bar — same shape action_bar.html renders
         # while armed, about to POST .../action/confirm.
         page.evaluate(
-            "document.body.insertAdjacentHTML('beforeend', "
-            "'<div class=\"action-bar\" data-armed=\"true\" id=\"t-bar\"></div>')"
+            "id => document.body.insertAdjacentHTML('beforeend', "
+            "'<div class=\"action-bar\" data-armed=\"true\" id=\"' + id + '\"></div>')",
+            dom_id,
         )
         _dispatch_htmx(page, "htmx:beforeRequest", "/record/x/action/confirm")
         _arm_reload_sentinel(page)
@@ -891,14 +960,10 @@ class TestErrorStripSurvivesInFlightRefresh:
         # The confirm response arrives: a failed verb re-renders the
         # WHOLE action-bar unarmed, carrying the error strip AND (when
         # eligible) the commit-drift button — the REAL shape
-        # action_bar.html emits post-fix.
+        # action_bar.html emits.
         page.evaluate(
-            "document.getElementById('t-bar').outerHTML = "
-            "'<div class=\"action-bar\" data-armed=\"false\" id=\"t-bar\">"
-            "<p class=\"error-strip\" role=\"alert\" data-verb-error=\"true\">"
-            "compile target has unrelated uncommitted changes</p>"
-            "<form><button data-key-action=\"commit_drift_arm\">Commit that "
-            "repo\\'s changes, then retry</button></form></div>'"
+            "([id, html]) => { document.getElementById(id).outerHTML = html; }",
+            [dom_id, failed_html],
         )
         _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/confirm")
         # THE ASSERTION: releaseReload()'s predicate re-check at the exact
@@ -914,7 +979,7 @@ class TestErrorStripSurvivesInFlightRefresh:
 
         # Defer-never-drop, chained: dismiss/re-render removes the strip
         # (leg (a)'s pinned release) and a settle still fires the reload.
-        page.evaluate("document.getElementById('t-bar').remove()")
+        page.evaluate("id => document.getElementById(id).remove()", dom_id)
         _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/arm")
         _assert_reloaded(page)
 

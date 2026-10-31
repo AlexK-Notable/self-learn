@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "3ebc194"
+ANCHOR = "39f9126"
 
 
 # ===================================================================== #
@@ -292,8 +292,23 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     # 2026-10-24, ANCHOR 7cb185a (stmt-role): this row's 11 `missing` doors (the retirement's deleted and edited tests)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
+    # 2026-10-30, S-100: the test audit's merge of test_wr2 into
+    # test_reader_contract.py::test_sw1_* (three `missing` doors). `nodes` and
+    # `dump_sha` below are NOT yet re-measured for this deletion: the landing
+    # step's --remeasure does that (the lane never runs it).
     "test_invocation.py": Behaviour(
         nodes=75, dump_sha="37437e97c3031e7c7e17079be73d487cb76679e8003a49bad9e736f217ba4f63",
+        missing={
+            'func:test_wr2_miner_early_returns_precede_the_stray_sweep': (
+                '2026-10-30 test audit L1-1 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.11. Dated exemption per armor §4.5/§4.7; the test merged into test_reader_contract.py::test_sw1_early_return_precedes_the_sweep_when_the_sdk_is_unavailable (its three Popen legs controlled nothing under sdk_absent).'
+            ),
+            'class:_FakePopen': (
+                '2026-10-30 test audit L1-1 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.11. Dated exemption per armor §4.5/§4.7; the Popen stand-in was used only by test_wr2.'
+            ),
+            'class:_PopenRaises': (
+                '2026-10-30 test audit L1-1 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.11. Dated exemption per armor §4.5/§4.7; the Popen stand-in was used only by test_wr2.'
+            ),
+        },
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
@@ -311,8 +326,19 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     # 2026-10-24, ANCHOR 7cb185a (stmt-role): this row's 1 `edited` doors (the retirement's deleted and edited tests)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
+    # 2026-10-30, S-100: two `edited` doors (test audit L1-1 took
+    # test_wr2 out of _SIM_2_NINE; L1-17 dropped an unasserted case from test_kl6).
+    # `dump_sha` below is NOT yet re-measured; the landing step's --remeasure does that.
     "test_invocation_sdk.py": Behaviour(
         nodes=139, dump_sha="b1ee64cd9f959dc125a4dbdbb38b1257ebf3918d62424f15848bd7ab95291e45",
+        edited={
+            'assign:_SIM_2_NINE': (
+                '2026-10-30 test audit L1-1 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.13. Dated exemption per armor §4.5/§4.7; test_wr2 left the set when it was merged into test_reader_contract.py.'
+            ),
+            'func:test_kl6_child_pid_of_is_defensive': (
+                '2026-10-30 test audit L1-17 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.9. Dated exemption per armor §4.5/§4.7; an unasserted _WrongType case was removed.'
+            ),
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
@@ -331,8 +357,19 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     ),
     # 2026-10-24, ANCHOR 7cb185a (stmt-role): this row's 1 `edited` doors (the retirement's deleted and edited tests)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
+    # 2026-10-30 (tests-fix, S-98; 11-telemetry-and-lifecycle.md §2.5, the `defer --until` rule):
+    # `test_defer_cli_until_date` deferred to the fixed date 2027-01-01 and goes red once that date is past
+    # (`defer` refuses a past --until); it now derives the date from today. `nodes`/`dump_sha` are
+    # anchor-side and unchanged by a HEAD edit; EXM3.census_edited (0 -> 1) and BEH3.control_edited
+    # (175 -> 176) are bumped below with dated reasons.
     "test_route_cli.py": Behaviour(
         nodes=59, dump_sha="0558051df890c86d53fe8592c00fcc902d7db04e3a379235db739bf28ebf3150",
+        edited={
+            "func:test_defer_cli_until_date": (
+                "2026-10-30 tests-fix (S-98): the deferral date is computed from today, "
+                "not hard-coded 2027-01-01 (11-telemetry-and-lifecycle.md §2.5)"
+            ),
+        },
     ),
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): A12's `edited` door (U7's cases block in the
     # batch prompt) was dropped as VACUOUS by this landing's own refusal; U7
@@ -904,9 +941,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=0,
+        value=3,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-30 audit-merges (S-100; test audit L1-1): 0 -> 3, the three `missing` doors on test_invocation.py (`test_wr2_...`, `_FakePopen`, `_PopenRaises`), counted against ANCHOR 3ebc194. "
+            "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
             "STALE refusal (stmt-role): 11 -> 0; the retirement's deleted and edited tests "
             "are anchor-side now. Previous entry: "
@@ -926,9 +965,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=3,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-30 tests-fix + audit-merges: 0 -> 3. tests-fix (S-98; 11-telemetry-and-lifecycle.md §2.5) adds an `edited` door on test_route_cli.py `func:test_defer_cli_until_date` (relative date); audit-merges (S-100; test audit L1-1, L1-17) adds two `edited` doors on test_invocation_sdk.py (`_SIM_2_NINE`, `test_kl6_child_pid_of_is_defensive`). Counted by reading; the landing remeasure confirms. "
+            "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
             "STALE refusal (stmt-role): 2 -> 0; the retirement's deleted and edited tests "
             "are anchor-side now. Previous entry: "
@@ -982,9 +1023,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_edited,
     ),
     "BEH1.control_missing": Measured(
-        value=97,
+        value=100,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-30 audit-merges (S-100; test audit L1-1): 97 -> 100, `test_wr2_...`, `_FakePopen` and `_PopenRaises` are absent at HEAD and present at the retired control anchor c3b48e7. "
+            "Previous entry: "
             "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 91 -> 97, the deleted backend-selector tests, counted against the retired control anchor c3b48e7. "
             "Previous entry: "
             "2026-10-24 test audit L1/L2, per §4.5/§4.7: 68 -> 91; "
@@ -998,9 +1041,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=175,
+        value=176,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-30 tests-fix (S-98; 11-telemetry-and-lifecycle.md §2.5): 175 -> 176; "
+            "`func:test_defer_cli_until_date` is edited against c3b48e7. Previous entry: "
             "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 179 -> 175, the retirement's edits counted against c3b48e7 (nodes it deleted no longer count as edited). "
             "Previous entry: "
             "2026-10-24 kl8 exec race (drafts/u-sdk-backend-spec.md §3.7): 178 -> 179; "
@@ -1670,24 +1715,18 @@ def test_arm1_one_table_one_anchor():
 
 
 def test_arm2_literals_match_the_anchor():
-    """`ARM2`. Every `Behaviour.nodes`/`.dump_sha` and every `Fixture`
-    sha equals the census/sha256 measured at `ANCHOR` right now."""
+    """`ARM2`. Every `Behaviour.nodes`/`.dump_sha` equals the census
+    measured at `ANCHOR` right now. (A `Fixture` row carries no literal --
+    its sha lives only in `F1`'s live comparison, section 4.3 -- so there
+    is nothing for ARM2 to compare there; the old fixture leg only
+    asserted that a sha256 hexdigest is 64 characters long, test audit
+    L2-13.)"""
     for key in BEHAVIOUR_KEYS:
         row = ARMOR[key]
         assert isinstance(row, Behaviour)
         c = _anchor_census(key)
         assert len(c) == row.nodes, (key, len(c), row.nodes)
         assert _dump_sha(c) == row.dump_sha, key
-    for key in FIXTURE_KEYS:
-        live_sha = hashlib.sha256(_anchor_bytes(key)).hexdigest()
-        # There is no per-fixture literal in `Fixture` itself (the sha
-        # lives only in `F1`'s live comparison, section 4.3) -- ARM2's
-        # fixture leg instead confirms the anchor bytes are non-empty
-        # and stable across two independent `git show` calls, which is
-        # what a hand-edited literal drifting from `--remeasure` would
-        # violate for the BEHAVIOUR half above.
-        assert len(live_sha) == 64
-        assert hashlib.sha256(_anchor_bytes(key)).hexdigest() == live_sha
 
 
 def test_arm3_table_is_exhaustive():
@@ -2436,12 +2475,17 @@ def test_add2_fake_claude_imports_nothing_live():
     """`ADD2`. `fake_claude.py` imports none of `subprocess`, `socket`,
     `urllib`, `http`. Positive control: a copy with `import socket`
     appended reddens."""
-    text = _head_text(_FAKE_CLAUDE_KEY)
-    for banned in ("subprocess", "socket", "urllib", "http"):
-        assert f"import {banned}" not in text, banned
+    def banned_imports(source: str) -> list[str]:
+        return [b for b in ("subprocess", "socket", "urllib", "http") if f"import {b}" in source]
 
+    text = _head_text(_FAKE_CLAUDE_KEY)
+    assert banned_imports(text) == []
+
+    # The positive control runs the SAME check over a mutated copy and
+    # needs it to fail (test audit L2-12: the old control only asserted
+    # that string concatenation works).
     mutated = text + "\nimport socket\n"
-    assert "import socket" in mutated  # the positive control
+    assert banned_imports(mutated) == ["socket"]
 
 
 def test_add3_edited_scenario_still_pinned():

@@ -130,8 +130,15 @@ def _seed_parked_hook(home, tmp_path):
 
 
 def _fake_hook_phases(
-    monkeypatch, rid, parked, *, extra_refusal=False, close_call=False
+    monkeypatch, rid, parked, *, extra_refusal=False, extra_apply_refusal=False,
+    close_call=False,
 ):
+    """``extra_refusal`` adds an item whose PREVIEW says would-refuse
+    (`undefer` of a lesson that is pending): the overseer no longer applies
+    such an item. ``extra_apply_refusal`` adds item 2, a `reject` of the same
+    lesson, which previews would-apply (the lesson is pending when previewed)
+    and is refused only AT APPLY, after item 1 has routed it: the shape every
+    test of an apply-time refusal needs (S-101)."""
     calls = []
 
     def invoke(spec):
@@ -169,6 +176,8 @@ def _fake_hook_phases(
             ]
             if extra_refusal:
                 items.append({"id": rid, "verb": "undefer"})
+            if extra_apply_refusal:
+                items.append({"id": rid, "verb": "reject"})
             _dump(stage / "sheet-hook.yaml", {"version": 1, "items": items})
         return type("SdkLike", (), {
             "ok": True, "rc": 0, "stdout": "", "detail": "", "failure": None, "turns": 1,
@@ -802,7 +811,7 @@ def test_run_exit_8_when_a_sheet_applies_and_refuses(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
-    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
     fake = batch.BatchResult(
         items=[
             batch.ItemResult(n=1, id=rid, verb="route", rc=0, state="applied"),
@@ -1481,14 +1490,17 @@ def test_a_refused_host_verb_that_wrote_nothing_lets_the_rest_of_the_sheet_run(
     commits its ledger leg before its host leg), so it is an ordinary
     receipted refusal: the later items of the same sheet are dispatched in
     the SAME run instead of being left "not attempted" behind a halt. Here
-    item 2 (`undefer` on a record that is pending, not deferred) then
-    refuses for real, so the sheet ends fully refused and complete."""
+    item 2 is refused too (simulated, it wrote nothing), so the sheet ends
+    fully refused and complete."""
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
-    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
     _silence_notifications(monkeypatch)
-    dispatched = _dispatch_returning(monkeypatch, 1, item_n=1)
+    # Every dispatch is a simulated refusal that wrote nothing: item 1 never
+    # lands, so item 2 (a reject of a still-pending lesson) would apply for
+    # real if it were left to the real dispatch.
+    dispatched = _dispatch_returning(monkeypatch, 1)
 
     first = overseer_run.run(home, dry_run=False, no_push=True)
 
@@ -1524,7 +1536,7 @@ def test_a_sheets_tail_behind_a_refused_host_verb_is_never_lost(tmp_path, monkey
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
-    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
     _silence_notifications(monkeypatch)
     dispatched = _dispatch_failing_after_its_ledger_commit(monkeypatch, home, item_n=1)
 
@@ -2202,7 +2214,7 @@ def _halted_run_with_item_1_refused(tmp_path, monkeypatch, kind):
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
-    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
     _silence_notifications(monkeypatch)
     dispatched = _dispatch_scripted(monkeypatch, {1: (1, kind), 2: (6, None)})
     first = overseer_run.run(home, dry_run=False, no_push=True)
@@ -2239,8 +2251,8 @@ def test_a_target_busy_refusal_is_dispatched_again_when_the_run_resumes(tmp_path
 
     assert dispatched == [1, 2, 1, 2], "the target-busy refusal is dispatched again"
     assert second.run == first.run
-    # ...and this time the real route lands (item 2, an undefer of a lesson
-    # that is not deferred, refuses for real).
+    # ...and this time the real route lands (item 2, a reject of the lesson
+    # item 1 has just routed, refuses for real: a routed lesson is not live).
     manifest = execution_evidence.read_manifest(home, first.run)
     (recipe,) = manifest["cases"].values()
     states = {row["n"]: row["state"] for row in recipe["dispositions"]}
@@ -2249,22 +2261,11 @@ def test_a_target_busy_refusal_is_dispatched_again_when_the_run_resumes(tmp_path
     assert Record.from_path(find_record_path(home, rid)).status == "routed"
 
 
-def test_a_bad_line_refusal_stays_final_when_the_run_resumes(tmp_path, monkeypatch):
-    """S-71 §7.2: a refusal of any kind other than `git` or `target-busy`
-    is a judgment on the line and stays final -- the resume dispatches
-    nothing of that sheet again."""
-    home, first, dispatched = _halted_run_with_item_1_refused(
-        tmp_path, monkeypatch, "bad-line"
-    )
-    manifest = execution_evidence.read_manifest(home, first.run)
-    (recipe,) = manifest["cases"].values()
-    assert recipe["dispositions"][0].get("kind") == "bad-line", recipe["dispositions"]
-    assert "simulated bad-line refusal of item 1 [bad-line]" in _refused_block(home)
-
-    overseer_run.run(home, dry_run=False, no_push=True)
-
-    # Item 2 (stopped) is dispatched again beside it (2026-09-26, N11).
-    assert dispatched == [1, 2, 2], "a bad-line refusal is never dispatched again"
+# S-71 §7.2: a refusal of any kind other than `git` or `target-busy` is a
+# judgment on the line and stays final -- the resume dispatches nothing of
+# that sheet again. The bad-line case lives in test_overseer_retry_beside_
+# final.py::test_a_stopped_item_beside_a_final_refusal_is_retried_and_both_
+# are_reported (merged there by the test audit, L5-2).
 
 
 def test_a_refusal_committed_without_a_kind_stays_final_when_the_run_resumes(

@@ -277,6 +277,15 @@ revert). Doc 13 promotes that to the general rule:
    it is never registered, carries no marker, and its mode cannot be
    anything else.
 
+   **The marker and git (S-97).** The marker is the one path a plain
+   host registration writes itself, so registration (and every re-registration,
+   marker present or repaired) puts its line in the repo's private
+   `.git/info/exclude` (self-learn's own block, idempotent), never the tracked
+   `.gitignore`. Unlike the item's tracked-file refusal, the marker is not
+   refused when tracked or re-admitted by `.gitignore`: a tracked marker gets no
+   exclude line (an ignore line cannot hide a tracked file) and is still
+   (over)written; a marker git already ignores gets no duplicate line.
+
    **What replaces git for a plain host, and what does not.** Item 2's
    drift check is unaffected: it was never a git check — it compares the
    ledger's routed records against `(lrn-…)` entry markers in the target,
@@ -548,6 +557,19 @@ this scheme is written to the REAL `~/.cache/self-learn` iff a real
 either suite; both suites' `conftest.py` also carry a session-scoped
 guard that fails the suite's own session, by name, if that guarantee
 is ever broken again.
+
+**Orphan sweep (S-99, 2026-10-30):** the guarantee above stops
+the suites; it cannot stop a scratch run or a home deleted by hand, and the
+`home-<digest>` name is a one-way hash. So `worker.cache_dir` records the
+home's path in `<cache>/home-<digest>/.home`, and `cache_gc.prune` (run by
+`serve` at start and daily) deletes a `home-*` directory only when its
+record hashes to its own name, the recorded home does not exist, and no
+file under it has changed for 7 days. A directory with no usable record is
+left alone; the ambient home and the serving daemon's home are never
+swept. The same pass deletes `host-<slug>.commit.lock` files that no
+process holds and that are 30 days old (1 day when the host path is under
+`/tmp`); `gitops._flock_lock` re-checks, after locking, that the file it
+holds is still the one at the path, so a sweep cannot split a lock.
 
 **Running the two suites (pre-existing, unrelated to the guarantee
 above):** a bare `pytest` invoked from the worktree root, given both
@@ -1307,7 +1329,14 @@ overseer's own cadence — `status --fast` and `doctor serve` gain
 committed `overseer/open-questions.yaml` machine index (one entry per
 question — its id, kind and affected case ids, plus an ask's text and why;
 no count limit since 2026-09-24), never by parsing the report's
-prose or walking the case store. These are additive JSON fields on an existing read-only surface,
+prose or walking the case store. *(Amended S-96:
+the count, and `overseer open`, leave out a question the user has answered
+since the index was written -- a statement whose `answers.ref` is its id,
+recorded at or after the index file's last write -- so an answer takes
+effect when `overseer respond` records it, not when the next weekly run
+rewrites the index. A later run that asks the same id again writes a newer
+index, so the question is open again. The statement store is only read;
+the next run still sees the answer.)* These are additive JSON fields on an existing read-only surface,
 not a new command; a `status`/`doctor` run that omits them is not this
 section's fault, but a build that never wires them through is.
 

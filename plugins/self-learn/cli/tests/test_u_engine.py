@@ -324,8 +324,6 @@ def test_pin4_positive_control_the_ui_prefix_would_fail_this_pin(monkeypatch):
     client = FakeSdkClient(disconnect_raises=RuntimeError("boom"))
     logs = _run_ladder_and_collect(monkeypatch, client=client)
     assert logs != [_CLI_DISCONNECT_RAISED], "PIN4 did not detect the swapped table"
-    with pytest.raises(AssertionError):
-        assert logs == [_CLI_DISCONNECT_RAISED], logs
 
 
 # ===================================================================== #

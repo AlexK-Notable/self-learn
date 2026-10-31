@@ -11,10 +11,10 @@ explanation and NEVER committed; only DIRTY (uncommitted changes) is
 served.
 
 All git activity happens in sandbox repos under pytest tmpdirs.
-``TestChezmoiLeg`` below keeps its class/test names verbatim per UN3's
-name-set freeze even though its subject is gone (§2.10b census, CD2) —
-every plain host, user scope included, now refuses this verb identically
-at exit 64, with no PATH shim left to simulate anything against.
+Every plain host, user scope included, refuses this verb identically at
+exit 64 (CD1), with no PATH shim left to simulate anything against; the
+refusal is pinned once, by
+``test_a_plain_host_refuses_with_the_whole_cd1_message`` below.
 """
 
 from __future__ import annotations
@@ -144,69 +144,34 @@ class TestGitopsLeg:
             verbs.commit_drift(env.home, RID, dest="hook")
 
 
-# -------------------------------------------------------------- chezmoi leg
+# ------------------------------------------------------- plain-host refusal
 
 
-class TestChezmoiLeg:
-    """U-hostmode §4.7/CD2 (rewritten, names kept — §2.10b census): the
-    chezmoi user leg ``commit_drift`` used to run is DELETED wholesale in
-    Phase 1, not rewritten (§4.7's own docstring) — user scope is a
-    first-class PLAIN host now, and EVERY plain host refuses this verb
-    identically at exit 64 (CD1), regardless of the on-disk state that
-    used to distinguish dirty/drift/clean. The four tests below no longer
-    have a mechanism to distinguish, so all four assert the SAME CD1
-    refusal — kept as four separate tests (not collapsed to one) because
-    UN3(i)'s name-set diff over this file must only GAIN names, never
-    drop them."""
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_plain_host_refuses_with_the_whole_cd1_message(env, tmp_path, dry_run):
+    """U-hostmode §4.7/CD1: user scope is a first-class PLAIN host, and
+    EVERY plain host refuses this verb identically at exit 64, regardless
+    of the on-disk state that used to distinguish dirty/drift/clean.
+    Replaces five tests that made this one call on this one fixture and
+    each matched a different fragment of the one message (test audit
+    L6-43): all three fragments are asserted here, and `--dry-run` runs
+    every precondition, this refusal included, so a plain host refuses
+    BEFORE dry_run can matter."""
+    target = tmp_path / "dot-claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_text("# user conduct\n", encoding="utf-8")
+    record = make_behavior(scope="user", record_id=RID)
+    create_record(env.home, record)
+    write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
 
-    def test_dirty_dotfiles_goes_through_chezmoi_git(self, env, tmp_path):
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        record = make_behavior(scope="user", record_id=RID)
-        create_record(env.home, record)
-        write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
-
-        with pytest.raises(verbs.VerbError, match="is a PLAIN host"):
-            verbs.commit_drift(env.home, RID, user_claude_md=target)
-
-    def test_drift_refused_no_commit(self, env, tmp_path):
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        record = make_behavior(scope="user", record_id=RID)
-        create_record(env.home, record)
-        write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
-
-        with pytest.raises(
-            verbs.VerbError, match="nothing for this verb to commit"
-        ):
-            verbs.commit_drift(env.home, RID, user_claude_md=target)
-
-    def test_clean_dotfiles_refused(self, env, tmp_path):
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        record = make_behavior(scope="user", record_id=RID)
-        create_record(env.home, record)
-        write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
-
-        with pytest.raises(verbs.VerbError, match="the file is yours to manage"):
-            verbs.commit_drift(env.home, RID, user_claude_md=target)
-
-    def test_dry_run_reports_repo_and_files_writes_nothing(self, env, tmp_path):
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        record = make_behavior(scope="user", record_id=RID)
-        create_record(env.home, record)
-        write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
-
-        # `--dry-run` runs every precondition — including this refusal —
-        # and writes nothing either way; a plain host refuses BEFORE
-        # dry_run can matter.
-        with pytest.raises(verbs.VerbError, match="is a PLAIN host"):
-            verbs.commit_drift(env.home, RID, user_claude_md=target, dry_run=True)
+    with pytest.raises(verbs.VerbError) as excinfo:
+        verbs.commit_drift(env.home, RID, user_claude_md=target, dry_run=dry_run)
+    message = str(excinfo.value)
+    assert "is a PLAIN host" in message
+    assert "nothing for this verb to commit" in message
+    assert "the file is yours to manage" in message
+    # the target's own bytes are untouched
+    assert target.read_text(encoding="utf-8") == "# user conduct\n"
 
 
 # ------------------------------------------------------------- markers/gate
@@ -222,36 +187,6 @@ class TestMarkersLoadBearing:
         with pytest.raises(verbs.DirtyTargetError) as excinfo:
             verbs.route(env.home, RID, dest="skill-md")
         assert verbs.GITOPS_DIRTY_MARKER in str(excinfo.value)
-
-    def test_chezmoi_dirty_message_carries_the_extracted_marker(
-        self, env, tmp_path
-    ):
-        """U-hostmode §4.7/CD2 (rewritten, name kept — §2.10b census): a
-        route into user scope no longer touches chezmoi AT ALL (USER2) —
-        there is no "dotfiles dirty" refusal left for `route` to raise,
-        so this route now SUCCEEDS (a plain host has no `git status` to
-        be dirty against). The load-bearing marker this test always
-        pinned moves to `commit_drift`'s own refusal — the one surface
-        that still names a REASON, `CD1`'s exit-64 text — which every
-        plain host carries verbatim, chezmoi or not."""
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        record = make_behavior(scope="user", record_id=RID)
-        create_record(env.home, record)
-
-        result = verbs.route(env.home, RID, dest="claude-md", user_claude_md=target)
-        assert result.host_commit_sha is None  # PLAIN2: nothing of ours to commit
-
-        # commit-drift still names the reason a plain host carries no
-        # "dirty" concept at all — CD1's refusal, not a chezmoi one.
-        rid2 = "lrn-0000cafd"
-        record2 = make_behavior(scope="user", record_id=rid2)
-        create_record(env.home, record2)
-        write_proposal(env.home, rid2, proposal_dict(destination="claude-md"))
-        with pytest.raises(verbs.VerbError) as excinfo:
-            verbs.commit_drift(env.home, rid2, user_claude_md=target)
-        assert "is a PLAIN host" in str(excinfo.value)
 
 
 # -------------------------------------------------------------------- CLI

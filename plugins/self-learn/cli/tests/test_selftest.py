@@ -105,7 +105,10 @@ def test_selftest_exits_9_on_healthy_sandbox_no_real_claude_dir(env, capsys):
     # EVERY home exit 9 regardless of this one real UNMEASURED check.
     assert rc == 9
     assert "FAIL" not in out
-    for check in ("capture", "compiler", "markers", "drift", "sentinel"):
+    # `reach` joined the loop when `test_selftest_reports_nine_checks_
+    # criterion_12` (same seeding, same command, same rc and summary
+    # line) was merged into this test (test audit L2-33; spec criterion 12).
+    for check in ("capture", "compiler", "markers", "drift", "sentinel", "reach"):
         assert f"PASS {check}" in out
     assert "worker" not in out
     assert "UNMEASURED surface" in out
@@ -720,20 +723,6 @@ def test_reach_not_a_repo_home_fails_criterion_11(tmp_path):
     not_repo.mkdir()
     ok, reason = selfcheck._check_reach(not_repo)
     assert ok is selfcheck.Verdict.FAIL
-
-
-def test_selftest_reports_nine_checks_criterion_12(env, capsys):
-    seed_routed_skill_target(env)
-    rc = cli.main(["--selftest"])
-    out = capsys.readouterr().out
-    # this `env` fixture has no real ~/.claude, so `surface` is genuinely
-    # UNMEASURED (claude-dir-absent) -- the only reason this run is 9,
-    # not 0. fold r1, 2026-09-04 dropped the worker placeholder row, so
-    # the summary line has one fewer UNMEASURED than before (1, not 2).
-    assert rc == 9
-    assert "PASS reach" in out
-    # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
-    assert "9 passed, 1 unmeasured, 0 failed" in out
 
 
 # --------------------------------------------------- FW-66: decode safety

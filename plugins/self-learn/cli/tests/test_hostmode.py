@@ -352,10 +352,8 @@ class TestMode8SkillsRootShapeValidation:
 
 
 class TestHostListModeColumn:
-    def test_mode_shown_only_for_non_git(self, tmp_path, capsys, monkeypatch):
-        """MODE11: `self-learn host list` renders each host's mode; a
-        registry with NO plain entries renders byte-identical to
-        50fa815's (UN4) — the git-mode entries carry no suffix at all."""
+    def test_mode_shown_for_every_host(self, tmp_path, capsys, monkeypatch):
+        """MODE11: `self-learn host list` renders each host's mode; every host line, git included, states its mode (S-97)."""
         from self_learn import cli
 
         env = make_env(tmp_path)
@@ -363,7 +361,7 @@ class TestHostListModeColumn:
         rc = cli.main(["host", "list"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "[mode=" not in out  # all-git registry: byte-identical shape
+        assert f"{env.host}  [mode=git]" in out  # S-97: git states its mode too
 
         plain_host = tmp_path / "plain-listed"
         plain_host.mkdir()
@@ -373,8 +371,8 @@ class TestHostListModeColumn:
         assert rc == 0
         out = capsys.readouterr().out
         assert f"{plain_host}  [mode=plain]" in out
-        # the pre-existing git host still renders with no suffix
-        assert f"{env.host}\n" in out or out.count("[mode=") == 1
+        # the pre-existing git host states its mode too
+        assert f"{env.host}  [mode=git]" in out
 
 
 # ---------------------------------------------------------------- REC group
@@ -4966,11 +4964,13 @@ class TestChez6CensusZeroRetiredModuleLiterals:
     def test_census_by_tree(self):
         """CHEZ6: retired-module literals remain absent from product trees,
         apart from the two documented compiler comments. The CLI test
-        census is 36 source lines after test-audit L6-1 removed the
-        duplicate BrokenSync class (2026-10-24). This file remains
+        census is 27 source lines after test-audit L6-1 removed the
+        duplicate BrokenSync class (2026-10-24) and test-audit L6-43
+        collapsed the five identical commit-drift refusal tests into one
+        (2026-10-30, 36 -> 27). This file remains
         excluded by path. Accounted source lines by file:
         test_armor.py: 2
-        test_commit_drift.py: 11
+        test_commit_drift.py: 2
         test_composer.py: 1
         test_hook_compiler.py: 2
         test_hosting.py: 1
@@ -5006,8 +5006,97 @@ class TestChez6CensusZeroRetiredModuleLiterals:
             return hits
 
         assert len(_hits(trees["cli/src"])) == 2
-        assert len(_hits(trees["cli/tests"])) == 36
+        assert len(_hits(trees["cli/tests"])) == 27
         assert _hits(trees["ui/src"]) == []
         assert _hits(trees["ui/templates"]) == []
         assert _hits(trees["ui/tests"]) == []
         assert _hits(trees["ui/static"]) == []  # zero chezmoi mentions; the 2 dated retirement comments say "adopt", not "chezmoi" (UIC5 sweeps that word)
+
+
+# ----------------------------------------------- S-97: marker excluded
+
+
+@pytest.fixture
+def _no_global_git_excludes(monkeypatch, tmp_path_factory):
+    # S-97: keep the developer's global ignore file out of these tests.
+    empty = tmp_path_factory.mktemp("gitcfg") / "gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+def _git_init(path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+
+
+def _status(path: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=all"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def test_plain_add_in_git_repo_excludes_marker_locally(tmp_path, _no_global_git_excludes):
+    env = make_env(tmp_path)
+    repo = tmp_path / "plain-repo"
+    repo.mkdir()
+    _git_init(repo)
+    host_add(env.ledger, repo, "project", mode="plain")
+    assert (repo / ".self-learn-host").is_file()
+    assert ".self-learn-host" not in _status(repo)  # positive: file exists
+    exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert exclude.count("/.self-learn-host") == 1
+    assert not (repo / ".gitignore").exists()  # never the tracked ignore file
+
+
+def test_plain_add_does_not_duplicate_when_gitignore_covers_marker(tmp_path, _no_global_git_excludes):
+    env = make_env(tmp_path)
+    repo = tmp_path / "covered-repo"
+    repo.mkdir()
+    _git_init(repo)
+    (repo / ".gitignore").write_text(".self-learn-host\n", encoding="utf-8")
+    host_add(env.ledger, repo, "project", mode="plain")
+    info = repo / ".git" / "info" / "exclude"
+    text = info.read_text(encoding="utf-8") if info.exists() else ""
+    assert "/.self-learn-host" not in text
+
+
+def test_plain_add_marker_repair_is_idempotent(tmp_path, _no_global_git_excludes):
+    env = make_env(tmp_path)
+    repo = tmp_path / "repair-repo"
+    repo.mkdir()
+    _git_init(repo)
+    host_add(env.ledger, repo, "project", mode="plain")
+    info = repo / ".git" / "info" / "exclude"
+    info.write_text("", encoding="utf-8")  # as if registered before this change
+    assert ".self-learn-host" in _status(repo)  # positive: shows again
+    (repo / ".self-learn-host").unlink()
+    host_add(env.ledger, repo, "project", mode="plain")  # repairs the marker
+    exclude = info.read_text(encoding="utf-8")
+    assert exclude.count("/.self-learn-host") == 1
+    assert ".self-learn-host" not in _status(repo)
+    # re-add with the marker present also restores a missing exclude line
+    info.write_text("", encoding="utf-8")
+    host_add(env.ledger, repo, "project", mode="plain")
+    assert info.read_text(encoding="utf-8").count("/.self-learn-host") == 1
+
+
+def test_host_add_note_depends_on_whether_path_is_a_repo(tmp_path, monkeypatch, capsys):
+    from self_learn import cli
+
+    env = make_env(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+    repo = tmp_path / "note-repo"
+    repo.mkdir()
+    _git_init(repo)
+    bare = tmp_path / "note-bare"
+    bare.mkdir()
+    assert cli.main(["host", "add", str(repo), "--mode", "plain"]) == 0
+    out = capsys.readouterr().out
+    assert "consent (plain mode)" in out  # positive control
+    assert "if you later" not in out
+    assert ".git/info/exclude" in out
+    assert cli.main(["host", "add", str(bare), "--mode", "plain"]) == 0
+    out = capsys.readouterr().out
+    assert "consent (plain mode)" in out
+    assert "if you later" in out

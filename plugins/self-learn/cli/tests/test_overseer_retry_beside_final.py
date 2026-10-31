@@ -45,12 +45,20 @@ def _no_model(monkeypatch):
     )
 
 
-def test_a_stopped_item_beside_a_final_refusal_is_retried_and_both_are_reported(
+def test_a_stopped_item_beside_a_final_refusal_is_retried_and_the_refusal_is_reported(
     tmp_path, monkeypatch
 ):
     """N11: item 1 refused (bad-line, final), item 2 stopped. The resume
-    dispatches item 2 again and never item 1, and the report names both."""
+    dispatches item 2 again and never item 1; item 1's refusal is named in
+    the report and item 2, run for real this time, applies."""
     home, first, dispatched = _halted_run_with_item_1_refused(tmp_path, monkeypatch, "bad-line")
+    # Before the resume (moved here from test_overseer_run.py::test_a_bad_
+    # line_refusal_stays_final_when_the_run_resumes, test audit L5-2): the
+    # first run committed the kind and reported item 1's refusal.
+    first_manifest = execution_evidence.read_manifest(home, first.run)
+    (first_recipe,) = first_manifest["cases"].values()
+    assert first_recipe["dispositions"][0].get("kind") == "bad-line", first_recipe["dispositions"]
+    assert "simulated bad-line refusal of item 1 [bad-line]" in _refused_block(home)
 
     second = overseer_run.run(home, dry_run=False, no_push=True)
 
@@ -60,13 +68,17 @@ def test_a_stopped_item_beside_a_final_refusal_is_retried_and_both_are_reported(
     (recipe,) = manifest["cases"].values()
     rows = {row["n"]: row for row in recipe["dispositions"]}
     assert rows[1]["state"] == "refused" and rows[1]["kind"] == "bad-line", rows
-    # Item 2 really ran again: its detail is the ledger's, not the script's.
-    assert rows[2]["state"] == "refused", rows
+    # Item 2 really ran again: its outcome is the ledger's, not the script's.
+    # Item 1's refusal is simulated and final, so it never routed the lesson:
+    # item 2, a `reject` of a lesson that is still pending, APPLIES for real
+    # (it would refuse only after a landed route, as in the target-busy test).
+    assert rows[2]["state"] == "applied", rows
     assert "simulated" not in rows[2].get("detail", ""), rows
     block = _refused_block(home)
     assert block.strip() and "- none" not in block, block
     assert "simulated bad-line refusal of item 1 [bad-line]" in block, block
-    assert rows[2]["detail"] in block, block
+    # An applied item is not listed as refused: only item 1 is.
+    assert "item 2" not in block, block
     assert manifest["status"] == "complete"
 
 
@@ -87,7 +99,7 @@ def test_a_receipted_final_refusal_is_reported_when_nothing_is_run_again(
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
-    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
     _silence_notifications(monkeypatch)
     dispatched = _dispatch_scripted(monkeypatch, {2: (1, "bad-line")})
     real_maintain = overseer_run._maintain_manifest
@@ -123,7 +135,7 @@ def test_the_cap_close_out_lists_a_retried_kind_refusal_as_unfinished(tmp_path, 
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
-    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
     _silence_notifications(monkeypatch)
     dispatched: list[int] = []
 
@@ -148,7 +160,7 @@ def test_the_cap_close_out_lists_a_retried_kind_refusal_as_unfinished(tmp_path, 
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     questions = report.split("## Questions for you\n", 1)[1].split("\n## ", 1)[0]
     assert "Unfinished:" in questions, questions
-    assert f"sheet-hook.yaml item 2 (undefer {rid})" in questions, questions
+    assert f"sheet-hook.yaml item 2 (reject {rid})" in questions, questions
     assert f"sheet-hook.yaml item 1 (route {rid})" in questions, questions
 
 
@@ -165,7 +177,7 @@ def test_the_tail_a_stop_left_behind_a_final_refusal_is_dispatched_too(tmp_path,
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
-    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
     phases = overseer_run.invocation.write_session
 
     def with_a_third_item(spec):

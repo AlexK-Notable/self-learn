@@ -115,6 +115,12 @@ class TestPaneManagerNotWired:
     def test_detail_page_still_renders_without_pane_manager(self, tmp_path: Path) -> None:
         sb, rec = _seed(tmp_path)
         c, _runner = make_client(sb)
+        # Same forced not-wired state as above (`create_app` wires a real
+        # manager by default). Without this line the test ran the normal
+        # path and repeated test_no_session_renders_iterate_control_not_
+        # split; if the Detail route dereferenced `app.state.pane_manager`
+        # unguarded, nothing caught it (test audit L9-40).
+        c.app.state.pane_manager = None
         r = c.get(f"/record/{rec.id}")
         assert r.status_code == 200
         assert 'data-key-action="iterate"' in r.text

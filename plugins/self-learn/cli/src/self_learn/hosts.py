@@ -628,6 +628,27 @@ def _now_iso() -> str:
     return chrono.now_iso()
 
 
+def _exclude_host_marker(marker: Path) -> None:
+    """S-97: a plain host never has its tracked files edited, so
+    the marker must not show in the repo's ``git status``. When the marker
+    sits in a git work tree, is not tracked, and git does not already
+    ignore it (a committed ``.gitignore`` may), put its one line in the
+    repo's private ``info/exclude`` block (:func:`gitops.ensure_excluded`,
+    idempotent, only self-learn's own block). Outside every work tree
+    nothing is done. A TRACKED marker is left alone (a tracked file cannot
+    be hidden by an ignore line). Runs BEFORE the marker is written."""
+    real = Path(os.path.realpath(marker))
+    repo = gitops.work_tree_of(real)
+    if repo is None:
+        return
+    rel = real.relative_to(repo).as_posix()
+    if gitops.in_index_or_head(repo, rel):
+        return
+    if gitops.check_ignore(repo, real):
+        return
+    gitops.ensure_excluded(repo, [gitops.exclude_pattern(rel)])
+
+
 def _write_host_marker(home: Path, target: Path) -> Path:
     """U-hostmode §4.4: one line naming the registering ledger home and
     an ISO timestamp — the structural analogue of ``.git``. Written
@@ -640,6 +661,7 @@ def _write_host_marker(home: Path, target: Path) -> Path:
     and a fresh registration is no exception)."""
     marker = host_marker_path(target)
     with gitops.host_lock(target, "plain"):
+        _exclude_host_marker(marker)
         # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True,
         # same reasoning as compilers.py's host-canon writes.
         fsops.atomic_write(
@@ -779,6 +801,10 @@ def host_add(
         if mode == "plain" and not (target / MARKER_FILENAME).is_file():
             _write_host_marker(home, target)
             marker_restored = True
+        elif mode == "plain":
+            # S-97: a plain host registered before the exclude
+            # line existed gets it on re-registration (idempotent).
+            _exclude_host_marker(target / MARKER_FILENAME)
         # already registered, same mode — nothing else to do
         return HostAddResult(hosts=hosts, marker_restored=marker_restored)
 

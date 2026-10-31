@@ -218,7 +218,10 @@ def test_halt_persists_across_slices(home, transcripts, monkeypatch):
     monkeypatch.setattr(miner, "_invoke_reader", spy)
     result = miner.run(home)
     assert result.status == "idle"  # halted file skipped without reading
-    assert "captured" not in captured or "Card 1" not in captured.get("prompt", "")
+    # The spy only ever sets `captured["prompt"]`, so the old check for the
+    # key "captured" was always true (test audit L3-1). An empty dict means
+    # the reader was never called, which also means "Card 1" never reached it.
+    assert captured == {}
 
 
 def test_digest_plain_string_content(transcripts):
