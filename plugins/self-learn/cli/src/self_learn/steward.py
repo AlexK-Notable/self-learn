@@ -1146,54 +1146,123 @@ def _premise_moved_inputs(home: Path, exclude: set[str] | None = None) -> list[d
     longest-moved first. Off when `premises.enabled` is false.
 
     A lesson with only a broken probe and nothing moved is not an input: its
-    brief shows the broken probe the next time it comes up."""
+    brief shows the broken probe the next time it comes up.
+
+    S-NEXT-u8-placement: a placement premise the sweep confirmed as failing
+    (:func:`steward_inputs.placement_moves`: `@reach`, `@writable`,
+    `@intact`) is a mover too, and joins the version like a written one.
+    The lessons of one managed block that carry an `@intact` mover are a
+    GROUP (02 §3a.10.3): offered together or not at all -- when an earlier
+    input of the run takes one of them, or the overseer holds one, the
+    whole group waits -- and counted as one against the nightly cap."""
     if not steward_inputs.premises_enabled(home):
         return []
     followups = {moved.record_id: moved for moved in steward_inputs.moved_followups(home)}
     premise_moves = {
         rid: found for rid, found in steward_inputs.moved_premises(home).items() if found.items
     }
-    if not followups and not premise_moves:
+    placement = steward_inputs.placement_moves(home)
+    if not followups and not premise_moves and not placement:
         return []
     terminal = _terminal_versions(home)
     held = cases.held_lessons(home)
-    candidates: list[tuple[str, str, dict]] = []
-    for rid in sorted(set(followups) | set(premise_moves)):
-        if (exclude and rid in exclude) or rid in held:
+    rows: dict[str, tuple[str, dict]] = {}
+    for rid in sorted(set(followups) | set(premise_moves) | set(placement)):
+        if rid in held:
             continue
-        followup = followups.get(rid)
-        found = premise_moves.get(rid)
-        written = list(found.items) if found is not None else []
-        version = steward_inputs.premise_moved_version(
-            followup_done=followup.done if followup is not None else None,
-            moved=[(item["premise"], item["value_sha"]) for item in written],
+        built = _premise_moved_row(
+            home, rid, followups.get(rid), premise_moves.get(rid), placement.get(rid)
         )
-        if (rid, version) in terminal:
+        if built is not None and (rid, built[1]["version"]) not in terminal:
+            rows[rid] = built
+    return _premise_moved_units(rows, placement, exclude or set(), held)
+
+
+def _premise_moved_row(
+    home: Path,
+    rid: str,
+    followup: steward_inputs.MovedFollowup | None,
+    found: steward_inputs.PremiseMoves | None,
+    placed: steward_inputs.PlacementMoves | None,
+) -> tuple[str, dict] | None:
+    """One lesson's `premise-moved` input row and when its oldest mover was
+    first seen (:func:`_premise_moved_inputs`), or ``None`` when nothing
+    moved."""
+    written = list(found.items) if found is not None else []
+    placements = list(placed.items) if placed is not None else []
+    if followup is None and not written and not placements:
+        return None
+    movers = written + placements
+    version = steward_inputs.premise_moved_version(
+        followup_done=followup.done if followup is not None else None,
+        moved=[(item["premise"], item["value_sha"]) for item in movers],
+    )
+    moved = ([_followup_item(followup)] if followup is not None else []) + movers
+    row: dict = {
+        "path": f"followup-done:{rid}" if not movers else f"premise-moved:{rid}",
+        "blob": version,
+        "version": version,
+        "record": rid,
+        "kind": steward_inputs.INPUT_PREMISE_MOVED,
+        "record_status": "routed",
+        "reason": _premise_moved_reason(
+            followup is not None, [str(item["premise"]) for item in movers]
+        ),
+        "moved": moved,
+    }
+    if found is not None and found.broken:
+        row["broken"] = list(found.broken)
+    predecessor = _premise_predecessor(home, rid)
+    if predecessor:
+        row["predecessor"] = predecessor
+    since = [found.since] if written and found is not None and found.since else []
+    if placements and placed is not None:
+        since.append(placed.since)
+    if followup is not None:
+        since.append(f"{followup.done_on.isoformat()}T00:00:00Z")
+    return (min(since) if since else ""), row
+
+
+def _premise_moved_units(
+    rows: Mapping[str, tuple[str, dict]],
+    placement: Mapping[str, steward_inputs.PlacementMoves],
+    exclude: set[str],
+    held: Iterable[str],
+) -> list[dict]:
+    """S-NEXT-u8-placement: the rows of :func:`_premise_moved_inputs` in
+    units -- one lesson, or one `@intact` group (every placed lesson whose
+    `@intact` mover names the same managed block, offered or not as one) --
+    oldest first, at most `steward_inputs.PREMISE_MOVED_PER_RUN` units. A
+    group any lesson of which another input of the run takes (*exclude*) or
+    the overseer holds (*held*) waits whole. Each `@intact` mover names the
+    group's other lessons (`members`), which its brief lists."""
+    held_ids = set(held)
+    groups: dict[str, list[str]] = {}
+    for rid, found in sorted(placement.items()):
+        for item in found.items:
+            if item.get("premise") == "@intact" and item.get("group"):
+                groups.setdefault(str(item["group"]), []).append(rid)
+    grouped = {rid for members in groups.values() for rid in members}
+    units: list[tuple[str, str, list[dict]]] = []
+    for group, members in groups.items():
+        if any(rid in exclude or rid in held_ids for rid in members):
             continue
-        moved = ([_followup_item(followup)] if followup is not None else []) + written
-        row: dict = {
-            "path": f"followup-done:{rid}" if not written else f"premise-moved:{rid}",
-            "blob": version,
-            "version": version,
-            "record": rid,
-            "kind": steward_inputs.INPUT_PREMISE_MOVED,
-            "record_status": "routed",
-            "reason": _premise_moved_reason(
-                followup is not None, [str(item["premise"]) for item in written]
-            ),
-            "moved": moved,
-        }
-        if found is not None and found.broken:
-            row["broken"] = list(found.broken)
-        predecessor = _premise_predecessor(home, rid)
-        if predecessor:
-            row["predecessor"] = predecessor
-        since = [found.since] if written and found is not None and found.since else []
-        if followup is not None:
-            since.append(f"{followup.done_on.isoformat()}T00:00:00Z")
-        candidates.append((min(since) if since else "", rid, row))
-    candidates.sort(key=lambda entry: (entry[0], entry[1]))
-    return [row for _since, _rid, row in candidates[: steward_inputs.PREMISE_MOVED_PER_RUN]]
+        offered_ids = [rid for rid in members if rid in rows]
+        offered = [rows[rid] for rid in offered_ids]
+        if not offered:
+            continue
+        for _since, row in offered:
+            for item in row["moved"]:
+                if item.get("source") == "placement" and item.get("premise") == "@intact":
+                    item["members"] = list(offered_ids)
+        units.append((min(since for since, _row in offered), group, [r for _s, r in offered]))
+    for rid, (since, row) in rows.items():
+        if rid in grouped or rid in exclude:
+            continue
+        units.append((since, rid, [row]))
+    units.sort(key=lambda unit: (unit[0], unit[1]))
+    return [row for _since, _key, members in units[: steward_inputs.PREMISE_MOVED_PER_RUN]
+            for row in members]
 
 
 #: A reconsider input's card line (`_reconsider_proposals`): the lesson an
@@ -1546,6 +1615,10 @@ def _pair_problem(
         replace_problem = _premise_decision_problem(
             case_data, lines, inputs, label=case_path.name
         )
+    if replace_problem is None:
+        replace_problem = _placement_decision_problem(
+            home, case_data, lines, inputs, label=case_path.name
+        )
     if replace_problem is not None:
         return replace_problem
     return always_loaded.route_problem(
@@ -1636,6 +1709,126 @@ def _premise_decision_problem(
                 f"`ids: {missing}` (or `action: set` with the list it should rest on now), "
                 "or the same change comes back every night"
             )
+    return None
+
+
+def _region_line_kind(item: Mapping) -> str | None:
+    """`adopt_region` (a fold) or `restore-region`, the two lines that
+    rewrite a lesson's managed block over a hand edit, or ``None``."""
+    if item.get("verb") == "replace" and item.get("adopt_region"):
+        return "adopt_region"
+    if item.get("verb") == "premises" and item.get("action") == "restore-region":
+        return "restore-region"
+    return None
+
+
+def _quoted(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _placement_decision_problem(
+    home: Path | None, case_data: dict, items: list,
+    inputs: Mapping[str, Mapping] | None, *, label: str,
+) -> str | None:
+    """S-NEXT-u8-placement (02 §3a.10.7): the rules of a hand edit in a
+    placed lesson's managed block (an `@intact` `premise-moved` input).
+
+    1. A fold (`replace` with `adopt_region: true`) or a `premises` line
+       `action: restore-region` stands only on an `@intact` input for that
+       very lesson (`steward_inputs.intact_group`); anywhere else it is
+       refused by name -- a parked case included, so its tentative sheet
+       never teaches the wrong shape.
+    2. The whole-region rule's second condition: the compiler rewrites the
+       WHOLE block, so every lesson of the block that carries an `@intact`
+       input in this packet is in this one case's `records`, each with a
+       fold or a restore line. A case that only notes or rebaselines it
+       leaves the block refusing every later write to its file.
+    3. The third condition: the case's `evidence` quotes every line a person
+       wrote in the block (`verbs.edited_region_lines`, read from disk now;
+       a line the secret scan matches is exempt, as the case's own scan
+       would refuse it), so the words the re-render drops survive in the
+       case even in a plain host with no git history.
+
+    The first condition (the block is still the one the input saw) is the
+    verbs' own, checked again at apply time under the ledger lock
+    (`verbs._require_confirmed_block`). A parked case is never applied, so
+    2 and 3 do not bind it."""
+    if not inputs:
+        return None
+    lines = [item for item in items if isinstance(item, dict)]
+    for item in lines:
+        which = _region_line_kind(item)
+        rid = str(item.get("id"))
+        if which is not None and steward_inputs.intact_group(inputs.get(rid)) is None:
+            return (
+                f"{label}: `{which}` on {rid}: it rewrites the lesson's managed block over a "
+                "hand edit, and stands only on a premise-moved input whose block the daily "
+                "check saw hand-edited (`@intact`) for that lesson; decide this lesson "
+                "another way"
+            )
+    if case_data.get("kind") == "parked":
+        return None
+    records = [str(rid) for rid in case_data.get("records") or []]
+    groups: dict[str, list[str]] = {}
+    for rid, row in inputs.items():
+        group = steward_inputs.intact_group(row)
+        if group is not None:
+            groups.setdefault(group, []).append(str(rid))
+    decided = {str(item.get("id")) for item in lines if _region_line_kind(item) is not None}
+    for group, members in sorted(groups.items()):
+        if not set(members) & set(records):
+            continue
+        outside = [rid for rid in members if rid not in records]
+        if outside:
+            return (
+                f"{label}: the managed block {group} was hand-edited on the lines of "
+                f"{sorted(members)}; the block is rewritten whole, so decide every one of them "
+                f"in this one case -- add {outside} to its `records`, each with its own line"
+            )
+        undecided = [rid for rid in members if rid not in decided]
+        if undecided:
+            return (
+                f"{label}: {undecided} carry a hand edit in the managed block {group}; give "
+                "each a `replace` line with `adopt_region: true` (fold the edit into the "
+                "lesson) or a `premises` line `action: restore-region` (put the ledger's text "
+                "back) -- an edited block refuses every later write to its file, so leaving "
+                "it as it is is not an answer; or park the case"
+            )
+        problem = _unquoted_edit_problem(home, case_data, members[0], group, label=label)
+        if problem is not None:
+            return problem
+    return None
+
+
+def _unquoted_edit_problem(
+    home: Path | None, case_data: dict, record_id: str, group: str, *, label: str
+) -> str | None:
+    """The whole-region rule's third condition for one block (see
+    :func:`_placement_decision_problem`), or ``None``. A block that cannot
+    be read now is the verbs' to refuse at apply time, not this check's."""
+    if home is None:
+        return None
+    try:
+        region = verbs.lesson_region(home, record_id)
+    except Exception:  # noqa: BLE001 -- the apply-time checks name it
+        return None
+    quotes = " ".join(
+        _quoted(str(item.get("quote") or ""))
+        for item in case_data.get("evidence") or [] if isinstance(item, dict)
+    )
+    missing = [
+        line for line in verbs.edited_region_lines(region)
+        if not steward_inputs.scan_hit(line) and _quoted(line) not in quotes
+    ]
+    if missing:
+        # The lines themselves are not repeated here (this message can reach
+        # the run record); the brief lists them under the block.
+        return (
+            f"{label}: the case's evidence does not quote what a person wrote in the managed "
+            f"block {group}: {len(missing)} of the lines the brief lists under \"the lines a "
+            "person wrote there\" are missing; quote each word for word in an evidence item "
+            f"(ref `{group}#managed`), so the words survive the re-render"
+        )
     return None
 
 
@@ -5197,6 +5390,11 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             finally:
                 if index is not None:
                     index.close()
+            # S-NEXT-u8-placement: the lessons of one hand-edited managed
+            # block are decided in one case, so they share one packet.
+            plans = steward_inputs.keep_groups_together(
+                plans, steward_inputs.intact_groups(eligible)
+            )
             by_record = {row["record"]: row for row in eligible}
             packet_rows = []
             observations: list[str] = []

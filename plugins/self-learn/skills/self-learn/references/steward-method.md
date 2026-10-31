@@ -627,3 +627,55 @@ yours without waiting for the overseer, because the evidence is an observed
 fact about the machine, not your judgement of its wording (the user accepted
 this on 2026-10-30). Merging placed lessons stays the overseer's: park that.
 The overseer reviews every such case afterwards, in its weekly sample.
+
+### Where the lesson sits: the placement premises
+
+(`03-decisions.md` S-NEXT-u8-placement; the premise-check design's unit
+U8.) A lesson can be true and still useless because of where it sits. Every
+placed lesson therefore has up to three **placement premises** that code
+checks every day and nobody writes: `@reach` (a session still loads the
+file it sits in), `@writable` (self-learn may still write there: not a file
+git tracks in a plain host) and `@intact` (its managed block is as
+self-learn left it). One that fails on two daily checks running makes the
+lesson a `premise-moved` input, and its brief says which and what the check
+saw. They are judged by their state, not against a recorded value: there is
+nothing to rebaseline, and a decided failure is not offered again.
+
+- **`@reach` or `@writable`: the lesson should move, or go.** Move it to a
+  place that loads, or that self-learn may write: for a lesson stuck in a
+  file git tracks in a plain host, usually `claude-md:local`. With a case
+  that covers the lesson, a `route` line with the new `dest` in the
+  `kind: reconsider` case (a reroute). With none, a `replace` line with
+  `text_from` naming the lesson itself and the new `dest`, in the `kind:
+  resolution` case: the same words, placed again, every idea kept in
+  `rewrite`. Taking a lesson out of a file git tracks leaves an uncommitted
+  change there for a person, which is expected. If nothing needs the lesson
+  any more, `retire` it. If a person placed it, the runner refuses to move
+  it: park the case with your tentative answer.
+- **`@intact`: a person edited the managed block by hand.** The brief shows
+  the lines the person wrote, the diff from the ledger's text to the block
+  on disk, and both blocks when they are short. The compiler rewrites the
+  whole block from the ledger, so an edited block refuses every later write
+  to its file until it is decided, and every lesson of the block whose line
+  was edited comes to you in the same run: decide them all in ONE case that
+  names each in `records`. For each, choose:
+  - **Fold the edit into the lesson** when the edit is consistent with it,
+    which is usual (a hand edit is most often a correction): a `replace`
+    line with `adopt_region: true` whose new text says what the edit says,
+    with every idea of the old text accounted for in `rewrite`. The lesson
+    stays where it is (no `also`, `to`, `dest` or `rules_paths`).
+  - **Put the ledger's text back** when the edit contradicts the lesson or
+    is not a change to a lesson: a `premises` line `action:
+    restore-region`. The lesson stands, so the case's outcome is
+    `no-action`.
+
+  One block may take a fold for one lesson and a restore for another, in
+  the one case. Either way, quote every line the brief lists as written by
+  the person, word for word, in the case's `evidence` (ref
+  `<file>#managed`): the block is rewritten from the ledger, and the case
+  is where the person's words survive. The runner refuses a case that
+  leaves a listed lesson out, leaves one undecided, or misses a line. Both
+  lines are refused on any other input, and both act only on the block the
+  daily check saw: if the block was edited again since, the line is
+  refused and the newer edit comes back as its own input. When you cannot
+  tell what the person meant, park it.

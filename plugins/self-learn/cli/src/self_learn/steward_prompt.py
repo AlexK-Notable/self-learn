@@ -1301,6 +1301,18 @@ def _premise_lines() -> list[str]:
         "  values now. Never write `baseline` or `decided_at`: the runner runs each probe once",
         "  and records them. A probe that cannot observe anything now refuses the line; a",
         "  probe never reads a credential file.",
+        # S-NEXT-u8-placement (02 §3a.10.3, §3a.10.7)
+        "  A PLACEMENT premise (`@reach`, `@writable`, `@intact`; method section 17) is derived",
+        "  by code for every placed lesson and never written: nothing to rebaseline. On an",
+        "  `@intact` input (a person hand-edited the lesson's managed block) every lesson of the",
+        "  block the brief lists goes in ONE case, each with either a `replace` line with",
+        "  `adopt_region: true` (fold the edit into the lesson; no also, to, dest or",
+        "  rules_paths) or a `premises` line `action: restore-region` (no other key but",
+        "  because and note: put the ledger's text back), and the case's `evidence` quotes",
+        "  every line the brief lists as written by a person. Both lines are refused on any",
+        "  other input. On an `@reach` or `@writable` input the lesson moves with a `route`",
+        "  line (a reconsider case) or a `replace` with `text_from` its own id and a `dest`",
+        "  (a resolution case), or is retired.",
     ]
 
 

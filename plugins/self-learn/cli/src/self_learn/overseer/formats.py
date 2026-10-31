@@ -155,7 +155,9 @@ def closed_sets() -> dict[str, Any]:
             "version": 1,
             "verbs": {
                 verb: {
-                    "keys": sorted(keys),
+                    # S-NEXT-u8-placement: a key the batch refuses the
+                    # overseer by name (`adopt_region`) is not offered.
+                    "keys": sorted(keys - batch.agent_refused_keys("overseer").get(verb, frozenset())),
                     "required": sorted(batch.REQUIRED_KEYS.get(verb, frozenset())),
                 }
                 for verb, keys in sorted(batch.PERMITTED_KEYS.items())
