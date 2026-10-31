@@ -32,7 +32,7 @@ from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
 
-from .. import always_loaded, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, skill_writer, statements, user_model, verbs, worker
+from .. import always_loaded, attribution, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, skill_writer, statements, user_model, verbs, worker
 from .. import notices as project_notices
 from ..ledger import discover_buckets, resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
@@ -840,7 +840,8 @@ Two kinds, each {{id, kind, cases}}:
   exactly what and why.
   An ask whose whole point is registering a repository as a canon host (you cannot register
   one yourself) may add register: {{path: <absolute path>, mode: git or plain, kind: project or
-  skills-root, default project}}. The user's typed yes then registers it for them. The text
+  skills-root, default project, action: add or set-mode, default add}}. The user's typed yes then
+  registers it for them, or, with action: set-mode, switches that registered host to the mode. The text
   must name that path exactly and that mode as a phrase such as "in git mode" or "a plain skills
   root" (not just a word like "git repository"), and never name the other mode, because the user sees the text and a yes means
   exactly that registration; the question and its register must agree. A question that is not
@@ -5170,6 +5171,7 @@ def _execute_manifest(
     )
 
 
+@attribution.as_job("overseer")
 def run(
     home: Path | str | None = None, *, dry_run: bool = False,
     no_push: bool | None = None, manual: bool = False,

@@ -139,23 +139,31 @@ skill or a draft the section showed, and a retirement request only a live
 skill; anything else is refused by name, and you relay that refusal as it is.
 
 An ask whose printed block ends with "a plain yes registers: …" asks the
-user to register a repository as a canon host. The registration happens in
-`overseer respond` itself, for a bare yes the person typed. From your (an
+user to register a repository as a canon host; one ending "a plain yes does:
+switch … to … mode" asks to switch a registered host's mode. Either happens
+in `overseer respond` itself, for a bare yes the person typed. From your (an
 agent's) shell the command finds your own session from `$CLAUDE_CODE_SESSION_ID`
 (add nothing; a shell without that variable needs `--session <the session id
 the person typed the yes in>`, and a `--session` naming another session is
-refused). It reads that session's transcript and registers only when the LAST
+refused). It reads that session's transcript and acts only when the LAST
 thing the person typed there is a plain yes (not an AskUserQuestion click, not
-an earlier yes, not words typed after it). So ask for the yes in plain chat, not
-as a clickable choice, and pass the answer to this one question straight away,
-before the person types anything else. When the check fails the command records
-NOTHING and the question stays open; it says why. Then tell the user plainly,
-and either have them type the yes in chat and answer again, have them run the
-same `respond` command in their own terminal, or, if they told you to register
-it, run the `self-learn host add …` line the error names and answer again (a
-registration already in place is left as it is). A yes that carries a
-condition ("yes, but git mode") is not a plain yes: record it in their words
-and let the overseer read it.
+an earlier yes, not words typed after it) AND your own chat message between
+their previous message and that yes names the question's `q-` id, the path
+and the mode, and no other registration question. So ask one registration at
+a time, in plain chat, not as a clickable choice, and name all three in the
+one message you ask with, for example: "Register /srv/app as a project host in
+plain mode (q-app-register)? Type yes to do it." If the person asks something
+back, restate the whole question before asking for the yes again. Pass the
+answer to this one question straight away, before the person types anything
+else. When the check fails the command records NOTHING and the question stays
+open; it says what was missing. Then either ask again the way above, have
+the person run the same `respond` command in their own terminal, or run the
+`self-learn host add …` / `host set-mode …` line the error names yourself
+with `--note "<why>"`: from an agent's shell a host command runs under the
+user's standing grant (`self-learn grant list`), recorded as yours, not
+theirs. Then answer again (what is already done is left as it is). A yes
+that carries a condition ("yes, but git mode") is not a plain yes: record it
+in their words and let the overseer read it.
 
 **For a reading**, cover these parts, in your own words but never skipping
 one:
