@@ -16,6 +16,8 @@ Public surface::
     write(home, name, files, *, case, by, expect_sha=None, updating=None,
           no_push=False) -> WriteResult
     retire(home, name, *, case, by, no_push=False) -> RetireResult
+    rename(home, old, new, *, case, by, veto_statement=None, expect_sha=None,
+           no_push=False) -> RenameResult      # SK8; see the rename section
     link_skill(skills_root, name) -> str
     routed_lessons(home, name) -> list[str]
     deployed_files(home, name) -> dict[str, str] | None
@@ -84,9 +86,12 @@ called from the locked block (``tests/test_lock_invariant.py``).
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
+import re
+import subprocess
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -99,7 +104,13 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 from . import gitops, intents, sentinel, skill_registry
 from .cases import CASE_ID_RE
-from .compilers import BEGIN_MARKER, END_MARKER, CompileError, _find_leading_block
+from .compilers import (
+    BEGIN_MARKER,
+    END_MARKER,
+    CompileError,
+    _find_leading_block,
+    compile_managed_file,
+)
 from .hosts import HostsError, host_mode, load_hosts, validate_host_path
 from .primitives import chrono, fsops, yamlio
 from .scan import scan as secret_scan
@@ -113,10 +124,12 @@ from .skill_scaffold import (
     SKILL_REFERENCES_DIR,
     SKILL_RUNNER_METADATA_KEY,
     SKILL_SUPPORT_FILE_SUFFIX,
+    _check_name,
     _read_frontmatter,
     check_skill,
     plugin_manifest_text,
 )
+from .statements import STMT_ID_RE
 
 __all__ = [
     "BY_VALUES",
@@ -126,6 +139,7 @@ __all__ = [
     "KIND_NEEDS_PERSON",
     "KIND_TARGET_BUSY",
     "MAX_DRAFT_FILE_BYTES",
+    "RenameResult",
     "RetireResult",
     "SkillCheck",
     "SkillLinkError",
@@ -138,6 +152,7 @@ __all__ = [
     "link_path",
     "link_skill",
     "read_draft_dir",
+    "rename",
     "retire",
     "routed_lessons",
     "skill_dir",
@@ -1579,5 +1594,971 @@ def retire(
     if no_push or not (result.ledger_sha or result.host_sha):
         return result
     ledger_push, host_push = _push(home, plan.root, result.ledger_sha, result.host_sha)
+    return _with_pushes(result, ledger_push, host_push)
+
+
+# ----------------------------------------------------------------- rename
+#
+# SK8 (S-NEXT-sk8-rename; skill-writing plan D15, §4.1 row SK8). A skill
+# self-learn owns gets a new name. ``rename`` MOVES the skill, every byte
+# kept except its name:
+#
+# 1. the registry row moves to the new name (one ledger commit): the same
+#    ``created`` stamp, ``plugin: plugins/<new>``, a ``last_write`` for
+#    this rename (the authored sha256 changes with the name line), and the
+#    old name added to ``renamed_from``. The old row stays live until step
+#    6, so nothing can scaffold a fresh skill under the old name meanwhile.
+#    A rename that comes from the user's veto (``veto_statement``) bans the
+#    old name for ever in the same commit;
+# 2. the plugin folder moves in ONE skills-root commit:
+#    ``plugins/<old>/skills/<old>/`` becomes ``plugins/<new>/skills/<new>/``;
+#    SKILL.md's frontmatter ``name`` and plugin.json's ``name`` change; the
+#    marketplace entry is renamed where it stands, every other byte of
+#    ``marketplace.json`` unchanged. Every other file moves as it is, the
+#    managed section and its lessons' lines included;
+# 3. the links: ``~/.claude/skills/<old>`` goes, ``~/.claude/skills/<new>``
+#    is made;
+# 4. every lesson routed ``new-skill:<old>`` is re-routed to
+#    ``new-skill:<new>``, one ledger commit each. Its routing block stays
+#    whole except ``new_skill`` (``routed_at`` keeps the compiler's line
+#    order; ``by`` still names who placed the lesson), and the old block
+#    is displaced into the lesson's ``history`` (``event: routing``), as
+#    ``reroute`` does. A ``new-skill`` target has no compile record
+#    (U-hostmode §8 OUT-7), so nothing else in the ledger names the path;
+# 5. the managed section is compared with what the compiler writes for
+#    the lessons now routed to the new name, and recompiled (one more
+#    skills-root commit) only when they differ, which only an interrupted
+#    rename can cause;
+# 6. the old row goes (one ledger commit), once no lesson routes to it.
+#
+# Refused: a new name that is not a skill name, is the old name, is vetoed,
+# is loaded on this machine, or is already used in the skills root or in
+# ``~/.claude/skills`` (``bad-line``); a skill self-learn does not own, or
+# whose own ledger bucket ``skills/<old>/`` -- or the new name's bucket --
+# holds records (``needs-person``: D15, "the overseer asks instead"); a
+# skill changed since self-learn last wrote it, unless ``expect_sha`` names
+# its files as they are now, and uncommitted changes in either plugin
+# folder or in ``marketplace.json`` (``target-busy``); a plugin folder that
+# holds a symlink, a file that is not UTF-8 text, or another skill's folder
+# (``needs-person``).
+#
+# Interrupted renames: every step is computed from the skills root's HEAD
+# and the ledger as they are, so running the same rename again finishes
+# it. An uncommitted half-move is taken up only when every changed file
+# holds this rename's own bytes. A rerun of a finished rename changes
+# nothing beyond making sure of the link and the veto. A skills-root commit
+# that FAILS puts the skills root back as HEAD has it and, on a first run,
+# the registry row too.
+#
+# Every write runs under the ledger lock and the skills root's lock, taken
+# in :func:`_rename_locked` (the one order: ledger first), in the named
+# functions it calls -- no nested closures (``tests/test_lock_invariant.py``).
+
+#: The registry stages of a rename (see :func:`_rename_preflight`).
+_STAGE_FRESH = "fresh"
+_STAGE_RESUME = "resume"
+_STAGE_DONE = "done"
+
+
+@dataclass(frozen=True)
+class RenameResult:
+    old: str
+    new: str
+    ok: bool
+    kind: str | None = None
+    problems: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    #: The lessons this run moved from ``new-skill:<old>`` to ``new-skill:<new>``.
+    rerouted: tuple[str, ...] = ()
+    #: Every ledger commit this run made, in order.
+    ledger_shas: tuple[str, ...] = ()
+    #: The skills-root commit that moved the plugin (``None``: not this run).
+    host_sha: str | None = None
+    #: The skills-root commit that recompiled the managed section (step 5).
+    settle_sha: str | None = None
+    #: What making ``~/.claude/skills/<new>`` did: ``created``, ``replaced``
+    #: or ``unchanged``.
+    link: str | None = None
+    #: Whether ``~/.claude/skills/<old>`` was removed.
+    unlinked: bool = False
+    #: Whether this run added the old name to the vetoed names.
+    vetoed: bool = False
+    #: The authored sha256 of the skill's files under the new name.
+    authored_sha256: str | None = None
+    warnings: tuple[str, ...] = ()
+    ledger_push: gitops.PushResult | None = None
+    host_push: gitops.PushResult | None = None
+
+    @property
+    def changed(self) -> bool:
+        return bool(
+            self.ledger_shas or self.host_sha or self.settle_sha or self.unlinked
+            or self.link in ("created", "replaced")
+        )
+
+
+@dataclass
+class _RenamePlan:
+    """Everything a rename decided from the state on disk."""
+
+    old: str
+    new: str
+    root: Path
+    #: ``fresh`` (nothing done yet), ``resume`` (step 1 is committed and
+    #: the old row is still live) or ``done`` (only the link and the veto
+    #: are made sure of).
+    stage: str
+    #: The row step 1 writes under the new name (``None``: it is there).
+    new_row: dict | None = None
+    #: The new name's registry row before step 1, put back when a first
+    #: run's skills-root move fails.
+    new_row_before: dict | None = None
+    #: ``{at, statement}`` of the user's veto of the old name, if any.
+    veto: dict | None = None
+    adds_veto: bool = False
+    #: Whether HEAD already has the plugin under its new name.
+    host_moved: bool = False
+    #: Each file under its new path, with its text after the rename.
+    writes: dict[Path, str] = field(default_factory=dict)
+    #: Each old tracked file, with its text at HEAD (step 2's undo).
+    removals: dict[Path, str] = field(default_factory=dict)
+    #: Paths (old and new) whose git mode is 100755.
+    executable: set[Path] = field(default_factory=set)
+    marketplace_head: str = ""
+    marketplace_text: str = ""
+    current_sha: str | None = None
+    new_sha: str | None = None
+    #: ``(id, path)`` of every lesson routed ``new-skill:<old>``.
+    lessons: list[tuple[str, Path]] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+def _rename_subject(old: str, new: str, case: str) -> str:
+    return f"self-learn: skill rename {old} → {new} ({case})"
+
+
+def _head_entries(root: Path, rel_dir: str) -> list[tuple[str, str]]:
+    """``(git mode, repo-relative path)`` of every file the skills root's
+    HEAD has under *rel_dir*. The whole tree is listed and filtered here,
+    so no path argument's matching rules decide what counts."""
+    proc = gitops._git_ok(root, "ls-tree", "-r", "-z", "--full-tree", "HEAD")  # noqa: SLF001 -- a read
+    prefix = rel_dir.rstrip("/") + "/"
+    entries: list[tuple[str, str]] = []
+    for item in proc.stdout.split("\0"):
+        meta, tab, path = item.partition("\t")
+        if tab and path.startswith(prefix):
+            entries.append((meta.split(" ", 1)[0], path))
+    return entries
+
+
+def _head_file_text(root: Path, rel: str) -> str | None:
+    """*rel*'s exact text at the skills root's HEAD (bytes decoded as
+    UTF-8, no newline translation); ``None`` when HEAD has no such file.
+    A file that is not UTF-8 is refused."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "show", f"HEAD:{rel}"],
+            capture_output=True,
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise gitops.GitOpsError(f"git show HEAD:{rel} in {root} timed out") from exc
+    if proc.returncode != 0:
+        return None
+    try:
+        return proc.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _Refused(
+            KIND_NEEDS_PERSON,
+            [f"{rel} is not a UTF-8 text file; a person must rename this plugin"],
+        ) from exc
+
+
+def _holds(path: Path, text: str) -> bool:
+    """Whether *path* is a plain file holding exactly *text*'s bytes."""
+    try:
+        return (
+            path.is_file()
+            and not path.is_symlink()
+            and path.read_bytes() == text.encode("utf-8")
+        )
+    except OSError:
+        return False
+
+
+def _make_executable(path: Path) -> None:
+    os.chmod(path, path.stat().st_mode | 0o111)
+
+
+def _lessons_routed_to(home: Path, name: str) -> list[tuple[str, Path]]:
+    """``(id, path)`` of every ROUTED lesson whose routing names
+    ``new-skill:<name>``, by id."""
+    from . import ledger_ops  # local: as in _routed
+    from .ledger import discover_buckets
+    from .records import Record
+
+    found: dict[str, Path] = {}
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except ledger_ops.UNREADABLE_RECORD_ERRORS:
+                continue
+            routing = record.routing or {}
+            if (
+                record.status == "routed"
+                and routing.get("destination") == "new-skill"
+                and routing.get("new_skill") == name
+                and record.id not in found
+            ):
+                found[record.id] = path
+    return sorted(found.items())
+
+
+def _bucket_records(home: Path, name: str) -> list[str]:
+    """The ids of every record filed anywhere in the ledger bucket
+    ``skills/<name>/`` (pending, resolved, or any other folder in it)."""
+    bucket = home / "skills" / name
+    if not bucket.is_dir():
+        return []
+    return sorted({p.stem for p in bucket.rglob("lrn-*.md") if p.is_file()})
+
+
+# -- the three name edits (pure)
+
+
+def _renamed_skill_md(text: str, old: str, new: str) -> str:
+    """SKILL.md *text* with its frontmatter ``name`` changed from *old* to
+    *new*: the one ``name:`` line rewritten, every other byte unchanged,
+    read back to prove it. Anything else is a person's to do."""
+    read = _read_frontmatter(text)
+    if read.mapping is None or read.mapping.get("name") != old:
+        raise _Refused(
+            KIND_NEEDS_PERSON,
+            [
+                f"{SKILL_ENTRY_FILE}: its frontmatter does not name the skill {old}; a person "
+                "must repair it before it is renamed"
+            ],
+        )
+    opening, inner, closing, body = _split_frontmatter(text)
+    pattern = re.compile(rf"name:[ \t]*(?P<q>[\"']?){re.escape(old)}(?P=q)[ \t]*")
+    lines = inner.splitlines(keepends=True)
+    hits = [i for i, line in enumerate(lines) if pattern.fullmatch(line.rstrip("\r\n"))]
+    if len(hits) == 1:
+        index = hits[0]
+        ending = lines[index][len(lines[index].rstrip("\r\n")) :]
+        lines[index] = f"name: {new}{ending}"
+        new_text = opening + "".join(lines) + closing + body
+        after = _read_frontmatter(new_text)
+        if after.mapping == {**read.mapping, "name": new} and after.body == body:
+            return new_text
+    raise _Refused(
+        KIND_NEEDS_PERSON,
+        [
+            f"{SKILL_ENTRY_FILE}: its name line could not be changed to {new} without touching "
+            "the rest of the frontmatter; a person must rename the skill"
+        ],
+    )
+
+
+def _renamed_manifest(raw: str, old: str, new: str) -> str:
+    """plugin.json *raw* with ``name`` changed from *old* to *new*, in the
+    file's own layout."""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    layout = _json_layout(raw, data) if isinstance(data, dict) else None
+    if not isinstance(data, dict) or layout is None or data.get("name") != old:
+        raise _Refused(
+            KIND_NEEDS_PERSON,
+            [
+                f"plugins/{old}/{_MANIFEST_REL} is not two-space JSON naming {old}, so "
+                "self-learn cannot change only its name; a person must rename the plugin"
+            ],
+        )
+    data["name"] = new
+    return _dump_json(data, layout)
+
+
+def _marketplace_renamed(raw: str, old: str, new: str) -> str:
+    """marketplace.json *raw* with the entry for *old* renamed to *new*
+    (``name`` and ``source``) where it stands; every other entry and key,
+    and the file's own JSON layout, unchanged."""
+    data, layout = _read_marketplace(raw)
+    if _entries_named(data, new):
+        raise _Refused(
+            KIND_BAD_LINE,
+            [f"name-collision: {_MARKETPLACE_REL} already has an entry named {new}"],
+        )
+    entries = _entries_named(data, old)
+    if len(entries) != 1 or entries[0].get("source") != f"./plugins/{old}":
+        raise _Refused(
+            KIND_NEEDS_PERSON,
+            [
+                f"{_MARKETPLACE_REL} has no single entry named {old} with source "
+                f"./plugins/{old}; a person must repair it before the skill is renamed"
+            ],
+        )
+    entries[0]["name"] = new
+    entries[0]["source"] = f"./plugins/{new}"
+    return _dump_json(data, layout)
+
+
+# -- the preflight (writes nothing)
+
+
+def _rename_name_check(home: Path, plan: _RenamePlan, vetoed: set[str]) -> None:
+    """A first run's checks on the names: the buckets, then the new name
+    as ``skill write`` would check it, then what already uses it."""
+    root, old, new = plan.root, plan.old, plan.new
+    held = [(name, ids) for name in (old, new) if (ids := _bucket_records(home, name))]
+    if held:
+        raise _Refused(
+            KIND_NEEDS_PERSON,
+            [
+                f"the ledger bucket skills/{name}/ holds record(s) {', '.join(ids)}; a skill "
+                "whose own bucket holds records is not renamed, so a person must decide"
+                for name, ids in held
+            ],
+        )
+    loaded, catalogue_problems = _loaded_names(home, leaving_out=None)
+    plan.notes += [f"skills on this machine: {p}" for p in catalogue_problems]
+    problems = [
+        str(finding)
+        for finding in _check_name(
+            new,
+            loaded_names=frozenset(loaded),
+            vetoed_names=frozenset(vetoed),
+            expected_name=None,
+        )
+    ]
+    taken: list[str] = []
+    if (root / "plugins" / new).exists():
+        taken.append(f"the skills root already has a folder plugins/{new}")
+    others = sorted(p for p in root.glob(f"plugins/*/skills/{new}") if p.is_dir())
+    if others:
+        taken.append(
+            f"the skills root already has a skill folder named {new} "
+            f"({os.path.relpath(others[0], root)})"
+        )
+    link = link_path(new)
+    if link.is_symlink() or link.exists():
+        taken.append(f"{link} already exists")
+    problems += [f"name-collision: {t}" for t in taken]
+    if problems:
+        raise _Refused(KIND_BAD_LINE, problems, notes=plan.notes)
+
+
+def _rename_host_plan(plan: _RenamePlan) -> None:
+    """Fill in step 2 from the skills root's HEAD (writes nothing), or mark
+    it done when HEAD already has the plugin under its new name."""
+    root, old, new = plan.root, plan.old, plan.new
+    old_rel, new_rel = f"plugins/{old}", f"plugins/{new}"
+    head_old = _head_entries(root, old_rel)
+    head_new = _head_entries(root, new_rel)
+    if head_old and head_new:
+        raise _Refused(
+            KIND_NEEDS_PERSON,
+            [f"the skills root has both {old_rel} and {new_rel} committed; a person must decide"],
+        )
+    if not head_old:
+        moved_md = f"{new_rel}/skills/{new}/{SKILL_ENTRY_FILE}"
+        if plan.stage == _STAGE_RESUME and any(path == moved_md for _mode, path in head_new):
+            plan.host_moved = True
+            return
+        raise _Refused(
+            KIND_NEEDS_PERSON,
+            [f"the skills root has no committed {old_rel}/skills/{old}/{SKILL_ENTRY_FILE} to rename"],
+        )
+    skill_prefix = f"skills/{old}/"
+    old_skill: dict[str, str] = {}
+    new_skill: dict[str, str] = {}
+    for mode, path in head_old:
+        rest = path[len(old_rel) + 1 :]
+        if mode not in ("100644", "100755"):
+            raise _Refused(
+                KIND_NEEDS_PERSON,
+                [f"{path} is not a plain file (git mode {mode}); a person must rename this plugin"],
+            )
+        if rest.startswith("skills/") and not rest.startswith(skill_prefix):
+            raise _Refused(
+                KIND_NEEDS_PERSON,
+                [f"{old_rel} holds another skill's folder ({path}); a person must rename this plugin"],
+            )
+        text = _head_file_text(root, path)
+        if text is None:  # pragma: no cover -- ls-tree just listed it
+            raise _Refused(KIND_NEEDS_PERSON, [f"{path} cannot be read from HEAD"])
+        if rest == f"{skill_prefix}{SKILL_ENTRY_FILE}":
+            new_text = _renamed_skill_md(text, old, new)
+        elif rest == _MANIFEST_REL:
+            new_text = _renamed_manifest(text, old, new)
+        else:
+            new_text = text
+        in_skill = rest.startswith(skill_prefix)
+        new_rest = f"skills/{new}/{rest[len(skill_prefix):]}" if in_skill else rest
+        if in_skill:
+            old_skill[rest[len(skill_prefix) :]] = text
+            new_skill[rest[len(skill_prefix) :]] = new_text
+        target = root / new_rel / new_rest
+        plan.writes[target] = new_text
+        plan.removals[root / path] = text
+        if mode == "100755":
+            plan.executable.update({target, root / path})
+    if SKILL_ENTRY_FILE not in old_skill:
+        raise _Refused(
+            KIND_NEEDS_PERSON,
+            [f"the skills root has no committed {old_rel}/skills/{old}/{SKILL_ENTRY_FILE} to rename"],
+        )
+    market = _head_file_text(root, _MARKETPLACE_REL)
+    if market is None:
+        raise _Refused(
+            KIND_DESTINATION_UNAVAILABLE,
+            [f"the skills root has no committed {_MARKETPLACE_REL}"],
+        )
+    plan.marketplace_head = market
+    plan.marketplace_text = _marketplace_renamed(market, old, new)
+    try:
+        plan.current_sha = _authored_sha(old_skill)
+        plan.new_sha = _authored_sha(new_skill)
+    except SkillRegistryError as exc:
+        raise _Refused(KIND_NEEDS_PERSON, [f"the skill's files cannot be hashed: {exc}"]) from exc
+
+
+def _rename_dirty_check(plan: _RenamePlan) -> None:
+    """Uncommitted changes in either plugin folder or the marketplace
+    refuse the rename (``target-busy``); on a rerun, the changes an
+    interrupted step 2 left (its own new files, its own removals, its own
+    marketplace) are let through."""
+    root = plan.root
+    marketplace = root / _MARKETPLACE_REL
+    dirty = _dirty_under(
+        root, [root / "plugins" / plan.old, root / "plugins" / plan.new, marketplace]
+    )
+    ours = {os.path.relpath(p, root): text for p, text in plan.writes.items()}
+    ours[_MARKETPLACE_REL] = plan.marketplace_text
+    gone = {os.path.relpath(p, root) for p in plan.removals}
+    busy: list[str] = []
+    for rel in sorted(dirty):
+        path = root / rel
+        if plan.stage == _STAGE_RESUME:
+            if rel in gone and not path.exists() and not path.is_symlink():
+                continue
+            if rel in ours and _holds(path, ours[rel]):
+                continue
+        busy.append(rel)
+    if busy:
+        raise _Refused(
+            KIND_TARGET_BUSY,
+            [f"uncommitted changes in the skills root: {', '.join(busy)}; retry once they are committed"],
+            notes=plan.notes,
+        )
+
+
+def _rename_preflight(
+    home: Path,
+    old: str,
+    new: str,
+    *,
+    case: str,
+    by: str,
+    now: str,
+    expect_sha: str | None,
+    veto_statement: str | None,
+) -> _RenamePlan:
+    """Decide the rename from the state on disk; raises :class:`_Refused`.
+    Writes nothing.
+
+    The registry says how far an earlier run got: no row under the new
+    name naming the old one in ``renamed_from`` is a FIRST run; such a row
+    with the old row still live and carrying the same ``created`` stamp
+    (step 1 copies it) is a RERUN of an interrupted one; such a row with
+    no live old row is a FINISHED rename. A live old row with another
+    ``created`` stamp is a skill made under the old name since, and is
+    renamed only as a first run would be (refused: the new name is taken)."""
+    for value in (old, new):
+        if not _valid_name(value):
+            raise _Refused(
+                KIND_BAD_LINE,
+                [f"{value!r} is not a skill name (kebab-case, at most {SKILL_NAME_MAX_CHARS} characters)"],
+            )
+    if old == new:
+        raise _Refused(KIND_BAD_LINE, [f"{old} already has that name"])
+    registry = _load_registry(home)
+    root = _skills_root(home)
+    old_row, new_row = registry.row(old), registry.row(new)
+    renamed = (
+        new_row is not None
+        and new_row["status"] == STATUS_LIVE
+        and old in (new_row.get("renamed_from") or [])
+    )
+    if renamed and not registry.is_owned(old):
+        stage = _STAGE_DONE
+    elif (
+        renamed
+        and old_row is not None
+        and new_row is not None
+        and old_row["created"] == new_row["created"]
+    ):
+        stage = _STAGE_RESUME
+    elif not registry.is_owned(old):
+        raise _Refused(
+            KIND_NEEDS_PERSON,
+            [f"{old} is not a skill self-learn owns; self-learn renames only its own skills"],
+        )
+    elif registry.is_owned(new):
+        raise _Refused(KIND_BAD_LINE, [f"name-collision: {new} is already a skill self-learn owns"])
+    else:
+        stage = _STAGE_FRESH
+    plan = _RenamePlan(old=old, new=new, root=root, stage=stage, new_row_before=new_row)
+    vetoed = {name.casefold() for name in registry.vetoed_names()}
+    if veto_statement is not None:
+        plan.veto = {"at": now, "statement": veto_statement}
+        plan.adds_veto = old.casefold() not in vetoed
+
+    if stage == _STAGE_DONE:
+        assert new_row is not None
+        if _head_entries(root, f"plugins/{old}") or not (
+            skill_dir(root, new) / SKILL_ENTRY_FILE
+        ).is_file():
+            raise _Refused(
+                KIND_NEEDS_PERSON,
+                [
+                    f"the registry says {old} was renamed to {new}, but the skills root does not "
+                    f"hold the skill under plugins/{new} alone; a person must repair it"
+                ],
+            )
+        plan.host_moved = True
+        plan.new_sha = new_row["last_write"]["authored_sha256"]
+        plan.notes.append(f"{old} was already renamed to {new}")
+        return plan
+
+    if stage == _STAGE_FRESH:
+        _rename_name_check(home, plan, vetoed)
+    _rename_host_plan(plan)
+    if not plan.host_moved:
+        _rename_dirty_check(plan)
+    if stage == _STAGE_FRESH:
+        assert old_row is not None
+        recorded = old_row["last_write"]["authored_sha256"]
+        if expect_sha is not None and plan.current_sha != expect_sha:
+            raise _Refused(
+                KIND_TARGET_BUSY,
+                [
+                    f"the skill's files changed since they were read: expected authored sha256 "
+                    f"{expect_sha}, found {plan.current_sha}"
+                ],
+                notes=plan.notes,
+            )
+        if expect_sha is None and plan.current_sha != recorded:
+            raise _Refused(
+                KIND_TARGET_BUSY,
+                [
+                    f"{old} was changed since self-learn last wrote it (authored sha256 "
+                    f"{plan.current_sha}, last written {recorded}); read the change and rename "
+                    f"again with --expect {plan.current_sha}"
+                ],
+                notes=plan.notes,
+            )
+        renamed_from = [name for name in (old_row.get("renamed_from") or []) if name != new]
+        if old not in renamed_from:
+            renamed_from.append(old)
+        assert plan.new_sha is not None
+        plan.new_row = {
+            "status": STATUS_LIVE,
+            "plugin": f"plugins/{new}",
+            "created": dict(old_row["created"]),
+            "last_write": {"at": now, "case": case, "by": by, "authored_sha256": plan.new_sha},
+            "renamed_from": renamed_from,
+        }
+    else:
+        assert new_row is not None
+        recorded_new = new_row["last_write"]["authored_sha256"]
+        if not plan.host_moved and plan.new_sha != recorded_new:
+            raise _Refused(
+                KIND_NEEDS_PERSON,
+                [
+                    f"plugins/{old} changed since the interrupted rename to {new} began (its "
+                    f"files would hash {plan.new_sha}, the registry row records {recorded_new}); "
+                    "a person must decide"
+                ],
+            )
+        plan.new_sha = recorded_new
+    plan.lessons = _lessons_routed_to(home, old)
+    return plan
+
+
+# -- the registry steps
+
+
+def _registry_rename_begin(
+    registry: skill_registry.Registry,
+    *,
+    old: str,
+    new: str,
+    row: dict | None,
+    veto: dict | None,
+) -> None:
+    """Step 1: the row under the new name, unless a live one is there
+    already, and the user's veto of the old name, unless it is banned."""
+    if row is not None:
+        current = registry.skills.get(new)
+        if current is None or current.get("status") != STATUS_LIVE:
+            registry.skills[new] = copy.deepcopy(row)
+    if veto is not None:
+        registry.add_veto(old, at=veto["at"], statement=veto["statement"])
+
+
+def _registry_rename_finish(registry: skill_registry.Registry, *, old: str, new: str) -> None:
+    """Step 6: the old row goes, when it is live, the new row names it in
+    ``renamed_from``, and both carry the same ``created`` stamp (the row
+    step 1 moved, not a skill made under the old name since)."""
+    row = registry.skills.get(old)
+    moved = registry.skills.get(new)
+    if row is None or row.get("status") != STATUS_LIVE:
+        return
+    if moved is None or moved.get("status") != STATUS_LIVE:
+        return
+    if old not in (moved.get("renamed_from") or []) or row.get("created") != moved.get("created"):
+        return
+    del registry.skills[old]
+
+
+# -- the skills-root and ledger steps (the caller holds both locks)
+
+
+def _move_plugin(plan: _RenamePlan, subject: str, body: str) -> str:
+    """Step 2: write the plugin under its new name, take the old files out,
+    and commit both halves with the marketplace in one skills-root commit.
+    Files an interrupted run already wrote are left as they are."""
+    root = plan.root
+    marketplace = root / _MARKETPLACE_REL
+    writes = {**plan.writes, marketplace: plan.marketplace_text}
+    for path, text in writes.items():
+        if not _holds(path, text):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fsops.atomic_write(path, text, preserve_mode=True, fsync=True, follow_symlinks=True)
+        if path in plan.executable:
+            _make_executable(path)
+    for path in plan.removals:
+        if gitops.is_tracked(root, path):
+            gitops.remove(root, path)
+    _prune_empty_dirs(root / "plugins" / plan.old)
+    gitops.stage(root, list(writes))
+    return gitops.commit(root, subject, body=body, paths=[*writes, *plan.removals])
+
+
+def _undo_move(plan: _RenamePlan) -> str:
+    """Put the skills root back as HEAD has it after a failed step 2: the
+    new files gone, the old ones back, the marketplace as committed, all
+    of it unstaged. Returns a sentence for the report."""
+    root = plan.root
+    marketplace = root / _MARKETPLACE_REL
+    for path in plan.writes:
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+    for path, text in plan.removals.items():
+        if not _holds(path, text):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fsops.atomic_write(path, text, preserve_mode=True, fsync=True, follow_symlinks=True)
+        if path in plan.executable:
+            _make_executable(path)
+    if not _holds(marketplace, plan.marketplace_head):
+        fsops.atomic_write(
+            marketplace, plan.marketplace_head, preserve_mode=True, fsync=True, follow_symlinks=True
+        )
+    touched = [*plan.writes, *plan.removals, marketplace]
+    try:
+        gitops.unstage(root, [p for p in touched if p.exists() or gitops.known_paths(root, [p])])
+    except gitops.GitOpsError as exc:
+        return f"the files were put back but could not be unstaged ({exc})"
+    _prune_empty_dirs(root / "plugins" / plan.new)
+    return "the skills root was put back as it was"
+
+
+def _reroute_lesson(
+    home: Path, path: Path, *, old: str, new: str, subject: str, body: str
+) -> str | None:
+    """Step 4 for one lesson: ``new_skill`` changed from *old* to *new*,
+    the rest of its routing block as it was, the old block displaced into
+    its history; one ledger commit. ``None`` when the lesson no longer
+    routes to *old*. The caller holds the ledger lock."""
+    from .records import Record  # local: as in _routed
+
+    record = Record.from_path(path)
+    routing = record.routing or {}
+    if (
+        record.status != "routed"
+        or routing.get("destination") != "new-skill"
+        or routing.get("new_skill") != old
+    ):
+        return None
+    intent = intents.begin(home, "skill-rename", [path], subject)
+    record.append_history("routing", {"routing": copy.deepcopy(routing)})
+    moved = copy.deepcopy(routing)
+    moved["new_skill"] = new
+    record.set_routing(moved)
+    record.write(path)
+    intents.complete(intent)
+    sha = gitops.stage_and_commit(home, [path], subject, body)
+    intents.finish(intent)
+    return sha
+
+
+def _settle_section(
+    home: Path, plan: _RenamePlan, body: str
+) -> tuple[str | None, str | None]:
+    """Step 5: recompile the managed section under the new name when it is
+    not what the compiler writes for the lessons routed there now (only an
+    interrupted rename leaves it so). Returns ``(skills-root commit,
+    warning)``; a failure is a warning naming ``self-learn recompile``,
+    never a failed rename: the lessons are routed either way."""
+    from . import verbs  # local: verbs imports a great deal
+
+    root = plan.root
+    target = skill_dir(root, plan.new) / SKILL_ENTRY_FILE
+    records = verbs._target_matched_records(  # noqa: SLF001 -- the compiler's own set
+        home, target.resolve(), ("skill-md", "new-skill"), user_claude_md=None
+    )
+    if not records:
+        return None, None
+    before = target.read_bytes()
+    try:
+        section = compile_managed_file(target, records)
+    except (CompileError, OSError) as exc:
+        return None, (
+            f"the managed section of {plan.new} was not checked ({exc}); run "
+            "`self-learn recompile` to repair it"
+        )
+    if not section.changed:
+        return None, None
+    rel = os.path.relpath(target, root)
+    try:
+        gitops.stage(root, [target])
+        sha = gitops.commit(
+            root,
+            f"self-learn: recompile {rel} (skill rename {plan.old} → {plan.new})",
+            body=body,
+            paths=[target],
+        )
+    except gitops.GitOpsError as exc:
+        fsops.atomic_write(target, before, preserve_mode=True, fsync=True, follow_symlinks=True)
+        try:
+            gitops.unstage(root, [target])
+        except gitops.GitOpsError:
+            pass
+        return None, (
+            f"the managed section of {plan.new} is stale and its recompile could not be "
+            f"committed ({exc}); run `self-learn recompile` to repair it"
+        )
+    return sha, None
+
+
+def _rename_outcome(plan: _RenamePlan, **fields: Any) -> RenameResult:
+    fields.setdefault("notes", tuple(plan.notes))
+    fields.setdefault("authored_sha256", plan.new_sha)
+    for key in ("problems", "rerouted", "ledger_shas", "warnings"):
+        if key in fields:
+            fields[key] = tuple(fields[key])
+    return RenameResult(old=plan.old, new=plan.new, **fields)
+
+
+def _apply_rename(home: Path, plan: _RenamePlan, *, case: str, by: str) -> RenameResult:
+    """The locked half of :func:`rename`: steps 1 to 6 of the section
+    comment, each skipped when an earlier run finished it. The caller
+    holds the ledger lock and the skills root's lock."""
+    from . import ledger_ops  # local: as in _routed
+
+    old, new, root = plan.old, plan.new, plan.root
+    subject = _rename_subject(old, new, case)
+    body = f"By: {by}"
+    shas: list[str] = []
+
+    begun = skill_registry.with_update(
+        home,
+        partial(_registry_rename_begin, old=old, new=new, row=plan.new_row, veto=plan.veto),
+        subject=subject,
+    )
+    if begun is not None:
+        shas.append(begun)
+    vetoed = plan.adds_veto and begun is not None
+
+    host_sha = None
+    if not plan.host_moved:
+        try:
+            host_sha = _move_plugin(plan, subject, body)
+        except (gitops.GitOpsError, OSError) as exc:
+            undone = _undo_move(plan)
+            if plan.stage == _STAGE_FRESH and begun is not None:
+                try:
+                    restored = skill_registry.with_update(
+                        home,
+                        partial(_registry_restore, name=new, row=plan.new_row_before),
+                        subject=f"{subject} undone: the skills-root move failed",
+                    )
+                except (SkillRegistryError, gitops.GitOpsError) as undo_exc:
+                    undone += (
+                        f"; the registry row for {new} could not be put back ({undo_exc}): run "
+                        "the same rename again to finish it"
+                    )
+                else:
+                    if restored is not None:
+                        shas.append(restored)
+            return _rename_outcome(
+                plan, ok=False, kind=KIND_GIT, ledger_shas=shas, vetoed=vetoed,
+                problems=[f"the skills-root move failed ({exc}); {undone}"],
+            )
+
+    try:
+        unlinked = _drop_link(link_path(old), skill_dir(root, old))
+        link = _place_link(link_path(new), skill_dir(root, new))
+    except (SkillLinkError, OSError) as exc:
+        return _rename_outcome(
+            plan, ok=False, kind=KIND_NEEDS_PERSON, ledger_shas=shas, host_sha=host_sha,
+            vetoed=vetoed,
+            problems=[
+                f"{old} was moved to {new} but could not be linked: {exc}; fix that path and "
+                "run the same rename again to finish"
+            ],
+        )
+
+    rerouted: list[str] = []
+    try:
+        for record_id, path in plan.lessons:
+            sha = _reroute_lesson(
+                home, path, old=old, new=new, body=body,
+                subject=f"self-learn: reroute {record_id} → new-skill:{new} (skill rename {old}, {case})",
+            )
+            if sha is not None:
+                shas.append(sha)
+                rerouted.append(record_id)
+    except (gitops.GitOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS) as exc:
+        return _rename_outcome(
+            plan, ok=False,
+            kind=KIND_GIT if isinstance(exc, gitops.GitOpsError) else KIND_NEEDS_PERSON,
+            ledger_shas=shas, host_sha=host_sha, link=link, unlinked=unlinked,
+            rerouted=rerouted, vetoed=vetoed,
+            problems=[
+                f"re-routing the lessons of {old} stopped ({exc}); run the same rename again "
+                "to finish"
+            ],
+        )
+
+    warnings: list[str] = []
+    settle_sha = None
+    if plan.stage != _STAGE_DONE:
+        settle_sha, warning = _settle_section(home, plan, body)
+        if warning:
+            warnings.append(warning)
+        remaining = [record_id for record_id, _path in _lessons_routed_to(home, old)]
+        if remaining:
+            return _rename_outcome(
+                plan, ok=False, kind=KIND_NEEDS_PERSON, ledger_shas=shas, host_sha=host_sha,
+                settle_sha=settle_sha, link=link, unlinked=unlinked, rerouted=rerouted,
+                vetoed=vetoed, warnings=warnings,
+                problems=[
+                    f"lesson(s) {', '.join(remaining)} still route to new-skill:{old}, so its "
+                    "registry row stays; run the same rename again to finish"
+                ],
+            )
+        finished = skill_registry.with_update(
+            home, partial(_registry_rename_finish, old=old, new=new), subject=subject
+        )
+        if finished is not None:
+            shas.append(finished)
+    return _rename_outcome(
+        plan, ok=True, ledger_shas=shas, host_sha=host_sha, settle_sha=settle_sha, link=link,
+        unlinked=unlinked, rerouted=rerouted, vetoed=vetoed, warnings=warnings,
+    )
+
+
+def _refused_rename(old: str, new: str, refused: _Refused) -> RenameResult:
+    return RenameResult(
+        old=old, new=new, ok=False, kind=refused.kind, problems=refused.problems,
+        notes=refused.notes,
+    )
+
+
+def _rename_locked(
+    home: Path,
+    old: str,
+    new: str,
+    root: Path,
+    *,
+    case: str,
+    by: str,
+    now: str,
+    expect_sha: str | None,
+    veto_statement: str | None,
+) -> RenameResult:
+    """Take the ledger lock, then the skills root's lock (the one order),
+    decide again from the state now, and apply."""
+    with intents.ledger_write(home) as recovered, gitops.host_lock(root, "git"):
+        intents.announce_recovered(recovered)
+        try:
+            plan = _rename_preflight(
+                home, old, new, case=case, by=by, now=now,
+                expect_sha=expect_sha, veto_statement=veto_statement,
+            )
+        except _Refused as refused:
+            return _refused_rename(old, new, refused)
+        return _apply_rename(home, plan, case=case, by=by)
+
+
+def rename(
+    home: Path | str,
+    old: str,
+    new: str,
+    *,
+    case: str,
+    by: str,
+    veto_statement: str | None = None,
+    expect_sha: str | None = None,
+    no_push: bool = False,
+) -> RenameResult:
+    """Rename a skill self-learn owns from *old* to *new* (the rename
+    section above). *veto_statement* is the statement id of the user's
+    veto when the rename comes from one: the old name is then banned for
+    ever. *expect_sha* is the authored sha256 of the skill's files as the
+    caller read them, needed when they changed since self-learn last wrote
+    them. Running the same rename again finishes an interrupted one and
+    changes nothing after a finished one."""
+    home = Path(home)
+    now = chrono.now_iso()
+    try:
+        _check_case_by(case, by)
+        if veto_statement is not None and (
+            not isinstance(veto_statement, str) or STMT_ID_RE.fullmatch(veto_statement) is None
+        ):
+            raise _Refused(
+                KIND_BAD_LINE, [f"{veto_statement!r} is not a statement id (stmt-xxxxxxxx)"]
+            )
+        plan = _rename_preflight(
+            home, old, new, case=case, by=by, now=now,
+            expect_sha=expect_sha, veto_statement=veto_statement,
+        )
+    except _Refused as refused:
+        return _refused_rename(old, new, refused)
+    except gitops.GitOpsError as exc:
+        return RenameResult(old=old, new=new, ok=False, kind=KIND_GIT, problems=(str(exc),))
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        result = _rename_locked(
+            home, old, new, plan.root, case=case, by=by, now=now,
+            expect_sha=expect_sha, veto_statement=veto_statement,
+        )
+    except (gitops.GitOpsError, SkillRegistryError) as exc:
+        return RenameResult(old=old, new=new, ok=False, kind=KIND_GIT, problems=(str(exc),))
+    finally:
+        hold.release()
+    host_sha = result.settle_sha or result.host_sha
+    ledger_sha = result.ledger_shas[-1] if result.ledger_shas else None
+    if no_push or not (ledger_sha or host_sha):
+        return result
+    ledger_push, host_push = _push(home, plan.root, ledger_sha, host_sha)
     return _with_pushes(result, ledger_push, host_push)
 
