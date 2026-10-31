@@ -592,10 +592,11 @@ class TestOlderThanTheBaseline:
 
 
 class TestTheSeamWithTheSteward:
-    """The steward reads this cache file itself, by name
-    (`steward_inputs.read_observations`). A key renamed on one side makes a
-    confirmed probe move silently stop reaching it, and no test of either
-    side alone would notice."""
+    """The steward reads what this cache file holds through
+    `steward_inputs.moved_premises`, which asks `premise_sweep.confirmed_moves`
+    (U4 removed its own reader, `steward_inputs.read_observations`). A key
+    renamed on one side makes a confirmed probe move silently stop reaching
+    the steward, and no test of either side alone would notice."""
 
     def _moved_two_sweeps(self, env, sw):
         watched = sw.probe_home / "watched.txt"
@@ -616,20 +617,20 @@ class TestTheSeamWithTheSteward:
             assert row["record"].startswith("lrn-")
             assert datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
 
-    def test_the_steward_reader_reads_what_the_sweep_wrote(self, env, sw, monkeypatch):
-        if not hasattr(steward_inputs, "read_observations"):
-            pytest.skip("the steward lane (U4) is not part of this checkout; the landing run covers the seam")
-        path = self._moved_two_sweeps(env, sw)
-        monkeypatch.setattr(
-            steward_inputs, "observations_path", lambda home: premise_sweep.observations_path(sw.cache)
+    def test_the_steward_reader_reads_what_the_sweep_wrote(self, env, sw):
+        """Integration 2026-10-31: this test used to skip whenever
+        `steward_inputs.read_observations` was missing, and U4 removed that
+        reader, so on the combined branch it could only skip. It now reads
+        the seam the steward really uses, from the cache the sweep wrote."""
+        self._moved_two_sweeps(env, sw)
+        found = steward_inputs.moved_premises(
+            env.ledger, history=premise_sweep.read_history(sw.cache)
         )
-        seen = steward_inputs.read_observations(env.ledger)
-        assert [o.state for o in seen[(A, "p1")]] == ["ok", "ok"]
-        assert [o.shown for o in seen[(A, "p1")]] == ["missing", "missing"]
-        (premise,) = reload_premises(path)
-        assert steward_inputs.confirmed_move(premise, seen[(A, "p1")]) is not None
+        assert A in found, found  # the steward sees the move the sweep confirmed
+        (item,) = found[A].items
+        assert item["premise"] == "p1" and item["how"] == "probe"
+        assert item["now"] == "missing"
         assert len(sw.moves("p1")) == 1  # both sides call it confirmed
-
 
 class TestCache:
     def test_it_keeps_the_last_three_observations_per_premise(self, env, sw):

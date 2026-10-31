@@ -348,11 +348,11 @@ def _row(
     """One line of ``observations.jsonl``. The keys ``record``, ``premise``
     and ``observed_at`` plus the :class:`premises.Observation` fields
     (``state``, ``value_sha``, ``shown``, ``claim``, ``reason``) sit at the
-    top level on purpose: the steward's own reader
-    (``steward_inputs.read_observations``) reads this very file by those
-    names. Rename one and a confirmed probe move silently stops reaching the
-    steward; ``test_the_steward_reader_reads_what_the_sweep_wrote`` keeps
-    the two together."""
+    top level on purpose: :func:`confirmed_moves`, which the steward reads
+    through ``steward_inputs.moved_premises``, judges this very file by
+    those names. Rename one and a confirmed probe move silently stops
+    reaching the steward; ``test_the_steward_reader_reads_what_the_sweep_wrote``
+    keeps the two together."""
     return {
         "sweep": sweep,
         "record": record_id,
