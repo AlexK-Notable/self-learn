@@ -31,7 +31,12 @@ from self_learn import (
     skill_writer,
     verbs,
 )
-from self_learn.compilers import BEGIN_MARKER, END_MARKER
+from self_learn.compilers import (
+    BEGIN_MARKER,
+    END_MARKER,
+    POINTER_BEGIN_MARKER,
+    POINTER_END_MARKER,
+)
 from self_learn.ledger_ops import create_record
 from self_learn.skill_scaffold import _read_frontmatter
 from support import commit_all, git, make_behavior, make_env
@@ -558,6 +563,204 @@ def test_a_reference_dropped_from_the_draft_is_removed(env):
     assert env.status(env.root) == ""
 
 
+# ===================================== what the compilers own (fix round 1)
+
+
+def _route_reference(env: Env, rid: str = RID, dest: str = "reference") -> None:
+    """A lesson filed in the skill's own bucket and routed as a reference:
+    the compiler appends its entry to the shelf (or the ``--dest`` file)
+    and adds a pointer block to SKILL.md, after the managed section."""
+    create_record(env.home, make_behavior(scope=f"skill:{NAME}", record_id=rid))
+    verbs.route(env.home, rid, dest=dest, no_push=True)
+
+
+def _pointer_block(text: str) -> str:
+    return text[text.index(POINTER_BEGIN_MARKER) : text.index(POINTER_END_MARKER) + len(POINTER_END_MARKER)]
+
+
+def _append_and_commit(env: Env, line: str) -> None:
+    path = env.skill_md()
+    path.write_text(path.read_text(encoding="utf-8") + "\n" + line + "\n", encoding="utf-8")
+    commit_all(env.root, "a person's note at the end")
+
+
+def test_a_reference_route_s_pointer_block_and_shelf_survive_a_rewrite(env):
+    """Gate r1 MAJOR 1 (shape 1) and MINOR 2: the pointer block a reference
+    route adds after the managed section is carried over byte for byte, the
+    shelf is never written or removed, and a lesson on the shelf does not
+    stop a write that changes an authored reference."""
+    first = env.write()
+    assert first.ok
+    _route_reference(env)
+    text = env.skill_md().read_text(encoding="utf-8")
+    shelf = env.skill_dir() / "references" / "LEARNINGS.md"
+    # control: the route put its block after the section and its entry on the shelf
+    assert text.count(POINTER_BEGIN_MARKER) == 1
+    assert text.index(END_MARKER) < text.index(POINTER_BEGIN_MARKER)
+    assert RID in shelf.read_text(encoding="utf-8")
+    block, shelf_text = _pointer_block(text), shelf.read_text(encoding="utf-8")
+    # the route is the compilers' text, not a person's edit
+    assert skill_writer.deployed_authored_sha256(env.home, NAME) == first.authored_sha256
+
+    # draft_view leaves out what the compilers own, and writes back as a no-op
+    view = skill_writer.draft_view(skill_writer.deployed_files(env.home, NAME))
+    assert set(view) == {"SKILL.md", REF}
+    assert "self-learn:pointers" not in view["SKILL.md"]
+    assert skill_writer.check(env.home, NAME, view).ok
+    ledger, root = env.head(env.home), env.head(env.root)
+    again = env.write(view, case=CASE2, expect_sha=first.authored_sha256)
+    assert again.ok and not again.changed, again.problems
+    assert env.head(env.home) == ledger and env.head(env.root) == root
+
+    # a real rewrite of SKILL.md and of the authored reference
+    files = draft(extra="\nA second paragraph.\n", ref_text=REF_TEXT + "\nOne more row.\n")
+    rewrite = env.write(files, case=CASE2)
+
+    assert rewrite.ok, rewrite.problems
+    text = env.skill_md().read_text(encoding="utf-8")
+    assert "A second paragraph." in text
+    assert text.count(POINTER_BEGIN_MARKER) == 1 and text.endswith(block + "\n")
+    assert text.index(END_MARKER) < text.index(POINTER_BEGIN_MARKER)
+    assert shelf.read_text(encoding="utf-8") == shelf_text
+    assert "One more row." in (env.skill_dir() / REF).read_text(encoding="utf-8")
+    assert skill_writer.routed_lessons(env.home, NAME) == [RID]
+    assert env.status(env.root) == ""
+    assert skill_writer.deployed_authored_sha256(env.home, NAME) == rewrite.authored_sha256
+
+
+def test_a_person_s_text_after_the_section_is_handed_back_not_dropped(env):
+    """Gate r1 MAJOR 1 (shape 2): text a person appended after the managed
+    section comes back in draft_view, so a write with --expect keeps it."""
+    first = env.write()
+    assert first.ok
+    note = "A person's note, added at the end of the file."
+    _append_and_commit(env, note)
+    current = skill_writer.deployed_authored_sha256(env.home, NAME)
+    assert current != first.authored_sha256  # control: the hash sees the note
+
+    view = skill_writer.draft_view(skill_writer.deployed_files(env.home, NAME))
+    assert note in view["SKILL.md"] and BEGIN_MARKER not in view["SKILL.md"]
+    view["SKILL.md"] += "\nA paragraph the overseer adds.\n"
+    result = env.write(view, case=CASE2, expect_sha=current)
+
+    assert result.ok, result.problems
+    text = env.skill_md().read_text(encoding="utf-8")
+    assert note in text and "A paragraph the overseer adds." in text
+    assert text.index(note) < text.index(BEGIN_MARKER)
+    assert text.rstrip().endswith(END_MARKER)
+
+
+def test_text_after_the_pointer_block_is_handed_back_and_the_block_stays_last(env):
+    assert env.write().ok
+    _route_reference(env)
+    note = "A note after the pointers."
+    _append_and_commit(env, note)
+    block = _pointer_block(env.skill_md().read_text(encoding="utf-8"))
+    current = skill_writer.deployed_authored_sha256(env.home, NAME)
+
+    view = skill_writer.draft_view(skill_writer.deployed_files(env.home, NAME))
+    assert note in view["SKILL.md"] and "self-learn:pointers" not in view["SKILL.md"]
+    result = env.write(view, case=CASE2, expect_sha=current)
+
+    assert result.ok, result.problems
+    text = env.skill_md().read_text(encoding="utf-8")
+    assert text.index(note) < text.index(BEGIN_MARKER)
+    assert text.endswith(block + "\n")
+
+
+@pytest.mark.parametrize("what", ["reference-shelf", "pointer-block"])
+def test_a_draft_carrying_what_the_compilers_own_is_refused(env, what):
+    """Gate r1 MINOR 2: the shelf and the pointer block are the compilers';
+    a draft carrying either is refused, with nothing written."""
+    files = draft()
+    if what == "reference-shelf":
+        files["references/LEARNINGS.md"] = "# Learnings\n"
+        files["SKILL.md"] += "See also [the learnings](references/LEARNINGS.md).\n"
+    else:
+        files["SKILL.md"] += (
+            f"\n{POINTER_BEGIN_MARKER}\n- `references/buttons.md` — the map\n{POINTER_END_MARKER}\n"
+        )
+    before = env.snapshot()
+
+    result = env.write(files)
+
+    assert not result.ok and result.kind == "bad-line"
+    assert what in _rules(result.problems), result.problems
+    assert env.snapshot() == before
+    assert skill_writer.check(env.home, NAME, files).kind == "bad-line"
+    # control: the same draft without the compilers' part writes
+    control = draft()
+    if what == "reference-shelf":
+        control["references/learning-notes.md"] = "# Learnings\n"
+        control["SKILL.md"] += "See also [the notes](references/learning-notes.md).\n"
+    assert env.write(control).ok
+
+
+def test_a_lesson_filed_in_an_authored_reference_blocks_only_a_change_to_that_file(env):
+    assert env.write().ok
+    _route_reference(env, dest=f"reference:{Path(REF).name}")
+    assert RID in (env.skill_dir() / REF).read_text(encoding="utf-8")  # control
+    view = skill_writer.draft_view(skill_writer.deployed_files(env.home, NAME))
+    assert RID in view[REF]
+
+    view["SKILL.md"] += "\nAnother paragraph.\n"
+    current = skill_writer.deployed_authored_sha256(env.home, NAME)
+    only_skill_md = env.write(view, case=CASE2, expect_sha=current)
+    assert only_skill_md.ok, only_skill_md.problems
+
+    changed = dict(view)
+    changed[REF] = REF_TEXT  # drops the lesson's entry
+    current = skill_writer.deployed_authored_sha256(env.home, NAME)
+    before = env.snapshot()
+    refused = env.write(changed, case=CASE2, expect_sha=current)
+    assert not refused.ok and refused.kind == "needs-person"
+    assert any(RID in p for p in refused.problems), refused.problems
+    assert env.snapshot() == before
+
+
+def test_both_commits_carry_the_by_trailer(env):
+    """Gate r1 MINOR 3: the registry commit is the overseer's by its
+    trailer, like the skills-root commit (the weekly census of hand steps
+    reads it)."""
+    assert env.write().ok
+    assert "By: overseer" in git(env.home, "log", "-1", "--format=%b").stdout
+    assert "By: overseer" in git(env.root, "log", "-1", "--format=%b").stdout
+    assert env.write(draft(extra="\nMore.\n"), case=CASE2, by="human").ok
+    assert "By: human" in git(env.home, "log", "-1", "--format=%b").stdout
+
+
+def test_a_deployed_file_the_hash_cannot_take_is_a_refusal_not_a_traceback(env):
+    """Gate r1 NIT 6."""
+    assert env.write().ok
+    (env.skill_dir() / "odd\\name.md").write_text("# odd\n", encoding="utf-8")
+    commit_all(env.root, "an oddly named file")
+    files = draft(extra="\nMore.\n")
+
+    result = env.write(files, case=CASE2)
+
+    assert not result.ok and result.kind == "needs-person"
+    assert any("cannot be taken" in p for p in result.problems), result.problems
+    found = skill_writer.check(env.home, NAME, files)
+    assert not found.ok and found.kind == "needs-person"
+
+
+def test_an_update_notes_another_skill_with_the_same_name_and_skips_its_own(env):
+    """Gate r1 NIT 7: on an update only the skill's own entries are left out
+    of the name check. Its own plugin, installed from the marketplace, is
+    not a clash; another plugin's skill of the same name is named in a
+    note (an update is not refused for a name the skill already had)."""
+    assert env.write().ok
+    _plugin(env, f"{NAME}@sandbox-skills", NAME)  # the skill's own plugin, installed
+    own = env.write(draft(extra="\nOne.\n"), case=CASE2)
+    assert own.ok, own.problems
+    assert not any("name-collision" in n for n in own.notes), own.notes
+
+    _plugin(env, "demo@market", NAME)  # another plugin's skill of the same name
+    other = env.write(draft(extra="\nTwo.\n"), case=CASE2)
+    assert other.ok, other.problems
+    assert any("name-collision" in n and f"demo:{NAME}" in n for n in other.notes), other.notes
+
+
 # ================================================ (h) interrupted writes
 
 
@@ -627,6 +830,9 @@ def test_a_failed_skills_root_commit_is_undone_on_both_sides(env, monkeypatch):
     assert not env.plugin_dir().exists()
     assert env.marketplace.read_text(encoding="utf-8") == env.marketplace_seed
     assert env.row() is None  # the row was put back
+    # the undo commit is the overseer's too, by its trailer
+    assert "undone" in git(env.home, "log", "-1", "--format=%s").stdout
+    assert "By: overseer" in git(env.home, "log", "-1", "--format=%b").stdout
     assert not env.link().exists() and not env.link().is_symlink()
 
 
@@ -699,6 +905,17 @@ def test_cli_refuses_a_change_from_an_agent_shell(env, monkeypatch, capsys, mark
     err = capsys.readouterr().err
     assert "person's command" in err and marker in err
     assert env.snapshot() == before
+
+
+def test_cli_by_takes_only_human():
+    """Gate r1 NIT 4: a person's run cannot be recorded as the overseer's."""
+    parser = cli._build_parser()
+    base = ["skill", "write", NAME, "--from", "draft", "--case", CASE]
+    assert parser.parse_args([*base, "--by", "human"]).by == "human"  # control
+    with pytest.raises(SystemExit):
+        parser.parse_args([*base, "--by", "overseer"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["skill", "retire", NAME, "--case", CASE, "--by", "overseer"])
 
 
 def test_cli_check_runs_from_an_agent_shell_and_writes_nothing(env, monkeypatch, capsys):

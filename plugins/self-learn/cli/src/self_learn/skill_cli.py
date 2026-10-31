@@ -7,9 +7,13 @@ shell (``settings.agent_caller``) they are refused before anything is read
 or locked, the way a tier-C ``config set`` is. ``write --check`` and
 ``list`` only read, and run anywhere.
 
-    self-learn skill write <name> --from <dir> --case <id> [--by human|overseer]
+    self-learn skill write <name> --from <dir> --case <id> [--by human]
                                   [--expect <sha>] [--check] [--no-push] [--json]
-    self-learn skill retire <name> --case <id> [--by human|overseer] [--no-push] [--json]
+    self-learn skill retire <name> --case <id> [--by human] [--no-push] [--json]
+
+``--by`` takes only ``human``: the command is a person's, and only the
+overseer's runner, in-process, records a write or a retirement as the
+overseer's.
     self-learn skill list [--json]
 
 Exit status: 0 done (or nothing to do), 1 refused, 6 a git step failed
@@ -30,6 +34,11 @@ from .ledger import resolve_home
 EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_USAGE = 64  # the CLI's own (cli.EXIT_USAGE, sysexits EX_USAGE)
+
+#: What ``--by`` accepts from the command line: a person's run is the
+#: person's. ``overseer`` stays in ``skill_registry.BY_VALUES`` for the
+#: runner's in-process calls.
+_CLI_BY_VALUES = ("human",)
 
 
 def _exit_for(ok: bool, kind: str | None) -> int:
@@ -54,7 +63,7 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     )
     write_p.add_argument("--case", required=True, help="the case this write belongs to")
     write_p.add_argument(
-        "--by", choices=skill_registry.BY_VALUES, default="human",
+        "--by", choices=_CLI_BY_VALUES, default="human",
         help="who decided the write (default: human)",
     )
     write_p.add_argument(
@@ -74,7 +83,7 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     retire_p.add_argument("name")
     retire_p.add_argument("--case", required=True, help="the case this retirement belongs to")
     retire_p.add_argument(
-        "--by", choices=skill_registry.BY_VALUES, default="human",
+        "--by", choices=_CLI_BY_VALUES, default="human",
         help="who decided the retirement (default: human)",
     )
     retire_p.add_argument("--no-push", action="store_true", dest="no_push")

@@ -10,10 +10,11 @@ with a marketplace, a scratch ``~/.claude``). Red on master:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
-from self_learn import cli, gitops, skill_writer, verbs
+from self_learn import cli, gitops, skill_registry, skill_writer, verbs
 from self_learn.ledger_ops import create_record
 from support import git, make_behavior
 from test_skill_write import CASE, CASE2, NAME, RID, RID2, Env, draft
@@ -75,6 +76,9 @@ def test_retire_refuses_while_a_lesson_routes_there_then_passes_once_none_does(e
     row = env.row()
     assert row["status"] == "retired"
     assert row["retired"]["case"] == CASE2 and row["retired"]["by"] == "overseer"
+    # both commits carry the trailer (gate r1 MINOR 3)
+    assert "By: overseer" in git(env.home, "log", "-1", "--format=%b").stdout
+    assert "By: overseer" in git(env.root, "log", "-1", "--format=%b").stdout
 
 
 def test_retiring_a_retired_skill_is_a_no_op(env):
@@ -161,6 +165,35 @@ def test_a_failed_removal_commit_puts_everything_back(env, monkeypatch):
     assert env.snapshot() == before
     assert env.link().resolve() == env.skill_dir().resolve()
     assert env.row()["status"] == "live"
+
+
+def test_a_failed_registry_commit_after_the_removal_still_pushes_the_removal(env, monkeypatch):
+    """Gate r1 NIT 5: the skills-root removal is committed before the row.
+    When the row's commit then fails, the result carries the removal commit
+    so it is pushed, and a rerun marks the row."""
+    assert env.write().ok
+    pushes: list[Path] = []
+    monkeypatch.setattr(
+        gitops, "push_if_remote", lambda repo, **_kw: pushes.append(Path(repo).resolve())
+    )
+    real_update = skill_registry.with_update
+
+    def refuse(*_args, **_kwargs):
+        raise gitops.GitOpsError("simulated: the ledger commit failed")
+
+    monkeypatch.setattr(skill_registry, "with_update", refuse)
+    result = skill_writer.retire(env.home, NAME, case=CASE2, by="overseer")
+
+    assert not result.ok and result.kind == "git"
+    assert result.host_sha == env.head(env.root)
+    assert not env.plugin_dir().exists() and env.row()["status"] == "live"
+    assert pushes == [env.root.resolve()]
+
+    monkeypatch.setattr(skill_registry, "with_update", real_update)
+    rerun = skill_writer.retire(env.home, NAME, case=CASE2, by="overseer", no_push=True)
+    assert rerun.ok, rerun.problems
+    assert rerun.ledger_sha and rerun.host_sha is None
+    assert env.row()["status"] == "retired"
 
 
 def test_a_retired_name_can_be_written_again(env):
