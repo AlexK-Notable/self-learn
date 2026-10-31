@@ -791,7 +791,7 @@ Read the step's note first, and the record in lessons/ when the step names a les
 user may take (a setting only they set, an answer they typed) is by design: say so instead of
 naming a gap. When the evidence does not show what the gap was, say that.
 uncommitted-host-removals: plain-mode projects where self-learn took a retired lesson's lines out of a
-tracked file and nobody has committed it yet ({{project, file, since}}). Under Catalogue health name each,
+tracked file and nobody has committed it yet ({{project, file, since, mixed}}; mixed true means the file held other changes first, so the agent reviews before committing). Under Catalogue health name each,
 with its file and how long it has waited; the agent working in that project commits it. Also name
 the unknown list (git could not answer, so they may be waiting). A state of unavailable means the
 notices could not be read: say that. Only both lists empty under state ok means none are waiting.

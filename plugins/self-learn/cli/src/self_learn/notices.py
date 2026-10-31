@@ -21,8 +21,8 @@ What a notice is. One short line about one project, with:
   ``notices.yaml``, for a project the ledger knows) or ``code`` (the runner of
   a plain-host removal, for each tracked file it left changed).
 - an end: it stops showing when a person runs ``self-learn notice done <id>``
-  or when its condition clears (a ``code`` notice's file has no uncommitted
-  change any more). A notice WITHOUT a condition also ends
+  or when its condition ends (a ``code`` notice records the bytes a removal
+  left; it ends when ``HEAD`` holds them, or the file has been edited since). A notice WITHOUT a condition also ends
   :data:`NOTICE_DAYS` (14) days after it was made. A notice WITH a condition
   has no age limit (S-106 as amended, hand-maintenance round b, lane CU-6): it
   is live while git still answers that the condition holds, because an
@@ -48,13 +48,16 @@ start a new 14 days and does not come back after a person marked it done. A
 code notice is different because it is only ever written right after a removal
 changed the file: if the notice for that file is still live it stays as it is
 (two removals before a commit are one notice, not two lines), and if it was
-marked done or ran out its days the new change gets a fresh one.
+marked done, ended (committed or edited) or ran out its days the new change
+gets a fresh one.
 
 What the reader costs. ``self-learn status --fast`` is the session-start
 hook's one call, pinned git-free and cheap. Reading notices keeps that: a
 notice outside the current project costs a path comparison. Only a ``code``
-notice INSIDE the current project asks git one bounded question
-(``git status --porcelain`` on its one file, no index lock, 1.5 s), all of a
+notice INSIDE the current project asks git one bounded question (the
+file's blob hash in the working tree and in ``HEAD``, two read-only git
+calls; ``git status --porcelain`` only for a notice stored without a hash;
+no index lock, 1.5 s), all of a
 call's questions together get :data:`GIT_TOTAL_BUDGET` seconds (the hook that
 calls this gives up at 4 s and would lose every one of its lines), and an
 answer that cannot be had -- git missing, a timeout, the budget spent --
@@ -504,8 +507,9 @@ def add(
     An existing notice with the same id is left exactly as it is: it keeps its
     first ``created_at`` (the 14 days run from the first sighting) and a done
     notice stays done. With *renew* (a ``code`` notice, written right after a
-    new change) an existing notice that is done or past its days is replaced
-    by a fresh one; a live one is still left alone. *case* is the case an
+    new change) an existing notice that is done, past its days, or whose git
+    condition no longer holds (committed, or the file edited since: it ended)
+    is replaced by a fresh one; one whose condition still holds is left alone. *case* is the case an
     overseer notice comes from, stored with it (the key, :func:`overseer_key`,
     is the caller's)."""
     try:
@@ -516,7 +520,12 @@ def add(
         path = _path_for(home, nid)
         existing = _load(path)
         moment = now if now is not None else datetime.now(timezone.utc)
-        if existing is not None and not (renew and not is_showing(existing, moment)):
+        if existing is not None and not (
+            renew and (
+                not is_showing(existing, moment)
+                or (_asks_git(existing) and condition_state(existing) != "holds")
+            )
+        ):
             return existing
         notice = Notice(
             id=nid, project=real_project, text=text, source=source,
@@ -768,7 +777,7 @@ def uncommitted_removals(
     home: Path | str, *, timeout: float = GIT_CHECK_TIMEOUT
 ) -> dict[str, Any]:
     """Every not-done ``code`` notice whose condition git answers "holds":
-    ``items`` of ``{project, file, since}`` -- a plain host's tracked file that
+    ``items`` of ``{project, file, since, mixed}`` (``mixed``: the file held other changes before the removal, so it is reviewed before it is committed) -- a plain host's tracked file that
     a lesson removal left changed and nobody has committed -- and ``unknown``
     of the same shape for those git could not answer (a timeout, an error): a
     question that could not be asked is never read as nothing waiting. A
@@ -776,8 +785,8 @@ def uncommitted_removals(
     neither. ``state`` is ``ok``, or ``unavailable`` with a ``reason`` when
     the notices could not be read at all. Asked by the overseer's run (no
     session-start budget). Oldest first. Never raises."""
-    items: list[dict[str, str]] = []
-    unknown: list[dict[str, str]] = []
+    items: list[dict[str, Any]] = []
+    unknown: list[dict[str, Any]] = []
     try:
         for notice in reversed(all_notices(home)):
             if notice.source != SOURCE_CODE or notice.done_at is not None or not _asks_git(notice):
@@ -789,6 +798,7 @@ def uncommitted_removals(
                 "project": notice.project,
                 "file": str((notice.condition or {}).get("file", "")),
                 "since": notice.created_at,
+                "mixed": (notice.condition or {}).get("clean") == "0",
             })
     except Exception as exc:  # noqa: BLE001
         return {"state": "unavailable", "reason": f"{type(exc).__name__}: {exc}"[:200],

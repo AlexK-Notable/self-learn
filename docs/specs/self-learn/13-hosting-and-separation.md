@@ -1868,8 +1868,8 @@ worded, has it dropped and named "already marked done" in "Refused / could not
 do" (S-NEXT-notices). A code notice is written only right after a removal changed
 the file: while the notice for that file is live a further removal leaves it as it
 is (two removals before a commit are one line, not two), and one that was marked
-done, or ended (its days are past and git no longer says the file is changed), is
-replaced by a fresh one. The words name the step for whoever reads the line,
+done, or ended (its condition answers clear or changed -- committed, or the file edited
+since -- or its days are past and git cannot answer), is replaced by a fresh one. The words name the step for whoever reads the line,
 usually the agent working in the project: "a retired lesson's lines were taken out
 of <rel>; nothing else changed. Commit it: `git commit -m "remove retired lesson
 lines" -- <path from the repo root>` run as `git -C <the checkout the removal was

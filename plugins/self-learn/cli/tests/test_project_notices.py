@@ -1093,3 +1093,48 @@ def test_the_health_row_says_so_when_git_cannot_answer_or_the_notices_cannot_be_
     monkeypatch.setattr(notices, "all_notices", broken)
     row = health.uncommitted_host_removals_row(home)
     assert row["state"] == "unavailable" and "cache unreadable" in row["reason"]
+
+
+# ------------------------------------------------- gate r2: an ended notice is replaced
+
+
+def test_a_second_removal_after_the_first_was_committed_with_more_gets_a_fresh_notice(tmp_path):
+    """Gate r2 MAJOR 1: removal 1 committed together with the person's own
+    line (not marked done, day 0..5): removal 2 is a new, uncommitted removal
+    and must be shown and listed, with the whole-file commit line."""
+    from self_learn.overseer import health
+
+    home = tmp_path / "ledger"
+    repo = _tracked_repo(tmp_path)
+    claude = repo / "CLAUDE.md"
+    first = _remove(home, repo, claude, "one\n", now=T0)
+    assert first is not None  # control
+    assert [n.id for n in notices.visible(home, repo, now=T0)] == [first.id]
+    claude.write_text("one\nthe person's own line\n", encoding="utf-8")
+    commit_all(repo, "removal and more")
+    day5 = T0 + timedelta(days=5)
+    second = _remove(home, repo, claude, "one\nthe person's own line\nx\n", now=day5)
+    assert second is not None and second.condition["hash"] != first.condition["hash"]
+    assert "nothing else changed" in second.text
+    shown = notices.visible(home, repo, now=day5)
+    assert [n.id for n in shown] == [second.id]
+    assert shown[0].condition["hash"] == second.condition["hash"]
+    assert [i["file"] for i in health.uncommitted_host_removals_row(home)["items"]] == [str(claude)]
+
+
+def test_a_second_removal_over_edits_in_progress_gets_a_fresh_review_notice(tmp_path):
+    from self_learn.overseer import health
+
+    home = tmp_path / "ledger"
+    repo = _tracked_repo(tmp_path)
+    claude = repo / "CLAUDE.md"
+    first = _remove(home, repo, claude, "one\n", now=T0)
+    assert first is not None
+    claude.write_text("one\nedit in progress\n", encoding="utf-8")  # never committed
+    day5 = T0 + timedelta(days=5)
+    second = _remove(home, repo, claude, "edit in progress\n", now=day5)
+    assert second is not None and second.condition["clean"] == "0"
+    assert "nothing else changed" not in second.text and "diff" in second.text
+    assert [n.id for n in notices.visible(home, repo, now=day5)] == [second.id]
+    items = health.uncommitted_host_removals_row(home)["items"]
+    assert [i["file"] for i in items] == [str(claude)] and items[0]["mixed"] is True

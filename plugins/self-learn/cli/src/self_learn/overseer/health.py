@@ -467,7 +467,8 @@ def uncommitted_host_removals_row(home: Path | str) -> dict[str, Any]:
         **found,
         "caution": (
             "Self-learn never commits in a plain-mode project. The next agent working in the "
-            "project commits the file (the notice shows it the exact git commit line). items "
+            "project commits the file (the notice shows it the exact git commit line); an item with "
+            "mixed true held other changes first, so the agent reviews the diff before committing. items "
             "are removals still uncommitted; unknown are notices git could not answer (say "
             "so, they may be waiting); state unavailable means the notices could not be "
             "read, so say that and list nothing. Only state ok with both lists empty means "
