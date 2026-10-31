@@ -19,6 +19,7 @@ def _p(kind: str, probe_extra: dict, **extra) -> list[dict]:
     probe = {"kind": kind, "path": "/etc/x.conf"}
     if kind == "git-file":
         probe["repo"] = "/etc"
+        probe["path"] = "x.conf"
     probe.update(probe_extra)
     out = {"id": "p1", "claim": "a fact the lesson rests on", "probe": probe}
     out.update(extra)
@@ -120,3 +121,16 @@ def test_equals_absent_holds_while_the_literal_is_not_found_and_moves_when_it_ap
     second = premises.observe(premise, env)
     assert second.claim == premises.CLAIM_CONTRADICTED
     assert premises.verdict(premise, second) == "moved"
+
+
+def test_an_old_record_form_observes_unavailable_not_judged(tmp_path: Path):
+    conf = tmp_path / "app.conf"
+    conf.write_text("BindsTo=x\n", encoding="utf-8")
+    env = ProbeEnv(home=tmp_path, now=lambda: "2026-10-30T00:00:00Z")
+    premise = {"id": "p1", "claim": "c", "holds_if": "absent", "match": "BindsTo=x",
+               "probe": {"kind": "file-match", "path": "~/app.conf",
+                         "contains": "BindsTo=x"}}
+    premises.validate_premises([premise], policy=False)
+    obs = premises.observe(premise, env)
+    assert obs.state == premises.OBS_UNAVAILABLE
+    assert "invalid premise" in obs.reason

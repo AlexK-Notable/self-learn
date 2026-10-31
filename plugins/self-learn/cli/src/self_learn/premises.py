@@ -926,11 +926,11 @@ def _premise_problem(premise: object, *, record_id: str | None, policy: bool) ->
                 return problem
         if policy and probe.get("kind") in ("file-match", "git-file"):
             # Policy, not structure: a record written before this rule still
-            # loads (its probe is refused before a run, so it reads
-            # unavailable until rewritten). These probes read the token present/absent (or a line-range
-            # hash), never the file's text: a literal in `match` can never
-            # be found in the value, so `absent` would always hold (a dead
-            # check) and `present` would always be contradicted.
+            # loads (`observe` reads it unavailable until rewritten). These
+            # probes read the token present/absent (or a line-range hash),
+            # never the file's text: a literal in `match` can never be found
+            # in the value, so `absent` would always hold (a dead check) and
+            # `present` would always be contradicted.
             problem = _file_match_problem(pid, probe, effective, match)
             if problem is not None:
                 return problem
@@ -2030,6 +2030,15 @@ def observe(premise: Mapping, env: ProbeEnv) -> Observation | None:
     probe = premise.get("probe") if isinstance(premise, Mapping) else None
     if probe is None:
         return None
+    if isinstance(probe, Mapping) and probe.get("kind") in ("file-match", "git-file"):
+        holds_if = premise.get("holds_if")
+        effective = HOLDS_IF_DEFAULT if holds_if is None else holds_if
+        problem = _file_match_problem(
+            str(premise.get("id")), probe, str(effective), premise.get("match")
+        )
+        if problem is not None:
+            # A record written before the rule: never judge it (a dead check).
+            return unavailable_observation(f"invalid premise: {problem}", observed_at=env.now())
     try:
         return run_probe(probe, env, premise=premise)
     except PremiseError as exc:

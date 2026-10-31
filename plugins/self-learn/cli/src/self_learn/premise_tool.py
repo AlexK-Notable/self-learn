@@ -173,8 +173,8 @@ _DESCRIPTION = (
     "--value`; an unbound or unset property reads as an empty value); "
     "package {name} (`pacman -Q`: the version, or not-installed); "
     "which {name}; git-file {repo, path, and one of contains | line | "
-    "lines} (the file at HEAD; judged as file-match); ledger {ref: lrn-xxxxxxxx, "
-    "lrn-xxxxxxxx#follow_up, or stmt-xxxxxxxx}. Paths are absolute or "
+    "lines} (the file at HEAD; judged as file-match); ledger {ref: "
+    "lrn-xxxxxxxx, lrn-xxxxxxxx#follow_up, or stmt-xxxxxxxx}. Paths are absolute or "
     "start with ~/; credential and key locations are refused."
 )
 
