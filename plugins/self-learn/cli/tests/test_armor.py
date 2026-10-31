@@ -331,8 +331,18 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     ),
     # 2026-10-24, ANCHOR 7cb185a (stmt-role): this row's 1 `edited` doors (the retirement's deleted and edited tests)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
+    # 2026-10-30 (tests-fix, S-NEXT-tests-fix; 11-telemetry-and-lifecycle.md §2.5, the `defer --until` rule):
+    # `test_defer_cli_until_date` deferred to the fixed date 2027-01-01 and goes red once that date is past
+    # (`defer` refuses a past --until); it now derives the date from today. The `dump_sha` below and the
+    # EXM3/BEH3 census values are NOT remeasured here; the landing step does that on master's tip.
     "test_route_cli.py": Behaviour(
         nodes=59, dump_sha="0558051df890c86d53fe8592c00fcc902d7db04e3a379235db739bf28ebf3150",
+        edited={
+            "test_defer_cli_until_date": (
+                "2026-10-30 tests-fix (S-NEXT-tests-fix): the deferral date is computed from today, "
+                "not hard-coded 2027-01-01 (11-telemetry-and-lifecycle.md §2.5)"
+            ),
+        },
     ),
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): A12's `edited` door (U7's cases block in the
     # batch prompt) was dropped as VACUOUS by this landing's own refusal; U7
