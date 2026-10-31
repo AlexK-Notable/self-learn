@@ -858,13 +858,19 @@ def _terminal_versions(
     pending, in its new bucket, and needs one there. Since L8 a move also
     changes the record's version (its `moved` history entry), so this skip
     is what brings back a lesson moved project->project before that -- its
-    bytes, and so its version, never changed."""
+    bytes, and so its version, never changed.
+
+    S-NEXT-rotation (P4): an input row may name further versions its one
+    decision SETTLES (`settles`, :func:`_premise_moved_row`: a combined
+    follow-up + premise input settles the follow-up's own version too).
+    Each is terminal exactly when the row's own version is."""
     terminal: set[tuple[str, str]] = set()
     for manifest in (committed_manifests(home) if manifests is None else manifests):
         recipes = manifest.get("cases") or {}
         for packet in manifest.get("packets") or []:
             if not isinstance(packet, dict):
                 continue
+            settles = _settled_versions(packet)
             for rid, disposition in (packet.get("dispositions") or {}).items():
                 if not isinstance(disposition, dict):
                     continue
@@ -882,7 +888,28 @@ def _terminal_versions(
                     version = disposition.get("input_version")
                     if isinstance(rid, str) and isinstance(version, str):
                         terminal.add((rid, version))
+                        for settled in settles.get((rid, version), ()):
+                            terminal.add((rid, settled))
     return terminal
+
+
+def _settled_versions(packet: Mapping) -> dict[tuple[str, str], list[str]]:
+    """``{(record, input version): [settled version, ...]}`` from a packet's
+    input rows that carry `settles` (S-NEXT-rotation, P4). The manifest
+    keeps each input row whole, so the list persists beside the
+    disposition that decides it."""
+    out: dict[tuple[str, str], list[str]] = {}
+    for row in packet.get("inputs") or []:
+        if not isinstance(row, Mapping):
+            continue
+        settles = row.get("settles")
+        rid, version = row.get("record"), row.get("version")
+        if not (isinstance(settles, list) and isinstance(rid, str) and isinstance(version, str)):
+            continue
+        out.setdefault((rid, version), []).extend(
+            str(item) for item in settles if isinstance(item, str)
+        )
+    return out
 
 
 def _steward_filing_moves(home: Path) -> dict[str, int]:
@@ -1205,8 +1232,16 @@ def _premise_moved_unit_lists(
     for rid in sorted(set(followups) | set(premise_moves) | set(placement)):
         if rid in held:
             continue
+        followup = followups.get(rid)
+        # S-NEXT-rotation (P4): a follow-up a committed run already settled
+        # -- alone, or inside a combined input (`settles`) -- neither comes
+        # back by itself nor rides along with a later premise move.
+        if followup is not None and (
+            rid, steward_inputs.premise_moved_version(followup_done=followup.done)
+        ) in terminal:
+            followup = None
         built = _premise_moved_row(
-            home, rid, followups.get(rid), premise_moves.get(rid), placement.get(rid)
+            home, rid, followup, premise_moves.get(rid), placement.get(rid)
         )
         if built is not None and (rid, built[1]["version"]) not in terminal:
             rows[rid] = built
@@ -1257,6 +1292,13 @@ def _premise_moved_row(
         ),
         "moved": moved,
     }
+    if followup is not None and movers:
+        # S-NEXT-rotation (P4): one decision of a combined input settles
+        # both. The follow-up-alone version is recorded beside this row so
+        # :func:`_terminal_versions` marks it decided with this one.
+        row["settles"] = [
+            steward_inputs.premise_moved_version(followup_done=followup.done)
+        ]
     predecessor = _premise_predecessor(home, rid)
     if predecessor:
         row["predecessor"] = predecessor
