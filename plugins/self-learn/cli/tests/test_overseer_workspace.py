@@ -22,7 +22,7 @@ from ruamel.yaml import YAML
 
 from self_learn import invocation, user_model, worker
 from self_learn.invocation_sdk import charter
-from self_learn.overseer import formats
+from self_learn.overseer import discovery, formats
 from self_learn.overseer import run as overseer_run
 from support import make_home
 
@@ -301,12 +301,16 @@ def test_the_run_works_in_its_own_workspace_with_formats(tmp_path, monkeypatch):
     result = overseer_run.run(home, dry_run=True, no_push=True)
     assert result.status == "dry-run"
     workspace = overseer_run.workspace_dir(home)
-    assert seen["cwd"] == [workspace, workspace]
-    for containment in seen["containment"]:
-        assert containment.write_globs == (f"{workspace}/**",)
-        assert containment.read_roots == (f"{workspace}",)
+    # SK4 (2026-10-31): phase S, between A and B, works in a workspace of
+    # its own beside this one, confined to it the same way.
+    discovery_workspace = discovery.workspace_dir(home)
+    assert seen["cwd"] == [workspace, discovery_workspace, workspace]
+    for containment, root in zip(seen["containment"], seen["cwd"]):
+        assert containment.write_globs == (f"{root}/**",)
+        assert containment.read_roots == (f"{root}",)
     assert "case-example.yaml" not in seen["formats"][0]
-    assert "case-example.yaml" in seen["formats"][1]
+    assert seen["formats"][1] == ["README.md", "closed-sets.yaml", discovery.CANDIDATES_FILE]
+    assert "case-example.yaml" in seen["formats"][2]
     for prompt in seen["prompt"]:
         assert "formats/README.md" in prompt
 

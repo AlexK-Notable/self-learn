@@ -255,6 +255,8 @@ NOT_REPO_TRUTH = {
     "steward.run": "XDG cache: steward run directory and last-run marker; ledger writes delegate to lock-owning cases/batch/user-model/statements verbs",
     "overseer/run._keep_phase_a": "XDG cache: overseer/phase-a/<week>/, a validated phase A kept for the same week's next attempt (2026-09-27, fail-state audit finding 7)",
     "overseer/run._write_last_run_marker": "XDG cache: overseer/overseer.last-run, a disposable fast-status marker; never ledger truth",
+    # SK4 (S-NEXT-sk4-discovery, 2026-10-31): phase S's kept copy, as phase A's above.
+    "overseer/discovery.keep": "XDG cache: overseer/phase-s/<week>/, a validated phase S kept for the same week's next attempt",
     # U2 (S-65, 02-schema.md §3a.2 §1.8): <cache>/cases/index.json is a
     # NOT_REPO_TRUTH index over the case files -- rebuildable from them,
     # never itself the ledger's truth. `cases._write_index` is the one

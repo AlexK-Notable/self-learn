@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import miner, steward, steward_prompt, worker
+from self_learn.overseer import discovery as overseer_discovery
 from self_learn.overseer import run as overseer_run
 from support import make_home
 
@@ -135,6 +136,11 @@ def overseer_prompts(tmp_path) -> dict[str, str]:
     return {
         "phase-a": overseer_run._phase_a_prompt(stage, 3, 0),
         "phase-b": overseer_run._phase_b_prompt(stage, ("case-0123abcd",), ("case-89abcdef",)),
+        # SK4 (2026-10-31): skill discovery is the overseer's third session,
+        # in its own workspace, with its own prompt.
+        "phase-s": overseer_discovery.phase_s_prompt(
+            tmp_path / "discovery", overseer_discovery.StagedInputs(lesson_count=3, surfaces=2, groups=1),
+        ),
     }
 
 
@@ -191,7 +197,7 @@ def ordinary_session_lines(first="please fix the failing test in the parser"):
 # ---------------------------------------------------------- the digest
 
 
-@pytest.mark.parametrize("phase", ["phase-a", "phase-b"])
+@pytest.mark.parametrize("phase", ["phase-a", "phase-s", "phase-b"])
 def test_overseer_session_is_halted(tmp_path, transcripts, phase):
     prompt = overseer_prompts(tmp_path)[phase]
     path = write_session(transcripts, OVERSEER_FOLDER, f"sess-overseer-{phase}", own_session_lines(prompt))
