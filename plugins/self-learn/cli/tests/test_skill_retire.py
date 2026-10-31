@@ -16,7 +16,7 @@ import pytest
 
 from self_learn import cli, gitops, skill_registry, skill_writer, verbs
 from self_learn.ledger_ops import create_record
-from support import git, make_behavior
+from support import commit_all, git, make_behavior
 from test_skill_write import CASE, CASE2, NAME, RID, RID2, Env, draft
 
 CASE3 = "case-9c0d1e2f"
@@ -49,6 +49,9 @@ def test_retire_refuses_while_a_lesson_routes_there_then_passes_once_none_does(e
 
     # the lesson leaves (replaced by a newer one routed elsewhere)
     create_record(env.home, make_behavior(scope="skill:s", record_id=RID2))
+    # `create_record` writes the file and commits nothing; commit it here so
+    # the clean-tree assertion below is about what `retire` leaves.
+    commit_all(env.home, f"seed {RID2}")
     verbs.supersede(env.home, RID, RID2, no_push=True)
     assert skill_writer.routed_lessons(env.home, NAME) == []
     root_count, ledger_count = env.count(env.root), env.count(env.home)

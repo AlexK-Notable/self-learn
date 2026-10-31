@@ -35,6 +35,12 @@ from pathlib import Path
 from . import settings, skill_registry, skill_writer
 from .gitops import EXIT_GIT_FAILED
 from .ledger import resolve_home
+# Called by its bare name, never as ``skill_writer.rename(...)``: the lock
+# invariant's walker (tests/test_lock_invariant.py) reads every
+# ``<x>.rename(...)`` call as ``Path.rename``, an unlocked filesystem move,
+# and would stop there instead of following the call into the writer,
+# whose own lock it must check.
+from .skill_writer import rename as rename_skill
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -232,7 +238,7 @@ def _retire(home: Path, args) -> int:
 
 
 def _rename(home: Path, args) -> int:
-    result = skill_writer.rename(
+    result = rename_skill(
         home, args.old, args.new, case=args.case, by="human",
         veto_statement=args.veto_statement, expect_sha=args.expect_sha, no_push=args.no_push,
     )

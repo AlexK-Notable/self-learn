@@ -236,16 +236,26 @@ def test_no_registry_is_a_pass_with_nothing_owed(env, claude_dir):
     assert message == "no owned skills"
 
 
-def test_a_skill_row_whose_plugin_folder_has_another_name_passes(env, claude_dir):
-    """After a rename the plugin folder (and its marketplace entry) can carry
-    another name than the skill: the row's `plugin` says where to look."""
-    _write_registry(env, {"beta": _row("beta", plugin="plugins/alpha")})
-    _deploy(env, claude_dir, "beta", plugin_name="alpha")
+def test_a_skill_row_naming_another_skills_plugin_folder_fails(env, claude_dir):
+    """A row's `plugin` is always `plugins/<its own name>` (02-schema.md §3;
+    `skill rename` moves the folder, the entry and the link with the name,
+    and retire and rename delete and move the folder a row names). So a row
+    naming another skill's folder is a registry the selftest cannot read, and
+    the row FAILs naming why, rather than checking the other skill's files.
+    (This test first asserted the opposite: that such a row passes.)"""
+    _healthy(env, claude_dir)
+    _assert_healthy(env, claude_dir)
+    rows = {"alpha": _row("alpha"), "beta": _row("beta", plugin="plugins/alpha")}
+    # Written raw: `skill_registry.render` refuses the row itself.
+    skill_registry.registry_path(env.ledger).write_text(
+        json.dumps({"version": 1, "skills": rows, "vetoed": []}), encoding="utf-8"
+    )
 
     verdict, message = _check(env, claude_dir)
 
-    assert verdict is Verdict.PASS, message
-    assert "1 live owned skill(s) intact" in message
+    assert verdict is Verdict.FAIL
+    assert "owned-skills.yaml unreadable" in message
+    assert "skills.beta.plugin: 'plugins/alpha' must be plugins/beta" in message
 
 
 # ------------------------------------------------------------------ the link

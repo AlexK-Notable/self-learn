@@ -410,6 +410,9 @@ _SHEET_KEYS = {
         "trigger", "instruction", "fact", "context", "type", "kind",
         # S-NEXT-u4-steward: the `premises` line's action and premise ids
         "action", "ids",
+        # S-NEXT-u8-placement: `replace`'s `adopt_region: true`, a flag that
+        # folds a person's edit of the line's own lesson's block into it
+        "adopt_region",
     )},
 }
 
@@ -438,6 +441,12 @@ _BATCH_CASES_CALLS = {
     "receipt": "the sheet's own case's Application section (the steward's new case)",
     "require_reconsider_case": "read",
     "_case_path_for_id": "read",
+    # S-NEXT-u4-steward fix round 1: `_resolution_reroute_for` and
+    # `_covered_by_another_case` read the recorded case and the cases that
+    # cover a lesson (the same reads `_STEWARD_CASES_CALLS` lists)
+    "show": "read",
+    "list_cases": "read",
+    "require_reconsider_predecessor": "read",
 }
 _VERBS_CASES_CALLS = {
     "require_reconsider_case": "read",
@@ -462,7 +471,10 @@ _RECORD_WRITERS = {
     "ledger_ops.reroute_record", "ledger_ops.defer_record", "ledger_ops.supersede_record",
     "ledger_ops._git_mv",
 }
-_RECORD_NAMES = ("record", "merged")
+#: `current` is `verbs.premises`' record, re-read inside the commit lock
+#: (`_premises_record_under_lock`, S-NEXT-u4-steward gate round 1) and
+#: written as `current.write(path)`; without it the walk missed that write.
+_RECORD_NAMES = ("record", "merged", "current")
 
 
 def _reaches_record_write(funcs: dict[str, ast.FunctionDef], start: str) -> bool:

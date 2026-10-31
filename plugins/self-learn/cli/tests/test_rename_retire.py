@@ -326,6 +326,15 @@ _DISPLAY_ALLOWLIST = frozenset(
         # coincidental match on "replaced by " -- unrelated to supersession
         # display at all ("replaced by a real pid", worker process bookkeeping).
         "plugins/self-learn/cli/src/self_learn/worker.py",
+        # 2026-10-31: the same coincidental "replaced by " in prose, none of
+        # it a supersession phrase: a notice "replaced by a fresh one", a
+        # staged file or text "replaced by a (one-line) stub" / "[withheld]",
+        # a skill's text "replaced by the draft".
+        "plugins/self-learn/cli/src/self_learn/notices.py",
+        "plugins/self-learn/cli/src/self_learn/overseer/discovery.py",
+        "plugins/self-learn/cli/src/self_learn/overseer/skills.py",
+        "plugins/self-learn/cli/src/self_learn/report.py",
+        "plugins/self-learn/cli/src/self_learn/skill_writer.py",
     }
 )
 

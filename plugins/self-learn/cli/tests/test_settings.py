@@ -514,8 +514,15 @@ def test_accepts_entries_clamp_on_read_exactly_like_any_other_validate(name, tmp
         monkeypatch.setenv("SELF_LEARN_PROVIDER", "bedrock")
     _write_config(home, setting.config_section, setting.config_key, "off-whitelist-value")
     value, source = settings.resolve_setting(home, setting)
-    assert value == _default_value(setting)
+    assert value == _FAIL_CLOSED_FOLDS.get(name, _default_value(setting))
     assert source == f"config:{setting.config_section}.{setting.config_key}"
+
+
+#: Entries whose clamp folds an off-whitelist value to a fixed value that is
+#: NOT the default, on purpose: `overseer.skill_writing` reads any value but
+#: auto/on/off as `off`, never as its default `auto`, so a mistyped rollback
+#: fails closed (03-decisions.md S-NEXT-skills part 6).
+_FAIL_CLOSED_FOLDS = {"overseer.skill_writing": "off"}
 
 
 @pytest.mark.parametrize("name", _ACCEPTS_NAMES)
