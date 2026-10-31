@@ -204,6 +204,7 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "overseer.max_model_calls",  # U8
         "overseer.enabled",  # O-3
         "overseer.broad_removal_threshold",  # O-6
+        "premises.backfill_per_night",  # S-NEXT-u6-backfill, tier C, default 10
         "sdk.max_budget_usd",
         "sdk.model_cli_floors",  # U4 (S-69): the per-model Claude Code floor
         "sdk.prefer_installed_cli",  # U4c (S-70): the installed-binary opt-out

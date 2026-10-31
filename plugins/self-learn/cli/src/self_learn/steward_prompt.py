@@ -12,7 +12,9 @@ user message. Each part keeps §4.1's relative order.
 
 **The briefs (U3a, 2026-09-27).** A brief is no longer the analyst's card.
 Each input -- a pending lesson, a reconsider input, or a suspected rule
-violation -- is rendered by :mod:`steward_inputs`: the record's own lesson
+violation; since the premise batch also a placed lesson whose premise
+moved, or one whose premises are to be written -- is rendered by
+:mod:`steward_inputs`: the record's own lesson
 sections, an evidence pack built by code (every quote checked against its
 transcript, a bounded excerpt around it), the closest existing lessons and
 the links that batched it. The runner builds those (it holds the index and
@@ -1273,7 +1275,9 @@ def _render_output_contract() -> str:
 def _premise_lines() -> list[str]:
     """S-NEXT-u4-steward: a `premise-moved` input and the `premises` verb,
     from the constants the checkers read (`premises.py`'s catalog and
-    vocabularies, `verbs.PREMISES_ACTIONS`)."""
+    vocabularies, `verbs.PREMISES_ACTIONS`). S-NEXT-u6-backfill: writing
+    premises with every route, and the `premise-extract` input whose case
+    only writes them (`steward._premise_extract_problem`)."""
     probe_fields = [
         f"      {kind:<13} {', '.join(sorted(premises._PROBE_FIELDS[kind] - {'kind'}))}"
         for kind in sorted(premises.PROBE_KINDS)
@@ -1301,6 +1305,19 @@ def _premise_lines() -> list[str]:
         "  values now. Never write `baseline` or `decided_at`: the runner runs each probe once",
         "  and records them. A probe that cannot observe anything now refuses the line; a",
         "  probe never reads a credential file.",
+        # S-NEXT-u6-backfill (02 §3a.10.7): route-time premises and the backfill.
+        "  WRITING PREMISES (method section 17). With every `route`, put a `premises` line with",
+        "  `action: set` on the same lesson in the same sheet: what the lesson rests on, a probe",
+        "  where the catalog can check one (try it with the `premise_probe` tool first), or",
+        "  `premises: []` for a lesson that rests on no fact about the machine. A placed lesson",
+        "  left with no premises comes back to you as a premise-extract input.",
+        "  A PREMISE-EXTRACT INPUT is a placed lesson with no premises recorded. Decide it in a",
+        "  `kind: resolution` case with `outcome: no-action` and no `supersedes`, whose sheet has",
+        "  exactly ONE line for it: `premises` with `action: set`. Nothing else may change the",
+        "  lesson there; the runner refuses any other line on it. A premise you find already",
+        "  false: write it with the probe that shows it; its first value is recorded as",
+        "  contradicting the claim and the lesson comes back the next night as a premise-moved",
+        "  input. When no probe can show it, park the case (`authority-unclear`).",
     ]
 
 

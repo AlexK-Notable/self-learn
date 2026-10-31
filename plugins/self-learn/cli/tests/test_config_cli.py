@@ -154,6 +154,9 @@ class TestConfigGet:
             # the digest and the session engine is the user's, like
             # `steward.enabled`.
             "miner.engine",
+            # S-NEXT-u6-backfill: the premise backfill's nightly pace (0
+            # pauses it) is the person's, like `premises.enabled`.
+            "premises.backfill_per_night",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 

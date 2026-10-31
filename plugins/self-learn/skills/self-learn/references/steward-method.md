@@ -164,9 +164,11 @@ decided with a `kind: resolution` case too (its `reject`, `defer` or `route`
 line takes a deferred lesson); its card says so. The runner refuses a
 reconsider case that names a pending lesson, or whose `supersedes` names no
 case that covers the lesson, and the repair turn tells you so.
-A placed lesson that comes to you because a premise moved, or for its
-premises to be written, and that no case covers, is also decided with a
-`kind: resolution` case (§17).
+A placed lesson that comes to you because a premise moved, and that no case
+covers, is also decided with a `kind: resolution` case (§17). So is a
+placed lesson that comes to you only for its premises to be written,
+whether or not a case covers it: that case decides nothing about the
+placement, so it supersedes nothing (§17).
 
 ## 7. Refine wording at adjudication
 
@@ -552,17 +554,53 @@ covers nothing.
 
 ## 17. A premise that moved
 
-(`03-decisions.md` S-NEXT-u3-followup and S-NEXT-u4-steward; the
-premise-check design's units U3 and U4.) A placed lesson rests on facts
-about the machine: a unit is or is not bound to another, a file holds a
+(`03-decisions.md` S-NEXT-u3-followup, S-NEXT-u4-steward and
+S-NEXT-u6-backfill; the premise-check design's units U3, U4 and U6.) A
+placed lesson rests on facts about the machine: a unit is or is not bound to another, a file holds a
 line, a package is at a version. When those facts change, the lesson can
 become false while it stays loaded in every session. Each placed lesson can
 therefore record its **premises**: up to four one-line claims, up to three
 of them with a **probe**, a read-only check from a closed catalog (`path`,
 `file-match`, `json-key`, `yaml-key`, `toml-key`, `systemd-show`,
 `package`, `which`, `git-file`, `ledger`) that code runs every day. You
-never run a probe; the runner does, and records what it saw. The output
-contract shows every field.
+never record a value yourself: the runner runs each probe when it applies
+your line and records what it saw. You can try a probe first with the
+`premise_probe` tool, which answers with the value the code would see now;
+you still have no shell. The output contract shows every field.
+
+**Writing premises.** With every `route`, put a `premises` line with
+`action: set` on the same lesson in the same sheet: the claims the lesson
+depends on, and a probe where the catalog can check one. Keep a probe
+narrow (the one line of a file that matters, not the whole file's hash),
+and try it with `premise_probe` before you write it. Choose `holds_if` to
+say what the claim means (`absent`: holds while the match is not in the
+value; `present`, `equals`, `version`; `changed`, the default: holds while
+the value is what it was). Use `on_change: refresh` only where any change is
+uninteresting (a version pin, a file hash); code then re-records it without
+asking you. A claim about behaviour ("the daemon does not reconnect after a
+bus restart") gets `probe: null`: write it down, never invent a probe for
+it. A "What would change this decision" line whose condition a probe can
+check becomes a premise that names it (`source: <case id>#what_would_change[<n>]`,
+counting the lines from 1). A lesson that rests on no fact about the
+machine (a general practice) gets `premises: []`. Never write a probe that
+reads a credential file; the runner refuses it. A lesson placed with no
+`premises` line at all comes back to you later to have them written.
+
+**A `premise-extract` input** is a placed lesson with no premises recorded:
+one placed before premises existed, or one a route placed without them.
+They come a few a night, `environment-specific` lessons first, then the
+ones whose case wrote "What would change this decision" lines (shown in the
+brief, numbered), then the rest. Its only job is the `premises set` line
+(or `[]`, with the reason in the case's `decision.because`), in a `kind: resolution` case
+with `outcome: no-action` that supersedes nothing: the placement decision
+stands, and this case only records what the lesson rests on. The runner
+refuses any other line on the lesson in that case. If, while writing them,
+you find the lesson already false, do not change it in this case: write
+the premise that is now false with a probe that shows it. The runner
+records that first value as contradicting the claim, and the lesson comes
+back to you the next night as a `premise-moved` input, decided as below,
+where changing it is yours. When no probe can show it, park the case
+(`authority-unclear`) with what you found.
 
 **A `premise-moved` input** is a placed lesson where something it rests on
 changed. Its brief's `[what moved]` block says what, with the record's own

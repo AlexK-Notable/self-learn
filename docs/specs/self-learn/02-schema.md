@@ -2376,7 +2376,7 @@ re-derived what the miner knew (117 record-file reads and 94 transcript
 calls over 9 runs), and approved a lesson on a verification the transcript
 contradicts; `suspected-violation` fires reached no consumer.
 
-**Inputs.** A run selects four kinds of input, each a row of the run
+**Inputs.** A run selects five kinds of input, each a row of the run
 record's `inputs` with a `kind`:
 
 | `kind` | What | Identity (`version`) |
@@ -2385,6 +2385,7 @@ record's `inputs` with a `kind`:
 | `reconsider` | a record a later observation brought back (unchanged) | `observation:<obs-id>` |
 | `suspected-violation` | a ROUTED record that unhandled `fire` events with outcome `suspected-violation` name (a legacy `violated` reads as it, §4.3 of `11-telemetry-and-lifecycle.md`); the row carries the events (`nonce`, `ts`, `outcome`, `origin`, optional `moment`, optional `line_format`) | `fires:<nonce>,<nonce>…`, sorted |
 | `premise-moved` *(S-NEXT-u3-followup)* | a ROUTED record something it rested on has moved for. Today the one mover is a closed follow-up: `follow_up_done.done_at` is not earlier than the day the lesson was last decided. The row carries `moved` (a list of `{source: follow-up-done, done_at, action, unblocks_on?, note?, done_note?}`), a `reason`, and, when a case covers the lesson, `predecessor` (see below) | `premise:<12 hex>`, a hash of the closed follow-up block (and, later, the premise sweep's `(premise id, value hash)` pairs) |
+| `premise-extract` *(S-NEXT-u6-backfill)* | a ROUTED record whose frontmatter has no `premises` key (`premises: []` is a decision and is never offered): the backfill. The row carries a `reason` | `extract:<the record file's committed blob>` |
 
 **`premise-moved` from a closed follow-up** *(S-NEXT-u3-followup; the premise-check design's unit U3, named
 in its decision D13).* Closing a follow-up (`followup-done`) records what the lesson was waiting on, and
@@ -2440,6 +2441,32 @@ moved written premise with a `premises` line on the lesson (before the `replace`
 and `decided_at` (a line that writes either is refused when the sheet loads), a probe that cannot observe refuses
 the line (`bad-line`), and each line is one commit, `self-learn: premises <action> lrn-<id>`, under the commit
 lock. It is open to the steward, the overseer and a person's `batch`; there is no CLI writer.
+
+**`premise-extract`: the backfill, and premises written at route time** *(S-NEXT-u6-backfill; unit U6; design
+D10, 02 §3a.10.7).* A placed lesson with no `premises` field is offered so its premises get written: the lessons
+placed before premises existed, and any lesson a later route placed without them (the steward's method asks for
+a `premises set` line with every `route`; a route that wrote none is caught here, so nothing enforces it at the
+route). Selection (`steward._premise_extract_inputs`): ROUTED, the frontmatter names no `premises` key, not held
+by the overseer (S-81), not named by an earlier input of the run, and not a lesson with a `premise-moved` input,
+whether taken tonight or waiting past its nightly cap (`steward._premise_inputs`); the version is
+`extract:<blob>` (the prefix keeps it apart from a `lesson` input's bare blob), read for every candidate in one
+`ls-tree` call, and an uncommitted record waits. Order: `generality: environment-specific` first, then a lesson
+whose intact, unsuperseded covering case wrote "What would change this decision" lines, then the rest; in each,
+the longest-placed first. Pace: at most `premises.backfill_per_night` per run (tier C, default 10, 0 pauses the
+backfill; agents never set it); off when `premises.enabled` is false. `serve._steward_is_due` counts the input
+like a reconsider input (due once the cooldown has passed), asking only when nothing else already decides the
+answer, unordered and stopped at one. The brief is the lesson, then `[what to write]`: its recorded
+generality, its OPEN follow-up (a condition the placement waits on is usually a premise), its `env` pins, the
+"What would change this decision" bullets of up to three covering cases, numbered from 1 so a premise can name
+one (`source: <case>#what_would_change[<n>]`), and `[how to decide it]`; no transcript evidence pack. The case
+(`steward._premise_extract_problem`, a stage check with a repair-turn message) is `kind: resolution`, `outcome:
+no-action`, no `supersedes`, and its sheet holds exactly one line for the lesson, `premises` with `action: set`
+(the list, or `[]` with the reason in `because`); any other line on it -- a `replace` or a merge through `also`,
+`retire`, `reject`, a move, a `note`, a `rebaseline` -- and a `kind: reconsider` case are refused, because the
+authority to change a placed lesson comes with a `premise-moved` input. A parked case is not judged. A lesson the
+steward finds already false is written with a premise whose probe shows it: the verb records the first value as
+`contradicts-claim`, and the lesson is a `premise-moved` input from the next night (above). An extract case's
+`no-action` is not a decision about what the lesson rests on (`steward_inputs.last_decision`).
 
 For `fire` and `recurrence-suspect` event payloads, `moment` is the cited
 entry UUID, emitted by session landing when available. `line_format:
