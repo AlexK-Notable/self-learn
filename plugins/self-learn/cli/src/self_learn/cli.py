@@ -2911,7 +2911,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 home, args.id, dest=args.dest, by=args.by or runner, note=args.note,
                 no_push=args.no_push, rules_paths=args.rules_paths,
                 allow_empty_glob=args.allow_empty_glob,
-                allow_unpathed=args.allow_unpathed,
+                allow_unpathed=args.allow_unpathed, stamp_by=runner,
             )
             return _finish_verb(
                 result, _routed_destination(result), as_json=args.as_json

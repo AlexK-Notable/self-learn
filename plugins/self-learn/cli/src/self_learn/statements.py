@@ -305,9 +305,10 @@ def user_message_ref(home: Path | str, session: str, verbatim: str) -> str:
     (S-NEXT-cures-a: ``teach --statement`` is given the words and the
     session, not a line number, so it finds the line itself).
 
-    Read-only. Only a row whose role is ``user`` counts (the same rule
-    :func:`add` enforces at write time), so words an agent, a skill text or
-    a tool result happens to repeat never become a "user statement".
+    Read-only. Only a row :func:`add`'s own evidence check accepts counts
+    (role ``user`` after rule 10 and the S-94 markers), so words an agent, a
+    skill text or a tool result happens to repeat never become a "user
+    statement".
     Raises :class:`StatementUsageError` when the session has no transcript
     under the configured roots, or no user row holds the words."""
     roots = refs.transcript_roots(home)
@@ -322,12 +323,29 @@ def user_message_ref(home: Path | str, session: str, verbatim: str) -> str:
     except (OSError, UnicodeError) as error:
         raise _transcript_problem(error) from error
     hits = refs._find_in(lines, verbatim, roles=("user",))  # noqa: SLF001
-    if not hits:
-        raise StatementUsageError(
-            f"statement: no row the user typed in session {session!r} holds "
-            "these words; pass the words exactly as the user said them"
-        )
-    return f"transcript:{session}#L{hits[-1]}"
+    # The raw role above is only a prefilter. `add` judges a row with
+    # `refs.resolve` (rule 10, the S-94 markers), which can call a row the
+    # raw role named `user` an agent's. So each candidate, latest first, goes
+    # through the SAME check `add` runs at write time; the first that passes
+    # is cited. A statement `add` would refuse is refused here, before the
+    # lesson is written, and an earlier row that passes is not lost behind a
+    # later one that does not.
+    refusal: StatementUsageError | None = None
+    sent = refs.sent_index(roots) if hits else None  # built once, not per candidate
+    for number in reversed(hits):
+        ref = f"transcript:{session}#L{number}"
+        try:
+            _check_evidence(Path(home), ref, verbatim, sent=sent)
+        except StatementUsageError as error:
+            refusal = refusal or error
+            continue
+        return ref
+    if refusal is not None:
+        raise refusal
+    raise StatementUsageError(
+        f"statement: no row the user typed in session {session!r} holds "
+        "these words; pass the words exactly as the user said them"
+    )
 
 
 def add(

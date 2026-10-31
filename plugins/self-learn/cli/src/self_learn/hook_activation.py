@@ -928,10 +928,11 @@ def activate(
             # `ItemResult.detail` (via `hook_result.post_notes`), the
             # `hook-activated` history entry's own `note`, and the CLI's
             # printed line (which just echoes `ItemResult.detail`) --
-            # must name the two manual steps a human still owes (route's
-            # own Apply text already names them for the human path;
-            # `verbs._hook_manual_steps` is the one place that renders
-            # them, reused here so the two can never drift apart).
+            # must name what a human still owes (route's own Apply text
+            # names it for the human path; `verbs._hook_manual_steps` is the
+            # one place that renders it, reused here so the two can never
+            # drift apart). Since S-NEXT-cures-a that is ONE step here: the
+            # symlink is already placed.
             manual_snippet = settings_snippet(
                 list(tools), name, claude_dir=claude_dir, event=hook_event(meta)
             )

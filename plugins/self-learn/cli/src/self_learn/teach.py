@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import sys
 from typing import Any
 
@@ -453,8 +454,9 @@ def run_teach(args: argparse.Namespace) -> int:
     also recorded in the user-statement store (S-65, S-NEXT-cures-a): found
     and checked BEFORE the lesson is written (a statement that cannot be
     cited refuses the whole command, nothing written), appended AFTER the
-    lesson lands (a failure there is reported with the lesson already
-    safe)."""
+    lesson lands or is captured to pending (exit 0 or 4). A failure of that
+    last step is printed with the command that retries it and does NOT change
+    the exit code, which stays the lesson's own."""
     statement = _clean(getattr(args, "statement", None))
     message_ref: str | None = None
     if statement is not None:
@@ -478,14 +480,34 @@ def run_teach(args: argparse.Namespace) -> int:
     code = _run_teach_lesson(args)
     if statement is None or message_ref is None:
         return code
-    if code != EXIT_OK:
+    if code not in (EXIT_OK, EXIT_ANALYST):
+        # Exit 4 is NOT a failure to land: the lesson was captured to
+        # pending/ (the analysis or the --route step failed after that), so
+        # the statement is recorded for it exactly as on exit 0.
         print(
             "self-learn teach: --statement was not recorded, because the "
             f"lesson did not land (exit {code})",
             file=sys.stderr,
         )
         return code
-    return _record_statement(statement, message_ref)
+    # The lesson's own code is what the caller gets back, whatever the
+    # statement leg does: a failure there must not turn a landed lesson into
+    # a non-zero exit (that skips the worker kick, and a person who reads a
+    # failure re-runs teach and writes the lesson twice). The statement leg
+    # reports its own failure, with the command that retries it.
+    _record_statement(statement, message_ref)
+    return code
+
+
+def _statement_retry_hint(statement: str, message_ref: str) -> str:
+    """The one command that records the statement alone; the lesson is
+    already written, so teach must not be run again."""
+    return (
+        "  Do not run teach again (the lesson is already written). To record "
+        "the statement alone:\n"
+        f"    self-learn statement add --verbatim {shlex.quote(statement)} "
+        f"--ref {message_ref} --recorded-by human"
+    )
 
 
 def _record_statement(statement: str, message_ref: str) -> int:
@@ -503,17 +525,21 @@ def _record_statement(statement: str, message_ref: str) -> int:
     except statements.StatementError as exc:
         print(
             f"self-learn teach: the lesson was captured, but --statement "
-            f"failed: {exc}",
+            f"failed: {exc}\n{_statement_retry_hint(statement, message_ref)}",
             file=sys.stderr,
         )
         return exc.exit_code
     except intents.LedgerStoppedError as exc:
-        print(str(exc), file=sys.stderr)
+        print(
+            f"{exc}\nself-learn teach: the lesson was captured, but --statement "
+            f"was not recorded\n{_statement_retry_hint(statement, message_ref)}",
+            file=sys.stderr,
+        )
         return EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:
         print(
             f"self-learn teach: the lesson was captured, but --statement "
-            f"failed: {exc}",
+            f"failed: {exc}\n{_statement_retry_hint(statement, message_ref)}",
             file=sys.stderr,
         )
         return EXIT_GIT_FAILED

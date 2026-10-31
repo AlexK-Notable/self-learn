@@ -9337,6 +9337,7 @@ def reroute(
     allow_empty_glob: bool = False,
     allow_unpathed: bool = False,
     execution: execution_evidence.ExecutionRef | None = None,
+    stamp_by: str | None = None,
 ) -> VerbResult:
     """Correct a wrong routing DESTINATION on an already-ROUTED record
     (U-verbs S-54 / §4.5, Phase 2) — the live-motivated half of what
@@ -9373,13 +9374,18 @@ def reroute(
     S-NEXT-cures-a (M5.1): the commit body ends with the attribution
     paragraph every other sheet-run verb already writes -- the delegated
     runner's ``execution`` trailers (``Case:``/``Sheet:``/``Item:``/``By:``)
-    when the sheet runner passes them, else a ``By:`` line for an explicit
-    *by*. A reroute used to carry neither, so a steward's or overseer's
-    reroute read like a hand commit in the ledger, and the overseer's crash
-    recovery (which proves a mutation by those trailers) could not see it."""
+    when the sheet runner passes them, else a ``By:`` line for *stamp_by*.
+    A reroute used to carry neither, so a steward's or overseer's reroute
+    read like a hand commit in the ledger, and the overseer's crash
+    recovery (which proves a mutation by those trailers) could not see it.
+
+    *stamp_by* is who RAN the verb (the CLI sets it, only from an agent
+    shell); *by* is who CHOSE the destination, as on ``route`` -- the review
+    UI sends ``--by analyst`` while a person clicks Re-route, so *by* never
+    feeds the trailer."""
     home = Path(home)
-    trailer_by = by  # before the default below: a bare terminal reroute stays unstamped
-    _by_trailer(trailer_by)  # a bad `by` refuses before any lock
+    _by_trailer(by)  # a bad `by` refuses before any lock (the routing field)
+    _by_trailer(stamp_by)  # likewise a bad `stamp_by`
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -9508,7 +9514,7 @@ def reroute(
 
             staged, sha = _commit_ledger(
                 home, touched, message,
-                _body_with_by_trailer(note, trailer_by, execution),
+                _body_with_by_trailer(note, stamp_by, execution),
             )
 
             # M-1 (U-verbs Phase 2 code gate r1): `reroute` writes a

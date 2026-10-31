@@ -39,8 +39,10 @@ from self_learn import (
     selfcheck,
     settings,
     statements,
+    teach,
     verbs,
 )
+from self_learn import batch
 from self_learn.hosts import host_add
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
@@ -54,7 +56,7 @@ from support import (
 )
 
 from test_statement_roles import transcript
-from test_u_verbs import env2, seed_routed  # noqa: F401
+from test_u_verbs import _seed_pending_behavior, _u5_case, env2, seed_routed  # noqa: F401
 
 SNIPPET = (
     '"PreToolUse": [{"matcher": "Edit|Write", "hooks": '
@@ -269,14 +271,64 @@ class TestRerouteAttribution:
         other = "self-learn: reroute lrn-0000c0a2 → claude-md"
         assert not execution_evidence._subject_matches(ref("route"), other)
 
-    def test_an_explicit_by_is_stamped_and_a_bare_terminal_reroute_is_not(self, env2):
+    def test_by_names_who_chose_the_destination_and_never_becomes_the_trailer(self, env2):
+        """`by` on a reroute is the ROUTING field, as on `route`: the review
+        UI's Re-route click sends `--by analyst` for a destination the person
+        did not cycle. It must not be written as the commit's `By:` (that
+        would credit the analyst for a person's click, and an agent shell that
+        passes `--by` would not be stamped as an agent)."""
         rid = seed_routed(env2.home)
-        stamped = verbs.reroute(env2.home, rid, dest="claude-md", by="agent", note="why",
-                                no_push=True)
+        result = verbs.reroute(
+            env2.home, rid, dest="claude-md", by="analyst", note="why", no_push=True
+        )
+        assert "By:" not in _body(env2.home, result.commit_sha)
+        # positive control: `by` did reach the routing block it is meant for
+        record = Record.from_path(next(env2.home.glob(f"skills/a/resolved/{rid}.md")))
+        assert record.routing["by"] == "analyst"
+
+    def test_stamp_by_is_the_trailer_and_by_is_left_alone(self, env2):
+        rid = seed_routed(env2.home)
+        stamped = verbs.reroute(
+            env2.home, rid, dest="claude-md", by="analyst", note="why", no_push=True,
+            stamp_by="agent",
+        )
         assert _body(env2.home, stamped.commit_sha).rstrip().endswith("By: agent")
+        record = Record.from_path(next(env2.home.glob(f"skills/a/resolved/{rid}.md")))
+        assert record.routing["by"] == "analyst"  # who chose it, unchanged
         rid2 = seed_routed(env2.home, rid="lrn-0000aaab")
         bare = verbs.reroute(env2.home, rid2, dest="claude-md", note="why", no_push=True)
         assert "By:" not in _body(env2.home, bare.commit_sha)
+        rid3 = seed_routed(env2.home, rid="lrn-0000aaac")
+        head = _head(env2.home)
+        with pytest.raises(verbs.VerbError, match="by must be one of"):
+            verbs.reroute(env2.home, rid3, dest="claude-md", no_push=True, stamp_by="nobody")
+        assert _head(env2.home) == head
+
+    def test_the_batch_dispatch_hands_the_runners_execution_to_the_verb(self, env2, tmp_path):
+        """The wiring the verb-level test above cannot see: a steward's route
+        line over a routed lesson under a reconsider case goes through
+        `batch._dispatch` -> `_dispatch_reroute` -> `verbs.reroute`. Dropping
+        `execution=` at either hop leaves the verb test green and the
+        commit without its trailers."""
+        rid = seed_routed(env2.home, "lrn-0000c0c1")
+        old_case = _u5_case(tmp_path, env2.home, records=[rid], kind="resolution", outcome="route")
+        case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider", outcome="route",
+            supersedes=old_case,
+        )
+        ref = execution_evidence.ExecutionRef(
+            run_id="run-cures-a", case_id=case, sheet_sha="12ab34cd",
+            sheet_digest="a" * 64, item=1, record_id=rid, verb="route", actor="steward",
+        )
+        item = batch.SheetItem(n=1, id=rid, verb="route", fields={"dest": "claude-md"})
+        result = batch._dispatch(
+            env2.home, item, case=case, actor="steward", hook_activation=False,
+            execution=ref,
+        )
+        assert result.state == "applied", result.detail  # positive control: it rerouted
+        assert "reroute" in git(env2.home, "log", "-1", "--format=%s").stdout
+        body = git(env2.home, "log", "-1", "--format=%B").stdout
+        assert execution_evidence.parse_trailers(body) == ref.trailer_identity()
 
     def test_a_bad_by_refuses_before_any_write(self, env2):
         rid = seed_routed(env2.home)
@@ -414,6 +466,23 @@ class TestAgentShellAttribution:
             verbs.route(env2.home, rid2, dest="skill-md", no_push=True, stamp_by="nobody")
 
 
+    def test_revise_stamps_the_runner_apart_from_the_proposals_revised_by(self, env2):
+        """`revise`'s `by` rides the proposal's `revised_by`; the trailer is
+        `stamp_by`, so naming a reviser never changes who ran the verb."""
+        rid = _seed_pending_behavior(env2, rid="lrn-0000c0d1")
+        plain = verbs.revise(
+            env2.home, rid, section="Trigger", text="Reworded once.", because="b",
+            by="analyst", no_push=True,
+        )
+        assert "By:" not in git(env2.home, "log", "-1", "--format=%B").stdout
+        assert plain.action == "revise"  # positive control: the revise landed
+        verbs.revise(
+            env2.home, rid, section="Trigger", text="Reworded twice.", because="b",
+            by="analyst", no_push=True, stamp_by="agent",
+        )
+        assert git(env2.home, "log", "-1", "--format=%B").stdout.rstrip().endswith("By: agent")
+
+
 # ---------------------------------------------------------- teach --statement
 
 
@@ -491,3 +560,96 @@ class TestTeachStatement:
             "transcript:synthetic-stmt#L7"
         )
         assert refs.resolve("synthetic-stmt", line=7, roots=[root]).role == "user"
+
+
+class TestTeachStatementFollowUps:
+    """What `--statement` does around the lesson (fix round 1)."""
+
+    def test_the_precheck_uses_the_write_time_check_and_falls_back_to_an_earlier_row(
+        self, tmp_path, monkeypatch
+    ):
+        """The raw role is a prefilter only: each candidate row, latest first,
+        goes through `statements._check_evidence` (what `add` runs at write
+        time). A latest row `add` would refuse must not be cited while an
+        earlier valid one exists, and must not let the lesson land only to
+        have its statement refused."""
+        home = make_home(tmp_path)
+        _, root = transcript(home, tmp_path)
+        path = root / "project" / "synthetic-stmt.jsonl"
+        with path.open("a") as f:
+            f.write(json.dumps({"type": "user", "message": {"content": "Keep it small."}}) + "\n")
+        assert statements.user_message_ref(home, "synthetic-stmt", "Keep it small.") == (
+            "transcript:synthetic-stmt#L7"
+        )  # positive control: with nothing refusing, the latest wins
+        real = statements._check_evidence
+
+        def refuse_line_7(home_, ref, verbatim, **kw):
+            if ref.endswith("#L7"):
+                raise statements.StatementUsageError("statement add: refused for this test")
+            return real(home_, ref, verbatim, **kw)
+
+        monkeypatch.setattr(statements, "_check_evidence", refuse_line_7)
+        assert statements.user_message_ref(home, "synthetic-stmt", "Keep it small.") == (
+            "transcript:synthetic-stmt#L1"
+        )
+
+        def refuse_all(home_, ref, verbatim, **kw):
+            raise statements.StatementUsageError("statement add: refused for this test")
+
+        monkeypatch.setattr(statements, "_check_evidence", refuse_all)
+        with pytest.raises(statements.StatementUsageError, match="refused for this test"):
+            statements.user_message_ref(home, "synthetic-stmt", "Keep it small.")
+
+    def test_exit_4_means_the_lesson_was_captured_so_the_statement_is_recorded(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        home = make_home(tmp_path)
+        transcript(home, tmp_path)
+        monkeypatch.setattr(teach, "_run_teach_lesson", lambda args: teach.EXIT_ANALYST)
+        monkeypatch.setattr(cli, "_kick_after_capture", lambda **kw: None)
+        capsys.readouterr()
+        rc = _teach(home, monkeypatch, "--session", "synthetic-stmt",
+                    "--statement", "Keep it small.")
+        assert rc == teach.EXIT_ANALYST
+        assert "did not land" not in capsys.readouterr().err
+        assert [r["verbatim"] for r in statements.list_statements(home)] == ["Keep it small."]
+
+    def test_a_lesson_that_failed_outright_records_no_statement(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        home = make_home(tmp_path)
+        transcript(home, tmp_path)
+        monkeypatch.setattr(teach, "_run_teach_lesson", lambda args: teach.EXIT_GIT_FAILED)
+        monkeypatch.setattr(cli, "_kick_after_capture", lambda **kw: None)
+        capsys.readouterr()
+        rc = _teach(home, monkeypatch, "--session", "synthetic-stmt",
+                    "--statement", "Keep it small.")
+        assert rc == teach.EXIT_GIT_FAILED
+        assert "did not land" in capsys.readouterr().err
+        assert statements.list_statements(home) == []
+
+    def test_a_statement_failure_after_the_lesson_landed_keeps_the_lessons_exit_code(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A non-zero exit here would skip the worker kick and invite a second
+        `teach` (a duplicate lesson); the failure is printed with the command
+        that retries only the statement."""
+        home = make_home(tmp_path)
+        transcript(home, tmp_path)
+        kicked: list[bool] = []
+        monkeypatch.setattr(cli, "_kick_after_capture", lambda **kw: kicked.append(True))
+
+        def boom(*a, **kw):
+            raise statements.StatementUsageError("statement add: boom")
+
+        monkeypatch.setattr(statements, "add", boom)
+        capsys.readouterr()
+        rc = _teach(home, monkeypatch, "--session", "synthetic-stmt",
+                    "--statement", "Keep it small.")
+        err = capsys.readouterr().err
+        assert list(home.glob("user/pending/lrn-*.md"))  # positive control: the lesson landed
+        assert rc == 0 and kicked == [True]
+        assert "--statement failed" in err and "boom" in err
+        assert "Do not run teach again" in err
+        assert "statement add --verbatim 'Keep it small.'" in err
+        assert "--ref transcript:synthetic-stmt#L1 --recorded-by human" in err
