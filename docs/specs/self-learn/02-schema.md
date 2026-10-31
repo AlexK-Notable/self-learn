@@ -3582,12 +3582,15 @@ Three kinds of event, and no clock:
    a follow-up closed again with other words is a new version. Until a case
    that counts dates after it, the closed follow-up rides along with any
    later `premise-moved` input on the lesson, so the steward sees it again.
-   A combined input (a closed follow-up and a moved premise together) that
-   the steward decides `no-action`, with a rebaseline for example, returns
-   once more as a follow-up-only input: a `no-action` case does not count as
-   a decision, the follow-up is still undecided, and its version, now a hash
-   of the follow-up alone, is new. That costs one more steward look and
-   writes nothing wrong (the 2026-10-31 integration accepted it, decision 10).
+   One decision of a combined input (a closed follow-up and a moved premise
+   together) settles both, whatever its outcome: the input row names the
+   follow-up's own version in `settles` (3a.10.7), and the run records that
+   version as decided too (`steward._terminal_versions`). A settled
+   follow-up therefore neither returns as a follow-up-only input after a
+   `no-action` decision (which does not count as a last decision) nor rides
+   along on a later premise move of the lesson
+   (`steward._premise_moved_unit_lists`). (S-NEXT-rotation; it replaces the
+   one extra look the 2026-10-31 integration accepted as its decision 10.)
    This needs no premise and no sweep. It is a standing rule, so a follow-up
    closed before this landed is picked up on its first night (on 2026-10-30
    that is `lrn-9b4250f5` only: `lrn-25968266` was decided by a case after
@@ -3670,7 +3673,7 @@ whole file's hash; never `host.<path>.head`, which moves on every commit.
 
 | `kind` | What | Identity (`version`) |
 |---|---|---|
-| `premise-moved` | a routed lesson with a moved premise, a closed follow-up, or a moved ledger premise (3a.10.4) | `premise:<12 hex>`, a hash of the moved premises -- a written premise as `(premise id, current value hash, baseline observed_at)`, so a value that comes back after two decisions is a new version; a placement premise as `(premise id, failing value hash, basis)`, 3a.10.3 -- and, while the follow-up rule holds (3a.10.4), the closed `follow_up_done` block (its action, gate, notes and `done_at`); `steward_inputs.premise_moved_version` |
+| `premise-moved` | a routed lesson with a moved premise, a closed follow-up, or a moved ledger premise (3a.10.4) | `premise:<12 hex>`, a hash of the moved premises -- a written premise as `(premise id, current value hash, baseline observed_at)`, so a value that comes back after two decisions is a new version; a placement premise as `(premise id, failing value hash, basis)`, 3a.10.3 -- and, while the follow-up rule holds (3a.10.4) and no run has settled it, the closed `follow_up_done` block (its action, gate, notes and `done_at`); `steward_inputs.premise_moved_version`. A row that carries both a follow-up and a moved premise also names, in `settles`, the follow-up-alone version, which its one decision settles (3a.10.4 (2)) |
 | `premise-extract` | a routed lesson with no `premises` field (the backfill) | `extract:<the record file's committed blob>` (the prefix keeps it apart from a `lesson` input's bare blob) |
 
 A record is still in at most one input per run, taken in the order
