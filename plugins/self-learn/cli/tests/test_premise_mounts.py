@@ -367,6 +367,11 @@ class TestAbsentSince:
         row = {**self.PREV, "mount": "/mnt/y", "observed_at": "2026-10-03T00:00:00Z"}
         assert premise_sweep._absent_since(self.PREV, row) == "2026-10-03T00:00:00Z"
 
+    def test_a_sweep_that_could_not_read_the_table_starts_afresh(self):
+        prev = {**self.PREV, "cause": premises.CAUSE_MOUNT_UNKNOWN}
+        row = {**self.PREV, "observed_at": "2026-10-03T00:00:00Z"}
+        assert premise_sweep._absent_since(prev, row) == "2026-10-03T00:00:00Z"
+
     def test_another_question_starts_afresh(self):
         row = {**self.PREV, "psha": "other", "observed_at": "2026-10-03T00:00:00Z"}
         assert premise_sweep._absent_since(self.PREV, row) == "2026-10-03T00:00:00Z"
