@@ -635,11 +635,17 @@ started about four hours earlier than the one before (live: 10-19 03:04Z,
    steward, so on a normal night the steward starts right after the mine.
 
 The heartbeat's preview (`next_job`, which `doctor`'s serve row prints) reads
-the cache only, like the overseer's: when the journal's newest attempt is newer
-than the last completed run (`steward.last-run`) a run is unfinished and the
-preview names the instant the predicate makes it due (that attempt plus two
-hours); otherwise it names the next slot not yet taken, no sooner than the
-minimum gap. The environment-hold notification says when the run tries again
+the cache only, like the overseer's: when the journal's newest `attempt-start`
+row is newer than the last completed run (`steward.last-run`) a run is
+unfinished and the preview names the instant the predicate makes it due (the
+journal's newest attempt row plus two hours); otherwise it names the next slot
+not yet taken, no sooner than the minimum gap nor than two hours after the
+journal's newest attempt row (the cache test holds every run that long).
+Unfinished is judged from `attempt-start` rows, never from the newest attempt
+row of any status: a completed run writes its last-run stamp with its end row,
+and its `recompile` and `push` rows come seconds later, so that comparison
+would read almost every completed run as unfinished *(gate r1 of
+S-NEXT-cadence)*. The environment-hold notification says when the run tries again
 ("after <date> <time> (every 2 h while the cause lasts)") and, when the cause is
 an expired or missing login (`failure_class.is_login_failure`), "run `claude`
 and `/login`"; another environment cause keeps its cause line.

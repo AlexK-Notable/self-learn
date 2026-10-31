@@ -17,13 +17,16 @@ runs at.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import os
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from self_learn import serve, steward
 from self_learn.invocation import failure_class
+from self_learn.records import Record
 
 #: 2027-01-15, an arbitrary fixed instant; every time below is relative to it.
 NOW = 1_800_000_000.0
@@ -218,20 +221,57 @@ def test_a_second_start_waits_for_the_minimum_gap(tmp_path, monkeypatch):
     assert serve._steward_is_due(home, cache, NOW) is True
 
 
-def test_a_deferral_that_came_due_since_the_last_run_is_new_work(tmp_path, monkeypatch):
+def _lesson_file(tmp_path: Path, deferred_until: str | None) -> Path:
+    """A real lesson record file, older than the last run, through the real
+    record parser: `_deferral_due_epochs` is NOT stubbed (gate r1 MINOR 3)."""
+    record = Record.create(
+        type="behavior", scope="skill:s", source="session", kind="anti-pattern",
+        trigger="About to restart the cadence fixture.",
+        instruction="Wait for the night's slot.", record_id="lrn-0cad0001",
+    )
+    if deferred_until is not None:
+        record.set_deferred_until(deferred_until)
+    path = tmp_path / "home" / "lrn-0cad0001.md"
+    record.write(path)
+    return path
+
+
+def _utc(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+@pytest.mark.parametrize(
+    ("deferred_until", "due"),
+    [
+        (None, False),  # control: no deferral, an old record -- not new work
+        ("came-due", True),  # came due 10 h ago, after the last start 25 h ago
+        ("future", False),  # still deferred: not new work yet
+        ("before-start", False),  # came due before the last start: that run saw it
+    ],
+)
+def test_a_deferral_that_came_due_since_the_last_run_is_new_work(
+    tmp_path, monkeypatch, deferred_until, due
+):
     """An eligible lesson whose record is older than the last run, and whose
-    deferral came due after it: due. Control: the same lesson with no
-    deferral is not new work."""
+    deferral came due after that run's start: due. Driven through the real
+    record file and `_deferral_due_epochs` (its parse, `chrono.to_dt` and
+    the `<= now` test). Would catch: a due deferral never counted, or a
+    future one counted early."""
     home, cache = _home(tmp_path, monkeypatch)
     _night(monkeypatch, target=NOW - 2 * HOUR, mine_finished=NOW - HOUR)
     _completed(monkeypatch, NOW - 25 * HOUR)
-    _one_new_lesson(monkeypatch, tmp_path, committed=NOW - 40 * HOUR)
-    monkeypatch.setattr(serve, "_deferral_due_epochs", lambda paths, now: {})
-    assert serve._steward_is_due(home, cache, NOW) is False  # control
-    monkeypatch.setattr(
-        serve, "_deferral_due_epochs", lambda paths, now: {"lrn-0cad0001": NOW - 10 * HOUR}
-    )
-    assert serve._steward_is_due(home, cache, NOW) is True
+    stamp = {
+        None: None,
+        "came-due": _utc(NOW - 10 * HOUR),
+        "future": _utc(NOW + 10 * HOUR),
+        "before-start": _utc(NOW - 30 * HOUR),
+    }[deferred_until]
+    path = _lesson_file(tmp_path, stamp)
+    monkeypatch.setattr(serve, "_eligible_input_paths", lambda actual: [path])
+    monkeypatch.setattr(serve, "_input_commit_epoch", lambda actual, p: NOW - 40 * HOUR)
+    if stamp is not None:  # positive control: the record really carries it
+        assert Record.from_path(path).deferred_until is not None
+    assert serve._steward_is_due(home, cache, NOW) is due
 
 
 # -------------------------------------------------------- 3. the preview
@@ -260,28 +300,145 @@ def test_the_heartbeat_preview_names_the_instant_the_unfinished_run_becomes_due(
     assert serve._steward_is_due(home, cache, instant) is True
 
 
-def test_the_preview_after_a_completed_run_names_the_next_nights_slot(tmp_path, monkeypatch):
-    home, cache = _home(tmp_path, monkeypatch)
-    start = NOW - HOUR
+def _tomorrow_noon() -> float:
+    """Noon of the calendar day after NOW's, local time -- computed here,
+    independently of `serve._day_target`."""
+    local = time.localtime(NOW)
+    return time.mktime((local.tm_year, local.tm_mon, local.tm_mday + 1, 12, 0, 0, 0, 0, -1))
+
+
+def _completed_run_journal(cache: Path, start: float) -> float:
+    """A completed run's journal as the steward really writes it: the
+    attempt-start, the end row stamped like `steward.last-run`, then the
+    recompile and push rows a few seconds later (gate r1 MAJOR 1: the first
+    preview test had no rows after the end row). Answers the end stamp."""
+    end = start + 600
     _journal(
         cache,
         {"ts": _iso(start), "run_id": "run-done", "status": "attempt-start"},
-        {"ts": _iso(start + 600), "run_id": "run-done", "status": "applied"},
+        {"ts": _iso(end), "run_id": "run-done", "status": "applied"},
+        {"ts": _iso(end + 2), "run_id": "run-done", "status": "recompile"},
+        {"ts": _iso(end + 5), "run_id": "run-done", "status": "push", "ok": True},
     )
-    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: _iso(start + 600))
+    return end
+
+
+def _steward_preview(home: Path, cache: Path) -> tuple[float, str]:
+    preview = serve._describe_next(home, cache, NOW)
+    part = preview.split("steward at ", 1)[1].split("; overseer at ", 1)[0]
+    when, why = part.split(" ", 1)
+    return datetime.fromisoformat(when).timestamp(), why
+
+
+def _tonight_done(monkeypatch) -> None:
+    """Tonight's mine target 2 h ago and the mine finished after it, so
+    tonight's slot is open; every other day's target is noon + 6 h of that
+    day (always later than NOW + 11 h for tomorrow, whatever the zone)."""
     target = NOW - 2 * HOUR
     monkeypatch.setattr(serve, "_today_mine_target", lambda cache_, now: target)
     monkeypatch.setattr(serve.miner, "last_run_iso", lambda: _iso(target + 600))
-    monkeypatch.setattr(serve, "_target_for", lambda when: when - 10 * HOUR)
+    monkeypatch.setattr(serve, "_target_for", lambda when: when + 6 * HOUR)
 
-    preview = serve._describe_next(home, cache, NOW)
-    steward_at = preview.split("steward at ", 1)[1].split(" ", 1)[0]
-    instant = datetime.fromisoformat(steward_at).timestamp()
-    # tomorrow's target (noon tomorrow minus 10 h in this stub), never
-    # `last run + 20 h`, and never before the minimum gap
-    assert instant > NOW
-    assert instant >= start + 43200
-    assert "after the night's mine" in preview
+
+def test_the_preview_after_a_completed_run_names_the_next_nights_slot(tmp_path, monkeypatch):
+    """Tonight's run started an hour ago and completed (its push row came
+    after its last-run stamp): the preview names tomorrow's mine target, to
+    the second. Would catch: the run read as unfinished because a push row
+    is newer than `steward.last-run` (gate r1 MAJOR 1, "retry its
+    unfinished run" after almost every run); tomorrow's slot replaced by
+    `now` or by `start + 12 h` (gate r1 MINOR 4)."""
+    home, cache = _home(tmp_path, monkeypatch)
+    start = NOW - HOUR
+    end = _completed_run_journal(cache, start)
+    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: _iso(end))
+    _tonight_done(monkeypatch)
+
+    instant, why = _steward_preview(home, cache)
+    assert why == "after the night's mine, when there is work"
+    assert "retry" not in why
+    expected = _tomorrow_noon() + 6 * HOUR
+    assert expected > start + 43200  # the slot, not the gap, decides here
+    assert instant == expected
+
+
+def test_the_preview_waits_for_the_minimum_gap_when_it_is_later_than_tomorrows_slot(
+    tmp_path, monkeypatch
+):
+    """Control for the `max`: with a 48 h minimum gap, the gap (start + 48 h)
+    is later than tomorrow's slot (at most 42 h after NOW in any zone), and
+    the preview names the gap."""
+    home, cache = _home(tmp_path, monkeypatch, cooldown=48 * 3600)
+    start = NOW - HOUR
+    end = _completed_run_journal(cache, start)
+    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: _iso(end))
+    _tonight_done(monkeypatch)
+
+    instant, why = _steward_preview(home, cache)
+    assert _tomorrow_noon() + 6 * HOUR < start + 48 * 3600
+    assert instant == start + 48 * 3600
+    assert why == "after the night's mine, when there is work"
+
+
+def test_a_run_retried_to_completion_just_now_holds_the_next_for_the_cache_interval(
+    tmp_path, monkeypatch
+):
+    """A run that started last night, was held, and completed on a retry 35
+    minutes ago: tonight's slot is open and the minimum gap has passed, but
+    the cache test holds every run two hours after the newest attempt row
+    (its push row), so the preview names that instant, not "now". The
+    predicate agrees to the second."""
+    home, cache = _home(tmp_path, monkeypatch)
+    start = NOW - 26 * HOUR
+    retry = NOW - 40 * 60
+    end = retry + 300
+    _journal(
+        cache,
+        {"ts": _iso(start), "run_id": "run-late", "status": "attempt-start"},
+        {"ts": _iso(start + 60), "run_id": "run-late", "status": "partial"},
+        {"ts": _iso(retry), "run_id": "run-late", "status": "attempt-start"},
+        {"ts": _iso(end), "run_id": "run-late", "status": "applied"},
+        {"ts": _iso(end + 5), "run_id": "run-late", "status": "push", "ok": True},
+    )
+    _completed(monkeypatch, start, last_run=end)
+    _one_new_lesson(monkeypatch, tmp_path, committed=NOW - HOUR)
+    _tonight_done(monkeypatch)
+
+    instant, why = _steward_preview(home, cache)
+    assert why == "after the night's mine, when there is work"
+    assert instant == end + 5 + steward.RETRY_SECS
+    assert serve._steward_is_due(home, cache, instant - 1) is False
+    assert serve._steward_is_due(home, cache, instant) is True
+
+
+def test_the_preview_names_the_retry_of_a_new_run_that_did_not_complete(tmp_path, monkeypatch):
+    """After a completed run, a new run starts and is held (its end row is
+    `partial`, then its push row): it is unfinished, and the retry is two
+    hours after its newest attempt row (the push), where the cache test
+    stops holding it. Control for MAJOR 1's fix: the attempt-start of the
+    new run is newer than the last completed run."""
+    home, cache = _home(tmp_path, monkeypatch)
+    first = NOW - 26 * HOUR
+    end = first + 600
+    held = NOW - 30 * 60
+    _journal(
+        cache,
+        {"ts": _iso(first), "run_id": "run-done", "status": "attempt-start"},
+        {"ts": _iso(end), "run_id": "run-done", "status": "applied"},
+        {"ts": _iso(end + 5), "run_id": "run-done", "status": "push", "ok": True},
+        {"ts": _iso(held), "run_id": "run-held", "status": "attempt-start"},
+        {"ts": _iso(held + 30), "run_id": "run-held", "status": "partial"},
+        {"ts": _iso(held + 35), "run_id": "run-held", "status": "push", "ok": True},
+    )
+    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: _iso(end))
+    _tonight_done(monkeypatch)
+
+    instant, why = _steward_preview(home, cache)
+    assert why == "to retry its unfinished run"
+    assert instant == held + 35 + steward.RETRY_SECS
+    # the predicate agrees, to the second (its committed stamp is the start)
+    _unfinished(monkeypatch, held)
+    assert serve._steward_is_due(home, cache, instant - 1) is False
+    assert serve._steward_is_due(home, cache, instant) is True
 
 
 # ------------------------------------------------------- 4. the hold notice
@@ -323,3 +480,53 @@ def test_the_runner_sends_the_new_words_once(tmp_path, monkeypatch):
     steward._notify_environment_hold(tmp_path, "run-x", "Failed to authenticate: OAuth expired")
     assert len(sent) == 1
     assert "It tries again after" in sent[0] and "/login" in sent[0]
+
+
+# ------------------------------------------- 5. the census in the scheduler
+
+
+def _tick_with(monkeypatch, tmp_path: Path, *, premises: bool, steward_due: bool) -> list[str]:
+    """One real `_run_tick` with every job stubbed; answers the order of the
+    jobs that ran and the census calls (gate r1 MINOR 2: the wiring itself
+    was never tested)."""
+    order: list[str] = []
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *a, **k: False)
+    monkeypatch.setattr(serve, "_overseer_is_due", lambda *a, **k: False)
+    monkeypatch.setattr(serve, "_premises_is_due", lambda *a, **k: premises)
+    monkeypatch.setattr(serve, "_steward_is_due", lambda *a, **k: steward_due)
+    monkeypatch.setattr(
+        serve, "_run_premises_job", lambda home, cache, now: order.append("premises")
+    )
+    monkeypatch.setattr(
+        serve, "_run_steward_job",
+        lambda home: order.append("steward") or steward.RunResult("idle"),
+    )
+    monkeypatch.setattr(
+        serve, "census_stranded", lambda home, cache, now=None: order.append("census")
+    )
+    cache = tmp_path / "tick-cache"
+    cache.mkdir(exist_ok=True)
+    serve._run_tick(tmp_path / "home", cache, now=NOW, pid=os.getpid(), tick_secs=60.0)
+    return order
+
+
+def test_the_premises_job_takes_one_census(tmp_path, monkeypatch):
+    assert _tick_with(monkeypatch, tmp_path, premises=True, steward_due=False) == [
+        "premises", "census",
+    ]
+
+
+def test_the_steward_job_takes_one_census_after_it_runs(tmp_path, monkeypatch):
+    assert _tick_with(monkeypatch, tmp_path, premises=False, steward_due=True) == [
+        "steward", "census",
+    ]
+
+
+def test_both_jobs_take_one_census_each(tmp_path, monkeypatch):
+    assert _tick_with(monkeypatch, tmp_path, premises=True, steward_due=True) == [
+        "premises", "census", "steward", "census",
+    ]
+
+
+def test_a_tick_with_no_job_takes_no_census(tmp_path, monkeypatch):
+    assert _tick_with(monkeypatch, tmp_path, premises=False, steward_due=False) == []

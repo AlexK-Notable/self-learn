@@ -831,15 +831,18 @@ def _next_slot_open(cache_dir: Path, now: float, taken_from: float | None) -> fl
     return max(now, today)
 
 
-def _journal_run_start_epoch(path: Path, now: float) -> float | None:
-    """The first `attempt-start` of the newest run in the steward's cache
-    journal -- the cache's view of when the last run selected its inputs --
-    or ``None``. Dry-run rows are never attempts."""
+def _journal_run_starts(path: Path, now: float) -> tuple[float | None, float | None]:
+    """The steward cache journal's `attempt-start` rows, read newest first:
+    ``(first, newest)`` -- the FIRST `attempt-start` of the newest run (the
+    cache's view of when that run selected its inputs) and the NEWEST
+    `attempt-start` of all (when the latest attempt began). ``(None, None)``
+    when the journal holds none. Dry-run rows are never attempts."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return None
-    newest: str | None = None
+        return None, None
+    newest_run: str | None = None
+    newest: float | None = None
     first: float | None = None
     for line in reversed(lines):
         try:
@@ -854,30 +857,47 @@ def _journal_run_start_epoch(path: Path, now: float) -> float | None:
         stamp = row.get("at") or row.get("ts")
         if not isinstance(stamp, str):
             continue
-        if newest is None:
-            newest = run_id if isinstance(run_id, str) else ""
-        elif run_id != newest:
+        epoch = _attempt_epoch(stamp, now)
+        if newest_run is None:
+            newest_run = run_id if isinstance(run_id, str) else ""
+            newest = epoch
+        elif run_id != newest_run:
             break
-        first = _attempt_epoch(stamp, now)
-    return first
+        first = epoch
+    return first, newest
+
+
+def _journal_run_start_epoch(path: Path, now: float) -> float | None:
+    """The first `attempt-start` of the newest run in the steward's cache
+    journal (:func:`_journal_run_starts`), or ``None``."""
+    return _journal_run_starts(path, now)[0]
 
 
 def _steward_next(home: Path, cache_dir: Path, now: float) -> tuple[float, str]:
     """When the steward is next due, from the cache alone (the heartbeat
-    preview, S-NEXT-cadence), and why. When the newest attempt in the
-    attempt journal is newer than the last COMPLETED run (`steward.last-run`),
-    a run is unfinished: it retries :data:`steward.RETRY_SECS` after that
-    attempt, exactly where `_steward_recently_attempted` stops holding it.
-    Otherwise the next run is the next nightly slot not yet taken, no sooner
-    than `steward.cooldown_secs` after the last run's start, and only if there
-    is work then."""
+    preview, S-NEXT-cadence), and why.
+
+    A run is unfinished when the journal's newest `attempt-start` is newer
+    than the last COMPLETED run (`steward.last-run`): a completed run writes
+    its last-run stamp when it ends, after every `attempt-start` it made, so
+    only an attempt that has not completed since can be newer. (Gate r1
+    MAJOR 1: the first cut compared the newest attempt row of ANY status, and
+    a completed run's `recompile` and `push` rows come after its last-run
+    stamp, so after almost every completed run the preview said "retry its
+    unfinished run".) An unfinished run retries :data:`steward.RETRY_SECS`
+    after the journal's newest attempt row, exactly where
+    `_steward_recently_attempted` stops holding it. Otherwise the next run is
+    the next nightly slot not yet taken, no sooner than `steward.cooldown_secs`
+    after the last run's start nor inside the cache retry interval the
+    predicate tests first, and only if there is work then."""
     journal = _steward_journal(cache_dir)
     attempt = _journal_attempt_epoch(journal, now)
+    start, newest_start = _journal_run_starts(journal, now)
     last_iso = steward.last_run_iso(home)
     last = _attempt_epoch(last_iso, now) if last_iso is not None else None
-    if attempt is not None and (last is None or last < attempt):
-        return max(now, attempt + steward.RETRY_SECS), "to retry its unfinished run"
-    start = _journal_run_start_epoch(journal, now)
+    if newest_start is not None and (last is None or last < newest_start):
+        retry_from = newest_start if attempt is None else max(attempt, newest_start)
+        return max(now, retry_from + steward.RETRY_SECS), "to retry its unfinished run"
     if start is None:
         start = last
     when = _next_slot_open(cache_dir, now, start)
@@ -886,6 +906,10 @@ def _steward_next(home: Path, cache_dir: Path, now: float) -> tuple[float, str]:
             home, settings.by_name("steward.cooldown_secs")
         )
         when = max(when, start + float(cast(int | float | str, cooldown_value)))
+    if attempt is not None:
+        # `_steward_recently_attempted` holds every run for RETRY_SECS after
+        # the newest attempt row (a completed run's push row included).
+        when = max(when, attempt + steward.RETRY_SECS)
     return when, "after the night's mine, when there is work"
 
 
