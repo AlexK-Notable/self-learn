@@ -3582,6 +3582,12 @@ Three kinds of event, and no clock:
    a follow-up closed again with other words is a new version. Until a case
    that counts dates after it, the closed follow-up rides along with any
    later `premise-moved` input on the lesson, so the steward sees it again.
+   A combined input (a closed follow-up and a moved premise together) that
+   the steward decides `no-action`, with a rebaseline for example, returns
+   once more as a follow-up-only input: a `no-action` case does not count as
+   a decision, the follow-up is still undecided, and its version, now a hash
+   of the follow-up alone, is new. That costs one more steward look and
+   writes nothing wrong (the 2026-10-31 integration accepted it, decision 10).
    This needs no premise and no sweep. It is a standing rule, so a follow-up
    closed before this landed is picked up on its first night (on 2026-10-30
    that is `lrn-9b4250f5` only: `lrn-25968266` was decided by a case after
@@ -3597,8 +3603,8 @@ churn. A premise that really depends on a version says so with a `package`
 probe and `holds_if: version`; otherwise the pin is shown as context the
 next time the lesson comes up, and that decision refreshes it.
 
-**Periodic re-reading** of lessons with nothing to probe is designed to be
-built but off: `premises.rotation_days` (default 0; above 0, a lesson whose
+**Periodic re-reading** of lessons with nothing to probe is reserved, not
+built; the design had it off: `premises.rotation_days` (default 0; above 0, a lesson whose
 last decision is older than that many days is offered, at most 3 a night).
 It spends steward calls with no sign that anything changed, and would stay
 at 0 for at least the first month after landing; the person decides from how
