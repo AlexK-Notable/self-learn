@@ -474,6 +474,18 @@ line (full field list: §7.2a.7 as amended).
 never enables them, unchanged from every other unit this repo ships
 (`CLAUDE.md` § Layout).
 
+**A premises job joins the tick** *(Added 2026-10-31, `03-decisions.md`
+S-NEXT-premise; `02-schema.md` §3a.10.6)*. A `premises` job, due once a day
+and run before the steward's nightly slot, runs every premise probe and the
+three placement checks and writes its observations to the cache
+(`<cache>/premises/observations.jsonl`, `NOT_REPO_TRUTH`). Its one ledger
+write is a `refresh` premise's code-only re-baseline, under its own
+`commit_lock` span and pinned subject (`self-learn: premises refresh …`),
+pushed the way a steward run pushes; `serve` itself still never stages,
+commits or pushes. It needs no model call, no new unit and no timer.
+`premises.enabled` (tier C, default true) gates it; `_steward_is_due` counts
+the `premise-moved` and `premise-extract` inputs it makes selectable.
+
 **The overseer's catch-up rule and the same-week guard** *(Added 2026-09-19,
 `03-decisions.md` S-68)*. The weekly job is due on the first tick at or after
 **Sunday 04:15 local for which that week is not done — whatever the weekday**.
