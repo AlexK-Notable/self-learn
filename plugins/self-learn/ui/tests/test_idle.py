@@ -342,7 +342,27 @@ def test_sse_disconnect_stamps_the_activity_clock() -> None:
     anyio.run(scenario)
 
 
-def test_create_app_starts_idle_task_only_when_window_positive(tmp_path) -> None:
+class _CancelSpy:
+    """Wraps the monitor's task and counts `cancel()` calls, delegating
+    everything else. The old assertion (`cancelled() or done()`) stayed
+    green with the lifespan's `idle_task.cancel()` deleted, because the
+    test client's event-loop shutdown ends the task by itself (test
+    audit O-5, mutation run M-17); only a call counter sees the
+    lifespan's own cancel."""
+
+    def __init__(self, task: "asyncio.Future[object]") -> None:
+        self._task = task
+        self.cancel_calls = 0
+
+    def cancel(self, *args: object, **kwargs: object) -> bool:
+        self.cancel_calls += 1
+        return self._task.cancel(*args, **kwargs)  # type: ignore[arg-type]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._task, name)
+
+
+def test_create_app_starts_idle_task_only_when_window_positive(tmp_path, monkeypatch) -> None:
     from starlette.testclient import TestClient
 
     from self_learn_ui.app import create_app
@@ -353,6 +373,21 @@ def test_create_app_starts_idle_task_only_when_window_positive(tmp_path) -> None
 
     sb = make_env(tmp_path)
     env = load_env(sb.env)
+
+    # Wrap ONLY the idle monitor's task (recognised by its coroutine's
+    # code object); every other `ensure_future` caller gets the real one.
+    real_ensure_future = asyncio.ensure_future
+    spies: list[_CancelSpy] = []
+
+    def spying_ensure_future(awaitable, *args, **kwargs):
+        task = real_ensure_future(awaitable, *args, **kwargs)
+        if getattr(awaitable, "cr_code", None) is IdleMonitor.run.__code__:
+            spy = _CancelSpy(task)
+            spies.append(spy)
+            return spy
+        return task
+
+    monkeypatch.setattr(asyncio, "ensure_future", spying_ensure_future)
 
     app = create_app(
         env=env,
@@ -365,9 +400,12 @@ def test_create_app_starts_idle_task_only_when_window_positive(tmp_path) -> None
     with TestClient(app, base_url="http://127.0.0.1:7357"):
         assert app.state.idle_task is not None
         assert not app.state.idle_task.done()
+        assert len(spies) == 1  # the spy really is the task the app holds
+        assert app.state.idle_task is spies[0]
+        assert spies[0].cancel_calls == 0
     # 10 §3 U13 pin, asserted (code-review MINOR): lifespan exit
     # CANCELS the monitor — deleting the cancel() must fail this test.
-    assert app.state.idle_task.cancelled() or app.state.idle_task.done()
+    assert spies[0].cancel_calls == 1
 
     app2 = create_app(
         env=env, token="t", runner=FakeRunner(), start_watcher=False

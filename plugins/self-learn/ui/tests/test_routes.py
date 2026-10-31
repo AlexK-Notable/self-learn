@@ -4288,20 +4288,38 @@ class TestHoldingRowShowsWhyItWasFlagged:
         assert rows[0].basis_text == ""
         assert rows[0].sighted_count == 1  # the row still exists
 
-    def test_the_front_page_renders_the_reason(self, tmp_path: Path) -> None:
+    def test_the_front_page_renders_the_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """End to end through the template, not just the model — the whole
         bug was a value that existed at one layer and never reached the
-        next one."""
+        next one. Monkeypatches `ledger.report` with a suspect carrying a
+        `basis` (the same page-READ seam `test_holding_section_heading_is_
+        defined` uses), so the template line that prints the reason is
+        actually reached; the old version seeded no suspect and could only
+        assert the class was absent (test audit L9-6)."""
+        from self_learn_ui import ledger as ledger_mod
+        from self_learn_ui.models import CliRead
+
         sb = make_env(tmp_path)
-        rec = make_behavior(scope="skill:s")
-        seed_record(sb.ledger, rec)
+        report_data = {
+            "recurrence_suspects": [
+                {
+                    "id": "lrn-aaaaaaa1",
+                    "nonce": "n1",
+                    "seen_at": "2026-08-01T00:00:00Z",
+                    "basis": "fire-violated",
+                }
+            ],
+            "routed_live": [{"id": "lrn-aaaaaaa1", "bucket": "s", "routed_days_ago": 3}],
+        }
+        monkeypatch.setattr(ledger_mod, "report", lambda home, **kw: CliRead(data=report_data))
         c, _runner = make_client(sb)
         r = c.get("/")
         assert r.status_code == 200
-        # No suspects seeded here, so assert the surface is wired rather
-        # than asserting text that would need live telemetry: the class
-        # must not appear when there is nothing to say.
-        assert "holding-basis" not in r.text
+        assert "Is it holding?" in r.text  # positive control: the holding region rendered
+        assert 'class="holding-basis"' in r.text
+        assert "Flagged because the model reported violating this rule." in r.text
 
 
 class TestFrontPageDeferredCountIsScoped:

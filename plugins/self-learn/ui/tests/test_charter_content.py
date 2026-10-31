@@ -35,16 +35,28 @@ def test_charter_states_the_allow_deny_surface_limits() -> None:
     assert "pending/lrn-" in text or "lrn-<id>" in text
 
 
+def _flat() -> str:
+    """The charter with emphasis marks dropped and every run of
+    whitespace (line wraps included) collapsed to one space, so a policy
+    sentence can be matched whole."""
+    return " ".join(_text().replace("**", "").split())
+
+
 def test_charter_states_no_path_to_route() -> None:
-    text = _text().lower()
-    assert "route" in text
-    assert "no path to" in text or "never" in text
+    # The sentence, not loose keywords: independent `"route" in text` and
+    # `"never" in text` checks passed when this rule was reversed (test
+    # audit L10-2).
+    assert (
+        "You have no path to `route`, `reject`, `defer`, or `retire` — ever."
+        in _flat()
+    )
 
 
 def test_charter_states_proposer_never_equals_approver() -> None:
-    text = _text().lower()
-    assert "proposer" in text and "approver" in text
-    assert "never" in text
+    assert (
+        "You are the proposer. The human is the approver. "
+        "These are never the same party"
+    ) in _flat()
 
 
 def test_charter_includes_the_routing_doctrine_section_8_register(tmp_path=None) -> None:

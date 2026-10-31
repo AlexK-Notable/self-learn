@@ -27,9 +27,32 @@ def test_base_template_exists_with_expected_blocks() -> None:
         assert block in BASE_HTML, f"missing {block}"
 
 
-def test_base_template_has_autoescape_marker_comment() -> None:
-    assert "AUTOESCAPE MARKER" in BASE_HTML
-    assert "autoescape=True" in BASE_HTML
+def test_no_template_turns_autoescape_off_and_the_environment_has_it_on() -> None:
+    """app.py's rule: explicit `autoescape=True`, constructed once, and
+    never an `{% autoescape false %}` block anywhere in the template tree
+    ("enforced by convention + tests/test_templates.py"). The old test only
+    looked for a comment in base.html, so it stayed green if app.py dropped
+    `autoescape=True` or a partial gained an `{% autoescape false %}` block
+    (test audit L9-65, mutation run M-20)."""
+    from self_learn_ui.app import _build_templates
+
+    assert _build_templates().env.autoescape is True
+
+    templates_dir = Path(__file__).resolve().parents[1] / "templates"
+    sources = {
+        path: path.read_text(encoding="utf-8") for path in sorted(templates_dir.rglob("*.html"))
+    }
+    # Positive control: the sweep really reached the tree, base.html included.
+    assert templates_dir / "base.html" in sources
+    assert len(sources) > 1
+    offenders = []
+    for path, text in sources.items():
+        # Jinja comments and HTML comments may name the banned tag in prose.
+        text = _re.sub(r"\{#.*?#\}", "", text, flags=_re.S)
+        text = _re.sub(r"<!--.*?-->", "", text, flags=_re.S)
+        if _re.search(r"\{%[-+]?\s*autoescape\b(?!\s+true\b)", text):
+            offenders.append(path.name)
+    assert offenders == []
 
 
 def test_base_template_has_no_inline_style_attributes() -> None:

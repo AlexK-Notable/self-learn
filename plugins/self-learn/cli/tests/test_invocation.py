@@ -130,64 +130,6 @@ def _run_raises(exc):
     return fake_run
 
 
-class _FakePopen:
-    """Configurable stand-in for `subprocess.Popen` (the miner's
-    transport). Used AS the monkeypatched replacement directly:
-    `monkeypatch.setattr(subprocess, "Popen", _FakePopen(...))` -- calling
-    `subprocess.Popen(argv, **kwargs)` then invokes this instance's
-    `__call__`, which records the call and returns itself as `proc`."""
-
-    def __init__(
-        self,
-        *,
-        returncode=0,
-        output="",
-        raise_on_construct=None,
-        raise_on_communicate=None,
-        write_file=None,
-        write_content="",
-        pid=4242,
-    ):
-        self.returncode = returncode
-        self._output = output
-        self._raise_on_construct = raise_on_construct
-        self._raise_on_communicate = raise_on_communicate
-        self._write_file = write_file
-        self._write_content = write_content
-        self.pid = pid
-        self.calls: list[tuple[list[str], dict]] = []
-        self.waited = False
-
-    def __call__(self, argv, **kwargs):
-        self.calls.append((argv, kwargs))
-        if self._raise_on_construct is not None:
-            raise self._raise_on_construct
-        return self
-
-    def communicate(self, prompt, timeout=None):
-        if self._raise_on_communicate is not None:
-            raise self._raise_on_communicate
-        if self._write_file is not None:
-            self._write_file.write_text(self._write_content, encoding="utf-8")
-        return (self._output, None)
-
-    def wait(self):
-        self.waited = True
-        return self.returncode
-
-
-class _PopenRaises:
-    """Stand-in for `subprocess.Popen` that raises at CONSTRUCTION time
-    (mirrors `FileNotFoundError`/`OSError` from a missing/unexecutable
-    `claude`)."""
-
-    def __init__(self, exc):
-        self._exc = exc
-
-    def __call__(self, argv, **kwargs):
-        raise self._exc
-
-
 # ===================================================================== #
 # SessionSpec builder
 # ===================================================================== #
@@ -1285,43 +1227,6 @@ def test_wr1_invoke_claude_signature_and_never_raises(tmp_path, monkeypatch):
     _sdk_env(monkeypatch)
     monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "error_result")
     assert worker._invoke_claude("p", 5.0, tmp_path, label="") is None  # exit
-
-
-def test_wr2_miner_early_returns_precede_the_stray_sweep(monkeypatch, tmp_path, sdk_absent):
-    monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "wr2-home"))
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "wr2-xdg"))
-    home = tmp_path / "wr2-home"
-    home.mkdir()
-    spool = miner.spool_dir()
-    stray = spool / "litter.txt"
-
-    scenarios = [
-        ("timeout", _FakePopen(raise_on_communicate=subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=1))),
-        ("not-found", _PopenRaises(FileNotFoundError())),
-        ("os-error", _PopenRaises(OSError("x"))),
-    ]
-    for name, popen in scenarios:
-        stray.write_text("litter", encoding="utf-8")
-        monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
-        monkeypatch.setattr(subprocess, "Popen", popen)
-        out = miner._invoke_reader(home, "PROMPT")
-        assert out is None, name
-        assert stray.exists(), f"{name}: stray sweep ran despite an early return"
-
-    # unavailable leg -- U-flip pins SELF_LEARN_BACKEND_MINER=cli at rung
-    # 1 (conftest's suite-wide default); clear it too, or it shadows this
-    # rung-2 override and miner-reader never reaches "unavailable".
-    stray.write_text("litter", encoding="utf-8")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_MINER", raising=False)
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    out = miner._invoke_reader(home, "PROMPT")
-    assert out is None
-    assert stray.exists(), "unavailable: stray sweep ran despite an early return"
-    monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
-
-
-
-
 
 
 def test_wr5_analyst_error_carries_cause_for_not_found_and_timeout(analyst_env, tmp_path, monkeypatch):

@@ -234,30 +234,29 @@ _LITERAL_ENABLED_WHEN_NAMES = frozenset(
 )
 
 
-def test_major2_env_first_literal_16_names_match_the_registry_exactly():
+def test_major2_env_first_literal_names_match_the_registry_exactly():
     actual = frozenset(s.name for s in settings.REGISTRY if s.direction == "env-first")
     assert actual == _LITERAL_ENV_FIRST_NAMES
-    assert len(_LITERAL_ENV_FIRST_NAMES) == 15  # U8: 16 -> 22 (+6); U4-seam: +1 (invocation.backend_miner-session)
 
 
-def test_major2_config_first_literal_complement_27_names_match_the_registry_exactly():
-    """The complement gives the COUNT too -- a mutation that silently
-    reclassifies one entry's `direction` changes which of these two
-    frozensets it belongs to, and this test (unlike a derived list)
-    still knows the ORIGINAL 16/21 split to compare against."""
+def test_major2_config_first_literal_complement_names_match_the_registry_exactly():
+    """The complement covers the whole registry -- a mutation that
+    silently reclassifies one entry's `direction` changes which of these
+    two frozensets it belongs to, and this test (unlike a derived list)
+    still knows the ORIGINAL split to compare against. The set equality
+    fixes the counts; the old `len(literal) == N` lines only counted a
+    literal against itself (test audit L2-27)."""
     actual = frozenset(s.name for s in settings.REGISTRY if s.direction == "config-first")
     assert actual == _LITERAL_CONFIG_FIRST_NAMES
-    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 49  # new miner R2: +5; U8: 21 -> 26; U10: +3; O-3: +1; O-6: +1; U1: +1; U4: +1; U4c: +1; turns_per_lesson: +1; sizing knobs: +5; refs.transcript_roots: +1; sdk.capture_sessions: +1; miner.mined_scheduled_jobs: +1; miner.skip_sessions: +1
     assert _LITERAL_ENV_FIRST_NAMES | _LITERAL_CONFIG_FIRST_NAMES == frozenset(
         s.name for s in settings.REGISTRY
     )
     assert not (_LITERAL_ENV_FIRST_NAMES & _LITERAL_CONFIG_FIRST_NAMES)
 
 
-def test_major3_enabled_when_literal_6_names_match_the_registry_exactly():
+def test_major3_enabled_when_literal_names_match_the_registry_exactly():
     actual = frozenset(s.name for s in settings.REGISTRY if s.enabled_when is not None)
     assert actual == _LITERAL_ENABLED_WHEN_NAMES
-    assert len(_LITERAL_ENABLED_WHEN_NAMES) == 8  # U8: 6 -> 8 (+2)
 
 
 @pytest.mark.parametrize("name", sorted(_LITERAL_ENV_FIRST_NAMES))

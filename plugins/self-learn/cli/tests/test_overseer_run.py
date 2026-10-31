@@ -2249,22 +2249,11 @@ def test_a_target_busy_refusal_is_dispatched_again_when_the_run_resumes(tmp_path
     assert Record.from_path(find_record_path(home, rid)).status == "routed"
 
 
-def test_a_bad_line_refusal_stays_final_when_the_run_resumes(tmp_path, monkeypatch):
-    """S-71 §7.2: a refusal of any kind other than `git` or `target-busy`
-    is a judgment on the line and stays final -- the resume dispatches
-    nothing of that sheet again."""
-    home, first, dispatched = _halted_run_with_item_1_refused(
-        tmp_path, monkeypatch, "bad-line"
-    )
-    manifest = execution_evidence.read_manifest(home, first.run)
-    (recipe,) = manifest["cases"].values()
-    assert recipe["dispositions"][0].get("kind") == "bad-line", recipe["dispositions"]
-    assert "simulated bad-line refusal of item 1 [bad-line]" in _refused_block(home)
-
-    overseer_run.run(home, dry_run=False, no_push=True)
-
-    # Item 2 (stopped) is dispatched again beside it (2026-09-26, N11).
-    assert dispatched == [1, 2, 2], "a bad-line refusal is never dispatched again"
+# S-71 §7.2: a refusal of any kind other than `git` or `target-busy` is a
+# judgment on the line and stays final -- the resume dispatches nothing of
+# that sheet again. The bad-line case lives in test_overseer_retry_beside_
+# final.py::test_a_stopped_item_beside_a_final_refusal_is_retried_and_both_
+# are_reported (merged there by the test audit, L5-2).
 
 
 def test_a_refusal_committed_without_a_kind_stays_final_when_the_run_resumes(

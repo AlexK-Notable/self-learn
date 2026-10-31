@@ -121,6 +121,14 @@ class TestEntryFormat:
 class TestGoldenRegeneration:
     def test_regeneration_matches_golden(self):
         pre = (GOLDEN / "managed-pre.md").read_text(encoding="utf-8")
+        # Fixture control: the input plants a hand edit inside the markers.
+        # Full equality with the expected file below then also proves the
+        # hand edit is overwritten and every byte outside the markers is
+        # kept -- the two properties that separate tests (a hand edit is
+        # overwritten; text outside the markers is preserved byte-exact)
+        # checked on this same input, merged here by the test audit (L7-3).
+        assert "hand-edited garbage" in pre
+        assert "lrn-deadbeef" in pre
         result = compile_managed_text(pre, golden_records())
         assert result.text == (GOLDEN / "managed-expected.md").read_text(encoding="utf-8")
         assert result.changed and not result.bootstrapped
@@ -130,21 +138,6 @@ class TestGoldenRegeneration:
         result = compile_managed_text(expected, golden_records())
         assert result.text == expected
         assert not result.changed
-
-    def test_hand_edit_inside_markers_is_overwritten(self):
-        pre = (GOLDEN / "managed-pre.md").read_text(encoding="utf-8")
-        assert "hand-edited garbage" in pre  # the fixture plants one
-        result = compile_managed_text(pre, golden_records())
-        assert "hand-edited garbage" not in result.text
-        assert "lrn-deadbeef" not in result.text
-
-    def test_text_outside_markers_preserved_byte_exact(self):
-        pre = (GOLDEN / "managed-pre.md").read_text(encoding="utf-8")
-        result = compile_managed_text(pre, golden_records())
-        assert result.text[: pre.index(BEGIN_MARKER)] == pre[: pre.index(BEGIN_MARKER)]
-        tail_pre = pre[pre.index(END_MARKER) + len(END_MARKER) :]
-        tail_new = result.text[result.text.index(END_MARKER) + len(END_MARKER) :]
-        assert tail_new == tail_pre
 
     def test_ordering_is_routed_at_then_id(self):
         pre = f"{BEGIN_MARKER}\n{END_MARKER}\n"

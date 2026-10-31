@@ -421,7 +421,10 @@ async def test_forced_iterate_interrupts_and_closes_the_other_session_first() ->
 async def test_retry_after_ended_session_starts_a_fresh_engine() -> None:
     """r retry (09 §5): the SAME record's ENDED (errored) session is
     cleared and a fresh engine constructed — force is not needed for a
-    same-record retry."""
+    same-record retry. This is also F3 at the r-retry seam (an ENDED
+    predecessor's drain is joined before the successor claims): a second
+    test in the F3 class that ran this same two-engine scenario with fewer
+    assertions was merged in here (test audit L10-4)."""
     calls = {"n": 0}
 
     def factory() -> PaneEngine:
@@ -561,7 +564,12 @@ async def test_file_changed_forces_a_refresh_never_a_validate_call() -> None:
     while not sub.empty():
         events.append(sub.get_nowait())
     scopes = [e.scope for e in events]
-    assert scopes.count(f"record:{RECORD_ID}") >= 1
+    # Exactly two: `force_refresh` is called from exactly two sites in
+    # pane.py (the FileChanged branch and `_post_session_validate`) and the
+    # hub does not coalesce. The old `>= 1` was met by the validate refresh
+    # alone, so deleting the FileChanged refresh left this test green (test
+    # audit L10-5).
+    assert scopes.count(f"record:{RECORD_ID}") == 2
 
 
 # --------------------------------------------------------- post-session validate
@@ -1161,25 +1169,6 @@ class TestNonBlockingStart:
         frames = await _drain_queue(sub)
         assert not any(f.get("text") == "late orphan text" for f in frames)
         assert manager.proposal_slot.current is successor  # never wiped
-
-    async def test_retry_same_key_disposes_the_predecessors_drain_first(self) -> None:
-        # F3 at the r-retry seam: an ENDED predecessor's drain is joined
-        # before the successor claims.
-        calls = {"n": 0}
-
-        def factory() -> PaneEngine:
-            calls["n"] += 1
-            if calls["n"] == 1:
-                return _RaisingEngine()
-            return FakeEngine(turns=[[Result("success", 0.0, None)]])
-
-        manager, *_ = _manager(default_engine_factory=factory)
-        await _start_and_join(manager, RECORD_ID)
-        assert manager.snapshot(RECORD_ID).state == pane.STATE_ENDED
-
-        outcome = await _start_and_join(manager, RECORD_ID)
-        assert outcome == "started"
-        assert manager.snapshot(RECORD_ID).state == pane.STATE_AWAITING_INPUT
 
     async def test_bucket_session_background_start_and_no_validate(self) -> None:
         # The bucket variant shares the manager and the whole Y-15
