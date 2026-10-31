@@ -161,6 +161,9 @@ class TestConfigGet:
             # S-NEXT-u6-backfill: the premise backfill's nightly pace (0
             # pauses it) is the person's, like `premises.enabled`.
             "premises.backfill_per_night",
+            # SK3 (S-NEXT-skills part 6): whether the overseer deploys the
+            # skills it writes is the user's switch.
+            "overseer.skill_writing",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 

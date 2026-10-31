@@ -33,6 +33,14 @@ EXAMPLE_CASE = "case-0000000b"
 #: E3b: the lessons a merge example folds into EXAMPLE_RECORD's successor.
 EXAMPLE_MERGED = ("lrn-0000000b", "lrn-0000000c")
 
+#: SK3 (S-NEXT-skills): the example skill phase B's formats carry, in
+#: ``skill-example/`` (a folder shaped like ``skills/<name>/``), and the
+#: lessons its example pair moves in.
+SKILL_EXAMPLE_DIR = "skill-example"
+EXAMPLE_SKILL = "example-release-notes"
+EXAMPLE_SKILL_LESSONS = ("lrn-0000000a", "lrn-0000000b")
+EXAMPLE_SKILL_REFERENCE = "references/procedure.md"
+
 #: S-73: a WARNING hook's compile input, as a sheet line carries it (the
 #: shape `batch.HOOK_INPUT_KEYS` and `ledger_ops._validate_hook_extension`
 #: check). The shape of a real re-decision (a `pgrep -f`/`pkill -f`
@@ -190,6 +198,28 @@ def closed_sets() -> dict[str, Any]:
         # S-NEXT-u7c: one more heading, optional, right after Catalogue health.
         "report_hand_steps_heading": run.HAND_STEPS_SECTION,
         "hook": _hook_closed_sets(),
+        "skill_template": _skill_template_sets(),
+    }
+
+
+def _skill_template_sets() -> dict[str, Any]:
+    """SK3: the skill template's fixed rules, read from the constants the
+    checker (`skill_scaffold.check_skill`, K1a) enforces."""
+    from .. import skill_scaffold as k1a
+
+    return {
+        "name_max_chars": k1a.SKILL_NAME_MAX_CHARS,
+        "name_reserved_words": list(k1a.SKILL_NAME_RESERVED_WORDS),
+        "description_max_chars": k1a.SKILL_DESCRIPTION_MAX_CHARS,
+        "listing_max_chars": k1a.SKILL_LISTING_MAX_CHARS,
+        "frontmatter_keys_allowed": list(k1a.SKILL_FRONTMATTER_ALLOWED_KEYS),
+        "frontmatter_keys_refused": sorted(k1a.SKILL_FRONTMATTER_REFUSED_KEYS),
+        "metadata_key_the_runner_writes": k1a.SKILL_RUNNER_METADATA_KEY,
+        "entry_file": k1a.SKILL_ENTRY_FILE,
+        "references_dir": k1a.SKILL_REFERENCES_DIR,
+        "references_suffix": k1a.SKILL_SUPPORT_FILE_SUFFIX,
+        "references_max_depth": k1a.SKILL_REFERENCES_MAX_DEPTH,
+        "body_soft_max_lines": k1a.SKILL_BODY_SOFT_MAX_LINES,
     }
 
 
@@ -292,6 +322,105 @@ _RESTATE_RULES = (
     "is the user's own preference. See case-restate-example.yaml with",
     "sheet-restate-example.yaml.",
 )
+
+
+def _skills_rules() -> list[str]:
+    """SK3 (S-NEXT-skills parts 3-6; D-AUTHOR §3.2-§3.5): phase B's section
+    on the skills self-learn owns. The template's numbers are read from the
+    checker's constants (`skill_scaffold`), the workspace names from
+    `overseer.skills`."""
+    from .. import skill_scaffold as k1a
+    from . import run, skills
+
+    allowed = ", ".join(k1a.SKILL_FRONTMATTER_ALLOWED_KEYS)
+    refused = ", ".join(sorted(k1a.SKILL_FRONTMATTER_REFUSED_KEYS))
+    reserved = " or ".join(f'"{w}"' for w in k1a.SKILL_NAME_RESERVED_WORDS)
+    text = f"""\
+## Skills self-learn owns
+
+Lessons that are parts of one task can become one skill that self-learn writes, keeps
+up to date and can retire. The lessons stay lessons inside it: they compile into the
+skill's managed section, as they do in any skill, and keep their history. The text
+you write around them is the coherent part: when to use the skill, the procedure,
+how its rules relate.
+
+Your inputs: {skills.OWNED_DIR}/<name>/ for each skill self-learn owns, as it is now --
+{skills.FILES_DIR}/ (its {k1a.SKILL_ENTRY_FILE} without the managed section, and its
+{k1a.SKILL_REFERENCES_DIR}/ files: start a change from these), {skills.ROW_FILE} (who made
+it, when, from which case), {skills.LESSONS_FILE} (the lessons routed into it) and
+{skills.DIFF_FILE} (what changed in its text since self-learn last wrote it).
+{skills.VETOES_FILE} lists the names the user vetoed, the skills whose name the user
+vetoed, and the user's requests to retire a skill. {skills.PROPOSALS_FILE} lists the
+steward's skill proposals; each is a parked case in parked/, decided like any other.
+{skills.WRITING_FILE} says whether this run deploys what you write.
+
+When to make a skill rather than add to one (judgment, not a rule with numbers):
+- Prefer an existing skill: if one already owns the moment (its name and description
+  match the task), route the lessons there.
+- Make one when all of these hold: the lessons share one task-shaped trigger a
+  description can name; the content is more than a line (a procedure, a format,
+  examples); no existing skill owns it.
+- Signs a skill is right: always-loaded lines are paid for in every session but matter
+  only for that task; the user named the skill's shape; the pattern has recurred.
+- Not a skill: a lesson tied to files (a path-scoped rule), a lesson tied to one
+  command (a warning hook), one line that fits where it is.
+
+To build a skill: write {skills.STAGE_SKILLS_DIR}/<name>/{k1a.SKILL_ENTRY_FILE} (and
+{k1a.SKILL_REFERENCES_DIR}/<file>{k1a.SKILL_SUPPORT_FILE_SUFFIX} when the detail is long), and a
+named pair: a case with outcome: route and decision.skill {{name, why, lessons}}
+(kind: maintenance, or the successor of a skill-proposal parked case), whose sheet
+routes each lesson in with dest: new-skill:<name>. A lesson already placed elsewhere moves
+in by the same route line in a kind: reconsider successor of the case that placed it,
+which the runner applies as a reroute once the skill is written. See {SKILL_EXAMPLE_DIR}/,
+case-skill-example.yaml and sheet-skill-example.yaml. The runner writes the skill
+first, then records the case and applies the sheet; if the write is refused, the whole
+pair is dropped and named under "Refused / could not do", and no lesson moves. The
+runner adds the managed section and the metadata.{k1a.SKILL_RUNNER_METADATA_KEY} stamp: never
+write either.
+
+The template (the runner refuses a skill that breaks it, naming the rule): the name is
+the folder's name, kebab-case, at most {k1a.SKILL_NAME_MAX_CHARS} characters, without {reserved},
+and not the name of any skill already loaded on this machine or any vetoed name; the
+description is not empty, at most {k1a.SKILL_DESCRIPTION_MAX_CHARS} characters, says what the skill
+does and when to use it, in the third person, with no XML tags; frontmatter keys only
+{allowed} ({refused} are refused); supporting files are markdown only, in
+{k1a.SKILL_REFERENCES_DIR}/, one level deep, each linked from {k1a.SKILL_ENTRY_FILE}; every file is
+secret-scanned. Keep the body under {k1a.SKILL_BODY_SOFT_MAX_LINES} lines and concise: the reader is
+a capable agent. closed-sets.yaml has these under skill_template.
+
+To change a skill self-learn owns: write the whole new text in
+{skills.STAGE_SKILLS_DIR}/<name>/, starting from {skills.OWNED_DIR}/<name>/{skills.FILES_DIR}/, in a pair whose
+case carries decision.skill naming it. Read {skills.DIFF_FILE} first and keep what a person
+wrote unless your case says why not. If the skill changes again before the runner
+writes it, the write is refused and you see it next week. A pair that only changes a
+skill's text may have an empty sheet (items: []).
+
+To route a pending lesson into a skill self-learn owns, write a route line with dest:
+new-skill:<name> in a case whose decision.skill names it; no folder is needed.
+
+A case may name in decision.skill a skill it does not build: the successor that declines
+a skill-proposal parked case may keep the proposal's decision.skill, and a case may name a
+linked skill self-learn does not own whose lessons it routes the ordinary way. With
+no {skills.STAGE_SKILLS_DIR}/<name>/ folder and no line routing into new-skill:<name>, such a
+case carries no skill step and its pair applies as any other. A sheet that routes into
+new-skill:<name> for a skill self-learn does not own is building it, and needs the folder.
+
+To retire a skill self-learn owns: a pair whose case has outcome: retire and
+decision.skill naming it. Its sheet first moves every lesson routed into it somewhere
+else (each lesson's history in {run.LESSONS_DIR}/ says where it was before); moving a routed
+lesson is a kind: reconsider successor of the case that moved it in. A sheet with no line
+for a lesson routed into the skill drops the pair. The runner retires
+the skill only after every line of the sheet applied. A skill with no lessons left is
+retired with an empty sheet. A case that retires lessons out of a skill it keeps does not
+name the skill in decision.skill. A request to retire in {skills.VETOES_FILE} is the user's: retire
+that skill this run, or ask the user in questions.yaml why you did not.
+
+A vetoed name is never used again, and a skill whose name was vetoed cannot be written
+under it. While {skills.WRITING_FILE} says deploy: false, every skill you build or change is
+checked by the same rules and kept as a draft, nothing is retired, and those pairs are
+not applied; write them exactly as you would otherwise.
+"""
+    return text.splitlines()
 
 
 def _rules(phase: str) -> str:
@@ -417,6 +546,8 @@ def _rules(phase: str) -> str:
             *_REPLACE_RULES,
             "",
             *_RESTATE_RULES,
+            "",
+            *_skills_rules(),
             "",
             # E3a: the passage on writing a lesson, inlined (never a pointer).
             # Phase B only: phase A selects cases and writes no lesson text.
@@ -713,6 +844,112 @@ def phase_b_examples() -> dict[str, str]:
         "maintenance-sheet.yaml": _dump({
             "version": 1,
             "items": [{"id": EXAMPLE_RECORD, "verb": "note", "append": "Checked this week."}],
+        }),
+        **skill_examples(),
+    }
+
+
+def skill_example_files() -> dict[str, str]:
+    """SK3: a valid skill folder, keyed as phase B's ``skills/<name>/`` is
+    (``SKILL.md``, ``references/<file>.md``); it passes
+    ``skill_scaffold.check_skill`` (`tests/test_overseer_skill_build.py`)."""
+    skill_md = (
+        "---\n"
+        f"name: {EXAMPLE_SKILL}\n"
+        'description: "Drafts release notes from merged changes. Use when the user asks for '
+        'release notes, a changelog entry, or a summary of what shipped in a version."\n'
+        "---\n\n"
+        "# Release notes\n\n"
+        "Use this when a version is about to ship and its notes are wanted. Each lesson in the\n"
+        "section at the end of this file says one rule; this text says how they fit together.\n\n"
+        "## Procedure\n\n"
+        "1. Collect the changes merged since the last release.\n"
+        "2. Group them by what a reader of the notes cares about, not by where the code changed.\n"
+        "3. Write one line per change; [the procedure](" + EXAMPLE_SKILL_REFERENCE + ") has\n"
+        "   the full steps and a worked example.\n\n"
+        "## How the rules relate\n\n"
+        "A line that is wrong is worse than a missing line, so accuracy comes before brevity.\n"
+    )
+    reference = (
+        "# Procedure\n\n"
+        "1. List the merged changes since the last release, with their titles.\n"
+        "2. Drop the changes no reader would notice (internal refactors, test-only changes).\n"
+        "3. Group the rest: new, changed, fixed.\n"
+        "4. Write each line as what the reader can now do, in one sentence.\n\n"
+        "## Worked example\n\n"
+        "A merged change titled \"cache parsed config\" becomes: \"Starting is faster when the\n"
+        "configuration file is large.\"\n"
+    )
+    return {"SKILL.md": skill_md, EXAMPLE_SKILL_REFERENCE: reference}
+
+
+def skill_examples() -> dict[str, str]:
+    """SK3: phase B's skill examples -- the skill folder, a pair that
+    builds it, and a pair that retires it."""
+    evidence = [
+        {"ref": f"record:{rid}", "quote": "Instruction: group release notes by what the reader notices"}
+        for rid in EXAMPLE_SKILL_LESSONS
+    ]
+    skill = {
+        "name": EXAMPLE_SKILL,
+        "why": (
+            "Both lessons are steps of one task, writing release notes, which a description "
+            "can name; together with the procedure they are more than a line."
+        ),
+        "lessons": list(EXAMPLE_SKILL_LESSONS),
+    }
+    files = {
+        f"{SKILL_EXAMPLE_DIR}/{rel}": text for rel, text in skill_example_files().items()
+    }
+    return {
+        **files,
+        "case-skill-example.yaml": _dump({
+            "kind": "maintenance", "trigger": "weekly", "outcome": "route",
+            "records": list(EXAMPLE_SKILL_LESSONS), "scope": "user",
+            "question": "Two lessons are steps of writing release notes; should they become one skill?",
+            "evidence": evidence,
+            "decision": {
+                "verb": "route",
+                "because": (
+                    "No skill owns writing release notes; the lessons share that trigger and need "
+                    "a procedure around them, which a skill holds and a single line does not."
+                ),
+                "confidence": "settled",
+                "skill": skill,
+            },
+        }),
+        "sheet-skill-example.yaml": _dump({
+            "version": 1,
+            "items": [
+                {"id": rid, "verb": "route", "dest": f"new-skill:{EXAMPLE_SKILL}", "close_call": False}
+                for rid in EXAMPLE_SKILL_LESSONS
+            ],
+        }),
+        # A retirement: a reconsider of the case that built the skill moves
+        # its lessons out (applied as reroutes), then the runner retires it.
+        "case-skill-retire-example.yaml": _dump({
+            "kind": "reconsider", "trigger": "weekly", "outcome": "retire",
+            "records": list(EXAMPLE_SKILL_LESSONS), "scope": "user",
+            "question": "The release-notes skill has not been used in months; should it be retired?",
+            "supersedes": EXAMPLE_CASE,
+            "evidence": evidence,
+            "decision": {
+                "verb": "retire",
+                "because": (
+                    "Releases are no longer made from this machine; the lessons go back to a "
+                    "path-scoped rule on the changelog, where they still apply."
+                ),
+                "confidence": "settled",
+                "skill": {**skill, "why": "Retired: no release has been made here in months."},
+            },
+        }),
+        "sheet-skill-retire-example.yaml": _dump({
+            "version": 1,
+            "items": [
+                {"id": rid, "verb": "route", "dest": "claude-md:rules:release-notes",
+                 "rules_paths": ["CHANGELOG.md"], "close_call": False}
+                for rid in EXAMPLE_SKILL_LESSONS
+            ],
         }),
     }
 
