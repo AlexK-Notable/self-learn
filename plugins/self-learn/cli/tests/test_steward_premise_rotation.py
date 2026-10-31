@@ -129,6 +129,8 @@ def test_a_lesson_is_due_once_its_last_look_is_a_whole_period_old(tmp_path):
     _placed(env, A, 89)
     _placed(env, B, 90)
     _placed(env, C, 91)
+    # the nightly quota is not what keeps A out (`auto` would be 2 here)
+    _config(home, "premises:\n  rotation_per_night: '10'\n")
 
     rows = steward._premise_review_inputs(home)
     assert sorted(row["record"] for row in rows) == [B, C]
@@ -528,3 +530,16 @@ def test_a_run_reviews_an_overdue_lesson_once_and_its_case_is_the_new_look(tmp_p
     assert steward.run(home).status == "idle"
     status = steward.premise_rotation_status(home)
     assert (status.due, status.reviewed_30d) == (0, 1)
+
+
+def test_the_contract_and_the_method_describe_the_review():
+    from self_learn import steward_prompt, worker
+
+    contract = " ".join(steward_prompt._render_output_contract().split())
+    assert "A PREMISE-REVIEW INPUT is a placed lesson back to be re-read whole" in contract
+    assert "a `set` is required when it records no premises" in contract
+    method = " ".join(
+        (worker.package_skill_refs() / "steward-method.md").read_text(encoding="utf-8").split()
+    )
+    assert "**A `premise-review` input** is a placed lesson that comes back to be re-read whole" in method
+    assert "the runner refuses a `replace`, `retire`, `route`, `reject` or `restore-region` line" in method

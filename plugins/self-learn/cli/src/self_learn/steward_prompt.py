@@ -1458,6 +1458,16 @@ def _premise_lines() -> list[str]:
         "  false: write it with the probe that shows it; its first value is recorded as",
         "  contradicting the claim and the lesson comes back the next night as a premise-moved",
         "  input. When no probe can show it, park the case (`authority-unclear`).",
+        # S-NEXT-rotation (02 §3a.10.4, §3a.10.7): the rotation.
+        "  A PREMISE-REVIEW INPUT is a placed lesson back to be re-read whole (about every 90",
+        "  days, or now because a probe of it is broken); nothing was observed to change. Decide",
+        "  it like an extract: a `kind: resolution` case with `outcome: no-action` and no",
+        "  `supersedes`, holding on the lesson at most one `premises` line (`set` or",
+        "  `rebaseline`; a `set` is required when it records no premises) and at most one",
+        "  `note` (which sentences you checked against what). Fix or drop a broken probe with",
+        "  `set`. The runner refuses any other line on it. A sentence you find false: write the",
+        "  premise whose probe shows it, and the lesson comes back as a premise-moved input; when",
+        "  no probe can show it, park the case (`authority-unclear`).",
         # S-104 (02 §3a.10.3, §3a.10.7)
         "  A PLACEMENT premise (`@reach`, `@writable`, `@intact`; method section 17) is derived",
         "  by code for every placed lesson and never written: nothing to rebaseline. On an",

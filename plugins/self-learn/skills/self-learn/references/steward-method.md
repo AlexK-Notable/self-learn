@@ -634,6 +634,34 @@ comes back to you the next night as a `premise-moved` input, decided as
 below, where changing it is yours. When no probe can show it, park the case
 (`authority-unclear`) with what you found.
 
+**A `premise-review` input** is a placed lesson that comes back to be
+re-read whole: every placed lesson does, about once every 90 days after it
+was last looked at, and a lesson whose probe could not observe anything on
+three daily checks running comes at once. Nothing was observed to change.
+The question is whether every sentence is still true and still relevant as
+a session would meet it now, not only the sentences a premise watches, and
+whether its premises would notice the next change. The brief shows why it
+is here, each premise with what the daily check last saw, where the lesson
+sits, the "What would change this decision" lines of the cases that cover
+it, and what recurred since the last look. Decide it as you would an
+extract: a `kind: resolution` case with `outcome: no-action` that
+supersedes nothing, holding on the lesson at most one `premises` line
+(`set` or `rebaseline`) and at most one `note`. When everything holds, one
+`note` saying which sentences you checked against what is the answer; add
+a `premises` line when a premise is missing, wrong or too narrow, and fix
+or drop a broken probe with `premises set`. A lesson that records no
+premises must get them here (`premises set`, or `[]`). Do not change the
+lesson in this case: the runner refuses a `replace`, `retire`, `route`,
+`reject` or `restore-region` line on it, because the authority to change a
+placed lesson comes with a `premise-moved` input. A sentence you find false
+goes the extract's way: write the premise that shows it (a `which`,
+`package` or `path` premise for a tool that is gone; a `ledger` premise on
+a corrected statement or a lesson that supersedes it); its first value is
+recorded as contradicting the claim, and the lesson comes back the next
+night as a `premise-moved` input. When no probe can show it (behaviour, or
+an overlap with another placed lesson, which is the overseer's merge), park
+the case (`authority-unclear`) with what you found.
+
 **A `premise-moved` input** is a placed lesson where something it rests on
 changed. Its brief says what, with the record's own lines to cite: a
 premise with its recorded value, today's value and when each was seen (a
