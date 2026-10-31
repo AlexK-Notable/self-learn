@@ -269,6 +269,27 @@ _REPLACE_RULES = (
 )
 
 
+#: C4 (S-NEXT-cures-f): what the overseer may do about a lesson a person
+#: rejected. Phase B's README only.
+_RESTATE_RULES = (
+    "A lesson a person rejected stays rejected: a `reopen` line for one is refused, and a",
+    "kind: reconsider successor may not supersede a case a person recorded. When you think",
+    "such a lesson is right, or right in a corrected form, you have two ways. (1) A",
+    "`restate` line, in a named kind: maintenance pair, writes the corrected lesson as a NEW",
+    "pending lesson (trigger + instruction, or fact; `because` says what you corrected and",
+    "why); the old lesson is left exactly as it is, gains a note pointing at the new one,",
+    "and the steward decides the new lesson like any other pending lesson, with the old",
+    "lesson's evidence. Use it only for a lesson that is rejected or retired: a pending,",
+    "deferred or placed lesson is corrected with `replace`. Give the case outcome",
+    "no-action, name the old lesson in its records, and quote the old text and the evidence",
+    "that shows what was wrong. Never write the same words the person rejected; restate",
+    "only a version that answers what the evidence shows. (2) A question in questions.yaml",
+    "(kind: ask) that names the lesson and the case that rejected it, when what decides it",
+    "is the user's own preference. See case-restate-example.yaml with",
+    "sheet-restate-example.yaml.",
+)
+
+
 def _rules(phase: str) -> str:
     from . import run
 
@@ -385,6 +406,8 @@ def _rules(phase: str) -> str:
             "case-always-loaded-example.yaml.",
             "",
             *_REPLACE_RULES,
+            "",
+            *_RESTATE_RULES,
             "",
             # E3a: the passage on writing a lesson, inlined (never a pointer).
             # Phase B only: phase A selects cases and writes no lesson text.
@@ -637,6 +660,34 @@ def phase_b_examples() -> dict[str, str]:
                     "Restart it with systemctl --user restart; it is a user unit."
                 ),
                 "because": DoubleQuotedScalarString("the command was wrong"),
+                "close_call": False,
+            }],
+        }),
+        # C4 (S-NEXT-cures-f): a corrected version of a rejected lesson, as a
+        # new pending lesson. The old lesson is left as it is, so the case
+        # decides nothing about it (`no-action`).
+        "case-restate-example.yaml": _dump({
+            "kind": "maintenance", "trigger": "weekly", "outcome": "no-action",
+            "records": [EXAMPLE_RECORD], "scope": "skill:example",
+            "question": "A person rejected this lesson; the evidence shows it was right about the problem and wrong about the cause. Should a corrected version be proposed?",
+            "evidence": [
+                {"ref": f"record:{EXAMPLE_RECORD}", "quote": "Instruction: delete the cache directory before every build"},
+                {"ref": "transcript:example-session#L52", "quote": "the stale object file was the cause, not the cache"},
+            ],
+            "decision": {
+                "because": "The rejected line blamed the cache; the transcript shows a stale object file. The corrected lesson names the real cause and leaves the person's reject in place.",
+                "confidence": "provisional",
+            },
+        }),
+        "sheet-restate-example.yaml": _dump({
+            "version": 1,
+            "items": [{
+                "id": EXAMPLE_RECORD, "verb": "restate",
+                "trigger": DoubleQuotedScalarString("A build fails with an error that names an object file."),
+                "instruction": DoubleQuotedScalarString(
+                    "Delete that object file and rebuild before suspecting the cache."
+                ),
+                "because": DoubleQuotedScalarString("the rejected lesson named the wrong cause; the transcript shows the right one"),
                 "close_call": False,
             }],
         }),

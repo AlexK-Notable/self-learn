@@ -426,6 +426,21 @@ def render_record(record: Record, *, path: str | None, head: str | None, bucket:
         )
     if path:
         lines.append(f"[record] ledger@{(head or 'HEAD')[:12]}:{path}")
+    # C4 (S-NEXT-cures-f): a pending lesson the overseer wrote as the corrected
+    # version of a lesson that was rejected or retired says so, with the
+    # overseer's reason, so the steward decides it on its merits and knows what
+    # the earlier decision was. Only the note the verb writes (its key starts
+    # `restate-` and whose text starts `restates `; the closed lesson's own
+    # note back to the new one reads `restated as`), never a note by someone
+    # else.
+    for entry in record.notes:
+        if (
+            isinstance(entry, dict)
+            and entry.get("by") == "overseer"
+            and str(entry.get("key") or "").startswith("restate-")
+            and str(entry.get("text") or "").startswith("restates ")
+        ):
+            lines.append(f"[restated by the overseer] {_one_line(entry.get('text'))}")
     sections = _section_lines(record.to_text())
     for name in _LESSON_SECTIONS.get(record.type, ()):
         found = sections.get(name)

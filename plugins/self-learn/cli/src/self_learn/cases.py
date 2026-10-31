@@ -1830,7 +1830,7 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
                     detail = item.get("detail")
                     made_suffix = (
                         f"; {' '.join(str(detail).split())}"
-                        if verb == "replace" and detail
+                        if verb in ("replace", "restate") and detail
                         and state in ("applied", "already-applied")
                         else ""
                     )

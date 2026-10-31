@@ -72,6 +72,7 @@ __all__ = [
     "REFUSAL_KINDS",
     "REFUSED_HOOK_DESTINATION",
     "REPLACE_REFUSED_ACTORS",
+    "RESTATE_REFUSED_ACTORS",
     "BatchError",
     "BatchContinuation",
     "BookkeepingHalt",
@@ -166,6 +167,17 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
             "type", "kind", "to", "dest", "rules_paths", "because", "note", "by",
         }
     ),
+    # S-NEXT-cures-f (C4): a corrected version of a CLOSED lesson (rejected or
+    # retired), written as a new pending lesson; the closed lesson stays as it
+    # is. The text keys as on `replace`; `to` in the rehome grammar names the
+    # new lesson's bucket (default: the closed lesson's own). No `dest`: the
+    # steward places it. The overseer's verb (`RESTATE_REFUSED_ACTORS`).
+    "restate": frozenset(
+        {
+            "trigger", "instruction", "fact", "context", "type", "kind", "to",
+            "because", "note", "by",
+        }
+    ),
 }
 PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
 #: No sheet aliases remain after graduate was removed on 2026-10-24.
@@ -203,6 +215,9 @@ REQUIRED_KEYS: dict[str, frozenset[str]] = {
     # E1: `because` plays revise's role (the commit body); the one-of check
     # on the text keys is the verb's (`verbs._replace_text_sections`).
     "replace": frozenset({"because"}),
+    # S-NEXT-cures-f: `because` plays `replace`'s role (the commit body and the
+    # two notes); the one-of check on the text keys is the verb's.
+    "restate": frozenset({"because"}),
 }
 
 #: S-29 / Y-17: never accepted inside a sheet, by name — a hook route
@@ -248,13 +263,39 @@ REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
 #: again, in the run, the preview and the contract alike. A person's sheet
 #: (`human`) and `self-learn replace` never pass through here.
 REPLACE_REFUSED_ACTORS: frozenset[str] = frozenset()
+#: S-NEXT-cures-f (C4): the actors a `restate` line is refused for by name,
+#: and for whom it is hidden from the generated contract. The steward decides
+#: pending lessons and never writes one: a restated lesson is the overseer's to
+#: write (or a person's, through a sheet run as `human`) and the steward's to
+#: decide, so no actor both writes and decides it. `_dispatch` and `dry_run`
+#: both read this ONE set.
+RESTATE_REFUSED_ACTORS: frozenset[str] = frozenset({"steward"})
 
 
 def agent_refused_verbs(actor: str) -> frozenset[str]:
     """The sheet verbs refused for *actor* by name, and so left out of the
     contract its runner shows it: ``replace`` while
-    :data:`REPLACE_REFUSED_ACTORS` names the actor (E1 fold 1)."""
-    return frozenset({"replace"}) if actor in REPLACE_REFUSED_ACTORS else frozenset()
+    :data:`REPLACE_REFUSED_ACTORS` names the actor (E1 fold 1), and
+    ``restate`` while :data:`RESTATE_REFUSED_ACTORS` does (S-NEXT-cures-f)."""
+    refused: set[str] = set()
+    if actor in REPLACE_REFUSED_ACTORS:
+        refused.add("replace")
+    if actor in RESTATE_REFUSED_ACTORS:
+        refused.add("restate")
+    return frozenset(refused)
+
+
+def _refuse_agent_restate(item: "SheetItem", actor: str) -> None:
+    """Raise the refusal of a ``restate`` line for an actor
+    :data:`RESTATE_REFUSED_ACTORS` names -- a :class:`verbs.SheetLineError`,
+    kind ``bad-line``. Keyed on the runner's *actor*, never the line's
+    ``by:``. The ONE sentence `_dispatch` and `dry_run` both show."""
+    if item.verb == "restate" and actor in RESTATE_REFUSED_ACTORS:
+        raise verbs.SheetLineError(
+            f"{item.id}: `restate` is refused for the {actor} "
+            "(batch.RESTATE_REFUSED_ACTORS); decide this lesson with route, revise, "
+            "reject, defer or replace, or park it"
+        )
 
 
 def _refuse_agent_replace(item: "SheetItem", actor: str) -> None:
@@ -763,7 +804,7 @@ def load_sheet(path: Path | str, *, home: Path | str | None = None) -> Sheet:
             )
         shape = (
             _route_shape_problem(raw) if verb == "route"
-            else _replace_shape_problem(raw) if verb == "replace"
+            else _replace_shape_problem(raw) if verb in ("replace", "restate")
             else None
         )
         if shape is not None:
@@ -1055,6 +1096,12 @@ def classify(
         # text, and every `also` lesson reads `superseded_by` that same lesson. A
         # half-applied merge is not applied: the verb finishes it.
         return replace_made(home, item.id, f) is not None
+    if verb == "restate":
+        # S-NEXT-cures-f (C4): applied iff the closed lesson already carries
+        # the note this line's text leaves (`verbs.restate_applied`). The state
+        # is the old lesson's, not the new one's: the new lesson may be decided
+        # (or rejected again) by now, and the line is still applied.
+        return verbs.restate_applied(home, item.id, f)
     if verb == "revise":
         # U3 (carried from the U4 gate, gate-u4-r1.md F5): `revise` was
         # added to PERMITTED_VERBS by U4 without a `classify` branch, so
@@ -1375,6 +1422,36 @@ def _dispatch_replace(
     )
 
 
+def _dispatch_restate(
+    home: Path,
+    item: SheetItem,
+    *,
+    actor: str,
+    execution: execution_evidence.ExecutionRef | None,
+) -> "ItemResult":
+    """S-NEXT-cures-f (C4): the ``restate`` leg of :func:`_dispatch`, factored
+    out like its siblings. The actor's by-name refusal runs first
+    (:data:`RESTATE_REFUSED_ACTORS`). ``by`` defaults to the runner's actor for
+    a non-human runner (it names the author of the new lesson's note). A
+    refusal raises to :func:`_dispatch`, which maps it like every other
+    verb's. The receipt line names the lesson it made, as a replace's does."""
+    _refuse_agent_restate(item, actor)
+    f = item.fields
+    result = verbs.restate_lesson(
+        home, item.id, because=f["because"],
+        trigger=f.get("trigger"), instruction=f.get("instruction"),
+        fact=f.get("fact"), context=f.get("context"),
+        type=f.get("type"), kind=f.get("kind"), to=f.get("to"), note=f.get("note"),
+        by=(f.get("by") or (actor if actor != "human" else None)),
+        no_push=True, execution=execution, actor=actor,
+    )
+    return ItemResult(
+        n=item.n, id=item.id, verb=item.verb, rc=0, sha=result.commit_sha,
+        state="applied", warnings=list(result.warnings),
+        detail=_replace_detail(result.new_record_id, None),
+    )
+
+
 def _sheet_follow_up(f: dict) -> dict | None:
     """A route line's follow-up keys as the verb's ``follow_up`` mapping
     (moved out of :func:`_dispatch` unchanged, E1: its `replace` branch
@@ -1583,6 +1660,9 @@ def _dispatch(
                 home, item.id, note=f.get("note"), by=(f.get("by") or actor),
                 no_push=True,
                 execution=execution,
+                # S-NEXT-cures-f: the runner's actor (never the line's `by:`)
+                # decides whether a person's rejection may be reopened.
+                actor=actor,
             )
         elif verb == "retire":
             # Keep retirement dispatch in a helper to stay within pyright's
@@ -1648,6 +1728,8 @@ def _dispatch(
             )
         elif verb == "replace":
             return _dispatch_replace(home, item, actor=actor, execution=execution)
+        elif verb == "restate":
+            return _dispatch_restate(home, item, actor=actor, execution=execution)
         elif verb == "revise":
             # U3 (carried from the U4 gate): U4 added `revise` to
             # PERMITTED_VERBS/PERMITTED_KEYS/REQUIRED_KEYS but this
@@ -1914,9 +1996,15 @@ def _preview_undefer(
 
 
 def _preview_reopen(
-    home: Path, item: SheetItem, by: str | None, rc: str | None
+    home: Path, item: SheetItem, by: str | None, rc: str | None,
+    actor: str = "human",
 ) -> None:
-    verbs._preflight_reopen(home, item.id, note=item.fields.get("note"), by=by)
+    """`reopen`'s own pre-lock checks. *actor* as `_dispatch` passes it
+    (:func:`_preview_checks` gives it): the overseer is refused a lesson a
+    person rejected, in the preview as in the run (S-NEXT-cures-f)."""
+    verbs._preflight_reopen(
+        home, item.id, note=item.fields.get("note"), by=by, actor=actor
+    )
 
 
 def _preview_retire(
@@ -2029,6 +2117,22 @@ def _preview_replace(
     )
 
 
+def _preview_restate(
+    home: Path, item: SheetItem, by: str | None, rc: str | None,
+    actor: str = "human",
+) -> None:
+    """S-NEXT-cures-f: the restate's own pre-lock checks
+    (`verbs._preflight_restate`), the closed lesson's status among them.
+    *actor* as `_dispatch_restate` passes it."""
+    f = item.fields
+    verbs._preflight_restate(
+        home, item.id, trigger=f.get("trigger"), instruction=f.get("instruction"),
+        fact=f.get("fact"), context=f.get("context"), type=f.get("type"),
+        kind=f.get("kind"), to=f.get("to"), because=f["because"], note=f.get("note"),
+        by=by, actor=actor,
+    )
+
+
 #: Each check raises the verb's refusal or returns; only `revise` returns
 #: something, the lesson as it would leave it (E0b).
 _PreviewCheck = Callable[[Path, SheetItem, str | None, str | None], Record | None]
@@ -2050,6 +2154,7 @@ _PREVIEW_CHECKS: dict[str, _PreviewCheck] = {
     "followup-done": _preview_followup_done,
     "revise": _preview_revise,
     "replace": _preview_replace,
+    "restate": _preview_restate,
 }
 
 #: What `_dispatch` turns into a refused item — a preview check raising one
@@ -2080,12 +2185,13 @@ def _preview_checks(
     returns: for a `revise`, the lesson as it would leave it."""
     _refuse_agent_shelf_cover(item, actor)
     _refuse_agent_replace(item, actor)
+    _refuse_agent_restate(item, actor)
     f = item.fields
     if item.verb == "replace":
         _refuse_agent_reference(
             item.id, verbs.replace_destination(home, item.id, f.get("dest")), actor
         )
-    if item.verb in ("revise", "replace"):
+    if item.verb in ("revise", "replace", "restate"):
         by = f.get("by") or (actor if actor != "human" else None)
     else:
         by = f.get("by") or actor
@@ -2098,6 +2204,10 @@ def _preview_checks(
         )
     if item.verb == "replace":
         return _preview_replace(home, item, by, reconsider_case, actor=actor)
+    if item.verb == "restate":
+        return _preview_restate(home, item, by, reconsider_case, actor=actor)
+    if item.verb == "reopen":
+        return _preview_reopen(home, item, by, reconsider_case, actor=actor)
     return _PREVIEW_CHECKS[item.verb](home, item, by, reconsider_case)
 
 

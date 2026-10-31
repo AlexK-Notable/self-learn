@@ -241,13 +241,19 @@ class TestPhaseBoundary:
         the same membership pin sits beside the count.
 
         2026-10-24 (02-schema §2): 18 returns to 17 when the one-release
-        graduate alias is removed; retire retains its membership pin."""
+        graduate alias is removed; retire retains its membership pin.
+
+        S-NEXT-cures-f (2026-10-31, C4): 17 grows to 18 -- `restate` joins,
+        the overseer's way to write a corrected version of a closed lesson as
+        a new pending lesson. Not a Phase-2 verb; the membership pin sits
+        beside the count."""
         phase2_verbs = {"reroute", "followup-add", "reclassify", "host remove", "bucket prune"}
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
         assert "revise" in batch.PERMITTED_VERBS  # U4: the one deliberate addition
         assert "retire" in batch.PERMITTED_VERBS  # S-67: the other deliberate addition
         assert "replace" in batch.PERMITTED_VERBS  # E1 (2026-10-10): the third
-        assert len(batch.PERMITTED_VERBS) == 17
+        assert "restate" in batch.PERMITTED_VERBS  # S-NEXT-cures-f (C4): the fourth
+        assert len(batch.PERMITTED_VERBS) == 18
 
     def test_phase1_touches_no_host(self, tmp_path, monkeypatch):
         """PH2: a fixture with a registered host (env's ``host_a``) runs

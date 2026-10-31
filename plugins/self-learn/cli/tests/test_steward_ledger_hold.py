@@ -311,6 +311,25 @@ def _row_replace_also(env, tmp):
             "instruction": "Stop the container first."}, B, None
 
 
+def _row_restate(env, tmp):
+    """S-NEXT-cures-f (C4): `restate` writes a new pending lesson beside a
+    closed one. The batch refuses it to the steward by name
+    (`batch.RESTATE_REFUSED_ACTORS`), so this row has no positive control
+    through the steward's runner: see `_STEWARD_REFUSED_ROWS`."""
+    _pending(env, A)
+    verbs.reject(env.ledger, A, no_push=True)
+    return {"id": A, "verb": "restate", "because": "the rejected line named the wrong cause",
+            "trigger": "About to edit the store while it runs.",
+            "instruction": "Stop the container first."}, A, None
+
+
+#: The rows whose verb the steward is refused by name, whoever holds the
+#: lesson: they have no "applies when free" control through the steward's own
+#: runner, and the walker drives them in
+#: `test_a_verb_refused_to_the_steward_by_name_changes_nothing`.
+_STEWARD_REFUSED_ROWS = frozenset({"restate"})
+
+
 _ROWS = {
     "route": _row_route,
     "route-collapse-loser": _row_route_collapse_loser,
@@ -335,6 +354,7 @@ _ROWS = {
     "revise": _row_revise,
     "replace": _row_replace,
     "replace-also": _row_replace_also,
+    "restate": _row_restate,
 }
 
 #: The `verbs` function behind each row the batch runner dispatches. Pinned,
@@ -359,6 +379,7 @@ _DISPATCH_FN_ROWS = {
     "followup_done": ["followup-done"],
     "revise": ["revise"],
     "replace_lesson": ["replace", "replace-also"],
+    "restate_lesson": ["restate"],
 }
 
 #: Every sheet key, by what it names. A key that names another lesson is
@@ -552,7 +573,7 @@ def test_the_walker_drives_every_steward_write_path_the_code_has():
     assert direct_writers == set(), direct_writers
 
 
-@pytest.mark.parametrize("row", sorted(_ROWS))
+@pytest.mark.parametrize("row", sorted(set(_ROWS) - _STEWARD_REFUSED_ROWS))
 def test_the_ledger_refuses_the_steward_every_write_to_a_held_lesson(
     tmp_path, row, claude_dir, monkeypatch
 ):
@@ -594,6 +615,39 @@ def test_the_ledger_refuses_the_steward_every_write_to_a_held_lesson(
     assert _snapshot(env, claude_dir) == before
     assert find_record_path(env.ledger, lesson).read_bytes() == record_before
     assert _awaiting(env.ledger) == [parked]
+
+
+@pytest.mark.parametrize("row", sorted(_STEWARD_REFUSED_ROWS))
+def test_a_verb_refused_to_the_steward_by_name_changes_nothing(
+    tmp_path, row, claude_dir
+):
+    """S-NEXT-cures-f: a verb `batch.agent_refused_verbs("steward")` names has
+    no path through the steward at all -- free or held, the line is refused
+    `bad-line` by name and nothing changes. Positive control: the same line
+    through the overseer's runner on the same ledger applies, so it is the
+    actor that is refused, not the line. The verbs the walker's row table
+    holds for the steward are exactly the ones that are not in this set."""
+    assert {"restate"} == set(batch.agent_refused_verbs("steward"))  # the set this row stands for
+    env = make_env(tmp_path / "ctl")
+    line, _lesson, case = _ROWS[row](env, tmp_path / "ctl")
+    sheet = tmp_path / "ctl" / "sheet.yaml"
+    _dump_yaml(sheet, {"version": 1, "items": [line]})
+    (done,) = batch.run(
+        env.ledger, batch.load_sheet(sheet, home=env.ledger), no_push=True, actor="overseer"
+    ).items
+    assert (done.state, done.rc) == ("applied", 0), done  # control: the line is sound
+
+    for label in ("free", "held"):
+        env = make_env(tmp_path / label)
+        line, lesson, case = _ROWS[row](env, tmp_path / label)
+        if label == "held":
+            _person_parks(env.ledger, [lesson], tmp_path / label)
+        telemetry.flush(env.ledger)
+        before = _snapshot(env, claude_dir)
+        got = _drive(env, tmp_path / label, line, case)
+        assert (got.state, got.kind) == ("refused", "bad-line"), (label, got)
+        assert "refused for the steward" in str(got.detail), got.detail
+        assert _snapshot(env, claude_dir) == before, label
 
 
 def test_a_person_and_the_overseer_are_never_refused_by_the_hold(tmp_path):
