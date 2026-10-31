@@ -1007,6 +1007,32 @@ class TestWhichAndLedger:
         assert no_ledger.state == OBS_UNAVAILABLE
 
 
+    def test_a_ledger_home_that_is_not_a_directory_says_there_is_no_ledger_to_read(self, tmp_path):
+        """Integration mutation gap (M5b): the `is_dir` guard in `_probe_ledger`.
+        Without it a wrong home (missing, or a plain file) falls through to the
+        lookups, which also come back `unavailable` but blame the id ("not in this
+        ledger") or a read error, as if the ledger were right and the record gone.
+        The guard names the real cause for lesson and statement refs alike."""
+        home = make_home(tmp_path)
+        ledger_ops.create_record(home, make_behavior(scope="skill:s", record_id="lrn-0000000b"))
+        (home / "user-statements.jsonl").write_text(
+            json.dumps({"id": "stmt-0000000b"}) + "\n", encoding="utf-8"
+        )
+        now = lambda: "2026-10-30T00:00:00Z"  # noqa: E731
+        right = ProbeEnv(home=tmp_path, ledger_home=home, now=now)
+        # positive control: both refs are readable against the right home
+        for target, shown in (("lrn-0000000b", "pending"), ("stmt-0000000b", "current")):
+            seen = premises.run_probe({"kind": "ledger", "ref": target}, right)
+            assert (seen.state, seen.shown) == (OBS_OK, shown), target
+        a_file = tmp_path / "a-file"
+        a_file.write_text("not a ledger\n", encoding="utf-8")
+        for wrong_home in (tmp_path / "no-ledger-here", a_file):
+            wrong = ProbeEnv(home=tmp_path, ledger_home=wrong_home, now=now)
+            for target in ("lrn-0000000b", "stmt-0000000b", "lrn-0000000b#follow_up"):
+                seen = premises.run_probe({"kind": "ledger", "ref": target}, wrong)
+                assert seen.state == premises.OBS_UNAVAILABLE, (wrong_home, target)
+                assert "no ledger to read" in seen.reason, (wrong_home, target, seen.reason)
+
 # ================================================= in-process probe bounds
 
 
