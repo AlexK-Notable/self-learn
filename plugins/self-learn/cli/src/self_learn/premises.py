@@ -1321,7 +1321,9 @@ class ProbeEnv:
     at :data:`PROBE_TIMEOUT`. ``now``: the clock observations are stamped
     with. ``mounts``: reads the :class:`MountTable` (tests inject one);
     it is read at most once per env (:meth:`mount_table`), and the sweep
-    makes one env per sweep."""
+    makes one env per sweep. ``denied_roots``: directories no probe of this
+    env may read or stat (the steward's read fence on the kept session
+    copies, S-NEXT-probes-chain); checked on the resolved path."""
 
     home: Path = field(default_factory=_process_home)
     path_env: str = field(default_factory=_process_path)
@@ -1331,6 +1333,7 @@ class ProbeEnv:
     timeout: float = PROBE_TIMEOUT
     now: Callable[[], str] = chrono.now_iso
     mounts: Callable[[], MountTable] = read_mount_table
+    denied_roots: tuple[str, ...] = ()
     _mount_cache: list = field(default_factory=list, init=False, repr=False, compare=False)
 
     def mount_table(self) -> MountTable:
@@ -1612,11 +1615,27 @@ def _home_problem(path: str, env: ProbeEnv) -> _Unavailable | None:
     return None
 
 
-def _resolved_problem(real: str, *, reads_content: bool) -> _Unavailable | None:
+def _denied_problem(real: str, env: ProbeEnv) -> _Unavailable | None:
+    """S-NEXT-probes-chain: the caller's own read fence
+    (:attr:`ProbeEnv.denied_roots`), checked on the RESOLVED path beside
+    the credential rules, so a link into a fenced tree is refused like the
+    tree itself. A refusal says only that the path is fenced, never
+    whether anything is there."""
+    for root in env.denied_roots:
+        try:
+            fenced = os.path.realpath(root)
+        except (OSError, ValueError):
+            fenced = os.path.normpath(root)
+        if _covers(fenced, os.path.normpath(real)):
+            return _Unavailable("refused: the path lies in a directory this caller may not read")
+    return None
+
+
+def _resolved_problem(real: str, *, reads_content: bool, env: ProbeEnv) -> _Unavailable | None:
     problem = credential_path_problem(real, reads_content=reads_content)
     if problem is not None:
         return _Unavailable(f"the path resolves to a refused location: {problem}")
-    return None
+    return _denied_problem(real, env)
 
 
 def _covers(point: str, target: str) -> bool:
@@ -1699,7 +1718,7 @@ def _read_file(path: str, env: ProbeEnv) -> bytes | _Unavailable:
         real = os.path.realpath(expanded)
     except (OSError, ValueError) as exc:
         return _Unavailable(f"cannot resolve the path ({type(exc).__name__})")
-    refused = _resolved_problem(real, reads_content=True)
+    refused = _resolved_problem(real, reads_content=True, env=env)
     if refused is not None:
         return refused
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC | os.O_NOFOLLOW
@@ -1769,7 +1788,7 @@ def _probe_path(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
         target = os.path.join(os.path.realpath(parent), name)
     except (OSError, ValueError) as exc:
         return _Unavailable(f"cannot resolve the path ({type(exc).__name__})")
-    refused = _resolved_problem(target, reads_content=False)
+    refused = _resolved_problem(target, reads_content=False, env=env)
     if refused is not None:
         return refused
     try:
@@ -1946,6 +1965,9 @@ def _probe_git_file(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     problem = credential_path_problem(real_repo, reads_content=True)
     if problem is not None:
         return _Unavailable(f"the repository resolves to a refused location: {problem}")
+    denied = _denied_problem(real_repo, env)
+    if denied is not None:
+        return denied
     if not os.path.isdir(real_repo):
         absent = _absent_mount(real_repo, env) if not os.path.lexists(real_repo) else None
         return absent if absent is not None else _Unavailable("the repository path is not a directory")

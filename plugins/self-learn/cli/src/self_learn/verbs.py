@@ -11057,8 +11057,12 @@ PREMISE_RUNNER_KEYS = frozenset({"baseline", "decided_at"})
 def _premise_probe_env(home: Path) -> premises_mod.ProbeEnv:
     """The environment the verb's probes run in: this machine, and *home*
     as the ledger a ``ledger`` probe reads. The one seam tests replace (a
-    fake command runner), so no test ever runs ``systemctl`` or ``pacman``."""
-    return premises_mod.ProbeEnv(ledger_home=home)
+    fake command runner), so no test ever runs ``systemctl`` or ``pacman``.
+    Fenced like the sweep (``premise_sweep.fenced_roots``): no probe reads
+    the kept session copies (S-NEXT-probes-chain)."""
+    from . import premise_sweep  # late: premise_sweep imports this module
+
+    return premises_mod.ProbeEnv(ledger_home=home, denied_roots=premise_sweep.fenced_roots(home))
 
 
 def premises_line_problem(action: object, premises: object, ids: object) -> str | None:

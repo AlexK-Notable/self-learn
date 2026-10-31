@@ -335,7 +335,11 @@ class PremiseProbeTool:
     ``lesson`` call reads and where ``ledger`` probes read); *env* is the
     probe environment (tests inject a fake command runner and a scratch
     home; ``None`` is the real one); *placement* is U8's reader, or
-    ``None``."""
+    ``None``; *denied_roots* are the directories the calling session may
+    not read (the steward's fence on the kept session copies,
+    ``Containment.read_denied``): no probe of this tool reads or stats
+    anything under them (S-NEXT-probes-chain), or a ``file-match`` would
+    be a yes/no oracle on another run's session."""
 
     def __init__(
         self,
@@ -343,17 +347,21 @@ class PremiseProbeTool:
         *,
         env: ProbeEnv | None = None,
         placement: PlacementReader | None = None,
+        denied_roots: Sequence[str | Path] = (),
     ) -> None:
         self.home = Path(home)
         self._env = env
         self._placement = placement
+        self._denied = tuple(str(root) for root in denied_roots)
         self._validator = Draft202012Validator(TOOL_DEFINITION["input_schema"])
 
     def probe_env(self) -> ProbeEnv:
         """The environment a call runs its probes in: always bound to this
-        tool's ledger, whatever an injected environment says."""
+        tool's ledger and fenced by this tool's denied roots, whatever an
+        injected environment says (an injected env's own roots are kept)."""
         base = self._env if self._env is not None else ProbeEnv()
-        return dataclass_replace(base, ledger_home=self.home)
+        denied = tuple(dict.fromkeys((*base.denied_roots, *self._denied)))
+        return dataclass_replace(base, ledger_home=self.home, denied_roots=denied)
 
     def tool(self) -> McpTool:
         async def handler(args: dict[str, Any]) -> ToolReply:
@@ -506,6 +514,10 @@ def build_toolset(
     *,
     env: ProbeEnv | None = None,
     placement: PlacementReader | None = None,
+    denied_roots: Sequence[str | Path] = (),
 ) -> McpToolset:
-    """The steward session's own tool: one server, one read-only tool."""
-    return PremiseProbeTool(home, env=env, placement=placement).toolset()
+    """The steward session's own tool: one server, one read-only tool.
+    *denied_roots*: the session's read fence, which the probes honour."""
+    return PremiseProbeTool(
+        home, env=env, placement=placement, denied_roots=denied_roots,
+    ).toolset()

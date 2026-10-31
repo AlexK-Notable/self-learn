@@ -109,6 +109,7 @@ __all__ = [
     "default_cache_dir",
     "doctor_rows",
     "enabled",
+    "fenced_roots",
     "is_due",
     "judge_placement",
     "judge_probe",
@@ -201,6 +202,17 @@ def default_cache_dir(home: Path | str) -> Path:
     from .serve import cache_dir_readonly
 
     return cache_dir_readonly(Path(home))
+
+
+def fenced_roots(home: Path | str) -> tuple[str, ...]:
+    """S-NEXT-probes-chain: the directories no premise probe of this
+    ledger reads or stats -- the kept copies of model sessions,
+    ``<cache>/sessions/`` (the steward's ``Containment.read_denied``, by
+    the same resolver, without creating the cache). The steward's tool
+    honours the session's own fence; the sweep and the ``premises`` sheet
+    verb's apply-time probes honour this, so a premise the steward writes
+    cannot read another run's session on a later night either."""
+    return (str(default_cache_dir(home) / "sessions"),)
 
 
 def observations_path(cache_dir: Path) -> Path:
@@ -1291,10 +1303,12 @@ def run(
         result.status = "idle"
     if unparseable:
         result.errors.append(f"{unparseable} record file(s) did not parse and were skipped")
+    base_env = env if env is not None else premises.ProbeEnv()
     probe_env = dataclasses.replace(
-        env if env is not None else premises.ProbeEnv(),
+        base_env,
         ledger_home=(env.ledger_home if env is not None and env.ledger_home else home),
         now=lambda: sweep_at,
+        denied_roots=tuple(dict.fromkeys((*base_env.denied_roots, *fenced_roots(home)))),
     )
 
     rows: list[dict] = []

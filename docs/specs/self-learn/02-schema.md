@@ -3462,7 +3462,14 @@ Every probe obeys these rules, enforced by the runner, not by the writer:
 3. **Credential paths are refused** when the premise is written: a basename of
    `.env` or `token.env`, `.credentials.json`, `hosts.yml`, an `id_*` key, and
    anything under `~/.ssh`. A path is absolute or starts with `~/`; a path
-   with a `..` part is refused.
+   with a `..` part is refused. *(S-NEXT-probes-chain:)* **No probe reads
+   the kept copies of model sessions** (`<cache>/sessions/`, the steward's
+   own read fence, `Containment.read_denied`): the runner refuses a path
+   whose resolved form lies there, a link into it included, as
+   `unavailable` ("the path lies in a directory this caller may not
+   read"), in the steward's `premise_probe` tool, the nightly sweep and
+   the `premises` verb's apply-time probes alike. Otherwise a `file-match`
+   would answer yes or no about another run's session.
 4. **`unavailable` is its own answer.** A probe that cannot read its target
    (file gone, unit unknown, `systemctl`/`pacman`/`git` missing, timeout,
    parse error) yields `unavailable`, which is never read as "unchanged" and

@@ -2588,8 +2588,12 @@ def _session_spec(
         # ledger this run decides for and writes nothing anywhere.
         # S-NEXT-probes-chain: a lesson's placement premises as the last
         # daily sweep judged them (the cache `placement_moves` reads).
+        # The probes honour the session's read fence on the kept session
+        # copies too: a `file-match` there would be a yes/no oracle on
+        # another run's session (S-NEXT-probes-chain).
         mcp_toolset=premise_tool.build_toolset(
             home, placement=_placement_reader(home),
+            denied_roots=containment.read_denied,
         ),
     )
 
