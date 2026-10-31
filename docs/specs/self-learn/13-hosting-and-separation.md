@@ -1746,6 +1746,84 @@ built the warning hooks; activation handles their event); O-2
 only decides *who* may approve and install a hook already compiled under
 whatever destination grammar exists at build time.
 
+## 7.5 Project notices (added 2026-10-31, S-NEXT-cures-d)
+
+**What problem.** Two facts end up outside the ledger with nobody to read them,
+both about ONE project: an overseer finding about a project's own code (the
+2026-10-25 finding on a shutdown watchdog sat five days until a person opened the
+weekly report), and the change S-89 leaves in a tracked file of a plain host when
+a retirement takes a lesson's line out of it ("a person commits it", with nothing
+telling the person). The weekly report and the pending count are the wrong place:
+a session working in that project needs the line, and a session elsewhere does
+not. The user agreed on 2026-10-30 ("i reviewed checkpoint 90. i agree with the
+decisions.") to the design's question Q3: one-line project notices at session
+start, shown only in sessions inside the project they name, each ending when
+done, when its condition clears, or after 14 days.
+
+**What a notice is.** One line about one project: `{id, project, text, source,
+created_at, run?, condition?, done_at?}` in one JSON file under
+`<cache>/home-<digest>/notices/<id>.json` (`notices.py`). It is CACHE, never the
+ledger: it carries a machine path, ends by itself, and is a hint, not a record. A
+lost cache loses the hint and nothing the ledger holds (the report still has the
+finding; the removal's warning still printed). One file per notice, so two writers
+never read-modify-write one file. Its id is `ntc-` and eight hex digits of a hash
+of the project, the source and a key (an overseer notice: its words; a code
+notice: the file), so the same finding written again by the next weekly run is
+the same notice: it does not start a new 14 days and does not come back after a
+person marked it done. A code notice is written only right after a removal changed
+the file: while the notice for that file is live a further removal leaves it as it
+is (two removals before a commit are one line, not two), and one that was marked
+done or ran out its days is replaced by a fresh one.
+
+**Where a session sees it.** A notice shows in a session whose working directory
+is the notice's project (a real path) or inside it, a git worktree of the project
+included, and nowhere else (containment is by path, so `proj2` is not inside
+`proj`). `self-learn status --fast` (the SessionStart hook's one call) carries
+`project_notices` (`{id, text, line}`, newest first, at most three) and
+`project_notices_more` (a count) ONLY when there is something to show; the hook
+`self-learn-pending.sh` prints each `line` and, when there are more, one line
+naming `self-learn notice list`. The line's wording lives in
+`notices.format_line`, once. A hook cannot fail a session on this: an absent or
+malformed field prints nothing.
+
+**How a notice ends.** Whichever comes first: (1) `self-learn notice done <id>`
+(a person's or an agent's word; cache only); (2) its condition clears; (3) 14 days
+after it was first made. A file older than 30 days is deleted by the next writer.
+
+**Two sources.**
+
+1. `source: overseer`. Phase B may write an optional `notices.yaml`,
+   `{notices: [{project, text, case?}]}`, beside its other files, and is given
+   `projects.yaml` (`{projects: [{name, path}]}`: every project bucket's recorded
+   path and every registered host, as real paths that exist). Each entry is
+   validated on its own, as findings are: `project` must be a path in that list (a
+   model cannot point a notice at a directory the ledger has never heard of),
+   `text` one sentence, one line of printable characters, at most 200, secret-
+   scanned, `case` a case id, at most five a run, no duplicates. An entry that
+   fails is dropped and named by its ordinal in the report's "Refused / could not
+   do" (never its words); a file that does not parse, or that the secret scan
+   matched, drops whole; none of it refuses a run. The notice rides in the run
+   record as `notices` and is written when the run finalizes, idempotently, so a
+   resumed run writes the same ones. A dry run writes none.
+2. `source: code`. When a plain host's retirement or reroute leaves a TRACKED file
+   changed (S-89, `verbs._settle_tracked_removals` answers the changed files), the
+   host phase writes one notice per file: "self-learn left an uncommitted change
+   in this repo's `<file>` (it took a lesson out): review it and commit it." Its
+   condition is that `git status --porcelain` still reports the file changed.
+
+**What reading costs.** `status --fast` stays git-free in every directory outside a
+notice's project: a notice for another project costs a path comparison. Only a
+`code` notice INSIDE the current project asks git one bounded question (that one
+file, `GIT_OPTIONAL_LOCKS=0` so no index lock, 1.5 s, at most six asks); an answer
+that cannot be had keeps the notice, and the 14 days bound it.
+
+**What it does not do.** Decide anything, write the ledger, or touch a host file.
+`notice list [--all] [--json]` and `notice done` take no commit lock: they only
+read and mark the cache. The text of an overseer notice is model output printed
+into a session, so it is held to one clean line, secret-scanned, validated again
+when read, and printed with the `self-learn:` prefix; it is the overseer's reading
+and is not a user instruction.
+
 ## 8. Invariants
 
 - **H-1** · One ledger home per machine, explicit (`~/.self-learn` or

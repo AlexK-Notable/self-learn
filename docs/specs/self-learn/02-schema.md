@@ -813,6 +813,20 @@ The census is stored in the run record as `hand_steps` (`state`, `reason`, `tota
 made before this field has none and its report is published as the overseer wrote it.
 The report's length guide counts the overseer's own lines, not the runner's.
 
+*(Added 2026-10-31, S-NEXT-cures-d.)* **Phase B's optional `notices.yaml`.** Phase B's
+stage also holds `projects.yaml` (`{projects: [{name, path}]}`: the paths of every
+project bucket (`projects/<slug>/meta.yaml`) and registered host that exist, as real
+paths; a secret-scan hit makes it `projects: []`), and phase B MAY write
+`notices.yaml`, `{notices: [{project, text, case?}]}`. It is not a required output
+file: a run without it is complete. The runner keeps an entry whose `project` is one
+of those paths, whose `text` is one line of at most 200 printable characters with no
+secret-scan hit, whose `case` (when present) is a case id, and which is not a
+repeat, up to five a run; every other entry is dropped and named by ordinal in
+"Refused / could not do". The kept entries are stored in the run record as `notices`
+(`{project, text, case?}` each; a record made before this field has none) and
+written to the cache as project notices when the run finalizes (13 §7.5). A
+`notices.yaml` the secret scan matches is replaced in the stage by `notices: []`.
+
 *(Added 2026-09-27.)* **Findings.** Phase B's staged `findings.yaml` is
 `{findings: [{case, kind: examined|dependency-moved, text, ref?}]}`. The runner
 validates each finding on its own and DROPS one that fails (unknown keys, a case

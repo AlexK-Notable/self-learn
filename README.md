@@ -31,11 +31,14 @@ plugins/self-learn/
                         overseer/ — the weekly overseer runner, population sampler,
                         hook-activation path, question conversation, and catalogue-health
                         checks (S-66)
+                        notices.py — one-line project notices shown at session start,
+                        only inside the project they name (S-NEXT-cures-d)
   ui/                    the G-3 web adjudication surface (uv project; localhost, systemd service)
   skills/self-learn/    SKILL.md + references (routing doctrine, card registry, steward method)
   commands/             /self-learn:review, /self-learn:teach, /self-learn:overseer
   hooks/                self-learn-pending.sh (SessionStart pending-count line;
-                        also names the overseer's open interpretation questions)
+                        also names the overseer's open interpretation questions and
+                        the project notices for the directory the session is in)
                         self-learn-refread.sh (PostToolUse reference-read observer)
   scripts/self-learn    ~/.local/bin shim (readlink -f → uv run against cli/)
   scripts/self-learn-ui        ~/.local/bin shim (readlink -f → uv run against ui/; `serve` = the systemd entry point)

@@ -252,6 +252,12 @@ NOT_REPO_TRUTH = {
     # only ledger write (the `on_change: refresh` re-baseline) is
     # `premise_sweep._refresh_record`, which takes the commit lock itself.
     "premise_sweep._write_cache_file": "XDG cache: <cache>/premises/observations.jsonl and sweep.json, the premise sweep's history and last-run marker; never ledger truth",
+    # S-NEXT-cures-d: project notices, one JSON file each under
+    # <cache>/notices/ -- `_store` writes one (atomic), `_discard` deletes one
+    # past its 30 days. A hint about one project that ends by itself, never
+    # ledger truth: a lost cache loses the hint and nothing the ledger holds.
+    "notices._store": "XDG cache: <cache>/notices/<id>.json, one project notice per file (S-NEXT-cures-d); a hint that ends by itself, never ledger truth",
+    "notices._discard": "XDG cache: unlinks one expired <cache>/notices/<id>.json (S-NEXT-cures-d)",
     "steward._write_json": "XDG cache: steward run recovery records and batch-result replay files",
     "steward._dump_yaml": "XDG cache: model stage normalization below steward/runs/<run_id>",
     # 2026-09-27 (fail-state audit finding 3): the per-pair stage check
@@ -919,6 +925,9 @@ _ARGV_FOR = {
     "_cmd_doctor_premises": None,  # driven through _cmd_doctor (S-NEXT-u2-sweep's
     # `doctor premises`): reads the sweep's cache and the ledger, writes
     # nothing, never touches the ledger's commit_lock.
+    "_cmd_notice": None,  # S-NEXT-cures-d's `notice list|done`: reads and
+    # marks the cache's project notices only; never the ledger, never its
+    # commit_lock.
     "_cmd_premises": None,  # S-NEXT-u2-sweep's `premises check`: a read verb --
     # it runs the probes and prints; it writes nothing at all, not even the
     # sweep's cache, and never touches the ledger's commit_lock.
