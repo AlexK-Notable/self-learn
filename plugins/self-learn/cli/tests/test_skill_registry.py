@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import gitops, intents
+from self_learn import compilers, gitops, intents
 from self_learn import skill_registry as sr
 from self_learn.compilers import BEGIN_MARKER, END_MARKER
 from support import git, make_home
@@ -194,6 +194,16 @@ _REFUSED = [
         "plugin-nested",
         _mut(lambda d: _ROW(d).update(plugin="plugins/a/b")),
         ["plugin", "plugins/a/b"],
+    ),
+    (
+        "plugin-of-another-skill",
+        _mut(lambda d: _ROW(d).update(plugin="plugins/other-skill")),
+        ["plugin", "plugins/other-skill", f"plugins/{NAME}", NAME],
+    ),
+    (
+        "two-rows-one-folder",
+        _mut(lambda d: d["skills"].update({"other-skill": _row("other-skill", plugin=f"plugins/{NAME}")})),
+        ["plugin", f"plugins/{NAME}", "other-skill"],
     ),
     ("name-not-kebab", _mut(lambda d: d["skills"].update({"Bad_Name": _row("bad")})), ["Bad_Name"]),
     ("retired-block-on-live", _mut(lambda d: _ROW(d).update(retired={})), ["retired", "live"]),
@@ -584,6 +594,29 @@ class TestUnderTheCommitLock:
         assert all(held for _label, held in seen), seen
         assert key not in gitops._held_locks  # released afterwards
 
+    def test_the_registry_is_read_again_inside_the_lock(self, home, monkeypatch):
+        """``with_update`` re-reads the file after taking the lock, so two
+        writers cannot overwrite each other from a stale read. Moving the
+        read ahead of the lock would leave every other test here green."""
+        key = str(gitops.commit_lock_path(home))
+        reads: list[bool] = []
+        real_load = sr.load
+
+        def load(path):
+            reads.append(key in gitops._held_locks)
+            return real_load(path)
+
+        # positive control: the recorder reads False when the lock is not held.
+        monkeypatch.setattr(sr, "load", load)
+        sr.load(home)
+        assert reads == [False]
+        reads.clear()
+
+        sr.with_update(home, lambda registry: _add_row(registry), subject="reread")
+
+        assert reads, "with_update never read the registry"
+        assert all(reads), reads
+
     def test_the_analysis_sees_the_write_and_sees_the_lock_discharge_it(self):
         analysis = _Analysis()
         requires = analysis.requires_lock()
@@ -650,6 +683,12 @@ def _with_section(text: str, *entries: str) -> str:
     return text.rstrip("\n") + "\n\n" + "\n".join(lines) + "\n"
 
 
+def _with_pointer(text: str, token: str = "references/LEARNINGS.md") -> str:
+    """*text* as the pointer route leaves it: the compiler's own output."""
+    line = compilers.pointer_line(token, "lessons routed here")
+    return compilers.compile_pointer_text(text, line)[0]
+
+
 class TestAuthoredHash:
     def test_it_is_a_sha256_in_hex(self):
         assert re.fullmatch(r"[0-9a-f]{64}", sr.authored_sha256(SKILL_MD, {}))
@@ -707,6 +746,71 @@ class TestAuthoredHash:
         assert sr.authored_sha256(moved_out, {"references/a.md": "When to use it.\n"}) != sr.authored_sha256(
             SKILL_MD, {"references/a.md": ""}
         )
+
+    def test_the_pointer_block_does_not_change_it(self):
+        # A skill-scoped `reference` route adds this block to SKILL.md; it is
+        # the compiler's text, so the first such lesson must not look like a
+        # person's edit.
+        bare = sr.authored_sha256(SKILL_MD, {})
+        one = _with_pointer(SKILL_MD)
+        two = _with_pointer(one, "references/other.md")  # a second line, same block
+        # positive control: the block is really in the text being hashed
+        assert compilers.POINTER_BEGIN_MARKER in one
+        assert one.count("- `references/") == 1 and two.count("- `references/") == 2
+        assert bare == sr.authored_sha256(one, {}) == sr.authored_sha256(two, {})
+
+    def test_the_pointer_block_and_the_managed_section_together_do_not_change_it(self):
+        refs = {"references/a.md": "# A\n"}
+        both = _with_pointer(_with_section(SKILL_MD, "- lesson"))
+        other_way = _with_section(_with_pointer(SKILL_MD), "- lesson")
+        assert compilers.POINTER_BEGIN_MARKER in both and BEGIN_MARKER in both
+        assert both != other_way  # control: two different texts, one hash below
+        base = sr.authored_sha256(SKILL_MD, refs)
+        assert sr.authored_sha256(both, refs) == sr.authored_sha256(other_way, refs) == base
+
+    def test_text_added_after_the_pointer_block_changes_it(self):
+        deployed = _with_pointer(SKILL_MD)
+        assert sr.authored_sha256(deployed + "A person's afterthought.\n", {}) != sr.authored_sha256(
+            deployed, {}
+        )
+
+    def test_a_damaged_pointer_block_counts_as_authored_text(self):
+        clean = sr.authored_sha256(_with_pointer(SKILL_MD), {})
+        no_end = SKILL_MD.rstrip("\n") + "\n\n" + compilers.POINTER_BEGIN_MARKER + "\n- x\n"
+        end_first = (
+            SKILL_MD.rstrip("\n")
+            + "\n\n"
+            + compilers.POINTER_END_MARKER
+            + "\n"
+            + compilers.POINTER_BEGIN_MARKER
+            + "\n"
+        )
+        twice = _with_pointer(SKILL_MD) + "\n"
+        twice += compilers.POINTER_BEGIN_MARKER + "\n" + compilers.POINTER_END_MARKER + "\n"
+        assert clean == sr.authored_sha256(SKILL_MD, {})  # control: a healthy file matches
+        for damaged in (no_end, end_first, twice):
+            assert sr.authored_sha256(damaged, {}) != clean
+
+    def test_the_reference_shelf_does_not_change_it(self):
+        # `references/LEARNINGS.md` is created and appended to by the
+        # reference route. Every other reference file still counts.
+        shelf = "references/LEARNINGS.md"
+        header = "# Learnings\n\nReference-routed lessons.\n"
+        entry = "\n## 2026-10-30 — lrn-0123abcd\n\n**Trigger:** x\n"
+        refs = {"references/a.md": "# A\n"}
+        base = sr.authored_sha256(SKILL_MD, refs)
+        assert sr.authored_sha256(SKILL_MD, {**refs, shelf: header}) == base
+        assert sr.authored_sha256(SKILL_MD, {**refs, shelf: header + entry}) == base
+        # positive control: the same text under any other name does count
+        assert sr.authored_sha256(SKILL_MD, {**refs, "references/other.md": header}) != base
+        assert sr.authored_sha256(SKILL_MD, {**refs, "references/learnings.md": header}) != base
+
+    def test_a_deployed_skill_with_a_reference_lesson_matches_its_draft(self):
+        # The whole of the pointer-route's output next to the draft it grew from.
+        refs = {"references/a.md": "# A\n"}
+        deployed_refs = {**refs, "references/LEARNINGS.md": "# Learnings\n\n## d — lrn-0123abcd\n"}
+        deployed = _with_pointer(_with_section(SKILL_MD, "- lesson"))
+        assert sr.authored_sha256(deployed, deployed_refs) == sr.authored_sha256(SKILL_MD, refs)
 
     def test_a_damaged_managed_section_counts_as_authored_text(self):
         clean = sr.authored_sha256(_with_section(SKILL_MD, "- lesson"), {})
