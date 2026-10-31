@@ -784,8 +784,7 @@ older home):*
                                     # subtree, owned by the overseer plan
   owned-skills.yaml                # skills self-learn owns (S-107)
   overseer/skills/{<week>.yaml,    # candidates + dispositions (S-107)
-    <week>/drafts/<name>/,         # skills kept as drafts, never deployed
-    writing-trial.yaml}            # auto's drafts-only run, written once
+    <week>/drafts/<name>/}         # skills kept as drafts (writing off)
 ```
 
 *(Added 2026-10-30, S-107.)* **Skills self-learn owns.** One
@@ -848,20 +847,15 @@ source, `candidate` or `skill-proposal` with the case id. Phase S's
 `skill-proposal` entry left out, so phase S never sees the steward's
 proposals, not even a week late. `overseer/skills/<week>/drafts/<name>/` holds a skill
 checked by `skill write --check` but not deployed, because
-`overseer.skill_writing` was `off` or this was `auto`'s drafts-only run.
-`overseer/skills/writing-trial.yaml` is
-`{week: <date>, run: <run id>, completed_at: <iso>, drafts: [<name>, ...]}`:
-the first run to complete with `overseer.skill_discovery` on while the file
-is absent and writing is not in effect (`off`, or `auto`'s trial), and whose
-phase S gave a valid `skill-candidates.yaml` (its own or a kept copy) and
-whose phase B gave a valid `skill-dispositions.yaml`, writes it, with an
-empty `drafts` list when it had nothing to build, in the commit that
-completes the run, and nothing rewrites it. Under `auto`
-its absence makes the run drafts-only and its presence lets the run write.
-A failed attempt, a closed-out week, a dry run, a run with discovery off,
-and a completed run whose phase S failed, timed out or did not validate,
-or whose dispositions did not validate, never write it
-(`03-decisions.md` S-107 part 6).
+`overseer.skill_writing` was `off` (or read as off: an unknown value or an
+unreadable `config.yaml`). A pair is kept as a draft only after the same
+batch preview and refusal checks a writing run makes, so a pair a writing
+run would drop is dropped, not drafted (`03-decisions.md` S-107 part 6).
+*(Amended S-NEXT-ft-skills-on.)* There is no `writing-trial.yaml` any more:
+the one-week drafts-only trial of `auto` is gone and nothing writes or reads
+that file. A ledger that holds one from an earlier run keeps it as history;
+a run record's `skills.trial_ready` / `skills.trial_why` from such a run are
+ignored.
 
 **The overseer's workspace for skills.** Phase S's stage holds `catalogue/`,
 `neighbourhoods.md`, `skills-index.yaml`, `history.yaml`, `briefs/` and
