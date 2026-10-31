@@ -87,7 +87,7 @@ def test_a_receipted_final_refusal_is_reported_when_nothing_is_run_again(
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
-    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
     _silence_notifications(monkeypatch)
     dispatched = _dispatch_scripted(monkeypatch, {2: (1, "bad-line")})
     real_maintain = overseer_run._maintain_manifest
@@ -123,7 +123,7 @@ def test_the_cap_close_out_lists_a_retried_kind_refusal_as_unfinished(tmp_path, 
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
-    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
     _silence_notifications(monkeypatch)
     dispatched: list[int] = []
 
@@ -148,7 +148,7 @@ def test_the_cap_close_out_lists_a_retried_kind_refusal_as_unfinished(tmp_path, 
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     questions = report.split("## Questions for you\n", 1)[1].split("\n## ", 1)[0]
     assert "Unfinished:" in questions, questions
-    assert f"sheet-hook.yaml item 2 (undefer {rid})" in questions, questions
+    assert f"sheet-hook.yaml item 2 (reject {rid})" in questions, questions
     assert f"sheet-hook.yaml item 1 (route {rid})" in questions, questions
 
 
@@ -165,7 +165,7 @@ def test_the_tail_a_stop_left_behind_a_final_refusal_is_dispatched_too(tmp_path,
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
-    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
     phases = overseer_run.invocation.write_session
 
     def with_a_third_item(spec):

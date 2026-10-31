@@ -1590,6 +1590,14 @@ PDT: "fix the rest of 3".)*
   machine `status` value (`applied`) and its exit code are unchanged; the
   JSON also carries `decisions_staged` and `decisions_dropped`. The
   steward has no such case: a dropped steward case is counted `refused`.
+  *(Added 2026-10-30, S-NEXT-overseer-run.)* The record's `decisions` also
+  carries `lines_dropped`: the lines taken off KEPT sheets because their
+  preview said `would-refuse`. When it is above zero the report's "Decided
+  in the user's stead" gets `- decisions: <n> line(s) of kept sheets were not
+  applied because their preview said they would be refused (named under
+  Refused / could not do)` and the journal gets a `line-dropped` row per line.
+  They are not pairs, so `staged`, `dropped` and `status_text` are unchanged,
+  and neither the status nor the exit code counts them.
 - *Steward reconsider misfit (audit finding 10).* When `verbs.reconsider`
   refuses a reconsider case the case writer accepted (its outcome does not
   apply to the lesson's status, or the lesson is gone), that case's sheet is receipted refused and nothing of it is dispatched. The refusal takes its S-71 kind from the exception's type: the verb's status check is `status`, and a raise site that names no type is `unclassified`. Each of the case's lessons follows §4.2 with the case named, and the run goes on. *(Amended 2026-10-08.)*; before, the

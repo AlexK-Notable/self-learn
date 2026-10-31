@@ -3190,6 +3190,9 @@ def _prepare_manifest(
         manifest["decisions"] = {
             "staged": int(decisions.get("staged") or 0),
             "dropped": int(decisions.get("dropped") or 0),
+            # S-NEXT-overseer-run: lines of KEPT sheets taken off because
+            # their preview said they would be refused (not pairs).
+            "lines_dropped": int(decisions.get("lines_dropped") or 0),
         }
     _scan_manifest_or_refuse(manifest)
     return manifest
@@ -4046,6 +4049,7 @@ def _execute_manifest(
     decision_counts = cast(dict[str, Any], manifest.get("decisions") or {})
     decisions_staged = int(decision_counts.get("staged") or 0)
     decisions_dropped = int(decision_counts.get("dropped") or 0)
+    decisions_lines_dropped = int(decision_counts.get("lines_dropped") or 0)
     decided_lines = (
         [
             f"decisions: {decisions_staged - decisions_dropped} of {decisions_staged} "
@@ -4054,6 +4058,15 @@ def _execute_manifest(
         ]
         if decisions_dropped else []
     )
+    if decisions_lines_dropped:
+        # S-NEXT-overseer-run: a line taken off a kept sheet is neither a
+        # refusal at apply (the run's code) nor a dropped pair (the counts
+        # above), so "applied" alone would read as if every line had landed.
+        decided_lines.append(
+            f"decisions: {decisions_lines_dropped} line(s) of kept sheets were not "
+            "applied because their preview said they would be refused (named "
+            "under Refused / could not do)"
+        )
 
     # S-68's generic guard. An attempt that ran and moved NOTHING toward a
     # terminal value is a failed attempt and counts exactly like one that
@@ -4235,10 +4248,12 @@ def _execute_manifest(
         "at": chrono.now_iso(), "run": run_id, "status": status_name,
         "code": decision, "model_calls": model_calls,
     }
-    if decisions_dropped:
+    if decisions_dropped or decisions_lines_dropped:
         journal_entry["decisions"] = {
             "staged": decisions_staged, "dropped": decisions_dropped,
         }
+        if decisions_lines_dropped:
+            journal_entry["decisions"]["lines_dropped"] = decisions_lines_dropped
     if push_failure is not None:
         journal_entry["push"] = push_failure
     _journal(home, journal_entry)
@@ -4959,6 +4974,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             # 2026-09-28 (follow-up 4): pairs dropped before the ledger --
             # by pairing or the secret scan (`pair_drops`), and below.
             pairs_dropped = len(pair_drops)
+            lines_dropped = 0
             preview_apply = 0
             preview_refused = 0
             seen_predecessors: set[str] = set()
@@ -5096,6 +5112,10 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 if predecessor is not None:
                     seen_predecessors.add(predecessor)
                 case_drops.extend(refused_lines)
+                lines_dropped += len(refused_lines)
+                for line in refused_lines:
+                    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                        "status": "line-dropped", "reason": line})
                 preview_apply += sum(item.state == "would-apply" for item in preview.items)
                 preview_refused += sum(item.state == "would-refuse" for item in preview.items)
                 prepared.append((case_file, sheet_file, sheet))
@@ -5151,6 +5171,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 journal_text=journal_text, trigger=trigger,
                 decisions={
                     "staged": len(prepared) + pairs_dropped, "dropped": pairs_dropped,
+                    "lines_dropped": lines_dropped,
                 },
             )
         except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes

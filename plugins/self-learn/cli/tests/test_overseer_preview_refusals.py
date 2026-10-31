@@ -98,6 +98,13 @@ def test_a_resolution_line_whose_preview_refuses_is_not_applied_and_the_rest_is(
         "[bad-line]: simulated preview refusal"
     ) in refused, refused
     assert rid_b not in refused, refused
+    # the dropped line is neither a refusal at apply nor a dropped pair, so
+    # the report's "Decided" section and the journal say it
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert "1 line(s) of kept sheets were not applied" in report, report
+    dropped = [row for row in overseer_run.read_journal(home, limit=200)
+               if row.get("status") == "line-dropped"]
+    assert len(dropped) == 1 and f"item 2 (reject {rid_a})" in dropped[0]["reason"], dropped
 
 
 def test_a_maintenance_pair_whose_preview_refuses_its_line_is_not_recorded(env, tmp_path, monkeypatch):
