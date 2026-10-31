@@ -300,10 +300,49 @@ def _parse_entry_fields(body: str) -> dict:
     return fields
 
 
+def _heal_char_list(value: Any) -> Any:
+    """Repair a list that is one string written out a character at a time.
+
+    `add_entry` once did `list(basis)` on a string, so an overseer payload
+    with `basis: "text"` was stored as `[t, e, x, t]` (um-cea0, 2026-10-11).
+    On the next read the spaces were gone as well (`_parse_scalar` drops
+    blank tokens). A list of two or more items that are each ONE character
+    is never a real list of references or reasons, so it reads back as the
+    one string they spell. The next write of the document stores it that
+    way. Anything else is returned unchanged."""
+    if (
+        isinstance(value, list)
+        and len(value) >= 2
+        and all(isinstance(item, str) and len(item) == 1 for item in value)
+    ):
+        return ["".join(value)]
+    return value
+
+
 def _entry_from_block(entry_id: str, title: str, r: int, body: str) -> dict:
     fields = _parse_entry_fields(body)
+    if "basis" in fields:
+        fields["basis"] = _heal_char_list(fields["basis"])
     fields.update({"id": entry_id, "title": title, "r": r})
     return fields
+
+
+def _text_list(name: str, value: object) -> list[str]:
+    """A list-shaped argument as a list of strings. A single string is ONE
+    item, never iterated: the overseer's add payload is model-written YAML,
+    and `basis: "some reason"` used to be split into characters. `None` and
+    an empty string are an empty list; anything else that is not a list of
+    strings is a usage error, before anything is written."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    raise UserModelUsageError(
+        f"user-model add: {name} must be a string or a list of strings, "
+        f"got {type(value).__name__}"
+    )
 
 
 def _load(home: Path) -> tuple[dict, dict[str, list[dict]]]:
@@ -441,6 +480,11 @@ def add_entry(
         raise UserModelUsageError("user-model add: title is required")
     if not because or not because.strip():
         raise UserModelUsageError("user-model add: because is required")
+
+    # A list field given as one string is one item (see `_text_list`).
+    conditions = _text_list("conditions", conditions)
+    statements = _text_list("statements", statements)
+    basis = _text_list("basis", basis)
 
     _check_vocabulary(title, because)
     hits = secret_scan(title) + secret_scan(because)
