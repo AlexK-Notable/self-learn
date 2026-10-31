@@ -520,6 +520,9 @@ def test_hp4_m2_real_worker_run_never_opens_a_followon_window_from_a_serve_tick(
     monkeypatch.setattr(worker, "_spawn_window", _raise_if_spawned)
     monkeypatch.setattr(miner, "run", lambda home, **kw: miner.MineResult(status="ok", landed=["c1"]))
 
+    # L6: the daily maintenance recompile is a job of its own in the same
+    # tick; this test is about the other jobs, so it is kept off here.
+    monkeypatch.setattr(serve, "_maintenance_is_due", lambda *a, **k: False)
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     serve.request_poke(cache_dir)
@@ -1555,6 +1558,9 @@ def test_u1_a13_a_raising_due_check_holds_only_that_job(monkeypatch, tmp_path):
     `run_forever`) ended the whole daemon."""
     home, cache_dir = _u1_home(tmp_path, monkeypatch)
     monkeypatch.setattr(serve, "_mine_is_due", lambda *a, **k: False)
+    # L6: the daily maintenance recompile is a job of its own in the same
+    # tick; this test is about the other jobs, so it is kept off here.
+    monkeypatch.setattr(serve, "_maintenance_is_due", lambda *a, **k: False)
     seen = {"manifests": 0, "overseer": 0}
 
     def _wedged(actual):
@@ -1797,6 +1803,9 @@ def test_u2_a_hold_that_cannot_be_recorded_still_only_costs_one_job(monkeypatch,
     hold still means "not due", and the later jobs still run."""
     home, cache_dir = _u1_home(tmp_path, monkeypatch)
     monkeypatch.setattr(serve, "_mine_is_due", lambda *a, **k: False)
+    # L6: the daily maintenance recompile is a job of its own in the same
+    # tick; this test is about the other jobs, so it is kept off here.
+    monkeypatch.setattr(serve, "_maintenance_is_due", lambda *a, **k: False)
     seen = {"overseer": 0}
 
     def _overseer_predicate(*args, **kwargs):

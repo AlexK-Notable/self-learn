@@ -1,0 +1,560 @@
+"""L6 (2026-10-31 interventions survey; decisions.md 8): self-maintenance of
+the host process and of the compile records.
+
+1. `serve` re-executes itself on new code between jobs, never mid-job, and
+   never onto code that does not import (13 §5).
+2. A host unit file that changed after the process started leaves a project
+   notice naming the reload and restart, cleared once the service restarted.
+3. A daily maintenance job recompiles the targets that carry self-learn's
+   markers with no compile record, and `--selftest` stops telling a person
+   to run `recompile` while it runs.
+4. `recompile` stops warning about a retired lesson whose target is gone
+   from disk (13 §4 item 2), and still removes a retired line where the
+   target exists.
+5. `overseer.hook_activation` is a registered setting: `doctor settings`
+   no longer warns about it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from self_learn import (
+    compiled,
+    config,
+    maintenance,
+    notices,
+    selfcheck,
+    serve,
+    settings,
+    verbs,
+)
+from self_learn.hosts import host_add, host_remove
+from self_learn.ledger_ops import create_record
+from support import git, init_repo, make_behavior, make_env
+
+_SRC_DIR = Path(serve.__file__).resolve().parent
+
+
+@pytest.fixture(autouse=True)
+def _scratch(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    monkeypatch.setenv("SELF_LEARN_ACTOR", "testhost")
+    # A test run under a systemd unit (the test budget's slice) carries
+    # INVOCATION_ID; the unit-file check reads it, so every test starts
+    # without it and the one that wants it sets it.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("SELF_LEARN_SERVE_STARTED_AT", raising=False)
+    for marker in settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
+
+
+class _Execed(BaseException):
+    """Raised by the stubbed exec, so it leaves `run_forever` the way a real
+    exec leaves it: nothing after it runs."""
+
+
+def _code_tree(tmp_path: Path) -> Path:
+    """A stand-in package: a git checkout with two committed source files."""
+    root = tmp_path / "checkout"
+    init_repo(root)
+    pkg = root / "self_learn"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "serve.py").write_text("X = 1\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed")
+    return pkg
+
+
+def _stub_exec(monkeypatch, calls: list) -> None:
+    def fake(argv, env):
+        calls.append((argv, env))
+        raise _Execed()
+
+    monkeypatch.setattr(serve, "_reexec", fake)
+
+
+# ------------------------------------------------------------------ re-exec
+
+
+def test_an_uncommitted_code_change_with_no_job_running_re_execs(tmp_path, monkeypatch):
+    """The landing case without a landing: the checkout's HEAD never moves,
+    one source file gets an uncommitted edit, and the daemon picks it up
+    after it has read the same on two ticks."""
+    pkg = _code_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    monkeypatch.setattr(serve, "_new_code_imports", lambda timeout=120.0: (True, ""))
+    head = git(pkg.parent, "rev-parse", "HEAD").stdout
+    ticks: list[int] = []
+
+    def tick(home, cache_dir, **_kw):
+        ticks.append(1)
+        if len(ticks) == 1:
+            (pkg / "serve.py").write_text("X = 2\n", encoding="utf-8")
+        return []
+
+    monkeypatch.setattr(serve, "_run_tick", tick)
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    cache = tmp_path / "cache"
+
+    with pytest.raises(_Execed):
+        serve.run_forever(tmp_path / "home", cache_dir=cache, tick_secs=0.01, max_ticks=10)
+
+    # control: the change is uncommitted -- HEAD alone could not see it
+    assert git(pkg.parent, "rev-parse", "HEAD").stdout == head
+    assert git(pkg.parent, "status", "--porcelain").stdout.strip() == "M self_learn/serve.py"
+    assert len(calls) == 1
+    # the first tick wrote the change; the checks after ticks 1 and 2 read
+    # it the same (REEXEC_STABLE_TICKS), and the exec followed the second
+    assert len(ticks) == serve.REEXEC_STABLE_TICKS == 2
+    argv, env = calls[0]
+    assert argv == serve._exec_argv()
+    assert float(env["SELF_LEARN_SERVE_STARTED_AT"]) <= time.time()
+    assert "SELF_LEARN_SERVE_STARTED_AT" not in os.environ  # never this process's env
+    rows = [json.loads(line) for line in (cache / serve.SERVE_JOURNAL_FILENAME).read_text().splitlines()]
+    assert [r["status"] for r in rows] == ["reexec"]
+    assert rows[0]["from"] != rows[0]["to"]
+    assert serve.read_heartbeat(cache)["next_job"].startswith("restarting on new code")
+
+
+def test_unchanged_code_never_re_execs(tmp_path, monkeypatch):
+    """Positive control for the test above: the same loop, no edit."""
+    pkg = _code_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    monkeypatch.setattr(serve, "_run_tick", lambda *a, **k: [])
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    assert serve.run_forever(tmp_path / "home", cache_dir=tmp_path / "c", tick_secs=0.01, max_ticks=5) == 0
+    assert calls == []
+
+
+def test_a_running_job_holds_the_re_exec_until_it_ends(tmp_path, monkeypatch):
+    """Never mid-job: the check, asked while a job runs, does nothing however
+    long the new code has been stable; asked again once the job is over, it
+    re-executes."""
+    pkg = _code_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    monkeypatch.setattr(serve, "_new_code_imports", lambda timeout=120.0: (True, ""))
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    home, cache = tmp_path / "home", tmp_path / "cache"
+    watch = serve._CodeWatch(running=serve.code_fingerprint(), started_at=time.time())
+    (pkg / "serve.py").write_text("X = 3\n", encoding="utf-8")
+
+    def job():
+        for _ in range(4):
+            serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+        return "done"
+
+    record = serve.run_one_job(cache, serve.Job("mine", "miner-reader", job), tick_secs=60.0)
+    assert record.ok and record.result == "done"
+    assert calls == []
+    assert watch.seen >= serve.REEXEC_STABLE_TICKS  # control: it WAS ready to go
+    assert serve._jobs_in_flight == 0
+
+    with pytest.raises(_Execed):
+        serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+    assert len(calls) == 1
+
+
+def test_new_code_that_does_not_import_is_not_run_and_not_retried(tmp_path, monkeypatch):
+    pkg = _code_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    asked: list[int] = []
+
+    def broken(timeout=120.0):
+        asked.append(1)
+        return False, "SyntaxError: invalid syntax"
+
+    monkeypatch.setattr(serve, "_new_code_imports", broken)
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    home, cache = tmp_path / "home", tmp_path / "cache"
+    watch = serve._CodeWatch(running=serve.code_fingerprint(), started_at=time.time())
+    (pkg / "serve.py").write_text("X = (\n", encoding="utf-8")
+    for _ in range(5):
+        serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+    assert calls == []
+    assert asked == [1]  # asked once for this code, not on every tick
+    rows = [json.loads(line) for line in (cache / serve.SERVE_JOURNAL_FILENAME).read_text().splitlines()]
+    assert [r["status"] for r in rows] == ["reexec-refused"]
+    assert "SyntaxError" in rows[0]["error"]
+
+    # the code changes again (fixed): it is checked again and run
+    monkeypatch.setattr(serve, "_new_code_imports", lambda timeout=120.0: (True, ""))
+    (pkg / "serve.py").write_text("X = 4\n", encoding="utf-8")
+    with pytest.raises(_Execed):
+        for _ in range(3):
+            serve._consider_reexec(home, cache, watch, pid=os.getpid(), tick_secs=60.0)
+    assert len(calls) == 1
+
+
+def test_the_import_check_reads_a_real_broken_tree(tmp_path):
+    """The real import check, against a real interpreter: a package copy with
+    a syntax error fails it and the shipped package passes it."""
+    copy = tmp_path / "src"
+    shutil.copytree(_SRC_DIR, copy / "self_learn", ignore=shutil.ignore_patterns("__pycache__"))
+    env = dict(os.environ, PYTHONPATH=str(copy))
+    ok = subprocess.run(
+        [sys.executable, "-P", "-c", "import self_learn.cli, self_learn.serve"],
+        env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+    )
+    assert ok.returncode == 0, ok.stderr
+    with (copy / "self_learn" / "serve.py").open("a", encoding="utf-8") as fh:
+        fh.write("\ndef broken(:\n")
+    old = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = str(copy)
+    try:
+        good, why = serve._new_code_imports()
+    finally:
+        if old is None:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = old
+    assert good is False and "SyntaxError" in why
+
+
+def test_the_rollback_switch_keeps_the_running_code(tmp_path, monkeypatch):
+    pkg = _code_tree(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("serve:\n  restart_on_new_code: false\n", encoding="utf-8")
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    monkeypatch.setattr(serve, "_new_code_imports", lambda timeout=120.0: (True, ""))
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    watch = serve._CodeWatch(running=serve.code_fingerprint(), started_at=time.time())
+    (pkg / "serve.py").write_text("X = 5\n", encoding="utf-8")
+    for _ in range(4):
+        serve._consider_reexec(home, tmp_path / "c", watch, pid=os.getpid(), tick_secs=60.0)
+    assert calls == []
+    assert watch.seen >= serve.REEXEC_STABLE_TICKS  # control: only the switch held it
+
+
+def test_a_real_serve_process_re_execs_onto_new_code_in_place(tmp_path):
+    """End to end, no stubs: a `serve` subprocess running a copy of the
+    package; a source edit in that copy makes the same process (same pid)
+    load the new code, which says so by writing its pid to a probe file at
+    import, and it keeps ticking."""
+    copy = tmp_path / "src"
+    shutil.copytree(_SRC_DIR, copy / "self_learn", ignore=shutil.ignore_patterns("__pycache__"))
+    home = tmp_path / "home"
+    home.mkdir()
+    subprocess.run(["git", "init", "-q", str(home)], check=True)
+    probe = tmp_path / "probe.txt"
+    env = os.environ.copy()
+    env.update({
+        "PYTHONPATH": str(copy),
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "SELF_LEARN_HOME": str(home),
+        "SELF_LEARN_MINER": "0",
+        "SELF_LEARN_MINER_AUTOKICK": "0",
+        "SELF_LEARN_SERVE_TICK_SECS": "0.2",
+        "PROBE_FILE": str(probe),
+    })
+    env.pop("INVOCATION_ID", None)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "self_learn.cli", "serve"], env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        cache = serve.cache_dir_readonly(home).relative_to(Path(os.environ["XDG_CACHE_HOME"]))
+        beat = tmp_path / "cache" / cache / serve.HEARTBEAT_FILENAME
+        deadline = time.time() + 30
+        while time.time() < deadline and proc.poll() is None and not beat.is_file():
+            time.sleep(0.05)
+        assert beat.is_file(), "serve never ticked"
+        with (copy / "self_learn" / "serve.py").open("a", encoding="utf-8") as fh:
+            fh.write(
+                "\nimport os as _os\n"
+                "with open(_os.environ['PROBE_FILE'], 'a', encoding='utf-8') as _fh:\n"
+                "    _fh.write(str(_os.getpid()) + '\\n')\n"
+            )
+        deadline = time.time() + 60
+        while time.time() < deadline and proc.poll() is None and not probe.is_file():
+            time.sleep(0.1)
+        # The import check (a separate interpreter) loads the new code first
+        # and writes its own pid; the serve process itself must follow.
+        deadline = time.time() + 60
+        while (time.time() < deadline and proc.poll() is None
+               and str(proc.pid) not in (probe.read_text().split() if probe.is_file() else [])):
+            time.sleep(0.1)
+        assert probe.is_file(), "the edited code was never loaded"
+        assert str(proc.pid) in probe.read_text().split(), "same process, new code"
+        before = json.loads(beat.read_text())["ts"]
+        deadline = time.time() + 15
+        while time.time() < deadline and json.loads(beat.read_text())["ts"] == before:
+            time.sleep(0.05)
+        assert json.loads(beat.read_text())["ts"] != before, "no tick after the re-exec"
+        assert proc.poll() is None
+    finally:
+        proc.terminate()
+        try:
+            _out, err = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _out, err = proc.communicate(timeout=15)
+    assert proc.returncode == 0, err
+    assert "restarting the host process between jobs" in err
+
+
+# ---------------------------------------------------------- the unit file
+
+
+def test_a_changed_unit_file_leaves_a_notice_cleared_after_a_restart(tmp_path, monkeypatch):
+    units = tmp_path / "units"
+    units.mkdir()
+    checkout = tmp_path / "checkout"
+    init_repo(checkout)
+    unit_src = checkout / "systemd" / serve.HOST_UNIT_NAME
+    unit_src.parent.mkdir()
+    unit_src.write_text("[Service]\n", encoding="utf-8")
+    (units / serve.HOST_UNIT_NAME).symlink_to(unit_src)  # install.sh's shape
+    monkeypatch.setenv("SELF_LEARN_SERVE_UNIT_DIR", str(units))
+    home = tmp_path / "home"
+    home.mkdir()
+
+    # not under systemd: nothing, whatever the times say
+    serve._check_unit_file(home, serve._CodeWatch(running="a", started_at=0.0))
+    assert notices.all_notices(home) == []
+
+    monkeypatch.setenv("INVOCATION_ID", "test")
+    started = unit_src.stat().st_mtime - 60  # the file changed after the start
+    serve._check_unit_file(home, serve._CodeWatch(running="a", started_at=started))
+    made = notices.all_notices(home)
+    assert len(made) == 1
+    assert made[0].project == os.path.realpath(checkout)
+    assert "daemon-reload" in made[0].text and serve.HOST_UNIT_NAME in made[0].text
+    assert notices.is_live(made[0], notices.datetime.now(notices.timezone.utc))
+
+    # restarted after the change: the same file version's notice is done
+    serve._check_unit_file(home, serve._CodeWatch(running="a", started_at=time.time() + 5))
+    (after,) = notices.all_notices(home)
+    assert after.id == made[0].id and after.done_at is not None
+
+
+# --------------------------------------------------- maintenance recompile
+
+
+def _routed_plain_without_a_record(tmp_path, rid="lrn-0000d0a1"):
+    """A plain host whose CLAUDE.md carries self-learn's region and no compile
+    record (verdict `unknown`), as every host before compile records."""
+    env = make_env(tmp_path)
+    plain_host = tmp_path / "maint-plain"
+    plain_host.mkdir()
+    host_add(env.ledger, plain_host, "project", mode="plain")
+    create_record(env.ledger, make_behavior(scope="project", record_id=rid), project_path=plain_host)
+    verbs.route(env.ledger, rid, dest="claude-md", no_push=True)
+    shutil.rmtree(env.ledger / "compiled")
+    return env, plain_host
+
+
+def _only_maintenance_due(monkeypatch):
+    for name in ("_mine_is_due", "_premises_is_due", "_steward_is_due", "_overseer_is_due"):
+        monkeypatch.setattr(serve, name, lambda *a, **k: False)
+
+
+def test_the_daily_maintenance_job_records_a_clean_unknown_target_once(tmp_path, monkeypatch):
+    env, plain_host = _routed_plain_without_a_record(tmp_path)
+    target = plain_host / "CLAUDE.md"
+    slug = verbs.host_slug(env.ledger, plain_host, scope_kind="project")
+    key = compiled.region_key(plain_host, target)
+    before = target.read_bytes()
+    # controls: selftest sees exactly this target as unrecorded
+    assert selfcheck.unrecorded_targets(env.ledger) == {target: ["lrn-0000d0a1"]}
+    assert compiled.entry_for(compiled.load_record(env.ledger, slug), key) is None
+    _only_maintenance_due(monkeypatch)
+    cache = tmp_path / "cache"
+    now = time.time()
+
+    ran = serve._run_tick(env.ledger, cache, now=now, pid=os.getpid(), tick_secs=60.0)
+
+    assert [r.name for r in ran] == ["maintenance"]
+    assert ran[0].ok, ran[0].error
+    assert compiled.entry_for(compiled.load_record(env.ledger, slug), key) is not None
+    assert target.read_bytes() == before  # recorded, never rewritten
+    assert "recompile resync record" in git(env.ledger, "log", "-1", "--format=%s").stdout
+    state = maintenance.read_state(cache)
+    assert state["status"] == "ran"
+    assert state["recorded"] == [str(target)] and state["refused"] == {}
+    assert selfcheck.unrecorded_targets(env.ledger) == {}
+
+    # once a day: the next tick is not due, and a later day finds nothing to do
+    head = git(env.ledger, "rev-parse", "HEAD").stdout
+    assert serve._run_tick(env.ledger, cache, now=now + 60, pid=os.getpid(), tick_secs=60.0) == []
+    later = serve._run_tick(env.ledger, cache, now=now + 86400 + 60, pid=os.getpid(), tick_secs=60.0)
+    assert [r.name for r in later] == ["maintenance"] and later[0].result.status == "idle"
+    assert git(env.ledger, "rev-parse", "HEAD").stdout == head
+
+
+def test_a_hand_edited_unknown_target_is_left_and_logged_with_its_reason(tmp_path, monkeypatch, capsys):
+    env, plain_host = _routed_plain_without_a_record(tmp_path)
+    target = plain_host / "CLAUDE.md"
+    text = target.read_text(encoding="utf-8")
+    assert verbs.BEGIN_MARKER in text
+    target.write_text(
+        text.replace(verbs.BEGIN_MARKER, verbs.BEGIN_MARKER + "\nHAND-EDITED LINE\n"),
+        encoding="utf-8",
+    )
+    edited = target.read_bytes()
+    assert edited != text.encode("utf-8")  # control: the edit happened
+    result = maintenance.run(env.ledger, tmp_path / "cache", now=time.time())
+    assert result.status == "ran"
+    assert result.recorded == [] and list(result.refused) == [str(target)]
+    assert target.read_bytes() == edited  # a hand edit is never overwritten
+    assert "left 1 target(s) unrecorded" in capsys.readouterr().err
+    assert maintenance.read_state(tmp_path / "cache")["refused"] == result.refused
+
+
+def test_selftest_stops_asking_a_person_to_recompile_while_the_job_runs(tmp_path):
+    env, plain_host = _routed_plain_without_a_record(tmp_path)
+    # positive control: no host process -> the old advice, naming the command
+    verdict, reason = selfcheck._check_drift(env.ledger)
+    assert verdict is selfcheck.Verdict.PASS
+    assert "1 target(s) carry self-learn markers with no compile record" in reason
+    assert "run `self-learn recompile`" in reason
+
+    cache = serve.cache_dir_readonly(env.ledger)
+    serve.write_heartbeat(cache, pid=os.getpid(), next_job="x", tick_secs=60.0)
+    verdict, reason = selfcheck._check_drift(env.ledger)
+    assert verdict is selfcheck.Verdict.PASS
+    assert "1 target(s) carry self-learn markers with no compile record" in reason
+    assert "daily maintenance recompile records them" in reason
+    assert "run `self-learn recompile`" not in reason
+    assert "--adopt" not in reason
+
+    # a target the last run could not record keeps its own repair
+    target = plain_host / "CLAUDE.md"
+    maintenance._store_state(cache, {"last_attempt_at": "2026-10-31T00:00:00Z",
+                                     "refused": {str(target): "hand-edited"}})
+    _verdict, reason = selfcheck._check_drift(env.ledger)
+    assert f"could not record {target} (hand-edited)" in reason
+    assert f"`self-learn recompile --adopt {target}`" in reason
+
+
+# ------------------------------------------------- retired, target gone
+
+
+def _retired_in_a_vanished_host(tmp_path, env, rid):
+    gone_host = tmp_path / "gone-host"
+    gone_host.mkdir()
+    host_add(env.ledger, gone_host, "project", mode="plain")
+    create_record(env.ledger, make_behavior(scope="project", record_id=rid), project_path=gone_host)
+    verbs.route(env.ledger, rid, dest="claude-md", no_push=True)
+    verbs.retire(env.ledger, rid, covered_by="claude-md:elsewhere", no_push=True)
+    host_remove(env.ledger, gone_host)
+    shutil.rmtree(gone_host)
+    return gone_host
+
+
+def test_a_retired_lesson_whose_host_is_gone_is_counted_not_warned(tmp_path):
+    env = make_env(tmp_path)
+    gone_host = _retired_in_a_vanished_host(tmp_path, env, "lrn-0000d0b1")
+
+    result = verbs.recompile(env.ledger, no_push=True)
+
+    assert result.gone == ["lrn-0000d0b1"]
+    assert not [w for w in result.warnings if "lrn-0000d0b1" in w], result.warnings
+    assert not [w for w in result.warnings if str(gone_host) in w], result.warnings
+    outcome = verbs.post_run_recompile(env.ledger, ["lrn-0000d0b1"])
+    assert outcome["gone"] == 1 and outcome["warnings"] == []
+
+
+def test_the_skip_is_narrow_a_retired_lesson_on_an_existing_unregistered_path_still_warns(tmp_path):
+    """The path is still on disk, so its file may still hold the line: the
+    warning (and its `host add`) stays."""
+    env = make_env(tmp_path)
+    gone_host = _retired_in_a_vanished_host(tmp_path, env, "lrn-0000d0b2")
+    gone_host.mkdir()
+    result = verbs.recompile(env.ledger, no_push=True)
+    assert result.gone == []
+    assert [w for w in result.warnings if w.startswith("lrn-0000d0b2:") and "host add" in w]
+
+
+def test_a_retired_lesson_whose_host_exists_still_has_its_line_removed(tmp_path):
+    """Positive control: where the target is on disk, recompile still takes
+    a retired lesson's line out (an interrupted retirement left it there)."""
+    env = make_env(tmp_path)
+    host = tmp_path / "kept-host"
+    host.mkdir()
+    host_add(env.ledger, host, "project", mode="plain")
+    rid = "lrn-0000d0b3"
+    create_record(env.ledger, make_behavior(scope="project", record_id=rid), project_path=host)
+    verbs.route(env.ledger, rid, dest="claude-md", no_push=True)
+    target = host / "CLAUDE.md"
+    with_line = target.read_bytes()
+    assert f"({rid})".encode() in with_line
+    verbs.retire(env.ledger, rid, covered_by="claude-md:elsewhere", no_push=True)
+    assert f"({rid})".encode() not in target.read_bytes()
+    target.write_bytes(with_line)  # the retirement's host write did not land
+
+    result = verbs.recompile(env.ledger, no_push=True)
+
+    assert result.gone == []
+    assert f"({rid})".encode() not in target.read_bytes()
+    assert [e for e in result.entries if e.target == target and e.changed]
+
+
+def test_a_retired_skill_lesson_whose_skill_folder_is_gone_is_counted_not_warned(tmp_path):
+    env = make_env(tmp_path, skills=("s", "doomed"))
+    rid = "lrn-0000d0b4"
+    create_record(env.ledger, make_behavior(scope="skill:doomed", record_id=rid))
+    verbs.route(env.ledger, rid, dest="skill-md", no_push=True)
+    verbs.retire(env.ledger, rid, covered_by="skill-md:s", no_push=True)
+    shutil.rmtree(env.host / "plugins" / "doomed-plugin")
+    git(env.host, "add", "-A")
+    git(env.host, "commit", "-q", "-m", "drop the doomed skill")
+
+    result = verbs.recompile(env.ledger, no_push=True)
+
+    assert result.gone == [rid]
+    assert not [w for w in result.warnings if rid in w or "doomed" in w], result.warnings
+
+
+# ----------------------------------------------- overseer.hook_activation
+
+
+def test_hook_activation_is_a_registered_setting_with_no_doctor_warning(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "overseer:\n  hook_activation: true\n  bogus_key: 1\n", encoding="utf-8"
+    )
+    rows = settings.preflight(home)
+    warns = [r.detail for r in rows if r.verdict == "WARN"]
+    # positive control: a really unknown key in the same section still warns
+    assert "unknown settings config key: overseer.bogus_key" in warns
+    assert not [w for w in warns if "hook_activation" in w], warns
+    value, source = settings.resolve_setting(home, settings.by_name("overseer.hook_activation"))
+    assert (value, source) == (True, "config:overseer.hook_activation")
+    assert config.hook_activation_enabled(home) is True  # the reader agrees
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("overseer:\n  hook_activation: false\n", False),
+        ("overseer:\n  enabled: true\n", False),
+        ("overseer:\n  hook_activation: 'true'\n", False),
+    ],
+)
+def test_the_registry_and_the_reader_agree(tmp_path, text, expected):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(text, encoding="utf-8")
+    value, _source = settings.resolve_setting(home, settings.by_name("overseer.hook_activation"))
+    assert value is expected
+    assert config.hook_activation_enabled(home) is expected
+    setting = settings.by_name("overseer.hook_activation")
+    assert setting.tier == "C" and setting.env_var is None and setting.override_channel is False

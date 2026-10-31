@@ -12086,10 +12086,59 @@ class RecompileResult:
     #: single-commit verb pushes; None under ``no_push``, when nothing was
     #: committed, and on every ordinary recompile (which pushes hosts only).
     ledger_push: gitops.PushResult | None = None
+    #: L6 (2026-10-31): retired lessons skipped because the target they once
+    #: compiled into is gone from disk -- an unregistered project host whose
+    #: recorded path no longer exists, or a skill whose folder is gone
+    #: (:func:`_retired_target_gone`). Counted, never warned: there is no
+    #: line left anywhere to take out.
+    gone: list[str] = field(default_factory=list)
 
     @property
     def committed(self) -> int:
         return sum(1 for e in self.entries if e.commit_sha is not None)
+
+
+def _retired_target_gone(
+    home: Path, bucket_dir: Path, record: Record, destination: str
+) -> bool:
+    """L6 (13 §4 item 2, amended 2026-10-31): True when the target a RETIRED
+    lesson once compiled into cannot exist on disk any more, so a recompile
+    has no line to take out of it:
+
+    - a ``project`` lesson (``claude-md``, any variant): its host is not a
+      registered project AND the bucket's recorded path no longer exists
+      (a registered host whose path vanished is a broken registration that
+      still warns: ``host rebind`` repairs it);
+    - a ``skill-md`` lesson: the skills root is registered and on disk, and
+      no ``plugins/*/skills/<name>`` folder exists under it;
+    - a ``new-skill`` lesson: the skills root is registered and on disk, and
+      its ``plugins/<name>`` folder does not exist.
+
+    Anything this cannot read answers False, so the old warning stands."""
+    try:
+        if record.scope == "project":
+            if destination != "claude-md":
+                return False
+            path = bucket_project_path(bucket_dir)
+            if path is None or Path(path).expanduser().exists():
+                return False
+            return not is_project_host(load_hosts(home), path)
+        if destination not in ("skill-md", "new-skill"):
+            return False
+        root = load_hosts(home).skills_root
+        if root is None or not Path(root).is_dir():
+            return False
+        if destination == "skill-md":
+            if not record.scope.startswith("skill:"):
+                return False
+            name = record.scope.partition(":")[2]
+            return not any(p.is_dir() for p in Path(root).glob(f"plugins/*/skills/{name}"))
+        name = (record.routing or {}).get("new_skill")
+        if not isinstance(name, str) or not name or "/" in name:
+            return False
+        return not (Path(root) / "plugins" / name).exists()
+    except (HostsError, OSError, ValueError):
+        return False
 
 
 def recompile_refusals(result: RecompileResult, record_id: str) -> list[str]:
@@ -12249,7 +12298,7 @@ def post_run_recompile(
     same run. Only pairs whose id is in *record_ids* (the item applied)."""
     ids = sorted(dict.fromkeys(str(rid) for rid in record_ids))
     if not ids:
-        return {"records": [], "changed": [], "skipped": [], "warnings": []}
+        return {"records": [], "changed": [], "skipped": [], "warnings": [], "gone": 0}
     origins = [(rid, Path(bucket)) for rid, bucket in moved_from if rid in ids]
     result = recompile(home, no_push=True, only_records=ids, moved_from=origins)
     return {
@@ -12257,6 +12306,8 @@ def post_run_recompile(
         "changed": [str(e.target) for e in result.entries if e.changed],
         "skipped": [f"{e.target}: {e.skipped}" for e in result.entries if e.skipped],
         "warnings": list(result.warnings),
+        # L6: retired lessons whose target is gone, skipped without a warning.
+        "gone": len(result.gone),
     }
 
 
@@ -12589,6 +12640,13 @@ def recompile(
                     rules_topic=(record.routing or {}).get("rules_topic"),
                 )
             except VerbError as exc:
+                if retired and _retired_target_gone(home, bucket.path, record, destination):
+                    # L6 (13 §4 item 2, amended 2026-10-31): a retired
+                    # lesson whose host or skill is gone from disk has no
+                    # file left to take its line out of. Nothing to do and
+                    # nothing to tell anyone; counted once, never warned.
+                    result.gone.append(record.id)
+                    continue
                 result.warnings.append(f"{record.id}: {exc}")
                 continue
             if destination == "reference":

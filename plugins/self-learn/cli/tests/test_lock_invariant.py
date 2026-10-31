@@ -244,6 +244,13 @@ NOT_REPO_TRUTH = {
     "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",
     "serve._log_job_crash": "XDG cache: cache_dir()/serve.journal.jsonl, one row per crashed job with no journal of its own (2026-09-27, fail-state audit finding 6)",
     "serve._write_holds": "XDG cache: cache_dir()/serve.holds.json (U1/A13 -- which job a failing due check is currently holding, and its cause, so the heartbeat and `doctor`'s serve row can name it and the notification fires once per cause; no ledger path, no commit)",
+    # L6 (2026-10-31): serve's re-exec rows (`reexec`, `reexec-refused`,
+    # `reexec-failed`) in the same serve.journal.jsonl `_log_job_crash`
+    # writes, and the daily maintenance recompile's last-run record. Both
+    # cache only; the maintenance job's ledger write is `verbs.recompile`,
+    # which takes its own locks.
+    "serve._append_serve_journal": "XDG cache: cache_dir()/serve.journal.jsonl, one row per re-exec on new code (L6); never ledger truth",
+    "maintenance._store_state": "XDG cache: <cache>/maintenance/recompile.json, the daily maintenance recompile's last-run record (L6); never ledger truth",
     "steward._journal": "XDG cache: steward/journal.jsonl, never ledger truth",
     # S-104: the premise sweep's two cache files, written by this ONE
     # function -- <cache>/premises/observations.jsonl (the last three

@@ -3534,6 +3534,13 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
         print(f"recompile: WARNING {warning}", file=sys.stderr)
     if result.adopt_only:
         return _report_adopt_only(result)
+    if result.gone:
+        # L6: one line, never a warning: a retired lesson whose target is
+        # gone from disk has nothing left to take out.
+        print(
+            f"recompile: {len(result.gone)} retired lesson(s) skipped — the "
+            "target they compiled into is gone from disk"
+        )
     if not result.entries:
         print("recompile: no managed targets (no routed records)")
         return EXIT_OK
