@@ -415,6 +415,10 @@ _CREDENTIAL_COMPONENTS = frozenset(
         # Network and cloud secrets: Wi-Fi keys, VPN profiles, CLI logins.
         "system-connections", "wpa_supplicant", "iwd", "gcloud", "doctl", ".terraform.d",
         "op", "kwalletd",
+        # Integration 2026-10-31 (u1 gate MINOR): more stores of what was
+        # typed or of logins -- vim's and less's histories, hub's GitHub
+        # login, WireGuard's private keys.
+        ".viminfo", ".lesshst", "hub", "wireguard",
     }
 )
 #: A component starting with one of these (``id_rsa``, ``id_ed25519``,
@@ -432,6 +436,9 @@ _CREDENTIAL_WORDS = (
     "token", "secret", "credential", "password", "passwd", "apikey", "api_key",
     "api-key", "private", "bitwarden", "keepass", "1password", "history", "cookie",
     "wallet",
+    # ``.histfile`` (zsh's HISTFILE as many configs name it) does not contain
+    # "history" (integration 2026-10-31, u1 gate MINOR).
+    "histfile",
 )
 #: Absolute trees no probe reads: process and device views (an
 #: ``environ`` file, a tty that blocks), runtime sockets and agent
@@ -1371,9 +1378,25 @@ def _shown(value: str) -> str:
         return ""
     if _LINES_TOKEN_RE.match(value):
         return value
-    if scan.scan(value) or _token_shaped(value):
+    if scan.scan(value) or _token_shaped(value) or _names_a_secret(value):
         return ""
     return value
+
+
+#: A shown value that names one of these is never shown, whatever follows
+#: it (integration 2026-10-31, u1 gate MINOR): the secret scan only flags
+#: ``password=`` followed by 8 or more characters, so a short password
+#: inline in a libpq conninfo string or a mount's options passed both
+#: screens. The hash still records the value.
+_SECRET_WORDS_IN_A_VALUE = (
+    "password", "passwd", "secret", "token", "apikey", "api_key", "api-key",
+    "credential",
+)
+
+
+def _names_a_secret(value: str) -> bool:
+    low = value.lower()
+    return any(word in low for word in _SECRET_WORDS_IN_A_VALUE)
 
 
 class _Budget(Exception):

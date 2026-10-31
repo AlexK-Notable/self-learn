@@ -1311,3 +1311,25 @@ class TestRecord:
         assert "premises" in cases.REWRITE_FIELDS
         block = {"ideas": [{"idea": "the binding fact", "now": "field:premises"}]}
         assert cases._rewrite_problem(block) is None
+
+
+# ------------------------------------------- integration 2026-10-31 (u1 gate MINORs)
+
+
+def test_a_short_password_inline_in_a_value_is_never_shown():
+    """The secret scan flags `password=` only before 8 or more characters, so a
+    short one inline (a libpq conninfo string, a mount's options) passed both
+    screens and was stored in baseline.shown. The hash still records it."""
+    control = premises.observation_from_value("host=db user=app")
+    assert control.shown == "host=db user=app"  # control: an ordinary value shows
+    for value in ("host=db user=app password=abc", "username=x,PASSWD=y", "api_key: q1"):
+        obs = premises.observation_from_value(value)
+        assert obs.state == OBS_OK and obs.value_sha, value
+        assert obs.shown == "", value
+
+
+@pytest.mark.parametrize("path", ["~/.histfile", "~/.viminfo", "~/.lesshst", "~/.config/hub",
+                                  "/etc/wireguard/wg0.conf"])
+def test_more_stores_of_typed_text_and_logins_are_refused(path):
+    assert premises.credential_path_problem("~/notes/plain.txt") is None  # control
+    assert premises.credential_path_problem(path) is not None
