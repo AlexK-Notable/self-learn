@@ -366,6 +366,18 @@ class TestTwoSweepDetection:
         sw.sweep()  # one sweep after the baseline was written
         assert len(sw.moves("p1")) == 1
 
+    def test_a_baseline_that_contradicts_does_not_count_on_the_sweep_of_the_same_day(self, env, sw):
+        sw.runner.out = b"dbus-broker.service\n"
+        # written at 01:00 on the day of the first sweep (03:30): the steward counts it
+        # only from the next calendar day, so the sweep must not count it earlier
+        premise = with_baseline(systemd_premise(), sw, at="2026-11-01T01:00:00Z")
+        assert premise["baseline"]["state"] == "contradicts-claim"
+        seed(env, A, [premise])
+        sw.sweep()
+        assert sw.moves("p1") == []  # same day: the ordinary two-sweep rule applies
+        sw.sweep()
+        assert len(sw.moves("p1")) == 1  # control: the same value on a second sweep counts
+
     def test_a_probe_rewritten_by_the_steward_forgets_the_old_observations(self, env, sw):
         path = seed(env, A, [with_baseline(systemd_premise(), sw)])
         sw.runner.out = b"dbus-broker.service\n"
@@ -426,6 +438,51 @@ class TestAFailedNightKeepsTheHistory:
         assert any("probes failed" in e for e in result.errors)
         rows = sw.history()[(A, "p1")]
         assert [r["state"] for r in rows] == ["ok", "unavailable"]
+
+    def test_a_lesson_re_homed_away_from_a_failing_placement_stops_being_reported(self, env, sw, monkeypatch):
+        path = seed(env, A)
+        fake_reach(monkeypatch, env, [A], state="unreachable", reason="plugin-disabled")
+        sw.sweep()
+        sw.sweep()
+        assert [m.premise_id for m in sw.moves("@reach")] == ["@reach"]  # control: it is failing and counted
+        assert (A, "@intact") in sw.history()  # control: a managed-region lesson has the third premise too
+        rows = {r.name: r for r in premise_sweep.doctor_rows(env.ledger, sw.cache, now=T0 + 2 * DAY)}
+        assert f"{A}@reach" in rows["placement-failing"].detail
+        # the steward re-homes it to a hook: no managed region any more, so no @intact row
+        record = Record.from_path(path)
+        record.set_routing({"routed_at": "2026-09-22T06:24:50Z", "destination": "hook", "by": "human"})
+        record.write(path)
+        fake_reach(monkeypatch, env, [A], destination="hook", state="reachable", reason="registered")
+        sw.sweep()
+        history = sw.history()
+        assert (A, "@intact") not in history  # its old reading is not the last word
+        assert history[(A, "@reach")][-1]["failing"] is False  # control: the premise it still has is measured afresh
+        # and then to `reference`, which is outside the reachability domain: nothing is measured
+        record = Record.from_path(path)
+        record.set_routing({"routed_at": "2026-09-22T06:24:50Z", "destination": "reference", "by": "human"})
+        record.write(path)
+        fake_reach(monkeypatch, env, [])
+        sw.sweep()
+        assert not any(key[0] == A and key[1].startswith("@") for key in sw.history())
+        assert sw.moves("@reach") == [] and sw.moves("@writable") == []
+        rows = {r.name: r for r in premise_sweep.doctor_rows(env.ledger, sw.cache, now=T0 + 4 * DAY)}
+        assert "placement-failing" not in rows
+
+    def test_a_premise_taken_off_a_lesson_drops_its_rows_while_its_other_rows_stay(self, env, sw):
+        watched = sw.probe_home / "watched.txt"
+        watched.write_text("x", encoding="utf-8")
+        keep = file_premise(watched)
+        gone = file_premise(watched, id="p2")
+        path = seed(env, A, [with_baseline(keep, sw), with_baseline(gone, sw)])
+        sw.sweep()
+        assert {(A, "p1"), (A, "p2")} <= set(sw.history())  # control: both were read
+        record = Record.from_path(path)
+        record.set_premises([with_baseline(keep, sw)])
+        record.write(path)
+        sw.sweep()
+        history = sw.history()
+        assert (A, "p2") not in history
+        assert len(history[(A, "p1")]) == 2
 
     def test_when_reachability_cannot_be_measured_a_failing_placement_stops_counting(self, env, sw, monkeypatch):
         seed(env, A)
