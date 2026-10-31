@@ -355,6 +355,23 @@ class TestWaitingIsNotBroken:
         assert obs.cause == premises.CAUSE_MOUNT_ABSENT and obs.mount == str(sw.point)
 
 
+class TestAbsentSince:
+    PREV = {"cause": premises.CAUSE_MOUNT_ABSENT, "mount": "/mnt/x", "psha": "q",
+            "observed_at": "2026-10-02T00:00:00Z", "absent_since": "2026-10-01T00:00:00Z"}
+
+    def test_it_is_carried_from_the_same_absent_mount(self):
+        row = {**self.PREV, "observed_at": "2026-10-03T00:00:00Z", "absent_since": None}
+        assert premise_sweep._absent_since(self.PREV, row) == "2026-10-01T00:00:00Z"
+
+    def test_another_mount_point_starts_afresh(self):
+        row = {**self.PREV, "mount": "/mnt/y", "observed_at": "2026-10-03T00:00:00Z"}
+        assert premise_sweep._absent_since(self.PREV, row) == "2026-10-03T00:00:00Z"
+
+    def test_another_question_starts_afresh(self):
+        row = {**self.PREV, "psha": "other", "observed_at": "2026-10-03T00:00:00Z"}
+        assert premise_sweep._absent_since(self.PREV, row) == "2026-10-03T00:00:00Z"
+
+
 class TestBrokenTail:
     PREMISE = {"id": "p1", "claim": "c", "probe": {"kind": "path", "path": "/mnt/x/f"}}
 
