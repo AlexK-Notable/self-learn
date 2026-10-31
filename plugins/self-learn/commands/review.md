@@ -94,7 +94,11 @@ limit; free-text "Other" is always there beyond them):
   preview. On choice:
   `self-learn route <id>` (proposal's destination) or
   `self-learn route <id> --dest <target>` if the user overrides; add
-  `--note "…"` if they give a why.
+  `--note "…"` if they give a why. **You run these verbs from an agent
+  shell, so every one of them needs `--note "<why>"`** (the CLI refuses
+  without it, before writing anything) and is recorded `By: agent` in the
+  ledger commit; the user's own terminal is unchanged. Put the user's
+  decision and reason in the note, in their words where you can.
   **Hook proposals are the one exception to regenerate-at-apply
   (M3-2):** the preview must show the proposal's `script` field IN FULL
   — the exact executable bytes the route will commit verbatim (P9: eyes

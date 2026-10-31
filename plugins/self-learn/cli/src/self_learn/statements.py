@@ -35,6 +35,7 @@ __all__ = [
     "StatementUsageError",
     "add",
     "list_statements",
+    "user_message_ref",
 ]
 
 #: 02-schema.md §3a.3: "whoever captured the words records them, the
@@ -296,6 +297,37 @@ def _check_evidence(
         + ("; quoted words were not typed by the user in a matched AskUserQuestion answer"
            if evidence.role == "tool_result" else "")
     )
+
+
+def user_message_ref(home: Path | str, session: str, verbatim: str) -> str:
+    """``transcript:<session>#L<n>`` for the LATEST row of *session*'s
+    transcript that the user typed and that holds *verbatim*
+    (S-NEXT-cures-a: ``teach --statement`` is given the words and the
+    session, not a line number, so it finds the line itself).
+
+    Read-only. Only a row whose role is ``user`` counts (the same rule
+    :func:`add` enforces at write time), so words an agent, a skill text or
+    a tool result happens to repeat never become a "user statement".
+    Raises :class:`StatementUsageError` when the session has no transcript
+    under the configured roots, or no user row holds the words."""
+    roots = refs.transcript_roots(home)
+    try:
+        ref = refs.resolve(session, roots=roots)
+        lines = refs._lines(refs.locate(ref, roots=roots))  # noqa: SLF001
+    except refs.RefError as error:
+        raise StatementUsageError(
+            f"statement: no transcript found for session {session!r} under "
+            "the configured transcript roots (refs.transcript_roots)"
+        ) from error
+    except (OSError, UnicodeError) as error:
+        raise _transcript_problem(error) from error
+    hits = refs._find_in(lines, verbatim, roles=("user",))  # noqa: SLF001
+    if not hits:
+        raise StatementUsageError(
+            f"statement: no row the user typed in session {session!r} holds "
+            "these words; pass the words exactly as the user said them"
+        )
+    return f"transcript:{session}#L{hits[-1]}"
 
 
 def add(
