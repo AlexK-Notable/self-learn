@@ -292,7 +292,7 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     # 2026-10-24, ANCHOR 7cb185a (stmt-role): this row's 11 `missing` doors (the retirement's deleted and edited tests)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
-    # 2026-10-30, S-NEXT-audit-merges: the test audit's merge of test_wr2 into
+    # 2026-10-30, S-100: the test audit's merge of test_wr2 into
     # test_reader_contract.py::test_sw1_* (three `missing` doors). `nodes` and
     # `dump_sha` below are NOT yet re-measured for this deletion: the landing
     # step's --remeasure does that (the lane never runs it).
@@ -326,7 +326,7 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     # 2026-10-24, ANCHOR 7cb185a (stmt-role): this row's 1 `edited` doors (the retirement's deleted and edited tests)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
-    # 2026-10-30, S-NEXT-audit-merges: two `edited` doors (test audit L1-1 took
+    # 2026-10-30, S-100: two `edited` doors (test audit L1-1 took
     # test_wr2 out of _SIM_2_NINE; L1-17 dropped an unasserted case from test_kl6).
     # `dump_sha` below is NOT yet re-measured; the landing step's --remeasure does that.
     "test_invocation_sdk.py": Behaviour(
@@ -357,7 +357,7 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     ),
     # 2026-10-24, ANCHOR 7cb185a (stmt-role): this row's 1 `edited` doors (the retirement's deleted and edited tests)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
-    # 2026-10-30 (tests-fix, S-NEXT-tests-fix; 11-telemetry-and-lifecycle.md §2.5, the `defer --until` rule):
+    # 2026-10-30 (tests-fix, S-98; 11-telemetry-and-lifecycle.md §2.5, the `defer --until` rule):
     # `test_defer_cli_until_date` deferred to the fixed date 2027-01-01 and goes red once that date is past
     # (`defer` refuses a past --until); it now derives the date from today. `nodes`/`dump_sha` are
     # anchor-side and unchanged by a HEAD edit; EXM3.census_edited (0 -> 1) and BEH3.control_edited
@@ -366,7 +366,7 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=59, dump_sha="0558051df890c86d53fe8592c00fcc902d7db04e3a379235db739bf28ebf3150",
         edited={
             "func:test_defer_cli_until_date": (
-                "2026-10-30 tests-fix (S-NEXT-tests-fix): the deferral date is computed from today, "
+                "2026-10-30 tests-fix (S-98): the deferral date is computed from today, "
                 "not hard-coded 2027-01-01 (11-telemetry-and-lifecycle.md §2.5)"
             ),
         },
@@ -944,7 +944,7 @@ MEASURED: dict[str, Measured] = {
         value=3,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-10-30 audit-merges (S-NEXT-audit-merges; test audit L1-1): 0 -> 3, the three `missing` doors on test_invocation.py (`test_wr2_...`, `_FakePopen`, `_PopenRaises`), counted against ANCHOR 3ebc194. "
+            "2026-10-30 audit-merges (S-100; test audit L1-1): 0 -> 3, the three `missing` doors on test_invocation.py (`test_wr2_...`, `_FakePopen`, `_PopenRaises`), counted against ANCHOR 3ebc194. "
             "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
             "STALE refusal (stmt-role): 11 -> 0; the retirement's deleted and edited tests "
@@ -968,7 +968,7 @@ MEASURED: dict[str, Measured] = {
         value=3,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-10-30 tests-fix + audit-merges: 0 -> 3. tests-fix (S-NEXT-tests-fix; 11-telemetry-and-lifecycle.md §2.5) adds an `edited` door on test_route_cli.py `func:test_defer_cli_until_date` (relative date); audit-merges (S-NEXT-audit-merges; test audit L1-1, L1-17) adds two `edited` doors on test_invocation_sdk.py (`_SIM_2_NINE`, `test_kl6_child_pid_of_is_defensive`). Counted by reading; the landing remeasure confirms. "
+            "2026-10-30 tests-fix + audit-merges: 0 -> 3. tests-fix (S-98; 11-telemetry-and-lifecycle.md §2.5) adds an `edited` door on test_route_cli.py `func:test_defer_cli_until_date` (relative date); audit-merges (S-100; test audit L1-1, L1-17) adds two `edited` doors on test_invocation_sdk.py (`_SIM_2_NINE`, `test_kl6_child_pid_of_is_defensive`). Counted by reading; the landing remeasure confirms. "
             "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 7cb185a from this module's own "
             "STALE refusal (stmt-role): 2 -> 0; the retirement's deleted and edited tests "
@@ -1026,7 +1026,7 @@ MEASURED: dict[str, Measured] = {
         value=100,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-10-30 audit-merges (S-NEXT-audit-merges; test audit L1-1): 97 -> 100, `test_wr2_...`, `_FakePopen` and `_PopenRaises` are absent at HEAD and present at the retired control anchor c3b48e7. "
+            "2026-10-30 audit-merges (S-100; test audit L1-1): 97 -> 100, `test_wr2_...`, `_FakePopen` and `_PopenRaises` are absent at HEAD and present at the retired control anchor c3b48e7. "
             "Previous entry: "
             "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 91 -> 97, the deleted backend-selector tests, counted against the retired control anchor c3b48e7. "
             "Previous entry: "
@@ -1044,7 +1044,7 @@ MEASURED: dict[str, Measured] = {
         value=176,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-10-30 tests-fix (S-NEXT-tests-fix; 11-telemetry-and-lifecycle.md §2.5): 175 -> 176; "
+            "2026-10-30 tests-fix (S-98; 11-telemetry-and-lifecycle.md §2.5): 175 -> 176; "
             "`func:test_defer_cli_until_date` is edited against c3b48e7. Previous entry: "
             "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 179 -> 175, the retirement's edits counted against c3b48e7 (nodes it deleted no longer count as edited). "
             "Previous entry: "

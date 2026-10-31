@@ -97,7 +97,7 @@ _RECONSIDER_OBSERVATION_RE = re.compile(
     re.MULTILINE,
 )
 
-#: S-NEXT-overseer-answers: the observation `overseer respond` writes on each
+#: S-96: the observation `overseer respond` writes on each
 #: case an ASK cited when the user answers it
 #: (`overseer.conversation.respond`). Its `ref` is the new statement, which
 #: no case could have listed among its dependencies beforehand, so the
@@ -809,7 +809,7 @@ def _files_record(recipe: object, record_id: str) -> bool:
 
 def _defers_record(recipe: object, record_id: str) -> bool:
     """True when this committed case recipe's sheet holds a `defer` item for
-    *record_id* (S-NEXT-steward). The mirror of :func:`_files_record`."""
+    *record_id* (S-95). The mirror of :func:`_files_record`."""
     if not isinstance(recipe, dict):
         return False
     return any(
@@ -828,7 +828,7 @@ def _terminal_versions(
 ) -> set[tuple[str, str]]:
     """Every ``(record, input version)`` a committed steward run decided.
 
-    S-NEXT-steward (2026-10-30): with ``defers_decide=False`` an `applied`
+    S-95 (2026-10-30): with ``defers_decide=False`` an `applied`
     row whose case DEFERRED the lesson (:func:`_defers_record`) is not a
     decision either: a deferral is a decision to look again on a date, and
     once that date passes the lesson is the steward's to decide again, with
@@ -979,7 +979,7 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
     supersedes its parked case it is selected again if its version is
     still undecided.
 
-    S-NEXT-steward (2026-10-30): a lesson the steward DEFERRED is selected
+    S-95 (2026-10-30): a lesson the steward DEFERRED is selected
     again once its deferral comes due, whichever identity the deferring run
     recorded (:func:`_terminal_versions`, ``defers_decide=False``); the
     queue itself (`ledger_ops.queue`) is what keeps it out until then. It
@@ -1165,7 +1165,7 @@ def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]
     back, as a reconsider input. An observation counts when its `ref` is one
     of the case's dependencies, or, for a case that DEFERRED its lessons,
     when it records the user's answer to a question the overseer asked about
-    the case (S-NEXT-overseer-answers): a deferral waits on that answer, and
+    the case (S-96): a deferral waits on that answer, and
     the answers to earlier questions on cases that decided something else
     were acted on long ago.
     A lesson the overseer holds is not (S-81): its observation stays

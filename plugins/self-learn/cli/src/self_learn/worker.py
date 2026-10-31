@@ -726,7 +726,7 @@ def cache_dir(home: Path | str | None = None) -> Path:
     digest = hashlib.sha256(str(resolved_home).encode("utf-8")).hexdigest()[:8]
     new = base / "self-learn" / f"home-{digest}"
     new.mkdir(parents=True, exist_ok=True)
-    # S-NEXT-cache: name the home this hash belongs to, so a later pass can
+    # S-99: name the home this hash belongs to, so a later pass can
     # tell when the home is gone and the directory is an orphan.
     cache_gc.record_home(new, resolved_home)
     _migrate_cache(base / "claude-skills" / "self-learn", new)

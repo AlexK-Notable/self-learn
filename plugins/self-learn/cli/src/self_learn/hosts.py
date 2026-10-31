@@ -629,7 +629,7 @@ def _now_iso() -> str:
 
 
 def _exclude_host_marker(marker: Path) -> None:
-    """S-NEXT-hosts: a plain host never has its tracked files edited, so
+    """S-97: a plain host never has its tracked files edited, so
     the marker must not show in the repo's ``git status``. When the marker
     sits in a git work tree, is not tracked, and git does not already
     ignore it (a committed ``.gitignore`` may), put its one line in the
@@ -802,7 +802,7 @@ def host_add(
             _write_host_marker(home, target)
             marker_restored = True
         elif mode == "plain":
-            # S-NEXT-hosts: a plain host registered before the exclude
+            # S-97: a plain host registered before the exclude
             # line existed gets it on re-registration (idempotent).
             _exclude_host_marker(target / MARKER_FILENAME)
         # already registered, same mode — nothing else to do

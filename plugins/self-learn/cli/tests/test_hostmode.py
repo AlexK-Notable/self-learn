@@ -353,7 +353,7 @@ class TestMode8SkillsRootShapeValidation:
 
 class TestHostListModeColumn:
     def test_mode_shown_for_every_host(self, tmp_path, capsys, monkeypatch):
-        """MODE11: `self-learn host list` renders each host's mode; every host line, git included, states its mode (S-NEXT-hosts)."""
+        """MODE11: `self-learn host list` renders each host's mode; every host line, git included, states its mode (S-97)."""
         from self_learn import cli
 
         env = make_env(tmp_path)
@@ -361,7 +361,7 @@ class TestHostListModeColumn:
         rc = cli.main(["host", "list"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert f"{env.host}  [mode=git]" in out  # S-NEXT-hosts: git states its mode too
+        assert f"{env.host}  [mode=git]" in out  # S-97: git states its mode too
 
         plain_host = tmp_path / "plain-listed"
         plain_host.mkdir()
@@ -5013,12 +5013,12 @@ class TestChez6CensusZeroRetiredModuleLiterals:
         assert _hits(trees["ui/static"]) == []  # zero chezmoi mentions; the 2 dated retirement comments say "adopt", not "chezmoi" (UIC5 sweeps that word)
 
 
-# ----------------------------------------------- S-NEXT-hosts: marker excluded
+# ----------------------------------------------- S-97: marker excluded
 
 
 @pytest.fixture
 def _no_global_git_excludes(monkeypatch, tmp_path_factory):
-    # S-NEXT-hosts: keep the developer's global ignore file out of these tests.
+    # S-97: keep the developer's global ignore file out of these tests.
     empty = tmp_path_factory.mktemp("gitcfg") / "gitconfig"
     empty.write_text("", encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))

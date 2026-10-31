@@ -277,7 +277,7 @@ revert). Doc 13 promotes that to the general rule:
    it is never registered, carries no marker, and its mode cannot be
    anything else.
 
-   **The marker and git (S-NEXT-hosts).** The marker is the one path a plain
+   **The marker and git (S-97).** The marker is the one path a plain
    host registration writes itself, so registration (and every re-registration,
    marker present or repaired) puts its line in the repo's private
    `.git/info/exclude` (self-learn's own block, idempotent), never the tracked
@@ -558,7 +558,7 @@ either suite; both suites' `conftest.py` also carry a session-scoped
 guard that fails the suite's own session, by name, if that guarantee
 is ever broken again.
 
-**Orphan sweep (S-NEXT-cache, 2026-10-30):** the guarantee above stops
+**Orphan sweep (S-99, 2026-10-30):** the guarantee above stops
 the suites; it cannot stop a scratch run or a home deleted by hand, and the
 `home-<digest>` name is a one-way hash. So `worker.cache_dir` records the
 home's path in `<cache>/home-<digest>/.home`, and `cache_gc.prune` (run by
@@ -1329,7 +1329,7 @@ overseer's own cadence — `status --fast` and `doctor serve` gain
 committed `overseer/open-questions.yaml` machine index (one entry per
 question — its id, kind and affected case ids, plus an ask's text and why;
 no count limit since 2026-09-24), never by parsing the report's
-prose or walking the case store. *(Amended S-NEXT-overseer-answers:
+prose or walking the case store. *(Amended S-96:
 the count, and `overseer open`, leave out a question the user has answered
 since the index was written -- a statement whose `answers.ref` is its id,
 recorded at or after the index file's last write -- so an answer takes

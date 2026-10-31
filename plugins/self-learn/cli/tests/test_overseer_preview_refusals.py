@@ -1,5 +1,5 @@
 """The overseer believes its own preview, and phase B can read lessons
-(S-NEXT-overseer-run, 2026-10-30).
+(S-101, 2026-10-30).
 
 (a) A sheet item whose preview says `would-refuse` is not applied: it is
     left off the staged sheet and named in "Refused / could not do" with the

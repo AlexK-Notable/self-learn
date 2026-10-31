@@ -1,4 +1,4 @@
-"""S-NEXT-cache: orphaned per-home cache directories and idle host lock
+"""S-99: orphaned per-home cache directories and idle host lock
 files are removed; nothing that belongs to an existing home or a held lock
 ever is.
 

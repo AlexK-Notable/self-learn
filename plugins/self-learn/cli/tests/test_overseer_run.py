@@ -138,7 +138,7 @@ def _fake_hook_phases(
     such an item. ``extra_apply_refusal`` adds item 2, a `reject` of the same
     lesson, which previews would-apply (the lesson is pending when previewed)
     and is refused only AT APPLY, after item 1 has routed it: the shape every
-    test of an apply-time refusal needs (S-NEXT-overseer-run)."""
+    test of an apply-time refusal needs (S-101)."""
     calls = []
 
     def invoke(spec):

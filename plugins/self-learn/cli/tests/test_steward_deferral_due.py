@@ -1,4 +1,4 @@
-"""S-NEXT-steward (2026-10-30): a lesson the steward deferred is the
+"""S-95 (2026-10-30): a lesson the steward deferred is the
 steward's again once its deferral comes due -- no manual `undefer`.
 
 Live evidence: `lrn-f55e9e47` and `lrn-e92861b2` (user scope) were deferred

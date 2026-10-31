@@ -21,7 +21,7 @@ Classes:
   Authentication is a login that no longer works: an expired or revoked
   OAuth session ("Failed to authenticate: OAuth session expired and could
   not be refreshed", run-c5fa4e3c0a78, 2026-10-30, which read as
-  ``unclassified`` and cost an attempt before S-NEXT-steward), an invalid key
+  ``unclassified`` and cost an attempt before S-95), an invalid key
   or token, or no login at all. It is the one class that tells the user: the
   runners' environment hold (``model_failures.HELD_ENVIRONMENT``) notifies
   once per distinct cause, and only they can log in again.

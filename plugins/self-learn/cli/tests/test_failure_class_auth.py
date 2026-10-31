@@ -1,4 +1,4 @@
-"""S-NEXT-steward (2026-10-30): an expired login is an `environment`
+"""S-95 (2026-10-30): an expired login is an `environment`
 failure, not `unclassified`.
 
 Live evidence: the steward's run `run-c5fa4e3c0a78` failed with the model

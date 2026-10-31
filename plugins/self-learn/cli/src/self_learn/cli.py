@@ -3143,7 +3143,7 @@ def _host_line(home, path, kind: str) -> str:
     """One registry line, with any gate problem spelled out inline.
 
     U-hostmode MODE11: the mode suffix names every host's mode, git
-    included (S-NEXT-hosts; UN4's silent git default is withdrawn here, so
+    included (S-97; UN4's silent git default is withdrawn here, so
     the skills root and each project state theirs)."""
     if path is None:
         return "(none registered)"

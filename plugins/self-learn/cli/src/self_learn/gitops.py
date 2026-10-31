@@ -457,7 +457,7 @@ def _flock_lock(path: Path, timeout: float, wedged_by: str) -> Iterator[None]:
                     ) from None
                 time.sleep(0.02)
                 continue
-            # S-NEXT-cache: `cache_gc.prune` may unlink an idle lock file.
+            # S-99: `cache_gc.prune` may unlink an idle lock file.
             # A lock taken on a file that was unlinked after we opened it
             # excludes nobody (the next opener creates a fresh file), so
             # confirm the file we hold is still the one at `path`, and

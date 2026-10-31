@@ -1,4 +1,4 @@
-"""S-NEXT-overseer-answers: an answered overseer question stops being open
+"""S-96: an answered overseer question stops being open
 at once, releases the case that waited on it, and the user model stores a
 list field given as one string as one item.
 

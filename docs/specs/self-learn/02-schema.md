@@ -755,7 +755,7 @@ reply to an ask is a statement with `answers.kind: question` and `answers.ref`
 the ask's id; phase B receives every such answer, newest first, as the staged
 `answers.yaml`.
 
-*(Added 2026-10-30, S-NEXT-overseer-run.)* **Lesson records and the preview.**
+*(Added 2026-10-30, S-101.)* **Lesson records and the preview.**
 Phase B's stage also holds `lessons/<id>.md`, every lesson record in the ledger
 as it stands (status, routing, history, `## Trigger`, `## Instruction`), so a
 lesson the overseer names can be read; a record the secret scan matches is a stub
@@ -1376,7 +1376,7 @@ fail the stage; apply time handles them by kind, as above. A repair turn
 already spent on a format error is not spent again. A dry run does the
 same, writing only to the cache.
 
-*(Amended S-NEXT-overseer-answers.)* A case whose outcome is `defer` and
+*(Amended S-96.)* A case whose outcome is `defer` and
 that the overseer asked the user about comes back to the steward when the
 user answers: `overseer respond` observes the cited case with `statement:
 user answered q-<slug> (ref: stmt-...)`, and the steward's reconsider input
@@ -1461,7 +1461,7 @@ unit around it:
   stage) and journaled `transient-retry`; `environment` (an unsupported model
   or Claude Code version, authentication — an expired, revoked or missing
   login included, "Failed to authenticate: OAuth session expired and could
-  not be refreshed" *(2026-10-30, S-NEXT-steward; before it read
+  not be refreshed" *(2026-10-30, S-95; before it read
   `unclassified`)* — a model or binary not found, a
   refused provider) is a HOLD — the steward puts the packet's
   `attempt_count` back and stops the run, the overseer writes no failure
@@ -1580,7 +1580,7 @@ PDT: "fix the rest of 3".)*
   is one decision, so it is dropped whole, never item by item, with one
   exception: in a resolution pair, a line whose own preview says
   would-refuse is dropped and reported and the rest of the pair stands
-  (S-NEXT-overseer-run, "Lesson records and the preview" above); a maintenance pair with such a line is
+  (S-101, "Lesson records and the preview" above); a maintenance pair with such a line is
   dropped whole. A
   secret-scan hit in a pair's case or sheet drops that pair — nothing of
   it reaches the ledger. *(2026-09-28, follow-up 3)* A hit in
@@ -1605,7 +1605,7 @@ PDT: "fix the rest of 3".)*
   machine `status` value (`applied`) and its exit code are unchanged; the
   JSON also carries `decisions_staged` and `decisions_dropped`. The
   steward has no such case: a dropped steward case is counted `refused`.
-  *(Added 2026-10-30, S-NEXT-overseer-run.)* The record's `decisions` also
+  *(Added 2026-10-30, S-101.)* The record's `decisions` also
   carries `lines_dropped`: the lines taken off KEPT sheets because their
   preview said `would-refuse`. When it is above zero the report's "Decided
   in the user's stead" gets `- decisions: <n> line(s) of kept sheets were not
@@ -1962,7 +1962,7 @@ with `um-0012` and `um-0019` marked `LAPSED`,
 
 A list field of an entry (`conditions`, `statements`, `basis`) given as one
 string is stored as one item, never as its characters
-*(S-NEXT-overseer-answers; um-cea0's `basis` was written one character per
+*(S-96; um-cea0's `basis` was written one character per
 item)*. A stored `basis` of two or more one-character items reads back as the
 one string it spells and is rewritten that way by the next write.
 
@@ -2409,7 +2409,7 @@ the machinery refusing a write, not a judgment on the lesson (orchestrator
 review 2026-09-27: two live lessons were refused over the secret-scan false
 positive fixed on 2026-09-26 and could never be offered again). Such a
 lesson gets one fresh attempt under the record identity; a refusal there is
-terminal, as every refusal was before. *(2026-10-30, S-NEXT-steward.)* A
+terminal, as every refusal was before. *(2026-10-30, S-95.)* A
 deferral is not a decision either, under either identity: an `applied`
 disposition whose case deferred the lesson (a `defer` item for it) is
 skipped when the eligible lessons are read, so a lesson the steward deferred

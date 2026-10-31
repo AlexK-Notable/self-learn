@@ -143,7 +143,7 @@ NOT_REPO_TRUTH = {
     "worker._truncate_oldest": "XDG cache: worker.log rotation",
     "worker._log_to": "XDG cache: worker.log",
     "worker.log": "XDG cache: worker.log",
-    # S-NEXT-cache: the per-home cache's own back-pointer, and the unlink of
+    # S-99: the per-home cache's own back-pointer, and the unlink of
     # an idle host lock file in the same cache root -- never in a repo.
     "cache_gc.record_home": "XDG cache: <cache>/home-<digest>/.home, the path of the home that directory belongs to",
     "cache_gc._remove_if_unheld": "XDG cache: unlinks an idle host-<slug>.commit.lock under the cache root",

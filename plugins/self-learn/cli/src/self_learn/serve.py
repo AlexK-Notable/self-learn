@@ -10,7 +10,7 @@ D-2): ``serve.heartbeat`` (the heartbeat itself), ``serve.poke`` (a
 verb's watchdog handoff, a separate file so a write never races the
 heartbeat), and ``serve.schedule`` (today's jittered mine target). All
 three are ``NOT_REPO_TRUTH``, mirroring ``worker.log``/``miner.spool_dir``.
-Once a day (S-NEXT-cache) it also asks ``cache_gc.prune`` to delete, from
+Once a day (S-99) it also asks ``cache_gc.prune`` to delete, from
 the cache ROOT, per-home cache directories whose ledger home no longer
 exists and host lock files nobody holds -- cache only, never the home it
 serves.
@@ -1204,7 +1204,7 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
 # --------------------------------------------------------------- the loop
 
 
-#: S-NEXT-cache: how often the serving daemon sweeps the cache root for
+#: S-99: how often the serving daemon sweeps the cache root for
 #: orphaned per-home directories and idle host lock files.
 CACHE_GC_INTERVAL_SECS = 24 * 3600
 

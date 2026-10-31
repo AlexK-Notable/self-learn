@@ -1008,7 +1008,7 @@ def _question_answers(home: Path) -> list[dict[str, Any]]:
     ]
 
 
-#: S-NEXT-overseer-run: the folder phase B finds every lesson record in.
+#: S-101: the folder phase B finds every lesson record in.
 LESSONS_DIR = "lessons"
 
 
@@ -1661,7 +1661,7 @@ def _preview_refusal_line(sheet_name: str, item: batch.DryRunItem) -> str:
 def _refuse_doomed_maintenance(
     case_file: Path, sheet_name: str, preview: batch.DryRunResult
 ) -> None:
-    """S-NEXT-overseer-run: a ``kind: maintenance`` pair whose preview
+    """S-101: a ``kind: maintenance`` pair whose preview
     refuses one of its lines is not recorded (a maintenance case describes a
     catalogue change; recorded, it would claim a change its sheet cannot make).
     The raise names every refused line; the pair loop puts it in "Refused /
@@ -1683,7 +1683,7 @@ def _drop_preview_refused(
     home: Path,
     stage: Path,
 ) -> tuple[batch.Sheet, list[str]]:
-    """S-NEXT-overseer-run: an item whose preview says ``would-refuse`` is
+    """S-101: an item whose preview says ``would-refuse`` is
     NOT applied. It is taken out of the staged sheet before the sheet's
     identity is frozen into the run record, and answered with one "Refused /
     could not do" line carrying the preview's reason. The sheet's other
@@ -3207,7 +3207,7 @@ def _prepare_manifest(
         manifest["decisions"] = {
             "staged": int(decisions.get("staged") or 0),
             "dropped": int(decisions.get("dropped") or 0),
-            # S-NEXT-overseer-run: lines of KEPT sheets taken off because
+            # S-101: lines of KEPT sheets taken off because
             # their preview said they would be refused (not pairs).
             "lines_dropped": int(decisions.get("lines_dropped") or 0),
         }
@@ -4076,7 +4076,7 @@ def _execute_manifest(
         if decisions_dropped else []
     )
     if decisions_lines_dropped:
-        # S-NEXT-overseer-run: a line taken off a kept sheet is neither a
+        # S-101: a line taken off a kept sheet is neither a
         # refusal at apply (the run's code) nor a dropped pair (the counts
         # above), so "applied" alone would read as if every line had landed.
         decided_lines.append(
@@ -5031,7 +5031,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 # so it is dropped whole, never item by item: applying part
                 # of a decision is not the decision the model made. The one
                 # exception is a resolution pair's line whose own PREVIEW
-                # says would-refuse (S-NEXT-overseer-run): that line is
+                # says would-refuse (S-101): that line is
                 # dropped and reported (`_drop_preview_refused`) and the
                 # rest of the pair stands, because the line cannot apply
                 # whatever the pair decided.
@@ -5110,7 +5110,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         reconsidered=_reconsidered_by(_yaml_mapping(case_file)),
                     )
                     _refuse_doomed_reconsider(case_file, predecessor, preview)
-                    # S-NEXT-overseer-run: a preview that says would-refuse is
+                    # S-101: a preview that says would-refuse is
                     # believed. A maintenance pair with such a line is not
                     # recorded; a decision's refused lines are not applied.
                     refused_lines: list[str] = []

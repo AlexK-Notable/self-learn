@@ -1,5 +1,5 @@
 """Removing cache directories and lock files that belong to nothing
-(S-NEXT-cache).
+(S-99).
 
 ``${XDG_CACHE_HOME:-~/.cache}/self-learn`` holds two kinds of entry that
 can outlive what they were made for:
