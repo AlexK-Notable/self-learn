@@ -703,7 +703,9 @@ def validate_premises(value: object, *, record_id: str | None = None) -> None:
         if premise.get("probe") is not None:
             probed += 1
     if probed > MAX_PROBED:
-        raise PremiseError(f"at most {MAX_PROBED} premises of a lesson carry a probe (got {probed})")
+        raise PremiseError(
+            f"at most {MAX_PROBED} premises of a lesson carry a probe (got {probed})"
+        )
 
 
 def _plain(value: Any) -> Any:
