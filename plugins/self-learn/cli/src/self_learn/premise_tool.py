@@ -36,15 +36,19 @@ A call's arguments are checked by the tool's JSON Schema and again by
 :func:`premises.validate_premises`, the function that validates a premise
 on a record, so the tool accepts exactly the probes a record would.
 
-**Placement premises (unit U8).** ``@reach``, ``@writable`` and
-``@intact`` are derived by code from a lesson's placement, never written.
-U8 builds that derivation; this tool shows its answer when it is handed
-one: ``build_toolset(home, placement=<reader>)``, where the reader takes
-``(home, record)`` and returns one :class:`PlacementReading` for each of
-the lesson's placement premises. Without a reader (this build), a lesson
-call says that placement checks are not available to the tool and a
-``premise`` of ``@reach``/``@writable``/``@intact`` is refused with the
-same reason; nothing is invented.
+**Placement premises (unit U8; S-NEXT-probes-chain).** ``@reach``,
+``@writable`` and ``@intact`` are derived by code from a lesson's
+placement, never written. The tool shows them as the last daily sweep
+judged them, with that sweep's time: ``build_toolset(home,
+placement=<reader>)``, where the reader takes ``(home, record)`` and
+returns one :class:`PlacementReading` for each of the lesson's placement
+premises. The steward's session passes
+``premise_sweep.placement_reader``, which reads the sweep's cache only:
+deriving them live walks the whole ledger (35 s on the live one), past
+the tool's bound. A reading can be up to a day old and says so. Without a
+reader, a lesson call says that placement checks are not available to
+the tool and a ``premise`` of ``@reach``/``@writable``/``@intact`` is
+refused with the same reason; nothing is invented.
 
 **A handler never blocks the session's event loop**: the probes run in a
 worker thread (``asyncio.to_thread``), as ``McpTool`` requires. One call
@@ -160,7 +164,13 @@ _DESCRIPTION = (
     "stored baseline. Verdicts: holds, moved, unavailable (the probe could "
     "not read its target: never a change, and never a confirmation), "
     "no-baseline, no-probe (a behaviour premise: written down, never "
-    "probed).\n"
+    "probed). The answer also shows the lesson's placement premises "
+    "(@reach: a session loads the file it was placed in; @writable: "
+    "self-learn may still write there; @intact: its managed block is as "
+    "self-learn left it) as the last daily sweep judged them, with that "
+    "sweep's time; the tool never derives them itself, so a reading can be "
+    "up to a day old (it says when it is older). `premise` may name one of "
+    "them (@reach, @writable, @intact).\n"
     "Probe kinds and their fields: path {path} (exists, type, symlink "
     "target); file-match {path, and exactly one of contains | line | "
     "lines} (a literal anywhere, a whole line, or the hash of lines "

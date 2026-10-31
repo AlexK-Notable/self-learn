@@ -3499,7 +3499,14 @@ The steward still has no Bash tool. It runs probes through a read-only MCP
 tool, `premise_probe`, on its session (`SessionSpec.mcp_toolset`, the way the
 miner's tools are given): the same catalog, the same runner, the same rules.
 It uses it to check a probe it is writing and to look at a premise while it
-decides.
+decides. *(S-NEXT-probes-chain:)* A lesson's placement premises (`@reach`,
+`@writable`, `@intact`, 3a.10.3) are shown as the last daily sweep judged
+them, with its time; the tool never derives them itself (the derivation
+walks the whole ledger, 35 s on the live one, past the tool's bound). Each
+reading is `holds`, `moved` (confirmed, or first sight that the next sweep
+confirms) or `unavailable`; a lesson placed again after its last row reads
+`unavailable` until the next sweep, so an old placement's failure is never
+shown as current, and a reading older than 48 hours says it is stale.
 
 **Behaviour is written down, not probed.** "oo7-daemon can outlive a bus
 restart" cannot be checked without restarting the bus, which a probe must

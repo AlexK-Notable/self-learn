@@ -70,7 +70,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from . import (
     compiled,
@@ -113,6 +113,8 @@ __all__ = [
     "judge_placement",
     "judge_probe",
     "observations_path",
+    "placement_ids",
+    "placement_reader",
     "read_history",
     "read_state",
     "render_check",
@@ -766,10 +768,7 @@ def _unavailable_placement_rows(
     nothing could be measured. ``unavailable`` never counts either way."""
     out: list[dict] = []
     for _bucket, rec in placed:
-        destination = (rec.routing or {}).get("destination")
-        if destination not in _PLACED_DESTINATIONS:
-            continue
-        ids = [REACH, WRITABLE] + ([INTACT] if destination in _REGION_DESTINATIONS else [])
+        ids = placement_ids((rec.routing or {}).get("destination"))
         out.extend(_fact_row(_Fact(rec.id, pid, "unavailable", detail=reason), sweep) for pid in ids)
     return out
 
@@ -1018,6 +1017,117 @@ def confirmed_placement_moves(
         )
     out.sort(key=lambda m: (m.since, m.record_id, m.premise_id))
     return out
+
+
+#: The placement reader's "stale" line: a reading older than this many
+#: hours is said to be old (the sweep runs daily; S-NEXT-probes-chain).
+PLACEMENT_STALE_HOURS = 48
+
+
+def placement_ids(destination: object) -> tuple[str, ...]:
+    """The placement premises a lesson placed at *destination* has (02
+    §3a.10.3): all three for ``claude-md``/``skill-md``, ``@reach`` and
+    ``@writable`` for ``new-skill``/``hook``, none otherwise."""
+    if destination not in _PLACED_DESTINATIONS:
+        return ()
+    return (REACH, WRITABLE) + ((INTACT,) if destination in _REGION_DESTINATIONS else ())
+
+
+def _failing_run(rows: list[dict]) -> int:
+    """How many of the newest rows fail with the newest row's value."""
+    latest = rows[-1]
+    count = 0
+    for row in reversed(rows):
+        if row.get("failing") and row.get("value_sha") == latest.get("value_sha"):
+            count += 1
+        else:
+            break
+    return count
+
+
+def _reading_words(row: Mapping) -> str:
+    shown = _clip(str(row.get("shown") or ""), 80)
+    detail = _clip(str(row.get("detail") or row.get("reason") or ""), 200)
+    if shown and detail and detail != shown:
+        return f"{shown}: {detail}"
+    return shown or detail or "no detail"
+
+
+def _placement_reading(
+    pid: str, rows: list[dict], routed_at: object, last_sweep: object, now_epoch: float
+) -> tuple[str, str]:
+    """``(verdict, detail)`` for one placement premise from its cached rows:
+    the same :func:`judge_placement` the steward's input is built with."""
+    if not rows:
+        when = str(last_sweep) if last_sweep else "never"
+        return premises.VERDICT_UNAVAILABLE, f"no sweep has measured it yet; last sweep {when}"
+    routed = chrono.to_dt(routed_at)
+    if routed is not None:
+        current = [r for r in rows if (chrono.to_dt(r.get("observed_at") or r.get("sweep")) or routed) >= routed]
+        if not current:
+            last_at = rows[-1].get("observed_at") or rows[-1].get("sweep")
+            return premises.VERDICT_UNAVAILABLE, (
+                f"placed again ({routed_at}) after the last sweep that measured it ({last_at}); "
+                "the next sweep measures the new placement"
+            )
+        rows = current
+    judged = judge_placement(rows)
+    latest = judged.row or rows[-1]
+    at = str(latest.get("observed_at") or latest.get("sweep"))
+    detail = f"{_reading_words(latest)}; as of the sweep at {at}"
+    if judged.verdict == premises.VERDICT_UNAVAILABLE:
+        verdict = premises.VERDICT_UNAVAILABLE
+        detail = f"could not be measured: {detail}"
+    elif judged.verdict == premises.VERDICT_MOVED:
+        verdict = premises.VERDICT_MOVED
+        if judged.confirmed:
+            detail += f"; confirmed: failing on {_failing_run(rows)} sweeps running since {judged.since}"
+        else:
+            detail += "; first sight: the next sweep confirms it"
+    else:
+        verdict = premises.VERDICT_HOLDS
+    row_epoch = _epoch(at)
+    if row_epoch is not None and now_epoch - row_epoch > PLACEMENT_STALE_HOURS * 3600:
+        detail += f"; stale: the sweep has not measured it since {at}"
+    return verdict, detail
+
+
+def placement_reader(
+    cache_dir: Path | None = None, *, now: Callable[[], float] | None = None
+) -> Callable[[Path, Record], list]:
+    """S-NEXT-probes-chain (02 §3a.10.2, the ``premise_probe`` paragraph):
+    the steward tool's reader of a lesson's placement premises, as the last
+    daily sweep judged them. It reads the sweep's cache only
+    (*cache_dir*, else the ledger's :func:`default_cache_dir`): never a
+    probe, never a derivation (:func:`_placement_rows` over the whole
+    ledger took 35 s on the live one, more than the tool's bound allows),
+    never a write. Each reading carries the sweep's time; a lesson placed
+    again after its last row reads ``unavailable`` (an old placement's
+    failure is never shown as current), and a reading older than
+    :data:`PLACEMENT_STALE_HOURS` says so. Returns a
+    ``premise_tool.PlacementReader``."""
+    from .premise_tool import PlacementReading  # late: keeps the sweep free of the seam
+
+    def read(home: Path, record: Record) -> list:
+        cache = cache_dir if cache_dir is not None else default_cache_dir(Path(home))
+        routing = record.routing or {}
+        ids = placement_ids(routing.get("destination"))
+        if not ids:
+            return []
+        history = read_history(cache)
+        state = read_state(cache)
+        last_sweep = state.get("last_finished_at") or state.get("last_attempt_at")
+        now_epoch = time.time() if now is None else float(now())
+        out = []
+        for pid in ids:
+            verdict, detail = _placement_reading(
+                pid, list(history.get((record.id, pid), [])), routing.get("routed_at"),
+                last_sweep, now_epoch,
+            )
+            out.append(PlacementReading(pid, verdict, detail))
+        return out
+
+    return read
 
 
 def _same_path(a: object, b: object) -> bool:

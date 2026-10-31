@@ -2514,6 +2514,14 @@ def _quarantine_dir(home: Path, run_id: str, packet_index: int, attempt: int) ->
     )
 
 
+def _placement_reader(home: Path) -> premise_tool.PlacementReader:
+    """The `premise_probe` tool's placement reader: the sweep's cache for
+    this ledger, read only (S-NEXT-probes-chain)."""
+    from . import premise_sweep  # late: premise_sweep imports verbs
+
+    return premise_sweep.placement_reader(premise_sweep.default_cache_dir(home))
+
+
 def _session_spec(
     home: Path, run_dir: Path, prompt: str, *, label: str, lessons: int = 1,
     run_id: str | None = None, shared_brief: Path | None = None,
@@ -2578,7 +2586,11 @@ def _session_spec(
         # the built-in tools; `containment.allowed_tools` names it, and the
         # seam refuses the session when the two disagree. It reads the
         # ledger this run decides for and writes nothing anywhere.
-        mcp_toolset=premise_tool.build_toolset(home),
+        # S-NEXT-probes-chain: a lesson's placement premises as the last
+        # daily sweep judged them (the cache `placement_moves` reads).
+        mcp_toolset=premise_tool.build_toolset(
+            home, placement=_placement_reader(home),
+        ),
     )
 
 
