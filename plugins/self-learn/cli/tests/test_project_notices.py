@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -38,7 +39,7 @@ from test_failstate_overseer import (
 )
 from test_overseer_run import _dump, _enabled
 from test_pending_hook import _base_payload, _run_hook
-from test_tracked_target_guard import _head, _lesson, _plain_repo_host
+from test_tracked_target_guard import _head, _lesson, _plain_repo_host, _record
 
 
 @pytest.fixture(autouse=True)
@@ -340,6 +341,89 @@ def test_notice_list_and_done_through_the_cli(tmp_path, monkeypatch, capsys):
     assert not (home / "notices").exists()  # nothing was ever written beside the ledger
 
 
+def test_notice_done_on_an_unwritable_cache_says_so_instead_of_a_traceback(
+    tmp_path, monkeypatch, capsys
+):
+    home = make_home(tmp_path)
+    proj = _project(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    note = _add(home, proj, now=datetime.now(timezone.utc))
+    assert note is not None
+    monkeypatch.chdir(proj)
+
+    def refuse(*_a, **_k):
+        raise OSError("read-only cache")
+
+    real_store = notices._store
+    monkeypatch.setattr(notices, "_store", refuse)
+    assert cli.main(["notice", "done", note.id]) == 1
+    assert "could not write the cache" in capsys.readouterr().err
+    monkeypatch.setattr(notices, "_store", real_store)  # control: writable, the same call works
+    assert cli.main(["notice", "done", note.id]) == 0
+
+
+def test_a_code_notice_does_not_say_self_learn_twice():
+    """The hook prints `self-learn: <words>`; the words of a code notice used
+    to start with `self-learn` too."""
+    words = notices.uncommitted_text("CLAUDE.md")
+    assert "CLAUDE.md" in words and "self-learn" not in words
+    line = notices.format_line(
+        notices.Notice(
+            id="ntc-00000000", project="/p", text=words, source=notices.SOURCE_CODE,
+            created_at="2026-10-31T12:00:00Z",
+        )
+    )
+    assert line.startswith("self-learn: ") and line.count("self-learn") == 2  # prefix and the verb
+
+
+# ------------------------------------------------------- the git budget
+
+
+def test_all_the_git_questions_of_one_read_share_one_budget(tmp_path, monkeypatch):
+    """The session-start hook gives `status --fast` 4 s and loses every line
+    when it runs out; six 1.5 s git questions could take 9 s. Past the budget a
+    notice is kept without asking (the same as a git that timed out)."""
+    home = tmp_path / "ledger"
+    proj = _project(tmp_path)
+    for i in range(3):
+        assert notices.add(
+            home, project=proj, text=f"Uncommitted file number {i} needs a person.",
+            source=notices.SOURCE_CODE, key=f"f{i}", now=T0,
+            condition={"kind": notices.COND_UNCOMMITTED, "repo": str(proj), "file": f"f{i}"},
+        )
+    asked: list[float] = []
+
+    def fake_git(argv, **kwargs):
+        asked.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, stdout=" M f\n", stderr="")
+
+    monkeypatch.setattr(notices.subprocess, "run", fake_git)
+    assert len(notices.visible(home, proj, now=T0)) == 3
+    assert len(asked) == 3 and max(asked) <= notices.GIT_CHECK_TIMEOUT  # control: git was asked
+
+    asked.clear()
+    monkeypatch.setattr(notices, "GIT_TOTAL_BUDGET", 0.0)
+    assert len(notices.visible(home, proj, now=T0)) == 3  # all kept
+    assert asked == []  # and git was not asked at all
+
+
+def test_the_overseer_is_shown_which_of_its_notices_are_still_up(tmp_path):
+    home = tmp_path / "ledger"
+    proj = _project(tmp_path)
+    other = _project(tmp_path, "other")
+    live = _add(home, proj)
+    assert live is not None
+    gone = _add(home, proj, "A finding that a person already marked done.")
+    assert gone is not None
+    notices.mark_done(home, gone.id)
+    _add(home, other, "An old one.", now=T0 - timedelta(days=notices.NOTICE_DAYS + 1))
+    code = notices.add(
+        home, project=proj, text="A code notice is not the overseer's.", source=notices.SOURCE_CODE, now=T0,
+    )
+    assert code is not None
+    assert notices.showing_by_project(home, now=T0) == {os.path.realpath(proj): [WORDS]}
+
+
 # ------------------------------------------------------------- the hook
 
 
@@ -405,8 +489,36 @@ def test_a_retirement_from_an_untracked_file_leaves_no_notice(tmp_path):
     host = _plain_repo_host(home, tmp_path, track_claude_md=False)
     rid = _lesson(home, host, "lrn-9a0000d2")
     verbs.route(home, rid, dest="claude-md", no_push=True)
-    verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
+    result = verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
+    assert _record(home, rid).status == "superseded"  # control: the retirement happened
+    assert not [w for w in result.warnings if "left the change uncommitted" in w], result.warnings
     assert notices.all_notices(home) == []
+
+
+def test_a_reference_retirement_from_a_tracked_shelf_leaves_a_notice(tmp_path):
+    """The reference-shelf leg is a second call site (`_retire_reference_host_phase`):
+    two lessons on a shelf git tracks, one retired -- only its lines leave the
+    shelf, the change is left for a person, and the person gets a notice. Deleting
+    that call leaves this test, and only this one, red."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a0000d3")
+    keep = _lesson(home, host, "lrn-9a0000d4")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    verbs.route(home, keep, dest="reference", no_push=True)
+    git(host, "add", "-f", "--", "references/LEARNINGS.md")
+    git(host, "commit", "-q", "-m", "track the shelf after all")
+    head = _head(host)
+    assert notices.all_notices(home) == []  # control: nothing before the removal
+
+    result = verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
+
+    assert _record(home, rid).status == "superseded"
+    assert any("left the change uncommitted" in w for w in result.warnings), result.warnings
+    assert _head(host) == head
+    (note,) = notices.visible(home, host)
+    assert "references/LEARNINGS.md" in note.text and note.source == notices.SOURCE_CODE
+    assert notices.visible(home, tmp_path) == []
 
 
 # ------------------------------------------- the overseer's notices.yaml
@@ -423,7 +535,7 @@ def test_the_formats_example_notices_validate_and_each_broken_twin_is_dropped():
     base = data["notices"][0]
     broken = {
         "a path the ledger does not know": {**base, "project": "/srv/somewhere-else"},
-        "two lines": {**base, "text": "line one\nline two"},
+        "a control character": {**base, "text": "line one\x07line two"},
         "too long": {**base, "text": "x" * (notices.MAX_TEXT + 1)},
         "an unknown key": {**base, "severity": "high"},
         "a case that is not a case id": {**base, "case": "the-weekly-one"},
@@ -434,6 +546,44 @@ def test_the_formats_example_notices_validate_and_each_broken_twin_is_dropped():
         assert kept == [] and len(dropped) == 1, name
         assert dropped[0].startswith("notice 1: dropped"), (name, dropped)
         assert (entry.get("text") or "\0") not in dropped[0], name  # never the model's text
+
+
+def test_a_wrapped_block_scalar_is_one_line_and_is_kept():
+    """A model that writes `text: |` and wraps it at 80 columns puts a line
+    break in the middle of one sentence. The prompt asks for one double-quoted
+    line, but a wrapped one must still be a notice (it was dropped whole)."""
+    raw = (
+        "notices:\n"
+        f"  - project: {formats.EXAMPLE_PROJECT}\n"
+        "    text: |\n"
+        "      The shutdown watchdog predates the daemon it guards;\n"
+        "      nothing is wrong, but do not rely on it.\n"
+    )
+    data = YAML(typ="safe").load(raw)
+    assert "\n" in data["notices"][0]["text"].strip()  # control: the value really wraps
+    kept, dropped = overseer_run._validate_notices(data, KNOWN)
+    assert dropped == [] and len(kept) == 1
+    assert kept[0]["text"] == (
+        "The shutdown watchdog predates the daemon it guards; nothing is wrong, but do not rely on it."
+    )
+    assert notices.text_problem(kept[0]["text"]) is None
+
+
+def test_a_project_path_the_secret_scan_matches_costs_that_notice_not_the_run():
+    """The run record is secret-scanned whole and a hit refuses the run, so a
+    notice may not carry a path the scan matches. (Control: a clean known path
+    with the same words is kept.)"""
+    leaky = "/srv/" + "ghp_" + "A1b2C3d4" * 5
+    words = "A fine one-line notice."
+    kept, dropped = overseer_run._validate_notices(
+        {"notices": [{"project": formats.EXAMPLE_PROJECT, "text": words}]}, KNOWN
+    )
+    assert len(kept) == 1 and dropped == []  # control
+    kept, dropped = overseer_run._validate_notices(
+        {"notices": [{"project": leaky, "text": words}]}, {os.path.realpath(leaky)}
+    )
+    assert kept == [] and dropped == ["notice 1: dropped — the secret scan matched the project path"]
+    assert leaky not in dropped[0]
 
 
 def test_a_notices_file_that_is_not_a_notices_list_drops_whole():
@@ -478,6 +628,12 @@ def test_a_secret_in_notices_yaml_is_withheld_and_the_run_goes_on():
 def test_the_phase_b_prompt_and_formats_tell_the_overseer_about_notices(tmp_path):
     prompt = overseer_run._phase_b_prompt(tmp_path, (), ())
     assert "notices.yaml is optional" in prompt and "projects.yaml" in prompt
+    flat = " ".join(prompt.split())
+    # one double-quoted line, like the two other free-text exceptions (a wrapped
+    # block scalar used to be dropped), and the notices still up are named
+    assert "ONE line (a double-quoted string, never a block scalar)" in flat
+    assert "A notice's text in notices.yaml is held to one line as well" in flat
+    assert "`showing` list in projects.yaml" in flat
     workspace = tmp_path / "ws"
     workspace.mkdir()
     root = formats.write(workspace, "B")
@@ -511,14 +667,17 @@ def test_writing_a_run_records_notices_is_idempotent(tmp_path):
     assert overseer_run._write_project_notices(home, {"run_id": "x"}) == 0  # an old record
 
 
-def _notice_run(tmp_path, monkeypatch, entries, *, dry_run=False):
+def _notice_run(tmp_path, monkeypatch, entries, *, dry_run=False, before=None):
     """One overseer run on a sandbox ledger whose fake phase B writes the
-    notices.yaml that ``entries(env, parked_case_id)`` answers."""
+    notices.yaml that ``entries(env, parked_case_id)`` answers (*before* runs
+    first, with the env)."""
     env = make_env(tmp_path)
     home = env.ledger
     _enabled(monkeypatch)
     rid_a, parked_a, rid_b, parked_b = _two_parked(home, tmp_path)
     seen: dict[str, str] = {}
+    if before is not None:
+        before(env)
 
     def invoke(spec):
         stage = spec.cwd
@@ -573,5 +732,31 @@ def test_a_dry_run_writes_no_notice(tmp_path, monkeypatch):
     def entries(env, parked):
         return [{"project": str(env.host), "text": WORDS}]
 
-    _env, home, _result, _seen = _notice_run(tmp_path, monkeypatch, entries, dry_run=True)
+    _env, home, result, seen = _notice_run(tmp_path, monkeypatch, entries, dry_run=True)
+    assert result.status == "dry-run"  # the run got as far as the end of a dry run ...
+    assert "projects" in seen  # ... and phase B ran and wrote the same notices.yaml
     assert notices.all_notices(home) == []
+
+
+def test_phase_b_is_shown_the_overseer_notices_still_up_in_each_project(tmp_path, monkeypatch):
+    """A reworded finding is a new notice with a fresh 14 days, so phase B is
+    told what is still showing and asked not to repeat it. (Control: a run with
+    nothing showing has no `showing` key.)"""
+
+    def entries(env, parked):
+        return []
+
+    (tmp_path / "plain").mkdir()
+    _e, _h, _r, seen_plain = _notice_run(tmp_path / "plain", monkeypatch, entries)
+    assert "path:" in seen_plain["projects"] and "showing" not in seen_plain["projects"]
+
+    def up(env):
+        assert notices.add(
+            env.ledger, project=env.host, text=WORDS, source=notices.SOURCE_OVERSEER,
+        )
+
+    (tmp_path / "with").mkdir()
+    _e, _h, _r, seen = _notice_run(tmp_path / "with", monkeypatch, entries, before=up)
+    data = YAML(typ="safe").load(seen["projects"])
+    (row,) = [r for r in data["projects"] if r["path"] == os.path.realpath(_e.host)]
+    assert row["showing"] == [WORDS]

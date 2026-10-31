@@ -2139,7 +2139,11 @@ def _cmd_notice(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return EXIT_USAGE
-        done = notices.mark_done(home, args.notice_id)
+        try:
+            done = notices.mark_done(home, args.notice_id)
+        except OSError as exc:
+            print(f"self-learn notice done: could not write the cache: {exc}", file=sys.stderr)
+            return 1
         if done is None:
             print(f"self-learn notice done: no notice {args.notice_id} on file", file=sys.stderr)
             return EXIT_USAGE

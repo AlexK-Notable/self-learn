@@ -702,6 +702,8 @@ or a wrapped line (a block scalar keeps a line break): every free-text value in
 user-model-delta.yaml (the user model refuses a line break), and every loaded value on a sheet
 line -- trigger, instruction, fact, and a revise line's text for one of those sections (a lesson
 whose loaded text spans lines is refused when it is placed).
+A notice's text in notices.yaml is held to one line as well: write it as a double-quoted string on
+one line, never a block scalar and never wrapped (a notice is printed as one line).
 """
 
 
@@ -812,11 +814,12 @@ notices.yaml is optional: {{notices: [{{project, text, case?}}]}}. A notice is o
 a session that works inside one project, and nowhere else, for something about that project's own code or
 setup that the sessions there should see (a defect you found in it; a change an agent left uncommitted in
 it). project is a path listed in projects.yaml; any other path is dropped. text is ONE sentence of at most
-{project_notices.MAX_TEXT} characters in plain words, written for someone who has not read this report; case is the
-case it comes from. A notice ends by itself after {project_notices.NOTICE_DAYS} days, or sooner when the user marks it
-done. At most {project_notices.MAX_PER_RUN} a run. The report is where findings go: write a notice only when a
+{project_notices.MAX_TEXT} characters in plain words on ONE line (a double-quoted string, never a block scalar),
+written for someone who has not read this report; case is the case it comes from. A notice ends by itself
+after {project_notices.NOTICE_DAYS} days, or sooner when the user marks it done. At most {project_notices.MAX_PER_RUN} a run. The report is where findings go: write a notice only when a
 session in that project would act differently for knowing it, and none when nothing meets that. The same words
-for the same project one week later are the same notice, so do not repeat one that is still showing.
+for the same project one week later are the same notice. A project's `showing` list in projects.yaml holds
+the notices still showing there: do not write one of them again, not even reworded.
 user-model-delta.yaml is {{updates: [...]}}. Each update is either
 {{action: add, container, title, because, source: system-reading, ref, held_since?, conditions?, statements?, basis?}}
 or {{action: lapse, id, changed_condition?|contrary?|consolidated_into?}}. Adds are provisional
@@ -1118,7 +1121,14 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
     _write_stage(stage, stage / "user-model.yaml", _yaml_text(model_doc))
     _write_stage(stage, stage / "answers.yaml", _yaml_text({"answers": _question_answers(home)}))
     # S-NEXT-cures-d: the projects a notice may name (names and real paths only).
-    projects_text = _yaml_text({"projects": project_notices.known_projects(home)})
+    # Each project also carries `showing`: the overseer notices still up there, so
+    # the model does not write a reworded copy (a new notice, a fresh 14 days).
+    showing = project_notices.showing_by_project(home)
+    project_rows = [
+        {**row, "showing": showing[row["path"]]} if showing.get(row["path"]) else row
+        for row in project_notices.known_projects(home)
+    ]
+    projects_text = _yaml_text({"projects": project_rows})
     if scan.scan(projects_text):
         projects_text = "projects: []\n"  # an input file's hit would refuse the run
     _write_stage(stage, stage / PROJECTS_FILE, projects_text)
@@ -1618,7 +1628,8 @@ def _validate_notices(
     paths the ledger knows, :func:`notices.known_projects`): a model cannot
     point a notice at a directory the ledger has never heard of. Answers
     ``(kept, dropped_lines)``; each kept entry is ``{project, text[, case]}``
-    with the project as a real path and the text stripped. At most
+    with the project as a real path and the text's whitespace collapsed to
+    single spaces (a wrapped block scalar is one line). At most
     :data:`notices.MAX_PER_RUN` are kept; the rest are dropped and counted."""
     if not isinstance(data, dict) or set(data) != {"notices"} or not isinstance(data["notices"], list):
         return [], ["notices.yaml: dropped — expected only a notices list"]
@@ -1637,9 +1648,16 @@ def _validate_notices(
         else:
             project = os.path.realpath(Path(entry["project"].strip()).expanduser())
             raw_text = entry.get("text")
-            text = raw_text.strip() if isinstance(raw_text, str) else ""
+            # A wrapped block scalar holds a line break in the middle of one
+            # sentence: join the lines with single spaces, so a model that
+            # wraps its words still gets its notice (the printed line is one).
+            text = " ".join(raw_text.split()) if isinstance(raw_text, str) else ""
             if project not in known:
                 problem = "project is not one of the projects in projects.yaml"
+            elif scan.scan(project):
+                # The run record is secret-scanned whole and a hit refuses the
+                # run; a notice's path must never be the thing that does it.
+                problem = "the secret scan matched the project path"
             elif (reason := project_notices.text_problem(text)) is not None:
                 problem = reason
             elif entry.get("case") is not None and not (

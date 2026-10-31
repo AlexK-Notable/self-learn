@@ -46,9 +46,12 @@ What the reader costs. ``self-learn status --fast`` is the session-start
 hook's one call, pinned git-free and cheap. Reading notices keeps that: a
 notice outside the current project costs a path comparison. Only a ``code``
 notice INSIDE the current project asks git one bounded question
-(``git status --porcelain`` on its one file, no index lock, 1.5 s), and an
-answer that cannot be had keeps the notice (the 14 days bound it). The
-hook prints at most :data:`MAX_SHOWN` lines.
+(``git status --porcelain`` on its one file, no index lock, 1.5 s), all of a
+call's questions together get :data:`GIT_TOTAL_BUDGET` seconds (the hook that
+calls this gives up at 4 s and would lose every one of its lines), and an
+answer that cannot be had -- git missing, a timeout, the budget spent --
+keeps the notice (the 14 days bound it). The hook prints at most
+:data:`MAX_SHOWN` lines.
 
 What this module does not do: decide anything, write the ledger, or touch a
 host file. It never raises into a caller that is doing something else:
@@ -62,6 +65,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -71,6 +75,8 @@ from . import cache_gc, scan
 from .primitives import chrono, fsops
 
 __all__ = [
+    "GIT_CHECK_TIMEOUT",
+    "GIT_TOTAL_BUDGET",
     "MAX_PER_RUN",
     "MAX_SHOWN",
     "MAX_TEXT",
@@ -81,11 +87,15 @@ __all__ = [
     "add",
     "add_uncommitted",
     "all_notices",
+    "condition_holds",
+    "format_line",
+    "is_live",
     "known_projects",
     "mark_done",
     "notice_id",
     "notices_dir",
     "prune",
+    "showing_by_project",
     "text_problem",
     "visible",
 ]
@@ -109,6 +119,11 @@ MAX_PER_RUN = 5
 MAX_CHECKS = 6
 #: Seconds the one git question may take.
 GIT_CHECK_TIMEOUT = 1.5
+#: Seconds ALL the git questions of one :func:`visible` call may take together.
+#: Six asks of 1.5 s each would be 9 s, past the 4 s the session-start hook
+#: allows its one ``status --fast`` call, and a hook that times out prints none
+#: of its lines. Once this is spent a notice is kept without asking.
+GIT_TOTAL_BUDGET = 2.0
 
 SOURCE_OVERSEER = "overseer"
 SOURCE_CODE = "code"
@@ -287,12 +302,13 @@ def is_live(notice: Notice, now: datetime) -> bool:
     return expires is not None and now < expires
 
 
-def condition_holds(notice: Notice) -> bool:
+def condition_holds(notice: Notice, *, timeout: float = GIT_CHECK_TIMEOUT) -> bool:
     """Whether the notice's condition still holds. No condition: it does. An
     ``uncommitted`` condition: its file still shows in ``git status``. A repo
     that is gone clears it; an answer that cannot be had (git missing, a
-    timeout, a git error) keeps it -- the 14 days bound it. Reads only: git
-    runs with ``GIT_OPTIONAL_LOCKS=0`` so it takes no index lock."""
+    timeout, a git error) keeps it -- the 14 days bound it. *timeout* is the
+    most seconds the one git question may take. Reads only: git runs with
+    ``GIT_OPTIONAL_LOCKS=0`` so it takes no index lock."""
     cond = notice.condition
     if not cond:
         return True
@@ -306,7 +322,7 @@ def condition_holds(notice: Notice) -> bool:
     try:
         proc = subprocess.run(
             ["git", "-C", repo, "status", "--porcelain", "--", file],
-            capture_output=True, text=True, timeout=GIT_CHECK_TIMEOUT,
+            capture_output=True, text=True, timeout=timeout,
             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         )
     except (OSError, subprocess.SubprocessError):
@@ -327,6 +343,7 @@ def visible(
         moment = now if now is not None else datetime.now(timezone.utc)
         out: list[Notice] = []
         checks = 0
+        deadline = time.monotonic() + GIT_TOTAL_BUDGET
         for notice in all_notices(home):
             if not _inside(notice.project, here) or not is_live(notice, moment):
                 continue
@@ -334,7 +351,12 @@ def visible(
                 checks += 1
                 if checks > MAX_CHECKS:
                     continue  # no more git questions this call; unconditioned notices still count
-                if not condition_holds(notice):
+                left = deadline - time.monotonic()
+                # The budget is spent: an answer cannot be had, so the notice
+                # is kept without asking (the same as a git that timed out).
+                if left > 0 and not condition_holds(
+                    notice, timeout=min(GIT_CHECK_TIMEOUT, left)
+                ):
                     continue
             out.append(notice)
         return out
@@ -390,9 +412,11 @@ def add(
 
 def uncommitted_text(rel: str) -> str:
     """The words of a ``code`` notice for a tracked file left changed."""
+    # No "self-learn" in the words: the printed line already starts with it
+    # (:func:`format_line`).
     text = (
-        f"self-learn left an uncommitted change in this repo's {rel} "
-        "(it took a lesson out): review it and commit it."
+        f"a lesson was taken out of this repo's {rel} and the change is "
+        "uncommitted: review it and commit it."
     )
     if len(text) > MAX_TEXT:
         text = text[: MAX_TEXT - 3].rstrip() + "..."
@@ -434,7 +458,8 @@ def add_uncommitted(
 def mark_done(home: Path | str, notice_id_: str, *, now: datetime | None = None) -> Notice | None:
     """A person (or an agent) says a notice is dealt with. Answers the notice
     as stored, or ``None`` when no such notice is on file. A notice already
-    done is answered as it is."""
+    done is answered as it is. Raises ``OSError`` when the cache cannot be
+    written (the verb that calls this says so)."""
     path = _path_for(home, notice_id_)
     existing = _load(path)
     if existing is None:
@@ -468,6 +493,25 @@ def prune(home: Path | str, *, now: datetime | None = None) -> int:
 
 
 # --------------------------------------------------------------- projects
+
+
+def showing_by_project(
+    home: Path | str, *, now: datetime | None = None
+) -> dict[str, list[str]]:
+    """The words of every overseer notice still showing, by project (its real
+    path): live, not done, not past its days. Phase B is shown this so it does
+    not write a finding again that is still up -- a reworded one is a new
+    notice (a new id, a fresh 14 days) and would come back after a person
+    marked the first one done. Reads only; never raises."""
+    out: dict[str, list[str]] = {}
+    try:
+        moment = now if now is not None else datetime.now(timezone.utc)
+        for notice in all_notices(home):
+            if notice.source == SOURCE_OVERSEER and is_live(notice, moment):
+                out.setdefault(notice.project, []).append(notice.text)
+    except Exception:  # noqa: BLE001
+        return {}
+    return out
 
 
 def known_projects(home: Path | str) -> list[dict[str, str]]:

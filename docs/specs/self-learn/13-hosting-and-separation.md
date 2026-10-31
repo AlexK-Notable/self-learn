@@ -1794,28 +1794,34 @@ after it was first made. A file older than 30 days is deleted by the next writer
 
 1. `source: overseer`. Phase B may write an optional `notices.yaml`,
    `{notices: [{project, text, case?}]}`, beside its other files, and is given
-   `projects.yaml` (`{projects: [{name, path}]}`: every project bucket's recorded
-   path and every registered host, as real paths that exist). Each entry is
+   `projects.yaml` (`{projects: [{name, path, showing?}]}`: every project bucket's recorded
+   path and every registered host, as real paths that exist; `showing` holds the words of the
+   overseer notices still up in that project, so the overseer does not write a reworded copy,
+   which would be a new notice with a fresh 14 days). Each entry is
    validated on its own, as findings are: `project` must be a path in that list (a
    model cannot point a notice at a directory the ledger has never heard of),
    `text` one sentence, one line of printable characters, at most 200, secret-
-   scanned, `case` a case id, at most five a run, no duplicates. An entry that
+   scanned (asked for as a double-quoted one-line string; a wrapped block scalar has its line
+   breaks joined with single spaces, so a notice is not lost to wrapping), `case` a case id, at most five a run, no duplicates, and a project path the secret scan matches is dropped (the run record is scanned whole). An entry that
    fails is dropped and named by its ordinal in the report's "Refused / could not
    do" (never its words); a file that does not parse, or that the secret scan
    matched, drops whole; none of it refuses a run. The notice rides in the run
-   record as `notices` and is written when the run finalizes, idempotently, so a
+   record as `notices` and is written first thing when the record is executed (before any sheet is applied), idempotently, so a
    resumed run writes the same ones. A dry run writes none.
 2. `source: code`. When a plain host's retirement or reroute leaves a TRACKED file
    changed (S-89, `verbs._settle_tracked_removals` answers the changed files), the
-   host phase writes one notice per file: "self-learn left an uncommitted change
-   in this repo's `<file>` (it took a lesson out): review it and commit it." Its
+   host phase writes one notice per file: "a lesson was taken out of this repo's
+   `<file>` and the change is uncommitted: review it and commit it." (printed after
+   the `self-learn:` prefix, so the words do not repeat it) Its
    condition is that `git status --porcelain` still reports the file changed.
 
 **What reading costs.** `status --fast` stays git-free in every directory outside a
 notice's project: a notice for another project costs a path comparison. Only a
 `code` notice INSIDE the current project asks git one bounded question (that one
-file, `GIT_OPTIONAL_LOCKS=0` so no index lock, 1.5 s, at most six asks); an answer
-that cannot be had keeps the notice, and the 14 days bound it.
+file, `GIT_OPTIONAL_LOCKS=0` so no index lock, 1.5 s, at most six asks, and 2 s for all of a
+call's asks together, because the hook allows `status --fast` 4 s and loses every one of its
+lines when it times out); an answer that cannot be had (git missing, a timeout, the budget
+spent) keeps the notice, and the 14 days bound it.
 
 **What it does not do.** Decide anything, write the ledger, or touch a host file.
 `notice list [--all] [--json]` and `notice done` take no commit lock: they only
