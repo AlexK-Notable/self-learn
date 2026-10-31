@@ -867,6 +867,12 @@ def _file_match_problem(pid: str, probe: Mapping, effective: str, match: object)
         return None
     if effective == "equals" and match in (PRESENT, ABSENT):
         return None
+    if effective in ("present", "absent") and match in (PRESENT, ABSENT):
+        return (
+            f"premise {pid}: a {probe.get('kind')} probe reads the token present "
+            "or absent: write it as `holds_if: equals` with "
+            f"`match: {match}`, not holds_if {effective}"
+        )
     return (
         f"premise {pid}: a {probe.get('kind')} probe reads the token present "
         "or absent, never the file's text, so holds_if "
@@ -918,8 +924,10 @@ def _premise_problem(premise: object, *, record_id: str | None, policy: bool) ->
             problem = _text_problem(match, f"premise {pid} match", policy=policy)
             if problem is not None:
                 return problem
-        if probe.get("kind") in ("file-match", "git-file"):
-            # These probes read the token present/absent (or a line-range
+        if policy and probe.get("kind") in ("file-match", "git-file"):
+            # Policy, not structure: a record written before this rule still
+            # loads (its probe is refused before a run, so it reads
+            # unavailable until rewritten). These probes read the token present/absent (or a line-range
             # hash), never the file's text: a literal in `match` can never
             # be found in the value, so `absent` would always hold (a dead
             # check) and `present` would always be contradicted.
