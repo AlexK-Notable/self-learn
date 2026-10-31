@@ -1450,6 +1450,10 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
 - `last_attempt_at` is written by that same increment and is what the
   scheduler's cooldown reads; a value that is unparseable or in the future
   reads as "attempted now", never as "due every tick" or "never due".
+  *(Amended 2026-10-31, S-NEXT-cadence.)* An unfinished steward run is
+  retried two hours after the later of this stamp and the cache attempt
+  journal's newest attempt (`13-hosting-and-separation.md` §5, "The steward's
+  schedule and retry"), never after `steward.cooldown_secs`.
 - `progress_at` is the time of the last attempt that made progress, and is
   what a later run compares against to tell a retry apart from a loop.
 - `failure` is the kind, and it reuses the literals the runner already writes
@@ -2716,6 +2720,40 @@ reads the same three selections, so a held lesson never makes the steward due; t
 (its decision's commit, not older than the start of the newest run -- the moment a run selects its inputs;
 a resumed run selects none, so new work is never measured from a run's end). A case naming a held lesson is not proposed
 for reconsider, for any of its lessons.
+
+**When new work makes the steward due** *(2026-10-31, S-NEXT-cadence)*. These
+selections are read by the scheduler once a night, in the steward's nightly
+slot after the mine (`13-hosting-and-separation.md` §5): new work is due when no
+run has started since the slot's mine target and the last start is at least
+`steward.cooldown_secs` ago. An eligible `lesson` input is new work when its
+record was committed, or the overseer released it, after the newest run's start
+(S-81), or when its `deferred_until` passed after that start: a due deferral's
+record is older than the last selection, so before this it waited for an
+unrelated input. A `reconsider`, `suspected-violation`, `premise-moved` or
+`premise-extract` input is new work by being there.
+
+**The positive invariant, and its census** *(2026-10-31, S-NEXT-cadence)*.
+Selection is a negative set: a queued lesson is skipped when a committed run's
+disposition matches its version. So a new skip rule can strand a lesson for ever
+in silence -- live, `lrn-e92861b2` and `lrn-f55e9e47` sat 55 days because a
+pre-U3a deferral counted as a decision (cured by S-95, found by a person 7 days
+after their due date). The invariant: **every queued lesson (pending, its
+deferral not in the future, in any bucket) is selectable -- an eligible `lesson`
+input or a `reconsider` input -- or held by the overseer, or an input of an
+unfinished committed run.** `steward.stranded_lessons(home)` lists every queued
+lesson that is none of these, oldest first, each with its bucket and the reason:
+the committed row (run, case, state, input version, and whether that version is
+the record's or the legacy proposal's) that makes it terminal under the current
+rule or an earlier one, "identity unreadable", or "no committed run decided it".
+It is read-only and costs about one `_eligible_lessons` call. Every row is a
+defect in the selection code or a state the code never meant to leave (for
+example a `reject` applied at the lesson's version while the lesson stayed
+pending), never a judgment on the lesson, so it is delivered to the people who
+can fix the code: the `--selftest` row `steward-queue` (FAIL listing each
+stranded id and reason; PASS "every queued lesson is selectable or held";
+UNMEASURED when the census cannot be taken), the overseer's phase-B fact row
+`stranded-lessons` (§3a.10.8's neighbour in `health.yaml`), the cache file and
+the `health` notice of `13-hosting-and-separation.md` §5 and §7.5.
 
 While the steward acts (its run, or a batch whose runner actor is `steward`), the ledger refuses any change
 to a held lesson's record before anything is written, whichever verb or sheet key reaches it (a line's `id`,
