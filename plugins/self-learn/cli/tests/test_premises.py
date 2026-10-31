@@ -148,8 +148,8 @@ class TestSchema:
                  "property": "BindsTo"},
                 holds_if="absent", match="dbus-broker.service", on_change="re-decide",
                 source="case-0000000a#what_would_change[1]",
-                baseline={"value_sha": "0" * 32, "shown": "", "observed_at":
-                          "2026-09-22T06:24:50Z", "state": "holds"},
+                baseline={"state": "holds", "value_sha": "0" * 32, "observed_at":
+                          "2026-09-22T06:24:50Z"},
                 decided_at="2026-10-30",
             ),
             {"id": "p2", "claim": "the daemon outlives a bus restart", "probe": None},
@@ -166,18 +166,29 @@ class TestSchema:
             ([_premise(None, color="red")], "does not take"),
             ([_premise(None)] * 2, "duplicate premise id"),
             ([{"id": f"p{n}", "claim": "c", "probe": None} for n in range(1, 6)], "at most 4"),
-            ([{"id": "x1", "claim": "c", "probe": None}], "p1..p99"),
+            ([{"id": "x1", "claim": "c", "probe": None}], "p1..p4"),
+            ([{"id": "p5", "claim": "c", "probe": None}], "p1..p4"),
+            ([{"id": "p1", "claim": "## Decision", "probe": None}], "heading"),
             ([{"id": "p1", "claim": "two\nlines", "probe": None}], "one line"),
             ([{"id": "p1", "claim": "", "probe": None}], "non-empty"),
-            ([{"id": "p1", "claim": "c" * 301, "probe": None}], "longer than"),
+            ([{"id": "p1", "claim": "c" * 201, "probe": None}], "longer than"),
             ([{"id": "p1", "claim": "token = abcdefghijklmnop", "probe": None}], "secret"),
             ([{"id": "p1", "claim": "c", "probe": None, "holds_if": "absent", "match": "x"}],
              "need a probe"),
-            ([_premise({"kind": "which", "name": "git"}, match="x")], "holds_if must be"),
+            ([_premise({"kind": "which", "name": "git"}, match="x")], "takes no match"),
+            ([_premise({"kind": "which", "name": "git"}, holds_if="changed", match="x")],
+             "takes no match"),
+            ([_premise({"kind": "which", "name": "git"}, holds_if="not-equals", match="x")],
+             "holds_if must be"),
+            ([_premise({"kind": "which", "name": "git"}, holds_if="absent", match="x",
+                       on_change="refresh")], "only for holds_if changed"),
+            ([_premise({"kind": "which", "name": "git"}, baseline={
+                "state": "holds", "value_sha": "0" * 32, "observed_at": "x", "shown": ""})],
+             "non-empty"),
             ([_premise({"kind": "which", "name": "git"}, holds_if="absent")], "match"),
-            ([_premise({"kind": "which", "name": "git"}, holds_if="version-range",
+            ([_premise({"kind": "which", "name": "git"}, holds_if="version",
                        match=">=1.0")], "needs a package probe"),
-            ([_premise({"kind": "package", "name": "git"}, holds_if="version-range",
+            ([_premise({"kind": "package", "name": "git"}, holds_if="version",
                        match="about 2")], "clauses"),
             ([_premise(None, on_change="refresh")], "on_change needs a probe"),
             ([_premise({"kind": "which", "name": "git"}, on_change="later")], "on_change must"),
@@ -207,11 +218,11 @@ class TestSchema:
                         "property": "binds to"})], "not a property name"),
             ([_premise({"kind": "package", "name": "--sync"})], "not a package name"),
             ([_premise({"kind": "which", "name": "/usr/bin/git"})], "bare command name"),
-            ([_premise({"kind": "ledger", "target": "lrn-zz"})], "lesson id or a statement id"),
-            ([_premise({"kind": "ledger", "target": "lrn-0000000b", "field": "body"})],
-             "status or follow_up"),
-            ([_premise({"kind": "ledger", "target": "stmt-0000000b", "field": "status"})],
-             "takes no field"),
+            ([_premise({"kind": "ledger", "ref": "lrn-zz"})], "ledger probe ref"),
+            ([_premise({"kind": "ledger", "ref": "lrn-0000000b#body"})], "ledger probe ref"),
+            ([_premise({"kind": "ledger", "ref": "stmt-0000000b#follow_up"})],
+             "ledger probe ref"),
+            ([_premise({"kind": "ledger", "target": "lrn-0000000b"})], "does not take"),
         ],
     )
     def test_malformed_lists_are_refused_by_name(self, value, words):
@@ -236,10 +247,11 @@ class TestSchema:
             premises.validate_premises([_premise({"kind": name})])
 
     def test_a_ledger_probe_may_not_name_its_own_lesson(self):
-        value = [_premise({"kind": "ledger", "target": "lrn-0000000a"})]
-        premises.validate_premises(value)  # control: fine with no record id
-        with pytest.raises(PremiseError, match="its own lesson"):
-            premises.validate_premises(value, record_id="lrn-0000000a")
+        for ref in ("lrn-0000000a", "lrn-0000000a#follow_up"):
+            value = [_premise({"kind": "ledger", "ref": ref})]
+            premises.validate_premises(value)  # control: fine with no record id
+            with pytest.raises(PremiseError, match="its own lesson"):
+                premises.validate_premises(value, record_id="lrn-0000000a")
 
 
 class TestPaths:
@@ -483,7 +495,7 @@ class TestPackage:
 
     def test_version_range_judges_the_claim(self, fakes):
         premise = _premise({"kind": "package", "name": "hyprland"},
-                           holds_if="version-range", match=">=0.56, <0.57")
+                           holds_if="version", match=">=0.56, <0.57")
         fakes.set("pacman", stdout="hyprland 0.56.2-1\n")
         assert premises.observe(premise, fakes.env()).claim == premises.CLAIM_HOLDS
         fakes.set("pacman", stdout="hyprland 0.57.0-1\n")
@@ -704,7 +716,7 @@ class TestWhichAndLedger:
         )
         env = ProbeEnv(home=tmp_path, ledger_home=home, now=lambda: "2026-10-30T00:00:00Z")
         shown = {
-            target: premises.run_probe({"kind": "ledger", "target": target}, env).shown
+            target: premises.run_probe({"kind": "ledger", "ref": target}, env).shown
             for target in ("lrn-0000000b", "lrn-0000000e", "stmt-0000000b", "stmt-0000000c",
                            "stmt-0000000e")
         }
@@ -716,11 +728,11 @@ class TestWhichAndLedger:
             "stmt-0000000e": premises.NOT_FOUND,
         }
         follow = premises.run_probe(
-            {"kind": "ledger", "target": "lrn-0000000b", "field": "follow_up"}, env
+            {"kind": "ledger", "ref": "lrn-0000000b#follow_up"}, env
         )
         assert follow.shown == "none"
         no_ledger = premises.run_probe(
-            {"kind": "ledger", "target": "lrn-0000000b"}, ProbeEnv(home=tmp_path)
+            {"kind": "ledger", "ref": "lrn-0000000b"}, ProbeEnv(home=tmp_path)
         )
         assert no_ledger.state == OBS_UNAVAILABLE
 
@@ -754,11 +766,29 @@ class TestVerdict:
                            match="dbus-broker.service")
         holds = premises.make_baseline(self._obs("", premise))
         contradicted = premises.make_baseline(self._obs("dbus-broker.service", premise))
-        recorded = premises.make_baseline(self._obs("anything"))
-        assert (holds["state"], contradicted["state"], recorded["state"]) == (
-            "holds", "contradicts-claim", "recorded",
+        changed = premises.make_baseline(self._obs("anything"))
+        assert (holds["state"], contradicted["state"], changed["state"]) == (
+            "holds", "contradicts-claim", "holds",
         )
-        premises.validate_premises([dict(premise, baseline=contradicted)])
+        assert "shown" not in holds  # an empty value is not shown
+        assert contradicted["shown"] == "dbus-broker.service"
+        written = dict(premise, baseline=contradicted)
+        premises.validate_premises([written])
+        # A contradicts-claim baseline is moved from the next sweep on, even
+        # though the value has not changed (02 §3a.10.4 as drafted).
+        same = self._obs("dbus-broker.service", premise)
+        assert premises.verdict(written, same) == "moved"
+        assert premises.verdict(dict(premise, baseline=holds), self._obs("", premise)) == "holds"
+
+    def test_a_judged_premise_moves_on_the_claim_not_on_any_change(self):
+        premise = _premise({"kind": "which", "name": "x"}, holds_if="absent",
+                           match="dbus-broker.service")
+        premise["baseline"] = premises.make_baseline(self._obs("", premise))
+        other = self._obs("other.service", premise)
+        assert other.value_sha != premise["baseline"]["value_sha"]  # control: value changed
+        assert premises.verdict(premise, other) == "holds"
+        bound = self._obs("other.service dbus-broker.service", premise)
+        assert premises.verdict(premise, bound) == "moved"
 
     @pytest.mark.parametrize(
         "holds_if, match, value, expected",
@@ -769,7 +799,6 @@ class TestVerdict:
             ("absent", "dbus-broker.service", "dbus-broker.service", "contradicted"),
             ("equals", "active", "active", "holds"),
             ("equals", "active", "inactive", "contradicted"),
-            ("not-equals", "active", "inactive", "holds"),
         ],
     )
     def test_holds_if(self, holds_if, match, value, expected):
@@ -833,8 +862,8 @@ class TestRecord:
         return [
             _premise({"kind": "systemd-show", "scope": "user", "unit": "x.service",
                       "property": "BindsTo"}, holds_if="absent", match="dbus-broker.service",
-                     baseline={"value_sha": "a" * 32, "shown": "", "observed_at":
-                               "2026-09-22T06:24:50Z", "state": "holds"}),
+                     baseline={"state": "holds", "value_sha": "a" * 32, "observed_at":
+                               "2026-09-22T06:24:50Z"}),
             {"id": "p2", "claim": "the daemon outlives a bus restart", "probe": None},
         ]
 
@@ -880,7 +909,7 @@ class TestRecord:
     def test_a_record_may_not_probe_its_own_status(self):
         record = make_behavior(record_id="lrn-0000000a")
         with pytest.raises(ValidationError, match="own lesson"):
-            record.set_premises([_premise({"kind": "ledger", "target": "lrn-0000000a"})])
+            record.set_premises([_premise({"kind": "ledger", "ref": "lrn-0000000a"})])
 
     def test_replace_carries_premises_to_the_new_lesson(self):
         first = make_behavior(record_id="lrn-0000000a")

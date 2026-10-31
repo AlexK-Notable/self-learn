@@ -18,18 +18,23 @@ share.
 probe::
 
     premises:
-      - id: p1
+      - id: p1                    # p1..p4
         claim: the unit is not bound to the session bus
         probe: {kind: systemd-show, scope: user, unit: x.service, property: BindsTo}
-        holds_if: absent          # judged against the observed value
-        match: dbus-broker.service
-        on_change: re-decide      # re-decide | refresh
+        holds_if: absent          # changed (default) | present | absent | equals | version
+        match: dbus-broker.service  # a literal; none for changed
+        on_change: re-decide      # re-decide | refresh (refresh: changed only)
         source: case-0000000a#what_would_change[1]
-        baseline: {value_sha: <32 hex>, shown: "", observed_at: <iso>, state: holds}
+        baseline: {state: holds, value_sha: <32 hex>, observed_at: <iso>}  # + shown
         decided_at: 2026-10-30
       - id: p2
         claim: the daemon can outlive a bus restart without reconnecting
         probe: null               # behavioural: written down, never probed
+
+The shape follows 02 §3a.10.1 as the spec lane drafted it, with the
+deviations this module's report names: literal matchers instead of
+regular expressions, and a readably absent target as a value rather than
+``unavailable``.
 
 It is a metadata field (the ``env``/``follow_up`` class): mutable in every
 status, carried over by ``replace`` (``cases.REWRITE_FIELDS``), and
@@ -73,13 +78,15 @@ by construction of this module rather than by convention:
   a real observation with its own value, so its disappearance is a
   change, never a silent "unchanged".
 
-**Placement premises (unit U8).** ``reach``, ``writable`` and ``intact``
-(:data:`PLACEMENT_PREMISE_IDS`) are implicit on every routed lesson and
-derived by code from the lesson's placement; nobody writes them. They are
-reserved here: a written premise may not use those names as an id or as a
-probe kind. U8 builds their observations with :func:`observation_from_value`
-(or :func:`unavailable_observation` for "unmeasurable"), so they share the
-same value hash, the same fail-closed state and the same :func:`verdict`.
+**Placement premises (unit U8).** ``@reach``, ``@writable`` and
+``@intact`` (:data:`PLACEMENT_PREMISE_IDS`) are implicit on every routed
+lesson and derived by code from the lesson's placement; nobody writes
+them. They are reserved here: a written premise may not use those names
+as an id or as a probe kind (the id pattern ``p1..p4`` refuses them too).
+U8 builds their observations with :func:`observation_from_value` (or
+:func:`unavailable_observation` for "unmeasurable"), so they share the
+same value hash and the same fail-closed state; they are judged by their
+current state rather than a stored baseline, which is U8's comparison.
 """
 
 from __future__ import annotations
@@ -116,6 +123,7 @@ __all__ = [
     "CLAIM_UNJUDGED",
     "CommandResult",
     "CommandRunner",
+    "HOLDS_IF_DEFAULT",
     "HOLDS_IF_VALUES",
     "MAX_PREMISES",
     "MAX_PROBED",
@@ -164,21 +172,28 @@ PROBE_KINDS = frozenset(
         "systemd-show", "package", "which", "git-file", "ledger",
     }
 )
-#: How an observed value is judged against the premise's ``match``.
-#: ``present``/``absent``: ``match`` occurs / does not occur in the value;
-#: ``equals``/``not-equals``: whole-value comparison; ``version-range``
-#: (``package`` probes only): ``match`` is a comma-separated list of
-#: ``<op><version>`` clauses, all of which must hold (pacman's vercmp).
-HOLDS_IF_VALUES = frozenset({"present", "absent", "equals", "not-equals", "version-range"})
+#: When a probed premise holds (02 §3a.10.1 as drafted by the spec lane).
+#: ``changed`` (the default when ``holds_if`` is absent): while the value's
+#: hash equals the baseline's. ``present``/``absent``: while ``match``
+#: occurs / does not occur in the value (a literal, not a regular
+#: expression -- see :func:`_matcher_problem`). ``equals``: while the
+#: value equals ``match``. ``version`` (``package`` probes only): while the
+#: version satisfies ``match``, up to four comma-separated
+#: ``<op><version>`` clauses compared in pacman's vercmp order.
+HOLDS_IF_VALUES = frozenset({"changed", "present", "absent", "equals", "version"})
+HOLDS_IF_DEFAULT = "changed"
 #: ``re-decide``: a stable change puts the lesson in front of the steward.
-#: ``refresh``: code re-records the baseline with no model call (D7.4).
+#: ``refresh`` (only with ``holds_if: changed``): code re-records the
+#: baseline with no model call (D7.4).
 ON_CHANGE_VALUES = frozenset({"re-decide", "refresh"})
-#: ``holds``/``contradicts-claim``: the baseline value was judged against
-#: the claim (``holds_if`` given); ``recorded``: no ``holds_if``, so only
-#: a change from this value can be noticed (D10's disagreement-at-write).
-BASELINE_STATES = frozenset({"holds", "contradicts-claim", "recorded"})
-#: U8's implicit placement premises: derived by code, never written.
-PLACEMENT_PREMISE_IDS = ("reach", "writable", "intact")
+#: The claim judged against the value when the baseline was recorded.
+#: ``contradicts-claim``: the first value already says the claim is false
+#: (D10's disagreement-at-write); a ``changed`` premise's baseline always
+#: ``holds`` (the value is, by definition, itself).
+BASELINE_STATES = frozenset({"holds", "contradicts-claim"})
+#: U8's implicit placement premises (02 §3a.10.3 as drafted): derived by
+#: code, never written. The ``@`` keeps them apart from written ids.
+PLACEMENT_PREMISE_IDS = ("@reach", "@writable", "@intact")
 
 MAX_PREMISES = 4
 MAX_PROBED = 3
@@ -226,7 +241,7 @@ _PREMISE_KEYS = (
     "baseline", "decided_at",
 )
 _BASELINE_KEYS = frozenset({"value_sha", "shown", "observed_at", "state"})
-_PREMISE_ID_RE = re.compile(r"^p[1-9][0-9]?$")
+_PREMISE_ID_RE = re.compile(r"^p[1-%d]$" % 4)
 _VALUE_SHA_RE = re.compile(r"^[0-9a-f]{%d}$" % VALUE_SHA_CHARS)
 _RECORD_ID_RE = re.compile(r"^lrn-[0-9a-f]{8}$")
 _STMT_ID_RE = re.compile(r"^stmt-[0-9a-f]{8}$")
@@ -241,7 +256,7 @@ _LINES_RE = re.compile(r"^([1-9][0-9]{0,6})(?:-([1-9][0-9]{0,6}))?$")
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$")
 _VERSION_CLAUSE_RE = re.compile(r"^(>=|<=|==|!=|>|<)\s*([A-Za-z0-9:._+~-]{1,64})$")
 
-_CLAIM_LIMIT = 300
+_CLAIM_LIMIT = 200
 _TEXT_LIMIT = 200
 _PATH_LIMIT = 512
 _KEY_PART_LIMIT = 128
@@ -485,7 +500,7 @@ _PROBE_FIELDS: dict[str, frozenset[str]] = {
     "package": frozenset({"kind", "name"}),
     "which": frozenset({"kind", "name"}),
     "git-file": frozenset({"kind", "repo", "path", "contains", "line", "lines"}),
-    "ledger": frozenset({"kind", "target", "field"}),
+    "ledger": frozenset({"kind", "ref"}),
 }
 
 
@@ -546,19 +561,31 @@ def _probe_problem(probe: object, *, record_id: str | None = None) -> str | None
             or _matcher_problem(probe, kind)
         )
     # kind == "ledger"
-    target = probe.get("target")
-    if isinstance(target, str) and _RECORD_ID_RE.match(target):
-        if record_id is not None and target == record_id:
-            return "a ledger probe may not name its own lesson"
-        fld = probe.get("field", "status")
-        if fld not in ("status", "follow_up"):
-            return f"ledger probe field must be status or follow_up, got {fld!r}"
+    ref = _ledger_ref(probe.get("ref"))
+    if ref is None:
+        return (
+            "ledger probe ref must be lrn-<8 hex>, lrn-<8 hex>#follow_up or "
+            f"stmt-<8 hex>, got {probe.get('ref')!r}"
+        )
+    if record_id is not None and ref[0] == record_id:
+        return "a ledger probe may not name its own lesson"
+    return None
+
+
+def _ledger_ref(value: object) -> tuple[str, str | None] | None:
+    """``(target id, part)`` for a ledger probe's ``ref``: a lesson
+    (``part`` ``None``: its status), a lesson's follow-up (``part``
+    ``"follow_up"``), or a statement. ``None`` when malformed."""
+    if not isinstance(value, str):
         return None
-    if isinstance(target, str) and _STMT_ID_RE.match(target):
-        if "field" in probe:
-            return "a ledger probe on a statement takes no field"
-        return None
-    return f"ledger probe target must be a lesson id or a statement id, got {target!r}"
+    target, sep, part = value.partition("#")
+    if _RECORD_ID_RE.match(target):
+        if not sep:
+            return (target, None)
+        return (target, part) if part == "follow_up" else None
+    if _STMT_ID_RE.match(target) and not sep:
+        return (target, None)
+    return None
 
 
 def validate_probe(probe: object, *, record_id: str | None = None) -> None:
@@ -592,11 +619,9 @@ def _baseline_problem(baseline: object) -> str | None:
     sha = baseline.get("value_sha")
     if not isinstance(sha, str) or not _VALUE_SHA_RE.match(sha):
         return f"baseline value_sha must be {VALUE_SHA_CHARS} lowercase hex characters"
-    shown = baseline.get("shown", "")
-    if not isinstance(shown, str):
-        return "baseline shown must be text"
-    if shown:
-        problem = _text_problem(shown, "baseline shown", limit=SHOWN_LIMIT)
+    if "shown" in baseline:
+        # Absent when the value was not short and scan-clean (02 §3a.10.1).
+        problem = _text_problem(baseline.get("shown"), "baseline shown", limit=SHOWN_LIMIT)
         if problem is not None:
             return problem
     observed_at = baseline.get("observed_at")
@@ -623,10 +648,15 @@ def _premise_problem(premise: object, *, record_id: str | None) -> str | None:
             "routed lesson, and it is never written"
         )
     if not isinstance(pid, str) or not _PREMISE_ID_RE.match(pid):
-        return f"premise id must be p1..p99, got {pid!r}"
-    problem = _text_problem(premise.get("claim"), f"premise {pid} claim", limit=_CLAIM_LIMIT)
+        return f"premise id must be p1..p{MAX_PREMISES}, got {pid!r}"
+    claim = premise.get("claim")
+    problem = _text_problem(claim, f"premise {pid} claim", limit=_CLAIM_LIMIT)
     if problem is not None:
         return problem
+    if str(claim).lstrip().startswith("#"):
+        # Briefs and cases render the claim as prose: no heading-shaped
+        # text (the case writer's own D-i rule, `cases._refuse_headings`).
+        return f"premise {pid} claim may not start with '#' (a heading-shaped line)"
     probe = premise.get("probe")
     if probe is not None:
         problem = _probe_problem(probe, record_id=record_id)
@@ -637,17 +667,22 @@ def _premise_problem(premise: object, *, record_id: str | None) -> str | None:
     if holds_if is not None or match is not None:
         if probe is None:
             return f"premise {pid}: holds_if and match need a probe"
-        if not _member(holds_if, HOLDS_IF_VALUES):
+        effective = HOLDS_IF_DEFAULT if holds_if is None else holds_if
+        if not _member(effective, HOLDS_IF_VALUES):
             return f"premise {pid}: holds_if must be one of {sorted(HOLDS_IF_VALUES)}"
-        problem = _text_problem(match, f"premise {pid} match")
-        if problem is not None:
-            return problem
-        if holds_if == "version-range":
+        if effective == HOLDS_IF_DEFAULT:
+            if match is not None:
+                return f"premise {pid}: holds_if changed takes no match"
+        else:
+            problem = _text_problem(match, f"premise {pid} match")
+            if problem is not None:
+                return problem
+        if effective == "version":
             if probe.get("kind") != "package":
-                return f"premise {pid}: holds_if version-range needs a package probe"
+                return f"premise {pid}: holds_if version needs a package probe"
             if _version_clauses(str(match)) is None:
                 return (
-                    f"premise {pid}: version-range match must be up to "
+                    f"premise {pid}: a version match is up to "
                     f"{_MAX_VERSION_CLAUSES} comma-separated '<op><version>' clauses "
                     "(op: >= > <= < == !=)"
                 )
@@ -657,6 +692,8 @@ def _premise_problem(premise: object, *, record_id: str | None) -> str | None:
             return f"premise {pid}: on_change needs a probe"
         if not _member(on_change, ON_CHANGE_VALUES):
             return f"premise {pid}: on_change must be one of {sorted(ON_CHANGE_VALUES)}"
+        if on_change == "refresh" and holds_if not in (None, HOLDS_IF_DEFAULT):
+            return f"premise {pid}: on_change refresh is only for holds_if changed"
     source = premise.get("source")
     if source is not None:
         problem = _text_problem(source, f"premise {pid} source")
@@ -1311,7 +1348,9 @@ def _probe_git_file(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
 def _probe_ledger(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     if env.ledger_home is None:
         return _Unavailable("no ledger to read")
-    target = str(probe["target"])
+    ref = _ledger_ref(probe.get("ref"))
+    assert ref is not None  # validated
+    target, part = ref
     if _STMT_ID_RE.match(target):
         from . import statements
 
@@ -1338,7 +1377,7 @@ def _probe_ledger(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
         record = Record.from_path(path)
     except (RecordError, OSError, UnicodeDecodeError) as exc:
         return _Unavailable(f"cannot read the lesson ({type(exc).__name__})")
-    if probe.get("field", "status") == "follow_up":
+    if part == "follow_up":
         if record.follow_up is not None:
             return "open"
         done = record.follow_up_done
@@ -1403,11 +1442,14 @@ def unavailable_observation(reason: str, *, observed_at: str | None = None) -> O
 
 
 def _judge(premise: Mapping | None, value: str) -> str:
+    """The claim judged against *value* alone. ``changed`` premises (the
+    default) cannot be judged without a baseline: unjudged here, judged by
+    :func:`verdict`."""
     if premise is None:
         return CLAIM_UNJUDGED
     holds_if = premise.get("holds_if")
     match = premise.get("match")
-    if holds_if is None or not isinstance(match, str):
+    if holds_if in (None, HOLDS_IF_DEFAULT) or not isinstance(match, str):
         return CLAIM_UNJUDGED
     if holds_if == "present":
         ok = match in value
@@ -1415,9 +1457,7 @@ def _judge(premise: Mapping | None, value: str) -> str:
         ok = match not in value
     elif holds_if == "equals":
         ok = value == match
-    elif holds_if == "not-equals":
-        ok = value != match
-    elif holds_if == "version-range":
+    elif holds_if == "version":
         ok = _version_holds(value, match)
     else:
         return CLAIM_UNJUDGED
@@ -1468,20 +1508,22 @@ def observe(premise: Mapping, env: ProbeEnv) -> Observation | None:
 
 
 def verdict(premise: Mapping, observation: Observation | None) -> str:
-    """Compare one observation with the premise's baseline, edge-only:
+    """Judge one premise by one observation (02 §3a.10.4 as drafted):
 
     - no probe -> ``no-probe``;
     - the probe could not observe -> ``unavailable`` -- NEVER ``holds``
       and never ``moved`` (fail-closed: a broken probe is neither a
       confirmation nor a trigger);
     - no baseline recorded yet -> ``no-baseline``;
-    - the value hash differs from the baseline's -> ``moved``;
-    - otherwise ``holds``.
+    - ``holds_if: changed`` (the default): ``moved`` when the value's hash
+      differs from the baseline's, else ``holds``;
+    - any other ``holds_if``: ``moved`` when the claim is contradicted by
+      the value (including a baseline recorded as ``contradicts-claim``,
+      which therefore counts from the next sweep), else ``holds``.
 
-    Whether the claim itself holds against the value is the
-    observation's ``claim`` and the baseline's ``state``; the trigger is
-    the change (design D7.1). Stability across sweeps (D7.2) is the
-    sweep's job (U2), not this single comparison's."""
+    The input that a ``moved`` premise becomes is versioned by its value
+    hash (U3/U4), so a decided state is not offered again. Stability across
+    two sweeps (D7.2) is the sweep's job (U2), not this single comparison's."""
     if premise.get("probe") is None:
         return VERDICT_NO_PROBE
     if observation is None or observation.state != OBS_OK or not observation.value_sha:
@@ -1489,9 +1531,17 @@ def verdict(premise: Mapping, observation: Observation | None) -> str:
     baseline = premise.get("baseline")
     if not isinstance(baseline, Mapping) or not baseline.get("value_sha"):
         return VERDICT_NO_BASELINE
-    if observation.value_sha != baseline.get("value_sha"):
+    if premise.get("holds_if") in (None, HOLDS_IF_DEFAULT):
+        if observation.value_sha != baseline.get("value_sha"):
+            return VERDICT_MOVED
+        return VERDICT_HOLDS
+    if observation.claim == CLAIM_CONTRADICTED:
         return VERDICT_MOVED
-    return VERDICT_HOLDS
+    if observation.claim == CLAIM_HOLDS:
+        return VERDICT_HOLDS
+    # An observation made without this premise (no claim judged): read the
+    # value hash instead of guessing a judgment.
+    return VERDICT_MOVED if observation.value_sha != baseline.get("value_sha") else VERDICT_HOLDS
 
 
 def make_baseline(observation: Observation) -> dict:
@@ -1502,16 +1552,12 @@ def make_baseline(observation: Observation) -> dict:
         raise PremiseError(
             f"cannot record a baseline from an unavailable observation ({observation.reason})"
         )
-    state = {
-        CLAIM_HOLDS: "holds",
-        CLAIM_CONTRADICTED: "contradicts-claim",
-    }.get(observation.claim, "recorded")
-    return {
-        "value_sha": observation.value_sha,
-        "shown": observation.shown,
-        "observed_at": observation.observed_at,
-        "state": state,
-    }
+    state = "contradicts-claim" if observation.claim == CLAIM_CONTRADICTED else "holds"
+    out: dict = {"state": state, "value_sha": observation.value_sha}
+    if observation.shown:
+        out["shown"] = observation.shown
+    out["observed_at"] = observation.observed_at
+    return out
 
 
 @dataclass(frozen=True)
