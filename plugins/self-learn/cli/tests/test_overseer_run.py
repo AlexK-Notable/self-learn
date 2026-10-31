@@ -44,6 +44,13 @@ def _fake_two_phase(monkeypatch, *, a_turns=2, b_turns=3, secret=False, b_limit=
         calls.append(spec)
         stage = spec.cwd
         yaml = YAML()
+        if spec.label == "phase-s":
+            # SK4 (2026-10-31): the third call, skill discovery, between A
+            # and B, in its own workspace; it finds nothing here.
+            _dump(stage / "skill-candidates.yaml", {"candidates": []})
+            return type("SdkLike", (), {
+                "ok": True, "rc": 0, "stdout": "", "detail": "", "failure": None, "turns": 1,
+            })()
         if len(calls) == 1:
             with (stage / "selection.yaml").open("w", encoding="utf-8") as fh:
                 yaml.dump({"cases": [], "why_these": "none", "why_stopped": "empty"}, fh)
@@ -293,10 +300,13 @@ def test_two_invocations_are_blind_then_full(tmp_path, monkeypatch):
     monkeypatch.setattr(overseer_run.invocation, "write_session", capture)
     result = overseer_run.run(home, dry_run=True, no_push=True)
     assert result.status == "dry-run"
-    assert len(calls) == 2
+    # SK4 (2026-10-31): three calls -- phase A, phase S (skill discovery,
+    # which never reads the steward's rationale either), phase B.
+    assert [spec.label for spec in calls] == ["phase-a", "phase-s", "phase-b"]
     assert "steward rationale" not in calls[0].prompt.lower()
-    assert "steward rationale" in calls[1].prompt.lower()
-    assert calls[0].surface == calls[1].surface == "overseer"
+    assert "steward rationale" not in calls[1].prompt.lower()
+    assert "steward rationale" in calls[-1].prompt.lower()
+    assert calls[0].surface == calls[-1].surface == "overseer"
     assert calls[0].cwd.name == "overseer"
     assert calls[0].containment.allowed_tools == "Read,Grep,Glob,Write,Edit"
     assert calls[0].containment.disallowed_tools == "Bash"
@@ -335,14 +345,15 @@ def test_phase_a_timeout_never_starts_b(tmp_path, monkeypatch):
     assert not (home / "overseer").exists()
 
 
-@pytest.mark.parametrize("guard", [0, 1])
-def test_a_guard_below_the_two_model_calls_a_run_makes_holds_before_any_call(
+@pytest.mark.parametrize("guard", [0, 1, 2])
+def test_a_guard_below_the_three_model_calls_a_run_makes_holds_before_any_call(
     tmp_path, monkeypatch, guard
 ):
     """S-66: "About 50 model calls per run is a runaway guard." A run makes
-    two (phase A, then phase B); a guard that cannot admit both holds the
-    run before the first, so no call is spent on output that could never
-    be applied, and nothing is committed."""
+    three (phase A, phase S, then phase B; two before SK4, 2026-10-31); a
+    guard that cannot admit them all holds the run before the first, so no
+    call is spent on output that could never be applied, and nothing is
+    committed."""
     home = make_home(tmp_path)
     monkeypatch.setenv("SELF_LEARN_OVERSEER_MAX_MODEL_CALLS", str(guard))
     calls = _fake_two_phase(monkeypatch)
@@ -354,15 +365,16 @@ def test_a_guard_below_the_two_model_calls_a_run_makes_holds_before_any_call(
     assert not (home / "overseer").exists()
 
 
-def test_a_guard_of_exactly_two_admits_a_complete_run(tmp_path, monkeypatch):
-    """Positive control for the hold above: the boundary value runs both phases."""
+def test_a_guard_of_exactly_three_admits_a_complete_run(tmp_path, monkeypatch):
+    """Positive control for the hold above: the boundary value runs every
+    phase (three calls since SK4, 2026-10-31)."""
     home = make_home(tmp_path)
-    monkeypatch.setenv("SELF_LEARN_OVERSEER_MAX_MODEL_CALLS", "2")
+    monkeypatch.setenv("SELF_LEARN_OVERSEER_MAX_MODEL_CALLS", "3")
     calls = _fake_two_phase(monkeypatch)
     result = overseer_run.run(home, dry_run=True, no_push=True)
     assert result.status == "dry-run"
-    assert result.model_calls == 2
-    assert len(calls) == 2
+    assert result.model_calls == 3
+    assert len(calls) == 3
 
 
 def test_a_phase_a_that_called_many_tools_goes_on_to_phase_b(tmp_path, monkeypatch):
@@ -377,8 +389,8 @@ def test_a_phase_a_that_called_many_tools_goes_on_to_phase_b(tmp_path, monkeypat
     calls = _fake_two_phase(monkeypatch, a_turns=53, b_turns=500)
     result = overseer_run.run(home, dry_run=False, no_push=True)
     assert result.status == "applied", result
-    assert result.model_calls == 2
-    assert len(calls) == 2
+    assert result.model_calls == 3  # A, S (SK4, 2026-10-31), B
+    assert len(calls) == 3
     assert overseer_run._committed_failure_notes(home, _this_week()) == []
 
 
@@ -494,7 +506,7 @@ def test_phase_b_stopped_at_claude_codes_turn_limit_applies_nothing(tmp_path, mo
     _silence_notifications(monkeypatch)
     result = overseer_run.run(home, dry_run=False, no_push=True)
     assert result.status == "refused"
-    assert result.model_calls == 2
+    assert result.model_calls == 3  # A, S (SK4, 2026-10-31), B
     assert applied == []
     notes = overseer_run._committed_failure_notes(home, _this_week())
     assert len(notes) == 1
@@ -1678,7 +1690,7 @@ def test_an_unreported_turn_count_does_not_stop_the_run(tmp_path, monkeypatch):
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
     assert result.status == "applied", result
-    assert result.model_calls == 2
+    assert result.model_calls == 3  # A, S (SK4, 2026-10-31), B
     assert overseer_run._committed_failure_notes(home, _this_week()) == []
 
 
@@ -2386,12 +2398,16 @@ def _wrap_phases(monkeypatch, *, a_entry=None, b_entry=None, questions=None,
         }
 
     def invoke(spec):
-        phase = "a" if spec.label == "phase-a" else "b"
+        # SK4 (2026-10-31): phase S, skill discovery, is recorded as "s" and
+        # given no entry, file or failure of A's or B's.
+        phase = {"phase-a": "a", "phase-s": "s"}.get(spec.label, "b")
         stage = spec.cwd
         seen[f"{phase}_stage"] = stage_texts(stage)
         seen[f"{phase}_prompt"] = spec.prompt
         seen[f"{phase}_containment"] = spec.containment
         outcome = inner(spec)
+        if phase == "s":
+            return outcome
         entry = a_entry if phase == "a" else b_entry
         if entry is not None:
             with (stage / "journal.md").open("a", encoding="utf-8") as fh:
@@ -2927,7 +2943,7 @@ def test_both_overseer_phases_run_with_auto_memory_off(tmp_path, monkeypatch):
 
     monkeypatch.setattr(overseer_run.invocation, "write_session", capture)
     assert overseer_run.run(home, dry_run=True, no_push=True).status == "dry-run"
-    assert [spec.label for spec in seen] == ["phase-a", "phase-b"]
+    assert [spec.label for spec in seen] == ["phase-a", "phase-s", "phase-b"]  # SK4, 2026-10-31
     for spec in seen:
         assert CliSessionPolicy(spec).env().get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1", spec.label
 

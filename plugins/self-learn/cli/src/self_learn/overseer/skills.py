@@ -49,8 +49,7 @@ retirement, and applies none of those pairs. ``auto`` behaves as ``off``
 until ``overseer/skills/writing-trial.yaml`` exists, and as ``on`` after.
 That file is written once, in the commit that completes the run, by the
 first run to complete while writing is not in effect and whose discovery
-steps were seen working (:func:`trial_readiness`, which phase S fills in;
-see its docstring).
+steps were seen working (``overseer.discovery.trial_readiness``, SK4).
 
 **Applying** (:func:`apply_write`, :func:`apply_retire`). The runner writes
 a skill BEFORE it records the pair's case and applies its sheet (a refused
@@ -114,7 +113,6 @@ __all__ = [
     "stale_draft_files",
     "step_for_case",
     "trial_path",
-    "trial_readiness",
     "trial_text",
     "unclaimed_folders",
     "writing_mode",
@@ -301,21 +299,6 @@ def writing_state(home: Path | str) -> WritingState:
     done = trial_path(home).is_file()
     deploy = mode == MODE_ON or (mode == MODE_AUTO and done)
     return WritingState(mode=mode, deploy=deploy, trial_done=done, note=note)
-
-
-def trial_readiness(home: Path | str, stage: Path) -> tuple[bool, str]:
-    """Whether this run's discovery steps were seen working, so that, if it
-    completes while writing is not in effect and no trial file exists, it
-    counts as ``auto``'s drafts-only run (S-NEXT-skills part 6): skill
-    discovery on, a valid ``skill-candidates.yaml`` from phase S and a valid
-    ``skill-dispositions.yaml`` from phase B. Answers ``(ready, why not)``.
-
-    Phase S and the dispositions are unit SK4's. Until SK4 replaces this
-    body, no run is ready, so ``auto`` stays drafts-only: it fails closed,
-    which is the spec's rule for a week in which the new model steps were
-    not seen working."""
-    del home, stage
-    return False, "skill discovery (phase S) is not built yet, so this run cannot be the trial"
 
 
 def trial_text(*, week: str, run_id: str, completed_at: str, drafts: list[str]) -> str:

@@ -164,6 +164,9 @@ class TestConfigGet:
             # SK3 (S-NEXT-skills part 6): whether the overseer deploys the
             # skills it writes is the user's switch.
             "overseer.skill_writing",
+            # SK4 (S-NEXT-sk4-discovery): whether the overseer looks for
+            # skills (phase S) is the user's switch too.
+            "overseer.skill_discovery",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 

@@ -38,7 +38,7 @@ from ..ledger import discover_buckets, resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
 from ..records import Record, build_covered_by
-from . import formats, health, notify, population as population_mod, skills as skills_mod
+from . import discovery as discovery_mod, formats, health, notify, population as population_mod, skills as skills_mod
 from . import conversation
 from .conversation import _PROPOSITION_RE
 
@@ -165,9 +165,17 @@ def _failure_detail(text: object) -> str | None:
 
 
 #: S-66: "About 50 model calls per run is a runaway guard, not a ration."
-#: A run makes exactly this many: phase A, then phase B. A resumed run makes
-#: none. `overseer.max_model_calls` is compared with THIS count.
-_MODEL_CALLS_PER_RUN = 2
+#: A run makes exactly this many: phase A, phase S (skill discovery, SK4,
+#: S-NEXT-sk4-discovery), then phase B -- one fewer with
+#: `overseer.skill_discovery` off (:func:`_model_calls_per_run`). A resumed
+#: run makes none. `overseer.max_model_calls` is compared with that count.
+#: (2 before SK4.)
+_MODEL_CALLS_PER_RUN = 3
+
+
+def _model_calls_per_run(discovery_on: bool) -> int:
+    """The model calls a run makes: three, or two with discovery off."""
+    return _MODEL_CALLS_PER_RUN if discovery_on else _MODEL_CALLS_PER_RUN - 1
 
 
 def _reported_turns(outcome: Any) -> int | None:
@@ -729,7 +737,26 @@ what_evidence_decides_it, and confidence (clear or close-call).
 """
 
 
-def _phase_b_prompt(stage: Path, selected: tuple[str, ...], parked: tuple[str, ...]) -> str:
+def _discovery_prompt_lines(discovery: bool) -> str:
+    """SK4 (S-NEXT-sk4-discovery): phase B's rule for the skill candidates
+    and the steward's skill proposals."""
+    if discovery:
+        return (
+            f"Skill discovery: {discovery_mod.CANDIDATES_FILE} holds the skill candidates this run's discovery\n"
+            f"phase found (it may be empty, or say that phase failed), and {skills_mod.PROPOSALS_FILE} the\n"
+            f"steward's skill proposals. Write {discovery_mod.DISPOSITIONS_FILE} giving every candidate and every\n"
+            "proposal exactly one disposition, even when both lists are empty "
+            f"({formats.FORMATS_DIR}/README.md's\n\"Skill dispositions\" section).\n"
+        )
+    return (
+        f"Skill discovery is off this run: write no {discovery_mod.DISPOSITIONS_FILE}, and leave every case in\n"
+        f"{skills_mod.PROPOSALS_FILE} parked: write no successor for it.\n"
+    )
+
+
+def _phase_b_prompt(
+    stage: Path, selected: tuple[str, ...], parked: tuple[str, ...], *, discovery: bool = True,
+) -> str:
     return f"""You are the self-learn overseer. The evidence-first view is complete.
 You may now read the steward rationale and full decided account in full/*.md.
 This folder, {stage}, is your workspace: you can read and write only inside it.
@@ -781,7 +808,7 @@ Never route a lesson to `reference` (a references/ shelf file): the runner refus
 on a shelf is taken off it.
 Skills self-learn owns: {formats.FORMATS_DIR}/README.md's "Skills self-learn owns" section says when and how to
 build, change or retire one; {skills_mod.OWNED_DIR}/, {skills_mod.VETOES_FILE}, {skills_mod.PROPOSALS_FILE} and {skills_mod.WRITING_FILE} are its inputs.
-{_YAML_TEXT_RULE_B}In a case file no line of any text field may start with `## `. To quote a heading line, quote
+{_discovery_prompt_lines(discovery)}{_YAML_TEXT_RULE_B}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
 an evidence item with such a line is dropped, and any other field with one refuses the case.
 Every text field is secret-scanned: an evidence item whose quote or ref matches is dropped (with
@@ -947,6 +974,122 @@ def _carry_kept_journal(source: Path, stage: Path) -> None:
         "this run instead of a new phase A.)"
     )
     _write_stage(stage, journal, current.rstrip("\n") + f"\n\n{marker}\n\n{body}\n")
+
+
+def _append_journal_entries(stage: Path, text: str | None, marker: str | None = None) -> None:
+    """SK4: append another workspace's journal entries -- everything after
+    its header line -- to the run's journal in *stage*, after *marker* when
+    one is given. Never fatal, as :func:`_carry_kept_journal`; the
+    commit-time secret scan still covers the text."""
+    if not text:
+        return
+    lines = text.splitlines()
+    body = "\n".join(lines[1:] if lines and lines[0].startswith("# ") else lines).strip()
+    if not body:
+        return
+    journal = stage / MODEL_JOURNAL_NAME
+    try:
+        current = journal.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    addition = f"\n\n{marker}\n\n{body}\n" if marker else f"\n\n{body}\n"
+    _write_stage(stage, journal, current.rstrip("\n") + addition)
+
+
+def _phase_s_journal(workspace: Path) -> str | None:
+    """Phase S's own journal, read only when it is a file inside its
+    workspace (as :func:`_model_journal_text` reads the run's)."""
+    path = workspace / MODEL_JOURNAL_NAME
+    try:
+        if path.resolve().parent != workspace.resolve():
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _run_phase_s(
+    home: Path, stage: Path, *, run_id: str, week: str, date: str, timeout_floor: float,
+    sessions: list[dict[str, Any]], dry_run: bool,
+) -> "discovery_mod.PhaseS":
+    """SK4 (S-NEXT-sk4-discovery): phase S, skill discovery, between phases
+    A and B. It runs in its own workspace (``discovery.workspace_dir``),
+    never the one phases A and B share, so it reads neither phase A's blind
+    case views and journal nor anything of the steward's. Its journal
+    entries join the run's journal in *stage* afterwards.
+
+    Never raises and never fails the run: inputs that could not be
+    prepared, a failed or timed-out call, or a file that does not validate
+    is a failed phase S, and phase B runs without candidates. The caller
+    holds the run on a call of the environment class, as for phase A. A
+    validated phase S is kept for the week's next attempt and reused while
+    its stage is unchanged; a dry run neither keeps nor reuses one."""
+    workspace = discovery_mod.workspace_reset(home)
+    try:
+        _start_model_journal(workspace, run_id, date)
+        formats.write(workspace, "S")
+        inputs = discovery_mod.stage_inputs(
+            home, workspace, _write_stage, answers=_question_answers(home),
+        )
+        prompt = discovery_mod.phase_s_prompt(workspace, inputs)
+        _write_stage(workspace, workspace / discovery_mod.PROMPT_FILE, prompt)
+        key = discovery_mod.stage_key(workspace)
+    except Exception as exc:  # noqa: BLE001 -- a failed phase S, never a failed run
+        why = _failure_detail(f"its inputs could not be prepared ({type(exc).__name__}: {exc})")
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-failed",
+            "reason": (why or "")[:300]})
+        return discovery_mod.PhaseS.failed(why or "its inputs could not be prepared")
+    for note in inputs.notes:
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-input",
+            "reason": (_failure_detail(note) or "")[:300]})
+    timeout = phase_timeout(timeout_floor, inputs.lesson_count)
+    _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-staged",
+        "lessons": inputs.lesson_count, "groups": inputs.groups, "timeout_secs": timeout})
+    reused_from = None if dry_run else discovery_mod.reuse(home, workspace, week, key, _write_stage)
+    if reused_from is not None:
+        model_calls = 0
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-reused",
+            "week": week, "from": reused_from})
+        _append_journal_entries(
+            stage, discovery_mod.kept_journal(home, week),
+            f"(The entries below are phase S of attempt {reused_from}, kept and reused by "
+            "this run instead of a new phase S.)",
+        )
+    else:
+        outcome = _invoke(home, workspace, prompt, timeout, "phase-s", run_id, sessions)
+        model_calls = 1
+        record = _session_record(outcome, "phase-s")
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-returned",
+            "ok": bool(outcome.ok), "tool_turns": _reported_turns(outcome),
+            **({"session": record} if record is not None else {})})
+        # Whatever happens next, what phase S logged is part of the run.
+        _append_journal_entries(stage, _phase_s_journal(workspace))
+        if not outcome.ok:
+            classified = model_failures.failure_fields(outcome)
+            state = "timed out" if outcome.failure == "timeout" else "failed"
+            why = f"its call {state} ({_failure_kind(outcome)})"
+            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-failed",
+                "reason": why, **classified})
+            return discovery_mod.PhaseS.failed(
+                why, model_calls=model_calls,
+                environment=outcome if classified.get("failure_class") == "environment" else None,
+            )
+    checked = discovery_mod.read_candidates(workspace / discovery_mod.CANDIDATES_FILE, inputs)
+    if not checked.valid:
+        why = _failure_detail(checked.why) or "its file did not validate"
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-s-failed",
+            "reason": why[:300]})
+        return discovery_mod.PhaseS.failed(why, model_calls=model_calls)
+    drops = tuple(_failure_detail(line) or line for line in checked.drops)
+    for line in drops:
+        _journal(home, {"at": chrono.now_iso(), "run": run_id,
+            "status": "skill-candidate-dropped", "reason": line[:300]})
+    if not dry_run and model_calls:
+        discovery_mod.keep(home, workspace, week, key, run_id)
+    return discovery_mod.PhaseS(
+        discovery_mod.STATE_OK, candidates=checked.entries, notes=drops,
+        model_calls=model_calls, reused_from=reused_from,
+    )
 
 
 def _session_record(outcome: Any, phase: str) -> dict[str, Any] | None:
@@ -2487,6 +2630,10 @@ _WITHHELD_ON_SECRET = {
     "report.md": "# Overseer report\n" + "".join(
         f"## {name}\n- none\n" for name in _REPORT_SECTIONS
     ),
+    # SK4: phase B's dispositions (recorded as withheld: none this run) and
+    # its staged copy of the candidates (the runner keeps its own).
+    discovery_mod.DISPOSITIONS_FILE: "dispositions: []\n",
+    discovery_mod.CANDIDATES_FILE: "candidates: []\n",
 }
 
 
@@ -3590,6 +3737,7 @@ def _publish_manifest(
         fsops.atomic_write(journal[0], journal[1], fsync=True)
         paths.append(journal[0])
     paths += _write_skill_drafts(home, intent, manifest)
+    paths += _write_discovery_week(home, intent, manifest)
     intents.complete(intent)
     gitops.stage_and_commit(
         home, paths, intent.commit_subject, None
@@ -3624,6 +3772,34 @@ def _write_skill_drafts(
         fsops.atomic_write(path, text, fsync=True)
         paths.append(path)
     return paths
+
+
+def _write_discovery_week(
+    home: Path, intent: intents.Intent, manifest: dict[str, Any]
+) -> list[Path]:
+    """SK4 (S-NEXT-sk4-discovery): this run's skill candidates and phase B's
+    dispositions, added to ``overseer/skills/<week>.yaml`` in the run
+    record's own commit, under its intent; next week's phase S reads them
+    back as ``history.yaml``. A run with neither writes nothing. Answers the
+    paths to commit. The caller holds the ledger lock."""
+    info = (manifest.get("skills") or {}).get("discovery")
+    if not isinstance(info, dict):
+        return []
+    entry = discovery_mod.week_entry(
+        cast(str, manifest["run_id"]), cast(str, manifest.get("started") or chrono.now_iso()), info,
+    )
+    if entry is None:
+        return []
+    week = str((manifest.get("skills") or {}).get("week") or manifest.get("week"))
+    path = discovery_mod.week_path(home, week)
+    try:
+        existing: str | None = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        existing = None
+    intents.add_step(intent, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fsops.atomic_write(path, discovery_mod.week_text(existing, week, entry), fsync=True)
+    return [path]
 
 
 def _manifest_journal(home: Path, manifest: dict[str, Any]) -> tuple[Path, str] | None:
@@ -4220,7 +4396,7 @@ def _skill_trial(home: Path, manifest: dict[str, Any], run_id: str) -> tuple[Pat
     """SK3 (S-NEXT-skills part 6): the trial file this completing run
     writes, or ``None``. Written once, by the first run to complete while
     writing was not in effect and whose discovery steps were seen working
-    (``skills_mod.trial_readiness``, recorded when the run was prepared)."""
+    (``discovery_mod.trial_readiness``, recorded when the run was prepared)."""
     info = manifest.get("skills")
     if not isinstance(info, dict) or not info.get("trial_ready"):
         return None
@@ -4878,6 +5054,8 @@ def _execute_manifest(
             decided=[
                 *decided_lines,
                 *skills_mod.report_lines(manifest, trial_written=trial is not None),
+                # SK4: one line per disposition phase B recorded.
+                *discovery_mod.report_lines(manifest),
             ],
             hand_steps=cast("dict[str, Any] | None", manifest.get("hand_steps")),
         )
@@ -5204,14 +5382,17 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     model = provider.model_for("overseer", home=home)
     guard = cast(int, guard)
     timeout_seconds = cast(float, timeout)
-    if guard < _MODEL_CALLS_PER_RUN:
+    # SK4 (S-NEXT-sk4-discovery): whether this run makes phase S, read once.
+    discovery_on = discovery_mod.enabled(home)
+    calls_per_run = _model_calls_per_run(discovery_on)
+    if guard < calls_per_run:
         # A guard below the calls every run makes admits no complete run:
         # hold before the first call rather than spend one whose output
         # could never be applied. The attempt-start line above has already
         # armed the scheduler's cooldown, so this cannot re-run every tick,
         # and no failure note is written: no model call was made.
         reason = (
-            f"runaway guard {guard} is below the {_MODEL_CALLS_PER_RUN} model "
+            f"runaway guard {guard} is below the {calls_per_run} model "
             "calls a run makes; no model call was started"
         )
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "runaway", "reason": reason})
@@ -5348,6 +5529,25 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     if not dry_run and model_calls:
         _keep_phase_a(home, stage, week, population_key, run_id)
 
+    # SK4 (S-NEXT-sk4-discovery): phase S, skill discovery, in its own
+    # workspace; it never fails the run. Before the lock, as phase A is: it
+    # writes nothing to the ledger.
+    if discovery_on:
+        phase_s = _run_phase_s(
+            home, stage, run_id=run_id, week=week, date=started[:10],
+            timeout_floor=timeout_seconds, sessions=sessions, dry_run=dry_run,
+        )
+        model_calls += phase_s.model_calls
+        if phase_s.environment is not None and not dry_run:
+            # The model or the installed Claude Code cannot run a call at
+            # all: phase B would meet the same wall. A hold, as for phase A:
+            # nothing counted, nothing committed; phase A stays kept.
+            _environment_hold(home, run_id, "s", phase_s.environment)
+            return RunResult(model_failures.HELD_ENVIRONMENT, EXIT_REFUSED, run_id, model_calls,
+                selected, excluded)
+    else:
+        phase_s = discovery_mod.PhaseS.off()
+
     coverage_before: bytes | None = None
     intent: intents.Intent | None = None
     # 2026-09-28 (fail-state audit finding 12), kept as it is on purpose:
@@ -5388,6 +5588,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             skill_stage = skills_mod.stage_phase_b(
                 home, stage, parked_rows, skill_state, _write_stage,
             )
+            # SK4: phase S's candidates (or what it came to), for phase B's
+            # dispositions.
+            discovery_mod.stage_phase_b(stage, phase_s, _write_stage)
         except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes
             # 2026-09-27 (fail-state audit finding 5).
             return _refuse_in_span(
@@ -5400,7 +5603,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 kind="invocation", reason=f"phase B inputs could not be prepared: {exc}",
             )
         formats.write(stage, "B")
-        prompt_b = _phase_b_prompt(stage, selected, tuple(row["case"] for row in parked_rows))
+        prompt_b = _phase_b_prompt(
+            stage, selected, tuple(row["case"] for row in parked_rows), discovery=discovery_on,
+        )
         _write_stage(stage, stage / "prompt-b.md", prompt_b)
         timeout_b = phase_timeout(timeout_seconds, len(blind) + len(parked_rows))
         outcome_b = _invoke(home, stage, prompt_b, timeout_b, "phase-b", run_id, sessions)
@@ -5752,6 +5957,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     continue  # the pair loop below names the file's trouble
                 if named is not None:
                     skill_named.add(named)
+            # SK4: the steward's skill proposals in the parked queue.
+            proposals_now = discovery_mod.proposal_ids(parked_rows)
             for case_file, sheet_file in pairs:
                 # 2026-09-27 (run c2b9192b): a case or sheet file that does
                 # not parse costs that pair alone, named by file and parse
@@ -5815,6 +6022,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     elif case_file is not None:
                         _validate_successor(case_file, {row["case"] for row in parked_rows}, home)
                         predecessor = str(_yaml_mapping(case_file)["supersedes"])
+                        if not discovery_on and predecessor in proposals_now:
+                            # SK4 (S-NEXT-skills part 6): with discovery off
+                            # the steward's skill proposals wait parked.
+                            raise OverseerError(
+                                f"{case_file.name}: {predecessor} is a skill proposal, which "
+                                "waits parked while overseer.skill_discovery is off"
+                            )
                         rule = _case_rule_problem(case_file, run_id)
                         if rule is not None:
                             # 2026-09-27 (audit finding 1): a decided case the
@@ -5998,9 +6212,29 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             )
             if skill_state.note:
                 case_drops.append(_failure_detail(skill_state.note) or skill_state.note)
+            # SK4 (S-NEXT-sk4-discovery): what phase S came to, and phase B's
+            # dispositions of its candidates and of the steward's skill
+            # proposals; a missing or dropped one is named.
+            case_drops.extend(phase_s.notes)
+            if discovery_on:
+                dispositions = discovery_mod.read_dispositions(
+                    stage / discovery_mod.DISPOSITIONS_FILE,
+                    candidates=[str(c["id"]) for c in phase_s.candidates],
+                    proposals=proposals_now,
+                    withheld=withheld.get(discovery_mod.DISPOSITIONS_FILE),
+                )
+                for line in dispositions.notes:
+                    line = _failure_detail(line) or line
+                    case_drops.append(line)
+                    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                        "status": "skill-disposition-note", "reason": line[:300]})
+            else:
+                dispositions = None
             # S-NEXT-skills part 6: whether this run's discovery steps were
             # seen working, so that it may count as auto's drafts-only run.
-            trial_ready, trial_why = skills_mod.trial_readiness(home, stage)
+            trial_ready, trial_why = discovery_mod.trial_readiness(
+                phase_s, dispositions or discovery_mod.Dispositions(False, why="discovery is off"),
+            )
         except (OverseerError, batch.BatchError) as exc:
             detail = _failure_detail(exc)
             closed_text, close_questions = (None, [])
@@ -6062,6 +6296,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     "drafts": skill_drafts,
                     "trial_ready": bool(trial_ready),
                     "trial_why": None if trial_ready else trial_why,
+                    # SK4: phase S and phase B's dispositions, for the week
+                    # file this record's commit writes and for the report.
+                    "discovery": discovery_mod.manifest_info(phase_s, dispositions),
                 },
             )
         except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes
@@ -6082,6 +6319,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         # one purpose (a failed phase B's next attempt) and is dropped, so a
         # later manual run looks at the week afresh.
         shutil.rmtree(_phase_a_keep_dir(home, week), ignore_errors=True)
+        # SK4: so is a kept phase S (02-schema §3).
+        discovery_mod.drop_kept(home, week)
 
     return _execute_manifest(
         home, manifest, boundary_no_push=boundary_no_push, manual=manual,

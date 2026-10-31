@@ -134,7 +134,7 @@ def closed_sets() -> dict[str, Any]:
     the modules that enforce them."""
     from .. import batch, cases, user_model, verbs
     from .. import notices as project_notices
-    from . import population, run
+    from . import discovery, population, run
 
     overseer_containers = sorted(
         name for name, who in user_model._WHO_MAY_ADD.items() if "overseer" in who
@@ -210,6 +210,10 @@ def closed_sets() -> dict[str, Any]:
         "report_hand_steps_heading": run.HAND_STEPS_SECTION,
         "hook": _hook_closed_sets(),
         "skill_template": _skill_template_sets(),
+        # SK4 (S-NEXT-sk4-discovery): the discovery phase's candidates, as
+        # phase B reads them, and the dispositions phase B writes.
+        "skill_candidates": discovery.candidate_closed_sets(),
+        "skill_dispositions": discovery.disposition_closed_sets(),
     }
 
 
@@ -434,8 +438,79 @@ not applied; write them exactly as you would otherwise.
     return text.splitlines()
 
 
+def _discovery_rules_s() -> list[str]:
+    """SK4 (S-NEXT-sk4-discovery): phase S's one file. Phase S is blind to
+    the steward: nothing here names cases, sheets, verbs or what a later
+    phase decides."""
+    from ..skill_scaffold import SKILL_NAME_MAX_CHARS
+    from . import discovery
+
+    return f"""\
+Phase S file: {discovery.CANDIDATES_FILE} (the example beside this file shows its shape).
+
+- Top level: candidates (a list; an empty list is a good answer) and, optionally,
+  why_stopped (why you stopped where you did).
+- Each candidate:
+  - id: sc-<a short slug of lowercase letters, digits and hyphens>, unique in the file.
+  - lessons: the lesson ids (lrn-...) that would go into the skill, each exactly as
+    {discovery.CATALOGUE_DIR}/ or {discovery.NEIGHBOURHOODS_FILE} shows it. A candidate naming a lesson you were not
+    shown is dropped.
+  - moment: the one task-shaped moment a skill description could name: when the skill
+    is needed.
+  - why: why these lessons are parts of that one task, and what makes a skill right for
+    them (their content is more than a line; it matters only for that task; the pattern
+    recurs).
+  - name: the name you would give a new skill: lowercase letters, digits and single
+    hyphens, at most {SKILL_NAME_MAX_CHARS} characters, not a name already in {discovery.SKILLS_INDEX_FILE} and not
+    one of its vetoed_names. Or into: the name of a skill in {discovery.SKILLS_INDEX_FILE} that already
+    owns the moment, exactly as it is listed there. One of the two, never both.
+  - checked (optional): the skills in {discovery.SKILLS_INDEX_FILE} you looked at, each {{skill, why_not}}.
+- A candidate that breaks one of these is dropped and named in the report; the others
+  stand. A file that does not parse, or is not this shape, counts as no candidates.
+""".splitlines()
+
+
+def _discovery_rules_b() -> list[str]:
+    """SK4 (S-NEXT-sk4-discovery): phase B's section on the candidates and
+    the steward's proposals, and the dispositions it writes."""
+    from . import discovery, skills
+
+    return f"""\
+## Skill dispositions
+
+{discovery.CANDIDATES_FILE} holds the candidates this run's discovery phase found, reading the
+catalogue of placed lessons on its own, never the steward's proposals: each with an id
+(sc-...), its lessons, the moment it serves, why, and either a name for a new skill or
+into: a skill already on this machine. {skills.PROPOSALS_FILE} lists the steward's skill
+proposals, each a parked case.
+
+Give every candidate and every proposal exactly one disposition in
+{discovery.DISPOSITIONS_FILE}. Write the file even when both lists are empty
+(dispositions: []). Each entry: source (candidate or skill-proposal), id (the
+candidate's sc-... id, or the proposal's case-... id), disposition, because, and:
+- build: you build the skill this run (its {skills.STAGE_SKILLS_DIR}/<name>/ folder and its pair,
+  above); skill names it.
+- add-to-existing: the lessons belong in a skill that exists; skill names it. Route
+  them there this run when you can.
+- defer: not now; would_change_it says what evidence would change that.
+- decline: not a skill; because says why.
+When a candidate and a proposal are the same group, decide it once: give both the same
+disposition, and say so only in the proposal's because. A candidate's because and
+would_change_it never name a proposal, a case or the steward: next week's discovery
+phase reads them, and it decides without the steward's proposals (the runner blanks any
+such mention there). A disposition does not decide a parked case: a
+proposal is decided by its successor case, as every parked case is. An entry that breaks
+these rules is dropped and named in the report, and so is a candidate or proposal left
+without a disposition. The dispositions are kept in the ledger, and next week's
+discovery phase reads what was decided for each candidate. See {discovery.DISPOSITIONS_FILE}
+here; closed-sets.yaml has the sets under skill_dispositions.
+If {discovery.CANDIDATES_FILE} says discovery: off, write no {discovery.DISPOSITIONS_FILE} and leave
+every proposal parked.
+""".splitlines()
+
+
 def _rules(phase: str) -> str:
-    from . import run
+    from . import discovery, run
 
     lines = [
         "# Output formats",
@@ -447,7 +522,10 @@ def _rules(phase: str) -> str:
         "Rules the runner enforces:",
         "",
         # E3b fold (gate N1): phase B's rule names its two exceptions.
-        "- " + " ".join((run._YAML_TEXT_RULE_B if phase == "B" else run._YAML_TEXT_RULE).split()),
+        # SK4: phase S's names none (it writes one file).
+        "- " + " ".join({
+            "B": run._YAML_TEXT_RULE_B, "S": discovery._YAML_TEXT_RULE_S,
+        }.get(phase, run._YAML_TEXT_RULE).split()),
         "- Every file you write stays in this workspace; nothing outside it can be",
         "  read or written.",
     ]
@@ -457,6 +535,8 @@ def _rules(phase: str) -> str:
             "Phase A files: selection.yaml, initial-views.yaml (one entry per selected",
             "case, every field non-empty text).",
         ]
+    elif phase == "S":
+        lines += ["", *_discovery_rules_s()]
     else:
         lines += [
             "- In a case file no line of any text field may start with `## `.",
@@ -572,6 +652,8 @@ def _rules(phase: str) -> str:
             *_RESTATE_RULES,
             "",
             *_skills_rules(),
+            "",
+            *_discovery_rules_b(),
             "",
             # E3a: the passage on writing a lesson, inlined (never a pointer).
             # Phase B only: phase A selects cases and writes no lesson text.
@@ -877,6 +959,82 @@ def phase_b_examples() -> dict[str, str]:
             "items": [{"id": EXAMPLE_RECORD, "verb": "note", "append": "Checked this week."}],
         }),
         **skill_examples(),
+        **discovery_examples_b(),
+    }
+
+
+#: SK4 (S-NEXT-sk4-discovery): the example candidates' ids, the lesson the
+#: second one moves, and the skill already on the machine it names.
+EXAMPLE_CANDIDATE = "sc-example-release-notes"
+EXAMPLE_INTO_CANDIDATE = "sc-example-diagram-rules"
+EXAMPLE_INTO_LESSON = "lrn-0000000c"
+EXAMPLE_EXISTING_SKILL = "example-diagrams"
+
+
+def discovery_examples_s() -> dict[str, str]:
+    """SK4: phase S's one file, ``skill-candidates.yaml``: a candidate for a
+    new skill and one for a skill already on the machine."""
+    from . import discovery
+
+    return {
+        discovery.CANDIDATES_FILE: _dump({
+            "candidates": [
+                {
+                    "id": EXAMPLE_CANDIDATE,
+                    "name": EXAMPLE_SKILL,
+                    "lessons": list(EXAMPLE_SKILL_LESSONS),
+                    "moment": "Writing release notes or a changelog entry for a version about to ship.",
+                    "why": (
+                        "Both lessons are steps of writing release notes: one says what to leave "
+                        "out, one how to group the rest. Together with a procedure they are more "
+                        "than a line, and they matter only when notes are written, yet both are "
+                        "loaded in every session."
+                    ),
+                    "checked": [{
+                        "skill": EXAMPLE_EXISTING_SKILL,
+                        "why_not": "It draws diagrams; it says nothing about release notes.",
+                    }],
+                },
+                {
+                    "id": EXAMPLE_INTO_CANDIDATE,
+                    "into": EXAMPLE_EXISTING_SKILL,
+                    "lessons": [EXAMPLE_INTO_LESSON],
+                    "moment": "Drawing a diagram for the user.",
+                    "why": (
+                        "The lesson is a rule about diagram labels; the diagrams skill already "
+                        "owns that moment, so the lesson belongs there rather than in a new skill."
+                    ),
+                },
+            ],
+            "why_stopped": "The other neighbourhood groups share words but not one task.",
+        }),
+    }
+
+
+def discovery_examples_b() -> dict[str, str]:
+    """SK4: phase B's ``skill-dispositions.yaml``: one disposition for a
+    candidate and one for a steward's proposal."""
+    from . import discovery
+
+    return {
+        discovery.DISPOSITIONS_FILE: _dump({
+            "dispositions": [
+                {
+                    "source": "candidate",
+                    "id": EXAMPLE_CANDIDATE,
+                    "disposition": "build",
+                    "skill": EXAMPLE_SKILL,
+                    "because": "No skill owns writing release notes, and its two lessons are one procedure.",
+                },
+                {
+                    "source": "skill-proposal",
+                    "id": EXAMPLE_PARKED_CASE,
+                    "disposition": "defer",
+                    "because": "Two lessons are not yet a procedure; the proposal names no steps.",
+                    "would_change_it": "A third lesson about the same task, or a lesson that gives the steps.",
+                },
+            ],
+        }),
     }
 
 
@@ -986,13 +1144,22 @@ def skill_examples() -> dict[str, str]:
 
 
 def write(workspace: Path, phase: str) -> Path:
-    """Write the formats for *phase* (``"A"`` or ``"B"``) into
+    """Write the formats for *phase* (``"A"``, ``"S"`` or ``"B"``) into
     ``<workspace>/formats/``; phase B adds its files to phase A's. Phase A
     sees no case or sheet vocabulary: it is blind to the steward's
-    decisions."""
-    from . import run
+    decisions. Phase S (SK4) writes into its own workspace and sees only
+    its one file and its closed set: no case or sheet vocabulary, nothing
+    of phase A's, and nothing of what phase B decides."""
+    from . import discovery, run
 
     root = workspace / FORMATS_DIR
+    if phase == "S":
+        files = dict(discovery_examples_s())
+        files["closed-sets.yaml"] = _dump({"skill_candidates": discovery.candidate_closed_sets()})
+        files["README.md"] = _rules("S")
+        for name, text in files.items():
+            run._write_stage(workspace, root / name, text)
+        return root
     files = dict(phase_a_examples())
     if phase == "B":
         files.update(phase_b_examples())

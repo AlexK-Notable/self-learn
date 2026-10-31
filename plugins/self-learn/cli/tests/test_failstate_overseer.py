@@ -290,7 +290,7 @@ def test_a_case_that_cannot_be_classified_is_left_out_of_coverage(tmp_path, monk
 
     monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
     result = overseer_run.run(home, no_push=True)
-    assert calls == ["phase-a", "phase-b"]
+    assert calls == ["phase-a", "phase-s", "phase-b"]  # SK4, 2026-10-31
     assert result.status == "applied"
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     assert f"case {orphaned}: left out of coverage" in report
@@ -363,7 +363,9 @@ def test_each_phase_is_given_the_scaled_limit(tmp_path, monkeypatch):
     overseer_run.run(home, no_push=True)
     # The week holds the two parked cases (phase A reads 2); phase B reads
     # them again as the parked queue (4).
-    assert timeouts == {"phase-a": 2000.0, "phase-b": 4000.0}
+    # SK4 (2026-10-31): phase S is given max(floor, 1000 s x the placed
+    # lessons in its catalogue): none are placed here, so the floor.
+    assert timeouts == {"phase-a": 2000.0, "phase-s": 900.0, "phase-b": 4000.0}
 
 
 def test_a_timed_out_phase_b_that_wrote_its_files_is_applied(tmp_path, monkeypatch):
@@ -419,7 +421,9 @@ def test_a_validated_phase_a_is_kept_for_the_weeks_next_attempt(tmp_path, monkey
     assert first.status == "timed-out"
     assert overseer_run.week_attempts(home, _week()) == 1
     second = overseer_run.run(home, no_push=True)
-    assert labels == ["phase-a", "phase-b", "phase-b"]
+    # SK4 (2026-10-31): phase S runs in both attempts (this fake writes it no
+    # candidates, so it is never kept); phase A is reused.
+    assert labels == ["phase-a", "phase-s", "phase-b", "phase-s", "phase-b"]
     assert second.status in {"applied", "partial"}
     assert _status(home, rid_b) != "pending"
 
@@ -442,7 +446,7 @@ def test_a_kept_phase_a_is_not_used_for_a_changed_population(tmp_path, monkeypat
     overseer_run.run(home, no_push=True)
     _seed_parked(home, tmp_path, "lrn-0d000004", "pd")  # a new case in the window
     overseer_run.run(home, no_push=True)
-    assert labels == ["phase-a", "phase-b", "phase-a", "phase-b"]
+    assert labels == ["phase-a", "phase-s", "phase-b", "phase-a", "phase-s", "phase-b"]  # SK4
 
 
 # ------------------------------------------------ unparseable stage files

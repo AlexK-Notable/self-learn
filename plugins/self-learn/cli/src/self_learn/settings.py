@@ -1213,6 +1213,26 @@ REGISTRY: tuple[Setting, ...] = (
         tier="C",
         override_channel=False,
     ),
+    # SK4 (S-NEXT-sk4-discovery; S-NEXT-skills part 6): whether the overseer
+    # makes its skill-discovery call (phase S) and phase B gives dispositions.
+    # On by default; off, a run makes two model calls and the steward's
+    # skill proposals wait parked. Tier C, config.yaml only (no env var, no
+    # override channel), like `overseer.skill_writing`: agents never set it
+    # (`CLAUDE.md`). `config set` takes 1 or 0, as for every bool setting.
+    Setting(
+        name="overseer.skill_discovery",
+        env_var=None,
+        config_section="overseer",
+        config_key="skill_discovery",
+        kind="bool",
+        default=True,
+        description=(
+            "whether the overseer's weekly run looks for skills (phase S, one more model call) "
+            "and decides every skill candidate and skill proposal; the user's switch"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
     # ----------------------------------------------------------- sdk
     Setting(
         name="sdk.max_budget_usd",

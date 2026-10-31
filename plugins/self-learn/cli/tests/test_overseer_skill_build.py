@@ -27,7 +27,7 @@ import test_skill_write as sk1
 from self_learn import batch, cases, settings, skill_registry, skill_writer, verbs
 from self_learn.compilers import BEGIN_MARKER
 from self_learn.ledger_ops import create_record, find_record_path
-from self_learn.overseer import formats, skills
+from self_learn.overseer import discovery, formats, skills
 from self_learn.overseer import run as overseer_run
 from self_learn.records import Record
 from self_learn.skill_scaffold import SKILL_FRONTMATTER_ALLOWED_KEYS, SKILL_NAME_MAX_CHARS, check_skill
@@ -132,6 +132,13 @@ def _phases(monkeypatch, write_b, *, seen: dict | None = None):
     def invoke(spec):
         calls.append(spec)
         stage = spec.cwd
+        if spec.label == "phase-s":
+            # SK4 (2026-10-31): skill discovery, in its own workspace, finds
+            # nothing; phase B's skill steps are what these tests drive.
+            _dump(stage / discovery.CANDIDATES_FILE, {"candidates": []})
+            return type("SdkLike", (), {
+                "ok": True, "rc": 0, "stdout": "", "detail": "", "failure": None, "turns": 1,
+            })()
         if spec.label == "phase-a":
             _dump(stage / "selection.yaml", {"cases": [], "why_these": "none", "why_stopped": "none"})
             _dump(stage / "initial-views.yaml", {"cases": []})
@@ -409,7 +416,7 @@ def test_c_a_dry_run_writes_no_draft(env, monkeypatch):
 def test_the_first_ready_completed_run_records_the_trial_and_the_next_writes(env, monkeypatch):
     _lesson(env, RID)
     _phases(monkeypatch, _build_b([RID]))
-    monkeypatch.setattr(skills, "trial_readiness", lambda home, stage: (True, ""))
+    monkeypatch.setattr(discovery, "trial_readiness", lambda *args: (True, ""))
 
     first = _run(env)
 
@@ -434,7 +441,9 @@ def test_the_first_ready_completed_run_records_the_trial_and_the_next_writes(env
 
 def test_a_run_not_ready_never_records_the_trial(env, monkeypatch):
     """Control for the test above: the same run with the shipped
-    readiness (no phase S on this branch) leaves auto drafts-only."""
+    readiness leaves auto drafts-only (phase B here writes no
+    skill-dispositions.yaml, so the discovery steps were not seen working;
+    SK4, 2026-10-31)."""
     _lesson(env, RID)
     _phases(monkeypatch, _build_b([RID]))
     _run(env)
@@ -448,7 +457,7 @@ def test_an_off_run_with_a_ready_discovery_also_records_the_trial(env, monkeypat
     too -- and off still writes nothing after it."""
     _set_writing(env, '"off"')
     _phases(monkeypatch, lambda stage: None)
-    monkeypatch.setattr(skills, "trial_readiness", lambda home, stage: (True, ""))
+    monkeypatch.setattr(discovery, "trial_readiness", lambda *args: (True, ""))
     _run(env)
     assert _load(skills.trial_path(env.home))["drafts"] == []
     assert not skills.writing_state(env.home).deploy
@@ -456,7 +465,7 @@ def test_an_off_run_with_a_ready_discovery_also_records_the_trial(env, monkeypat
 
 def test_a_dry_run_never_records_the_trial(env, monkeypatch):
     _phases(monkeypatch, lambda stage: None)
-    monkeypatch.setattr(skills, "trial_readiness", lambda home, stage: (True, ""))
+    monkeypatch.setattr(discovery, "trial_readiness", lambda *args: (True, ""))
     _run(env, dry_run=True)
     assert not skills.trial_path(env.home).exists()
 
