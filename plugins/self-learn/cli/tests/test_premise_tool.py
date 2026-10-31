@@ -307,7 +307,7 @@ def test_a_file_probe_never_returns_the_files_text(tmp_path):
         assert "state: ok" in answer
         assert "CANARY" not in text and "waybar" not in answer
     present = _ok(tool.dispatch({"probe": {"kind": "file-match", "path": str(conf),
-                                           "contains": "first"}, "holds_if": "present",
+                                           "contains": "first"}, "holds_if": "equals",
                                  "match": "present"}))
     assert 'value: "present"' in present and "claim: holds" in present
 

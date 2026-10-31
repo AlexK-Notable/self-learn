@@ -3415,6 +3415,13 @@ premises:
   is matched with its quotes: `match: '"plain"'`).
   `version`: while the value (a `package` probe's version) satisfies the range
   in `match` (for example `>=0.56,<0.57`, compared in `vercmp` order).
+  A `file-match` / `git-file` probe's value is the token `present` or `absent`
+  (a `contains` / `line` probe) or a line-range hash (`lines`), never the
+  text, so a literal `match` could not be found in it: `absent` would hold
+  forever and `present` would always be contradicted. Validation therefore
+  accepts only `changed`, or `equals` with `match` `present` or `absent`, for
+  `contains` / `line`, and only `changed` for `lines`. The refusal names the
+  form (S-NEXT-ft-file-match).
 - **An explicit empty list** (`premises: []`) means "decided: this lesson
   rests on no fact about the machine" (a general practice). It is not offered
   for the backfill again. The reason lives in the case that wrote it.
