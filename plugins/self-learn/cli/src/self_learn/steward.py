@@ -16,6 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass, field, replace as dataclass_replace
 from datetime import datetime, timezone
+from operator import itemgetter
 from pathlib import Path
 from collections.abc import Iterable, Mapping
 from typing import cast
@@ -1125,7 +1126,8 @@ def _followup_item(moved: steward_inputs.MovedFollowup) -> dict:
 
 
 def _premise_moved_inputs(
-    home: Path, exclude: set[str] | None = None, *, manifests: list[dict] | None = None
+    home: Path, exclude: set[str] | None = None, *, capped: bool = True,
+    manifests: list[dict] | None = None,
 ) -> list[dict]:
     """S-NEXT-u3-followup and S-NEXT-u4-steward (premise-check design U3, U4):
     one `premise-moved` input per ROUTED lesson where something it rests on
@@ -1154,7 +1156,12 @@ def _premise_moved_inputs(
     per tick).
 
     A broken probe is not an input by itself: every brief of the lesson
-    shows it (:func:`steward_inputs.broken_probes`)."""
+    shows it (:func:`steward_inputs.broken_probes`).
+
+    S-NEXT-u6-backfill: *capped* false returns every waiting row, the
+    ones past the nightly cap included -- what the backfill reads so that
+    a lesson whose move waits is not offered to have its premises written
+    meanwhile (:func:`_premise_inputs`)."""
     if not steward_inputs.premises_enabled(home):
         return []
     followups = {moved.record_id: moved for moved in steward_inputs.moved_followups(home)}
@@ -1199,7 +1206,144 @@ def _premise_moved_inputs(
             since.append(f"{followup.done_on.isoformat()}T00:00:00Z")
         candidates.append((min(since) if since else "", rid, row))
     candidates.sort(key=lambda entry: (entry[0], entry[1]))
-    return [row for _since, _rid, row in candidates[: steward_inputs.PREMISE_MOVED_PER_RUN]]
+    rows = [row for _since, _rid, row in candidates]
+    # the cap is read at call time (a test narrows it on the module)
+    return rows[: steward_inputs.PREMISE_MOVED_PER_RUN] if capped else rows
+
+
+# ------------------------- premise-extract: the backfill (S-NEXT-u6-backfill)
+
+#: The card line of a `premise-extract` input.
+_PREMISE_EXTRACT_REASON = (
+    "This placed lesson records no premises, so nothing can notice when what it rests on "
+    "changes. Write them; the placement stands."
+)
+
+
+def _committed_blobs(home: Path, paths: Iterable[Path]) -> dict[Path, str]:
+    """``{path: its blob at HEAD}`` for each of *paths* that is committed,
+    from ONE `git ls-tree` (the backfill's candidates are many, and the
+    scheduler's due check reads them on every tick; `_committed_blob` is
+    one git call per file). A path outside the ledger or not committed is
+    absent; a git failure gives ``{}``, which offers nothing (an input
+    needs a committed version)."""
+    root = home.resolve()
+    rels: dict[str, Path] = {}
+    for path in paths:
+        try:
+            rels[path.resolve().relative_to(root).as_posix()] = path
+        except ValueError:
+            continue
+    if not rels:
+        return {}
+    try:
+        proc = gitops._git(home, "ls-tree", "-r", "-z", "HEAD", "--", *sorted(rels))  # noqa: SLF001
+    except gitops.GitOpsError:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    out: dict[Path, str] = {}
+    for entry in proc.stdout.split("\0"):
+        meta, tab, rel = entry.partition("\t")
+        fields = meta.split()
+        if tab and len(fields) == 3 and fields[1] == "blob" and rel in rels:
+            out[rels[rel]] = fields[2]
+    return out
+
+
+def _extract_order(home: Path, rows: list[tuple[Record, dict]]) -> list[tuple[Record, dict]]:
+    """*rows* in the backfill's order (design D10): environment-specific
+    lessons, then those a covering case says what would change, then the
+    rest (`steward_inputs.extract_rank`); in each rank the longest-placed
+    first, then by id. The case index is read once for all of them."""
+    covering = steward_inputs.covering_cases(home, [record.id for record, _row in rows])
+    floor = datetime.fromtimestamp(0, tz=timezone.utc)
+    keyed = []
+    for record, row in rows:
+        routing = record.routing if isinstance(record.routing, dict) else {}
+        rank = steward_inputs.extract_rank(home, record, covering.get(record.id, []))
+        placed = chrono.to_dt(routing.get("routed_at")) or floor
+        keyed.append(((rank, placed, record.id), record, row))
+    keyed.sort(key=itemgetter(0))
+    return [(record, row) for _key, record, row in keyed]
+
+
+def _premise_extract_inputs(
+    home: Path, exclude: set[str] | None = None,
+    *, limit: int | None = None, ordered: bool = True,
+) -> list[dict]:
+    """S-NEXT-u6-backfill (premise-check design D10; 02 §3a.10.7): one
+    `premise-extract` input per ROUTED lesson with no `premises` field
+    (`steward_inputs.routed_without_premises`; `premises: []` is a decision
+    and is never offered), so the steward writes what it rests on.
+
+    Its version is ``extract:<the record file's committed blob>``: a run
+    that decided it -- applied, parked, refused or abandoned -- never sees
+    that version again, an applied `premises set` changes the record so it
+    is no longer a candidate, and a record that changes for any other
+    reason is a new version. The prefix keeps the identity apart from a
+    `lesson` input's bare blob. A lesson the overseer holds is not offered
+    (S-81); neither is one *exclude* names (an earlier input of the run, or
+    a `premise-moved` input waiting under its nightly cap,
+    :func:`_premise_inputs`). A record that is not committed waits.
+
+    At most `premises.backfill_per_night` rows (tier C, default 10; 0
+    pauses the backfill), and *limit* when smaller, in the order of
+    :func:`_extract_order`. *ordered* false skips the ordering's case reads
+    -- the scheduler's due check asks only whether any row exists. Off
+    when `premises.enabled` is false."""
+    if not steward_inputs.premises_enabled(home):
+        return []
+    cap = steward_inputs.premise_backfill_per_night(home)
+    if limit is not None:
+        cap = min(cap, limit)
+    if cap <= 0:
+        return []
+    found = steward_inputs.routed_without_premises(home)
+    if not found:
+        return []
+    held = cases.held_lessons(home)
+    found = [
+        (path, record) for path, record in found
+        if record.id not in held and not (exclude and record.id in exclude)
+    ]
+    if not found:
+        return []
+    blobs = _committed_blobs(home, [path for path, _record in found])
+    terminal = _terminal_versions(home)
+    rows: list[tuple[Record, dict]] = []
+    for path, record in found:
+        blob = blobs.get(path)
+        if blob is None:
+            continue
+        version = f"extract:{blob}"
+        if (record.id, version) in terminal:
+            continue
+        rows.append((record, {
+            "path": f"premise-extract:{record.id}",
+            "blob": version,
+            "version": version,
+            "record": record.id,
+            "kind": steward_inputs.INPUT_PREMISE_EXTRACT,
+            "record_status": "routed",
+            "reason": _PREMISE_EXTRACT_REASON,
+        }))
+    if ordered:
+        rows = _extract_order(home, rows)
+    return [row for _record, row in rows[:cap]]
+
+
+def _premise_inputs(home: Path, exclude: set[str]) -> list[dict]:
+    """The run's premise rows, after every other input (S-NEXT-u6-backfill):
+    the `premise-moved` rows under their nightly cap, then the backfill's
+    `premise-extract` rows. A lesson with a `premise-moved` input -- taken
+    tonight or waiting past the cap -- is not offered for its premises to
+    be written (02 §3a.10.7): its move is decided first, and that decision
+    writes or re-records them."""
+    moved = _premise_moved_inputs(home, exclude=exclude, capped=False)
+    taken = moved[: steward_inputs.PREMISE_MOVED_PER_RUN]
+    waiting = {str(row["record"]) for row in moved}
+    return taken + _premise_extract_inputs(home, exclude=set(exclude) | waiting)
 
 
 #: A reconsider input's card line (`_reconsider_proposals`): the lesson an
@@ -1460,7 +1604,9 @@ def _pair_problem(
     input: a placed lesson no case covers may be replaced or moved in a
     `kind: resolution` case (:func:`_steward_replace_problem`,
     :func:`_steward_move_problem`), and a `no-action` decision re-records
-    every moved premise (:func:`_premise_decision_problem`)."""
+    every moved premise (:func:`_premise_decision_problem`).
+    S-NEXT-u6-backfill: and of a `premise-extract` input, whose case only
+    writes the lesson's premises (:func:`_premise_extract_problem`)."""
     try:
         case_data = _read_yaml(case_path)
     except ValueError as exc:
@@ -1556,6 +1702,10 @@ def _pair_problem(
         )
     if replace_problem is None:
         replace_problem = _premise_decision_problem(
+            case_data, lines, inputs, label=case_path.name
+        )
+    if replace_problem is None:
+        replace_problem = _premise_extract_problem(
             case_data, lines, inputs, label=case_path.name
         )
     if replace_problem is not None:
@@ -1674,6 +1824,71 @@ def _premise_decision_problem(
             f"lesson; add a `premises` line on {rid} with " + " or ".join(owed)
             + ", or the same change comes back every night"
         )
+    return None
+
+
+def _premise_extract_problem(
+    case_data: dict, items: list, inputs: Mapping[str, Mapping] | None, *, label: str
+) -> str | None:
+    """S-NEXT-u6-backfill (02 §3a.10.7): a `premise-extract` input came for
+    its premises to be written, and for nothing else. Its case is a `kind:
+    resolution` case with `outcome: no-action` and no `supersedes` (the
+    placement decision stands, so there is nothing to supersede), and its
+    sheet holds exactly ONE line for the lesson: `premises` with `action:
+    set` (the list, or `[]`). Changing the lesson -- `replace` (or being
+    merged through another line's `also`), `retire`, `reject`, a move, a
+    `note` -- is refused here: the authority to change a placed lesson
+    comes with a `premise-moved` input, and a lesson found false while its
+    premises are written gets a premise whose probe shows it, so it comes
+    back the next night as one. A parked case is never applied, so it is
+    not judged (parking is the answer when no probe can show it)."""
+    extract = frozenset(
+        str(rid) for rid, row in (inputs or {}).items()
+        if row.get("kind") == steward_inputs.INPUT_PREMISE_EXTRACT
+    )
+    if not extract or case_data.get("kind") == "parked":
+        return None
+    named = [str(rid) for rid in case_data.get("records") or [] if str(rid) in extract]
+    if not named:
+        return None
+    how = (
+        "a lesson you find already false gets a premise whose probe shows it, and comes back "
+        "the next night as a `premise-moved` input; when no probe can show it, park the case "
+        "(`authority-unclear`) (method section 17)"
+    )
+    shape = []
+    if case_data.get("kind") != "resolution":
+        shape.append(f"kind {case_data.get('kind')!r}")
+    if case_data.get("outcome") != "no-action":
+        shape.append(f"outcome {case_data.get('outcome')!r}")
+    if case_data.get("supersedes"):
+        shape.append(f"supersedes {case_data.get('supersedes')!r}")
+    if shape:
+        return (
+            f"{label}: {named} came to you only for their premises to be written; decide them "
+            "in a `kind: resolution` case with `outcome: no-action` and no `supersedes` (got "
+            f"{', '.join(shape)}); {how}"
+        )
+    lines = [item for item in items if isinstance(item, dict)]
+    for rid in named:
+        own = [item for item in lines if str(item.get("id")) == rid]
+        merged = any(
+            item.get("verb") == "replace"
+            and rid in {str(other) for other in _listed(item.get("also"))}
+            for item in lines
+        )
+        writes = [
+            item for item in own if item.get("verb") == "premises" and item.get("action") == "set"
+        ]
+        if merged or len(own) != 1 or len(writes) != 1:
+            got = [
+                f"{item.get('verb')}" + (f" {item.get('action')}" if item.get("action") else "")
+                for item in own
+            ] + (["merged by a replace"] if merged else [])
+            return (
+                f"{label}: {rid} came to you only for its premises to be written; its one line "
+                f"is `premises` with `action: set` (got {got}); {how}"
+            )
     return None
 
 
@@ -5239,9 +5454,9 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
         # S-NEXT-u3-followup: a placed lesson whose follow-up closed after it was
         # last decided. Last, so a lesson another input already names is
         # decided on that one now and on this one next run.
-        eligible += _premise_moved_inputs(
-            home, exclude={row["record"] for row in eligible}
-        )
+        # S-NEXT-u6-backfill: then the backfill, a placed lesson with no
+        # premises (`_premise_inputs`: never one whose move waits).
+        eligible += _premise_inputs(home, exclude={row["record"] for row in eligible})
         if not dry_run:
             # S-81 (gate S1c R4): before any early return, so even an idle
             # run says that a tampered parked case still holds a lesson.

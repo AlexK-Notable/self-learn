@@ -22,7 +22,12 @@ This module builds, for one run:
    check's unit U3), is a ROUTED lesson something the lesson rested on has
    moved for; today the one thing that moves it is a closed follow-up
    (:func:`moved_followups`), and the premise sweep adds its own movers
-   later through the same kind (:func:`premise_moved_version`).
+   later through the same kind (:func:`premise_moved_version`). The fifth,
+   ``premise-extract`` (S-NEXT-u6-backfill, unit U6), is a ROUTED lesson
+   with no ``premises`` field at all, offered so its premises get written
+   (:func:`routed_without_premises`, :func:`extract_rank`): the backfill of
+   the lessons placed before premises existed, and the safety net for a
+   route that wrote none.
 2. **The batches.** U2's :func:`index.related.group_for_steward` over the
    run's input ids: at most 10 per packet, at most 5 unrelated
    (:func:`plan_packets`). The lesson index is brought up to date
@@ -57,7 +62,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence, cast
 
 from . import refs, telemetry
 from .index import hybrid
@@ -71,7 +76,14 @@ __all__ = [
     "INPUT_RECONSIDER",
     "INPUT_SUSPECTED_VIOLATION",
     "INPUT_PREMISE_MOVED",
+    "INPUT_PREMISE_EXTRACT",
     "INPUT_KINDS",
+    "PREMISE_EXTRACT_PER_RUN",
+    "covering_cases",
+    "extract_rank",
+    "premise_backfill_per_night",
+    "render_premise_extract",
+    "routed_without_premises",
     "LessonBrief",
     "MovedFollowup",
     "PREMISE_MOVED_PER_RUN",
@@ -102,11 +114,21 @@ INPUT_SUSPECTED_VIOLATION = "suspected-violation"
 #: its own moved for. The one constant every producer of this kind and the
 #: premise units that build on it (U4's brief, U8's placement premises) name.
 INPUT_PREMISE_MOVED = "premise-moved"
-INPUT_KINDS = (INPUT_LESSON, INPUT_RECONSIDER, INPUT_SUSPECTED_VIOLATION, INPUT_PREMISE_MOVED)
+#: S-NEXT-u6-backfill (premise-check design D10): a routed lesson with no
+#: ``premises`` field, offered for its premises to be written (the backfill).
+INPUT_PREMISE_EXTRACT = "premise-extract"
+INPUT_KINDS = (
+    INPUT_LESSON, INPUT_RECONSIDER, INPUT_SUSPECTED_VIOLATION, INPUT_PREMISE_MOVED,
+    INPUT_PREMISE_EXTRACT,
+)
 
 #: Design D7.5: at most this many ``premise-moved`` inputs in one run, oldest
 #: first; the rest wait for the next run (the backlog carries over).
 PREMISE_MOVED_PER_RUN = 10
+#: Design D10: the backfill offers at most this many lessons a night by
+#: default; ``premises.backfill_per_night`` (tier C) is what a run reads
+#: (:func:`premise_backfill_per_night`).
+PREMISE_EXTRACT_PER_RUN = 10
 
 # ------------------------------------------------------------ the budgets
 #
@@ -1124,6 +1146,235 @@ def render_premise_moved(
     return "\n".join(lines), stats
 
 
+# ------------------------------ premise-extract (U6, S-NEXT-u6-backfill)
+#
+# 02 §3a.10.7, "Writing premises": a PLACED lesson with no `premises` field
+# is offered to the steward so that its premises get written -- the lessons
+# placed before premises existed (149 on 2026-10-30), and any lesson a later
+# route placed without them. The test is ABSENT, never empty: `premises: []`
+# is a decision ("it rests on no fact about the machine") and is not offered
+# again. Order (design D10): `environment-specific` lessons first, then those
+# whose covering case says what would change it, then the rest; at most
+# `premises.backfill_per_night` a night. The case such an input gets records
+# what the lesson rests on and changes nothing else (`steward.
+# _premise_extract_problem`): a lesson found false here is written with a
+# premise whose first value contradicts its claim, and comes back the next
+# night as a `premise-moved` input, where the authority to change it is.
+
+
+def premise_backfill_per_night(home: Path) -> int:
+    """How many ``premise-extract`` inputs one run may take: the tier C
+    setting ``premises.backfill_per_night`` (default
+    :data:`PREMISE_EXTRACT_PER_RUN`; 0 pauses the backfill)."""
+    from . import settings  # late: settings is a registry module, not an input
+
+    try:
+        setting = settings.by_name("premises.backfill_per_night")
+    except KeyError:
+        return PREMISE_EXTRACT_PER_RUN
+    value, _source = settings.resolve_setting(home, setting)
+    try:
+        return max(int(cast(int | str, value)), 0)
+    except (TypeError, ValueError):
+        return PREMISE_EXTRACT_PER_RUN
+
+
+#: A frontmatter line that says the record is placed, and one that names
+#: the field -- the cheap test before a parse (:func:`routed_without_premises`).
+_ROUTED_LINE = re.compile(r"""^status:[ \t]*['"]?routed['"]?[ \t]*$""", re.M)
+_PREMISES_KEY = re.compile(r"^premises[ \t]*:", re.M)
+
+
+def _frontmatter(text: str) -> str | None:
+    """A record file's frontmatter (between its first two ``---`` lines,
+    as `Record.from_text` splits it), or ``None`` when it has none."""
+    lines = text.split("\n")
+    if not lines or lines[0] != "---":
+        return None
+    try:
+        close = lines[1:].index("---") + 1
+    except ValueError:
+        return None
+    return "\n".join(lines[1:close])
+
+
+def routed_without_premises(home: Path) -> list[tuple[Path, Record]]:
+    """Every ROUTED record whose frontmatter has no ``premises`` key, with
+    its file path, in bucket and file order. ``premises: []`` is a key: a
+    decision, never a candidate. Like :func:`routed_with_premises` it reads
+    the file text first and parses only a file whose frontmatter says
+    ``status: routed`` and names no ``premises`` key, because the
+    steward's due check calls this on every scheduler tick; the parse then
+    decides. An unreadable file is skipped."""
+    from .ledger import discover_buckets
+    from .records import RecordError
+
+    out: list[tuple[Path, Record]] = []
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                front = _frontmatter(path.read_text(encoding="utf-8"))
+                if front is None or not _ROUTED_LINE.search(front) or _PREMISES_KEY.search(front):
+                    continue
+                record = Record.from_path(path)
+            except (RecordError, OSError, UnicodeDecodeError):
+                continue
+            if record.status == "routed" and record.premises is None:
+                out.append((path, record))
+    return out
+
+
+def covering_cases(home: Path, record_ids: Iterable[str]) -> dict[str, list[str]]:
+    """``record id -> [case id, ...]``: the cases that name each record, are
+    intact and are not superseded, newest first, from ONE read of the case
+    index (the backfill ranks every candidate at once). A record no such
+    case names is absent. An index that cannot be read gives ``{}``: every
+    lesson then ranks as one no case covers, and is still offered."""
+    from . import cases
+
+    wanted = {str(rid) for rid in record_ids}
+    try:
+        rows = cases.list_cases(home, only_ok=True)
+    except (cases.CaseError, OSError, ValueError):
+        return {}
+    found: dict[str, list[tuple[str, str]]] = {}
+    for row in rows:
+        case_id = row.get("case")
+        if not isinstance(case_id, str) or row.get("superseded_by"):
+            continue
+        for rid in row.get("records") or []:
+            if str(rid) in wanted:
+                found.setdefault(str(rid), []).append((str(row.get("opened_at") or ""), case_id))
+    return {
+        rid: [case_id for _opened, case_id in sorted(pairs, reverse=True)]
+        for rid, pairs in found.items()
+    }
+
+
+def _would_change_by_case(home: Path, case_ids: Sequence[str]) -> list[tuple[str, list[str]]]:
+    """``[(case id, its "what would change" bullets), ...]`` for the newest
+    :data:`_OTHER_COVERING_CASES` of *case_ids* that have any."""
+    out: list[tuple[str, list[str]]] = []
+    for case_id in list(case_ids)[:_OTHER_COVERING_CASES]:
+        bullets = _would_change_lines(home, case_id)
+        if bullets:
+            out.append((case_id, bullets))
+    return out
+
+
+#: The backfill's three ranks, in the order they are offered (design D10).
+EXTRACT_RANK_ENVIRONMENT = 0
+EXTRACT_RANK_WOULD_CHANGE = 1
+EXTRACT_RANK_REST = 2
+
+
+def extract_rank(home: Path, record: Record, case_ids: Sequence[str]) -> int:
+    """Where *record* falls in the backfill's order (design D10): a lesson
+    marked ``environment-specific`` first (it is the most likely to rest on
+    a fact that can change), then one whose covering case (*case_ids*,
+    newest first) wrote "What would change this decision" lines (an
+    expiry condition already in prose, waiting to become a probe), then
+    the rest. The case files are read only for a lesson that is not
+    environment-specific."""
+    if record.generality == "environment-specific":
+        return EXTRACT_RANK_ENVIRONMENT
+    if _would_change_by_case(home, case_ids):
+        return EXTRACT_RANK_WOULD_CHANGE
+    return EXTRACT_RANK_REST
+
+
+#: The open follow-up's fields as the extract brief labels them.
+_OPEN_FOLLOWUP_LABELS = (
+    ("action", "what it asks for"),
+    ("unblocks_on", "it is to be closed when"),
+    ("note", "its note"),
+)
+
+
+def _extract_decide_lines() -> list[str]:
+    """The extract brief's [how to decide it] block."""
+    return [
+        "[how to decide it] one `kind: resolution` case with `outcome: no-action` and no "
+        "`supersedes` (the placement stands; this case only records what the lesson rests "
+        "on), holding exactly ONE line for this lesson: `premises` with `action: set`:",
+        "  - it rests on facts about this machine: write them, at most "
+        f"{_premise_limits()} -- a one-line claim each, a probe where the catalog can check "
+        "one (try it first with the `premise_probe` tool; keep it narrow: the line that "
+        "matters, not a whole file), `probe: null` for a behaviour no check can see, and "
+        "`source: <case id>#what_would_change[<n>]` on a premise taken from a line numbered "
+        "above;",
+        "  - it rests on no fact about the machine (a general practice): `premises: []`, with "
+        "the reason in `decision.because`; it is then never offered again;",
+        "  - a premise you would write is ALREADY false: do not change the lesson in this case "
+        "(no replace, retire, route, reject or note line; the runner refuses them here). "
+        "Write that premise with the probe that shows it is false: the runner records the "
+        "first value as contradicting the claim, and the lesson comes back to you the next "
+        "night as a `premise-moved` input, where correcting, narrowing or retiring it is "
+        "yours;",
+        "  - no probe can show what you found, or you cannot tell what it rests on: park the "
+        "case (`authority-unclear`) with what you found.",
+        "  (method section 17)",
+    ]
+
+
+def _premise_limits() -> str:
+    from . import premises
+
+    return f"{premises.MAX_PREMISES} premises, {premises.MAX_PROBED} of them with a probe"
+
+
+def render_premise_extract(
+    home: Path, record: Record, row: Mapping[str, Any], *, path: str | None, head: str | None
+) -> tuple[str, dict]:
+    """The part of a ``premise-extract`` brief that is not the lesson itself
+    (S-NEXT-u6-backfill): what the steward needs to write the lesson's
+    premises -- its recorded generality, its open follow-up (a condition
+    the placement waits on is usually a premise), its ``env`` pins, and the
+    numbered "What would change this decision" bullets of the cases that
+    cover it, so a premise can name the bullet it came from -- then how to
+    decide. No transcript evidence pack: what the lesson rests on is in its
+    words and its cases, not in the session it was taught from."""
+    lines = [
+        "[what to write] this placed lesson has no premises recorded: write what it rests "
+        "on. Nothing has been observed to change; the placement decision stands"
+    ]
+    if record.generality:
+        lines.append(f"  generality as recorded: {record.generality}")
+    follow = record.follow_up
+    if follow:
+        lines.append(
+            "  its follow-up is still open (a condition the placement waits on is usually a "
+            "premise):"
+        )
+        for key, label in _OPEN_FOLLOWUP_LABELS:
+            if follow.get(key):
+                lines.append(f"    {label}: {_clip(follow[key])}")
+    if record.env:
+        pins = ", ".join(f"{key} {value}" for key, value in sorted(record.env.items()))
+        lines.append(
+            f"[tool versions when it was taught] {_clip(pins, 600)} (a premise that really "
+            "depends on a version says so with a `package` probe and `holds_if: version`)"
+        )
+    case_ids = covering_cases(home, [record.id]).get(record.id, [])
+    shown = _would_change_by_case(home, case_ids)
+    for case_id, bullets in shown:
+        lines.append(f"[what the case that covers it ({case_id}) said would change it]")
+        lines += [f"  [{n}] {_clip(bullet, 600)}" for n, bullet in enumerate(bullets, start=1)]
+    if not case_ids:
+        lines.append(
+            "[covering case] none: no case names this lesson (placed before cases existed)"
+        )
+    lines += _extract_decide_lines()
+    stats = {
+        "items": 0, "excerpted": 0, "excerpt_chars": 0, "verdicts": {},
+        "would_change_cases": len(shown),
+    }
+    return "\n".join(lines), stats
+
+
 # -------------------------------------------------------------- the record
 
 
@@ -1658,6 +1909,10 @@ def build_briefs(
         # deferral came due, and the card says how it is decided.
         if kind in (INPUT_RECONSIDER, INPUT_LESSON, INPUT_PREMISE_MOVED) and row.get("reason"):
             parts.append(f"[why it is back] {_one_line(row['reason'])}")
+        elif kind == INPUT_PREMISE_EXTRACT and row.get("reason"):
+            # S-NEXT-u6-backfill: nothing brought it BACK; it is here to be
+            # completed.
+            parts.append(f"[why it is here] {_one_line(row['reason'])}")
         parts.append(render_record(
             record, path=rel, head=head, bucket=_bucket_of(home, path),
             closed_followup=kind != INPUT_PREMISE_MOVED and rid in undecided,
@@ -1671,6 +1926,11 @@ def build_briefs(
             # What moved is the evidence: the lesson's own transcript pack
             # says what it was taught from, not what has changed since.
             text, pack_stats = render_premise_moved(home, record, row, path=rel, head=head)
+            parts.append(text)
+        elif kind == INPUT_PREMISE_EXTRACT:
+            # S-NEXT-u6-backfill: what the lesson rests on is in its words and
+            # its cases, not in the session it was taught from.
+            text, pack_stats = render_premise_extract(home, record, row, path=rel, head=head)
             parts.append(text)
         else:
             items, pack_stats = evidence_pack(record, roots=resolved_roots, budget=share)

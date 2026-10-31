@@ -158,6 +158,9 @@ class TestConfigGet:
             # switch is the person's, like `steward.enabled`, though it
             # defaults to true.
             "premises.enabled",
+            # S-NEXT-u6-backfill: the premise backfill's nightly pace (0
+            # pauses it) is the person's, like `premises.enabled`.
+            "premises.backfill_per_night",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 

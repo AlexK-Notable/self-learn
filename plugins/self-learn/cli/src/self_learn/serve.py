@@ -779,6 +779,15 @@ def _input_commit_epoch(home: Path, path: Path) -> float:
         return 0.0
 
 
+def _premise_extract_waiting(home: Path) -> bool:
+    """S-NEXT-u6-backfill: whether the steward's next run would take at
+    least one `premise-extract` input (a placed lesson with no premises,
+    not held, its version undecided, the backfill not paused). Unordered
+    and stopped at one row: the ordering reads case files, and this runs
+    on every scheduler tick."""
+    return bool(steward._premise_extract_inputs(home, limit=1, ordered=False))
+
+
 def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     """Apply the committed-obligation OR predicate outside cooldown and STOP.
 
@@ -807,11 +816,18 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     # last decided is an input too, due like a reconsider input once the
     # cooldown has passed (the premise-check design, U3).
     premise_moved = steward._premise_moved_inputs(home, manifests=manifests)
+    # S-NEXT-u6-backfill: a placed lesson with no premises is an input too
+    # (the backfill), due like a reconsider input once the cooldown has
+    # passed. Asked only when it can change the answer, and unordered (the
+    # ordering reads case files; this runs on every tick).
+    premise_extract: bool | None = None
     if (
         not unfinished and not reconsider and not input_paths
         and not violations and not premise_moved
     ):
-        return False
+        premise_extract = _premise_extract_waiting(home)
+        if not premise_extract:
+            return False
     attempts = [str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")]
     last_iso = max(attempts) if attempts else steward.last_run_iso(home)
     if last_iso is None:
@@ -824,6 +840,10 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     if now - last_epoch < float(cooldown):
         return False
     if unfinished or reconsider or violations or premise_moved:
+        return True
+    if premise_extract is None:
+        premise_extract = _premise_extract_waiting(home)
+    if premise_extract:
         return True
     # S-81 (gate S1d R2): an input is new work when no run has SELECTED
     # inputs since its record -- or the overseer's release of it -- was

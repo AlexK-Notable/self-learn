@@ -1087,6 +1087,31 @@ REGISTRY: tuple[Setting, ...] = (
         tier="C",
         override_channel=False,
     ),
+    # S-NEXT-u6-backfill (premise-check design D10, D14): how many placed
+    # lessons with no `premises` field the steward is offered each night to
+    # write them (the backfill, `premise-extract`). The design's 10 is the
+    # default; 0 pauses the backfill while the rest of the premise check
+    # runs. Tier C like `premises.enabled`: the pace of the steward's
+    # unattended work on placed lessons is the person's (agents never set
+    # it; S-92 refuses `config set` from an agent's shell), with no
+    # process-override rung, so an exported `SELF_LEARN_OVERRIDE_*` cannot
+    # change it either.
+    Setting(
+        name="premises.backfill_per_night",
+        env_var=None,
+        config_section="premises",
+        config_key="backfill_per_night",
+        kind="int",
+        default=10,
+        validate=lambda v: max(cast(int, v), 0),
+        validate_hint="must be >= 0",
+        description=(
+            "how many placed lessons with no premises the steward is offered each "
+            "night to write them (the backfill); 0 pauses it"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
     # ---------------------------------------------------------- runs
     # U1 (S-68, `03-decisions.md`): ONE cap shared by both delegated
     # runners and by the overseer's week -- a run left unfinished either

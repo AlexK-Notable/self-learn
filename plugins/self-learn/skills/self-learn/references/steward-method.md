@@ -172,9 +172,11 @@ decided with a `kind: resolution` case too (its `reject`, `defer` or `route`
 line takes a deferred lesson); its card says so. The runner refuses a
 reconsider case that names a pending lesson, or whose `supersedes` names no
 case that covers the lesson, and the repair turn tells you so.
-A placed lesson that comes to you because a premise moved, or for its
-premises to be written, and that no case covers, is also decided with a
-`kind: resolution` case (§17).
+A placed lesson that comes to you because a premise moved, and that no case
+covers, is also decided with a `kind: resolution` case (§17). So is a
+placed lesson that comes to you only for its premises to be written,
+whether or not a case covers it: that case decides nothing about the
+placement, so it supersedes nothing (§17).
 
 ## 7. Refine wording at adjudication
 
