@@ -116,9 +116,15 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
 
 ## Change discipline
 
-- The review bar is mutation verification: for every test a change adds or relies
-  on, break the behaviour and see the test fail; a test that stays green is a
-  defect, not a pass. An absence assertion ("X not in page") needs a positive
+- Tests run only when a significant change is incoming: more than about 300 product
+  lines in one landing, any change to the sheet apply path or a ledger-mutating
+  verb, or three or more lanes landing together. A small change lands after a
+  blind review by reading, with no test run; its tests run with the next
+  significant batch. A significant batch runs the suite once, over the combined
+  landing, after review.
+- In a significant batch the review bar is mutation verification: for every test a
+  change adds or relies on, break the behaviour and see the test fail; a test that
+  stays green is a defect, not a pass. An absence assertion ("X not in page") needs a positive
   control asserting the region rendered, checked first.
 - Armor (`plugins/self-learn/cli/tests/test_armor.py`): the fixtures `support.py`,
   `conftest.py`, and `backends.py` are byte-pinned and eight behaviour files are
@@ -144,9 +150,10 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
 - Direct commits to `master` are the norm; branches merge with `--no-ff` and a
   message that carries the unit's narrative and review result. Prefixes in use:
   `fix(<area>):`, `feat(<area>):`, `spec(<area>):`, `docs(<area>):`, `merge:`.
-- A change is landable when it is committed on a clean tree, the CLI suite is green
-  (plus the UI suite when UI files changed), pyright has not grown, and, for
-  product code, its blind code gate returned CLEAN. Never `--force` or
+- A change is landable when it is committed on a clean tree, pyright has not grown,
+  and, for product code, its blind code gate returned CLEAN; when it is part of a
+  significant batch (§ Change discipline), also when the CLI suite is green over the
+  batch (plus the UI suite when UI files changed). Never `--force` or
   `--force-with-lease` on a published branch, never push a dirty tree, never push
   someone else's branch or a detached HEAD.
 - Before pushing paths the remote has not seen, scan the outgoing diff's added
