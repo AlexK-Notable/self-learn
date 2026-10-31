@@ -578,7 +578,10 @@ def test_every_brief_of_a_lesson_with_an_undecided_follow_up_shows_it(tmp_path, 
     # and it says which decisions end the follow-up check (integration
     # 2026-10-31: the earlier text promised a later input unconditionally)
     assert "If this case places, moves, rewrites or retires the lesson, and is opened on a later UTC day than the one the follow-up was closed, that decision ends the follow-up check" in body
-    assert "If it is opened on the day the follow-up was closed, or decides anything else about the lesson, the lesson comes to you again on its own `premise-moved` input" in body
+    assert "If it is opened on the day the follow-up was closed, or decides anything else about the lesson, the lesson comes to you again on its own `premise-moved` input, where that check is made." in body
+    # integration mutation gap (item 23): the tail of that sentence is pinned too,
+    # for the old wording ended ", which is where." and this test passed under it
+    assert "which is where" not in body
     # a premise-moved input is not one of these: it carries the facts in its own
     # block, once
     (row,) = steward._premise_moved_inputs(home)
