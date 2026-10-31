@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from . import domain, intents, invocation, sentinel, settings, telemetry
+from . import cache_gc, domain, intents, invocation, sentinel, settings, telemetry
 from .primitives import chrono, fsops, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
@@ -726,6 +726,9 @@ def cache_dir(home: Path | str | None = None) -> Path:
     digest = hashlib.sha256(str(resolved_home).encode("utf-8")).hexdigest()[:8]
     new = base / "self-learn" / f"home-{digest}"
     new.mkdir(parents=True, exist_ok=True)
+    # S-NEXT-cache: name the home this hash belongs to, so a later pass can
+    # tell when the home is gone and the directory is an orphan.
+    cache_gc.record_home(new, resolved_home)
     _migrate_cache(base / "claude-skills" / "self-learn", new)
     return new
 

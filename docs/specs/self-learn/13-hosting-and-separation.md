@@ -558,6 +558,19 @@ either suite; both suites' `conftest.py` also carry a session-scoped
 guard that fails the suite's own session, by name, if that guarantee
 is ever broken again.
 
+**Orphan sweep (S-NEXT-cache, 2026-10-30):** the guarantee above stops
+the suites; it cannot stop a scratch run or a home deleted by hand, and the
+`home-<digest>` name is a one-way hash. So `worker.cache_dir` records the
+home's path in `<cache>/home-<digest>/.home`, and `cache_gc.prune` (run by
+`serve` at start and daily) deletes a `home-*` directory only when its
+record hashes to its own name, the recorded home does not exist, and no
+file under it has changed for 7 days. A directory with no usable record is
+left alone; the ambient home and the serving daemon's home are never
+swept. The same pass deletes `host-<slug>.commit.lock` files that no
+process holds and that are 30 days old (1 day when the host path is under
+`/tmp`); `gitops._flock_lock` re-checks, after locking, that the file it
+holds is still the one at the path, so a sweep cannot split a lock.
+
 **Running the two suites (pre-existing, unrelated to the guarantee
 above):** a bare `pytest` invoked from the worktree root, given both
 packages' `tests/` directories, collides — neither package's `tests/`
