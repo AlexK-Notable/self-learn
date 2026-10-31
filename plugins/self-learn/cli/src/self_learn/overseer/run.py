@@ -1588,8 +1588,13 @@ def _refuse_doomed_reconsider(
     the predecessor stays open for a better correction.
     The raise names every refused line, and the pair loop puts it in
     "Refused / could not do" and the run journal, so a drop is never
-    silent. Resolution and maintenance pairs are not touched: a parked
-    case's resolution is the decision itself, refused lines and all.
+    silent. Only reconsider pairs are doomed by ANY refused line. The
+    other two kinds answer a preview's refusal differently, in the pair
+    loop after this check: a maintenance pair with a refused line is not
+    recorded (`_refuse_doomed_maintenance`), and a resolution pair loses
+    just its refused lines while the rest stands
+    (`_drop_preview_refused`; an all-refused sheet is left whole, because
+    the case is the decision itself).
 
     A refusal of a retried kind (`batch.RETRIED_REFUSAL_KINDS`: `git`,
     `target-busy`) does not doom the pair (the coordinator's ruling,
@@ -5012,7 +5017,12 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 # do" and the run record; before, each refused the whole
                 # run (about 22 minutes of phase B). A pair is one decision,
                 # so it is dropped whole, never item by item: applying part
-                # of a decision is not the decision the model made.
+                # of a decision is not the decision the model made. The one
+                # exception is a resolution pair's line whose own PREVIEW
+                # says would-refuse (S-NEXT-overseer-run): that line is
+                # dropped and reported (`_drop_preview_refused`) and the
+                # rest of the pair stands, because the line cannot apply
+                # whatever the pair decided.
                 try:
                     predecessor: str | None = None
                     if case_file is not None and _is_maintenance_pair(case_file):
@@ -5147,7 +5157,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             return RunResult("refused", EXIT_REFUSED, run_id, model_calls, selected, excluded, report=str(report_path))
 
         if dry_run:
-            text = _report_text(date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, parked_decided=preview_apply, preview_sheets=len(pairs), preview_refused=preview_refused)
+            text = _report_text(date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, parked_decided=preview_apply, preview_sheets=len(pairs), preview_refused=preview_refused, refused=list(case_drops))
             report_path = _write_report_only(stage, text)
             _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "dry-run", "model_calls": model_calls})
             return RunResult("dry-run", EXIT_OK, run_id, model_calls, selected, excluded, report=str(report_path))

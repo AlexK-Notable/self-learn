@@ -1566,7 +1566,11 @@ PDT: "fix the rest of 3".)*
   parked), so the overseer may record several `kind: maintenance` cases in
   one run, each in its own named pair, beside its successors; every other
   named case is a successor (`SUCCESSOR_CASE_FIELDS`, unchanged). A pair
-  is one decision, so it is dropped whole, never item by item. A
+  is one decision, so it is dropped whole, never item by item, with one
+  exception: in a resolution pair, a line whose own preview says
+  would-refuse is dropped and reported and the rest of the pair stands
+  (S-NEXT-overseer-run, "Lesson records and the preview" above); a maintenance pair with such a line is
+  dropped whole. A
   secret-scan hit in a pair's case or sheet drops that pair — nothing of
   it reaches the ledger. *(2026-09-28, follow-up 3)* A hit in
   `findings.yaml`, `user-model-delta.yaml` or `report.md` costs that

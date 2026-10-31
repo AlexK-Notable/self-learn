@@ -45,11 +45,12 @@ def _no_model(monkeypatch):
     )
 
 
-def test_a_stopped_item_beside_a_final_refusal_is_retried_and_both_are_reported(
+def test_a_stopped_item_beside_a_final_refusal_is_retried_and_the_refusal_is_reported(
     tmp_path, monkeypatch
 ):
     """N11: item 1 refused (bad-line, final), item 2 stopped. The resume
-    dispatches item 2 again and never item 1, and the report names both."""
+    dispatches item 2 again and never item 1; item 1's refusal is named in
+    the report and item 2, run for real this time, applies."""
     home, first, dispatched = _halted_run_with_item_1_refused(tmp_path, monkeypatch, "bad-line")
 
     second = overseer_run.run(home, dry_run=False, no_push=True)
@@ -60,13 +61,17 @@ def test_a_stopped_item_beside_a_final_refusal_is_retried_and_both_are_reported(
     (recipe,) = manifest["cases"].values()
     rows = {row["n"]: row for row in recipe["dispositions"]}
     assert rows[1]["state"] == "refused" and rows[1]["kind"] == "bad-line", rows
-    # Item 2 really ran again: its detail is the ledger's, not the script's.
-    assert rows[2]["state"] == "refused", rows
+    # Item 2 really ran again: its outcome is the ledger's, not the script's.
+    # Item 1's refusal is simulated and final, so it never routed the lesson:
+    # item 2, a `reject` of a lesson that is still pending, APPLIES for real
+    # (it would refuse only after a landed route, as in the target-busy test).
+    assert rows[2]["state"] == "applied", rows
     assert "simulated" not in rows[2].get("detail", ""), rows
     block = _refused_block(home)
     assert block.strip() and "- none" not in block, block
     assert "simulated bad-line refusal of item 1 [bad-line]" in block, block
-    assert rows[2]["detail"] in block, block
+    # An applied item is not listed as refused: only item 1 is.
+    assert "item 2" not in block, block
     assert manifest["status"] == "complete"
 
 
