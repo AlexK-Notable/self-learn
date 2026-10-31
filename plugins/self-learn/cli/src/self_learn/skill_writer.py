@@ -98,9 +98,11 @@ edits or a stale ``expect_sha``: retry later), ``needs-person`` (only a
 person can settle it), ``destination-unavailable`` (no git-mode skills root
 with a marketplace on this machine) and ``git`` (a git step failed).
 
-Every ledger write goes through :func:`skill_registry.with_update`; every
-skills-root write happens inside ``gitops.host_lock`` in a named function
-called from the locked block (``tests/test_lock_invariant.py``).
+Every registry write goes through :func:`skill_registry.with_update`; a
+rename also rewrites each moved lesson's ``routing.new_skill`` and commits
+it under the same ledger lock (:func:`_reroute_lesson`). Every skills-root
+write happens inside ``gitops.host_lock`` in a named function called from
+the locked block (``tests/test_lock_invariant.py``).
 """
 
 from __future__ import annotations
@@ -2181,11 +2183,14 @@ def _marketplace_renamed(raw: str, old: str, new: str) -> str:
 # -- the preflight (writes nothing)
 
 
-def _rename_name_check(home: Path, plan: _RenamePlan, vetoed: set[str]) -> None:
-    """A first run's checks on the names: the buckets, then the new name
-    as ``skill write`` would check it, then what already uses it."""
-    root, old, new = plan.root, plan.old, plan.new
-    held = [(name, ids) for name in (old, new) if (ids := _bucket_records(home, name))]
+def _rename_bucket_check(home: Path, plan: _RenamePlan) -> None:
+    """D15: a skill whose own ledger bucket (``skills/<old>/`` or
+    ``skills/<new>/``) holds records is not renamed. Run on a first run AND
+    on every resumed run that is not done (integration 2026-10-31, the sk8
+    gate's MINOR): a record filed there between a crash and the rerun would
+    otherwise be stranded on a folder that no longer exists, or start
+    compiling into the renamed skill."""
+    held = [(name, ids) for name in (plan.old, plan.new) if (ids := _bucket_records(home, name))]
     if held:
         raise _Refused(
             KIND_NEEDS_PERSON,
@@ -2195,6 +2200,13 @@ def _rename_name_check(home: Path, plan: _RenamePlan, vetoed: set[str]) -> None:
                 for name, ids in held
             ],
         )
+
+
+def _rename_name_check(home: Path, plan: _RenamePlan, vetoed: set[str]) -> None:
+    """A first run's checks on the names: the new name as ``skill write``
+    would check it, then what already uses it (the buckets are
+    :func:`_rename_bucket_check`'s, on every run that is not done)."""
+    root, old, new = plan.root, plan.old, plan.new
     loaded, catalogue_problems, _clashes = _loaded_names(home, leaving_out=None)
     plan.notes += [f"skills on this machine: {p}" for p in catalogue_problems]
     problems = [
@@ -2406,6 +2418,7 @@ def _rename_preflight(
         plan.notes.append(f"{old} was already renamed to {new}")
         return plan
 
+    _rename_bucket_check(home, plan)
     if stage == _STAGE_FRESH:
         _rename_name_check(home, plan, vetoed)
     _rename_host_plan(plan)
