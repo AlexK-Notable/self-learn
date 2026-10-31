@@ -3720,8 +3720,24 @@ def _oldest_pending_days(home: Path) -> int:
     return oldest
 
 
+def _steward_owns_queue(home: Path | str) -> bool:
+    """True while `steward.enabled` is on: the queue is the steward's, so
+    the worker's person-facing popups ("review", "backlog needs
+    attention") stay silent (L3). A failed settings read is False: the
+    popups then behave as before rather than vanishing."""
+    try:
+        enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
+    except Exception:  # noqa: BLE001 -- a nudge decision never fails a run
+        return False
+    return bool(enabled)
+
+
 def _maybe_escalate(home: Path, total_pending: int, per_bucket: list[dict]) -> bool:
-    """Worker-run-end-only escalation, debounced 24 h (pinned)."""
+    """Worker-run-end-only escalation, debounced 24 h (pinned). Silent
+    while the steward owns the queue (L3)."""
+    if _steward_owns_queue(home):
+        log("escalation: skipped — the steward owns the queue")
+        return False
     oldest = _oldest_pending_days(home)
     if total_pending < ESCALATE_PENDING and oldest <= ESCALATE_OLDEST_DAYS:
         return False
@@ -4360,15 +4376,18 @@ def run(
                     aggregate = {"pending": total_pending, "buckets": per_bucket}
                     if ids:
                         append_event("proposals", ids, aggregate)
-                        _notify_with_ids(
-                            render_notification(
-                                n,
-                                sorted(result.buckets) or ["(unknown)"],
-                                total_pending,
-                                len(per_bucket),
-                            ),
-                            ids,
-                        )
+                        if _steward_owns_queue(home):
+                            log("notify: proposals popup skipped — the steward owns the queue")
+                        else:
+                            _notify_with_ids(
+                                render_notification(
+                                    n,
+                                    sorted(result.buckets) or ["(unknown)"],
+                                    total_pending,
+                                    len(per_bucket),
+                                ),
+                                ids,
+                            )
                     log(
                         f"run: ok — {len(result.proposed)} proposal(s), "
                         f"{len(result.merge_proposed)} merge, "

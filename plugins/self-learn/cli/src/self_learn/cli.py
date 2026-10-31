@@ -1620,6 +1620,12 @@ def _cmd_status_fast() -> int:
     data["overseer_last_run"] = overseer_run.last_run_iso_from_cache(
         serve.cache_dir_readonly(home)
     )
+    # L3: whose queue it is, and whether the steward is keeping up.
+    data.update(
+        steward.nudge_fields(
+            home, serve.cache_dir_readonly(home), int(data.get("total_pending") or 0)
+        )
+    )
     # S-106: project notices -- ABSENT unless this directory is inside
     # a project a live notice names (absence is the normal case, like
     # `overseer_open_questions`). `visible` never raises and reads only the

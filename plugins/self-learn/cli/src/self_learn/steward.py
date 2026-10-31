@@ -5137,10 +5137,18 @@ def _notify_parked_now(home: Path, run_id: str, parked: list[tuple[str, str]]) -
     once, through the shipped helper; a failure is journaled, never raised."""
     ids = list(dict.fromkeys(record_id for record_id, _kind in parked))
     kinds = sorted({kind for _record_id, kind in parked})
-    summary = (
-        f"self-learn steward: {len(ids)} lesson(s) parked for the overseer — "
-        f"the ledger refused a line a person must fix ({', '.join(kinds)})"
-    )
+    if "needs-person" in kinds:
+        summary = (
+            f"self-learn steward: {len(ids)} lesson(s) parked for the overseer — "
+            f"the ledger refused a line a person must fix ({', '.join(kinds)})"
+        )
+    else:
+        # L3: only a `needs-person` refusal waits on a person; the rest the
+        # overseer decides itself.
+        summary = (
+            f"self-learn steward: {len(ids)} lesson(s) parked for the overseer — "
+            f"it decides them on its next run ({', '.join(kinds)})"
+        )
     try:
         overseer_notify.send(home, "routine", summary, ids)
     except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
@@ -5644,6 +5652,94 @@ def last_run_iso_from_cache(resolved_cache_dir: Path) -> str | None:
         return marker.read_text(encoding="utf-8").strip() or None
     except OSError:
         return None
+
+
+#: L3 (S-NEXT-nudges): a person is nudged about the steward only when it
+#: is not keeping up -- no completed run for this long while lessons wait.
+STALE_AFTER_SECS = 48 * 60 * 60
+
+#: How much of the journal's tail the read-only hold probe reads.
+_HOLD_TAIL_BYTES = 65536
+
+
+def _hold_from_journal(resolved_cache_dir: Path) -> str | None:
+    """The cause of the steward's newest run when it ended held by its
+    environment, else `None`. Reads the journal's tail only, creates
+    nothing, skips dry-run rows (a rehearsal is not the steward's state),
+    and judges the NEWEST row that is a run outcome: a later run that
+    did not hold clears the hold. A run that is held writes a
+    `held-environment` row, then its closing row carries `held`."""
+    path = resolved_cache_dir / "steward" / "journal.jsonl"
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - _HOLD_TAIL_BYTES))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("dry_run"):
+            continue
+        status = row.get("status")
+        if status == model_failures.HELD_ENVIRONMENT:
+            cause = row.get("cause")
+            return str(cause) if cause else "the environment"
+        if row.get("held"):
+            return str(row["held"])
+        if status in {"notify-failed", "model-log", "unexplained-paths"} or "run_id" not in row:
+            # not a run outcome: keep looking for the one that is
+            continue
+        return None
+    return None
+
+
+def _stranded_count(resolved_cache_dir: Path) -> int | None:
+    """The census count L2 caches at `<cache>/steward/stranded.json` (a
+    list of rows, or an object whose `stranded` is that list); `None`
+    when the file is absent or unreadable -- unknown, never zero."""
+    try:
+        data = json.loads((resolved_cache_dir / "steward" / "stranded.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(data, dict):
+        data = data.get("stranded")
+    return len(data) if isinstance(data, list) else None
+
+
+def nudge_fields(
+    home: Path | str, resolved_cache_dir: Path, total_pending: int, *, now: float | None = None
+) -> dict:
+    """`status --fast`'s steward facts (L3): whether the steward owns the
+    queue, and whether it is not keeping up. One settings read and cache
+    reads; no git, nothing written. `steward_stale` means no COMPLETED
+    run (the `steward.last-run` marker, not an attempt) for more than 48 h
+    while the queue is not empty."""
+    enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
+    out: dict = {"steward_enabled": bool(enabled)}
+    if not enabled:
+        return out
+    stale = False
+    if total_pending > 0:
+        last_dt = chrono.to_dt(last_run_iso_from_cache(resolved_cache_dir))
+        if last_dt is None:
+            stale = True  # never completed (or unreadable): infinitely old
+        else:
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            stale = (now if now is not None else time.time()) - last_dt.timestamp() > STALE_AFTER_SECS
+    out["steward_stale"] = stale
+    hold = _hold_from_journal(resolved_cache_dir)
+    if hold is not None:
+        out["steward_hold"] = hold
+    stranded = _stranded_count(resolved_cache_dir)
+    if stranded is not None:
+        out["stranded_count"] = stranded
+    return out
 
 
 def last_run_iso(home: Path | str | None = None) -> str | None:
