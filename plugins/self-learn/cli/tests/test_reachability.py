@@ -381,12 +381,11 @@ def test_row_mixed(env, tmp_path, monkeypatch):
 # ============================================================ RP-SKILL
 
 
-def test_skill_1_personal_symlink(env, tmp_path, monkeypatch):
-    claude_dir = make_claude_dir(tmp_path, monkeypatch, settings={}, skills={"s": env.skill_dir})
-    route_skill_md(env)
-    row = _only(reachability_rows(env.ledger, claude_dir))
-    assert row.state == "reachable"
-    assert row.reason == "personal-skill-link"
+# T-SKILL-1 (`~/.claude/skills/<n>` symlink to the compiled skill dir =>
+# reachable, reason `personal-skill-link`) is discharged by
+# test_skill_6b_skill_md_leg_uses_glob_not_formula below, which runs the
+# same sandbox, symlink and route and also checks the resolved target
+# (merged there by the test audit, L7-8).
 
 
 def test_skill_2_override_wins_over_symlink(env, tmp_path, monkeypatch):
@@ -527,7 +526,8 @@ def test_skill_6b_skill_md_leg_uses_glob_not_formula(env, tmp_path, monkeypatch)
     """r3-a NIT (M6h): the skill-md leg resolves via `skill_dir_for`'s
     GLOB, never the new-skill fixed formula — `support.py`'s sandbox
     layout (`plugins/<n>-plugin/skills/<n>`) is exactly the shape where
-    the two legs diverge."""
+    the two legs diverge. Also T-SKILL-1: a personal symlink to the
+    compiled skill dir is `reachable` with reason `personal-skill-link`."""
     claude_dir = make_claude_dir(tmp_path, monkeypatch, settings={}, skills={"s": env.skill_dir})
     route_skill_md(env, name="s")
     row = _only(reachability_rows(env.ledger, claude_dir))

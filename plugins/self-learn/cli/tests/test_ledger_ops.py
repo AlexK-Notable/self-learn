@@ -389,18 +389,18 @@ def test_resolve_record_accepts_every_live_source_for_superseded(tmp_path, sourc
     assert Record.from_path(resolved_path).status == "superseded"
 
 
-@pytest.mark.parametrize("new_status", ["routed", "rejected"])
-def test_resolve_record_refuses_terminal_source_for_route_and_reject(tmp_path, new_status):
+def test_resolve_record_refuses_terminal_source_for_reject(tmp_path):
+    # The `routed` leg of the old parametrize repeated
+    # test_resolve_record_no_longer_lies_not_found_for_a_resolved_record
+    # (same setup, same call, a weaker assertion); it was dropped, test
+    # audit L6-3. Reject-after-reject is the case that stays.
     home = make_home(tmp_path)
     create_record(home, make_behavior(record_id="lrn-aa000001"))
     commit_all(home)
     resolve_record(home, "lrn-aa000001", "rejected")  # terminalize it first
 
     with pytest.raises(LedgerOpsError, match="rejected"):
-        if new_status == "routed":
-            resolve_record(home, "lrn-aa000001", new_status, destination="skill-md")
-        else:
-            resolve_record(home, "lrn-aa000001", new_status)
+        resolve_record(home, "lrn-aa000001", "rejected")
 
 
 def test_supersede_record_refuses_terminal_old(tmp_path):

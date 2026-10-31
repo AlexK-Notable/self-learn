@@ -11,6 +11,7 @@ with a HOST repo registered as BOTH skills-root and project host.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from ruamel.yaml import YAML
@@ -117,19 +118,39 @@ class TestObligation1VariantAbsentByteIdentical:
 
 
 class TestObligation2And3ProjectGlobValidation:
-    def test_dead_pattern_refuses_naming_it(self, env):
+    # Obligations 2/3, 17 and 24 are one scenario with three pattern/topic
+    # pairs (merged by the test audit, L8-4): a project-scope rules proposal
+    # with a dead glob, routed with NO --dest.
+    #   * 2/3: the refusal names the dead pattern, nothing is committed.
+    #   * 17: the proposal's variant survives the input seam -- with no
+    #     --dest at all, `_resolve_destination`'s proposal branch must have
+    #     threaded `rules_paths` through to glob validation (not None-dropped),
+    #     or the route would not refuse.
+    #   * 24 (A9, the positive control): it creates nothing without the
+    #     flag; the flag case is `test_flag_lands_dead_glob_verbatim_on_disk_A9`.
+    @pytest.mark.parametrize(
+        ("pattern", "topic"),
+        [
+            ("src/**/*.ts", "ts-rules"),
+            ("definitely/dead/**", "ts-rules"),
+            ("nope/**", "dead-topic"),
+        ],
+    )
+    def test_dead_pattern_refuses_naming_it(self, env, pattern, topic):
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(scope='project', 
-                destination="claude-md", variant="rules", rules_topic="ts-rules",
-                rules_paths=["src/**/*.ts"],
+            proposal_dict(
+                scope="project",
+                destination="claude-md", variant="rules", rules_topic=topic,
+                rules_paths=[pattern],
             ),
         )
-        with pytest.raises(verbs.VerbError, match="src/\\*\\*/\\*\\.ts"):
+        with pytest.raises(verbs.VerbError, match=re.escape(pattern)):
             verbs.route(env.home, OLD)
-        # nothing committed — the record stays pending
+        # nothing committed — the record stays pending, no rules file created
         assert (project_bucket_dir(env) / "pending" / f"{OLD}.md").is_file()
+        assert not (env.host / ".claude" / "rules" / f"{topic}.md").exists()
 
     def test_partial_failure_one_of_three_dead(self, env):
         (env.host / "src").mkdir()
@@ -600,28 +621,6 @@ class TestObligation16BareDestOneMotion:
 
 
 # =====================================================================
-# Obligation 17 — the proposal's variant survives the input seam
-# (_resolve_destination never None-drops it): a dead glob still refuses.
-# =====================================================================
-
-
-class TestObligation17ProposalVariantSurvivesInputSeam:
-    def test_proposal_dead_glob_still_refuses_via_no_dest_route(self, env):
-        seed_project_record(env)
-        write_proposal(
-            env.home, OLD,
-            proposal_dict(scope='project', 
-                destination="claude-md", variant="rules", rules_topic="ts-rules",
-                rules_paths=["definitely/dead/**"],
-            ),
-        )
-        # no --dest at all: proves _resolve_destination's proposal branch
-        # threaded rules_paths through to glob validation, not None-dropped.
-        with pytest.raises(verbs.VerbError, match="definitely/dead"):
-            verbs.route(env.home, OLD)
-
-
-# =====================================================================
 # Obligation 18 — a bad rules-topic slug reports a "rules topic" error,
 # never "new-skill name … must be kebab-case".
 # =====================================================================
@@ -960,20 +959,9 @@ class TestObligation23RecompileRepairsHandEdit:
 
 
 class TestObligation24DeadGlobPositiveControl:
-    def test_refuses_and_creates_nothing_without_flag_A9(self, env):
-        seed_project_record(env)
-        write_proposal(
-            env.home, OLD,
-            proposal_dict(scope='project', 
-                destination="claude-md", variant="rules", rules_topic="dead-topic",
-                rules_paths=["nope/**"],
-            ),
-        )
-        with pytest.raises(verbs.VerbError):
-            verbs.route(env.home, OLD)
-        assert (project_bucket_dir(env) / "pending" / f"{OLD}.md").is_file()
-        assert not (env.host / ".claude" / "rules" / "dead-topic.md").exists()
-
+    # The refusal half ("refuses and creates nothing without the flag") is
+    # the `nope/**` case of TestObligation2And3ProjectGlobValidation::
+    # test_dead_pattern_refuses_naming_it.
     def test_flag_lands_dead_glob_verbatim_on_disk_A9(self, env):
         seed_project_record(env)
         write_proposal(

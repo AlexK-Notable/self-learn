@@ -1,9 +1,10 @@
 """Content assertions on the authored ``pane-charter.md`` (10 §3 task U5
 bullet 5): its job, its limits, and the Y-9 communication-register pin
 must all actually be present in the shipped file — not just described in
-a commit message. Deliberately light-touch (substring/structure checks,
-not a prose-quality grader): the file is prose for a model, and its exact
-wording is expected to evolve.
+a commit message. Mostly light-touch (substring/structure checks, not a
+prose-quality grader), except the two L10-2 tests, which pin the policy
+sentences whole (whitespace and emphasis normalised): rewording one of
+those sentences in the charter is meant to break them and be updated here.
 """
 
 from __future__ import annotations
@@ -35,16 +36,28 @@ def test_charter_states_the_allow_deny_surface_limits() -> None:
     assert "pending/lrn-" in text or "lrn-<id>" in text
 
 
+def _flat() -> str:
+    """The charter with emphasis marks dropped and every run of
+    whitespace (line wraps included) collapsed to one space, so a policy
+    sentence can be matched whole."""
+    return " ".join(_text().replace("**", "").split())
+
+
 def test_charter_states_no_path_to_route() -> None:
-    text = _text().lower()
-    assert "route" in text
-    assert "no path to" in text or "never" in text
+    # The sentence, not loose keywords: independent `"route" in text` and
+    # `"never" in text` checks passed when this rule was reversed (test
+    # audit L10-2).
+    assert (
+        "You have no path to `route`, `reject`, `defer`, or `retire` — ever."
+        in _flat()
+    )
 
 
 def test_charter_states_proposer_never_equals_approver() -> None:
-    text = _text().lower()
-    assert "proposer" in text and "approver" in text
-    assert "never" in text
+    assert (
+        "You are the proposer. The human is the approver. "
+        "These are never the same party"
+    ) in _flat()
 
 
 def test_charter_includes_the_routing_doctrine_section_8_register(tmp_path=None) -> None:

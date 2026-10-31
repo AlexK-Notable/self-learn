@@ -243,7 +243,6 @@ class TestPhaseBoundary:
         2026-10-24 (02-schema §2): 18 returns to 17 when the one-release
         graduate alias is removed; retire retains its membership pin."""
         phase2_verbs = {"reroute", "followup-add", "reclassify", "host remove", "bucket prune"}
-        assert "followup-add" in phase2_verbs  # gate r2 m-2: pins the spelling itself
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
         assert "revise" in batch.PERMITTED_VERBS  # U4: the one deliberate addition
         assert "retire" in batch.PERMITTED_VERBS  # S-67: the other deliberate addition
@@ -1248,13 +1247,11 @@ class TestBatch:
         for rcs, expected in legs:
             results = [fake(rc, state="applied" if rc == 0 else "refused") for rc in rcs]
             assert batch.decision_code(results) == expected, rcs
-
-        # the two discriminating legs: raw max() gives the WRONG answer
-        assert max(3, 6) != 3
-        assert max(4, 6) != 4
-        # S-62's own discriminating leg: raw max() over {0, 6} is 6, the
-        # OLD (wrong, pre-S-62) answer this fix replaces with 8.
-        assert max(0, 6) != 8
+        # Raw max() over the codes would give the WRONG answer on these
+        # legs ([3, 6] -> 6, not 3; [0, 6] -> 6, the pre-S-62 answer this
+        # procedure replaces with 8) -- the table above is what pins that.
+        # The `assert max(3, 6) != 3` lines that restated it checked
+        # Python's own max (test audit L6-14).
 
     def test_bat3_stops_on_567_continues_past_1(self, env2, monkeypatch):
         good1 = env2.seed(scope="skill:a")

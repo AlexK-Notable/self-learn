@@ -4964,11 +4964,13 @@ class TestChez6CensusZeroRetiredModuleLiterals:
     def test_census_by_tree(self):
         """CHEZ6: retired-module literals remain absent from product trees,
         apart from the two documented compiler comments. The CLI test
-        census is 36 source lines after test-audit L6-1 removed the
-        duplicate BrokenSync class (2026-10-24). This file remains
+        census is 27 source lines after test-audit L6-1 removed the
+        duplicate BrokenSync class (2026-10-24) and test-audit L6-43
+        collapsed the five identical commit-drift refusal tests into one
+        (2026-10-30, 36 -> 27). This file remains
         excluded by path. Accounted source lines by file:
         test_armor.py: 2
-        test_commit_drift.py: 11
+        test_commit_drift.py: 2
         test_composer.py: 1
         test_hook_compiler.py: 2
         test_hosting.py: 1
@@ -5004,7 +5006,7 @@ class TestChez6CensusZeroRetiredModuleLiterals:
             return hits
 
         assert len(_hits(trees["cli/src"])) == 2
-        assert len(_hits(trees["cli/tests"])) == 36
+        assert len(_hits(trees["cli/tests"])) == 27
         assert _hits(trees["ui/src"]) == []
         assert _hits(trees["ui/templates"]) == []
         assert _hits(trees["ui/tests"]) == []

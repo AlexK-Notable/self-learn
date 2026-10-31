@@ -866,7 +866,13 @@ class TestScopeInvariants:
         assert str(env.skill_md) in str(exc_info.value)
         assert (env.ledger / "skills" / "s" / "pending" / f"{rec.id}.md").is_file()
 
-    def test_f6_l8_supersede_graduate_still_refuse(self, env):
+    def test_f6_l8_applying_a_reference_without_a_record_refuses(self, env):
+        """`_apply_target` for a `reference` spec with no routed record
+        (what a recompile or supersede would pass) refuses instead of
+        compiling nothing. Not a public supersede/graduate/retire test:
+        since S-54 those retire a reference's own entry block through the
+        shared retirement path (test_u_verbs_p2.py::TestRER6...), and
+        the old name said they "still refuse" (test audit L7-7)."""
         spec = TargetSpec(
             "reference", "skill", env.ledger / "skills" / "s", None, env.host,
             refs_dir=env.skill_dir / "references", ref_name=None,

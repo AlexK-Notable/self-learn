@@ -140,6 +140,12 @@ def test_second_sighting_survives_a_dismissal(env):
 
 
 # ------------------------------------------------------- T-ENTRY-SHAPE
+#
+# Also discharges T-BASIS-COPIED (spec u-dismiss-false-recurrence, M11): the
+# entry's `basis` equals the spooled event's `basis` for a NON-default value
+# (`fire-violated`, asserted below). A separate T-BASIS-COPIED test, which
+# repeated this scenario with a different `--why`, was merged in here (test
+# audit L3-4).
 
 
 def test_entry_shape_carries_the_events_facts_not_now(env):
@@ -159,30 +165,6 @@ def test_entry_shape_carries_the_events_facts_not_now(env):
     assert entry["basis"] == "fire-violated"
     assert entry["why"] == "rule-followed"
     assert entry["dismissed_at"]
-
-
-# ------------------------------------------------------- T-BASIS-COPIED
-
-
-def test_basis_is_copied_for_a_non_default_value(env):
-    rid = seed_routed(env)
-    nonce, _ = spool_suspect(env, rid, basis="fire-violated")
-    assert (
-        cli.main(
-            [
-                "dismiss-suspect",
-                rid,
-                "--event",
-                nonce,
-                "--why",
-                "unrelated",
-                "--no-push",
-            ]
-        )
-        == 0
-    )
-    record = Record.from_path(env.ledger / "resolved" / f"{rid}.md")
-    assert record.dismissed_suspects[0]["basis"] == "fire-violated"
 
 
 # --------------------------------------------------------- T-TWO-CLOCKS

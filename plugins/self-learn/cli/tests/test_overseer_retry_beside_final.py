@@ -51,6 +51,13 @@ def test_a_stopped_item_beside_a_final_refusal_is_retried_and_both_are_reported(
     """N11: item 1 refused (bad-line, final), item 2 stopped. The resume
     dispatches item 2 again and never item 1, and the report names both."""
     home, first, dispatched = _halted_run_with_item_1_refused(tmp_path, monkeypatch, "bad-line")
+    # Before the resume (moved here from test_overseer_run.py::test_a_bad_
+    # line_refusal_stays_final_when_the_run_resumes, test audit L5-2): the
+    # first run committed the kind and reported item 1's refusal.
+    first_manifest = execution_evidence.read_manifest(home, first.run)
+    (first_recipe,) = first_manifest["cases"].values()
+    assert first_recipe["dispositions"][0].get("kind") == "bad-line", first_recipe["dispositions"]
+    assert "simulated bad-line refusal of item 1 [bad-line]" in _refused_block(home)
 
     second = overseer_run.run(home, dry_run=False, no_push=True)
 

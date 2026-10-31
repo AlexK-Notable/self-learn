@@ -380,6 +380,11 @@ class TestDegradedLegs:
 
 class TestCountCorrectness:
     def test_bootstrap_target_reports_zero(self, env, capsys):
+        """Also 08 §1 F8: `list --json --surface-fill` for a still-pending
+        record must not see itself in its own target's fill — it isn't
+        `status: routed` yet, so the whole row below is zero (a separate
+        pending-record test that asserted only `entries == 0` was merged
+        in here, test audit L7-9)."""
         rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
         create_record(env.ledger, rec)
 
@@ -409,16 +414,6 @@ class TestCountCorrectness:
         seed_words = len(SKILL_MD_SEED.format(name="s").split())
         assert fill["file_words"] == seed_words
         assert fill["managed_share"] == round(6 / seed_words, 3)
-
-    def test_pending_record_itself_is_never_counted(self, env, capsys):
-        """08 §1 F8: `list --json --surface-fill` for a still-pending
-        record must not see itself in its own target's fill — it isn't
-        `status: routed` yet."""
-        rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
-        create_record(env.ledger, rec)
-
-        (item,) = _list_json(capsys, "--surface-fill")
-        assert item["surface_fill"]["skill-md"]["entries"] == 0
 
     def test_eleven_entries_all_applied_and_counted(self, env, capsys):
         """U-cap §6.1: the entry cap is retired — an 11th entry is
