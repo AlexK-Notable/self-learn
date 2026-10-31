@@ -777,8 +777,9 @@ def _phase_b_prompt(
 You may now read the steward rationale and full decided account in full/*.md.
 This folder, {stage}, is your workspace: you can read and write only inside it.
 {_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
-answers.yaml (the user's answers to earlier overseer questions and corrections of your readings,
-newest first, each with its kind: question or proposition; it may be empty);
+answers.yaml (the user's answers to earlier overseer questions, and corrections of your readings
+made since your last completed run, newest first, each with its kind: question or proposition;
+it may be empty);
 projects.yaml lists the projects a notice may name.
 {LESSONS_DIR}/lrn-<id>.md is the current record of every lesson in the ledger: its status, routing,
 history, and loaded text (## Trigger and ## Instruction). Read the record of any lesson you name or
@@ -854,10 +855,12 @@ whether they will; say exactly what and why.
 You never wait for an answer. default is ONE sentence saying what you did this run in the user's
 stead, as you would act if no answer ever came: decide the lessons and cases the question is about
 by that default in this same run (stage the cases and sheets it calls for), and never defer a
-lesson to wait for the answer. The runner reports every default under "Decided in the user's
-stead" and hands each lesson a cited case deferred back to the steward with your default as its
-context; the user's answer, whenever it comes, can overturn it, and you act on such an answer in
-answers.yaml like any other evidence.
+lesson to wait for the answer. A parked case an ask cites is decided by that default only through
+a successor case you stage this run; if none supersedes it, the runner reports the default as not
+applied and its lessons stay held for next week. The runner reports every default under "Decided
+in the user's stead" and hands each lesson a cited case deferred back to the steward with your
+default as its context; the user's answer, whenever it comes, can overturn it, and you act on
+such an answer in answers.yaml like any other evidence.
 An ask whose answer would change the user's system outside self-learn (their files, services,
 settings or repositories; anything but the ledger and what self-learn deploys) adds system: true
 and writes no default: its default is always to change nothing, and the runner says so.
@@ -1223,7 +1226,25 @@ def _question_answers(home: Path) -> list[dict[str, Any]]:
     Phase B saw no user statement before this: `user-model.yaml` carries
     statement ids, never their words. A proposition answer whose `ref` is not
     a reading's id (every statement without an `answers` block reads as a
-    proposition answer with no ref) answers no reading and is left out."""
+    proposition answer with no ref) answers no reading and is left out.
+
+    Fix round 1 (gate r1 MINOR 5): a correction of a reading is offered once
+    -- only when recorded after the last completed run's `last_run_at`
+    (coverage's stamp, taken before that run staged phase B's inputs, so an
+    older correction was already in front of a phase B, or was applied by
+    the old `overseer respond` on a reading). Before, every reply to a
+    reading ever recorded came in each week as a live correction, a reading
+    revised since included. A stamp that does not parse is kept: a
+    correction is never silently lost. Answers to asks are unchanged."""
+    since = _coverage_last_run_at(home)
+    since_epoch = _iso_epoch(since) if since is not None else None
+
+    def _fresh(row: dict[str, Any]) -> bool:
+        if since_epoch is None:
+            return True
+        at = _iso_epoch(str(row.get("at") or ""))
+        return at is None or at > since_epoch
+
     rows = [
         row for row in statements.list_statements(home)
         if isinstance(row.get("answers"), dict)
@@ -1233,6 +1254,7 @@ def _question_answers(home: Path) -> list[dict[str, Any]]:
                 row["answers"].get("kind") == "proposition"
                 and isinstance(row["answers"].get("ref"), str)
                 and _PROPOSITION_RE.fullmatch(row["answers"]["ref"]) is not None
+                and _fresh(row)
             )
         )
     ]
@@ -3354,7 +3376,9 @@ def _close_out_questions(
         f"the week that opened {week} was closed after {attempts} failed "
         f"attempts ({kind}: {_short(detail)}); {_decided_clause(applied)}, "
         f"and the machinery, not the merits, is what stopped it.{tail} "
-        "Should these be looked at by hand, or left to the next week's run?"
+        # Fix round 1 (gate r1 MINOR 3; decision 4 of the 2026-10-31b
+        # round: every question states its default, and nothing waits).
+        "Unless you say otherwise, next week's run takes these up; nothing waits on you."
     ]
 
 
@@ -4161,17 +4185,27 @@ def _record_defaults(home: Path, manifest: dict[str, Any]) -> list[str]:
     (`steward._reconsider_proposals`), exactly as an answer would (S-96), so
     no lesson waits on the user. Each observation id is derived from the run,
     the ask and the case, so a resumed run records nothing twice. Answers the
-    cases observed, in order."""
+    cases observed, in order.
+
+    Fix round 1 (gate r1 MAJOR 1): a case still parked for the overseer
+    after this run's apply (no successor of this run superseded it) is NOT
+    observed: the default decided none of its lessons, and
+    `cases.held_lessons` keeps holding them. :func:`_parked_cited` names such
+    cases, and the report says the default did not reach them."""
     run_id = cast(str, manifest["run_id"])
+    asks = _defaulted_asks(manifest)
+    if not asks:
+        return []  # no case index read for a run that asked nothing
     links = conversation.superseded_links(home)
+    parked = _awaiting_ids(home)
     observed: list[str] = []
-    for row in _defaulted_asks(manifest):
+    for row in asks:
         seen: set[str] = set()
         for cited in row.get("cases") or []:
             if not isinstance(cited, str):
                 continue
             case_id = conversation.current_case(home, cited, links)
-            if case_id in seen:
+            if case_id in seen or case_id in parked:
                 continue
             seen.add(case_id)
             reserved = "obs-" + hashlib.sha256(
@@ -4186,28 +4220,88 @@ def _record_defaults(home: Path, manifest: dict[str, Any]) -> list[str]:
     return observed
 
 
-def _default_lines(manifest: dict[str, Any]) -> list[str]:
+def _awaiting_ids(home: Path) -> set[str]:
+    """The ids of the cases still parked for the overseer and undecided
+    (`cases.awaiting_overseer`, the hold's own definition)."""
+    return {
+        str(row["case"]) for row in cases.awaiting_overseer(home)
+        if isinstance(row.get("case"), str)
+    }
+
+
+def _parked_cited(home: Path, manifest: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
+    """Fix round 1 (gate r1 MAJOR 1): for each ask with a default, the cases
+    it cites whose line of successors still ends at a case parked for the
+    overseer once this run's apply is done. The model was told to decide
+    such a case by the default through a successor; when it staged none, or
+    the successor was refused, the default reached none of that case's
+    lessons and `cases.held_lessons` still holds them. Answers, per such
+    ask, ``{"held": [...], "reached": [...]}``: the parked cases, and the
+    cases the default did reach. Asks citing no parked case are left out."""
+    asks = _defaulted_asks(manifest)
+    if not asks:
+        return {}  # no case index read for a run that asked nothing
+    links = conversation.superseded_links(home)
+    parked = _awaiting_ids(home)
+    found: dict[str, dict[str, list[str]]] = {}
+    for row in asks:
+        held: list[str] = []
+        reached: list[str] = []
+        for cited in row.get("cases") or []:
+            if not isinstance(cited, str):
+                continue
+            case_id = conversation.current_case(home, cited, links)
+            bucket = held if case_id in parked else reached
+            if case_id not in bucket:
+                bucket.append(case_id)
+        if held:
+            found[row["id"]] = {"held": held, "reached": reached}
+    return found
+
+
+def _default_lines(
+    manifest: dict[str, Any], parked: dict[str, dict[str, list[str]]] | None = None,
+) -> list[str]:
     """The report's "Decided in the user's stead" lines for the run's asks:
     each default applied, and, listed apart, the asks that would change the
-    user's system or register a host, where the default changed nothing."""
+    user's system or register a host, where the default changed nothing.
+    An ask whose default did not reach a case still parked for the overseer
+    (*parked*, from :func:`_parked_cited`) gets no "applied" line: it is
+    named under "Refused / could not do" (:func:`_default_refusals`)."""
+    parked = parked or {}
     applied: list[str] = []
     unchanged: list[str] = []
     for row in _defaulted_asks(manifest):
         if row.get("register"):
-            unchanged.append(
-                f"{row['id']} would register a host, so nothing was registered: "
-                f"{row['default']}"
-            )
+            unchanged.append(f"{row['id']} would register a host: {row['default']}")
         elif row.get("system") is True:
-            unchanged.append(
-                f"{row['id']} would change your system, so nothing was changed: "
-                f"{row['default']}"
-            )
-        else:
+            unchanged.append(f"{row['id']} would change your system: {row['default']}")
+        elif row["id"] not in parked:
             applied.append(
                 f"{row['id']} asked and not waited for; applied its default: {row['default']}"
             )
     return [*applied, *unchanged]
+
+
+def _default_refusals(
+    manifest: dict[str, Any], parked: dict[str, dict[str, list[str]]],
+) -> list[str]:
+    """Fix round 1 (gate r1 MAJOR 1): one "Refused / could not do" line per
+    ask whose default did not reach a cited case still parked for the
+    overseer, naming the cases it did reach, if any."""
+    lines: list[str] = []
+    for row in _defaulted_asks(manifest):
+        entry = parked.get(row["id"])
+        if not entry:
+            continue
+        reached = entry["reached"]
+        tail = f" (it was applied to {', '.join(reached)})" if reached else ""
+        lines.append(
+            f"{row['id']}: default not applied to {', '.join(entry['held'])} — still "
+            "parked for the overseer; its lessons stay held until a successor decides it"
+            + tail
+        )
+    return lines
 
 
 #: The run-record fields the finalize write OWNS (A17). Everything else on
@@ -5045,6 +5139,7 @@ def _execute_manifest(
             codes.append(EXIT_REFUSED)
             refusals.extend(line for line in user_model_lines if "refused" in line)
 
+    default_parked: dict[str, dict[str, list[str]]] | None = None
     if not halted:
         try:
             for index, finding in enumerate(cast(list[dict[str, Any]], manifest["findings"]), start=1):
@@ -5053,7 +5148,17 @@ def _execute_manifest(
                     text=cast(str, finding.get("text") or "examined"), by="overseer",
                     ref=finding.get("ref"), reserved_id=_observation_id(run_id, index),
                 )
-            _record_defaults(home, manifest)
+            if not retry_pending:
+                # Fix round 1 (gate r1 MINOR 2): defaults are recorded only
+                # on the attempt that will publish the asks (A14: only a
+                # completed run publishes `open-questions.yaml`). An attempt
+                # held for a retried refusal records none, so no lesson is
+                # released on a default the user was never shown; the resume
+                # that completes records them (each id is reserved, so the
+                # observation is written once whatever happens later).
+                _record_defaults(home, manifest)
+                default_parked = _parked_cited(home, manifest)
+                refusals.extend(_default_refusals(manifest, default_parked))
         except Exception as exc:
             halted = True
             halt_reason = f"run ended early: {exc}"
@@ -5209,8 +5314,12 @@ def _execute_manifest(
             notes=runner_notes,
             decided=[
                 # S-NEXT-overseer-asks: each ask's default, applied by
-                # `_record_defaults` above (not yet, on a halted attempt).
-                *([] if halted else _default_lines(manifest)),
+                # `_record_defaults` above (not on an attempt that did not
+                # record them; fix round 1, gate r1 MINOR 2).
+                *(
+                    [] if halted or default_parked is None
+                    else _default_lines(manifest, default_parked)
+                ),
                 *decided_lines,
                 *skills_mod.report_lines(manifest, trial_written=trial is not None),
                 # SK4: one line per disposition phase B recorded.

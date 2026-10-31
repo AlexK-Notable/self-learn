@@ -966,7 +966,12 @@ questions:
   <um-id>@r<revision>`), and phase B's `answers.yaml` now carries such
   corrections beside the answers to asks, each row with its `kind`
   (`question` or `proposition`; a proposition answer whose `ref` is not a
-  reading's id is left out).
+  reading's id is left out). *(Fix round 1.)* A correction is offered once:
+  only one recorded after coverage's `last_run_at` (the last completed run,
+  stamped before it staged phase B's inputs) comes in, so a reply to a
+  reading already in front of a phase B, or applied by the old `overseer
+  respond` on a reading, is not offered again as a live correction. A stamp
+  that does not parse is kept. Answers to asks are unchanged.
 - Every ask needs `default`: one sentence, secret-scanned, on what the
   overseer did this run in the user's stead; an ask without one is dropped.
   The overseer decides the lessons the ask is about by that default in the
@@ -985,9 +990,24 @@ questions:
   <default>` with `ref: overseer-run:<run>`, under an observation id derived
   from the run, the ask and the case (a resume records nothing twice). The
   steward brings a case whose outcome is `defer` back on it, as on an answer
-  (S-96), with a card line quoting the default.
+  (S-96), with a card line quoting the default. *(Fix round 1.)* Defaults are
+  recorded only on the attempt that will publish the asks: an attempt held
+  for a retried refusal (A14: only a completed run publishes
+  `open-questions.yaml`) records none and reports none, so no lesson is
+  released on a default the user was never shown; the resume that completes
+  records them. A cited case whose line of successors still ends at a case
+  parked for the overseer after this run's apply (`cases.awaiting_overseer`:
+  no successor of this run decided it, or its successor was refused) is NOT
+  observed: the default decided none of its lessons and the hold keeps them.
 - The report's "Decided in the user's stead" lists each default applied and,
-  after them, the `system` and `register` asks where nothing was changed.
+  after them, the `system` and `register` asks where nothing was changed
+  (`<q-id> would change your system: <default>`, `<q-id> would register a
+  host: <default>`). *(Fix round 1.)* An ask whose default did not reach a
+  cited parked case gets no "applied" line; "Refused / could not do" says
+  `<q-id>: default not applied to case-… — still parked for the overseer;
+  its lessons stay held until a successor decides it`, naming any case it
+  did reach. The phase B prompt says a parked case an ask cites is decided
+  by the default only through a successor staged that run.
 - `overseer open` shows an ask's default under its `why`; the recorded
   presentation line carries it. `overseer_open_questions` and the
   session-start count leave out an ask with a default: it is decided, not
@@ -1707,6 +1727,17 @@ user answered q-<slug> (ref: stmt-...)`, and the steward's reconsider input
 (§3a.8) counts that observation although its `ref` is not among the case's
 dependencies (a statement made afterwards cannot be). Cases that decided
 anything other than `defer` do not come back on an answer.
+*(Amended S-NEXT-overseer-asks, 2026-10-31.)* That rule holds for an ask
+written without a default (an index from before this amendment). Two more
+observation forms now count as reconsider inputs the same way: `ask
+defaulted q-<slug>; default applied: <default> (ref: overseer-run:<run>)`,
+recorded by the runner when it applies an ask's default, brings back a case
+whose outcome is `defer` only, like an answer; `user answered q-<slug> after
+its default was applied (ref: stmt-...)`, recorded by `overseer respond` for
+an ask that carried a default, on the case the cited case's line of
+successors ends at, brings that case back WHATEVER it decided, so the
+user's answer can overturn what the default decided. See "Asks carry a
+default" in the questions section above.
 
 *(Amended 2026-10-16, S-88.)* A staged `kind: reconsider` case is also
 checked for the predecessor apply time needs, for each lesson it names,

@@ -27,9 +27,13 @@ from support import make_home
 from test_overseer_answered_questions import _deferred_case
 from test_overseer_conversation import _case, _report_and_index
 from test_overseer_run import (
+    _dispatch_scripted,
     _enabled,
+    _fake_hook_phases,
     _fake_two_phase,
     _index,
+    _refused_block,
+    _seed_parked_hook,
     _silence_notifications,
     _wrap_phases,
 )
@@ -209,7 +213,7 @@ def test_the_report_lists_asks_that_changed_nothing_apart(tmp_path, monkeypatch)
     lines = decided.splitlines()
     applied = lines.index(f"- q-diagram-skill asked and not waited for; applied its default: {DEFAULT}")
     unchanged = lines.index(
-        f"- q-restart-daemon would change your system, so nothing was changed: {conversation.SYSTEM_DEFAULT}"
+        f"- q-restart-daemon would change your system: {conversation.SYSTEM_DEFAULT}"
     )
     assert applied < unchanged  # the change-nothing asks come after, apart
     user_model = report.split("## User model\n", 1)[1].split("\n## ", 1)[0]
@@ -362,3 +366,191 @@ def test_a_correction_of_a_reading_reaches_phase_b_and_a_stray_statement_does_no
     )
     rows = overseer_run._question_answers(home)
     assert [(row["kind"], row["ref"]) for row in rows] == [("proposition", "um-1a2b@r1")]
+
+
+# ------------------------------------------------------------- fix round 1
+
+
+def _decided_block(home: Path) -> str:
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    return report.split("## Decided in the user's stead\n", 1)[1].split("\n## ", 1)[0]
+
+
+def _awaiting(home: Path) -> set[str]:
+    return {row["case"] for row in cases.awaiting_overseer(home)}
+
+
+def test_a_default_on_a_still_parked_case_is_not_reported_applied(tmp_path, monkeypatch):
+    """Gate r1 MAJOR 1: an ask citing a case parked for the overseer, with no
+    successor staged this run, decided none of that case's lessons -- the
+    hold keeps them. The report must not say the default was applied; it
+    names the case under "Refused / could not do", and the parked case is
+    not observed. Mutation checked: `_parked_cited` answering {} (every ask
+    reported applied) fails this test."""
+    home = make_home(tmp_path)
+    _rid, deferred = _deferred_case(home, tmp_path)
+    _hook_rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    _wrap_phases(monkeypatch, questions=[
+        _ask("q-diagram-skill", [deferred]),
+        _ask("q-parked-hook", [parked], default="I left the hook unbuilt."),
+    ])
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert result.status == "applied", result
+    decided = _decided_block(home)
+    # Positive control: the ask beside it is reported applied.
+    assert f"- q-diagram-skill asked and not waited for; applied its default: {DEFAULT}" in decided
+    assert "q-parked-hook" not in decided, decided
+    assert (
+        f"- q-parked-hook: default not applied to {parked} — still parked for the overseer; "
+        "its lessons stay held until a successor decides it"
+    ) in _refused_block(home)
+    assert parked in _awaiting(home)
+    assert "ask defaulted" not in _observations(home, parked)
+    assert "ask defaulted q-diagram-skill" in _observations(home, deferred)  # control
+
+
+def test_a_default_on_an_ask_citing_parked_and_deferred_cases_names_both(tmp_path):
+    """The refusal line names the case the default did reach. Mutation
+    checked: `_record_defaults` observing a parked case (its `case_id in
+    parked` skip removed) fails this test."""
+    home = make_home(tmp_path)
+    _rid, deferred = _deferred_case(home, tmp_path)
+    _hook_rid, parked = _seed_parked_hook(home, tmp_path)
+    manifest = {"run_id": "abcd1234", "questions": {"questions": [
+        _ask("q-both", [deferred, parked]),
+    ]}}
+
+    assert overseer_run._record_defaults(home, manifest) == [deferred]
+    held = overseer_run._parked_cited(home, manifest)
+
+    assert held == {"q-both": {"held": [parked], "reached": [deferred]}}
+    assert overseer_run._default_lines(manifest, held) == []
+    assert overseer_run._default_refusals(manifest, held) == [
+        f"q-both: default not applied to {parked} — still parked for the overseer; its "
+        f"lessons stay held until a successor decides it (it was applied to {deferred})"
+    ]
+
+
+def test_an_attempt_held_for_a_retry_records_no_default_and_the_resume_does(tmp_path, monkeypatch):
+    """Gate r1 MINOR 2: an attempt whose only failure is a refusal that is
+    dispatched again (`target-busy`) publishes no asks (A14), so it records
+    no default and reports none; the resume that completes records it, on
+    the successor that decided the cited parked case. Mutation checked:
+    recording defaults whatever `retry_pending` says (the `if not
+    retry_pending:` guard removed) fails this test."""
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked)
+    _wrap_phases(monkeypatch, questions=[_ask("q-hook-now", [parked])])
+    _silence_notifications(monkeypatch)
+    dispatched = _dispatch_scripted(monkeypatch, {1: (1, "target-busy")})
+
+    first = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert first.status == "partial", first  # control: held for the retry
+    assert dispatched == [1]
+    (successor,) = [
+        row["case"] for row in cases.list_cases(home, only_ok=True)
+        if row.get("supersedes") == parked
+    ]
+    assert "ask defaulted" not in _observations(home, successor)
+    assert "ask defaulted" not in _observations(home, parked)
+    assert "q-hook-now" not in _decided_block(home)
+
+    second = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert second.run == first.run and dispatched == [1, 1]
+    assert second.status == "applied", second
+    assert _observations(home, successor).count("ask defaulted q-hook-now") == 1
+    assert f"- q-hook-now asked and not waited for; applied its default: {DEFAULT}" in _decided_block(home)
+
+
+def test_the_close_out_question_states_its_default():
+    """Gate r1 MINOR 3: the runner's own question, when a week closes at
+    the attempt cap, says what happens if the user says nothing."""
+    (line,) = overseer_run._close_out_questions(
+        week="2026-10-25", attempts=3, kind="no-progress", detail="stuck", unfinished=[],
+    )
+    assert "was closed after 3 failed attempts" in line  # control: the question
+    assert line.endswith(
+        "Unless you say otherwise, next week's run takes these up; nothing waits on you."
+    )
+
+
+def _set_last_run(home: Path, at: str) -> None:
+    (home / "overseer").mkdir(parents=True, exist_ok=True)
+    _dump_yaml(home / "overseer" / "coverage.yaml", {"last_run_at": at})
+
+
+def test_a_correction_of_a_reading_reaches_phase_b_only_once(tmp_path):
+    """Gate r1 MINOR 5: a correction recorded before the last completed run
+    was already in front of a phase B (or applied by the old `respond`),
+    so it is not offered again; an answer to an ask is offered as before.
+    Mutation checked: `_fresh` answering True always fails this test."""
+    home = make_home(tmp_path)
+    statements.add(
+        home, verbatim="That reading is wrong for this repo.", recorded_by="human",
+        source={"message_ref": "conversation:obs-0000abcd", "surface": "conversation"},
+        answers={"kind": "proposition", "ref": "um-1a2b@r1", "text": None},
+    )
+    statements.add(
+        home, verbatim="Yes, build it.", recorded_by="human",
+        source={"message_ref": "conversation:obs-0000abcf", "surface": "conversation"},
+        answers={"kind": "question", "ref": "q-diagram-skill", "text": None},
+    )
+
+    _set_last_run(home, "2000-01-01T00:00:00Z")  # the correction came after it
+    assert sorted(row["kind"] for row in overseer_run._question_answers(home)) == [
+        "proposition", "question",
+    ]
+    _set_last_run(home, "2999-01-01T00:00:00Z")  # the correction came before it
+    assert [row["kind"] for row in overseer_run._question_answers(home)] == ["question"]
+
+
+def test_a_proposition_answer_whose_ref_is_not_a_reading_is_left_out(tmp_path):
+    """Gate r1 NIT 7: a `str` ref that is not `um-<4 hex>@r<n>`. Mutation
+    checked: replacing the `_PROPOSITION_RE` test with `isinstance(ref,
+    str)` alone fails this test."""
+    home = make_home(tmp_path)
+    statements.add(
+        home, verbatim="About something else.", recorded_by="human",
+        source={"message_ref": "conversation:obs-0000abcd", "surface": "conversation"},
+        answers={"kind": "proposition", "ref": "not-a-reading", "text": None},
+    )
+    statements.add(
+        home, verbatim="That reading is wrong.", recorded_by="human",
+        source={"message_ref": "conversation:obs-0000abce", "surface": "conversation"},
+        answers={"kind": "proposition", "ref": "um-1a2b@r1", "text": None},
+    )
+    assert [row["ref"] for row in overseer_run._question_answers(home)] == ["um-1a2b@r1"]
+
+
+def test_current_case_stops_where_a_cycle_closes(tmp_path):
+    """Gate r1 NIT 7: a corrupt successor cycle cannot loop for ever."""
+    home = make_home(tmp_path)
+    links = {"case-aaaaaaaa": "case-bbbbbbbb", "case-bbbbbbbb": "case-aaaaaaaa"}
+    assert conversation.current_case(home, "case-aaaaaaaa", links) == "case-bbbbbbbb"
+    assert conversation.current_case(home, "case-cccccccc", links) == "case-cccccccc"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("default", "  ", "has an empty default"),
+        ("system", "yes", "has a system flag that is not true or false"),
+    ],
+)
+def test_an_index_row_with_a_bad_default_or_system_flag_is_refused(tmp_path, field, value, message):
+    """Gate r1 NIT 7: `overseer open` refuses an index row it cannot trust."""
+    home = make_home(tmp_path)
+    case_id = _case(home, tmp_path, "1", {})
+    row = {**_ask("q-diagram-skill", [case_id]), field: value}
+    _report_and_index(home, [row], ["- q-diagram-skill: build it?"])
+    with pytest.raises(conversation.ConversationError, match=message):
+        conversation.open_questions(home, out=io.StringIO())
