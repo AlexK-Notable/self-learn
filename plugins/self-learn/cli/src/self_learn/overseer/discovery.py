@@ -1,6 +1,6 @@
 """The overseer looks for skills itself: phase S, skill discovery (SK4,
-S-NEXT-sk4-discovery; skill-writing plan §2 steps 2-3, decision D11;
-``03-decisions.md`` S-NEXT-skills part 4, ``02-schema.md`` §3 "The
+S-107; skill-writing plan §2 steps 2-3, decision D11;
+``03-decisions.md`` S-107 part 4, ``02-schema.md`` §3 "The
 overseer's workspace for skills").
 
 A run is phase A (the week's cases, blind to the steward's decisions), then
@@ -124,7 +124,7 @@ __all__ = [
     "workspace_reset",
 ]
 
-#: The switch (S-NEXT-skills part 6).
+#: The switch (S-107 part 6).
 SETTING = "overseer.skill_discovery"
 
 # ---------------------------------------------------------- the workspace
@@ -173,7 +173,7 @@ _DISPOSITION_REQUIRED = ("source", "id", "disposition", "because")
 _NEEDS_SKILL = ("build", "add-to-existing")
 
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-#: Fix round 1 (S-NEXT-sk4-discovery): what :func:`_blind` blanks out of
+#: Fix round 1 (S-107): what :func:`_blind` blanks out of
 #: text phase B wrote before phase S reads it -- a case id, the steward,
 #: and a (skill) proposal -- so phase S never learns of the steward's
 #: proposals through a candidate's ``because`` or a question's text, not
@@ -1011,7 +1011,7 @@ def trial_readiness(phase_s: PhaseS, dispositions: Dispositions) -> tuple[bool, 
     """Whether this run's discovery steps were seen working, so that, if it
     completes while writing is not in effect and no trial file exists, it
     counts as ``overseer.skill_writing: auto``'s drafts-only run
-    (S-NEXT-skills part 6): discovery on, a valid ``skill-candidates.yaml``
+    (S-107 part 6): discovery on, a valid ``skill-candidates.yaml``
     from phase S (its own or a kept copy) and a valid
     ``skill-dispositions.yaml`` from phase B. Answers ``(ready, why not)``.
     The rest of the rule -- writing not in effect, no trial file yet, the

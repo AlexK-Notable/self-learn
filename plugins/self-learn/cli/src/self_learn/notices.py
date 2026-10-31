@@ -1,5 +1,5 @@
 """notices.py -- one-line project notices at session start (hand-maintenance
-cures, lane D: M7 and M6 part 3; decision row S-NEXT-cures-d, assigned at
+cures, lane D: M7 and M6 part 3; decision row S-106, assigned at
 landing).
 
 The problem. Two kinds of fact end up outside the ledger with nobody to read

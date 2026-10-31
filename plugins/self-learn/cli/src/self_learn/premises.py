@@ -1,6 +1,6 @@
 """premises.py -- what a placed lesson rests on, and the read-only checks
 that re-observe it (premise-check design, unit U1; decision row
-S-NEXT-u1-premises, assigned at landing).
+S-104, assigned at landing).
 
 A placed lesson can stay loaded long after the fact it rests on stopped
 being true (the case that prompted this: a lesson saying "nothing binds
@@ -245,7 +245,7 @@ PLACEMENT_PREMISE_IDS = ("@reach", "@writable", "@intact")
 
 
 def intact_failing_value(verdict: str, region_sha: str | None) -> str | None:
-    """S-NEXT-u8-placement: the value a failing ``@intact`` is observed as,
+    """S-104: the value a failing ``@intact`` is observed as,
     from the compile record's verdict for a managed block and the sha256 of
     the block on disk -- ``edited:<sha256>`` for a hand-edited block,
     ``region-missing`` for one that is gone -- or ``None`` for every verdict

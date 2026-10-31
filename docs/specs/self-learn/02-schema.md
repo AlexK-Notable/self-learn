@@ -12,7 +12,7 @@ id: lrn-4c1e9a2f
 type: behavior            # behavior | knowledge
 scope: skill:home-assistant   # skill:<name> | project | user
 kind: anti-pattern        # behavior only: anti-pattern | surface-rule | reasoning-pattern
-source: teach             # teach | auto-memory | backlog | session | rewrite (S-79, S-85: written through replace; S-NEXT-cures-f: also through restate)
+source: teach             # teach | auto-memory | backlog | session | rewrite (S-79, S-85: written through replace; S-108: also through restate)
 status: pending           # pending | routed | rejected | deferred | superseded
 created_at: 2026-07-12T09:14:00Z
 sightings: 2              # set when a merge proposal is collapsed at review
@@ -84,7 +84,7 @@ optional `## Context`. One lesson per record; a capture containing two
 lessons becomes two records. *Amended 2026-10-07 (S-79):* a `behavior`
 record may carry an optional `## Context` too (any number of lines, at
 most one such section), and `source: rewrite` marks a lesson
-written through `replace` (S-85; the actor stays in `routing.by` and the case). *Amended (S-NEXT-cures-f):* `restate` also writes `source: rewrite`: a new `pending` lesson with no `supersedes`, beside a closed lesson it leaves alone; its one note by the actor names that lesson (see the `restate` verb under §3a.1). *Amended (S-84):* `teach --context` writes that section for a
+written through `replace` (S-85; the actor stays in `routing.by` and the case). *Amended (S-108):* `restate` also writes `source: rewrite`: a new `pending` lesson with no `supersedes`, beside a closed lesson it leaves alone; its one note by the actor names that lesson (see the `restate` verb under §3a.1). *Amended (S-84):* `teach --context` writes that section for a
 behavior lesson as it does for a knowledge lesson; the loaded text (Trigger and
 Instruction, or Fact) is the core of the lesson and `## Context` holds the
 background, as `skills/self-learn/references/lesson-writing.md` tells every writer.
@@ -408,13 +408,13 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   fields as in S-85. Commit subject `self-learn: replace lrn-old → lrn-new (<dest>)`, with `because` (and `note`)
   as the body. A merge may leave the merged line and a not-yet-retired old line loaded together for the seconds
   between commits, never neither. `replace` was the 18th sheet verb when it landed; the count is not kept here
-  (`batch.PERMITTED_VERBS` is the list, which `premises` joins with S-NEXT-premise).
-  *(2026-10-31, S-NEXT-premise.)* `replace` also carries `premises` (`cases.REWRITE_FIELDS`), and takes one more
+  (`batch.PERMITTED_VERBS` is the list, which `premises` joins with S-104).
+  *(2026-10-31, S-104.)* `replace` also carries `premises` (`cases.REWRITE_FIELDS`), and takes one more
   key, `adopt_region: true`, open only to the steward on an `@intact` `premise-moved` input for the region of the
   lesson it replaces: the apply adopts that region as it stands on disk (S-83) before compiling the new lesson,
   which folds a person's hand edit into the lesson, and only when the same case decides every hand edit in that
   region and quotes it (the whole-region rule, §3a.10.7).
-- **`premises`** *(2026-10-31, S-NEXT-premise)*: a list of at most four premises the lesson rests on, each a
+- **`premises`** *(2026-10-31, S-104)*: a list of at most four premises the lesson rests on, each a
   claim with an optional read-only probe and the baseline the runner recorded when it was last decided; metadata
   class like `follow_up_done` (verb-written, mutable in every status, outside the substance freeze, absent until a
   verb writes it; `[]` means decided-none). Written only by the `premises` sheet verb's `set` and `rebaseline`
@@ -422,7 +422,7 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   the field to the new lesson (`cases.REWRITE_FIELDS`), and by the sweep's code-only `refresh` re-baseline. Verbs
   and commit subjects: 11 §2.5. Shape, probe catalog, triggers and the
   three placement premises code derives (`@reach`, `@writable`, `@intact`, never stored): §3a.10.
-- **`restate`** *(S-NEXT-cures-f, C4)*: keys `trigger, instruction, fact, context, type, kind, to, because, note, by`
+- **`restate`** *(S-108, C4)*: keys `trigger, instruction, fact, context, type, kind, to, because, note, by`
   (`because` required; no `dest`, no `also`, no `text_from`). The line's `id` names a CLOSED lesson: `rejected`, or
   retired (`superseded` with a `covered_by:` or `canon` value). It writes the corrected text as a NEW lesson in the
   closed lesson's bucket (or `to`'s): `status: pending`, `source: rewrite`, `supersedes: null`, the closed lesson's
@@ -444,7 +444,7 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   writes and decides the lesson. The steward's brief shows the note on a pending lesson as
   `[restated by the overseer] …`. `restate` joins the sheet verbs (`batch.PERMITTED_VERBS`; the count is not kept
   here, as under `replace`).
-- **`reopen` and a person's rejection** *(S-NEXT-cures-f, C4)*: the overseer may not `reopen` a `rejected` lesson a
+- **`reopen` and a person's rejection** *(S-108, C4)*: the overseer may not `reopen` a `rejected` lesson a
   person rejected, in the run or in the preview: `NeedsPerson` (kind `needs-person`), naming the case and saying to
   write the corrected lesson with `restate` or to ask the user a question that names the reject. "A person rejected
   it" is read from the case ledger (`verbs.person_reject_case`), because a record does not store who rejected it. A case
@@ -782,13 +782,13 @@ older home):*
     open-questions.yaml, evaluation-<date>.md,
     journal/<date>-<run>.md}        # the overseer's own
                                     # subtree, owned by the overseer plan
-  owned-skills.yaml                # skills self-learn owns (S-NEXT-skills)
-  overseer/skills/{<week>.yaml,    # candidates + dispositions (S-NEXT-skills)
+  owned-skills.yaml                # skills self-learn owns (S-107)
+  overseer/skills/{<week>.yaml,    # candidates + dispositions (S-107)
     <week>/drafts/<name>/,         # skills kept as drafts, never deployed
     writing-trial.yaml}            # auto's drafts-only run, written once
 ```
 
-*(Added 2026-10-30, S-NEXT-skills.)* **Skills self-learn owns.** One
+*(Added 2026-10-30, S-107.)* **Skills self-learn owns.** One
 registry file at the top of the ledger, `owned-skills.yaml`, committed under
 the ledger's commit lock by `skill_registry.with_update` and by nothing else.
 A missing file reads as an empty registry; an unknown key or an unknown
@@ -813,7 +813,7 @@ A skill is owned when it has a `live` row; a retired row keeps its history
 and owns nothing. `by` is `overseer` only when the overseer's runner calls
 the writer itself (a Python call, not the CLI), and `human` for every write,
 retirement or rename made through the CLI; an agent's shell cannot make one
-(`03-decisions.md` S-NEXT-skills part 2), so no third value is needed.
+(`03-decisions.md` S-107 part 2), so no third value is needed.
 `case` always names a case in this build: the CLI's `write`, `retire` and
 `rename` require `--case`, and the registry refuses any other value
 (`skill_registry._check_case`). A person's step that answers no case
@@ -861,7 +861,7 @@ its absence makes the run drafts-only and its presence lets the run write.
 A failed attempt, a closed-out week, a dry run, a run with discovery off,
 and a completed run whose phase S failed, timed out or did not validate,
 or whose dispositions did not validate, never write it
-(`03-decisions.md` S-NEXT-skills part 6).
+(`03-decisions.md` S-107 part 6).
 
 **The overseer's workspace for skills.** Phase S's stage holds `catalogue/`,
 `neighbourhoods.md`, `skills-index.yaml`, `history.yaml`, `briefs/` and
@@ -904,7 +904,7 @@ questions:
     text: "Do you want …?"  # one question, plain words
     why: "…"                # what the answer changes
     cases: [case-…]         # an ask needs at least one
-    register:               # optional, an ask only (S-NEXT-cures-b)
+    register:               # optional, an ask only (S-103)
       path: /abs/path       # the repository a plain yes registers as a canon host
       mode: plain           # git | plain
       kind: project         # project (default) | skills-root
@@ -920,7 +920,7 @@ reply to an ask is a statement with `answers.kind: question` and `answers.ref`
 the ask's id; phase B receives every such answer, newest first, as the staged
 `answers.yaml`.
 
-*(Added 2026-10-31, S-NEXT-cures-b.)* **A question that registers a host.** An
+*(Added 2026-10-31, S-103.)* **A question that registers a host.** An
 ask may carry `register: {path, mode, kind?}`: a plain yes to it registers that
 repository (13 §4 item 5). The runner drops the entry (naming it in "Refused /
 could not do") unless `path` is one absolute path, `mode` is `git` or `plain`,
@@ -944,7 +944,7 @@ preview's reason, in "Refused / could not do"; a sheet whose every item is refus
 is left whole and refused at apply. A `kind: maintenance` pair with such a line is
 not recorded.
 
-*(Added 2026-10-31, S-NEXT-u7c.)* **Phase B's premise-check facts and the hand-step
+*(Added 2026-10-31, S-105.)* **Phase B's premise-check facts and the hand-step
 census.** Phase B's `health.yaml` `catalogue_health` list (`overseer/health.py`
 `gather`) gains two rows, both measured by code from the ledger and its git history,
 neither calling a model nor writing anything. **`premise-check`** (premise design
@@ -994,7 +994,7 @@ The census is stored in the run record as `hand_steps` (`state`, `reason`, `tota
 made before this field has none and its report is published as the overseer wrote it.
 The report's length guide counts the overseer's own lines, not the runner's.
 
-*(Added 2026-10-31, S-NEXT-cures-d.)* **Phase B's optional `notices.yaml`.** Phase B's
+*(Added 2026-10-31, S-106.)* **Phase B's optional `notices.yaml`.** Phase B's
 stage also holds `projects.yaml` (`{projects: [{name, path, showing?}]}`: the paths of every
 project bucket (`projects/<slug>/meta.yaml`) and registered host that exist, as real
 paths, each with `showing`, the words of the overseer notices still up there, when it has any, so a finding
@@ -1232,7 +1232,7 @@ parked_reason: null            # hook | always-loaded-user-scope |
                                 #   broad-removal | authority-unclear |
                                 #   scope-conflict | plain-host-committed-file |
                                 #   attempts-exhausted | ledger-refused |
-                                #   skill-proposal (S-NEXT-skills)
+                                #   skill-proposal (S-107)
                                 #   (closed set; only when
                                 #   kind: parked)
 decided_sha256: "a3c1…"        # hash of sections 1-4 as committed
@@ -1320,7 +1320,7 @@ name. A case with a `replace` item needs `decision.rewrite`, and every lesson th
 name (`cases.replace_items_problem`, S-86). In the steward's coverage rule an `also` id counts as an item of its
 sheet, so a merge case's `records` are exactly `{id} ∪ also`.
 The always-loaded test reads `replace` items, a dest-less one through the first lesson's placement.
-*(Added 2026-10-30, S-NEXT-skills.)* A parked case with `parked_reason: skill-proposal` must carry
+*(Added 2026-10-30, S-107.)* A parked case with `parked_reason: skill-proposal` must carry
 `decision.skill` in the shape above (the steward's draft of a skill; the overseer decides it);
 without it the case is refused by name. A skill-building pair is `outcome: route` with
 `decision.skill`, and a skill retirement is `outcome: retire` with `decision.skill`. The overseer's
@@ -1462,7 +1462,7 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   2026-09-20. The overseer's record uses it the same way since
   2026-09-24: its runaway guard, `overseer.max_model_calls`, counts
   MODEL CALLS, as S-66 says: two per run until 2026-10-30, three since
-  S-NEXT-skills added phase S (two with `overseer.skill_discovery` off),
+  S-107 added phase S (two with `overseer.skill_discovery` off),
   and a guard below the run's own call count holds the run before its
   first call; revision log, 2026-09-24),
   `schema-repair` (a
@@ -1664,7 +1664,7 @@ its status first. Before, the case passed, was recorded, and
 lesson was parked for the overseer and the steward's decision was lost
 (run `run-85e1b89015c0`).
 
-*(Amended 2026-10-31, S-NEXT-premise.)* A ROUTED lesson that comes to the
+*(Amended 2026-10-31, S-104.)* A ROUTED lesson that comes to the
 steward as a `premise-moved` input (§3a.10.7) and that no case a reconsider
 may supersede covers is decided the same way, with a `kind: resolution`
 case; a `premise-extract` input is always decided with a `kind: resolution`
@@ -2041,7 +2041,7 @@ covers every record the reconsider names and passes its freeze hash (what
 when it is not parked, was recorded by the steward or the overseer —
 never a case a person recorded (`actor: human`), which before S-76 could
 not happen because such a case is never parked; any other actor is a
-per-pair drop naming it. *(Amended S-NEXT-cures-f:)* nor may the overseer
+per-pair drop naming it. *(Amended S-108:)* nor may the overseer
 `reopen` a lesson a person rejected; it writes the corrected lesson as a new
 pending one with `restate`, or asks the user a question that names the reject.
 Phase B checks all of these before anything is
@@ -2658,7 +2658,7 @@ calls over 9 runs), and approved a lesson on a verification the transcript
 contradicts; `suspected-violation` fires reached no consumer.
 
 **Inputs.** A run selects three kinds of input, each a row of the run
-record's `inputs` with a `kind` *(five since S-NEXT-premise, 2026-10-31:
+record's `inputs` with a `kind` *(five since S-104, 2026-10-31:
 `premise-moved` and `premise-extract` are defined in §3a.10.7)*:
 
 | `kind` | What | Identity (`version`) |
@@ -2706,7 +2706,7 @@ handled events are dropped before the version is taken, so a new fire about
 the same record is a new input carrying only itself, and a run that decided
 an input's events (applied, parked, refused, abandoned) is never offered
 them again. A record is in at most one input per run (reconsider first, then lesson, then suspected violation;
-since S-NEXT-premise, then premise-moved, then premise-extract, §3a.10.7).
+since S-104, then premise-moved, then premise-extract, §3a.10.7).
 
 **A lesson the overseer holds** *(2026-10-08, S-81)* is no input of any kind. A lesson is held while a parked
 case for the overseer that has not been superseded names it, whoever parked it: an intact one
@@ -2857,7 +2857,7 @@ or, with the line's compile input, a hook — the fix may be a stronger
 surface or a hook, decided by the steward itself; the case's `outcome:
 route` now applies to a `routed` record (`verbs.reconsider`). The
 overseer's `kind: reconsider` successors do the same (*amended
-S-NEXT-cures-f, C8:* its runner now writes the `reconsidered` history entry
+S-108, C8:* its runner now writes the `reconsidered` history entry
 too, once the case is recorded and before its sheet applies —
 `verbs.reconsider(…, any_status=True)`, which skips the status and outcome
 checks so a lesson whose earlier decision never applied, still `pending`,
@@ -3353,7 +3353,7 @@ only, never transcript text).
 
 ### 3a.10 Premises: what a placed lesson rests on
 
-*(Added 2026-10-31, `03-decisions.md` S-NEXT-premise; code `premises.py`,
+*(Added 2026-10-31, `03-decisions.md` S-104; code `premises.py`,
 `serve.py`, `steward_inputs.py`, `steward.py`, `batch.py`, `verbs.py`.)* A
 placed lesson can be true when it is routed and false a month later: the
 system it describes changes under it. The case that showed it: `lrn-9b4250f5`
@@ -3828,7 +3828,7 @@ offered again. The method asks for premises with every route; nothing
 enforces it at the route, and a route that wrote none is caught by the
 backfill.
 
-**`premise-extract`: the backfill, and premises written at route time** *(S-NEXT-u6-backfill; unit U6; design
+**`premise-extract`: the backfill, and premises written at route time** *(S-104; unit U6; design
 D10).* A placed lesson with no `premises` field is offered so its premises get written: the lessons
 placed before premises existed, and any lesson a later route placed without them (the steward's method asks for
 a `premises set` line with every `route`; a route that wrote none is caught here, so nothing enforces it at the

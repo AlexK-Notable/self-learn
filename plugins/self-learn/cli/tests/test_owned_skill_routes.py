@@ -1,4 +1,4 @@
-"""SK2 (S-NEXT-sk2-routes) -- routes into skills self-learn owns
+"""SK2 (S-107) -- routes into skills self-learn owns
 (skill-writing plan D5 and D7; §4.1 row SK2, tests (a)-(f); §1.3 fact 1).
 
 What changed, in plain words:

@@ -1,4 +1,4 @@
-"""S-NEXT-u7c (hand-maintenance cures, lane C): ``report.hand_steps``, the
+"""S-105 (hand-maintenance cures, lane C): ``report.hand_steps``, the
 week's census of ledger changes made from a person's or an agent's shell.
 
 Every test builds a throwaway git repository whose commits carry chosen

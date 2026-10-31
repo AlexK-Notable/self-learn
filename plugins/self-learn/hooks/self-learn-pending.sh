@@ -3,7 +3,7 @@
 #
 # Prints the pending line, the staleness alarm, the escalation line and,
 # only in a session inside a project a live notice names, that project's
-# notice lines (S-NEXT-cures-d) into session context. ALL queue semantics come from
+# notice lines (S-106) into session context. ALL queue semantics come from
 # `self-learn status --json --fast` — a guaranteed-cheap CLI path
 # (pending/-only frontmatter scan, no git, <500 ms warm budget). This
 # script only formats; it never reimplements queue rules and NEVER calls
@@ -154,7 +154,7 @@ if [ "$overseer_open_questions" -gt 0 ] 2>/dev/null; then
   echo "self-learn: the overseer has ${overseer_open_questions} interpretation questions — /self-learn:overseer"
 fi
 
-# S-NEXT-cures-d: project notices. `self-learn status --fast` carries
+# S-106: project notices. `self-learn status --fast` carries
 # `project_notices` ONLY when this session's directory is inside a project a
 # live notice names (an overseer finding about that project, or a tracked file
 # of a plain host that self-learn left changed); each entry's `line` is the

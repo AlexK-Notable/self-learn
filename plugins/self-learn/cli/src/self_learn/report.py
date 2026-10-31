@@ -175,7 +175,7 @@ def _resolution_dates(home: Path) -> dict[str, str]:
     return dates
 
 
-#: S-NEXT-u7c (hand-maintenance cures, lane C): the census of hand steps.
+#: S-105 (hand-maintenance cures, lane C): the census of hand steps.
 #: How far back it looks, and how many steps one packet carries (the rest
 #: are counted, never silently dropped).
 HAND_STEP_WINDOW_DAYS = 7
@@ -230,7 +230,7 @@ def hand_steps(
     limit: int = HAND_STEP_LIMIT,
 ) -> dict:
     """The week's hand steps: every ledger commit of the last *days* days
-    that no job made (S-NEXT-u7c; ``design-manual-maintenance-cures.md`` M5.3).
+    that no job made (S-105; ``design-manual-maintenance-cures.md`` M5.3).
 
     A commit is a **hand step** when its subject is not a job's
     (:data:`_JOB_SUBJECT_RE`) and it carries no job's identity: no ``Case:``

@@ -260,7 +260,7 @@ def test_a_pending_first_lesson_gives_a_pending_replacement_in_one_commit(env):
 
 
 def test_stamp_by_is_the_commit_trailer_on_both_replace_paths_and_by_is_not(env):
-    """S-NEXT-cures-a (M5.2): an agent shell's `replace` is recorded `By:
+    """S-102 (M5.2): an agent shell's `replace` is recorded `By:
     agent` through `stamp_by`; `by` is who chose the destination and never
     reaches the trailer. Pending path first, then the routed one."""
     old = _seed(env.home, "lrn-e1000a01")

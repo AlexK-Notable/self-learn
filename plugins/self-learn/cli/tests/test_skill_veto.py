@@ -1,4 +1,4 @@
-"""SK7 (S-NEXT-sk7-veto): the user's view of the skills self-learn made, and
+"""SK7 (S-107): the user's view of the skills self-learn made, and
 the user's veto.
 
 Skill-writing plan, unit SK7, decision D15 (except the rename itself, SK8):
@@ -782,7 +782,7 @@ class TestASkillOpenNeverShownCanStillBeVetoed:
 
     def test_a_stamp_with_no_case_names_no_case_and_has_nothing_to_record_on(self):
         # The registry as it stands on this branch refuses a null case, so the
-        # shape a person's CLI step without --case will leave (S-NEXT-skills,
+        # shape a person's CLI step without --case will leave (S-107,
         # part 2) is checked on the pure helpers: such a stamp prints "no case"
         # and names none to attach the user's words to.
         stamp = {"at": LAST_MONTH, "case": None, "by": "human"}

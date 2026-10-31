@@ -1,4 +1,4 @@
-"""S-NEXT-u3-followup (premise-check design, unit U3): a closed follow-up puts the
+"""S-104 (premise-check design, unit U3): a closed follow-up puts the
 placed lesson in front of the steward.
 
 The case that prompted it (read from the live ledger, 2026-10-30): a routed

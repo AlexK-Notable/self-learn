@@ -62,7 +62,7 @@ this is what happens on the nights and weeks nobody opens either one.
 | `mine run [--trigger …] [--since YYYY-MM-DD]` | Transcript miner (doc 12): digest unread session transcripts → contained reader → land `source: session` candidates in pending (use-scaled cap, secret-scanned, origin-deduped; NEVER routes). Nightly timer + >24 h verb watchdog + manual force all call this |
 | `mine status [--json]` | The run journal: last run, staleness, and per-candidate outcomes (landed / folded / recurrence / dropped-and-why) |
 | `status --fast` | Pending-only frontmatter scan for the SessionStart hook (<500 ms; staleness + escalation flags; `project_notices` when the working directory is inside a project a live notice names) |
-| `notice list [--all] [--json]` \| `notice done <id>` | Project notices (S-NEXT-cures-d): one line about one project, shown at session start only in sessions inside it; ends when done, when its condition clears (a tracked file self-learn left changed is committed), or after 14 days. Cache only, never the ledger |
+| `notice list [--all] [--json]` \| `notice done <id>` | Project notices (S-106): one line about one project, shown at session start only in sessions inside it; ends when done, when its condition clears (a tracked file self-learn left changed is committed), or after 14 days. Cache only, never the ledger |
 | `push` | Retry unpushed resolution commits (rebase-retry, never auto-resolve) |
 | `sentinel hold\|heartbeat\|release` | Pause the repo's autosync during review batches (2 h mtime TTL) |
 | `import --backlog <skill>` \| `--memory DIR` | One-shot ETL: GOTCHAS journal / auto-memory topic files → pending records (idempotent, origin-deduped) (DIR or `$SELF_LEARN_MEMORY_DIR`; no default) |

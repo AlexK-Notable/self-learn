@@ -3025,7 +3025,7 @@ def reroute_record(
         # examples, exactly as `route`'s routing block does.
         routing["hook"] = dict(hook)
     if new_skill is not None:
-        # SK2 (S-NEXT-sk2-routes): a reroute INTO a skill self-learn owns
+        # SK2 (S-107): a reroute INTO a skill self-learn owns
         # names it, exactly as `route`'s routing block does.
         routing["new_skill"] = new_skill
     record.set_routing(routing)
@@ -3146,7 +3146,7 @@ def open_followups(home: Path) -> list[dict]:
 
 def closed_followups(home: Path) -> list[Record]:
     """Every ROUTED record whose follow-up was closed (``follow_up_done``
-    present), as the parsed records, in bucket and file order (S-NEXT-u3-followup).
+    present), as the parsed records, in bucket and file order (S-104).
 
     The mirror of :func:`open_followups`: ``resolved/`` only, the same status
     gate (a superseded or graduated record may still carry the block, but

@@ -1,4 +1,4 @@
-"""S-NEXT-u4-steward (premise-check design, unit U4): the steward decides a
+"""S-104 (premise-check design, unit U4): the steward decides a
 placed lesson whose written premise moved, and the `premises` sheet verb
 records what a lesson rests on.
 
@@ -1008,7 +1008,7 @@ def test_the_steward_previews_its_staged_move_as_the_reroute_it_will_be(tmp_path
 
 
 def test_the_contract_and_the_method_say_the_same(tmp_path):
-    """The method's text is the premise-spec lane's (S-NEXT-premise,
+    """The method's text is the premise-spec lane's (S-104,
     steward-method section 17); this lane writes none of its own, so the
     method half of this test passes once that lane has landed with it."""
     from self_learn import steward_prompt, worker

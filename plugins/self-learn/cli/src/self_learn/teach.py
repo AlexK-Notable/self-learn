@@ -451,7 +451,7 @@ def _capture_txn(
 
 def run_teach(args: argparse.Namespace) -> int:
     """``self-learn teach``. With ``--statement`` the user's own words are
-    also recorded in the user-statement store (S-65, S-NEXT-cures-a): found
+    also recorded in the user-statement store (S-65, S-102): found
     and checked BEFORE the lesson is written (a statement that cannot be
     cited refuses the whole command, nothing written), appended AFTER the
     lesson lands or is captured to pending (exit 0 or 4). A failure of that

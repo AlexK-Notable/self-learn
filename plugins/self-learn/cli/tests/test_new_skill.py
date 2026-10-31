@@ -127,7 +127,7 @@ class TestScaffold:
 
         routed = Record.from_path(env.bucket / "resolved" / f"{RID}.md")
         assert routed.routing["new_skill"] == "mouse-firmware"
-        # M3-11's note, as SK2 (S-NEXT-sk2-routes, 2026-10-31, D7) changed
+        # M3-11's note, as SK2 (S-107, 2026-10-31, D7) changed
         # it: the route links the skill itself, so the note says where it
         # is linked and asks for no "run ./install.sh" step any more.
         assert any("linked at" in n for n in result.post_notes), result.post_notes
@@ -231,7 +231,7 @@ def test_selftest_drift_covers_new_skill(env, tmp_path, monkeypatch, capsys):
     # skill is actually INDEXED, not merely present -- the healthy-install
     # premise this test relies on needs a personal-skill symlink into the
     # sandbox claude_dir's skills index (§2.2/§5.1B row 6 of the
-    # reachability spec). 2026-10-31, SK2 (S-NEXT-sk2-routes, D7): the route
+    # reachability spec). 2026-10-31, SK2 (S-107, D7): the route
     # makes that link itself now; the hand-made link this test used to add
     # is gone, and the test checks the route's link instead.
     link = claude / "skills" / "mouse-firmware"

@@ -1,5 +1,5 @@
 """premise_sweep.py -- the daily premise sweep (premise-check design, unit
-U2, plus the sweep half of unit U8; decision row S-NEXT-u2-sweep, assigned
+U2, plus the sweep half of unit U8; decision row S-104, assigned
 at landing).
 
 :mod:`premises` is the field, the closed catalog of read-only probes and
@@ -51,7 +51,7 @@ remembers what they said, so that a change is noticed only when it is real:
   ``psha``, ``state``, ``value_sha``, ``failing``, ``observed_at``, ...) are
   its contract; :func:`confirmed_moves` is the same judgement for the read
   verb and the sweep's own count. Its placement half (U8,
-  S-NEXT-u8-placement) reads :func:`confirmed_placement_moves`, the cache
+  S-104) reads :func:`confirmed_placement_moves`, the cache
   alone, and the verbs that fold or restore a hand-edited block read
   :func:`confirmed_intact_values`.
 
@@ -647,7 +647,7 @@ def _intact_facts(
                 )
             elif rid in carriers:  # edited
                 sha = compiled.sha256_hex(region.observed or b"")
-                # S-NEXT-u8-placement: the one spelling the fold and restore
+                # S-104: the one spelling the fold and restore
                 # verbs compare against (`premises.intact_failing_value`).
                 value = premises.intact_failing_value("edited", sha) or f"edited:{sha}"
                 facts.append(_Fact(rid, INTACT, "failing", value, "hand-edited", note, group_key))
@@ -892,7 +892,7 @@ def confirmed_placement_moves(
     *,
     history: History | None = None,
 ) -> list[Movement]:
-    """S-NEXT-u8-placement: the confirmed moves of PLACEMENT premises
+    """S-104: the confirmed moves of PLACEMENT premises
     only, read from the cache alone -- no record is parsed, so the
     steward's due check can ask on every scheduler tick. The same
     judgement :func:`confirmed_moves` makes (:func:`judge_placement`); the
@@ -930,7 +930,7 @@ def _same_path(a: object, b: object) -> bool:
 def confirmed_intact_values(
     home: Path | str, target: Path | str, cache_dir: Path | None = None
 ) -> set[str]:
-    """S-NEXT-u8-placement (02 §3a.10.7, the whole-region rule's first
+    """S-104 (02 §3a.10.7, the whole-region rule's first
     condition): the value hashes of every CONFIRMED ``@intact`` move of the
     managed block in *target* -- what the steward's input saw. A fold or a
     restore acts only on the block the sweep confirmed: a block edited again

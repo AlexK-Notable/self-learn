@@ -53,7 +53,7 @@ def _seed_fresh_proposals(home: Path, count: int, offset: int = 0) -> list[str]:
     return ids
 
 
-#: S-NEXT-u6-backfill: the steward's shared test setup pauses the premise
+#: S-104: the steward's shared test setup pauses the premise
 #: backfill (`premises.backfill_per_night: 0`). With it on (the product
 #: default, 10), every placed lesson a test makes without premises becomes a
 #: `premise-extract` input on the next run, which these tests -- about other

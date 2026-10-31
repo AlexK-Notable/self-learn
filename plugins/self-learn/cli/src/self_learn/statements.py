@@ -303,7 +303,7 @@ def _check_evidence(
 def user_message_ref(home: Path | str, session: str, verbatim: str) -> str:
     """``transcript:<session>#L<n>`` for the LATEST row of *session*'s
     transcript that the user typed and that holds *verbatim*
-    (S-NEXT-cures-a: ``teach --statement`` is given the words and the
+    (S-102: ``teach --statement`` is given the words and the
     session, not a line number, so it finds the line itself).
 
     Read-only. Only a row :func:`add`'s own evidence check accepts counts
@@ -351,7 +351,7 @@ def user_message_ref(home: Path | str, session: str, verbatim: str) -> str:
 
 def latest_user_typed(home: Path | str, session: str) -> tuple[str, str]:
     """``(message_ref, text)`` of the LAST row of *session*'s transcript that
-    the user typed (S-NEXT-cures-b). The proof an agent's shell needs before a
+    the user typed (S-103). The proof an agent's shell needs before a
     registration may ride on a "yes": the words the person typed most recently
     must be that yes, so an older "yes" (to another question) or anything the
     person typed after it never counts.

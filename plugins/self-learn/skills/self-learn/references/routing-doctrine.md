@@ -256,7 +256,7 @@ mechanically at route time — propose your best name and let the human
 correct it, never leave it blank); `no` needs at most one member;
 `indeterminate` is available when the clustering is genuinely unclear.
 `yes` fires `NEW_SKILL` and ends the procedure here. `NEW_SKILL` is a
-**proposal** of a skill, never the making of one (S-NEXT-sk6-steward-proposes):
+**proposal** of a skill, never the making of one (S-107):
 a person who agrees routes the lesson with `route --dest new-skill:<name>`,
 which scaffolds the skill; an agent never does. The steward, deciding the
 lesson, either routes it into a skill self-learn already owns (its output

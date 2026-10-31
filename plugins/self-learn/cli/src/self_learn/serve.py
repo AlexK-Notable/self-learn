@@ -15,7 +15,7 @@ the cache ROOT, per-home cache directories whose ledger home no longer
 exists and host lock files nobody holds -- cache only, never the home it
 serves.
 
-A daily PREMISES job (S-NEXT-u2-sweep, `premise_sweep.py`) also runs, before
+A daily PREMISES job (S-104, `premise_sweep.py`) also runs, before
 the steward: it re-reads what placed lessons rest on, writes only its own cache
 folder (`<cache>/premises/`) and, for a premise marked `on_change: refresh`, one
 ledger commit under the commit lock (the job commits its own writes, as the
@@ -780,7 +780,7 @@ def _input_commit_epoch(home: Path, path: Path) -> float:
 
 
 def _premise_extract_waiting(home: Path) -> bool:
-    """S-NEXT-u6-backfill: whether the steward's next run would take at
+    """S-104: whether the steward's next run would take at
     least one `premise-extract` input (a placed lesson with no premises,
     not held, its version undecided, the backfill not paused). Unordered
     and stopped at one row: the ordering reads case files, and this runs
@@ -812,11 +812,11 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     # U3a: an unhandled suspected rule violation is an input too; like a
     # reconsider input it is due once the cooldown has passed.
     violations = steward._suspected_violation_inputs(home)
-    # S-NEXT-u3-followup: a placed lesson whose follow-up closed after it was
+    # S-104: a placed lesson whose follow-up closed after it was
     # last decided is an input too, due like a reconsider input once the
     # cooldown has passed (the premise-check design, U3).
     premise_moved = steward._premise_moved_inputs(home, manifests=manifests)
-    # S-NEXT-u6-backfill: a placed lesson with no premises is an input too
+    # S-104: a placed lesson with no premises is an input too
     # (the backfill), due like a reconsider input once the cooldown has
     # passed. Asked only when it can change the answer, and unordered (the
     # ordering reads case files; this runs on every tick).
@@ -1118,7 +1118,7 @@ def _run_worker_job(home: Path) -> "worker.RunResult":
 
 
 def _premises_is_due(home: Path, cache_dir: Path, now: float) -> bool:
-    """S-NEXT-u2-sweep (premise-check design D5): the daily premise sweep is
+    """S-104 (premise-check design D5): the daily premise sweep is
     due when ``premises.enabled`` is on, it was last attempted at least a day
     ago, and the ledger has a resolved lesson to look at. Reads the cache and
     directory names only, so it is cheap every tick."""
@@ -1207,7 +1207,7 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 )
                 ran.append(worker_record)
                 _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
-        # S-NEXT-u2-sweep: the premise sweep runs BEFORE the steward, so a
+        # S-104: the premise sweep runs BEFORE the steward, so a
         # change it confirms is decided the same night (design D5). It is a
         # job like the others (serial, one at a time) and calls no model.
         if _due_or_hold(

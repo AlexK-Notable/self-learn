@@ -1,5 +1,5 @@
 """``skill write`` and ``skill retire``: self-learn deploys and removes the
-skills it owns (SK1, S-NEXT-sk1-writer; skill-writing plan §2 steps 5 and 8,
+skills it owns (SK1, S-107; skill-writing plan §2 steps 5 and 8,
 decisions D4 and D7, interfaces §4.0).
 
 A skill self-learn owns lives in the skills root (claude-skills) as an
@@ -1871,7 +1871,7 @@ def retire(
 
 # ----------------------------------------------------------------- rename
 #
-# SK8 (S-NEXT-sk8-rename; skill-writing plan D15, §4.1 row SK8). A skill
+# SK8 (S-107; skill-writing plan D15, §4.1 row SK8). A skill
 # self-learn owns gets a new name. ``rename`` MOVES the skill, every byte
 # kept except its name:
 #

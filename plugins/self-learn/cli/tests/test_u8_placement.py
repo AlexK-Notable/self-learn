@@ -1,4 +1,4 @@
-"""S-NEXT-u8-placement (premise-check design, unit U8; the hand-maintenance
+"""S-104 (premise-check design, unit U8; the hand-maintenance
 cures design, M3): the steward's half of the placement premises.
 
 The sweep half (U2) derives, for every placed lesson, whether a session
@@ -1071,7 +1071,7 @@ def test_a_lesson_that_cannot_be_written_is_told_how_to_move(tmp_path):
     body = _brief(home, row)
     assert "placement @writable moved: self-learn may no longer write where this lesson sits" in body
     assert "[how to decide where it sits]" in body
-    # no case covers it: S-NEXT-u4-steward's resolution reroute moves it
+    # no case covers it: S-104's resolution reroute moves it
     assert "a `route` line with the `dest` it should have (applied as a reroute)" in body
     assert "text_from" not in body
     assert "[how to decide the hand edit]" not in body  # control
@@ -1082,7 +1082,7 @@ def test_a_lesson_that_cannot_be_written_is_told_how_to_move(tmp_path):
 
 def test_the_contract_and_the_overseer_formats_agree(tmp_path):
     """The method's text (steward-method section 17) is the premise-spec
-    lane's, as it is for U4 (S-NEXT-u4-steward's fix round 1): this lane
+    lane's, as it is for U4 (S-104's fix round 1): this lane
     writes none of its own, so only the contract and the overseer's formats
     are pinned here."""
     contract = " ".join(steward_prompt._render_output_contract().split())

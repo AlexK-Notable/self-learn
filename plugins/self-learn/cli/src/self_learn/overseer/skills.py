@@ -1,6 +1,6 @@
 """The overseer builds, changes and retires the skills self-learn owns
-(SK3, S-NEXT-sk3-overseer-build; skill-writing plan §2 steps 4, 7 and 10,
-decisions D4 and D10; ``03-decisions.md`` S-NEXT-skills parts 4-6).
+(SK3, S-107; skill-writing plan §2 steps 4, 7 and 10,
+decisions D4 and D10; ``03-decisions.md`` S-107 parts 4-6).
 
 This module is the overseer runner's half of skill writing. The writer
 itself (template check, name check, secret scan, deploy, registry row,
@@ -142,7 +142,7 @@ SKILL_PROPOSAL_REASON = "skill-proposal"
 # ---------------------------------------------------------------- the ledger
 
 #: ``overseer/skills/`` under the ledger home: ``<week>/drafts/<name>/`` and
-#: the trial file (``02-schema.md`` §3, S-NEXT-skills).
+#: the trial file (``02-schema.md`` §3, S-107).
 LEDGER_DIR = "overseer/skills"
 TRIAL_FILE = "writing-trial.yaml"
 
@@ -196,7 +196,7 @@ def writing_mode(home: Path | str) -> tuple[str, str | None]:
     when the value in ``config.yaml`` is not one of the three.
 
     Read from ``config.yaml`` only: no environment variable and no override
-    channel (S-NEXT-skills part 6). A missing key is the default, ``auto``;
+    channel (S-107 part 6). A missing key is the default, ``auto``;
     a ``config.yaml`` that cannot be read reads as ``off``.
     Any other value -- a typo, ``null``, a YAML boolean such as ``false`` --
     reads as ``off``, never as the default, so a mistyped rollback fails

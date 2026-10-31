@@ -1,4 +1,4 @@
-"""S-NEXT-cures-b: `host set-mode` and a typed yes that registers a host.
+"""S-103: `host set-mode` and a typed yes that registers a host.
 
 Written under the user's 2026-10-30 rule (tests run only for a significant
 change): the orchestrator runs these once over the combined landing. Each

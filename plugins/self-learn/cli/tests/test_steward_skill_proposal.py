@@ -1,4 +1,4 @@
-"""SK6 (S-NEXT-sk6-steward-proposes): the steward proposes skills.
+"""SK6 (S-107): the steward proposes skills.
 
 The skill-writing plan's D6: only the overseer creates a skill on its own
 decision; the steward PROPOSES one, by parking a case for the overseer with

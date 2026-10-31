@@ -2745,7 +2745,7 @@ def test_both_prompts_carry_the_journal_and_phase_b_the_question_bar(tmp_path, m
         assert f"You are in phase {phase} now." in prompt
         # The bar is against capping questions (d07ae48). Integration
         # 2026-10-31: cures lane D's notices paragraph carries its own caps,
-        # which the decision register sets (S-NEXT-cures-d: one sentence of at
+        # which the decision register sets (S-106: one sentence of at
         # most N characters, at most five a run), so it is cut out first.
         uncapped = _without_notices_paragraph(prompt)
         assert "at most" not in uncapped.lower()

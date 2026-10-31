@@ -80,9 +80,9 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
           inferred, except the user host, which is never registered.
 ```
 
-*(Added 2026-10-30, S-NEXT-skills.)* **Skills self-learn owns live in the
+*(Added 2026-10-30, S-107.)* **Skills self-learn owns live in the
 skills root, and self-learn links them.** A skill self-learn makes (`skill
-write`, `03-decisions.md` S-NEXT-skills) is an ordinary plugin of the
+write`, `03-decisions.md` S-107) is an ordinary plugin of the
 registered skills root (claude-skills), `plugins/<name>/skills/<name>/`, with
 its `marketplace.json` entry, committed and pushed by self-learn with the
 autosync pause sentinel held, exactly as a `skill-md` route's write is. There
@@ -112,11 +112,11 @@ commit. Codex's skill folder is not linked.
                                        # evidence and unfinished obligations
   user-statements.jsonl               # append-only, the user's own words
   user-model.md                       # CURRENT/LAPSED readings (02 §3a)
-  owned-skills.yaml                   # skills self-learn owns (02 §3; S-NEXT-skills)
+  owned-skills.yaml                   # skills self-learn owns (02 §3; S-107)
   overseer/{<date>-report.md, latest-report.md, coverage.yaml,
     open-questions.yaml, evaluation-<date>.md}   # the overseer's own subtree
   overseer/skills/{<week>.yaml, <week>/drafts/<name>/,
-    writing-trial.yaml}                # candidates, dispositions, drafts (S-NEXT-skills)
+    writing-trial.yaml}                # candidates, dispositions, drafts (S-107)
 ```
 
 `cases/runs/<run_id>.json` is ledger truth, not runner cache. Its schema and
@@ -308,7 +308,7 @@ revert). Doc 13 promotes that to the general rule:
    exclude line (an ignore line cannot hide a tracked file) and is still
    (over)written; a marker git already ignores gets no duplicate line.
 
-   **Changing a mode, and registering on a yes (S-NEXT-cures-b, 2026-10-31).**
+   **Changing a mode, and registering on a yes (S-103, 2026-10-31).**
    `host add` never changes a mode: re-adding a registered host with a
    different mode still refuses. Before this, the only way across was `host
    remove` then `host add --mode` (two commits, with the compile gate shut
@@ -552,7 +552,7 @@ never enables them, unchanged from every other unit this repo ships
 (`CLAUDE.md` § Layout).
 
 **A premises job joins the tick** *(Added 2026-10-31, `03-decisions.md`
-S-NEXT-premise; `02-schema.md` §3a.10.6)*. A `premises` job, due once a day
+S-104; `02-schema.md` §3a.10.6)*. A `premises` job, due once a day
 and run before the steward's nightly slot, runs every premise probe and the
 three placement checks and writes its observations to the cache
 (`<cache>/premises/observations.jsonl`, `NOT_REPO_TRUTH`). Its one ledger
@@ -1817,7 +1817,7 @@ other verb's receipt there (`02-schema.md` §3a.2 §5); the human path opens
 no case, so no Application section exists to write to. `batch`'s flush
 epilogue remains the Application section's one writer.
 
-**What a delegated item prints (S-NEXT-cures-a, 2026-10-31).** The route's own "two manual steps remain" text is for the person who ran it. When the overseer or the steward routes a hook, the activation that follows in the same item either did both steps (it registered the hook) or placed the symlink and, with `overseer.hook_activation` off, says in its own "delegated" receipt that one step is left (the `settings.json` entry; `./install.sh` is no longer owed once the symlink is placed). The item's text therefore never carries the route's two-step block (`batch._dispatch_hook_activation`, `verbs.without_hook_manual_steps`).
+**What a delegated item prints (S-102, 2026-10-31).** The route's own "two manual steps remain" text is for the person who ran it. When the overseer or the steward routes a hook, the activation that follows in the same item either did both steps (it registered the hook) or placed the symlink and, with `overseer.hook_activation` off, says in its own "delegated" receipt that one step is left (the `settings.json` entry; `./install.sh` is no longer owed once the symlink is placed). The item's text therefore never carries the route's two-step block (`batch._dispatch_hook_activation`, `verbs.without_hook_manual_steps`).
 
 **What stays true regardless of actor.** The two manual steps this file's
 existing hook-compile path already requires — the exact-bytes preview and a
@@ -1837,7 +1837,7 @@ built the warning hooks; activation handles their event); O-2
 only decides *who* may approve and install a hook already compiled under
 whatever destination grammar exists at build time.
 
-## 7.5 Project notices (added 2026-10-31, S-NEXT-cures-d)
+## 7.5 Project notices (added 2026-10-31, S-106)
 
 **What problem.** Two facts end up outside the ledger with nobody to read them,
 both about ONE project: an overseer finding about a project's own code (the

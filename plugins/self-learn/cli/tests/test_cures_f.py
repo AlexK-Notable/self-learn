@@ -1,4 +1,4 @@
-"""S-NEXT-cures-f (2026-10-31, lane F of the hand-maintenance cures: C4 and C8).
+"""S-108 (2026-10-31, lane F of the hand-maintenance cures: C4 and C8).
 
 The user's agreement (2026-10-30, "i reviewed checkpoint 90. i agree with the
 decisions."): the overseer may write a corrected lesson as a PENDING record for

@@ -804,7 +804,7 @@ def test_the_mode_flip_refusal_names_the_registration_on_both_commands(
         host_add(home, repo, "project", mode="git")
     assert f"`self-learn host remove {repo} --project`" in str(project_flip.value)
     assert f"`self-learn host add {repo} --mode git`" in str(project_flip.value)
-    # S-NEXT-cures-b: the refusal now names three commands, in this order: the
+    # S-103: the refusal now names three commands, in this order: the
     # one-step `set-mode` first, then the remove + add pair it replaces.
     set_mode, remove, add = re.findall(r"`self-learn (host [^`]*)`", str(root_flip.value))
     assert set_mode == f"host set-mode {repo} plain --skills-root"
@@ -928,7 +928,7 @@ def test_the_hosts_row_names_the_way_out_for_a_plain_root(tmp_path, monkeypatch)
     assert "--dest skill-md" not in msg
     with pytest.raises(verbs.NeedsPerson, match="SKILL.md is tracked by git"):
         verbs.reroute(home, rid, dest="skill-md", no_push=True)  # why the row says so
-    # S-NEXT-cures-b: one command now (a person's `host set-mode`), not a
+    # S-103: one command now (a person's `host set-mode`), not a
     # remove then an add.
     (set_mode,) = re.findall(r"`self-learn (host [^`]*)`", msg)
     assert set_mode.startswith("host set-mode ")

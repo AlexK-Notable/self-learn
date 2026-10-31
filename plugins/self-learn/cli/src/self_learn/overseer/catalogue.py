@@ -18,7 +18,7 @@ on this machine. Each is data first, then a renderer over the data:
    it. A dict ready to dump as ``skills-index.yaml``.
 
 3. **Lesson neighbourhoods** (:func:`lesson_neighbourhoods`,
-   :func:`render_neighbourhoods`; S-NEXT-sk5-neighbourhoods, D12): groups of placed or pending
+   :func:`render_neighbourhoods`; S-107, D12): groups of placed or pending
    lessons that sit near each other, across every bucket, so a reader who
    looks for "several lessons that are really one task" reads a short list
    instead of searching ~150 lessons. Computed from the lesson index (the

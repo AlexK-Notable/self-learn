@@ -1,5 +1,5 @@
 """The steward's read-only ``premise_probe`` tool (premise-check design,
-unit U5; decision row S-NEXT-u5-probe-tool, assigned at landing).
+unit U5; decision row S-104, assigned at landing).
 
 The steward decides a lesson that rests on a fact about the machine, and
 writes the ``premises`` a lesson will be checked by. It has no Bash

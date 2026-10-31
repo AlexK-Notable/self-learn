@@ -132,7 +132,7 @@ class HostRemoveRefused(HostsError):
 
 
 class HostModeAgentRefusal(HostsError):
-    """S-NEXT-cures-b: ``host set-mode`` called from an agent's shell. A
+    """S-103: ``host set-mode`` called from an agent's shell. A
     mode is the person's choice (registration is disclosed consent, S-29 /
     Y-17, and a mode change is the same kind of act), so the CLI refuses it
     the way it refuses a tier-C ``config set`` (S-92): exit 1, before the
@@ -720,7 +720,7 @@ def host_add(
     already-registered host with the SAME mode changes nothing and
     commits nothing; re-adding with a DIFFERENT mode REFUSES (MODE6,
     U-hostmode R-f: ``host add`` never changes a mode; a person changes
-    one in place with ``host set-mode``, S-NEXT-cures-b, or by ``host
+    one in place with ``host set-mode``, S-103, or by ``host
     remove`` + ``host add --mode``).
 
     ``init`` (09 §11 Y-17, 2026-07-18): run the ``--init`` leg
@@ -802,7 +802,7 @@ def host_add(
             f"{kind} host {target} is already registered as "
             f"{existing_mode!r}; `host add` never changes a mode. Run "
             f"`self-learn host set-mode {target} {mode} {which}` in your own "
-            "terminal to change it in place (S-NEXT-cures-b), or `self-learn "
+            "terminal to change it in place (S-103), or `self-learn "
             f"host remove {target} {which}` then `self-learn host add "
             f"{target}{add_flag} --mode {mode}`"
         )
@@ -891,7 +891,7 @@ def host_set_mode(
     *,
     registration: str | None = None,
 ) -> HostSetModeResult:
-    """``host set-mode <path> <mode>`` (S-NEXT-cures-b, cures M6.1): change a
+    """``host set-mode <path> <mode>`` (S-103, cures M6.1): change a
     registered host's mode in place, in one ledger commit (pinned subject
     ``self-learn: host set-mode <kind> <path> <old> → <new>``). Before this,
     the only route was ``host remove`` then ``host add --mode``, two commits
@@ -1329,7 +1329,7 @@ def host_remove(
     project entry -- and keep the other with its own mode. One repo may be
     registered both ways in two modes, and ``host add`` never changes a
     registration's mode (MODE6), so changing one is ``host set-mode``
-    (S-NEXT-cures-b), or this call followed by ``host add``; without it, a bare ``host remove``
+    (S-103), or this call followed by ``host add``; without it, a bare ``host remove``
     dropped both. The routed-record refusal then counts only the records
     that registration compiles (:func:`records_targeting`). ``None`` (the
     bare verb) drops every registration of *path*, unchanged.

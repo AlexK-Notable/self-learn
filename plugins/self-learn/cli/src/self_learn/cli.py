@@ -916,7 +916,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     premises_p = sub.add_parser(
         "premises",
-        help="the premise check (S-NEXT-u2-sweep): check -- run every probe now, "
+        help="the premise check (S-104): check -- run every probe now, "
         "read-only, and print each premise's baseline, current value and verdict",
     )
     premises_sub = premises_p.add_subparsers(dest="premises_command", metavar="<verb>")
@@ -934,7 +934,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     notice_p = sub.add_parser(
         "notice",
-        help="project notices (S-NEXT-cures-d): one line about a project, shown at "
+        help="project notices (S-106): one line about a project, shown at "
         "session start only in sessions inside that project -- list | done",
     )
     notice_sub = notice_p.add_subparsers(dest="notice_command", metavar="<verb>")
@@ -1316,7 +1316,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     hsm = host_sub.add_parser(
         "set-mode",
-        help="change a registered host's mode in place (S-NEXT-cures-b); a "
+        help="change a registered host's mode in place (S-103); a "
         "person's command: refused from an agent's shell, like a tier-C "
         "config set",
     )
@@ -1620,7 +1620,7 @@ def _cmd_status_fast() -> int:
     data["overseer_last_run"] = overseer_run.last_run_iso_from_cache(
         serve.cache_dir_readonly(home)
     )
-    # S-NEXT-cures-d: project notices -- ABSENT unless this directory is inside
+    # S-106: project notices -- ABSENT unless this directory is inside
     # a project a live notice names (absence is the normal case, like
     # `overseer_open_questions`). `visible` never raises and reads only the
     # cache; the one git question a `code` notice asks is bounded.
@@ -2150,7 +2150,7 @@ def _cmd_doctor_miner(home: Path) -> int:
 
 
 def _cmd_notice(args: argparse.Namespace) -> int:
-    """`notice list [--all] [--json]` and `notice done ID` (S-NEXT-cures-d).
+    """`notice list [--all] [--json]` and `notice done ID` (S-106).
     Both touch only the cache (`<cache>/notices/`): a notice is a hint about
     one project, never ledger content, so neither verb takes the commit lock
     or writes the ledger."""
@@ -2192,7 +2192,7 @@ def _cmd_notice(args: argparse.Namespace) -> int:
 
 
 def _cmd_doctor_premises(home: Path) -> int:
-    """`doctor premises` (S-NEXT-u2-sweep): the same rows as the selftest's
+    """`doctor premises` (S-104): the same rows as the selftest's
     `premises` row, one per line, from :func:`premise_sweep.doctor_rows`. A
     broken probe is a WARN, never a FAIL, so this verb always exits 0; it
     reads the cache and the ledger and writes nothing."""
@@ -2644,7 +2644,7 @@ def _reports_no_change(compile_result: object) -> bool:
 
 #: Verbs whose whole effect is on the ledger (or the Claude runtime dir) and
 #: never attempt a host write, so "no `compile_result`" cannot mean "the host
-#: write failed" for them (S-NEXT-cures-a; see :func:`_outcome_state`).
+#: write failed" for them (S-102; see :func:`_outcome_state`).
 _LEDGER_ONLY_ACTIONS = frozenset({
     "reject", "defer", "reconsider",
     "hook-activate", "hook-deactivate",
@@ -2686,7 +2686,7 @@ def _outcome_state(result: verbs.VerbResult) -> str:
     renders it on the success leg unconditionally) — this function only
     controls the summary label, never the repair text."""
     if result.action in _LEDGER_ONLY_ACTIONS:
-        # S-NEXT-cures-a (M2.2): the ledger-only actions beyond the three
+        # S-102 (M2.2): the ledger-only actions beyond the three
         # the original check named -- `hook-activate`/`hook-deactivate`
         # (the runtime-dir write IS the whole verb; no `compile_result`
         # ever exists, so they used to read `drift` on every success and
@@ -2709,7 +2709,7 @@ def _outcome_state(result: verbs.VerbResult) -> str:
         and result.host_commit_sha is None
         and result.destination is None
     ):
-        # S-NEXT-cures-a (M2.2): a `replace` of a pending or deferred
+        # S-102 (M2.2): a `replace` of a pending or deferred
         # lesson writes the new lesson to `pending/` and supersedes the
         # old one in one ledger commit (`_replace_pending`): no host write
         # was attempted, so `compile_result is None` does not mean one
@@ -2878,7 +2878,7 @@ _NOTE_REQUIRED_SURFACES = frozenset({"reconsider", "followup add"})
 
 
 def _agent_attribution(args: argparse.Namespace, surface: str) -> tuple[str | None, int | None]:
-    """M5.2 (S-NEXT-cures-a): who ran this ledger-writing verb, and whether
+    """M5.2 (S-102): who ran this ledger-writing verb, and whether
     it may run.
 
     Returns ``(runner, refusal_code)``. In a person's own terminal
@@ -3304,7 +3304,7 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
                 home, args.path, args.mode, registration=args.registration
             )
         except hosts_mod.HostModeAgentRefusal as exc:
-            # S-NEXT-cures-b: a business-rule refusal (exit 1, like
+            # S-103: a business-rule refusal (exit 1, like
             # AgentSettingRefusal), not a usage mistake.
             print(f"self-learn host set-mode: {exc}", file=sys.stderr)
             return 1

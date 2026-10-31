@@ -1,4 +1,4 @@
-"""S-NEXT-u6-backfill (premise-check design, unit U6): the backfill. A placed
+"""S-104 (premise-check design, unit U6): the backfill. A placed
 lesson with no `premises` field is offered to the steward as a
 `premise-extract` input, so the premises of the lessons placed before
 premises existed get written, a few a night; and a premise the steward finds

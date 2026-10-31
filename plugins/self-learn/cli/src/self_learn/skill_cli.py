@@ -1,5 +1,5 @@
-"""``self-learn skill write|retire|rename|list`` (SK1, S-NEXT-sk1-writer;
-``rename``: SK8, S-NEXT-sk8-rename).
+"""``self-learn skill write|retire|rename|list`` (SK1, S-107;
+``rename``: SK8, S-107).
 
 The person's door to :mod:`self_learn.skill_writer`; the overseer's runner
 calls the same functions in-process. ``write``, ``retire`` and ``rename``

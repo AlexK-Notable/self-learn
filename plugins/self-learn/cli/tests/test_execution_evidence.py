@@ -204,10 +204,10 @@ _THREADED_VERBS = (
     # E1 (2026-10-10): replace threads the execution ref to its own route
     # commit, whose subject starts `self-learn: replace <first id> `.
     "replace",
-    # S-NEXT-cures-f: restate threads the ref to its own commit, whose subject
+    # S-108: restate threads the ref to its own commit, whose subject
     # starts `self-learn: restate <closed id> `.
     "restate",
-    # S-NEXT-u4-steward: `self-learn: premises <action> <id>`.
+    # S-104: `self-learn: premises <action> <id>`.
     "premises",
 )
 

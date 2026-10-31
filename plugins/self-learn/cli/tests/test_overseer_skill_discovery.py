@@ -1,6 +1,6 @@
 """SK4 -- the overseer looks for skills itself: phase S, skill discovery
 (skill-writing plan §2 steps 2-3, D11, §4.1 row SK4 tests (a)-(h);
-``03-decisions.md`` S-NEXT-skills parts 4 and 6; ``02-schema.md`` §3 "The
+``03-decisions.md`` S-107 parts 4 and 6; ``02-schema.md`` §3 "The
 overseer's workspace for skills").
 
 A run is phase A, then phase S (one model call, in a workspace of its own,

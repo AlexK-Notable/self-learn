@@ -2271,7 +2271,7 @@ class TestDeactivateChecksRoutingHookToolsSameAsActivate:
 
 
 class TestAgentShellIsStamped:
-    """S-NEXT-cures-a (M5.2): `hook activate|deactivate` have no `--note`, so
+    """S-102 (M5.2): `hook activate|deactivate` have no `--note`, so
     an agent shell is stamped `By: agent` but not asked for a reason."""
 
     def test_activate_and_deactivate_record_by_agent_only_from_an_agent_shell(

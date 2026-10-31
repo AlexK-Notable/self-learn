@@ -1,4 +1,4 @@
-"""SK9 (S-NEXT-sk9-selftest): the `owned_skills` row of `self-learn --selftest`.
+"""SK9 (S-107): the `owned_skills` row of `self-learn --selftest`.
 
 The skill-writing plan (§4.1, unit SK9): every LIVE row of the ledger's
 owned-skills registry (``owned-skills.yaml``, `skill_registry`) must have its

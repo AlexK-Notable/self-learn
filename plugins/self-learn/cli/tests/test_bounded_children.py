@@ -277,17 +277,17 @@ MEASURED_CENSUS_MODULES = frozenset(
         "hosts.py",
         "ledger.py",
         "miner.py",
-        "notices.py",  # S-NEXT-cures-d: `git status` of a notice's file
+        "notices.py",  # S-106: `git status` of a notice's file
         "overseer/notify.py",
         "primitives/procs.py",
         "provider.py",
-        "skill_writer.py",  # S-NEXT-sk8-rename: `git show HEAD:<file>`
+        "skill_writer.py",  # S-107: `git show HEAD:<file>`
         "worker.py",
     }
 )
 # O-6 (16): detached overseer companion notification. 2026-10-31 (18): two
-# bounded `subprocess.run` sites, `notices.condition_holds` (S-NEXT-cures-d) and
-# `skill_writer._head_file_text` (S-NEXT-sk8-rename), both with `timeout=`.
+# bounded `subprocess.run` sites, `notices.condition_holds` (S-106) and
+# `skill_writer._head_file_text` (S-107), both with `timeout=`.
 MEASURED_CENSUS_SITE_COUNT = 18
 
 

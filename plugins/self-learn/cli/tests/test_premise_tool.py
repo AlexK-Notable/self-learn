@@ -1,4 +1,4 @@
-"""premise_tool.py (premise-check design, unit U5; S-NEXT-u5-probe-tool):
+"""premise_tool.py (premise-check design, unit U5; S-104):
 the steward's read-only `premise_probe` tool, and the seam change that
 lets the steward carry it beside its built-in tools.
 

@@ -535,7 +535,7 @@ runner uses when it decides a parked item in the user's stead — a human
 resolving one is not a special case.
 
 A `skill-proposal` case is the steward proposing a skill
-(S-NEXT-sk6-steward-proposes): it never makes one. Its decision's
+(S-107): it never makes one. Its decision's
 `skill` block names the skill it proposes, why, and every lesson the
 skill would hold — each lesson of the case's `records`, which the case
 writer checks, and any placed lessons that belong with them — and its

@@ -1,6 +1,6 @@
 """SK3 -- the overseer builds, changes and retires the skills self-learn
 owns, in phase B (skill-writing plan §2 steps 4, 7 and 10, D4, D10, §4.1
-row SK3 tests (a)-(f); ``03-decisions.md`` S-NEXT-skills parts 4-6, with
+row SK3 tests (a)-(f); ``03-decisions.md`` S-107 parts 4-6, with
 ``overseer.skill_writing`` taking auto|on|off, default auto).
 
 Every run here is scripted: the model is the fake ``write_session``
@@ -207,7 +207,7 @@ def test_skill_writing_defaults_to_auto_and_reads_its_three_values(env):
 
 @pytest.mark.parametrize("raw", ["false", "true", "maybe", "null", "1"])
 def test_any_other_value_reads_as_off_with_a_note(env, raw):
-    """S-NEXT-skills part 6: a mistyped rollback fails closed -- a YAML
+    """S-107 part 6: a mistyped rollback fails closed -- a YAML
     boolean included, which the generic resolver would read as the
     default (``auto``)."""
     _set_writing(env, raw)
@@ -1247,7 +1247,7 @@ def test_a_case_refused_after_its_skill_was_written_is_named_in_the_report(env, 
 
 @pytest.mark.parametrize("raw", ["false", "null", '""', '"maybe"'])
 def test_doctor_settings_names_a_skill_writing_value_the_overseer_reads_as_off(env, raw):
-    """Gate r2 MINOR (S-NEXT-skills part 6): `doctor settings` showed the
+    """Gate r2 MINOR (S-107 part 6): `doctor settings` showed the
     default, auto, for a YAML boolean, null or an empty string, while the
     overseer reads each as off. Red on 893996b (an INFO row). Control: a
     valid value is an ordinary INFO row."""

@@ -20,7 +20,7 @@ Mutation rules (02 §2) are enforced in code paths, not by convention:
   ``sightings``, ``scope``/``kind`` (the filing is never frozen),
   ``deferred_until``/``deferred_count``, ``superseded_by`` (corrective
   supersession targets already-routed records by design).
-- ``premises`` (S-NEXT-u1-premises, ``premises.py``) is metadata like
+- ``premises`` (S-104, ``premises.py``) is metadata like
   ``env``: mutable in every status through :meth:`Record.set_premises`,
   which validates the whole list, policy included; :meth:`Record.validate`
   checks its structure on every load and write (the policy runs on write
@@ -504,7 +504,7 @@ class Record:
 
     @property
     def premises(self) -> list[dict] | None:
-        """What the lesson rests on (S-NEXT-u1-premises; ``premises.py``):
+        """What the lesson rests on (S-104; ``premises.py``):
         plain deep copies, so callers cannot poke entries in place.
         ``None`` when the field is absent; ``[]`` when a decision recorded
         that the lesson rests on nothing checkable."""
@@ -798,7 +798,7 @@ class Record:
         self._fm["env"] = dict(value)
 
     def set_premises(self, value: list | None) -> None:
-        """Replace the whole ``premises`` list (S-NEXT-u1-premises).
+        """Replace the whole ``premises`` list (S-104).
         Metadata class, like ``env``: allowed in every status, because
         premises are written and re-baselined after a lesson is placed.
         ``None`` removes the field; ``[]`` records "nothing checkable".
@@ -1063,7 +1063,7 @@ class Record:
         premises = fm.get("premises")
         if premises is not None:
             try:
-                # Structure only on load (S-NEXT-u1-premises): the policy
+                # Structure only on load (S-104): the policy
                 # (secret scan, credential rules) runs on every write and
                 # before every probe, so a policy that tightens later never
                 # stops an existing record from loading.

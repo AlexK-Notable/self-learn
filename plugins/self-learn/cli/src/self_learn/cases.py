@@ -157,7 +157,7 @@ OUTCOMES = frozenset(
         "revise", "no-action", "parked",
     }
 )
-#: S-NEXT-sk6-steward-proposes: the parked reason of a skill proposal.
+#: S-107: the parked reason of a skill proposal.
 SKILL_PROPOSAL_REASON = "skill-proposal"
 PARKED_REASONS = frozenset(
     {
@@ -174,7 +174,7 @@ PARKED_REASONS = frozenset(
         # the steward decided and the ledger refused the decision's line for
         # a reason neither a retry nor a fresh decision can fix.
         "ledger-refused",
-        # S-NEXT-sk6-steward-proposes (skill-writing plan D6, SK-b): chosen
+        # S-107 (skill-writing plan D6, SK-b): chosen
         # by the steward's model when lessons would be better held by one
         # skill. The steward proposes a skill and never makes one; the
         # lessons wait, held like every parked case's (S-81), for the
@@ -205,7 +205,7 @@ REWRITE_NOW_VALUES = frozenset({"loaded", "context", "dropped"})
 #: grounding fields ``replace`` carries over (D-AUTHOR §2.11) and the
 #: lesson's notes (the build plan's amended writing guidance, §1.4: "a note
 #: attached to the lesson").
-#: S-NEXT-u1-premises: ``premises`` joins them -- what a lesson rests on
+#: S-104: ``premises`` joins them -- what a lesson rests on
 #: belongs to the lesson, not to one wording of it, so a rewrite keeps it
 #: (``verbs._compose_replacement`` carries it over).
 REWRITE_FIELDS = frozenset(
@@ -656,7 +656,7 @@ def _skill_problem(block: object) -> str | None:
 
 def _skill_proposal_problem(decision: dict, records: list[str]) -> str | None:
     """What a ``parked_reason: skill-proposal`` case lacks, or ``None``
-    (S-NEXT-sk6-steward-proposes; the skill-writing plan's §4.0 case shape:
+    (S-107; the skill-writing plan's §4.0 case shape:
     "`parked_reason: skill-proposal` requires `decision.skill`"). Called
     after :func:`_skill_problem` has checked the block's shape.
 
@@ -916,7 +916,7 @@ def check_case_data(data: dict, *, withhold_spans: bool = False) -> CaseFields:
             if problem is not None:
                 raise CaseUsageError(f"case record: {problem}")
     if parked_reason == SKILL_PROPOSAL_REASON:
-        # S-NEXT-sk6-steward-proposes: a skill proposal carries the skill.
+        # S-107: a skill proposal carries the skill.
         problem = _skill_proposal_problem(decision, list(records_field))
         if problem is not None:
             raise CaseUsageError(f"case record: {problem}")

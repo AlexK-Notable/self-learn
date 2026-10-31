@@ -1,5 +1,5 @@
 """premise_sweep.py (premise-check design, unit U2, plus the sweep half of unit
-U8; S-NEXT-u2-sweep): the daily sweep, the cache, two-sweep change detection,
+U8; S-104): the daily sweep, the cache, two-sweep change detection,
 `unavailable` handling, refresh, the read verb, the doctor/selftest row, the
 `premises.enabled` setting and the `serve` job.
 

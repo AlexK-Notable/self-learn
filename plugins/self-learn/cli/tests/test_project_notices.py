@@ -1,5 +1,5 @@
 """Project notices (hand-maintenance cures, lane D: M7 and M6 part 3;
-decision row S-NEXT-cures-d).
+decision row S-106).
 
 The user, 2026-10-30: "i reviewed checkpoint 90. i agree with the decisions."
 -- which settled design question Q3: one-line project notices at session

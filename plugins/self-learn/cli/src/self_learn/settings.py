@@ -175,7 +175,7 @@ SettingValue = str | int | float | bool | None
 #: (one call per session). `miner.run` reads the setting.
 MINER_ENGINES: tuple[str, ...] = ("digest", "session")
 
-#: `overseer.skill_writing`'s three values (S-NEXT-skills part 6, SK3):
+#: `overseer.skill_writing`'s three values (S-107 part 6, SK3):
 #: ``auto`` (the default: the first overseer run to complete keeps every
 #: skill it builds as a checked draft, every later run writes), ``on`` and
 #: ``off`` (drafts only). The runner reads the setting through
@@ -1076,7 +1076,7 @@ REGISTRY: tuple[Setting, ...] = (
         tier="C",
     ),
     # ------------------------------------------------------ premises
-    # The premise check (S-NEXT-u2-sweep, premise-check design D12 as the user
+    # The premise check (S-104, premise-check design D12 as the user
     # changed it on 2026-10-30): the daily sweep and the steward's two input
     # kinds run from landing with no step by a person, so the DEFAULT is true
     # and setting it false is the person's rollback. Tier C like every switch
@@ -1097,7 +1097,7 @@ REGISTRY: tuple[Setting, ...] = (
         tier="C",
         override_channel=False,
     ),
-    # S-NEXT-u6-backfill (premise-check design D10, D14): how many placed
+    # S-104 (premise-check design D10, D14): how many placed
     # lessons with no `premises` field the steward is offered each night to
     # write them (the backfill, `premise-extract`). The design's 10 is the
     # default; 0 pauses the backfill while the rest of the premise check
@@ -1188,7 +1188,7 @@ REGISTRY: tuple[Setting, ...] = (
         description="removal actions above this count raise the overseer notification cue",
         validate=lambda v: max(cast(int, v), 0),
     ),
-    # SK3 (S-NEXT-skills part 6): whether the overseer deploys the skills it
+    # SK3 (S-107 part 6): whether the overseer deploys the skills it
     # writes. Tier C, config.yaml only (no env var, no override channel),
     # like `miner.engine`: agents never set it (`CLAUDE.md`). The runner
     # reads it with `overseer.skills.writing_mode`, which reads an unknown
@@ -1213,7 +1213,7 @@ REGISTRY: tuple[Setting, ...] = (
         tier="C",
         override_channel=False,
     ),
-    # SK4 (S-NEXT-sk4-discovery; S-NEXT-skills part 6): whether the overseer
+    # SK4 (S-107; S-107 part 6): whether the overseer
     # makes its skill-discovery call (phase S) and phase B gives dispositions.
     # On by default; off, a run makes two model calls and the steward's
     # skill proposals wait parked. Tier C, config.yaml only (no env var, no
@@ -1961,7 +1961,7 @@ def preflight(home: Path | str) -> list[SettingRow]:
     rows: list[SettingRow] = []
     for setting in REGISTRY:
         if setting.name == "overseer.skill_writing":
-            # SK3 fix round 2 (gate r2 MINOR; S-NEXT-skills part 6): a
+            # SK3 fix round 2 (gate r2 MINOR; S-107 part 6): a
             # value the overseer reads as `off` while `resolve_setting`
             # falls through to the default is named, with what is obeyed.
             misread = _skill_writing_misread(home)
@@ -2016,7 +2016,7 @@ def _skill_writing_misread(home: Path | str) -> str | None:
     """`doctor settings`' WARN for an ``overseer.skill_writing`` value in
     config.yaml that is not ``auto``, ``on`` or ``off`` -- a YAML boolean,
     ``null``, an empty string, a typo -- or ``None`` (SK3 fix round 2, gate
-    r2 MINOR; S-NEXT-skills part 6). The overseer reads such a value as
+    r2 MINOR; S-107 part 6). The overseer reads such a value as
     ``off`` (`overseer.skills.writing_mode`), while :func:`resolve_setting`
     would show the default, ``auto``, for a boolean, ``null`` or an empty
     string; this row says what the overseer obeys. Mirrors

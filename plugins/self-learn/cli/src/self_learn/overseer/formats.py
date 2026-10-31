@@ -32,11 +32,11 @@ EXAMPLE_PARKED_CASE = "case-0000000a"
 EXAMPLE_CASE = "case-0000000b"
 #: E3b: the lessons a merge example folds into EXAMPLE_RECORD's successor.
 EXAMPLE_MERGED = ("lrn-0000000b", "lrn-0000000c")
-#: S-NEXT-cures-d: the project the notices example names. Not a real path; a
+#: S-106: the project the notices example names. Not a real path; a
 #: test hands the validator a known-projects set that holds it.
 EXAMPLE_PROJECT = "/srv/example-project"
 
-#: SK3 (S-NEXT-skills): the example skill phase B's formats carry, in
+#: SK3 (S-107): the example skill phase B's formats carry, in
 #: ``skill-example/`` (a folder shaped like ``skills/<name>/``), and the
 #: lessons its example pair moves in.
 SKILL_EXAMPLE_DIR = "skill-example"
@@ -153,7 +153,7 @@ def closed_sets() -> dict[str, Any]:
             "kind": list(run.FINDING_KINDS),
         },
         "questions": {"kind": list(run.QUESTION_KINDS)},
-        # S-NEXT-cures-d: the optional project notices.
+        # S-106: the optional project notices.
         "notices": {
             "entry_keys": list(run.NOTICE_KEYS),
             "max_text_chars": project_notices.MAX_TEXT,
@@ -174,7 +174,7 @@ def closed_sets() -> dict[str, Any]:
             "version": 1,
             "verbs": {
                 verb: {
-                    # S-NEXT-u8-placement: a key the batch refuses the
+                    # S-104: a key the batch refuses the
                     # overseer by name (`adopt_region`) is not offered.
                     "keys": sorted(keys - batch.agent_refused_keys("overseer").get(verb, frozenset())),
                     "required": sorted(batch.REQUIRED_KEYS.get(verb, frozenset())),
@@ -206,11 +206,11 @@ def closed_sets() -> dict[str, Any]:
             },
         },
         "report_headings_in_order": list(run._REPORT_SECTIONS),
-        # S-NEXT-u7c: one more heading, optional, right after Catalogue health.
+        # S-105: one more heading, optional, right after Catalogue health.
         "report_hand_steps_heading": run.HAND_STEPS_SECTION,
         "hook": _hook_closed_sets(),
         "skill_template": _skill_template_sets(),
-        # SK4 (S-NEXT-sk4-discovery): the discovery phase's candidates, as
+        # SK4 (S-107): the discovery phase's candidates, as
         # phase B reads them, and the dispositions phase B writes.
         "skill_candidates": discovery.candidate_closed_sets(),
         "skill_dispositions": discovery.disposition_closed_sets(),
@@ -318,7 +318,7 @@ _REPLACE_RULES = (
 )
 
 
-#: C4 (S-NEXT-cures-f): what the overseer may do about a lesson a person
+#: C4 (S-108): what the overseer may do about a lesson a person
 #: rejected. Phase B's README only.
 _RESTATE_RULES = (
     "A lesson a person rejected stays rejected: a `reopen` line for one is refused, and a",
@@ -340,7 +340,7 @@ _RESTATE_RULES = (
 
 
 def _skills_rules() -> list[str]:
-    """SK3 (S-NEXT-skills parts 3-6; D-AUTHOR §3.2-§3.5): phase B's section
+    """SK3 (S-107 parts 3-6; D-AUTHOR §3.2-§3.5): phase B's section
     on the skills self-learn owns. The template's numbers are read from the
     checker's constants (`skill_scaffold`), the workspace names from
     `overseer.skills`."""
@@ -439,7 +439,7 @@ not applied; write them exactly as you would otherwise.
 
 
 def _discovery_rules_s() -> list[str]:
-    """SK4 (S-NEXT-sk4-discovery): phase S's one file. Phase S is blind to
+    """SK4 (S-107): phase S's one file. Phase S is blind to
     the steward: nothing here names cases, sheets, verbs or what a later
     phase decides."""
     from ..skill_scaffold import SKILL_NAME_MAX_CHARS
@@ -471,7 +471,7 @@ Phase S file: {discovery.CANDIDATES_FILE} (the example beside this file shows it
 
 
 def _discovery_rules_b() -> list[str]:
-    """SK4 (S-NEXT-sk4-discovery): phase B's section on the candidates and
+    """SK4 (S-107): phase B's section on the candidates and
     the steward's proposals, and the dispositions it writes."""
     from . import discovery, skills
 
@@ -919,7 +919,7 @@ def phase_b_examples() -> dict[str, str]:
                 "close_call": False,
             }],
         }),
-        # C4 (S-NEXT-cures-f): a corrected version of a rejected lesson, as a
+        # C4 (S-108): a corrected version of a rejected lesson, as a
         # new pending lesson. The old lesson is left as it is, so the case
         # decides nothing about it (`no-action`).
         "case-restate-example.yaml": _dump({
@@ -964,7 +964,7 @@ def phase_b_examples() -> dict[str, str]:
     }
 
 
-#: SK4 (S-NEXT-sk4-discovery): the example candidates' ids, the lesson the
+#: SK4 (S-107): the example candidates' ids, the lesson the
 #: second one moves, and the skill already on the machine it names.
 EXAMPLE_CANDIDATE = "sc-example-release-notes"
 EXAMPLE_INTO_CANDIDATE = "sc-example-diagram-rules"

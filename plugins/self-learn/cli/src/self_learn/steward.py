@@ -244,7 +244,7 @@ _REDACTED_DETAIL = "<redacted: secret-scan>"
 #: (`steward_prompt._render_output_contract`).
 _RUNNER_ONLY_PARKED_REASONS = steward_prompt.RUNNER_ONLY_PARKED_REASONS
 #: ... and the reasons the model MAY park a lesson with: every other one.
-#: S-NEXT-sk6-steward-proposes: that includes `skill-proposal`
+#: S-107: that includes `skill-proposal`
 #: (`cases.SKILL_PROPOSAL_REASON`), the steward's one way to ask for a
 #: skill; the case writer requires its `decision.skill`, so a proposal
 #: without one reaches the repair turn through `_case_rule_message`.
@@ -1100,7 +1100,7 @@ _FOLLOWUP_MOVED_REASON = (
     "This lesson's follow-up was closed after the lesson was last decided: what it "
     "waited on has happened. Decide whether the lesson is still true as written."
 )
-#: ... and one whose written premises moved (S-NEXT-u4-steward).
+#: ... and one whose written premises moved (S-104).
 _PREMISE_MOVED_REASON = (
     "Something this lesson rests on was observed to have changed since it was last "
     "decided ({ids}). Decide whether the lesson is still true as written."
@@ -1133,7 +1133,7 @@ def _premise_moved_inputs(
     home: Path, exclude: set[str] | None = None, *, capped: bool = True,
     manifests: list[dict] | None = None,
 ) -> list[dict]:
-    """S-NEXT-u3-followup and S-NEXT-u4-steward (premise-check design U3, U4):
+    """S-104 and S-104 (premise-check design U3, U4):
     one `premise-moved` input per ROUTED lesson where something it rests on
     moved -- its follow-up was closed after the lesson was last decided
     (:func:`steward_inputs.moved_followups`: the live trigger and the
@@ -1163,12 +1163,12 @@ def _premise_moved_inputs(
     A broken probe is not an input by itself: every brief of the lesson
     shows it (:func:`steward_inputs.broken_probes`).
 
-    S-NEXT-u6-backfill: *capped* false returns every unit's rows, the
+    S-104: *capped* false returns every unit's rows, the
     ones past the nightly cap included. The backfill reads
     :func:`_premise_moved_unit_lists` instead, which also names the lessons
     of a group that waits whole (:func:`_premise_inputs`).
 
-    S-NEXT-u8-placement: a placement premise the sweep confirmed as failing
+    S-104: a placement premise the sweep confirmed as failing
     (:func:`steward_inputs.placement_moves`: `@reach`, `@writable`,
     `@intact`) is a mover too, and joins the version like a written one,
     with its `basis` (fix round 2) in place of a baseline's time.
@@ -1228,7 +1228,7 @@ def _premise_moved_row(
     if followup is None and not written and not placements:
         return None
     movers = written + placements
-    # A written premise hashes with its baseline's time (S-NEXT-u4-steward,
+    # A written premise hashes with its baseline's time (S-104,
     # so a value that returns after two decisions is a new version); a
     # placement premise has no baseline and is judged by its failing state,
     # so it hashes the premise, that state's value hash and what the
@@ -1274,7 +1274,7 @@ def _premise_moved_units(
     exclude: set[str],
     held: Iterable[str],
 ) -> list[list[dict]]:
-    """S-NEXT-u8-placement: the rows of :func:`_premise_moved_inputs` in
+    """S-104: the rows of :func:`_premise_moved_inputs` in
     units -- one lesson, or one `@intact` group (every placed lesson whose
     `@intact` mover names the same managed block, offered or not as one) --
     oldest first, each unit a list of rows; the caller applies the cap of
@@ -1317,7 +1317,7 @@ def _premise_moved_units(
     return [members for _since, _key, members in units]
 
 
-# ------------------------- premise-extract: the backfill (S-NEXT-u6-backfill)
+# ------------------------- premise-extract: the backfill (S-104)
 
 #: The card line of a `premise-extract` input.
 _PREMISE_EXTRACT_REASON = (
@@ -1378,7 +1378,7 @@ def _premise_extract_inputs(
     home: Path, exclude: set[str] | None = None,
     *, limit: int | None = None, ordered: bool = True,
 ) -> list[dict]:
-    """S-NEXT-u6-backfill (premise-check design D10; 02 §3a.10.7): one
+    """S-104 (premise-check design D10; 02 §3a.10.7): one
     `premise-extract` input per ROUTED lesson with no `premises` field
     (`steward_inputs.routed_without_premises`; `premises: []` is a decision
     and is never offered), so the steward writes what it rests on.
@@ -1440,7 +1440,7 @@ def _premise_extract_inputs(
 
 
 def _premise_inputs(home: Path, exclude: set[str]) -> list[dict]:
-    """The run's premise rows, after every other input (S-NEXT-u6-backfill):
+    """The run's premise rows, after every other input (S-104):
     the `premise-moved` rows under their nightly cap, then the backfill's
     `premise-extract` rows. A lesson with a `premise-moved` input -- taken
     tonight or waiting past the cap -- is not offered for its premises to
@@ -1704,13 +1704,13 @@ def _pair_problem(
     (:mod:`always_loaded`); *home*, when given, resolves a dest-less
     route's destination from the lesson's proposal.
 
-    S-NEXT-u4-steward: *inputs* (record id -> the packet's input row, when
+    S-104: *inputs* (record id -> the packet's input row, when
     the caller has the packet) carries the rules of a `premise-moved`
     input: a placed lesson no case covers may be replaced or moved in a
     `kind: resolution` case (:func:`_steward_replace_problem`,
     :func:`_steward_move_problem`), and a `no-action` decision re-records
     every moved premise (:func:`_premise_decision_problem`).
-    S-NEXT-u6-backfill: and of a `premise-extract` input, whose case only
+    S-104: and of a `premise-extract` input, whose case only
     writes the lesson's premises (:func:`_premise_extract_problem`)."""
     try:
         case_data = _read_yaml(case_path)
@@ -1848,7 +1848,7 @@ def _lesson_status(home: Path, record_id: str) -> str | None:
 def _uncovered_premise_moved(inputs: Mapping[str, Mapping] | None) -> frozenset[str]:
     """The packet's `premise-moved` inputs that no case covers (the input
     row names no `predecessor`): the placed lessons a `kind: resolution`
-    case may change (S-NEXT-u4-steward)."""
+    case may change (S-104)."""
     return frozenset(
         str(rid) for rid, row in (inputs or {}).items()
         if row.get("kind") == steward_inputs.INPUT_PREMISE_MOVED and not row.get("predecessor")
@@ -1869,7 +1869,7 @@ def _moved_premises(row: Mapping | None) -> list[Mapping]:
 def _premise_decision_problem(
     case_data: dict, items: list, inputs: Mapping[str, Mapping] | None, *, label: str
 ) -> str | None:
-    """S-NEXT-u4-steward (02 §3a.10.7): a `no-action` decision on a
+    """S-104 (02 §3a.10.7): a `no-action` decision on a
     `premise-moved` input -- the lesson stands -- must re-record every
     written premise that moved, or the same change comes back every night.
     Re-recording is a `premises` line on the lesson: `action: set` (which
@@ -1940,7 +1940,7 @@ def _premise_decision_problem(
 def _premise_extract_problem(
     case_data: dict, items: list, inputs: Mapping[str, Mapping] | None, *, label: str
 ) -> str | None:
-    """S-NEXT-u6-backfill (02 §3a.10.7): a `premise-extract` input came for
+    """S-104 (02 §3a.10.7): a `premise-extract` input came for
     its premises to be written, and for nothing else. Its case is a `kind:
     resolution` case with `outcome: no-action` and no `supersedes` (the
     placement decision stands, so there is nothing to supersede), and its
@@ -2029,7 +2029,7 @@ def _placement_decision_problem(
     home: Path | None, case_data: dict, items: list,
     inputs: Mapping[str, Mapping] | None, *, label: str,
 ) -> str | None:
-    """S-NEXT-u8-placement (02 §3a.10.7): the rules of a hand edit in a
+    """S-104 (02 §3a.10.7): the rules of a hand edit in a
     placed lesson's managed block (an `@intact` `premise-moved` input).
 
     1. A fold (`replace` with `adopt_region: true`) or a `premises` line
@@ -2210,7 +2210,7 @@ def _steward_replace_problem(
     at all -- only this packet's -- is `_check_stage`'s rule, and the
     S-81 hold is the ledger's.
 
-    S-NEXT-u4-steward (02 §3a.10.7, the user's 2026-10-30 yes to the
+    S-104 (02 §3a.10.7, the user's 2026-10-30 yes to the
     design's Q2): a lesson in *uncovered_moved* -- a `premise-moved` input
     no case covers, so there is no case for a reconsider to supersede -- is
     the one placed lesson a `kind: resolution` case may replace (S-88's
@@ -2218,7 +2218,7 @@ def _steward_replace_problem(
     move is :func:`_steward_move_problem`'s). Merging stays refused for it
     as for every placed lesson.
 
-    S-NEXT-u8-placement, fix round 1: a lesson in *fold_in_resolution* (a
+    S-104, fix round 1: a lesson in *fold_in_resolution* (a
     member of an `@intact` group no one case covers,
     :func:`_split_intact_members`) may be folded -- a `replace` with
     `adopt_region: true`, which keeps it where it is -- in a `kind:
@@ -2265,7 +2265,7 @@ def _steward_move_problem(
     home: Path, case_data: dict, items: list, *, label: str,
     uncovered_moved: frozenset[str] = frozenset(),
 ) -> str | None:
-    """S-NEXT-u4-steward (02 §3a.10.7, "`route`: the lesson moves (`batch`
+    """S-104 (02 §3a.10.7, "`route`: the lesson moves (`batch`
     applies it as `reroute`)"): a `route` line on a placed (routed) lesson
     is that lesson's move. A `kind: reconsider` case may carry it (U3b,
     S-72: `batch._reconsider_case_for`). A `kind: resolution` case may
@@ -2688,7 +2688,7 @@ def _reconsidered_by(case_data: object) -> frozenset[str]:
 
 
 def _rerouted_by(case_data: object) -> frozenset[str]:
-    """S-NEXT-u4-steward: the record ids a staged ``kind: resolution`` case
+    """S-104: the record ids a staged ``kind: resolution`` case
     that supersedes nothing covers -- the lines whose `route` on a routed
     lesson the preview widens to the reroute apply time will make
     (`batch._resolution_reroute_for`). The stage check
@@ -2709,7 +2709,7 @@ def _forced_parking_reason(
     """Return the policy reason that prevents this sheet from dispatching.
     *reconsidered* (S-73 item 6): the lines a staged reconsider case covers
     preview with its widening, the same as :func:`_ledger_repair_message`;
-    *rerouted* (S-NEXT-u4-steward): likewise for a staged resolution case's
+    *rerouted* (S-104): likewise for a staged resolution case's
     move of a placed lesson (:func:`_rerouted_by`)."""
     raw = _read_yaml(sheet_path)
     if not isinstance(raw, dict):
@@ -3395,7 +3395,7 @@ def _predecessor_fill(home: Path, stage: Path, predecessors: dict) -> dict[str, 
 def _spanning_reconsider_refusal(
     name: str, case_data: Mapping, predecessor_ids: set
 ) -> str | None:
-    """S-NEXT-u8-placement, fix round 1 (gate MAJOR 1): why a `kind:
+    """S-104, fix round 1 (gate MAJOR 1): why a `kind:
     reconsider` case whose records were placed by more than one earlier
     case cannot be recorded (it supersedes exactly one), or ``None``. Until
     this round `_prepared_recipe` RAISED here, before the parking branch and
@@ -3664,7 +3664,7 @@ def _verify_mutation_commit(
 ) -> bool:
     """Require the candidate commit to contain the referenced record effect."""
     if item.verb == "premises" and item.fields.get("action") == "restore-region":
-        # S-NEXT-u8-placement, fix round 1: a restore commits the compile
+        # S-104, fix round 1: a restore commits the compile
         # record alone (no record file), under its own subject
         # (`verbs.restore_region`); that subject for this lesson is its effect.
         shown = gitops._git(home, "log", "-1", "--format=%s", sha)  # noqa: SLF001
@@ -3781,7 +3781,7 @@ def _recovered_items(
             continue
         restores = item.verb == "premises" and item.fields.get("action") == "restore-region"
         if item.verb in {"route", "rehome", "rescope"} or restores:
-            # S-NEXT-u8-placement, fix round 1 (gate MINOR 1): a
+            # S-104, fix round 1 (gate MINOR 1): a
             # `restore-region` line's block is written after its ledger
             # commit, so one that crashed in between left a `stale` block
             # (the person's words the case decided to overwrite, still
@@ -5812,10 +5812,10 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
         eligible += _suspected_violation_inputs(
             home, exclude={row["record"] for row in eligible}
         )
-        # S-NEXT-u3-followup: a placed lesson whose follow-up closed after it was
+        # S-104: a placed lesson whose follow-up closed after it was
         # last decided. Last, so a lesson another input already names is
         # decided on that one now and on this one next run.
-        # S-NEXT-u6-backfill: then the backfill, a placed lesson with no
+        # S-104: then the backfill, a placed lesson with no
         # premises (`_premise_inputs`: never one whose move waits).
         eligible += _premise_inputs(home, exclude={row["record"] for row in eligible})
         if not dry_run:
@@ -5872,7 +5872,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             finally:
                 if index is not None:
                     index.close()
-            # S-NEXT-u8-placement: the lessons of one hand-edited managed
+            # S-104: the lessons of one hand-edited managed
             # block are decided in one case, so they share one packet.
             plans = steward_inputs.keep_groups_together(
                 plans, steward_inputs.intact_groups(eligible)
@@ -6003,7 +6003,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             # lessons had no valid case keeps the ones already decided.
             open_inputs = _open_inputs(packet_record)
             open_records = {row["record"] for row in open_inputs}
-            # S-NEXT-u4-steward: the stage check reads each input's kind
+            # S-104: the stage check reads each input's kind
             # (the rules of a `premise-moved` input, `_pair_problem`).
             open_by_record = {str(row["record"]): row for row in open_inputs}
             inputs = [_brief_input(row) for row in open_inputs]

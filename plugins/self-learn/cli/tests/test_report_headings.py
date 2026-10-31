@@ -18,7 +18,7 @@ from support import make_home
 from test_overseer_run import _enabled, _fake_two_phase, _refused_block, _silence_notifications
 
 HEADINGS = overseer_run._REPORT_SECTIONS
-#: S-NEXT-u7c: a real run always stages a week's census (at worst one that says
+#: S-105: a real run always stages a week's census (at worst one that says
 #: it could not be read), so the runner always adds the eighth heading to what
 #: it publishes. The seven above are still what the MODEL writes.
 PUBLISHED_HEADINGS = overseer_run._REPORT_SECTIONS_WITH_HAND_STEPS

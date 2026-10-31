@@ -91,7 +91,7 @@ def test_healthy_home_exits_0_no_worker_placeholder_row(env, capsys):
     originally shipped one as an unconditional, COUNTED UNMEASURED
     entry — reporting a verdict for a check that was never run, which
     made every home exit 9 forever). Eleven real checks since
-    S-NEXT-sk9-selftest's `owned_skills` row (2026-10-31; ten since S-82's
+    S-107's `owned_skills` row (2026-10-31; ten since S-82's
     `hosts` row, nine before, 2026-10-08), all PASS: exit 0.
 
     Mutation witness the gate can use: re-adding the dropped
@@ -111,8 +111,8 @@ def test_healthy_home_exits_0_no_worker_placeholder_row(env, capsys):
     assert "FAIL" not in out
     assert "worker" not in out
     # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
-    # S-NEXT-sk9-selftest (2026-10-31): so did `owned_skills` and
-    # S-NEXT-u2-sweep's `premises` (ten before both).
+    # S-107 (2026-10-31): so did `owned_skills` and
+    # S-104's `premises` (ten before both).
     assert "12 passed, 0 unmeasured, 0 failed" in out
 
 

@@ -1,4 +1,4 @@
-"""S-NEXT-u7c: the overseer's phase-B facts about the premise check (premise
+"""S-105: the overseer's phase-B facts about the premise check (premise
 design D11, unit U7) and the weekly report's "Hand steps this week" section
 (hand-maintenance cures, lane C).
 

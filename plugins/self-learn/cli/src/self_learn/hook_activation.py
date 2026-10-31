@@ -931,12 +931,12 @@ def activate(
             # must name what a human still owes (route's own Apply text
             # names it for the human path; `verbs._hook_manual_steps` is the
             # one place that renders it, reused here so the two can never
-            # drift apart). Since S-NEXT-cures-a that is ONE step here: the
+            # drift apart). Since S-102 that is ONE step here: the
             # symlink is already placed.
             manual_snippet = settings_snippet(
                 list(tools), name, claude_dir=claude_dir, event=hook_event(meta)
             )
-            # S-NEXT-cures-a: the symlink was just placed (step 1 above), so
+            # S-102: the symlink was just placed (step 1 above), so
             # "run ./install.sh" is no longer owed -- only the settings.json
             # registration is, and the text says ONE step.
             manual_steps = verbs._hook_manual_steps(  # noqa: SLF001

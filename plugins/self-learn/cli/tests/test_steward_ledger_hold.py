@@ -289,7 +289,7 @@ def _row_followup_done(env, tmp):
 
 
 def _row_premises(env, tmp):
-    """S-NEXT-u4-steward: `premises` writes its own lesson's `premises`
+    """S-104: `premises` writes its own lesson's `premises`
     field (a premise with no probe, so nothing is run)."""
     return {"id": _routed(env, A), "verb": "premises", "action": "set",
             "premises": [{"id": "p1", "claim": "the store is not shared", "probe": None}]}, A, None
@@ -319,7 +319,7 @@ def _row_replace_also(env, tmp):
 
 
 def _row_restate(env, tmp):
-    """S-NEXT-cures-f (C4): `restate` writes a new pending lesson beside a
+    """S-108 (C4): `restate` writes a new pending lesson beside a
     closed one. The batch refuses it to the steward by name
     (`batch.RESTATE_REFUSED_ACTORS`), so this row has no positive control
     through the steward's runner: see `_STEWARD_REFUSED_ROWS`."""
@@ -400,7 +400,7 @@ _SHEET_KEYS = {
     "target": "another lesson, read for its existence only (never written)",
     "also": "other lessons a replace supersedes -- row replace-also",
     "text_from": "another lesson, read for its text only (never written)",
-    # S-NEXT-u4-steward: a `ledger` probe in `premises` may name another
+    # S-104: a `ledger` probe in `premises` may name another
     # lesson; the runner only READS it (`premises._probe_ledger`).
     "premises": "a lesson's premises; a ledger probe in it reads another lesson (never written)",
     **{key: "no lesson" for key in (
@@ -408,9 +408,9 @@ _SHEET_KEYS = {
         "note", "hook", "rules_paths", "until", "covered_by", "to", "append", "key",
         "event", "tolerate", "why", "section", "text", "because",
         "trigger", "instruction", "fact", "context", "type", "kind",
-        # S-NEXT-u4-steward: the `premises` line's action and premise ids
+        # S-104: the `premises` line's action and premise ids
         "action", "ids",
-        # S-NEXT-u8-placement: `replace`'s `adopt_region: true`, a flag that
+        # S-104: `replace`'s `adopt_region: true`, a flag that
         # folds a person's edit of the line's own lesson's block into it
         "adopt_region",
     )},
@@ -441,7 +441,7 @@ _BATCH_CASES_CALLS = {
     "receipt": "the sheet's own case's Application section (the steward's new case)",
     "require_reconsider_case": "read",
     "_case_path_for_id": "read",
-    # S-NEXT-u4-steward fix round 1: `_resolution_reroute_for` and
+    # S-104 fix round 1: `_resolution_reroute_for` and
     # `_covered_by_another_case` read the recorded case and the cases that
     # cover a lesson (the same reads `_STEWARD_CASES_CALLS` lists)
     "show": "read",
@@ -472,7 +472,7 @@ _RECORD_WRITERS = {
     "ledger_ops._git_mv",
 }
 #: `current` is `verbs.premises`' record, re-read inside the commit lock
-#: (`_premises_record_under_lock`, S-NEXT-u4-steward gate round 1) and
+#: (`_premises_record_under_lock`, S-104 gate round 1) and
 #: written as `current.write(path)`; without it the walk missed that write.
 _RECORD_NAMES = ("record", "merged", "current")
 
@@ -647,7 +647,7 @@ def test_the_ledger_refuses_the_steward_every_write_to_a_held_lesson(
 def test_a_verb_refused_to_the_steward_by_name_changes_nothing(
     tmp_path, row, claude_dir
 ):
-    """S-NEXT-cures-f: a verb `batch.agent_refused_verbs("steward")` names has
+    """S-108: a verb `batch.agent_refused_verbs("steward")` names has
     no path through the steward at all -- free or held, the line is refused
     `bad-line` by name and nothing changes. Positive control: the same line
     through the overseer's runner on the same ledger applies, so it is the

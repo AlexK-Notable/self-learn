@@ -706,7 +706,7 @@ def _abort_if_dirty(repo: Path, target: Path) -> None:
 #: differently from "uncommitted changes").
 REGION_VERDICT_MARKER = "was hand-edited outside self-learn"
 
-#: S-NEXT-u8-placement (02 §3a.10.7, folding a hand edit into the lesson):
+#: S-104 (02 §3a.10.7, folding a hand edit into the lesson):
 #: the ``(region key, sha256 of the block on disk)`` pairs a steward fold
 #: approved for the call it wraps (:func:`fold_region`). An ``edited``
 #: block whose key AND bytes are named here passes the pre-flight below as
@@ -783,7 +783,7 @@ def _abort_if_region_unsound(
     if verdict == "edited" and (
         compiled.region_key(host_path, target, region_kind), observed_hash
     ) in _APPROVED_EDITED_REGIONS.get():
-        # S-NEXT-u8-placement: the steward's fold of exactly these bytes
+        # S-104: the steward's fold of exactly these bytes
         # (`fold_region`); the caller's write records them as based_on.
         return
     if verdict == "unknown" and region_kind == "managed" and spec is not None:
@@ -1028,7 +1028,7 @@ def _write_compile_record_entry(
 def _unrecorded_region_is_current(
     home: Path, spec: TargetSpec, observed_hash: str | None
 ) -> bool:
-    """S-NEXT-cures-a (M2.4): True when *spec*'s managed region has no
+    """S-102 (M2.4): True when *spec*'s managed region has no
     compile-record entry (verdict ``unknown``) and the bytes on disk are
     exactly the region the ledger's current records would render -- the
     same equality :func:`_abort_if_region_unsound` already applies before
@@ -2304,7 +2304,7 @@ def _owned_skills(home: Path):
     """The ledger's owned-skills registry (:mod:`self_learn.skill_registry`),
     or :class:`NeedsPerson` when ``owned-skills.yaml`` does not read back --
     a damaged registry is a person's to fix, and no route guesses past it
-    (SK2, S-NEXT-sk2-routes)."""
+    (SK2, S-107)."""
     from . import skill_registry  # local: kept off verbs' import-time graph
 
     try:
@@ -2317,7 +2317,7 @@ def _owned_skills(home: Path):
 
 
 def owned_skill_refusal(home: Path | str, name: str | None) -> VerbError | None:
-    """SK2 (S-NEXT-sk2-routes; skill-writing plan D5): why ``new-skill:<name>``
+    """SK2 (S-107; skill-writing plan D5): why ``new-skill:<name>``
     cannot take a lesson from the steward or the overseer, or by a
     ``reroute`` -- or ``None`` when it can.
 
@@ -2417,7 +2417,7 @@ def _resolve_target(
     ``claude-md`` while that destination refuses additions (S-82). Pure —
     writes nothing; ``check_dirty=False`` (recompile, ``list --json``,
     commit-drift) resolves exactly as before and runs its own checks. One
-    gate runs in both modes (SK2, S-NEXT-sk2-routes): a ``new-skill``
+    gate runs in both modes (SK2, S-107): a ``new-skill``
     target that would scaffold the name of a skill self-learn owns is
     refused, with ``check_dirty`` or without."""
     spec = _resolve_target_unguarded(
@@ -2594,7 +2594,7 @@ def _resolve_target_unguarded(
         plugin_dir = root / "plugins" / name
         target = plugin_dir / "skills" / name / "SKILL.md"
         if not removal and not target.is_file():
-            # SK2 (S-NEXT-sk2-routes): this write would scaffold. Ahead of
+            # SK2 (S-107): this write would scaffold. Ahead of
             # M3-9, so an owned skill that lost its SKILL.md is named as
             # such, not as a foreign plugin. Not gated on `check_dirty`
             # (fix round 1, 2026-10-31): `recompile` resolves with
@@ -3128,7 +3128,7 @@ def _prepare_sheet_hook(
 #: The three lines a hook ROUTE prints as its manual steps. The prefixes are
 #: shared with :func:`without_hook_manual_steps`, which removes them from a
 #: route's notes when the activation that follows has already done the work
-#: (S-NEXT-cures-a): one place renders the text and one place recognises it,
+#: (S-102): one place renders the text and one place recognises it,
 #: so the two cannot drift.
 _HOOK_MANUAL_HEADER = (
     "hook routed — two manual steps remain (the guard is INERT until both):"
@@ -3150,7 +3150,7 @@ def _hook_manual_steps(
     ``PostToolUse``), read back from the snippet itself so the two can
     never disagree.
 
-    ``placed=True`` (S-NEXT-cures-a): the symlink is already in place (an
+    ``placed=True`` (S-102): the symlink is already in place (an
     activation ran), so only the settings.json step is still owed — the
     text says one step, never "two", and never asks for ``./install.sh``."""
     event = next(iter(json.loads("{" + snippet + "}")))
@@ -3168,7 +3168,7 @@ def _hook_manual_steps(
 
 
 def without_hook_manual_steps(notes: list[str]) -> list[str]:
-    """*notes* minus the route's manual-steps lines (S-NEXT-cures-a).
+    """*notes* minus the route's manual-steps lines (S-102).
 
     A hook route that an activation follows in the same item has nothing
     left for a person to do that the activation's own receipts do not say:
@@ -3278,7 +3278,7 @@ def _hook_commit_or_undo(
     its own final ``By: <actor>`` paragraph, through the SAME
     :func:`_body_with_by_trailer` every other resolution verb already
     uses; ``None`` (a person's own terminal) leaves the body exactly as
-    before this fold. S-NEXT-cures-a: :func:`hook_deactivate` takes *by*
+    before this fold. S-102: :func:`hook_deactivate` takes *by*
     too, so an agent shell's call is stamped ``By: agent`` like the rest.
 
     Fold r2, item B: wraps the ledger-side write
@@ -3480,7 +3480,7 @@ def hook_deactivate(
     home = Path(home)
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
-    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
+    _by_trailer(by)  # S-102: validates before any lock is taken
 
     claude_dir = selfcheck.claude_runtime_dir()
     hold = sentinel.hold()
@@ -4809,7 +4809,7 @@ class NewSkillApplyResult:
     #: scaffold — `None` on a route into an EXISTING skill (charges 0,
     #: §5.2's dedup rule; the description is never rewritten there).
     description_words: int | None = None
-    #: SK2 (S-NEXT-sk2-routes, D7): what the route did to the skill's
+    #: SK2 (S-107, D7): what the route did to the skill's
     #: ``~/.claude/skills/<name>`` link once its host write landed --
     #: ``created`` / ``replaced`` / ``unchanged`` (:func:`skill_writer.link_skill`)
     #: -- or ``None`` when no link was attempted (a removal, a recompile, a
@@ -4921,7 +4921,7 @@ def _tilde(path: Path) -> str:
 
 
 def _link_routed_skill(spec: TargetSpec, compile_result: object, warnings: list[str]) -> object:
-    """SK2 (S-NEXT-sk2-routes; skill-writing plan D7): after a route into a
+    """SK2 (S-107; skill-writing plan D7): after a route into a
     ``new-skill`` destination has written (and, in git mode, committed) the
     skill, make ``~/.claude/skills/<name>`` the link
     ``claude-skills/install.sh`` would make, so the skill loads without
@@ -5204,7 +5204,7 @@ def _settle_tracked_removals(
 
 
 def _notice_tracked_removals(home: Path, spec: TargetSpec, changed: list[Path]) -> None:
-    """S-NEXT-cures-d (M6 part 3): the person S-89 leaves a commit to is told
+    """S-106 (M6 part 3): the person S-89 leaves a commit to is told
     where they will be looking -- one project notice per tracked file the
     removal left changed, shown at the start of a session inside that host
     (:mod:`notices`). Cache only: no ledger write, no host write, so it needs
@@ -6915,7 +6915,7 @@ def route(
     ``None`` and get the unchanged heuristic (an explicit ``--dest`` typed
     at a terminal IS the human's own choice).
 
-    ``stamp_by`` (S-NEXT-cures-a, M5.2): the actor to name in the commit's
+    ``stamp_by`` (S-102, M5.2): the actor to name in the commit's
     ``By:`` trailer -- who RAN the verb, which is not what *by* means
     (*by* is who chose the destination, so the review UI sends the
     analyst there while a person clicks approve). Only the CLI sets it,
@@ -7635,7 +7635,7 @@ def _compose_replacement(
     if first.env is not None:
         record.set_env(dict(first.env))
     if first.premises is not None:
-        # S-NEXT-u1-premises: premises (with their baselines) belong to the
+        # S-104: premises (with their baselines) belong to the
         # lesson, not to one wording of it. A ledger probe on the new id
         # itself cannot occur: the id is fresh.
         record.set_premises(first.premises)
@@ -8013,7 +8013,7 @@ def replace_lesson(
     and, for a managed destination, the line the compiler wrote
     (``compiled_line``) -- the case's after-text (D-AUTHOR §2.4)."""
     home = Path(home)
-    _by_trailer(stamp_by)  # S-NEXT-cures-a: refuses before any lock
+    _by_trailer(stamp_by)  # S-102: refuses before any lock
     plan = _preflight_replace(
         home, record_id, also=also, trigger=trigger, instruction=instruction,
         fact=fact, context=context, text_from=text_from, type=type, kind=kind,
@@ -8108,7 +8108,7 @@ def replace_result(
 
 # ------------------------------------------------------- cures-f restate
 #
-# S-NEXT-cures-f (the 2026-10-30 hand-maintenance cures, C4): the overseer may
+# S-108 (the 2026-10-30 hand-maintenance cures, C4): the overseer may
 # write a corrected lesson as a NEW PENDING lesson, which the steward then
 # decides the way it decides a mined one. `restate` names a lesson that is
 # closed -- rejected, or retired -- and leaves it exactly as it is: a
@@ -8340,7 +8340,7 @@ def restate_lesson(
     execution: execution_evidence.ExecutionRef | None = None,
     actor: str = "human",
 ) -> VerbResult:
-    """The sheet verb ``restate`` (S-NEXT-cures-f, C4): write a corrected
+    """The sheet verb ``restate`` (S-108, C4): write a corrected
     version of the closed lesson *record_id* as a new PENDING lesson, and
     leave *record_id* as it is (status, resolution and text untouched; it only
     gains one note naming the new lesson). One ledger commit, subject
@@ -9460,7 +9460,7 @@ def reconsider(
     `find_record_path` runs first, outside every wrap, the same
     contract `reject`/`defer`/`reopen` pin.
 
-    S-NEXT-cures-f (C8): *any_status* skips the two status checks above and
+    S-108 (C8): *any_status* skips the two status checks above and
     writes the pointer for a lesson in any status. The overseer applies its own
     ``kind: reconsider`` successor's sheet, and that sheet may re-decide a
     lesson whose earlier decision failed to apply (still ``pending``), which
@@ -9551,7 +9551,7 @@ REOPEN_ADMITTED_STATUSES = REOPENABLE_STATUSES | frozenset({"superseded"})
 _REOPEN_ADMITTED_STATUSES = REOPEN_ADMITTED_STATUSES
 
 
-#: S-NEXT-cures-f (C4): the actors a `reopen` of a lesson a PERSON rejected is
+#: S-108 (C4): the actors a `reopen` of a lesson a PERSON rejected is
 #: refused for. The overseer may not put a person's rejection back in the
 #: queue; it writes a corrected lesson with `restate`, or asks the user a
 #: question that names the reject. The steward is not listed: its inputs
@@ -9662,7 +9662,7 @@ def _preflight_reopen(
     checks, in the same order. *actor* is the runner's own (`batch.run`'s,
     never a sheet line's `by`): an actor in
     :data:`REOPEN_PERSON_REJECT_REFUSED_ACTORS` may not reopen a lesson a
-    person rejected (S-NEXT-cures-f), checked after the status gate so its
+    person rejected (S-108), checked after the status gate so its
     words name a rejected lesson."""
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
@@ -9733,7 +9733,7 @@ def reopen(
     Fold r1 (F3): *by*, when given, rides the commit body as its own
     trailing ``By:`` paragraph. *actor* is the runner's (`batch.run`'s): the
     overseer is refused a lesson a person rejected
-    (:data:`REOPEN_PERSON_REJECT_REFUSED_ACTORS`, S-NEXT-cures-f)."""
+    (:data:`REOPEN_PERSON_REJECT_REFUSED_ACTORS`, S-108)."""
     home = Path(home)
     _preflight_reopen(home, record_id, note=note, by=by, actor=actor)
 
@@ -9800,7 +9800,7 @@ def note(
     message. A human call at a terminal omits `key` and every call
     appends (two identical observations on two days are two facts)."""
     home = Path(home)
-    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
+    _by_trailer(by)  # S-102: validates before any lock is taken
     path = _preflight_note(home, record_id, append=append)
 
     if key is not None and Record.from_path(path).note_has_key(key):
@@ -9923,7 +9923,7 @@ def _reroute_plan(
     if destination == "hook" and hook_input is not None:
         hook_route = _prepare_sheet_hook(home, bucket_dir, record, hook_input, by=by)
     elif destination == "new-skill" and resolved_dest.ref_name:
-        # SK2 (S-NEXT-sk2-routes; plan D5): RER4 is lifted for a skill
+        # SK2 (S-107; plan D5): RER4 is lifted for a skill
         # self-learn owns -- the reroute adds a line to a skill that exists
         # and scaffolds nothing. Any other new-skill name stays refused; a
         # nameless one falls to the unchanged refusal below.
@@ -10035,7 +10035,7 @@ def reroute(
     new-skill`` (RER4 — both are ``ONE_MOTION_UNROUTABLE``: rerouting
     INTO either is a fresh ``route`` decision on a fresh record, not a
     correction; rerouting AWAY FROM either is supported — the retirement
-    half already exists for both). SK2 (S-NEXT-sk2-routes): rerouting INTO
+    half already exists for both). SK2 (S-107): rerouting INTO
     ``new-skill:<name>`` is admitted when ``<name>`` is a skill self-learn
     owns and is deployed (:func:`owned_skill_refusal`) -- the lesson moves
     into that skill's managed section and nothing is scaffolded.
@@ -10049,7 +10049,7 @@ def reroute(
     the compile input `--dest hook` stays refused. The checks before any
     lock are :func:`_reroute_plan`, which `batch.dry_run` previews too.
 
-    S-NEXT-cures-a (M5.1): the commit body ends with the attribution
+    S-102 (M5.1): the commit body ends with the attribution
     paragraph every other sheet-run verb already writes -- the delegated
     runner's ``execution`` trailers (``Case:``/``Sheet:``/``Item:``/``By:``)
     when the sheet runner passes them, else a ``By:`` line for *stamp_by*.
@@ -10803,7 +10803,7 @@ def followup_done(
     lrn-…``; the note lands in ``follow_up_done.done_note`` + the commit
     body — ``resolution_note`` stays write-once and untouched (02 §2)."""
     home = Path(home)
-    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
+    _by_trailer(by)  # S-102: validates before any lock is taken
     path, record = _preflight_followup_done(home, record_id, note=note)
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -10927,7 +10927,7 @@ def confirm_recurrence(
     ``recurrences[].note`` — NEVER ``resolution_note`` (write-once, 02 §2).
     Commit: ``self-learn: recurrence confirmed on lrn-…``."""
     home = Path(home)
-    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
+    _by_trailer(by)  # S-102: validates before any lock is taken
     event, path, record = _preflight_confirm_recurrence(
         home, record_id, event_ref=event_ref, tolerate=tolerate, note=note
     )
@@ -11004,7 +11004,7 @@ def confirm_held(
     age-since-capture, is the staleness metric. Commit:
     ``self-learn: confirmed holding lrn-…``."""
     home = Path(home)
-    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
+    _by_trailer(by)  # S-102: validates before any lock is taken
     path, record = _preflight_confirm_held(home, record_id, note=note)
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -11032,7 +11032,7 @@ def confirm_held(
         hold.release()
 
 
-# ------------------------------------------- premises (S-NEXT-u4-steward)
+# ------------------------------------------- premises (S-104)
 #
 # 02 §3a.10.7: the `premises` sheet verb writes a placed lesson's
 # `premises` field (`premises.py`). `set` writes the whole list, `rebaseline`
@@ -11045,8 +11045,8 @@ def confirm_held(
 # (the steward's, the overseer's or a person's `batch`) is the one way in.
 
 #: The actions of the `premises` sheet verb (02 §3a.10.7). `set` and
-#: `rebaseline` write the field (S-NEXT-u4-steward); `restore-region`
-#: (S-NEXT-u8-placement) writes no premise: it puts the ledger's text of the
+#: `rebaseline` write the field (S-104); `restore-region`
+#: (S-104) writes no premise: it puts the ledger's text of the
 #: lesson's managed block back over a hand edit, with its own branch in
 #: :func:`premises`.
 PREMISES_ACTIONS = ("set", "rebaseline", "restore-region")
@@ -11071,7 +11071,7 @@ def premises_line_problem(action: object, premises: object, ids: object) -> str 
     if action not in PREMISES_ACTIONS:
         return f"`action` must be one of {list(PREMISES_ACTIONS)}, got {action!r}"
     if action == "restore-region":
-        # S-NEXT-u8-placement: it names no premise; the block is the lesson's.
+        # S-104: it names no premise; the block is the lesson's.
         if premises is not None or ids is not None:
             return (
                 "action restore-region takes neither `premises` nor `ids`: it puts the "
@@ -11170,7 +11170,7 @@ def _preflight_premises(
     if problem is not None:
         raise SheetLineError(f"premises {record_id}: {problem}")
     if action == "restore-region":
-        # S-NEXT-u8-placement: its checks are `_preflight_restore_region`'s,
+        # S-104: its checks are `_preflight_restore_region`'s,
         # which `premises` and `batch._preview_premises` call instead.
         raise SheetLineError(
             f"premises {record_id}: restore-region writes no premises; its checks are "
@@ -11276,7 +11276,7 @@ def premises(
     no_push: bool = False,
     execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
-    """Write a lesson's ``premises`` (02 §3a.10.7; S-NEXT-u4-steward).
+    """Write a lesson's ``premises`` (02 §3a.10.7; S-104).
 
     ``action: set`` replaces the whole list with *premises* (``[]`` records
     "rests on no fact about the machine"); ``action: rebaseline`` re-records
@@ -11287,7 +11287,7 @@ def premises(
     ``self-learn: premises <action> lrn-…``; the body carries *because*,
     *note* and each premise's old and new shown value.
 
-    ``action: restore-region`` (S-NEXT-u8-placement) is :func:`restore_region`."""
+    ``action: restore-region`` (S-104) is :func:`restore_region`."""
     home = Path(home)
     if action == "restore-region":
         problem = premises_line_problem(action, premises, ids)
@@ -11335,7 +11335,7 @@ def premises(
 
 
 
-# ------------------------------------------ managed blocks (S-NEXT-u8-placement)
+# ------------------------------------------ managed blocks (S-104)
 #
 # 02 §3a.10.3 and §3a.10.7: a person's hand edit inside a placed lesson's
 # managed block (the `@intact` placement premise). The steward decides it in
@@ -11570,7 +11570,7 @@ def fold_region(
     rules_paths: object = None,
     user_claude_md: Path | str | None = None,
 ) -> Iterator[LessonRegion]:
-    """S-NEXT-u8-placement (02 §3a.10.7, folding a hand edit into the
+    """S-104 (02 §3a.10.7, folding a hand edit into the
     lesson): wraps the ``replace`` of a line with ``adopt_region: true``
     (``batch`` wraps the verb and its preview alike). It runs
     :func:`_preflight_fold`, then, while the block is ``edited``, approves
@@ -11662,7 +11662,7 @@ def restore_region(
     execution: execution_evidence.ExecutionRef | None = None,
     user_claude_md: Path | str | None = None,
 ) -> VerbResult:
-    """``premises`` ``action: restore-region`` (S-NEXT-u8-placement, 02
+    """``premises`` ``action: restore-region`` (S-104, 02
     §3a.10.7): the ledger's text wins over a hand edit in the lesson's
     managed block. One lock span, the shape every route has (REC9): the
     block is read again under the ledger lock (a block changed since the
@@ -11826,7 +11826,7 @@ def dismiss_suspect(
     telemetry, preserved as analyst fuel. Commit:
     ``self-learn: suspect dismissed on lrn-…``."""
     home = Path(home)
-    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
+    _by_trailer(by)  # S-102: validates before any lock is taken
     event, path, record = _preflight_dismiss_suspect(
         home, record_id, event_ref=event_ref, note=note, why=why
     )
@@ -11915,7 +11915,7 @@ def link_contradicts(
     record id or canon anchor) to ``links.contradicts``. Commit:
     ``self-learn: link lrn-… contradicts <target>``."""
     home = Path(home)
-    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
+    _by_trailer(by)  # S-102: validates before any lock is taken
     path, record = _preflight_link_contradicts(home, record_id, target, note=note)
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -12153,7 +12153,7 @@ def replace_host_records(home: Path | str, first_id: str) -> list[str]:
     return [new_id, *retired]
 
 
-#: S-NEXT-u8-placement: the subject a `restore-region` line's commit carries
+#: S-104: the subject a `restore-region` line's commit carries
 #: (`restore_region`), which `batch` puts in the item's detail: its host
 #: write is owed when it did not land, like a route's.
 RESTORE_REGION_SUBJECT = "self-learn: premises restore-region "
@@ -12188,7 +12188,7 @@ def host_result_ids(items: Iterable[object], home: Path | str | None = None) -> 
     superseded, so both the target the new line goes to and each one an
     old line leaves are compiled.
 
-    S-NEXT-u8-placement: a ``premises`` ``restore-region`` item too
+    S-104: a ``premises`` ``restore-region`` item too
     (:func:`_restores_a_region`): its block is written after its ledger
     commit, so a host write that failed leaves a ``stale`` block this
     recompile finishes."""
@@ -13000,7 +13000,7 @@ def recompile(
                     # unwanted divergence from REC9's "the record rides
                     # its OWN resolution's commit" shape.
                     #
-                    # S-NEXT-cures-a (M2.4): the one no-op render that
+                    # S-102 (M2.4): the one no-op render that
                     # DOES write is a region with NO record entry at all
                     # (verdict `unknown`) whose bytes already equal what
                     # the ledger would render -- self-learn's own prior
@@ -13778,7 +13778,7 @@ def followup_add(
     :meth:`Record.complete_follow_up` already gives ``followup done``
     below."""
     home = Path(home)
-    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
+    _by_trailer(by)  # S-102: validates before any lock is taken
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
     try:
@@ -13933,7 +13933,7 @@ def reclassify(
     unreachable through this CLI (``--kind`` cannot name a clear). One
     gap, three faces, one fix — see :func:`_reclassify_apply`."""
     home = Path(home)
-    _by_trailer(by)  # S-NEXT-cures-a: validates before any lock is taken
+    _by_trailer(by)  # S-102: validates before any lock is taken
     if kind is None and type is None:
         raise VerbUsageError("reclassify needs --kind and/or --type")
     path = find_record_path(home, record_id)  # pending OR resolved
@@ -14251,7 +14251,7 @@ def revise(
     saw the new wording, so re-stamping it fresh would misreport the
     proposal as re-validated against text it was not."""
     home = Path(home)
-    _by_trailer(stamp_by)  # S-NEXT-cures-a: refuses before any lock
+    _by_trailer(stamp_by)  # S-102: refuses before any lock
     path, _revised = _preflight_revise(
         home, record_id, section=section, text=text, because=because, by=by
     )
@@ -14287,7 +14287,7 @@ def revise(
             staged, sha = _commit_ledger(
                 home, touched, message,
                 # `by` rides the proposal's `revised_by`, never the commit
-                # trailer (as for `route`); `stamp_by` (S-NEXT-cures-a,
+                # trailer (as for `route`); `stamp_by` (S-102,
                 # M5.2: the CLI's agent shell) is who RAN the verb.
                 _body_with_by_trailer(because, stamp_by, execution),
             )

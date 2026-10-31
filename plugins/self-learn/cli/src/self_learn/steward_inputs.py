@@ -18,12 +18,12 @@ This module builds, for one run:
    collected per record (:func:`suspected_violations`). The user's words
    (2026-09-26 19:32, of the audit's two options): "do both a and b" --
    (b) being that suspected rule violations the miner records go to the
-   steward. The fourth, ``premise-moved`` (S-NEXT-u3-followup, the premise
+   steward. The fourth, ``premise-moved`` (S-104, the premise
    check's unit U3), is a ROUTED lesson something the lesson rested on has
    moved for; today the one thing that moves it is a closed follow-up
    (:func:`moved_followups`), and the premise sweep adds its own movers
    later through the same kind (:func:`premise_moved_version`). The fifth,
-   ``premise-extract`` (S-NEXT-u6-backfill, unit U6), is a ROUTED lesson
+   ``premise-extract`` (S-104, unit U6), is a ROUTED lesson
    with no ``premises`` field at all, offered so its premises get written
    (:func:`routed_without_premises`, :func:`extract_rank`): the backfill of
    the lessons placed before premises existed, and the safety net for a
@@ -105,7 +105,7 @@ __all__ = [
     "refresh_index",
     "suspected_violations",
     "tool_reads",
-    # S-NEXT-u8-placement
+    # S-104
     "PlacementMoves",
     "intact_group",
     "intact_groups",
@@ -118,11 +118,11 @@ __all__ = [
 INPUT_LESSON = "lesson"
 INPUT_RECONSIDER = "reconsider"
 INPUT_SUSPECTED_VIOLATION = "suspected-violation"
-#: S-NEXT-u3-followup (premise-check design D6): a routed lesson a premise of
+#: S-104 (premise-check design D6): a routed lesson a premise of
 #: its own moved for. The one constant every producer of this kind and the
 #: premise units that build on it (U4's brief, U8's placement premises) name.
 INPUT_PREMISE_MOVED = "premise-moved"
-#: S-NEXT-u6-backfill (premise-check design D10): a routed lesson with no
+#: S-104 (premise-check design D10): a routed lesson with no
 #: ``premises`` field, offered for its premises to be written (the backfill).
 INPUT_PREMISE_EXTRACT = "premise-extract"
 INPUT_KINDS = (
@@ -436,7 +436,7 @@ def fires_version(events: Iterable[dict]) -> str:
     return "fires:" + ",".join(sorted(str(e.get("nonce")) for e in events))
 
 
-# ----------------------------------------------- premise-moved (U3, S-NEXT-u3-followup)
+# ----------------------------------------------- premise-moved (U3, S-104)
 
 
 def premises_enabled(home: Path) -> bool:
@@ -477,7 +477,7 @@ def premise_moved_version(
     version. The same pattern as :func:`fires_version`. U3 passes
     ``followup_done=``.
 
-    S-NEXT-u4-steward passes ``(premise id, current value hash, baseline
+    S-104 passes ``(premise id, current value hash, baseline
     observed_at)`` for each written premise (gate round 1 on c82e783,
     MINOR): with the value alone, a value that went A to B (decided, the
     baseline re-recorded as B), then back to A (decided), then to B again
@@ -487,7 +487,7 @@ def premise_moved_version(
     version; a park or a refusal leaves the baseline, and so the version,
     as it was. A two-element pair hashes exactly as before.
 
-    S-NEXT-u8-placement passes ``(premise id, failing value hash, basis)``
+    S-104 passes ``(premise id, failing value hash, basis)``
     for each placement premise (fix round 2): the basis names what the
     failure is a failure of, so a reroute or a restore makes the same
     failing value, seen again, a new version
@@ -610,7 +610,7 @@ def moved_followups(home: Path) -> list[MovedFollowup]:
     return out
 
 
-# --------------------------------- moved premises (U4, S-NEXT-u4-steward)
+# --------------------------------- moved premises (U4, S-104)
 #
 # 02 §3a.10.4 events 1 and 3: a WRITTEN premise of a placed lesson moved.
 # The daily sweep (U2, `premise_sweep`) is the one judge of that: it keeps
@@ -853,7 +853,7 @@ def open_followup_ids(home: Path) -> set[str]:
     }
 
 
-# --------------------------- placement premises (U8, S-NEXT-u8-placement)
+# --------------------------- placement premises (U8, S-104)
 #
 # 02 §3a.10.3: every placed lesson has up to three placement premises that
 # code derives on each daily sweep and nobody writes -- `@reach` (does a
@@ -1057,7 +1057,7 @@ def intact_groups(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[str]]:
 def keep_groups_together(
     plans: list["PacketPlan"], groups: Mapping[str, Sequence[str]]
 ) -> list["PacketPlan"]:
-    """S-NEXT-u8-placement (02 §3a.10.3, "one region, one decision"): the
+    """S-104 (02 §3a.10.3, "one region, one decision"): the
     lessons of one `@intact` group are decided in ONE case, so they must sit
     in one packet. Each group's members are moved into the packet that holds
     its first member, as unrelated members (relatedness did not put them
@@ -1372,7 +1372,7 @@ def _decide_lines(
     return out
 
 
-#: S-NEXT-u8-placement: what each placement premise says when it fails, in
+#: S-104: what each placement premise says when it fails, in
 #: the brief.
 _PLACEMENT_WORDS = {
     "@reach": "no session loads the file this lesson sits in any more",
@@ -1389,7 +1389,7 @@ WITHHELD_LINE = "[withheld: the line matched the secret scan]"
 
 
 def quotable_line(line: str) -> str:
-    """S-NEXT-u8-placement, fix round 1: the words of a hand-written line a
+    """S-104, fix round 1: the words of a hand-written line a
     case's evidence must quote. A line that starts with `## ` cannot start a
     quoted line (`cases.split_runner_evidence` drops that evidence item
     before the case is recorded), so for it the words after `## ` are asked
@@ -1477,7 +1477,7 @@ def _intact_region_lines(home: Path, record_id: str) -> list[str]:
 
 
 def _placement_item_lines(home: Path, record: Record, item: Mapping[str, Any]) -> list[str]:
-    """A ``source: placement`` mover as brief lines (S-NEXT-u8-placement)."""
+    """A ``source: placement`` mover as brief lines (S-104)."""
     pid = str(item.get("premise"))
     lines = [
         f"  placement {pid} moved: {_PLACEMENT_WORDS.get(pid, 'its placement failed')} "
@@ -1542,7 +1542,7 @@ def _placement_decide_lines(
             "  - you cannot tell: park it.",
         ]
     if {"@reach", "@writable"} & set(placement_ids):
-        # S-NEXT-u4-steward's fix round 1 lets a resolution case move a
+        # S-104's fix round 1 lets a resolution case move a
         # placed lesson no case covers (`batch._resolution_reroute_for`), so
         # both shapes move it with a `route` line.
         move = "a `route` line with the `dest` it should have (applied as a reroute)"
@@ -1632,7 +1632,7 @@ def render_premise_moved(
     return "\n".join(lines), stats
 
 
-# ------------------------------ premise-extract (U6, S-NEXT-u6-backfill)
+# ------------------------------ premise-extract (U6, S-104)
 #
 # 02 §3a.10.7, "Writing premises": a PLACED lesson with no `premises` field
 # is offered to the steward so that its premises get written -- the lessons
@@ -1816,7 +1816,7 @@ def render_premise_extract(
     home: Path, record: Record, row: Mapping[str, Any], *, path: str | None, head: str | None
 ) -> tuple[str, dict]:
     """The part of a ``premise-extract`` brief that is not the lesson itself
-    (S-NEXT-u6-backfill): what the steward needs to write the lesson's
+    (S-104): what the steward needs to write the lesson's
     premises -- its recorded generality, its open follow-up (a condition
     the placement waits on is usually a premise), its ``env`` pins, and the
     numbered "What would change this decision" bullets of the cases that
@@ -1906,7 +1906,7 @@ def render_record(
     block; :func:`build_briefs` turns it on for a lesson in
     :func:`open_followup_ids`).
 
-    S-NEXT-u4-steward (02 section 3a.10.2 and 3a.10.5 (3)): every brief, of
+    S-104 (02 section 3a.10.2 and 3a.10.5 (3)): every brief, of
     any input kind, lists the lesson's premises (a premise with no probe, a
     behaviour, is read nowhere else) and *broken*, the probes the sweep saw
     `unavailable` three times running (:func:`broken_probes`), so the
@@ -1923,7 +1923,7 @@ def render_record(
         )
     if path:
         lines.append(f"[record] ledger@{(head or 'HEAD')[:12]}:{path}")
-    # C4 (S-NEXT-cures-f): a pending lesson the overseer wrote as the corrected
+    # C4 (S-108): a pending lesson the overseer wrote as the corrected
     # version of a lesson that was rejected or retired says so, with the
     # overseer's reason, so the steward decides it on its merits and knows what
     # the earlier decision was. Only the note the verb writes (its key starts
@@ -1952,7 +1952,7 @@ def render_record(
             "  verification as the miner wrote it (no ref; not checked by code): "
             + _one_line(record.verified_how)
         )
-    # S-NEXT-u4-steward (02 §3a.10.2): what the lesson rests on, whatever
+    # S-104 (02 §3a.10.2): what the lesson rests on, whatever
     # brought it here -- a premise with no probe (a behaviour) is read
     # nowhere else.
     if record.premises == []:
@@ -2370,7 +2370,7 @@ def build_briefs(
     # The routed lessons whose closed follow-up is still undecided: their
     # briefs of any kind but `premise-moved` show it as context.
     undecided = open_followup_ids(home)
-    # S-NEXT-u4-steward: probes broken three sweeps running, shown on every
+    # S-104: probes broken three sweeps running, shown on every
     # brief of their lesson whatever its input kind (02 section 3a.10.5 (3)).
     broken = broken_probes(home)
     out: dict[str, LessonBrief] = {}
@@ -2396,7 +2396,7 @@ def build_briefs(
         if kind in (INPUT_RECONSIDER, INPUT_LESSON, INPUT_PREMISE_MOVED) and row.get("reason"):
             parts.append(f"[why it is back] {_one_line(row['reason'])}")
         elif kind == INPUT_PREMISE_EXTRACT and row.get("reason"):
-            # S-NEXT-u6-backfill: nothing brought it BACK; it is here to be
+            # S-104: nothing brought it BACK; it is here to be
             # completed.
             parts.append(f"[why it is here] {_one_line(row['reason'])}")
         parts.append(render_record(
@@ -2414,7 +2414,7 @@ def build_briefs(
             text, pack_stats = render_premise_moved(home, record, row, path=rel, head=head)
             parts.append(text)
         elif kind == INPUT_PREMISE_EXTRACT:
-            # S-NEXT-u6-backfill: what the lesson rests on is in its words and
+            # S-104: what the lesson rests on is in its words and
             # its cases, not in the session it was taught from.
             text, pack_stats = render_premise_extract(home, record, row, path=rel, head=head)
             parts.append(text)

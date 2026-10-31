@@ -1,4 +1,4 @@
-"""premises.py (premise-check design, unit U1; S-NEXT-u1-premises): the
+"""premises.py (premise-check design, unit U1; S-104): the
 ``premises`` field on a record, the closed read-only probe catalog, the
 probe runner and the baseline comparison.
 

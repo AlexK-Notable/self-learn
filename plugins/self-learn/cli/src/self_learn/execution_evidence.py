@@ -258,7 +258,7 @@ def _subject_matches(ref: ExecutionRef, subject: str) -> bool:
     if ref.verb == "link-contradicts":
         return subject.startswith(f"self-learn: link {rid} contradicts ")
     if ref.verb == "premises":
-        # S-NEXT-u4-steward: the action sits between the verb and the id
+        # S-104: the action sits between the verb and the id
         # (`self-learn: premises set lrn-…`, 11 §2.5). The sweep's code-only
         # `premises refresh` commit carries no execution trailers and is
         # never a sheet item's proof. Any one-word action (U8 adds
@@ -275,7 +275,7 @@ def _subject_matches(ref: ExecutionRef, subject: str) -> bool:
     if ref.verb == "graduate":
         prefixes.append(f"self-learn: retire {rid}")
     if ref.verb == "route":
-        # S-NEXT-cures-a (M5.1): a `route` line under a reconsider case over
+        # S-102 (M5.1): a `route` line under a reconsider case over
         # an already-routed lesson runs `verbs.reroute`, whose subject is
         # "self-learn: reroute <id> → <dest>". Now that the reroute commit
         # carries the runner's trailers, crash recovery can prove it; without

@@ -1,4 +1,4 @@
-"""The owned-skills registry (SK-R, S-NEXT-sk-r-registry; skill-writing plan §4.0).
+"""The owned-skills registry (SK-R, S-107; skill-writing plan §4.0).
 
 A skill is **self-learn's own** when ``<ledger>/owned-skills.yaml`` has a
 ``live`` row for it. The ledger holds the registry row; the skill's files

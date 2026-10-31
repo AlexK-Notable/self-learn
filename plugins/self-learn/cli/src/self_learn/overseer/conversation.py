@@ -11,7 +11,7 @@ proposition), and an `ask` puts a decision or fact only the user has (its id
 is `q-<slug>`, and the index carries its `text` and `why`). There is no
 limit on how many are shown.
 
-Skills (S-NEXT-sk7-veto, skill-writing plan SK7 / decision D15). After the
+Skills (S-107, skill-writing plan SK7 / decision D15). After the
 questions, ``open`` prints a "Skills this week" section: every skill
 self-learn built, changed or retired in the latest report's overseer week,
 every live skill ``open`` has never shown before (however long ago it moved:
@@ -43,7 +43,7 @@ asked instead, does not clear them. The names of drafts and of ``build``
 dispositions that were vetoed are read from the registry's ``vetoed`` list
 (``skill write`` and the template check refuse them).
 
-An ask may carry `register: {path, mode, kind?}` (S-NEXT-cures-b): the user's
+An ask may carry `register: {path, mode, kind?}` (S-103): the user's
 typed plain "yes" to it registers that repository as a canon host in the same
 command (`respond`). The person typing the answer is the consent
 (S-29 / Y-17); `overseer open` shows what a yes will register, and the ask's
@@ -85,7 +85,7 @@ class ConversationUsageError(ConversationError):
 class ResponseResult:
     statement_id: str | None
     observed_cases: tuple[str, ...] = ()
-    #: S-NEXT-cures-b: one plain sentence on what the answer did about a
+    #: S-103: one plain sentence on what the answer did about a
     #: host registration the ask carried (registered, already registered, not
     #: done and why); `None` when the question carried none.
     registration: str | None = None
@@ -954,7 +954,7 @@ def _agent_shell_proof(
 def _carry_out_registration(
     home: Path, row: dict, text: str, session: str | None = None
 ) -> tuple[str, bool]:
-    """S-NEXT-cures-b: what the answer *text* does about the registration an
+    """S-103: what the answer *text* does about the registration an
     ask carries. Returns `(sentence, registered)`.
 
     Only a bare yes registers: "yes, but use git mode" or "not yet" is an

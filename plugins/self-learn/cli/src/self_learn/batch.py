@@ -168,13 +168,13 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
         {
             "also", "trigger", "instruction", "fact", "context", "text_from",
             "type", "kind", "to", "dest", "rules_paths", "because", "note", "by",
-            # S-NEXT-u8-placement (02 §3a.10.7): `adopt_region: true` folds a
+            # S-104 (02 §3a.10.7): `adopt_region: true` folds a
             # person's hand edit in the lesson's managed block into the
             # new lesson -- the steward's only (`REGION_WRITE_ACTORS`).
             "adopt_region",
         }
     ),
-    # S-NEXT-cures-f (C4): a corrected version of a CLOSED lesson (rejected or
+    # S-108 (C4): a corrected version of a CLOSED lesson (rejected or
     # retired), written as a new pending lesson; the closed lesson stays as it
     # is. The text keys as on `replace`; `to` in the rehome grammar names the
     # new lesson's bucket (default: the closed lesson's own). No `dest`: the
@@ -185,7 +185,7 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
             "because", "note", "by",
         }
     ),
-    # S-NEXT-u4-steward (02 §3a.10.7): a lesson's `premises` -- `action:
+    # S-104 (02 §3a.10.7): a lesson's `premises` -- `action:
     # set` writes the whole list (`premises`), `action: rebaseline` re-records
     # the premises named in `ids`. An annotation, like `note`: no `by` (the
     # runner's execution trailer names who ran it). The line's shape is
@@ -228,10 +228,10 @@ REQUIRED_KEYS: dict[str, frozenset[str]] = {
     # E1: `because` plays revise's role (the commit body); the one-of check
     # on the text keys is the verb's (`verbs._replace_text_sections`).
     "replace": frozenset({"because"}),
-    # S-NEXT-cures-f: `because` plays `replace`'s role (the commit body and the
+    # S-108: `because` plays `replace`'s role (the commit body and the
     # two notes); the one-of check on the text keys is the verb's.
     "restate": frozenset({"because"}),
-    # S-NEXT-u4-steward: which list the line carries depends on the action.
+    # S-104: which list the line carries depends on the action.
     "premises": frozenset({"action"}),
 }
 
@@ -278,7 +278,7 @@ REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
 #: again, in the run, the preview and the contract alike. A person's sheet
 #: (`human`) and `self-learn replace` never pass through here.
 REPLACE_REFUSED_ACTORS: frozenset[str] = frozenset()
-#: S-NEXT-cures-f (C4): the actors a `restate` line is refused for by name,
+#: S-108 (C4): the actors a `restate` line is refused for by name,
 #: and for whom it is hidden from the generated contract. The steward decides
 #: pending lessons and never writes one: a restated lesson is the overseer's to
 #: write (or a person's, through a sheet run as `human`) and the steward's to
@@ -286,7 +286,7 @@ REPLACE_REFUSED_ACTORS: frozenset[str] = frozenset()
 #: both read this ONE set.
 RESTATE_REFUSED_ACTORS: frozenset[str] = frozenset({"steward"})
 
-#: SK2 (S-NEXT-sk2-routes, 2026-10-31; skill-writing plan D5 and §1.3 fact 1):
+#: SK2 (S-107, 2026-10-31; skill-writing plan D5 and §1.3 fact 1):
 #: the actors whose route into `new-skill:<name>` is accepted only when
 #: <name> is a skill self-learn owns and has deployed
 #: (:func:`verbs.owned_skill_refusal`). Before this, nothing in the batch,
@@ -330,7 +330,7 @@ def agent_refused_verbs(actor: str) -> frozenset[str]:
     """The sheet verbs refused for *actor* by name, and so left out of the
     contract its runner shows it: ``replace`` while
     :data:`REPLACE_REFUSED_ACTORS` names the actor (E1 fold 1), and
-    ``restate`` while :data:`RESTATE_REFUSED_ACTORS` does (S-NEXT-cures-f)."""
+    ``restate`` while :data:`RESTATE_REFUSED_ACTORS` does (S-108)."""
     refused: set[str] = set()
     if actor in REPLACE_REFUSED_ACTORS:
         refused.add("replace")
@@ -352,7 +352,7 @@ def _refuse_agent_restate(item: "SheetItem", actor: str) -> None:
         )
 
 
-#: S-NEXT-u8-placement (02 §3a.10.7): the actors a line that writes a
+#: S-104 (02 §3a.10.7): the actors a line that writes a
 #: lesson's whole managed block over a person's hand edit is open to -- a
 #: `replace` with `adopt_region: true` (fold the edit into the lesson) and a
 #: `premises` line `action: restore-region` (put the ledger's text back).
@@ -389,7 +389,7 @@ def _refuse_region_lines(item: "SheetItem", actor: str) -> None:
 
 def agent_refused_keys(actor: str) -> dict[str, frozenset[str]]:
     """The sheet keys refused for *actor* by name, per verb, and so left out
-    of the contract its runner shows it (S-NEXT-u8-placement):
+    of the contract its runner shows it (S-104):
     ``adopt_region`` on ``replace`` for every actor but the steward."""
     return {} if actor in REGION_WRITE_ACTORS else {"replace": frozenset({"adopt_region"})}
 
@@ -957,7 +957,7 @@ def _replace_shape_problem(raw: dict) -> str | None:
         if value is not None and not isinstance(value, str):
             return f"`{key}` must be text, got {value!r}"
     if "adopt_region" in raw:
-        # S-NEXT-u8-placement: a fold keeps the lesson where it sits.
+        # S-104: a fold keeps the lesson where it sits.
         if raw.get("adopt_region") is not True:
             return f"`adopt_region` is `true` or absent, got {raw.get('adopt_region')!r}"
         mixed = sorted(key for key in ("also", "to", "dest", "rules_paths") if raw.get(key) is not None)
@@ -1199,14 +1199,14 @@ def classify(
     if verb == "followup-done":
         return record.follow_up is None and record.follow_up_done is not None
     if verb == "premises" and f.get("action") == "restore-region":
-        # S-NEXT-u8-placement: applied iff the lesson's managed block is
+        # S-104: applied iff the lesson's managed block is
         # `clean` and holds exactly the ledger's rendering -- so a re-run
         # after an earlier line of the same case put the block right is
         # never refused, and a crash after the ledger commit is finished by
         # the post-run recompile, not by a second restore.
         return verbs.region_restored(home, item.id)
     if verb == "premises":
-        # S-NEXT-u4-steward: every `set` or `rebaseline` runs its probes
+        # S-104: every `set` or `rebaseline` runs its probes
         # and records what they saw NOW, so its effect is not derivable from
         # state (like a key-less `note`), with one exception: `set` of `[]`
         # on a lesson that already records `[]` has nothing left to write.
@@ -1221,7 +1221,7 @@ def classify(
         # half-applied merge is not applied: the verb finishes it.
         return replace_made(home, item.id, f) is not None
     if verb == "restate":
-        # S-NEXT-cures-f (C4): applied iff the closed lesson already carries
+        # S-108 (C4): applied iff the closed lesson already carries
         # the note this line's text leaves (`verbs.restate_applied`). The state
         # is the old lesson's, not the new one's: the new lesson may be decided
         # (or rejected again) by now, and the line is still applied.
@@ -1372,7 +1372,7 @@ def _resolution_reroute_for(
     actor: str,
     rerouted: frozenset[str] = frozenset(),
 ) -> bool:
-    """S-NEXT-u4-steward (02 §3a.10.7, "`route`: the lesson moves (`batch`
+    """S-104 (02 §3a.10.7, "`route`: the lesson moves (`batch`
     applies it as `reroute`)"): a steward's `route` line on a ROUTED lesson
     under a `kind: resolution` case that names the lesson and supersedes
     nothing is that lesson's move, applied as :func:`_dispatch_reroute`. It
@@ -1466,7 +1466,7 @@ def _dispatch_hook_activation(
     it. On success, F9: both commits' worth of post-notes ride the ONE
     item result when *route_result* is given — route's own (the
     exact-bytes preview a human reviewing this route sees today; its
-    manual-steps text is dropped, S-NEXT-cures-a, because the activation
+    manual-steps text is dropped, S-102, because the activation
     right after it already did those steps) alongside hook_activate's; route's own commit sha
     rides `detail` since :class:`ItemResult` has only one `sha` slot
     and hook_activate's is the more RECENT of the two commits."""
@@ -1501,7 +1501,7 @@ def _dispatch_hook_activation(
             "; " + "; ".join(notes) if notes else ""
         )
     else:
-        # S-NEXT-cures-a: the route's own "two manual steps remain" text is
+        # S-102: the route's own "two manual steps remain" text is
         # dropped here. The activation that ran after it either did both
         # steps (registered) or says, in its own receipt, the one step it
         # left (placed only). Joining the two printed advice that was
@@ -1534,7 +1534,7 @@ def _dispatch_reroute(
 ) -> "ItemResult":
     """U3b (S-72, 2026-09-28): a `route` line under a valid `kind:
     reconsider` case over a ROUTED lesson re-decides where it lives (*why*,
-    the receipt's word for it: S-NEXT-u4-steward's case-less
+    the receipt's word for it: S-104's case-less
     `premise-moved` move, :func:`_resolution_reroute_for`, says so) --
     `verbs.reroute`, which retires the old placement and writes the new
     one in one motion. Factored out of :func:`_dispatch` for the same
@@ -1578,9 +1578,9 @@ def _dispatch_reroute_if_moved(
     """The `route` line that MOVES a routed lesson, applied as
     :func:`_dispatch_reroute`: under a valid `kind: reconsider` case (U3b,
     S-72), or under the `kind: resolution` case of a `premise-moved` input
-    no case covers (S-NEXT-u4-steward, :func:`_resolution_reroute_for`);
+    no case covers (S-104, :func:`_resolution_reroute_for`);
     ``None`` for every other route, which :func:`_dispatch` applies as a
-    route. Factored out of :func:`_dispatch` (S-NEXT-u8-placement fix
+    route. Factored out of :func:`_dispatch` (S-104 fix
     round 1): with cures-a's execution trailer and u4's resolution reroute
     both merged in, pyright found that function too complex to analyse."""
     if _reconsider_case_for(home, item.id, case, verb) is not None:
@@ -1617,7 +1617,7 @@ def _dispatch_retire(
 
 
 def _fold_context(home: Path, item: SheetItem) -> AbstractContextManager[object]:
-    """S-NEXT-u8-placement: :func:`verbs.fold_region` for a ``replace`` line
+    """S-104: :func:`verbs.fold_region` for a ``replace`` line
     with ``adopt_region: true`` (its checks, then the approval of exactly the
     hand-edited block the daily check confirmed), else nothing. The run and
     its preview both wrap the replace in it."""
@@ -1651,7 +1651,7 @@ def _dispatch_replace(
         item.id, verbs.replace_destination(home, item.id, f.get("dest")), actor
     )
     try:
-        # S-NEXT-u8-placement: a fold (`adopt_region: true`) runs inside
+        # S-104: a fold (`adopt_region: true`) runs inside
         # `verbs.fold_region`, which checks the block and lets the replace
         # compile over exactly the hand edit the daily check confirmed.
         with _fold_context(home, item):
@@ -1693,7 +1693,7 @@ def _dispatch_restate(
     actor: str,
     execution: execution_evidence.ExecutionRef | None,
 ) -> "ItemResult":
-    """S-NEXT-cures-f (C4): the ``restate`` leg of :func:`_dispatch`, factored
+    """S-108 (C4): the ``restate`` leg of :func:`_dispatch`, factored
     out like its siblings. The actor's by-name refusal runs first
     (:data:`RESTATE_REFUSED_ACTORS`). ``by`` defaults to the runner's actor for
     a non-human runner (it names the author of the new lesson's note). A
@@ -1720,7 +1720,7 @@ def _dispatch_record_metadata(
     home: Path, item: SheetItem, execution: execution_evidence.ExecutionRef | None
 ) -> "verbs.VerbResult":
     """The ``followup-done`` and ``premises`` legs of :func:`_dispatch`
-    (S-NEXT-u4-steward), kept out of it for pyright's per-function
+    (S-104), kept out of it for pyright's per-function
     complexity ceiling, as its siblings were: adding the ``premises`` branch
     inline tipped it over. Both write a placed lesson's metadata and take no
     ``by``. A refusal raises to :func:`_dispatch`, which maps it."""
@@ -1977,7 +1977,7 @@ def _dispatch(
                 home, item.id, note=f.get("note"), by=(f.get("by") or actor),
                 no_push=True,
                 execution=execution,
-                # S-NEXT-cures-f: the runner's actor (never the line's `by:`)
+                # S-108: the runner's actor (never the line's `by:`)
                 # decides whether a person's rejection may be reopened.
                 actor=actor,
             )
@@ -2039,7 +2039,7 @@ def _dispatch(
                 execution=execution,
             )
         elif verb in ("followup-done", "premises"):
-            _refuse_region_lines(item, actor)  # S-NEXT-u8-placement: restore-region
+            _refuse_region_lines(item, actor)  # S-104: restore-region
             result = _dispatch_record_metadata(home, item, execution)
         elif verb == "replace":
             return _dispatch_replace(home, item, actor=actor, execution=execution)
@@ -2113,7 +2113,7 @@ def _dispatch(
     return ItemResult(
         n=item.n, id=item.id, verb=verb, rc=0, sha=result.commit_sha,
         state="applied", warnings=list(result.warnings),
-        # S-NEXT-u8-placement: a `premises` line's subject names its action,
+        # S-104: a `premises` line's subject names its action,
         # which tells the post-run recompile a restore-region's host write
         # may be owed (`verbs.host_result_ids`).
         detail=result.commit_message if verb == "premises" else None,
@@ -2138,7 +2138,7 @@ _HOST_OUTCOME_VERBS = frozenset(
 
 def _host_outcome(item: "SheetItem") -> bool:
     """Whether *item* commits the ledger and then writes a host file: a
-    :data:`_HOST_OUTCOME_VERBS` line, or (S-NEXT-u8-placement, fix round 1)
+    :data:`_HOST_OUTCOME_VERBS` line, or (S-104, fix round 1)
     a `premises` line `action: restore-region` -- its ledger commit lands
     first and its block is written after (`verbs.restore_region`), so one
     that fails after the commit is the same half-state a route's is and
@@ -2331,7 +2331,7 @@ def _preview_reopen(
 ) -> None:
     """`reopen`'s own pre-lock checks. *actor* as `_dispatch` passes it
     (:func:`_preview_checks` gives it): the overseer is refused a lesson a
-    person rejected, in the preview as in the run (S-NEXT-cures-f)."""
+    person rejected, in the preview as in the run (S-108)."""
     verbs._preflight_reopen(
         home, item.id, note=item.fields.get("note"), by=by, actor=actor
     )
@@ -2418,12 +2418,12 @@ def _preview_followup_done(
 def _preview_premises(
     home: Path, item: SheetItem, by: str | None, rc: str | None
 ) -> None:
-    """S-NEXT-u4-steward: the verb's own pre-lock checks, which run the
+    """S-104: the verb's own pre-lock checks, which run the
     line's probes (read-only by construction) -- so a probe that cannot
     observe is a `would-refuse` here exactly as it is a refusal at apply."""
     f = item.fields
     if f.get("action") == "restore-region":
-        # S-NEXT-u8-placement: the restore's own checks (the block, its
+        # S-104: the restore's own checks (the block, its
         # writability, the daily check's confirmation); nothing is written.
         verbs._preflight_restore_region(
             home, item.id, because=f.get("because"), note=f.get("note"),
@@ -2458,7 +2458,7 @@ def _preview_replace(
     the S-81 gates on every lesson it rewrites included. *actor* as
     `_dispatch_replace` passes it (:func:`_preview_checks` gives it)."""
     f = item.fields
-    # S-NEXT-u8-placement: a fold previews inside the same approval its run
+    # S-104: a fold previews inside the same approval its run
     # gets (`_fold_context`), so the preview neither refuses the confirmed
     # hand edit nor lets a newer one through.
     with _fold_context(home, item):
@@ -2475,7 +2475,7 @@ def _preview_restate(
     home: Path, item: SheetItem, by: str | None, rc: str | None,
     actor: str = "human",
 ) -> None:
-    """S-NEXT-cures-f: the restate's own pre-lock checks
+    """S-108: the restate's own pre-lock checks
     (`verbs._preflight_restate`), the closed lesson's status among them.
     *actor* as `_dispatch_restate` passes it."""
     f = item.fields
@@ -2708,7 +2708,7 @@ def _dry_run_items(
     will be -- hook shape, replay, destination -- rather than stopping at
     the routed-status refusal. Nothing is written.
 
-    ``rerouted`` (S-NEXT-u4-steward): the same for a staged ``kind:
+    ``rerouted`` (S-104): the same for a staged ``kind:
     resolution`` case on a ``premise-moved`` input no case covers -- its
     ``route`` line on a routed lesson previews as the reroute
     :func:`_resolution_reroute_for` will make of it at apply time.

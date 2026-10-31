@@ -273,7 +273,7 @@ def _current_condition_items(home: Path) -> list[Any]:
     return items
 
 
-#: S-NEXT-u7c (premise-check design D11, unit U7): the lookback for the
+#: S-105 (premise-check design D11, unit U7): the lookback for the
 #: premise sweep's code-only refreshes, the same week the hand-step census
 #: covers (:data:`report.HAND_STEP_WINDOW_DAYS`).
 _REFRESH_WINDOW_DAYS = report.HAND_STEP_WINDOW_DAYS
@@ -439,7 +439,7 @@ def _staged_reason(raw: Any) -> str:
 
 def hand_steps_row(home: Path | str, *, now: datetime | None = None) -> dict[str, Any]:
     """The week's census of hand steps (``report.hand_steps``) as a phase-B
-    fact row (S-NEXT-u7c, lane C): every ledger change made from a person's
+    fact row (S-105, lane C): every ledger change made from a person's
     or an agent's shell rather than by a job, so the overseer can name, for
     each, the gap in self-learn that made the hand step necessary."""
     census = report.hand_steps(home, now=now)
@@ -485,7 +485,7 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         recurrence_suspects(gathered),
         never_fired_always_loaded(_always_loaded_ids(resolved), fired),
         condition_row,
-        # S-NEXT-u7c: the premise check's facts (design D11) and the week's
+        # S-105: the premise check's facts (design D11) and the week's
         # census of hand steps (hand-maintenance cures, lane C).
         premise_facts(resolved),
         hand_steps_row(resolved),

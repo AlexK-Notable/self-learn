@@ -219,7 +219,7 @@ class TestPlacedOnlyReceiptNamesTheManualSteps:
             assert "registration" in text, surface_name
             assert "manual step" in text, surface_name
             assert "settings.json" in text, surface_name
-            # S-NEXT-cures-a: the symlink WAS placed, so the text names the
+            # S-102: the symlink WAS placed, so the text names the
             # ONE step left, never "two" and never `./install.sh`.
             assert "one manual step" in text, surface_name
             assert "two manual" not in text, surface_name
@@ -301,7 +301,7 @@ class TestHookItemCarriesBothCommitsWorthOfNotes:
         assert item.sha is not None
         route_sha = detail.split("route commit ", 1)[1].split(";", 1)[0].strip()
         assert route_sha and route_sha != item.sha
-        # S-NEXT-cures-a: the route's own manual-steps text (printed by
+        # S-102: the route's own manual-steps text (printed by
         # EVERY hook route a human runs) is dropped when the activation
         # that follows in the same item registered the hook: both steps
         # are done, so "two manual steps remain" would be false output

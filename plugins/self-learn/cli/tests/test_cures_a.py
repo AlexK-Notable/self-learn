@@ -1,4 +1,4 @@
-"""S-NEXT-cures-a -- honest output and attribution (the 2026-10-30
+"""S-102 -- honest output and attribution (the 2026-10-30
 hand-maintenance cures, lane A).
 
 Written by reading, not run: the user's 2026-10-30 rule (tests run only for a

@@ -185,7 +185,7 @@ under `sessions/miner-session/`.
 
 ### 1b. The steward's own tool, beside its built-ins: `premise_probe`
 
-*Added 2026-10-31 (S-NEXT-u5-probe-tool, unit U5 of the premise batch,
+*Added 2026-10-31 (S-104, unit U5 of the premise batch,
 `02-schema.md` §3a.10).* The steward has no shell, so it could neither see
 what a premise probe would answer nor look at a premise while it decides.
 It now has one tool of its own, `premise_probe`, which runs the same
@@ -1215,7 +1215,7 @@ every route.
 `self-learn host set-mode <path> git|plain` (add `--skills-root` or
 `--project` for a path registered both ways) in your own terminal: one ledger
 commit, the records and compile records untouched, and an agent's shell is
-refused (S-NEXT-cures-b; 13 §4 item 5). Before that command existed the only
+refused (S-103; 13 §4 item 5). Before that command existed the only
 route was `self-learn host remove <path>` then `self-learn host add --mode
 <new-mode> <path>`, which still works.
 

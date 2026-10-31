@@ -643,7 +643,7 @@ items:
 """,
 }
 
-#: S-NEXT-sk6-steward-proposes (skill-writing plan D6, SK-b): one worked
+#: S-107 (skill-writing plan D6, SK-b): one worked
 #: skill proposal -- a case parked as `skill-proposal` with its
 #: `decision.skill`, and the sheet that is the steward's tentative answer
 #: if no skill is made. Kept apart from `AUTHORITY_EXAMPLES`, whose pairs
@@ -1097,7 +1097,7 @@ def _render_output_contract(owned_skills: Sequence[str] | None = ()) -> str:
     constants; the examples are `STAGE_EXAMPLES`, which the suite feeds
     through those same checkers.
 
-    *owned_skills* (S-NEXT-sk6-steward-proposes): the live skills
+    *owned_skills* (S-107): the live skills
     self-learn owns, the only ones a `new-skill` line of the steward may
     name (:func:`_skill_lines`); `None` when the registry could not be
     read. `_ordered_blocks` passes :func:`_owned_skills`; a caller that
@@ -1347,7 +1347,7 @@ def _render_output_contract(owned_skills: Sequence[str] | None = ()) -> str:
 
 
 def _owned_skills(home: Path) -> tuple[str, ...] | None:
-    """S-NEXT-sk6-steward-proposes: the live skills self-learn owns
+    """S-107: the live skills self-learn owns
     (:func:`skill_registry.load`), or ``None`` when the registry cannot be
     read. Read per packet from the ledger. Nothing a steward run does
     changes it -- only the overseer or a person writes or retires a skill --
@@ -1361,7 +1361,7 @@ def _owned_skills(home: Path) -> tuple[str, ...] | None:
 
 
 def _skill_lines(owned_skills: Sequence[str] | None) -> list[str]:
-    """S-NEXT-sk6-steward-proposes (skill-writing plan D6, SK-b): what the
+    """S-107 (skill-writing plan D6, SK-b): what the
     steward may do with skills -- route a pending lesson into a skill
     self-learn owns, named from *owned_skills*, and propose any other skill
     by parking its case (`cases.SKILL_PROPOSAL_REASON`) -- never make one.
@@ -1409,9 +1409,9 @@ def _skill_lines(owned_skills: Sequence[str] | None) -> list[str]:
 
 
 def _premise_lines() -> list[str]:
-    """S-NEXT-u4-steward: a `premise-moved` input and the `premises` verb,
+    """S-104: a `premise-moved` input and the `premises` verb,
     from the constants the checkers read (`premises.py`'s catalog and
-    vocabularies, `verbs.PREMISES_ACTIONS`). S-NEXT-u6-backfill: writing
+    vocabularies, `verbs.PREMISES_ACTIONS`). S-104: writing
     premises with every route, and the `premise-extract` input whose case
     only writes them (`steward._premise_extract_problem`)."""
     probe_fields = [
@@ -1445,7 +1445,7 @@ def _premise_lines() -> list[str]:
         "  values now. Never write `baseline` or `decided_at`: the runner runs each probe once",
         "  and records them. A probe that cannot observe anything now refuses the line; a",
         "  probe never reads a credential file.",
-        # S-NEXT-u6-backfill (02 §3a.10.7): route-time premises and the backfill.
+        # S-104 (02 §3a.10.7): route-time premises and the backfill.
         "  WRITING PREMISES (method section 17). With every `route`, put a `premises` line with",
         "  `action: set` on the same lesson in the same sheet: what the lesson rests on, a probe",
         "  where the catalog can check one (try it with the `premise_probe` tool first), or",
@@ -1458,7 +1458,7 @@ def _premise_lines() -> list[str]:
         "  false: write it with the probe that shows it; its first value is recorded as",
         "  contradicting the claim and the lesson comes back the next night as a premise-moved",
         "  input. When no probe can show it, park the case (`authority-unclear`).",
-        # S-NEXT-u8-placement (02 §3a.10.3, §3a.10.7)
+        # S-104 (02 §3a.10.3, §3a.10.7)
         "  A PLACEMENT premise (`@reach`, `@writable`, `@intact`; method section 17) is derived",
         "  by code for every placed lesson and never written: nothing to rebaseline. On an",
         "  `@intact` input (a person hand-edited the lesson's managed block) every lesson of the",

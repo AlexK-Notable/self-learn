@@ -80,7 +80,7 @@ UNMEASURED; else 0:
         left on the skills root's own ``claude-md`` while the two modes
         differ (that destination is refused then); UNMEASURED with no
         ``hosts.yaml``;
-    (h) owned_skills (S-NEXT-sk9-selftest) — the owned-skills registry
+    (h) owned_skills (S-107) — the owned-skills registry
         (``owned-skills.yaml``, skill_registry) against the disk: each LIVE
         row must have its skill folder in the skills root, an entry in the
         skills root's ``marketplace.json``, the ``metadata.self-learn``
@@ -676,7 +676,7 @@ def _check_drift(
     # REC5's seventh row). The per-record `plain_notes` line above
     # already names each one; this is the SUMMARY count doc 17's
     # migration paragraph promises.
-    unknown_targets: list[str] = []  # S-NEXT-cures-a: named, in first-seen order
+    unknown_targets: list[str] = []  # S-102: named, in first-seen order
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
@@ -871,7 +871,7 @@ def _check_drift(
         return Verdict.PASS, "no routed managed-destination records — no drift possible"
     ok_message = f"{checked} routed record(s) present in their compiled targets"
     if unknown_targets:
-        # S-NEXT-cures-a (M2.3): `recompile --adopt` takes a TARGET (the
+        # S-102 (M2.3): `recompile --adopt` takes a TARGET (the
         # option is `--adopt TARGET`), so the old bare "run `self-learn
         # recompile --adopt`" failed with "expected one argument". A plain
         # `recompile` records a region that is already correct (M2.4); a
@@ -1446,7 +1446,7 @@ def _owned_skill_problems(
 
 
 def _check_owned_skills(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
-    """(h) owned_skills (S-NEXT-sk9-selftest): ``owned-skills.yaml`` against
+    """(h) owned_skills (S-107): ``owned-skills.yaml`` against
     the disk, read-only. See the module docstring's row (h).
 
     Refusal posture first, like the hosts row: a ``missing`` or
@@ -1600,7 +1600,7 @@ def _check_invocation(home: Path) -> tuple[Verdict, str]:
 
 
 def _check_premises(home: Path) -> tuple[Verdict, str]:
-    """S-NEXT-u2-sweep (02 §3a.10.6): the premise check's health, one row. WARN
+    """S-104 (02 §3a.10.6): the premise check's health, one row. WARN
     names each written probe that has been `unavailable` on three sweeps in a
     row (a broken probe: the steward fixes or drops it); everything else
     (placement premises failing, how many could not be measured, how many
@@ -1632,8 +1632,8 @@ def run_selftest(home: Path) -> int:
     time this function actually RUNS, :mod:`cli` has always finished
     loading) on any UNMEASURED with no FAIL; else 0.
 
-    Twelve checks since S-NEXT-sk9-selftest added ``owned_skills`` and
-    S-NEXT-u2-sweep added ``premises`` (ten since S-82 added ``hosts``,
+    Twelve checks since S-107 added ``owned_skills`` and
+    S-104 added ``premises`` (ten since S-82 added ``hosts``,
     2026-10-08). There is no
     ``worker`` row (fold r1, 2026-09-04). M-K originally shipped one as an unconditional, COUNTED
     UNMEASURED entry, which made every home — healthy or not — exit 9

@@ -154,17 +154,17 @@ class TestConfigGet:
             # the digest and the session engine is the user's, like
             # `steward.enabled`.
             "miner.engine",
-            # S-NEXT-u2-sweep (premise-check design D12): the premise check's
+            # S-104 (premise-check design D12): the premise check's
             # switch is the person's, like `steward.enabled`, though it
             # defaults to true.
             "premises.enabled",
-            # S-NEXT-u6-backfill: the premise backfill's nightly pace (0
+            # S-104: the premise backfill's nightly pace (0
             # pauses it) is the person's, like `premises.enabled`.
             "premises.backfill_per_night",
-            # SK3 (S-NEXT-skills part 6): whether the overseer deploys the
+            # SK3 (S-107 part 6): whether the overseer deploys the
             # skills it writes is the user's switch.
             "overseer.skill_writing",
-            # SK4 (S-NEXT-sk4-discovery): whether the overseer looks for
+            # SK4 (S-107): whether the overseer looks for
             # skills (phase S) is the user's switch too.
             "overseer.skill_discovery",
         }

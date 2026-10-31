@@ -60,7 +60,7 @@ _REPORT_SECTIONS = (
     "Questions for you",
     "Refused / could not do",
 )
-#: S-NEXT-u7c (hand-maintenance cures, lane C): the eighth heading. It is
+#: S-105 (hand-maintenance cures, lane C): the eighth heading. It is
 #: OPTIONAL in the model's report (a report without it is still valid, so a
 #: model that forgets it costs nothing) and, when present, sits directly
 #: after "Catalogue health". The runner adds it to the published report when
@@ -90,7 +90,7 @@ INITIAL_VIEW_KEYS = ("id", "what_i_would_do", "why", "what_evidence_decides_it",
 INITIAL_CONFIDENCE = ("clear", "close-call")
 FINDING_KEYS = ("case", "kind", "text", "ref")
 FINDING_KINDS = ("examined", "dependency-moved")
-#: S-NEXT-cures-d (hand-maintenance cures, lane D): the optional phase B file
+#: S-106 (hand-maintenance cures, lane D): the optional phase B file
 #: of one-line project notices, and the phase B input listing the projects a
 #: notice may name. Neither is in `REQUIRED_OUTPUT_FILES`: a run with no
 #: notices.yaml is complete.
@@ -166,7 +166,7 @@ def _failure_detail(text: object) -> str | None:
 
 #: S-66: "About 50 model calls per run is a runaway guard, not a ration."
 #: A run makes exactly this many: phase A, phase S (skill discovery, SK4,
-#: S-NEXT-sk4-discovery), then phase B -- one fewer with
+#: S-107), then phase B -- one fewer with
 #: `overseer.skill_discovery` off (:func:`_model_calls_per_run`). A resumed
 #: run makes none. `overseer.max_model_calls` is compared with that count.
 #: (2 before SK4.)
@@ -738,7 +738,7 @@ what_evidence_decides_it, and confidence (clear or close-call).
 
 
 def _discovery_prompt_lines(discovery: bool) -> str:
-    """SK4 (S-NEXT-sk4-discovery): phase B's rule for the skill candidates
+    """SK4 (S-107): phase B's rule for the skill candidates
     and the steward's skill proposals."""
     if discovery:
         return (
@@ -1012,7 +1012,7 @@ def _run_phase_s(
     home: Path, stage: Path, *, run_id: str, week: str, date: str, timeout_floor: float,
     sessions: list[dict[str, Any]], dry_run: bool,
 ) -> "discovery_mod.PhaseS":
-    """SK4 (S-NEXT-sk4-discovery): phase S, skill discovery, between phases
+    """SK4 (S-107): phase S, skill discovery, between phases
     A and B. It runs in its own workspace (``discovery.workspace_dir``),
     never the one phases A and B share, so it reads neither phase A's blind
     case views and journal nor anything of the steward's. Its journal
@@ -1276,7 +1276,7 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
     model_doc = user_model.show(home)
     _write_stage(stage, stage / "user-model.yaml", _yaml_text(model_doc))
     _write_stage(stage, stage / "answers.yaml", _yaml_text({"answers": _question_answers(home)}))
-    # S-NEXT-cures-d: the projects a notice may name (names and real paths only).
+    # S-106: the projects a notice may name (names and real paths only).
     # Each project also carries `showing`: the overseer notices still up there, so
     # the model does not write a reworded copy (a new notice, a fresh 14 days).
     showing = project_notices.showing_by_project(home)
@@ -1420,7 +1420,7 @@ def _questions(
             row["text"] = _flat(item["text"])
             row["why"] = _flat(item["why"])
             if "register" in item:
-                # S-NEXT-cures-b: validated against the ask's own text in
+                # S-103: validated against the ask's own text in
                 # `_question_problem`; re-checked against the flattened text
                 # the index will carry, so the two cannot drift.
                 register, problem = conversation.normalize_register(item["register"], row["text"])
@@ -1516,7 +1516,7 @@ def _repair_report_headings(path: Path) -> list[str]:
     out = lines[: starts[0]]
     notes: list[str] = []
     # The optional eighth heading is kept, in its place, when the model wrote
-    # it, and never reported missing when it did not (S-NEXT-u7c).
+    # it, and never reported missing when it did not (S-105).
     order = (
         _REPORT_SECTIONS_WITH_HAND_STEPS if HAND_STEPS_SECTION in sections else _REPORT_SECTIONS
     )
@@ -1560,7 +1560,7 @@ _GAP_NOT_NAMED = "the overseer did not name the gap"
 
 def _staged_hand_steps(stage: Path) -> dict[str, Any]:
     """The week's census of hand steps as phase B was given it: the
-    ``hand-steps-this-week`` row of the staged ``health.yaml`` (S-NEXT-u7c).
+    ``hand-steps-this-week`` row of the staged ``health.yaml`` (S-105).
     A stage with no such row, or a file that does not read, answers a census
     of state ``unavailable`` -- which the report says in words -- and never
     an empty week: an unread packet must not read as "nothing happened"."""
@@ -1592,7 +1592,7 @@ def _hand_step_line(step: dict[str, Any], gap: str | None = None) -> str:
 
 def _put_hand_steps_section(lines: list[str], census: dict[str, Any]) -> None:
     """Make the published report carry every hand step of the census
-    (S-NEXT-u7c). The overseer's own section, when it wrote one, stays as it
+    (S-105). The overseer's own section, when it wrote one, stays as it
     is; for each step of the census whose commit the section does not name,
     the runner adds one line saying the overseer did not name the gap, so no
     step goes unlisted. When the overseer wrote no section the runner writes
@@ -1789,7 +1789,7 @@ def _validate_findings(
 def _validate_notices(
     data: object, known_paths: Iterable[str]
 ) -> tuple[list[dict[str, str]], list[str]]:
-    """Validate notices.yaml ENTRY BY ENTRY (S-NEXT-cures-d), as findings are:
+    """Validate notices.yaml ENTRY BY ENTRY (S-106), as findings are:
     a notice that breaks a rule costs that notice, never the run, and each
     drop is named in one runner line for "Refused / could not do" -- by its
     ordinal only, never its text. A file that is not a mapping holding just a
@@ -3677,13 +3677,13 @@ def _prepare_manifest(
         # a resume can put it back in the rebuilt stage the way the report
         # is put back. `None` when it holds only its header line.
         "journal": journal_text,
-        # S-NEXT-u7c: the week's census of hand steps, as phase B was given
+        # S-105: the week's census of hand steps, as phase B was given
         # it (`health.yaml`'s `hand-steps-this-week` row), so a resume's
         # published report lists the same steps the overseer read. The rebuilt
         # stage of a resume has no `health.yaml`. A record made before this
         # field has none and its report is left as the model wrote it.
         "hand_steps": _staged_hand_steps(stage),
-        # S-NEXT-cures-d: the run's validated project notices ({project, text,
+        # S-106: the run's validated project notices ({project, text,
         # case?}), kept in the record so a resumed run writes the same ones.
         # A record made before this field has none.
         "notices": [dict(row) for row in (project_notice_rows or [])],
@@ -3712,7 +3712,7 @@ def _prepare_manifest(
             "lines_dropped": int(decisions.get("lines_dropped") or 0),
         }
     if skills_info is not None:
-        # SK3 (S-NEXT-skills part 6): what overseer.skill_writing meant for
+        # SK3 (S-107 part 6): what overseer.skill_writing meant for
         # this run, the steps kept as drafts (committed with this record),
         # and whether the run may be auto's drafts-only run.
         manifest["skills"] = {**skills_info, "week": manifest["week"]}
@@ -3749,7 +3749,7 @@ def _publish_manifest(
 def _write_skill_drafts(
     home: Path, intent: intents.Intent, manifest: dict[str, Any]
 ) -> list[Path]:
-    """SK3 (S-NEXT-skills part 6, D10): the skills phase B built or changed
+    """SK3 (S-107 part 6, D10): the skills phase B built or changed
     while writing was not in effect, each checked by the writer's rules
     and kept in the ledger at ``overseer/skills/<week>/drafts/<name>/``. They
     go in the run record's own commit, under its intent; a file an earlier
@@ -3777,7 +3777,7 @@ def _write_skill_drafts(
 def _write_discovery_week(
     home: Path, intent: intents.Intent, manifest: dict[str, Any]
 ) -> list[Path]:
-    """SK4 (S-NEXT-sk4-discovery): this run's skill candidates and phase B's
+    """SK4 (S-107): this run's skill candidates and phase B's
     dispositions, added to ``overseer/skills/<week>.yaml`` in the run
     record's own commit, under its intent; next week's phase S reads them
     back as ``history.yaml``. A run with neither writes nothing. Answers the
@@ -3863,7 +3863,7 @@ def _manifest_introduction(home: Path, run_id: str) -> str:
     return commits[0]
 
 
-#: C8 (S-NEXT-cures-f): the ledger roots a lesson's record file lives under --
+#: C8 (S-108): the ledger roots a lesson's record file lives under --
 #: a skill bucket (`skills/`), a project bucket (`projects/`) or the user
 #: bucket (`user/`), the first three members of `ledger._LAYOUT`. Crash
 #: recovery looked in `skills` alone, so a lesson in a project or the user
@@ -3931,7 +3931,7 @@ def _candidate_establishes(
         # state read (`batch.replace_made`), never this commit's.
         return record.status == "superseded" and bool(record.superseded_by)
     if verb == "restate":
-        # C4 (S-NEXT-cures-f): the proof commit left the closed lesson with the
+        # C4 (S-108): the proof commit left the closed lesson with the
         # note this line's text carries (`verbs.restate_key_of`); the lesson's
         # own status is untouched by design, so the note is the only evidence.
         key = verbs.restate_key_of(home, item)
@@ -3950,7 +3950,7 @@ def _candidate_establishes(
     if verb == "followup-done":
         return record.follow_up is None and record.follow_up_done is not None
     if verb == "premises":
-        # S-NEXT-u4-steward: the commit wrote the field; what values its
+        # S-104: the commit wrote the field; what values its
         # probes saw is the commit's own, not something to compare again.
         return record.premises is not None
     if verb in {"rehome", "rescope"}:
@@ -4184,7 +4184,7 @@ def _item_settled(row: dict[str, Any]) -> bool:
 
 
 def _stamp_reconsidered(home: Path, case_path: Path, case_id: str) -> None:
-    """C8 (S-NEXT-cures-f): give each lesson a ``kind: reconsider`` successor
+    """C8 (S-108): give each lesson a ``kind: reconsider`` successor
     covers its ``reconsidered`` history entry, the pointer from the lesson to
     the case that revisited it -- what the steward's apply and a person's
     `self-learn reconsider` already write (`verbs.reconsider`). Before this the
@@ -4393,7 +4393,7 @@ def _record_sheetless(
 
 
 def _skill_trial(home: Path, manifest: dict[str, Any], run_id: str) -> tuple[Path, str] | None:
-    """SK3 (S-NEXT-skills part 6): the trial file this completing run
+    """SK3 (S-107 part 6): the trial file this completing run
     writes, or ``None``. Written once, by the first run to complete while
     writing was not in effect and whose discovery steps were seen working
     (``discovery_mod.trial_readiness``, recorded when the run was prepared)."""
@@ -4630,7 +4630,7 @@ def _execute_manifest(
         # Carried exactly as the report is: the rebuilt stage gets the
         # run's own journal back, never another run's.
         _write_stage(stage, stage / MODEL_JOURNAL_NAME, carried_journal)
-    # S-NEXT-cures-d: the run's project notices, first thing and idempotent, so
+    # S-106: the run's project notices, first thing and idempotent, so
     # a run that halts or resumes later still leaves them (cache only).
     _write_project_notices(home, manifest)
     runner_notes = [
@@ -5037,7 +5037,7 @@ def _execute_manifest(
             "week": week, "attempts": attempts, "failure": kind,
             "applied": application_count,
         })
-    # SK3 (S-NEXT-skills part 6): the run that completes as auto's
+    # SK3 (S-107 part 6): the run that completes as auto's
     # drafts-only run writes the trial file in its completing commit.
     trial = None if halted or closed else _skill_trial(home, manifest, run_id)
     try:
@@ -5382,7 +5382,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     model = provider.model_for("overseer", home=home)
     guard = cast(int, guard)
     timeout_seconds = cast(float, timeout)
-    # SK4 (S-NEXT-sk4-discovery): whether this run makes phase S, read once.
+    # SK4 (S-107): whether this run makes phase S, read once.
     discovery_on = discovery_mod.enabled(home)
     calls_per_run = _model_calls_per_run(discovery_on)
     if guard < calls_per_run:
@@ -5529,7 +5529,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     if not dry_run and model_calls:
         _keep_phase_a(home, stage, week, population_key, run_id)
 
-    # SK4 (S-NEXT-sk4-discovery): phase S, skill discovery, in its own
+    # SK4 (S-107): phase S, skill discovery, in its own
     # workspace; it never fails the run. Before the lock, as phase A is: it
     # writes nothing to the ledger.
     if discovery_on:
@@ -5576,7 +5576,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         # whole verified parked queue; no count or prompt budget truncates it.
         # S-81: the one definition the steward's hold reads too.
         parked_rows = cases.awaiting_overseer(home)
-        # SK3 (S-NEXT-skills part 6): whether this run deploys the skills
+        # SK3 (S-107 part 6): whether this run deploys the skills
         # phase B writes, read once; the run record keeps it, so a resume
         # makes the same choice.
         skill_state = skills_mod.writing_state(home)
@@ -5886,7 +5886,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     f"{withheld['findings.yaml']}: every finding dropped"
                 )
             finding_drops = [*findings_parse, *finding_drops]
-            # S-NEXT-cures-d: the optional notices.yaml. A bad notice costs
+            # S-106: the optional notices.yaml. A bad notice costs
             # that notice; it is said in "Refused / could not do".
             notice_rows, notice_drops = _read_notices(
                 stage, withheld,
@@ -6023,7 +6023,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         _validate_successor(case_file, {row["case"] for row in parked_rows}, home)
                         predecessor = str(_yaml_mapping(case_file)["supersedes"])
                         if not discovery_on and predecessor in proposals_now:
-                            # SK4 (S-NEXT-skills part 6): with discovery off
+                            # SK4 (S-107 part 6): with discovery off
                             # the steward's skill proposals wait parked.
                             raise OverseerError(
                                 f"{case_file.name}: {predecessor} is a skill proposal, which "
@@ -6108,7 +6108,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     if rules is not None:
                         raise OverseerError(rules)
                     if skill_step is not None and not skill_step.deploy:
-                        # SK3 (S-NEXT-skills part 6): writing is not in
+                        # SK3 (S-107 part 6): writing is not in
                         # effect, so the step is kept, checked, as a draft
                         # and the pair is not applied; the report says what
                         # it would have done.
@@ -6212,7 +6212,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             )
             if skill_state.note:
                 case_drops.append(_failure_detail(skill_state.note) or skill_state.note)
-            # SK4 (S-NEXT-sk4-discovery): what phase S came to, and phase B's
+            # SK4 (S-107): what phase S came to, and phase B's
             # dispositions of its candidates and of the steward's skill
             # proposals; a missing or dropped one is named.
             case_drops.extend(phase_s.notes)
@@ -6230,7 +6230,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         "status": "skill-disposition-note", "reason": line[:300]})
             else:
                 dispositions = None
-            # S-NEXT-skills part 6: whether this run's discovery steps were
+            # S-107 part 6: whether this run's discovery steps were
             # seen working, so that it may count as auto's drafts-only run.
             trial_ready, trial_why = discovery_mod.trial_readiness(
                 phase_s, dispositions or discovery_mod.Dispositions(False, why="discovery is off"),
