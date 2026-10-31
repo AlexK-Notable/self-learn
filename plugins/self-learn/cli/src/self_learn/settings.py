@@ -1065,6 +1065,28 @@ REGISTRY: tuple[Setting, ...] = (
         description="enable the steward's applying runner after its watched maiden run",
         tier="C",
     ),
+    # ------------------------------------------------------ premises
+    # The premise check (S-NEXT-u2-sweep, premise-check design D12 as the user
+    # changed it on 2026-10-30): the daily sweep and the steward's two input
+    # kinds run from landing with no step by a person, so the DEFAULT is true
+    # and setting it false is the person's rollback. Tier C like every switch
+    # that is the person's (agents never set it; S-92 refuses `config set` from
+    # an agent's shell), with no process-override rung: an exported
+    # `SELF_LEARN_OVERRIDE_*` must not be able to switch it.
+    Setting(
+        name="premises.enabled",
+        env_var=None,
+        config_section="premises",
+        config_key="enabled",
+        kind="bool",
+        default=True,
+        description=(
+            "whether the daily premise sweep and the steward's premise inputs run "
+            "(on unless set false; the person's switch)"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
     # ---------------------------------------------------------- runs
     # U1 (S-68, `03-decisions.md`): ONE cap shared by both delegated
     # runners and by the overseer's week -- a run left unfinished either
