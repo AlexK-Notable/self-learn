@@ -391,7 +391,9 @@ def test_session_spec_and_doctor_share_the_required_steward_containment(
     assert spec.containment.write_globs == (f"{spec.cwd}/steward/**",)
     assert spec.containment.write_exact == ()
     assert spec.containment.strict_mcp is True
-    assert spec.containment.allowed_tools == "Read,Grep,Glob,Write,Edit"
+    assert spec.containment.allowed_tools == "Read,Grep,Glob,Write,Edit,mcp__premises__premise_probe"
+    assert spec.mcp_toolset is not None
+    assert spec.mcp_toolset.qualified_names == ("mcp__premises__premise_probe",)
     assert spec.containment.disallowed_tools == "Bash,NotebookEdit,Task,WebFetch,WebSearch"
 
     row = provider._steward_containment_row(home)

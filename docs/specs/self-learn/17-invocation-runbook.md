@@ -70,7 +70,9 @@ grants `Edit`/`Write` only inside the run's own declared stage directory —
 never the ledger or canon directly. Neither of the two is a new kind of
 charter; each gets its own `Containment` instance with a narrower write set
 than the surfaces it joins. `miner-session` (2026-10-06) writes nothing at
-all and runs only on its own tools; §1a describes it.
+all and runs only on its own tools; §1a describes it. The `steward` also has
+one tool of its own, read-only, beside its built-in tools (2026-10-31); §1b
+describes it.
 
 ### 1a. The seventh surface: `miner-session`, which runs on its own tools
 
@@ -180,6 +182,72 @@ surface sends byte-for-byte the options and makes exactly the sidecar and
 sweep calls it made before. In the cache, the new surface writes only its
 own `miner-session.*` event logs and sidecars and its session copies
 under `sessions/miner-session/`.
+
+### 1b. The steward's own tool, beside its built-ins: `premise_probe`
+
+*Added 2026-10-31 (S-NEXT-u5-probe-tool, unit U5 of the premise batch,
+`02-schema.md` §3a.10).* The steward has no shell, so it could neither see
+what a premise probe would answer nor look at a premise while it decides.
+It now has one tool of its own, `premise_probe`, which runs the same
+read-only catalog the nightly sweep runs (`premises.py`: the same refusals,
+the same 5-second bound, the same scrubbed environment) and adds no probe
+or command of its own. The tool is `premise_tool.py`; the model sees it as
+`mcp__premises__premise_probe`.
+
+**What changes on the `steward` surface.** The session carries
+`SessionSpec.mcp_toolset` (§1a), and the containment's `allowed_tools`
+becomes `Read,Grep,Glob,Write,Edit,mcp__premises__premise_probe`;
+`disallowed_tools` is unchanged (`Bash` and the rest stay refused). Unlike
+`miner-session` (§1a), the steward's own tool rides **beside** the built-in
+tools: the options carry no `tools` key, so nothing is switched off, and
+the only added key is `mcp_servers` holding the one server. The seam's rule
+for it (`invocation_sdk/backend.py`, `_OWN_TOOLS_WITH_BUILTINS`): the
+containment must allow every tool the toolset serves and no other `mcp__`
+tool, and a steward containment that names an `mcp__` tool the session does
+not serve is refused as well. Either failure is a `ValueError` raised while
+the options are built, before any Claude Code process starts. Every other
+surface that is given a toolset keeps §1a's exact-names rule and has its
+built-in tools switched off. The repair round of a steward call is a new
+session on the same containment, so `steward._repair_spec` carries the
+toolset; a rebuild that dropped it would be refused by that rule.
+
+**The tool.** Two ways to call it, never both. `probe` takes one catalog
+probe (with an optional `holds_if` and `match`) and answers with the value
+seen now (the value itself only when it is short and passes the secret
+scan, always its hash), how `holds_if` reads the claim, and the baseline
+the runner would record if the premise were written now; a first value that
+already contradicts the claim reads `contradicts-claim` there. `lesson`
+(optionally with `premise`) takes a lesson id and answers with that
+lesson's recorded premises, each probed now and judged against its stored
+baseline (the verdict the sweep would reach, without the sweep's
+two-day debounce). The arguments are validated by the tool's JSON Schema and
+then by `premises.validate_premises`, the function that validates a premise
+on a record, so the tool accepts exactly the probes a record would. It
+writes nothing (not the ledger, the cache or the stage), takes no lock and
+calls no model. Its handler runs the probes in a worker thread, as §1a
+requires of every handler, and one call runs at most three probes of five
+seconds each, inside the seam's 60-second bound. An error the model can
+correct (a bad probe, an unknown lesson) comes back as an error reply naming
+it; an unexpected failure names only its type.
+
+**Placement premises.** `@reach`, `@writable` and `@intact` (`02-schema.md`
+§3a.10.3) are derived by code, not written. The tool shows them when its
+builder is handed a reader for them (`build_toolset(home,
+placement=reader)`; the reader is the placement-premise unit's, U8), asked
+for with `premise: "@reach"` and so on or shown beside the written premises
+in a `lesson` call. Without a reader, the tool says that placement checks
+are not available to it and a request for one is refused; it never invents
+a reading.
+
+**The doctor.** `self-learn doctor`'s steward `containment` row checks the
+new shape: the allowed list above, `Bash` still refused, and a toolset that
+is exactly the one read-only `premise_probe` tool.
+
+**Unmeasured.** Whether Claude Code consults the charter for an in-process
+MCP tool when its built-in tools are also on (§1a measured nothing here
+either) has not been observed on a real steward run: no model call was
+made to build this. The first live steward run after this lands is its
+measurement; a denied call shows in the run's `denials` and in the journal.
 
 ## 2. The `[sdk]` extra is no longer optional
 

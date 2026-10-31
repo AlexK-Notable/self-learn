@@ -34,6 +34,7 @@ from . import (
     intents,
     invocation,
     ledger_ops,
+    premise_tool,
     settings,
     statements,
     steward_inputs,
@@ -90,7 +91,10 @@ class RunResult:
     held: str | None = None
 
 
-_ALLOWED_TOOLS = "Read,Grep,Glob,Write,Edit"
+# 2026-10-31 (premise batch, U5): the steward's one tool of its own, the
+# read-only `premise_probe` (`premise_tool.py`), rides beside Read, Grep,
+# Glob, Write and Edit. It still has no shell: Bash stays disallowed below.
+_ALLOWED_TOOLS = "Read,Grep,Glob,Write,Edit," + premise_tool.QUALIFIED_NAME
 _DISALLOWED_TOOLS = "Bash,NotebookEdit,Task,WebFetch,WebSearch"
 _RECONSIDER_OBSERVATION_RE = re.compile(
     r"^- (obs-[0-9a-f]{8}) (\S+) \S+ (statement|dependency-moved):.*?\(ref: ([^)]+)\)$",
@@ -1758,6 +1762,11 @@ def _session_spec(
         # 2026-09-28: every session of one run keeps its transcript copy in
         # one folder, `<cache>/sessions/steward/<run id>/`.
         transcript_group=run_id,
+        # 2026-10-31 (U5): the read-only `premise_probe` tool, served beside
+        # the built-in tools; `containment.allowed_tools` names it, and the
+        # seam refuses the session when the two disagree. It reads the
+        # ledger this run decides for and writes nothing anywhere.
+        mcp_toolset=premise_tool.build_toolset(home),
     )
 
 
@@ -1814,6 +1823,10 @@ def _repair_spec(spec: invocation.SessionSpec, error: str) -> invocation.Session
         # Carried (2026-09-28): the repair turn's transcript copy sits
         # beside its decision call's.
         transcript_group=spec.transcript_group,
+        # Carried (2026-10-31): the repair round is a NEW session on the
+        # same containment, which names the probe tool; dropped, the seam
+        # would refuse it for allowing a tool it does not serve.
+        mcp_toolset=spec.mcp_toolset,
     )
 
 

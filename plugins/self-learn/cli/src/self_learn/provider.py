@@ -1209,9 +1209,15 @@ def _steward_containment_row(home: Path | str) -> Row:
         and containment.write_globs == expected_glob
         and containment.write_exact == ()
         and containment.strict_mcp is True
-        and containment.allowed_tools == "Read,Grep,Glob,Write,Edit"
+        and containment.allowed_tools
+        == "Read,Grep,Glob,Write,Edit,mcp__premises__premise_probe"
         and containment.disallowed_tools
         == "Bash,NotebookEdit,Task,WebFetch,WebSearch"
+        # 2026-10-31 (U5): the steward's one tool of its own, read-only,
+        # and exactly that one: the containment names it and the spec serves it.
+        and spec.mcp_toolset is not None
+        and spec.mcp_toolset.qualified_names == ("mcp__premises__premise_probe",)
+        and all(tool.read_only for tool in spec.mcp_toolset.tools)
     )
     if matches:
         return Row(
@@ -1219,7 +1225,8 @@ def _steward_containment_row(home: Path | str) -> Row:
             verdict="PASS",
             detail=(
                 "steward: Read/Grep/Glob plus file writes confined to the run "
-                "directory; Bash, task delegation, notebooks, and web tools refused"
+                "directory and the read-only premise_probe tool; Bash, task "
+                "delegation, notebooks, and web tools refused"
             ),
         )
     return Row(
@@ -1231,7 +1238,8 @@ def _steward_containment_row(home: Path | str) -> Row:
             f"write_exact={list(containment.write_exact)!r}; "
             f"strict_mcp={containment.strict_mcp!r}; "
             f"allowed_tools={containment.allowed_tools!r}; "
-            f"disallowed_tools={containment.disallowed_tools!r}"
+            f"disallowed_tools={containment.disallowed_tools!r}; "
+            f"own_tools={None if spec.mcp_toolset is None else list(spec.mcp_toolset.qualified_names)!r}"
         ),
     )
 
