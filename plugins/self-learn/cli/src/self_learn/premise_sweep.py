@@ -46,8 +46,11 @@ remembers what they said, so that a change is noticed only when it is real:
   make a flapping value look stable.
 - **What this module does not do:** it does not decide anything, put a lesson
   in front of the steward, or write the ``premises`` field of a lesson
-  (apart from the refresh above). The steward's input (U3/U4) reads
-  :func:`confirmed_moves`; nothing else is its interface.
+  (apart from the refresh above). The steward's input (U3/U4) reads the
+  cache file directly, so the file's row keys (``record``, ``premise``,
+  ``psha``, ``state``, ``value_sha``, ``failing``, ``observed_at``, ...) are
+  its contract; :func:`confirmed_moves` is the same judgement for the read
+  verb and the sweep's own count.
 
 The switch is ``premises.enabled`` (tier C, default TRUE; agents never set
 it). With it false the job is never due and :func:`run` does nothing unless
@@ -718,6 +721,12 @@ def _later_than(row_at: object, baseline_at: object) -> bool:
     return a is not None and b is not None and a > b
 
 
+def _later_day(row_at: object, baseline_at: object) -> bool:
+    """True when *row_at* falls on a later calendar day than *baseline_at*."""
+    a, b = chrono.to_dt(row_at), chrono.to_dt(baseline_at)
+    return a is not None and b is not None and a.date() > b.date()
+
+
 def judge_probe(premise: Mapping, rows: list[dict]) -> Judgement:
     """Judge one written premise from its observation rows (oldest first).
     Rows made under another probe or judgment are ignored. See the module
@@ -742,10 +751,13 @@ def judge_probe(premise: Mapping, rows: list[dict]) -> Judgement:
         return Judgement(verdict, False, latest)
     if latest.get("kind") == KIND_LEDGER:
         need = 1
-    elif baseline.get("state") == "contradicts-claim" and _later_than(
+    elif baseline.get("state") == "contradicts-claim" and _later_day(
         latest.get("observed_at"), baseline.get("observed_at")
     ):
-        need = 1  # the observation that wrote it was the first sighting
+        # The observation that wrote it was the first sighting, and it counts
+        # from the NIGHT AFTER (02 §3a.10.4 (1)): a sweep on the same calendar
+        # day does not, which is how the steward's reader counts it too.
+        need = 1
     else:
         need = STABLE_SWEEPS
     run_rows: list[dict] = []
@@ -1027,14 +1039,25 @@ def run(
     result.unavailable = sum(1 for row in rows if row["state"] == premises.OBS_UNAVAILABLE)
 
     history = read_history(cache_dir)
-    # Carry every earlier observation forward: a lesson whose sweep could not
-    # run (a probe that raised, a record that did not parse) must keep its
-    # history, or one bad night would reset the two-sweep count. Only a
-    # lesson that is no longer routed is dropped, and only when every record
-    # file parsed (else it may merely be one that did not parse tonight).
+    # Keep the history of what this sweep measured, so one bad night does not
+    # reset the two-sweep count: every failure path above writes an
+    # `unavailable` row (a probe that raised, a failed instrument), so a live
+    # lesson's premise either has a row tonight or is no longer measured for
+    # it. A stored key a live lesson has no row for tonight is dropped: a
+    # lesson re-homed to `reference`, `hook` or `new-skill` must not keep its
+    # old failing `@reach` / `@writable` / `@intact` rows as the last word
+    # (they would read as failing for good and be offered again), and a
+    # premise taken off a record has nothing left to judge. The one
+    # exception is a lesson that is not in `placed`: while a record file did
+    # not parse it may merely be the one that did not parse tonight, so its
+    # keys are carried; once every file parses, a lesson no longer routed
+    # is dropped.
+    written = {(str(row["record"]), str(row["premise"])) for row in rows}
     live = {rec.id for _b, rec in placed}
     fresh: History = {
-        key: list(kept) for key, kept in history.items() if unparseable or key[0] in live
+        key: list(kept)
+        for key, kept in history.items()
+        if key in written or (unparseable and key[0] not in live)
     }
     for row in rows:
         key = (str(row["record"]), str(row["premise"]))
