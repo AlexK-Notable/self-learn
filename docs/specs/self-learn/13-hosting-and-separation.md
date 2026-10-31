@@ -1425,7 +1425,12 @@ recorded at or after the index file's last write -- so an answer takes
 effect when `overseer respond` records it, not when the next weekly run
 rewrites the index. A later run that asks the same id again writes a newer
 index, so the question is open again. The statement store is only read;
-the next run still sees the answer.)* These are additive JSON fields on an existing read-only surface,
+the next run still sees the answer.)* *(Amended S-NEXT-overseer-asks: nor does the
+count include an ask that carries a `default` -- the overseer applied it in
+the run that asked, so it waits on nobody (`conversation.waits_on_the_user`);
+`overseer open` still shows it, with its default, so the user can overturn
+it. Readings are no longer indexed; an index written before still counts
+its readings and its asks without a default.)* These are additive JSON fields on an existing read-only surface,
 not a new command; a `status`/`doctor` run that omits them is not this
 section's fault, but a build that never wires them through is.
 

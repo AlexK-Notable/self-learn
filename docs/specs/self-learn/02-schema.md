@@ -910,6 +910,9 @@ questions:
       kind: project         # project (default) | skills-root
 ```
 
+*(Amended S-NEXT-overseer-asks, 2026-10-31: the shape above is the one an
+index written before this amendment may still hold. Since it, `ask` is the
+only kind the runner indexes; see "Asks carry a default" below.)*
 An index row written before this date is `{id, cases}` and reads as
 `kind: reading`. The runner validates each entry on its own — a reading's id
 must name an entry at that revision in the user model the run was given, an
@@ -932,6 +935,72 @@ that registration. A reading never carries `register`. The index keeps the
 field as `{kind, path, mode}`; `overseer open` prints "a plain yes registers:
 …" under the ask, and the one-line text recorded on each cited case's
 presentation carries the same words.
+
+*(Added 2026-10-31, S-NEXT-overseer-asks.)* **Asks carry a default; the
+overseer never waits on the user.** Decision 4 of the 2026-10-31b round (the
+orchestrator's, under the user's 15:13 words "unless sudo is involved, you
+should never have to tell me, 'X is waiting on you'"):
+
+```yaml
+questions:
+  - id: q-user-scope-shelf  # the only kind
+    kind: ask
+    text: "Do you want …?"
+    why: "…"
+    cases: [case-…]
+    default: "I left the lesson where it is."  # what the overseer did this run
+  - id: q-restart-daemon
+    kind: ask
+    text: "…"
+    why: "…"
+    cases: [case-…]
+    system: true            # would change the user's system outside self-learn: no default of its own
+```
+
+- A `kind: reading` entry, or a legacy `{id, cases}` entry whose id is a
+  user-model proposition, is DROPPED and named in "Refused / could not do"
+  ("a reading is not asked: show it under User model and act on it; the user
+  corrects one when they choose to"). Readings remain evidence, shown in the
+  report's User model section; the runner adds one line there saying how to
+  correct one (`statement add … --answers-kind proposition --answers-ref
+  <um-id>@r<revision>`), and phase B's `answers.yaml` now carries such
+  corrections beside the answers to asks, each row with its `kind`
+  (`question` or `proposition`; a proposition answer whose `ref` is not a
+  reading's id is left out).
+- Every ask needs `default`: one sentence, secret-scanned, on what the
+  overseer did this run in the user's stead; an ask without one is dropped.
+  The overseer decides the lessons the ask is about by that default in the
+  same run and never defers a lesson to wait for the answer.
+- An ask with `system: true` (its answer would change the user's system
+  outside self-learn's own surfaces) or with `register` writes NO default:
+  one it writes is dropped, and the runner indexes the fixed change-nothing
+  sentence (`conversation.SYSTEM_DEFAULT`, "Nothing on your system was
+  changed; answer if you want it done.", or `REGISTER_DEFAULT`, "Nothing was
+  registered; a plain yes registers it."). The runner cannot tell a system ask
+  the model failed to flag; the prompt says which asks are.
+- The index row keeps `default` (and `system: true` when set). At publish,
+  for each ask, the runner observes on each cited case -- or on the case its
+  line of successors ends at, this run's own successor included -- a
+  `statement` by the overseer: `ask defaulted <q-id>; default applied:
+  <default>` with `ref: overseer-run:<run>`, under an observation id derived
+  from the run, the ask and the case (a resume records nothing twice). The
+  steward brings a case whose outcome is `defer` back on it, as on an answer
+  (S-96), with a card line quoting the default.
+- The report's "Decided in the user's stead" lists each default applied and,
+  after them, the `system` and `register` asks where nothing was changed.
+- `overseer open` shows an ask's default under its `why`; the recorded
+  presentation line carries it. `overseer_open_questions` and the
+  session-start count leave out an ask with a default: it is decided, not
+  waiting. An ask without one (an index written before) still counts.
+- An answer to an ask with a default is observed, not on the cited cases, but
+  on the case each one's line of successors ends at, as `user answered <q-id>
+  after its default was applied (ref: stmt-…)`. The steward brings that case
+  back WHATEVER it decided, with the user's words in the card, so an answer
+  can overturn what the default decided. An answer to an ask without a
+  default keeps S-96's form and rule. Once a later run rewrites the index,
+  last week's asks can no longer be answered with `overseer respond`; a
+  `statement add --answers-kind question --answers-ref <q-id>` still reaches
+  phase B through `answers.yaml`.
 
 *(Added 2026-10-30, S-101.)* **Lesson records and the preview.**
 Phase B's stage also holds `lessons/<id>.md`, every lesson record in the ledger
