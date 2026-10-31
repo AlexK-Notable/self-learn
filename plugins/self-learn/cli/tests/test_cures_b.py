@@ -369,7 +369,11 @@ def test_from_an_agent_shell_a_session_whose_last_typed_row_is_a_yes_registers(t
     )
 
     assert result.registered is True
-    assert result.registration == f"registered project host {new} in git mode"
+    # integration 2026-10-31 (cures-b gate r3 MAJOR): from an agent's shell the
+    # sentence names where the typed yes is (conversation._carry_out_registration).
+    assert result.registration == (
+        f"registered project host {new} in git mode (the yes is at transcript:{session}#L3)"
+    )
     assert is_project_host(load_hosts(home), new)
     assert _answers(home) == answers + 1
 
