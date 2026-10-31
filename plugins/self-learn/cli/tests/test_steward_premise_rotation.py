@@ -25,6 +25,13 @@ the lane report):
 11. doctor WARNs when the oldest review is overdue by more than the period;
 plus the brief, and one run end to end.
 
+Fix round 1 (gate r1) adds: a quota of 0 never makes the steward due by
+itself (it would start an idle run every tick); a lesson with an undecided
+move and a lesson the overseer holds are never offered; the due check's
+last path (pending lessons no run is new work for) still asks the rotation;
+a broken probe on a lesson just past its age is not "overdue by a period";
+the doctor row reads `doctor_rows`' own cache and clock.
+
 Sandbox ledger only (`support.make_env` under tmpdir); no model call.
 """
 
@@ -53,15 +60,18 @@ from support import commit_all, make_env
 from test_steward import _configure_steward, _dump_yaml, _stage_dir
 from test_steward_inputs import _publish_disposition
 from test_steward_premise_moved import (
+    BUS,
     P_BEHAVIOUR,
     P_CHANGED,
     _case,
+    _day,
     _iso,
     _observe,
     _pair,
     _premised,
     _rec,
     _routed,
+    _with_baseline,
 )
 
 A = "lrn-f8a00001"
@@ -411,6 +421,11 @@ def test_both_settings_are_tier_c_with_no_override_channel(name, default):
     assert setting.default == default
 
 
+def test_the_default_period_constant_is_the_registry_s_default():
+    # steward_inputs keeps its own copy for an unreadable registry entry
+    assert steward_inputs.ROTATION_DAYS_DEFAULT == settings.by_name("premises.rotation_days").default
+
+
 def test_rotation_per_night_takes_auto_or_a_whole_number(tmp_path):
     value = settings._rotation_per_night_value
     assert value("auto") == "auto" and value(" 5 ") == "5" and value("0") == "0"
@@ -545,3 +560,134 @@ def test_the_contract_and_the_method_describe_the_review():
     )
     assert "**A `premise-review` input** is a placed lesson that comes back to be re-read whole" in method
     assert "the runner refuses a `replace`, `retire`, `route`, `reject` or `restore-region` line" in method
+
+
+# ================================================= fix round 1 (gate r1)
+
+
+def test_a_quota_of_zero_never_makes_the_steward_due_by_itself(tmp_path, monkeypatch):
+    """Gate r1 MAJOR 1: with `rotation_per_night: '0'` the run takes no
+    review and ends `idle`, which arms no cooldown; a due check that still
+    said True started that idle run on every tick."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _placed(env, A, 200)
+    cache = tmp_path / "cache"
+    now = time.time()
+    monkeypatch.setattr(steward, "last_run_iso", lambda h: _iso(-2))
+    _config(home, "steward:\n  enabled: true\npremises:\n  backfill_per_night: 0\n")
+    assert serve._steward_is_due(home, cache, now) is True  # positive control: `auto`
+    _config(home, "steward:\n  enabled: true\npremises:\n  backfill_per_night: 0\n"
+                  "  rotation_per_night: '0'\n")
+    assert serve._steward_is_due(home, cache, now) is False
+    assert steward.run(home).status == "idle"  # what a True would have started, every tick
+    assert serve._steward_is_due(home, cache, now) is False
+    # the doctor still shows it due (nothing is hidden), at 0 a night
+    status = steward.premise_rotation_status(home)
+    assert (status.per_night, status.due) == (0, 1)
+
+
+def test_a_lesson_whose_move_is_undecided_is_not_offered_to_be_re_read(tmp_path):
+    """02 §3a.10.4 "Never offered", an undecided `premise-moved` input:
+    its move is decided first, and that decision re-records the premises."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    _age(home, A, 120)
+    _premised(home, A, _with_baseline(P_CHANGED, "", at=_iso(-10), decided=_day(-10)))
+    _placed(env, B, 120)  # a sibling, due the same way
+    _config(home, "premises:\n  rotation_per_night: '10'\n")
+    assert sorted(_offered(home)) == [A, B]  # positive control: both due, nothing moved
+
+    _observe(home, A, P_CHANGED, BUS, _iso(-1))
+    _observe(home, A, P_CHANGED, BUS, _iso(-0.01))  # two agreeing sweeps: a confirmed move
+    assert [row["record"] for row in steward._premise_moved_inputs(home)] == [A]
+    assert _offered(home) == [B]
+
+
+def test_a_lesson_the_overseer_holds_is_not_offered_to_be_re_read(tmp_path, monkeypatch):
+    """02 §3a.10.4 "Never offered", S-81: a lesson named by a case parked
+    for the overseer is the overseer's until it decides."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _placed(env, A, 120)
+    _placed(env, B, 120)
+    _config(home, "premises:\n  rotation_per_night: '10'\n")
+    assert sorted(_offered(home)) == [A, B]  # positive control
+    monkeypatch.setattr(
+        cases, "awaiting_overseer",
+        lambda h: [{"case": "case-0000cc01", "kind": "parked", "records": [A]}],
+    )
+    assert A in cases.held_lessons(home)  # through the hold's own reading
+    assert _offered(home) == [B]
+
+
+def test_with_pending_lessons_no_run_is_new_work_for_the_rotation_still_decides(
+    tmp_path, monkeypatch,
+):
+    """`serve._steward_is_due`'s last path: lessons are waiting but every
+    one was already selected by a run, so only an overdue review can make
+    the steward due -- 7 days past due, not 6."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _configure_steward(home)
+    _placed(env, A, 96)  # six days past due
+    cache = tmp_path / "cache"
+    now = time.time()
+    pending = home / "lrn-f8a0000f.yaml"
+    monkeypatch.setattr(serve, "_eligible_input_paths", lambda h: [pending])
+    monkeypatch.setattr(steward, "last_run_iso", lambda h: _iso(-2))
+    # positive control: the pending lesson is new work -> due, the rotation not asked
+    monkeypatch.setattr(serve, "_input_commit_epoch", lambda h, path: now)
+    assert serve._steward_is_due(home, cache, now) is True
+    # already selected by the last run: nothing new, and the review rides along
+    monkeypatch.setattr(serve, "_input_commit_epoch", lambda h, path: now - 30 * 86400)
+    assert serve._steward_is_due(home, cache, now) is False
+    _age(home, A, 98)  # eight days past due
+    assert serve._steward_is_due(home, cache, now) is True
+
+
+def test_a_broken_probe_on_a_lesson_just_past_its_age_is_not_overdue_by_a_period(tmp_path):
+    """Gate r1 MINOR 3: the doctor's "overdue" is days past the age at
+    which the lesson would be offered anyway; a broken-probe review's
+    grace counts from its last look, but that is not how late it is."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _placed(env, A, 92, P_CHANGED, P_BEHAVIOUR)
+    row = _rotation_row(home)
+    assert row.verdict == "INFO" and "1 due, oldest overdue 2 day(s)" in row.detail  # control
+    _broken(home, A)
+    (offered,) = steward._premise_review_inputs(home)
+    assert offered["review"]["rank"] == "broken-probe"
+    row = _rotation_row(home)
+    assert row.verdict == "INFO", row
+    assert "1 due, oldest overdue 2 day(s)" in row.detail
+    assert health.premise_facts(home)["rotation"]["oldest_overdue_days"] == 2
+    # a broken probe on a lesson looked at yesterday: due, and 0 days past its age
+    _age(home, A, 1)
+    assert steward.premise_rotation_status(home).oldest_overdue == 0
+    # the due check's grace still counts a broken review from its last look
+    candidates, _days, _placed_n = steward._premise_review_candidates(home)
+    assert [(c.overdue, c.past_due) for c in candidates] == [(1, 0)]
+
+
+def test_the_doctor_row_reads_doctor_rows_own_cache_and_clock(tmp_path):
+    """Gate r1 NIT 6: `doctor_rows(home, cache_dir, now=...)` judges the
+    rotation on that day and with that cache, like its other rows."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _placed(env, A, 50, P_CHANGED, P_BEHAVIOUR)
+
+    def rotation(cache_dir=None, now=None):
+        (row,) = [r for r in premise_sweep.doctor_rows(home, cache_dir, now=now)
+                  if r.name == "rotation"]
+        return row
+
+    assert "0 due, none overdue" in rotation().detail  # control: 50 < 90
+    later = time.time() + 50 * 86400
+    assert "1 due, oldest overdue 10 day(s)" in rotation(now=later).detail
+    _broken(home, A)
+    assert "1 due, oldest overdue 0 day(s)" in rotation().detail  # broken, in the default cache
+    empty = tmp_path / "another-cache"
+    empty.mkdir()
+    assert "0 due, none overdue" in rotation(cache_dir=empty).detail

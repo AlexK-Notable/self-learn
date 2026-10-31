@@ -1178,7 +1178,8 @@ REGISTRY: tuple[Setting, ...] = (
         accepts_hint="auto, or a whole number >= 0",
         description=(
             "how many placed lessons the steward re-reads a night: auto (enough to read "
-            "every lesson once per rotation_days, plus one) or a number"
+            "every lesson once per rotation_days, plus one) or a number written in quotes "
+            "in config.yaml ('5'; an unquoted 5 is not text and reads as auto)"
         ),
         tier="C",
         override_channel=False,

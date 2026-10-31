@@ -1412,24 +1412,26 @@ def doctor_rows(
     if isinstance(errors, list) and errors:
         detail += f"; {len(errors)} problem(s) last time (first: {_clip(str(errors[0]), 100)})"
     rows.append(DoctorRow("INFO", "sweep", detail))
-    rows.append(_rotation_row(home))
+    rows.append(_rotation_row(home, cache_dir, now_epoch))
     if not rows or all(r.verdict == "INFO" for r in rows):
         rows.insert(0, DoctorRow("OK", "premises", "no probe is broken"))
     return rows
 
 
-def _rotation_row(home: Path) -> DoctorRow:
+def _rotation_row(home: Path, cache_dir: Path, now_epoch: float) -> DoctorRow:
     """S-NEXT-rotation (02 §3a.10.6): the rotation's doctor row --
     `rotation: every N days; M due, oldest overdue D days; K reviewed in
     the last 30 days`. A WARN when the oldest due review is overdue by more
     than the period itself (the steward is not running, or a number set by
     hand is too low); INFO `off` when `premises.rotation_days` is 0; INFO
     `could not be read` (never a clean line) when the status cannot be
-    computed."""
+    computed. Judged on *now_epoch*'s day, with the broken probes read
+    from *cache_dir* (`doctor_rows`' own arguments)."""
     from . import steward  # late: the steward imports this module's callers
 
+    today = datetime.fromtimestamp(now_epoch, tz=timezone.utc).date()
     try:
-        status = steward.premise_rotation_status(home)
+        status = steward.premise_rotation_status(home, today=today, cache_dir=cache_dir)
     except Exception as exc:  # noqa: BLE001 -- doctor degrades, never breaks
         return DoctorRow("INFO", "rotation", f"could not be read ({_clip(str(exc), 100)})")
     if status.period <= 0:

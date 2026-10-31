@@ -1532,17 +1532,27 @@ _PREMISE_REVIEW_BROKEN_REASON = (
 @dataclass(frozen=True)
 class _ReviewCandidate:
     """One lesson the rotation would offer, before the nightly cap: its
-    order key, its input row, and how many days past due it is (the due
-    check's grace test)."""
+    order key, its input row, how many days it counts toward the due
+    check's grace test (*overdue*: a broken-probe review counts from its
+    last look), and how many days it is past the age at which the rotation
+    would have offered it anyway (*past_due*: what `doctor` and the
+    overseer's facts call "overdue"; for a broken-probe review
+    ``max(age - period, 0)``, since how long the probe has been broken is
+    not kept -- the sweep cache holds three observations). Fix round 1
+    (gate MINOR 3): one number for both made a broken probe on a lesson
+    last looked at more than a period ago read as "the steward is not
+    running"."""
 
     key: tuple
     row: dict
     overdue: int
+    past_due: int
 
 
 def _premise_review_candidates(
     home: Path, exclude: set[str] | None = None, *,
     today: date | None = None, manifests: list[dict] | None = None,
+    cache_dir: Path | None = None,
 ) -> tuple[list[_ReviewCandidate], int, int]:
     """Every lesson the rotation would offer tonight, in order, uncapped,
     with the period and the number of live placed lessons (for the `auto`
@@ -1560,7 +1570,9 @@ def _premise_review_candidates(
     probe, then the rest (:func:`steward_inputs.review_rank`); in each the
     longest since its last look first, then by id. A broken lesson is
     `age` days past due (it is due from its last look); an age-due one
-    `age - period`. Off with `premises.enabled` false or a period of 0."""
+    `age - period`. Off with `premises.enabled` false or a period of 0.
+    *cache_dir* is the sweep's cache (default: the ledger's own), where the
+    broken probes are read."""
     from . import premise_sweep  # late: the sweep imports serve, serve the steward
 
     if not steward_inputs.premises_enabled(home):
@@ -1577,7 +1589,9 @@ def _premise_review_candidates(
     terminal = _terminal_versions(home, manifests=manifests)
     _units, moving = _premise_moved_unit_lists(home, manifests=manifests)
     extracting = _premise_extract_candidates(home, terminal)
-    history = premise_sweep.read_history(premise_sweep.default_cache_dir(home))
+    history = premise_sweep.read_history(
+        cache_dir if cache_dir is not None else premise_sweep.default_cache_dir(home)
+    )
     broken = steward_inputs.broken_probes(
         home, placed=[(bucket, record) for bucket, record in placed if record.premises],
         history=history,
@@ -1595,6 +1609,7 @@ def _premise_review_candidates(
         broken_items = broken.get(rid) or []
         version = None
         overdue = 0
+        past_due = 0
         if broken_items:
             version = steward_inputs.review_broken_version(
                 record, [str(item.get("premise")) for item in broken_items]
@@ -1603,6 +1618,7 @@ def _premise_review_candidates(
                 version = None  # decided: the lesson waits for its age, below
             else:
                 overdue = age
+                past_due = max(age - days, 0)
         rank = steward_inputs.review_rank(record, version is not None)
         if version is None:
             cycle = steward_inputs.review_cycle(last_day, today, days)
@@ -1611,7 +1627,7 @@ def _premise_review_candidates(
             version = steward_inputs.review_version(last_day, cycle)
             if (rid, version) in terminal:
                 continue
-            overdue = age - days
+            overdue = past_due = age - days
         out.append(_ReviewCandidate(
             key=(rank, last or floor, rid),
             row={
@@ -1638,6 +1654,7 @@ def _premise_review_candidates(
                 },
             },
             overdue=overdue,
+            past_due=past_due,
         ))
     out.sort(key=lambda candidate: candidate.key)
     return out, days, len(placed)
@@ -1663,8 +1680,17 @@ def _premise_review_overdue(
     """Whether a due review makes the steward due BY ITSELF: the oldest is
     at least `steward_inputs.ROTATION_GRACE_DAYS` days past due. Until
     then reviews ride along with a run something else starts
-    (`serve._steward_is_due`)."""
-    found, _days, _placed = _premise_review_candidates(home, today=today, manifests=manifests)
+    (`serve._steward_is_due`).
+
+    Never while the nightly quota is 0 (`premises.rotation_per_night:
+    '0'`): the run would take none of them and end `idle`, which arms no
+    cooldown, so the next tick would start it again, every minute, for as
+    long as the setting stood (fix round 1, gate MAJOR 1). Above 0, any
+    due review counts, not only the first *quota* of them: a run started
+    for one takes the first in order and drains the queue from the top."""
+    found, days, placed = _premise_review_candidates(home, today=today, manifests=manifests)
+    if not found or steward_inputs.premise_rotation_per_night(home, placed, days) <= 0:
+        return False
     return any(candidate.overdue >= steward_inputs.ROTATION_GRACE_DAYS for candidate in found)
 
 
@@ -1672,7 +1698,8 @@ def _premise_review_overdue(
 class RotationStatus:
     """The rotation's state for `doctor` and the overseer's facts: the
     period (0: off), tonight's quota, how many lessons are due, the oldest
-    one's days past due (`None` when none is), and how many lessons a
+    one's days past due (:attr:`_ReviewCandidate.past_due`; `None` when
+    none is due), and how many lessons a
     committed run reviewed (decided a `premise-review` input applied or
     parked) in the last 30 days."""
 
@@ -1683,11 +1710,17 @@ class RotationStatus:
     reviewed_30d: int
 
 
-def premise_rotation_status(home: Path, *, today: date | None = None) -> RotationStatus:
-    """:class:`RotationStatus` now. Reads only."""
+def premise_rotation_status(
+    home: Path, *, today: date | None = None, cache_dir: Path | None = None,
+) -> RotationStatus:
+    """:class:`RotationStatus` on *today* (default: now), the broken probes
+    read from the sweep cache *cache_dir* (default: the ledger's own).
+    Reads only."""
     today = today or datetime.now(timezone.utc).date()
     manifests = committed_manifests(home)
-    found, days, placed = _premise_review_candidates(home, today=today, manifests=manifests)
+    found, days, placed = _premise_review_candidates(
+        home, today=today, manifests=manifests, cache_dir=cache_dir,
+    )
     if days <= 0:
         return RotationStatus(0, 0, 0, None, 0)
     cutoff = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=30)
@@ -1710,7 +1743,7 @@ def premise_rotation_status(home: Path, *, today: date | None = None) -> Rotatio
         period=days,
         per_night=steward_inputs.premise_rotation_per_night(home, placed, days),
         due=len(found),
-        oldest_overdue=max((candidate.overdue for candidate in found), default=None),
+        oldest_overdue=max((candidate.past_due for candidate in found), default=None),
         reviewed_30d=len(reviewed),
     )
 

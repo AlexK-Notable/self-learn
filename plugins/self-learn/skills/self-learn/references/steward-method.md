@@ -635,8 +635,8 @@ below, where changing it is yours. When no probe can show it, park the case
 (`authority-unclear`) with what you found.
 
 **A `premise-review` input** is a placed lesson that comes back to be
-re-read whole: every placed lesson does, about once every 90 days after it
-was last looked at, and a lesson whose probe could not observe anything on
+re-read whole: every placed lesson does, about once a rotation period (90
+days by default) after it was last looked at, and a lesson whose probe could not observe anything on
 three daily checks running comes at once. Nothing was observed to change.
 The question is whether every sentence is still true and still relevant as
 a session would meet it now, not only the sentences a premise watches, and
