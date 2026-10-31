@@ -745,10 +745,10 @@ skills:
   <name>:
     status: live            # live | retired
     plugin: plugins/<name>  # relative to the skills root
-    created: {at: <iso>, case: case-xxxxxxxx, by: overseer|human}
-    last_write: {at: <iso>, case: case-xxxxxxxx, by: overseer|human,
+    created: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human}
+    last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human,
                  authored_sha256: <hex>}
-    retired: {at: <iso>, case: case-xxxxxxxx, by: overseer|human}  # only when retired
+    retired: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human}  # only when retired
     renamed_from: [<old name>, ...]                                 # optional
 vetoed:
   - {name: <name>, at: <iso>, statement: stmt-xxxxxxxx}
@@ -758,7 +758,9 @@ A skill is owned when it has a `live` row; a retired row keeps its history
 and owns nothing. `by` is `overseer` only when the overseer's runner calls
 the writer itself (a Python call, not the CLI), and `human` for every write,
 retirement or rename made through the CLI; an agent's shell cannot make one
-(`03-decisions.md` S-NEXT-skills part 2), so no third value is needed. `authored_sha256` is the sha256 of the skill's authored
+(`03-decisions.md` S-NEXT-skills part 2), so no third value is needed.
+`case` is `null` only with `by: human`, for a person's CLI step given no
+`--case` because it answers no case; the runner always names its case. `authored_sha256` is the sha256 of the skill's authored
 files, everything outside the managed section (`SKILL.md` less that
 section, and every `references/*.md`), as the last `skill write` left
 them (`skill_registry.authored_sha256`); `skill write --expect` compares against the files as they are now.
@@ -776,19 +778,26 @@ reader; the registry row is the authority.
 **The overseer's skill files.** `overseer/skills/<week>.yaml` holds the
 week's phase-S candidates and phase B's disposition of each candidate and
 each `skill-proposal` case (`build`, `add-to-existing`, `defer` with what
-would change it, `decline` with a reason); phase S reads earlier weeks' files
-as its `history.yaml`. `overseer/skills/<week>/drafts/<name>/` holds a skill
+would change it, `decline` with a reason). Each disposition names its
+source, `candidate` or `skill-proposal` with the case id. Phase S's
+`history.yaml` is built from earlier weeks' files with every
+`skill-proposal` entry left out, so phase S never sees the steward's
+proposals, not even a week late. `overseer/skills/<week>/drafts/<name>/` holds a skill
 checked by `skill write --check` but not deployed, because
 `overseer.skill_writing` was `off` or this was `auto`'s drafts-only run.
 `overseer/skills/writing-trial.yaml` is
 `{week: <date>, run: <run id>, completed_at: <iso>, drafts: [<name>, ...]}`:
 the first run to complete with `overseer.skill_discovery` on while the file
-is absent and writing is not in effect (`off`, or `auto`'s trial) writes it,
-with an empty `drafts` list when it had nothing to build, in the commit that
+is absent and writing is not in effect (`off`, or `auto`'s trial), and whose
+phase S gave a valid `skill-candidates.yaml` (its own or a kept copy) and
+whose phase B gave a valid `skill-dispositions.yaml`, writes it, with an
+empty `drafts` list when it had nothing to build, in the commit that
 completes the run, and nothing rewrites it. Under `auto`
 its absence makes the run drafts-only and its presence lets the run write.
-A failed attempt, a closed-out week, a dry run and a run with discovery off
-never write it.
+A failed attempt, a closed-out week, a dry run, a run with discovery off,
+and a completed run whose phase S failed, timed out or did not validate,
+or whose dispositions did not validate, never write it
+(`03-decisions.md` S-NEXT-skills part 6).
 
 **The overseer's workspace for skills.** Phase S's stage holds `catalogue/`,
 `neighbourhoods.md`, `skills-index.yaml`, `history.yaml`, `briefs/` and
@@ -796,9 +805,10 @@ never write it.
 `skill-candidates.yaml`. Phase B's stage adds `owned-skills/<name>/` (the
 skill's files as they are now, its registry row,
 `changed-since-last-write.diff` and the ids of the lessons routed into it),
-`vetoes.yaml` (the vetoed names, and the retirement requests the person
-made through `overseer respond --retire-skill` since the last completed
-run, each with its statement id) and `skill-proposals.yaml`; it writes
+`vetoes.yaml` (the vetoed names, and the open retirement requests: for
+each live skill, its newest `overseer respond --retire-skill` request made
+since the skill was created, with its statement id, staged in every run
+until the skill is retired) and `skill-proposals.yaml`; it writes
 `skills/<name>/` (one folder per skill to build or rewrite: `SKILL.md`,
 optional `references/*.md`) and `skill-dispositions.yaml`.
 
