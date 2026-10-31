@@ -1154,7 +1154,8 @@ def _premise_moved_inputs(
 
     S-NEXT-u8-placement: a placement premise the sweep confirmed as failing
     (:func:`steward_inputs.placement_moves`: `@reach`, `@writable`,
-    `@intact`) is a mover too, and joins the version like a written one.
+    `@intact`) is a mover too, and joins the version like a written one,
+    with its `basis` (fix round 2) in place of a baseline's time.
     The lessons of one managed block that carry an `@intact` mover are a
     GROUP (02 §3a.10.3): offered together or not at all -- when an earlier
     input of the run takes one of them, or the overseer holds one, the
@@ -1198,11 +1199,18 @@ def _premise_moved_row(
     # A written premise hashes with its baseline's time (S-NEXT-u4-steward,
     # so a value that returns after two decisions is a new version); a
     # placement premise has no baseline and is judged by its failing state,
-    # so its pair is the premise and that state's value hash.
+    # so it hashes the premise, that state's value hash and what the
+    # failure is a failure OF (`basis`, fix round 2: the placement's
+    # `routed_at`, or the managed block's last compile-record write). A
+    # reroute or a restore changes the basis, so the same failing value
+    # seen again after one is a new version; a park or a refusal does not.
     version = steward_inputs.premise_moved_version(
         followup_done=followup.done if followup is not None else None,
         moved=[(item["premise"], item["value_sha"], item["recorded_at"]) for item in written]
-        + [(item["premise"], item["value_sha"]) for item in placements],
+        + [
+            (item["premise"], item["value_sha"], *([item["basis"]] if item.get("basis") else []))
+            for item in placements
+        ],
     )
     moved = ([_followup_item(followup)] if followup is not None else []) + movers
     row: dict = {
@@ -1848,8 +1856,8 @@ def _placement_decision_problem(
             return (
                 f"{label}: the lessons of the managed block {group} ({sorted(members)}) are "
                 "not all covered by one earlier case, and a `kind: reconsider` case supersedes "
-                "exactly one; decide them all in this one case as `kind: resolution` with no "
-                "`supersedes` (on this input a fold or a restore of a placed lesson is yours "
+                "exactly one; decide them all in this one case as `kind: resolution` and write "
+                "no `supersedes` (on this input a fold or a restore of a placed lesson is yours "
                 "in a resolution case)"
             )
         undecided = [rid for rid in members if rid not in decided]

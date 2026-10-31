@@ -29,7 +29,13 @@ never sees a placement move):
 * the stage rules: a block-writing line only on an `@intact` input, every
   hand-edited lesson of the block in one case with its own fold or restore,
   and the person's lines quoted in the case's evidence;
-* the brief shows the person's lines and the diff, and how to decide.
+* the brief shows the person's lines and the diff, and how to decide;
+* (fix round 2) a placement mover's version names what failed -- the
+  placement's `routed_at`, or the block's last compile-record write -- so a
+  failure that comes back after a reroute or a restore is offered again,
+  while an undecided or parked one keeps its version; an `@reach` mover
+  through the sweep; a group the overseer holds part of waits whole; a
+  restore whose host write fails halts the sheet.
 
 Every scenario runs on a sandbox ledger and host (`support.make_env` under
 pytest's tmpdir, never the real `~/.self-learn`). No model call; no probe
@@ -105,11 +111,14 @@ def _edit_line(env, rid: str, extra: str = EDIT) -> None:
     commit_all(env.host, "a person's hand edit")
 
 
-def _sweeps(env, monkeypatch, tmp_path, ids: list[str], *, days: tuple[float, ...] = (2, 1)) -> None:
+def _sweeps(
+    env, monkeypatch, tmp_path, ids: list[str], *, days: tuple[float, ...] = (2, 1), **reach
+) -> None:
     """The daily sweep on the days given (days ago), into the cache the
     steward and the verbs read (`premise_sweep.default_cache_dir`), with
-    the reachability instrument fixed (every lesson reachable)."""
-    fake_reach(monkeypatch, env, ids)
+    the reachability instrument fixed (every lesson reachable, unless
+    *reach* gives the verdict's fields, `fake_reach`'s knobs)."""
+    fake_reach(monkeypatch, env, ids, **reach)
     cache = premise_sweep.default_cache_dir(env.ledger)
     for ago in days:
         result = premise_sweep.run(
@@ -183,10 +192,13 @@ def test_a_confirmed_hand_edit_is_a_premise_moved_input(tmp_path, monkeypatch):
     assert item["group"] == str(env.skill_md.resolve())
     assert item["members"] == [A]
     assert "@intact" in row["reason"]
-    # the version is the failing state: the same edit is the same input
+    # the version is the failing state and the block's last write (fix
+    # round 2): the same edit of the same block is the same input
+    assert re.fullmatch(r"entry:[0-9a-f]{12}", item["basis"])
     assert row["version"] == steward_inputs.premise_moved_version(
-        moved=[("@intact", item["value_sha"])]
+        moved=[("@intact", item["value_sha"], item["basis"])]
     )
+    assert _intact_rows(home)[0]["version"] == row["version"]  # read again: unchanged
     # the row is committed with the run record: never the block's text
     assert EDIT.strip() not in json.dumps(row)
 
@@ -271,6 +283,99 @@ def test_a_lesson_retired_since_the_sweep_is_not_offered(tmp_path, monkeypatch):
     assert A in steward_inputs.placement_moves(home)  # control
     monkeypatch.setattr(steward_inputs, "_placed_record", lambda h, rid: None)
     assert steward_inputs.placement_moves(home) == {}
+
+
+def test_the_lessons_of_one_edited_block_wait_whole_while_the_overseer_holds_one(
+    tmp_path, monkeypatch
+):
+    """Fix round 2 (gate MINOR): a group waits whole when the overseer holds
+    any one of its lessons, not only when another input of the run takes
+    one (`steward._premise_moved_units`' *held*)."""
+    from self_learn import cases
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    _routed(env, B)
+    _edit_line(env, A)
+    _edit_line(env, B, " (another note)")
+    _sweeps(env, monkeypatch, tmp_path, [A, B])
+    assert sorted(row["record"] for row in _intact_rows(home)) == [A, B]  # control
+
+    monkeypatch.setattr(cases, "held_lessons", lambda _home: {A: []})
+    assert _intact_rows(home) == []  # B is not offered alone
+
+
+def test_a_block_removed_again_after_a_restore_is_offered_again(tmp_path, monkeypatch):
+    """Fix round 2 (gate MAJOR): a placement mover's version was only the
+    premise and its failing value. A person removes the block, the steward
+    restores it, the person removes it again byte for byte before a daily
+    check saw it back: the same failing value (`region-missing`), the same
+    first-seen time, so the version the restore's run decided -- and the
+    lesson, no longer loaded, was never offered again. The block's
+    compile-record entry (`basis`) is in the version now, and the restore
+    rewrote it."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    removed = "# s skill\n\nAuthored prose stays put.\n"
+    env.skill_md.write_text(removed, encoding="utf-8")
+    commit_all(env.host, "a person removed the block")
+    _sweeps(env, monkeypatch, tmp_path, [A], days=(4, 3))
+    (first,) = _intact_rows(home)
+    # undecided, or parked (nothing written): the same version on every read
+    assert _intact_rows(home)[0]["version"] == first["version"]
+    with monkeypatch.context() as decided:
+        decided.setattr(steward, "_terminal_versions", lambda *a, **k: {(A, first["version"])})
+        assert _intact_rows(home) == []  # control: a decided version is not offered
+
+    got = _apply(home, tmp_path, [_restore(A)])
+    assert (got.state, got.rc) == ("applied", 0), got
+    assert verbs.lesson_region(home, A).verdict == "clean"
+    env.skill_md.write_text(removed, encoding="utf-8")
+    commit_all(env.host, "a person removed the block again")
+    _sweeps(env, monkeypatch, tmp_path, [A], days=(2, 1))
+
+    monkeypatch.setattr(steward, "_terminal_versions", lambda *a, **k: {(A, first["version"])})
+    (second,) = _intact_rows(home)
+    (old,), (new,) = first["moved"], second["moved"]
+    assert new["value_sha"] == old["value_sha"]  # the very same failing value
+    assert new["since"] == old["since"]  # and no check saw the block back between
+    assert new["basis"] != old["basis"]
+    assert second["version"] != first["version"]
+
+
+def test_a_reach_failure_from_the_sweep_is_offered_and_a_reroute_makes_it_new(
+    tmp_path, monkeypatch
+):
+    """Fix round 2 (gate MAJOR and MINOR): an `@reach` mover driven through
+    the daily sweep -- every other sweep here keeps every lesson reachable.
+    Its version names the placement (`routed_at`): a park or a refusal
+    leaves it, while a lesson moved to a place that fails the same way
+    (`unreachable:skill-disabled` again) is a new input, not the one the
+    earlier run decided."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    seed(env, A)  # routed 2026-09-22: long past the 7-day wait
+    _sweeps(env, monkeypatch, tmp_path, [A], state="unreachable", reason="skill-disabled")
+
+    (row,) = [r for r in steward._premise_moved_inputs(home) if r["record"] == A]
+    (item,) = [i for i in row["moved"] if i.get("premise") == "@reach"]
+    assert item["source"] == "placement" and "skill-disabled" in item["now"]
+    assert item["basis"] == "routed:2026-09-22T06:24:50Z"
+    assert "@reach" in row["reason"]
+    assert steward_inputs.intact_group(row) is None  # not a block group
+    (same,) = [r for r in steward._premise_moved_inputs(home) if r["record"] == A]
+    assert same["version"] == row["version"]  # nothing landed: the same input
+
+    monkeypatch.setattr(steward, "_terminal_versions", lambda *a, **k: {(A, row["version"])})
+    assert [r for r in steward._premise_moved_inputs(home) if r["record"] == A] == []  # control
+    seed(env, A, routed_at="2026-10-01T00:00:00Z")  # a reroute landed; the new place fails alike
+    (moved,) = [r for r in steward._premise_moved_inputs(home) if r["record"] == A]
+    (again,) = [i for i in moved["moved"] if i.get("premise") == "@reach"]
+    assert again["value_sha"] == item["value_sha"]
+    assert again["basis"] == "routed:2026-10-01T00:00:00Z"
+    assert moved["version"] != row["version"]
 
 
 # =============================================== 3. restore-region
@@ -601,7 +706,7 @@ def test_the_brief_says_when_no_one_case_covers_the_block(predecessors, differ):
         assert bool(item.get("cases_differ")) is differ
     told = "\n".join(steward_inputs._placement_decide_lines(
         predecessors[0], ["@intact"], cases_differ=differ))
-    resolution = "ONE `kind: resolution` case with no `supersedes`"
+    resolution = "ONE `kind: resolution` case (write no `supersedes` yourself"
     assert (resolution in told) is differ
     assert ("`kind: reconsider` case (the runner fills in" in told) is not differ
 
@@ -654,7 +759,7 @@ def test_a_run_decides_a_block_two_cases_placed_in_one_resolution_case(tmp_path,
 
     assert result.status == "applied", result
     assert len(seen) == 1, "the group was split across packets"
-    assert "ONE `kind: resolution` case with no `supersedes`" in seen[0]
+    assert "ONE `kind: resolution` case (write no `supersedes` yourself" in seen[0]
     old = _rec(home, A)
     assert old.status == "superseded" and old.superseded_by
     text = env.skill_md.read_text(encoding="utf-8")
@@ -803,7 +908,70 @@ def test_a_restore_that_crashed_before_its_host_write_is_finished_on_recovery(
     assert verbs.host_result_ids([done[1]], home) == [A]
 
 
+def test_a_restore_whose_host_write_fails_after_its_ledger_commit_halts_the_sheet(
+    tmp_path, monkeypatch
+):
+    """Fix round 2 (gate MINOR): `batch._host_outcome` counts a
+    `restore-region` line with the route verbs. Its ledger commit lands
+    before its block is written, so one whose host write fails is the same
+    half-state a route's is: receipted, then the sheet halts before the
+    next line, which may depend on it."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    _edit_line(env, A)
+    _sweeps(env, monkeypatch, tmp_path, [A])
+    start = gitops.head_sha(home)
+    sheet = batch.Sheet(
+        [
+            batch.SheetItem(n=1, id=A, verb="premises", fields={
+                "action": "restore-region", "because": "the edit contradicts the lesson"}),
+            batch.SheetItem(n=2, id=A, verb="note", fields={"append": "must not run"}),
+        ],
+        case="case-acde1234",
+        sheet_sha="12ab34cd",
+        sheet_digest="a" * 64,
+    )
+    continuation = batch.BatchContinuation(
+        run_id="run-u8-halt01", case_id="case-acde1234", sheet_digest="a" * 64, completed={},
+    )
+    checkpoints: list = []
+
+    def fail_after_ledger_commit(*_args, **_kwargs):
+        raise batch.CompileError("simulated host failure")
+
+    monkeypatch.setattr(verbs, "_host_phase", fail_after_ledger_commit)
+    with pytest.raises(batch.BookkeepingHalt, match="host outcome failed") as raised:
+        batch.run(
+            home, sheet, no_push=True, actor="steward", continuation=continuation,
+            checkpoint=lambda partial: checkpoints.append(partial.to_json()) or {"state": "ok"},
+        )
+
+    assert [item.n for item in raised.value.result.items] == [1]
+    assert [item.n for item in raised.value.untouched_tail] == [2]
+    assert raised.value.result.items[0].rc != 0
+    assert raised.value.result.items[0].evidence == "host failure returned by premises"
+    assert len(checkpoints) == 1
+    # the ledger leg landed; the block was not written, and reads `stale`
+    assert gitops.head_sha(home) != start
+    assert _subject(home) == f"self-learn: premises restore-region {A}"
+    assert EDIT in env.skill_md.read_text(encoding="utf-8")
+    assert verbs.lesson_region(home, A).verdict == "stale"
+    assert all(note.get("text") != "must not run" for note in _rec(home, A).notes)
+
+
 # ================================================================ 6. the brief
+
+
+def test_a_long_line_a_person_wrote_is_shown_cut_and_says_so():
+    """Fix round 2 (gate NIT): the brief shows at most 400 characters of a
+    line, while the case must quote the line whole; a cut line says so and
+    where to Read it."""
+    long = "x " * 300
+    shown = steward_inputs._quoted_line(long, "/h/SKILL.md")
+    assert shown.startswith(long[:399]) and "…" in shown
+    assert f"[cut: this line has {len(long)} characters; Read it whole in /h/SKILL.md" in shown
+    assert steward_inputs._quoted_line("short", "/h/SKILL.md") == "short"  # control
 
 
 def test_the_brief_shows_the_persons_lines_the_diff_and_how_to_decide(tmp_path, monkeypatch):
@@ -857,7 +1025,8 @@ def test_the_contract_and_the_overseer_formats_agree(tmp_path):
     contract = " ".join(steward_prompt._render_output_contract().split())
     assert "adopt_region" in contract and "restore-region" in contract
     assert "A PLACEMENT premise (`@reach`, `@writable`, `@intact`; method section 17)" in contract
-    assert "that one case is `kind: resolution` with no `supersedes`" in contract
+    assert ("that one case is `kind: resolution` and you write no `supersedes` (the runner "
+            "fills one in only when exactly one earlier case covers any of them)") in contract
     root = overseer_formats.write(tmp_path / "ws", "B")
     sets = YAML(typ="safe").load((root / "closed-sets.yaml").read_text(encoding="utf-8"))
     replace_keys = sets["sheet"]["verbs"]["replace"]["keys"]

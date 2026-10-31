@@ -463,7 +463,13 @@ def premise_moved_version(
     third move was never offered. Every decision that keeps a premise
     re-records its baseline at a new time, so the third move is a new
     version; a park or a refusal leaves the baseline, and so the version,
-    as it was. A two-element pair hashes exactly as before."""
+    as it was. A two-element pair hashes exactly as before.
+
+    S-NEXT-u8-placement passes ``(premise id, failing value hash, basis)``
+    for each placement premise (fix round 2): the basis names what the
+    failure is a failure of, so a reroute or a restore makes the same
+    failing value, seen again, a new version
+    (:func:`placement_moves`)."""
     block = None
     if followup_done is not None:
         block = {
@@ -812,7 +818,8 @@ def open_followup_ids(home: Path) -> set[str]:
 # this reads those confirmations and turns them into `premise-moved` movers
 # (`source: placement`). Judged by their current state, so nothing is
 # re-recorded when they are decided: the input's version (the failing
-# state) is what keeps a decided failure from being offered again.
+# state, and what it is a failure OF -- `basis`) is what keeps a decided
+# failure from being offered again.
 
 #: The placement premises the 7-day rule holds (02 §3a.10.5 (5)): they
 #: follow values that can drift back and forth. `@intact` is a person's act,
@@ -831,9 +838,10 @@ class PlacementMoves:
     since: str
 
 
-def _placement_item(move: Any) -> dict:
+def _placement_item(move: Any, basis: str) -> dict:
     """One confirmed placement move as the input row and the brief carry
-    it: the premise, the failing state's short words and value hash, when it
+    it: the premise, the failing state's short words and value hash, what
+    the failure is a failure of (`basis`, :func:`placement_moves`), when it
     was first and last seen failing, the sweep's note, and for `@intact` the
     managed target (`group`). Never the block's text: input rows are kept
     in the committed run record."""
@@ -843,6 +851,7 @@ def _placement_item(move: Any) -> dict:
         "claim": _one_line(move.claim),
         "now": _one_line(move.shown),
         "value_sha": move.value_sha,
+        "basis": basis,
         "since": move.since,
         "now_at": move.observed_at,
     }
@@ -867,19 +876,54 @@ def _placed_record(home: Path, record_id: str) -> Record | None:
     return record
 
 
-def _intact_still_seen(home: Path, record_id: str, value_sha: str) -> bool:
-    """Whether the lesson's managed block still fails `@intact` with the
-    value the sweep confirmed. A block edited again since (a new input after
+def _intact_basis(home: Path, record_id: str, value_sha: str) -> str | None:
+    """The `basis` of an `@intact` move (:func:`placement_moves`) while the
+    lesson's managed block still fails `@intact` with the value the sweep
+    confirmed, else ``None``. A block edited again since (a new input after
     two more sweeps) or put right by hand is not offered on the old evidence:
     the fold or restore would refuse it anyway (`verbs._require_confirmed_block`).
-    Reads the block's bytes only (no rendering)."""
-    from . import premises, verbs  # late: verbs imports far more
+    Reads the block's bytes and its compile-record entry only (no rendering).
+
+    Fix round 2 (gate MAJOR): the basis is the block's compile-record entry
+    -- its write time, its writer and both hashes, hashed short (a full digest in the
+    committed run record would trip the secret scan's hex rule). Every
+    write of the block changes it, a restore (`no-action`, so
+    :func:`last_decision` does not move) included; while the block stays
+    edited nothing writes it (an edited block refuses every write), so an
+    undecided or parked failure keeps its version. Without it a block put
+    back by a restore and then removed again, or returned to an earlier
+    edited state after a later write, had the very version the earlier
+    decision closed, and was never offered again."""
+    from . import compiled, premises, verbs  # late: verbs imports far more
 
     try:
         region = verbs.lesson_region(home, record_id, render=False)
+        if premises.intact_value_sha(region.verdict, region.observed_sha) != value_sha:
+            return None
+        entry = compiled.entry_for(
+            compiled.load_record(home, region.slug), region.key, region="managed"
+        ) or {}
     except Exception:  # noqa: BLE001 -- unreadable now: not offered this run
-        return False
-    return premises.intact_value_sha(region.verdict, region.observed_sha) == value_sha
+        return None
+    written = json.dumps(
+        [str(entry.get(key) or "") for key in ("at", "by", "sha256", "based_on_sha256")]
+    )
+    return "entry:" + hashlib.sha256(written.encode("utf-8")).hexdigest()[:12]
+
+
+def _routed_basis(record: Record) -> str:
+    """The `basis` of an `@reach` or `@writable` move (:func:`placement_moves`):
+    the placement the failure is about, named by ``routing.routed_at``.
+    A route or reroute that lands rewrites it (`ledger_ops.reroute_record`), a
+    park, a refusal or a `no-action` decision does not -- so a lesson moved
+    to a place that fails in the same way is a new input (after the 7-day
+    wait), and a failure decided where it is stays decided. Fix round 2
+    (gate MAJOR): not :func:`last_decision`, which also counts the
+    ``opened_at`` of a case whose line the ledger refused (the case stays
+    in the index, superseded by its `ledger-refused` successor), so a
+    refusal would have made a new version every night."""
+    routing = record.routing if isinstance(record.routing, dict) else {}
+    return f"routed:{routing.get('routed_at') or ''}"
 
 
 def placement_moves(home: Path, *, today: date | None = None) -> dict[str, PlacementMoves]:
@@ -891,7 +935,13 @@ def placement_moves(home: Path, *, today: date | None = None) -> dict[str, Place
     Left out: a lesson no longer placed; an `@reach` or `@writable` move on
     a lesson decided less than :data:`PROBE_REDECIDE_DAYS` days ago
     (:func:`last_decision`; 02 §3a.10.5 (5)); an `@intact` move whose block
-    is no longer the one the sweep confirmed (:func:`_intact_still_seen`)."""
+    is no longer the one the sweep confirmed (:func:`_intact_basis`).
+
+    Each item carries a `basis` (fix round 2): what the failure is a
+    failure OF -- the placement (:func:`_routed_basis`) or the block's last
+    write (:func:`_intact_basis`). It joins the input's version, so a
+    decision that changed the placement or rewrote the block makes the same
+    failing value, seen again, a new input."""
     from . import premise_sweep  # late: premise_sweep imports verbs
 
     try:
@@ -918,11 +968,13 @@ def placement_moves(home: Path, *, today: date | None = None) -> dict[str, Place
                 today - decided.date()
             ).days < PROBE_REDECIDE_DAYS:
                 continue  # D7.5: decided less than a week ago; it waits
-            if move.premise_id == "@intact" and not _intact_still_seen(
-                home, record_id, move.value_sha
-            ):
-                continue
-            items.append(_placement_item(move))
+            if move.premise_id == "@intact":
+                basis = _intact_basis(home, record_id, move.value_sha)
+                if basis is None:
+                    continue
+            else:
+                basis = _routed_basis(record)
+            items.append(_placement_item(move, basis))
         if items:
             out[record_id] = PlacementMoves(
                 record_id, items, min(str(item["since"]) for item in items)
@@ -1294,8 +1346,26 @@ def scan_hit(line: str) -> bool:
     return bool(scan(line))
 
 
+#: The most of one block line a brief shows.
+_SHOWN_LINE_CHARS = 400
+
+
 def _shown_line(line: str) -> str:
-    return WITHHELD_LINE if scan_hit(line) else _cut(line, 400)
+    return WITHHELD_LINE if scan_hit(line) else _cut(line, _SHOWN_LINE_CHARS)
+
+
+def _quoted_line(line: str, target: object) -> str:
+    """A line a person wrote, as the brief lists it for the case to quote.
+    Fix round 2 (gate NIT): a line longer than the brief shows is cut, and
+    the case must still quote it whole, so the brief says it was cut and
+    where to Read it."""
+    shown = _shown_line(line)
+    if shown == WITHHELD_LINE or len(line) <= _SHOWN_LINE_CHARS:
+        return shown
+    return (
+        f"{shown}  [cut: this line has {len(line)} characters; Read it whole in {target} "
+        "and quote it whole]"
+    )
 
 
 def _intact_region_lines(home: Path, record_id: str) -> list[str]:
@@ -1318,7 +1388,7 @@ def _intact_region_lines(home: Path, record_id: str) -> list[str]:
             "    the lines a person wrote there, which the case's `evidence` must quote word for "
             f"word (one item, ref `{region.target}#managed`), so they survive whatever you decide:"
         )
-        out += [f"      | {_shown_line(line)}" for line in edited]
+        out += [f"      | {_quoted_line(line, region.target)}" for line in edited]
         if any(quotable_line(line) != line for line in edited):
             out.append(
                 "    (a line that starts with `## ` is quoted by its words after the `## `: a "
@@ -1386,22 +1456,29 @@ def _placement_decide_lines(
     )
     out: list[str] = []
     if "@intact" in placement_ids:
+        # Fix round 2 (gate MINOR): a mixed group (one lesson covered, one
+        # not) records with `supersedes` filled in by the runner
+        # (`steward._predecessor_fill`: one earlier case among its records),
+        # so the words say "write none yourself", not "it has none".
         edit_case = (
-            "ONE `kind: resolution` case with no `supersedes` (the lessons of this block were "
-            "not all placed by one case, and a reconsider case supersedes only one)"
+            "ONE `kind: resolution` case (write no `supersedes` yourself: the lessons of this "
+            "block were not all placed by one case, and a reconsider case supersedes only one; "
+            "the runner fills one in only when exactly one earlier case covers any of them)"
             if cases_differ else case
         )
         out += [
             f"[how to decide the hand edit] in {edit_case} naming every lesson of the block listed "
-            "above in `records`, each with its own line; `no-action` alone is not an answer, "
-            "because an edited block refuses every later write to its file:",
+            "above in `records`, each with its own line; a case that leaves the block as it is "
+            "(no fold or restore line for a lesson of it) is not an answer, because an edited "
+            "block refuses every later write to its file:",
             "  - the edit is consistent with the lesson (usually a correction): fold it into "
             "the lesson -- a `replace` line with `adopt_region: true` whose new text says what "
             "the edit says, every idea of the old text in `decision.rewrite` (outcome "
             "`replaced`);",
             "  - the edit contradicts the lesson, or is not a change to a lesson: put the "
-            "ledger's text back -- a `premises` line `action: restore-region` (the lesson "
-            "stands: outcome `no-action`);",
+            "ledger's text back -- a `premises` line `action: restore-region` (the lesson's "
+            "text stands, so the case's outcome is `no-action`; the restore line is the "
+            "answer);",
             "  - fold one lesson and restore another of the same block in the one case if they "
             "differ; quote every line a person wrote (listed above) in the case's `evidence`, "
             "whichever you choose: the block is rewritten from the ledger either way;",

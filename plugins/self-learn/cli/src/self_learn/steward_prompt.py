@@ -1316,9 +1316,10 @@ def _premise_lines() -> list[str]:
         "  rules_paths) or a `premises` line `action: restore-region` (no other key but",
         "  because and note: put the ledger's text back), and the case's `evidence` quotes",
         "  every line the brief lists as written by a person. When those lessons were not all",
-        "  placed by one case, that one case is `kind: resolution` with no `supersedes`. Both",
-        "  lines are refused on any other input. On an `@reach` or `@writable` input the",
-        "  lesson moves with a `route` line (applied as a reroute), or is retired.",
+        "  placed by one case, that one case is `kind: resolution` and you write no",
+        "  `supersedes` (the runner fills one in only when exactly one earlier case covers any",
+        "  of them). Both lines are refused on any other input. On an `@reach` or `@writable`",
+        "  input the lesson moves with a `route` line (applied as a reroute), or is retired.",
     ]
 
 

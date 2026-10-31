@@ -673,7 +673,7 @@ def test_a_value_that_comes_back_after_two_decisions_is_offered_again():
     # a park or a refusal leaves the baseline, and so the version, as it was
     assert first == steward_inputs.premise_moved_version(
         moved=[("p1", _sha("B"), "2026-10-01T03:00:00Z")])
-    # a two-element pair (U3's and U8's shape) hashes as it always did
+    # a two-element pair hashes as it always did (U8 adds a basis since its fix round 2)
     assert steward_inputs.premise_moved_version(moved=[("p1", "aaa")]) == (
         steward_inputs.premise_moved_version(moved=[["p1", "aaa"]])
     )
