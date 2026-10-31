@@ -3666,6 +3666,9 @@ or relevant".
   when the oldest due review is `ROTATION_GRACE_DAYS` (7) days past due
   (a broken-probe review counts from its last look), and that is asked only
   after the cooldown and every cheaper reason (`serve._steward_is_due`).
+  Never while the quota is 0: that run would take no review and end
+  `idle`, which arms no cooldown, so it would start again every tick
+  (fix round 1 of the lane's gate).
 - **The brief** (`steward_inputs.render_premise_review`) has no transcript
   pack: why now (the last look, by what, the period, or the broken probe),
   every written premise with the daily check's latest verdict and the
@@ -3728,7 +3731,10 @@ whole file's hash; never `host.<path>.head`, which moves on every commit.
   placed lessons have no `premises` field yet, and when the sweep last ran.
   *(S-NEXT-rotation)* And the rotation: `rotation: every N days, Q a night;
   M due, oldest overdue D days; K reviewed in the last 30 days` (reviewed =
-  a committed run decided its `premise-review` input applied or parked), a
+  a committed run decided its `premise-review` input applied or parked; D =
+  days past the age at which the lesson would be offered anyway, for a
+  broken-probe review its days since the last look less the period, at
+  least 0: how long a probe has been broken is not kept), a
   WARN when the oldest due review is overdue by more than the period itself
   (the steward is not running, or a number set by hand is too low), INFO
   `off` when the period is 0.
@@ -3975,7 +3981,8 @@ oldest overdue, reviewed in the last 30 days, or `off`).
   extract case counts as each lesson's first look, so nothing is reviewed
   for about three months anyway, with no later step by a person.
 - **`premises.rotation_per_night`** *(S-NEXT-rotation)* (tier C, str,
-  default `auto`, or a whole number written as text): how many
+  default `auto`, or a whole number written as text, so quoted in
+  `config.yaml`: an unquoted number is not text and reads as `auto`): how many
   `premise-review` inputs a run takes. `auto` = ceil(live placed lessons /
   rotation_days) + 1, so a backlog drains and the number grows with the
   ledger without a person; a number overrides it; anything else reads as
