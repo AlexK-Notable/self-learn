@@ -245,6 +245,13 @@ NOT_REPO_TRUTH = {
     "serve._log_job_crash": "XDG cache: cache_dir()/serve.journal.jsonl, one row per crashed job with no journal of its own (2026-09-27, fail-state audit finding 6)",
     "serve._write_holds": "XDG cache: cache_dir()/serve.holds.json (U1/A13 -- which job a failing due check is currently holding, and its cause, so the heartbeat and `doctor`'s serve row can name it and the notification fires once per cause; no ledger path, no commit)",
     "steward._journal": "XDG cache: steward/journal.jsonl, never ledger truth",
+    # S-NEXT-u2-sweep: the premise sweep's two cache files, written by this ONE
+    # function -- <cache>/premises/observations.jsonl (the last three
+    # observations per probe) and <cache>/premises/sweep.json (when the sweep
+    # last ran). A cache that is lost costs a day, never a lesson; the sweep's
+    # only ledger write (the `on_change: refresh` re-baseline) is
+    # `premise_sweep._refresh_record`, which takes the commit lock itself.
+    "premise_sweep._write_cache_file": "XDG cache: <cache>/premises/observations.jsonl and sweep.json, the premise sweep's history and last-run marker; never ledger truth",
     "steward._write_json": "XDG cache: steward run recovery records and batch-result replay files",
     "steward._dump_yaml": "XDG cache: model stage normalization below steward/runs/<run_id>",
     # 2026-09-27 (fail-state audit finding 3): the per-pair stage check
@@ -909,6 +916,12 @@ _ARGV_FOR = {
     # `_cmd_host_inner` below: a read-only helper, never a direct
     # dispatch target, and (like `_cmd_doctor` itself) never touches the
     # ledger's commit_lock at all.
+    "_cmd_doctor_premises": None,  # driven through _cmd_doctor (S-NEXT-u2-sweep's
+    # `doctor premises`): reads the sweep's cache and the ledger, writes
+    # nothing, never touches the ledger's commit_lock.
+    "_cmd_premises": None,  # S-NEXT-u2-sweep's `premises check`: a read verb --
+    # it runs the probes and prints; it writes nothing at all, not even the
+    # sweep's cache, and never touches the ledger's commit_lock.
     "_cmd_doctor_miner": None,  # driven through _cmd_doctor (new miner R2
     # fix round 4's `doctor miner` verb): reads the cache's waiting
     # answers only, never the ledger, never its commit_lock.

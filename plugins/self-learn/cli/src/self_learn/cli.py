@@ -56,6 +56,7 @@ from . import (
     gitops,
     intents,
     miner,
+    premise_sweep,
     provider,
     refread,
     selfcheck,
@@ -911,6 +912,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="commit exactly as pinned, skip only the push",
     )
 
+    premises_p = sub.add_parser(
+        "premises",
+        help="the premise check (S-NEXT-u2-sweep): check -- run every probe now, "
+        "read-only, and print each premise's baseline, current value and verdict",
+    )
+    premises_sub = premises_p.add_subparsers(dest="premises_command", metavar="<verb>")
+    pcheck = premises_sub.add_parser(
+        "check",
+        help="run the probes and placement checks now and print premise, baseline, "
+        "current value and verdict (holds, moved, unavailable, no-probe); writes nothing",
+    )
+    pcheck.add_argument(
+        "--id", dest="record_id", metavar="ID", help="only this lesson (lrn-xxxxxxxx)"
+    )
+    pcheck.add_argument(
+        "--json", action="store_true", dest="as_json", help="machine-readable rows"
+    )
+
     telemetry_p = sub.add_parser(
         "telemetry", help="observation plane (11 §4): note (spool) | flush"
     )
@@ -1103,7 +1122,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "doctor",
         help="read-only diagnostics: invocation (provider/backend config), "
         "settings (the U-settings registry), miner (the session miner's "
-        "waiting answers); bare `doctor` defaults to `doctor invocation`",
+        "waiting answers), premises (the premise check); bare `doctor` "
+        "defaults to `doctor invocation`",
     )
     doctor_sub = doctor_p.add_subparsers(dest="doctor_command", metavar="[<verb>]")
     doctor_sub.add_parser(
@@ -1120,6 +1140,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "miner",
         help="the session miner's waiting answers: how many items still "
         "wait to land, and each stuck one (a write that failed on 3 runs)",
+    )
+    doctor_sub.add_parser(
+        "premises",
+        help="the premise check: written probes that are broken, placement "
+        "premises failing, lessons with no premises yet, when the sweep last ran",
     )
     # Bare `doctor` (no <verb>) behaves exactly as `doctor invocation` —
     # there is only one verb today, and forcing operators to spell it out
@@ -2061,6 +2086,54 @@ def _cmd_doctor_miner(home: Path) -> int:
     return EXIT_OK
 
 
+def _cmd_doctor_premises(home: Path) -> int:
+    """`doctor premises` (S-NEXT-u2-sweep): the same rows as the selftest's
+    `premises` row, one per line, from :func:`premise_sweep.doctor_rows`. A
+    broken probe is a WARN, never a FAIL, so this verb always exits 0; it
+    reads the cache and the ledger and writes nothing."""
+    for row in premise_sweep.doctor_rows(home):
+        print(f"doctor: {row.verdict} {row.name} — {row.detail}")
+    return EXIT_OK
+
+
+def _cmd_premises(args: argparse.Namespace) -> int:
+    """`premises check [--id ID] [--json]`: a READ verb. It runs the probes and
+    the placement checks now (they only read: `systemctl show`, `pacman -Q`,
+    file reads, the compile record) and prints each premise against its
+    baseline. It writes nothing -- not the ledger, not even the sweep's cache,
+    so that running it twice cannot make a value that flaps look stable -- and
+    it works with `premises.enabled` false."""
+    if args.premises_command != "check":
+        print("usage: self-learn premises check [--id ID] [--json]", file=sys.stderr)
+        return EXIT_USAGE
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    record_id = args.record_id
+    if record_id is not None and not re.fullmatch(r"lrn-[0-9a-f]{8}", record_id):
+        print(
+            f"self-learn premises check: {record_id!r} is not a lesson id (lrn-xxxxxxxx)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    try:
+        rows = premise_sweep.check(home, record_id=record_id)
+    except LookupError as exc:
+        print(f"self-learn premises check: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if args.as_json:
+        print(json.dumps([row.as_dict() for row in rows]))
+        return EXIT_OK
+    if not rows:
+        print("premises check: no placed lesson records a premise, and no placement check applies")
+        return EXIT_OK
+    print(premise_sweep.render_check(rows))
+    moved = sum(1 for row in rows if row.verdict == "moved")
+    broken = sum(1 for row in rows if row.verdict == "unavailable")
+    print(f"premises check: {len(rows)} premise(s); {moved} moved, {broken} could not be observed")
+    return EXIT_OK
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """`Doc-0` -- a THIN PRINTER. Computes no verdict of its own and
     calls no probe directly: every verdict comes from
@@ -2075,6 +2148,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         return _cmd_doctor_settings(home)
     if args.doctor_command == "miner":
         return _cmd_doctor_miner(home)
+    if args.doctor_command == "premises":
+        return _cmd_doctor_premises(home)
     if args.doctor_command != "invocation":
         print("usage: self-learn doctor invocation", file=sys.stderr)
         return EXIT_USAGE
@@ -4526,6 +4601,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "telemetry":
         return _cmd_telemetry(args)
+
+    if args.command == "premises":
+        return _cmd_premises(args)
 
     if args.command == "report":
         return _cmd_report(as_json=args.as_json)

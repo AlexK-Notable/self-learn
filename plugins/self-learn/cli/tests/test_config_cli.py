@@ -154,6 +154,10 @@ class TestConfigGet:
             # the digest and the session engine is the user's, like
             # `steward.enabled`.
             "miner.engine",
+            # S-NEXT-u2-sweep (premise-check design D12): the premise check's
+            # switch is the person's, like `steward.enabled`, though it
+            # defaults to true.
+            "premises.enabled",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 

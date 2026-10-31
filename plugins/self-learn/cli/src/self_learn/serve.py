@@ -15,6 +15,12 @@ the cache ROOT, per-home cache directories whose ledger home no longer
 exists and host lock files nobody holds -- cache only, never the home it
 serves.
 
+A daily PREMISES job (S-NEXT-u2-sweep, `premise_sweep.py`) also runs, before
+the steward: it re-reads what placed lessons rest on, writes only its own cache
+folder (`<cache>/premises/`) and, for a premise marked `on_change: refresh`, one
+ledger commit under the commit lock (the job commits its own writes, as the
+others do); it never calls a model.
+
 Jobs run SERIALLY (orchestrator ruling, spec §5.2a): the producers this
 unit schedules are already serialised by their own locks
 (``worker.lock``, ``miner.spawn.lock``), so a daemon that runs one job at
@@ -48,7 +54,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import cache_gc, cases, gitops, intents, miner, overseer, settings, steward, worker
+from . import cache_gc, cases, gitops, intents, miner, overseer, premise_sweep, settings, steward, worker
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
 from .primitives import chrono, fsops
@@ -1084,6 +1090,23 @@ def _run_worker_job(home: Path) -> "worker.RunResult":
     return worker.run(home, coalesce=True, no_push=False)
 
 
+def _premises_is_due(home: Path, cache_dir: Path, now: float) -> bool:
+    """S-NEXT-u2-sweep (premise-check design D5): the daily premise sweep is
+    due when ``premises.enabled`` is on, it was last attempted at least a day
+    ago, and the ledger has a resolved lesson to look at. Reads the cache and
+    directory names only, so it is cheap every tick."""
+    return premise_sweep.is_due(home, cache_dir, now)
+
+
+def _run_premises_job(home: Path, cache_dir: Path, now: float) -> "premise_sweep.SweepResult":
+    """The sweep itself: code only, never a model call. It writes the cache
+    (``<cache>/premises/``) and, for a premise marked ``on_change: refresh``,
+    one ledger commit under the commit lock. The cache directory and the clock
+    are the ones the due check read, so the attempt marker it leaves is the one
+    that stops the job being due again the same day."""
+    return premise_sweep.run(home, cache_dir, now=now)
+
+
 def _run_steward_job(home: Path) -> "steward.RunResult":
     return steward.run(home)
 
@@ -1157,6 +1180,20 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 )
                 ran.append(worker_record)
                 _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
+        # S-NEXT-u2-sweep: the premise sweep runs BEFORE the steward, so a
+        # change it confirms is decided the same night (design D5). It is a
+        # job like the others (serial, one at a time) and calls no model.
+        if _due_or_hold(
+            "premises", home, cache_dir, now, lambda: _premises_is_due(home, cache_dir, now)
+        ):
+            premises_record = run_one_job(
+                cache_dir,
+                Job("premises", "premises", lambda: _run_premises_job(home, cache_dir, now)),
+                pid=pid,
+                tick_secs=tick_secs,
+                home=home,
+            )
+            ran.append(premises_record)
         if _due_or_hold(
             "steward", home, cache_dir, now, lambda: _steward_is_due(home, cache_dir, now)
         ):
