@@ -2718,6 +2718,17 @@ def test_phase_sessions_get_edit_confined_exactly_as_write(tmp_path, monkeypatch
             assert (verdicts["Edit"] == "PermissionResultAllow") is allowed, (target, verdicts)
 
 
+def _without_notices_paragraph(prompt: str) -> str:
+    """*prompt* without phase B's notices.yaml paragraph (from its first line
+    to the user-model-delta.yaml paragraph that follows it)."""
+    start = prompt.find("notices.yaml is optional")
+    if start < 0:
+        return prompt
+    end = prompt.find("user-model-delta.yaml is", start)
+    assert end > start, "the notices paragraph is followed by the user-model paragraph"
+    return prompt[:start] + prompt[end:]
+
+
 def test_both_prompts_carry_the_journal_and_phase_b_the_question_bar(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     _fake_two_phase(monkeypatch)
@@ -2732,8 +2743,18 @@ def test_both_prompts_carry_the_journal_and_phase_b_the_question_bar(tmp_path, m
         assert "No later run reads it." in prompt
         assert "## phase <A|B> · <a few words>" in prompt
         assert f"You are in phase {phase} now." in prompt
-        assert "at most" not in prompt.lower()
+        # The bar is against capping questions (d07ae48). Integration
+        # 2026-10-31: cures lane D's notices paragraph carries its own caps,
+        # which the decision register sets (S-NEXT-cures-d: one sentence of at
+        # most N characters, at most five a run), so it is cut out first.
+        uncapped = _without_notices_paragraph(prompt)
+        assert "at most" not in uncapped.lower()
         assert "three questions" not in prompt.lower()
+    # control: the paragraph is there in B, and the cut takes only it
+    assert "notices.yaml is optional" in b and "at most" in b.lower()
+    cut = _without_notices_paragraph(b)
+    assert "notices.yaml is optional" not in cut and "user-model-delta.yaml is" in cut
+    assert len(b) - len(cut) < 2000
     assert "The log records only what you read in this stage; you have not seen the steward's decisions." in a
     assert "you have not seen the steward's decisions" not in b
     assert "There is no limit on\nhow many you ask" in b
