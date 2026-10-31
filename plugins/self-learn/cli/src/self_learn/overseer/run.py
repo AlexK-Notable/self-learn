@@ -1777,7 +1777,8 @@ def _pair_rules_problem(
     always-loaded combined test (the steward's rule, one copy), then E3b's
     two `replace` rules (`cases.replace_items_problem`: every lesson a
     replace line changes is in the case's records, and the case accounts
-    for the old text in `decision.rewrite`)."""
+    for the old text in `decision.rewrite`), and the same first rule for a
+    `restate` line (`_restate_items_problem`)."""
     case_data = _yaml_mapping(case_file)
     lines = [{"id": item.id, "verb": item.verb, **item.fields} for item in sheet]
     return _held_pair_problem(
@@ -1787,7 +1788,23 @@ def _pair_rules_problem(
         resolve=always_loaded.proposal_resolver(home),
         placement=always_loaded.placement_resolver(home),
         label=case_file.name,
-    ) or cases.replace_items_problem(case_data, lines, label=case_file.name)
+    ) or cases.replace_items_problem(
+        case_data, lines, label=case_file.name
+    ) or _restate_items_problem(case_data, lines, label=case_file.name)
+
+
+def _restate_items_problem(case_data: dict, lines: list[dict], *, label: str) -> str | None:
+    """A `restate` line's lesson is one of the case's records: the case is the
+    account of why the rejected lesson gets a corrected version, so it must
+    name that lesson (the case writer's own `replace` rule, for `restate`)."""
+    records = {str(rid) for rid in case_data.get("records") or []}
+    for line in lines:
+        if line.get("verb") == "restate" and str(line.get("id")) not in records:
+            return (
+                f"{label}: a restate line names {line.get('id')}, which the case does not "
+                "name in its records -- the case must cover every lesson it restates"
+            )
+    return None
 
 
 def _validate_maintenance_case(path: Path) -> None:
@@ -3625,24 +3642,22 @@ def _stamp_reconsidered(home: Path, case_path: Path, case_id: str) -> None:
     overseer's reconsider may re-decide a lesson whose earlier decision never
     applied (still pending), which `verbs.reconsider`'s status checks refuse;
     whether the sheet's line then changes the lesson is that line's own
-    preview. Idempotent: a re-drive finds the entry and writes nothing. A
-    refusal (the case check failing on a case just recorded would mean the
-    ledger is not what it was a moment ago) refuses this case and its sheet
-    alone, as a refusal by the case writer does."""
+    preview. Idempotent: a re-drive finds the entry and writes nothing.
+
+    This runs AFTER the case is recorded (and its predecessor superseded), so
+    it never refuses the case: a failure here (the ledger not being what it was
+    a moment ago) propagates, ends the run early, and the next resume drives
+    the stamp again. Refusing the case and its sheet at this point would leave
+    the predecessor superseded and the correction never applied."""
     data = _yaml_mapping(case_path)
     if data.get("kind") != "reconsider":
         return
     records = data.get("records")
     for record_id in dict.fromkeys(records if isinstance(records, list) else []):
-        try:
-            verbs.reconsider(
-                home, str(record_id), case=case_id, by="overseer",
-                no_push=True, any_status=True,
-            )
-        except (verbs.VerbError, LedgerOpsError) as exc:
-            raise _CaseRefused(
-                cases.CaseError(f"reconsider {record_id}: {scan.refusal_text(exc)}")
-            ) from exc
+        verbs.reconsider(
+            home, str(record_id), case=case_id, by="overseer",
+            no_push=True, any_status=True,
+        )
 
 
 def _run_manifest_sheet(

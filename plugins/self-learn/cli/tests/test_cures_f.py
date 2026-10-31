@@ -17,8 +17,9 @@ What is pinned here:
     refuses what the run refuses; the steward's brief shows the note; the
     overseer's formats carry an example pair that validates.
 (2) `reopen` is refused for the overseer when a person rejected the lesson
-    (an open case a person recorded, or no case an agent recorded), in the run
-    and in the preview, and stays allowed for a person and for a lesson the
+    (the newest open `reject` case is a person's, or there is no open reject
+    case, as after a hand reject; a case of another outcome says nothing), in
+    the run and in the preview, and stays allowed for a person and for a lesson the
     steward or the overseer rejected.
 (3) Crash recovery (`overseer.run._record_at_commit`) finds a lesson in a
     project or the user bucket, not only a skill bucket.
@@ -45,7 +46,9 @@ from self_learn.ledger_ops import find_record_path
 from self_learn.overseer import formats
 from self_learn.overseer import run as overseer_run
 from self_learn.records import Record
-from test_replace import Env, _head, _place, _rec, _seed, _sheet, _subjects
+from test_replace import (
+    OLD_INSTRUCTION, OLD_TRIGGER, Env, _head, _place, _rec, _seed, _sheet, _subjects,
+)
 from test_steward import _dump_yaml
 from test_steward_refusals import _case
 
@@ -306,6 +309,45 @@ def test_the_overseers_restate_example_pair_validates_and_the_readme_names_it(tm
         assert "\n" not in str(item[key])  # one physical line
 
 
+def test_a_restate_with_the_words_of_the_closed_lesson_is_refused_in_run_and_preview(env):
+    """Without the check, the same words come back as a pending lesson: a
+    reopen by another route, which the overseer is refused for a person's
+    reject. White space and the context do not make a new version; a changed
+    instruction does (control)."""
+    _rejected(env, A)
+    head = _head(env.home)
+    same = _line(
+        A, trigger=f"  {OLD_TRIGGER}  ", instruction=OLD_INSTRUCTION.replace(" ", "  ", 1),
+        context="A new context.",
+    )
+
+    (got,) = _run(env, [same]).items
+    (shown,) = _preview(env, [same], name="preview").items
+
+    assert (got.state, got.kind) == ("refused", "bad-line"), got
+    assert "same as the lesson's own" in (got.detail or ""), got.detail
+    assert (shown.state, shown.kind) == ("would-refuse", "bad-line"), shown
+    assert _head(env.home) == head and len(_pending_files(env, A)) == 0
+    changed = _line(A, trigger=OLD_TRIGGER, instruction=NEW_INSTRUCTION)  # control
+    (ok,) = _run(env, [changed], name="changed").items
+    assert (ok.state, ok.rc) == ("applied", 0), ok
+
+
+def test_a_restate_pair_whose_case_does_not_name_the_lesson_is_dropped(env):
+    """The case is the account of the correction: a restate line's lesson must
+    be one of its records (the same first rule `replace` has)."""
+    line = {"id": A, "verb": "restate"}
+    unrelated = {"records": [B], "kind": "maintenance"}
+    covering = {"records": [A, B], "kind": "maintenance"}
+
+    problem = overseer_run._restate_items_problem(unrelated, [line], label="case.yaml")
+
+    assert problem is not None and A in problem and "case.yaml" in problem
+    assert overseer_run._restate_items_problem(covering, [line], label="case.yaml") is None
+    other = {"id": A, "verb": "reject"}  # control: only a restate line is held to it
+    assert overseer_run._restate_items_problem(unrelated, [other], label="case.yaml") is None
+
+
 # ======================================= (2) the overseer never reopens a
 #                                           person's rejection
 
@@ -396,6 +438,63 @@ def test_a_superseded_person_case_does_not_protect_a_lesson_an_agent_then_reject
     (got,) = _run(env, [_reopen(A)]).items
 
     assert (got.state, got.rc) == ("applied", 0), got
+
+
+def _maintenance_case(env: Env, name: str, rid: str, actor: str = "overseer") -> str:
+    """The case an overseer's `restate` pair carries: maintenance, `no-action`
+    (the closed lesson is not decided again), naming the lesson in its records."""
+    data = _case([rid], "no-action", "no-action")
+    data.update(kind="maintenance", trigger="weekly")
+    data["decision"] = {"because": "the correction leaves the reject in place", "confidence": "provisional"}
+    stage = env.tmp / f"{name}.yaml"
+    _dump_yaml(stage, data)
+    return cases.record(env.home, stage, actor=actor)
+
+
+def test_an_overseer_restate_case_does_not_turn_a_persons_reject_into_the_overseers(env):
+    """The overseer's own `restate` writes a no-action case that names the
+    lesson. A hand reject plus that case (week N) must still refuse the
+    overseer's reopen (week N+1): only a case whose outcome is `reject` speaks
+    for who rejected the lesson. Before the fix any open agent case did, so
+    this reopen applied."""
+    _rejected(env, A)  # a hand reject: no case
+    _run(env, [_line(A)])  # week N: the overseer's restate
+    case = _maintenance_case(env, "restate-case", A)
+    assert [r["outcome"] for r in cases.list_cases(env.home, record_id=A)] == ["no-action"]  # control
+    head = _head(env.home)
+
+    (got,) = _run(env, [_reopen(A)], name="week-n1").items
+    (shown,) = _preview(env, [_reopen(A)], name="week-n1-preview").items
+
+    assert (got.state, got.kind) == ("refused", "needs-person"), got
+    assert "rejected by hand" in (got.detail or ""), (case, got.detail)
+    assert (shown.state, shown.kind) == ("would-refuse", "needs-person"), shown
+    assert _head(env.home) == head and _rec(env.home, A).status == "rejected"
+
+
+def test_a_steward_case_of_another_outcome_does_not_hand_a_persons_reject_to_the_overseer(env):
+    """A steward `defer` case came first; a person rejected the lesson by hand
+    afterwards. The defer case does not say who rejected it."""
+    _seed(env.home, A)
+    _record_case(env, "steward-defer", [A], "defer", actor="steward")
+    verbs.reject(env.home, A, no_push=True)  # a hand reject, no case
+
+    (got,) = _run(env, [_reopen(A)]).items
+
+    assert (got.state, got.kind) == ("refused", "needs-person"), got
+    assert verbs.person_reject_case(env.home, A) != ""
+
+
+def test_a_persons_reject_case_is_not_displaced_by_a_later_case_of_another_outcome(env):
+    """A person's reject case followed by a no-action agent case: still the
+    person's, because only reject cases are read."""
+    _rejected(env, A)
+    _record_case(env, "person-reject", [A], "reject", actor="human")
+    _maintenance_case(env, "later-note", A)
+
+    why = verbs.person_reject_case(env.home, A)
+
+    assert "which a person recorded" in why, why
 
 
 # ================================ (3) crash recovery finds every scope's lessons
@@ -514,3 +613,54 @@ def test_the_stamp_and_the_reconsider_sheet_compose_in_the_runners_order(env):
     after: Record = _rec(env.home, A)
     assert after.status == "rejected"
     assert [e["case"] for e in after.history if e.get("event") == "reconsidered"] == [case_id]
+
+
+def test_the_runner_stamps_the_reconsider_it_has_just_recorded(env, monkeypatch):
+    """`_stamp_reconsidered` is exercised directly above; this pins its wiring
+    in `_run_manifest_sheet`: the case is recorded first, then the stamp is
+    called with that case. Deleting the call lets this fall through (no
+    sentinel raised)."""
+    _seed(env.home, A)
+    prior = _record_case(env, "prior", [A], "route", actor="steward")
+    case = _case([A], "reject", "reject")
+    case.update(kind="reconsider", trigger="reconsider", supersedes=prior)
+    stage = env.tmp / "stage"
+    case_file, sheet_file = env.tmp / "case-src.yaml", env.tmp / "sheet-src.yaml"
+    _dump_yaml(case_file, case)
+    _dump_yaml(sheet_file, {"version": 1, "items": [{"id": A, "verb": "reject"}]})
+    recipe = {
+        "case_name": "case-reconsider.yaml", "case_text": case_file.read_text(encoding="utf-8"),
+        "sheet_name": "sheet-reconsider.yaml", "sheet": sheet_file.read_text(encoding="utf-8"),
+    }
+    calls: list[tuple] = []
+
+    def spy(home, case_path, case_id):
+        calls.append((home, case_path.name, case_id))
+        raise RuntimeError("stamp-called")
+
+    monkeypatch.setattr(overseer_run, "_stamp_reconsidered", spy)
+    case_id = "case-0ddba11e"
+
+    with pytest.raises(RuntimeError, match="stamp-called"):
+        overseer_run._run_manifest_sheet(env.home, stage, {}, case_id, recipe, gate=False)
+
+    assert calls == [(env.home, "case-reconsider.yaml", case_id)]
+    shown = cases.show(env.home, case_id, evidence_only=False).frontmatter
+    assert shown["supersedes"] == prior  # the case was recorded before the stamp
+    assert cases.show(env.home, prior, evidence_only=False).frontmatter["superseded_by"] == case_id
+
+
+def test_a_failed_stamp_does_not_refuse_the_case_it_follows(env, monkeypatch):
+    """The stamp runs after the case is recorded and its predecessor
+    superseded, so its failure is not a case refusal (which would drop the
+    sheet for good): it propagates, and the resume drives the stamp again."""
+    _seed(env.home, A)
+    stage_file, case_id = _reconsider_case(env, A)
+
+    def broken(*args, **kwargs):
+        raise verbs.VerbError("the ledger is not what it was a moment ago")
+
+    monkeypatch.setattr(overseer_run.verbs, "reconsider", broken)
+
+    with pytest.raises(verbs.VerbError):
+        overseer_run._stamp_reconsidered(env.home, stage_file, case_id)

@@ -416,7 +416,12 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   entry `restated as <new>: <because>` with the same key (annotation, any status; `resolution_note`, status and text
   untouched). One ledger commit, subject `self-learn: restate lrn-old → lrn-new (pending)`, `because` as the body.
   Refused by name (`bad-line`): a lesson that is `pending`, `deferred` or `routed` (corrected with `replace`), a
-  lesson replaced by a successor (restate or replace that lesson), a missing reason, text of two types, a secret.
+  lesson replaced by a successor (restate or replace that lesson), text whose trigger and instruction (or fact) read
+  the same as the closed lesson's own once white space is folded (the same words back in the queue are a reopen by
+  another route; the context does not count), text of two types, a secret. A missing `because` is refused earlier,
+  when the sheet loads (`BatchError`, "missing required"). In the overseer's pairs a `restate` line's lesson must be
+  one of its case's `records` (`overseer.run._restate_items_problem`, the `replace` rule's first half; the pair is
+  dropped otherwise).
   Idempotence: applied iff the closed lesson already carries a note with this text's key (the new lesson may be
   decided, or rejected again, by then); the overseer's crash recovery reads the same note
   (`overseer.run._candidate_establishes`). Open to the overseer and a person's sheet; the steward is refused by name
@@ -427,10 +432,13 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 - **`reopen` and a person's rejection** *(S-NEXT-cures-f, C4)*: the overseer may not `reopen` a `rejected` lesson a
   person rejected, in the run or in the preview: `NeedsPerson` (kind `needs-person`), naming the case and saying to
   write the corrected lesson with `restate` or to ask the user a question that names the reject. "A person rejected
-  it" is read from the case ledger (`verbs.person_reject_case`), because a record does not store who rejected it: an
-  open (not superseded) case a person recorded that names the lesson, or no open case at all (a hand reject), counts;
-  an open case only the steward or the overseer recorded does not, and such a lesson stays the overseer's to reopen or
-  reconsider as before (S-76). Keyed on the runner's actor, never the line's `by:`; a person's sheet and
+  it" is read from the case ledger (`verbs.person_reject_case`), because a record does not store who rejected it. Only
+  an open (not superseded) case whose outcome is `reject` and that names the lesson speaks for its rejection; a case of
+  any other outcome that names it (the overseer's `no-action` case beside a `restate`, a steward `defer`) says nothing
+  about who rejected it. The newest such reject case decides: one a person recorded makes it a person's rejection, one
+  only the steward or the overseer recorded does not (a tie in time goes to the person). With no open reject case at
+  all (a hand reject, which writes no case) it counts as a person's. A lesson an agent rejected stays the overseer's to
+  reopen or reconsider as before (S-76). Keyed on the runner's actor, never the line's `by:`; a person's sheet and
   `self-learn reopen` are unchanged; the steward is not listed (its inputs never include a rejected lesson).
 - **`evidence` is append-only** — it may *gain* entries (cluster merges add
   the merged record's provenance) but existing entries are never rewritten
@@ -2607,7 +2615,9 @@ too, once the case is recorded and before its sheet applies —
 `verbs.reconsider(…, any_status=True)`, which skips the status and outcome
 checks so a lesson whose earlier decision never applied, still `pending`,
 is stamped as well; before, the case's `supersedes` link was the only
-record), and may name a case that is not parked
+record; the stamp runs after the case is recorded, so a failure in it ends the
+run early and the resume stamps again, never refusing the case and its sheet),
+and may name a case that is not parked
 — one that covers the same records, has not been superseded, passes its
 freeze hash, and was recorded by the steward or the overseer (§3a, S-76).
 

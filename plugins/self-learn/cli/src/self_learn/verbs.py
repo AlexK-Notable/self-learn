@@ -7891,6 +7891,18 @@ def _compose_restatement(
     return record
 
 
+def _restated_words(sections: dict[str, str]) -> dict[str, str]:
+    """The words of a lesson that decide whether a restatement is a new
+    version: trigger, instruction and fact, with each run of white space read
+    as one space. Context is left out: a lesson with the same trigger and
+    instruction and a new context is still the same lesson."""
+    return {
+        key: " ".join(str(sections[key]).split())
+        for key in ("Trigger", "Instruction", "Fact")
+        if sections.get(key)
+    }
+
+
 def _preflight_restate(
     home: Path,
     record_id: str,
@@ -7917,7 +7929,9 @@ def _preflight_restate(
        already carries this line's note: ``done``).
     3. Its status: a rejected or retired lesson only. An open or placed lesson
        is corrected with ``replace``; a replaced one with its successor.
-    4. The composed lesson, its bucket (``to``, else the closed lesson's own),
+    4. The text: it must differ from the closed lesson's own words (the same
+       words back in the queue are a reopen by another route).
+    5. The composed lesson, its bucket (``to``, else the closed lesson's own),
        its whole-record secret scan, and the loaded-text check."""
     if not isinstance(because, str) or not because.strip():
         raise SheetLineUsageError("restate needs `because` (it rides the commit body)")
@@ -7950,6 +7964,15 @@ def _preflight_restate(
         raise SheetLineError(
             f"restate: {record_id} was replaced by {anchor.superseded_by} -- restate or "
             "replace that lesson instead"
+        )
+    if new_type == anchor.type and _restated_words(sections) == _restated_words(
+        _body_sections(anchor)
+    ):
+        raise SheetLineError(
+            f"restate: the text given for {record_id} is the same as the lesson's own "
+            f"({anchor.status}); that would put the same words back in the queue, which "
+            "is a reopen by another route. Write a version that answers what the "
+            "evidence shows, or leave the lesson closed"
         )
     scope, _bucket_dir, project_path = _replace_bucket(home, anchor_path, to)
     record = _compose_restatement(
@@ -9203,24 +9226,33 @@ def person_reject_case(home: Path, record_id: str) -> str:
     """Why a rejected lesson counts as a person's decision, in words, or the
     empty string when the steward or the overseer decided it.
 
-    The ledger does not store who rejected a lesson, so this reads the cases:
-    an open (not superseded) case recorded by a person that names the lesson
-    is the person's decision; with no open case at all (a hand reject through
-    the CLI, before cases existed) the ledger cannot show that an agent
-    decided it, so it is the person's; an open case an agent recorded, and no
-    person's, is the agent's. A lesson an agent rejected is the overseer's to
-    reconsider (S-76); only a person's is protected here."""
+    The ledger does not store who rejected a lesson, so this reads the cases.
+    Only an open (not superseded) case whose OUTCOME is `reject` and that names
+    the lesson speaks for its rejection: any other case that merely names it (a
+    `no-action` case the overseer writes beside a `restate`, a `defer`, a
+    `parked` case) says nothing about who rejected it. Of those reject cases the
+    newest decides: one a person recorded is the person's decision; one the
+    steward or the overseer recorded is the agent's. With no open reject case
+    at all (a hand reject through the CLI, which writes no case) the ledger
+    cannot show that an agent decided it, so it is the person's. A tie in time
+    between a person's reject case and an agent's goes to the person. A lesson
+    an agent rejected is the overseer's to reconsider (S-76); only a person's
+    is protected here."""
     try:
         rows = [
             row for row in cases.list_cases(home, record_id=record_id)
-            if not row.get("superseded_by")
+            if not row.get("superseded_by") and row.get("outcome") == "reject"
         ]
     except (cases.CaseError, OSError, ValueError):
         rows = []
-    for row in rows:
+    if not rows:
+        return "no case an agent recorded covers it, so it was rejected by hand"
+    newest = max(str(row.get("opened_at") or "") for row in rows)
+    latest = [row for row in rows if str(row.get("opened_at") or "") == newest]
+    for row in latest:
         if row.get("actor") == "human":
             return f"case {row.get('case')}, which a person recorded"
-    if any(row.get("actor") in ("steward", "overseer") for row in rows):
+    if any(row.get("actor") in ("steward", "overseer") for row in latest):
         return ""
     return "no case an agent recorded covers it, so it was rejected by hand"
 
