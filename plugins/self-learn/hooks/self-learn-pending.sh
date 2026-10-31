@@ -130,12 +130,18 @@ if [ "$steward_enabled" = "true" ]; then
   # Informational lines, printed only when the steward is not keeping up.
   steward_stale="$(jq -r '.steward_stale // false' <<<"$out" 2>/dev/null)" || exit 0
   steward_hold="$(jq -r '.steward_hold // empty' <<<"$out" 2>/dev/null)" || steward_hold=""
+  steward_hold_fix="$(jq -r '.steward_hold_fix // empty' <<<"$out" 2>/dev/null)" || steward_hold_fix=""
+  steward_stale_hours="$(jq -r '.steward_stale_hours // 48' <<<"$out" 2>/dev/null)" || steward_stale_hours=48
   stranded_count="$(jq -r '.stranded_count // 0' <<<"$out" 2>/dev/null)" || stranded_count=0
   if [ "$steward_stale" = "true" ]; then
-    echo "⚠️  self-learn: the steward has not finished a run in over 2 days — ${total} lesson(s) queued for it"
+    echo "⚠️  self-learn: the steward has not finished a run in over ${steward_stale_hours} hours — ${total} lesson(s) queued for it"
   fi
   if [ -n "$steward_hold" ]; then
-    echo "⚠️  self-learn: the steward is held — ${steward_hold}"
+    if [ -n "$steward_hold_fix" ]; then
+      echo "⚠️  self-learn: the steward is held — ${steward_hold}; ${steward_hold_fix}"
+    else
+      echo "⚠️  self-learn: the steward is held — ${steward_hold}"
+    fi
   fi
   if [ "$stranded_count" -gt 0 ] 2>/dev/null; then
     echo "⚠️  self-learn: ${stranded_count} queued lesson(s) the steward never selects — see \`self-learn --selftest\`"

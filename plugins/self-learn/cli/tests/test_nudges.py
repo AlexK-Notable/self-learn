@@ -71,7 +71,7 @@ def _steward_payload(**extra) -> dict:
 def test_hook_is_quiet_while_the_steward_keeps_up(tmp_path):
     # positive control first: the same payload, stale, does print.
     stale = _hook(tmp_path, "a", _steward_payload(steward_stale=True))
-    assert "the steward has not finished a run in over 2 days" in stale
+    assert "the steward has not finished a run in over 48 hours" in stale
     assert "19 lesson(s) queued" in stale
 
     quiet = _hook(tmp_path, "b", _steward_payload(steward_stale=False))
@@ -82,7 +82,14 @@ def test_hook_prints_the_hold_and_the_stranded_count(tmp_path):
     out = _hook(
         tmp_path, "a", _steward_payload(steward_hold="OAuth session expired", stranded_count=2)
     )
-    assert "the steward is held — OAuth session expired" in out
+    assert "the steward is held — OAuth session expired\n" in out
+    fixed = _hook(
+        tmp_path, "c",
+        _steward_payload(steward_hold="OAuth session expired", steward_hold_fix="run `claude`, then `/login`"),
+    )
+    assert "held — OAuth session expired; run `claude`, then `/login`" in fixed
+    hours = _hook(tmp_path, "d", _steward_payload(steward_stale=True, steward_stale_hours=72))
+    assert "in over 72 hours" in hours
     assert "2 queued lesson(s) the steward never selects" in out
     assert "--selftest" in out
     # a zero census is silent
@@ -166,17 +173,71 @@ def test_hold_is_the_newest_run_outcome(led, tmp_path):
     assert "steward_hold" not in steward.nudge_fields(led, cache, 1, now=NOW)
 
 
+def test_hold_survives_the_rows_the_steward_writes_after_its_closing_row(led, tmp_path):
+    _enable(led)
+    cache = _cache(tmp_path)
+    closing = {"ts": "t2", "run_id": "r1", "status": "partial", "decided": 0, "calls": 1,
+               "held": "Failed to authenticate: OAuth session expired and could not be refreshed"}
+    # the real order of a held run on a ledger with a remote (live journal 10-31)
+    _journal(
+        cache,
+        {"ts": "t0", "run_id": "r1", "status": "attempt-start"},
+        {"ts": "t1", "run_id": "r1", "status": "held-environment", "cause": closing["held"]},
+        {"ts": "t1", "run_id": "r1", "status": "model-log"},
+        closing,
+        {"ts": "t3", "run_id": "r1", "status": "push", "ok": True},
+    )
+    fields = steward.nudge_fields(led, cache, 1, now=NOW)
+    assert fields["steward_hold"] == closing["held"]
+    assert fields["steward_hold_fix"] == "run `claude`, then `/login`"
+    _journal(cache, {"ts": "t4", "run_id": "r1", "status": "recompile", "ok": True})
+    assert steward.nudge_fields(led, cache, 1, now=NOW)["steward_hold"] == closing["held"]
+
+
+def test_an_abandoned_row_is_not_a_hold_cause(led, tmp_path):
+    _enable(led)
+    cache = _cache(tmp_path)
+    _journal(
+        cache,
+        {"ts": "t1", "run_id": "r1", "status": "applied", "decided": 2},
+        {"ts": "t2", "run_id": "r2", "status": "abandoned", "held": ["lrn-1"]},
+    )
+    assert "steward_hold" not in steward.nudge_fields(led, cache, 1, now=NOW)
+
+
+def test_hold_fix_names_the_step_for_the_known_environment_causes():
+    assert steward.hold_fix("Failed to authenticate: OAuth session expired") == "run `claude`, then `/login`"
+    assert "claude update" in steward.hold_fix("Please update Claude Code")
+    assert steward.hold_fix("something odd") is None
+
+
 def test_stranded_count_is_absent_unless_known(led, tmp_path):
     _enable(led)
     cache = _cache(tmp_path)
     assert "stranded_count" not in steward.nudge_fields(led, cache, 1, now=NOW)
     path = cache / "steward" / "stranded.json"
-    path.write_text(json.dumps({"stranded": [{"id": "lrn-1"}, {"id": "lrn-2"}]}), encoding="utf-8")
+    # the census writer's shape (serve._write_stranded)
+    path.write_text(json.dumps({"at": "t", "count": 2, "lessons": [{"id": "lrn-1"}, {"id": "lrn-2"}]}), encoding="utf-8")
     assert steward.nudge_fields(led, cache, 1, now=NOW)["stranded_count"] == 2
-    path.write_text("[]", encoding="utf-8")
+    path.write_text(json.dumps({"at": "t", "count": 0, "lessons": []}), encoding="utf-8")
     assert steward.nudge_fields(led, cache, 1, now=NOW)["stranded_count"] == 0
     path.write_text("not json", encoding="utf-8")
     assert "stranded_count" not in steward.nudge_fields(led, cache, 1, now=NOW)
+    path.write_text(json.dumps({"stranded": [{"id": "x"}]}), encoding="utf-8")
+    assert "stranded_count" not in steward.nudge_fields(led, cache, 1, now=NOW)
+
+
+def test_a_queue_of_only_overseer_held_lessons_is_not_a_stale_steward(led, tmp_path, monkeypatch):
+    _enable(led)
+    cache = _cache(tmp_path)
+    marker = cache / "steward" / "steward.last-run"
+    marker.write_text(_iso(NOW - 72 * HOUR) + "\n", encoding="utf-8")
+    # control: nothing held, old marker -> stale
+    assert steward.nudge_fields(led, cache, 3, now=NOW)["steward_stale"] is True
+    monkeypatch.setattr(steward.cases, "held_lessons", lambda home: {"a": [], "b": [], "c": []})
+    assert steward.nudge_fields(led, cache, 3, now=NOW)["steward_stale"] is False
+    # a lesson beyond the held ones is the steward's: stale again
+    assert steward.nudge_fields(led, cache, 4, now=NOW)["steward_stale"] is True
 
 
 # ------------------------------------------------------------------ worker

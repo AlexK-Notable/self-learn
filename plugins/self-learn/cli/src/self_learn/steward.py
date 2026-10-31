@@ -5662,13 +5662,22 @@ STALE_AFTER_SECS = 48 * 60 * 60
 _HOLD_TAIL_BYTES = 65536
 
 
+#: A steward run's closing journal statuses (`RunResult.status` at the
+#: end of `_run`); a mid-run `refused` row has no `decided` field.
+_CLOSING_STATUSES = frozenset({"applied", "partial", "refused", "stopped"})
+
+
 def _hold_from_journal(resolved_cache_dir: Path) -> str | None:
     """The cause of the steward's newest run when it ended held by its
     environment, else `None`. Reads the journal's tail only, creates
     nothing, skips dry-run rows (a rehearsal is not the steward's state),
-    and judges the NEWEST row that is a run outcome: a later run that
-    did not hold clears the hold. A run that is held writes a
-    `held-environment` row, then its closing row carries `held`."""
+    and judges the NEWEST row that is positively a run outcome -- a
+    `held-environment` row or a closing row (a closing status carrying
+    `decided`); every other row (`push`, `recompile`, `model-log`,
+    `abandoned`, `notify-failed`, ...) is skipped, because the steward
+    journals some of them AFTER the closing row. A later run that did not
+    hold clears the hold. A held run writes `held-environment`, then its
+    closing row carries `held` (a string cause)."""
     path = resolved_cache_dir / "steward" / "journal.jsonl"
     try:
         with open(path, "rb") as fh:
@@ -5689,26 +5698,55 @@ def _hold_from_journal(resolved_cache_dir: Path) -> str | None:
         if status == model_failures.HELD_ENVIRONMENT:
             cause = row.get("cause")
             return str(cause) if cause else "the environment"
-        if row.get("held"):
-            return str(row["held"])
-        if status in {"notify-failed", "model-log", "unexplained-paths"} or "run_id" not in row:
-            # not a run outcome: keep looking for the one that is
-            continue
-        return None
+        if status in _CLOSING_STATUSES and "decided" in row:
+            held = row.get("held")
+            return held if isinstance(held, str) and held else None
+    return None
+
+
+#: Environment-hold causes (the classifier's `_ENVIRONMENT` families) and
+#: the one step only the person can take. First match wins.
+_HOLD_FIXES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"authenticat|oauth|api[ -]?key|bearer|access token|(?:logged|signed) in|/login|\b40[13]\b", re.I),
+     "run `claude`, then `/login`"),
+    (re.compile(r"credit balance", re.I), "add credit to the Anthropic account"),
+    (re.compile(r"update|upgrade|version|does not support|unsupported|not supported", re.I),
+     "update Claude Code (`claude update`)"),
+    (re.compile(r"not[ _]found|\b404\b", re.I), "check the configured model name"),
+)
+
+
+def hold_fix(cause: str) -> str | None:
+    """The next step for an environment-hold *cause*, or `None` when the
+    cause is not one the classifier knows."""
+    for pattern, fix in _HOLD_FIXES:
+        if pattern.search(cause):
+            return fix
     return None
 
 
 def _stranded_count(resolved_cache_dir: Path) -> int | None:
-    """The census count L2 caches at `<cache>/steward/stranded.json` (a
-    list of rows, or an object whose `stranded` is that list); `None`
-    when the file is absent or unreadable -- unknown, never zero."""
+    """The census count L2 caches at `<cache>/steward/stranded.json`
+    (`serve._write_stranded`: `{"at", "count", "lessons"}`); `None` when
+    the file is absent, unreadable or has no integer `count` -- unknown,
+    never zero."""
     try:
         data = json.loads((resolved_cache_dir / "steward" / "stranded.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if isinstance(data, dict):
-        data = data.get("stranded")
-    return len(data) if isinstance(data, list) else None
+    count = data.get("count") if isinstance(data, dict) else None
+    return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
+
+
+def _steward_takeable(home: Path | str, total_pending: int) -> int:
+    """Queued lessons the steward may take: the queue less the lessons the
+    overseer holds (they wait for the overseer, not for the steward).
+    A failed read leaves the queue whole."""
+    try:
+        held = len(cases.held_lessons(home))
+    except Exception:  # noqa: BLE001 -- a hint must not break the status probe
+        return total_pending
+    return max(0, total_pending - held)
 
 
 def nudge_fields(
@@ -5717,8 +5755,8 @@ def nudge_fields(
     """`status --fast`'s steward facts (L3): whether the steward owns the
     queue, and whether it is not keeping up. One settings read and cache
     reads; no git, nothing written. `steward_stale` means no COMPLETED
-    run (the `steward.last-run` marker, not an attempt) for more than 48 h
-    while the queue is not empty."""
+    run (the `steward.last-run` marker, not an attempt) for more than
+    `STALE_AFTER_SECS` while a lesson the steward may take is queued."""
     enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
     out: dict = {"steward_enabled": bool(enabled)}
     if not enabled:
@@ -5726,16 +5764,22 @@ def nudge_fields(
     stale = False
     if total_pending > 0:
         last_dt = chrono.to_dt(last_run_iso_from_cache(resolved_cache_dir))
-        if last_dt is None:
-            stale = True  # never completed (or unreadable): infinitely old
-        else:
-            if last_dt.tzinfo is None:
-                last_dt = last_dt.replace(tzinfo=timezone.utc)
-            stale = (now if now is not None else time.time()) - last_dt.timestamp() > STALE_AFTER_SECS
+        if last_dt is not None and last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        behind = (
+            last_dt is None  # never completed (or unreadable): infinitely old
+            or (now if now is not None else time.time()) - last_dt.timestamp() > STALE_AFTER_SECS
+        )
+        # the held-lesson read opens the case files: only when it can matter
+        stale = behind and _steward_takeable(home, total_pending) > 0
     out["steward_stale"] = stale
+    out["steward_stale_hours"] = STALE_AFTER_SECS // 3600
     hold = _hold_from_journal(resolved_cache_dir)
     if hold is not None:
         out["steward_hold"] = hold
+        fix = hold_fix(hold)
+        if fix is not None:
+            out["steward_hold_fix"] = fix
     stranded = _stranded_count(resolved_cache_dir)
     if stranded is not None:
         out["stranded_count"] = stranded
