@@ -54,7 +54,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import cache_gc, cases, gitops, intents, miner, overseer, premise_sweep, settings, steward, worker
+from . import cache_gc, cases, gitops, intents, miner, overseer, premise_sweep, settings, steward, steward_inputs, worker
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
 from .primitives import chrono, fsops
@@ -788,6 +788,25 @@ def _premise_extract_waiting(home: Path) -> bool:
     return bool(steward._premise_extract_inputs(home, limit=1, ordered=False))
 
 
+def _rotation_on(home: Path) -> bool:
+    """S-NEXT-rotation: whether the rotation could offer anything at all
+    (`premises.enabled` and a `premises.rotation_days` above 0): two
+    settings reads, cheap enough for every tick."""
+    return steward_inputs.premises_enabled(home) and steward_inputs.premise_rotation_days(home) > 0
+
+
+def _premise_review_overdue(home: Path, manifests: list[dict]) -> bool:
+    """S-NEXT-rotation (premises design P1): reviews ride along with a run
+    something else starts, sharing its packet; by themselves they make the
+    steward due only once the oldest due one is
+    `steward_inputs.ROTATION_GRACE_DAYS` days past due
+    (:func:`steward._premise_review_overdue`, one case-index read for every
+    lesson)."""
+    if not _rotation_on(home):
+        return False
+    return steward._premise_review_overdue(home, manifests=manifests)
+
+
 def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     """Apply the committed-obligation OR predicate outside cooldown and STOP.
 
@@ -821,17 +840,23 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     # passed. Asked only when it can change the answer, and unordered (the
     # ordering reads case files; this runs on every tick).
     premise_extract: bool | None = None
+    only_review = False
     if (
         not unfinished and not reconsider and not input_paths
         and not violations and not premise_moved
     ):
         premise_extract = _premise_extract_waiting(home)
         if not premise_extract:
-            return False
+            # S-NEXT-rotation: a review can still make it due by itself, but
+            # that is asked only after the cooldown (below), and only when
+            # the rotation is on at all -- a settings read, nothing more, here.
+            if not _rotation_on(home):
+                return False
+            only_review = True
     attempts = [str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")]
     last_iso = max(attempts) if attempts else steward.last_run_iso(home)
     if last_iso is None:
-        return True
+        return _premise_review_overdue(home, manifests) if only_review else True
     last_epoch = _attempt_epoch(last_iso, now)
     cooldown_value, _source = settings.resolve_setting(
         home, settings.by_name("steward.cooldown_secs")
@@ -845,6 +870,10 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
         premise_extract = _premise_extract_waiting(home)
     if premise_extract:
         return True
+    if not input_paths:
+        # S-NEXT-rotation: nothing else is waiting; only an overdue review
+        # can make the steward due now.
+        return _premise_review_overdue(home, manifests)
     # S-81 (gate S1d R2): an input is new work when no run has SELECTED
     # inputs since its record -- or the overseer's release of it -- was
     # committed. A run selects its inputs when it starts (`started_at`); a
@@ -854,14 +883,18 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     starts = [str(row.get("started_at")) for row in manifests if row.get("started_at")]
     selected_epoch = _attempt_epoch(max(starts), now) if starts else last_epoch
     released = _release_epochs(home, {path.stem for path in input_paths})
-    return any(
+    if any(
         _input_commit_epoch(home, path) > selected_epoch
         # Not before the last selection: both clocks count whole seconds,
         # and an eligible lesson the overseer let go no earlier than that
         # selection is one no run has had the chance to select.
         or released.get(path.stem, -1.0) >= selected_epoch
         for path in input_paths
-    )
+    ):
+        return True
+    # S-NEXT-rotation: asked last, and only now -- after the cooldown and
+    # every cheaper reason -- because it reads every placed lesson.
+    return _premise_review_overdue(home, manifests)
 
 
 def _release_epochs(home: Path, lessons: set[str]) -> dict[str, float]:

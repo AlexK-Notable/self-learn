@@ -426,7 +426,34 @@ def premise_facts(
         return row
     row["state"] = "ok"
     row["refreshed_this_week"] = premise_refreshes(home, now=now)
+    row["rotation"] = _rotation_facts(home, now=now)
     return row
+
+
+def _rotation_facts(home: Path, *, now: datetime | None = None) -> dict[str, Any]:
+    """S-NEXT-rotation (02 §3a.10.8): the rotation's facts -- its period
+    and nightly quota, how many lessons are due, the oldest one's days past
+    due, and how many a committed run reviewed in the last 30 days. `off`
+    when `premises.rotation_days` is 0; `unavailable` with a reason when it
+    cannot be read (never a zero)."""
+    from .. import steward
+
+    try:
+        status = steward.premise_rotation_status(
+            Path(home), today=(now.astimezone(timezone.utc).date() if now is not None else None),
+        )
+    except Exception as exc:  # noqa: BLE001 -- health facts degrade, never break a run
+        return {"state": "unavailable", "reason": _one_line(f"{type(exc).__name__}: {exc}", 200)}
+    if status.period <= 0:
+        return {"state": "off", "value": "premises.rotation_days is 0: no lesson is re-read"}
+    return {
+        "state": "ok",
+        "period_days": status.period,
+        "per_night": status.per_night,
+        "due": status.due,
+        "oldest_overdue_days": status.oldest_overdue,
+        "reviewed_last_30_days": status.reviewed_30d,
+    }
 
 
 def _staged_reason(raw: Any) -> str:
