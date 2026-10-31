@@ -1335,3 +1335,35 @@ def test_off_drops_not_drafts_a_build_pair_the_preview_refuses(env, monkeypatch,
     assert "[skill drafted]" not in report
     assert not draft.exists()
     assert env.row() is None and _status(env, RID) == "pending" and _status(env, RID2) == "pending"
+
+
+def test_off_keeps_a_sheetless_rewrite_as_a_draft_and_records_no_case(env, monkeypatch):
+    """Fix round 1 (gate r1 MINOR): the sheetless half of the off path. A
+    rewrite of an owned skill moves no lesson, so it has nothing to
+    preview; with writing off it is kept as a draft where a writing run
+    would apply it. Its case is not recorded and the deployed skill is
+    untouched. Before this test, turning that branch off left every other
+    test green: the pair went on to be recorded, and only the deploy guard
+    in `_apply_skill_write` kept the skill root unchanged."""
+    _set_writing(env, '"on"')
+    _lesson(env, RID)
+    assert env.write().ok  # self-learn's own skill, written under on
+    recorded = env.row()["last_write"]
+    deployed = env.skill_md().read_text(encoding="utf-8")
+    _set_writing(env, '"off"')
+    before = {row["case"] for row in cases.list_cases(env.home)}
+    _phases(monkeypatch, _rewrite_b("The rewritten closing line."))
+
+    result = _run(env)
+
+    assert result.status == "applied", _report(result)  # positive control: the run completed
+    decided = _section(_report(result), "Decided in the user's stead")
+    assert f"[skill drafted] {NAME}: would change it" in decided, decided
+    draft_md = skills.drafts_dir(env.home, _week(), NAME) / "SKILL.md"
+    assert "The rewritten closing line." in draft_md.read_text(encoding="utf-8")
+    assert git(env.home, "ls-files", "--error-unmatch", str(draft_md)).returncode == 0
+    # nothing deployed, no case recorded for the pair
+    assert env.skill_md().read_text(encoding="utf-8") == deployed
+    assert env.row()["last_write"] == recorded
+    assert {row["case"] for row in cases.list_cases(env.home)} == before
+    assert "[skill changed]" not in _report(result)

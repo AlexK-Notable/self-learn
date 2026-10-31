@@ -2069,7 +2069,7 @@ def skill_writing_misread(home: Path | str) -> str | None:
         return (
             f"overseer.skill_writing = 'off' (config.yaml {broken}) -- the overseer cannot read "
             "the setting, so it reads it as off and keeps every skill it builds or changes as "
-            "a draft; a person repairs config.yaml"
+            "a draft; config.yaml needs repairing"
         )
     raw = found[1]
     if isinstance(raw, str) and (raw in SKILL_WRITING_MODES or raw == SKILL_WRITING_LEGACY_ON):

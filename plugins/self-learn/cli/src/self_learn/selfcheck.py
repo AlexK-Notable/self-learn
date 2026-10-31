@@ -92,6 +92,9 @@ UNMEASURED; else 0:
         the row PASSes ("no owned skills": nothing is owed, so nothing is
         unmeasured); it is UNMEASURED only with no ``hosts.yaml`` and no
         live rows (no skills root could be looked in), like the drift row.
+        A value of ``overseer.skill_writing`` the overseer reads as off
+        (``settings.skill_writing_misread``) turns a PASS into a WARN and
+        is appended to a FAIL; UNMEASURED is left as it is.
 
     There is no ``worker`` row (fold r1, 2026-09-04 — M-K originally
     shipped one as a real, COUNTED UNMEASURED entry reading
