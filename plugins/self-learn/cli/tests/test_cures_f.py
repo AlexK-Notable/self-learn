@@ -605,6 +605,59 @@ def test_a_line_cannot_sign_an_overseers_restatement_as_a_person(env):
     assert "By: human" not in git(env.home, "log", "-1", "--format=%B").stdout
 
 
+
+def test_the_verb_alone_names_the_actor_on_the_note_whatever_by_it_is_given(env):
+    """Integration mutation gap (item 113): the test above passes through the
+    sheet, where the batch also hands `by=actor`, so reverting the verb's own
+    `note_by` (to `by or "human"`) alone changed nothing. Called directly with
+    `by="human"` and an overseer actor, the new lesson's note still names the
+    overseer; a person's own call may name `by` (the control)."""
+    _rejected(env, A)
+    _rejected(env, B)
+
+    agent = verbs.restate_lesson(
+        env.home, A, because=BECAUSE, trigger=NEW_TRIGGER, instruction=NEW_INSTRUCTION,
+        by="human", no_push=True, actor="overseer",
+    )
+    person = verbs.restate_lesson(
+        env.home, B, because=BECAUSE, trigger=NEW_TRIGGER, instruction=NEW_INSTRUCTION,
+        by="overseer", no_push=True, actor="human",
+    )
+
+    (agent_note,) = _rec(env.home, agent.new_record_id).notes
+    (person_note,) = _rec(env.home, person.new_record_id).notes
+    assert agent_note["by"] == "overseer", agent_note
+    assert person_note["by"] == "overseer", person_note  # a person's own `by` is honoured
+
+
+def test_the_batch_alone_hands_the_runners_actor_to_the_restate_not_the_lines_by(
+    env, monkeypatch
+):
+    """Integration mutation gap (item 113, the batch site): reverting the
+    dispatch's `by=` to the line's own `by` alone changed nothing, because the
+    verb also substitutes the actor. What the batch hands the verb is pinned
+    here, with the verb wrapped (the real one still runs); a person's run
+    passes the line's `by` (the control that the spy sees the real call)."""
+    _rejected(env, A)
+    _rejected(env, B)
+    seen: list[dict] = []
+    real = verbs.restate_lesson
+
+    def spy(*args, **kwargs):
+        seen.append({"id": args[1], "by": kwargs.get("by"), "actor": kwargs.get("actor")})
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(verbs, "restate_lesson", spy)
+
+    (agent,) = _run(env, [_line(A, by="human")]).items
+    (person,) = _run(env, [_line(B, by="overseer")], actor="human", name="person").items
+
+    assert (agent.state, person.state) == ("applied", "applied"), (agent, person)
+    assert seen == [
+        {"id": A, "by": "overseer", "actor": "overseer"},
+        {"id": B, "by": "overseer", "actor": "human"},
+    ], seen
+
 # ================================ (3) crash recovery finds every scope's lessons
 
 
