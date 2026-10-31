@@ -564,11 +564,19 @@ class TestUnderTheCommitLock:
     ):
         key = str(gitops.commit_lock_path(home))
         seen: list[tuple[str, bool]] = []
+        outside: list[str] = []
         real_write = sr.fsops.atomic_write
         real_commit = gitops.stage_and_commit
 
         def write(path, *args, **kwargs):
-            seen.append((f"write {Path(path).name}", key in gitops._held_locks))
+            # Only the ledger's own files: `sentinel.hold()` writes the
+            # autosync-pause file in the XDG cache, outside every repo, before
+            # the lock on purpose (as every ledger verb does), through the same
+            # `fsops.atomic_write`.
+            if Path(path).resolve().is_relative_to(Path(home).resolve()):
+                seen.append((f"write {Path(path).name}", key in gitops._held_locks))
+            else:
+                outside.append(Path(path).name)
             return real_write(path, *args, **kwargs)
 
         def commit(root, paths, subject, *args, **kwargs):
@@ -592,6 +600,7 @@ class TestUnderTheCommitLock:
         assert f"write {sr.REGISTRY_FILENAME}" in labels
         assert f"commit {sr.REGISTRY_FILENAME}" in labels
         assert all(held for _label, held in seen), seen
+        assert outside == ["autosync-pause"], outside  # the only write left out
         assert key not in gitops._held_locks  # released afterwards
 
     def test_the_registry_is_read_again_inside_the_lock(self, home, monkeypatch):
@@ -662,11 +671,11 @@ class TestUnderTheCommitLock:
         locked = (
             "        with intents.ledger_write(home) as recovered:\n"
             "            intents.announce_recovered(recovered)\n"
-            "            return _update_locked(home, fn, message)\n"
+            "            return _update_locked(home, fn, message, body)\n"
         )
         assert text.count(locked) == 1  # the edit below really changes something
         module.write_text(
-            text.replace(locked, "        return _update_locked(home, fn, message)\n"),
+            text.replace(locked, "        return _update_locked(home, fn, message, body)\n"),
             encoding="utf-8",
         )
         requires = _Analysis(sandbox).requires_lock()
