@@ -1061,8 +1061,8 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
     commit, pinned subject ``self-learn: host rebind <old> → <new>``.
 
     The MODE carries over from the old entry unchanged — rebind is a path
-    move, never a mode change (that is ``host remove`` + ``host add
-    --mode``, R-f).
+    move, never a mode change (that is ``host set-mode``, a person's
+    command; ``host add`` never changes a mode).
 
     Returns the bucket's new directory. The new path is gate-validated
     (:func:`validate_host_path`, mode-aware); the OLD path is deliberately

@@ -103,17 +103,21 @@ step 4's command using the ask's `q-` id.
 An ask whose printed block ends with "a plain yes registers: …" asks the
 user to register a repository as a canon host. The registration happens in
 `overseer respond` itself, for a bare yes the person typed. From your (an
-agent's) shell, add `--session <the session id the person typed the yes in>`:
-the command then reads that session's transcript and registers only when the
-LAST thing the person typed there is a plain yes (not an AskUserQuestion click,
-not an earlier yes, not words typed after it). Pass the answer to this one
-question straight away, before the person types anything else. Without
-`--session`, or when the check fails, the answer is recorded, nothing is
-registered, and the command says so; then tell the user plainly, and either
-have them run the same `respond` command in their own terminal or, if they
-told you to register it, run the `self-learn host add …` line the output
-names. A yes that carries a condition ("yes, but git mode") is not a plain
-yes: record it in their words and let the overseer read it.
+agent's) shell the command finds your own session from `$CLAUDE_CODE_SESSION_ID`
+(add nothing; a shell without that variable needs `--session <the session id
+the person typed the yes in>`, and a `--session` naming another session is
+refused). It reads that session's transcript and registers only when the LAST
+thing the person typed there is a plain yes (not an AskUserQuestion click, not
+an earlier yes, not words typed after it). So ask for the yes in plain chat, not
+as a clickable choice, and pass the answer to this one question straight away,
+before the person types anything else. When the check fails the command records
+NOTHING and the question stays open; it says why. Then tell the user plainly,
+and either have them type the yes in chat and answer again, have them run the
+same `respond` command in their own terminal, or, if they told you to register
+it, run the `self-learn host add …` line the error names and answer again (a
+registration already in place is left as it is). A yes that carries a
+condition ("yes, but git mode") is not a plain yes: record it in their words
+and let the overseer read it.
 
 **For a reading**, cover these parts, in your own words but never skipping
 one:
@@ -162,7 +166,7 @@ request for clarification, not an explicit decline — call:
 self-learn overseer respond --proposition <um-id@r | q-id> \
   --scope "<user|project:<host>>" --text "<verbatim>" \
   [--as-asked "<question as narrowed in conversation>"] \
-  [--session <session-id>]   # needed from an agent's shell for a host-registration yes
+  [--session <session-id>]   # only in a shell without $CLAUDE_CODE_SESSION_ID, for a host-registration yes
 ```
 
 `--proposition` takes either kind's id exactly as `overseer open` printed

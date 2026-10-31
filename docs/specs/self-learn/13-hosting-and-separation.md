@@ -326,14 +326,21 @@ revert). Doc 13 promotes that to the general rule:
    recorded and the question stays open. A `skills-root` registration that
    would replace a DIFFERENT registered skills root is refused the same way (the
    question never said so). An agent relaying the person's answer is how an
-   answer normally reaches the ledger, so from an agent's shell `respond
-   --session <id>` registers when that session's transcript proves the typing:
-   the LAST row the person typed there is a plain yes (an AskUserQuestion click,
-   an earlier yes, an agent-written turn and anything typed after the yes do not
-   count; `statements.latest_user_typed`). Without `--session`, or when the check
-   fails, the answer is still recorded (as before) but nothing is registered, and
-   the output says why and names the `host add` line a person or the agent they
-   told can run.
+   answer normally reaches the ledger, so from an agent's shell `respond`
+   registers when its own session's transcript proves the typing: the session is
+   `$CLAUDE_CODE_SESSION_ID` (so the agent need not know it), a `--session`
+   naming a different session is refused, and `--session` is for a shell without
+   that variable. The LAST row the person typed there must be a plain yes (an
+   AskUserQuestion click, an earlier yes, an agent-written turn, a line another
+   agent typed into the pane and anything typed after the yes do not count;
+   `statements.latest_user_typed`, which judges a row as `statement add` does).
+   When the agent's shell cannot prove it, `respond` records NOTHING and the
+   question stays open (the same as a refused `host add`: an answered question
+   whose registration never happened would read as done); the error says to have
+   the person type a plain yes and answer again, answer in their own terminal, or
+   run the `host add` line themselves (a registration already in place is left as
+   it is and needs no proof). A "yes" that is not a plain yes is still recorded
+   and the overseer reads it.
 
    **What replaces git for a plain host, and what does not.** Item 2's
    drift check is unaffected: it was never a git check — it compares the

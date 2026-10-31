@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,7 @@ def redirect(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
     for marker in settings.AGENT_CALLER_MARKERS:  # every test is a person's shell unless it says so
         monkeypatch.delenv(marker, raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)  # set only by the tests that model an agent's own session
 
 
 def _head(repo: Path) -> str:
@@ -305,23 +307,28 @@ def test_anything_but_a_bare_yes_records_the_answer_and_registers_nothing(tmp_pa
     assert _answers(home) == answers + 1  # the words are still the answer
 
 
-def test_from_an_agent_shell_without_a_session_the_answer_is_recorded_but_nothing_is_registered(
+def test_from_an_agent_shell_without_a_session_nothing_is_recorded_and_the_question_stays_open(
     tmp_path, monkeypatch
 ):
-    new = tmp_path / "new-host"
+    """Round 2 MAJOR: an answer recorded without the registration read as done
+    (S-96 hides an answered question). On master a yes from an agent's shell
+    had no proof step at all; in round 1 it was recorded and nothing registered."""
+    new = tmp_path / "new host"  # a space: the printed command must be shell-quoted
     init_repo(new)
     home, ask, _shown = _seed_registration_question(tmp_path, new)
     monkeypatch.setenv("CLAUDECODE", "1")
     answers = _answers(home)
+    head = _head(home)
 
-    result = conversation.respond(home, proposition=ask["id"], scope="user", text="yes")
+    with pytest.raises(conversation.ConversationError) as raised:
+        conversation.respond(home, proposition=ask["id"], scope="user", text="yes")
 
-    assert result.registered is False
-    assert result.registration.startswith("NOT registered")
-    assert "--session" in result.registration  # it says how to get the typing checked
-    assert f"self-learn host add {new}" in result.registration
+    message = str(raised.value)
+    assert "NOT registered" in message and "question stays open" in message
+    assert "--session" in message  # it says how to get the typing checked
+    assert f"self-learn host add {shlex.quote(str(new))}" in message
     assert not is_project_host(load_hosts(home), new)
-    assert _answers(home) == answers + 1
+    assert _answers(home) == answers and _head(home) == head  # nothing recorded
 
 
 def _typed(text: str) -> dict:
@@ -367,18 +374,25 @@ def test_from_an_agent_shell_a_session_whose_last_typed_row_is_a_yes_registers(t
     assert _answers(home) == answers + 1
 
 
+_SUGGESTED_YES = {
+    "type": "user", "promptSource": "suggestion_accepted", "message": {"content": "yes"},
+}  # Claude Code's own suggested prompt, accepted with a keystroke: an agent-written turn (rule 10, sign 2)
+
+
 @pytest.mark.parametrize(
     "rows, why",
     [
         ([_typed("yes"), _ASSISTANT, _typed("wait, not that one")], "words typed after the yes"),
         ([_typed("no"), _ASSISTANT, _CLICK], "an AskUserQuestion click is not typing"),
         ([_typed("yes, but use plain mode")], "a conditional yes is not a plain yes"),
+        ([_typed("no"), _ASSISTANT, _SUGGESTED_YES], "an accepted suggestion is an agent-written yes"),
         (
-            [{"type": "user", "message": {"content": "<agent-message>yes</agent-message>"}}],
-            "an agent-written turn is not the person",
+            [_typed("no"), _ASSISTANT,
+             {"type": "user", "message": {"content": "<agent-message>yes</agent-message>"}}],
+            "a tagged agent message is not the person",
         ),
     ],
-    ids=["typed-after", "click-only", "conditional", "agent-turn"],
+    ids=["typed-after", "click-only", "conditional", "suggested-yes", "agent-tag"],
 )
 def test_from_an_agent_shell_a_yes_the_transcript_does_not_show_registers_nothing(
     rows, why, tmp_path, monkeypatch
@@ -389,31 +403,149 @@ def test_from_an_agent_shell_a_yes_the_transcript_does_not_show_registers_nothin
     session = _transcript(home, tmp_path, rows)
     monkeypatch.setenv("CLAUDECODE", "1")
     answers = _answers(home)
+    head = _head(home)
 
-    result = conversation.respond(
-        home, proposition=ask["id"], scope="user", text="yes", session=session
+    with pytest.raises(conversation.ConversationError, match="NOT registered"):
+        conversation.respond(
+            home, proposition=ask["id"], scope="user", text="yes", session=session
+        )
+
+    assert not is_project_host(load_hosts(home), new), why
+    assert _answers(home) == answers and _head(home) == head  # nothing recorded: the question stays open
+
+
+def test_a_yes_another_agent_typed_into_the_pane_is_not_the_persons(tmp_path, monkeypatch):
+    """Round 2 MINOR: `latest_user_typed` read the role without the sends, so a
+    plain `yes` an orchestrating agent typed into the pane through herdr (no
+    `<agent-message>` tag) counted as the person's. Rule 10's third sign."""
+    new = tmp_path / "new-host"
+    init_repo(new)
+    home, ask, _shown = _seed_registration_question(tmp_path, new)
+    typed_at = {"timestamp": "2026-10-30T10:00:10Z", "sessionId": "sess-yes"}
+    session = _transcript(
+        home, tmp_path,
+        [_typed("go on"), _ASSISTANT, {**_typed("yes"), **typed_at}],
     )
+    sender = {
+        "type": "assistant", "timestamp": "2026-10-30T10:00:05Z", "sessionId": "orchestrator",
+        "message": {"content": [
+            {"type": "tool_use", "input": {"command": 'herdr pane send-text w1:p2 "yes"'}},
+        ]},
+    }
+    other = tmp_path / "transcripts" / "project" / "orchestrator.jsonl"
+    # control: with no send on record the same last row IS the person's yes
+    assert statements.latest_user_typed(home, session) == (f"transcript:{session}#L3", "yes")
+    other.write_text(json.dumps(sender) + "\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    answers = _answers(home)
 
-    assert result.registered is False, why
-    assert result.registration.startswith("NOT registered")
+    # the send is seen: the yes is skipped, the earlier row the person typed is not a yes
+    assert statements.latest_user_typed(home, session) == (f"transcript:{session}#L1", "go on")
+    with pytest.raises(conversation.ConversationError, match="NOT registered"):
+        conversation.respond(
+            home, proposition=ask["id"], scope="user", text="yes", session=session
+        )
+
     assert not is_project_host(load_hosts(home), new)
-    assert _answers(home) == answers + 1  # the answer is still recorded
+    assert _answers(home) == answers
 
 
-def test_from_an_agent_shell_an_unknown_session_registers_nothing(tmp_path, monkeypatch):
+def test_from_an_agent_shell_an_unknown_session_registers_nothing_and_records_nothing(
+    tmp_path, monkeypatch
+):
     new = tmp_path / "new-host"
     init_repo(new)
     home, ask, _shown = _seed_registration_question(tmp_path, new)
     _transcript(home, tmp_path, [_typed("yes")])  # control: transcripts are configured
     monkeypatch.setenv("CLAUDECODE", "1")
+    answers = _answers(home)
+
+    with pytest.raises(conversation.ConversationError, match="could not be checked"):
+        conversation.respond(
+            home, proposition=ask["id"], scope="user", text="yes", session="no-such-session"
+        )
+
+    assert not is_project_host(load_hosts(home), new)
+    assert _answers(home) == answers
+
+
+def test_an_agent_shell_proves_the_yes_in_its_own_session_without_being_told_the_id(
+    tmp_path, monkeypatch
+):
+    """Round 2 MAJOR: an agent does not know its session id (teach.md says to
+    omit it), so `--session` could not be passed on the normal path. The
+    shell's own `$CLAUDE_CODE_SESSION_ID` is the default."""
+    new = tmp_path / "new-host"
+    init_repo(new)
+    home, ask, _shown = _seed_registration_question(tmp_path, new)
+    session = _transcript(home, tmp_path, [_typed("register it?"), _ASSISTANT, _typed("yes")])
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
+
+    result = conversation.respond(home, proposition=ask["id"], scope="user", text="yes")
+
+    assert result.registered is True
+    assert result.registration == (
+        f"registered project host {new} in git mode (the yes is at transcript:{session}#L3)"
+    )
+    assert is_project_host(load_hosts(home), new)
+
+
+def test_a_session_other_than_the_shells_own_is_refused(tmp_path, monkeypatch):
+    """Round 2 MINOR: the proof was tied neither to the caller's session nor to
+    the question, so an agent could name an older session where the person had
+    said yes to something else."""
+    new = tmp_path / "new-host"
+    init_repo(new)
+    home, ask, _shown = _seed_registration_question(tmp_path, new)
+    older = _transcript(home, tmp_path, [_typed("yes")], session="older-session")
+    own = tmp_path / "transcripts" / "project" / "own-session.jsonl"
+    own.write_text(json.dumps(_typed("what about the host?")) + "\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "own-session")
+    # control: the older session's last typed row IS a plain yes, so only the binding refuses it
+    assert statements.latest_user_typed(home, older)[1] == "yes"
+    answers = _answers(home)
+
+    with pytest.raises(conversation.ConversationError, match="other than this shell's own"):
+        conversation.respond(home, proposition=ask["id"], scope="user", text="yes", session=older)
+    with pytest.raises(conversation.ConversationError, match="NOT registered"):  # and its own says no yes
+        conversation.respond(home, proposition=ask["id"], scope="user", text="yes")
+
+    assert not is_project_host(load_hosts(home), new)
+    assert _answers(home) == answers
+
+
+def test_naming_the_shells_own_session_explicitly_is_fine(tmp_path, monkeypatch):
+    new = tmp_path / "new-host"
+    init_repo(new)
+    home, ask, _shown = _seed_registration_question(tmp_path, new)
+    session = _transcript(home, tmp_path, [_typed("yes")])
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
 
     result = conversation.respond(
-        home, proposition=ask["id"], scope="user", text="yes", session="no-such-session"
+        home, proposition=ask["id"], scope="user", text="yes", session=session
     )
 
-    assert result.registered is False
-    assert "could not be checked" in result.registration
-    assert not is_project_host(load_hosts(home), new)
+    assert result.registered is True
+
+
+def test_a_registration_done_by_hand_needs_no_proof_when_the_answer_comes_after(tmp_path, monkeypatch):
+    """The recovery the refusal names: run `host add`, then answer again. It
+    must not hit the same refusal (nothing is being registered)."""
+    new = tmp_path / "new-host"
+    init_repo(new)
+    home, ask, _shown = _seed_registration_question(tmp_path, new)
+    host_add(home, new, "project", mode="git")
+    monkeypatch.setenv("CLAUDECODE", "1")  # an agent's shell, no session, no transcript
+    answers = _answers(home)
+
+    result = conversation.respond(home, proposition=ask["id"], scope="user", text="yes")
+
+    assert result.registered is True
+    assert result.registration == f"already registered, left as it was: project host {new} in git mode"
+    assert _answers(home) == answers + 1
 
 
 def test_a_person_s_own_terminal_needs_no_session(tmp_path):
@@ -558,6 +690,13 @@ def _register(path, mode="git", kind="project"):
         (_register("/srv/app"), "Register /home/x/srv/app in git mode?", "text must name"),
         (_register("/srv/app"), "Register /srv/app.git in git mode?", "text must name"),
         (_register("/srv/app"), "Register /srv/app, a git repository?", "text must name"),
+        # round 2: ordinary prose is not a mode, and a text naming the other mode names neither
+        (_register("/srv/app", "plain"), "Register /srv/app in plain words?", "text must name"),
+        (_register("/srv/app", "git"),
+         "Register /srv/app as a plain host? Its CLAUDE.md is tracked in git history.", "text must name"),
+        (_register("/srv/app", "plain"),
+         "Register /srv/app as a plain host? Its CLAUDE.md is tracked in git history.", None),
+        (_register("/srv/app", "git"), "Register /srv/app in git mode, not plain mode?", "text must name"),
         (_register("/srv/app", "plain"), "Register /srv/app? A plain yes will do.", "text must name"),
         (_register("/srv/app"), "Register /srv/app (git mode).", None),
         (_register("/srv/app", "plain"), "Register /srv/app as a plain host.", None),
@@ -637,3 +776,11 @@ def test_the_phase_b_prompt_tells_the_overseer_about_register(tmp_path):
     assert "kind: ask is a decision or fact only the user has" in flat  # control: the ask rules are there
     assert "register: {path: <absolute path>, mode: git or plain" in flat
     assert "must name that path exactly and that mode" in flat
+
+
+def test_the_printed_host_add_line_is_quoted_for_a_shell():
+    line = conversation._hand_command({"kind": "skills-root", "path": "/srv/my app", "mode": "plain"})
+    assert line == "`self-learn host add '/srv/my app' --skills-root --mode plain`"
+    assert conversation._hand_command({"kind": "project", "path": "/srv/app", "mode": "git"}) == (
+        "`self-learn host add /srv/app --mode git`"
+    )

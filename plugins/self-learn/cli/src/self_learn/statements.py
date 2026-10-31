@@ -338,11 +338,16 @@ def latest_user_typed(home: Path | str, session: str) -> tuple[str, str]:
     must be that yes, so an older "yes" (to another question) or anything the
     person typed after it never counts.
 
-    Read-only. Only a row whose role is ``user`` counts, as in
-    :func:`user_message_ref`; a tool result (an AskUserQuestion click), an
-    agent-written turn, a skill text or a subagent's reply is never "typed".
-    Raises :class:`StatementUsageError` when the session has no transcript or
-    holds no typed row."""
+    Read-only. Only a row whose role is ``user`` counts, judged the way
+    :func:`add` judges one (rule 10 in full, with the sends swept once, and
+    the subagent-file flag when the session resolves into a subagent's
+    file); a tool result (an AskUserQuestion click), an agent-written turn
+    (including a line another agent typed into the pane without the
+    ``<agent-message>`` tag), a skill text or a subagent's reply is never
+    "typed". A row an agent wrote is passed over, not stopped at: the
+    person's own typing is what is wanted. Raises
+    :class:`StatementUsageError` when the session has no transcript or holds
+    no typed row."""
     roots = refs.transcript_roots(home)
     try:
         ref = refs.resolve(session, roots=roots)
@@ -354,9 +359,15 @@ def latest_user_typed(home: Path | str, session: str) -> tuple[str, str]:
         ) from error
     except (OSError, UnicodeError) as error:
         raise _transcript_problem(error) from error
+    in_subagent_file = ref.subagent_file is not None
+    sent: provenance.SentIndex | None = None
     for number in range(len(lines), 0, -1):
         entry = refs._entry(lines[number - 1])  # noqa: SLF001
-        if entry is not None and refs.role_of(entry) == "user":
+        if entry is None or refs.role_of(entry, in_subagent_file=in_subagent_file) != "user":
+            continue  # a cheap prefilter; rule 10's sends are swept only for a row that passes it
+        if sent is None:
+            sent = refs.sent_index(roots)
+        if refs.role_of(entry, in_subagent_file=in_subagent_file, sent=sent) == "user":
             return f"transcript:{session}#L{number}", refs._raw_text(entry).strip()  # noqa: SLF001
     raise StatementUsageError(
         f"statement: session {session!r} holds no row the user typed"

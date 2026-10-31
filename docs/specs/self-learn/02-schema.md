@@ -764,7 +764,8 @@ ask may carry `register: {path, mode, kind?}`: a plain yes to it registers that
 repository (13 §4 item 5). The runner drops the entry (naming it in "Refused /
 could not do") unless `path` is one absolute path, `mode` is `git` or `plain`,
 `kind` is `project` or `skills-root`, and the ask's `text` names the path
-as a whole path and the mode as a phrase ("in git mode", "a plain skills root"),
+as a whole path and the mode as a phrase ("in git mode", "a plain skills root";
+"in plain words" or "in git history" is not one), and names no other mode,
 because the user sees the text and a yes means exactly
 that registration. A reading never carries `register`. The index keeps the
 field as `{kind, path, mode}`; `overseer open` prints "a plain yes registers:

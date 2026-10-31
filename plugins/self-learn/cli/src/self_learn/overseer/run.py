@@ -771,7 +771,7 @@ Two kinds, each {{id, kind, cases}}:
   one yourself) may add register: {{path: <absolute path>, mode: git or plain, kind: project or
   skills-root, default project}}. The user's typed yes then registers it for them. The text
   must name that path exactly and that mode as a phrase such as "in git mode" or "a plain skills
-  root" (not just a word like "git repository"), because the user sees the text and a yes means
+  root" (not just a word like "git repository"), and never name the other mode, because the user sees the text and a yes means
   exactly that registration; the question and its register must agree. A question that is not
   about that registration never carries register.
 cases lists the case-… ids the question comes from, exactly as they appear in this stage; an

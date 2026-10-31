@@ -16,13 +16,17 @@ typed plain "yes" to it registers that repository as a canon host in the same
 command (`respond`). The person typing the answer is the consent
 (S-29 / Y-17); `overseer open` shows what a yes will register, and the ask's
 own text must name the path and the mode. An agent relaying the answer from
-its own shell registers only with `--session`: the last row the person typed
-in that session must be a plain yes (`statements.latest_user_typed`).
+its own shell registers only when its own session (`$CLAUDE_CODE_SESSION_ID`,
+or `--session` where that is not set) shows the person's last typed row to be
+a plain yes (`statements.latest_user_typed`); a yes it cannot prove records
+nothing and leaves the question open.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -104,12 +108,19 @@ def _names_path(text: str, path: str) -> bool:
 
 def _names_mode(text: str, mode: str) -> bool:
     """True when *text* names the mode the way a person reads one: "git mode",
-    "plain skills root", "plain host", "mode: plain". A bare "git repository"
-    or "a plain yes" does not name a mode."""
+    "in git mode", "plain skills root", "plain host", "mode: plain". A bare
+    "git repository", "in plain words", "in git history" or "a plain yes" does
+    not name a mode, and a text that also names the OTHER mode names neither
+    (a yes must not register a mode the text only mentioned in passing)."""
+    others = [other for other in hosts.HOST_MODES if other != mode]
+    return _says_mode(text, mode) and not any(_says_mode(text, other) for other in others)
+
+
+def _says_mode(text: str, mode: str) -> bool:
     return (
         re.search(
             rf"\b{mode}[ -](?:mode|host|skills[ -]root|registration)\b"
-            rf"|\bin {mode}\b|\bmode\s*[:=]?\s*{mode}\b",
+            rf"|\bmode\s*[:=]?\s*{mode}\b",
             text,
             re.IGNORECASE,
         )
@@ -496,35 +507,60 @@ def _dependent_cases(home: Path, proposition: str, statement_id: str) -> list[tu
 _PLAIN_YES_RE = re.compile(r"\s*y(es)?\s*[.!]?\s*", re.IGNORECASE)
 
 
-def _agent_shell_proof(home: Path, session: str | None, phrase: str, register: dict[str, str]) -> str | None:
-    """From an agent's shell a yes registers only when the person's own typing
-    is proved: the agent names the session (`--session`), and the LAST row the
-    person typed in that session's transcript is a plain yes. Returns `None`
-    when proved, else the sentence saying why nothing was registered. Nothing
-    older counts (a yes to another question), nothing typed after it, and no
-    tool result (an AskUserQuestion click is not typing)."""
-    hand = (
-        f"`self-learn host add {register['path']}"
+_OWN_SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
+
+
+def _hand_command(register: dict[str, str]) -> str:
+    """The `host add` line a person (or an agent they told to) can run, with
+    the path quoted for a shell."""
+    return (
+        f"`self-learn host add {shlex.quote(register['path'])}"
         f"{' --skills-root' if register['kind'] == 'skills-root' else ''} "
         f"--mode {register['mode']}`"
     )
-    if not session or not session.strip():
+
+
+def _agent_shell_proof(
+    home: Path, session: str | None, phrase: str, register: dict[str, str]
+) -> tuple[str | None, str | None]:
+    """From an agent's shell a yes registers only when the person's own typing
+    is proved. Returns `(problem, proof_ref)`: `problem` is None when proved,
+    else the sentence saying why; `proof_ref` is the transcript line that held
+    the yes.
+
+    The session is the agent's OWN: `$CLAUDE_CODE_SESSION_ID` when that is set
+    (the agent need not know its id, and `--session` naming another session is
+    refused, so an older session where the person said yes to something else
+    cannot be borrowed); `--session` is for a shell that has no such variable.
+    The LAST row the person typed in that session's transcript must be a plain
+    yes. Nothing older counts (a yes to another question), nothing typed after
+    it, and no tool result (an AskUserQuestion click is not typing)."""
+    own = (os.environ.get(_OWN_SESSION_ENV) or "").strip()
+    named = (session or "").strip()
+    if own and named and named != own:
         return (
-            f"NOT registered ({phrase}): this is an agent's shell, and a registration "
-            "carries the person's own typed yes. Run the same command with "
-            "`--session <the session id the person typed the yes in>` so the typing can be "
-            f"checked, answer in your own terminal, or run {hand} yourself"
+            f"`--session` names a session other than this shell's own, and a yes "
+            f"is proved only in the session it was typed in ({phrase})",
+            None,
+        )
+    chosen = named or own
+    if not chosen:
+        return (
+            f"this is an agent's shell with no session to check the typing in "
+            f"({phrase}); pass `--session <the session id the person typed the yes in>`",
+            None,
         )
     try:
-        _ref, typed = statements.latest_user_typed(home, session.strip())
+        ref, typed = statements.latest_user_typed(home, chosen)
     except statements.StatementError as exc:
-        return f"NOT registered ({phrase}): the typing could not be checked ({exc}); run {hand} yourself"
+        return f"the typing could not be checked ({exc}) ({phrase})", None
     if _PLAIN_YES_RE.fullmatch(typed) is None:
         return (
-            f"NOT registered ({phrase}): the last thing the person typed in session "
-            f"{session.strip()} is not a plain yes. Ask again, or run {hand} yourself"
+            f"the last thing the person typed in session {chosen} is not a plain "
+            f"yes ({phrase})",
+            None,
         )
-    return None
+    return None, ref
 
 
 def _carry_out_registration(
@@ -537,20 +573,19 @@ def _carry_out_registration(
     answer the overseer reads, not a consent to what the question named.
     From an agent's shell (the detection that keeps tier-C settings the
     person's) the registration also needs proof that the person typed the yes
-    (`session`, see :func:`_agent_shell_proof`), because the agent relaying
-    the answer is how it normally reaches the ledger; without the proof the
-    answer is still recorded and nothing is registered. A registration `host
-    add` refuses (a path that is gone, a path already registered in the other
-    mode, a path that is not a git repo for `git` mode) raises, so the answer
-    is NOT recorded and the question stays open."""
+    (see :func:`_agent_shell_proof`), because the agent relaying the answer is
+    how it normally reaches the ledger. A bare yes the agent's shell cannot
+    prove, like a registration `host add` refuses (a path that is gone, a
+    path already registered in the other mode, a path that is not a git repo
+    for `git` mode), raises, so the answer is NOT recorded and the question
+    stays open: an answered question whose registration never happened would
+    read as done. A registration already in place needs no proof (nothing is
+    being done), so "register it by hand, then answer" works."""
     register = row["register"]
     phrase = _register_phrase(register)
     if _PLAIN_YES_RE.fullmatch(text) is None:
         return f"nothing registered: the answer was not a plain yes ({phrase})", False
-    if settings.agent_caller():
-        unproved = _agent_shell_proof(home, session, phrase, register)
-        if unproved is not None:
-            return unproved, False
+    proof_ref: str | None = None
     try:
         before = hosts.load_hosts(home)
         target = Path(register["path"]).expanduser().resolve()
@@ -571,9 +606,20 @@ def _carry_out_registration(
                 f"overseer respond: your yes would register {phrase}, but "
                 f"{before.skills_root} is already the skills root and registering "
                 "this one would replace it. Nothing was recorded and the question "
-                "stays open; if you want the swap, run `self-learn host add "
-                f"{register['path']} --skills-root --mode {register['mode']}` yourself"
+                f"stays open; if you want the swap, run {_hand_command(register)} yourself"
             )
+        if not already and settings.agent_caller():
+            # A registration already in place needs no proof (nothing is
+            # being done); one still to be done does.
+            problem, proof_ref = _agent_shell_proof(home, session, phrase, register)
+            if problem is not None:
+                raise ConversationError(
+                    f"overseer respond: NOT registered, {problem}. Nothing was recorded and "
+                    "the question stays open. Have the person type a plain yes in this "
+                    "session and answer again straight away, have them answer in their "
+                    f"own terminal, or run {_hand_command(register)} (only if they told "
+                    "you to) and answer again: a registration already done is left as it is"
+                )
         hosts.host_add(home, register["path"], register["kind"], mode=register["mode"])
     except hosts.HostsError as exc:
         raise ConversationError(
@@ -590,7 +636,10 @@ def _carry_out_registration(
         raise ConversationError(
             f"overseer respond: registering {phrase} failed ({exc}); the answer was not recorded"
         ) from exc
-    return (f"already registered, left as it was: {phrase}" if already else f"registered {phrase}"), True
+    proved = f" (the yes is at {proof_ref})" if proof_ref else ""
+    return (
+        f"already registered, left as it was: {phrase}{proved}" if already else f"registered {phrase}{proved}"
+    ), True
 
 
 def respond(
