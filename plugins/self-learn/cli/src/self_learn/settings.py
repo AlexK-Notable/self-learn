@@ -175,15 +175,20 @@ SettingValue = str | int | float | bool | None
 #: (one call per session). `miner.run` reads the setting.
 MINER_ENGINES: tuple[str, ...] = ("digest", "session")
 
-#: `overseer.skill_writing`'s three values (S-107 part 6, SK3):
-#: ``auto`` (the default: the first overseer run to complete keeps every
-#: skill it builds as a checked draft, every later run writes), ``on`` and
-#: ``off`` (drafts only). The runner reads the setting through
-#: `overseer.skills.writing_mode`, never through `resolve_setting`: any
-#: other value in config.yaml, a YAML boolean included, must read as
-#: ``off`` (a mistyped rollback fails closed), and the generic resolver
-#: would read a boolean as the default.
-SKILL_WRITING_MODES: tuple[str, ...] = ("auto", "on", "off")
+#: `overseer.skill_writing`'s two values (S-107 part 6 as amended by
+#: S-NEXT-ft-skills-on): ``on`` (the default: the overseer deploys every
+#: skill it builds, changes, renames or retires from its first run) and
+#: ``off`` (the person's rollback: drafts only). The runner reads the
+#: setting through `overseer.skills.writing_mode`, never through
+#: `resolve_setting`: any other value in config.yaml, a YAML boolean
+#: included, must read as ``off`` (a mistyped rollback fails closed), and
+#: the generic resolver would read a boolean as the default.
+SKILL_WRITING_MODES: tuple[str, ...] = ("on", "off")
+#: ``auto``, the old default (a one-week drafts-only trial, then writing),
+#: still accepted and read as ``on``: it meant "write" after one week, so
+#: reading it as ``off`` would turn writing off for exactly the person who
+#: never touched the switch (S-NEXT-ft-skills-on).
+SKILL_WRITING_LEGACY_ON = "auto"
 
 
 def _warn(message: str) -> None:
@@ -1188,28 +1193,30 @@ REGISTRY: tuple[Setting, ...] = (
         description="removal actions above this count raise the overseer notification cue",
         validate=lambda v: max(cast(int, v), 0),
     ),
-    # SK3 (S-107 part 6): whether the overseer deploys the skills it
-    # writes. Tier C, config.yaml only (no env var, no override channel),
-    # like `miner.engine`: agents never set it (`CLAUDE.md`). The runner
-    # reads it with `overseer.skills.writing_mode`, which reads an unknown
-    # value -- a YAML boolean included -- as `off`; `validate` folds an
-    # unknown string to `off` here too, so `doctor settings` agrees for
-    # every string value.
+    # SK3 (S-107 part 6, as amended by S-NEXT-ft-skills-on): whether the
+    # overseer deploys the skills it writes. Tier C, config.yaml only (no
+    # env var, no override channel), like `miner.engine`. The runner
+    # reads it with `overseer.skills.writing_mode`, which reads `auto`
+    # (the old default) as `on` and any other unknown value -- a YAML
+    # boolean included -- as `off`; `validate` folds the same way here, so
+    # `doctor settings` agrees for every string value.
     Setting(
         name="overseer.skill_writing",
         env_var=None,
         config_section="overseer",
         config_key="skill_writing",
         kind="str",
-        default="auto",
+        default="on",
         description=(
-            "whether the overseer deploys the skills it writes: auto (its first completed run "
-            "keeps them as drafts, every later run writes), on, or off (drafts only); the "
-            "user's switch"
+            "whether the overseer deploys the skills it writes: on (the default; auto, the old "
+            "default, reads as on) or off (drafts only, the rollback switch)"
         ),
-        validate=lambda v: v if v in SKILL_WRITING_MODES else "off",
-        accepts=lambda v: v in SKILL_WRITING_MODES,
-        accepts_hint="auto, on or off",
+        validate=lambda v: (
+            "on" if v == SKILL_WRITING_LEGACY_ON
+            else v if v in SKILL_WRITING_MODES else "off"
+        ),
+        accepts=lambda v: v in SKILL_WRITING_MODES or v == SKILL_WRITING_LEGACY_ON,
+        accepts_hint="on or off (auto, the old default, means on)",
         tier="C",
         override_channel=False,
     ),
@@ -1964,7 +1971,7 @@ def preflight(home: Path | str) -> list[SettingRow]:
             # SK3 fix round 2 (gate r2 MINOR; S-107 part 6): a
             # value the overseer reads as `off` while `resolve_setting`
             # falls through to the default is named, with what is obeyed.
-            misread = _skill_writing_misread(home)
+            misread = skill_writing_misread(home)
             if misread is not None:
                 rows.append(SettingRow(name=setting.name, verdict="WARN", detail=misread))
                 continue
@@ -2012,27 +2019,66 @@ def preflight(home: Path | str) -> list[SettingRow]:
     return rows
 
 
-def _skill_writing_misread(home: Path | str) -> str | None:
-    """`doctor settings`' WARN for an ``overseer.skill_writing`` value in
-    config.yaml that is not ``auto``, ``on`` or ``off`` -- a YAML boolean,
-    ``null``, an empty string, a typo -- or ``None`` (SK3 fix round 2, gate
-    r2 MINOR; S-107 part 6). The overseer reads such a value as
-    ``off`` (`overseer.skills.writing_mode`), while :func:`resolve_setting`
-    would show the default, ``auto``, for a boolean, ``null`` or an empty
-    string; this row says what the overseer obeys. Mirrors
-    ``writing_mode``'s rule; it cannot call it (that module imports this
-    one)."""
+def skill_writing_config_unreadable(home: Path | str) -> str | None:
+    """Why ``config.yaml`` cannot be read for ``overseer.skill_writing`` --
+    it does not parse, its top level is not a mapping, or ``overseer`` is
+    not a mapping -- or ``None`` when it reads (or is absent or empty, which
+    is the default). Says what is wrong, never the file's text.
+
+    One copy for the runner (`overseer.skills.writing_mode`) and the three
+    health views (S-NEXT-ft-skills-on): :func:`config.settings_leaf`
+    answers ``None`` for such a file as it does for a missing key, and a
+    broken file must read as ``off``, never as the default."""
+    from ruamel.yaml import YAML
+
+    path = config.config_path(home)
+    if not path.is_file():
+        return None
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 -- YAMLError, OSError, UnicodeDecodeError
+        return f"could not be read ({type(exc).__name__})"
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        return "has a top level that is not a mapping"
+    section = data.get("overseer")
+    if section is not None and not isinstance(section, dict):
+        return "has an overseer section that is not a mapping"
+    return None
+
+
+def skill_writing_misread(home: Path | str) -> str | None:
+    """The WARN detail for an ``overseer.skill_writing`` the overseer
+    reads as ``off`` although the person did not write ``off``, or ``None``
+    (SK3 fix round 2, gate r2 MINOR; S-107 part 6 as amended by
+    S-NEXT-ft-skills-on). Two causes: a value in config.yaml that is not
+    ``on``, ``off`` or ``auto`` -- a YAML boolean, ``null``, an empty
+    string, a typo -- and a config.yaml that cannot be read at all
+    (:func:`skill_writing_config_unreadable`). :func:`resolve_setting` would
+    show the default, ``on``, for either; this sentence says what the
+    overseer obeys. ``doctor settings``, ``--selftest``'s ``owned_skills``
+    row and ``doctor`` (invocation) all print it. Mirrors
+    ``overseer.skills.writing_mode``'s rule; it cannot call it (that module
+    imports this one)."""
     found = config.settings_leaf(home, "overseer", "skill_writing")
     if found is None:
-        return None
+        broken = skill_writing_config_unreadable(home)
+        if broken is None:
+            return None
+        return (
+            f"overseer.skill_writing = 'off' (config.yaml {broken}) -- the overseer cannot read "
+            "the setting, so it reads it as off and keeps every skill it builds or changes as "
+            "a draft; a person repairs config.yaml"
+        )
     raw = found[1]
-    if isinstance(raw, str) and raw in SKILL_WRITING_MODES:
+    if isinstance(raw, str) and (raw in SKILL_WRITING_MODES or raw == SKILL_WRITING_LEGACY_ON):
         return None
     return (
         f"overseer.skill_writing = 'off' (config:overseer.skill_writing) -- config.yaml holds "
-        f"{raw!r}, which is not auto, on or off, so the overseer reads it as off and keeps "
+        f"{raw!r}, which is not on or off, so the overseer reads it as off and keeps "
         "every skill it builds or changes as a draft; a person sets it with `self-learn "
-        "config set overseer.skill_writing auto|on|off`"
+        "config set overseer.skill_writing on|off`"
     )
 
 

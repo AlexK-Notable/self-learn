@@ -116,7 +116,6 @@ __all__ = [
     "stage_inputs",
     "stage_key",
     "stage_phase_b",
-    "trial_readiness",
     "week_entry",
     "week_path",
     "week_text",
@@ -891,7 +890,8 @@ def proposal_ids(parked_rows: list[dict[str, Any]]) -> list[str]:
 class Dispositions:
     """Phase B's ``skill-dispositions.yaml``, checked. ``valid`` holds when
     the file parsed with the right shape and every candidate and every
-    proposal got exactly one disposition: the condition the trial reads."""
+    proposal got exactly one disposition (the run record's
+    ``dispositions_valid``)."""
 
     valid: bool
     entries: tuple[dict[str, Any], ...] = ()
@@ -936,7 +936,7 @@ def _disposition_problem(
     # (`would_change_it: 2026-11-07`) would otherwise reach json.dumps.
     # Integration 2026-10-31 (sk4 gate MINOR): an optional key written as
     # null (`skill: null` on a decline) is JSON-safe and reads as absent;
-    # refusing it dropped the entry and put the drafts-only trial off a week.
+    # refusing it dropped the entry and left the candidate undisposed.
     for key in ("skill", "would_change_it"):
         if entry.get(key) is not None and not _text_ok(entry[key]):
             return f"{key} must be non-empty text"
@@ -950,7 +950,7 @@ def read_dispositions(
     was shown and the proposals it was given. Never raises.
 
     A file that is absent while nothing is owed says nothing in the report
-    (it is still not valid: the trial needs the file). *withheld* is the
+    (it is still not valid: no file was written). *withheld* is the
     secret-scan rule when the runner blanked the file."""
     name = path.name
     owed = [*candidates, *proposals]
@@ -1005,24 +1005,6 @@ def read_dispositions(
     elif len(kept) != len(data["dispositions"]):
         why = f"{name} had an entry the runner dropped"
     return Dispositions(why is None, tuple(kept), tuple(notes), why)
-
-
-def trial_readiness(phase_s: PhaseS, dispositions: Dispositions) -> tuple[bool, str]:
-    """Whether this run's discovery steps were seen working, so that, if it
-    completes while writing is not in effect and no trial file exists, it
-    counts as ``overseer.skill_writing: auto``'s drafts-only run
-    (S-107 part 6): discovery on, a valid ``skill-candidates.yaml``
-    from phase S (its own or a kept copy) and a valid
-    ``skill-dispositions.yaml`` from phase B. Answers ``(ready, why not)``.
-    The rest of the rule -- writing not in effect, no trial file yet, the
-    run completes, not a dry run -- is ``run._skill_trial``'s."""
-    if phase_s.state == STATE_OFF:
-        return False, "skill discovery is off (overseer.skill_discovery), so this run cannot be the trial"
-    if phase_s.state != STATE_OK:
-        return False, f"skill discovery (phase S) did not work this run: {phase_s.why}"
-    if not dispositions.valid:
-        return False, f"phase B's dispositions did not validate: {dispositions.why}"
-    return True, ""
 
 
 # --------------------------------------------------- the run record, the week

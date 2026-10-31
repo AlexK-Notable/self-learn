@@ -125,6 +125,7 @@ from . import intents
 from . import provider
 from . import scan as scan_mod
 from . import sentinel
+from . import settings
 from . import skill_registry
 from .compilers import (
     BEGIN_MARKER,
@@ -1446,6 +1447,24 @@ def _owned_skill_problems(
 
 
 def _check_owned_skills(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
+    """(h) owned_skills, with the ``overseer.skill_writing`` misread
+    (S-NEXT-ft-skills-on, S-107 part 6): a PASS becomes a WARN carrying
+    :func:`settings.skill_writing_misread`'s sentence, and a FAIL's detail
+    carries it too, so ``--selftest`` names a value the overseer reads as
+    ``off`` without a row of its own (the row count stays twelve).
+    UNMEASURED is left as it is: the home could not be measured."""
+    verdict, detail = _check_owned_skills_registry(home, claude_dir)
+    if verdict not in (Verdict.PASS, Verdict.FAIL):
+        return verdict, detail
+    misread = settings.skill_writing_misread(home)
+    if misread is None:
+        return verdict, detail
+    if verdict == Verdict.PASS:
+        return Verdict.WARN, f"{misread}; {detail}"
+    return verdict, f"{detail}; {misread}"
+
+
+def _check_owned_skills_registry(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
     """(h) owned_skills (S-107): ``owned-skills.yaml`` against
     the disk, read-only. See the module docstring's row (h).
 

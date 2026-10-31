@@ -122,7 +122,11 @@ def test_dc1_pristine_home_zero_fail_all_rows_once(capsys):
         if not seen_order or seen_order[-1] != name:
             seen_order.append(name)
     # consistency never appears (0 lines); every other row does, in order
-    expected = [r for r in provider.DOCTOR_ROWS if r not in ("consistency", "retired")]
+    # (S-NEXT-ft-skills-on: nor the skill_writing WARN, only for a misread value)
+    expected = [
+        r for r in provider.DOCTOR_ROWS
+        if r not in ("consistency", "retired", "overseer.skill_writing")
+    ]
     assert seen_order == expected
 
 
@@ -1049,3 +1053,21 @@ def test_p2_doctor_unknown_verb_still_a_usage_error(capsys):
     err = capsys.readouterr().err
     assert "invalid choice: 'bogus'" in err
     assert "invocation" in err
+
+
+@pytest.mark.parametrize("text", ["overseer:\n  skill_writing: maybe\n", "overseer: [\n"])
+def test_doctor_invocation_warns_for_a_skill_writing_value_read_as_off(capsys, _home, text):
+    """S-NEXT-ft-skills-on test 5: `doctor` (invocation) carries one WARN
+    row when the overseer reads overseer.skill_writing as off although
+    nobody wrote off -- an unknown value or a config.yaml that cannot be
+    read. Positive control first: ``on`` gives no such row."""
+    _home.mkdir(parents=True, exist_ok=True)
+    (_home / "config.yaml").write_text("overseer:\n  skill_writing: \"on\"\n", encoding="utf-8")
+    rc, out = _run(["doctor", "invocation"], capsys)
+    assert _rows_by_name(out, "switches")  # the rows printed
+    assert _rows_by_name(out, "overseer.skill_writing") == []
+
+    (_home / "config.yaml").write_text(text, encoding="utf-8")
+    rc, out = _run(["doctor", "invocation"], capsys)
+    (row,) = _rows_by_name(out, "overseer.skill_writing")
+    assert row.startswith("WARN ") and "= 'off'" in row and "reads it as off" in row

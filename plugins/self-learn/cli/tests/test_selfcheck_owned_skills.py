@@ -692,3 +692,47 @@ def test_the_row_writes_nothing(env, claude_dir):
 
     assert verdict is Verdict.FAIL  # it really looked
     assert _tree_digest(env.ledger, env.host, claude_dir) == before
+
+
+# ------------------------------------- S-NEXT-ft-skills-on: skill_writing misread
+
+
+def _write_skill_writing(env, raw: str) -> None:
+    (env.ledger / "config.yaml").write_text(f"overseer:\n  skill_writing: {raw}\n", encoding="utf-8")
+
+
+def test_selftest_warns_owned_skills_for_a_skill_writing_value_read_as_off(env, claude_dir, capsys):
+    """S-NEXT-ft-skills-on test 5: with no owned skills, a value the overseer
+    reads as off (not on, off or auto) turns the row's PASS into a WARN
+    naming the value; no new row. Positive control first: the same home
+    with ``on`` is a plain PASS."""
+    _write_skill_writing(env, '"on"')
+    verdict, message = _check(env, claude_dir)
+    assert verdict is Verdict.PASS and message.startswith("no owned skills"), message
+
+    _write_skill_writing(env, '"maybe"')
+    verdict, message = _check(env, claude_dir)
+    assert verdict is Verdict.WARN, message
+    assert "'maybe'" in message and "reads it as off" in message
+    assert "no owned skills" in message  # the registry check's own detail is kept
+
+    cli.main(["--selftest"])
+    out = capsys.readouterr().out
+    assert "selftest: WARN owned_skills — overseer.skill_writing = 'off'" in out
+
+
+def test_a_failing_owned_skills_row_carries_the_misread_in_its_detail(env, claude_dir):
+    """A FAIL stays a FAIL and also names the misread value."""
+    _healthy(env, claude_dir)
+    (claude_dir / "skills" / "alpha").unlink()
+    _write_skill_writing(env, "false")
+    verdict, message = _check(env, claude_dir)
+    assert verdict is Verdict.FAIL
+    assert "alpha: link" in message and "False" in message and "reads it as off" in message
+
+
+def test_auto_is_no_misread(env, claude_dir):
+    """``auto``, the old default, reads as on: nothing to warn about."""
+    _write_skill_writing(env, "auto")
+    verdict, message = _check(env, claude_dir)
+    assert verdict is Verdict.PASS, message
