@@ -240,6 +240,58 @@ def test_the_lessons_of_one_edited_block_are_one_group(tmp_path, monkeypatch):
     assert sorted(row["record"] for row in _intact_rows(home)) == [A, B]
 
 
+def _group_of_two_and_a_stranger(env, monkeypatch, tmp_path) -> None:
+    """A and B: one hand-edited block (one `@intact` group). C: a routed
+    lesson in another block's care -- it records no premises, so the
+    backfill may offer it."""
+    _routed(env, A)
+    _routed(env, B)
+    _routed(env, C)
+    _edit_line(env, A)
+    _edit_line(env, B, " (another note)")
+    _sweeps(env, monkeypatch, tmp_path, [A, B, C])
+
+
+def _kinds(rows: list[dict]) -> list[tuple[str, str]]:
+    return sorted((row["record"], row["kind"]) for row in rows)
+
+
+def test_the_nightly_cap_never_cuts_a_group_through_the_backfill_path(tmp_path, monkeypatch):
+    """Gate MINOR 2 (2d1b5ba): `_premise_inputs`, the path the run takes,
+    counts the cap in UNITS: with the cap at one, a group of two is offered
+    whole, never cut at its first row."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _group_of_two_and_a_stranger(env, monkeypatch, tmp_path)
+    moved = steward_inputs.INPUT_PREMISE_MOVED
+
+    monkeypatch.setattr(steward_inputs, "PREMISE_MOVED_PER_RUN", 1)
+    rows = steward._premise_inputs(home, exclude=set())
+    # positive control: the group (both lessons) is in the offer ...
+    assert [pair for pair in _kinds(rows) if pair[1] == moved] == [(A, moved), (B, moved)]
+    # ... and the cap of one still left room for the backfill's own row
+    assert (C, steward_inputs.INPUT_PREMISE_EXTRACT) in _kinds(rows)
+
+
+def test_a_group_that_waits_whole_keeps_its_other_lessons_out_of_the_backfill(
+    tmp_path, monkeypatch
+):
+    """Gate MINOR 2 (2d1b5ba): an earlier input of the run takes A, so the
+    group waits whole; B, whose move waits with it, is not offered for its
+    premises to be written that night."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _group_of_two_and_a_stranger(env, monkeypatch, tmp_path)
+    extract = steward_inputs.INPUT_PREMISE_EXTRACT
+
+    # control: with nothing taking A the backfill offers only the stranger
+    assert [r for r in _kinds(steward._premise_inputs(home, exclude=set())) if r[1] == extract] == [
+        (C, extract)
+    ]
+    rows = steward._premise_inputs(home, exclude={A})
+    assert _kinds(rows) == [(C, extract)]  # B is neither moved nor extract
+
+
 def test_a_group_is_kept_in_one_packet():
     plans = [
         steward_inputs.PacketPlan([A, C], [A, C], [{"a": A, "b": C}], {"cosine": 0, "lexical": 0, "none": 1}),
