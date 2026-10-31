@@ -6167,7 +6167,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     _journal(home, {"at": chrono.now_iso(), "run": run_id,
                         "status": "line-dropped", "reason": line})
                 if skill_step is not None and not skill_step.deploy:
-                    # SK3 (S-107 part 6; S-NEXT-ft-skills-on): writing is
+                    # SK3 (S-107 part 6; S-107 amended 2026-10-31): writing is
                     # off, so the step is kept, checked, as a draft and the
                     # pair is not applied. It is drafted only after the same
                     # preview a writing run makes, so a pair the preview

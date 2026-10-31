@@ -1451,7 +1451,7 @@ def _owned_skill_problems(
 
 def _check_owned_skills(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
     """(h) owned_skills, with the ``overseer.skill_writing`` misread
-    (S-NEXT-ft-skills-on, S-107 part 6): a PASS becomes a WARN carrying
+    (S-107 amended 2026-10-31, S-107 part 6): a PASS becomes a WARN carrying
     :func:`settings.skill_writing_misread`'s sentence, and a FAIL's detail
     carries it too, so ``--selftest`` names a value the overseer reads as
     ``off`` without a row of its own (the row count stays twelve).

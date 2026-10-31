@@ -2,7 +2,7 @@
 owns, in phase B (skill-writing plan §2 steps 4, 7 and 10, D4, D10, §4.1
 row SK3 tests (a)-(f); ``03-decisions.md`` S-107 parts 4-6, with
 ``overseer.skill_writing`` taking on|off, default on, ``auto`` read as on --
-S-NEXT-ft-skills-on removed the one-week drafts-only trial).
+S-107 amended 2026-10-31 removed the one-week drafts-only trial).
 
 Every run here is scripted: the model is the fake ``write_session``
 (phase A selects nothing; phase B writes the files each test names), and
@@ -200,7 +200,7 @@ def _build_b(rids, *, files=None, name=NAME):
 
 
 def test_skill_writing_defaults_to_on_reads_on_and_off_and_reads_auto_as_on(env):
-    """S-NEXT-ft-skills-on: two values, ``on`` the default; ``auto``, the
+    """S-107 amended 2026-10-31: two values, ``on`` the default; ``auto``, the
     old default, reads as on (it meant "write" after one week)."""
     assert skills.writing_mode(env.home) == ("on", None)
     for value, mode in (("on", "on"), ("off", "off"), ("auto", "on")):
@@ -221,7 +221,7 @@ def test_any_other_value_reads_as_off_with_a_note(env, raw):
 
 
 def test_writing_state_deploys_exactly_when_on_and_an_old_trial_file_changes_nothing(env):
-    """S-NEXT-ft-skills-on: ``deploy`` is ``mode == "on"``; the trial and
+    """S-107 amended 2026-10-31: ``deploy`` is ``mode == "on"``; the trial and
     its file are gone, and a ``writing-trial.yaml`` an older run left in a
     ledger turns nothing on or off."""
     state = skills.writing_state(env.home)
@@ -384,7 +384,7 @@ def test_b_a_secret_in_a_skill_folder_costs_its_pair_not_the_run(env, monkeypatc
 @pytest.mark.parametrize("value", ['"off"', "false", '"of"'])
 def test_c_writing_not_in_effect_commits_a_draft_and_deploys_nothing(env, monkeypatch, value):
     """Off, and the values that read as off (a YAML boolean, a typo), keep a
-    checked draft and deploy nothing (S-NEXT-ft-skills-on test 3)."""
+    checked draft and deploy nothing (S-107 amended 2026-10-31 test 3)."""
     _set_writing(env, value)
     _lesson(env, RID)
     _phases(monkeypatch, _build_b([RID]))
@@ -420,7 +420,7 @@ def test_c_a_dry_run_writes_no_draft(env, monkeypatch):
 
 @pytest.mark.parametrize("value", [None, '"auto"'])
 def test_the_first_completed_run_deploys_its_build_pair(env, monkeypatch, value):
-    """S-NEXT-ft-skills-on tests 1 and 2: with no ``skill_writing`` key, and
+    """S-107 amended 2026-10-31 tests 1 and 2: with no ``skill_writing`` key, and
     with the old default ``auto`` left in config.yaml, the very first run
     writes: the skill is in the skills root, its registry row is live, the
     lesson moved, and no drafts-only week and no trial file exist."""
@@ -442,7 +442,7 @@ def test_the_first_completed_run_deploys_its_build_pair(env, monkeypatch, value)
 
 
 def test_no_run_records_a_trial_file(env, monkeypatch):
-    """S-NEXT-ft-skills-on test 4: no run, on or off, writes
+    """S-107 amended 2026-10-31 test 4: no run, on or off, writes
     ``overseer/skills/writing-trial.yaml``. Positive control first: each
     run completed and its finalize commit published a run record."""
     for value in ('"off"', '"on"'):
@@ -458,7 +458,7 @@ def test_no_run_records_a_trial_file(env, monkeypatch):
 def test_a_run_record_from_before_the_change_with_trial_keys_reports_without_error():
     """A run record written while the trial existed may carry
     ``trial_ready`` / ``trial_why``; they are read without error and
-    ignored (S-NEXT-ft-skills-on)."""
+    ignored (S-107 amended 2026-10-31)."""
     manifest = {"week": "2026-10-25", "case_order": [], "cases": {}, "skills": {
         "state": {"mode": "auto", "deploy": False, "trial_done": False},
         "drafts": [], "trial_ready": True, "trial_why": None,
@@ -1261,7 +1261,7 @@ def test_doctor_settings_names_a_skill_writing_value_the_overseer_reads_as_off(e
     assert row.verdict == "INFO" and "= 'on'" in row.detail
 
 
-# =========================================== S-NEXT-ft-skills-on: the health views
+# =========================================== S-107 amended 2026-10-31: the health views
 
 
 @pytest.mark.parametrize("text", [

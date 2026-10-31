@@ -564,7 +564,7 @@ def test_a_dry_run_neither_keeps_nor_writes_a_week_file(home, monkeypatch):
 
 @pytest.mark.parametrize("value", [None, "off"])
 def test_a_run_whose_discovery_steps_validate_writes_no_trial_file(home, monkeypatch, value):
-    """S-NEXT-ft-skills-on (test 4): the run that used to count as
+    """S-107 amended 2026-10-31 (test 4): the run that used to count as
     ``auto``'s drafts-only week -- discovery steps validated, writing not in
     effect -- writes no ``overseer/skills/writing-trial.yaml``, on the
     default or under ``off``. Positive control first: the run completed,
@@ -694,7 +694,7 @@ def test_history_leaves_out_every_skill_proposal_disposition(tmp_path):
              "skill": "PROPOSED-NAME", "because": "STEWARD-MARK"},
         ],
     }), encoding="utf-8")
-    # an old trial file (S-NEXT-ft-skills-on removed the trial; a ledger may
+    # an old trial file (S-107 amended 2026-10-31 removed the trial; a ledger may
     # still hold one) is not a week file
     (path.parent / "writing-trial.yaml").write_text("week: x\n", encoding="utf-8")
     history = discovery.history(ledger)

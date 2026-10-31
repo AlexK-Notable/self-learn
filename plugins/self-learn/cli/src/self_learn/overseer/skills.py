@@ -47,7 +47,7 @@ boolean included) reads as ``off``. ``on`` deploys from the first run;
 ``off`` keeps every build or rewrite as a checked draft in the ledger
 (``overseer/skills/<week>/drafts/<name>/``), makes no retirement, and
 applies none of those pairs (S-107 part 6 as amended by
-S-NEXT-ft-skills-on: the one-week drafts-only trial is gone).
+S-107 amended 2026-10-31: the one-week drafts-only trial is gone).
 
 **Applying** (:func:`apply_write`, :func:`apply_retire`). The runner writes
 a skill BEFORE it records the pair's case and applies its sheet (a refused
@@ -137,7 +137,7 @@ SKILL_PROPOSAL_REASON = "skill-proposal"
 
 #: ``overseer/skills/`` under the ledger home: ``<week>/drafts/<name>/``
 #: (``02-schema.md`` §3, S-107). A ``writing-trial.yaml`` an older run left
-#: here is history: nothing reads it (S-NEXT-ft-skills-on).
+#: here is history: nothing reads it (S-107 amended 2026-10-31).
 LEDGER_DIR = "overseer/skills"
 
 #: What a step does, in the report's words.
@@ -191,7 +191,7 @@ def writing_mode(home: Path | str) -> tuple[str, str | None]:
 
     Read from ``config.yaml`` only: no environment variable and no override
     channel (S-107 part 6). A missing key is the default, ``on``, and so is
-    ``auto``, the old default (S-NEXT-ft-skills-on: it meant "write" after
+    ``auto``, the old default (S-107 amended 2026-10-31: it meant "write" after
     one week, so reading it as ``off`` would turn writing off for the person
     who never touched the switch). A ``config.yaml`` that cannot be read
     reads as ``off``. Any other value -- a typo, ``null``, a YAML boolean
@@ -1016,7 +1016,7 @@ def report_lines(manifest: dict[str, Any]) -> list[str]:
     built, changed or retired (from the run record's steps, so a resumed
     run reports what an earlier attempt did), every draft with its "would
     ..." line, and, when writing was off, one line saying so. A run record
-    written before S-NEXT-ft-skills-on may carry ``trial_ready`` and
+    written before S-107 amended 2026-10-31 may carry ``trial_ready`` and
     ``trial_why``; they are ignored."""
     info = manifest.get("skills")
     if not isinstance(info, dict):

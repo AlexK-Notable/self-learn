@@ -392,7 +392,7 @@ DOCTOR_ROWS = (
     "serve",
     "ui",
     "sessions",
-    # S-NEXT-ft-skills-on: present only when the overseer reads the
+    # S-107 amended 2026-10-31: present only when the overseer reads the
     # setting as off although nobody wrote off.
     "overseer.skill_writing",
 )
@@ -1349,7 +1349,7 @@ def preflight(home: Path | str) -> list[Row]:
     # sessions (2026-09-28, follow-up 6) — the kept transcript copies
     rows.append(_sessions_row(home))
 
-    # S-NEXT-ft-skills-on (S-107 part 6): an overseer.skill_writing the
+    # S-107 amended 2026-10-31 (S-107 part 6): an overseer.skill_writing the
     # overseer reads as off although nobody wrote off -- an unknown value
     # or an unreadable config.yaml -- is named here too, as in `doctor
     # settings` and `--selftest`'s owned_skills row.

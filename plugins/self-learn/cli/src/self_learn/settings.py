@@ -176,7 +176,7 @@ SettingValue = str | int | float | bool | None
 MINER_ENGINES: tuple[str, ...] = ("digest", "session")
 
 #: `overseer.skill_writing`'s two values (S-107 part 6 as amended by
-#: S-NEXT-ft-skills-on): ``on`` (the default: the overseer deploys every
+#: S-107 amended 2026-10-31): ``on`` (the default: the overseer deploys every
 #: skill it builds, changes, renames or retires from its first run) and
 #: ``off`` (the person's rollback: drafts only). The runner reads the
 #: setting through `overseer.skills.writing_mode`, never through
@@ -187,7 +187,7 @@ SKILL_WRITING_MODES: tuple[str, ...] = ("on", "off")
 #: ``auto``, the old default (a one-week drafts-only trial, then writing),
 #: still accepted and read as ``on``: it meant "write" after one week, so
 #: reading it as ``off`` would turn writing off for exactly the person who
-#: never touched the switch (S-NEXT-ft-skills-on).
+#: never touched the switch (S-107 amended 2026-10-31).
 SKILL_WRITING_LEGACY_ON = "auto"
 
 
@@ -1193,7 +1193,7 @@ REGISTRY: tuple[Setting, ...] = (
         description="removal actions above this count raise the overseer notification cue",
         validate=lambda v: max(cast(int, v), 0),
     ),
-    # SK3 (S-107 part 6, as amended by S-NEXT-ft-skills-on): whether the
+    # SK3 (S-107 part 6, as amended 2026-10-31): whether the
     # overseer deploys the skills it writes. Tier C, config.yaml only (no
     # env var, no override channel), like `miner.engine`. The runner
     # reads it with `overseer.skills.writing_mode`, which reads `auto`
@@ -2026,7 +2026,7 @@ def skill_writing_config_unreadable(home: Path | str) -> str | None:
     is the default). Says what is wrong, never the file's text.
 
     One copy for the runner (`overseer.skills.writing_mode`) and the three
-    health views (S-NEXT-ft-skills-on): :func:`config.settings_leaf`
+    health views (S-107 amended 2026-10-31): :func:`config.settings_leaf`
     answers ``None`` for such a file as it does for a missing key, and a
     broken file must read as ``off``, never as the default."""
     from ruamel.yaml import YAML
@@ -2052,7 +2052,7 @@ def skill_writing_misread(home: Path | str) -> str | None:
     """The WARN detail for an ``overseer.skill_writing`` the overseer
     reads as ``off`` although the person did not write ``off``, or ``None``
     (SK3 fix round 2, gate r2 MINOR; S-107 part 6 as amended by
-    S-NEXT-ft-skills-on). Two causes: a value in config.yaml that is not
+    S-107 amended 2026-10-31). Two causes: a value in config.yaml that is not
     ``on``, ``off`` or ``auto`` -- a YAML boolean, ``null``, an empty
     string, a typo -- and a config.yaml that cannot be read at all
     (:func:`skill_writing_config_unreadable`). :func:`resolve_setting` would

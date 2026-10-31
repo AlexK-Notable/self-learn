@@ -694,7 +694,7 @@ def test_the_row_writes_nothing(env, claude_dir):
     assert _tree_digest(env.ledger, env.host, claude_dir) == before
 
 
-# ------------------------------------- S-NEXT-ft-skills-on: skill_writing misread
+# ------------------------------------- S-107 amended 2026-10-31: skill_writing misread
 
 
 def _write_skill_writing(env, raw: str) -> None:
@@ -702,7 +702,7 @@ def _write_skill_writing(env, raw: str) -> None:
 
 
 def test_selftest_warns_owned_skills_for_a_skill_writing_value_read_as_off(env, claude_dir, capsys):
-    """S-NEXT-ft-skills-on test 5: with no owned skills, a value the overseer
+    """S-107 amended 2026-10-31 test 5: with no owned skills, a value the overseer
     reads as off (not on, off or auto) turns the row's PASS into a WARN
     naming the value; no new row. Positive control first: the same home
     with ``on`` is a plain PASS."""

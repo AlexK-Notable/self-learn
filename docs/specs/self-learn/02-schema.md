@@ -851,7 +851,7 @@ checked by `skill write --check` but not deployed, because
 unreadable `config.yaml`). A pair is kept as a draft only after the same
 batch preview and refusal checks a writing run makes, so a pair a writing
 run would drop is dropped, not drafted (`03-decisions.md` S-107 part 6).
-*(Amended S-NEXT-ft-skills-on.)* There is no `writing-trial.yaml` any more:
+*(Amended 2026-10-31.)* There is no `writing-trial.yaml` any more:
 the one-week drafts-only trial of `auto` is gone and nothing writes or reads
 that file. A ledger that holds one from an earlier run keeps it as history;
 a run record's `skills.trial_ready` / `skills.trial_why` from such a run are
@@ -3409,6 +3409,13 @@ premises:
   is matched with its quotes: `match: '"plain"'`).
   `version`: while the value (a `package` probe's version) satisfies the range
   in `match` (for example `>=0.56,<0.57`, compared in `vercmp` order).
+  A `file-match` / `git-file` probe's value is the token `present` or `absent`
+  (a `contains` / `line` probe) or a line-range hash (`lines`), never the
+  text, so a literal `match` could not be found in it: `absent` would hold
+  forever and `present` would always be contradicted. Validation therefore
+  accepts only `changed`, or `equals` with `match` `present` or `absent`, for
+  `contains` / `line`, and only `changed` for `lines`. The refusal names the
+  form (S-104 (amended 2026-10-31)).
 - **An explicit empty list** (`premises: []`) means "decided: this lesson
   rests on no fact about the machine" (a general practice). It is not offered
   for the backfill again. The reason lives in the case that wrote it.
@@ -3483,7 +3490,7 @@ lesson's own premises do not.
 | id | Holds while | Moves when | `unavailable` when |
 |---|---|---|---|
 | `@reach` | `reachability.reachability_rows` says `reachable` for the lesson | it says `unreachable` | it says `unmeasurable` |
-| `@writable` | a write to the lesson's target through its registration would pass S-80's check (`verbs._plain_write_check`, run read-only: the target is not a file git tracks in a `plain` host) | that check would refuse the write | the host or the target cannot be resolved |
+| `@writable` | a write to the lesson's target through the registration the write uses (the skills root for `new-skill` and `hook` whatever the lesson's scope, and for every skill-scope lesson; the project host or the user host otherwise) would pass S-80's check (`verbs._plain_write_check`, run read-only: the target is not a file git tracks in a `plain` host); a `new-skill` target is judged as the writer judges it: it holds when the skills root is `git`, and the tracked-file check is not asked (a plain root fails on the writer's own reason, which the route's G1 check on its tracked skill files would reach too) | that check would refuse the write; or, for `new-skill`, the skills root is registered `plain` ("self-learn writes the skills it owns only into a git-mode skills root") | the host or the target cannot be resolved |
 | `@intact` | the compile record's verdict for the lesson's region (`compiled.verdict_for`) is `clean` or `stale` | the verdict is `edited`, or `missing` (the region is gone) | the verdict is `unknown` or `fresh` (nothing to compare against) |
 
 - **They are judged by their current state, not against a stored baseline.**
