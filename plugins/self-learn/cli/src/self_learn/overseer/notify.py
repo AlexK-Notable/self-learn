@@ -69,6 +69,16 @@ def hold_kind(cause: str | None) -> str:
     return "silent"
 
 
+def with_hold_fix(text: str, cause: str | None) -> str:
+    """*text* followed by the person's one step for an environment-hold
+    *cause* (`failure_class.hold_fix`), when it has one: the login popup
+    says what to type (answer 10's low barrier; gate r1 NIT 2 of the
+    surfaces lane). The steward words its own through
+    `steward.hold_notice_text`; the overseer and `serve` use this."""
+    fix = failure_class.hold_fix(cause)
+    return f"{text} To fix it: {fix}." if fix else text
+
+
 def send(
     home: Path, cue: str, summary: str, ids: list[str], *, kind: str = "silent"
 ) -> None:

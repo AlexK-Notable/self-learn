@@ -87,8 +87,9 @@ Discuss option.
 
 **Decide what you can yourself.** Most records need no person: an
 outdated, already-covered or plainly-placed lesson is yours to decide —
-apply the verb with `--by agent --note "<why>"` and report it in the
-session summary. Put a record to the person only for a needs-you reason:
+apply the verb with `--note "<why>"` (recorded `By: agent`; on `route`,
+`reroute`, `replace`, `revise` and `reconsider` also `--by agent`, which the
+other verbs do not take) and report it in the session summary. Put a record to the person only for a needs-you reason:
 a login, sudo, spending money, a change to their system outside
 self-learn, writing into another repo's git history, a conflict between
 two things they said, or self-learn broken past its own repair. For such a
@@ -375,8 +376,9 @@ record's own `recurrences` list — match on the event `nonce` vs recorded
 `ref`s) is the steward's to re-decide (`steward-method.md` §10), so show it
 as information only: *"Routed <date>. Sighted <N> times since; the steward
 will re-decide it."* Never ask the person whether a stale rule should
-change. Where you can judge it yourself, decide it with `--by agent` and
-`--note "<why>"`; the resolutions map to verbs:
+change. Where you can judge it yourself, decide it with `--note "<why>"`
+(recorded `By: agent`; the `route` below also takes `--by agent`, the
+other verbs take no `--by`); the resolutions map to verbs:
 - **Revise** → capture the better wording (`self-learn teach
   --supersedes <id> …`) and route it — supersession does the retirement.
 - **Escalate** → same, routed toward the stronger surface (`--dest`).

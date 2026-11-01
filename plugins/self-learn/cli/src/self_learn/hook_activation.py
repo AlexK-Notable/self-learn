@@ -945,7 +945,10 @@ def activate(
             delegated_note = (
                 "activation is delegated but switched off "
                 "(overseer.hook_activation is false) — placed only; "
-                "registration is the human's one manual step: "
+                "registration is the one manual step left, and anyone may "
+                f"take it, an agent included: run `self-learn hook activate {record_id}` "
+                "(from an agent's shell add --note \"<why>\"), which registers and "
+                "verifies it. For reference, it does: "
                 + " ".join(manual_steps[1:])
             )
             steps.append(StepReceipt("delegated", delegated_note))

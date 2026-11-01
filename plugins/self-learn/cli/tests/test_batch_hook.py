@@ -224,6 +224,10 @@ class TestPlacedOnlyReceiptNamesTheManualSteps:
             assert "one manual step" in text, surface_name
             assert "two manual" not in text, surface_name
             assert "install.sh" not in text, surface_name
+            # Surfaces gate r1 NIT 3 (congruence M4): the step is a verb
+            # anyone may run, an agent included, never "the human's".
+            assert f"self-learn hook activate {RID}" in text, surface_name
+            assert "the human's" not in text, surface_name
         # the item detail carries the route's own preview/commit text too,
         # but not the route's "two manual steps remain" block
         assert "two manual steps remain" not in detail

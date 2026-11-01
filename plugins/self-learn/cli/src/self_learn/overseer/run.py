@@ -1357,8 +1357,11 @@ def _environment_hold(home: Path, run_id: str, phase: str, outcome: Any) -> str:
         try:
             notify.send(
                 home, "routine",
-                f"self-learn overseer: held — the model call cannot run here: {cause}. "
-                "Nothing was counted; it retries on its next attempt.",
+                notify.with_hold_fix(
+                    f"self-learn overseer: held — the model call cannot run here: {cause}. "
+                    "Nothing was counted; it retries on its next attempt.",
+                    cause,
+                ),
                 [run_id],
                 # Answer 1 (attention round): only a login cause pops up.
                 kind=notify.hold_kind(cause),

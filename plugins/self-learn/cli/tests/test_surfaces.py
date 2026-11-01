@@ -70,6 +70,10 @@ def test_the_serve_hold_pops_up_only_for_a_login(tmp_path, sent):
     serve._notify_due_hold(home, "steward", LOGIN_CAUSE)  # noqa: SLF001
     serve._notify_due_hold(home, "steward", OTHER_CAUSE)  # noqa: SLF001
     assert [row["kind"] for row in sent] == ["hold.credentials", "silent"]
+    # Gate r1 NIT 2: the one popup says what to type. Mutation: send the
+    # bare text without `notify.with_hold_fix`.
+    assert LOGIN_CAUSE in sent[0]["summary"]
+    assert "To fix it: run `claude`, then `/login`." in sent[0]["summary"]
 
 
 def test_the_overseer_hold_pops_up_only_for_a_login(tmp_path, sent, monkeypatch):
@@ -80,6 +84,9 @@ def test_the_overseer_hold_pops_up_only_for_a_login(tmp_path, sent, monkeypatch)
     overseer_run._environment_hold(home, "run-1", "phase-a", login)  # noqa: SLF001
     overseer_run._environment_hold(home, "run-2", "phase-a", other)  # noqa: SLF001
     assert [row["kind"] for row in sent] == ["hold.credentials", "silent"]
+    # Gate r1 NIT 2. Mutation: send the bare text without the step.
+    assert "cannot run here" in sent[0]["summary"]
+    assert "To fix it: run `claude`, then `/login`." in sent[0]["summary"]
 
 
 # ====================================================== C7: agent as recorder
@@ -299,6 +306,25 @@ def test_overseer_command_points_to_the_inbox():
     assert "have the person run" not in text
     assert "the person run the same `respond`" not in text
     assert "--recorded-by human" not in text
+    # Gate r1 MAJOR 1: a needs-you ask waits for the user, and one with a
+    # plan is decided only by an option. Mutation: drop the needs-you passage.
+    assert "needs you; meanwhile" in text
+    assert "self-learn attention answer <att-id> --option" in text
+    assert "decided **only by choosing one of its options**" in text
+    assert "Nothing in either place is waiting on them" not in text
+
+
+def test_review_never_hands_by_to_a_verb_that_refuses_it():
+    """Gate r1 MINOR 3: `reject`, `retire`, `supersede`, `dismiss-suspect`,
+    `confirm-recurrence` and the rest take no `--by` (rc 64), so review.md
+    tells the agent to decide with `--note` and names the verbs that take
+    `--by agent`. Mutation: restore "apply the verb with `--by agent --note"."""
+    text = _flat(PLUGIN / "commands" / "review.md")
+    # positive control first: the corrected sentence is there
+    assert "apply the verb with `--note \"<why>\"` (recorded `By: agent`; on `route`," in text
+    assert "the other verbs take no `--by`" in text
+    assert "apply the verb with `--by agent --note" not in text
+    assert "decide it with `--by agent` and" not in text
 
 
 def test_documented_examples_show_agent_for_the_agents_own_acts():

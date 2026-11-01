@@ -958,10 +958,14 @@ reader too, but do not assume they are first: the placement cap below
 (Q3 — `03-decisions.md` SA-3) binds a human review session alone and never
 bounds the steward's own reading of a night's queue, which has no cap
 (no per-run limit on records decided). The overseer's conversation with
-the user follows the same discipline as the cap below: each new question
-states the default the overseer already applied, so it does not wait on
-the user, never a queue to clear (questions from before S-117 carry no
-default; they sit in the inbox like every other item).
+the user follows the same discipline as the cap below, never a queue to
+clear: a stead question states the default the overseer already applied,
+so it does not wait on the user; a needs-you question (a change to their
+system, another repo's history, money, sudo, a conflict between their
+statements) does wait, states what holds meanwhile, and, when it carries
+a plan, is decided only by choosing one of its options (questions from
+before S-117 carry no default; they sit in the inbox like every other
+item).
 
 The machine fields above (`destination`, `rationale`, `already_canon`)
 justify **filing**. They do not support a **decision**. Whoever reads a

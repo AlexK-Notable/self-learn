@@ -6,13 +6,26 @@ argument-hint: (no arguments — always opens the latest report)
 Open the **overseer's** latest weekly report and talk through the
 questions it puts to the user. Every question is an **ask**: a decision
 or fact only the user has (its id is `q-<slug>`, and it comes with its own
-text, a line saying what the answer changes, and the **default** the
-overseer already applied). The overseer never waits on the user: it acted
-on that default in the run that asked, so an ask is not waiting for an
-answer, and the user's answer, whenever it comes, can overturn what the
-default decided. An ask that would change the user's system outside
-self-learn, or register a host, always has the default of changing
-nothing. The overseer no longer asks the user to confirm its **readings**
+text and a line saying what the answer changes). Asks come in two kinds,
+and `overseer open` labels each one:
+
+- **Decided in their stead** (`done in your stead without waiting (your
+  answer can change it)`): the overseer acted on its **default** in the run
+  that asked, so this ask is not waiting for an answer; the user's answer,
+  whenever it comes, can overturn what the default decided.
+- **Needs you** (`needs you; meanwhile`): only the user can settle it — a
+  change to their system outside self-learn, writing into another repo's
+  history (registering a host), spending money, sudo, or a conflict between
+  two things they said. It **does wait** for them: it stays open until they
+  answer or the overseer's weekly check finds it no longer matters. The
+  line after the label is what holds meanwhile (nothing on their system
+  changed, nothing spent, nothing registered; for a conflict, the newer
+  statement holds). Such an ask usually offers **options**, and one that
+  carries a **plan** (the change or spend it would carry out) is decided
+  only by choosing one of its options (§ "Answering an ask with options"
+  below).
+
+The overseer no longer asks the user to confirm its **readings**
 of them; a reading question can appear only from an index written before
 that change (its id is a user-model proposition, `um-<4 hex>@r<revision>`).
 You are a
@@ -24,13 +37,16 @@ user says back into the statement store.
 **The inbox is where these questions live.** Every ask is also an item in
 self-learn's inbox, the page the tray icon opens
 (`self-learn-ui-open --page /inbox`): the question in plain words, why it
-needs the user, what the default already did, the evidence, one-click
-answers, a reply box, and a read-only agent to ask about it. In a
-terminal, `self-learn attention` lists the same items and `self-learn
-attention packet <item> --json` prints one in full. This command is the
-in-conversation way to the same questions, for when the user brings the
-overseer up in a session; point them to the inbox when they would rather
-read it there. Nothing in either place is waiting on them.
+needs the user, what holds meanwhile or what the default already did, the
+evidence, one-click answers for its options, a reply box, and a read-only
+agent to ask about it. In a terminal, `self-learn attention` lists the
+same items (`--json` gives each item's `att-…` id, with the ask's `q-` id
+as its `subject`) and `self-learn attention packet <item> --json` prints
+one in full. This command is the in-conversation way to the same
+questions, for when the user brings the overseer up in a session; point
+them to the inbox when they would rather read it there. A stead ask is
+not waiting on them in either place; a needs-you ask is, until they
+answer it.
 
 This is not a review session. Nothing here approves a lesson, a route, or
 a hook — those are decisions the overseer (or, since S-72, the steward:
@@ -88,8 +104,9 @@ you` section with EVERY indexed question — there is no count limit — and,
 when the committed machine index contains a proposition the prose omitted,
 a fallback line naming that proposition and its cases. An ask is printed
 from the index as `- <q-id>: <text>` followed by `  why: <why>` and,
-for an ask with a default, `  done in your stead without waiting (your
-answer can change it): <default>`.
+for a stead ask, `  done in your stead without waiting (your answer can
+change it): <default>`, or, for a needs-you ask, `  needs you; meanwhile:
+<what holds until they answer>`.
 Relay the output to the user verbatim, and nothing else from the report
 unless they ask. That display is what this step records as a
 **presentation** — its `covering` value says whether the decision, its
@@ -120,14 +137,49 @@ user asks otherwise), one at a time, with no fixed number: the user may
 stop whenever they like, and whatever was not discussed stays shown and
 unanswered — nothing more.
 
-**For an ask**, relay its text as the question, say in one sentence what
-the answer changes (its `why`), say what the overseer already did in their
-stead (its default), and name the cases it came from. Make it plain that
-nothing is waiting on them: the default stands unless they answer
-otherwise. Do not restate it as a reading of the user or ask for approval
-of anything; it is a decision or fact only the user has. If they answer,
-record it with step 4's command using the ask's `q-` id; the steward then
-re-decides the lessons the default decided, against their words.
+**For a stead ask** (`done in your stead`), relay its text as the
+question, say in one sentence what the answer changes (its `why`), say
+what the overseer already did in their stead (its default), and name the
+cases it came from. Make it plain that this one is not waiting on them:
+the default stands unless they answer otherwise. Do not restate it as a
+reading of the user or ask for approval of anything; it is a decision or
+fact only the user has. If they answer, record it with step 4's command
+using the ask's `q-` id; the steward then re-decides the lessons the
+default decided, against their words.
+
+**For a needs-you ask** (`needs you; meanwhile`), relay its text and its
+`why`, and say plainly that it **is** waiting for them: nothing has been
+done, and the "meanwhile" line is what holds until they decide. Then
+offer its options: `self-learn attention --json` lists them on the item
+whose `subject` is the ask's `q-` id (with the overseer's recommended
+one marked), and `self-learn attention packet <item> --json` adds the
+recommendation's reasoning, the plan and the evidence. The inbox shows
+all of this on one page, with one-click answers.
+
+**Answering an ask with options.** An ask that carries a plan is decided
+**only by choosing one of its options**; words alone are recorded and
+leave it open. So when the user answers such an ask:
+
+- In the inbox: one click on the option (the easiest route; offer it).
+- From this session: put their words in a file and run
+  `self-learn attention answer <att-id> --option <opt-id> --ref
+  transcript:<session>#L<n> --text-file <file>` with `--note "<why>"`
+  (the ref is the line they typed; the words stay theirs, recorded
+  `agent` because you relayed them). An option whose effect is `approve`
+  or `register` also needs their **typed yes**, proved from this
+  session's transcript: ask in one plain chat message (not a clickable
+  choice) that names the item's `att-…` id and the option's label, for
+  example "Approve «Yes, add the binding» on att-3f9a1c0b2d4e? Type yes to
+  do it.", and answer straight after they type a plain yes. Without that
+  proof the command records nothing (exit 64) and says what was missing;
+  the inbox click is then the route.
+- If they answered in words only and you record them with `overseer
+  respond`, the words are kept and the overseer reads them, but an ask
+  with a plan **stays open**: tell them so, and point them to the inbox
+  to choose the option.
+
+An ask without a plan (including a conflict ask) is answered by their
+words alone, recorded with step 4's command.
 
 **When the user objects to a skill** (unprompted: nothing here asks), do
 what they said with `self-learn skill veto <name> [--rename-to <new>]`
@@ -137,8 +189,8 @@ overseer run, or at once with `--rename-to`), `self-learn skill rename
 it, this records a request the next overseer run carries out). From your
 shell each runs under the user's standing grant with `--note "<why>"`.
 
-An ask whose printed block ends with "a plain yes registers: …" asks the
-user to register a repository as a canon host; one ending "a plain yes does:
+An ask whose printed block has a line "a plain yes registers: …" asks the
+user to register a repository as a canon host; one with "a plain yes does:
 switch … to … mode" asks to switch a registered host's mode. Either happens
 in `overseer respond` itself, for a bare yes the person typed. From your (an
 agent's) shell the command finds your own session from `$CLAUDE_CODE_SESSION_ID`

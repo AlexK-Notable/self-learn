@@ -136,8 +136,10 @@ rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
   puts a record to the person only for a needs-you reason. Routing
   doctrine: `references/routing-doctrine.md`.
 - `/self-learn:overseer` — open the overseer's latest report and its
-  questions, each with the default it already applied, and record the
-  user's replies. Never a review session: nothing here approves a lesson.
+  questions, and record the user's replies. A stead ask carries the
+  default it already applied and waits on nobody; a `needs you; meanwhile`
+  ask waits for the user, and one with a plan is decided only by choosing
+  one of its options (an inbox click, or `self-learn attention answer`). Never a review session: nothing here approves a lesson.
   The inbox (`self-learn-ui-open --page /inbox`, or `self-learn attention`
   in a terminal) shows the same items with everything needed to decide them.
 
