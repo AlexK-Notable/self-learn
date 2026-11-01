@@ -139,16 +139,20 @@ COMMAND_VIEW_MAX_BYTES = 262144
 #:   ``cat > FILE <<'D'``, ``cat >> FILE <<'D'``, ``tee FILE <<'D'`` or
 #:   ``tee -a FILE <<'D'`` (a quoted delimiter; FILE one plain word or one
 #:   quoted string; nothing after the delimiter word on that line), whose
-#:   terminator line is found, and whose FILE's base name does not appear
-#:   again later in the command (a file written, then run).
+#:   terminator line is found, and whose FILE's base name appears nowhere
+#:   else in the command, before or after (a file written, then run, or
+#:   read by a reader started earlier); the rest of the command holds no
+#:   glob (``*``, ``?``, ``[``) and no ``$``; and FILE is not one that runs
+#:   without being named (a git hook, a ``hooks/`` or ``profile.d/``
+#:   directory, a shell startup file such as ``.bashrc`` or ``.profile``).
 #:
 #: To find those shapes the scan tokenizes a small, exact subset of the
 #: shell: words, single quotes, double quotes holding no ``$(``, ``${`` or
 #: backtick, backslash escapes, comments, ``; & && | || ( )`` and plain
 #: redirections. Anything else anywhere in the command -- a substitution,
 #: backticks, ``$'...'``, arithmetic, any other heredoc, a here-string, a
-#: process substitution, a ``git``/``gh`` redefined in the command (a
-#: function, ``alias git=``, ``function gh``), an unterminated
+#: process substitution, a ``git``, ``gh``, ``cat`` or ``tee`` redefined
+#: in the command (a function, ``alias git=``, ``function gh``), an unterminated
 #: quote -- ends the scan, and the view is the RAW
 #: command: the behaviour before S-133. No single quote appears in the
 #: program, so the generator embeds it as one bash single-quoted word.
@@ -254,7 +258,7 @@ function lineinfo(    k, line) {
     line = substr(S, LS, LE - LS)
     A2AT = match(line, A2RE) ? LS + RSTART - 1 : 0
 }
-function a2(    t, d, base, j, k, line) {
+function a2(    t, d, base, j, k, line, rest) {
     if (I > LE) lineinfo()
     if (I != A2AT) return 0
     t = substr(S, I, LE - I)
@@ -271,7 +275,10 @@ function a2(    t, d, base, j, k, line) {
         j = k + 1
     }
     if (j > N) return 0
-    if (index(substr(S, k), base) > 0) return 0
+    rest = substr(S, 1, I - 1) substr(S, k)
+    if (index(rest, base) > 0 || rest ~ /[*?$]/ || index(rest, "[") > 0) return 0
+    if (t ~ /(^|\/)(\.git|\.husky|hooks|profile\.d|\.config\/(fish|bash|zsh))\//) return 0
+    if (base ~ /^\.[A-Za-z0-9_.-]*(rc|profile|env|login|logout)$/ || base ~ /\.fish$/) return 0
     OUT = OUT substr(S, I, LE - I) "\n" line
     I = k
     return 1
@@ -360,7 +367,7 @@ BEGIN {
     FILEW = "([^ \t\n\047\"\\\\$`<>|;&()#]+|\047[^\047\n]*\047|\"[^\"$`\\\\\n]*\")"
     DELIMQ = "(\047[A-Za-z0-9_]+\047|\"[A-Za-z0-9_]+\"|\\\\[A-Za-z0-9_]+)"
     A2CMD = "^(cat[ \t]+>>?[ \t]*|tee([ \t]+-a)?[ \t]+)"
-    REDEF = "(^|[^A-Za-z0-9_.-])(git|gh)[ \t]*[(]|(git|gh)=|function[ \t]+(git|gh)([^A-Za-z0-9_.-]|$)"
+    REDEF = "(^|[^A-Za-z0-9_.-])(git|gh|cat|tee)[ \t]*[(]|(git|gh|cat|tee)=|function[ \t]+(git|gh|cat|tee)([^A-Za-z0-9_.-]|$)"
     A2RE = "(cat[ \t]+>>?[ \t]*|tee([ \t]+-a)?[ \t]+)" FILEW "[ \t]+<<[ \t]*" DELIMQ "[ \t]*$"
 }
 { BUF = (NR == 1) ? $0 : BUF RS $0 }

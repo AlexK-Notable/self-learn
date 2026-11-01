@@ -439,6 +439,23 @@ CORPUS: dict[str, tuple[str, str]] = {
     'A2 near-miss: two heredocs on the A2 line': ("cat <<'X' | sh; cat > f.md <<'E'\npkill -f foo\nX\ny\nE", 'warn'),
     'A1 near-miss: a second git command after a commit': ("git commit -m 'x'; git log -m 'pkill -f foo'", 'warn'),
     'A2 near-miss: a continued delimiter line into a shell': ("tee f.md <<'E' \\\n| sh\npkill -f foo\nE", 'warn'),
+    # --- gate r4 (F1: an A2 file run without being named after it;
+    # F2: a redefined cat or tee; F3: two mutation survivors)
+    'A2 near-miss: a reader started earlier in the pipeline': ("bash f1 | tee -a f1 <<\\E\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: a reader started earlier by path': ("(tail -f /tmp/q | bash) & cat >> /tmp/q <<'E'\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: a git hook, then a commit': ("cat > .git/hooks/post-commit <<'E'\npkill -f foo\nE\ngit commit -m 'x'", 'warn'),
+    'A2 near-miss: a husky hook': ("cat > .husky/pre-commit <<'E'\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: run by a glob': ("cat > /tmp/x.sh <<'E'\npkill -f foo\nE\nbash /tmp/*.sh", 'warn'),
+    'A2 near-miss: run by a bracket glob': ("cat > /tmp/x.sh <<'E'\npkill -f foo\nE\nbash /tmp/[x].sh", 'warn'),
+    'A2 near-miss: a shell startup file': ("cat >> ~/.bashrc <<'E'\npkill -f foo\nE\nbash -i -c true", 'warn'),
+    'A2 near-miss: a profile.d file': ("tee /etc/profile.d/x.sh <<'E'\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: run through a variable': ("f=/tmp/x; cat > /tmp/x.sh <<'E'\npkill -f foo\nE\nbash $f.sh", 'warn'),
+    'A2 near-miss: cat redefined': ("cat() { bash; }; cat > f <<'E'\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: tee redefined on the line before': ("tee() { sh; }\ntee f <<'E'\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: cat aliased': ("alias cat=bash\ncat > f <<'E'\npkill -f foo\nE", 'warn'),
+    'idiom near-miss: cat redefined': ('cat() { bash; }; git commit -m "$(cat <<\'E\'\npkill -f foo\nE\n)"', 'warn'),
+    'A1 near-miss: commit as another program\'s argument': ("echo commit -m 'pkill -f foo'", 'warn'),
+    'A1: a mid-word # opens no comment': ("echo a#'x\n' && git commit -m 'pkill -f foo'", 'silent'),
 }
 
 
