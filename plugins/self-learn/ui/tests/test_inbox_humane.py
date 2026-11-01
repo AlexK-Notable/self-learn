@@ -348,8 +348,8 @@ def test_why_opens_the_case_told_once(tmp_path, monkeypatch):
     outside = body[:body.index("The case file as written")]
     assert outside.count(CASE_BECAUSE) == 1 and "- verb:" not in outside
     assert shown == [("case-0000beef", False)]
-    bad = client.get("/inbox/case/..%2Fetc")
-    assert bad.status_code == 404 and len(shown) == 1
+    bad = client.get("/inbox/case/lrn-0000beef")  # reaches the route; not a case id
+    assert bad.status_code == 404 and len(shown) == 1 and "no such case" in bad.text
     tampered = client.get("/inbox/case/case-0000dead")
     assert tampered.status_code == 404 and "failed its freeze-hash check" in tampered.text
 
