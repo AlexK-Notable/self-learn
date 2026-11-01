@@ -6,13 +6,18 @@
   run_message, run_item, run_command, run_lead (and run_login / run_fix
   for those two clicks).
 
-  Run it now replaces this block (closest .ws-run), so it works wherever
+  Walk fixes, item 7: its retry button says what it does ("Try again:
+  open a new terminal"); the verb's sentence has its times humanized.
+  Gate r1 F4: when this approval's terminal is still open (already_open),
+  the verb's plain sentence says so, and no retry is offered.
+
+  The retry replaces this block (closest .ws-run), so it works wherever
   the block sits: in #ws-run-result, or under an answer that moved the
   item on (gate r1 finding 3: run_item is then the approved successor).
 #}
 <div class="ws-run" data-run-exit="{{ run_exit }}">
   {% if run_exit == 0 %}
-  <p class="ws-run-ok"{% if run_fix %} data-item-resolved{% endif %}>{{ run_message }}</p>
+  <p class="ws-run-ok"{% if run_fix %} data-item-resolved{% endif %}>{{ run_message | plain_times }}</p>
   {% if run_login %}<p>Type <code>/login</code> in that terminal; then press Check now.</p>{% endif %}
   {% elif run_exit == 5 %}
   <p role="alert">No terminal was found to open, so nothing was started.{% if run_command %} Run this in a terminal of your own:{% endif %}</p>
@@ -21,12 +26,14 @@
     <button type="button" class="btn btn-quiet" data-copy="#ws-run-cmd">Copy</button></div>
   {% endif %}
   {% if run_lead %}<p class="ws-meta">{{ run_lead }}</p>{% endif %}
+  {% elif run_already_open %}
+  <p role="status" data-already-open>{{ run_message }}</p>
   {% elif run_exit == 4 %}
-  <p role="alert">Not started: {{ run_message }}</p>
+  <p role="alert">Not started: {{ run_message | plain_times }}</p>
   {% else %}
-  <p class="error-strip" role="alert">{{ run_message }}</p>
+  <p class="error-strip" role="alert">{{ run_message | plain_times }}</p>
   {% endif %}
-  {% if run_exit != 0 and not run_fix and not run_login and run_item and run_item.class == "approved" %}
-  <button type="button" class="btn btn-primary" hx-post="/inbox/{{ run_item.id }}/run" hx-target="closest .ws-run" hx-swap="outerHTML" data-run-now>Run it now</button>
+  {% if run_exit != 0 and not run_already_open and not run_fix and not run_login and run_item and run_item.class == "approved" %}
+  <button type="button" class="btn btn-primary" hx-post="/inbox/{{ run_item.id }}/run" hx-target="closest .ws-run" hx-swap="outerHTML" data-run-now>Try again: open a new terminal</button>
   {% endif %}
 </div>

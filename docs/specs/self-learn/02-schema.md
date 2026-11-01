@@ -1164,13 +1164,22 @@ questions:
   default, and as waiting when it has neither, as before. *(Fix round 2.)* The
   runner reads a new `questions.yaml` the same way: an ask the model wrote
   with `system: true` or `register` and no `needs` is validated as `needs:
-  user` with that `because` (and, as in S-117, writes no default of its own),
+  user` with that `because` (and, as in S-117, writes no default of its own;
+  *follow-ups 2:* a `because` the model wrote is kept when it is one of the
+  closed list, and only a missing or invalid one is inferred, a `register`
+  ask's being `foreign-history` always),
   so one without options, a recommendation or, for a system change, a plan is
   dropped and named, never indexed as a needs-you page with nothing to click
   (answer 10). An ask with neither and a default stays S-117's stead ask.
   A question whose `text` names ledger ids (`lrn-`, `case-`, `stmt-`, `um-`)
-  is kept and named in "Refused / could not do": its ids belong in `cases`
-  and `statements`, which the inbox shows beside it.
+  is kept and named, on the `needs` path and S-117's stead path alike: its
+  ids belong in `cases` and `statements`, which the inbox shows beside it.
+  *(Follow-ups 2.)* The note reads "question <id> (kept, and asked as
+  written): …" and is published under "Questions for you", after the
+  model's own lines (the manifest's `question_notes`), never under
+  "Refused / could not do", since nothing was refused; and only for an
+  ask the index really carries: none on a run that did not complete, and
+  none for an ask dropped at publish.
 - **Options, recommendation, plan.** `options` are 2-4 `{id, label, effect:
   approve|decline|other|register, confirm?, note?: required}`, ids unique; a
   `register` effect only on an ask with `register`; `recommend.option` names
@@ -4762,8 +4771,23 @@ so an ask whose case was edited by hand still shows the case and its
 lesson. On any page but the case's own `conflict.case-tampered` item the
 fact says the text may not be what was decided and names that item, which
 asks about the edit. The case's own page also points to `ledger_history`
-for the case file: the commits that touched it, subjects and trailers only;
-the packet shows no decided text and no diff. The plan's texts (its
+for the case file: the commits that touched it, subjects and trailers only.
+*(Follow-ups 2.)* That page's packet also carries `case_edit`: `{case,
+decided: {text, commit, committed_at, truncated} | null, now, changes:
+[{was, now}], note}`, sections 1-4 as decided beside the file as it is
+now and the passages that differ (line by line, at most 12, each at most
+1,200 characters), so the person sees the edit before choosing keep or
+restore. The decided text is `cases.decided_text(home, case_id)`: the
+newest commit whose own frozen part matched its own `decided_sha256`,
+found by the same lookup `case refreeze --restore` uses
+(`cases._decided_version`), read-only (`git log` and `git show` of the
+one file, no lock), every secret-scan hit redacted, cut at 20,000
+characters. `attention_packet.build` itself still runs no git: the
+verbs that build the packet (`attention packet`, `ask`) hand it
+`cases.decided_text` as `decided_reader`; without one, or when no commit
+matches or git fails, `decided` is null and `note` says why. Every other
+kind's `case_edit` is null. The ask agent's `case` tool shows the same
+decided text for a case that fails its freeze check. The plan's texts (its
 summary and conditions, each check's and step's `say` and `command`, each
 file's `content`) are clipped and secret-scanned like every excerpt, and
 the size fit trims them too. Bounds: the whole JSON at most 64 KiB; each text at most 4,000
@@ -4779,6 +4803,25 @@ packet and the ask agent's read fence. A `look_at` path is kept only when it
 is absolute and exists, neither it nor its resolved target is under a deny
 path or has a deny name, it is not `/` or `$HOME`, and it is at least two
 components deep (below `$HOME` when under it); at most five are kept.
+*(S-130, item 6.)* Evidence entries carry what a person decides
+by: a `lesson` entry is titled by its trigger (or fact), never the first
+heading's name, and carries `trigger`, `instruction`, `fact`,
+`sightings` and `seen` (its frontmatter `evidence`, newest first, at most
+ten: `{at, session, origin, quote}`); a `hook` entry carries the lesson's
+`trigger` and `instruction` and comes first, the lesson itself not
+repeated after it; on an ask whose `because` is `conflict`, its two
+`statement` entries carry `side: newer|older` by their `at`, the same
+field and ordering `attention answer` uses for the losing side (on equal
+or unknown times the page marks neither, where the verb counts the
+second-named one as the newer: the page never claims an order it does
+not know; gate r1 F7); a `file` entry carries `is_dir` and `display` (the whole
+path, the home folder written `~`); a statement whose context cannot be
+read says why in words (`context_note`: "not found on this machine: the
+conversation file it came from was moved or deleted…"), never an
+exception's class name. An undone decided item (its transcript's last
+undo/redo row is an undo) has `meanwhile` and `decided.changes_now` from
+`attention.UNDONE_NOW`; a hook or always-loaded item is titled by its
+lesson's trigger, its id only when the lesson cannot be read.
 
 **The workspace transcript** (`<ledger>/attention/workspace/<item-id>.jsonl`;
 the ref kind `workspace:<item-id>#T<n>`, rule 11 of §3a.6): row 0 a header,
@@ -4845,12 +4888,35 @@ no sealed draft row of this item carries is refused (64). A draft carrying
 an option is sent as that option. Free text is secret-scanned before
 anything is written (64).
 
+*(S-130, item 2.)* The origin of a reply from the page or a
+person's shell is decided by ONE function, `attention_answers._origin_of`
+(the draft id, then the 40-character match, then typed), and its words by
+ONE table, `recorded_as_words`. `attention_answers.preview(home, id, *,
+text, draft_id, option)` runs both without writing anything and returns
+`{origin, recorded_as, matched, problem}` (`matched`: the shared run of
+the agent's text, grown to its whole length; `problem`: why it would be
+refused, a secret or an unknown draft); the page shows it before sending,
+so it can never say more than the record does (C6). *(Item 3.)*
+`--words-from T` sends an option with the words of the person's own
+earlier reply `T<n>` on this item (`role: user`, `origin: typed`, `kind:
+reply`, no option; anything else 64), with no `--text-file` or `--draft`
+and never from an agent's shell (64): the workspace row is `origin:
+clicked` with the words and `words_from`, the choice's `text` is the
+words and its `statement` the one that already records them, and no new
+statement is written; `recorded_as` is "as your choice of the offered
+option, with the words you sent before".
+
 **What decides.** Only an option whose `effect` is `approve` approves a
 plan; words alone on an item with a plan are recorded (a statement,
 `answers.kind: question`), the item stays open and counted, and nothing is
 launched. An option marked `note: required` refuses to send without words
 (3); an option marked `confirm`, and every `register` option, needs
-`--confirm` (3). An item without a plan (a stead ask, a sudo ask, a
+`--confirm` (3). *(S-130, gate r2 N1.)* So does an `approve`
+option that comes with `--draft`, whether named by `--option` or taken
+from the draft: without `--confirm` it is refused (3, nothing recorded,
+no terminal opened) with the words of `DRAFT_NEEDS_CONFIRM` ("comes with
+the agent's draft and approves this change: confirm it first …"), so a
+page's confirmation never depends on what the browser remembered. An item without a plan (a stead ask, a sudo ask, a
 conflict, a registration) is decided by an option or by words; an agent
 draft sent with no option, or a reply that pastes the agent's text, is a
 choice that decides nothing on an item with a plan, exactly like words
@@ -4935,7 +5001,41 @@ live claim's session (3 otherwise, naming the claimant), appends an
 outcome (`by` the process actor) and removes the claim; `--failed` returns
 the item to the person, the reason first among its evidence, and the
 approval no longer stands. `run` on work already done is 3 (not
-approved), whichever of the three ids names it. **While the ledger is
+approved), whichever of the three ids names it. **Changing your mind by
+a click** *(follow-ups 2)*: an `approved.pending` item's `options` are
+the ask's own options other than an approval (decline, other), each
+answered by `attention answer` like the first click
+(`attention.change_options`; an approval is not repeated, "Run it now"
+is the relaunch). While a session holds a live claim they carry
+`disabled` with the reason in words, and `answer` still refuses (3), since
+a different answer cannot reach a session already carrying the work out.
+`attention claim` records, beside the session, the systemd unit the
+claiming process runs in (`attention_answers.caller_unit`: the
+`self-learn-run-<12 hex>.service` segment of `/proc/self/cgroup`, else
+null), so a claim says whether it came from a terminal the page
+launched. Only when the claim names exactly this item's own run unit
+(`attention.run_unit(id)`, `self-learn-run-` + the item id's 12 hex), the
+run record names that same unit, the launch belongs to the current
+approval (at or after its approval) and is not stopped, and the claim
+came at or after the launch (`attention.stoppable`, gate r1 F1, F2), does
+the item also offer `opt-stop` "Stop it" (`via: stop`, `confirm`):
+`attention stop <id>` runs `systemctl --user is-active` on that unit and,
+when it still runs, `systemctl --user stop` and checks again (3 when it
+will not stop, the claim kept); then it writes `stopped_at` into the run
+record (the item reads `approved`, not running), removes the claim and
+seals a workspace row `kind: stop`, `origin: clicked`. It undoes nothing
+the session did and the approval stands until the person answers
+otherwise. Any other claim (an agent in the person's own terminal, a
+claim with no unit, an older approval's launch, another item's unit) is
+a session self-learn did not open: no Stop it, the options' reason says
+"it is running in a session self-learn did not open; tell it in its own
+terminal", `stop` exits 3 without asking systemd about any unit, and the
+claim is never removed; with no live claim it exits 3 (a different
+answer is taken already). Refused from an agent's shell (64). **`attention run --json`** prints `RunResult.to_json()`, `{exit,
+message, command, brief}`, on stdout whatever the exit; `command` is the
+command alone a person runs when no terminal was found (exit 5: `claude
+'<brief line>'`, or `claude` for a login), else null, and the answer
+verb's `run` object carries the same keys. **While the ledger is
 STOPPED** nothing can be
 committed and every answer is refused (10), except the person's *Have an
 agent look at it* on the `broken.stopped` item that says so: its choice is
@@ -4992,8 +5092,8 @@ are not listed (the inbox records a typed reply as a statement itself).
 
 **Verbs** (exit codes as contract §4.6): `attention answer` (0 recorded; 2
 unknown or closed; 3 refused downstream; 10 held; 64 usage), `attention
-undo` (0; 2; 3; 10), `attention run [--login]` (0; 2; 3; 4; 5; 64),
-`attention fix` (0; 2; 3; 64), `attention claim` (0; 2; 3), `attention done`
+undo` (0; 2; 3; 10), `attention run [--login] [--json]` (0; 2; 3; 4; 5; 64),
+`attention fix` (0; 2; 3; 64), `attention stop` (0; 2; 3; 64), `attention claim` (0; 2; 3), `attention done`
 (0; 2; 3; 10; 64), `case refreeze` (§3a.2).
 
 ## 4. Managed sections (the compile targets' contract)

@@ -1113,16 +1113,33 @@ def test_a_re_ask_dropped_at_publish_is_not_reported_as_needing_the_user(tmp_pat
 def test_a_question_naming_ledger_ids_is_kept_and_named(tmp_path):
     """Gate r2 NIT 5 (§2.1 item 2: "one sentence, with no ids in it").
     Mutation checked: `_ids_in_text_note` answering nothing fails this
-    test."""
+    test. Follow-ups 2 (gate r3 NITs 1 and 2): the note is on a KEPT ask, so
+    with `notes_out` it goes there (the report's "Questions for you"), never
+    among the drops ("Refused / could not do"); and S-117's stead path (a
+    legacy ask with a default and no `needs`) is named too. Mutations
+    checked: the stead path's note line replaced by `pass` (gate r3 M1)
+    and the notes sent to `dropped` whatever `notes_out` is both fail it."""
     case_id = "case-12345678"
+    stead = {
+        "id": "q-stead-ids", "kind": "ask", "cases": [case_id],
+        "text": "Should stmt-0a1b2c3d be read as standing? Yes keeps it; no drops it.",
+        "why": "decides how the statement is read", "default": DEFAULT,
+    }
+    notes: list[str] = []
     index, dropped = _validate(tmp_path, [
         _user_ask("q-clean", [case_id]),
         _user_ask("q-ids", [case_id], text="Should lrn-1a2b3c4d move per case-12345678? Yes moves it."),
-    ], {case_id})
+        stead,
+    ], {case_id}, notes_out=notes)
 
-    assert _ids(index) == ["q-clean", "q-ids"]  # both kept
-    assert dropped == [
-        "question q-ids: its question names case-12345678, lrn-1a2b3c4d -- a question is one "
-        "plain sentence; the ids belong in its cases and statements, which the inbox shows "
-        "beside it"
+    assert _ids(index) == ["q-clean", "q-ids", "q-stead-ids"]  # all kept
+    assert index["questions"][2].get("needs") is None  # control: the stead path, not _r2_ask
+    assert dropped == []
+    assert notes == [
+        "question q-ids (kept, and asked as written): its question names case-12345678, "
+        "lrn-1a2b3c4d -- a question is one plain sentence; the ids belong in its cases and "
+        "statements, which the inbox shows beside it",
+        "question q-stead-ids (kept, and asked as written): its question names stmt-0a1b2c3d "
+        "-- a question is one plain sentence; the ids belong in its cases and statements, "
+        "which the inbox shows beside it",
     ]

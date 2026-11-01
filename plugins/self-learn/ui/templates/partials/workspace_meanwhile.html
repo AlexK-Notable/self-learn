@@ -1,0 +1,14 @@
+{# "Meanwhile" / "What it changes now" (design r2 §2.1 items 4 and 9).
+   Its own partial so an undo or a redo can redraw it out of band from a
+   fresh read (walk fixes, item 5: after an undo it describes the item as
+   it now is). A decided item never says "Nothing is done until you
+   answer" (walk fixes, item 8): nothing waits on an answer there. #}
+<section id="ws-meanwhile" class="ws-section" aria-labelledby="ws-meanwhile-h"{% if meanwhile_oob %} hx-swap-oob="true"{% endif %} data-meanwhile>
+  <h2 id="ws-meanwhile-h">{% if item.class == "decided" %}What it changes now{% else %}Meanwhile{% endif %}</h2>
+  {% set meanwhile = (packet.meanwhile if packet else None) or item.meanwhile %}
+  {% if item.class == "decided" and packet and packet.decided and packet.decided.changes_now %}
+  <p>{{ packet.decided.changes_now }}</p>
+  {% elif meanwhile %}<p>{{ meanwhile }}</p>
+  {% elif item.class == "decided" %}<p>Nothing waits on you: this is a record of what was decided for you.{% if item.undo %} Undo it, or tell it something below, if it is wrong.{% else %} Tell it something below if it is wrong.{% endif %}</p>
+  {% else %}<p>Nothing is done until you answer.</p>{% endif %}
+</section>

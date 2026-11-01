@@ -302,7 +302,13 @@ MEASURED_CENSUS_MODULES = frozenset(
 # answers (S-123; design r2 §3.4.7). `attention_answers`' own `run(` is
 # no site: its in-module callers use `_run_item`, so the bare name never
 # reads as `from subprocess import run`.
-MEASURED_CENSUS_SITE_COUNT = 21
+# 2026-11-01 (follow-ups 2 of the attention round, 23): two bounded
+# `subprocess.run` sites, both with `timeout=STOP_TIMEOUT_SECS` --
+# `attention_answers._unit_state` (`systemctl --user is-active` of the
+# run's own `self-learn-run-<12 hex>` unit) and `attention_answers.stop`
+# (`systemctl --user stop` of that unit), the inbox's "Stop it"
+# (S-129). No new module.
+MEASURED_CENSUS_SITE_COUNT = 23
 
 
 def test_p3_gate_census_matches_the_measured_count():

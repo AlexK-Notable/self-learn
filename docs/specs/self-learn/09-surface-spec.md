@@ -483,8 +483,10 @@ section records what the surface is.
 - **Inbox** (`GET /inbox`): one page holding the item list (left, a
   `<nav aria-label="Inbox">`) and the selected item's workspace (right;
   stacked at narrow widths, with the "Ask about this" panel in a third
-  column from 1,280 px). `/inbox` 303-redirects to the most pressing
-  item: needs-you items by key (`credentials`, `broken`, `money`,
+  column from 1,280 px). `/inbox` renders the list with the most pressing
+  item already open, and a line under it says so (every item is in the
+  list); it no longer redirects, so a reload opens whatever is most
+  pressing then *(S-130, item 8)*. The order: needs-you items by key (`credentials`, `broken`, `money`,
   `sudo`, `conflict`, `system-change`, `foreign-history`) oldest first,
   then unseen flagged decided items, then other unseen decided items.
   The list groups items as Needs you, Being carried out and Decided for
@@ -505,7 +507,19 @@ section records what the surface is.
   checks, commands and files), and the "Ask about this" conversation.
   The list data renders at once; when the packet takes longer than
   1.5 s, the evidence region says "assembling…" and fills by a deferred
-  htmx request.
+  htmx request. *(S-130, items 6 and 8.)* The title block is an
+  ordinary block, never sticky over the text scrolled under it. A
+  decided item's "What it changes now" never says "Nothing is done until
+  you answer": with nothing to say it reads as a record of what was
+  decided. Evidence is told so a person can decide by it: on a conflict
+  each quote says when it was said (relative, and the exact time) and
+  which is "the newer one" or "the older one" (the options' words, from
+  the packet's `side`); a quote whose conversation is gone says so in
+  words, never an exception's name; a hook item leads with the lesson's
+  trigger and rule and folds its script and registration; a lesson is
+  titled by its trigger (or fact) and lists when it was seen (its
+  sightings, with their quotes); a folder is said to be one, with its
+  whole path written from `~`.
 - **Answers** go to `attention answer` with the option, the reply text as
   a 0600 `--text-file` that is deleted after the run, `--draft` when the
   text started as an agent draft, and `--confirm` on the second click of
@@ -513,22 +527,104 @@ section records what the surface is.
   click: a `confirm` option and an option with a `register` effect (the
   armed line repeats the packet's full question, never the list title
   cut at 200 characters, since the question names the path and mode;
-  "This registers <path> in git mode. Confirm?"), and an approve option
-  on a plan with sudo steps (it lists the sudo commands). Each sent
+  "This registers <path> in git mode. Confirm?"), an approve option
+  on a plan with sudo steps (it lists the sudo commands), and *(S-130,
+  item 1)* an approve option chosen by its number key (`keyed=1`: a key
+  never approves on its own; a mouse click on the same button still
+  sends at once, design r2 §0 call 3), and *(gate r1 F2)* an approve
+  option carried by the agent's draft rather than by a click on that
+  option's own button (`from_draft=1`: Send, `Ctrl+Enter`, or a draft
+  card's "Send the draft as is"; the armed line says that sending the
+  draft approves). *(Gate r2 N1.)* The server decides this, not the
+  browser: a request that carries a draft id arms an approve option it
+  names, and, when it names none, the approve or register option the
+  draft itself carries (read from the item's transcript), so a browser
+  that cannot keep site storage still arms it; the Confirm passes
+  `--confirm`, which the answer verb requires for an approval sent with a
+  draft. If the verb asks for that confirmation and the page could not
+  tell the option, it says so in words ("click that option's own button
+  to choose it, then confirm"), never the verb's flag. Under the options a key hint gives
+  each number key and what it does, "approve: …" or "register: …" in
+  words for such options. *(Gate r1 F1.)* On an armed bar only its own
+  Confirm button goes ahead (a click, or `Enter`/`Space` with it
+  focused); no number key confirms or does anything there, a held key's
+  auto-repeat never acts, and the armed bar says so. *(Gate r1 F3, the
+  orchestrator's ruling, not the user's.)* `Enter` or `Space` on a
+  focused approve or register button stays a click, the normal
+  activation for keyboard and screen-reader users; so the page itself
+  never moves focus onto such a button: "Use this draft" focuses the
+  reply box, an armed bar focuses its Cancel, and nothing focuses an
+  option or Confirm on load or after an answer. *(S-130, item 2; C6.)* One line under
+  the reply box says how its text would be recorded, before anything is
+  sent: the page asks `POST /inbox/<id>/provenance`, which runs the
+  answer verb's own rule (`attention_answers.preview`: the draft id, then
+  the 40-character match against the agent's text) and answers in words,
+  naming the agent's words a reply shares; while the box changed and the
+  answer is not back the line says "Checking how this would be
+  recorded…", so the page is never more generous than the record. There
+  is no second "using the agent's draft" line; on an item with a plan a
+  separate line says only what words alone do. *(S-130, item 3.)*
+  After words sent alone, the bar carries their transcript row
+  (`sent_t`), and a `note: required` option clicked with an empty box
+  offers those words as its note in one click (`attention answer
+  --words-from T`: the choice cites the statement that already records
+  them, so they are never typed twice nor recorded twice). Each sent
   answer shows how it was recorded ("as your words", "as your choice of
   the offered option", "as the agent's draft, accepted by you"). Words
   typed alone on an item with a plan get "To decide, pick an option."
   and the item stays under Needs you. A failed answer shows the verb's
   message and keeps the text. When the answer moves the item on (an
   approval starts work), the bar says where it went and offers no
-  options; if that approval's launch found no terminal, **Run it now**
-  is offered for the item it moved to.
-- **Being carried out** shows "Running in a terminal (started <time>)"
-  and **Run it now** (`attention run`; the login variant passes
-  `--login`), the verb's reason when a launch is refused, and, when no
-  terminal can be opened, the command alone in a copy block (split from
-  the verb's sentence: `claude '<brief line>'`, or `claude` for a login)
-  with the brief's path beside it.
+  options; if that approval's launch found no terminal, a retry is
+  offered for the item it moved to. Verb sentences show their times in
+  words ("started just now"), the exact instant on hover.
+- **Being carried out** shows "Running in a terminal (started <time>)",
+  never with a relaunch while it runs *(S-130, item 7)*: a new
+  terminal (`attention run --json`; the login variant passes `--login`)
+  is offered as "Start it in a new terminal" when nothing runs (never
+  launched, refused, or stopped), as "Try again: open a new terminal"
+  after a failed launch, and as "Open a new terminal to carry it out"
+  when no session has claimed a launch for two minutes. *(Gate r1 F4.)*
+  That line never says the terminal did not open: it may be open and
+  waiting for the person (a question or a permission), so it says to
+  answer it there if so, and to open a new one if not. When this
+  approval's own run unit (`attention.run_unit`) is still active,
+  `attention run` opens no second terminal (one bounded `systemctl
+  --user is-active`, asked only once a launch record exists) and answers
+  exit 3 with `already_open: true` and a plain sentence saying a
+  terminal for it is already open; the page shows that sentence as a
+  status with no retry, never systemd's own error, both under "Being
+  carried out" and under the answer whose approval launched it (gate r2
+  N2). A unit still `deactivating` counts as open (N3). *(Gate r1 F5.)* The
+  provenance line is asked again when an ask turn ends and on an
+  attention event while the box holds text, since the agent texts the
+  rule reads change under it. Words told to running work say
+  to tell the session in its terminal, never "you can change your answer
+  until it is carried out". A request inside the bar that does not redraw
+  it (a launch, a fix, a login check, feedback) leaves no button busy and
+  no "Recording…" behind. The verb's reason when a launch is refused, and, when no
+  terminal can be opened, the command alone in a copy block (the verb's
+  `command` field, never parsed from its sentence, follow-ups 2:
+  `claude '<brief line>'`, or `claude` for a login) with the brief's
+  path (its `brief` field) beside it. *(Follow-ups 2.)* A change of mind
+  is a click: before a session claims the work, the ask's other options
+  (decline, other) are buttons answered through `attention answer`, and
+  the page says that the session in the terminal is refused when it then
+  tries to claim it. Once a session has claimed it they are off, each
+  with its reason in a line ("… is off: …"), and the page says why: a
+  different answer cannot reach that session. When the page opened that
+  terminal it offers **Stop it**, which arms first (what stopping does:
+  the terminal closes, a step in progress stops and is not undone, what
+  was already changed stays changed, the approval stands) and on
+  confirm runs `attention stop` and draws the bar again, with the other
+  options clickable and a new terminal offered; otherwise it says to tell
+  the session in its own terminal.
+- **A hand-edited case** (`conflict.case-tampered`) shows "What was
+  decided, and what the file says now" from the packet's `case_edit`
+  (follow-ups 2): each passage that differs as "Was decided:" beside
+  "The file says now:", then the whole decided text and the whole file
+  in folded blocks; when the decided text cannot be shown, the reason,
+  and the file as it is now.
   `awaiting-sudo` shows each sudo command with a copy button and **I ran
   it**. Code kinds (§3.4.8 of the design) render their own options; the
   `fix` ones run `attention fix`, the rest go through `attention answer`.
@@ -538,17 +634,32 @@ section records what the surface is.
   when the held jobs run next, in the host's words from
   `serve.heartbeat`; a stale heartbeat (older than one tick: the host
   stopped) names no time, and the page says none is known.
+  *(S-130, item 4.)* That result goes to the top of the page in
+  plain words and is brought into view: the login works, the item is
+  closed, it left the Needs you list because nothing waits there any
+  more, and which item is next; the list is redrawn with it, and the ask
+  panel's note says the agent can answer again but this item is closed.
 - **Decided items** show what was done and why, the item's undo and
   redo buttons (`attention undo [--redo]`, labelled by the CLI), an overturn-in-words box, and
   the feedback buttons ("Didn't need me", "Should have asked me"). After
   an undo, redo is what is offered, on a reload too: from the item's
   `undo.redo`, or from its transcript, whose last undo/redo row is the
   last act. An undo that takes the item off the list (a reopened
-  withdrawn ask) says so and links to where it went.
+  withdrawn ask) says so and links to where it went. *(S-130,
+  item 5.)* An undo, a redo or a feedback click answers in plain words
+  ("Turned off: the hook no longer runs in new Claude Code sessions.";
+  "Noted: items like this one now wait for you under Needs you, so this
+  one has moved there in the list."), with the verb's own line and its
+  ids only in a small details fold; "What it changes now" is drawn again
+  from a fresh read, and an undone item says it changes nothing now
+  (`attention.UNDONE_NOW`). An item's title names what its lesson is
+  about, not the lesson's id.
 - **Ask about this**: starter chips fixed per kind, a text box, the live
   answer streaming into a bubble (`aria-busy` while it streams), a tool
-  line ("reading case-…"), **Stop**, and any drafts as cards with **Use
-  this draft** and **Send as is**. A draft placed in the reply box keeps
+  line ("reading case-…"), **Stop** (only while an answer streams), and
+  any drafts as cards with **Use this draft** and **Send the draft as is**
+  (never "Send as is", which read like the reply box's Send;
+  S-130, item 8). A draft placed in the reply box keeps
   its `draft_id` and option, also when the page restores the unsent
   reply after a reload or a switch to another item; the server decides
   the origin. Emptying the box, or selecting all of it and typing over
@@ -557,12 +668,17 @@ section records what the surface is.
   a drop or an undo leaves the box holding exactly the draft's text
   (words the person types are theirs even when they contain or spell out
   a short draft). The box is disabled
-  with a plain sentence when the login is broken or asking would bill
-  money; every other part of the page still works.
+  when the login is broken or asking would bill money, and the panel says
+  so first, in a boxed notice under its heading (not small text under the
+  conversation), with the input's placeholder saying it is off
+  (S-130, item 4); every other part of the page still works.
 - **Keys** (`INBOX_KEYMAP`, listed in the `?` overlay on inbox pages):
   `j`/`k`, `Enter`, `1`–`4`, `r`, `a`, `Ctrl+Enter`, `Esc`, `u`, `s`,
   `?`. They are inert while a text field has focus except `Ctrl+Enter`
-  and `Esc`. `Enter` opens the selected item only when nothing has
+  and `Esc`. `1`–`4` arm an option that approves or registers instead of
+  sending it (S-130, item 1); on an armed bar they do nothing,
+  their auto-repeat never acts, and `Ctrl+Enter` on a reply carrying such
+  an option arms it too (gate r1 F1, F2). `Enter` opens the selected item only when nothing has
   focus; on a focused list link, button or `<summary>` it does what that
   control does. The review keymap is inert on inbox pages, so the
   inbox table may reuse its letters; global key uniqueness holds within
@@ -571,11 +687,13 @@ section records what the surface is.
   agent finishing, errors and item changes. An unsent reply or
   question is kept per item in `localStorage` (a convenience only).
   Only a recorded send of the answer form (an option, Send, Confirm)
-  empties it; a draft card's **Send as is** sends the card's text and
+  empties it; a draft card's **Send the draft as is** sends the card's text and
   empties the box only when the box held that same text; an undo, redo,
   run, fix or login check re-renders the
   answer bar without sending the box's text, and the bar's box is
-  refilled from what was typed.
+  refilled from what was typed. Once the seen click is recorded, the
+  "new" (or "unseen") mark leaves the page header and the item's list row
+  together, with the same word in both (S-130, item 8).
 - **Weekly report** (`/overseer-report[/<date>]`): a read-only render of
   the overseer's report, newest by default, with links to earlier ones.
 

@@ -4,6 +4,12 @@
   its `via` names), a reply box that can go with an option ("click an
   option, add a note, send"), and an honest line saying how each answer
   was recorded. The server decides nothing the answer verb decides.
+
+  Walk fixes (S-130): one provenance line under the box, from
+  the answer verb's own rule (item 2); words sent alone in this visit
+  offered as a required note (item 3); key hints that say "approve" or
+  "register" (item 1); plain words for undo/redo with the verb's line in a
+  fold (item 5); "Run it now" only when nothing is running (item 7).
 #}
 {% set r = answer_result %}
 {% set how_words = {
@@ -15,34 +21,64 @@
   "ran-sudo": "as your click: I ran it",
   "undo": "as your click: undo", "redo": "as your click: redo", "reopen": "as your click: ask me anyway",
 } %}
+{% set sent_t = r.sent_t if r and r.sent_t is not none else none %}
 <section id="ws-answer" class="ws-section ws-answer" aria-labelledby="ws-answer-h" data-answer-bar>
   <h2 id="ws-answer-h">{% if item.class == "decided" %}Undo or overturn{% elif item.class == "approved" %}Being carried out{% else %}Answer{% endif %}</h2>
 
   {% if r and r.state == "recorded" %}
   <div class="ws-recorded" data-recorded>
-    <p><strong>Recorded {{ r.recorded_as }}.</strong>{% if r.item_state and r.item_state not in ("open",) %} The item is now {{ r.item_state }}.{% endif %}</p>
-    {% if r.words_alone_on_plan %}<p data-pick-an-option>{{ "Recorded as your words. The overseer reads them on its next run. To decide, pick an option." }}</p>{% endif %}
+    {% if r.words_alone_on_plan %}<p data-pick-an-option><strong>{{ "Recorded as your words." }}</strong> {{ "The overseer reads them on its next run. To decide, pick an option." }}</p>
+    {% else %}<p><strong>Recorded {{ r.recorded_as }}.</strong>{% if r.item_state and r.item_state not in ("open",) %} The item is now {{ r.item_state }}.{% endif %}</p>{% endif %}
     {% if r.registration %}<p>{{ r.registration }}</p>{% endif %}
-    {% for w in r.warnings %}<p class="ws-warning">{{ w }}</p>{% endfor %}
+    {% for w in r.warnings %}<p class="ws-warning">{{ w | plain_times }}</p>{% endfor %}
     {% if r.run %}
       {% set run_exit = r.run.exit %}
       {% set run_message = r.run.message %}
       {% set run_command = r.run.command %}
       {% set run_lead = r.run.lead %}
+      {# Gate r2 N2: the approval's own launch can find this item's
+         terminal still open; the plain status, never an error and retry. #}
+      {% set run_already_open = r.run.already_open %}
       {# An approval moves the item on: Run it now is the successor's. #}
       {% set run_item = r.successor or item %}
       {% include "partials/workspace_run_body.html" %}
     {% endif %}
     {% if r.closed %}
     <p data-answer-closed>It is no longer waiting on you.{% if r.successor %} It is now under {{ r.successor.chip }}: <a href="/inbox/{{ r.successor.id }}" hx-get="/inbox/{{ r.successor.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML" hx-push-url="/inbox/{{ r.successor.id }}">open it</a>.{% endif %}</p>
-    {% else %}
-    <p class="ws-meta">You can change your answer until it is carried out.</p>
+    {% elif r.item_state == "running" or item.state == "running" %}
+    {# Walk fixes, item 7: no "change your answer" line while it runs. #}
+    <p class="ws-meta" data-running-words>It is being carried out in a terminal now. If it should change course, tell that session in its terminal.</p>
+    {% elif not r.words_alone_on_plan %}
+    <p class="ws-meta" data-changeable>You can change your answer until it is carried out.</p>
     {% endif %}
   </div>
   {% elif r and r.state == "error" %}
-  <div class="error-strip" role="alert" data-answer-error><p>{{ r.message }}</p><p class="ws-meta">Your text is kept in the box.</p></div>
+  <div class="error-strip" role="alert" data-answer-error><p>{{ r.message | plain_times }}</p>
+    {% if r.reuse %}
+    {# Walk fixes, item 3: the words sent alone earlier in this visit,
+       offered as the note in one click (they stay recorded as the
+       person's words; the option is recorded as their choice). #}
+    <div class="ws-reuse" data-reuse-offer>
+      <p>Or use the words you just sent as the note:</p>
+      <blockquote class="ws-quote">“{{ r.reuse.text }}”</blockquote>
+      <form hx-post="/inbox/{{ item.id }}/answer" hx-target="#ws-answer" hx-swap="outerHTML">
+        <input type="hidden" name="words_from" value="{{ r.reuse.t }}">
+        <input type="hidden" name="sent_t" value="{{ r.reuse.t }}">
+        <button type="submit" name="option" value="{{ r.reuse.option.id }}" class="btn btn-primary" data-reuse-words>Use these words: {{ r.reuse.option.label }}</button>
+      </form>
+      <p class="ws-meta">They stay recorded as your words, as sent; “{{ r.reuse.option.label }}” is recorded as your choice, with them as its note.</p>
+    </div>
+    {% else %}
+    <p class="ws-meta">Your text is kept in the box.</p>
+    {% endif %}
+  </div>
+  {% elif r and r.state == "stopped" %}
+  <div class="ws-recorded" data-stopped><p><strong>{{ r.message | plain_times }}</strong></p></div>
+  {% elif r and r.state == "stop-error" %}
+  <div class="error-strip" role="alert" data-stop-error><p>Not stopped: {{ r.message | plain_times }}</p></div>
   {% elif r and r.state == "undone" %}
-  <div class="ws-recorded" data-recorded><p><strong>{% if r.redo %}Done again.{% else %}Undone.{% endif %}</strong> {{ r.message }}</p>
+  <div class="ws-recorded" data-recorded data-undone><p><strong>{{ r.words }}</strong></p>
+    {% if r.message %}<details class="ws-details"><summary>Details</summary><p class="ws-meta" data-verb-line>{{ r.message }}</p></details>{% endif %}
     {% if r.closed %}<p data-answer-closed>This item has left the list.{% if r.successor %} It is now under {{ r.successor.chip }}: <a href="/inbox/{{ r.successor.id }}" hx-get="/inbox/{{ r.successor.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML" hx-push-url="/inbox/{{ r.successor.id }}">open it</a>.{% endif %}</p>{% endif %}
   </div>
   {% elif item.answer %}
@@ -65,14 +101,42 @@
   {% endif %}
 
   {% if item.class == "approved" %}
+  {# Follow-ups 2 (gap 2): what a change of mind does now, said plainly:
+     before a session claims the work the other options are one click;
+     once one has, they are off and Stop it (when this page opened that
+     terminal) is the way to change course.
+     Walk fixes, item 7: "Run it now" is never offered while it runs; a
+     new terminal is offered when nothing runs (never started, stopped,
+     refused) or when a launch went unclaimed for two minutes (its
+     terminal may be waiting for the person, or may never have opened:
+     the words say both; gate r1 F4). #}
+  {% set can_stop = options | selectattr("via", "equalto", "stop") | list %}
+  {% set can_change = options | rejectattr("via", "equalto", "stop") | list %}
   <div class="ws-running" data-approved>
     {% if item.state == "running" and item.run %}
     <p>Running in a terminal{% if item.run.at %} (started {{ item.run.at | humanize_ts }}){% endif %}.{% if item.run.claimed_by %} A session claimed it ({{ item.run.claimed_by }}).{% endif %}</p>
+    {% if item.run.claimed_by %}
+    <p data-claimed-words>While that session holds the work, a different answer cannot reach it, so your other options are off.
+    {% if can_stop %}<strong>Stop it</strong> closes that terminal: a step it is in the middle of stops there and is not undone, and anything it already changed stays changed. Then you can change your answer.{% else %}It is running in a session that self-learn's inbox did not open, so the page cannot stop it and leaves its hold on the work alone: tell it in its own terminal.{% endif %}</p>
     {% else %}
-    <p>Approved, not running: no terminal session has it.</p>
+    {% if launch_unclaimed %}
+    <p data-unclaimed-stale>No session has started on the work in the two minutes since its terminal was opened. If that terminal is open and waiting for you (a question, or a permission to allow), answer it there and the work starts. If no terminal for it is open any more, open a new one.</p>
+    <button type="button" class="btn btn-primary" hx-post="/inbox/{{ item.id }}/run" hx-target="#ws-run-result" hx-swap="innerHTML" data-run-now>Open a new terminal to carry it out</button>
     {% endif %}
-    {% if not (item.run and item.run.claimed_by) %}
-    <button type="button" class="btn btn-primary" hx-post="/inbox/{{ item.id }}/run" hx-target="#ws-run-result" hx-swap="innerHTML" data-run-now data-option-index="1">Run it now</button>
+    {% if can_change %}
+    <p data-unclaimed-words>No session has claimed the work yet. If you change your answer now, the session in that terminal is refused when it tries to claim it, and changes nothing.</p>
+    {% endif %}
+    {% endif %}
+    {% else %}
+    <p>Approved, not running: no terminal session has it.{% if can_change %} You can still change your answer: pick another option below.{% endif %}</p>
+    <button type="button" class="btn btn-primary" hx-post="/inbox/{{ item.id }}/run" hx-target="#ws-run-result" hx-swap="innerHTML" data-run-now>Start it in a new terminal</button>
+    {% endif %}
+    {% if r and r.state == "armed-stop" %}
+    <div class="ws-armed" role="alert" data-armed-stop>
+      <p>{{ r.message }}</p>
+      <button type="button" class="btn btn-primary" hx-post="/inbox/{{ item.id }}/stop" hx-vals='{"confirm": "1"}' hx-target="#ws-answer" hx-swap="outerHTML" data-confirm-stop>Confirm: Stop it</button>
+      <button type="button" class="btn" hx-get="/inbox/{{ item.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML">Cancel</button>
+    </div>
     {% endif %}
     <div id="ws-run-result" aria-live="polite"></div>
   </div>
@@ -105,12 +169,17 @@
       <input type="hidden" name="confirm" value="1">
       <input type="hidden" name="text" value="{{ r.text or '' }}">
       <input type="hidden" name="draft_id" value="{{ r.draft_id or '' }}">
+      {% if r.words_from is not none %}<input type="hidden" name="words_from" value="{{ r.words_from }}">{% endif %}
+      {% if sent_t is not none %}<input type="hidden" name="sent_t" value="{{ sent_t }}">{% endif %}
       <button type="submit" name="option" value="{{ r.option.id }}" class="btn btn-primary" data-confirm-armed>Confirm: {{ r.option.label }}</button>
-      <button type="button" class="btn" hx-get="/inbox/{{ item.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML">Cancel</button>
+      <button type="button" class="btn" hx-get="/inbox/{{ item.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML" data-armed-cancel>Cancel</button>
     </form>
+    <p class="ws-meta" data-armed-how>Only the Confirm button goes ahead: click it, or Tab to it and press Enter. Number keys do nothing here; Cancel goes back.</p>
+    {% if r.text %}<p class="ws-meta" data-armed-provenance>{{ provenance.line }}</p>{% endif %}
   </div>
   {% elif item.state != "awaiting-sudo" and not (r and r.closed) %}
   <form id="ws-answer-form" class="ws-answer-form" hx-post="/inbox/{{ item.id }}/answer" hx-target="#ws-answer" hx-swap="outerHTML">
+    {% if sent_t is not none %}<input type="hidden" name="sent_t" value="{{ sent_t }}" data-sent-t>{% endif %}
     {% if options %}
     <div class="ws-options" role="group" aria-label="Options">
       {% for o in options %}
@@ -120,22 +189,31 @@
       <button type="button" class="{{ cls }}" data-option-index="{{ loop.index }}" hx-post="/inbox/{{ item.id }}/run" hx-vals='{"login": "1"}' hx-target="#ws-run-result" hx-swap="innerHTML">{{ label }}</button>
       {% elif o.via == "check-login" %}
       <button type="button" class="{{ cls }}" data-option-index="{{ loop.index }}" hx-post="/inbox/{{ item.id }}/check-login" hx-target="#ws-run-result" hx-swap="innerHTML"{% if o.disabled %} disabled title="{{ o.disabled }}"{% endif %}>{{ label }}</button>
+      {% elif o.via == "stop" %}
+      <button type="button" class="{{ cls }}" data-option-index="{{ loop.index }}" hx-post="/inbox/{{ item.id }}/stop" hx-target="#ws-answer" hx-swap="outerHTML" data-stop>{{ label }}</button>
       {% elif o.via == "fix" %}
       <button type="button" class="{{ cls }}" data-option-index="{{ loop.index }}" hx-post="/inbox/{{ item.id }}/fix" hx-vals='{"option": "{{ o.id }}"}' hx-target="#ws-run-result" hx-swap="innerHTML">{{ label }}</button>
       {% else %}
-      <button type="submit" name="option" value="{{ o.id }}" class="{{ cls }}" data-option-index="{{ loop.index }}"{% if o.note == "required" %} data-note-required{% endif %}{% if o.disabled %} disabled title="{{ o.disabled }}"{% endif %}>{{ label }}</button>
+      <button type="submit" name="option" value="{{ o.id }}" class="{{ cls }}" data-option-index="{{ loop.index }}" data-effect="{{ o.effect or 'other' }}"{% if o.note == "required" %} data-note-required{% endif %}{% if o.disabled %} disabled title="{{ o.disabled }}"{% endif %}>{{ label }}</button>
       {% endif %}
       {% endfor %}
     </div>
     {% for o in options if o.disabled %}<p class="ws-meta">{{ o.label }} is off: {{ o.disabled }}</p>{% endfor %}
+    {% if key_hints %}
+    <p class="ws-meta ws-key-hints" data-key-hints>Keys: {% for h in key_hints %}<kbd>{{ h.key }}</kbd> {{ h.does }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+    {% endif %}
     {% endif %}
     {% if item.class != "approved" %}<div id="ws-run-result" aria-live="polite"></div>{% endif %}
     <label class="ws-reply-label" for="ws-reply-text">{% if item.class == "decided" %}Tell it something (overturn it in your own words){% elif item.class == "approved" %}Tell it something (your words are recorded; the overseer reads them){% elif options %}Or answer in your own words{% else %}Your answer{% endif %}</label>
-    <textarea id="ws-reply-text" name="text" rows="3" data-reply-box data-item="{{ item.id }}">{{ r.text if r and r.text else "" }}</textarea>
+    <textarea id="ws-reply-text" name="text" rows="3" data-reply-box data-item="{{ item.id }}" aria-describedby="ws-reply-line">{{ r.text if r and r.text else "" }}</textarea>
     <input type="hidden" id="ws-reply-draft" name="draft_id" value="{{ r.draft_id if r and r.draft_id else '' }}">
     <div class="ws-reply-foot">
-      <span class="ws-meta" id="ws-reply-line">{% if has_plan and item.class == "needs-you" %}{{ plan_line }}{% else %}Recorded as your words.{% endif %}</span>
-      <span class="ws-meta" id="ws-reply-draft-note" hidden>Using the agent's draft: it is recorded as the agent's draft, not as your words.</span>
+      {# Walk fixes, item 2: ONE line says how the box's text would be
+         recorded, from the answer verb's own rule (the page asks the
+         server as the person types); a plan item adds what words alone
+         do, which never contradicts it. #}
+      <span class="ws-meta" id="ws-reply-line" data-provenance-line data-origin="{{ provenance.origin or '' }}" aria-live="polite">{{ provenance.line }}</span>
+      {% if has_plan and item.class == "needs-you" %}<span class="ws-meta" id="ws-reply-plan">{{ plan_line }}</span>{% endif %}
       <button type="submit" class="btn" data-send-reply>Send</button>
     </div>
   </form>
@@ -149,4 +227,5 @@
     {% endif %}
   </div>
 </section>
+{% if oob_meanwhile %}{% set meanwhile_oob = true %}{% include "partials/workspace_meanwhile.html" %}{% endif %}
 {% if oob_list %}{% include "partials/workspace_list.html" %}{% endif %}

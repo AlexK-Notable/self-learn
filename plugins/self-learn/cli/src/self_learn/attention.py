@@ -715,14 +715,97 @@ def _approval_track(
     item["answer"] = answer
     record = _run_record(home, item["id"])
     claim = _claim(home, item["id"], now)
-    launched = record is not None and str(record.get("at") or "") >= str(approved_at or "")
+    # Follow-ups 2 (gap 2): a launch the person stopped from the page
+    # (`attention stop`) no longer counts as running.
+    launched = (record is not None and str(record.get("at") or "") >= str(approved_at or "")
+                and not record.get("stopped_at"))
     if launched or claim is not None:
         item["state"] = "running"
         item["run"] = {
             "unit": (record or {}).get("unit"), "at": (record or {}).get("at"),
             "claimed_by": (claim or {}).get("session"),
         }
+    item["options"] = change_options(base.get("options") or [], record, claim,
+                                     item_id=item["id"], approved_at=approved_at)
+    item["_approved_at"] = approved_at
     return [item]
+
+
+#: Follow-ups 2 (gap 2): the page's "Stop it" on approved work a session
+#: claimed in a terminal this page opened (`attention stop`).
+STOP_OPTION_ID = "opt-stop"
+STOP_LABEL = "Stop it"
+#: The transient unit `attention run` launches an approved item's terminal
+#: in: this prefix plus the item id's 12 hex (`attention_answers.run`).
+RUN_UNIT_PREFIX = "self-learn-run-"
+#: Gate r1 F1: what the page says when the claim is not the terminal it
+#: opened for this approval.
+NOT_OURS_REASON = "it is running in a session self-learn did not open; tell it in its own terminal"
+
+
+def run_unit(item_id: str) -> str:
+    """The unit name `attention run` gives approved item *item_id*'s
+    terminal."""
+    return RUN_UNIT_PREFIX + item_id[len("att-"):]
+
+
+def stoppable(record: dict | None, claim: dict | None, *, item_id: str,
+              approved_at: str | None) -> bool:
+    """Whether ``attention stop`` may act on approved work (gate r1 F1,
+    F2): only when the live *claim* was made from inside the very unit the
+    page launched for THIS approval. All of these must hold:
+
+    - the run record names this item's own unit (:func:`run_unit`), not
+      another item's and not any other unit;
+    - that launch belongs to the current approval (at or after
+      *approved_at*) and is not already stopped;
+    - the claim names the same unit (``attention claim`` records the
+      systemd unit the claiming process runs in, from its cgroup), and was
+      made at or after the launch.
+
+    Any other claim -- an agent in the person's own terminal, a claim from
+    before the launch, one recorded without a unit -- is a session
+    self-learn did not open, which the page can neither stop nor release."""
+    if claim is None or record is None or record.get("stopped_at"):
+        return False
+    unit = run_unit(item_id)
+    if record.get("unit") != unit or claim.get("unit") != unit:
+        return False
+    launched_at = _dt(record.get("at"))
+    claimed_at = _dt(claim.get("at"))
+    approved = _dt(approved_at) if approved_at else None
+    if launched_at is None or claimed_at is None:
+        return False
+    if approved is not None and launched_at < approved:
+        return False
+    return claimed_at >= launched_at
+
+
+def change_options(options: list[dict], record: dict | None, claim: dict | None, *,
+                   item_id: str, approved_at: str | None) -> list[dict]:
+    """Follow-ups 2 (gap 2): the one-click changes of mind on approved
+    work. The originally offered options other than an approval (decline,
+    other), each answered by ``attention answer`` like the first click;
+    while a session holds a live claim they are off (``disabled``, in
+    words), since the answer verb refuses a new answer then, and ``Stop
+    it`` is offered only when the claiming session runs in the unit this
+    page launched for this approval (:func:`stoppable`). An approval is
+    not repeated here: "Run it now" is the page's relaunch."""
+    out = [dict(o) for o in options
+           if isinstance(o, dict) and o.get("id") and o.get("effect") != "approve"]
+    if claim is not None:
+        session = claim.get("session")
+        ours = stoppable(record, claim, item_id=item_id, approved_at=approved_at)
+        if ours:
+            reason = (f"a session ({session}) is carrying it out now and a different answer "
+                      "cannot reach it; Stop it first")
+        else:
+            reason = f"{NOT_OURS_REASON} (session {session})"
+        for option in out:
+            option["disabled"] = reason
+        if ours:
+            out.append(_option(STOP_OPTION_ID, STOP_LABEL, "other", via="stop", confirm=True))
+    return out
 
 
 def _src_asks(home: Path, ctx: "_Ctx") -> list[dict]:
@@ -1149,6 +1232,27 @@ def _case_for_lesson(manifest: dict, lesson: str) -> str | None:
     return None
 
 
+def _lesson_words(home: Path, lesson: str) -> str | None:
+    """Walk fixes, item 5: what a lesson is about, in its own words (its
+    trigger, or its fact), for an item title that names no id; ``None``
+    when the lesson cannot be read."""
+    from .ledger_ops import LedgerOpsError, find_record_path
+    from .primitives import text as text_mod
+    from .records import Record
+
+    try:
+        body = Record.from_path(find_record_path(home, lesson)).body
+    except (LedgerOpsError, OSError, ValueError):
+        return None
+    matches = list(text_mod.HEADING_RE.finditer(body))
+    for i, m in enumerate(matches):
+        if m.group(1) in ("Trigger", "Fact"):
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+            words = " ".join(body[m.end():end].split())
+            return _first_line(words, 120) or None
+    return None
+
+
 def _src_runs(home: Path, ctx: "_Ctx") -> list[dict]:
     """Decided items from the committed run manifests (``cases/runs/*.json``)
     completed in the window: one digest per run, and one item per
@@ -1218,13 +1322,18 @@ def _src_runs(home: Path, ctx: "_Ctx") -> list[dict]:
             lesson = effect["lesson"]
             at = str(effect.get("at") or done_at)
             case_id = _case_for_lesson(manifest, lesson)
+            about = _lesson_words(home, lesson)
             if effect.get("hook_activated"):
                 out.append(_new_item(
                     "decided.hook-activated", f"{lesson}@{at}",
-                    title=f"The {actor} turned on a hook for {lesson}", since=at, by=str(actor),
+                    title=(f"The {actor} turned on a hook: {about}" if about
+                           else f"The {actor} turned on a hook for {lesson}"),
+                    since=at, by=str(actor),
                     run=run_id, refs=[lesson, *([case_id] if case_id else [])],
                     meanwhile="The hook is active in every new Claude Code session.",
-                    decided={"what": f"turned on the hook compiled from {lesson}", "by": actor,
+                    decided={"what": (f"turned on the hook for this lesson: {about}" if about
+                                     else f"turned on the hook compiled from {lesson}"),
+                             "by": actor,
                              "at": at, "because": None, "changes_now": "the hook runs on matching tool calls"},
                     lesson=lesson, case=case_id,
                 ))
@@ -1232,7 +1341,8 @@ def _src_runs(home: Path, ctx: "_Ctx") -> list[dict]:
                 subject = case_id or lesson
                 out.append(_new_item(
                     "decided.always-loaded", subject,
-                    title=f"The {actor} changed a line every session loads ({lesson})",
+                    title=(f"The {actor} changed a line every session loads: {about}" if about
+                           else f"The {actor} changed a line every session loads ({lesson})"),
                     since=at, by=str(actor), run=run_id,
                     refs=[lesson, *([case_id] if case_id else [])],
                     meanwhile="The line is in effect in every new session.",
@@ -1535,6 +1645,20 @@ def _apply_override(item: dict, wanted: str) -> dict | None:
     return out
 
 
+#: Walk fixes, item 5: what a decided item changes now once the person
+#: undid it (its transcript's last undo/redo row is an undo), so the page's
+#: "What it changes now" says so instead of describing the undone act.
+UNDONE_NOW = {
+    "decided.hook-activated": ("Nothing now: you turned the hook off, so it does not run in new "
+                               "sessions. Turn it back on below if you want it again."),
+    "decided.registration": ("Nothing now: you removed the registration, so self-learn writes "
+                             "nothing into that repository."),
+    "decided.grant-use": "Nothing now: you undid what the agent did under your grant.",
+    "decided.skill": "Nothing now: you undid the change to the skill.",
+}
+UNDONE_NOW_DEFAULT = "Nothing now: you undid it."
+
+
 def _conversation(home: Path, item_id_: str) -> tuple[dict, bool]:
     """The item's conversation summary (§4.1 `conversation`) and whether a
     redo is what its undo offers next: its transcript's last undo/redo row
@@ -1594,6 +1718,11 @@ def collect(home: Path | str, *, all_items: bool = False) -> list[dict]:
         item["conversation"], redo = _conversation(home, item["id"])
         if isinstance(item.get("undo"), dict):
             item["undo"] = {**item["undo"], "redo": redo}
+            if redo:
+                undone = UNDONE_NOW.get(item["kind"], UNDONE_NOW_DEFAULT)
+                item["meanwhile"] = undone
+                if isinstance(item.get("_decided"), dict):
+                    item["_decided"] = {**item["_decided"], "changes_now": undone}
         out.append(item)
     return out
 

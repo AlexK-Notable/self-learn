@@ -19,6 +19,9 @@ The verbs the inbox's buttons and reply box run, and their library halves:
 * :func:`fix` (``attention fix``): "Restart self-learn" on a ``broken.host``
   item: ``systemctl --user reset-failed`` then ``restart`` of
   ``self-learn-host.service`` only.
+* :func:`stop` (``attention stop``, follow-ups 2): "Stop it" on approved
+  work a session claimed in the terminal the page opened: stops that unit
+  and clears the claim, so the person can change their answer.
 * :func:`claim` / :func:`done` (``attention claim|done``): the carrying-out
   session's own verbs.
 * :func:`undo` (``attention undo [--redo]``): the one-step inverse of a
@@ -59,9 +62,12 @@ __all__ = [
     "done",
     "fix",
     "outcomes_path",
+    "preview",
+    "recorded_as_words",
     "redo_offered",
     "resolve_terminal",
     "run",
+    "stop",
     "undo",
 ]
 
@@ -82,9 +88,10 @@ PASTE_MATCH_CHARS = 40
 RAN_SUDO_OPTION = "opt-ran-sudo"
 RAN_SUDO_LABEL = "I ran it"
 #: The unit name prefix of a launched session (``self-learn-run-<12 hex>``).
-RUN_UNIT_PREFIX = "self-learn-run-"
+RUN_UNIT_PREFIX = attention.RUN_UNIT_PREFIX
 LAUNCH_TIMEOUT_SECS = 10
 FIX_TIMEOUT_SECS = 10
+STOP_TIMEOUT_SECS = 10
 HOST_UNIT = attention.HOST_UNIT
 #: §3.4.7's terminal fallbacks, in order: the binary and the argv that
 #: follows it before the command.
@@ -157,9 +164,23 @@ class RunResult:
     unit: str | None = None
     brief: str | None = None
     argv: list[str] | None = None
+    #: Follow-ups 2 (gap 3): the command a person runs in a terminal of
+    #: their own when none was found (exit 5), alone, so a page copies it
+    #: without parsing :attr:`message`; ``None`` otherwise.
+    command: str | None = None
+    #: Walk fixes gate r1 F4: the terminal launched for this approval is
+    #: still open (its unit is active), so no second one was opened.
+    already_open: bool = False
 
     def to_json(self) -> dict[str, Any]:
-        return {"exit": self.exit, "message": self.message}
+        """``attention run --json`` and the answer verb's ``run``:
+        ``{exit, message, command, brief}``, plus ``already_open: true``
+        only when this approval's terminal is still open (gate r1 F4)."""
+        out: dict[str, Any] = {"exit": self.exit, "message": self.message,
+                               "command": self.command, "brief": self.brief}
+        if self.already_open:
+            out["already_open"] = True
+        return out
 
 
 # ------------------------------------------------------------------ helpers
@@ -380,7 +401,11 @@ def _code_kind_for_subject(subject: str) -> str:
 
 def _options_for(item: dict, ask_row: dict | None) -> list[dict]:
     options = [dict(o) for o in item.get("options") or []]
-    if not options and item["kind"] == "approved.pending":
+    if item["kind"] == "approved.pending":
+        # Follow-ups 2 (gap 2): the approved item's own options are the
+        # page's changes of mind (no approval, `disabled` while claimed,
+        # "Stop it"); what an answer may choose is still every option the
+        # ask offered, and a live claim is checked in `answer` itself.
         if ask_row is not None:
             options = [_option_view(o, ask_row.get("recommend"))
                        for o in ask_row.get("options") or [] if isinstance(o, dict) and o.get("id")]
@@ -409,9 +434,13 @@ def _sudo_steps(plan: dict | None) -> tuple[list[dict], list[dict]]:
     return [s for s in steps if s.get("sudo") is True], [s for s in steps if s.get("sudo") is not True]
 
 
-def _paste_match(text: str, agent_texts: list[str]) -> str | None:
-    """The agent row whose text shares a whitespace-normalised run of
-    :data:`PASTE_MATCH_CHARS` characters with *text*, or ``None``."""
+def _paste_run(text: str, agent_texts: list[str]) -> tuple[str, str] | None:
+    """``(the agent row's text, the shared run)`` for the first agent row
+    whose text shares a whitespace-normalised run of
+    :data:`PASTE_MATCH_CHARS` characters with *text*, or ``None``. The run
+    is grown to the longest shared stretch from where it was found, so the
+    page can show the person which words made the match (walk fixes,
+    item 2)."""
     reply = _norm(text)
     if len(reply) < PASTE_MATCH_CHARS:
         return None
@@ -420,9 +449,127 @@ def _paste_match(text: str, agent_texts: list[str]) -> str | None:
         if len(theirs) < PASTE_MATCH_CHARS:
             continue
         for start in range(len(reply) - PASTE_MATCH_CHARS + 1):
-            if reply[start:start + PASTE_MATCH_CHARS] in theirs:
-                return original
+            end = start + PASTE_MATCH_CHARS
+            if reply[start:end] in theirs:
+                while end < len(reply) and reply[start:end + 1] in theirs:
+                    end += 1
+                return original, reply[start:end]
     return None
+
+
+def _paste_match(text: str, agent_texts: list[str]) -> str | None:
+    """The agent row whose text shares a whitespace-normalised run of
+    :data:`PASTE_MATCH_CHARS` characters with *text*, or ``None``."""
+    hit = _paste_run(text, agent_texts)
+    return hit[0] if hit is not None else None
+
+
+def recorded_as_words(origin: str, *, with_choice: bool, words_from: bool = False) -> str:
+    """How an answer of *origin* is recorded, in the page's words: the
+    answer verb's ``recorded_as`` and the page's preview line before
+    sending (:func:`preview`) both read this one table, so the page can
+    never say more than the record does (walk fixes, item 2; C6)."""
+    if words_from:
+        return "as your choice of the offered option, with the words you sent before"
+    if origin == "typed":
+        return "as your choice of the offered option, with your words" if with_choice else "as your words"
+    if origin == "clicked":
+        return "as your choice of the offered option"
+    if origin == "draft-accepted":
+        return "as the agent's draft, accepted by you"
+    if origin == "draft-edited":
+        return "as the agent's draft, edited and sent by you"
+    return "as your words, relayed by an agent from your session"
+
+
+def _origin_of(home: Path, item_id: str, text: str | None, draft_id: str | None) -> dict[str, Any]:
+    """§3.4.1's order for a reply that is the person's own act (the page,
+    or their own shell): a ``draft_id`` naming no sealed draft of the item
+    is refused; with one, equal text is ``draft-accepted`` and different
+    text ``draft-edited``; with none, a :data:`PASTE_MATCH_CHARS` match
+    against an agent row is ``draft-edited``; otherwise ``typed``; no text
+    at all is ``clicked``. The ONE rule :func:`answer` records by and
+    :func:`preview` reports. Returns ``{origin, text, draft_text,
+    draft_option, matched}``."""
+    if draft_id is not None:
+        draft_row = next(
+            (row for row in workspace.rows(home, item_id, pending=False)
+             if row.get("kind") == "draft" and row.get("role") == "agent"
+             and row.get("draft_id") == draft_id and isinstance(row.get("t"), int)),
+            None,
+        )
+        if draft_row is None or not isinstance(draft_row.get("text"), str):
+            raise AnswerError(f"--draft {draft_id} names no sealed draft of {item_id}", EXIT_USAGE)
+        sealed_text: str = draft_row["text"]
+        sent = sealed_text if text is None else text
+        return {
+            "origin": "draft-accepted" if sent.strip() == sealed_text.strip() else "draft-edited",
+            "text": sent, "draft_text": sealed_text,
+            "draft_option": draft_row["option"] if isinstance(draft_row.get("option"), str) else None,
+            "matched": None,
+        }
+    if text is None:
+        return {"origin": "clicked", "text": None, "draft_text": None, "draft_option": None,
+                "matched": None}
+    agent_texts = [
+        str(row["text"]) for row in workspace.rows(home, item_id, pending=False)
+        if row.get("role") == "agent" and row.get("kind") in ("answer", "draft")
+        and isinstance(row.get("text"), str)
+    ]
+    hit = _paste_run(text, agent_texts)
+    return {
+        "origin": "draft-edited" if hit is not None else "typed", "text": text,
+        "draft_text": hit[0] if hit is not None else None, "draft_option": None,
+        "matched": hit[1] if hit is not None else None,
+    }
+
+
+def preview(home: Path | str, item_id: str, *, text: str | None = None,
+            draft_id: str | None = None, option: str | None = None) -> dict[str, Any]:
+    """What :func:`answer` would record for this reply, read-only (walk
+    fixes, item 2): the page shows it under the reply box before anything
+    is sent, from the same rule (:func:`_origin_of`) and the same words
+    (:func:`recorded_as_words`). Returns ``{origin, recorded_as, matched,
+    problem}``; ``origin`` is ``None`` when nothing would be sent or the
+    reply would be refused (``problem`` then says why)."""
+    home = Path(home)
+    if isinstance(text, str) and not text.strip():
+        text = None
+    empty = {"origin": None, "recorded_as": None, "matched": None, "problem": None}
+    if text is None and draft_id is None:
+        return empty
+    if text is not None and (rule := workspace.secret_rule(text)) is not None:
+        return {**empty, "problem": f"it matches the secret scan ({rule}), so it would be refused"}
+    try:
+        found = _origin_of(home, item_id, text, draft_id)
+    except AnswerError as exc:
+        return {**empty, "problem": str(exc)}
+    origin = found["origin"]
+    with_choice = (option is not None or found["draft_option"] is not None
+                   or origin.startswith("draft-"))
+    return {"origin": origin, "recorded_as": recorded_as_words(origin, with_choice=with_choice),
+            "matched": found["matched"], "problem": None}
+
+
+def _reused_words(home: Path, item_id: str, t: int) -> tuple[str, str | None]:
+    """Walk fixes, item 3: the words the person typed and sent on this item
+    as row ``T<t>`` (a reply with no option), and the statement that
+    already records them, so a note-required option can take them as its
+    note without the person typing them again and without a second
+    statement of the same words."""
+    row = next((r for r in workspace.rows(home, item_id, pending=False) if r.get("t") == t), None)
+    if (row is None or row.get("role") != "user" or row.get("origin") != "typed"
+            or row.get("kind") != "reply" or row.get("option")
+            or not isinstance(row.get("text"), str) or not row["text"].strip()):
+        raise AnswerError(f"--words-from T{t} names no reply you typed and sent on {item_id}",
+                          EXIT_USAGE)
+    ref = f"workspace:{item_id}#T{t}"
+    statement = next(
+        (str(s.get("id")) for s in statements.list_statements(home)
+         if (s.get("source") or {}).get("message_ref") == ref),
+        None,
+    )
+    return row["text"], statement
 
 
 def _conflict_statements(ask_row: dict | None) -> list[str]:
@@ -560,6 +707,13 @@ def _cases_citing(home: Path, statement_ids: list[str]) -> list[str]:
 # ------------------------------------------------------------------ answer
 
 
+#: Walk fixes gate r2 N1: the words of the refusal :func:`answer` gives an
+#: approval sent with the agent's draft and no ``confirm``; the page finds
+#: them in the verb's message and arms the option instead of showing an error.
+DRAFT_NEEDS_CONFIRM = ("comes with the agent's draft and approves this change: confirm it first, "
+                       "nothing is approved until you do")
+
+
 def answer(
     home: Path | str,
     item_id: str,
@@ -572,14 +726,27 @@ def answer(
     confirm: bool = False,
     note: str | None = None,
     launch: bool = True,
+    words_from: int | None = None,
 ) -> AnswerResult:
     """``self-learn attention answer`` (design r2 §3.4.1, §3.4.4). Raises
     :class:`AnswerError` with the exit code of §4.6 when refused; nothing is
-    recorded then, except where the message says otherwise."""
+    recorded then, except where the message says otherwise.
+
+    *words_from* (walk fixes, item 3) is the transcript row of words the
+    person already typed and sent on this item: an option is sent with
+    them as its note, citing the statement that already records them, so
+    they are never typed twice nor recorded as a second statement."""
     home = Path(home)
     agent = _agent()
     if isinstance(text, str) and not text.strip():
         text = None
+    if words_from is not None:
+        if agent:
+            raise AnswerError("--words-from is the person's click on the page; refused from an "
+                              "agent's shell", EXIT_USAGE)
+        if option is None or text is not None or draft_id is not None:
+            raise AnswerError("--words-from goes with --option alone (no --text-file, no --draft)",
+                              EXIT_USAGE)
     if option is None and text is None and draft_id is None:
         raise AnswerError("answer needs --option, --text-file or --draft", EXIT_USAGE)
     if agent:
@@ -636,37 +803,19 @@ def answer(
         ask_row = None
     options = _options_for(item, ask_row)
 
-    # -- the origin (§3.4.1's order)
-    draft_row: dict | None = None
+    # -- the origin (§3.4.1's order; one rule with the page's preview)
     draft_text: str | None = None
-    if draft_id is not None:
-        draft_row = next(
-            (row for row in workspace.rows(home, item["id"], pending=False)
-             if row.get("kind") == "draft" and row.get("role") == "agent"
-             and row.get("draft_id") == draft_id and isinstance(row.get("t"), int)),
-            None,
-        )
-        if draft_row is None or not isinstance(draft_row.get("text"), str):
-            raise AnswerError(f"--draft {draft_id} names no sealed draft of {item['id']}", EXIT_USAGE)
-        sealed_text: str = draft_row["text"]
-        draft_text = sealed_text
-        if text is None:
-            text = sealed_text
-        origin = "draft-accepted" if text.strip() == sealed_text.strip() else "draft-edited"
-        if option is None and isinstance(draft_row.get("option"), str):
-            option = draft_row["option"]
+    reused_statement: str | None = None
+    if words_from is not None:
+        text, reused_statement = _reused_words(home, item["id"], words_from)
+        origin = "clicked"
     elif agent:
         origin = "relayed"
-    elif text is not None:
-        agent_texts = [
-            str(row["text"]) for row in workspace.rows(home, item["id"], pending=False)
-            if row.get("role") == "agent" and row.get("kind") in ("answer", "draft")
-            and isinstance(row.get("text"), str)
-        ]
-        draft_text = _paste_match(text, agent_texts)
-        origin = "draft-edited" if draft_text is not None else "typed"
     else:
-        origin = "clicked"
+        found = _origin_of(home, item["id"], text, draft_id)
+        origin, text, draft_text = found["origin"], found["text"], found["draft_text"]
+        if option is None and found["draft_option"] is not None:
+            option = found["draft_option"]
 
     # -- the option
     chosen: dict | None = None
@@ -696,6 +845,16 @@ def answer(
             raise AnswerError(
                 f"«{chosen.get('label')}» asks once more before it acts; send it again with "
                 "--confirm", EXIT_REFUSED,
+            )
+        # Walk fixes gate r2 N1: an approval that comes with the agent's
+        # draft (its option named here, or taken from the draft) is never
+        # sent in one step, whatever the page remembered: the verb itself
+        # asks once more, so the confirmation does not depend on browser
+        # storage. (A register option is refused above already.)
+        if draft_id is not None and chosen.get("effect") == "approve" and not confirm:
+            raise AnswerError(
+                f"«{chosen.get('label')}» {DRAFT_NEEDS_CONFIRM}; nothing was recorded. Send it "
+                "again with --confirm", EXIT_REFUSED,
             )
         if item["kind"] == "approved.pending" and chosen.get("effect") != "approve":
             # "The answer stays changeable until it is carried out" (design
@@ -766,6 +925,8 @@ def answer(
         "draft_id": draft_id, "draft_text": draft_text if origin.startswith("draft-") else None,
         "ref": ref,
     }
+    if words_from is not None:
+        row["words_from"] = words_from
     t = _seal(home, item, row)
     result.transcript_row = t
     message_ref = f"workspace:{item['id']}#T{t}"
@@ -796,7 +957,8 @@ def answer(
             "text": text if effect != "ran-sudo" else None,
             "draft_id": draft_id, "draft_text": draft_text if how.startswith("draft-") else None,
             "offered_by": offered_by, "answers": _answers_for(item, ask_row, for_choice=True),
-            "source": {"message_ref": message_ref}, "statement": result.statement,
+            "source": {"message_ref": message_ref},
+            "statement": result.statement or reused_statement,
             "proof": proof_ref, "recorded_by": _actor(), "note": note,
         }
         from .overseer import conversation
@@ -822,13 +984,8 @@ def answer(
     plan = _plan_of(item, ask_row)
     result.state = _downstream(home, item, ask_row, chosen, plan, decided_by, result,
                                launch=launch, origin=origin)
-    result.recorded_as = (
-        "as your words" if origin == "typed" and result.choice is None
-        else "as your choice of the offered option, with your words" if origin == "typed"
-        else "as your choice of the offered option" if origin == "clicked"
-        else "as the agent's draft, accepted by you" if origin == "draft-accepted"
-        else "as the agent's draft, edited and sent by you" if origin == "draft-edited"
-        else "as your words, relayed by an agent from your session"
+    result.recorded_as = recorded_as_words(
+        origin, with_choice=result.choice is not None, words_from=words_from is not None,
     )
     return result
 
@@ -1104,7 +1261,7 @@ def _run_item(home: Path | str, item_id: str, *, login: bool = False) -> RunResu
         terminal = resolve_terminal(home)
         if terminal is None:
             return RunResult(EXIT_NO_TERMINAL, "no terminal found: open one yourself, run "
-                                               "`claude`, then type /login")
+                                               "`claude`, then type /login", command="claude")
         unit = RUN_UNIT_PREFIX + item_id[len("att-"):]
         argv = ["--user", "--collect", "--quiet", f"--unit={unit}",
                 f"--working-directory={_working_directory(None)}", "--", *terminal, "claude"]
@@ -1148,11 +1305,17 @@ def _run_item(home: Path | str, item_id: str, *, login: bool = False) -> RunResu
     message = f"{first_line} Read {brief} and follow it."
     terminal = resolve_terminal(home)
     if terminal is None:
+        command = f"claude {shlex.quote(message)}"
         return RunResult(EXIT_NO_TERMINAL, (
-            f"no terminal found. The brief is at {brief}; open a terminal and run: claude "
-            f"{shlex.quote(message)}"
-        ), brief=str(brief))
-    unit = RUN_UNIT_PREFIX + item["id"][len("att-"):]
+            f"no terminal found. The brief is at {brief}; open a terminal and run: {command}"
+        ), brief=str(brief), command=command)
+    unit = attention.run_unit(item["id"])
+    # Walk fixes gate r1 F4: a terminal launched for this approval before
+    # (a run record exists) may still be open and waiting for the person;
+    # then no second one is opened and the person is told so in words.
+    if attention._run_record(home, item["id"]) is not None and _unit_still_open(unit):  # noqa: SLF001
+        return RunResult(EXIT_REFUSED, ALREADY_OPEN_MESSAGE, unit=unit, brief=str(brief),
+                         already_open=True)
     plan = item.get("_plan") if isinstance(item.get("_plan"), dict) else None
     argv = ["--user", "--collect", "--quiet", f"--unit={unit}",
             f"--working-directory={_working_directory(plan)}", "--", *terminal, "claude", message]
@@ -1232,6 +1395,143 @@ def fix(home: Path | str, item_id: str, option: str) -> str:
     return f"{HOST_UNIT} restarted; the item ends when its heartbeat is fresh again"
 
 
+# ------------------------------------------------------------------ stop
+
+
+#: A unit `attention run` launched, as a cgroup path segment
+#: (``RUN_UNIT_PREFIX`` + 12 hex + ``.service``).
+_RUN_UNIT_SEGMENT_RE = re.compile(r"^(self-learn-run-[0-9a-f]{12})\.service$")
+#: Where the claiming process's cgroup is read (a test points it elsewhere).
+_CGROUP_PATH = Path("/proc/self/cgroup")
+#: ``systemctl is-active`` answers that mean the unit still runs.
+_STILL_RUNNING = frozenset({"active", "activating", "deactivating", "reloading", "refreshing"})
+STOPPED_MESSAGE = (
+    "Stopped. The terminal opened for this work is closed, so its session can change nothing "
+    "more. A step it was in the middle of stopped where it was and was not undone, and "
+    "anything it had already changed stays changed. Your approval still stands but nothing is "
+    "carrying it out: choose a different answer, or Run it now to start again."
+)
+ALREADY_CLOSED_MESSAGE = (
+    "The terminal opened for this work had already closed, so its session could change "
+    "nothing more; its hold on the work is cleared. Anything it changed before it closed "
+    "stays changed. Your approval still stands but nothing is carrying it out: choose a "
+    "different answer, or Run it now to start again."
+)
+
+
+#: Walk fixes gate r1 F4: what `attention run` says when this approval's
+#: terminal (its unit) is still open: it may be waiting for the person.
+ALREADY_OPEN_MESSAGE = (
+    "A terminal for this is already open: the one opened for it earlier is still running, and "
+    "no session in it has started the work yet. It may be waiting for you to answer a question "
+    "or allow a permission there: answer it in that terminal and the work starts. If you would "
+    "rather start again, close that terminal first, then open a new one here."
+)
+
+
+def _unit_still_open(unit: str) -> bool:
+    """Whether *unit* (this approval's own run unit, `attention.run_unit`)
+    still runs: one bounded ``systemctl --user is-active``. ``False`` when
+    systemctl is missing or cannot answer: the launch then goes ahead and
+    systemd itself refuses a second unit of the same name."""
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return False
+    try:
+        return _unit_state(binary, unit) in _STILL_RUNNING
+    except AnswerError:
+        return False
+
+
+def _unit_state(binary: str, unit: str) -> str:
+    try:
+        proc = subprocess.run(
+            [binary, "--user", "is-active", unit], capture_output=True, text=True,
+            timeout=STOP_TIMEOUT_SECS, check=False, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AnswerError(f"systemctl --user is-active {unit} failed: {exc}", EXIT_REFUSED) from exc
+    return str(proc.stdout or "").strip() or "unknown"
+
+
+def _mark_run_stopped(home: Path, item_id: str, record: dict) -> None:
+    """The run record (cache) gains ``stopped_at``: the reader then counts
+    the launch as stopped, not running."""
+    target = _cache(home) / "attention" / "runs" / f"{item_id}.json"
+    fsops.atomic_write(target, json.dumps({**record, "stopped_at": chrono.now_iso()}) + "\n",
+                       fsync=False)
+
+
+def stop(home: Path | str, item_id: str) -> str:
+    """``self-learn attention stop <id>`` (follow-ups 2, gap 2): the page's
+    "Stop it" on approved work a session has claimed. A new answer is
+    refused while a live claim holds the work (:func:`answer`), because a
+    different answer cannot reach a session already carrying it out; this
+    is the one honest way to change course then. It acts only on a claim
+    made in the terminal this page launched (``attention.stoppable``): it
+    stops that unit (``systemctl --user stop``, bounded), checks it no
+    longer runs, marks the launch stopped and clears the claim (both
+    cache), and seals a workspace row ``kind: stop``. It undoes nothing the
+    session already did, and the approval stands until the person answers
+    otherwise. Refused from an agent's shell (64): it acts on the person's
+    click. Exits 2 when *item_id* is not approved work, 3 when nothing
+    holds a claim, the claim is a session the page did not open, or the
+    unit would not stop."""
+    home = Path(home)
+    if _agent():
+        raise AnswerError(
+            "refused from an agent's shell: stopping work the person approved is the person's "
+            "click", EXIT_USAGE,
+        )
+    item = _approved_for(_items(home), item_id)
+    if item is None or item["kind"] != "approved.pending":
+        raise AnswerError(f"{item_id} is not approved work being carried out", EXIT_UNKNOWN)
+    claim_row = attention._claim(home, item["id"], _now())  # noqa: SLF001
+    if claim_row is None:
+        raise AnswerError(
+            "no session has claimed it, so there is nothing to stop: a different answer is "
+            "taken now, and a session that tries to claim the work afterwards is refused and "
+            "changes nothing", EXIT_REFUSED,
+        )
+    record = attention._run_record(home, item["id"])  # noqa: SLF001
+    # Gate r1 F1/F2: only a claim made from inside the unit the page
+    # launched for THIS approval (this item's own unit name) is stoppable.
+    # Any other claim is left exactly as it is: the page cannot stop that
+    # session, so it never releases its hold either.
+    if record is None or not attention.stoppable(
+        record, claim_row, item_id=item["id"], approved_at=item.get("_approved_at"),
+    ):
+        raise AnswerError(
+            f"{attention.NOT_OURS_REASON} (session {claim_row.get('session')}); the page cannot "
+            "stop it, and its hold on the work stays", EXIT_REFUSED,
+        )
+    unit = attention.run_unit(item["id"])
+    binary = shutil.which("systemctl")
+    if binary is None:
+        raise AnswerError("systemctl is not on PATH", EXIT_REFUSED)
+    message = ALREADY_CLOSED_MESSAGE
+    if _unit_state(binary, unit) in _STILL_RUNNING:
+        try:
+            subprocess.run(
+                [binary, "--user", "stop", unit], capture_output=True, text=True,
+                timeout=STOP_TIMEOUT_SECS, check=False, stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AnswerError(f"systemctl --user stop {unit} failed: {exc}", EXIT_REFUSED) from exc
+        state = _unit_state(binary, unit)
+        if state in _STILL_RUNNING:
+            raise AnswerError(
+                f"{unit} did not stop (systemd says it is {state}); nothing else was changed",
+                EXIT_REFUSED,
+            )
+        message = STOPPED_MESSAGE
+    _mark_run_stopped(home, item["id"], record)
+    _clear_claim(home, item["id"])
+    _try_seal(home, item, {"role": "user", "origin": "clicked", "kind": "stop", "text": None,
+                           "option": None})
+    return message
+
+
 # ------------------------------------------------------------------ claim and done
 
 
@@ -1239,12 +1539,38 @@ def _claim_path(home: Path, item_id: str) -> Path:
     return _cache(home) / "attention" / "claims" / f"{item_id}.json"
 
 
+def caller_unit() -> str | None:
+    """Gate r1 F1: the ``self-learn-run-<12 hex>`` unit this process runs
+    in, read from its cgroup (``/proc/self/cgroup``: a session ``attention
+    run`` launched, and every command it runs, live in that transient
+    unit's cgroup), or ``None`` when it runs anywhere else or the file
+    cannot be read. A claim records it, so "Stop it" can tell the terminal
+    the page opened from any other session."""
+    try:
+        # Gate r2 R2-1: a path that is not UTF-8 never fails the claim;
+        # a run unit name is ASCII, so a replaced byte cannot fake one.
+        text = _CGROUP_PATH.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        path = line.split(":", 2)[-1]
+        for segment in reversed(path.split("/")):
+            match = _RUN_UNIT_SEGMENT_RE.fullmatch(segment)
+            if match is not None:
+                return match.group(1)
+    return None
+
+
 def _write_claim(home: Path, item_id: str, session: str) -> None:
-    """``<cache>/attention/claims/<id>.json`` (cache only; 2-hour TTL)."""
+    """``<cache>/attention/claims/<id>.json`` (cache only; 2-hour TTL):
+    ``{session, at, unit}``, ``unit`` the caller's own run unit or null
+    (gate r1 F1)."""
     target = _claim_path(home, item_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     fsops.atomic_write(
-        target, json.dumps({"session": session, "at": chrono.now_iso()}) + "\n", fsync=False,
+        target,
+        json.dumps({"session": session, "at": chrono.now_iso(), "unit": caller_unit()}) + "\n",
+        fsync=False,
     )
 
 

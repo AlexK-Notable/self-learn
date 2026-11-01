@@ -240,6 +240,11 @@
           { target: "#ws-conversation", swap: "innerHTML" }).then(function () {
           var live = $("#ws-ask-live");
           if (live) live.innerHTML = "";
+          // Walk fixes gate r1 F5: the turn is sealed now, so the agent's
+          // words the paste rule matches against changed; the line under
+          // the reply box is asked again, never left more generous than
+          // the record.
+          recheckProvenance();
           var box = $("#ws-ask-text");
           if (box && !box.disabled) box.focus();
         });
@@ -251,7 +256,7 @@
   document.addEventListener("self-learn:sse", function (e) {
     var env = e.detail || {};
     if (env.type === "ask") onAsk(env);
-    else if (env.type === "attention") { refreshList(); noteResolved(env.ids); }
+    else if (env.type === "attention") { refreshList(); noteResolved(env.ids); recheckProvenance(); }
   });
   document.addEventListener("self-learn:refresh", refreshList);
 
@@ -268,13 +273,73 @@
   function applyDraftMeta(id, option) {
     var hidden = $("#ws-reply-draft");
     var form = $("#ws-answer-form");
-    var note = $("#ws-reply-draft-note");
+    var changed = !!hidden && hidden.value !== (id || "");
     if (hidden) hidden.value = id || "";
     if (form) {
       if (id && option) form.setAttribute("data-draft-option", option);
       else form.removeAttribute("data-draft-option");
     }
-    if (note) note.hidden = !id;
+    if (changed) askProvenance(true);
+  }
+
+  // ------------------------------------------------------------ provenance
+
+  // Walk fixes, item 2 (C6): ONE line under the reply box says how its
+  // text would be recorded, and it comes from the answer verb's own rule
+  // (POST .../provenance runs the CLI's preview: the draft id, then the
+  // 40-character match against the agent's text). While the box changed
+  // and the answer is not back, the line claims nothing ("Checking..."), so
+  // the page is never more generous than the record. Answers that arrive
+  // out of order are dropped.
+  var PROVENANCE_CHECKING = "Checking how this would be recorded\u2026";
+  var PROVENANCE_UNKNOWN = "How this would be recorded could not be checked; the line under " +
+    "your answer says how it was recorded once you send it.";
+  var provenanceSeq = 0;
+  var provenanceTimer = null;
+
+  function setProvenance(line, origin) {
+    var el = $("#ws-reply-line");
+    if (!el) return;
+    el.textContent = line;
+    el.setAttribute("data-origin", origin || "");
+  }
+
+  function askProvenance(now) {
+    var box = $("#ws-reply-text");
+    var el = $("#ws-reply-line");
+    var item = currentItem();
+    if (!box || !el || !item) return;
+    var seq = ++provenanceSeq;
+    if (provenanceTimer) { window.clearTimeout(provenanceTimer); provenanceTimer = null; }
+    setProvenance(PROVENANCE_CHECKING, "");
+    var send = function () {
+      provenanceTimer = null;
+      var hidden = $("#ws-reply-draft");
+      var body = new URLSearchParams();
+      body.set("text", box.value || "");
+      body.set("draft_id", hidden ? hidden.value || "" : "");
+      fetch("/inbox/" + encodeURIComponent(item) + "/provenance", {
+        method: "POST", credentials: "same-origin", body: body,
+        headers: { "HX-Request": "true" },
+      }).then(function (resp) { return resp.ok ? resp.json() : null; })
+        .then(function (data) {
+          if (seq !== provenanceSeq || currentItem() !== item) return;
+          if (data && typeof data.line === "string") setProvenance(data.line, data.origin);
+          else setProvenance(PROVENANCE_UNKNOWN, "");
+        }, function () {
+          if (seq !== provenanceSeq) return;
+          setProvenance(PROVENANCE_UNKNOWN, "");
+        });
+    };
+    if (now) send();
+    else provenanceTimer = window.setTimeout(send, 300);
+  }
+
+  // The agent texts the rule matches against can change under a box that
+  // did not (an ask turn sealed, a new draft): ask again when it holds text.
+  function recheckProvenance() {
+    var reply = $("#ws-reply-text");
+    if (reply && reply.value) askProvenance(true);
   }
 
   function storeDraftMeta(item, id, option) {
@@ -299,6 +364,7 @@
     applyDraftMeta(id, option);
     store("reply", currentItem(), text);
     storeDraftMeta(currentItem(), id, option);
+    askProvenance(true);
     box.focus();
   }
 
@@ -397,6 +463,7 @@
       } else {
         reattachDraft(t, e.inputType);
       }
+      askProvenance(false);
     } else if (t.id === "ws-ask-text") {
       store("ask", currentItem(), t.value);
     }
@@ -411,6 +478,7 @@
       var hidden = $("#ws-reply-draft");
       var meta = reply.value ? recallDraftMeta(id) : null;
       if (meta && hidden && !hidden.value) applyDraftMeta(meta.id, meta.option);
+      if (reply.value) askProvenance(true);
     }
     if (ask && !ask.value && !ask.disabled) ask.value = recall("ask", id);
   }
@@ -423,7 +491,13 @@
     if (!form) return;
     var params = e.detail.parameters;
     var draftOption = form.getAttribute("data-draft-option");
-    if (draftOption && !params.option) params.option = draftOption;
+    if (draftOption && !params.option) {
+      // Walk fixes gate r1 F2: the option rides with the agent's draft, not
+      // with a click on that option's own button; the route arms it when it
+      // approves or registers (Send, Ctrl+Enter alike).
+      params.option = draftOption;
+      params.from_draft = "1";
+    }
   });
 
   document.addEventListener("htmx:beforeRequest", function (e) {
@@ -435,18 +509,51 @@
       var status = $("#ws-ask-status");
       if (status) status.textContent = "";
     }
-    if (elt && elt.closest && elt.closest("#ws-answer")) {
+    // Walk fixes, item 7: "Recording..." and the busy buttons are for a
+    // request that redraws the answer bar (an answer, an undo, a stop).
+    // Run it now, a fix, a login check or feedback swap only their own
+    // result box; they used to leave every button aria-disabled and
+    // "Recording..." under the box for good, so the next Send click on a
+    // running item was refused as a click on a disabled button.
+    if (elt && elt.closest && elt.closest("#ws-answer") && redrawsAnswerBar(e.detail)) {
       $all("#ws-answer button").forEach(function (b) { b.setAttribute("aria-disabled", "true"); });
       var line = $("#ws-reply-line");
-      if (line) line.textContent = "Recording…";
+      if (line) {
+        line.setAttribute("data-before-recording", line.textContent);
+        line.textContent = "Recording…";
+      }
     }
   });
+
+  var BAR_PATH_RE = /^\/inbox\/att-[0-9a-f]{12}\/(answer|undo|stop)$/;
+
+  function redrawsAnswerBar(detail) {
+    return BAR_PATH_RE.test(requestPath(detail).split("?")[0]);
+  }
+
+  function dropNewMarks(id) {
+    if (currentItem() === id) $all("#ws [data-new-mark]").forEach(function (m) { m.remove(); });
+    $all("#inbox-list [data-inbox-item=\"" + id + "\"] .dot-new").forEach(function (m) { m.remove(); });
+  }
 
   document.addEventListener("htmx:afterRequest", function (e) {
     var own = ownItem(e.detail);
     if (own && own === ownAction.item) {
       ownAction.pending = false;
       ownAction.until = Date.now() + OWN_GRACE_MS;
+    }
+    // Whatever the request was, a bar it did not redraw is live again.
+    $all("#ws-answer [aria-disabled=\"true\"]").forEach(function (b) { b.removeAttribute("aria-disabled"); });
+    var line = $("#ws-reply-line");
+    if (line && line.textContent === "Recording…") {
+      line.textContent = line.getAttribute("data-before-recording") || "";
+      line.removeAttribute("data-before-recording");
+    }
+    // Walk fixes, item 8: once the seen click is recorded, the "new" mark
+    // goes from the page header and from the item's list row together.
+    var seen = /^\/inbox\/(att-[0-9a-f]{12})\/seen$/.exec(requestPath(e.detail).split("?")[0]);
+    if (seen && e.detail.xhr && e.detail.xhr.status >= 200 && e.detail.xhr.status < 300) {
+      dropNewMarks(seen[1]);
     }
   });
 
@@ -461,6 +568,18 @@
         setAsking(status === 409 && !!liveBubble());
       }
     }
+  });
+
+  // Walk fixes, item 4: a result that belongs at the top of the page (a
+  // login check that worked) is brought into view and announced, so it is
+  // never left below the fold while the item quietly leaves the list.
+  document.addEventListener("htmx:oobAfterSwap", function (e) {
+    var swapped = e.detail && e.detail.target;
+    if (!swapped || swapped.id !== "ws-top-result") return;
+    var target = $("#ws-top-result");  // the element now in the page
+    if (!target || !target.textContent.trim()) return;
+    try { target.scrollIntoView({ block: "start" }); } catch (err) { target.scrollIntoView(); }
+    announce(target.textContent.replace(/\s+/g, " ").trim());
   });
 
   document.addEventListener("htmx:afterSwap", function (e) {
@@ -487,8 +606,15 @@
     // what that card sent.
     var elt = e.detail && e.detail.requestConfig ? e.detail.requestConfig.elt : null;
     var card = elt && elt.closest ? elt.closest("[data-draft-card]") : null;
+    // Gate r1 F2: a card's approve option now arms first, so its send can
+    // arrive from the armed bar's Confirm: that form carries the text it
+    // sends, and the box's words are cleared only when they are that text.
+    var armedForm = !card && elt && elt.closest ? elt.closest("[data-armed-answer]") : null;
+    var armedText = armedForm ? armedForm.querySelector("input[name=\"text\"]") : null;
     var sentReply = !!path && path[2] === "answer" && (
-      !card || recall("reply", currentItem()).trim() === draftCardText(card.getAttribute("data-draft-id"))
+      card ? recall("reply", currentItem()).trim() === draftCardText(card.getAttribute("data-draft-id"))
+        : armedForm ? recall("reply", currentItem()).trim() === (armedText ? armedText.value : "").trim()
+          : true
     );
     var recorded = $("#ws-answer [data-recorded]");
     if (recorded && inAnswer) {
@@ -511,6 +637,15 @@
     }
     var err = $("#ws-answer [data-answer-error]");
     if (err && target.id === "ws-answer") announce(err.textContent.replace(/\s+/g, " ").trim());
+    // Walk fixes gate r1 F3 (the orchestrator's ruling): the page never
+    // moves focus onto an approve or register button by itself. An armed
+    // bar puts it on Cancel, so a stray Enter or Space backs out.
+    var cancel = target.id === "ws-answer" ? $("#ws-answer [data-armed-cancel]") : null;
+    if (cancel) cancel.focus();
+    if (target.id === "ws-answer" || target.id === "inbox-workspace") {
+      var kept = $("#ws-reply-text");
+      if (kept && kept.value) askProvenance(true);
+    }
     if (target.id === "ws-ask-live") {
       store("ask", currentItem(), "");
       var box = $("#ws-ask-text");
@@ -530,10 +665,34 @@
   function sendFocusedBox() {
     var el = document.activeElement;
     if (!el) return false;
-    if (el.id === "ws-reply-text") return clickIfPresent("[data-send-reply]");
+    if (el.id === "ws-reply-text") {
+      keyedClick = true;
+      try { return clickIfPresent("[data-send-reply]"); } finally { keyedClick = false; }
+    }
     if (el.id === "ws-ask-text") return clickIfPresent("[data-ask-send]");
     return false;
   }
+
+  // Walk fixes, item 1: a number key never approves or registers. On an
+  // option whose effect is approve or register it ARMS the option (the
+  // answer route answers `keyed=1` with the once-more confirmation a
+  // confirm option gets); a mouse click on the same button still sends at
+  // once (design r2 §0 call 3).
+  var keyedClick = false;
+
+  function pressOption(key) {
+    var btn = $("#ws-answer [data-option-index=\"" + key + "\"]");
+    if (!btn || btn.disabled || btn.hidden) return;
+    var effect = btn.getAttribute("data-effect");
+    keyedClick = effect === "approve" || effect === "register";
+    try { btn.click(); } finally { keyedClick = false; }
+  }
+
+  document.addEventListener("htmx:configRequest", function (e) {
+    if (!keyedClick) return;
+    var path = String(e.detail.path || "").split("?")[0];
+    if (/\/answer$/.test(path)) e.detail.parameters.keyed = "1";
+  });
 
   function onKey(event) {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -568,9 +727,13 @@
         break;
       }
       case "inbox_option": {
-        var armed = $("[data-confirm-armed]");
-        if (armed && event.key === "1") { armed.click(); break; }
-        clickIfPresent("#ws-answer [data-option-index=\"" + event.key + "\"]");
+        // Walk fixes gate r1 F1: a held key's auto-repeat never acts, and
+        // while something is armed no number key does anything: only the
+        // armed bar's own Confirm button confirms (a click, or Enter/Space
+        // with it focused), so a digit can never approve.
+        if (event.repeat) break;
+        if ($("#ws-answer [data-armed-answer], #ws-answer [data-armed-stop]")) break;
+        pressOption(event.key);
         break;
       }
       case "inbox_reply": { var r = $("#ws-reply-text"); if (r) r.focus(); break; }

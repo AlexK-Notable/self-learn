@@ -301,7 +301,9 @@ is never one. Its denied paths are `<cache>/sessions` and every
 Grep is refused because the charter judges a Grep by its root, never by the
 files it reads. (2) The charter, as above. (3) Its own tools (MCP server
 `selflearn_ask`, beside the built-ins as the steward's are, §1b) read, through
-the same fence: `record`, `case`, `statements`, `words_in_context`, `report`,
+the same fence: `record`, `case` (for a case that fails its freeze check, the
+file as it is now and then sections 1-4 as decided, from `cases.decided_text`;
+follow-ups 2), `statements`, `words_in_context`, `report`,
 `ledger_history` (a read-only `git log` of subjects and trailers), `status` (the
 data of `status --json --fast` from an in-process function, never the CLI),
 `item`, `search` (replaces Grep: secret files, denied folders and binary files

@@ -11,7 +11,12 @@ grants, facts), pointers to look further, the conversation's state, the
 latest answer, and the cuts made to fit the bounds.
 
 :func:`build` reads the ledger and cache files only. It makes no model
-call, writes nothing to the ledger, and never runs git.
+call, writes nothing to the ledger, and never runs git. One read of the
+ledger's history is handed in by the verb that builds the packet
+(follow-ups 2, gap 1): a ``conflict.case-tampered`` item's ``case_edit``
+shows what the case said when it was decided through the caller's
+*decided_reader* (``cases.decided_text``); without one it says the decided
+text was not looked up.
 
 **One deny list** (:data:`SECRET_DENY`) serves this packet's ``look_at``
 filter and the ask agent's read fence; the ask lane imports it and never
@@ -26,7 +31,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import attention
 from .primitives import chrono
@@ -40,6 +45,7 @@ __all__ = [
     "MAX_TEXT_CHARS",
     "PACKET_VERSION",
     "SECRET_DENY",
+    "DecidedReader",
     "DenyList",
     "UnknownItem",
     "build",
@@ -186,6 +192,41 @@ class _Limits:
 # ------------------------------------------------------------------ evidence
 
 
+#: Walk fixes, item 6: the most sightings a lesson entry lists.
+MAX_SIGHTINGS = 10
+
+
+def _sections(body: str) -> dict[str, str]:
+    """A record body's ``## Name`` sections, name -> text."""
+    from .primitives import text as text_mod
+
+    out: dict[str, str] = {}
+    matches = list(text_mod.HEADING_RE.finditer(body))
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        out[m.group(1)] = body[m.end():end].strip()
+    return out
+
+
+def _sightings(record: Any, limits: _Limits, where: str) -> list[dict]:
+    """Walk fixes, item 6: each time the lesson was seen (its frontmatter
+    ``evidence``: a session and time with the quote, or an origin with a
+    note), newest first, so a claim like "came up at least twice" can be
+    checked in place."""
+    rows = [dict(e) for e in getattr(record, "evidence", ()) or () if isinstance(e, dict)]
+    rows.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
+    out: list[dict] = []
+    for index, entry in enumerate(rows[:MAX_SIGHTINGS]):
+        out.append({
+            "at": entry.get("ts") if isinstance(entry.get("ts"), str) else None,
+            "session": entry.get("session") if isinstance(entry.get("session"), str) else None,
+            "origin": entry.get("origin") if isinstance(entry.get("origin"), str) else None,
+            "quote": limits.clip(entry.get("quote") or entry.get("note"),
+                                 f"{where}.seen[{index}]", 400),
+        })
+    return out
+
+
 def _lesson(home: Path, lesson_id: str, limits: _Limits, where: str) -> dict | None:
     from .ledger_ops import LedgerOpsError, find_record_path
     from .records import Record
@@ -195,12 +236,25 @@ def _lesson(home: Path, lesson_id: str, limits: _Limits, where: str) -> dict | N
     except (LedgerOpsError, OSError, ValueError):
         return None
     body = record.body
-    title = next((ln.lstrip("# ").strip() for ln in body.splitlines() if ln.strip()), lesson_id)
+    sections = _sections(body)
+    # Walk fixes, item 6: the title is what the lesson is about (its
+    # trigger, or its fact), never the first heading's name ("Trigger").
+    lead = sections.get("Trigger") or sections.get("Fact")
+    title = (
+        " ".join(lead.split()) if lead
+        else next((ln.lstrip("# ").strip() for ln in body.splitlines() if ln.strip()), lesson_id)
+    )
     routing = record.routing or {}
+    sightings = getattr(record, "sightings", None)
     return {
         "kind": "lesson", "id": lesson_id, "title": limits.clip(title, f"{where}.title", 300),
         "text": limits.clip(body, f"{where}.text"), "status": record.status,
         "placement": routing.get("destination") if isinstance(routing, dict) else None,
+        "trigger": limits.clip(sections.get("Trigger"), f"{where}.trigger", 1000),
+        "instruction": limits.clip(sections.get("Instruction"), f"{where}.instruction", 1000),
+        "fact": limits.clip(sections.get("Fact"), f"{where}.fact", 1000),
+        "sightings": sightings if isinstance(sightings, int) else None,
+        "seen": _sightings(record, limits, where),
     }
 
 
@@ -224,10 +278,24 @@ def _context(home: Path, ref: str, limits: _Limits, where: str, deadline: float)
         else:
             return None, "no context for this kind of ref"
     except Exception as exc:  # noqa: BLE001 -- context is a courtesy
-        return None, f"not read ({type(exc).__name__})"
+        return None, _context_problem(exc)
     if text is None:
-        return None, "the ref did not resolve"
+        return None, "not found: the place it points to is not there any more"
     return limits.clip(text, f"{where}.context", MAX_CONTEXT_CHARS), None
+
+
+def _context_problem(exc: Exception) -> str:
+    """Walk fixes, item 6: why a statement's conversation was not shown, in
+    plain words (the page prints "The conversation around it was <this>."),
+    never an exception's class name."""
+    from . import refs
+
+    if isinstance(exc, refs.RefError):
+        return ("not found on this machine: the conversation file it came from was moved or "
+                "deleted (the words themselves are kept)")
+    if isinstance(exc, OSError):
+        return "not readable here (the file could not be opened)"
+    return "not read (it could not be parsed)"
 
 
 def _statement(home: Path, row: dict, limits: _Limits, where: str, deadline: float) -> dict:
@@ -296,6 +364,120 @@ def _case(home: Path, case_id: str, limits: _Limits, where: str) -> tuple[dict |
     return _case_entry(case_id, sections, body, limits, where), _case_links(view.frontmatter, sections)
 
 
+def _case_file_now(
+    home: Path, case_id: str,
+) -> tuple[Path, dict, str, str | None, dict[str, str]] | None:
+    """A case file as it is now, read directly (no git, at most
+    :data:`MAX_CASE_FILE_BYTES`): ``(path, frontmatter, body, frozen
+    sections 1-4 or None when the headings no longer parse, sections)``, or
+    ``None`` for a missing case. Its frontmatter or headings may be what
+    was edited, so each part that does not parse is left empty."""
+    from . import cases
+
+    try:
+        path = cases._case_path_for_id(home, case_id)  # noqa: SLF001
+        with path.open("rb") as fh:
+            raw = fh.read(MAX_CASE_FILE_BYTES)
+    except Exception:  # noqa: BLE001 -- a missing case is no entry
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    frontmatter: dict = {}
+    sections: dict[str, str] = {}
+    frozen: str | None = None
+    try:
+        frontmatter, body = cases._split_frontmatter(text)  # noqa: SLF001
+    except Exception:  # noqa: BLE001 -- the frontmatter itself may be what was edited
+        body = text
+    try:
+        frozen, _rest = cases._split_frozen(body)  # noqa: SLF001
+        sections = cases._parse_sections(body)  # noqa: SLF001
+    except Exception:  # noqa: BLE001 -- the headings may be what was edited
+        frozen = None
+    return path, frontmatter, body, frozen, sections
+
+
+#: A reader of a case's decided text (``cases.decided_text``): the packet
+#: never runs git itself, so the verb that builds it hands one in.
+DecidedReader = Callable[[Path, str], "dict[str, Any] | None"]
+#: The most changed passages a ``case_edit`` lists, and each one's length.
+MAX_CASE_CHANGES = 12
+MAX_CHANGE_CHARS = 1200
+
+
+def _changes(decided: str, now: str, limits: _Limits) -> list[dict]:
+    """The passages where *now* differs from *decided*, line by line, each
+    ``{"was": decided lines, "now": the file's lines}`` (an empty side is
+    ``""``: lines added or taken out), at most :data:`MAX_CASE_CHANGES`."""
+    import difflib
+
+    old, new = decided.splitlines(), now.splitlines()
+    out: list[dict] = []
+    matcher = difflib.SequenceMatcher(a=old, b=new, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if len(out) == MAX_CASE_CHANGES:
+            limits.truncated.append(f"case_edit.changes: more than {MAX_CASE_CHANGES} passages")
+            break
+        where = f"case_edit.changes[{len(out)}]"
+        out.append({
+            "was": limits.clip("\n".join(old[i1:i2]), f"{where}.was", MAX_CHANGE_CHARS),
+            "now": limits.clip("\n".join(new[j1:j2]), f"{where}.now", MAX_CHANGE_CHARS),
+        })
+    return out
+
+
+def _case_edit(home: Path, item: dict, limits: _Limits,
+               decided_reader: DecidedReader | None) -> dict | None:
+    """Follow-ups 2 (gap 1): on a ``conflict.case-tampered`` page, what
+    the case said when it was decided beside what the file says now, and
+    the passages that differ, so the person sees the edit before choosing
+    keep or restore. The decided text comes from *decided_reader* (the
+    ``attention packet`` and ``ask`` verbs pass ``cases.decided_text``,
+    the same lookup ``refreeze --restore`` uses); this module runs no git.
+    Without a reader, or when it finds no decided commit or fails, the
+    block says so in ``note`` and ``decided`` is ``None``."""
+    if item["kind"] != "conflict.case-tampered":
+        return None
+    case_id = str(item.get("subject"))
+    now = _case_file_now(home, case_id)
+    now_text = None if now is None else (now[3] if now[3] is not None else now[2])
+    decided: dict | None = None
+    decided_text: str | None = None
+    note: str | None = None
+    if decided_reader is None:
+        note = "the decided text was not looked up here"
+    else:
+        found: dict[str, Any] | None = None
+        try:
+            found = decided_reader(home, case_id)
+        except Exception as exc:  # noqa: BLE001 -- the page still works without it
+            note = f"the ledger's history could not be read ({type(exc).__name__})"
+        else:
+            if found is None:
+                note = ("no commit of this case holds the text it was decided with, so it "
+                        "cannot be shown, and restoring it would be refused")
+        if isinstance(found, dict) and isinstance(found.get("text"), str):
+            decided_text = str(found["text"])
+            decided = {
+                "text": limits.clip(decided_text, "case_edit.decided.text"),
+                "commit": str(found.get("commit") or "")[:12] or None,
+                "committed_at": found.get("committed_at"),
+                "truncated": bool(found.get("truncated")),
+            }
+    changes: list[dict] = []
+    if decided_text is not None and now_text is not None:
+        # Compared whole (both secret-scanned), then each passage clipped.
+        changes = _changes(redact_text(decided_text), redact_text(now_text), limits)
+    return {
+        "case": case_id,
+        "decided": decided,
+        "now": limits.clip(now_text, "case_edit.now"),
+        "changes": changes,
+        "note": note,
+    }
+
+
 def _edited_case(home: Path, case_id: str, limits: _Limits, where: str, fact_where: str, *,
                  own_item: str | None, on_own_page: bool) -> tuple[list[dict], list[str]]:
     """A case whose freeze hash fails, read as the file is now (gate r1
@@ -310,25 +492,10 @@ def _edited_case(home: Path, case_id: str, limits: _Limits, where: str, fact_whe
     one), the fact says that item is where the edit is asked about."""
     from . import cases
 
-    try:
-        path = cases._case_path_for_id(home, case_id)  # noqa: SLF001
-        with path.open("rb") as fh:
-            raw = fh.read(MAX_CASE_FILE_BYTES)
-    except Exception:  # noqa: BLE001 -- a missing case is no entry
+    now = _case_file_now(home, case_id)
+    if now is None:
         return [], []
-    text = raw.decode("utf-8", errors="replace")
-    frontmatter: dict = {}
-    sections: dict[str, str] = {}
-    frozen: str | None = None
-    try:
-        frontmatter, body = cases._split_frontmatter(text)  # noqa: SLF001
-    except Exception:  # noqa: BLE001 -- the frontmatter itself may be what was edited
-        body = text
-    try:
-        frozen, _rest = cases._split_frozen(body)  # noqa: SLF001
-        sections = cases._parse_sections(body)  # noqa: SLF001
-    except Exception:  # noqa: BLE001 -- the headings may be what was edited
-        frozen = None
+    path, frontmatter, body, frozen, sections = now
     entry = _case_entry(case_id, sections, frozen if frozen is not None else body, limits, where)
     decided = str(frontmatter.get("decided_sha256") or "")
     now = cases._hash_frozen(frozen) if frozen is not None else None  # noqa: SLF001
@@ -374,9 +541,22 @@ def _report(home: Path, date: str | None, limits: _Limits, where: str) -> dict |
     }
 
 
+def _display_path(path: str) -> str:
+    """Walk fixes, item 6: a path as a person reads it, the home folder
+    written ``~``, whole (never cut)."""
+    try:
+        home = str(Path.home())
+    except RuntimeError:
+        return path
+    if home and home != "/" and (path == home or path.startswith(home.rstrip("/") + "/")):
+        return "~" + path[len(home.rstrip("/")):]
+    return path
+
+
 def _file(path: str, limits: _Limits, where: str) -> dict:
     p = Path(path)
-    if p.is_dir():
+    is_dir = p.is_dir()
+    if is_dir:
         try:
             names = sorted(child.name + ("/" if child.is_dir() else "") for child in p.iterdir())
         except OSError as exc:
@@ -392,8 +572,8 @@ def _file(path: str, limits: _Limits, where: str) -> dict:
             text = f"(cannot read: {exc})"
         truncated = p.stat().st_size > len(text) if p.exists() else False
     excerpt = limits.clip(text, f"{where}.excerpt")
-    return {"kind": "file", "path": path, "excerpt": excerpt,
-            "truncated": bool(truncated or (excerpt or "").endswith("…"))}
+    return {"kind": "file", "path": path, "display": _display_path(path), "is_dir": is_dir,
+            "excerpt": excerpt, "truncated": bool(truncated or (excerpt or "").endswith("…"))}
 
 
 def _hook(home: Path, lesson_id: str, limits: _Limits, where: str) -> dict | None:
@@ -425,8 +605,12 @@ def _hook(home: Path, lesson_id: str, limits: _Limits, where: str) -> dict | Non
             except OSError:
                 script = None
     registration = {k: v for k, v in meta.items() if k not in ("script", "script_path")}
+    sections = _sections(record.body)
     return {
         "kind": "hook", "record": lesson_id,
+        # Walk fixes, item 6: what the hook is for leads, before its script.
+        "trigger": limits.clip(sections.get("Trigger"), f"{where}.trigger", 1000),
+        "instruction": limits.clip(sections.get("Instruction"), f"{where}.instruction", 1000),
         "script_excerpt": limits.clip(script if script is not None else meta.get("script"),
                                       f"{where}.script_excerpt"),
         "registration": limits.clip(json.dumps(registration, sort_keys=True, default=str),
@@ -518,9 +702,14 @@ def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str],
         if isinstance(answers, dict) and answers.get("ref") in answering:
             done.add(str(row.get("id")))
             out.append(_statement(home, row, limits, f"evidence[{len(out)}]", deadline))
+    _mark_conflict_sides(item, out)
     if item["kind"] == "decided.hook-activated" and isinstance(item.get("_lesson"), str):
         hook = _hook(home, item["_lesson"], limits, f"evidence[{len(out)}]")
         if hook is not None:
+            # Walk fixes, item 6: the hook leads, and it opens with the
+            # lesson's trigger and instruction; the lesson itself is not
+            # repeated below the script.
+            out[:] = [e for e in out if not (e.get("kind") == "lesson" and e.get("id") == item["_lesson"])]
             out.insert(0, hook)
     if item["kind"] == "decided.overseer-run":
         report = _report(home, (item.get("source") or {}).get("report"), limits, f"evidence[{len(out)}]")
@@ -534,6 +723,30 @@ def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str],
             out.append({"kind": "fact", "label": fact.get("label"),
                         "value": limits.clip(value, "evidence.fact") if isinstance(value, str) else value})
     return out
+
+
+def _mark_conflict_sides(item: dict, out: list[dict]) -> None:
+    """Walk fixes, item 6: on a conflict between two statements, each
+    quote says whether it is the newer or the older one (the words the
+    options use), by when it was said: the same ``at`` field and ordering
+    the answer verb uses when it observes the losing side
+    (``attention_answers._conflict_losers``). On equal or unknown times the
+    page marks neither, where the verb counts the second-named one as the
+    newer (gate r1 F7): the page never claims an order it does not know."""
+    raw = item.get("_ask")
+    ask: dict = raw if isinstance(raw, dict) else {}
+    named = ask.get("statements") if ask.get("because") == "conflict" else None
+    if not (isinstance(named, list) and len(named) == 2):
+        return
+    quoted = {e.get("id"): e for e in out if e.get("kind") == "statement" and e.get("id") in named}
+    if len(quoted) != 2:
+        return
+    first, second = (quoted[named[0]], quoted[named[1]])
+    a_at, b_at = str(first.get("at") or ""), str(second.get("at") or "")
+    if not a_at or not b_at or a_at == b_at:
+        return
+    newer, older = (first, second) if a_at > b_at else (second, first)
+    newer["side"], older["side"] = "newer", "older"
 
 
 def _evidence_ref(entry: dict) -> dict:
@@ -555,6 +768,9 @@ _VIA_DOES = {
     "fix": "restarts self-learn's host service (systemctl --user restart)",
     "refreeze --keep": "keeps your edit: the case's freeze hash is taken from the file as it is",
     "refreeze --restore": "puts back the case as it was decided, from the ledger's history",
+    "stop": ("closes the terminal carrying it out, so its session changes nothing more; a step "
+             "it is in the middle of stops there and is not undone, and what it already changed "
+             "stays changed. Then you can change your answer"),
 }
 
 
@@ -630,9 +846,13 @@ def _why_you(item: dict) -> str | None:
     return f"{base} {own}".strip() if isinstance(own, str) and own.strip() else base
 
 
-def build(home: Path | str, item_id: str) -> dict:
+def build(home: Path | str, item_id: str, *,
+          decided_reader: DecidedReader | None = None) -> dict:
     """The packet of item *item_id* (contract §4.3). Raises
-    :class:`UnknownItem` for an id no item has."""
+    :class:`UnknownItem` for an id no item has. *decided_reader*
+    (``cases.decided_text``, passed by the ``attention packet`` and ``ask``
+    verbs) fills ``case_edit.decided`` on a ``conflict.case-tampered`` item;
+    this function itself never runs git (follow-ups 2, gap 1)."""
     home = Path(home)
     items = attention.collect(home, all_items=True)
     item = next((i for i in items if i["id"] == item_id), None)
@@ -686,6 +906,7 @@ def build(home: Path | str, item_id: str) -> dict:
              for k, v in decided.items()} if isinstance(decided, dict) else None
         ),
         "undo": {"label": undo.get("label"), "redo_label": undo.get("redo_label")} if isinstance(undo, dict) else None,
+        "case_edit": _case_edit(home, item, limits, decided_reader),
         "evidence": evidence,
         "more": more,
         "pointers": _pointers(home, item),
@@ -727,6 +948,12 @@ def _pointers(home: Path, item: dict) -> list[dict]:
                          "no commit)",
                 "tool": "ledger_history", "path": str(path),
             })
+            # Follow-ups 2 (gap 1): the text itself, as decided, is the
+            # `case` tool's (and this packet's `case_edit`).
+            out.append({
+                "label": "what the case said when it was decided, beside the file as it is now",
+                "tool": "case",
+            })
     return out
 
 
@@ -749,6 +976,14 @@ def _cut_candidates(packet: dict) -> list[tuple[dict, str, str]]:
             for index, row in enumerate(plan.get(group) or []):
                 if isinstance(row, dict):
                     out += [(row, key, f"plan.{group}[{index}].{key}") for key in keys]
+    edit = packet.get("case_edit")
+    if isinstance(edit, dict):
+        out.append((edit, "now", "case_edit.now"))
+        if isinstance(edit.get("decided"), dict):
+            out.append((edit["decided"], "text", "case_edit.decided.text"))
+        for index, change in enumerate(edit.get("changes") or []):
+            if isinstance(change, dict):
+                out += [(change, key, f"case_edit.changes[{index}].{key}") for key in ("was", "now")]
     return out
 
 
@@ -803,6 +1038,19 @@ def render_md(packet: dict) -> str:
         lines += ["## Plan", "```json", json.dumps(packet["plan"], indent=2, ensure_ascii=False), "```", ""]
     if packet.get("decided"):
         lines += ["## Decided", "```json", json.dumps(packet["decided"], indent=2, ensure_ascii=False), "```", ""]
+    edit = packet.get("case_edit")
+    if isinstance(edit, dict):
+        lines += [f"## The hand edit of {edit.get('case')}", ""]
+        decided = edit.get("decided")
+        if isinstance(decided, dict):
+            lines += [f"### Sections 1-4 as decided (commit {decided.get('commit')}, "
+                      f"{decided.get('committed_at')})", str(decided.get("text") or ""), ""]
+        else:
+            lines += [f"The decided text is not shown: {edit.get('note')}.", ""]
+        lines += ["### Sections 1-4 as the file says now", str(edit.get("now") or ""), ""]
+        for change in edit.get("changes") or []:
+            lines += ["### A passage that differs", "Was decided:", str(change.get("was") or "(nothing)"),
+                      "The file says now:", str(change.get("now") or "(nothing)"), ""]
     lines.append("## Evidence")
     for entry in packet.get("evidence") or []:
         lines += ["", f"### {entry.get('kind')} {entry.get('id') or entry.get('path') or entry.get('label') or ''}".rstrip()]

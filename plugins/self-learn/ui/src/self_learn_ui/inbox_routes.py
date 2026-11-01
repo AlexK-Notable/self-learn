@@ -14,7 +14,7 @@ The rules this module keeps (the same as :mod:`self_learn_ui.routes`):
 - every read goes through :mod:`self_learn_ui.ledger` (``attention --json``,
   ``attention packet <id> --json``, the workspace transcript);
 - every mutation goes through the app's :class:`VerbRunner`
-  (``attention answer|undo|feedback|seen|run|fix``, ``case refreeze``);
+  (``attention answer|undo|feedback|seen|run|fix|stop``, ``case refreeze``);
 - ask turns and ``attention check-login`` go through the app's
   :class:`self_learn_ui.ask_runner.AskRunner`, never the verb runner, so a
   click never waits behind a model call;
@@ -28,6 +28,7 @@ The rules this module keeps (the same as :mod:`self_learn_ui.routes`):
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import secrets
@@ -36,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, Response
 
 import self_learn.primitives.chrono as chrono
 
@@ -79,7 +80,19 @@ _ITEM_ID_RE = re.compile(r"^att-[0-9a-f]{12}$")
 _OPTION_ID_RE = re.compile(r"^opt-[a-z0-9-]{1,48}$")
 _DRAFT_ID_RE = re.compile(r"^drf-[0-9a-f]{8}$")
 #: The approve-with-sudo arming and the "pick an option" line need the plan.
-PLAN_LINE = "Your words are recorded and the overseer reads them; to decide, pick an option."
+#: Walk fixes, item 2: this line says only what words alone do; how the
+#: box's text is recorded is the provenance line's, which never repeats it.
+PLAN_LINE = ("Words alone do not decide this: to decide, pick an option. Words in the box go "
+             "with the option you click, as its note.")
+#: Walk fixes, item 2: the provenance line under the reply box, before
+#: anything is typed. It promises nothing the record may not keep.
+PROVENANCE_EMPTY = ("Words you write yourself are recorded as your words. Text taken from the "
+                    "agent's answers or drafts is recorded as the agent's, not as yours.")
+PROVENANCE_CHECKING = "Checking how this would be recorded…"
+#: Walk fixes, item 7: a launch no session has claimed after this long is
+#: treated as failed (the terminal did not open, or was closed before it
+#: started), and the page offers a new terminal.
+UNCLAIMED_LAUNCH_SECS = 120
 WORDS_ALONE_LINE = ("Recorded as your words. The overseer reads them on its next run. "
                     "To decide, pick an option.")
 #: §2.2: the starter chips, fixed per class by code, never by the model.
@@ -144,44 +157,152 @@ def _age_words(since: object, now: datetime | None = None) -> str:
     return f"{weeks} weeks"
 
 
-#: ``attention run``'s exit-5 sentences (attention_answers.run): the
-#: approved-work one ends "...; open a terminal and run: claude '<line>'",
-#: the login one says "run `claude`, then type /login".
-_NO_TERMINAL_BRIEF_RE = re.compile(
-    r"The brief is at (?P<brief>.+?); open a terminal and run: (?P<cmd>\S.*)$", re.S)
-_NO_TERMINAL_LOGIN_RE = re.compile(r"run `(?P<cmd>[^`]+)`, then type /login")
-_NO_TERMINAL_ANY_RE = re.compile(r"\brun: (?P<cmd>\S.*)$", re.S)
-
-
-def no_terminal(message: str) -> dict[str, str | None]:
-    """Split the verb's no-terminal sentence into the command alone (the
-    copy block holds only what runs when pasted; gate r1 finding 3) and a
-    line of prose for around it. With no command in the sentence, the
-    sentence itself is the prose and nothing is offered to copy."""
-    text = (message or "").strip()
-    match = _NO_TERMINAL_BRIEF_RE.search(text)
-    if match:
-        return {"command": match.group("cmd").strip(),
-                "lead": f"The brief it follows is at {match.group('brief').strip()}."}
-    match = _NO_TERMINAL_LOGIN_RE.search(text)
-    if match:
-        return {"command": match.group("cmd").strip(),
-                "lead": "Then type /login in that session, and press Check now."}
-    match = _NO_TERMINAL_ANY_RE.search(text)
-    if match:
-        return {"command": match.group("cmd").strip(), "lead": None}
-    return {"command": None, "lead": text or None}
+def no_terminal(run: dict, *, login: bool = False) -> dict[str, str | None]:
+    """The copy block and its prose for ``attention run``'s exit 5 (no
+    terminal found), from the verb's machine-readable fields
+    (``RunResult.to_json()``: ``command``, ``brief``; follow-ups 2, gap 3)
+    -- never parsed from its sentence. The copy block holds only the
+    command (gate r1 finding 3); with no command, the sentence itself is
+    the prose and nothing is offered to copy."""
+    command = run.get("command")
+    command = command.strip() if isinstance(command, str) and command.strip() else None
+    brief = run.get("brief")
+    if command is None:
+        message = str(run.get("message") or "").strip()
+        return {"command": None, "lead": message or None}
+    if isinstance(brief, str) and brief.strip():
+        return {"command": command, "lead": f"The brief it follows is at {brief.strip()}."}
+    if login:
+        return {"command": command, "lead": "Then type /login in that session, and press Check now."}
+    return {"command": command, "lead": None}
 
 
 def _with_command(run: object, exit_code: int | None = None) -> object:
-    """A run result (``{exit, message}``) with ``command``/``lead`` added
-    when it is the no-terminal refusal."""
+    """A run result (``{exit, message, command, brief}``) with
+    ``command``/``lead`` set for the page when it is the no-terminal
+    refusal."""
     if not isinstance(run, dict):
         return run
     code = run.get("exit") if exit_code is None else exit_code
     if code != 5:
         return run
-    return {**run, **no_terminal(str(run.get("message") or ""))}
+    return {**run, **no_terminal(run)}
+
+
+def _run_json(result: RunResult) -> dict | None:
+    """``attention run --json``'s object (printed on every exit), or
+    ``None`` when stdout holds none (an older CLI, or a crash)."""
+    try:
+        data = json.loads((result.stdout or "").strip() or "null")
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def provenance_line(preview: dict) -> dict[str, Any]:
+    """Walk fixes, item 2: the ONE line under the reply box saying how the
+    box's text would be recorded, from the answer verb's own rule
+    (``ledger.answer_preview``). ``{line, origin, matched}``."""
+    problem = preview.get("problem")
+    origin = preview.get("origin")
+    matched = preview.get("matched")
+    if problem:
+        line = f"This would not be recorded: {problem}."
+    elif origin is None:
+        line = PROVENANCE_EMPTY
+    elif origin == "typed":
+        line = f"Sending this records it {preview.get('recorded_as') or 'as your words'}."
+    else:
+        line = f"Sending this records it {preview.get('recorded_as')}, not as your words"
+        if origin == "draft-edited" and isinstance(matched, str) and matched:
+            shown = matched if len(matched) <= 120 else matched[:119].rstrip() + "…"
+            line += (f": it contains the agent's text “{shown}”. To be quoted as your own words, "
+                     "say it in your own words.")
+        elif origin.startswith("draft-"):
+            line += (": it started as the agent's draft. To be quoted as your own words, clear "
+                     "the box and write your own.")
+        else:
+            line += "."
+    return {"line": line, "origin": origin, "matched": matched}
+
+
+#: Walk fixes, item 5: what an undo or a redo did, in plain words, by
+#: kind; the verb's own line goes in a small details fold.
+UNDO_WORDS = {
+    "decided.hook-activated": ("Turned off: the hook no longer runs in new Claude Code sessions.",
+                               "Turned back on: the hook runs in every new Claude Code session "
+                               "again."),
+    "decided.registration": ("Removed: self-learn no longer writes into that repository.",
+                             "Registered again, in plain mode: self-learn writes its lines there "
+                             "and never commits."),
+    "decided.grant-use": ("Undone: what the agent did under your grant is reversed.",
+                          "Done again: the agent's act is back in place."),
+    "decided.skill": ("Undone: the change to the skill is reversed.", "Done again."),
+    "decided.withdrawn": ("Asked again: the question is back under Needs you.", ""),
+}
+
+
+def undo_words(kind: object, *, redo: bool, label: object = None) -> str:
+    pair = UNDO_WORDS.get(str(kind))
+    if pair is not None and pair[1 if redo else 0]:
+        return pair[1 if redo else 0]
+    return f"Done: {label}." if label else ("Done again." if redo else "Undone.")
+
+
+def feedback_words(item: dict, wanted: str) -> str:
+    """Walk fixes, item 5: what a "didn't need me" / "should have asked me"
+    click changed, in plain words. A code kind's class changes at once
+    (answer 7), so the item moves in the list and the line says so; an
+    overseer ask's click is evidence the overseer weighs."""
+    if str(item.get("kind") or "").startswith("ask."):
+        return ("Noted for the overseer: it weighs this when it decides what to ask you. "
+                "Nothing else changes now.")
+    if wanted == "needs-you":
+        return ("Noted: items like this one now wait for you under Needs you, so this one has "
+                "moved there in the list. You can change this on the settings page.")
+    if wanted == "decided":
+        return ("Noted: items like this one no longer wait for you; self-learn decides them and "
+                "shows them under Decided for you, so this one has moved there in the list. You "
+                "can change this on the settings page.")
+    return ("Noted: items like this one no longer show in the inbox. You can change this on the "
+            "settings page.")
+
+
+def launch_unclaimed(item: dict, now: datetime | None = None) -> bool:
+    """Walk fixes, item 7: approved work shown as running whose launch no
+    session has claimed for :data:`UNCLAIMED_LAUNCH_SECS` (the brief's
+    first step is the claim, seconds after the terminal opens): the
+    terminal did not open, or was closed before it started."""
+    run = item.get("run") if isinstance(item.get("run"), dict) else None
+    if item.get("class") != "approved" or item.get("state") != "running" or run is None:
+        return False
+    if run.get("claimed_by"):
+        return False
+    at = _parse(run.get("at"))
+    if at is None:
+        return False
+    return ((now or datetime.now(timezone.utc)) - at).total_seconds() >= UNCLAIMED_LAUNCH_SECS
+
+
+def key_hints(options: list[dict]) -> list[dict]:
+    """Walk fixes, item 1: the number key of each option and what it does,
+    in words. An option that approves or registers is armed by its key
+    (it asks once more); the hint says "approve" or "register" plainly."""
+    out: list[dict] = []
+    for index, option in enumerate(options[:4], start=1):
+        if option.get("disabled"):
+            continue
+        effect = option.get("effect")
+        if effect == "approve":
+            does = f"approve: {option.get('label')} (asks you to confirm first)"
+        elif effect == "register":
+            does = f"register: {option.get('label')} (asks you to confirm first)"
+        elif option.get("confirm") or option.get("via") == "stop":
+            does = f"{option.get('label')} (asks you to confirm first)"
+        else:
+            does = str(option.get("label"))
+        out.append({"key": str(index), "does": does})
+    return out
 
 
 def redo_next(item: dict, rows: list[dict]) -> bool:
@@ -315,8 +436,22 @@ def _workspace_ctx(
     view_options = [{**o, "does": (packet_options.get(o.get("id")) or {}).get("does")}
                     for o in options]
     has_plan = bool((packet or {}).get("plan")) or any(o.get("effect") == "approve" for o in options)
+    # Walk fixes, item 2: a bar drawn with text in the box (a refused send,
+    # an armed option) says how that text would be recorded, by the verb's
+    # own rule; an empty box gets the general line, and the page asks again
+    # as the person types.
+    kept_text = (answer or {}).get("text") if isinstance((answer or {}).get("text"), str) else None
+    kept_draft = (answer or {}).get("draft_id") or None
+    if kept_text or kept_draft:
+        provenance = provenance_line(ledger.answer_preview(
+            _home(request), str(item.get("id")), text=kept_text, draft_id=kept_draft))
+    else:
+        provenance = provenance_line({})
     return {
         "item": _view_item(item),
+        "provenance": provenance,
+        "key_hints": key_hints(view_options) if item.get("state") != "awaiting-sudo" else [],
+        "launch_unclaimed": launch_unclaimed(item),
         "packet": packet,
         "packet_error": None if packet_read is None or packet_read.data is not None else packet_read.error,
         "deferred": deferred,
@@ -399,8 +534,19 @@ async def inbox(request: Request) -> Response:
     ctx = _list_ctx(read, None)
     items = [i for group in ctx["groups"].values() for i in group]
     if items and not ctx["reader_error"]:
+        # §2.1 item 1: the list beside the most pressing item, already
+        # open. Walk fixes, item 8: the page says that is what happened
+        # (the list is on the left, or above on a narrow window), and the
+        # address stays /inbox, so a reload opens whatever is most pressing
+        # then.
         first = sorted(items, key=inbox_order)[0]
-        return RedirectResponse(url=f"/inbox/{first['id']}", status_code=303)
+        read2, item, packet_read, deferred = await _workspace_for(request, first["id"], budget=1.5)
+        if item is not None:
+            ctx = _list_ctx(read2, item["id"])
+            return _render(request, "inbox.html", {
+                **ctx, **_workspace_ctx(request, item, packet_read, deferred=deferred),
+                "opened_first": True,
+            })
     return _render(request, "inbox.html", {**ctx, "item": None})
 
 
@@ -515,9 +661,75 @@ def _answer_partial(request: Request, item: dict, packet_read: ledger.PacketRead
                     answer: dict, *, list_read: ledger.CliRead | None = None,
                     status_code: int = 200) -> HTMLResponse:
     ctx = _workspace_ctx(request, item, packet_read, deferred=False, answer=answer)
+    # Walk fixes, item 5: after an undo or a redo, "What it changes now"
+    # is drawn again (out of band) from the fresh read.
+    ctx["oob_meanwhile"] = answer.get("state") == "undone" and not answer.get("closed")
     if list_read is not None:
         ctx.update({"oob_list": True, **_list_ctx(list_read, item.get("id"))})
     return _render(request, "partials/workspace_answer.html", ctx, status_code=status_code)
+
+
+_ROW_T_RE = re.compile(r"^\d{1,6}$")
+
+
+def _row_t(value: str | None) -> int | None:
+    value = (value or "").strip()
+    return int(value) if _ROW_T_RE.match(value) else None
+
+
+def _sent_words(request: Request, item_id: str, t: int | None) -> str | None:
+    """Walk fixes, item 3: the words the person typed and sent on this item
+    as transcript row *t* (a reply with no option), or ``None``. The same
+    test the answer verb's ``--words-from`` applies."""
+    if t is None:
+        return None
+    row = next((r for r in ledger.workspace_rows(_home(request), item_id) if r.get("t") == t), None)
+    if (row is None or row.get("role") != "user" or row.get("origin") != "typed"
+            or row.get("kind") != "reply" or row.get("option")):
+        return None
+    words = row.get("text")
+    return words if isinstance(words, str) and words.strip() else None
+
+
+def _draft_option(request: Request, item: dict, draft_id: str | None) -> dict | None:
+    """Walk fixes gate r2 N1: the offered option the agent's draft
+    *draft_id* carries, read from the item's own transcript on the server,
+    so a page that forgot it (blocked browser storage) still arms an
+    approval that comes with the draft. ``None`` when the draft carries no
+    offered option."""
+    if draft_id is None:
+        return None
+    row = next((r for r in ledger.workspace_rows(_home(request), item["id"])
+                if r.get("kind") == "draft" and r.get("draft_id") == draft_id), None)
+    wanted = (row or {}).get("option")
+    return next((o for o in item.get("options") or [] if o.get("id") == wanted), None) if wanted else None
+
+
+def _needs_draft_confirm(message: str) -> bool:
+    """Gate r2 N1: the answer verb refused an approval sent with the
+    agent's draft until it is confirmed (its own words, not re-typed)."""
+    from self_learn.attention_answers import DRAFT_NEEDS_CONFIRM
+
+    return DRAFT_NEEDS_CONFIRM in message
+
+
+#: Gate r2 N1: what the page says when the verb asked for a confirmation
+#: the page could not arm itself (it could not tell which option it was).
+DRAFT_CONFIRM_UNARMED = ("The agent's draft carries an option that approves this change, so it "
+                         "is confirmed first; nothing was recorded. Click that option's own button "
+                         "to choose it, then confirm.")
+
+
+#: Walk fixes, item 1: an approve option armed by its number key.
+KEYED_APPROVE_LINE = ("“{label}” approves this change: an agent then carries it out in a terminal "
+                      "you can see. You pressed a key, and a key never approves on its own. "
+                      "Confirm?")
+#: Walk fixes gate r1 F2: an approve option that rides with the agent's
+#: draft (Send, Ctrl+Enter, or the card's "Send the draft as is"), not with
+#: a click on that option's own button.
+DRAFT_APPROVE_LINE = ("The agent's draft is sent as “{label}”, and that approves this change: an "
+                      "agent then carries it out in a terminal you can see. Sending a draft never "
+                      "approves on its own. Confirm?")
 
 
 @router.post("/inbox/{item_id}/answer", response_class=HTMLResponse)
@@ -528,6 +740,10 @@ async def inbox_answer(
     text: str | None = Form(None),
     draft_id: str | None = Form(None),
     confirm: str | None = Form(None),
+    keyed: str | None = Form(None),
+    from_draft: str | None = Form(None),
+    words_from: str | None = Form(None),
+    sent_t: str | None = Form(None),
 ) -> HTMLResponse:
     read = await _doc(request)
     item = _find(read, item_id)
@@ -536,12 +752,17 @@ async def inbox_answer(
     option = (option or "").strip() or None
     draft_id = (draft_id or "").strip() or None
     text = text if text is not None and text.strip() else None
+    reuse_t = _row_t(words_from)
+    # Walk fixes, item 3: the row of words sent alone earlier in this visit
+    # (the bar carries it after a words-only send), kept across a refusal.
+    last_sent = _row_t(sent_t)
     packet_read: ledger.PacketRead | None = None
 
-    def fail(message: str, status: int = 200) -> HTMLResponse:
+    def fail(message: str, status: int = 200, **extra: Any) -> HTMLResponse:
         return _answer_partial(request, item, packet_read,
                                {"state": "error", "message": message, "text": text,
-                                "draft_id": draft_id}, status_code=status)
+                                "draft_id": draft_id, "sent_t": last_sent, **extra},
+                               status_code=status)
 
     if option is not None and not _OPTION_ID_RE.match(option):
         return fail("That option is not one this item offers.", 400)
@@ -552,10 +773,36 @@ async def inbox_answer(
     chosen = next((o for o in item.get("options") or [] if o.get("id") == option), None)
     if option is not None and chosen is None and option != "opt-ran-sudo":
         return fail("That option is not one this item offers.", 400)
-    if chosen is not None and chosen.get("note") == "required" and text is None:
+    if option is None and draft_id is not None:
+        # Gate r2 N1: the draft's own option, from the server's transcript:
+        # an approval or register it carries arms like any other.
+        carried = _draft_option(request, item, draft_id)
+        if carried is not None and (carried.get("confirm") or carried.get("effect") in (
+                "approve", "register")):
+            chosen = carried
+    if chosen is not None and chosen.get("disabled"):
+        # Follow-ups 2 (gap 2): a change of mind is off while a session
+        # holds the work; the reason says what to do instead.
+        return fail(f"“{chosen.get('label')}” is off: {chosen.get('disabled')}.")
+    reused: str | None = None
+    if reuse_t is not None:
+        reused = _sent_words(request, item_id, reuse_t)
+        if chosen is None or text is not None or draft_id is not None or reused is None:
+            return fail("Those words are not ones you sent on this item; write the note in the "
+                        "box instead.", 400)
+    if chosen is not None and chosen.get("note") == "required" and text is None and reused is None:
+        # Walk fixes, item 3: words sent alone in this visit are offered as
+        # the note, one click, so the person never types them twice.
+        offer = _sent_words(request, item_id, last_sent)
         return fail(f"“{chosen.get('label')}” needs a note: write it in the box, then click it "
-                    "again.")
+                    "again.", reuse={"t": last_sent, "text": offer, "option": chosen}
+                    if offer is not None else None)
     armed = confirm == "1"
+    by_key = keyed == "1"
+    # Gate r1 F2 / r2 N1: any approval that goes with the agent's draft
+    # (the page's mark, or a draft id on the request) asks once more; the
+    # answer verb refuses it without --confirm anyway.
+    by_draft = from_draft == "1" or draft_id is not None
     if chosen is not None and not armed:
         if chosen.get("confirm") or chosen.get("effect") == "register":
             # §3.7 "This registers <path> in git mode. Confirm?": the path
@@ -571,6 +818,7 @@ async def inbox_answer(
             question = packet_q if isinstance(packet_q, str) and packet_q.strip() else item.get("title")
             return _answer_partial(request, item, packet_read, {
                 "state": "armed", "option": chosen, "text": text, "draft_id": draft_id,
+                "words_from": reuse_t, "sent_t": last_sent,
                 "message": f"“{chosen.get('label')}” answers “{question}”, and it acts "
                            "outside self-learn once you confirm it. Confirm?",
             })
@@ -580,9 +828,21 @@ async def inbox_answer(
             if sudo:
                 return _answer_partial(request, item, packet_read, {
                     "state": "armed", "option": chosen, "text": text, "draft_id": draft_id,
-                    "sudo": sudo,
+                    "words_from": reuse_t, "sent_t": last_sent, "sudo": sudo,
                     "message": "You run these yourself; the agent does the rest after you click "
                                "I ran it.",
+                })
+            if by_key or by_draft:
+                # Walk fixes, item 1 (design r2 §0 call 3 for a click): a
+                # number key never approves on its own; it arms, exactly as
+                # a confirm option's first click does. Gate r1 F2: neither
+                # does an option carried by the agent's draft (the person
+                # never clicked a button naming it), whatever sent it.
+                line = DRAFT_APPROVE_LINE if by_draft and not by_key else KEYED_APPROVE_LINE
+                return _answer_partial(request, item, packet_read, {
+                    "state": "armed", "option": chosen, "text": text, "draft_id": draft_id,
+                    "words_from": reuse_t, "sent_t": last_sent,
+                    "message": line.format(label=chosen.get("label")),
                 })
     argv = ["attention", "answer", item_id]
     if option is not None:
@@ -594,7 +854,11 @@ async def inbox_answer(
             argv += ["--text-file", str(reply_path)]
         if draft_id is not None:
             argv += ["--draft", draft_id]
-        if armed and chosen is not None and (chosen.get("confirm") or chosen.get("effect") == "register"):
+        if reuse_t is not None:
+            argv += ["--words-from", str(reuse_t)]
+        if armed and chosen is not None and (
+                chosen.get("confirm") or chosen.get("effect") == "register"
+                or (draft_id is not None and chosen.get("effect") == "approve")):
             argv.append("--confirm")
         argv.append("--json")
         result = await _run_verb(request, argv)
@@ -605,7 +869,13 @@ async def inbox_answer(
             except OSError:
                 pass
     if not result.ok:
-        return fail(_verb_message(result))
+        message = _verb_message(result)
+        if _needs_draft_confirm(message):
+            # Gate r2 N1: the verb asked for the confirmation the page
+            # could not arm (it could not read which option the draft
+            # carries); say so in words, never the verb's flag.
+            return fail(DRAFT_CONFIRM_UNARMED)
+        return fail(message)
     evidence = result.evidence or {}
     state = evidence.get("state")
     # No option chosen (typed words, or an agent draft sent without one):
@@ -619,6 +889,9 @@ async def inbox_answer(
     successor = None if fresh is not None else next(
         (_view_item(i) for i in _items(list_read)
          if i.get("subject") == item.get("subject") and i.get("id") != item_id), None)
+    row_t = evidence.get("transcript_row")
+    words_alone = (no_option and text is not None and draft_id is None
+                   and evidence.get("recorded_as") == "as your words" and isinstance(row_t, int))
     return _answer_partial(request, fresh or item, packet_read, {
         "state": "recorded",
         "recorded_as": evidence.get("recorded_as") or "",
@@ -631,6 +904,7 @@ async def inbox_answer(
         "run": _with_command(evidence.get("run")),
         "warnings": evidence.get("warnings") or [],
         "registration": evidence.get("registration"),
+        "sent_t": row_t if words_alone else (None if option is not None else last_sent),
     }, list_read=list_read)
 
 
@@ -653,20 +927,50 @@ async def inbox_undo(request: Request, item_id: str, redo: str | None = Form(Non
     successor = None if fresh is not None else next(
         (_view_item(i) for i in _items(list_read)
          if i.get("subject") == item.get("subject") and i.get("id") != item_id), None)
-    answer = {"state": "undone", "redo": redo == "1", "message": (result.stdout or "").strip(),
+    # Walk fixes, item 5: plain words for what it did (the verb's own line
+    # sits in a details fold), and "What it changes now" is drawn again
+    # from a fresh read, so it describes the item after the undo.
+    label = (item.get("undo") or {}).get("redo_label" if redo == "1" else "label")
+    answer = {"state": "undone", "redo": redo == "1",
+              "words": undo_words(item.get("kind"), redo=redo == "1", label=label),
+              "message": (result.stdout or "").strip(),
               "closed": fresh is None, "successor": successor}
-    return _answer_partial(request, fresh or item, None, answer, list_read=list_read)
+    packet_read = await _packet(request, item_id) if fresh is not None else None
+    return _answer_partial(request, fresh or item, packet_read, answer, list_read=list_read)
 
 
 @router.post("/inbox/{item_id}/feedback", response_class=HTMLResponse)
 async def inbox_feedback(request: Request, item_id: str, wanted: str = Form(...)) -> HTMLResponse:
     if wanted not in ("needs-you", "decided", "silent"):
         return HTMLResponse("unknown feedback", status_code=400)
+    read = await _doc(request)
+    item = _find(read, item_id) or {"id": item_id}
     result = await _run_verb(request, ["attention", "feedback", item_id, "--wanted", wanted])
     return _render(request, "partials/workspace_feedback.html", {
-        "ok": result.ok, "message": (result.stdout if result.ok else _verb_message(result)).strip(),
+        "ok": result.ok,
+        # Walk fixes, item 5: plain words; the verb's line (ids) in a fold.
+        "words": feedback_words(item, wanted) if result.ok else None,
+        "message": (result.stdout if result.ok else _verb_message(result)).strip(),
         "item_id": item_id,
     })
+
+
+@router.post("/inbox/{item_id}/provenance")
+async def inbox_provenance(request: Request, item_id: str, text: str = Form(""),
+                           draft_id: str = Form("")) -> Response:
+    """Walk fixes, item 2: how the reply box's text would be recorded, by
+    the answer verb's own rule, as the person types (``{line, origin}``
+    JSON for ``inbox.js``). Read-only; never records anything."""
+    if not _ITEM_ID_RE.match(item_id):
+        return Response(status_code=400)
+    draft = draft_id.strip() or None
+    if draft is not None and not _DRAFT_ID_RE.match(draft):
+        line = provenance_line({'problem': 'that draft is not one this item holds'})
+        return Response(json.dumps(line), media_type='application/json')
+    preview = await asyncio.to_thread(
+        ledger.answer_preview, _home(request), item_id,
+        text=text if text.strip() else None, draft_id=draft)
+    return Response(json.dumps(provenance_line(preview)), media_type="application/json")
 
 
 @router.post("/inbox/{item_id}/run", response_class=HTMLResponse)
@@ -675,14 +979,59 @@ async def inbox_run(request: Request, item_id: str, login: str | None = Form(Non
     item = _find(read, item_id)
     if item is None:
         return _render(request, "partials/workspace_gone.html", {"gone": item_id}, status_code=404)
-    argv = ["attention", "run", item_id] + (["--login"] if login == "1" else [])
+    argv = ["attention", "run", item_id] + (["--login"] if login == "1" else []) + ["--json"]
     result = await _run_verb(request, argv)
-    message = ((result.stdout if result.ok else result.stderr) or "").strip() or _verb_message(result)
-    split = no_terminal(message) if result.exit_code == 5 else {"command": None, "lead": None}
+    data = _run_json(result)
+    if data is not None and isinstance(data.get("message"), str) and data["message"].strip():
+        message = data["message"].strip()
+    else:
+        message = ((result.stdout if result.ok else result.stderr) or "").strip() or _verb_message(result)
+    split = (no_terminal({**(data or {}), "message": message}, login=login == "1")
+             if result.exit_code == 5 else {"command": None, "lead": None})
     return _render(request, "partials/workspace_run.html", {
         "item": _view_item(item), "exit": result.exit_code, "login": login == "1",
-        "message": message, **split,
+        "message": message, "already_open": bool((data or {}).get("already_open")), **split,
     })
+
+
+#: Follow-ups 2 (gap 2): what "Stop it" does, said before the person
+#: confirms it (the same facts the verb's own sentence states after).
+STOP_ARMED_LINE = (
+    "Stop it closes the terminal carrying this out, so its session changes nothing more. A step "
+    "it is in the middle of stops there and is not undone, and anything it already changed "
+    "stays changed. Your approval stands until you choose a different answer. Stop it?"
+)
+
+
+@router.post("/inbox/{item_id}/stop", response_class=HTMLResponse)
+async def inbox_stop(request: Request, item_id: str, confirm: str | None = Form(None)) -> HTMLResponse:
+    """Follow-ups 2 (gap 2): "Stop it" on approved work a session claimed in
+    the terminal this page opened. The first click arms it (what stopping
+    does and does not do, in words); the confirm runs ``attention stop``.
+    Afterwards the answer bar is drawn again from a fresh read, so the
+    person's other options are clickable at once."""
+    read = await _doc(request)
+    item = _find(read, item_id)
+    if item is None:
+        return _render(request, "partials/workspace_gone.html", {"gone": item_id}, status_code=404)
+    offered = any(o.get("via") == "stop" for o in item.get("options") or [])
+    if not offered:
+        return _answer_partial(request, item, None, {
+            "state": "stop-error",
+            "message": "There is nothing this page can stop on this item now.",
+        }, status_code=400)
+    if confirm != "1":
+        return _answer_partial(request, item, None, {"state": "armed-stop",
+                                                     "message": STOP_ARMED_LINE})
+    result = await _run_verb(request, ["attention", "stop", item_id])
+    if not result.ok:
+        return _answer_partial(request, item, None,
+                               {"state": "stop-error", "message": _verb_message(result)})
+    list_read = await _doc(request)
+    fresh = _find(list_read, item_id)
+    return _answer_partial(request, fresh or item, None, {
+        "state": "stopped", "message": (result.stdout or "").strip(), "closed": fresh is None,
+    }, list_read=list_read)
 
 
 @router.post("/inbox/{item_id}/fix", response_class=HTMLResponse)
@@ -714,10 +1063,21 @@ async def inbox_check_login(request: Request, item_id: str) -> HTMLResponse:
         uilog.log(f"inbox: attention envelope not published: {exc}")
     next_jobs = (await asyncio.to_thread(ledger.scheduler_next, _home(request))
                  if outcome.ok else None)
-    return _render(request, "partials/workspace_login.html", {
+    ctx: dict[str, Any] = {
         "ok": outcome.ok, "exit": outcome.exit_code, "message": outcome.message,
         "item_id": item_id, "next_jobs": next_jobs,
-    })
+    }
+    if outcome.ok:
+        # Walk fixes, item 4: the outcome goes to the top of the page in
+        # plain words (out of band), the list is redrawn with it (so the
+        # item leaving it is the click's own, explained result), and the
+        # ask panel's "login is broken" note is replaced.
+        list_read = await _doc(request)
+        remaining = [i for i in _items(list_read) if i.get("class") == "needs-you"]
+        ctx.update({"oob_list": True, **_list_ctx(list_read, item_id),
+                    "still_open": _find(list_read, item_id) is not None,
+                    "next_item": sorted(remaining, key=inbox_order)[0] if remaining else None})
+    return _render(request, "partials/workspace_login.html", ctx)
 
 
 @router.post("/inbox/{item_id}/ask", response_class=HTMLResponse)

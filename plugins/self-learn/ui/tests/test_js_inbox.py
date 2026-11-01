@@ -199,6 +199,12 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
                       error=None if item_id == ID_OO7 else "no packet in this fixture"))
     patch.setattr(ledger, "workspace_rows",
                   lambda home, item_id: list(OO7_ROWS) if item_id == ID_OO7 else [])
+    # Walk fixes, item 2: the provenance line runs the CLI's real rule
+    # (`attention_answers.preview`) over this fixture's rows.
+    from self_learn import workspace as sl_workspace
+
+    patch.setattr(sl_workspace, "rows", lambda home, item_id, pending=True: (
+        [dict(r) for r in OO7_ROWS] if item_id == ID_OO7 else []))
     home = tmp_path_factory.mktemp("js-inbox") / "home"
     home.mkdir()
     port = _free_port()
@@ -286,6 +292,26 @@ def _paste_whole(page: "Page", selector: str, text: str) -> None:
     )
 
 
+def _wait_line(page: "Page", words: str) -> None:
+    """Walk fixes, item 2: the one provenance line under the reply box
+    comes to say *words* (it is asked of the server as the box changes)."""
+    try:
+        _wait_for(lambda: words in (page.text_content("#ws-reply-line") or ""))
+    except AssertionError:
+        assert words in (page.text_content("#ws-reply-line") or "")
+
+
+def _confirm_armed(page: "Page") -> None:
+    """Walk fixes gate r1 F2: an approve option carried by the agent's
+    draft arms first; confirm it as a person would, once htmx wired the
+    armed form (app.js blocks a native submit in the swap/settle gap)."""
+    page.wait_for_selector("#ws-answer [data-armed-answer]", timeout=_WAIT_MS)
+    page.wait_for_function(
+        "() => !!document.querySelector('[data-confirm-armed]').closest('form')['htmx-internal-data']",
+        timeout=_WAIT_MS)
+    page.click("[data-confirm-armed]")
+
+
 def _wait_for(predicate, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -313,8 +339,9 @@ def test_a_restored_draft_is_still_sent_as_the_agents_draft_with_its_option(page
     _wait_for_value(page, "#ws-reply-text", "Only the first two.")
     assert page.input_value("#ws-reply-draft") == DRAFT_ID
     assert page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions"
-    assert page.is_visible("#ws-reply-draft-note")
+    _wait_line(page, "as the agent's draft, accepted by you")
     page.click("[data-send-reply]")
+    _confirm_armed(page)  # the draft's option approves (walk fixes gate r1 F2)
     _wait_for(lambda: bool(_answer_calls(server)))
     argv = _answer_calls(server)[-1]
     assert argv[argv.index("--draft") + 1] == DRAFT_ID
@@ -437,7 +464,7 @@ def test_typing_over_a_whole_draft_sends_the_persons_own_words(page, server):
     page.keyboard.type("Not yet.")
     assert page.input_value("#ws-reply-draft") == ""
     assert page.get_attribute("#ws-answer-form", "data-draft-option") is None
-    assert not page.is_visible("#ws-reply-draft-note")
+    _wait_line(page, "Sending this records it as your words.")
     # The draft's own text pasted back over everything: the id returns.
     # (A paste is `insertFromPaste`; typed input never re-attaches, see
     # the next test. Set here as the browser's paste would set it.)
@@ -485,7 +512,7 @@ def test_typed_words_that_contain_a_short_draft_are_never_sent_as_it(page, serve
 
 
 def test_send_as_is_on_a_draft_card_keeps_the_boxs_own_words(page, server):
-    """ui-workspace gate r3 NIT A: a draft card's "Send as is" sends the
+    """ui-workspace gate r3 NIT A: a draft card's "Send the draft as is" sends the
     card's text, so the reply box's unsent words stay (09 §2.5: only a
     recorded send of the answer form empties it). Mutation: clear on every
     POST .../answer whatever sent it (the lane's rule) -> red."""
@@ -493,6 +520,7 @@ def test_send_as_is_on_a_draft_card_keeps_the_boxs_own_words(page, server):
     _open(page, server, ID_OO7)
     page.fill("#ws-reply-text", words)
     page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] button[type="submit"]')
+    _confirm_armed(page)  # the card's option approves (walk fixes gate r1 F2)
     page.wait_for_selector("#ws-answer [data-recorded]", timeout=_WAIT_MS)
     argv = _answer_calls(server)[-1]
     assert argv[argv.index("--draft") + 1] == DRAFT_ID  # control: the card was sent
@@ -510,14 +538,16 @@ def test_a_failed_answer_keeps_the_drafts_note_and_option(page, server):
     afterSwap re-apply -> red (the note is hidden, the option gone)."""
     _open(page, server, ID_OO7)
     page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] [data-use-draft]')
-    assert page.is_visible("#ws-reply-draft-note")  # control: the draft is wired
+    _wait_line(page, "as the agent's draft")  # control: the draft is wired
     server.runner.queue_result(RunResult(3, stderr="refused for this test"))
     page.click("[data-send-reply]")
+    _confirm_armed(page)  # the draft's option approves (walk fixes gate r1 F2)
     page.wait_for_selector("#ws-answer [data-answer-error]", timeout=_WAIT_MS)
     assert page.input_value("#ws-reply-draft") == DRAFT_ID
-    assert page.is_visible("#ws-reply-draft-note")
+    _wait_line(page, "as the agent's draft")
     assert page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions"
     page.click("[data-send-reply]")
+    _confirm_armed(page)
     _wait_for(lambda: len(_answer_calls(server)) >= 2)
     argv = _answer_calls(server)[-1]
     assert argv[argv.index("--draft") + 1] == DRAFT_ID

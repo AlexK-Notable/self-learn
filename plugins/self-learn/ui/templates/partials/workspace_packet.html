@@ -24,6 +24,34 @@
   </section>
   {% endif %}
 
+  {% if packet.case_edit %}
+  {# Follow-ups 2 (gap 1): a hand-edited case shows what was decided beside
+     what the file says now, passage by passage, so the person sees the
+     edit before choosing keep or restore. #}
+  {% set edit = packet.case_edit %}
+  <section class="ws-section ws-case-edit" aria-labelledby="ws-edit-h" data-case-edit>
+    <h2 id="ws-edit-h">What was decided, and what the file says now</h2>
+    {% if edit.decided %}
+    <p class="ws-meta">The decided version is the one saved{% if edit.decided.committed_at %} {{ edit.decided.committed_at | humanize_ts }}{% endif %}. Each place where the file now differs from it:</p>
+    {% for change in edit.changes or [] %}
+    <div class="ws-change" data-case-change>
+      <p><strong>Was decided:</strong></p>
+      {% if change.was %}<pre class="ws-pre ws-was">{{ change.was }}</pre>{% else %}<p class="ws-meta">(nothing: these lines were added by hand)</p>{% endif %}
+      <p><strong>The file says now:</strong></p>
+      {% if change.now %}<pre class="ws-pre ws-now">{{ change.now }}</pre>{% else %}<p class="ws-meta">(nothing: these lines were taken out by hand)</p>{% endif %}
+    </div>
+    {% else %}
+    <p data-case-no-change>No line reads differently; the edit is only in spacing or line endings.</p>
+    {% endfor %}
+    <details class="ws-ev"><summary>The whole decided text (sections 1-4)</summary><pre class="ws-pre" data-decided-text>{{ edit.decided.text }}</pre></details>
+    {% if edit.now %}<details class="ws-ev"><summary>The whole file as it is now (sections 1-4)</summary><pre class="ws-pre">{{ edit.now }}</pre></details>{% endif %}
+    {% else %}
+    <p data-decided-missing>The decided version cannot be shown: {{ edit.note }}.</p>
+    {% if edit.now %}<details class="ws-ev" open><summary>The file as it is now (sections 1-4)</summary><pre class="ws-pre">{{ edit.now }}</pre></details>{% endif %}
+    {% endif %}
+  </section>
+  {% endif %}
+
   {% if packet.recommendation %}
   <section class="ws-section ws-recommendation" aria-labelledby="ws-rec-h">
     <h2 id="ws-rec-h">Recommendation</h2>
@@ -84,12 +112,31 @@
     {% for ev in packet.evidence or [] %}
     <details class="ws-ev ws-ev-{{ ev.kind }}" data-evidence-kind="{{ ev.kind }}"{% if loop.index <= 2 %} open{% endif %}>
       {% if ev.kind == "lesson" %}
-      <summary>The lesson <code>{{ ev.id }}</code>{% if ev.title %}: {{ ev.title }}{% endif %}</summary>
-      <p class="ws-meta">{{ ev.status }}{% if ev.placement %} · {{ ev.placement }}{% endif %}</p>
+      <summary>The lesson{% if ev.title %}: {{ ev.title }}{% endif %}</summary>
+      <p class="ws-meta">{{ ev.status }}{% if ev.placement %} · {{ ev.placement }}{% endif %} · <code>{{ ev.id }}</code></p>
+      {% if ev.trigger or ev.instruction %}
+      {% if ev.trigger %}<p><strong>When:</strong> {{ ev.trigger }}</p>{% endif %}
+      {% if ev.instruction %}<p><strong>Do:</strong> {{ ev.instruction }}</p>{% endif %}
+      {% else %}
       <div class="ws-quote">{{ ev.text | markdown }}</div>
+      {% endif %}
+      {% if ev.seen %}
+      {# Walk fixes, item 6: each time it came up, so a claim like "came up
+         at least twice" can be checked here. #}
+      {% set times = [ev.sightings or 0, ev.seen | length] | max %}
+      <p class="ws-meta" data-sightings>Seen {{ times }} time{{ '' if times == 1 else 's' }}{% if ev.seen | length < times %} ({{ ev.seen | length }} with a record of when){% endif %}:</p>
+      <ul class="ws-sightings">
+        {% for seen in ev.seen %}
+        <li>{% if seen.at %}{{ seen.at | humanize_ts }}{% else %}undated{% endif %}{% if seen.quote %}: “{{ seen.quote }}”{% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
       {% elif ev.kind == "statement" %}
-      <summary>Your words, <code>{{ ev.id }}</code>{% if ev.at %}, {{ ev.at | humanize_ts }}{% endif %}</summary>
+      {# Walk fixes, item 6: when it was said, and, on a conflict, which
+         one is newer (the words the options use). #}
+      <summary>Your words{% if ev.side %}: <span class="chip chip-side" data-side="{{ ev.side }}">the {{ ev.side }} one</span>{% endif %}{% if ev.at %}, said {{ ev.at | humanize_ts }}{% endif %}</summary>
       <blockquote class="ws-quote">“{{ ev.verbatim }}”</blockquote>
+      <p class="ws-meta">{% if ev.at %}Said {{ ev.at | exact_time }}{% if ev.side == "newer" %}; it holds until you answer{% endif %}. {% endif %}Recorded as <code>{{ ev.id }}</code>.</p>
       {% if ev.answers and ev.answers.ref %}<p class="ws-meta">Answering {{ ev.answers.kind }} {{ ev.answers.ref }}</p>{% endif %}
       {% if ev.context %}<p class="ws-meta">Around it:</p><pre class="ws-pre">{{ ev.context }}</pre>
       {% elif ev.context_note %}<p class="ws-meta">The conversation around it was {{ ev.context_note }}.</p>{% endif %}
@@ -104,13 +151,23 @@
       <div class="ws-quote">{{ ev.excerpt | markdown }}</div>
       <p><a href="/overseer-report/{{ ev.date }}">Open the whole report</a></p>
       {% elif ev.kind == "file" %}
-      <summary>The file <code>{{ ev.path }}</code></summary>
+      {# Walk fixes, item 6: the whole path, home written ~, and a folder
+         said to be one (its entries listed), never a bare listing under
+         "The file". #}
+      <summary>{% if ev.is_dir %}What is in the folder{% else %}The file{% endif %} <code class="ws-path">{{ ev.display or ev.path }}</code></summary>
+      {% if ev.is_dir %}<p class="ws-meta">Its entries, as they are now:</p>{% endif %}
       <pre class="ws-pre">{{ ev.excerpt }}</pre>
-      {% if ev.truncated %}<p class="ws-meta">Only the start of the file is shown.</p>{% endif %}
+      {% if ev.truncated %}<p class="ws-meta">{% if ev.is_dir %}Only the first entries are shown.{% else %}Only the start of the file is shown.{% endif %}</p>{% endif %}
       {% elif ev.kind == "hook" %}
-      <summary>The hook from <code>{{ ev.record }}</code></summary>
+      <summary>The hook{% if ev.trigger %}: {{ ev.trigger }}{% endif %}</summary>
+      {# Walk fixes, item 6: what it is for, before the script. #}
+      {% if ev.trigger %}<p data-hook-trigger><strong>When:</strong> {{ ev.trigger }}</p>{% endif %}
+      {% if ev.instruction %}<p data-hook-instruction><strong>The rule:</strong> {{ ev.instruction }}</p>{% endif %}
+      <p class="ws-meta">From the lesson <code>{{ ev.record }}</code>.</p>
+      {% if ev.script_excerpt or ev.registration %}<details class="ws-details" data-hook-script><summary>The script it runs, and how it is registered</summary>
       {% if ev.script_excerpt %}<pre class="ws-pre">{{ ev.script_excerpt }}</pre>{% endif %}
       {% if ev.registration %}<p class="ws-meta">Registered as:</p><pre class="ws-pre">{{ ev.registration }}</pre>{% endif %}
+      </details>{% endif %}
       {% elif ev.kind == "hold" %}
       <summary>What is held{% if ev.since %}, since {{ ev.since | humanize_ts }}{% endif %}</summary>
       <p><strong>The error:</strong></p><pre class="ws-pre">{{ ev.cause }}</pre>

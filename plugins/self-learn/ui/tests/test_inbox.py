@@ -211,14 +211,15 @@ HX = {"HX-Request": "true"}
 # ----------------------------------------------------------------- 1. order
 
 
-def test_inbox_redirects_to_the_login_hold_ahead_of_an_older_system_change(tmp_path, monkeypatch):
+def test_inbox_opens_the_login_hold_ahead_of_an_older_system_change(tmp_path, monkeypatch):
     """§2.1 item 1. The reader's order is not trusted: the fixture lists
-    the older system-change ask first, the login hold second.
-    Mutation: sort by `since` only -> red."""
+    the older system-change ask first, the login hold second. Walk fixes,
+    item 8: /inbox renders the list with that item open and says why
+    (no redirect). Mutation: sort by `since` only -> red."""
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7, HOOK, LOGIN)))
     resp = client.get("/inbox", follow_redirects=False)
-    assert resp.status_code == 303
-    assert resp.headers["location"] == f"/inbox/{ID_LOGIN}"
+    assert resp.status_code == 200
+    assert f'data-item-id="{ID_LOGIN}"' in resp.text and "data-opened-first" in resp.text
 
 
 def test_inbox_with_nothing_renders_the_empty_state_and_no_list_items(tmp_path, monkeypatch):
@@ -236,7 +237,7 @@ def test_only_decided_items_select_the_first_unseen_one(tmp_path, monkeypatch):
                 "since": "2026-10-31T10:00:00Z", "updated_at": "2026-10-31T10:00:00Z"}
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(seen_old, HOOK)))
     resp = client.get("/inbox", follow_redirects=False)
-    assert resp.headers["location"] == f"/inbox/{ID_HOOK}"
+    assert f'data-item-id="{ID_HOOK}"' in resp.text
     page = client.get(f"/inbox/{ID_HOOK}")
     assert "Nothing needs you" in page.text
 
@@ -529,15 +530,20 @@ def test_the_reader_failing_shows_the_error_panel_with_retry(tmp_path, monkeypat
 
 
 def test_run_and_fix_run_their_verbs_and_a_missing_terminal_shows_the_command(tmp_path, monkeypatch):
+    import json as _json
+
     runner = FakeRunner()
-    # attention_answers.run's own exit-5 sentence, word for word.
-    runner.queue_result(RunResult(5, stderr=(
-        "no terminal found. The brief is at /c/attention/runs/x/brief.md; open a terminal and "
-        "run: claude 'self-learn: read the brief'")))
+    # `attention run --json`'s exit-5 object (follow-ups 2, gap 3): the page
+    # copies `command` and names `brief`; it never parses the sentence, so
+    # here the sentence names neither.
+    runner.queue_result(RunResult(5, stdout=_json.dumps({
+        "exit": 5, "message": "no terminal found, so nothing was started",
+        "command": "claude 'self-learn: read the brief'",
+        "brief": "/c/attention/runs/x/brief.md"})))
     runner.queue_result(RunResult(0, stdout="self-learn-host.service restarted"))
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(APPROVED, HOST)), runner=runner)
     resp = client.post(f"/inbox/{ID_APPROVED}/run", headers=HX)
-    assert runner.calls[0] == ["attention", "run", ID_APPROVED]
+    assert runner.calls[0] == ["attention", "run", ID_APPROVED, "--json"]
     assert "No terminal was found" in resp.text
     assert 'data-copy="#ws-run-cmd"' in resp.text
     # Gate r1 finding 3: the copy block holds the command alone, which runs
@@ -545,17 +551,18 @@ def test_run_and_fix_run_their_verbs_and_a_missing_terminal_shows_the_command(tm
     copied = resp.text.split('id="ws-run-cmd" data-run-command>')[1].split("</pre>")[0]
     assert copied == "claude &#39;self-learn: read the brief&#39;"
     assert "/c/attention/runs/x/brief.md" in resp.text
-    assert "Run it now" in resp.text and 'hx-target="closest .ws-run"' in resp.text
+    assert "Try again: open a new terminal" in resp.text and 'hx-target="closest .ws-run"' in resp.text
     fix = client.post(f"/inbox/{ID_HOST}/fix", data={"option": "opt-restart"}, headers=HX)
     assert runner.calls[1] == ["attention", "fix", ID_HOST, "--option", "opt-restart"]
     assert "restarted" in fix.text
 
 
 def test_open_a_login_terminal_runs_run_login(tmp_path, monkeypatch):
-    runner = FakeRunner(RunResult(0, stdout="A terminal is open running claude: type /login there."))
+    runner = FakeRunner(RunResult(0, stdout='{"exit": 0, "message": "A terminal is open running '
+                                         'claude: type /login there.", "command": null, "brief": null}'))
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(LOGIN)), runner=runner)
     resp = client.post(f"/inbox/{ID_LOGIN}/run", data={"login": "1"}, headers=HX)
-    assert runner.calls == [["attention", "run", ID_LOGIN, "--login"]]
+    assert runner.calls == [["attention", "run", ID_LOGIN, "--login", "--json"]]
     assert "/login" in resp.text
 
 
@@ -682,9 +689,13 @@ def test_an_approval_that_moves_the_item_on_links_to_it_and_offers_no_old_option
 
 def test_a_login_no_terminal_offers_claude_alone_to_copy(tmp_path, monkeypatch):
     """Gate r1 finding 3, the login variant: the copy block holds `claude`,
-    not the verb's sentence."""
-    runner = FakeRunner(RunResult(5, stderr="no terminal found: open one yourself, run `claude`, "
-                                             "then type /login"))
+    not the verb's sentence. Follow-ups 2 (gap 3): the command comes from
+    `attention run --json`'s `command` field; the sentence is not parsed."""
+    import json as _json
+
+    runner = FakeRunner(RunResult(5, stdout=_json.dumps({
+        "exit": 5, "message": "no terminal found, so nothing was started",
+        "command": "claude", "brief": None})))
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(LOGIN)), runner=runner)
     resp = client.post(f"/inbox/{ID_LOGIN}/run", data={"login": "1"}, headers=HX)
     assert "No terminal was found" in resp.text  # control: the no-terminal branch rendered
@@ -707,8 +718,10 @@ def test_an_approval_whose_launch_found_no_terminal_offers_run_it_now_for_the_su
             reads.doc = _doc(approved)
             return await super().run(argv)
 
-    run = {"exit": 5, "message": ("no terminal found. The brief is at /c/b.md; open a terminal "
-                                  "and run: claude 'go'")}
+    # Follow-ups 2 (gap 3): the answer verb's `run` carries `command` and
+    # `brief`; the sentence is not parsed, so it names neither here.
+    run = {"exit": 5, "message": "no terminal found, so nothing was started",
+           "command": "claude 'go'", "brief": "/c/b.md"}
     import json as _json
 
     runner = Moves(RunResult(0, stdout=_json.dumps({
@@ -774,7 +787,7 @@ def test_an_undo_that_moves_the_item_on_says_so(tmp_path, monkeypatch):
     client, runner, *_ = make_client(tmp_path, monkeypatch, reads, runner=Moves(RunResult(0, stdout="reopened")))
     resp = client.post(f"/inbox/{withdrawn['id']}/undo", headers=HX)
     assert runner.calls[0] == ["attention", "undo", withdrawn["id"]]
-    assert "Undone." in resp.text  # control
+    assert "data-undone" in resp.text and "Asked again" in resp.text  # control
     assert "data-answer-closed" in resp.text and 'href="/inbox/att-0000000000bb"' in resp.text
     bar = resp.text[: resp.text.index('id="inbox-list"')]
     assert "Ask me anyway" not in bar and 'id="ws-answer-form"' not in bar
@@ -839,7 +852,7 @@ def test_a_working_login_says_when_the_held_jobs_run_again(tmp_path, monkeypatch
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(LOGIN)))
     resp = client.post(f"/inbox/{ID_LOGIN}/check-login", headers=HX)
     assert "The login works." in resp.text and "data-item-resolved" in resp.text
-    assert "Next scheduled: mine at 2026-11-02T03:31:00" in resp.text
+    assert "runs again at its next scheduled time: mine at 2026-11-02T03:31:00" in resp.text
 
 
 def test_the_apps_idle_monitor_waits_for_an_ask_turn(tmp_path, monkeypatch):

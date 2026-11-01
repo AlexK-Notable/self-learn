@@ -472,7 +472,9 @@ def _run_probe(argv: list[str]) -> str:
 
 
 def _git_log(home: Path, argv_tail: list[str]) -> str:
-    """The one git reader of this module: a read-only ``git log``."""
+    """``ledger_history``'s git reader: a read-only ``git log``. (The
+    ``case`` tool's decided text is read by ``cases.decided_text``, through
+    ``gitops``, follow-ups 2.)"""
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_PAGER": "cat"}
     try:
         done = subprocess.run(
@@ -482,6 +484,25 @@ def _git_log(home: Path, argv_tail: list[str]) -> str:
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"git log failed: {type(exc).__name__}"
     return done.stdout if done.returncode == 0 else f"git log failed: {done.stderr.strip()[:300]}"
+
+
+def _decided_block(home: Path, case_id: str) -> str:
+    """Follow-ups 2 (gap 1): the ``case`` tool's account of a case that
+    fails its freeze check -- sections 1-4 as they were decided
+    (``cases.decided_text``, read-only, capped, secret-scanned), or why
+    they cannot be shown."""
+    from . import cases
+
+    try:
+        found = cases.decided_text(home, case_id)
+    except Exception as exc:  # noqa: BLE001 -- the file as it is now is still shown
+        return f"Sections 1-4 as decided: not shown (the ledger's history could not be read: {type(exc).__name__})"
+    if found is None:
+        return ("Sections 1-4 as decided: not shown (no commit of this case holds the text it "
+                "was decided with; restoring it would be refused)")
+    return (f"Sections 1-4 as decided (commit {str(found['commit'])[:12]}, "
+            f"{found.get('committed_at')}{', cut short' if found.get('truncated') else ''}):\n"
+            + str(found["text"]))
 
 
 def _json(value: object) -> str:
@@ -548,6 +569,7 @@ class AskTools:
             text = (f"(this case failed its freeze-hash check or could not be parsed: "
                     f"{type(exc).__name__}; shown as the file is now)\n"
                     + raw.decode("utf-8", errors="replace"))
+            text += "\n\n" + _decided_block(self.home, case_id)
             frontmatter = {}
         line = [case_id]
         successor = frontmatter.get("superseded_by")
@@ -851,7 +873,9 @@ class AskTools:
     _TOOLS: tuple[tuple[str, str, dict, str], ...] = (
         ("record", "A lesson's full text, status, placement and destination.",
          _schema({"id": _STR}, ("id",)), "record"),
-        ("case", "A case file (full view) and its line of successors.",
+        ("case", "A case file (full view) and its line of successors. For a case edited by hand "
+                 "after it was decided, the file as it is now and sections 1-4 as they were "
+                 "decided.",
          _schema({"id": _STR}, ("id",)), "case"),
         ("statements", "The person's recorded statements (verbatim, id, date, what each "
          "answers), at most 40; filter by ids, a text query, or since a date.",
@@ -1174,7 +1198,11 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
     if workspace.ITEM_ID_RE.fullmatch(item_id or "") is None:
         return _fail(emitter, err, "failed", f"unknown item {item_id!r}", EXIT_UNKNOWN), emitter
     try:
-        packet = attention_packet.build(home, item_id)
+        from . import cases
+
+        # Follow-ups 2 (gap 1): a hand-edited case's packet shows its
+        # decided text; the read of the ledger's history is this verb's.
+        packet = attention_packet.build(home, item_id, decided_reader=cases.decided_text)
     except attention_packet.UnknownItem:
         return _fail(emitter, err, "failed", f"unknown or expired item {item_id}",
                      EXIT_UNKNOWN), emitter

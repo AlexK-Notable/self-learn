@@ -319,6 +319,23 @@ def workspace_rows(home: Path, item_id: str) -> list[dict]:
         return []
 
 
+def answer_preview(home: Path, item_id: str, *, text: str | None, draft_id: str | None,
+                   option: str | None = None) -> dict:
+    """Walk fixes, item 2: how the answer verb would record this reply,
+    from the CLI's own rule (``attention_answers.preview``: the draft id,
+    then the 40-character match against the agent's text), read-only. The
+    page shows it under the reply box before anything is sent, so it can
+    never say more than the record does. A read that fails says so and
+    claims nothing."""
+    from self_learn import attention_answers as sl_answers
+
+    try:
+        return dict(sl_answers.preview(home, item_id, text=text, draft_id=draft_id, option=option))
+    except (ValueError, OSError) as exc:
+        return {"origin": None, "recorded_as": None, "matched": None,
+                "problem": f"how it would be recorded could not be read ({exc})"}
+
+
 _REPORT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 

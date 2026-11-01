@@ -2270,6 +2270,18 @@ approval an agent relayed from its own session launches nothing; that
 session, the one the person typed the yes in and is watching, may carry it
 out by the same brief, or the person clicks Run it now.
 
+*Follow-ups 2:* the person can stop it from the inbox too. "Stop it"
+(`self-learn attention stop`) acts only on a session that claimed the work
+in the terminal unit the page launched for this approval
+(`self-learn-run-<12 hex>`, the item's own id). That is checked, not
+guessed: `attention claim` records the unit the claiming process runs in,
+read from its own cgroup, and only a claim naming that unit can be stopped
+(gate r1 F1); any other session's claim is left alone. It stops
+that transient user unit (`systemctl --user stop`, bounded to 10 s, checked
+with `is-active` before and after), marks the launch stopped and drops the
+claim in the cache. It is the person's click (refused from an agent's
+shell), and it touches no other unit.
+
 ## 7.7 The tray unit (added 2026-10-31, S-126)
 
 `systemd/self-learn-tray.service` runs `plugins/self-learn/scripts/self-learn-tray`
