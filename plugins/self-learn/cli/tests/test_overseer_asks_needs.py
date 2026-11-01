@@ -49,12 +49,24 @@ DEFAULT = "I left the lesson where it is this week."
 TEXT = "Will you run the one sudo step that installs the udev rule? Yes means you run it; no leaves it."
 
 
+SUDO_OPTIONS = [
+    {"id": "opt-ran", "label": "I'll run it", "effect": "approve"},
+    {"id": "opt-not-now", "label": "No", "effect": "decline"},
+]
+
+
 def _user_ask(qid: str, cases: list[str], because: str = "sudo", **extra) -> dict:
+    """A needs-user ask with the options and recommendation every such ask
+    carries (fix round 1, gate r1 MAJOR 2); *extra* overrides any key, and
+    a given `options` without a `recommend` recommends its first option."""
     row = {
         "id": qid, "kind": "ask", "cases": cases, "text": TEXT,
         "why": "only you can run sudo", "needs": "user", "because": because,
+        "options": [dict(o) for o in SUDO_OPTIONS],
     }
     row.update(extra)
+    if "recommend" not in extra and isinstance(row.get("options"), list) and row["options"]:
+        row["recommend"] = {"option": row["options"][0]["id"], "reasoning": "it is the safe one"}
     return row
 
 
@@ -517,11 +529,16 @@ def test_the_formats_contract_and_the_prompt_carry_the_r2_rules(tmp_path):
     assert sets["because"] == ["system-change", "foreign-history", "conflict", "money", "sudo"]
     assert sets["option_effects"] == ["approve", "decline", "other", "register"]
     assert sets["withdraw_keys"] == ["id", "why"]
+    assert sets["needs_user_requires"] == ["because", "options", "recommend"]
     flat = " ".join(overseer_run._phase_b_prompt(tmp_path, (), ()).split())
     assert " ".join(overseer_run.ORDERED_CHECK.split()) in flat
     assert "Never ask a withdrawn question again in other words" in flat
     assert "checks are read-only commands" in flat
     assert "for a conflict, the newer statement wins meanwhile" in flat
+    assert "never re-asked" in flat and "ask under a new id" in flat
+    # Fix round 1 (gate r1 MAJOR 3): no real ledger ids in the product prompt.
+    assert "stmt-0123abcd" in overseer_run.ORDERED_CHECK
+    assert "5bb55a2e" not in flat and "q-task-routing" not in flat
     readme = " ".join((formats.write(tmp_path / "ws", "B") / "README.md").read_text("utf-8").split())
     assert "checks are read-only commands" in readme
     example = YAML(typ="safe").load(formats.phase_b_examples()["questions.yaml"])
@@ -552,15 +569,15 @@ def test_an_ask_with_a_plan_is_answered_only_by_a_choice_naming_one_of_its_optio
         )
     ids = {"q-plan", "q-plain"}
     assert conversation._answered_ids(home, ids) == {"q-plain"}  # words answer the plain ask only
-    carried, _ = overseer_run._carry_forward(home, {"questions": []}, [], run_id="abcd1234")
-    assert [row["id"] for row in carried["questions"]] == ["q-plan"]
+    carried = overseer_run._carry_forward(home, {"questions": []}, [], run_id="abcd1234")
+    assert [row["id"] for row in carried.index["questions"]] == ["q-plan"]
 
     _write_jsonl(home, "choices.jsonl", [
         _choice("q-plan", "opt-no", "decline", NOW, label="No, leave it"),
     ])
     assert conversation._answered_ids(home, ids) == ids
-    carried, _ = overseer_run._carry_forward(home, {"questions": []}, [], run_id="abcd1234")
-    assert carried["questions"] == []
+    carried = overseer_run._carry_forward(home, {"questions": []}, [], run_id="abcd1234")
+    assert carried.index["questions"] == []
 
 
 # ------------------------------------------------- 11. reopen
@@ -673,3 +690,265 @@ def test_the_reading_correction_line_points_at_the_inbox_and_an_agents_relay():
     assert "open it in your inbox (the tray icon)" in line
     assert "--recorded-by agent" in line
     assert "--recorded-by human" not in line
+
+
+# ------------------------------------------------- fix round 1 (gate r1)
+
+
+def _outcome(q_id: str, result: str, at: datetime) -> dict:
+    return {
+        "id": "out-0000aaaa", "at": _iso(at), "item": attention.item_id("approved.pending", q_id),
+        "subject": q_id, "result": result, "note": "done by the agent", "session": None,
+        "by": "agent",
+    }
+
+
+def test_an_approved_or_click_answered_id_is_never_asked_again(tmp_path, monkeypatch):
+    """Gate r1 BLOCKER 1: re-asking an approved ask's id must not move the
+    user's approval onto a plan they never saw. Mutation checked: passing
+    no `reask` to `_questions` in `_run` fails the "dropped —" lines (the
+    finalize's own check still keeps the index, with its other wording)."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    asked = _iso(NOW - timedelta(days=20))
+    approved = _system_ask("q-appr", [case_id], default=conversation.SYSTEM_DEFAULT,
+                           asked_at=asked, system=True)
+    approved["plan"]["sudo"] = False
+    done = _system_ask("q-done", [case_id], default=conversation.SYSTEM_DEFAULT,
+                       asked_at=asked, system=True)
+    done["plan"]["sudo"] = False
+    declined = _user_ask("q-declined", [case_id], default=conversation.NEEDS_USER_DEFAULTS["sudo"],
+                         asked_at=asked)
+    still_open = _user_ask("q-open", [case_id], default=conversation.NEEDS_USER_DEFAULTS["sudo"],
+                           asked_at=asked)
+    _hand_index(home, [approved, done, declined, still_open])
+    _write_jsonl(home, "choices.jsonl", [
+        _choice("q-appr", "opt-yes", "approve", NOW - timedelta(days=10), label="Yes, add it"),
+        _choice("q-done", "opt-yes", "approve", NOW - timedelta(days=9), label="Yes, add it",
+                cid="chc-0000bbbb"),
+        _choice("q-declined", "opt-not-now", "decline", NOW - timedelta(days=8), label="No",
+                cid="chc-0000cccc"),
+    ])
+    _write_jsonl(home, "outcomes.jsonl", [_outcome("q-done", "done", NOW - timedelta(days=3))])
+    state = _phases(monkeypatch)
+    rewritten = {**_plan(), "summary": "DELETE the user's dotfiles instead."}
+    state["questions"] = [
+        _system_ask("q-appr", [case_id], plan=dict(rewritten)),
+        _system_ask("q-done", [case_id], plan=dict(rewritten)),
+        _user_ask("q-declined", [case_id], text="Run the sudo step after all? Yes runs it."),
+        _user_ask("q-open", [case_id], text="Will you run the udev step this week? Yes runs it."),
+    ]
+
+    _run(home, first=True)
+
+    index = {row["id"]: row for row in _index(home)}
+    # Control: a still-open ask re-asked takes the new words, keeps asked_at.
+    assert index["q-open"]["text"] == "Will you run the udev step this week? Yes runs it."
+    assert index["q-open"]["asked_at"] == asked
+    # The approved and the done asks are kept exactly as they were.
+    for q_id in ("q-appr", "q-done"):
+        assert index[q_id]["plan"]["summary"] == _plan()["summary"], q_id
+        assert index[q_id]["asked_at"] == asked
+    assert "q-declined" not in index
+    refused = _refused_block(home)
+    assert f"question q-appr: dropped — {overseer_run.REASK_APPROVED}" in refused
+    assert f"question q-done: dropped — {overseer_run.REASK_DONE}" in refused
+    assert f"question q-declined: dropped — {overseer_run.REASK_CHOSEN}" in refused
+    assert "question q-open: dropped" not in refused
+
+
+def test_an_approval_clicked_while_a_run_is_in_progress_keeps_its_plan(tmp_path, monkeypatch):
+    """Gate r1 BLOCKER 1, the finalize's own check under its lock. Mutation
+    checked: removing the `reask` drop in `_carry_forward` fails this test
+    (the re-emitted row's plan replaces the approved one)."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    state = _phases(monkeypatch)
+    state["questions"] = [_system_ask("q-net", [case_id])]
+    _run(home, first=True)
+    original = _row(home, "q-net")["plan"]["summary"]  # control
+    state["questions"] = [
+        _system_ask("q-net", [case_id], plan={**_plan(), "summary": "A different plan."}),
+    ]
+    real = overseer_run._record_defaults
+    clicked: list[str] = []
+
+    def approve_mid_run(given_home, manifest):
+        if not clicked:
+            _write_jsonl(given_home, "choices.jsonl", [
+                _choice("q-net", "opt-yes", "approve", datetime.now(timezone.utc),
+                        label="Yes, add it"),
+            ])
+            clicked.append("q-net")
+        return real(given_home, manifest)
+
+    monkeypatch.setattr(overseer_run, "_record_defaults", approve_mid_run)
+    _run(home)
+
+    assert clicked == ["q-net"]
+    assert _row(home, "q-net")["plan"]["summary"] == original
+    assert (
+        f"question q-net: dropped at publish -- {overseer_run.REASK_APPROVED}"
+        in _refused_block(home)
+    )
+
+
+def test_a_needs_user_ask_offers_options_and_a_recommendation(tmp_path):
+    """Gate r1 MAJOR 2 (answer 10). Mutation checked: making options
+    optional again (the `not options` check in `_r2_ask` removed) fails the
+    conflict and sudo assertions."""
+    home = make_home(tmp_path)
+    a = _statement(home, "Never tell me X is waiting on you.", 1)
+    b = _statement(home, "Legit things that need my attention are fine.", 2)
+    case_id = "case-12345678"
+    host = str(tmp_path / "newhost")
+    register_text = (
+        f"Register {host} as a canon host in git mode? Yes registers it; no leaves it unregistered."
+    )
+    conflict = {"because": "conflict", "text": "Which of your two statements wins? Pick one.",
+                "statements": [a, b]}
+    keep = [{"id": "opt-newer", "label": "Keep the newer one", "effect": "other"},
+            {"id": "opt-older", "label": "Keep the older one", "effect": "other"}]
+    register_options = [{"id": "opt-register", "label": "Register it", "effect": "register"},
+                        {"id": "opt-no", "label": "No", "effect": "decline"}]
+    index, dropped = _validate(tmp_path, [
+        _user_ask("q-conflict-bare", [case_id], options=None, **conflict),
+        _user_ask("q-sudo-no-recommend", [case_id], recommend=None),
+        _user_ask("q-conflict", [case_id], options=keep, **conflict),
+        _user_ask("q-register-no-register", [case_id], because="foreign-history",
+                  text=register_text, register={"path": host, "mode": "git"}),
+        _user_ask("q-register", [case_id], because="foreign-history", text=register_text,
+                  register={"path": host, "mode": "git"}, options=register_options),
+        _user_ask("q-stead-bare", [case_id], needs="stead", because=None, options=None,
+                  default=DEFAULT),
+    ], {case_id}, known_statements={a, b})
+
+    assert _ids(index) == ["q-conflict", "q-register", "q-stead-bare"]  # controls
+    assert index["questions"][0]["recommend"]["option"] == "opt-newer"
+    wanted = {
+        "q-conflict-bare": "a needs: user ask offers 2 to 4 options",
+        "q-sudo-no-recommend": "a needs: user ask recommends one of its options",
+        "q-register-no-register": "an ask with register offers at least one register and one "
+                                  "decline option",
+    }
+    for q_id, why in wanted.items():
+        assert any(line.startswith(f"question {q_id}: dropped — {why}") for line in dropped), (
+            q_id, dropped,
+        )
+
+
+def test_reopening_a_withdrawn_approval_brings_back_a_question(tmp_path):
+    """Gate r1 MINOR 4: "Ask me anyway" on a withdrawn approval asks again;
+    the old approve click no longer stands. Mutation checked:
+    `_answer_floor` ignoring `reopened_at` fails this test."""
+    home = make_home(tmp_path)
+    case_id = "case-12345678"
+    asked = _iso(NOW - timedelta(days=20))
+    row = _system_ask("q-appr", [case_id], default=conversation.SYSTEM_DEFAULT,
+                      asked_at=asked, system=True)
+    row["plan"]["sudo"] = False
+    _hand_index(home, [])
+    (home / "overseer" / "withdrawn.yaml").write_text(
+        overseer_run._yaml_text({"withdrawn": [{
+            "id": "q-appr", "text": row["text"], "because": "system-change", "cases": [case_id],
+            "asked_at": asked, "withdrawn_at": _iso(NOW - timedelta(days=2)), "run": "abcd1234",
+            "why": "moot", "row": row,
+        }]}),
+        encoding="utf-8",
+    )
+    _write_jsonl(home, "choices.jsonl", [
+        _choice("q-appr", "opt-yes", "approve", NOW - timedelta(days=10), label="Yes, add it"),
+    ])
+
+    back = conversation.reopen(home, "q-appr")
+
+    assert back["asked_at"] == asked and back.get("reopened_at")
+    indexed = _row(home, "q-appr")
+    assert indexed["reopened_at"] == back["reopened_at"]
+    assert conversation._answered_ids(home, {"q-appr"}) == set()
+    assert conversation.open_question_count(home) == 1
+    floor = conversation._answer_floor(conversation._load_questions(home)[0], None)
+    track = conversation.approval_track(
+        indexed, conversation.choice_rows(home), [], since=floor,
+    )
+    assert track.state == "open"
+    # A new approve click after the reopen is a new approval.
+    _write_jsonl(home, "choices.jsonl", [
+        _choice("q-appr", "opt-yes", "approve", NOW - timedelta(days=10), label="Yes, add it"),
+        _choice("q-appr", "opt-yes", "approve", datetime.now(timezone.utc) + timedelta(seconds=2),
+                label="Yes, add it", cid="chc-0000dddd"),
+    ])
+    assert conversation._answered_ids(home, {"q-appr"}) == {"q-appr"}
+
+
+def test_the_report_names_only_the_withdrawals_the_finalize_applied(tmp_path, monkeypatch):
+    """Gate r1 MINOR 6. Mutation checked: `_default_lines` reading the
+    model's `manifest["withdraw"]` again fails this test."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    state = _phases(monkeypatch)
+    state["questions"] = [_user_ask("q-answered-meanwhile", [case_id]), _user_ask(
+        "q-moot-upstream", [case_id], because="foreign-history",
+        text="Push the fix upstream? Yes pushes; no keeps it local.",
+    )]
+    _run(home, first=True)
+    state["questions"] = []
+    state["withdraw"] = [{"id": "q-answered-meanwhile", "why": "it stopped mattering."},
+                         {"id": "q-moot-upstream", "why": "the upstream was archived."}]
+    real = overseer_run._record_defaults
+    answered: list[str] = []
+
+    def answer_mid_run(given_home, manifest):
+        if not answered:
+            statements.add(
+                given_home, verbatim="I ran it.", recorded_by="human",
+                source={"message_ref": "conversation:obs-0000ef01", "surface": "conversation"},
+                answers={"kind": "question", "ref": "q-answered-meanwhile", "text": None},
+            )
+            answered.append("q-answered-meanwhile")
+        return real(given_home, manifest)
+
+    monkeypatch.setattr(overseer_run, "_record_defaults", answer_mid_run)
+    _run(home)
+
+    decided = _decided_block(home)
+    assert "q-moot-upstream withdrawn: I stopped asking because the upstream was archived." in decided  # control
+    assert "q-answered-meanwhile withdrawn" not in decided
+    assert "withdraw q-answered-meanwhile: not applied" in _refused_block(home)
+    assert [row["id"] for row in _withdrawn(home)] == ["q-moot-upstream"]
+
+
+def test_the_backstop_spares_an_ask_withdrawn_more_than_90_days_ago(tmp_path):
+    """Gate r1 NIT 9. Mutation checked: the backstop ignoring its window
+    (`WITHDRAWN_BACKSTOP_DAYS` never consulted) fails the 91-day case."""
+    case_id = "case-12345678"
+    now = datetime(2026, 10, 31, 12, tzinfo=timezone.utc)
+
+    def gone(days: int) -> list[dict]:
+        return [{"id": "q-before", "because": "sudo", "cases": [case_id],
+                 "withdrawn_at": _iso(now - timedelta(days=days))}]
+
+    index, dropped = _validate(tmp_path, [_user_ask("q-again", [case_id])], {case_id},
+                               withdrawn=gone(89), now=_iso(now))
+    assert _ids(index) == [] and any("asks again, in other words" in d for d in dropped)  # control
+    index, dropped = _validate(tmp_path, [_user_ask("q-again", [case_id])], {case_id},
+                               withdrawn=gone(91), now=_iso(now))
+    assert _ids(index) == ["q-again"], dropped
+
+
+def test_choices_left_out_of_phase_b_for_a_secret_are_named(tmp_path, monkeypatch):
+    """Gate r1 NIT 8. Mutation checked: removing the note in
+    `_full_inputs` fails this test."""
+    home = make_home(tmp_path)
+    _rid, _case_id = _deferred_case(home, tmp_path)
+    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    _write_jsonl(home, "choices.jsonl", [
+        _choice("q-gone", "opt-yes", "approve", NOW - timedelta(days=1), label=f"use {token}"),
+    ])
+    state = _phases(monkeypatch)
+    _run(home, first=True)
+    answers = YAML(typ="safe").load(state["b_stage"]["answers.yaml"])
+    assert "choices" not in answers  # the fallback ran
+    assert "answers.yaml: the user's option choices and feedback clicks were left out" in (
+        _refused_block(home)
+    )
