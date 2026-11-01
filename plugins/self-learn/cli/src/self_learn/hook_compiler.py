@@ -207,7 +207,6 @@ function ansiq(    k, c, code) {
 function catdoc(    j, q, d, strip, k, bs, line, cmp, e, r) {
     if (substr(S, I + 1, 5) != "$(cat") return 0
     j = I + 6
-    if (j > N || index(" \t", substr(S, j, 1)) == 0) return 0
     while (j <= N && index(" \t", substr(S, j, 1)) > 0) j++
     if (substr(S, j, 2) != "<<") return 0
     j += 2; strip = 0
@@ -232,7 +231,7 @@ function catdoc(    j, q, d, strip, k, bs, line, cmp, e, r) {
         if (cmp == d) break
         j = k + 1
     }
-    if (j > N || substr(S, k, 3) != "\n)\"") return 0
+    if (substr(S, k, 3) != "\n)\"") return 0
     e = k + 3; r = e
     while (r <= N && substr(S, r, 1) != "\n") r++
     if (substr(S, e, r - e) ~ PIPE_SHELL) return 0
