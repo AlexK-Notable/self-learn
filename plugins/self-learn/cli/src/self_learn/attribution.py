@@ -41,7 +41,10 @@ import functools
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import ParamSpec, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
+
+if TYPE_CHECKING:
+    from .grant_uses import GrantUse
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -192,15 +195,45 @@ def as_job(actor: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
 
 
 @contextlib.contextmanager
-def acting(granted: Authority | None) -> Iterator[None]:
+def acting(granted: Authority | None, *, use: "GrantUse | None" = None) -> Iterator[None]:
     """Put *granted* in force for the commits inside the span. ``None`` (a
-    person's own terminal, where no authority is needed) changes nothing."""
+    person's own terminal, where no authority is needed) changes nothing.
+
+    *use* (attention round, design r2 §3.4.6): what the wrapped person-only
+    verb does, read by its call site before it acts. With an authority in
+    force and *use* given, the span runs inside one
+    :func:`intents.ledger_write` span, and on a normal exit (no exception,
+    ``use.applies`` still true) one ``grant-uses.jsonl`` row is appended as
+    its own commit inside that same span, stamped ``By: agent`` with the
+    authority's trailer. A failed append is reported on stderr and never
+    fails the verb: the act happened, and its commit trailers still hold
+    it."""
     if granted is None:
         yield
         return
     token = _AUTHORITY.set(granted)
     try:
-        yield
+        if use is None:
+            yield
+            return
+        from . import grant_uses, intents  # lazy: keep this module import-light
+
+        with intents.ledger_write(use.home):
+            yield
+            if use.applies:
+                try:
+                    grant_uses.append(
+                        use.home,
+                        grant_uses.row_for(granted.kind, granted.ref, granted.reason, use),
+                    )
+                except Exception as exc:  # noqa: BLE001 -- the verb already succeeded
+                    import sys
+
+                    print(
+                        f"self-learn: {use.verb}: done, but its grant-use record was not "
+                        f"written ({exc}); the commit's trailers still record the act",
+                        file=sys.stderr,
+                    )
     finally:
         _AUTHORITY.reset(token)
 

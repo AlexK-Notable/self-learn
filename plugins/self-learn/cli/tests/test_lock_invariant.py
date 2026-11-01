@@ -292,6 +292,11 @@ NOT_REPO_TRUTH = {
     # N3 (fold-u2-r1): was mis-cited "S-65 §1.8" — S-65 is a decisions-
     # table row with no subsections; §1.8 is the interface draft's own.
     "cases._write_index": "cache-only, rebuildable (interface draft §1.8): <cache>/cases/index.json, never the ledger",
+    # Attention round (design r2 §3.1, §3.4.2, §4.4): the inbox reader's
+    # and the workspace's cache files.
+    "attention._write_seen": "XDG cache: <cache>/attention/seen.json, which items the person has seen (a lost cache only shows items once more); never ledger truth",
+    "attention._write_registration_snapshot": "XDG cache: <cache>/attention/registrations.json, the plain registrations the inbox has seen and when each first appeared; rebuildable, never ledger truth",
+    "workspace._keep_pending": "XDG cache: <cache>/workspace/<item-id>/pending.jsonl, workspace rows kept while the ledger is STOPPED; workspace.append seals them into the ledger under the lock and removes the file",
     # S-66 / 13 §7.4 (O-2a): `hook_activation._write_claude_runtime` had
     # an entry here through the build and fold r1 (its raw writes sat
     # OUTSIDE `verbs.hook_activate`/`hook_deactivate`'s ledger lock).

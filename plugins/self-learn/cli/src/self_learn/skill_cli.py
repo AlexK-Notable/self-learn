@@ -49,7 +49,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import attribution, grants, skill_registry, skill_requests, skill_writer
+from . import attribution, grant_uses, grants, skill_registry, skill_requests, skill_writer
 from .gitops import EXIT_GIT_FAILED
 from .ledger import resolve_home
 # Called by its bare name, never as ``skill_writer.rename(...)``: the lock
@@ -64,9 +64,10 @@ EXIT_REFUSED = 1
 EXIT_USAGE = 64  # the CLI's own (cli.EXIT_USAGE, sysexits EX_USAGE)
 
 #: What ``--by`` accepts from the command line: a person's run is the
-#: person's. ``overseer`` stays in ``skill_registry.BY_VALUES`` for the
-#: runner's in-process calls.
-_CLI_BY_VALUES = ("human",)
+#: person's, an agent's is the agent's (C7, attention round: an agent never
+#: has to record its own act as the user's). ``overseer`` stays in
+#: ``skill_registry.BY_VALUES`` for the runner's in-process calls.
+_CLI_BY_VALUES = ("human", "agent")
 
 
 def _exit_for(ok: bool, kind: str | None) -> int:
@@ -200,14 +201,35 @@ def dispatch(args) -> int:
     # The statement id of the grant an agent's request runs under, kept on
     # the request's registry entry (a typed yes is never a skill request's).
     args.grant = granted.ref if granted is not None and granted.kind == "grant" else None
-    with attribution.acting(granted):
+    use = (
+        grant_uses.GrantUse(home, f"skill {command}", _use_args(args), prior=None)
+        if granted is not None else None
+    )
+    with attribution.acting(granted, use=use):
         if command == "write":
-            return _write(home, args)
-        if command == "rename":
-            return _rename(home, args)
-        if command == "veto":
-            return _veto(home, args)
-        return _retire(home, args)
+            code = _write(home, args)
+        elif command == "rename":
+            code = _rename(home, args)
+        elif command == "veto":
+            code = _veto(home, args)
+        else:
+            code = _retire(home, args)
+        if use is not None and code != EXIT_OK:
+            use.applies = False
+        return code
+
+
+def _use_args(args) -> list[str]:
+    """The argv a skill verb's grant-use row keeps (attention round,
+    design r2 §3.4.6): enough to run it again as the redo."""
+    command = args.skill_command
+    if command == "write":
+        return [args.name, "--from", str(args.source)]
+    if command == "rename":
+        return [args.old, args.new]
+    if command == "veto":
+        return [args.name, *(["--rename-to", args.rename_to] if args.rename_to else [])]
+    return [args.name]
 
 
 def _print_lines(prefix: str, lines, stream) -> None:

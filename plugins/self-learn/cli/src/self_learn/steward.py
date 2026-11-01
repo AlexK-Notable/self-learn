@@ -31,6 +31,7 @@ from . import (
     cases,
     conditions,
     config,
+    effects,
     execution_evidence,
     gitops,
     intents,
@@ -4656,9 +4657,11 @@ def _maintain_manifest(home: Path, run_id: str, packet_index: int) -> tuple[int,
                     ref = source.get("message_ref")
                     if not isinstance(ref, str) or not (
                         ref.startswith("transcript:") or ref.startswith("conversation:")
+                        or ref.startswith("workspace:")
                     ):
                         raise statements.StatementUsageError(
-                            "statement add: source.message_ref must be transcript:<session>#L<n> or conversation:<obs-id>"
+                            "statement add: source.message_ref must be transcript:<session>#L<n>, "
+                            "conversation:<obs-id> or workspace:<item-id>#T<n>"
                         )
                     recovered = {
                         "state": "applied",
@@ -6274,6 +6277,14 @@ def _apply_packet(
                     phase = "unfinished"
                     halt_code = result.process_code or 8
                 _note_host_results(result, home)
+        # Attention round (design r2 §3.1, critique 8): one row per line this
+        # dispatch applied, so a hook the steward turns on overnight, or an
+        # always-loaded line it changes, lights the inbox exactly as the
+        # overseer's do. Only `batch.run` applies lines; parked and refused
+        # results carry none.
+        effect_rows = effects.rows_for_sheet(
+            home, items, result.items, hook_activation=config.hook_activation_enabled(home),
+        )
         failed = [item for item in result.items if item.state in _FAILED_ITEM_STATES]
         refused += len(failed)
         successful = {item.id for item in result.items if item.state in _SUCCESS_RECEIPT_STATES}
@@ -6332,6 +6343,7 @@ def _apply_packet(
             _update_manifest(home, run_id, reason=f"case {case_id} {summary_state}", update=lambda current: (
                 current["cases"][case_id].update(phase=phase, result=result_json),
                 current["packets"][packet_index - 1]["dispositions"].update(rows),
+                current.setdefault("attention_effects", []).extend(effect_rows),
             ))
         except gitops.GitOpsError as exc:
             _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dirty-refused",
@@ -6773,6 +6785,10 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 "inputs": [row for packet in packet_rows for row in packet["inputs"]],
                 "reconsider_observations": observations, "coverage": _coverage_empty(),
                 "ledger_effects": [],
+                # Attention round (design r2 §4.4): what each applied line
+                # changes for the user, read by the inbox; never mixed into
+                # `ledger_effects`, the crash-recovery proof list.
+                "attention_effects": [],
                 # U3a data point: how the run's inputs were batched.
                 "grouping": {**grouping, "index": index_info},
             }
