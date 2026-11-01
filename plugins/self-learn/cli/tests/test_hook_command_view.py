@@ -194,6 +194,10 @@ GATE_WARNS = {
 GATE_SILENT = {
     "a here-string fed to a non-shell": 'cat <<< "pkill -f foo"',
     "a here-string to a shell, then other quoted text": "bash <<< x; echo 'pkill -f foo'",
+    "a quoted here-string to a shell, then other quoted text":
+        "bash <<< 'true'; echo 'pkill -f foo'",
+    "a quoted here-string to a shell, then a double-quoted payload's data":
+        "bash <<< \"$(echo 'x')\"; echo 'pkill -f foo'",
     "a trap's signal list is not code": "trap 'echo hi' 'pkill -f foo'",
     "a real comment after a subshell": "(echo a) # pkill -f foo",
     "arithmetic leaves later quotes alone": 'x=$((1<<2)); echo "pkill -f foo"',
