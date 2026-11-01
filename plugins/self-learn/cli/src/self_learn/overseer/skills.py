@@ -72,7 +72,7 @@ from typing import Any, Callable, Collection, Mapping, cast
 
 from ruamel.yaml import YAML
 
-from .. import config, gitops, scan, settings, skill_registry, skill_writer
+from .. import config, scan, settings, skill_registry, skill_writer
 from ..hosts import HostsError, load_hosts
 from ..skill_registry import STATUS_LIVE, SkillRegistryError
 
@@ -402,37 +402,10 @@ def _skills_root(home: Path) -> Path | None:
 
 
 def _files_at_last_write(home: Path, name: str, row: dict) -> dict[str, str] | None:
-    """The skill's files as self-learn's last write committed them to the
-    skills root, found by that commit's subject; ``None`` when the commit
-    or its ``SKILL.md`` cannot be found."""
-    last = row.get("last_write") or {}
-    case = last.get("case")
-    root = _skills_root(home)
-    if (case is not None and not isinstance(case, str)) or "case" not in last or root is None:
-        return None
-    # The writer's own subject (one definition: `skill_writer._subject`); a
-    # person's write with no case says "(no case)", and the newest such write
-    # of this skill is its last write when the row's case is null.
-    subject = skill_writer._subject("write", name, case)  # noqa: SLF001
-    proc = gitops._git(  # noqa: SLF001 -- a read
-        root, "log", "-1", "--format=%H", "--fixed-strings", f"--grep={subject}",
-        "--", f"plugins/{name}",
-    )
-    sha = proc.stdout.strip() if proc.returncode == 0 else ""
-    if not sha:
-        return None
-    prefix = f"plugins/{name}/skills/{name}/"
-    listing = gitops._git(root, "ls-tree", "-r", "-z", "--name-only", sha, "--", prefix)  # noqa: SLF001
-    if listing.returncode != 0:
-        return None
-    files: dict[str, str] = {}
-    for path in listing.stdout.split("\0"):
-        if not path.startswith(prefix):
-            continue
-        shown = gitops._git(root, "show", f"{sha}:{path}")  # noqa: SLF001
-        if shown.returncode == 0:
-            files[path[len(prefix):]] = shown.stdout
-    return files if "SKILL.md" in files else None
+    """The skill's files as self-learn's last write (or its last rename)
+    committed them to the skills root (one definition:
+    ``skill_writer.files_at_last_write``)."""
+    return skill_writer.files_at_last_write(home, name, row)
 
 
 def _diff_lines(old: str, new: str, rel: str) -> list[str]:

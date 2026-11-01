@@ -67,6 +67,8 @@ __all__ = [
     "adopt_entry",
     "compiled_record_path",
     "entry_for",
+    "has_prefix",
+    "rekey_prefix",
     "load_record",
     "migrate_legacy_entries",
     "region_bytes",
@@ -386,6 +388,42 @@ def delete_entry(home: Path | str, slug: str, key: str) -> Path | None:
     if key not in targets:
         return None
     del targets[key]
+    buf = io.StringIO()
+    y.dump(data, buf)
+    fsops.atomic_write(path, buf.getvalue(), preserve_mode=True, fsync=True)
+    return path
+
+
+def has_prefix(home: Path | str, slug: str, prefix: str) -> bool:
+    """Whether ``<home>/compiled/<slug>.yaml`` has an entry whose key's path
+    starts with *prefix* (a folder, ending in ``/``)."""
+    path = compiled_record_path(home, slug)
+    if not path.is_file():
+        return False
+    data = _yaml().load(path.read_text(encoding="utf-8")) or {}
+    return any(str(key).startswith(prefix) for key in (data.get("targets") or {}))
+
+
+def rekey_prefix(home: Path | str, slug: str, old_prefix: str, new_prefix: str) -> Path | None:
+    """Re-key every entry whose key starts with *old_prefix* to start with
+    *new_prefix* instead, the entry itself unchanged (S-NEXT-skills-chain:
+    a skill rename moves the folder, and every region in it moves byte for
+    byte). An entry already under the new key wins over the old one.
+    ``None`` when nothing changed. Commits nothing."""
+    path = compiled_record_path(home, slug)
+    if not path.is_file():
+        return None
+    y = _yaml()
+    data = y.load(path.read_text(encoding="utf-8")) or {}
+    targets = data.get("targets") or {}
+    moved = [key for key in list(targets) if str(key).startswith(old_prefix)]
+    if not moved:
+        return None
+    for key in moved:
+        entry = targets.pop(key)
+        new_key = new_prefix + str(key)[len(old_prefix):]
+        if new_key not in targets:
+            targets[new_key] = entry
     buf = io.StringIO()
     y.dump(data, buf)
     fsops.atomic_write(path, buf.getvalue(), preserve_mode=True, fsync=True)

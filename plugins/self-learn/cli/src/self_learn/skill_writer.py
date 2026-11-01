@@ -19,6 +19,7 @@ Public surface::
     rename(home, old, new, *, case, by, expect_sha=None,
            no_push=False) -> RenameResult      # SK8; see the rename section
     link_skill(skills_root, name) -> str
+    files_at_last_write(home, name, row=None) -> dict[str, str] | None
     routed_lessons(home, name) -> list[str]
     deployed_files(home, name) -> dict[str, str] | None
     deployed_authored_sha256(home, name) -> str | None
@@ -1234,6 +1235,14 @@ def _preflight(
         link = link_path(name)
         if link.is_symlink() or link.exists():
             taken.append(f"{link} already exists")
+        held = _bucket_records(home, name)
+        if held:
+            # S-NEXT-skills-chain (SK-C1): a new skill never silently starts
+            # compiling records left in an old bucket of its name.
+            taken.append(
+                f"the ledger bucket skills/{name}/ holds record(s) {', '.join(held)} of another "
+                "skill: choose another name"
+            )
         problems += [f"name-collision: {t}" for t in taken]
 
     # -- the template and the secret scan
@@ -1909,6 +1918,14 @@ def retire(
 #    managed section and its lessons' lines included;
 # 3. the links: ``~/.claude/skills/<old>`` goes, ``~/.claude/skills/<new>``
 #    is made;
+# 3a. the skill's own ledger bucket moves with it (S-NEXT-skills-chain,
+#    SK-C1): every file under ``skills/<old>/`` is ``git mv``ed to the same
+#    place under ``skills/<new>/``, each record's scope becomes
+#    ``skill:<new>`` with one ``skill-renamed`` history entry naming the
+#    blob it had (``ledger_ops.carry_skill_bucket``), and the skills root's
+#    compile-record entries under ``plugins/<old>/skills/<old>/`` are
+#    re-keyed to the new path (the regions are byte for byte the same) --
+#    one ledger commit, or none when the bucket is empty;
 # 4. every lesson routed ``new-skill:<old>`` is re-routed to
 #    ``new-skill:<new>``, one ledger commit each. Its routing block stays
 #    whole except ``new_skill`` (``routed_at`` keeps the compiler's line
@@ -1923,12 +1940,16 @@ def retire(
 # 6. the old row goes (one ledger commit), once no lesson routes to it.
 #
 # Refused: a new name that is not a skill name, is the old name, is vetoed,
-# is loaded on this machine, or is already used in the skills root or in
-# ``~/.claude/skills`` (``bad-line``); a skill self-learn does not own, or
-# whose own ledger bucket ``skills/<old>/`` -- or the new name's bucket --
-# holds records (``needs-person``: D15, "the overseer asks instead"); a
-# skill changed since self-learn last wrote it, unless ``expect_sha`` names
-# its files as they are now, and uncommitted changes in either plugin
+# is loaded on this machine, is already used in the skills root or in
+# ``~/.claude/skills``, or whose own ledger bucket ``skills/<new>/`` holds
+# records of another skill (``bad-line``: the caller chooses another name;
+# S-NEXT-skills-chain, no person is asked); a skill self-learn does not
+# own (``needs-person``); a skill changed since self-learn last wrote it,
+# unless ``expect_sha`` names
+# its files as they are now (the row then records the hash of the files as
+# self-learn last wrote them, renamed, so phase B still sees the person's
+# edit as a change since self-learn's last write), and uncommitted changes
+# in either plugin
 # folder or in ``marketplace.json`` (``target-busy``); a plugin folder that
 # holds a symlink, a file that is not UTF-8 text, or another skill's folder
 # (``needs-person``).
@@ -2017,6 +2038,78 @@ class _RenamePlan:
     #: ``(id, path)`` of every lesson routed ``new-skill:<old>``.
     lessons: list[tuple[str, Path]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+
+def _last_write_commit(root: Path, name: str, before: str | None) -> tuple[str, str] | None:
+    """``(sha, subject)`` of the newest skills-root commit that is
+    self-learn's write of *name*, or its rename to *name*, at or before
+    *before* (``None``: HEAD); ``None`` when there is none."""
+    write_prefix = f"self-learn: skill write {name} ("
+    rename_infix = f" → {name} ("
+    args = [
+        "log", "--format=%H%x00%s", "--fixed-strings",
+        f"--grep={write_prefix}", "--grep=self-learn: skill rename ",
+        before or "HEAD", "--", f"plugins/{name}",
+    ]
+    proc = gitops._git(root, *args)  # noqa: SLF001 -- a read
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        sha, _nul, subject = line.partition("\0")
+        if subject.startswith(write_prefix):
+            return sha, subject
+        if subject.startswith("self-learn: skill rename ") and rename_infix in subject:
+            return sha, subject
+    return None
+
+
+def _skill_files_at(root: Path, sha: str, name: str) -> dict[str, str] | None:
+    prefix = f"plugins/{name}/skills/{name}/"
+    listing = gitops._git(root, "ls-tree", "-r", "-z", "--name-only", sha, "--", prefix)  # noqa: SLF001
+    if listing.returncode != 0:
+        return None
+    files: dict[str, str] = {}
+    for path in listing.stdout.split("\0"):
+        if not path.startswith(prefix):
+            continue
+        shown = gitops._git(root, "show", f"{sha}:{path}")  # noqa: SLF001
+        if shown.returncode == 0:
+            files[path[len(prefix):]] = shown.stdout
+    return files if SKILL_ENTRY_FILE in files else None
+
+
+def files_at_last_write(
+    home: Path | str, name: str, row: dict | None = None, *, _before: str | None = None,
+    _depth: int = 0,
+) -> dict[str, str] | None:
+    """The skill's files as self-learn last wrote them to the skills root
+    (keys relative to the skill folder, as :func:`deployed_files`); ``None``
+    when they cannot be found. The last write is the newest commit that is
+    ``skill write <name>`` or a rename to *name*; a rename's files are the
+    files of the last write of the name it had, with the name line changed
+    (S-NEXT-skills-chain, SK-C1: a rename keeps a person's edit visible as a
+    change since self-learn last wrote the skill). *row* is accepted for the
+    callers that have it; the history is the record."""
+    del row
+    root = _skills_root_or_none(Path(home))
+    if root is None or _depth > 16:
+        return None
+    found = _last_write_commit(root, name, _before)
+    if found is None:
+        return None
+    sha, subject = found
+    if subject.startswith(f"self-learn: skill write {name} ("):
+        return _skill_files_at(root, sha, name)
+    old = subject[len("self-learn: skill rename "):].split(" → ", 1)[0]
+    if not _valid_name(old) or old == name:
+        return None
+    files = files_at_last_write(home, old, _before=f"{sha}^", _depth=_depth + 1)
+    if files is None:
+        return None
+    try:
+        return {**files, SKILL_ENTRY_FILE: _renamed_skill_md(files[SKILL_ENTRY_FILE], old, name)}
+    except _Refused:
+        return None
 
 
 def _rename_subject(old: str, new: str, case: str | None) -> str:
@@ -2197,21 +2290,49 @@ def _marketplace_renamed(raw: str, old: str, new: str) -> str:
 # -- the preflight (writes nothing)
 
 
+def _carried_by_this_rename(home: Path, old: str, record_id: str, path: Path) -> bool:
+    """Whether the record at *path* (under ``skills/<new>/``) is one this
+    rename of *old* carried, or is still carrying: it still says
+    ``scope: skill:<old>``, or its newest history entry is the rename's
+    ``skill-renamed`` from ``skills/<old>``."""
+    from . import ledger_ops
+    from .records import Record
+
+    try:
+        record = Record.from_path(path)
+    except ledger_ops.UNREADABLE_RECORD_ERRORS:
+        return False
+    if record.scope == f"skill:{old}":
+        return True
+    history = record.history
+    last = history[-1] if history else None
+    return (
+        isinstance(last, dict)
+        and last.get("event") == ledger_ops.SKILL_RENAMED_EVENT
+        and last.get("from") == f"skills/{old}"
+    )
+
+
 def _rename_bucket_check(home: Path, plan: _RenamePlan) -> None:
-    """D15: a skill whose own ledger bucket (``skills/<old>/`` or
-    ``skills/<new>/``) holds records is not renamed. Run on a first run AND
-    on every resumed run that is not done (integration 2026-10-31, the sk8
-    gate's MINOR): a record filed there between a crash and the rerun would
-    otherwise be stranded on a folder that no longer exists, or start
-    compiling into the renamed skill."""
-    held = [(name, ids) for name in (plan.old, plan.new) if (ids := _bucket_records(home, name))]
-    if held:
+    """S-NEXT-skills-chain (SK-C1): the rename carries ``skills/<old>/``
+    with it, so only the NEW name's bucket can stop it: one that holds
+    records of another skill refuses the name (``bad-line``: the caller
+    chooses another; no person is needed). Records this rename already
+    carried there (an interrupted run) are its own. Run on a first run and
+    on every resumed run that is not done."""
+    bucket = home / "skills" / plan.new
+    if not bucket.is_dir():
+        return
+    others = sorted(
+        path.stem for path in bucket.rglob("lrn-*.md")
+        if path.is_file() and not _carried_by_this_rename(home, plan.old, path.stem, path)
+    )
+    if others:
         raise _Refused(
-            KIND_NEEDS_PERSON,
+            KIND_BAD_LINE,
             [
-                f"the ledger bucket skills/{name}/ holds record(s) {', '.join(ids)}; a skill "
-                "whose own bucket holds records is not renamed, so a person must decide"
-                for name, ids in held
+                f"the name's bucket skills/{plan.new}/ holds records of another skill "
+                f"({', '.join(others)}): choose another name"
             ],
         )
 
@@ -2460,17 +2581,27 @@ def _rename_preflight(
         if old not in renamed_from:
             renamed_from.append(old)
         assert plan.new_sha is not None
+        recorded_new = plan.new_sha
+        if plan.current_sha != recorded:
+            # S-NEXT-skills-chain (SK-C1, sk8 finding 7k): a person edited the
+            # skill since self-learn last wrote it. The row keeps naming what
+            # self-learn wrote (renamed), so phase B still sees the edit.
+            recorded_new = _last_written_sha_renamed(home, old, old_row, new) or recorded
         plan.new_row = {
             "status": STATUS_LIVE,
             "plugin": f"plugins/{new}",
             "created": dict(old_row["created"]),
-            "last_write": {"at": now, "case": case, "by": by, "authored_sha256": plan.new_sha},
+            "last_write": {"at": now, "case": case, "by": by, "authored_sha256": recorded_new},
             "renamed_from": renamed_from,
         }
     else:
         assert new_row is not None
         recorded_new = new_row["last_write"]["authored_sha256"]
-        if not plan.host_moved and plan.new_sha != recorded_new:
+        if (
+            not plan.host_moved
+            and plan.new_sha != recorded_new
+            and not _resumed_hand_edit(home, plan, old_row, recorded_new, expect_sha)
+        ):
             raise _Refused(
                 KIND_NEEDS_PERSON,
                 [
@@ -2479,9 +2610,41 @@ def _rename_preflight(
                     "a person must decide"
                 ],
             )
-        plan.new_sha = recorded_new
+        if plan.new_sha == recorded_new or plan.host_moved:
+            plan.new_sha = recorded_new
     plan.lessons = _lessons_routed_to(home, old)
     return plan
+
+
+def _last_written_sha_renamed(
+    home: Path, old: str, old_row: dict, new: str
+) -> str | None:
+    """The authored sha256 of *old*'s files as self-learn last wrote them,
+    with the name line changed to *new*; ``None`` when those files cannot
+    be found in the skills root's history (the caller keeps the recorded
+    hash)."""
+    files = files_at_last_write(home, old, old_row)
+    if files is None:
+        return None
+    try:
+        files = {**files, SKILL_ENTRY_FILE: _renamed_skill_md(files[SKILL_ENTRY_FILE], old, new)}
+        return _authored_sha(files)
+    except (_Refused, SkillRegistryError):
+        return None
+
+
+def _resumed_hand_edit(
+    home: Path, plan: _RenamePlan, old_row: dict | None, recorded_new: str,
+    expect_sha: str | None,
+) -> bool:
+    """A resumed rename of a skill a person had edited: the row step 1
+    wrote records the last-written files renamed, not the files as they
+    are, so the plan's hash differs from it by design. It is the same
+    rename when the caller names the files as they are (``expect_sha``)
+    and step 1's hash is the last-written one."""
+    if old_row is None or expect_sha is None or plan.current_sha != expect_sha:
+        return False
+    return _last_written_sha_renamed(home, plan.old, old_row, plan.new) == recorded_new
 
 
 # -- the registry steps
@@ -2594,6 +2757,38 @@ def _reroute_lesson(
     record.write(path)
     intents.complete(intent)
     sha = gitops.stage_and_commit(home, [path], subject, body)
+    intents.finish(intent)
+    return sha
+
+
+def _carry_bucket(
+    home: Path, plan: _RenamePlan, subject: str, body: str, *, by: str, case: str | None,
+) -> str | None:
+    """Step 3a: carry ``skills/<old>/`` to ``skills/<new>/`` and re-key the
+    skills root's compile-record entries for the old folder, in one ledger
+    commit under an intent. ``None`` when there is nothing to carry. The
+    caller holds the ledger lock."""
+    from . import compiled, ledger_ops
+    from .hosts import host_slug
+
+    plan_files = ledger_ops.skill_bucket_carry_plan(home, plan.old, plan.new)
+    slug = host_slug(home, plan.root, scope_kind="skill")
+    record_path = compiled.compiled_record_path(home, slug)
+    old_prefix = f"plugins/{plan.old}/skills/{plan.old}/"
+    new_prefix = f"plugins/{plan.new}/skills/{plan.new}/"
+    rekey = compiled.has_prefix(home, slug, old_prefix)
+    if not plan_files and not rekey:
+        return None
+    paths = [p for pair in plan_files for p in pair] + ([record_path] if rekey else [])
+    message = f"{subject}: carry skills/{plan.old}/ to skills/{plan.new}/"
+    intent = intents.begin(home, "skill-rename", sorted(set(paths)), message)
+    touched = ledger_ops.carry_skill_bucket(home, plan.old, plan.new, by=by, case=case)
+    if rekey:
+        written = compiled.rekey_prefix(home, slug, old_prefix, new_prefix)
+        if written is not None:
+            touched.append(written)
+    intents.complete(intent)
+    sha = gitops.stage_and_commit(home, sorted(set(touched)), message, body)
     intents.finish(intent)
     return sha
 
@@ -2712,6 +2907,21 @@ def _apply_rename(home: Path, plan: _RenamePlan, *, case: str | None, by: str) -
                 "run the same rename again to finish"
             ],
         )
+
+    try:
+        carried = _carry_bucket(home, plan, subject, body, by=by, case=case)
+    except (gitops.GitOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS, ledger_ops.LedgerOpsError) as exc:
+        return _rename_outcome(
+            plan, ok=False,
+            kind=KIND_GIT if isinstance(exc, gitops.GitOpsError) else KIND_NEEDS_PERSON,
+            ledger_shas=shas, host_sha=host_sha, link=link, unlinked=unlinked,
+            problems=[
+                f"moving the ledger bucket skills/{old}/ to skills/{new}/ stopped ({exc}); run "
+                "the same rename again to finish"
+            ],
+        )
+    if carried is not None:
+        shas.append(carried)
 
     rerouted: list[str] = []
     try:

@@ -115,7 +115,7 @@ REQUIRED_SECTIONS = {"behavior": ("Trigger", "Instruction"), "knowledge": ("Fact
 HISTORY_EVENTS = frozenset(
     {
         "resolution", "routing", "hook-activated", "hook-deactivated", "reconsidered",
-        "moved",
+        "moved", "skill-renamed",
     }
 )
 #: "Episode brief" (02 §1 amendment, 10 §3 U18): a miner-only, optional

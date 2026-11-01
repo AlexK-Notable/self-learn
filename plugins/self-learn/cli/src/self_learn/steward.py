@@ -1024,6 +1024,12 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         rid = entry.record.id
         if (rid, identity["version"]) in terminal:
             continue
+        # S-NEXT-skills-chain (SK-C1): a lesson a skill rename carried to the
+        # renamed skill's bucket, unchanged since, is the version it was;
+        # decided then, it stays decided.
+        carried = ledger_ops.carried_version(entry.record)
+        if carried is not None and (rid, carried) in terminal:
+            continue
         legacy = identity.get("legacy_version")
         if isinstance(legacy, str) and (rid, legacy) in legacy_terminal:
             continue
@@ -1425,6 +1431,11 @@ def _premise_extract_inputs(
             continue
         version = f"extract:{blob}"
         if (record.id, version) in terminal:
+            continue
+        # S-NEXT-skills-chain (SK-C1): a lesson a skill rename carried is the
+        # version it was before the move.
+        carried = ledger_ops.carried_version(record)
+        if carried is not None and (record.id, f"extract:{carried}") in terminal:
             continue
         rows.append((record, {
             "path": f"premise-extract:{record.id}",
