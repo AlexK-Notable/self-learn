@@ -9,12 +9,14 @@ changes): the orchestrator runs these once over the combined landing.
 from __future__ import annotations
 
 import io
+import json
 import os
 from pathlib import Path
 
 import pytest
 
 from self_learn import cases, ledger_ops, statements, steward, user_model, verbs
+from self_learn.scan import scan as scan_text
 from self_learn.overseer import conversation
 from self_learn.overseer import run as overseer_run
 from support import commit_all, make_home
@@ -225,8 +227,10 @@ _SPELLED = "- basis: [B, e, a, r, s, o, n, t, h, e, q, u, e, s, t, i, o, n, ., P
 
 def test_a_basis_spelled_one_character_at_a_time_heals_on_read_and_on_the_next_write(tmp_path):
     """um-cea0 (2026-10-11): a string was iterated as a list. The malformed
-    entry reads back as the one string it spells, and the next write of the
-    document stores it that way."""
+    entry reads back as ONE item, and the next write of the document stores
+    it that way. With no run manifest holding the original, that item is
+    the plain-words placeholder naming the entry (2026-11-01: the spaceless
+    join this test used to expect tripped the secret scan)."""
     home = make_home(tmp_path)
     healthy = _add(home, basis=["one reason", "another reason"])
     broken = _add(home)
@@ -236,7 +240,8 @@ def test_a_basis_spelled_one_character_at_a_time_heals_on_read_and_on_the_next_w
     path.write_text(text[:block_end] + _SPELLED + "\n" + text[block_end:], encoding="utf-8")
     commit_all(home, "plant the malformed entry")
 
-    assert _entry(home, broken)["basis"] == ["Bearsonthequestion.Pro"]
+    placeholder = user_model._lost_basis_text(broken)  # noqa: SLF001
+    assert _entry(home, broken)["basis"] == [placeholder]
     # Control: a real list, and its commas, are left alone.
     assert _entry(home, healthy)["basis"] == ["one reason", "another reason"]
 
@@ -246,5 +251,171 @@ def test_a_basis_spelled_one_character_at_a_time_heals_on_read_and_on_the_next_w
     )
     stored = path.read_text(encoding="utf-8")
     assert _SPELLED not in stored
-    assert "- basis: [Bearsonthequestion.Pro]" in stored
+    assert f"- basis: [{placeholder}]" in stored
     assert "- basis: [one reason, another reason]" in stored
+
+
+# 2026-11-01 (overseer run 5b769e3a): the spelled basis is recovered from
+# the run manifest that recorded the add, or reads as a placeholder; never
+# as the spaceless join, which tripped the secret scan on the stage.
+
+#: Long enough that its letters joined without spaces are a 40+ character
+#: run (the base64 rule), and it carries commas and a colon like the real one.
+_ORIGINAL = (
+    "Bears on the overseer's question bar: decide and report rather than ask "
+    "for confirmation, then name what was decided"
+)
+
+
+def _plant_spelled(home: Path, entry_id: str, original: str) -> str:
+    """Write *entry_id*'s basis the way the 2026-10-11 `add_entry` did
+    (`list(basis)` on a string, rendered as a list) and commit it."""
+    path = home / "user-model.md"
+    text = path.read_text(encoding="utf-8")
+    block_end = text.index("- provisional", text.index(f"### {entry_id}"))
+    spelled = "- basis: " + user_model._fmt_list(list(original))  # noqa: SLF001
+    path.write_text(text[:block_end] + spelled + "\n" + text[block_end:], encoding="utf-8")
+    commit_all(home, "plant a spelled-out basis")
+    return spelled
+
+
+def _seed_manifest(home: Path, name: str, *bases: str) -> None:
+    """A run manifest shaped like the overseer's (`maintenance[].payload`)."""
+    runs = home / "cases" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"id": f"op-{i:012x}", "kind": "model", "state": "applied",
+         "payload": {"action": "add", "basis": basis}}
+        for i, basis in enumerate(bases)
+    ]
+    (runs / f"{name}.json").write_text(
+        json.dumps({"run_id": name, "maintenance": rows}), encoding="utf-8"
+    )
+    commit_all(home, f"seed manifest {name}")
+
+
+def test_a_spelled_basis_reads_back_as_its_original_from_a_run_manifest(tmp_path):
+    home = make_home(tmp_path)
+    broken = _add(home)
+    spelled = _plant_spelled(home, broken, _ORIGINAL)
+    _seed_manifest(home, "854639e4", _ORIGINAL)
+    # A decoy whose words differ is never chosen.
+    _seed_manifest(home, "f938dad3", "Provisional; one explicit instruction about one run")
+    # Positive control: what the old heal emitted trips the scan.
+    assert scan_text("".join(c for c in _ORIGINAL if c not in " ,"))
+
+    assert _entry(home, broken)["basis"] == [_ORIGINAL]
+
+    # The next write by the ordinary writer stores the recovered words.
+    user_model.add_entry(
+        home, container="D", title="another", because="a dated statement supports it",
+        source="system-reading", by="overseer", statements=["stmt-00000002"], ref="case-00000002",
+    )
+    stored = (home / "user-model.md").read_text(encoding="utf-8")
+    assert spelled not in stored
+    assert f"- basis: [{_ORIGINAL}]" in stored
+    # The list rendering splits an item at its commas on the next read (a
+    # limit of the `[a, b]` format, not of this heal): the words survive.
+    assert ", ".join(_entry(home, broken)["basis"]) == _ORIGINAL
+
+
+def test_a_spelled_basis_with_no_single_original_reads_as_a_placeholder_the_scan_passes(tmp_path):
+    home = make_home(tmp_path)
+    missing = _add(home)
+    ambiguous = _add(home)
+    _plant_spelled(home, missing, _ORIGINAL)
+    _plant_spelled(home, ambiguous, "split across two ways")
+    # Two distinct originals with the same letters: neither is chosen.
+    _seed_manifest(home, "6d38cdd1", "split across two ways", "split across, two ways")
+
+    for entry_id in (missing, ambiguous):
+        (item,) = _entry(home, entry_id)["basis"]
+        assert item == user_model._lost_basis_text(entry_id)  # noqa: SLF001
+        assert entry_id in item and "2026-10-11" in item
+        assert scan_text(item) == []
+        assert "," not in item and "[" not in item and "]" not in item
+
+
+def test_the_overseer_stage_user_model_yaml_passes_the_secret_scan(tmp_path):
+    home = make_home(tmp_path)
+    recovered = _add(home)
+    lost = _add(home)
+    _plant_spelled(home, recovered, _ORIGINAL)
+    _plant_spelled(home, lost, _ORIGINAL.replace("question bar", "answer bar"))
+    _seed_manifest(home, "854639e4", _ORIGINAL)
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    overseer_run._full_inputs(home, stage, (), [], answers_since=None)  # noqa: SLF001
+    staged = (stage / "user-model.yaml").read_text(encoding="utf-8")
+    # Positive control first: the stage holds both healed entries.
+    from ruamel.yaml import YAML
+
+    bases = {
+        e["id"]: list(e["basis"])
+        for e in YAML(typ="safe").load(staged)["containers"]["D"]
+    }
+    assert bases[recovered] == [_ORIGINAL]
+    assert bases[lost] == [user_model._lost_basis_text(lost)]  # noqa: SLF001
+    assert scan_text(staged) == []
+    assert "user-model.yaml" not in overseer_run._secret_files(stage)  # noqa: SLF001
+
+
+def _plant_line(home: Path, entry_id: str, line: str) -> None:
+    path = home / "user-model.md"
+    text = path.read_text(encoding="utf-8")
+    block_end = text.index("- provisional", text.index(f"### {entry_id}"))
+    path.write_text(text[:block_end] + line + "\n" + text[block_end:], encoding="utf-8")
+    commit_all(home, "plant a basis line")
+
+
+def test_a_stored_spaceless_join_heals_to_its_original_and_an_unmatched_token_is_kept(tmp_path):
+    """The S-96 heal's join, saved by a write before this fix: one item of
+    40+ characters with no whitespace. It is replaced when one original
+    matches; a long token no manifest explains is left as it is."""
+    home = make_home(tmp_path)
+    joined_entry = _add(home)
+    token_entry = _add(home)
+    joined = "".join(c for c in _ORIGINAL if c not in " ,")
+    token = "transcript:c10dea22-5d41-4849-b598-b4176a20dd59#L1410"
+    assert len(joined) >= 40 and len(token) >= 40
+    _plant_line(home, joined_entry, f"- basis: [{joined}]")
+    _plant_line(home, token_entry, f"- basis: [{token}]")
+    _seed_manifest(home, "854639e4", _ORIGINAL)
+    # Positive control: the stored join is what tripped the scan.
+    assert scan_text(joined)
+
+    assert _entry(home, joined_entry)["basis"] == [_ORIGINAL]
+    assert _entry(home, token_entry)["basis"] == [token]
+
+
+def test_unreadable_or_malformed_manifests_never_stop_the_recovery(tmp_path):
+    home = make_home(tmp_path)
+    broken = _add(home)
+    _plant_spelled(home, broken, _ORIGINAL)
+    runs = home / "cases" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "aa-malformed.json").write_text("{not json", encoding="utf-8")
+    (runs / "ab-not-utf8.json").write_bytes(b'{"basis": "\xff\xfe"}')
+    (runs / "ac-a-directory.json").mkdir()
+    (runs / "ad-deep.json").write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    (runs / "ae-scalar.json").write_text('"just a string"', encoding="utf-8")
+    (runs / "af-non-string.json").write_text('{"basis": ["a", 1]}', encoding="utf-8")
+    _seed_manifest(home, "zz-real", _ORIGINAL)
+
+    assert _entry(home, broken)["basis"] == [_ORIGINAL]
+
+
+def test_a_candidate_holding_a_line_break_is_never_used(tmp_path):
+    """Its words match once whitespace is removed, but rendered into the
+    document it would be structure, so the entry reads as the placeholder."""
+    home = make_home(tmp_path)
+    broken = _add(home)
+    _plant_spelled(home, broken, _ORIGINAL)
+    # Differs from the original only by whitespace, so the key matches and
+    # only the line-break filter keeps it out.
+    with_break = _ORIGINAL.replace("bar: decide", "bar:\ndecide")
+    assert user_model._basis_key(with_break) == user_model._basis_key(_ORIGINAL)  # noqa: SLF001
+    _seed_manifest(home, "854639e4", with_break)
+
+    assert _entry(home, broken)["basis"] == [user_model._lost_basis_text(broken)]  # noqa: SLF001
