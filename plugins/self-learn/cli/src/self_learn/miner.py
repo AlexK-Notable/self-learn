@@ -189,6 +189,10 @@ SELF_PROMPT_HEADERS = (
     *worker.SESSION_OPENINGS,
     *steward_prompt.SESSION_OPENINGS,
     *overseer_run.SESSION_OPENINGS,
+    # 2026-10-31 (attention round, design r2 §3.3): the inbox's "ask about
+    # this" agent; `ask.SESSION_OPENING` is this text, and its first prompt
+    # opens `self-learn ask-about-this session for <item-id>.`
+    "self-learn ask-about-this session for ",
 )
 #: Self-learn command spans inside otherwise-minable sessions (M-5).
 _COMMAND_SPAN_RE = re.compile(r"<command-name>/?self-learn:")
