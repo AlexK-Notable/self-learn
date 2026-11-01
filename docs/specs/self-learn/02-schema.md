@@ -4803,6 +4803,23 @@ packet and the ask agent's read fence. A `look_at` path is kept only when it
 is absolute and exists, neither it nor its resolved target is under a deny
 path or has a deny name, it is not `/` or `$HOME`, and it is at least two
 components deep (below `$HOME` when under it); at most five are kept.
+*(S-NEXT-walkfix, item 6.)* Evidence entries carry what a person decides
+by: a `lesson` entry is titled by its trigger (or fact), never the first
+heading's name, and carries `trigger`, `instruction`, `fact`,
+`sightings` and `seen` (its frontmatter `evidence`, newest first, at most
+ten: `{at, session, origin, quote}`); a `hook` entry carries the lesson's
+`trigger` and `instruction` and comes first, the lesson itself not
+repeated after it; on an ask whose `because` is `conflict`, its two
+`statement` entries carry `side: newer|older` by their `at` (neither on
+equal or unknown times; the comparison `attention answer` uses for the
+losing side); a `file` entry carries `is_dir` and `display` (the whole
+path, the home folder written `~`); a statement whose context cannot be
+read says why in words (`context_note`: "not found on this machine: the
+conversation file it came from was moved or deleted…"), never an
+exception's class name. An undone decided item (its transcript's last
+undo/redo row is an undo) has `meanwhile` and `decided.changes_now` from
+`attention.UNDONE_NOW`; a hook or always-loaded item is titled by its
+lesson's trigger, its id only when the lesson cannot be read.
 
 **The workspace transcript** (`<ledger>/attention/workspace/<item-id>.jsonl`;
 the ref kind `workspace:<item-id>#T<n>`, rule 11 of §3a.6): row 0 a header,
@@ -4868,6 +4885,24 @@ A draft is named by `--draft <drf-…>` (the page's hidden field); a draft id
 no sealed draft row of this item carries is refused (64). A draft carrying
 an option is sent as that option. Free text is secret-scanned before
 anything is written (64).
+
+*(S-NEXT-walkfix, item 2.)* The origin of a reply from the page or a
+person's shell is decided by ONE function, `attention_answers._origin_of`
+(the draft id, then the 40-character match, then typed), and its words by
+ONE table, `recorded_as_words`. `attention_answers.preview(home, id, *,
+text, draft_id, option)` runs both without writing anything and returns
+`{origin, recorded_as, matched, problem}` (`matched`: the shared run of
+the agent's text, grown to its whole length; `problem`: why it would be
+refused, a secret or an unknown draft); the page shows it before sending,
+so it can never say more than the record does (C6). *(Item 3.)*
+`--words-from T` sends an option with the words of the person's own
+earlier reply `T<n>` on this item (`role: user`, `origin: typed`, `kind:
+reply`, no option; anything else 64), with no `--text-file` or `--draft`
+and never from an agent's shell (64): the workspace row is `origin:
+clicked` with the words and `words_from`, the choice's `text` is the
+words and its `statement` the one that already records them, and no new
+statement is written; `recorded_as` is "as your choice of the offered
+option, with the words you sent before".
 
 **What decides.** Only an option whose `effect` is `approve` approves a
 plan; words alone on an item with a plan are recorded (a statement,
