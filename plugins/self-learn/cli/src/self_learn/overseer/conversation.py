@@ -101,6 +101,9 @@ _INDEX_KEYS = frozenset({
     # files the packet may excerpt, the two statements a conflict names,
     # and when it was first asked (kept across carry-forward and reopen).
     "needs", "because", "asked_at", "options", "recommend", "plan", "look_at", "statements",
+    # Fix round 1 (gate r1 MINOR 4): when "Ask me anyway" put it back; an
+    # answer or an approval counts only from then (`_answer_floor`).
+    "reopened_at",
 })
 
 #: `needs` (§3.8): `user` -- only the user can settle it, and it stays open
@@ -262,16 +265,17 @@ def _r2_fields(row: dict) -> dict:
         if row["because"] not in BECAUSE_KEYS:
             raise bad("because")
         out["because"] = row["because"]
-    if "asked_at" in row and row["asked_at"] is not None:
-        # A hand-written unquoted timestamp loads as a datetime: read it as
-        # the same instant, written the way the runner writes it.
-        asked = chrono.to_dt(row["asked_at"])
-        if asked is None or not isinstance(row["asked_at"], (str, datetime)):
-            raise bad("asked_at")
-        out["asked_at"] = (
-            row["asked_at"] if isinstance(row["asked_at"], str)
-            else asked.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        )
+    for stamp in ("asked_at", "reopened_at"):
+        if stamp in row and row[stamp] is not None:
+            # A hand-written unquoted timestamp loads as a datetime: read it
+            # as the same instant, written the way the runner writes it.
+            when = chrono.to_dt(row[stamp])
+            if when is None or not isinstance(row[stamp], (str, datetime)):
+                raise bad(stamp)
+            out[stamp] = (
+                row[stamp] if isinstance(row[stamp], str)
+                else when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            )
     if "options" in row and row["options"] is not None:
         options = row["options"]
         if not _dict_rows(options, ("id", "label")) or any(
@@ -463,10 +467,21 @@ def _utc(value: object) -> datetime | None:
 
 
 def _floor(row: dict, index_floor: datetime | None) -> datetime | None:
-    """An answer counts from when the ask was first asked: its `asked_at`
-    (kept across carry-forward and reopen), else the index's last write."""
+    """When the ask was first asked: its `asked_at` (kept across
+    carry-forward and reopen), else the index's last write. How long it has
+    been open is counted from here."""
     asked = _utc(row.get("asked_at"))
     return asked if asked is not None else index_floor
+
+
+def _answer_floor(row: dict, index_floor: datetime | None) -> datetime | None:
+    """From when an answer, a choice or an outcome counts for the ask: its
+    `reopened_at` when "Ask me anyway" put it back (fix round 1, gate r1
+    MINOR 4: a withdrawn approval comes back as a question, so the approve
+    click made before the withdrawal no longer stands, and a new approve
+    click is a new approval), else when it was first asked (:func:`_floor`)."""
+    reopened = _utc(row.get("reopened_at"))
+    return reopened if reopened is not None else _floor(row, index_floor)
 
 
 @dataclass(frozen=True)
@@ -474,8 +489,18 @@ class Track:
     """Where an ask with a plan stands after its choices and outcomes
     (§1.3, §3.4.7): `open` (nothing chosen, or approved work that failed),
     `answered` (declined, or another non-approving option), `awaiting-sudo`,
-    `approved`, or `done`. The same walk as the inbox's
-    (`attention._approval_track`), so the two never disagree."""
+    `approved`, or `done`.
+
+    The same state machine as the inbox's walk (`attention._approval_track`,
+    attention-core's), with two differences (fix round 1, gate r1 MINOR 5):
+    this walk counts only events at or after *since* (the ask's
+    :func:`_answer_floor`), and matches a choice by its subject or its
+    `answers.ref` (a conflict's ref included); the inbox's walk has no floor
+    and matches by subject or inbox item id. They agree for an ask whose id
+    was asked once and never reopened. The runner keeps it that way: an id
+    the user answered with a choice, or whose plan they approved, is never
+    asked again (`run._reask_problems`), so only a reopen can tell them
+    apart, until the inbox's walk takes the same floor."""
 
     state: str
     approved_at: str | None = None
@@ -535,8 +560,9 @@ def _answered_ids(home: Path, ids: set[str], rows: list[dict] | None = None) -> 
     The index (`open-questions.yaml`) is rewritten only by a complete weekly
     run, so before 2026-10-30 a question stayed listed, and counted by the
     session-start hook, for the rest of the week after `overseer respond`
-    recorded its answer. An answer counts from the ask's `asked_at`, or, for
-    a row without one, from the index file's last write (second precision).
+    recorded its answer. An answer counts from the ask's `reopened_at`, else
+    its `asked_at`, or, for a row with neither, from the index file's last
+    write (second precision; :func:`_answer_floor`).
     The floor is what lets a later run ask the same id again: its new row is
     newer than the old answer, so the question is open once more. The
     statement and choice stores are only read, so the next weekly run still
@@ -569,7 +595,7 @@ def _answered_ids(home: Path, ids: set[str], rows: list[dict] | None = None) -> 
         q_id = row.get("id")
         if q_id not in ids:
             continue
-        floor = _floor(row, index_floor)
+        floor = _answer_floor(row, index_floor)
 
         def fresh(at: object, floor: datetime | None = floor) -> bool:
             when = _utc(at)
@@ -660,13 +686,16 @@ def reopen(home: Path | str, q_id: str) -> dict:
     anyway"): the ONE writer that moves a withdrawn ask back. Under
     `ledger_write` it takes the row out of `overseer/withdrawn.yaml`, puts
     the ask back in `open-questions.yaml` as `needs: user` with its first
-    `asked_at` kept (so an answer recorded before the withdrawal does not
-    count, and one after it does), and commits both files. The weekly
+    `asked_at` kept (how long it has been open counts from the first ask)
+    and `reopened_at` stamped now, and commits both files. The weekly
     finalize merges the index under the same lock, so a reopen made while
     a run is in progress survives it. Answers the row put back.
 
-    A withdrawn approval comes back as the ask it approved, open again: the
-    approval was withdrawn, so a new approve click is a new approval."""
+    A withdrawn approval comes back as the ask it approved, open again: an
+    answer, a choice or an outcome counts only from `reopened_at`
+    (:func:`_answer_floor`), so the approve click made before the
+    withdrawal no longer stands and a new approve click is a new approval
+    (fix round 1, gate r1 MINOR 4)."""
     resolved = Path(home)
     index_path = resolved / "overseer" / "open-questions.yaml"
     w_path = withdrawn_path(resolved)
@@ -705,6 +734,7 @@ def reopen(home: Path | str, q_id: str) -> dict:
         asked_at = found.get("asked_at") or row.get("asked_at")
         if isinstance(asked_at, str) and chrono.to_dt(asked_at) is not None:
             row["asked_at"] = asked_at
+        row["reopened_at"] = chrono.now_iso()
         if not isinstance(row.get("text"), str) or not row["text"].strip():
             raise ConversationError(f"reopen: {q_id} has no text to ask")
         raw = []

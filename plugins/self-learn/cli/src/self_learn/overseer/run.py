@@ -810,15 +810,18 @@ def _discovery_prompt_lines(discovery: bool) -> str:
     )
 
 
-#: r1 §2.2's ordered check, verbatim (attention design r2.1 §3.8): the
-#: overseer applies it to every question before it asks one.
+#: r1 §2.2's ordered check (attention design r2.1 §3.8): the overseer
+#: applies it to every question before it asks one. Verbatim but for the
+#: example in step 3, which names placeholder ids instead of a real
+#: statement and question (fix round 1, gate r1 MAJOR 3: this is a public
+#: repository, and a live statement id means nothing in another ledger).
 ORDERED_CHECK = """1. Is it machinery with no decision in it (a count, a completion, a retry that worked, a census)?
    **SILENT.**
 2. Does it fit one of the NEEDS-YOU keys above? Then it is **NEEDS YOU**, but only if step 3 fails.
 3. Is there a recorded statement or user-model reading that settles it (quote it), or will an agent
    in the project do it as a project notice? Then **DECIDED FOR YOU**, citing the statement.
-   (Example: `q-task-routing-models` was settled by stmt-5bb55a2e "use the task routing skill to
-   decide which agents/llms do what".)
+   (Example: `q-example-models` was settled by stmt-0123abcd "use the routing skill to choose
+   models".)
 4. Everything else is **DECIDED FOR YOU**: decide by the default and report it."""
 
 #: The closed list the overseer may name in `because` (answer 2), each
@@ -852,8 +855,12 @@ runner writes what holds meanwhile (nothing outside self-learn changes; for a co
 statement wins meanwhile). A needs: user ask with no valid because is filed as stead with its
 default and named, so give it a default only if you would act on one. Such an ask stays open until
 the user answers or you withdraw it; it is never closed for age.
-An ask may offer options: 2 to 4 entries {{id: opt-<slug>, label, effect: approve, decline, other or
-register, confirm?: true, note?: required}}, and recommend: {{option, reasoning}} naming one of them.
+A needs: user ask must offer options: 2 to 4 entries {{id: opt-<slug>, label, effect: approve,
+decline, other or register, confirm?: true, note?: required}}, and must recommend: {{option,
+reasoning}} naming one of them, so the user can answer with one click and sees why you recommend it;
+a needs: user ask without both is dropped and named. A conflict offers one option per statement
+("Keep the newer one: ...", "Keep the older one: ..."); a sudo ask offers e.g. "I'll run it" and "No";
+a register ask offers at least one register option and one decline option. A stead ask may offer them.
 A system-change or money ask carries a plan, and an ask with a plan offers at least one approve and
 one decline option; only the user's click on an approve option approves it, and an agent then carries
 the plan out in a terminal the user watches. plan is {{summary, cwd?, checks: [{{say, command?}}],
@@ -870,7 +877,10 @@ and each of kind: approved is a change the user approved more than {STALE_APPROV
 that no agent has carried out (its plan summary and checks). The runner keeps each one open for you;
 re-judge whether it still matters. If it went moot, list it in questions.yaml under a top-level
 withdraw: [{{id, why}}], why being one sentence the user reads ("I stopped asking because ...").
-Re-asking an open ask's id keeps it open with your new words. Never ask a withdrawn question again in
+Re-asking an open ask's id (kind: ask) keeps it open with your new words. An approved item (kind:
+approved) is kept or withdrawn, never re-asked: the user approved that plan, so re-asking its id is
+dropped and named; withdraw it and ask under a new id. Nor is an id the user already answered by
+choosing an option ever asked again: ask under a new id. Never ask a withdrawn question again in
 other words: {OPEN_ASKS_FILE}'s withdrawn list holds what you withdrew, and a new needs: user ask with
 the same because and cases as one withdrawn within {WITHDRAWN_BACKSTOP_DAYS} days is dropped.
 In answers.yaml, choices are options the user chose (or an agent's draft they sent), never their own
@@ -1535,7 +1545,10 @@ def _open_asks(
         ]
         replies += [_choice_input(c) for c in choices if conversation.choice_names_ask(c, row)]
         if conversation.has_plan(row):
-            track = conversation.approval_track(row, choices, outcomes, since=floor)
+            track = conversation.approval_track(
+                row, choices, outcomes,
+                since=conversation._answer_floor(row, index_floor),  # noqa: SLF001
+            )
             approved_at = conversation._utc(track.approved_at)  # noqa: SLF001
             if track.state in ("approved", "awaiting-sudo") and approved_at is not None:
                 if (now_dt - approved_at).days >= STALE_APPROVAL_DAYS:
@@ -1602,8 +1615,6 @@ def _stage_open_asks(home: Path, stage: Path) -> dict[str, str]:
 
 #: S-101: the folder phase B finds every lesson record in.
 LESSONS_DIR = "lessons"
-#: S-101: the folder phase B finds every lesson record in.
-LESSONS_DIR = "lessons"
 
 
 def _stage_lessons(home: Path, stage: Path) -> int:
@@ -1651,7 +1662,7 @@ def _stage_lessons(home: Path, stage: Path) -> int:
 
 def _full_inputs(
     home: Path, stage: Path, selected: tuple[str, ...], parked_rows: list[dict[str, Any]],
-    *, answers_since: str | None,
+    *, answers_since: str | None, notes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Write phase B's inputs; answer the user-model document it was given
     (which a `kind: reading` question was validated against until readings
@@ -1685,6 +1696,12 @@ def _full_inputs(
     })
     if scan.scan(answers_text):
         answers_text = _yaml_text({"answers": _question_answers(home, since=answers_since)})
+        # Fix round 1 (gate r1 NIT 8): said, never dropped silently.
+        if notes is not None:
+            notes.append(
+                "answers.yaml: the user's option choices and feedback clicks were left out "
+                "of phase B's inputs -- the secret scan matched them"
+            )
     _write_stage(stage, stage / "answers.yaml", answers_text)
     _stage_open_asks(home, stage)
     # S-106: the projects a notice may name (names and real paths only).
@@ -1998,8 +2015,25 @@ def _r2_ask(
                 len(named) != 2 or named[0] == named[1]
             ):
                 return None, "a conflict ask names exactly two distinct statements"
+            # Fix round 1 (gate r1 MAJOR 2; answer 10, §2.1 items 5 and 7):
+            # every needs-you page offers one-click answers and a
+            # recommendation with its reasoning; the user is never left with
+            # only a reply box.
+            if refile is None and not options:
+                return None, (
+                    f"a needs: user ask offers {OPTIONS_MIN} to {OPTIONS_MAX} options, so the "
+                    "user can answer with one click"
+                )
+            if refile is None and recommend is None:
+                return None, (
+                    "a needs: user ask recommends one of its options, with its reasoning"
+                )
+            effects = {o["effect"] for o in options or []}
+            if refile is None and register and not {"register", "decline"} <= effects:
+                return None, (
+                    "an ask with register offers at least one register and one decline option"
+                )
             if refile is None and plan is not None:
-                effects = {o["effect"] for o in options or []}
                 if not {"approve", "decline"} <= effects:
                     return None, (
                         "an ask with a plan needs at least one approve and one decline option"
@@ -2130,6 +2164,7 @@ def _questions(
     carried: set[str] | None = None,
     look_at_home: Path | None = None,
     now: str | None = None,
+    reask: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Validate questions.yaml ENTRY BY ENTRY (2026-09-24).
 
@@ -2155,7 +2190,13 @@ def _questions(
     *withdrawn* the rows of `overseer/withdrawn.yaml`, for §1.3's backstop,
     which spares the ids in *carried* (asks still open from earlier runs: a
     re-emitted one is the same ask); *look_at_home* filters `look_at` paths
-    through the packet's deny list."""
+    through the packet's deny list.
+
+    Fix round 1 (gate r1 BLOCKER 1): *reask* maps each id that may not be
+    asked again to why (:func:`_reask_problems`): an ask whose plan the user
+    approved, and one they answered with a choice. A re-emitted row with
+    such an id is dropped and named, so the user's click never stands for
+    words or a plan written after it."""
     del model_doc
     try:
         data = _yaml_mapping(path)
@@ -2187,6 +2228,8 @@ def _questions(
         problem = _question_problem(item, known_cases)
         if problem is None and item["id"] in seen:
             problem = "duplicate id"
+        if problem is None and reask and item["id"] in reask:
+            problem = reask[item["id"]]
         if problem is not None:
             dropped.append(f"question {label}: dropped — {problem}")
             continue
@@ -5313,6 +5356,7 @@ def _parked_cited(home: Path, manifest: dict[str, Any]) -> dict[str, dict[str, l
 
 def _default_lines(
     manifest: dict[str, Any], parked: dict[str, dict[str, list[str]]] | None = None,
+    *, withdrawn: list[dict[str, str]] | None = None,
 ) -> list[str]:
     """The report's "Decided in the user's stead" lines for the run's asks:
     each default applied, and, listed apart, the asks that would change the
@@ -5336,13 +5380,16 @@ def _default_lines(
                 f"{row['id']} asked and not waited for; applied its default: {row['default']}"
             )
     # S-NEXT-overseer-asks (§1.3): each ask or approval withdrawn as moot,
-    # with its reason; the inbox shows it with "Ask me anyway".
-    withdrawn = [
+    # with its reason; the inbox shows it with "Ask me anyway". Fix round 1
+    # (gate r1 MINOR 6): only the withdrawals the finalize APPLIED
+    # (*withdrawn*, `Carried.applied`), never the model's list: one it could
+    # not apply is said under "Refused / could not do" instead.
+    gone = [
         f"{entry['id']} withdrawn: I stopped asking because {entry['why']}"
-        for entry in manifest.get("withdraw") or []
+        for entry in withdrawn or []
         if isinstance(entry, dict) and entry.get("id") and entry.get("why")
     ]
-    return [*applied, *unchanged, *withdrawn]
+    return [*applied, *unchanged, *gone]
 
 
 def _default_refusals(
@@ -5405,11 +5452,16 @@ def _finalized_record(
     return current
 
 
+#: A report rendered inside the finalize's lock, from what the finalize
+#: actually applied: `(withdrawals applied, runner notes) -> report text`.
+ReportRender = Callable[[list[dict[str, str]], list[str]], str]
+
+
 def _write_manifest_truth(
     home: Path,
     manifest: dict[str, Any],
     *,
-    report_text: str,
+    report_text: str | ReportRender,
     complete: bool,
     closed: bool = False,
     week: str | None = None,
@@ -5446,17 +5498,33 @@ def _write_manifest_truth(
     with intents.ledger_write(home):
         index_rows: dict[str, Any] | None = None
         withdrawn_rows: list[dict[str, Any]] | None = None
+        applied: list[dict[str, str]] = []
+        carry_notes: list[str] = []
         if complete:
             # S-NEXT-overseer-asks (§3.8; critique 32): the previous index is
             # read HERE, inside the finalize's own lock span, so an answer or
             # a reopen made while this run was in progress is never lost.
-            index_rows, withdrawn_rows = _carry_forward(
+            carried = _carry_forward(
                 home, cast(dict[str, Any], record["questions"]),
                 cast(list[dict[str, str]], record.get("withdraw") or []),
                 run_id=cast(str, manifest["run_id"]),
             )
+            index_rows, withdrawn_rows = carried.index, carried.withdrawn
+            applied, carry_notes = carried.applied, carried.notes
             if withdrawn_rows is not None:
                 paths.append(conversation.withdrawn_path(home))
+        # Fix round 1 (gate r1 MINOR 6): the report says what this finalize
+        # applied, so it is rendered here, after the carry-forward.
+        text = report_text(applied, carry_notes) if callable(report_text) else report_text
+        # A17: the record re-read from HEAD after the render and under this
+        # lock, so no writer can advance a field it does not own between
+        # this read and the write below (the report is rendered in here
+        # since fix round 1, so the read before the lock is no longer the
+        # last one before the write).
+        record = _finalized_record(
+            home, manifest,
+            status_name="closed" if closed else ("complete" if complete else "unfinished"),
+        )
         intent = intents.begin(
             home, "overseer-run-finalize", paths,
             f"self-learn: overseer finalize {manifest['run_id']}",
@@ -5466,8 +5534,8 @@ def _write_manifest_truth(
         path.parent.mkdir(parents=True, exist_ok=True)
         fsops.atomic_write(path, _manifest_text(record), fsync=True)
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        fsops.atomic_write(report_path, report_text, fsync=True)
-        fsops.atomic_write(latest, report_text, fsync=True)
+        fsops.atomic_write(report_path, text, fsync=True)
+        fsops.atomic_write(latest, text, fsync=True)
         if cursor is not None:
             cursor[0].parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(cursor[0], cursor[1], fsync=True)
@@ -5495,6 +5563,73 @@ def _write_manifest_truth(
     return record, report_path, latest
 
 
+#: Why an id may not be asked again (fix round 1, gate r1 BLOCKER 1).
+REASK_APPROVED = (
+    "the user approved its plan and no agent has carried it out yet; it stays as approved -- "
+    "withdraw it and ask under a new id"
+)
+REASK_DONE = "the user approved its plan and an agent carried it out; ask under a new id"
+REASK_CHOSEN = "the user already answered it by choosing an option; ask under a new id"
+
+
+def _reask_problems(
+    home: Path, previous: list[dict[str, Any]], *,
+    choices: list[dict[str, Any]] | None = None,
+    outcomes: list[dict[str, Any]] | None = None,
+    answered: set[str] | None = None,
+) -> dict[str, str]:
+    """Fix round 1 (gate r1 BLOCKER 1): each question id a run may not ask
+    again, mapped to why.
+
+    - An indexed ask whose plan the user approved (approved, awaiting their
+      sudo steps, or done): the approval was for THAT plan. Re-asking the id
+      with the earlier `asked_at` kept would carry the user's click over to
+      a plan written after it (`approval_track` counts every choice since
+      `asked_at`), and the inbox's walk, which has no floor at all, would do
+      so under any `asked_at`. It stays as it is until it is done or
+      withdrawn; a new plan is a new id.
+    - Any other id a choice row names (subject or `answers.ref`), unless the
+      ask is still open in *previous* (a choice that decided nothing, or
+      approved work that failed): the user answered it by a click, and the
+      inbox would show that old answer against new words.
+
+    Words (statements) never block a re-ask: both walks floor them, so a
+    later run may ask the same id again (S-117's floor)."""
+    choices = conversation.choice_rows(home) if choices is None else choices
+    outcomes = conversation.outcome_rows(home) if outcomes is None else outcomes
+    index_floor = _index_floor(home)
+    prior = [row for row in previous if conversation.asks_the_user(row)]
+    if answered is None:
+        answered = conversation._answered_ids(home, {row["id"] for row in prior}, previous)  # noqa: SLF001
+    out: dict[str, str] = {}
+    still_open: set[str] = set()
+    for row in prior:
+        q_id = row["id"]
+        if conversation.has_plan(row):
+            track = conversation.approval_track(
+                row, choices, outcomes,
+                since=conversation._answer_floor(row, index_floor),  # noqa: SLF001
+            )
+            if track.state in ("approved", "awaiting-sudo"):
+                out[q_id] = REASK_APPROVED
+            elif track.state == "done":
+                out[q_id] = REASK_DONE
+            elif track.state == "open":
+                still_open.add(q_id)
+        elif q_id not in answered:
+            still_open.add(q_id)
+    for choice in choices:
+        answers = choice.get("answers")
+        named = {choice.get("subject"), answers.get("ref") if isinstance(answers, dict) else None}
+        for q_id in named:
+            if (
+                isinstance(q_id, str) and q_id.startswith("q-")
+                and q_id not in out and q_id not in still_open
+            ):
+                out[q_id] = REASK_CHOSEN
+    return out
+
+
 def _still_open(
     row: dict[str, Any], answered: set[str], choices: list[dict[str, Any]],
     outcomes: list[dict[str, Any]], floor: datetime | None, now_dt: datetime,
@@ -5503,7 +5638,8 @@ def _still_open(
     is unanswered (answer 4: no age close), or it carries a plan whose
     approval is not finished -- approved, awaiting the user's sudo steps,
     or done within :data:`DONE_APPROVAL_KEEP_DAYS` (the inbox derives the
-    approved and done items from the indexed ask)."""
+    approved and done items from the indexed ask). *floor* is the ask's
+    :func:`conversation._answer_floor`."""
     if conversation.has_plan(row):
         track = conversation.approval_track(row, choices, outcomes, since=floor)
         if track.state in ("open", "approved", "awaiting-sudo"):
@@ -5515,33 +5651,73 @@ def _still_open(
     return row["id"] not in answered
 
 
+@dataclass(frozen=True)
+class Carried:
+    """What :func:`_carry_forward` publishes: the index; the rows of
+    `overseer/withdrawn.yaml` (``None`` when that file is not to be
+    written); the withdrawals it actually applied (`{id, why}`), which are
+    the only ones the report says were withdrawn; and the runner lines for
+    "Refused / could not do" (a withdrawal it could not apply, a re-ask it
+    dropped at publish)."""
+
+    index: dict[str, Any]
+    withdrawn: list[dict[str, Any]] | None
+    applied: list[dict[str, str]]
+    notes: list[str]
+
+
 def _carry_forward(
     home: Path, index: dict[str, Any], withdraw: list[dict[str, str]], *, run_id: str,
-) -> tuple[dict[str, Any], list[dict[str, Any]] | None]:
+) -> Carried:
     """The index a complete run publishes (§3.8, "Carry-forward"): the
     run's own asks, then every `needs: user` ask of the previous index the
     run did not ask again and that is still open (:func:`_still_open`),
-    with its first `asked_at`. A re-emitted id takes the model's new text
-    and keeps its `asked_at`. The run's `withdraw:` entries leave the index
-    and are appended to `overseer/withdrawn.yaml` with their `why` and the
-    whole row (so a reopen puts back exactly what was asked). Called under
-    the finalize's lock. Answers `(index, withdrawn rows or None when
-    withdrawn.yaml is not to be written)`. A previous index or withdrawn
-    file that cannot be read carries nothing and withdraws nothing."""
+    with its first `asked_at` (and its `reopened_at`). A re-emitted id takes
+    the model's new text and keeps both. The run's `withdraw:` entries leave
+    the index and are appended to `overseer/withdrawn.yaml` with their `why`
+    and the whole row (so a reopen puts back exactly what was asked).
+    Called under the finalize's lock, so it sees every answer and reopen
+    made while the run was in progress. A previous index or withdrawn file
+    that cannot be read carries nothing and withdraws nothing.
+
+    Fix round 1 (gate r1 BLOCKER 1, MINOR 6): a re-emitted id the user
+    may no longer be asked (:func:`_reask_problems`, read again here, under
+    the lock: a click made during the run counts) is dropped and the earlier
+    row kept exactly as it was; a named withdrawal that is no longer open
+    (answered during the run) or cannot be written is not applied, and both
+    are said in :attr:`Carried.notes`."""
     now = chrono.now_iso()
     now_dt = conversation._utc(now) or datetime.now(timezone.utc)  # noqa: SLF001
     new_rows = [dict(row) for row in index.get("questions") or [] if isinstance(row, dict)]
     try:
         previous = conversation._load_questions(home)  # noqa: SLF001
     except conversation.ConversationError:
-        return {"questions": new_rows}, None
+        notes = [
+            f"withdraw {entry['id']}: not applied -- the question index could not be read"
+            for entry in withdraw
+        ]
+        return Carried({"questions": new_rows}, None, [], notes)
     prior = [row for row in previous if conversation.asks_the_user(row)]
     answered = conversation._answered_ids(home, {row["id"] for row in prior}, previous)  # noqa: SLF001
     choices = conversation.choice_rows(home)
     outcomes = conversation.outcome_rows(home)
     index_floor = _index_floor(home)
     by_id = {row["id"]: row for row in prior}
+    notes: list[str] = []
+    reask = _reask_problems(
+        home, previous, choices=choices, outcomes=outcomes, answered=answered,
+    )
+    kept_rows: list[dict[str, Any]] = []
+    for row in new_rows:
+        if row["id"] in reask:
+            notes.append(f"question {row['id']}: dropped at publish -- {reask[row['id']]}")
+            continue
+        kept_rows.append(row)
+    new_rows = kept_rows
     asked_now = {row["id"] for row in new_rows}
+
+    def answer_floor(row: dict[str, Any]) -> datetime | None:
+        return conversation._answer_floor(row, index_floor)  # noqa: SLF001
 
     def first_asked(row: dict[str, Any]) -> str | None:
         floor = conversation._floor(row, index_floor)  # noqa: SLF001
@@ -5552,22 +5728,20 @@ def _carry_forward(
     for row in new_rows:
         earlier = by_id.get(row["id"])
         if earlier is not None and row.get("needs") == "user" and _still_open(
-            earlier, answered, choices, outcomes,
-            conversation._floor(earlier, index_floor), now_dt,  # noqa: SLF001
+            earlier, answered, choices, outcomes, answer_floor(earlier), now_dt,
         ):
             asked = first_asked(earlier)
             if asked:
                 row["asked_at"] = asked
+            if earlier.get("reopened_at"):
+                row["reopened_at"] = earlier["reopened_at"]
     why_by_id = {entry["id"]: entry["why"] for entry in withdraw}
     carried: list[dict[str, Any]] = []
     gone: list[dict[str, Any]] = []
     for row in prior:
         if row["id"] in asked_now:
             continue
-        if not _still_open(
-            row, answered, choices, outcomes,
-            conversation._floor(row, index_floor), now_dt,  # noqa: SLF001
-        ):
+        if not _still_open(row, answered, choices, outcomes, answer_floor(row), now_dt):
             continue
         kept = dict(row)
         asked = first_asked(row)
@@ -5586,15 +5760,28 @@ def _carry_forward(
             })
             continue
         carried.append(kept)
+    gone_ids = {entry["id"] for entry in gone}
+    for entry in withdraw:
+        if entry["id"] not in gone_ids:
+            notes.append(
+                f"withdraw {entry['id']}: not applied -- it was answered, or is no longer "
+                "open, by the time this run published"
+            )
     withdrawn_rows: list[dict[str, Any]] | None = None
+    applied: list[dict[str, str]] = []
     if gone:
         try:
             withdrawn_rows = [*conversation.load_withdrawn(home), *gone]
-        except conversation.ConversationError:
+            applied = [{"id": entry["id"], "why": entry["why"]} for entry in gone]
+        except conversation.ConversationError as exc:
             # The file cannot be read: never blank it. The asks stay open.
             carried.extend(entry["row"] for entry in gone)
             withdrawn_rows = None
-    return {"questions": [*new_rows, *carried]}, withdrawn_rows
+            notes.extend(
+                f"withdraw {entry['id']}: not applied -- {exc}; it stays open"
+                for entry in gone
+            )
+    return Carried({"questions": [*new_rows, *carried]}, withdrawn_rows, applied, notes)
 
 
 def _refusal_line(sheet_name: str, item: batch.ItemResult) -> str:
@@ -6681,35 +6868,39 @@ def _execute_manifest(
             "applied": application_count,
         })
     try:
-        text = _finalize_model_report(
-            stage / "report.md", date=cast(str, manifest["date"]), run_id=run_id,
-            model=cast(str, manifest["model"]), selected=selected,
-            population_count=int(manifest.get("population_count") or 0),
-            excluded=excluded, model_calls=model_calls,
-            guard=int(manifest.get("guard") or 0), refusals=refusals,
-            hooks=hook_lines,
-            user_model_lines=user_model_lines,
-            questions=questions,
-            notes=runner_notes,
-            decided=[
-                # S-117: each ask's default, applied by
-                # `_record_defaults` above (not on an attempt that did not
-                # record them; fix round 1, gate r1 MINOR 2).
-                *(
-                    [] if halted or default_parked is None
-                    else _default_lines(manifest, default_parked)
-                ),
-                *decided_lines,
-                *host_lines,
-                *cast(list[str], manifest.get("policy_lines") or []),
-                *skills_mod.report_lines(manifest),
-                # SK4: one line per disposition phase B recorded.
-                *discovery_mod.report_lines(manifest),
-            ],
-            hand_steps=cast("dict[str, Any] | None", manifest.get("hand_steps")),
-        )
+        def _render(withdrawn: list[dict[str, str]], carry_notes: list[str]) -> str:
+            # Rendered by `_write_manifest_truth` inside its lock, after the
+            # carry-forward (fix round 1, gate r1 MINOR 6): *withdrawn* are the
+            # withdrawals it applied, *carry_notes* what it could not do.
+            return _finalize_model_report(
+                stage / "report.md", date=cast(str, manifest["date"]), run_id=run_id,
+                model=cast(str, manifest["model"]), selected=selected,
+                population_count=int(manifest.get("population_count") or 0),
+                excluded=excluded, model_calls=model_calls,
+                guard=int(manifest.get("guard") or 0), refusals=refusals,
+                hooks=hook_lines,
+                user_model_lines=user_model_lines,
+                questions=questions,
+                notes=[*runner_notes, *carry_notes],
+                decided=[
+                    # S-117: each ask's default, applied by
+                    # `_record_defaults` above (not on an attempt that did not
+                    # record them; fix round 1, gate r1 MINOR 2).
+                    *(
+                        [] if halted or default_parked is None
+                        else _default_lines(manifest, default_parked, withdrawn=withdrawn)
+                    ),
+                    *decided_lines,
+                    *host_lines,
+                    *cast(list[str], manifest.get("policy_lines") or []),
+                    *skills_mod.report_lines(manifest),
+                    # SK4: one line per disposition phase B recorded.
+                    *discovery_mod.report_lines(manifest),
+                ],
+                hand_steps=cast("dict[str, Any] | None", manifest.get("hand_steps")),
+            )
         manifest, report_path, latest = _write_manifest_truth(
-            home, manifest, report_text=text, complete=not halted, closed=closed,
+            home, manifest, report_text=_render, complete=not halted, closed=closed,
             week=week, closed_text=closed_text,
         )
         if closed:
@@ -7237,9 +7428,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         # phase B writes, read once; the run record keeps it, so a resume
         # makes the same choice.
         skill_state = skills_mod.writing_state(home)
+        input_notes: list[str] = []
         try:
             model_doc = _full_inputs(
                 home, stage, selected, parked_rows, answers_since=answers_since,
+                notes=input_notes,
             )
             # SK3: the skills self-learn owns, the vetoes and the steward's
             # skill proposals, as phase B's inputs (never raises for the
@@ -7552,6 +7745,10 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 withdrawn=withdrawn_rows,
                 carried={row["id"] for row in _safe_questions(home)},
                 look_at_home=home,
+                # Fix round 1 (gate r1 BLOCKER 1): an approved plan's id, or
+                # one the user answered with a click, is never re-asked.
+                # The finalize checks again under its lock.
+                reask=_reask_problems(home, _safe_questions(home)),
             )
             withdraw, withdraw_drops = _withdrawals(
                 stage / "questions.yaml", withdraw_targets,
@@ -8067,7 +8264,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 runner_notes=[
                     *phase_a_drops,
                     *report_notes, *question_drops, *finding_drops, *case_drops,
-                    *pair_drops, *coverage_drops, *phase_b_notes,
+                    *pair_drops, *coverage_drops, *phase_b_notes, *input_notes,
                 ],
                 journal_text=journal_text, trigger=trigger,
                 decisions={
