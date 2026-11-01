@@ -1392,6 +1392,9 @@ class JobsLine:
     late: bool
     text: str
     last_read: str | None
+    #: Nothing is late, but a job has not run yet: the line says so and
+    #: shows a neutral mark, never the "on time" green.
+    waiting: bool = False
 
 
 @dataclass(frozen=True)
@@ -1493,7 +1496,27 @@ def build_jobs(
         if isinstance(since, int)
         else ("Has not run yet." if not steward_last else "")
     )
-    steward = JobRow("steward", "Nightly review", steward_last, sdetail, False,
+    # Gate r1 MINOR-3: the steward's OWN verdicts, carried by `status
+    # --json` (`steward.nudge_fields`, the same facts `status --fast` has):
+    # held by its environment, or no completed run for longer than its
+    # threshold while lessons it may take are waiting. Absent on an older
+    # CLI, or with the steward off: then it is never called late.
+    hold = status.get("steward_hold")
+    slate = False
+    if isinstance(hold, str) and hold:
+        slate = True
+        sdetail = f"On hold: {hold}."
+        problems.append("The nightly review is on hold")
+    elif status.get("steward_stale") is True:
+        slate = True
+        hours = status.get("steward_stale_hours")
+        sdetail = (
+            f"Behind: no finished run for over {hours} hours while lessons wait."
+            if isinstance(hours, int)
+            else "Behind: lessons are waiting and it has not finished a run."
+        )
+        problems.append("The nightly review is behind")
+    steward = JobRow("steward", "Nightly review", steward_last, sdetail, slate,
                      link_href="/inbox", link_text="See what it decided")
 
     # Weekly check (the overseer).
@@ -1514,6 +1537,10 @@ def build_jobs(
         problems.append("Job status could not be read")
     if problems:
         line = JobsLine(True, "; ".join(problems), last_read)
+    elif miner.last_run is None and miner.detail == "Has not run yet.":
+        # Gate r1 NIT-4: nothing is late, but "ran on time" would be false
+        # beside an overnight read that never ran.
+        line = JobsLine(False, "The overnight read has not run yet", None, waiting=True)
     else:
         line = JobsLine(False, "All jobs ran on time", last_read)
     return (miner, worker, steward, overseer), line
@@ -1548,6 +1575,7 @@ def build_home_model(
     report_read: CliRead,
     mine_read: CliRead,
     *,
+    proposals: dict[str, dict | None] | None = None,
     now: datetime | None = None,
 ) -> HomeModel:
     """Proposal §3: tiles, lessons to decide, the places table split into
@@ -1580,12 +1608,22 @@ def build_home_model(
             if item.get("already_canon"):
                 suggestion = "suggested: already covered by what is loaded"
             elif item.get("has_proposal") and dest:
-                if dest == "claude-md" and scope == "user":
-                    words = "your instructions"
+                # Gate r1 NIT-3: the SAME destination the lesson's own bucket
+                # row would arm (scope correction, a "defer" recommendation,
+                # a rules topic), so Home and the bucket page never disagree.
+                if proposals is not None:
+                    armed, _note = proposed_destination(
+                        scope, dest, proposals.get(str(item.get("id") or ""))
+                    )
                 else:
-                    words = destination_label(dest, scope) or str(dest)
-                    words = words[:1].lower() + words[1:]
-                suggestion = "suggested: " + words
+                    armed, _note = correct_destination(scope, dest)
+                if armed is None:
+                    suggestion = "no place chosen yet: the suggestion does not fit here"
+                elif armed == "claude-md" and scope == "user":
+                    suggestion = "suggested: your instructions"
+                else:
+                    words = destination_label(armed, scope) or str(armed)
+                    suggestion = "suggested: " + words[:1].lower() + words[1:]
             else:
                 suggestion = "no suggestion yet"
             source = str(item.get("source") or "")

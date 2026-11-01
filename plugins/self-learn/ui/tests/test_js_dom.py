@@ -3934,3 +3934,120 @@ class TestNeverPressedKeymapActions:
             and "tolerate" not in (r.post_data or "")
         ):
             holding_page.keyboard.press("c")
+
+
+# ============================================ humane lane 1, gate r1 fold:
+# the shared header's background reads never hold a key back.
+
+
+def _fake_swap(page: "Page", *, background: bool) -> None:
+    """One htmx swap that has landed but not settled, reported the way
+    htmx 2.0.9 reports an outerHTML swap (measured on the scratch server):
+    `detail.elt` is the NEW, unmarked content, and `detail.requestConfig.elt`
+    is the element that made the request. `background` marks that
+    requester the way base.html marks the header's own after-load reads."""
+    page.evaluate(
+        """(bg) => {
+              const requester = document.createElement('a');
+              if (bg) requester.setAttribute('data-background-read', '');
+              const swapped = document.createElement('a');
+              document.dispatchEvent(new CustomEvent('htmx:afterSwap',
+                  {detail: {elt: swapped, requestConfig: {elt: requester}}}));
+           }""",
+        background,
+    )
+
+
+def _brief_open(page: "Page") -> bool:
+    return page.evaluate("document.querySelector('details.episode-brief').open")
+
+
+class TestHumaneBackgroundReads:
+    def test_a_key_pressed_while_a_header_read_lands_acts_at_once(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """Gate r1 MAJOR-1: the header's jobs line and inbox count (and
+        Home's answer tile) swap in after load. A key pressed in that
+        window must act at once -- they are not page swaps a key could
+        race. Control first, on its own fresh page: an ordinary unsettled
+        swap DOES hold the same key back, so this test can see a hold.
+        Both pages wait out their own real header reads first (held
+        routes never answer), so only the made-up swap is in play."""
+        page.route("**/header/jobs", lambda route: None)  # never answers
+        page.route("**/inbox/count", lambda route: None)
+        _open(page, server, f"/record/{REC_BRIEF}")
+        _fake_swap(page, background=False)
+        page.keyboard.press("b")
+        assert _brief_open(page) is False, (
+            "control: an unsettled ordinary swap no longer holds a key -- this test "
+            "cannot tell a background read from one"
+        )
+        _open(page, server, f"/record/{REC_BRIEF}")
+        _fake_swap(page, background=True)
+        page.keyboard.press("b")
+        assert _brief_open(page) is True
+
+    def test_a_key_pressed_as_the_real_header_reads_land_acts_at_once(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """The same, end to end through htmx itself: both real header reads
+        are held, then released, and a key is pressed from inside each
+        one's own `htmx:afterSwap` -- after app.js has handled that swap,
+        before it settles: the exact window the gate measured."""
+        held: list = []
+        page.route("**/header/jobs", lambda route: held.append(route))
+        page.route("**/inbox/count", lambda route: held.append(route))
+        _open(page, server, f"/record/{REC_BRIEF}")
+        deadline = time.monotonic() + 10
+        while len(held) < 2:
+            assert time.monotonic() < deadline, f"header reads never started: {len(held)}"
+            page.wait_for_timeout(20)
+        assert page.evaluate(
+            "document.querySelectorAll('[data-background-read]').length"
+        ) == 2  # positive control: both reads are still waiting to land
+        page.evaluate(
+            """() => {
+                 window.__atLanding = [];
+                 document.addEventListener('htmx:afterSwap', () => {
+                   const d = document.querySelector('details.episode-brief');
+                   d.open = false;
+                   document.dispatchEvent(new KeyboardEvent('keydown', {key: 'b', bubbles: true}));
+                   window.__atLanding.push(d.open);
+                   d.open = false;
+                 });
+               }"""
+        )
+        for route in held:
+            route.continue_()
+        deadline = time.monotonic() + 10
+        while page.evaluate("window.__atLanding.length") < 2:
+            assert time.monotonic() < deadline, page.evaluate("window.__atLanding")
+            page.wait_for_timeout(20)
+        assert page.evaluate("window.__atLanding") == [True, True]
+        assert page.evaluate(
+            "document.querySelectorAll('[data-background-read]').length"
+        ) == 0  # both landed (their swapped-in content carries no mark)
+
+
+class TestHumanePlacesAtPhoneWidth:
+    def test_every_places_column_is_on_screen_at_390(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """Gate r1 MINOR-4: at 390 px the places table reflows; no column
+        hides behind a sideways scroll and no heading is clipped. Positive
+        control first: the table has rows (both seeded buckets wait)."""
+        page.set_viewport_size({"width": 390, "height": 844})
+        _open(page, server, "/")
+        cells = page.evaluate(
+            """() => Array.from(document.querySelectorAll('.places-table tbody td')).map(td => {
+                  const r = td.getBoundingClientRect();
+                  return {right: r.right, width: r.width, label: td.getAttribute('data-label')};
+               })"""
+        )
+        assert len(cells) >= 6, cells  # positive control: rows rendered
+        assert all(c["width"] > 0 and c["right"] <= 390 for c in cells), cells
+        box = page.evaluate(
+            "(() => { const t = document.querySelector('.places-table');"
+            " return [t.scrollWidth, t.clientWidth]; })()"
+        )
+        assert box[0] <= box[1], f"the table still scrolls sideways inside its box: {box}"

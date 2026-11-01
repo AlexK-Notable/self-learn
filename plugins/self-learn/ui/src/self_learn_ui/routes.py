@@ -580,7 +580,10 @@ def front(request: Request, notice: str | None = None) -> HTMLResponse:
     )
     # Humane lane 1 (proposal §3): the Home page's own model, built beside
     # the front model from the SAME four reads -- no extra CLI call.
-    home_model = models.build_home_model(model, list_read, status_read, report_read, mine_read)
+    home_model = models.build_home_model(
+        model, list_read, status_read, report_read, mine_read,
+        proposals=_home_proposals(home, list_read),
+    )
     _jobs_line_cache(request)["line"] = (time.monotonic(), home_model.jobs_line)
     report_data = report_read.data if report_read.ok and isinstance(report_read.data, dict) else {}
     # The "Inbox (N)" link fills itself in after load (GET /inbox/count,
@@ -605,6 +608,26 @@ def front(request: Request, notice: str | None = None) -> HTMLResponse:
             "days_ago_words": models.days_ago_words,
         },
     )
+
+
+def _home_proposals(home: Path, list_read: ledger.CliRead) -> dict[str, dict | None]:
+    """Gate r1 NIT-3: each waiting lesson's own proposal, read the way the
+    bucket page reads it (`ledger.read_proposal_raw`), so Home words its
+    suggested destination exactly as that lesson's bucket row arms it.
+    Only lessons with a proposal; a failed read is simply absent."""
+    if not list_read.ok:
+        return {}
+    paths = {(b.scope, b.name): b.path for b in ledger.discover_buckets(home)}
+    out: dict[str, dict | None] = {}
+    for item in list_read.data or []:
+        if not isinstance(item, dict) or not item.get("has_proposal"):
+            continue
+        path = paths.get((str(item.get("scope") or "").split(":", 1)[0], str(item.get("bucket"))))
+        if path is None:
+            continue
+        proposal, _err = ledger.read_proposal_raw(path, str(item.get("id")))
+        out[str(item.get("id"))] = proposal
+    return out
 
 
 # ------------------------------------------------- shared header (lane 1)
@@ -647,12 +670,18 @@ async def home_needs_you(request: Request) -> HTMLResponse:
     """The Home page's "Needs your answer" tile, filled in after load from
     the inbox reader's own `counts.needs_you` (the front page never waits
     on `attention --json`). `None` (rendered "?") when it could not be read."""
+    from .inbox_routes import inbox_link  # the header link's own words
+
     read = await asyncio.to_thread(ledger.attention, _home(request))
     data = read.data if isinstance(read.data, dict) else None
     count: int | None = None
     if data is not None and not read.error and not data.get("error"):
         count = int((data.get("counts") or {}).get("needs_you") or 0)
-    return _render(request, "partials/home_answer_tile.html", {"count": count})
+    # The same read also fills the header's "Inbox (N)" link, out of band,
+    # so Home reads the inbox once (gate r1 NIT-1).
+    return _render(
+        request, "partials/home_answer_tile.html", {"count": count, "inbox": inbox_link(read)}
+    )
 
 
 # -------------------------------------------------------------------- Bucket
@@ -672,14 +701,30 @@ def _place(home: Path, scope: str, name: str) -> dict[str, Any]:
     line. Display only: a failed read falls back to the bucket name and
     never breaks the page."""
     try:
-        bucket = _find_bucket(home, scope, name)
-        if bucket is not None:
-            info = sl_places.bucket_places([bucket]).get((scope, name)) or {}
-            if info.get("label"):
-                return {"label": info["label"], "path": info.get("path")}
+        # Gate r1 NIT-2: resolved over EVERY bucket at once, as `status
+        # --json` resolves them, so two projects sharing a folder name get
+        # the same path-labels here as on Home.
+        info = sl_places.bucket_places(ledger.discover_buckets(home)).get((scope, name)) or {}
+        if info.get("label"):
+            return {"label": info["label"], "path": info.get("path")}
     except Exception:  # noqa: BLE001 -- display words only
         pass
     return {"label": name, "path": None}
+
+
+def _replaced_here(report_read: "ledger.CliRead", scope: str, name: str) -> int | None:
+    """Humane lane 1 (gate r1 MINOR-6, proposal §10): how many rules from
+    this place were later replaced or retired -- `report --json`'s own
+    per-bucket `counts.superseded`, never counted here. ``None`` when the
+    report could not be read (the page then says nothing about it)."""
+    data = report_read.data if report_read.ok and isinstance(report_read.data, dict) else None
+    if data is None:
+        return None
+    for b in data.get("buckets") or []:
+        if isinstance(b, dict) and b.get("scope") == scope and b.get("bucket") == name:
+            counts = b.get("counts")
+            return int(counts.get("superseded") or 0) if isinstance(counts, dict) else 0
+    return 0
 
 
 def _belongs_to_bucket(home: Path, record_id: object, scope: str, name: str) -> bool:
@@ -714,7 +759,7 @@ def _belongs_to_bucket(home: Path, record_id: object, scope: str, name: str) -> 
 
 
 def _gather_archive_entries(
-    home: Path, scope: str, name: str
+    home: Path, scope: str, name: str, *, report_read: "ledger.CliRead | None" = None
 ) -> tuple[list[dict], str | None]:
     """B1 (U-grad-ui §4/§7): the Bucket page's routed-record archive
     section, INDEX-SET (§2.2) — `report --json`'s `routed_live`, taken
@@ -759,7 +804,10 @@ def _gather_archive_entries(
     no error line" posture — `models.build_front_model` already treats a
     `None` `.data` this way, and this fix does not widen the disagreement
     between the two call sites beyond what already existed."""
-    report_read = ledger.report(home)
+    # Humane lane 1 (gate r1 MINOR-6): a caller that already made this
+    # read passes it in, so the bucket page reads the report once.
+    if report_read is None:
+        report_read = ledger.report(home)
     if not report_read.ok:
         return [], report_read.error
     data = report_read.data
@@ -820,7 +868,11 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
     registry = ledger.read_registry()
     host_registered = items[0].get("host_registered", True) if items else True
     host_add_command = models.host_add_command(scope, ledger.project_path_for(bucket.path))
-    archive_entries, archive_error = _gather_archive_entries(home, scope, name)
+    report_read = ledger.report(home)
+    archive_entries, archive_error = _gather_archive_entries(
+        home, scope, name, report_read=report_read
+    )
+    replaced_here = _replaced_here(report_read, scope, name)
 
     # 09 §5 unreadable-record row: the skip-and-count line's number comes
     # from `status --json`'s per-bucket `unreadable` field — never a
@@ -870,6 +922,7 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
         {
             "model": model,
             "place": _place(home, scope, name),
+            "replaced_here": replaced_here,
             "notice": notice,
             "list_error": list_read.error,
             "pane": pane_snapshot,

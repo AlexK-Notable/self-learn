@@ -645,8 +645,16 @@ def test_the_front_page_links_the_inbox_with_its_count(tmp_path, monkeypatch):
     client = TestClient(app, base_url="http://127.0.0.1:7357")
     client.cookies.set("slu_token", TOKEN)
     page = client.get("/").text
-    assert 'href="/inbox"' in page and 'hx-get="/inbox/count"' in page
+    # Humane lane 1 gate r1 NIT-1: Home reads the inbox ONCE, for its tile,
+    # and fills the header link out of band from that read; every other
+    # page still fetches the count after load.
+    assert 'href="/inbox"' in page and 'hx-get="/home/needs-you"' in page
+    assert 'hx-get="/inbox/count"' not in page
     assert reads == []
+    tile = client.get("/home/needs-you", headers=HX).text
+    assert 'hx-swap-oob="true"' in tile and "Inbox (2)" in tile and reads == ["attention"]
+    reads.clear()
+    assert 'hx-get="/inbox/count"' in client.get("/settings").text
     link = client.get("/inbox/count", headers=HX).text
     assert 'href="/inbox"' in link and "Inbox (2)" in link and reads == ["attention"]
     monkeypatch.setattr(ledger, "attention", lambda home, env=None: CliRead(data=None, error="boom"))

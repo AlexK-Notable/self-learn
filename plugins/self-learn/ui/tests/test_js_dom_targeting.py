@@ -1262,3 +1262,39 @@ class TestHumaneDecideFold:
         front1_page.wait_for_selector(f'#action-bar-{HOLD_A}[data-armed="true"]', state="attached")
         assert front1_page.evaluate(f"() => document.querySelector('{fold}').open") is True
         assert front1_page.locator(f'#action-bar-{HOLD_A}[data-armed="true"]').is_visible()
+
+    def test_the_armed_bar_is_wholly_on_screen_after_the_key(
+        self, front2_page: "Page", front2_server: ServerHandle
+    ) -> None:
+        """Gate r1 MINOR-5: the key scrolls its button into view BEFORE the
+        fold opens and the armed bar swaps in, so on a short screen the bar
+        landed partly below the bottom edge. Once the armed bar settles it
+        is scrolled into view, Confirm, Cancel and its lower edge. Measured
+        on a short window with the selection on the LAST rule, the shape
+        that clipped."""
+        front2_page.set_viewport_size({"width": 1440, "height": 420})
+        _open(front2_page, front2_server, "/")
+        ids = _row_ids(front2_page)
+        holding = [i for i, rid in enumerate(ids) if rid in (HOLD_A, HOLD_B)]
+        last = holding[-1]
+        rid = ids[last]
+        _select(front2_page, last)
+        front2_page.keyboard.press("t")
+        bar = f'#action-bar-{rid}[data-armed="true"]'
+        front2_page.wait_for_selector(bar, state="attached")
+        # Polled from here: the page's CSP refuses wait_for_function's own
+        # polling (unsafe-eval), which would time out whatever the page did.
+        js = """(sel) => { const r = document.querySelector(sel).getBoundingClientRect();
+                          return [r.top, r.bottom, window.innerHeight]; }"""
+        deadline = time.monotonic() + 3
+        while True:
+            top, bottom, height = front2_page.evaluate(js, bar)
+            # One pixel of slack: "nearest" aligns the bar's edge to the
+            # window's on a sub-pixel layout (measured: bottom 420.3 of 420).
+            if top >= -1 and bottom <= height + 1:
+                break
+            assert time.monotonic() < deadline, (
+                f"the armed bar is not wholly on screen: top={top} bottom={bottom} "
+                f"height={height}"
+            )
+            front2_page.wait_for_timeout(50)

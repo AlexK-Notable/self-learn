@@ -86,11 +86,20 @@
         <span class="site-brand">self-learn</span>
         <nav class="site-nav" aria-label="Pages">
           <a href="/"{% if _here == "home" %} aria-current="page"{% endif %}{% if _kind in ("bucket", "report") %} data-key-action="up" title="Home (Esc goes back here)"{% endif %}>Home</a>
+          {# The inbox link's count is a background read
+             (`data-background-read`: app.js never holds a key back for
+             it). On Home the "Needs your answer" tile's one inbox read
+             fills it in too (an out-of-band swap of #nav-inbox), so Home
+             reads the inbox once, not twice. #}
+          <span id="nav-inbox" class="nav-inbox">
           {% if _here == "inbox" %}
           <a href="/inbox" aria-current="page">Inbox</a>
+          {% elif _kind == "front" %}
+          <a class="status-item inbox-link" href="/inbox" title="What needs you, and what was decided for you" data-inbox-link>Inbox</a>
           {% else %}
-          {% include "partials/workspace_inbox_link.html" %}
+          <a class="status-item inbox-link" href="/inbox" title="What needs you, and what was decided for you" data-inbox-link data-background-read hx-get="/inbox/count" hx-trigger="load" hx-swap="outerHTML">Inbox</a>
           {% endif %}
+          </span>
           <a href="/overseer-report"{% if _here == "weekly" %} aria-current="page"{% endif %}>Weekly report</a>
           <a href="/report"{% if _here == "health" %} aria-current="page"{% endif %}>Health</a>
           <a href="/settings"{% if _here == "settings" %} aria-current="page"{% endif %}>Settings</a>
@@ -98,7 +107,7 @@
         {% if jobs_line is defined and jobs_line %}
         {% include "partials/jobs_line.html" %}
         {% else %}
-        <a class="jobs-line jobs-line-loading" href="/#jobs" hx-get="/header/jobs" hx-trigger="load" hx-swap="outerHTML">Checking the jobs&hellip;</a>
+        <a class="jobs-line jobs-line-loading" href="/#jobs" data-background-read hx-get="/header/jobs" hx-trigger="load" hx-swap="outerHTML">Checking the jobs&hellip;</a>
         {% endif %}
       </div>
       {% block crumbs %}{% endblock %}

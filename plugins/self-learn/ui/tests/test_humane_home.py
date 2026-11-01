@@ -181,12 +181,60 @@ class TestJobs:
     def test_a_failed_last_read_is_late_even_when_recent(self):
         _jobs, line = self._jobs(mine={"last_run": "2026-11-01T10:00:00Z", "stale": False,
                                        "runs": [_run(status="failed")]})
+        assert _jobs[0].detail == "The last run failed."  # positive control: the row
         assert line.late is True and "failed" in line.text
+        assert _jobs[0].late is True  # gate r1 MINOR-1: its own row is marked too
 
     def test_a_behind_drafting_job_and_an_unreadable_miner_both_show(self):
         _jobs, line = self._jobs(mine=None, worker_stale=True, unanalyzed=3)
         assert "Drafting suggestions is behind" in line.text
         assert "overnight read's status could not be read" in line.text
+
+    def test_an_unreadable_status_is_never_called_on_time(self):
+        """Gate r1 MINOR-2: with `status --json` failing, the header names
+        it and never prints the all-clear, even with a healthy miner."""
+        mine = {"last_run": "2026-11-01T10:00:00Z", "stale": False, "runs": [_run()]}
+        assert self._jobs(mine=mine)[1].text == "All jobs ran on time"  # control
+        _jobs, line = build_jobs(
+            CliRead(data=None, error="status: boom"), CliRead(data=mine),
+            worker_stale=False, total_unanalyzed=0, now=NOW,
+        )
+        assert line.late is True
+        assert "Job status could not be read" in line.text
+        assert "All jobs ran on time" not in line.text
+
+    def test_a_held_nightly_review_is_named_in_the_header(self):
+        """Gate r1 MINOR-3: the steward's own hold, carried by `status
+        --json`, turns its row and the header late, in plain words."""
+        mine = {"last_run": "2026-11-01T10:00:00Z", "stale": False, "runs": [_run()]}
+        jobs, line = self._jobs(mine=mine, status={"steward_enabled": True,
+                                                   "steward_hold": "OAuth session expired"})
+        steward = jobs[2]
+        assert steward.key == "steward"  # positive control: the right row
+        assert steward.late is True
+        assert steward.detail == "On hold: OAuth session expired."
+        assert line.late is True and line.text == "The nightly review is on hold"
+
+    def test_a_behind_nightly_review_is_named_in_the_header(self):
+        mine = {"last_run": "2026-11-01T10:00:00Z", "stale": False, "runs": [_run()]}
+        jobs, line = self._jobs(mine=mine, status={"steward_enabled": True,
+                                                   "steward_stale": True,
+                                                   "steward_stale_hours": 48})
+        assert jobs[2].late is True
+        assert jobs[2].detail == "Behind: no finished run for over 48 hours while lessons wait."
+        assert line.late is True and line.text == "The nightly review is behind"
+        # A steward that is neither held nor stale is never called late.
+        quiet, ok = self._jobs(mine=mine, status={"steward_enabled": True,
+                                                  "steward_stale": False})
+        assert quiet[2].late is False and ok.text == "All jobs ran on time"
+
+    def test_an_overnight_read_that_never_ran_is_not_called_on_time(self):
+        """Gate r1 NIT-4: nothing is late, but the all-clear would be false
+        beside a job that has not run yet."""
+        jobs, line = self._jobs(mine={"last_run": None, "stale": False, "runs": []})
+        assert jobs[0].detail == "Has not run yet."  # positive control
+        assert line.late is False and line.waiting is True
+        assert line.text == "The overnight read has not run yet"
 
     def test_the_weekly_check_is_late_only_a_day_after_its_time(self):
         mine = {"last_run": "2026-11-01T10:00:00Z", "stale": False, "runs": [_run()]}
@@ -366,3 +414,106 @@ def test_sightings_are_counted_in_words(tmp_path, sightings, words):
     rec = make_behavior(scope="skill:s")
     rec.set_sightings(sightings)
     assert words in _build_finding(rec, "t").provenance_text + " ·"
+
+
+# ------------------------------------------------------ gate r1 fold (lane 1)
+
+
+class TestGateR1Fold:
+    def test_an_empty_place_counts_the_rules_replaced_there_from_the_report(
+        self, tmp_path, monkeypatch
+    ):
+        """MINOR-6 (proposal §10): the count is `report --json`'s own
+        per-bucket `counts.superseded`, from the read the page already makes."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        resolve_record_directly(sb.ledger, sb.ledger / "skills" / "s", rec)
+        calls: list[str] = []
+
+        def report(home, **kw):
+            calls.append("report")
+            return CliRead(data={"routed_live": [], "recurrence_suspects": [], "buckets": [
+                {"bucket": "s", "scope": "skill", "counts": {"routed": 1, "superseded": 2}},
+                {"bucket": "s", "scope": "project", "counts": {"superseded": 9}},
+            ]})
+
+        monkeypatch.setattr(ledger_mod, "report", report)
+        page = _client(sb).get("/bucket/skill/s").text
+        assert "Nothing is waiting here." in page  # positive control: the sentence
+        assert "2 earlier rules from here were later replaced or retired." in page
+        assert calls == ["report"]  # one report read for the whole page
+        monkeypatch.setattr(ledger_mod, "report",
+                            lambda home, **kw: CliRead(data=None, error="boom"))
+        failed = _client(sb).get("/bucket/skill/s").text
+        assert "Nothing is waiting here." in failed
+        assert "replaced or retired" not in failed
+
+    def test_home_reads_the_inbox_once_and_fills_the_header_link_from_it(
+        self, tmp_path, monkeypatch
+    ):
+        """NIT-1: Home's header link is filled out of band by the SAME
+        attention read as the tile; other pages still fetch their count."""
+        sb = make_env(tmp_path)
+        reads: list[str] = []
+
+        def attention(home, env=None):
+            reads.append("attention")
+            return CliRead(data={"counts": {"needs_you": 2, "new": 0}, "items": []})
+
+        monkeypatch.setattr(ledger_mod, "attention", attention)
+        c = _client(sb)
+        home = c.get("/").text
+        assert 'id="nav-inbox"' in home and 'hx-get="/home/needs-you"' in home  # control
+        assert 'hx-get="/inbox/count"' not in home
+        assert 'hx-get="/inbox/count"' in c.get("/report").text
+        tile = c.get("/home/needs-you").text
+        assert reads == ["attention"]
+        oob = tile.split('<span id="nav-inbox"', 1)[1].split("</span>", 1)[0]
+        assert 'hx-swap-oob="true"' in oob
+        assert "Inbox (2)" in oob
+
+    def test_the_bucket_page_names_a_shared_folder_by_its_path_like_home(self, tmp_path):
+        """NIT-2: two projects sharing a folder name are told apart by their
+        `~` path on the bucket page, as on Home (resolved together)."""
+        from self_learn_ui.routes import _place
+
+        sb = make_env(tmp_path)
+        for slug, where in (("a-app", tmp_path / "a" / "app"), ("b-app", tmp_path / "b" / "app")):
+            where.mkdir(parents=True)
+            d = sb.ledger / "projects" / slug
+            d.mkdir(parents=True)
+            (d / "meta.yaml").write_text(f"path: {where}\n", encoding="utf-8")
+        a = _place(sb.ledger, "project", "a-app")
+        b = _place(sb.ledger, "project", "b-app")
+        assert a["path"] and b["path"]  # positive control: both resolved
+        assert a["label"] == a["path"] and b["label"] == b["path"]
+        assert a["label"] != b["label"]
+
+    def test_home_words_a_suggestion_as_its_bucket_row_arms_it(self):
+        """NIT-3: a user-scope lesson whose proposal recommends waiting (the
+        reference file does not fit there) is not "suggested" on Home."""
+        item = {"id": "lrn-00000001", "bucket": "user", "scope": "user",
+                "destination": "reference", "has_proposal": True, "title": "x"}
+        fits = {"id": "lrn-00000002", "bucket": "user", "scope": "user",
+                "destination": "claude-md", "has_proposal": True, "title": "y"}
+        status = CliRead(data={"buckets": [_bucket("user", "user", pending=2)],
+                               "total_pending": 2, "open_followups": 0,
+                               "worker_last_run": None})
+        list_read = CliRead(data=[item, fits])
+        report_read = CliRead(data={})
+        mine_read = CliRead(data={"last_run": None, "stale": False, "runs": []})
+        front = build_front_model(list_read, status, report_read, mine_read,
+                                  sentinel_mtime=None, now=NOW)
+        model = build_home_model(
+            front, list_read, status, report_read, mine_read, now=NOW,
+            proposals={"lrn-00000001": {"recommendation": "defer",
+                                        "destination": "reference"},
+                       "lrn-00000002": {"recommendation": "route",
+                                        "destination": "claude-md"}},
+        )
+        by_id = {row.id: row.suggestion_text for row in model.lessons}
+        assert by_id["lrn-00000002"] == "suggested: your instructions"  # control
+        assert by_id["lrn-00000001"] == (
+            "no place chosen yet: the suggestion does not fit here"
+        )

@@ -229,7 +229,10 @@ class TestWorkerOverdueRendersAsATextLabel:
         c, _runner = make_client(sb)
         r = c.get("/")
         assert r.status_code == 200
-        assert "all jobs ran on time" in r.text.lower()  # positive control
+        # Positive control: the header's jobs line rendered. Humane lane 1
+        # gate r1 NIT-4: on a ledger whose overnight read never ran it says
+        # so rather than "all jobs ran on time".
+        assert "the overnight read has not run yet" in r.text.lower()
         assert "drafting suggestions is behind" not in r.text.lower()
 
 
