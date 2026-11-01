@@ -2724,15 +2724,27 @@ def test_phase_sessions_get_edit_confined_exactly_as_write(tmp_path, monkeypatch
             assert (verdicts["Edit"] == "PermissionResultAllow") is allowed, (target, verdicts)
 
 
-def _without_notices_paragraph(prompt: str) -> str:
-    """*prompt* without phase B's notices.yaml paragraph (from its first line
-    to the user-model-delta.yaml paragraph that follows it)."""
-    start = prompt.find("notices.yaml is optional")
+def _without_paragraph(prompt: str, first: str, followers: tuple[str, ...]) -> str:
+    """*prompt* without the paragraph that starts at *first*, up to the
+    nearest of *followers* after it (the paragraph that follows)."""
+    start = prompt.find(first)
     if start < 0:
         return prompt
-    end = prompt.find("user-model-delta.yaml is", start)
-    assert end > start, "the notices paragraph is followed by the user-model paragraph"
-    return prompt[:start] + prompt[end:]
+    ends = [at for at in (prompt.find(word, start + 1) for word in followers) if at > start]
+    assert ends, f"the {first!r} paragraph is followed by one of {followers}"
+    return prompt[:start] + prompt[min(ends):]
+
+
+def _without_notices_paragraph(prompt: str) -> str:
+    """*prompt* without phase B's two capped file paragraphs: notices.yaml's
+    (S-106) and, after it, hosts.yaml's (S-NEXT-hosts: a one-line `why` of at
+    most N characters, at most N registrations a run). Each is cut on its own,
+    up to the paragraph that follows it, so a cut never runs past its paragraph
+    (integration w31b: the two together are longer than one paragraph's bound)."""
+    cut = _without_paragraph(
+        prompt, "notices.yaml is optional", ("hosts.yaml is optional", "user-model-delta.yaml is")
+    )
+    return _without_paragraph(cut, "hosts.yaml is optional", ("user-model-delta.yaml is",))
 
 
 def test_both_prompts_carry_the_journal_and_phase_b_the_question_bar(tmp_path, monkeypatch):
@@ -2760,7 +2772,14 @@ def test_both_prompts_carry_the_journal_and_phase_b_the_question_bar(tmp_path, m
     assert "notices.yaml is optional" in b and "at most" in b.lower()
     cut = _without_notices_paragraph(b)
     assert "notices.yaml is optional" not in cut and "user-model-delta.yaml is" in cut
-    assert len(b) - len(cut) < 2000
+    assert "hosts.yaml is optional" in b and "hosts.yaml is optional" not in cut
+    notices_only = _without_paragraph(
+        b, "notices.yaml is optional", ("hosts.yaml is optional", "user-model-delta.yaml is")
+    )
+    hosts_only = _without_paragraph(b, "hosts.yaml is optional", ("user-model-delta.yaml is",))
+    assert len(b) - len(notices_only) < 2000
+    assert len(b) - len(hosts_only) < 2000
+    assert len(b) - len(cut) == (len(b) - len(notices_only)) + (len(b) - len(hosts_only))
     assert "The log records only what you read in this stage; you have not seen the steward's decisions." in a
     assert "you have not seen the steward's decisions" not in b
     assert "There is no limit on\nhow many you ask" in b

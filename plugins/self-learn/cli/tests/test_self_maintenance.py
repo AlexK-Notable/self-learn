@@ -36,6 +36,7 @@ from self_learn import (
     selfcheck,
     serve,
     settings,
+    skill_registry,
     verbs,
 )
 from self_learn.hosts import host_add, host_remove
@@ -832,7 +833,7 @@ def test_a_retired_lesson_on_a_registered_host_whose_path_vanished_still_warns(t
     assert [w for w in result.warnings if w.startswith(f"{rid}:") and str(host) in w], result.warnings
 
 
-def _retired_new_skill(tmp_path, rid, name, *, retire=True):
+def _retired_new_skill(tmp_path, rid, name, *, retire=True, vetoed=False):
     env = make_env(tmp_path)
     marketplace = env.host / ".claude-plugin" / "marketplace.json"
     marketplace.parent.mkdir()
@@ -844,6 +845,13 @@ def _retired_new_skill(tmp_path, rid, name, *, retire=True):
     git(env.host, "add", "-A")
     git(env.host, "commit", "-q", "-m", "marketplace seed")
     create_record(env.ledger, make_behavior(scope="skill:s", record_id=rid))
+    if vetoed:
+        # S-NEXT-skills-chain SK-G: a route scaffold under a vetoed name stays
+        # the person's (no owned row), so recompile may scaffold it again.
+        def add(registry):
+            registry.add_veto(name, at="2026-10-31T00:00:00Z", by="human")
+
+        skill_registry.with_update(env.ledger, add, subject=f"veto {name}")
     verbs.route(env.ledger, rid, dest=f"new-skill:{name}", no_push=True)
     assert (env.host / "plugins" / name).is_dir()  # control: it was scaffolded
     if retire:
@@ -957,12 +965,35 @@ def _notice(home, nid):
 # Gate r2 finding 1 (MINOR): the `retired` guard on the new-skill gone branch.
 
 
+def test_a_live_owned_new_skill_whose_plugin_is_gone_is_not_counted_gone(tmp_path):
+    """The other side of the retired-and-gone skip, for a skill self-learn
+    owns: since S-NEXT-skills-chain SK-G a route's scaffold under a fresh name
+    is owned, and an owned skill's missing SKILL.md is restored by the overseer
+    (SK-E), never scaffolded by a recompile. The LIVE lesson is still never
+    counted gone: recompile names the owned skill's repair instead
+    (integration w31b: self-maint's test predates SK-G)."""
+    rid = "lrn-0000d0c5"
+    env = _retired_new_skill(tmp_path, rid, "live-owned", retire=False)
+    shutil.rmtree(env.host / "plugins" / "live-owned")
+    git(env.host, "add", "-A")
+    git(env.host, "commit", "-q", "-m", "drop the live plugin")
+    skill_md = env.host / "plugins" / "live-owned" / "skills" / "live-owned" / "SKILL.md"
+
+    result = verbs.recompile(env.ledger, no_push=True)
+
+    assert result.gone == []
+    assert [w for w in result.warnings if rid in w and "self-learn owns" in w], result.warnings
+    assert not skill_md.exists()
+
+
 def test_a_live_new_skill_lesson_whose_plugin_is_gone_is_rebuilt_not_counted_gone(tmp_path):
     """The other side of the retired-and-gone skip: a LIVE lesson routed to a
     new skill whose plugin folder was deleted is compiled again (its plugin
-    comes back), never counted gone."""
+    comes back), never counted gone. The skill is the person's (a scaffold
+    under a vetoed name, SK-G), since an owned one is the overseer's to
+    restore (the test above)."""
     rid = "lrn-0000d0c4"
-    env = _retired_new_skill(tmp_path, rid, "live-new", retire=False)
+    env = _retired_new_skill(tmp_path, rid, "live-new", retire=False, vetoed=True)
     shutil.rmtree(env.host / "plugins" / "live-new")
     git(env.host, "add", "-A")
     git(env.host, "commit", "-q", "-m", "drop the live plugin")
