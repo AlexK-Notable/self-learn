@@ -268,6 +268,8 @@ MODEL_KEY_FOR_SURFACE = {
     "overseer": "overseer",
     # 2026-10-06 (U4-seam): the session miner runs on the old miner's model.
     "miner-session": "miner",
+    # 2026-10-31 (attention round, design r2 §3.3): the inbox's ask agent.
+    "ask": "ask",
 }
 
 

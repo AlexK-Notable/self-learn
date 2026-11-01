@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{#
+  The inbox and its decision workspace (attention round, design r2 §2,
+  §3.6, §3.7; the user's answer 10, decision C4). One click from the tray:
+  the item list beside the selected item's workspace, which holds
+  everything needed to decide — the question, why it needs you, what
+  happens meanwhile, the recommendation and the alternatives, the
+  evidence in place, one-click options and a reply box, and an "ask about
+  this" agent. Keys: static/inbox.js (app.js stays inert on this page).
+#}
+{% block title %}self-learn — Inbox{% if item %} · {{ item.title }}{% endif %}{% endblock %}
+{% block page_kind %}inbox{% endblock %}
+{% block extra_scripts %}<script src="/static/inbox.js" defer></script>{% endblock %}
+
+{% block status_strip %}
+<div class="status-strip">
+  <span class="brand">self-learn</span>
+  <a href="/" title="The lesson review pages">&larr; Lessons</a>
+  <span class="status-item">Inbox</span>
+  <a class="status-item" href="/overseer-report" title="The overseer's latest weekly report">weekly report</a>
+  <a class="status-item" href="/settings" title="Every setting, including which kinds of item reach this inbox">settings</a>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="inbox" data-inbox data-selected="{{ item.id if item else '' }}">
+  <nav aria-label="Inbox" class="inbox-nav">
+    {% include "partials/workspace_list.html" %}
+  </nav>
+  <div id="inbox-workspace" class="inbox-workspace">
+    {% if item %}
+      {% include "partials/workspace.html" %}
+    {% elif gone %}
+      {% include "partials/workspace_gone.html" %}
+    {% elif reader_error %}
+      <section class="ws-empty" aria-labelledby="inbox-error-h" data-reader-error>
+        <h1 id="inbox-error-h">The inbox could not be read</h1>
+        <pre class="ws-pre">{{ reader_error }}</pre>
+        <p>The inbox itself may be broken; the tray icon shows the same state.</p>
+        <p><a class="btn" href="/inbox">Retry</a></p>
+      </section>
+    {% else %}
+      <section class="ws-empty" aria-labelledby="inbox-empty-h" data-inbox-empty>
+        <h1 id="inbox-empty-h">Nothing needs you, and nothing new.</h1>
+        <p>Decisions made for you still show here for a month. <a href="/overseer-report">Read the weekly report</a>.</p>
+      </section>
+    {% endif %}
+  </div>
+</div>
+<div id="inbox-live" class="visually-hidden" role="status" aria-live="polite"></div>
+{% endblock %}

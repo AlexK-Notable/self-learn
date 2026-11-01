@@ -761,6 +761,11 @@ def test_the_runner_keeps_a_good_register_and_drops_one_the_text_does_not_name(t
         "text": "Register /srv/app as a canon host in git mode? Yes registers it; no does not.",
         "why": "decides whether its lessons can be routed there",
         "register": {"path": "/srv/app", "mode": "git"},
+        # S-NEXT-overseer-asks fix round 2: read as needs: user, so it offers
+        # a register and a decline option and recommends one.
+        "options": [{"id": "opt-register", "label": "Register it", "effect": "register"},
+                    {"id": "opt-no", "label": "No", "effect": "decline"}],
+        "recommend": {"option": "opt-no", "reasoning": "nothing routes there yet"},
     }
     hidden = {
         "id": "q-enable-feature", "kind": "ask", "cases": [case_id],

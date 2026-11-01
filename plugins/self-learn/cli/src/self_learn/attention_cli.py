@@ -8,6 +8,9 @@
         0 | 1 build failed | 2 unknown id
     self-learn attention feedback <id> --wanted needs-you|decided|silent [--note TEXT]
         0 | 2 unknown id | 64 refused from an agent's shell (the person's click only)
+    self-learn attention check-login                                  (ask-agent lane)
+        0 login works (writes login-ok.json) | 3 login broken (prints the fix)
+        | 4 would spend money | 1 any other failure
 
 Neither ``attention`` nor ``ask`` ticks the miner watchdog (``cli.py``).
 The list, ``seen`` and ``packet`` write no ledger file; ``feedback`` appends
@@ -69,8 +72,16 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     feedback_p.add_argument("--note", default=None)
 
     # --- answers lane ---
+    from . import attention_answers_cli
+
+    attention_answers_cli.add_parsers(commands)
 
     # --- ask-agent lane ---
+    commands.add_parser(
+        "check-login",
+        help="make one tiny model call to check that the Claude login works again "
+             "(subscription usage, never money); clears a login hold when it does",
+    )
 
     parser.set_defaults(_attention_dispatch=dispatch)
     return parser
@@ -88,8 +99,16 @@ def dispatch(args) -> int:
     if command == "feedback":
         return _feedback(home, args)
     # --- answers lane ---
+    from . import attention_answers_cli
+
+    if command in attention_answers_cli.COMMANDS:
+        return attention_answers_cli.dispatch(home, args)
 
     # --- ask-agent lane ---
+    if command == "check-login":
+        from . import ask
+
+        return ask.check_login(home)
     print(f"self-learn attention: unknown command {command!r}", file=sys.stderr)
     return EXIT_USAGE
 

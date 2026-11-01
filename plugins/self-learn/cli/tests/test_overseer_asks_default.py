@@ -62,6 +62,31 @@ def _ask(qid: str, case_ids: list[str], **extra) -> dict:
     return row
 
 
+def _needs_shape(*, register: bool = False) -> dict:
+    """What a `system: true` or `register` ask written without `needs`
+    carries since S-NEXT-overseer-asks fix round 2 (gate r2 MAJOR 2): it is
+    read as `needs: user` and held to those rules -- options and a
+    recommendation, and for a system change a plan with a check."""
+    if register:
+        return {
+            "options": [{"id": "opt-register", "label": "Register it", "effect": "register"},
+                        {"id": "opt-no", "label": "No", "effect": "decline"}],
+            "recommend": {"option": "opt-no", "reasoning": "nothing routes there yet"},
+        }
+    return {
+        "options": [{"id": "opt-yes", "label": "Yes, restart it", "effect": "approve"},
+                    {"id": "opt-no", "label": "No", "effect": "decline"}],
+        "recommend": {"option": "opt-no", "reasoning": "it recovered on its own"},
+        "plan": {
+            "summary": "Restart the daemon.",
+            "checks": [{"say": "It is running", "command": "systemctl --user is-active d"}],
+            "steps": [{"say": "Restart it", "command": "systemctl --user restart d",
+                       "sudo": False}],
+            "files": [],
+        },
+    }
+
+
 def _validate(tmp_path: Path, entries: list[dict], known: set[str]):
     path = tmp_path / "questions.yaml"
     with path.open("w", encoding="utf-8") as fh:
@@ -116,9 +141,10 @@ def test_an_ask_about_the_users_system_defaults_to_changing_nothing(tmp_path):
     its own default (the `system` branch of `_default_problem` and
     `_ask_default` removed) fails this test."""
     case_id = "case-12345678"
-    system_ask = _ask("q-restart-daemon", [case_id], system=True)
+    system_ask = _ask("q-restart-daemon", [case_id], system=True, **_needs_shape())
     del system_ask["default"]
-    overreach = _ask("q-edit-dotfile", [case_id], system=True, default="I edited your dotfile.")
+    overreach = _ask("q-edit-dotfile", [case_id], system=True, default="I edited your dotfile.",
+                     **_needs_shape())
     index, dropped = _validate(tmp_path, [system_ask, overreach], {case_id})
 
     assert [row["id"] for row in index["questions"]] == ["q-restart-daemon"]
@@ -137,6 +163,7 @@ def test_a_registration_ask_registers_nothing_by_default(tmp_path):
         "text": "Register /srv/app as a canon host in git mode? Yes registers it; no does not.",
         "why": "decides whether its lessons can be routed there",
         "register": {"path": "/srv/app", "mode": "git"},
+        **_needs_shape(register=True),
     }
     with_default = {**register, "id": "q-register-other", "default": "I registered it."}
     index, dropped = _validate(tmp_path, [register, with_default], {case_id})
@@ -202,7 +229,7 @@ def test_the_report_lists_asks_that_changed_nothing_apart(tmp_path, monkeypatch)
     _enabled(monkeypatch)
     _silence_notifications(monkeypatch)
     _fake_two_phase(monkeypatch)
-    system_ask = _ask("q-restart-daemon", [case_id], system=True)
+    system_ask = _ask("q-restart-daemon", [case_id], system=True, **_needs_shape())
     del system_ask["default"]
     _wrap_phases(monkeypatch, questions=[system_ask, _ask("q-diagram-skill", [case_id])])
 

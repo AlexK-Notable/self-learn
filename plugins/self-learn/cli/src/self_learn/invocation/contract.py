@@ -50,6 +50,7 @@ Surface = Literal[
     "steward",
     "overseer",
     "miner-session",
+    "ask",
 ]
 
 #: 2026-10-06 (U4-seam, `17-invocation-runbook.md` §1a): `miner-session`,
@@ -64,6 +65,7 @@ SURFACES: tuple[Surface, ...] = (
     "steward",
     "overseer",
     "miner-session",
+    "ask",
 )
 
 #: Five environment selectors for seven surfaces (Sec 3.2) -- the repair
@@ -82,6 +84,9 @@ SELECTOR_FOR_SURFACE: dict[str, str] = {
     "steward": "STEWARD",
     "overseer": "OVERSEER",
     "miner-session": "MINER",
+    # 2026-10-31 (attention round, design r2 §3.3): the inbox's "ask about
+    # this" agent, its own selector (`models.ask`, `sdk.max_turns.ask`).
+    "ask": "ASK",
 }
 
 # ----------------------------------------------------------- Cont-1 (Sec 3.3)
@@ -105,6 +110,21 @@ class Containment:
     #: cache's kept session transcripts (`session_copies.sessions_dir`).
     #: Empty = no deny root.
     read_denied: tuple[str, ...] = ()
+    #: 2026-10-31 (attention round, design r2 §3.3): basename globs
+    #: (`fnmatch`, case-insensitive) a Read may never open, whatever the
+    #: roots allow -- judged on the target's own name AND on its resolved
+    #: symlink target's name (`charter.py`). The ask agent's is
+    #: `attention_packet.SECRET_DENY.names`. Empty -- every other surface --
+    #: changes nothing. Keyword, defaulted and LAST.
+    read_denied_names: tuple[str, ...] = ()
+
+
+#: 2026-10-31: the ask agent's refused tools, fixed here (never the
+#: caller's): no shell, no writes, no sub-agents, no web, and no Grep --
+#: the charter judges a Grep by its root, never by the files it reads, so
+#: a Grep over a root holding a `token.env` would send its lines to the
+#: model; the agent's own `search` tool replaces it (design r2 §3.3).
+_ASK_DISALLOWED = "Bash,Grep,Write,Edit,NotebookEdit,Task,WebFetch,WebSearch"
 
 
 def containment_rules(c: Containment) -> list[str]:
@@ -137,6 +157,9 @@ def containment_for(
     write_exact: tuple[str, ...] = (),
     spool_dir: Path | str | None = None,
     sessions_dir: Path | str | None = None,
+    read_roots: tuple[str, ...] = (),
+    read_denied: tuple[str, ...] = (),
+    read_denied_names: tuple[str, ...] = (),
 ) -> Containment:
     """``C-c`` -- receives SCALARS ONLY and renders every glob PATTERN
     from string literals inside this module. It may not receive, call, or
@@ -233,6 +256,29 @@ def containment_for(
             write_exact=(),
             strict_mcp=True,
             default_mode="default",
+        )
+    if surface == "ask":
+        # 2026-10-31 (attention round, design r2 §3.3): the inbox's "ask
+        # about this" agent reads and never writes. No write scope, so the
+        # charter's write family always denies and the enforcement hatch
+        # stays shut; the refused tools are fixed above; the read fence
+        # (roots, denied paths, denied file names) is the caller's, and
+        # only this surface takes it from the caller. An `allowed_tools`
+        # naming a refused or a writing tool is a programming error.
+        allowed = {t for t in (allowed_tools or "").split(",") if t}
+        bad = sorted(allowed & set(_ASK_DISALLOWED.split(",")))
+        if bad:
+            raise ValueError(f"containment_for: the ask surface may not allow {bad}")
+        return Containment(
+            allowed_tools=allowed_tools,
+            disallowed_tools=_ASK_DISALLOWED,
+            write_globs=(),
+            write_exact=(),
+            strict_mcp=True,
+            default_mode="default",
+            read_roots=tuple(str(r) for r in read_roots),
+            read_denied=tuple(str(r) for r in read_denied),
+            read_denied_names=tuple(str(n) for n in read_denied_names),
         )
     raise ValueError(f"containment_for: unknown surface {surface!r}")
 
@@ -431,6 +477,22 @@ class SessionSpec:
     #: and would clear a live sibling's. `False` -- every producer but the
     #: session miner's fan-out -- sweeps exactly as before.
     skip_orphan_sweep: bool = False
+    #: 2026-10-31 (attention round, design r2 §3.3): continue THIS earlier
+    #: Claude Code session (the options carry `resume=<id>`), so one turn
+    #: of a conversation is one seam session. `None` -- every producer but
+    #: the ask agent -- sends no `resume` key at all. Keyword, defaulted
+    #: and LAST.
+    resume_session_id: str | None = None
+    #: 2026-10-31: called with one plain dict per streamed fact -- a text
+    #: delta (`{"ev": "delta", "text"}`), a tool use (`{"ev": "tool",
+    #: "name", "target"}`) and the result of one of the session's own tools
+    #: (`{"ev": "tool-result", "name", "is_error", "text"}`). When set the
+    #: options carry `include_partial_messages=True`. It runs on the
+    #: session's event loop and must never block; an exception it raises
+    #: is logged once and never ends the session. `None` -- every producer
+    #: but the ask agent -- leaves the options exactly as before. Keyword,
+    #: defaulted and LAST.
+    on_event: Callable[[dict[str, Any]], None] | None = None
 
     def __post_init__(self) -> None:
         if self.sidecar_key is not None and not _SIDECAR_KEY_RE.fullmatch(self.sidecar_key):
@@ -570,6 +632,17 @@ _MINER_SESSION_TEMPLATES = LogTemplates(
     detail_strip=False,
 )
 
+#: 2026-10-31 (attention round, design r2 §4.10): the ask agent, miner-shaped.
+_ASK_TEMPLATES = LogTemplates(
+    exited="run: claude exited {rc}: {detail}",
+    timed_out="run: claude timed out after {timeout}s",
+    not_found="run: claude CLI not found on PATH",
+    os_error="run: ask agent invocation failed ({exc})",
+    unavailable="run: invocation backend unavailable ({exc})",
+    detail_cap=400,
+    detail_strip=False,
+)
+
 #: ``L-a`` -- the templates are NOT uniform across surfaces, and that is
 #: the shipped truth (worker and worker-repair share one table; the
 #: miner carries no label and different wording; the analyst has no
@@ -584,6 +657,7 @@ LOG_TEMPLATES: dict[str, LogTemplates] = {
     "steward": _STEWARD_TEMPLATES,
     "overseer": _OVERSEER_TEMPLATES,
     "miner-session": _MINER_SESSION_TEMPLATES,
+    "ask": _ASK_TEMPLATES,
 }
 
 
@@ -607,4 +681,5 @@ TRANSPORT: dict[str, bool] = {
     "steward": True,  # U8 -- same split as every other surface
     "overseer": True,
     "miner-session": True,
+    "ask": True,
 }

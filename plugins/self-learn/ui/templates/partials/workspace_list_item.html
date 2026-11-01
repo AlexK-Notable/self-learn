@@ -1,0 +1,14 @@
+{# One inbox row. The class chip carries words as well as colour (§3.6). #}
+<li class="inbox-item{% if it.id == selected_id %} selected{% endif %}" data-inbox-item="{{ it.id }}" data-class="{{ it.class }}" data-kind="{{ it.kind }}">
+  <a href="/inbox/{{ it.id }}" hx-get="/inbox/{{ it.id }}/workspace" hx-target="#inbox-workspace"
+     hx-swap="innerHTML" hx-push-url="/inbox/{{ it.id }}"
+     {% if it.id == selected_id %}aria-current="page"{% endif %}>
+    <span class="inbox-item-title">{{ it.title }}</span>
+    <span class="inbox-item-meta">
+      {% if it.class == "needs-you" %}<span class="chip chip-needs-you">{{ it.chip }}</span>
+      {% elif it.class == "approved" %}<span class="chip chip-approved">{% if it.state == "running" %}Running in a terminal{% else %}Approved, not started{% endif %}</span>
+      {% else %}<span class="chip chip-decided">Decided</span>{% endif %}
+      {% if it.class == "decided" and not it.seen %}<span class="dot-new" title="not seen yet">{% if it.flagged %}new{% else %}unseen{% endif %}</span>{% endif %}
+    </span>
+  </a>
+</li>

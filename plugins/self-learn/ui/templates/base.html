@@ -32,7 +32,13 @@
        console error on every swap and killing the indicator fade. Disable
        the injection here (htmx reads this meta before boot) — the indicator
        CSS lives in style.css instead. (U11 browser trial, 2026-07-17 / W-9.) #}
-    <meta name="htmx-config" content='{"includeIndicatorStyles": false}' />
+    {# Attention round (inbox build, measured in the walk world): htmx's
+       swap "settles" the class/style/width/height of every element whose
+       id is in both the old and the new content, by setAttribute — so a
+       swapped textarea or input with an id raised a CSP "Applying inline
+       style" error on every answer and list refresh. Style can never apply
+       under this CSP anyway; it is dropped from the settled set. #}
+    <meta name="htmx-config" content='{"includeIndicatorStyles": false, "attributesToSettle": ["class", "width", "height"]}' />
     <title>{% block title %}self-learn{% endblock %}</title>
     {# empty data: icon suppresses the /favicon.ico 404 (CSP img-src allows data:) #}
     <link rel="icon" href="data:," />
@@ -40,6 +46,9 @@
     <link rel="stylesheet" href="/static/pygments.css" />
     <script src="/static/htmx-2.0.9.min.js" defer></script>
     <script src="/static/app.js" defer></script>
+    {# Attention round (design r2 §4.7): page-specific scripts, e.g. the
+       inbox's static/inbox.js — still external files only (CSP). #}
+    {% block extra_scripts %}{% endblock %}
   </head>
   {# data-page drives the context-filtered keymap footer (style.css):
      each page names itself so only its usable keys render visible. #}

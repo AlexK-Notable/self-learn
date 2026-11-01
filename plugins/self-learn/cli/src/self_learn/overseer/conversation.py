@@ -48,6 +48,8 @@ agent` with `Proof: <transcript line>` and `Answers: <question id>`.
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import re
 import shlex
@@ -55,7 +57,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TextIO
+from typing import Callable, TextIO
 
 from ruamel.yaml import YAML
 
@@ -91,7 +93,31 @@ _OBS_LINE_RE = re.compile(
 )
 
 
-_INDEX_KEYS = frozenset({"id", "kind", "cases", "text", "why", "register", "default", "system"})
+_INDEX_KEYS = frozenset({
+    "id", "kind", "cases", "text", "why", "register", "default", "system",
+    # S-NEXT-overseer-asks (attention design r2.1 §3.8, §4.5): who an ask
+    # needs, the closed reason it needs the user, the options it offers
+    # and the one recommended, the plan an approve option carries out, the
+    # files the packet may excerpt, the two statements a conflict names,
+    # and when it was first asked (kept across carry-forward and reopen).
+    "needs", "because", "asked_at", "options", "recommend", "plan", "look_at", "statements",
+    # Fix round 1 (gate r1 MINOR 4): when "Ask me anyway" put it back; an
+    # answer or an approval counts only from then (`_answer_floor`).
+    "reopened_at",
+})
+
+#: `needs` (§3.8): `user` -- only the user can settle it, and it stays open
+#: until answered or withdrawn (answer 4, C2); `stead` -- decided by its
+#: default in the run that asked (S-117).
+NEEDS_VALUES = ("user", "stead")
+#: The closed list of reasons an overseer ask needs the user (answer 2;
+#: `credentials` and `broken` are code's kinds, never the overseer's).
+BECAUSE_KEYS = ("system-change", "foreign-history", "conflict", "money", "sudo")
+#: The keys whose ask must carry a plan (§3.8).
+PLAN_REQUIRED_BECAUSE = frozenset({"system-change", "money"})
+#: What one option click does (§3.8, §3.4.4).
+OPTION_EFFECTS = ("approve", "decline", "other", "register")
+PLAN_KEYS = frozenset({"summary", "cwd", "checks", "steps", "files", "sudo"})
 
 #: S-117 (decision 4 of the 2026-10-31b round: "The overseer
 #: never waits on the user"). Every ask the runner indexes carries `default`:
@@ -101,6 +127,24 @@ _INDEX_KEYS = frozenset({"id", "kind", "cases", "text", "why", "register", "defa
 #: these change-nothing sentences.
 SYSTEM_DEFAULT = "Nothing on your system was changed; answer if you want it done."
 REGISTER_DEFAULT = "Nothing was registered or switched; a plain yes does it."
+#: S-NEXT-overseer-asks: what holds meanwhile for each needs-you key, the
+#: `default` the runner indexes for a `needs: user` ask (the model writes
+#: none of its own; nothing outside self-learn is changed until the user
+#: answers, and a conflict follows answer 6: the newer statement wins).
+NEEDS_USER_DEFAULTS = {
+    "system-change": SYSTEM_DEFAULT,
+    "foreign-history": "Nothing was written to another repository's history; answer if you want it done.",
+    "conflict": "The newer statement holds until you say otherwise.",
+    "money": "Nothing was spent; answer if you want it done.",
+    "sudo": "Nothing was run with sudo; answer if you want it done.",
+}
+
+
+def needs_user_default(because: str, register: dict | None = None) -> str:
+    """The fixed meanwhile sentence for a `needs: user` ask."""
+    if because == "foreign-history" and register:
+        return REGISTER_DEFAULT
+    return NEEDS_USER_DEFAULTS[because]
 
 #: The observation the runner records, at publish, on each case an ask
 #: cites (or the case that has since superseded it): the ask was put and
@@ -192,6 +236,81 @@ def _register_phrase(register: dict[str, str]) -> str:
     return f"{register['kind']} host {register['path']} in {register['mode']} mode"
 
 
+def _is_str_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _dict_rows(value: object, required: tuple[str, ...]) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(row, dict) and all(isinstance(row.get(key), str) for key in required)
+        for row in value
+    )
+
+
+def _r2_fields(row: dict) -> dict:
+    """The r2 keys of one indexed ask (§4.5), checked for shape. The
+    runner validated their meaning when it indexed them (`run._questions`);
+    this refuses an index someone edited into a shape no reader can trust,
+    naming the key, as the loader does for every other key."""
+    out: dict = {}
+
+    def bad(key: str) -> ConversationError:
+        return ConversationError(f"overseer open: indexed question {row['id']} has a bad {key}")
+
+    if "needs" in row:
+        if row["needs"] not in NEEDS_VALUES:
+            raise bad("needs")
+        out["needs"] = row["needs"]
+    if "because" in row and row["because"] is not None:
+        if row["because"] not in BECAUSE_KEYS:
+            raise bad("because")
+        out["because"] = row["because"]
+    for stamp in ("asked_at", "reopened_at"):
+        if stamp in row and row[stamp] is not None:
+            # A hand-written unquoted timestamp loads as a datetime: read it
+            # as the same instant, written the way the runner writes it.
+            when = chrono.to_dt(row[stamp])
+            if when is None or not isinstance(row[stamp], (str, datetime)):
+                raise bad(stamp)
+            out[stamp] = (
+                row[stamp] if isinstance(row[stamp], str)
+                else when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            )
+    if "options" in row and row["options"] is not None:
+        options = row["options"]
+        if not _dict_rows(options, ("id", "label")) or any(
+            option.get("effect", "other") not in OPTION_EFFECTS
+            or not isinstance(option.get("confirm", False), bool)
+            or option.get("note") not in (None, "required")
+            for option in options
+        ):
+            raise bad("options")
+        out["options"] = [dict(option) for option in options]
+    if "recommend" in row and row["recommend"] is not None:
+        recommend = row["recommend"]
+        if not isinstance(recommend, dict) or not isinstance(recommend.get("option"), str):
+            raise bad("recommend")
+        out["recommend"] = dict(recommend)
+    if "plan" in row and row["plan"] is not None:
+        plan = row["plan"]
+        if (
+            not isinstance(plan, dict) or not set(plan) <= PLAN_KEYS
+            or not isinstance(plan.get("summary"), str)
+            or not _dict_rows(plan.get("steps"), ("say",))
+            or not _dict_rows(plan.get("checks", []), ("say",))
+            or not _dict_rows(plan.get("files", []), ("path", "content"))
+            or plan.get("cwd") is not None and not isinstance(plan.get("cwd"), str)
+        ):
+            raise bad("plan")
+        out["plan"] = plan
+    for key in ("look_at", "statements"):
+        if key in row and row[key] is not None:
+            if not _is_str_list(row[key]):
+                raise bad(key)
+            out[key] = list(row[key])
+    return out
+
+
 def _load_questions(home: Path) -> list[dict]:
     """The committed index, in the model's order. A row written before
     2026-09-24 is `{id, cases}` and reads as `kind: reading`."""
@@ -254,6 +373,8 @@ def _load_questions(home: Path) -> list[dict]:
                     )
                 if row["system"]:
                     ask_row["system"] = True
+            for key, value in _r2_fields(row).items():
+                ask_row[key] = value
             rows.append(ask_row)
         else:
             raise ConversationError(
@@ -264,58 +385,379 @@ def _load_questions(home: Path) -> list[dict]:
 
 
 #: The `answers.kind` values `respond` writes: an ask is answered as a
-#: `question`, a reading as a `proposition`.
+#: `question`, a reading as a `proposition`. A conflict ask is also answered
+#: by words recorded as an `instruction` on `conflict:<a>+<b>` (§3.4.4).
 _ANSWER_KINDS = frozenset({"question", "proposition"})
 
 
-def _answered_ids(home: Path, ids: set[str]) -> set[str]:
-    """Which of the indexed question *ids* the user has answered since the
-    index was written.
+def asks_the_user(row: dict) -> bool:
+    """Whether an indexed ask needs the user (§3.8): `needs: user`, or, in
+    an index written before `needs`, a `system: true` ask (read as
+    `system-change`) or one carrying `register` (`foreign-history`)."""
+    if row.get("kind") != "ask":
+        return False
+    needs = row.get("needs")
+    if needs is not None:
+        return needs == "user"
+    return bool(row.get("system") or row.get("register"))
+
+
+def has_plan(row: dict) -> bool:
+    return isinstance(row.get("plan"), dict)
+
+
+def conflict_ref(row: dict) -> str | None:
+    """`conflict:<stmt-a>+<stmt-b>` for a conflict ask naming two statements."""
+    named = row.get("statements")
+    if row.get("because") == "conflict" and isinstance(named, list) and len(named) == 2:
+        return f"conflict:{named[0]}+{named[1]}"
+    return None
+
+
+def _jsonl(path: Path) -> list[dict]:
+    """The object rows of an append-only JSONL file; a missing file or a
+    torn line reads as no row (the inbox's files are best-effort here)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out: list[dict] = []
+    for line in text.splitlines():
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            out.append(value)
+    return out
+
+
+def choice_rows(home: Path | str) -> list[dict]:
+    """`attention/choices.jsonl` (design r2.1 §4.4): the person's option
+    clicks and the agent drafts they sent. Never their words."""
+    return _jsonl(Path(home) / "attention" / "choices.jsonl")
+
+
+def outcome_rows(home: Path | str) -> list[dict]:
+    """`attention/outcomes.jsonl`: approved work done or failed."""
+    return _jsonl(Path(home) / "attention" / "outcomes.jsonl")
+
+
+def feedback_rows(home: Path | str) -> list[dict]:
+    """`attention/feedback.jsonl`: the person's "didn't need me" /
+    "should have asked me" clicks."""
+    return _jsonl(Path(home) / "attention" / "feedback.jsonl")
+
+
+def choice_names_ask(choice: dict, row: dict) -> bool:
+    """Whether a choice row is about the indexed ask *row*: its subject, or
+    the ref it answers, is the ask's id (or its conflict ref)."""
+    answers = choice.get("answers")
+    ref = answers.get("ref") if isinstance(answers, dict) else None
+    refs = {row["id"], conflict_ref(row)} - {None}
+    return choice.get("subject") == row["id"] or ref in refs
+
+
+def _utc(value: object) -> datetime | None:
+    """A timestamp as an aware UTC datetime (a naive one read as UTC)."""
+    when = chrono.to_dt(value)
+    if when is None:
+        return None
+    return when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
+
+
+def _floor(row: dict, index_floor: datetime | None) -> datetime | None:
+    """When the ask was first asked: its `asked_at` (kept across
+    carry-forward and reopen), else the index's last write. How long it has
+    been open is counted from here."""
+    asked = _utc(row.get("asked_at"))
+    return asked if asked is not None else index_floor
+
+
+def _answer_floor(row: dict, index_floor: datetime | None) -> datetime | None:
+    """From when an answer, a choice or an outcome counts for the ask: its
+    `reopened_at` when "Ask me anyway" put it back (fix round 1, gate r1
+    MINOR 4: a withdrawn approval comes back as a question, so the approve
+    click made before the withdrawal no longer stands, and a new approve
+    click is a new approval), else when it was first asked (:func:`_floor`)."""
+    reopened = _utc(row.get("reopened_at"))
+    return reopened if reopened is not None else _floor(row, index_floor)
+
+
+@dataclass(frozen=True)
+class Track:
+    """Where an ask with a plan stands after its choices and outcomes
+    (§1.3, §3.4.7): `open` (nothing chosen, or approved work that failed),
+    `answered` (declined, or another non-approving option), `awaiting-sudo`,
+    `approved`, or `done`.
+
+    The same state machine as the inbox's walk (`attention._approval_track`,
+    attention-core's), with two differences (fix round 1, gate r1 MINOR 5):
+    this walk counts only events at or after *since* (the ask's
+    :func:`_answer_floor`), and matches a choice by its subject or its
+    `answers.ref` (a conflict's ref included); the inbox's walk has no floor
+    and matches by subject or inbox item id. They agree for an ask whose id
+    was asked once and never reopened. The runner keeps it that way: an id
+    the user answered with a choice, or whose plan they approved, is never
+    asked again (`run._reask_problems`), so only a reopen can tell them
+    apart, until the inbox's walk takes the same floor."""
+
+    state: str
+    approved_at: str | None = None
+    done_at: str | None = None
+
+
+def approval_track(
+    row: dict, choices: list[dict], outcomes: list[dict], *, since: datetime | None = None,
+) -> Track:
+    effects = {
+        option.get("id"): option.get("effect")
+        for option in row.get("options") or [] if isinstance(option, dict)
+    }
+    raw_plan = row.get("plan")
+    plan: dict = raw_plan if isinstance(raw_plan, dict) else {}
+    sudo = any(
+        isinstance(step, dict) and step.get("sudo") is True for step in plan.get("steps") or []
+    )
+    events: list[tuple[str, str, dict]] = []
+    for choice in choices:
+        when = _utc(choice.get("at"))
+        if choice_names_ask(choice, row) and when is not None and (since is None or when >= since):
+            events.append((str(choice.get("at")), "choice", choice))
+    for outcome in outcomes:
+        when = _utc(outcome.get("at"))
+        if outcome.get("subject") == row["id"] and when is not None and (
+            since is None or when >= since
+        ):
+            events.append((str(outcome.get("at")), "outcome", outcome))
+    events.sort(key=lambda event: event[0])
+    state, approved_at, done_at = "open", None, None
+    for at, what, event in events:
+        if what == "choice":
+            if event.get("how") == "ran-sudo":
+                if state == "awaiting-sudo":
+                    state = "approved"
+                continue
+            effect = event.get("effect") or effects.get(event.get("option"))
+            if event.get("option") not in effects and effect is None:
+                continue  # words relayed as a choice name no option: they decide nothing
+            if effect == "approve":
+                state, approved_at, done_at = ("awaiting-sudo" if sudo else "approved"), at, None
+            elif effect in ("decline", "other", "register") and state in (
+                "open", "awaiting-sudo", "approved",
+            ):
+                # answers lane, fix round 1: a changed answer before the work
+                # is carried out stands (as `attention._approval_track`).
+                state = "answered"
+        elif state == "approved":
+            if event.get("result") == "done":
+                state, done_at = "done", at
+            elif event.get("result") == "failed":
+                state = "open"
+    return Track(state, approved_at, done_at)
+
+
+def _answered_ids(home: Path, ids: set[str], rows: list[dict] | None = None) -> set[str]:
+    """Which of the indexed question *ids* the user has answered since they
+    were asked.
 
     The index (`open-questions.yaml`) is rewritten only by a complete weekly
     run, so before 2026-10-30 a question stayed listed, and counted by the
     session-start hook, for the rest of the week after `overseer respond`
-    recorded its answer. A question is answered when a statement whose
-    `answers.ref` is its id was recorded at or after the index file's last
-    write (second precision). The floor is what lets a later run ask the same
-    id again: its new index is newer than the old answer, so the question is
-    open once more. The statement store is only read, so the next weekly run
-    still sees the answer (`run._question_answers`). A store or index that
-    cannot be read answers nothing: the question stays listed."""
+    recorded its answer. An answer counts from the ask's `reopened_at`, else
+    its `asked_at`, or, for a row with neither, from the index file's last
+    write (second precision; :func:`_answer_floor`).
+    The floor is what lets a later run ask the same id again: its new row is
+    newer than the old answer, so the question is open once more. The
+    statement and choice stores are only read, so the next weekly run still
+    sees the answer (`run._question_answers`). A store or index that cannot
+    be read answers nothing: the question stays listed.
+
+    S-NEXT-overseer-asks (§3.8, critique 1): an ask **without a plan** is
+    answered by a statement or a choice whose `answers.ref` is its id (a
+    conflict ask also by words on its `conflict:<a>+<b>` ref); an ask **with
+    a plan** is answered only by a choice naming one of its options, because
+    only an option click approves or declines a change or a spend. Words
+    alone are recorded and leave it open. *rows* are the indexed rows (read
+    from the index when not given)."""
     if not ids:
         return set()
     try:
-        floor = datetime.fromtimestamp(
+        index_floor = datetime.fromtimestamp(
             int((home / "overseer" / "open-questions.yaml").stat().st_mtime),
             tz=timezone.utc,
         )
-        rows = statements.list_statements(home)
-    except (OSError, ValueError):
+        said = statements.list_statements(home)
+        if rows is None:
+            rows = _load_questions(home)
+    except (OSError, ValueError, ConversationError):
         return set()
+    chose = choice_rows(home)
+    done = outcome_rows(home)
     answered: set[str] = set()
     for row in rows:
-        answers = row.get("answers")
-        if not isinstance(answers, dict) or answers.get("kind") not in _ANSWER_KINDS:
+        q_id = row.get("id")
+        if q_id not in ids:
             continue
-        ref = answers.get("ref")
-        at = chrono.to_dt(row.get("at"))
-        if isinstance(ref, str) and ref in ids and at is not None and at >= floor:
-            answered.add(ref)
+        floor = _answer_floor(row, index_floor)
+
+        def fresh(at: object, floor: datetime | None = floor) -> bool:
+            when = _utc(at)
+            return when is not None and (floor is None or when >= floor)
+
+        if has_plan(row):
+            # Only a choice naming one of its options answers it; approved
+            # work that failed puts it back in front of the user (§3.4.7).
+            if approval_track(row, chose, done, since=floor).state != "open":
+                answered.add(q_id)
+            continue
+        refs = {q_id, conflict_ref(row)} - {None}
+        for statement in said:
+            answers = statement.get("answers")
+            if not isinstance(answers, dict) or answers.get("ref") not in refs:
+                continue
+            if answers.get("kind") not in _ANSWER_KINDS and not (
+                answers.get("kind") == "instruction" and answers.get("ref") != q_id
+            ):
+                continue
+            if fresh(statement.get("at")):
+                answered.add(q_id)
+                break
+        if q_id not in answered and any(
+            choice_names_ask(choice, row) and fresh(choice.get("at")) for choice in chose
+        ):
+            answered.add(q_id)
     return answered
 
 
 def _unanswered(home: Path, rows: list[dict]) -> tuple[list[dict], set[str]]:
     """*rows* without the questions already answered, and the answered ids."""
-    answered = _answered_ids(home, {row["id"] for row in rows})
+    answered = _answered_ids(home, {row["id"] for row in rows}, rows)
     return [row for row in rows if row["id"] not in answered], answered
 
 
 def waits_on_the_user(row: dict) -> bool:
-    """S-117: whether an indexed question is still waiting
-    for the user. An ask with a default does not: the overseer applied it in
-    the run that asked, and an answer only overturns it. A reading, or an
-    ask from an index written before defaults, still waits."""
-    return not (row.get("kind") == "ask" and row.get("default"))
+    """Whether an indexed question is still waiting for the user.
+
+    S-NEXT-overseer-asks (§3.8): it reads `needs`, not `default`. A
+    `needs: user` ask waits, whatever meanwhile sentence it carries (only the
+    user can settle it, answer 2); a `needs: stead` ask does not: the
+    overseer applied its default in the run that asked (S-117), and an
+    answer only overturns it. In an index written before `needs`, a
+    `system: true` or `register` ask reads as needing the user, an ask with
+    a default reads as stead, and a reading or an ask with neither (written
+    before defaults) still waits, as it did."""
+    if row.get("kind") != "ask":
+        return True
+    if row.get("needs") is not None or row.get("system") or row.get("register"):
+        return asks_the_user(row)
+    return not row.get("default")
+
+
+def withdrawn_path(home: Path | str) -> Path:
+    return Path(home) / "overseer" / "withdrawn.yaml"
+
+
+def load_withdrawn(home: Path | str) -> list[dict]:
+    """`overseer/withdrawn.yaml`'s rows (§4.4): the asks, and the approvals,
+    the overseer withdrew as moot. A missing file is none; an unreadable one
+    raises, because the runner and `reopen` rewrite it and must not blank it."""
+    path = withdrawn_path(home)
+    if not path.is_file():
+        return []
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - one stable surface error
+        raise ConversationError(f"cannot read {path.name}: {exc}") from exc
+    if data is None:
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("withdrawn", []), list):
+        raise ConversationError(f"{path.name} must contain only a withdrawn list")
+    return [row for row in data.get("withdrawn") or [] if isinstance(row, dict)]
+
+
+def _yaml_dump(data: object) -> str:
+    stream = io.StringIO()
+    yaml = YAML()
+    yaml.default_flow_style = False
+    yaml.width = 100
+    yaml.dump(data, stream)
+    return stream.getvalue()
+
+
+def reopen(home: Path | str, q_id: str) -> dict:
+    """Put a withdrawn ask back in front of the user (§3.8, "Ask me
+    anyway"): the ONE writer that moves a withdrawn ask back. Under
+    `ledger_write` it takes the row out of `overseer/withdrawn.yaml`, puts
+    the ask back in `open-questions.yaml` as `needs: user` with its first
+    `asked_at` kept (how long it has been open counts from the first ask)
+    and `reopened_at` stamped now, and commits both files. The weekly
+    finalize merges the index under the same lock, so a reopen made while
+    a run is in progress survives it. Answers the row put back.
+
+    A withdrawn approval comes back as the ask it approved, open again: an
+    answer, a choice or an outcome counts only from `reopened_at`
+    (:func:`_answer_floor`), so the approve click made before the
+    withdrawal no longer stands and a new approve click is a new approval
+    (fix round 1, gate r1 MINOR 4)."""
+    resolved = Path(home)
+    index_path = resolved / "overseer" / "open-questions.yaml"
+    w_path = withdrawn_path(resolved)
+    with intents.ledger_write(resolved) as recovered:
+        intents.announce_recovered(recovered)
+        withdrawn = load_withdrawn(resolved)
+        found = next((row for row in withdrawn if row.get("id") == q_id), None)
+        if found is None:
+            raise ConversationError(f"reopen: {q_id} is not a withdrawn question")
+        current = _load_questions(resolved)
+        if any(row["id"] == q_id for row in current):
+            raise ConversationError(f"reopen: {q_id} is already open")
+        raw_kept = found.get("row")
+        kept: dict = raw_kept if isinstance(raw_kept, dict) else {}
+        row: dict = {
+            key: value for key, value in kept.items() if key in _INDEX_KEYS
+        }
+        row.update({
+            "id": q_id, "kind": "ask",
+            "cases": [c for c in (row.get("cases") or found.get("cases") or []) if isinstance(c, str)],
+            "text": row.get("text") or found.get("text"),
+            "why": row.get("why") or found.get("why") or "You asked for this question back.",
+            "needs": "user",
+        })
+        because = row.get("because") or found.get("because")
+        if because not in BECAUSE_KEYS:
+            because = "system-change" if row.get("system") else (
+                "foreign-history" if row.get("register") else None
+            )
+        if because is None:
+            raise ConversationError(
+                f"reopen: {q_id} names no reason it needs you, so it cannot be asked as one"
+            )
+        row["because"] = because
+        row["default"] = needs_user_default(because, row.get("register"))
+        asked_at = found.get("asked_at") or row.get("asked_at")
+        if isinstance(asked_at, str) and chrono.to_dt(asked_at) is not None:
+            row["asked_at"] = asked_at
+        row["reopened_at"] = chrono.now_iso()
+        if not isinstance(row.get("text"), str) or not row["text"].strip():
+            raise ConversationError(f"reopen: {q_id} has no text to ask")
+        raw = []
+        if index_path.is_file():
+            data = YAML(typ="safe").load(index_path.read_text(encoding="utf-8")) or {}
+            raw = list(data.get("questions") or []) if isinstance(data, dict) else []
+        raw.append(row)
+        remaining = [r for r in withdrawn if r is not found]
+        paths = [index_path, w_path]
+        intent = intents.begin(resolved, "overseer-reopen", paths, f"self-learn: overseer reopen {q_id}")
+        for target in paths:
+            intents.add_step(intent, target)
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(index_path, _yaml_dump({"questions": raw}), fsync=True)
+        fsops.atomic_write(w_path, _yaml_dump({"withdrawn": remaining}), fsync=True)
+        intents.complete(intent)
+        gitops.stage_and_commit(resolved, paths, intent.commit_subject, None)
+        intents.finish(intent)
+    return row
 
 
 def open_question_count(home: Path | str) -> int | None:
@@ -352,6 +794,13 @@ def _yes_does(register: dict[str, str]) -> str:
 
 #: How `overseer open` labels an ask's applied default.
 DEFAULT_LABEL = "done in your stead without waiting (your answer can change it)"
+#: S-NEXT-overseer-asks: how `overseer open` labels what holds meanwhile on
+#: an ask only the user can settle (it waits; nothing was done in its stead).
+NEEDS_YOU_LABEL = "needs you; meanwhile"
+
+
+def _default_label(row: dict) -> str:
+    return NEEDS_YOU_LABEL if asks_the_user(row) else DEFAULT_LABEL
 
 
 def _ask_display(row: dict) -> list[str]:
@@ -359,7 +808,7 @@ def _ask_display(row: dict) -> list[str]:
     if row.get("register"):
         lines.append(f"  {_yes_does(row['register'])}: {_register_phrase(row['register'])}")
     if row.get("default"):
-        lines.append(f"  {DEFAULT_LABEL}: {row['default']}")
+        lines.append(f"  {_default_label(row)}: {row['default']}")
     return lines
 
 
@@ -369,7 +818,7 @@ def _ask_recorded_text(row: dict) -> str:
     if row.get("register"):
         shown += f" ({_yes_does(row['register'])}: {_register_phrase(row['register'])})"
     if row.get("default"):
-        shown += f" ({DEFAULT_LABEL}: {row['default']})"
+        shown += f" ({_default_label(row)}: {row['default']})"
     return " ".join(shown.split())
 
 
@@ -735,6 +1184,52 @@ def _carry_out_registration(
             f"nothing {'done' if set_mode else 'registered'}: the answer was not a plain "
             f"yes ({phrase})"
         ), False
+
+    def prove() -> attribution.Authority:
+        problem, proof_ref = _agent_shell_proof(home, session, phrase, register, row["id"])
+        if problem is not None:
+            raise ConversationError(
+                f"overseer respond: NOT {'done' if set_mode else 'registered'}, {problem}. "
+                "Nothing was recorded and "
+                "the question stays open. Have the person type a plain yes in this "
+                "session to your message naming the question, and answer again straight "
+                "away, have them answer in their own terminal, or run "
+                f"{_hand_command(register)} with --note under the user's standing grant "
+                "and answer again: what is already done is left as it is"
+            )
+        if proof_ref is None:  # survives `python -O`, unlike an assert (gate r1 NIT)
+            raise ConversationError(
+                "overseer respond: NOT done: the proof named no transcript line. "
+                "Nothing was recorded and the question stays open"
+            )
+        return attribution.Authority("typed-yes", proof_ref, f"Answers: {row['id']}")
+
+    return _register_core(home, row, consent=prove)
+
+
+def _register_core(
+    home: Path,
+    row: dict,
+    *,
+    consent: "attribution.Authority | Callable[[], attribution.Authority] | None",
+) -> tuple[str, bool]:
+    """The text-free part of :func:`_carry_out_registration` (attention
+    round, design r2 §3.4.4): carry out the registration *row*'s
+    ``register`` names. Returns ``(sentence, registered)``; raises
+    :class:`ConversationError` when the registration is refused, so the
+    caller records nothing and the question stays open.
+
+    *consent* is who allowed it: ``None`` in a person's own terminal or
+    from the inbox (the person's click is the consent); from an agent's
+    shell an :class:`attribution.Authority` (a proved typed yes), or a
+    callable that proves one, called only when something is still to be
+    done (what is already so needs no proof). Split out so the inbox's
+    option click (which has no text) registers through the same code as a
+    typed bare yes; before the split a click registered nothing while the
+    page said "recorded" (critique 9)."""
+    register = row["register"]
+    phrase = _register_phrase(register)
+    set_mode = register.get("action") == "set-mode"
     proof_ref: str | None = None
     switched: hosts.HostSetModeResult | None = None
     try:
@@ -765,23 +1260,14 @@ def _carry_out_registration(
         if not already and settings.agent_caller():
             # What is already so needs no proof (nothing is being done); what
             # is still to be done does.
-            problem, proof_ref = _agent_shell_proof(home, session, phrase, register, row["id"])
-            if problem is not None:
+            granted = consent() if callable(consent) else consent
+            if granted is None:
                 raise ConversationError(
-                    f"overseer respond: NOT {'done' if set_mode else 'registered'}, {problem}. "
-                    "Nothing was recorded and "
-                    "the question stays open. Have the person type a plain yes in this "
-                    "session to your message naming the question, and answer again straight "
-                    "away, have them answer in their own terminal, or run "
-                    f"{_hand_command(register)} with --note under the user's standing grant "
-                    "and answer again: what is already done is left as it is"
-                )
-            if proof_ref is None:  # survives `python -O`, unlike an assert (gate r1 NIT)
-                raise ConversationError(
-                    "overseer respond: NOT done: the proof named no transcript line. "
+                    f"overseer respond: NOT {'done' if set_mode else 'registered'}: from an "
+                    f"agent's shell a registration needs the person's proved yes ({phrase}). "
                     "Nothing was recorded and the question stays open"
                 )
-            granted = attribution.Authority("typed-yes", proof_ref, f"Answers: {row['id']}")
+            proof_ref = granted.ref if granted.kind == "typed-yes" else None
         # A person's terminal still runs `host add` for a registration already
         # in place (it restores a plain host's missing marker, as before); an
         # agent's shell has nothing to do then, and no authority to do it with.
@@ -945,3 +1431,69 @@ def decline(home: Path | str, *, proposition: str) -> ResponseResult:
     presentations = _presentations(resolved, row)
     _set_presentation_outcome(resolved, presentations, "declined")
     return ResponseResult(None)
+
+
+#: `attention/choices.jsonl` (design r2.1 §4.4): how a choice row was made.
+CHOICE_HOWS = ("clicked", "draft-accepted", "draft-edited", "relayed", "ran-sudo")
+_CHOICE_ID_RE = re.compile(r"^chc-[0-9a-f]{8}$")
+
+
+def choices_path(home: Path | str) -> Path:
+    return Path(home) / "attention" / "choices.jsonl"
+
+
+def record_choice(home: Path | str, row: dict) -> str:
+    """Append one choice row to `attention/choices.jsonl` and commit it
+    (design r2.1 §3.4.3; the attention round's `answers` lane): the
+    person's click on an offered option, an agent draft they sent, a choice
+    an agent relayed from their session, or their "I ran it" on a sudo step.
+    Never their words: the statement store keeps those, and a choice that
+    came with words cites the statement (`statement`).
+
+    The id (`chc-` + 8 hex) is allocated under the ledger lock when the row
+    has none; the row is secret-scanned first (its free texts are the
+    person's note or an agent's draft) and refused on a hit. Returns the
+    id."""
+    from ..scan import scan as scan_secrets  # lazy: only the inbox writes choices
+
+    resolved = Path(home)
+    if row.get("how") not in CHOICE_HOWS:
+        raise ConversationUsageError(
+            f"record_choice: how must be one of {', '.join(CHOICE_HOWS)}, got {row.get('how')!r}"
+        )
+    if row.get("recorded_by") not in ("human", "agent"):
+        raise ConversationUsageError(
+            f"record_choice: recorded_by must be human or agent, got {row.get('recorded_by')!r}"
+        )
+    for field in ("text", "draft_text", "note"):
+        value = row.get(field)
+        if isinstance(value, str) and value:
+            hits = scan_secrets(value)
+            if hits:
+                raise ConversationUsageError(
+                    f"record_choice: the {field} matched the secret scan ({hits[0].rule}); "
+                    "nothing was recorded"
+                )
+    target = choices_path(resolved)
+    with intents.ledger_write(resolved) as recovered:
+        intents.announce_recovered(recovered)
+        existing = {r.get("id") for r in choice_rows(resolved)}
+        choice_id = row.get("id")
+        if choice_id is not None and (
+            not isinstance(choice_id, str) or _CHOICE_ID_RE.fullmatch(choice_id) is None
+        ):
+            raise ConversationUsageError(f"record_choice: malformed id {choice_id!r}")
+        while choice_id is None or choice_id in existing:
+            choice_id = "chc-" + os.urandom(4).hex()
+        full = {"id": choice_id, "at": chrono.now_iso(), **{k: v for k, v in row.items() if k != "id"}}
+        prior = target.read_text(encoding="utf-8") if target.exists() else ""
+        if prior and not prior.endswith("\n"):
+            prior += "\n"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(target, prior + json.dumps(full, sort_keys=True) + "\n", fsync=True)
+        gitops.stage_and_commit(
+            resolved, [target],
+            f"self-learn: attention choice {choice_id} ({full['how']} on {full.get('item')})",
+            None,
+        )
+    return choice_id

@@ -155,3 +155,47 @@ def keymap_json() -> str:
     a second hand-authored list.
     """
     return json.dumps(keymap_as_dicts())
+
+
+# ----------------------------------------------------------------- the inbox
+
+#: The inbox's own table (attention round, design r2 §3.6). A SEPARATE table
+#: from :data:`KEYMAP`, rendered instead of it on the inbox pages (footer,
+#: ``?`` overlay and the JSON blob alike): the inbox reuses letters the
+#: review pages bind (`j`, `k`, `s`, `a`, `u`, `r`), so folding these rows
+#: into :data:`KEYMAP` would break that table's global-uniqueness rule, and
+#: the two never share a page. ``static/inbox.js`` dispatches these; app.js
+#: stays inert on ``body[data-page="inbox"]``. Every key here is unique
+#: within this table (tested). None fires while a text field has focus,
+#: except ``Ctrl+Enter`` (send the box) and ``Escape`` (stop the agent's
+#: answer, or leave the field) — the one chord the review pages forbid is
+#: allowed here because it only acts INSIDE a text field, where the browser
+#: gives it no meaning of its own.
+INBOX_KEYMAP: tuple[KeymapEntry, ...] = (
+    KeymapEntry(("j",), "inbox_next", "Next item", "inbox"),
+    KeymapEntry(("k",), "inbox_prev", "Previous item", "inbox"),
+    KeymapEntry(("Enter",), "inbox_open", "Open the selected item", "inbox"),
+    KeymapEntry(
+        ("1", "2", "3", "4"), "inbox_option",
+        "That option (sends it, or arms one that asks first)", "inbox",
+    ),
+    KeymapEntry(("r",), "inbox_reply", "Write your own answer", "inbox"),
+    KeymapEntry(("a",), "inbox_ask", "Ask about this", "inbox"),
+    KeymapEntry(("Ctrl+Enter",), "inbox_send", "Send the box you are typing in", "inbox"),
+    KeymapEntry(
+        ("Escape",), "inbox_escape", "Stop the agent's answer, or leave the field", "inbox",
+    ),
+    KeymapEntry(("u",), "inbox_undo", "Undo (decided items)", "inbox"),
+    KeymapEntry(("s",), "inbox_seen_all", "Mark all seen", "inbox"),
+    KeymapEntry(("?",), "help", "Help overlay", "inbox"),
+)
+
+
+def inbox_keymap_as_dicts() -> list[dict]:
+    """:data:`INBOX_KEYMAP` as plain dicts, display order preserved."""
+    return [{**asdict(entry), "keys": list(entry.keys)} for entry in INBOX_KEYMAP]
+
+
+def inbox_keymap_json() -> str:
+    """The inbox table as the JSON blob ``inbox.js`` reads."""
+    return json.dumps(inbox_keymap_as_dicts())

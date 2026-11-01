@@ -296,7 +296,20 @@ NOT_REPO_TRUTH = {
     # and the workspace's cache files.
     "attention._write_seen": "XDG cache: <cache>/attention/seen.json, which items the person has seen (a lost cache only shows items once more); never ledger truth",
     "attention._write_registration_snapshot": "XDG cache: <cache>/attention/registrations.json, the plain registrations the inbox has seen and when each first appeared; rebuildable, never ledger truth",
+    "ask._write_cache": "XDG cache: <cache>/workspace/<item-id>/{packet.json,packet.md,state.json,stop-requested}, the ask agent's working copy of an item's packet, its session id and the person's Stop marker, and <cache>/attention/login-ok.json, the last check-login success; rebuildable, never ledger truth (the conversation's record is the ledger's workspace transcript)",
+    "ask._drop_cache": "XDG cache: unlinks <cache>/workspace/<item-id>/stop-requested, the person's Stop marker, once a turn has read it or before a turn starts; never ledger truth",
     "workspace._keep_pending": "XDG cache: <cache>/workspace/<item-id>/pending.jsonl, workspace rows kept while the ledger is STOPPED; workspace.append seals them into the ledger under the lock and removes the file",
+    # Attention round, answers lane (design r2 §3.4.7, §4.4): approved
+    # work's cache files. The approval and its outcome are ledger rows
+    # (choices.jsonl, outcomes.jsonl, under the lock); these only say which
+    # terminal was launched and which session claimed it, and a lost cache
+    # only allows a second claim.
+    "attention_answers._write_brief": "XDG cache: <cache>/attention/runs/<id>/brief.md, the filled-in RUN_BRIEF a launched session reads; never ledger truth",
+    "attention_answers._write_run_record": "XDG cache: <cache>/attention/runs/<id>.json {unit, at}, which systemd unit a launch started; never ledger truth",
+    "attention_answers._write_claim": "XDG cache: <cache>/attention/claims/<id>.json {session, at}, the carrying-out session's 2-hour claim; never ledger truth",
+    "attention_answers._clear_claim": "XDG cache: removes <cache>/attention/claims/<id>.json once its work is done; never ledger truth",
+    "attention_answers._write_held_approval": "XDG cache: <cache>/attention/held-approvals/<id>.json, a broken.stopped approval clicked while the ledger is STOPPED; `done` commits it under the lock once the intent is cleared",
+    "attention_answers._clear_held_approval": "XDG cache: removes a held approval once `done` committed it; never ledger truth",
     # S-66 / 13 §7.4 (O-2a): `hook_activation._write_claude_runtime` had
     # an entry here through the build and fold r1 (its raw writes sat
     # OUTSIDE `verbs.hook_activate`/`hook_deactivate`'s ledger lock).

@@ -109,8 +109,8 @@ def test_dc1_pristine_home_zero_fail_all_rows_once(capsys):
     single_line_rows = ("switches", "provider", "config", "sdk", "rollout", "region", "credentials", "orphans", "ui", "sessions")
     for row in single_line_rows:
         assert len(_rows_by_name(out, row)) == 1, row
-    assert len(_rows_by_name(out, "models")) == 8  # 7 surfaces + small_fast (U8: +steward/+overseer; U4-seam: +miner-session)
-    assert len(_rows_by_name(out, "env")) == 7  # U8: +steward/+overseer; U4-seam: +miner-session
+    assert len(_rows_by_name(out, "models")) == 9  # 8 surfaces + small_fast (U8: +steward/+overseer; U4-seam: +miner-session; 2026-10-31: +ask)
+    assert len(_rows_by_name(out, "env")) == 8  # U8: +steward/+overseer; U4-seam: +miner-session; 2026-10-31: +ask
     assert len(_rows_by_name(out, "consistency")) == 0
 
     # row order
@@ -683,6 +683,8 @@ def test_dc9_handoff_block_fixed_fields_and_no_leak_and_equality(monkeypatch, ca
     # instead of being silently followed (U8 fold r1, gate S2).
     _HANDOFF_SURFACES = (
         "worker", "worker-repair", "miner-reader", "analyst", "steward", "overseer", "miner-session",
+        # 2026-10-31 (attention round, design r2 §3.3): the inbox's ask agent.
+        "ask",
     )
     assert tuple(provider.SURFACES) == _HANDOFF_SURFACES
     expected_fields = (
@@ -900,7 +902,7 @@ def test_dc14_env_row_per_surface_and_catches_refusal(monkeypatch, capsys, _home
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     rows = provider.preflight(_home)
     env_rows = {r.surface: r for r in rows if r.name == "env"}
-    assert len(env_rows) == 7  # U4-seam: +miner-session
+    assert len(env_rows) == 8  # U4-seam: +miner-session; 2026-10-31 (attention round): +ask
     assert env_rows["worker"].verdict == "FAIL"
     assert env_rows["analyst"].verdict == "PASS"
 

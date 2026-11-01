@@ -1,0 +1,32 @@
+{#
+  What a launch or a fix did (design r2 §3.4.7, §3.4.8; §3.7 "Being
+  carried out" rows). Exit 5 = no terminal was found: only the command
+  itself goes in the copy block (inbox_routes.no_terminal splits it from
+  the verb's sentence), and Run it now stays offered. Expects run_exit,
+  run_message, run_item, run_command, run_lead (and run_login / run_fix
+  for those two clicks).
+
+  Run it now replaces this block (closest .ws-run), so it works wherever
+  the block sits: in #ws-run-result, or under an answer that moved the
+  item on (gate r1 finding 3: run_item is then the approved successor).
+#}
+<div class="ws-run" data-run-exit="{{ run_exit }}">
+  {% if run_exit == 0 %}
+  <p class="ws-run-ok"{% if run_fix %} data-item-resolved{% endif %}>{{ run_message }}</p>
+  {% if run_login %}<p>Type <code>/login</code> in that terminal; then press Check now.</p>{% endif %}
+  {% elif run_exit == 5 %}
+  <p role="alert">No terminal was found to open, so nothing was started.{% if run_command %} Run this in a terminal of your own:{% endif %}</p>
+  {% if run_command %}
+  <div class="ws-copyable"><pre class="ws-pre ws-cmd" id="ws-run-cmd" data-run-command>{{ run_command }}</pre>
+    <button type="button" class="btn btn-quiet" data-copy="#ws-run-cmd">Copy</button></div>
+  {% endif %}
+  {% if run_lead %}<p class="ws-meta">{{ run_lead }}</p>{% endif %}
+  {% elif run_exit == 4 %}
+  <p role="alert">Not started: {{ run_message }}</p>
+  {% else %}
+  <p class="error-strip" role="alert">{{ run_message }}</p>
+  {% endif %}
+  {% if run_exit != 0 and not run_fix and not run_login and run_item and run_item.class == "approved" %}
+  <button type="button" class="btn btn-primary" hx-post="/inbox/{{ run_item.id }}/run" hx-target="closest .ws-run" hx-swap="outerHTML" data-run-now>Run it now</button>
+  {% endif %}
+</div>

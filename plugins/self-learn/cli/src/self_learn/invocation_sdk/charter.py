@@ -16,6 +16,7 @@ job alone.
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,9 +184,20 @@ def _inside(target: Path, roots: tuple[Path, ...]) -> bool:
     return any(target == root or root in target.parents for root in roots)
 
 
+#: 2026-10-31 (attention round, design r2 §3.3): the read tools that open
+#: one file's CONTENTS by its target path, judged by its file name against
+#: `Containment.read_denied_names`. Glob only lists names and is not.
+_NAME_CHECKED = frozenset({"Read", "NotebookRead", "Grep"})
+
+
+def _denied_name(name: str, globs: tuple[str, ...]) -> bool:
+    lowered = name.lower()
+    return any(fnmatch.fnmatchcase(lowered, glob.lower()) for glob in globs)
+
+
 def _read_decision(
     tool_name: str, tool_input: dict[str, Any], roots: tuple[Path, ...], cwd: Path,
-    denied: tuple[Path, ...] = (),
+    denied: tuple[Path, ...] = (), denied_names: tuple[str, ...] = (),
 ) -> str | None:
     """2026-09-28: why a read-family call reaches outside *roots*, or
     ``None`` when it stays inside. Every path the call names is judged: the
@@ -203,7 +215,11 @@ def _read_decision(
     it would read the files inside it. A Glob rooted there is allowed: it
     only lists names, the steward's real runs start Globs at the home and
     cache folders (9 of 550 read-family calls, measured 2026-09-28), and a
-    Read of anything it lists inside the denied directory is still refused."""
+    Read of anything it lists inside the denied directory is still refused.
+
+    *denied_names* (2026-10-31, the ask agent): basename globs a Read may
+    never open -- judged on the target's own name and on its resolved
+    target's name, so a `notes.md` symlink to an `id_rsa` is refused too."""
     raw = _extract_target_path(tool_input)
     names = [raw] if raw is not None else []
     for key in ("pattern", "glob"):
@@ -223,6 +239,11 @@ def _read_decision(
     if tool_name == "Glob" and isinstance(pattern, str) and pattern.startswith("/"):
         prefix, _rest = _split_trusted_prefix(pattern)
         candidates.append(Path(prefix or "/"))
+    if denied_names and tool_name in _NAME_CHECKED and raw is not None:
+        named = Path(raw) if Path(raw).is_absolute() else cwd / raw
+        for name in (named.name, named.resolve().name):
+            if _denied_name(name, denied_names):
+                return f"{tool_name} may not read {named}: {name} matches a secret file name"
     for candidate in candidates:
         target = candidate.resolve()
         for root in denied:
@@ -250,11 +271,12 @@ def build_can_use_tool(containment: Containment, *, cwd: Path | str | None = Non
          fires first).
       2. the enforcement hatch (`C-10`) is open -> ALLOW.
       3. `tool_name` is in the write family -> a path decision (`C-5`).
-      3a. (2026-09-28) the containment names `read_roots` or
-         `read_denied` and `tool_name` is in the read family -> DENY when
-         any path it names falls outside every root or inside a denied
-         directory (a search rooted above one, too); otherwise fall
-         through to step 4.
+      3a. (2026-09-28) the containment names `read_roots`,
+         `read_denied` or (2026-10-31) `read_denied_names` and `tool_name`
+         is in the read family -> DENY when any path it names falls
+         outside every root or inside a denied directory (a search rooted
+         above one, too), or when a Read's target or its resolved target
+         has a denied file name; otherwise fall through to step 4.
       4. `tool_name` is in the containment's `allowed_tools` -> ALLOW
          (unscoped -- `C-2`: no CLI surface scopes reads by path).
       5. -> DENY, always, with a reason naming the tool.
@@ -271,6 +293,7 @@ def build_can_use_tool(containment: Containment, *, cwd: Path | str | None = Non
     # root -- the overseer's cwd IS its one root.
     read_roots = tuple(Path(root).resolve() for root in containment.read_roots)
     read_denied = tuple(Path(root).resolve() for root in containment.read_denied)
+    read_denied_names = tuple(containment.read_denied_names)
     read_cwd = (
         Path(cwd).resolve() if cwd is not None
         else (read_roots[0] if read_roots else Path.cwd())
@@ -319,8 +342,10 @@ def build_can_use_tool(containment: Containment, *, cwd: Path | str | None = Non
                 )
             )
 
-        if (read_roots or read_denied) and tool_name in R:
-            problem = _read_decision(tool_name, tool_input, read_roots, read_cwd, read_denied)
+        if (read_roots or read_denied or read_denied_names) and tool_name in R:
+            problem = _read_decision(
+                tool_name, tool_input, read_roots, read_cwd, read_denied, read_denied_names
+            )
             if problem is not None:
                 return PermissionResultDeny(
                     message=f"self-learn invocation charter: {problem}"

@@ -2244,6 +2244,25 @@ into a session, so it is held to one clean line, secret-scanned, validated again
 when read, and printed with the `self-learn:` prefix; it is the overseer's reading
 and is not a user instruction.
 
+## 7.6 Approved work runs in a terminal the person opens (added 2026-10-31c, S-NEXT-answers)
+
+A change the person approved in the inbox (an `approve` option click on an
+item with a plan, design r2 §3.4.7) is carried out by an interactive Claude
+Code session the click opens, in a terminal the person can see and stop:
+`self-learn attention run` launches `systemd-run --user --collect` with the
+resolved terminal running `claude "<brief line 1> Read <brief> and follow
+it."`, the brief (`attention_answers.RUN_BRIEF`) telling the session to
+claim it, read the plan, run every check before changing anything, never run
+sudo, and report `attention done`. Approved work is **never** handed to a
+session through session start (the withdrawn `approved_work` status field
+and its hook line): headless `claude -p` jobs and orchestrated workers start
+sessions too, and an unattended one could change the user's system with
+nobody watching. Project notices (§7.5) are the only lines session start
+prints from the inbox's side, and none of them carries approved work. An
+approval an agent relayed from its own session launches nothing; that
+session, the one the person typed the yes in and is watching, may carry it
+out by the same brief, or the person clicks Run it now.
+
 ## 8. Invariants
 
 - **H-1** · One ledger home per machine, explicit (`~/.self-learn` or
