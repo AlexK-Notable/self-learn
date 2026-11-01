@@ -1386,28 +1386,77 @@ async def mine_near_miss_promote(
 # -------------------------------------------------------------------- Report
 
 
+#: The Health page re-reads `report --json` and `status --json` (about 8 s
+#: on the real ledger) on every full load. A filter or "show all" request
+#: from the page's own htmx form re-arranges what that page already showed, so
+#: it reuses the last full load's reads for this long (gate r2 m-1). A full
+#: page load (no HX-Request) always re-reads and refreshes the cache.
+_REPORT_CACHE_TTL = 300.0
+_REPORT_CACHE: dict[str, tuple[float, Any, Any]] = {}
+
+
+def _deferred_titles(home: Path, report: Any) -> dict[str, str]:
+    """Each deferred lesson's own words (`report --json`'s `deferred[]`
+    carries only its id): the first line of its Trigger or Fact."""
+    from self_learn.ledger_ops import record_title
+
+    titles: dict[str, str] = {}
+    rows = report.get("deferred") if isinstance(report, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        rid = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(rid, str):
+            continue
+        loc = ledger.locate_record(home, rid)
+        record = ledger.read_record(loc.path) if loc is not None else None
+        if record is not None:
+            titles[rid] = record_title(record)
+    return titles
+
+
+def _report_url(q: str, show_all: bool) -> str:
+    params = []
+    if show_all:
+        params.append("all=1")
+    if q:
+        params.append(f"q={quote(q)}")
+    return "/report" + ("?" + "&".join(params) if params else "")
+
+
 @router.get("/report", response_class=HTMLResponse)
 def report_page(request: Request) -> HTMLResponse:
     """The Health page (humane lane 2, 09 §2.7): `report --json` and
     `status --json`'s counted facts, arranged in a person's words by
     :func:`health.build_health` -- tiles, three charts, a table of the
     rules in use by their own text. `?q=` filters that table on the
-    server (no script), `?all=1` lifts its row limit."""
+    server through the page's htmx form, `?all=1` lifts its row limit."""
+    import time
+
     home = _home(request)
-    report_read = ledger.report(home)
-    status_read = ledger.status(home)
+    is_htmx = request.headers.get("HX-Request") == "true"
+    restoring = request.headers.get("HX-History-Restore-Request") == "true"
+    key = str(home)
+    cached = _REPORT_CACHE.get(key)
+    if is_htmx and cached is not None and time.monotonic() - cached[0] < _REPORT_CACHE_TTL:
+        report_read, status_read = cached[1], cached[2]
+    else:
+        report_read = ledger.report(home)
+        status_read = ledger.status(home)
+        _REPORT_CACHE[key] = (time.monotonic(), report_read, status_read)
     status_data = status_read.data if status_read.ok and isinstance(status_read.data, dict) else {}
     metrics = status_data.get("metrics")
     supply_mix = status_data.get("supply_mix")
+    q = request.query_params.get("q", "").strip()
+    show_all = request.query_params.get("all", "") not in ("", "0")
     model = health.build_health(
         report_read.data,
         metrics,
         supply_mix,
         status_data.get("buckets"),
-        query=request.query_params.get("q", ""),
-        show_all=request.query_params.get("all", "") not in ("", "0"),
+        query=q,
+        show_all=show_all,
+        titles=_deferred_titles(home, report_read.data),
     )
-    return _render(
+    response = _render(
         request,
         "report.html",
         {
@@ -1417,6 +1466,10 @@ def report_page(request: Request) -> HTMLResponse:
             "status_error": status_read.error,
         },
     )
+    if is_htmx and not restoring:
+        # the address bar shows the clean form: no empty `?q=` after a cleared box
+        response.headers["HX-Push-Url"] = _report_url(q, show_all)
+    return response
 
 
 # ---------------------------------------------------------------- settings

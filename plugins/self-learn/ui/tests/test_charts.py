@@ -27,7 +27,7 @@ from self_learn_ui.env import load_env
 from self_learn_ui.models import CliRead
 from self_learn_ui.runner import FakeRunner
 
-from support import make_env
+from support import make_behavior, make_env, seed_record
 
 TOKEN = "test-token"
 
@@ -102,6 +102,15 @@ class TestWaitingChartGap:
         html = str(charts.waiting_chart(s))
         assert "<svg" not in html
         assert "could not read the ledger&#x27;s git history" in html or "could not read the ledger's git history" in html
+
+
+class TestRoomUnderTheAxis:
+    def test_each_drawing_keeps_30_units_under_the_plot_for_its_date_labels(self) -> None:
+        """Gate r1 n-4: at 26 the axis "0" and the first date label touched
+        in the narrow drawing. Heights: top 12 + plot + bottom 30."""
+        html = str(charts.waiting_chart(_series([3, 2, 1, 4])))
+        heights = [int(h) for h in re.findall(r'viewBox="0 0 \d+ (\d+)"', html)]
+        assert heights == [12 + 150 + 30, 12 + 150 + 30, 12 + 170 + 30]
 
 
 class TestWaitingSentence:
@@ -190,8 +199,10 @@ class TestDecidedChart:
         css = (Path(__file__).resolve().parents[1] / "static" / "style.css").read_text()
         for g in cli_series.OUTCOME_GROUPS:
             assert g in charts.GROUP_WORDS
-            assert f".chart-svg .cv-{g} " in css
-            assert f".chart-key-{g} " in css
+            # the real rule, with its colour: the forced-colors override also
+            # names `.cv-<g>`, so the bare selector would match it too
+            assert re.search(rf"\.chart-svg \.cv-{g} \{{ fill: var\(--chart-{g}\); \}}", css)
+            assert re.search(rf"\.chart-key-{g} \{{ background: var\(--chart-{g}\); \}}", css)
         legend = str(charts.decided_legend())
         for words in charts.GROUP_WORDS.values():
             assert words in legend
@@ -222,6 +233,12 @@ class TestSupplyChart:
         assert charts.supply_sentence(self.MIX) == (
             "Of 369 lessons so far, 243 came from your sessions, read overnight."
         )
+
+    def test_every_ledger_source_has_words(self) -> None:
+        from self_learn.records import SOURCES
+
+        for key in SOURCES:
+            assert key in charts.SUPPLY_WORDS, f"no words for the lesson source {key!r}"
 
     def test_an_unknown_key_shows_raw_never_dropped(self) -> None:
         html = str(charts.supply_chart({"session": 3, "brand-new": 2}))
@@ -323,12 +340,12 @@ REPORT = {
     "graduated": 58,
     "rejected": 112,
     "mined": {"pending": 0, "accept_rate": 0.5593},
-    "telemetry": {"events_by_kind": {"capture": 322}, "capture_rate_ceiling": 0.9},
+    "telemetry": {"events_by_kind": {"capture": 322}, "capture_rate_ceiling": 0.9, "decline_reasons": {}},
     "routed_live": [
         {"id": "lrn-aaaa0001", "bucket": "user", "scope": "user", "bucket_label": "Your instructions",
          "title": "About to accept an empty result as proof a check passed", "destination": "claude-md",
          "routed_days_ago": 99, "last_confirmed": None, "recurrences": 2, "dismissed_suspects": 0},
-        {"id": "lrn-aaaa0002", "bucket": "herdr", "scope": "skill", "bucket_label": "herdr",
+        {"id": "lrn-aaaa0002", "bucket": "user", "scope": "user", "bucket_label": "Your instructions",
          "title": "About to run <b>pkill -f</b> on a name in your own command", "destination": "hook",
          "routed_days_ago": 120, "last_confirmed": None, "recurrences": 0, "dismissed_suspects": 0},
         {"id": "lrn-aaaa0003", "bucket": "herdr", "scope": "skill", "bucket_label": "herdr",
@@ -348,9 +365,55 @@ REPORT = {
          "unblocks_on": "2026-08-01T00:00:00Z", "routed_at": "2026-07-01T00:00:00Z"},
     ],
     "series": _series([8, 7, 5, 2]),
+    "destinations": {"claude-md": 107, "skill-md": 42, "hook": 8},
+    "deferred": [
+        {"id": "lrn-dddd0001", "bucket": "-home-me-repos-widget-8c7fedb5", "until": "2026-10-30", "overdue_days": 2},
+        {"id": "lrn-dddd0002", "bucket": "-home-me-repos-widget-8c7fedb5", "until": "2026-10-01", "overdue_days": 31},
+        {"id": "lrn-dddd0003", "bucket": "herdr", "until": "2026-11-09", "overdue_days": -7},
+    ],
+    "suspects_dismissed": [
+        {"id": "lrn-aaaa0001", "ref": "r1", "ts": "2026-10-21T10:44:41Z", "dismissed_at": "2026-10-21",
+         "basis": "fire-suspected-violation", "why": "unrelated"},
+        {"id": "lrn-gone0001", "ref": "r2", "ts": "2026-09-13T10:44:25Z", "dismissed_at": "2026-09-28",
+         "basis": "fire-violated", "why": "rule-followed"},
+    ],
+    "context_budget": {
+        "tokens_per_word_est": 1.33,
+        "composition": {"flagged": True, "surfaces": [
+            {"surface": "project-claude-md", "key": "8c7fedb5", "flagged": True, "flagged_by": ["caution", "growth"]},
+            {"surface": "user-claude-md", "key": "~/.claude/CLAUDE.md", "flagged": False, "flagged_by": []},
+        ]},
+        "conditional": {"rules_cofire": {"flagged": True, "threshold_max_fanin": 5, "scopes": [
+            {"scope": "project", "key": "8c7fedb5", "crowded": True, "max_fanin": 15, "pairs": [["a", "b"]]},
+            {"scope": "user", "key": "~/.claude/rules", "crowded": False, "max_fanin": 0, "pairs": []},
+        ]}},
+        "budget": {
+            "severity": "informational",
+            "window_days": 30,
+            "surfaces": [
+                {"surface": "user-claude-md", "key": "~/.claude/CLAUDE.md", "state": "absent", "file_words": None,
+                 "managed_words": None, "managed_share": None, "flagged": False},
+                {"surface": "project-claude-md", "key": "8c7fedb5", "state": "ok", "file_words": 1735,
+                 "managed_words": 0, "managed_share": 0.0, "flagged": True},
+            ],
+        },
+    },
+    "reference_shelf": {"instrumented": False, "instrument_state": "script-missing", "targets_total": 13, "targets": [{}, {}]},
+    "surface_reach": {
+        "checked": 163, "reachable": 43, "unreachable": 56, "unmeasurable": 64,
+        "by_destination": {"hook": {"reachable": 0, "unreachable": 8, "unmeasurable": 0}},
+        "rows": [{"record_id": "lrn-aaaa0001"}],
+    },
 }
+REPORT["buckets"] = [
+    {"bucket": "-home-me-repos-widget-8c7fedb5", "scope": "project", "label": "widget",
+     "path": "~/repos/widget_" + "unbreakable" * 12,  # no hyphen or slash to break at: it must wrap anywhere
+     "path_exists": True, "counts": {"routed": 3, "superseded": 1}},
+    {"bucket": "herdr", "scope": "skill", "label": "herdr", "path": None, "path_exists": None, "counts": {}},
+]
 STATUS = {
-    "buckets": [{"bucket": "user", "scope": "user", "pending": 2, "oldest_days": 0}],
+    "buckets": [{"bucket": "user", "scope": "user", "label": "Your instructions", "path": "~/.claude",
+                 "path_exists": True, "pending": 2, "oldest_days": 0, "unanalyzed": 0, "unreadable": 0}],
     "supply_mix": {"session": 243, "teach": 83, "rewrite": 11, "backlog": 32},
     "metrics": {"time_to_triage_median_days": 1.0, "pending_total": 2,
                 "pending_over_30d_pct": 0.0, "routed_and_corrected": 22},
@@ -360,14 +423,27 @@ STATUS = {
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch):
     sb = make_env(tmp_path)
+    # a deferred lesson whose own words the page can read (lrn-dddd0002 has no file)
+    seed_record(sb.ledger, make_behavior(scope="skill:s", record_id="lrn-dddd0001", trigger="Putting off the widget cleanup."))
     env = load_env(sb.env)
     app = create_app(env=env, token=TOKEN, runner=FakeRunner(), start_watcher=False)
     c = TestClient(app, base_url="http://127.0.0.1:7357")
     c.cookies.set("slu_token", TOKEN)
     from self_learn_ui import ledger
 
-    monkeypatch.setattr(ledger, "report", lambda home: CliRead(data=REPORT))
-    monkeypatch.setattr(ledger, "status", lambda home: CliRead(data=STATUS))
+    calls = {"report": 0, "status": 0}
+
+    def _report(home):
+        calls["report"] += 1
+        return CliRead(data=REPORT)
+
+    def _status(home):
+        calls["status"] += 1
+        return CliRead(data=STATUS)
+
+    monkeypatch.setattr(ledger, "report", _report)
+    monkeypatch.setattr(ledger, "status", _status)
+    c.calls = calls  # type: ignore[attr-defined]
     return c
 
 
@@ -426,7 +502,7 @@ class TestHealthPage:
         text = client.get("/report").text
         sec = text.split('aria-label="rules seen again"', 1)[1].split("</section>", 1)[0]
         assert sec.count("<tr>") == 2  # header + ONE row for two sightings
-        assert re.search(r'<td class="num" data-label="Times">2</td>', sec)
+        assert re.search(r'<td class="num" data-label="Times seen">2</td>', sec)
         assert "A transcript matched the rule&#39;s text" in sec and "A session broke the rule" in sec
 
     def test_filter_is_server_side(self, client) -> None:
@@ -456,6 +532,150 @@ class TestHealthPage:
         full = client.get("/report", params={"all": "1"}).text
         assert "Rule number %d" % (health.DEFAULT_LIMIT + 6) in full
         assert "Rule number %d" % (health.DEFAULT_LIMIT + 6) not in text
+        assert f"Showing all {health.DEFAULT_LIMIT + 7}." in full
+        # gate r1 n-5 / r2 n-3: "Showing all" compares the MATCHED count with the limit
+        few = client.get("/report", params={"all": "1", "q": "number 3"}).text
+        assert "rules match" in few and "Showing all" not in few
+        # gate r2 n-8: filtering from the "all" view keeps it (a hidden field in the form)
+        assert 'name="all" value="1"' in few and 'name="all"' not in text
+
+    def test_a_filter_request_from_the_page_does_not_re_read_the_report(self, client, monkeypatch) -> None:
+        """Gate r2 m-1: `report --json` takes about 8 s on the real ledger.
+        The page's own htmx filter reuses the last full load's reads; a full
+        page load always re-reads."""
+        from self_learn_ui import routes
+
+        client.get("/report")
+        assert client.calls == {"report": 1, "status": 1}
+        hx = {"HX-Request": "true"}
+        r = client.get("/report", params={"q": "pkill"}, headers=hx)
+        assert "1 of 3 rules match" in r.text
+        client.get("/report", params={"all": "1"}, headers=hx)
+        assert client.calls == {"report": 1, "status": 1}, "a filter must not re-run the CLI"
+        client.get("/report", params={"q": "pkill"})  # a shared link / reload: a full load
+        assert client.calls == {"report": 2, "status": 2}
+        monkeypatch.setattr(routes, "_REPORT_CACHE_TTL", 0.0)  # a stale cache is re-read
+        client.get("/report", params={"q": "x"}, headers=hx)
+        assert client.calls == {"report": 3, "status": 3}
+
+    def test_the_address_after_a_filter_is_the_clean_one(self, client) -> None:
+        hx = {"HX-Request": "true"}
+        assert client.get("/report", params={"q": ""}, headers=hx).headers["HX-Push-Url"] == "/report"
+        assert client.get("/report", params={"q": "a b"}, headers=hx).headers["HX-Push-Url"] == "/report?q=a%20b"
+        assert client.get("/report", params={"q": "x", "all": "1"}, headers=hx).headers["HX-Push-Url"] == "/report?all=1&q=x"
+        # a plain page load, and a Back/Forward restore, push nothing
+        assert "HX-Push-Url" not in client.get("/report", params={"q": "x"}).headers
+        restore = {"HX-Request": "true", "HX-History-Restore-Request": "true"}
+        assert "HX-Push-Url" not in client.get("/report", params={"q": "x"}, headers=restore).headers
+
+    def test_the_filter_form_shows_a_search_indicator_and_disables_its_button(self, client) -> None:
+        text = client.get("/report").text
+        form = text.split('<form class="health-filter"', 1)[1].split("</form>", 1)[0]
+        assert 'hx-disabled-elt="find button"' in form
+        assert 'class="health-searching" role="status">Searching' in form
+        css = (Path(__file__).resolve().parents[1] / "static" / "style.css").read_text()
+        assert ".health-filter.htmx-request .health-searching {\n  display: inline;" in css
+
+    def test_every_report_fact_reaches_the_page(self, client) -> None:
+        """Gate r1 M-2: nothing the old page printed may be dropped. Every
+        top-level key of `report --json` is a counter in the fold under its
+        CLI name (the lists of rows as an entry count), and the facts a
+        person would look for are also in readable sections."""
+        text = client.get("/report").text
+        fold = text.split("All counters, with their names", 1)[1]
+        names = re.findall(r"<code>([^<]+)</code>", fold)
+        assert names, "positive control: the counters fold rendered rows"
+        for key in REPORT:
+            assert any(n == key or n.startswith(key + ".") for n in names), f"report key {key!r} reaches no counter"
+        for key in STATUS["metrics"]:
+            assert f"metrics.{key}" in names
+        for key in STATUS["supply_mix"]:  # gate r2 n-1: the decision row says supply_mix is in the fold
+            assert f"supply_mix.{key}" in names
+        # an empty dict is a row ("empty"), not a vanished one (gate r2 n-4)
+        assert "<code>telemetry.decline_reasons</code></td><td class=\"num\">empty</td>" in fold
+        assert "<code>surface_reach.by_destination.hook.unreachable</code></td><td class=\"num\">8</td>" in fold
+        assert "<code>context_budget.budget.severity</code></td><td class=\"num\">informational</td>" in fold
+        assert "<code>deferred</code></td><td class=\"num\">3 entries</td>" in fold
+        assert "<code>reference_shelf.targets</code></td><td class=\"num\">2 entries</td>" in fold
+
+    def test_deferred_lessons_have_readable_rows(self, client) -> None:
+        text = client.get("/report").text
+        sec = text.split('aria-label="put off for later"', 1)[1].split("</section>", 1)[0]
+        assert "Put off for later (3)" in sec
+        assert "widget" in sec  # the place by its label, not the bucket slug
+        assert "-home-me-repos-widget" not in sec
+        assert "2 days overdue (overdue)" in sec and "2026-10-30" in sec
+        assert 'href="/record/lrn-dddd0001"' in sec
+        assert "due in 7 days" in sec
+        # the lesson's own words (gate r2 n-7); one whose file is missing says so
+        assert ">Putting off the widget cleanup.</a>" in sec
+        assert "A lesson (its text could not be read)" in sec
+        visible = re.sub(r'href="[^"]*"', "", sec)
+        assert "lrn-" not in visible and "Open the lesson" not in sec
+
+    def test_deferred_rows_are_most_overdue_first_and_not_yet_due_last(self, client) -> None:
+        sec = client.get("/report").text.split('aria-label="put off for later"', 1)[1]
+        assert sec.index("31 days overdue") < sec.index("2 days overdue") < sec.index("due in 7 days")
+
+    def test_flagged_checks_name_the_file_in_words(self, client) -> None:
+        """Gate r2 m-5: a warning the CLI raised reads with the file it is
+        about, not only as a counter that says "yes"."""
+        text = client.get("/report").text
+        budget = text.split('aria-label="instruction file size"', 1)[1].split("</details>", 1)[0]
+        assert "2 flagged</summary>" in budget
+        assert "widget: most of what self-learn wrote there is warnings; self-learn&#39;s share of the file grew fast this month." in budget
+        assert "widget: many rules files are read together (up to 15 at once; the limit is 5)." in budget
+        assert "Your instructions: " not in budget.split("What the checks flagged:", 1)[1].split("</ul>", 1)[0]  # the unflagged file is not listed
+        assert "pair-by-pair detail behind these is in the command-line report" in budget
+        fold = text.split("All counters, with their names", 1)[1]
+        assert "the rows themselves are in the command-line report" in fold
+
+    def test_dismissed_sightings_have_readable_rows(self, client) -> None:
+        text = client.get("/report").text
+        sec = text.split('aria-label="dismissed sightings"', 1)[1].split("</details>", 1)[0]
+        assert "(2)" in sec
+        assert "About to accept an empty result as proof a check passed" in sec  # the rule's words
+        assert "A rule that is no longer in use" in sec  # a rule not in use any more
+        assert "Not about this rule" in sec and "The rule was followed" in sec
+        assert "A session may have broken the rule" in sec
+        visible = re.sub(r'href="[^"]*"', "", sec)
+        assert "lrn-" not in visible
+
+    def test_reach_budget_places_and_destinations_in_words(self, client) -> None:
+        text = client.get("/report").text
+        reach = text.split('aria-label="reach"', 1)[1].split("</details>", 1)[0]
+        assert "Of 163 rules checked: 43 reach a place the assistant reads, 56 do not, and 64 could not be measured." in reach
+        assert '<td class="health-rule">Warning hook</td><td class="num" data-label="Reach">0</td><td class="num" data-label="Do not reach">8</td>' in reach
+        budget = text.split('aria-label="instruction file size"', 1)[1].split("</details>", 1)[0]
+        assert '<td class="health-rule">Your instructions</td><td class="num" data-label="Words">not known</td>' in budget
+        assert '<td data-label="State">no file</td>' in budget  # `absent`, in words (gate r2 m-3)
+        assert '<td class="health-rule">widget</td><td class="num" data-label="Words">1735</td>' in budget
+        assert '<td data-label="State">measured (flagged)</td>' in budget
+        assert ">ok<" not in budget and ">absent<" not in budget
+        places = text.split('aria-label="lessons by place"', 1)[1].split("</details>", 1)[0]
+        assert "3 in use, 1 replaced by a better rule" in places and "herdr" not in places  # empty places are not listed
+        assert 'data-label="Lessons"' in places  # stacked on a phone, like the rules tables
+        assert "By kind: 107 instructions files, 42 skills, 8 warning hooks." in text  # plurals (gate r2 n-6)
+        assert "13 reference files are tracked. Reads of them are not being counted yet: the counting script is not installed." in text
+        assert "script-missing" not in text.split("All counters, with their names", 1)[0]
+        assert "Counted on 2026-11-01." in text
+
+    def test_the_two_seen_again_numbers_say_what_each_counts(self, client) -> None:
+        text = client.get("/report").text
+        assert 'title="Times a sighting of this rule was confirmed">Confirmed again</th>' in text
+        sec = text.split('aria-label="rules seen again"', 1)[1]
+        assert "Rules seen again, not yet decided (1)" in sec
+        assert "Times seen</th>" in sec and "that nobody has judged yet" in sec
+
+    def test_a_user_level_hook_does_not_read_as_living_in_the_instructions(self, client) -> None:
+        text = client.get("/report").text
+        table = text.split('aria-label="rules in use"', 1)[1].split("</table>", 1)[0]
+        # lrn-aaaa0002 is a hook in the USER bucket, whose label is "Your instructions"
+        assert 'Warning hook<span class="health-where">For all your work</span>' in table
+        assert 'Warning hook<span class="health-where">Your instructions</span>' not in table
+        # a rule in a skill's own bucket names the skill; a user instructions rule is one line
+        assert 'mystery<span class="health-where">herdr</span>' in table
+        assert '<td data-label="Where"><div>Your instructions</div></td>' in table
 
     def test_a_failed_cli_shows_its_error_and_no_page_model(self, tmp_path: Path, monkeypatch) -> None:
         sb = make_env(tmp_path)
@@ -485,3 +705,52 @@ class TestHealthModelUnits:
         tiles = {t["label"]: t["value"] for t in health.build_health({"routed_live": []}, {}, {}, [])["tiles"]}
         assert tiles["Waiting for a decision"] == "not known"
         assert tiles["Rules later corrected"] == "not known"
+
+    def test_status_failed_typical_wait_is_not_known_not_none_yet(self) -> None:
+        # gate r1 m-2: with `status` unreadable the page must not claim no
+        # lesson was ever decided
+        tiles = {t["label"]: t for t in health.build_health(REPORT, None, None, None)["tiles"]}
+        assert tiles["Typical wait"]["value"] == "not known"
+        assert "no lesson has been decided" not in tiles["Typical wait"]["note"]
+        # a readable status whose metric is None really means none yet
+        ok = {t["label"]: t for t in health.build_health(REPORT, {"pending_total": 0}, None, [])["tiles"]}
+        assert ok["Typical wait"]["value"] == "none yet"
+
+    def test_a_missing_recurrence_count_is_not_known_not_zero(self) -> None:
+        report = {"routed_live": [
+            {"id": "lrn-a", "title": "A", "scope": "skill", "bucket": "b", "bucket_label": "b", "destination": "hook", "routed_days_ago": 1},
+            {"id": "lrn-b", "title": "B", "scope": "skill", "bucket": "b", "bucket_label": "b", "destination": "hook", "routed_days_ago": 9, "recurrences": 0},
+        ]}
+        rows = {r["title"]: r for r in health.build_health(report, {}, {}, [])["rules"]}
+        assert rows["A"]["seen_words"] == "not known" and rows["B"]["seen_words"] == "0"
+        order = [r["title"] for r in health.build_health(report, {}, {}, [])["rules"]]
+        assert order == ["B", "A"]  # a known count sorts before an unknown one
+
+    def test_user_level_places_read_as_for_all_your_work(self) -> None:
+        assert health.place_words("hook", "user", "Your instructions") == ("Warning hook", "For all your work")
+        assert health.place_words("claude-md", "user", "Your instructions") == ("Your instructions", "")
+
+
+    def test_counts_are_plural_when_they_should_be(self) -> None:
+        line = health.build_health({"destinations": {"claude-md": 107, "skill-md": 1, "hook": 8, "new-skill": 1}}, {}, {}, [])["destinations_line"]
+        assert line == "By kind: 107 instructions files, 8 warning hooks, 1 skill, 1 new skill."
+
+    def test_an_empty_dict_is_a_counter_row_not_nothing(self) -> None:
+        names = dict(health.build_health({"destinations": {}, "telemetry": {"decline_reasons": {}, "captures": 3}}, {}, {}, [])["counters"])
+        assert names["destinations"] == "empty"
+        assert names["telemetry.decline_reasons"] == "empty" and names["telemetry.captures"] == "3"
+
+    def test_deferred_rows_sort_by_real_overdue_days(self) -> None:
+        rows = health.build_health(
+            {"deferred": [
+                {"id": "a", "bucket": "x", "until": "u", "overdue_days": 1},
+                {"id": "b", "bucket": "x", "until": "u", "overdue_days": 31},
+                {"id": "c", "bucket": "x", "until": "u", "overdue_days": None},
+                {"id": "d", "bucket": "x", "until": "u", "overdue_days": -3},
+            ]}, {}, {}, [])["deferred"]
+        assert [r["id"] for r in rows] == ["b", "a", "d", "c"]
+
+    def test_state_and_instrument_words_fall_back_to_what_was_sent(self) -> None:
+        assert health.STATE_WORDS.get("weird", "weird") == "weird"
+        note = health.build_health({"reference_shelf": {"instrumented": False, "instrument_state": "new-state", "targets_total": 2}}, {}, {}, [])["reference_note"]
+        assert note.endswith("not being counted yet: new-state.")
