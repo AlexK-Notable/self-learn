@@ -84,6 +84,7 @@ from ..skill_writer import rename as rename_skill
 __all__ = [
     "DIFF_FILE",
     "FILES_DIR",
+    "LAST_WRITE_DIR",
     "LESSONS_FILE",
     "LEDGER_DIR",
     "MODE_OFF",
@@ -109,6 +110,7 @@ __all__ = [
     "draft_files",
     "drafts_dir",
     "preview_for_step",
+    "relink_owned",
     "renamed_from",
     "report_lines",
     "short_hashes",
@@ -133,6 +135,9 @@ ROW_FILE = "row.yaml"
 LESSONS_FILE = "lessons.yaml"
 DIFF_FILE = "changed-since-last-write.diff"
 VETOES_FILE = "vetoes.yaml"
+#: Beside ``row.yaml`` of an owned skill whose folder is gone: its files as
+#: self-learn last wrote them (S-NEXT-skills-chain, SK-E).
+LAST_WRITE_DIR = "last-write"
 PROPOSALS_FILE = "skill-proposals.yaml"
 WRITING_FILE = "skill-writing.yaml"
 
@@ -288,8 +293,12 @@ class StagedSkills:
     expect: dict[str, str] = field(default_factory=dict)
     #: Live skills a staged file of which was replaced by a stub.
     withheld: set[str] = field(default_factory=set)
-    #: Live skills with no ``SKILL.md`` in the skills root.
+    #: Live skills with no ``SKILL.md`` in the skills root, or that could
+    #: not be shown.
     missing: set[str] = field(default_factory=set)
+    #: Live skills whose folder is gone from the skills root (a subset of
+    #: ``missing``): phase B may restore one (S-NEXT-skills-chain, SK-E).
+    absent: set[str] = field(default_factory=set)
     #: Lines for "Refused / could not do" (nothing here refuses the run).
     notes: list[str] = field(default_factory=list)
 
@@ -364,17 +373,16 @@ def _stage_owned(
     folder = stage / OWNED_DIR / name
     row = registry.row(name) or {}
     lessons = skill_writer.routed_lessons(home, name)
-    write(stage, folder / LESSONS_FILE, _yaml_text({"lessons": lessons}))
+    held = _reference_held(home, name)
+    write(stage, folder / LESSONS_FILE, _yaml_text({
+        "lessons": lessons,
+        **({"in_reference_files": held} if held else {}),
+    }))
     deployed = skill_writer.deployed_files(home, name)
     if deployed is None:
         staged.missing.add(name)
-        write(stage, folder / ROW_FILE, _yaml_text({
-            "name": name, "row": _row_for_stage(row), "deployed": False,
-            "says": (
-                "This skill's SKILL.md is not in the skills root. It cannot be changed until a "
-                "person restores it; the selftest names it."
-            ),
-        }))
+        staged.absent.add(name)
+        _stage_absent(home, stage, folder, name, row, write)
         return
     withheld: list[str] = []
     for rel, text in sorted(skill_writer.draft_view(deployed).items()):
@@ -402,6 +410,115 @@ def _stage_owned(
         "changed_since_last_write": current != recorded,
         **({"withheld": withheld} if withheld else {}),
     }))
+
+
+def _reference_held(home: Path, name: str) -> dict[str, str]:
+    """``{lesson id: references/<file>.md}`` for each lesson routed into
+    one of the skill's AUTHORED reference files (not the compilers' shelf):
+    a rewrite that changes or removes that file is refused until the lesson
+    is moved out (S-NEXT-skills-chain, SK-E)."""
+    root = _skills_root(home)
+    if root is None:
+        return {}
+    folder = skill_writer.skill_dir(root, name)
+    held: dict[str, str] = {}
+    for rid, destination, file in skill_writer._routed(home, name):  # noqa: SLF001
+        if destination != "reference" or file is None:
+            continue
+        try:
+            rel = file.resolve().relative_to(folder.resolve()).as_posix()
+        except ValueError:
+            continue
+        if skill_writer._is_managed_reference(rel):  # noqa: SLF001
+            held[rid] = rel
+    return held
+
+
+def _removal_commit(root: Path, name: str) -> dict[str, str] | None:
+    """``{subject, by}`` of the skills-root commit that took
+    ``plugins/<name>/`` away (``by`` from its ``By:`` trailer, empty when
+    it has none: a person's own commit), or ``None``."""
+    from .. import gitops
+
+    proc = gitops._git(  # noqa: SLF001 -- a read
+        root, "log", "-1", "--diff-filter=D", "--format=%s%x00%b", "--", f"plugins/{name}",
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    subject, _nul, body = proc.stdout.partition("\0")
+    by = ""
+    for line in body.splitlines():
+        if line.startswith("By: "):
+            by = line[len("By: "):].strip()
+    return {"subject": subject.strip(), "by": by}
+
+
+def _stage_absent(
+    home: Path, stage: Path, folder: Path, name: str, row: dict, write: Writer,
+) -> None:
+    """S-NEXT-skills-chain (SK-E): an owned skill whose folder is gone from
+    the skills root. Phase B is shown the files as self-learn last wrote
+    them (``last-write/``) and the commit that removed the folder, and
+    decides: restore it (write ``skills/<name>/`` from ``last-write/``) or
+    retire it. No person is needed."""
+    root = _skills_root(home)
+    removed = _removal_commit(root, name) if root is not None else None
+    last = skill_writer.files_at_last_write(home, name, row)
+    shown: list[str] = []
+    if last is not None:
+        for rel, text in sorted(skill_writer.draft_view(last).items()):
+            hits = scan.scan(text)
+            if hits:
+                text = _stub(hits[0].rule, "the skills root's history")
+            write(stage, folder / LAST_WRITE_DIR / rel, text)
+            shown.append(rel)
+    if removed is None:
+        how = "nothing in the skills root's history says how it went"
+    elif removed["by"] in ("", "human", "agent"):
+        how = (
+            f"a person's commit removed it ({removed['subject']!r}): that is their wish to be "
+            "rid of it -- retire it"
+        )
+    else:
+        how = f"self-learn's own commit removed it ({removed['subject']!r}, by {removed['by']})"
+    write(stage, folder / ROW_FILE, _yaml_text({
+        "name": name, "row": _row_for_stage(row), "deployed": False,
+        **({"removed_by": removed} if removed is not None else {}),
+        "says": (
+            "This skill's folder is not in the skills root; " + how + ". Restore it (write "
+            f"{STAGE_SKILLS_DIR}/{name}/ from {LAST_WRITE_DIR}/ in a pair whose case names it) or "
+            "retire it (a pair with outcome: retire)."
+            + ("" if shown else f" No {LAST_WRITE_DIR}/ could be found to restore it from.")
+        ),
+    }))
+
+
+def relink_owned(home: Path | str) -> tuple[list[str], list[str]]:
+    """S-NEXT-skills-chain (SK-E): before phase B is staged, every live
+    skill self-learn owns whose folder exists gets its
+    ``~/.claude/skills/<name>`` link made again when it is missing or
+    dangling (``skill_writer.relink``). ``(repairs, problems)``: a line per
+    link made, for "Decided in the user's stead", and a line per path that
+    is a person's and was left alone, for "Refused / could not do"."""
+    repairs: list[str] = []
+    problems: list[str] = []
+    try:
+        names = skill_registry.load(home).live()
+    except SkillRegistryError:
+        return repairs, problems
+    for name in names:
+        outcome, problem = skill_writer.relink(home, name)
+        if outcome in ("created", "replaced"):
+            repairs.append(
+                f"[skill relinked] {name}: ~/.claude/skills/{name} was "
+                + ("missing" if outcome == "created" else "a broken link")
+                + "; linked again"
+            )
+        if problem is not None:
+            problems.append(
+                f"skill {name}: its link was not made: {problem}; that path is left as it is"
+            )
+    return repairs, problems
 
 
 def _skills_root(home: Path) -> Path | None:
@@ -519,6 +636,9 @@ class SkillStep:
     expect_sha: str | None = None
     deploy: bool = True
     renamed_from: str | None = None
+    #: A rewrite of an owned skill whose folder was gone when phase B was
+    #: staged: the write is a compare-and-swap against absence (SK-E).
+    expect_missing: bool = False
 
     @property
     def label(self) -> str:
@@ -541,6 +661,7 @@ class SkillStep:
             "action": self.action, "name": self.name, "updating": self.updating,
             "files": dict(self.files), "expect_sha": self.expect_sha, "deploy": self.deploy,
             **({"renamed_from": self.renamed_from} if self.renamed_from else {}),
+            **({"expect_missing": True} if self.expect_missing else {}),
         }
 
     @classmethod
@@ -551,6 +672,7 @@ class SkillStep:
             updating=bool(data.get("updating")), files=dict(data.get("files") or {}),
             expect_sha=data.get("expect_sha"), deploy=bool(data.get("deploy", True)),
             renamed_from=str(renamed_from) if renamed_from else None,
+            expect_missing=bool(data.get("expect_missing")),
         )
 
 
@@ -695,7 +817,8 @@ def step_for_case(
             f"{name} cannot be rewritten this run: part of its text matched the secret scan, so "
             "it was not shown to you in full; a person must remove that text first"
         )
-    if owned and name in staged.missing:
+    restoring = owned and name in staged.absent
+    if owned and name in staged.missing and not restoring:
         raise SkillPairError(
             f"{name} cannot be rewritten this run: its files could not be read from the skills root"
         )
@@ -708,6 +831,7 @@ def step_for_case(
         # A file that is not UTF-8 comes back as bytes; the template check names it.
         checked = skill_writer.check(
             home, name, cast(Mapping[str, str], files), expect_sha=expect, updating=owned,
+            expect_missing=restoring,
         )
     except Exception as exc:  # noqa: BLE001 -- a git or hosts read failed: this pair, not the run
         raise SkillPairError(
@@ -718,7 +842,7 @@ def step_for_case(
     text_files = {key: value for key, value in files.items() if isinstance(value, str)}
     return SkillStep(
         action="write", name=name, updating=owned, files=text_files, expect_sha=expect,
-        deploy=deploy,
+        deploy=deploy, expect_missing=restoring,
     )
 
 
@@ -1016,6 +1140,7 @@ def apply_write(home: Path | str, case_id: str, step: SkillStep, *, case_name: s
     result = skill_writer.write(
         home, step.name, step.files, case=case_id, by="overseer",
         expect_sha=step.expect_sha, updating=step.updating, no_push=True,
+        expect_missing=step.expect_missing,
     )
     if result.ok:
         return StepOutcome("applied", _done_line(step, case_id))
@@ -1097,7 +1222,9 @@ def report_lines(manifest: dict[str, Any]) -> list[str]:
     info = manifest.get("skills")
     if not isinstance(info, dict):
         return []
-    lines: list[str] = []
+    lines: list[str] = [
+        str(line) for line in info.get("repairs") or [] if isinstance(line, str)
+    ]
     recipes = manifest.get("cases") or {}
     for case_id in manifest.get("case_order") or []:
         raw = (recipes.get(case_id) or {}).get("skill")

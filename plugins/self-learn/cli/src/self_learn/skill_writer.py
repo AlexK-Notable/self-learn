@@ -20,6 +20,7 @@ Public surface::
            no_push=False) -> RenameResult      # SK8; see the rename section
     rename_check(home, old, new, *, expect_sha=None) -> RenameCheck
     link_skill(skills_root, name) -> str
+    relink(home, name) -> (outcome | None, problem | None)
     files_at_last_write(home, name, row=None) -> dict[str, str] | None
     routed_lessons(home, name) -> list[str]
     deployed_files(home, name) -> dict[str, str] | None
@@ -395,6 +396,25 @@ def _place_link(link: Path, target: Path) -> str:
         if temporary.is_symlink():
             temporary.unlink()
     return outcome
+
+
+def relink(home: Path | str, name: str) -> tuple[str | None, str | None]:
+    """S-NEXT-skills-chain (SK-E): make sure a live skill self-learn owns
+    is linked at ``~/.claude/skills/<name>`` (a fresh machine, a cleaned
+    ``~/.claude``). ``(outcome, problem)``: *outcome* is what
+    :func:`link_skill` did (``created``, ``replaced``, ``unchanged``), or
+    ``None`` when nothing was done; *problem* names a path that is a
+    person's (a real file or folder, or a working link elsewhere), which is
+    left alone. A skill whose folder is missing is not linked (``(None,
+    None)``: the restore or retirement handles it)."""
+    home = Path(home)
+    root = _skills_root_or_none(home)
+    if root is None or not (skill_dir(root, name) / SKILL_ENTRY_FILE).is_file():
+        return None, None
+    try:
+        return link_skill(root, name), None
+    except SkillLinkError as exc:
+        return None, str(exc)
 
 
 def unlink_skill(skills_root: Path | str, name: str) -> bool:
@@ -1179,6 +1199,7 @@ def _preflight(
     files: object,
     *,
     expect_sha: str | None,
+    expect_missing: bool = False,
     updating: bool | None,
     case: str | None,
     by: str,
@@ -1316,7 +1337,22 @@ def _preflight(
     plan.new_sha = _authored_sha_or_refuse(after, "the files this write would leave")
 
     # -- the compare-and-swap (D4)
-    if expect_sha is not None:
+    if expect_missing:
+        # S-NEXT-skills-chain (SK-E): the overseer restores an owned skill
+        # whose folder was gone when phase B was staged; the swap is
+        # against absence, so anything found there now refuses it.
+        if not updating:
+            raise _Refused(KIND_BAD_LINE, ["only a skill self-learn owns is restored"])
+        if deployed or folder.exists():
+            raise _Refused(
+                KIND_TARGET_BUSY,
+                [
+                    f"{name}'s folder was missing when it was read, and something is there now "
+                    f"({os.path.relpath(folder, root)}); it is read again next run"
+                ],
+                notes=plan.notes,
+            )
+    elif expect_sha is not None:
         if plan.current_sha != expect_sha:
             raise _Refused(
                 KIND_TARGET_BUSY,
@@ -1370,7 +1406,8 @@ def _preflight(
                 [
                     f"{name}'s references hold lessons routed there as references "
                     f"({', '.join(reference_lessons)}); this write would change or remove the "
-                    "files they live in, so a person must move the lessons first"
+                    "files they live in: move those lessons out in one pair first (lessons.yaml "
+                    "marks them), and rewrite the file in a later run"
                 ],
                 notes=plan.notes,
             )
@@ -1426,6 +1463,7 @@ def check(
     *,
     expect_sha: str | None = None,
     updating: bool | None = None,
+    expect_missing: bool = False,
 ) -> SkillWriteCheck:
     """Everything :func:`write` checks, writing nothing. *updating* is
     worked out from the registry when not given (a live row means update);
@@ -1436,6 +1474,7 @@ def check(
         plan = _preflight(
             home, name, files, expect_sha=expect_sha, updating=updating,
             case=_PLACEHOLDER_CASE, by="overseer", now=chrono.now_iso(),
+            expect_missing=expect_missing,
         )
     except _Refused as refused:
         return SkillWriteCheck(
@@ -1620,6 +1659,7 @@ def _write_locked(
     expect_sha: str | None,
     updating: bool | None,
     now: str,
+    expect_missing: bool = False,
 ) -> WriteResult:
     """Take the ledger lock, then the skills root's lock (the one order),
     decide again from the state now, and apply."""
@@ -1628,7 +1668,7 @@ def _write_locked(
         try:
             plan = _preflight(
                 home, name, files, expect_sha=expect_sha, updating=updating,
-                case=case, by=by, now=now,
+                case=case, by=by, now=now, expect_missing=expect_missing,
             )
         except _Refused as refused:
             return _refused_write(name, refused)
@@ -1658,18 +1698,22 @@ def write(
     expect_sha: str | None = None,
     updating: bool | None = None,
     no_push: bool = False,
+    expect_missing: bool = False,
 ) -> WriteResult:
     """Check, then deploy the skill (module docstring). Idempotent by
     content: a second identical write makes no commit. *files* maps
     ``SKILL.md`` and ``references/<file>.md`` to their text; *case* is the
-    case the write belongs to; *by* is ``overseer`` or ``human``."""
+    case the write belongs to; *by* is ``overseer`` or ``human``.
+    *expect_missing* (S-NEXT-skills-chain, SK-E): the caller read the owned
+    skill's folder as missing and restores it; anything there now refuses
+    the write ``target-busy``."""
     home = Path(home)
     now = chrono.now_iso()
     try:
         _check_case_by(case, by)
         plan = _preflight(
             home, name, files, expect_sha=expect_sha, updating=updating,
-            case=case, by=by, now=now,
+            case=case, by=by, now=now, expect_missing=expect_missing,
         )
     except _Refused as refused:
         return _refused_write(name, refused)
@@ -1678,7 +1722,7 @@ def write(
     try:
         result = _write_locked(
             home, name, files, plan.root, case=case, by=by,
-            expect_sha=expect_sha, updating=updating, now=now,
+            expect_sha=expect_sha, updating=updating, now=now, expect_missing=expect_missing,
         )
     except (gitops.GitOpsError, SkillRegistryError) as exc:
         return WriteResult(name=name, ok=False, kind=KIND_GIT, problems=(str(exc),))

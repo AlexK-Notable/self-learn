@@ -5647,9 +5647,17 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             # SK3: the skills self-learn owns, the vetoes and the steward's
             # skill proposals, as phase B's inputs (never raises for the
             # ledger's content; what it could not show is a note).
+            # S-NEXT-skills-chain (SK-E): an owned skill's missing or broken
+            # link is made again before phase B is shown the skills (never on
+            # a dry run, never with writing off: the rollback deploys nothing).
+            skill_repairs, link_problems = (
+                skills_mod.relink_owned(home)
+                if skill_state.deploy and not dry_run else ([], [])
+            )
             skill_stage = skills_mod.stage_phase_b(
                 home, stage, parked_rows, skill_state, _write_stage,
             )
+            skill_stage.notes.extend(link_problems)
             # SK4: phase S's candidates (or what it came to), for phase B's
             # dispositions.
             discovery_mod.stage_phase_b(stage, phase_s, _write_stage)
@@ -6365,6 +6373,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 skills_info={
                     "state": skill_state.to_json(),
                     "drafts": skill_drafts,
+                    # SK-E: links made again before phase B was staged.
+                    "repairs": skill_repairs,
                     # SK4: phase S and phase B's dispositions, for the week
                     # file this record's commit writes and for the report.
                     "discovery": discovery_mod.manifest_info(phase_s, dispositions),

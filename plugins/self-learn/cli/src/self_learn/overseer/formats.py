@@ -363,7 +363,14 @@ Your inputs: {skills.OWNED_DIR}/<name>/ for each skill self-learn owns, as it is
 {skills.FILES_DIR}/ (its {k1a.SKILL_ENTRY_FILE} without the managed section, and its
 {k1a.SKILL_REFERENCES_DIR}/ files: start a change from these), {skills.ROW_FILE} (who made
 it, when, from which case), {skills.LESSONS_FILE} (the lessons routed into it) and
-{skills.DIFF_FILE} (what changed in its text since self-learn last wrote it).
+{skills.DIFF_FILE} (what changed in its text since self-learn last wrote it). A skill whose
+folder is gone from the skills root has no {skills.FILES_DIR}/; its {skills.ROW_FILE} says how it
+went and {skills.LAST_WRITE_DIR}/ holds its files as self-learn last wrote them: restore it
+(write {skills.STAGE_SKILLS_DIR}/<name>/ from {skills.LAST_WRITE_DIR}/ in a pair whose case names
+it) or retire it; a removal a person committed is their wish to be rid of it, so retire it.
+{skills.LESSONS_FILE}'s in_reference_files names each lesson that lives in one of the skill's
+own reference files: a change to that file is refused while it holds them, so move those
+lessons out in one pair and rewrite the file in a later run.
 {skills.VETOES_FILE} lists the names the user vetoed (vetoed), the live skills whose name the
 user vetoed (renames_owed), and the live skills the user asked to retire (retire_requests). {skills.PROPOSALS_FILE} lists the
 steward's skill proposals; each is a parked case in parked/, decided like any other.

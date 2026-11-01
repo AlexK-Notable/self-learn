@@ -1520,3 +1520,125 @@ def test_sk_c2_with_writing_off_a_rename_is_a_draft_saying_would_rename(env, mon
     decided = _section(_report(result), "Decided in the user's stead")
     assert f"[skill drafted] {NEW_NAME}: would rename {NAME} to it" in decided
     assert "not renamed this run" not in _report(result)
+
+
+# ====================================== SK-E: an owned skill repairs itself
+
+
+def _remove_folder(env: sk1.Env) -> None:
+    git(env.root, "rm", "-r", "-q", f"plugins/{NAME}")
+    git(env.root, "commit", "-q", "-m", "a person removes the skill folder")
+
+
+def _restore_b(*, during=None):
+    """Phase B restores the owned skill from the staged last-write/."""
+    def write_b(stage: Path) -> None:
+        shown = stage / skills.OWNED_DIR / NAME / skills.LAST_WRITE_DIR
+        files = {
+            p.relative_to(shown).as_posix(): p.read_text(encoding="utf-8")
+            for p in shown.rglob("*") if p.is_file()
+        }
+        assert "SKILL.md" in files
+        _write_folder(stage, NAME, files)
+        _dump(stage / "case-restore.yaml", _case([RID], outcome="no-action", lessons=[]))
+        _dump(stage / "sheet-restore.yaml", {"version": 1, "items": []})
+        if during is not None:
+            during()
+    return write_b
+
+
+def test_sk_e_1_a_missing_link_is_made_again_and_a_person_s_folder_is_left(env, monkeypatch):
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    assert env.write(sk1.draft("other-skill"), name="other-skill").ok
+    env.link().unlink()
+    env.link("other-skill").unlink()
+    (env.link("other-skill")).mkdir()  # a real folder: the person's
+    assert not env.link().exists()  # control: the link is gone
+    _phases(monkeypatch, lambda stage: None)
+
+    result = _run(env)
+
+    assert env.link().is_symlink() and env.link().resolve() == env.skill_dir().resolve()
+    assert env.link("other-skill").is_dir() and not env.link("other-skill").is_symlink()
+    report = _report(result)
+    assert f"[skill relinked] {NAME}" in _section(report, "Decided in the user's stead")
+    refused = _section(report, "Refused / could not do")
+    assert "skill other-skill: its link was not made" in refused
+
+
+def test_sk_e_1b_a_dry_run_relinks_nothing(env, monkeypatch):
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    env.link().unlink()
+    _phases(monkeypatch, lambda stage: None)
+    _run(env, dry_run=True)
+    assert not env.link().exists()
+
+
+def test_sk_e_2_a_missing_folder_is_restored_with_the_recorded_hash(env, monkeypatch):
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    recorded = env.row()["last_write"]["authored_sha256"]
+    _lesson(env, RID)
+    _remove_folder(env)
+    seen: dict = {}
+    _phases(monkeypatch, _restore_b(), seen=seen)
+
+    result = _run(env)
+
+    row_staged = YAML(typ="safe").load(seen["stage"][f"{skills.OWNED_DIR}/{NAME}/{skills.ROW_FILE}"])
+    assert row_staged["deployed"] is False and "retire it" in row_staged["says"]
+    assert row_staged["removed_by"]["subject"] == "a person removes the skill folder"
+    assert env.skill_md().is_file()
+    assert skill_writer.deployed_authored_sha256(env.home, NAME) == recorded
+    assert env.row()["last_write"]["authored_sha256"] == recorded
+    assert f"[skill changed] {NAME}" in _section(_report(result), "Decided in the user's stead")
+
+
+def test_sk_e_3_a_file_appearing_before_the_restore_refuses_it(env, monkeypatch):
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    _lesson(env, RID)
+    _remove_folder(env)
+    placed = "---\nname: mouse-care\ndescription: a person's own\n---\n\n# Mine\n"
+
+    def a_person_puts_it_back():
+        path = env.skill_md()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(placed, encoding="utf-8")
+
+    _phases(monkeypatch, _restore_b(during=a_person_puts_it_back))
+
+    result = _run(env)
+
+    assert env.skill_md().read_text(encoding="utf-8") == placed
+    refused = _section(_report(result), "Refused / could not do")
+    assert "target-busy" in refused and "something is there now" in refused
+
+
+def test_sk_e_a_skill_with_no_folder_and_no_marketplace_entry_retires(env):
+    assert env.write().ok
+    _remove_folder(env)
+    market = env.marketplace.read_text(encoding="utf-8")
+    env.marketplace.write_text(market.replace(f'"name": "{NAME}"', '"name": "gone-entry"'), encoding="utf-8")
+    commit_all(env.root, "the entry went too")
+    result = skill_writer.retire(env.home, NAME, case=sk1.CASE2, by="overseer", no_push=True)
+    assert result.ok, result.problems
+    assert env.row()["status"] == "retired"
+
+
+def test_sk_e_4_lessons_yaml_marks_a_lesson_in_an_authored_reference(env, monkeypatch):
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    create_record(env.home, make_behavior(scope=f"skill:{NAME}", record_id=RID))
+    commit_all(env.home, f"seed {RID}")
+    verbs.route(env.home, RID, dest=f"reference:{sk1.REF.split('/')[-1]}", no_push=True)
+    seen: dict = {}
+    _phases(monkeypatch, lambda stage: None, seen=seen)
+
+    _run(env)
+
+    lessons = YAML(typ="safe").load(seen["stage"][f"{skills.OWNED_DIR}/{NAME}/{skills.LESSONS_FILE}"])
+    assert RID in lessons["lessons"]  # control: the lesson is in the skill
+    assert lessons["in_reference_files"] == {RID: sk1.REF}
