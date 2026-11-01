@@ -4568,11 +4568,16 @@ where to look further, the conversation's state, the latest answer, and
 `limits`. A case in the evidence is followed directly by the lessons its
 frontmatter `records` names and the statements its section 4 names, each
 shown once, so an ask shows the lesson it is about and the user's earlier
-words, not the case alone. A case whose freeze hash fails is no entry,
-except on its own `conflict.case-tampered` page: there it is read as the
-file is now (a plain size-capped file read, no git; the excerpt is sections
-1-4, the span the hash covers), with a `fact` naming the mismatch and a
-pointer to `ledger_history` for the version decided. The plan's texts (its
+words, not the case alone. A case whose freeze hash fails is read as the
+file is now, on every page that cites it (a plain size-capped file read, no
+git; the excerpt is sections 1-4, the span the hash covers), followed by a
+`fact` naming the mismatch and then by the lessons and statements it names,
+so an ask whose case was edited by hand still shows the case and its
+lesson. On any page but the case's own `conflict.case-tampered` item the
+fact says the text may not be what was decided and names that item, which
+asks about the edit. The case's own page also points to `ledger_history`
+for the case file: the commits that touched it, subjects and trailers only;
+the packet shows no decided text and no diff. The plan's texts (its
 summary and conditions, each check's and step's `say` and `command`, each
 file's `content`) are clipped and secret-scanned like every excerpt, and
 the size fit trims them too. Bounds: the whole JSON at most 64 KiB; each text at most 4,000
