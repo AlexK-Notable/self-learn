@@ -275,7 +275,10 @@ Claude Code finds it again). `on_event` makes the options carry
 "text"}` for each text delta, `{"ev": "tool", "name", "target"}` for each tool
 use and `{"ev": "tool-result", "name", "is_error", "text"}` for each result of
 the session's own tools; a callback that raises is logged once and never ends
-the session. A spec without them sends exactly the options it sent before (no
+the session. The text of a later block (after a tool use, or at a new text
+block) arrives with a paragraph break (`"\n\n"`) in front, so narration before
+a tool call is never glued to the text after it; the `done` text is the final
+message only, as before. A spec without them sends exactly the options it sent before (no
 `resume` key, `include_partial_messages=False`).
 
 **One `Containment` field, keyword, defaulted and last:** `read_denied_names`,
@@ -339,9 +342,17 @@ after `model_failures.TRANSIENT_BACKOFF_SECS`. All of them share one deadline of
 the time that is left, and a later session that would get less than 30 s (the
 retry: the backoff plus 30 s) is not started, so the turn ends inside its own
 bound and the UI's watchdog (the timeout plus 30 s) never fires on a turn that is
-still working. A SIGTERM before the deadline is the person's Stop and seals
-"stopped by you"; one after it is the watchdog and seals "stopped: the turn ran
-past its time limit". Both exit 7 with `code: "interrupted"`. Each later session
+still working. The person's Stop is the one SIGTERM that seals "stopped by
+you": the page calls `ask.request_stop(home, item_id)` (it writes
+`<cache>/workspace/<item-id>/stop-requested`) before it signals the verb's
+process group, and the verb seals "stopped by you" only when that marker is
+there, then removes it. A marker left from an earlier turn is removed when a
+turn starts and when it ends. Any other SIGTERM is not the person's act: after
+the deadline it is the watchdog and seals "stopped: the turn ran past its time
+limit"; before it, it is a UI service stop or restart (systemd signals every
+process of the unit's cgroup, so the verb gets it directly), a logout or a
+shutdown, and it seals "stopped before it answered". All three exit 7 with
+`code: "interrupted"`. Each later session
 emits its own `start` event, so the page starts the bubble again.
 
 **A session that cannot be continued.** A resumed session whose failure says no
@@ -355,9 +366,11 @@ session that made a turn keeps it.
 **Secrets in what the agent says.** Every delta, the `done` text, a draft event
 and every own-tool reply pass `ask.redact`: the secret scan's hits are replaced
 inline, and a private key's PEM block is withheld whole, from its `BEGIN` line to
-its `END` line (or to the end of the text while no `END` has come), because the
-scan's `private-key` rule matches the header only and a body's short last line
-passes every other rule. `search` withholds a key's lines the same way. The sealed
+its `END` line (or, while no `END` has come, to the end of the text when the
+header ends its line, as every real key's does, also before an escaped `\n`),
+because the scan's `private-key` rule matches the header only and a body's short
+last line passes every other rule. A header named inside a sentence is withheld
+alone and the words after it stay. `search` withholds a key's lines the same way. The sealed
 answer row keeps the redacted text and names the rule in `redacted`.
 
 **Who may ask.** The verb refuses from an agent's shell (exit 64, `code:
