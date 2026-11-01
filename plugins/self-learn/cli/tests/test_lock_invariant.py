@@ -251,6 +251,10 @@ NOT_REPO_TRUTH = {
     # last ran). A cache that is lost costs a day, never a lesson; the sweep's
     # only ledger write (the `on_change: refresh` re-baseline) is
     # `premise_sweep._refresh_record`, which takes the commit lock itself.
+    # S-NEXT-hosts: the daily host policy's attempt marker. The policy's
+    # ledger commits go through `hosts._host_set_mode`, which takes the
+    # commit lock itself.
+    "serve._write_hosts_policy_marker": "XDG cache: cache_dir()/hosts-policy.json, the daily host policy's last-attempt marker; never ledger truth",
     "premise_sweep._write_cache_file": "XDG cache: <cache>/premises/observations.jsonl and sweep.json, the premise sweep's history and last-run marker; never ledger truth",
     # S-106: project notices, one JSON file each under
     # <cache>/notices/ -- `_store` writes one (atomic), `_discard` deletes one

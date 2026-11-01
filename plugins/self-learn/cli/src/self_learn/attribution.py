@@ -62,10 +62,11 @@ __all__ = [
 
 #: Every value a stamped ``By:`` trailer may carry. ``human``/``agent`` are
 #: the two shells; the rest are the jobs (``sweep`` is the premise sweep,
-#: ``serve`` the daemon outside any job); ``analyst`` stays for the verbs'
-#: own ``routing.by`` trailers written before this module.
+#: ``serve`` the daemon outside any job, ``policy`` the daily host policy,
+#: S-NEXT-hosts); ``analyst`` stays for the verbs' own ``routing.by``
+#: trailers written before this module.
 ACTORS = frozenset(
-    {"human", "agent", "miner", "worker", "sweep", "steward", "overseer", "serve", "analyst"}
+    {"human", "agent", "miner", "worker", "sweep", "steward", "overseer", "serve", "policy", "analyst"}
 )
 #: The actors that are a shell someone typed into, not a job.
 SHELL_ACTORS = frozenset({"human", "agent"})

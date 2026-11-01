@@ -839,7 +839,8 @@ def test_the_selftest_hosts_row_shows_a_repo_registered_twice_with_each_mode(
     out = capsys.readouterr().out
     assert (
         f"selftest: PASS hosts — 2 registration(s); {repo.resolve()} is registered "
-        "twice: skills-root=git, project=plain\n"
+        "twice: skills-root=git, project=plain; the host policy (one repo, one mode) "
+        f"sets project {repo.resolve()} plain → git at serve's next daily pass\n"
     ) in out
 
     (home / "hosts.yaml").write_text(_registry(repo, root="git", project=None), encoding="utf-8")

@@ -21,6 +21,7 @@ import hashlib
 import os
 import re
 import shutil
+import subprocess
 import textwrap
 import time
 import uuid
@@ -33,6 +34,7 @@ from typing import Any, cast
 from ruamel.yaml import YAML, YAMLError
 
 from .. import always_loaded, attribution, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, skill_writer, statements, user_model, verbs, worker
+from .. import hosts as hosts_mod
 from .. import notices as project_notices
 from ..ledger import discover_buckets, resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
@@ -97,6 +99,12 @@ FINDING_KINDS = ("examined", "dependency-moved")
 NOTICES_FILE = "notices.yaml"
 PROJECTS_FILE = "projects.yaml"
 NOTICE_KEYS = ("project", "text", "case")
+#: S-NEXT-hosts (decision 5, interventions L5): the optional phase B file
+#: listing projects self-learn registers itself, in PLAIN mode only. `mode`
+#: is accepted only so a request for git mode is refused by name.
+HOSTS_FILE = "hosts.yaml"
+REGISTRATION_KEYS = ("path", "case", "why", "mode")
+REGISTRATION_WHY_MAX = 200
 QUESTION_KINDS = ("reading", "ask")
 REQUIRED_OUTPUT_FILES = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
 MAINTENANCE_CASE_FIELDS = ("kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision")
@@ -838,8 +846,8 @@ Two kinds, each {{id, kind, cases}}:
   Never bundle two decisions into one ask. If only the user can do something (it needs their
   hands, credentials, or a command agents may not run), you may ask whether they will; say
   exactly what and why.
-  An ask whose whole point is registering a repository as a canon host (you cannot register
-  one yourself) may add register: {{path: <absolute path>, mode: git or plain, kind: project or
+  An ask whose whole point is registering a repository as a canon host in git mode, or switching
+  a registered host's mode (a plain project you register yourself, in hosts.yaml) may add register: {{path: <absolute path>, mode: git or plain, kind: project or
   skills-root, default project, action: add or set-mode, default add}}. The user's typed yes then
   registers it for them, or, with action: set-mode, switches that registered host to the mode. The text
   must name that path exactly and that mode as a phrase such as "in git mode" or "a plain skills
@@ -861,6 +869,15 @@ after {project_notices.NOTICE_DAYS} days, or sooner when the user marks it done.
 session in that project would act differently for knowing it, and none when nothing meets that. The same words
 for the same project one week later are the same notice. A project's `showing` list in projects.yaml holds
 the notices still showing there: do not write one of them again, not even reworded.
+hosts.yaml is optional: {{registrations: [{{path, case, why}}]}}. It registers a project directory as a PLAIN
+canon host, which you may do on your own: a plain host gets only files git ignores and self-learn never
+commits or pushes there. List one only when a lesson's case shows it belongs in that project's own files and
+projects.yaml shows the project registered: no. path is the absolute path; case is the case-… id it comes
+from; why is one line of at most {REGISTRATION_WHY_MAX} characters. The runner refuses a path that is not an
+existing directory inside the user's home, is the ledger or self-learn's cache, or is registered already,
+and never registers git mode (that stays the user's). Each registration is listed in the report with the
+command that undoes it; a lesson can be routed there from the next run on. At most
+{hosts_mod.MAX_REGISTRATIONS_PER_RUN} a run.
 user-model-delta.yaml is {{updates: [...]}}. Each update is either
 {{action: add, container, title, because, source: system-reading, ref, held_since?, conditions?, statements?, basis?}}
 or {{action: lapse, id, changed_condition?|contrary?|consolidated_into?}}. Adds are provisional
@@ -1285,6 +1302,9 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
         {**row, "showing": showing[row["path"]]} if showing.get(row["path"]) else row
         for row in project_notices.known_projects(home)
     ]
+    # S-NEXT-hosts: whether each is a registered project host, and in which
+    # mode, so phase B can list an unregistered one in hosts.yaml.
+    project_rows = [{**row, "registered": _registered_label(home, row["path"])} for row in project_rows]
     projects_text = _yaml_text({"projects": project_rows})
     if scan.scan(projects_text):
         projects_text = "projects: []\n"  # an input file's hit would refuse the run
@@ -1895,6 +1915,183 @@ def _write_project_notices(home: Path, manifest: dict[str, Any]) -> int:
             run=run_id if isinstance(run_id, str) else None,
         )
     return offered
+
+
+def _registered_label(home: Path, path: str) -> str:
+    """projects.yaml's ``registered`` for one project (S-NEXT-hosts): its
+    project registration's mode (``git``/``plain``), or ``no``. Never
+    raises (an unreadable registry reads ``unknown``)."""
+    try:
+        hosts = hosts_mod.load_hosts(home)
+    except hosts_mod.HostsError:
+        return "unknown"
+    if not hosts_mod.is_project_host(hosts, path):
+        return "no"
+    return hosts.project_modes.get(os.path.realpath(path), "git")
+
+
+def _validate_registrations(
+    data: object, known_cases: Iterable[str]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Validate hosts.yaml (S-NEXT-hosts) ENTRY BY ENTRY, as notices are: a
+    bad entry costs that entry, named by its ordinal (never its text) in
+    one runner line for "Refused / could not do". Shape only: the path's
+    own checks (an existing directory inside the user's home, not the
+    ledger or the cache, not registered) run when the record executes
+    (:func:`hosts.registration_problem`), against the registry as it is
+    then. Each kept entry is ``{path, case, why}``; a request for git mode
+    is refused (registering a repository in git mode stays the user's)."""
+    if not isinstance(data, dict) or set(data) != {"registrations"} or not isinstance(data["registrations"], list):
+        return [], [f"{HOSTS_FILE}: dropped — expected only a registrations list"]
+    known = set(known_cases)
+    kept: list[dict[str, str]] = []
+    dropped: list[str] = []
+    seen: set[str] = set()
+    for ordinal, entry in enumerate(data["registrations"], start=1):
+        label = f"host registration {ordinal}"
+        problem: str | None = None
+        path = why = ""
+        if not isinstance(entry, dict) or set(entry) - set(REGISTRATION_KEYS):
+            problem = "an entry permits path, case, why and mode only"
+        elif entry.get("mode") not in (None, "plain"):
+            problem = (
+                "only plain mode: registering a repository in git mode stays the user's"
+                if entry.get("mode") == "git" else "mode must be plain"
+            )
+        elif not isinstance(entry.get("path"), str) or not entry["path"].strip():
+            problem = "a registration needs a path"
+        else:
+            path = entry["path"].strip()
+            raw_why = entry.get("why")
+            why = " ".join(raw_why.split()) if isinstance(raw_why, str) else ""
+            case = entry.get("case")
+            if not os.path.isabs(path):
+                problem = "path must be absolute"
+            elif scan.scan(path) or scan.scan(why):
+                problem = "the secret scan matched it"
+            elif not why:
+                problem = "a registration needs a why"
+            elif len(why) > REGISTRATION_WHY_MAX:
+                problem = f"why is longer than {REGISTRATION_WHY_MAX} characters"
+            elif not (isinstance(case, str) and _CASE_ID_RE.match(case)):
+                problem = "case must be a case-… id"
+            elif case not in known:
+                problem = "case is not a case in the ledger"
+            elif os.path.realpath(path) in seen:
+                problem = "the same path twice"
+            elif len(kept) >= hosts_mod.MAX_REGISTRATIONS_PER_RUN:
+                problem = f"more than {hosts_mod.MAX_REGISTRATIONS_PER_RUN} registrations in one run"
+        if problem is not None:
+            dropped.append(f"{label}: dropped — {problem}")
+            continue
+        seen.add(os.path.realpath(path))
+        kept.append({"path": path, "case": cast(str, entry["case"]), "why": why})
+    return kept, dropped
+
+
+def _read_registrations(
+    stage: Path, withheld: dict[str, str], known_cases: Iterable[str]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """The run's plain project registrations from the stage's optional
+    hosts.yaml, and the runner lines for what was dropped. Never raises and
+    never costs the run: no file is none; a file that does not parse or was
+    withheld by the secret scan drops every entry and says so."""
+    if HOSTS_FILE in withheld:
+        return [], [
+            f"{HOSTS_FILE}: withheld — the secret scan matched {withheld[HOSTS_FILE]}: "
+            "every registration dropped"
+        ]
+    path = stage / HOSTS_FILE
+    if not path.is_file():
+        return [], []
+    try:
+        data: object = _yaml_mapping(path)
+    except OverseerError as exc:
+        return [], [f"{exc}: every registration dropped"]
+    return _validate_registrations(data, known_cases)
+
+
+def _registered_by_run(home: Path, path: str, run_id: str) -> bool:
+    """Whether this run's own ledger commit registered *path* (a resume
+    after the registration committed and before the record did)."""
+    subject = f"self-learn: host add project {os.path.realpath(path)}"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(home), "log", "--format=%s", "--fixed-strings",
+             f"--grep={_registration_run_line(run_id)}", "--", "hosts.yaml"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and subject in proc.stdout.splitlines()
+
+
+def _registration_run_line(run_id: str) -> str:
+    return f"Overseer run {run_id}"
+
+
+def _registration_note(run_id: str, row: dict[str, Any], real: str) -> str:
+    return (
+        "Registered in plain mode by the overseer, under decision 5: self-learn "
+        "registers a project in plain mode on its own (it writes only files git "
+        "ignores there and never commits or pushes).\n\n"
+        f"{_registration_run_line(run_id)}, {row['case']}: {row['why']}\n\n"
+        f"Undo: self-learn host remove {real} --project"
+    )
+
+
+def _host_line(row: dict[str, Any]) -> str:
+    real = os.path.realpath(str(row["path"]))
+    return (
+        f"[host registered] {real} as a plain project ({row['case']}: {row['why']}); "
+        f"undo: `self-learn host remove {real} --project`"
+    )
+
+
+def _register_hosts(home: Path, manifest: dict[str, Any], runner_notes: list[str]) -> list[str]:
+    """Register each of the record's plain project registrations
+    (S-NEXT-hosts, decision 5) through :func:`hosts.register_plain_project`
+    (self-learn's own act: the commit says ``By: overseer``, whatever shell
+    started the run) and answer the report's "Decided in the user's stead"
+    lines, one per registration made, each with the command that undoes it.
+    A refused one (:func:`hosts.registration_problem`, or ``host add``'s own
+    refusal) is a line appended to *runner_notes* ("Refused / could not
+    do"); nothing is written for it. Each row keeps its outcome (``result``
+    ``registered``/``refused`` and ``reason``), so a resume reports the
+    same outcome without asking again; a row a resume finds already
+    registered by this run's own commit reads ``registered``. Never raises."""
+    rows = manifest.get("registrations")
+    if not isinstance(rows, list):
+        return []
+    run_id = str(manifest.get("run_id") or "")
+    lines: list[str] = []
+    for ordinal, row in enumerate(rows, start=1):
+        if not (isinstance(row, dict) and isinstance(row.get("path"), str)
+                and isinstance(row.get("case"), str) and isinstance(row.get("why"), str)):
+            continue
+        if row.get("result") not in ("registered", "refused"):
+            real = os.path.realpath(row["path"])
+            try:
+                problem = hosts_mod.registration_problem(home, row["path"])
+                if problem is not None and _registered_by_run(home, real, run_id):
+                    row["result"], row["reason"] = "registered", None
+                elif problem is not None:
+                    row["result"], row["reason"] = "refused", problem
+                else:
+                    hosts_mod.register_plain_project(
+                        home, row["path"], note=_registration_note(run_id, row, real),
+                    )
+                    row["result"], row["reason"] = "registered", None
+            except Exception as exc:  # noqa: BLE001 -- one registration never costs the run
+                row["result"], row["reason"] = "refused", " ".join(str(exc).split())[:300]
+        if row["result"] == "registered":
+            lines.append(_host_line(row))
+        else:
+            runner_notes.append(
+                f"host registration {ordinal} ({os.path.realpath(row['path'])}): "
+                f"refused — {row.get('reason') or 'no reason given'}"
+            )
+    return lines
 
 
 def _coverage_text(
@@ -2628,6 +2825,7 @@ _WITHHELD_ON_SECRET = {
     "findings.yaml": "findings: []\n",
     "user-model-delta.yaml": "updates: []\n",
     NOTICES_FILE: "notices: []\n",
+    HOSTS_FILE: "registrations: []\n",
     "report.md": "# Overseer report\n" + "".join(
         f"## {name}\n- none\n" for name in _REPORT_SECTIONS
     ),
@@ -3560,6 +3758,7 @@ def _prepare_manifest(
     skill_steps: dict[Path, "skills_mod.SkillStep"] | None = None,
     skills_info: dict[str, Any] | None = None,
     project_notice_rows: list[dict[str, str]] | None = None,
+    registration_rows: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -3688,6 +3887,11 @@ def _prepare_manifest(
         # case?}), kept in the record so a resumed run writes the same ones.
         # A record made before this field has none.
         "notices": [dict(row) for row in (project_notice_rows or [])],
+        # S-NEXT-hosts: the plain project registrations phase B asked for
+        # ({path, case, why}), validated for shape. The runner registers each
+        # when the record executes and writes the outcome into its row
+        # (`result`, `reason`), so a resume reports the same outcome.
+        "registrations": [dict(row) for row in (registration_rows or [])],
         "findings": findings,
         "case_order": order,
         "cases": recipes,
@@ -4062,6 +4266,8 @@ def _observation_id(run_id: str, index: int) -> str:
 _FINALIZE_OWNED_FIELDS = (
     "cases", "remaining", "attempt_count", "last_attempt_at", "progress_at",
     "failure", "failure_detail", "halt_code", "week", "outcome",
+    # S-NEXT-hosts: each registration's outcome, written as it executes.
+    "registrations",
 )
 
 
@@ -4637,6 +4843,9 @@ def _execute_manifest(
     runner_notes = [
         str(line) for line in cast(list[Any], manifest.get("runner_notes") or [])
     ]
+    # S-NEXT-hosts: the plain project registrations, before the cases (so a
+    # resume that halts later still has them), each outcome kept in its row.
+    host_lines = _register_hosts(home, manifest, runner_notes)
     recipes = cast(dict[str, dict[str, Any]], manifest["cases"])
     order = cast(list[str], manifest["case_order"])
     codes: list[int] = []
@@ -4873,6 +5082,9 @@ def _execute_manifest(
         refreshed = execution_evidence.read_manifest(home, run_id, at="HEAD")
         refreshed["cases"] = manifest["cases"]
         refreshed["remaining"] = manifest["remaining"]
+        if "registrations" in manifest:
+            # S-NEXT-hosts: the outcomes `_register_hosts` wrote this attempt.
+            refreshed["registrations"] = manifest["registrations"]
         manifest = refreshed
         maintenance = cast(list[dict[str, Any]], manifest.get("maintenance") or [])
         application_count += sum(row.get("state") == "applied" for row in maintenance)
@@ -5054,6 +5266,7 @@ def _execute_manifest(
             notes=runner_notes,
             decided=[
                 *decided_lines,
+                *host_lines,
                 *skills_mod.report_lines(manifest, trial_written=trial is not None),
                 # SK4: one line per disposition phase B recorded.
                 *discovery_mod.report_lines(manifest),
@@ -5895,6 +6108,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 {row["path"] for row in project_notices.known_projects(home)},
             )
             finding_drops = [*finding_drops, *notice_drops]
+            # S-NEXT-hosts: the optional hosts.yaml. A bad entry costs that
+            # entry; it is said in "Refused / could not do".
+            registration_rows, registration_drops = _read_registrations(
+                stage, withheld,
+                {row["case"] for row in cases.list_cases(home, only_ok=True)},
+            )
+            finding_drops = [*finding_drops, *registration_drops]
             if examined_ids != selected:
                 # Coverage was advanced from phase A's selection before
                 # phase B ran; a selected case with no valid examined
@@ -6282,6 +6502,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 model_updates=model_updates,
                 sessions=sessions,
                 project_notice_rows=notice_rows,
+                registration_rows=registration_rows,
                 runner_notes=[
                     *phase_a_drops,
                     *report_notes, *question_drops, *finding_drops, *case_drops,

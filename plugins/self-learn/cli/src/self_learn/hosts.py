@@ -77,7 +77,15 @@ __all__ = [
     "HostModeAgentRefusal",
     "HostSetModeResult",
     "HostsError",
+    "MAX_REGISTRATIONS_PER_RUN",
+    "POLICY_ACTOR",
+    "POLICY_RULE",
+    "POLICY_STATEMENT",
+    "PolicyChange",
+    "PolicyResult",
+    "RegistrationRefused",
     "ancestors_of",
+    "apply_policy",
     "canon_read_roots",
     "capture_host_path",
     "effective_default_mode",
@@ -93,6 +101,10 @@ __all__ = [
     "is_project_host",
     "is_repo_root",
     "load_hosts",
+    "policy_changes",
+    "policy_mode",
+    "register_plain_project",
+    "registration_problem",
     "save_hosts",
     "skill_dir_for",
     "slug_for",
@@ -765,6 +777,22 @@ def host_add(
     From an agent's shell it runs only with an authority in force
     (:func:`attribution.refuse_unless_authorized`; S-NEXT-attribution)."""
     attribution.refuse_unless_authorized("host add", HostModeAgentRefusal)
+    return _host_add(home, path, kind, init=init, mode=mode, note=note)
+
+
+def _host_add(
+    home: Path | str,
+    path: Path | str,
+    kind: str,
+    *,
+    init: bool = False,
+    mode: str = "git",
+    note: str | None = None,
+) -> HostAddResult:
+    """:func:`host_add` without the agent-shell check (S-NEXT-hosts). Its
+    other caller is :func:`register_plain_project`, self-learn's own plain
+    registration (decision 5): an act of the overseer's, not of whatever
+    shell started the run, so the shell's markers are not asked."""
     home = Path(home)
     if kind not in HOST_KINDS:
         raise HostsError(f"kind must be one of {list(HOST_KINDS)}, got {kind!r}")
@@ -944,6 +972,23 @@ def host_set_mode(
     missing marker is restored, as ``host add`` does). Lock discipline is
     ``host_add``'s: the ledger lock opens before ``hosts.yaml`` is rewritten."""
     attribution.refuse_unless_authorized("host set-mode", HostModeAgentRefusal)
+    return _host_set_mode(home, path, mode, registration=registration, note=note)
+
+
+def _host_set_mode(
+    home: Path | str,
+    path: Path | str,
+    mode: str,
+    *,
+    registration: str | None = None,
+    note: str | None = None,
+    subject_suffix: str = "",
+) -> HostSetModeResult:
+    """:func:`host_set_mode` without the agent-shell check (S-NEXT-hosts).
+    Its other caller is :func:`apply_policy`, which runs in code (the serve
+    daemon's daily step) and applies a rule the user typed, so no shell's
+    markers are asked. *subject_suffix* is appended to the pinned subject
+    (the policy's `` (policy)``)."""
     _check_registration(registration)
     home = Path(home)
     if mode not in HOST_MODES:
@@ -1021,7 +1066,7 @@ def host_set_mode(
             project_modes=new_modes,
         )
 
-    message = f"self-learn: host set-mode {kind} {target} {old_mode} → {mode}"
+    message = f"self-learn: host set-mode {kind} {target} {old_mode} → {mode}{subject_suffix}"
     with intents.ledger_write(home) as recovered:
         intents.announce_recovered(recovered)
         intent = intents.begin(home, "host_set_mode", [hosts_path(home)], message)
@@ -1099,6 +1144,226 @@ def _nested_plain_prefixes(hosts: Hosts, target: Path, repo: Path, prefix: str) 
         if other != prefix and other.startswith(prefix):
             out.append(other)
     return tuple(out)
+
+
+# ------------------------------------------------- the host policy (S-NEXT-hosts)
+
+#: The user's typed policy the host policy applies (2026-10-08: skill repos
+#: are written directly). Cited in every commit the policy makes.
+POLICY_STATEMENT = "stmt-60e41e67"
+#: The rule, in the words the commits and the doctor use.
+POLICY_RULE = "one repo, one mode"
+#: The actor the policy's commits carry (``By: policy``).
+POLICY_ACTOR = "policy"
+
+
+@dataclass(frozen=True)
+class PolicyChange:
+    """One registration the policy would change: its *kind* (always
+    ``project`` today), its resolved *path*, and the mode before and after."""
+
+    kind: str
+    path: Path
+    old_mode: str
+    new_mode: str
+
+    def text(self) -> str:
+        return f"{self.kind} {self.path} {self.old_mode} → {self.new_mode}"
+
+
+@dataclass
+class PolicyResult:
+    """What one :func:`apply_policy` pass did: the changes it committed, the
+    records it recompiled for each, and a line for each change it could not
+    make (or whose recompile failed), naming the path and why."""
+
+    changed: list[PolicyChange] = field(default_factory=list)
+    recompiled: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    failed: list[str] = field(default_factory=list)
+
+
+def _same_path(a: Path | str, b: Path | str) -> bool:
+    try:
+        return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+    except OSError:
+        return False
+
+
+def policy_mode(hosts: Hosts, path: Path | str, kind: str = "project") -> str | None:
+    """The mode the host policy gives *path*'s *kind* registration, or
+    ``None`` when the policy says nothing about it (S-NEXT-hosts, decision
+    5, interventions L5). The one rule: a project registration whose real
+    path is the skills root's real path takes the skills root's mode (one
+    repo, one mode: self-learn already writes that repository as the skills
+    root, so its project registration adds no new kind of write). Nothing
+    else is decided here; the skills root's own mode is never changed."""
+    if kind != "project" or hosts.skills_root is None:
+        return None
+    if not _same_path(hosts.skills_root, path):
+        return None
+    return hosts.skills_root_mode
+
+
+def policy_changes(hosts: Hosts) -> list[PolicyChange]:
+    """Every registration whose mode differs from :func:`policy_mode`'s
+    answer, in registry order. Reads *hosts* only (the doctor's ``hosts``
+    row names these)."""
+    out: list[PolicyChange] = []
+    for p in hosts.projects:
+        try:
+            resolved = Path(p).expanduser().resolve()
+        except OSError:
+            continue
+        wanted = policy_mode(hosts, resolved)
+        current = hosts.project_modes.get(str(resolved), "git")
+        if wanted is not None and wanted != current:
+            out.append(PolicyChange("project", resolved, current, wanted))
+    return out
+
+
+def _policy_note(change: PolicyChange) -> str:
+    return (
+        f"Applied by the host policy ({POLICY_RULE}): {change.path} is "
+        f"registered as the skills root in {change.new_mode} mode and as a "
+        f"project, so the project registration takes the skills root's mode. "
+        f"The user's policy for skill repos ({POLICY_STATEMENT}): they are "
+        "written directly. Undo: register the skills root in the other mode, "
+        "or `self-learn host remove "
+        f"{change.path} --project`."
+    )
+
+
+def apply_policy(home: Path | str) -> PolicyResult:
+    """Apply :func:`policy_mode` to every registration (S-NEXT-hosts). Code
+    applies a rule the user typed, so this calls the set-mode core
+    (:func:`_host_set_mode`) without the agent-shell check; ``host set-mode``
+    typed in an agent's shell is still refused without the grant. One
+    ledger commit per change, subject ``self-learn: host set-mode project
+    <path> <old> → <new> (policy)``, body citing the statement and the rule,
+    trailer ``By: policy``; under the ledger lock exactly as ``host
+    set-mode`` takes it (a switch to git also takes self-learn's own
+    ``info/exclude`` lines for the files git mode commits). Each changed
+    registration's routed records are then recompiled, so the compile
+    record of its targets is written (interventions I10).
+
+    Never raises for one registration: a change it cannot make (the path is
+    gone, not a git work tree for git mode) or a recompile that fails is a
+    line in ``failed`` and the next change is still tried. Run once a day by
+    ``serve`` (:func:`serve._run_hosts_policy_job`); idempotent, a registry
+    that already follows the policy writes nothing."""
+    from . import verbs  # lazy: verbs imports this module
+
+    home = Path(home)
+    result = PolicyResult()
+    with attribution.job(POLICY_ACTOR):
+        try:
+            pending = policy_changes(load_hosts(home))
+        except HostsError as exc:
+            result.failed.append(f"hosts.yaml unreadable: {exc}")
+            return result
+        for change in pending:
+            try:
+                done = _host_set_mode(
+                    home, change.path, change.new_mode, registration=change.kind,
+                    note=_policy_note(change), subject_suffix=" (policy)",
+                )
+            except (HostsError, gitops.GitOpsError) as exc:
+                result.failed.append(f"{change.text()}: not changed — {exc}")
+                continue
+            if not done.changed:
+                continue
+            result.changed.append(change)
+            if done.unexclude_error:
+                result.failed.append(
+                    f"{change.text()}: changed, but self-learn's info/exclude lines "
+                    f"were not taken out — {done.unexclude_error}"
+                )
+            if done.routed:
+                try:
+                    verbs.recompile(home, only_records=list(done.routed))
+                except Exception as exc:  # noqa: BLE001 -- the switch stands; say so
+                    result.failed.append(
+                        f"{change.text()}: changed, but the recompile of its "
+                        f"{len(done.routed)} routed record(s) failed — {exc}"
+                    )
+                    continue
+            result.recompiled[str(change.path)] = done.routed
+    return result
+
+
+# ------------------------------------- self-learn's own plain registration
+
+#: At most this many registrations from one overseer run.
+MAX_REGISTRATIONS_PER_RUN = 5
+
+
+class RegistrationRefused(HostsError):
+    """:func:`register_plain_project` refused a path: the reason is the
+    message. Nothing was written."""
+
+
+def _cache_root() -> Path:
+    cache = os.environ.get("XDG_CACHE_HOME")
+    base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
+    return base / "self-learn"
+
+
+def _under(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def registration_problem(home: Path | str, raw_path: object) -> str | None:
+    """Why self-learn may not register *raw_path* as a plain project on its
+    own (S-NEXT-hosts, decision 5), or ``None``. The checks, in order: an
+    absolute path; an existing directory; strictly under the user's home
+    directory (``$HOME`` itself is refused); not the ledger, inside it or
+    above it; not inside self-learn's cache (or above it); not registered
+    already, in either registration or either mode."""
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return "a registration needs a path"
+    text = raw_path.strip()
+    if not os.path.isabs(text):
+        return f"{text} is not an absolute path"
+    target = Path(text)
+    if not target.is_dir():
+        return f"{text} is not an existing directory"
+    real = Path(os.path.realpath(target))
+    user_home = Path(os.path.realpath(Path.home()))
+    if real == user_home or user_home not in real.parents:
+        return f"{real} is not inside the user's home directory {user_home}"
+    ledger = Path(os.path.realpath(Path(home).expanduser()))
+    if _under(real, ledger) or ledger in real.parents or real in ledger.parents:
+        return f"{real} is the ledger, inside it or above it"
+    cache = Path(os.path.realpath(_cache_root()))
+    if _under(real, cache) or real in cache.parents:
+        return f"{real} is self-learn's cache, inside it or above it"
+    hosts = load_hosts(home)
+    if hosts.skills_root is not None and _same_path(hosts.skills_root, real):
+        return f"{real} is already registered (the skills root)"
+    if is_project_host(hosts, real):
+        mode = hosts.project_modes.get(str(real), "git")
+        return f"{real} is already registered (a {mode} project)"
+    return None
+
+
+def register_plain_project(home: Path | str, path: str, *, note: str) -> HostAddResult:
+    """Register *path* as a PLAIN project host as self-learn's own act
+    (S-NEXT-hosts; decision 5; interventions D1, the overseer's runner
+    action). Plain only: a plain registration writes only files git ignores
+    (the marker and its private ``info/exclude`` line now, compiled lines
+    later) and never commits or pushes in that repository, which is the
+    deployment the user described (stmt-7364bdbe). Git mode for a new
+    repository stays a person's act and is never reached from here.
+
+    Refuses with :class:`RegistrationRefused` (nothing written) whatever
+    :func:`registration_problem` names. Calls the ``host add`` core without
+    the agent-shell check: the act is the overseer's (its commit says ``By:
+    overseer``), whatever shell started the run. *note* is the commit body
+    (the case, the reason, and the undo command)."""
+    problem = registration_problem(home, path)
+    if problem is not None:
+        raise RegistrationRefused(problem)
+    return _host_add(home, os.path.realpath(path.strip()), "project", mode="plain", note=note)
 
 
 def _commit_or_half_written(

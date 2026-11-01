@@ -135,7 +135,7 @@ from .compilers import (
 )
 from .compilers import surface_names_target as _surface_names_target
 from .hook_compiler import replay_examples
-from .hosts import HostsError, ancestors_of, host_mode, host_slug, hosts_path, load_hosts, skill_dir_for
+from .hosts import POLICY_RULE, HostsError, ancestors_of, host_mode, host_slug, hosts_path, load_hosts, policy_changes, skill_dir_for
 from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .ledger_ops import (
     ProposalError,
@@ -1312,6 +1312,12 @@ def _check_hosts(home: Path) -> tuple[Verdict, str]:
     )
     if root_mode == project_mode:
         return Verdict.PASS, shown
+    # S-NEXT-hosts: the registration the daily host policy will change.
+    owed = policy_changes(hosts)
+    if owed:
+        shown += "; the host policy (" + POLICY_RULE + ") sets " + ", ".join(
+            change.text() for change in owed
+        ) + " at serve's next daily pass"
     stranded: list[str] = []
     for bucket in discover_buckets(home):
         if bucket.scope != "skill":
@@ -1330,10 +1336,13 @@ def _check_hosts(home: Path) -> tuple[Verdict, str]:
     if stranded:
         if root_mode == "git":
             # A removal is never refused there (S-82), and a git skills
-            # root takes the lesson in its SKILL.md.
+            # root takes the lesson in its SKILL.md. S-NEXT-hosts: the host
+            # policy makes the project git too, after which the two modes
+            # agree and the destination is accepted again.
             advice = (
-                "move each to its SKILL.md (`self-learn reroute <id> --dest "
-                "skill-md`), or retire it"
+                "the host policy's switch of the project registration to git "
+                "ends the refusal; meanwhile move each to its SKILL.md "
+                "(`self-learn reroute <id> --dest skill-md`), or retire it"
             )
         else:
             # A plain skills root's SKILL.md is tracked by git, so it takes
