@@ -509,6 +509,31 @@ def test_cli_rename_as_the_person(env, capsys):
     assert f"{NAME} is now {NEW}" in out and "vetoed" in out
 
 
+def test_cli_rename_from_an_agent_shell_under_the_grant_is_the_agents(env, monkeypatch, capsys):
+    """Gate r1 finding 4 (decision 6). Mutation: drop `args.by = "agent"`
+    from `skill_cli.dispatch` -> the registry and the skill's commit say
+    `human`."""
+    from self_learn import grants
+    from test_grants import _stmt
+
+    assert env.write().ok
+    stmt = _stmt(env.home, env.tmp)
+    assert grants.add(env.home, statement=stmt)[1] is True
+    monkeypatch.setenv("CLAUDECODE", "1")
+    capsys.readouterr()
+    code = cli.main(["skill", "rename", NAME, NEW, "--case", CASE2, "--no-push",
+                     "--note", "the user asked for the new name"])
+    assert code == 0, capsys.readouterr().err
+    registry = skill_registry.load(env.home)
+    assert registry.row(NEW) is not None  # positive control: it was renamed
+    assert registry.row(NEW)["last_write"]["by"] == "agent"
+    assert git(env.root, "log", "-1", "--format=%b").stdout.strip() == "By: agent"
+    body = git(env.home, "log", "-1", "--format=%B").stdout
+    assert "the user asked for the new name" in body
+    assert body.strip().rpartition("\n\n")[2].splitlines() == ["By: agent", f"Grant: {stmt}"]
+    assert "By: human" not in body
+
+
 @pytest.mark.parametrize("marker", ["CLAUDECODE", "CODEX_THREAD_ID"])
 def test_cli_rename_is_refused_from_an_agent_shell(env, monkeypatch, capsys, marker):
     """The person's own run is the control: ``test_cli_rename_as_the_person``."""

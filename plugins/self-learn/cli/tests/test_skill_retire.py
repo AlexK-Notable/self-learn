@@ -216,6 +216,30 @@ def test_cli_retire_as_the_person(env, capsys):
     assert not env.plugin_dir().exists()
 
 
+def test_cli_retire_from_an_agent_shell_under_the_grant_is_the_agents(env, monkeypatch, capsys):
+    """Gate r1 finding 4 (decision 6): with the user's grant in force an
+    agent's shell retires the skill, and the registry and the ledger commit
+    say `agent`, the grant and the reason. Mutation: drop `args.by =
+    "agent"` from `skill_cli.dispatch` -> the registry says `human`."""
+    from self_learn import grants
+    from test_grants import _stmt
+
+    assert env.write().ok
+    stmt = _stmt(env.home, env.tmp)
+    assert grants.add(env.home, statement=stmt)[1] is True
+    monkeypatch.setenv("CLAUDECODE", "1")
+    capsys.readouterr()
+    code = cli.main(["skill", "retire", NAME, "--case", CASE2, "--no-push",
+                     "--note", "the user asked to retire it"])
+    assert code == 0, capsys.readouterr().err
+    assert not env.plugin_dir().exists()  # positive control: it was retired
+    assert env.row()["retired"]["by"] == "agent"
+    body = git(env.home, "log", "-1", "--format=%B").stdout
+    assert "the user asked to retire it" in body
+    assert body.strip().rpartition("\n\n")[2].splitlines() == ["By: agent", f"Grant: {stmt}"]
+    assert "By: human" not in body
+
+
 def test_cli_retire_names_the_lessons_that_block_it(env, capsys):
     assert env.write().ok
     _route_in(env)

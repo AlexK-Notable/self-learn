@@ -865,6 +865,32 @@ def test_each_rejecter_is_recorded_on_the_lesson(env, monkeypatch):
     assert _rec(env.home, B).resolution_by == "human"
 
 
+def test_an_agents_command_line_batch_reject_is_the_agents(env, monkeypatch, capsys):
+    """Gate r1 finding 1: `commands/review.md` has the agent apply review
+    decisions with `self-learn batch`; its reject is the agent's, not the
+    `human` default. Mutation: `_cmd_batch` calls `batch.run` without
+    `actor=` -> `resolution_by` is `human` and the body holds `By: human`."""
+    from self_learn import cli, settings
+
+    for marker in settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
+    _seed(env.home, A)
+    _sheet(env.tmp, [{"id": A, "verb": "reject", "note": "n"}], name="agent-sheet")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert settings.agent_caller()
+    assert cli.main(["batch", str(env.tmp / "agent-sheet.yaml"), "--no-push"]) == 0, (
+        capsys.readouterr().err
+    )
+    assert _rec(env.home, A).status == "rejected"  # positive control: the line applied
+    assert _rec(env.home, A).resolution_by == "agent"
+    reject_sha = git(env.home, "log", "--format=%H", "--grep", f"reject {A}", "-1").stdout.strip()
+    assert reject_sha  # control: the reject commit is found
+    body = git(env.home, "log", "-1", "--format=%B", reject_sha).stdout
+    assert body.strip().rpartition("\n\n")[2].splitlines() == ["By: agent"]
+    assert "By: human" not in body
+
+
 def test_a_persons_hand_reject_after_a_steward_case_is_the_persons(env):
     """A steward reject case (here even with a receipt saying its line
     applied) stays open; the lesson's current rejection is a person's hand

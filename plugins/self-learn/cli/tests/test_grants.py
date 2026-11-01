@@ -154,6 +154,46 @@ def test_a_statement_on_a_line_the_user_did_not_type_never_becomes_a_grant(env, 
     assert grants.list_rows(env.ledger) == []
 
 
+def test_a_question_the_user_asked_never_becomes_a_grant(env, tmp_path):
+    """Gate r1 finding 6: a typed question grants nothing. Mutation: drop the
+    `GRANT_KINDS` check in `grants.add` -> it is recorded."""
+    proposition = _stmt(env.ledger, tmp_path)  # configures the transcript root
+    asked = tmp_path / "transcripts" / "project" / "sess-asked.jsonl"
+    asked.write_text(json.dumps(_typed(f"can you {WORDS}?")) + "\n", encoding="utf-8")
+    stmt = statements.add(
+        env.ledger, verbatim=WORDS,
+        source={"message_ref": "transcript:sess-asked#L1", "surface": "conversation"},
+        recorded_by="human", answers={"kind": "question", "ref": None, "text": None},
+    )
+    assert stmt != proposition
+    with pytest.raises(grants.GrantError, match="never from a question"):
+        grants.add(env.ledger, statement=stmt)
+    assert grants.list_rows(env.ledger) == []
+    # control: the same words, stated, qualify
+    assert grants.add(env.ledger, statement=proposition)[1] is True
+
+
+def test_the_users_words_are_shown_wherever_the_grant_is_used(env, tmp_path, monkeypatch, capsys):
+    """Gate r1 finding 6: the `grant add` commit, the acceptance line of a
+    command run under it, its commit, and the `--note` refusal all carry the
+    user's words. Mutation: `authorize` builds the authority without
+    `words=` -> the config commit lacks them (the acceptance line still
+    prints them, so the commit assertion is what fails)."""
+    stmt = _stmt(env.ledger, tmp_path)
+    assert cli.main(["grant", "add", "--statement", stmt]) == 0
+    assert WORDS in " ".join(_body(env.ledger).split())
+    _agent(monkeypatch)
+    capsys.readouterr()
+    assert cli.main(["config", "set", "steward.enabled", "1"]) == cli.EXIT_USAGE
+    assert WORDS in capsys.readouterr().err
+    assert cli.main(["config", "set", "steward.enabled", "1", "--note", "the user wants it"]) == 0
+    err = capsys.readouterr().err
+    assert "running under the user's standing grant" in err and WORDS in err
+    body = " ".join(_body(env.ledger).split())
+    assert f"Under the user's standing grant ({stmt}): \"{WORDS}\"" in body
+    assert _final_block(_body(env.ledger)) == ["By: agent", f"Grant: {stmt}"]
+
+
 def test_a_revoked_grant_lets_nothing_run_again(env, tmp_path, monkeypatch, capsys):
     _granted(env, tmp_path)
     proj = tmp_path / "proj"

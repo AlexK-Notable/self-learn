@@ -3535,6 +3535,17 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
             )
             for line in changed.unexcluded:
                 print(f"  no longer excluded (git mode commits it): {line}")
+            if changed.unexclude_error is not None:
+                # Gate r1 finding 5: the switch is committed and stands.
+                print(
+                    "self-learn host set-mode: warning: the mode switched to git, but "
+                    "taking self-learn's own lines for this host out of "
+                    f".git/info/exclude failed ({changed.unexclude_error}); a file "
+                    "still listed there cannot be committed until its line is gone -- "
+                    "take self-learn's lines under this path out of that block by hand "
+                    "(keep CLAUDE.local.md and the marker)",
+                    file=sys.stderr,
+                )
         return EXIT_OK
     if args.host_command == "rebind":
         try:
@@ -4629,7 +4640,14 @@ def _cmd_batch(args: argparse.Namespace) -> int:
         return EXIT_OK if dr.ok else 1
 
     sentinel.heartbeat()  # mutating invocation class (08 §1)
-    result = batch.run(home, items, no_push=args.no_push)
+    # S-NEXT-attribution (gate r1 finding 1): the runner of a command-line
+    # batch is the shell it was typed into, `agent` from an agent's shell, so
+    # a reject line records `resolution_by: agent` and the commits say `By:
+    # agent`, never the `human` default. No actor-gated set (hook routing,
+    # region writes, references, new-skill ownership, reopening a person's
+    # rejection) holds `human` or `agent`, so nothing else changes.
+    runner = "agent" if settings.agent_caller() else "human"
+    result = batch.run(home, items, no_push=args.no_push, actor=runner)
     for item in result.items:
         for warning in item.warnings:
             print(f"self-learn batch item {item.n}: {warning}", file=sys.stderr)

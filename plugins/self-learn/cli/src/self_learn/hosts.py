@@ -202,6 +202,9 @@ class HostSetModeResult:
     #: S-NEXT-attribution: the lines a switch to git mode took out of
     #: self-learn's own ``info/exclude`` block (files git mode now commits).
     unexcluded: tuple[str, ...] = ()
+    #: Gate r1 finding 5: why that cleanup failed, when it did. The mode
+    #: switch is committed by then and stands; the CLI warns and exits 0.
+    unexclude_error: str | None = None
 
 
 def slug_for(path: Path | str) -> str:
@@ -1027,11 +1030,19 @@ def host_set_mode(
         _commit_or_half_written(home, [yaml_path], message, note)
         intents.finish(intent)
     unexcluded: tuple[str, ...] = ()
+    unexclude_error: str | None = None
     if mode == "git":
-        unexcluded = _unexclude_for_git(hosts, target)
+        # After the commit: the switch stands whatever happens here, so a
+        # failure (a malformed block, the host lock timing out) is reported
+        # as that, never as "nothing was written" (gate r1 finding 5).
+        try:
+            unexcluded = _unexclude_for_git(hosts, target)
+        except gitops.GitOpsError as exc:
+            unexclude_error = str(exc)
     return HostSetModeResult(
         hosts=hosts, kind=kind, old_mode=old_mode, new_mode=mode,
         changed=True, routed=routed, unexcluded=unexcluded,
+        unexclude_error=unexclude_error,
     )
 
 
@@ -1059,7 +1070,35 @@ def _unexclude_for_git(hosts: Hosts, target: Path) -> tuple[str, ...]:
         return ()
     rel = Path(os.path.realpath(target)).relative_to(repo).as_posix()
     prefix = "/" if rel in ("", ".") else f"/{rel}/"
-    return tuple(gitops.drop_excluded(repo, prefix, _KEEP_EXCLUDED))
+    return tuple(gitops.drop_excluded(
+        repo, prefix, _KEEP_EXCLUDED, keep_prefixes=_nested_plain_prefixes(hosts, target, repo, prefix),
+    ))
+
+
+def _nested_plain_prefixes(hosts: Hosts, target: Path, repo: Path, prefix: str) -> tuple[str, ...]:
+    """The anchored ``/<rel>/`` of every OTHER registration still in plain
+    mode whose path lies under *target* in the same work tree (gate r1
+    finding 5): its exclude lines are its own and stay, though *prefix*
+    covers them. A plain registration above *target* is not listed: its own
+    lines are not under *prefix* deeper than *target*'s."""
+    plain: list[Path] = [
+        Path(path) for path, mode in hosts.project_modes.items() if mode == "plain"
+    ]
+    if hosts.skills_root is not None and hosts.skills_root_mode == "plain":
+        plain.append(Path(hosts.skills_root).expanduser())
+    out: list[str] = []
+    for path in plain:
+        real = Path(os.path.realpath(path))
+        if real == Path(os.path.realpath(target)):
+            continue
+        try:
+            rel = real.relative_to(repo).as_posix()
+        except ValueError:
+            continue
+        other = "/" if rel in ("", ".") else f"/{rel}/"
+        if other != prefix and other.startswith(prefix):
+            out.append(other)
+    return tuple(out)
 
 
 def _commit_or_half_written(

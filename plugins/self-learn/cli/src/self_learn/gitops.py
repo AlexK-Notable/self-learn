@@ -1011,7 +1011,9 @@ def ensure_excluded(repo: Path, patterns: Iterable[str]) -> bool:
         return True
 
 
-def drop_excluded(repo: Path, prefix: str, keep_names: Iterable[str]) -> list[str]:
+def drop_excluded(
+    repo: Path, prefix: str, keep_names: Iterable[str], keep_prefixes: Iterable[str] = ()
+) -> list[str]:
     """Take out of *repo*'s self-learn ``info/exclude`` block every line
     under *prefix* (an anchored ``/<rel>/`` the lines start with, ``/`` for
     the whole repo) whose file name is not in *keep_names*; return the
@@ -1019,8 +1021,12 @@ def drop_excluded(repo: Path, prefix: str, keep_names: Iterable[str]) -> list[st
     to git mode commits the files it writes, and git refuses to stage a
     file its ignore rules match). Lines outside the block, the block's own
     marker lines, and a malformed block are never touched (the last raises,
-    like :func:`ensure_excluded`). Takes *repo*'s :func:`commit_lock`."""
+    like :func:`ensure_excluded`). A line under any of *keep_prefixes* (the
+    anchored ``/<rel>/`` of another registration nested under *prefix* that
+    is still plain, gate r1 finding 5) is kept: those files stay private.
+    Takes *repo*'s :func:`commit_lock`."""
     keep = set(keep_names)
+    others = tuple(keep_prefixes)
     with commit_lock(repo):
         exclude = git_path(repo, "info/exclude")
         try:
@@ -1048,7 +1054,12 @@ def drop_excluded(repo: Path, prefix: str, keep_names: Iterable[str]) -> list[st
         for line in lines[begin + 1 : end]:
             bare = line.rstrip("\r\n")
             name = bare.rstrip("/").rsplit("/", 1)[-1]
-            if bare.startswith(prefix) and bare.strip() and name not in keep:
+            if (
+                bare.startswith(prefix)
+                and bare.strip()
+                and name not in keep
+                and not any(bare.startswith(other) for other in others)
+            ):
                 removed.append(bare)
             else:
                 kept.append(line)

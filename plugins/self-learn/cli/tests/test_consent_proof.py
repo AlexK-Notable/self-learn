@@ -251,6 +251,54 @@ def test_switching_to_git_takes_out_self_learns_own_lines_for_committed_files(tm
         assert kept in after
 
 
+def test_switching_the_repo_root_to_git_keeps_a_nested_plain_hosts_lines(tmp_path):
+    """Gate r1 finding 5(b): `/` takes every block line, but a plain host
+    nested in the same work tree keeps its own. Mutation: ignore
+    `keep_prefixes` in `gitops.drop_excluded` -> `/sub/CLAUDE.md` goes too."""
+    env = make_env(tmp_path)
+    proj = tmp_path / "proj"
+    init_repo(proj)
+    sub = proj / "sub"
+    sub.mkdir()
+    host_add(env.ledger, proj, "project", mode="plain")
+    host_add(env.ledger, sub, "project", mode="plain")
+    gitops.ensure_excluded(proj, ["/CLAUDE.md", "/sub/CLAUDE.md", "/sub/.claude/rules/y.md"])
+
+    changed = host_set_mode(env.ledger, proj, "git", registration="project")
+
+    after = gitops.git_path(proj, "info/exclude").read_text(encoding="utf-8")
+    assert changed.unexcluded == ("/CLAUDE.md",)  # positive control: the root's own line went
+    assert "/sub/CLAUDE.md\n" in after and "/sub/.claude/rules/y.md\n" in after
+    assert host_mode(env.ledger, sub, registration="project") == "plain"
+
+
+def test_a_failed_exclude_cleanup_after_the_switch_warns_and_exits_0(tmp_path, monkeypatch, capsys):
+    """Gate r1 finding 5(a): the mode is committed before the cleanup, so
+    its failure is a warning, never "nothing written". Mutation: drop the
+    `try`/`except gitops.GitOpsError` around `_unexclude_for_git` -> the
+    command fails (non-zero) although the mode switched."""
+    from self_learn import cli
+
+    for marker in settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    env = make_env(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+    proj = tmp_path / "proj"
+    init_repo(proj)
+    host_add(env.ledger, proj, "project", mode="plain")
+    gitops.ensure_excluded(proj, ["/CLAUDE.md"])
+    exclude = gitops.git_path(proj, "info/exclude")
+    exclude.write_text(exclude.read_text(encoding="utf-8") + gitops.EXCLUDE_BEGIN + "\n", encoding="utf-8")
+    broken = exclude.read_text(encoding="utf-8")
+
+    assert cli.main(["host", "set-mode", str(proj), "git"]) == 0
+    err = capsys.readouterr().err
+    assert host_mode(env.ledger, proj, registration="project") == "git"  # the switch stands
+    assert "warning: the mode switched to git" in err and "malformed" in err
+    assert exclude.read_text(encoding="utf-8") == broken  # nothing half-rewritten
+
+
 def test_a_git_mode_commit_cannot_stage_a_file_the_block_still_excludes(tmp_path):
     """Why the removal is needed (measured, not assumed): git refuses to
     stage a new file its ignore rules match, so a git-mode compile into a

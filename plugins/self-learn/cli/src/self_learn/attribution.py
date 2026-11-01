@@ -16,12 +16,13 @@ The job actor wins over the process actor. Both live in
 copy of the context and nothing one in-process call sets leaks into the
 next (the test suite calls ``main`` hundreds of times in one process).
 
-:func:`stamp` is what :func:`gitops.commit` applies to every **ledger**
-commit (``ledger=True``; host-repo commits are never stamped): it appends a
-final ``By: <actor>`` paragraph unless the body already ends in a trailer
-paragraph that says who did it (a verb's own ``By:`` block, a sheet runner's
-execution block). With no actor set at all (a library call from a test) the
-body is left exactly as it was.
+:func:`stamp` is applied to every **ledger** commit's body: by
+:func:`gitops.stage_and_commit`, and by each direct ``gitops.commit(home,
+...)`` call site (host-repo commits are never stamped). It appends a final
+``By: <actor>`` paragraph unless the body already ends in a trailer block
+that is provably the current writer's own (a verb's own ``By:`` block naming
+it, or, inside a job, a sheet runner's execution block). With no actor set
+at all (a library call from a test) the body is left exactly as it was.
 
 An agent's call to a person-only command runs only under an
 :class:`Authority`: the user's standing grant (:mod:`self_learn.grants`) or a
@@ -55,6 +56,7 @@ __all__ = [
     "job",
     "process",
     "refuse_unless_authorized",
+    "SHEET_RUNNERS",
     "stamp",
 ]
 
@@ -83,11 +85,15 @@ class Authority:
     ``kind`` is ``grant`` (the user's recorded standing grant; ``ref`` is its
     statement id) or ``typed-yes`` (a plain yes the person typed to the
     message that named this act; ``ref`` is that transcript line). ``reason``
-    is the agent's ``--note`` (for a typed yes, what it answered)."""
+    is the agent's ``--note`` (for a typed yes, what it answered).
+    ``words`` (a grant only) are the user's own words the grant was recorded
+    from, copied into every commit made under it so the grant can be read
+    where it is used (gate r1 finding 6)."""
 
     kind: str
     ref: str
     reason: str
+    words: str = ""
 
     def __post_init__(self) -> None:
         if self.kind not in ("grant", "typed-yes"):
@@ -100,6 +106,22 @@ class Authority:
     def trailer(self) -> str:
         key = "Grant" if self.kind == "grant" else "Proof"
         return f"By: agent\n{key}: {self.ref}"
+
+    def paragraphs(self) -> list[str]:
+        """The body paragraphs a commit made under this authority carries
+        before its trailer: the reason, and for a grant the user's words.
+        Neither can read as a trailer block (each holds spaces before any
+        colon), so the trailer stays the one final block."""
+        out = [self.reason.strip()]
+        if self.words.strip():
+            words = " ".join(self.words.split())
+            out.append(f'Under the user\'s standing grant ({self.ref}): "{words}"')
+        return out
+
+    def held_by(self, text: str) -> bool:
+        """Whether *text* already holds every one of :meth:`paragraphs`."""
+        flat = " ".join(text.split())
+        return all(" ".join(p.split()) in flat for p in self.paragraphs())
 
 
 _AUTHORITY: contextvars.ContextVar[Authority | None] = contextvars.ContextVar(
@@ -217,37 +239,80 @@ def _with_paragraph(body: str | None, paragraph: str) -> str:
     return f"{body.rstrip()}\n\n{paragraph}"
 
 
+#: The actors that run a sheet and write its execution block (``By:``,
+#: ``Case:``, ``Sheet:``, ``Item:``, :mod:`self_learn.execution_evidence`).
+SHEET_RUNNERS = frozenset({"steward", "overseer"})
+
+#: A job whose own verbs write another actor's ``By:`` trailer as theirs:
+#: the worker (and the miner, which runs it) route with ``by="analyst"``.
+_JOB_OWN_TRAILERS: dict[str, frozenset[str]] = {
+    "worker": frozenset({"analyst"}),
+    "miner": frozenset({"analyst"}),
+}
+
+
+def _is_execution_block(text: str) -> bool:
+    from . import execution_evidence  # lazy: keep this module import-light
+
+    return execution_evidence.parse_trailers(text) is not None
+
+
+def _owns(actor: str, pairs: dict[str, str], text: str) -> bool:
+    """Whether the final ``By:`` block *pairs* is provably *actor*'s own
+    (gate r1 finding 2): it names *actor* (or a trailer *actor*'s own verbs
+    write, such as the worker's ``analyst``), or, outside a shell, it is a
+    sheet runner's execution block. In a shell nothing else is: a note
+    typed there may end in any block it likes."""
+    by = pairs["By"]
+    if "Grant" in pairs or "Proof" in pairs:
+        return False  # only an authority in force writes those (stamp's first branch)
+    if by == actor or by in _JOB_OWN_TRAILERS.get(actor, frozenset()):
+        return True
+    return actor not in SHELL_ACTORS and by in SHEET_RUNNERS and _is_execution_block(text)
+
+
+def _missing(text: str, granted: Authority) -> str:
+    """*text* with each of *granted*'s paragraphs it does not hold yet."""
+    out = text
+    for paragraph in granted.paragraphs():
+        if " ".join(paragraph.split()) not in " ".join(out.split()):
+            out = _with_paragraph(out, paragraph)
+    return out
+
+
 def stamp(body: str | None) -> str | None:
     """*body* with the who-did-it trailer a ledger commit needs.
 
+    The body's own final ``By:`` block is kept only when it is provably the
+    current writer's (gate r1 finding 2; text a note or a model wrote may end
+    in any block it likes, so a block naming someone else is never trusted):
+
     * An :class:`Authority` in force: ``By: agent`` plus ``Grant:``/``Proof:``,
-      and the reason as its own paragraph when the body does not already hold
-      it. A ``By:`` block the body already ends in (a verb stamped ``By:
-      agent`` itself) gains the ``Grant:``/``Proof:`` line instead of a second
-      block.
-    * Otherwise the current actor, as ``By: <actor>``, unless the body already
-      ends in a ``By:`` block. One exception keeps a shell honest: in a
-      shell (``human``/``agent``) a final ``By:`` block naming someone else that
-      is not a sheet runner's execution block (``Case:`` line) gets this
-      shell's own block after it, so a note ending ``By: steward`` typed into
-      an agent's shell cannot pass for the steward.
+      and the reason (and, for the grant, the user's words) as their own
+      paragraphs when the body does not already hold them. A final ``By:
+      agent`` block with no ``Grant:``/``Proof:`` (a verb stamped ``By:
+      agent`` itself) gains this authority's line instead of a second block;
+      one already naming this very authority is kept. Any other final block
+      gets this one after it.
+    * Otherwise the current actor, as ``By: <actor>``, unless the body
+      already ends in that actor's own block (:func:`_owns`).
     * No actor: *body* unchanged."""
     granted = _AUTHORITY.get()
     text = body if body is not None else ""
     pairs = _final_block(text)[1] if text.strip() else {}
     if granted is not None:
-        if pairs.get("By") == "agent" and "Grant" not in pairs and "Proof" not in pairs:
-            key = "Grant" if granted.kind == "grant" else "Proof"
-            return f"{text.rstrip()}\n{key}: {granted.ref}"
-        if pairs and ("Grant" in pairs or "Proof" in pairs):
-            return body
-        reason = " ".join(granted.reason.split())
-        out = text if reason in " ".join(text.split()) else _with_paragraph(text, granted.reason.strip())
-        return _with_paragraph(out, granted.trailer())
+        key = "Grant" if granted.kind == "grant" else "Proof"
+        if pairs.get("By") == "agent" and set(pairs) <= {"By", key}:
+            head, _pairs = _final_block(text)
+            block = text.strip()[len(head):].strip()
+            if key not in pairs:
+                return _with_paragraph(_missing(head, granted), f"{block}\n{key}: {granted.ref}")
+            if pairs[key] == granted.ref and granted.held_by(head):
+                return body
+        return _with_paragraph(_missing(text, granted), granted.trailer())
     actor = current_actor()
     if actor is None:
         return body
-    if pairs:
-        if pairs["By"] == actor or "Case" in pairs or actor not in SHELL_ACTORS:
-            return body
+    if pairs and _owns(actor, pairs, text):
+        return body
     return _with_paragraph(text, f"By: {actor}")

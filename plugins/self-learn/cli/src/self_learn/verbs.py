@@ -7539,8 +7539,12 @@ def _refuse_moving_a_person_s_lesson(
     keeps its placement: the new lesson must land where that lesson is now
     (the same destination, in the same bucket), or the replace is refused
     as :class:`NeedsPerson` before anything is written. A person's own
-    replace (``actor == "human"``) is never refused here."""
-    if actor == "human":
+    replace (``actor == "human"``) is never refused here, and neither is one
+    typed into an agent's shell (``actor == "agent"``, S-NEXT-attribution):
+    that shell acts in the person's session (cures CU-5), and before a
+    command-line ``batch`` named its runner it ran here as ``human``; naming
+    who ran it changes the record, not what it may do."""
+    if actor in ("human", "agent"):
         return
     for lesson, path in lessons:
         if lesson.status != "routed":

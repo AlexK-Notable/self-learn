@@ -1019,6 +1019,7 @@ def _carry_out_registration(
             f"yes ({phrase})"
         ), False
     proof_ref: str | None = None
+    switched: hosts.HostSetModeResult | None = None
     try:
         registered, already = _registration_state(home, register)
         before = hosts.load_hosts(home)
@@ -1058,7 +1059,11 @@ def _carry_out_registration(
                     f"{_hand_command(register)} with --note under the user's standing grant "
                     "and answer again: what is already done is left as it is"
                 )
-            assert proof_ref is not None
+            if proof_ref is None:  # survives `python -O`, unlike an assert (gate r1 NIT)
+                raise ConversationError(
+                    "overseer respond: NOT done: the proof named no transcript line. "
+                    "Nothing was recorded and the question stays open"
+                )
             granted = attribution.Authority("typed-yes", proof_ref, f"Answers: {row['id']}")
         # A person's terminal still runs `host add` for a registration already
         # in place (it restores a plain host's missing marker, as before); an
@@ -1066,7 +1071,7 @@ def _carry_out_registration(
         if not already or (not set_mode and not settings.agent_caller()):
             with attribution.acting(granted):
                 if set_mode:
-                    hosts.host_set_mode(
+                    switched = hosts.host_set_mode(
                         home, register["path"], register["mode"],
                         registration=register["kind"], note=f"Answers: {row['id']}",
                     )
@@ -1092,6 +1097,12 @@ def _carry_out_registration(
             f"overseer respond: {phrase} failed ({exc}); the answer was not recorded"
         ) from exc
     proved = f" (the yes is at {proof_ref})" if proof_ref else ""
+    if switched is not None and switched.unexclude_error is not None:
+        # Gate r1 finding 5: the switch is committed; say what did not follow.
+        proved += (
+            "; warning: taking self-learn's own lines for it out of .git/info/exclude "
+            f"failed ({switched.unexclude_error}), so remove them there by hand"
+        )
     if already:
         return f"already so, left as it was: {phrase}{proved}" if set_mode else (
             f"already registered, left as it was: {phrase}{proved}"

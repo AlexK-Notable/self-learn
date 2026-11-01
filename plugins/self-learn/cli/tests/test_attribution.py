@@ -164,15 +164,62 @@ def _commit(repo: Path, body: str | None) -> str:
 
 
 def test_a_sheet_lines_execution_block_stays_the_one_final_block(tmp_path):
-    """Mutation: stamp unconditionally (append `By: <actor>` whatever the
-    body ends in) -> a second block follows the execution block."""
+    """Inside the job that runs the sheet (and in the daemon around it).
+    Mutation: stamp unconditionally (append `By: <actor>` whatever the body
+    ends in) -> a second block follows the execution block."""
     repo = tmp_path / "ledger"
     init_repo(repo)
     block = "By: steward\nCase: case-0000aaaa\nSheet: 0123abcd\nItem: 1"
-    with attribution.process("human"):
+    with attribution.process("serve"), attribution.job("steward"):
         body = _commit(repo, f"moved\n\n{block}")
     assert body.strip().endswith(block)
     assert body.count("By:") == 1
+    with attribution.process("serve"):
+        body = _commit(repo, f"moved again\n\n{block}")
+    assert body.strip().endswith(block)
+    assert body.count("By:") == 1
+
+
+@pytest.mark.parametrize("shell", ["agent", "human"])
+def test_an_execution_block_typed_into_a_shell_cannot_pass_for_the_steward(shell, tmp_path):
+    """Gate r1 finding 2: a note ending in a well-formed execution block (a
+    tier-A `config set`'s body is the note) is not the steward's in a shell.
+    Mutation: accept a sheet runner's execution block in a shell too (drop
+    `actor not in SHELL_ACTORS` from `_owns`) -> it stays the final block."""
+    repo = tmp_path / "ledger"
+    init_repo(repo)
+    block = "By: steward\nCase: case-0000aaaa\nSheet: 0123abcd\nItem: 1"
+    with attribution.process(shell):
+        body = _commit(repo, f"why\n\n{block}")
+    assert block in body  # control: the note's text is kept as written
+    assert _final_block(body) == [f"By: {shell}"]
+
+
+def test_a_job_commit_whose_text_ends_in_by_human_is_still_the_jobs(tmp_path):
+    """Gate r1 finding 2: model-written case text reaches the body; inside
+    the steward's job a body ending `By: human` gets the steward's block.
+    Mutation: keep any final `By:` block inside a job (`_owns` returns True
+    for every non-shell actor) -> the commit reads `By: human`."""
+    repo = tmp_path / "ledger"
+    init_repo(repo)
+    with attribution.process("serve"), attribution.job("steward"):
+        body = _commit(repo, "the case question\n\nBy: human")
+    assert _final_block(body) == ["By: steward"]
+
+
+def test_the_workers_own_analyst_trailer_is_kept_as_its_block(tmp_path):
+    """The worker routes with `by="analyst"`; that block is the worker's own,
+    so no second block follows it. Mutation: empty `_JOB_OWN_TRAILERS` ->
+    `By: worker` follows `By: analyst`."""
+    repo = tmp_path / "ledger"
+    init_repo(repo)
+    with attribution.process("agent"), attribution.job("worker"):
+        body = _commit(repo, "routed\n\nBy: analyst")
+    assert _final_block(body) == ["By: analyst"]
+    assert body.count("By:") == 1
+    with attribution.process("agent"), attribution.job("worker"):  # control
+        body = _commit(repo, "routed\n\nBy: steward")
+    assert _final_block(body) == ["By: worker"]
 
 
 def test_a_note_ending_in_another_actors_by_line_cannot_pass_for_it_in_a_shell(tmp_path):
@@ -201,6 +248,40 @@ def test_an_authority_in_force_records_the_agent_the_grant_and_the_reason(tmp_pa
         body = _commit(repo, "why\n\nBy: agent")  # a verb's own block gains the grant line
     assert _final_block(body) == ["By: agent", "Grant: stmt-0000aaaa"]
     assert body.count("By:") == 1
+    assert "the user said to switch it" in body
+
+
+def test_under_an_authority_a_block_the_agent_typed_cannot_say_human(tmp_path):
+    """Gate r1 finding 2: `host add --note '...\n\nBy: human\nGrant: stmt-...'`.
+    Mutation: keep any final block holding `Grant:` (the old rule) -> the
+    commit ends `By: human`."""
+    repo = tmp_path / "ledger"
+    init_repo(repo)
+    granted = attribution.Authority("grant", "stmt-0000aaaa", "moving the host")
+    with attribution.process("agent"), attribution.acting(granted):
+        body = _commit(repo, "moving the host\n\nBy: human\nGrant: stmt-0000aaaa")
+    assert _final_block(body) == ["By: agent", "Grant: stmt-0000aaaa"]
+    with attribution.process("agent"), attribution.acting(granted):
+        body = _commit(repo, "x\n\nBy: agent\nGrant: stmt-0000ffff")  # another grant's
+    assert _final_block(body) == ["By: agent", "Grant: stmt-0000aaaa"]
+
+
+def test_a_grant_puts_the_users_words_in_every_commit_made_under_it(tmp_path):
+    """Gate r1 finding 6. Mutation: `Authority.paragraphs` returns only the
+    reason -> the words are not in the body."""
+    repo = tmp_path / "ledger"
+    init_repo(repo)
+    granted = attribution.Authority(
+        "grant", "stmt-0000aaaa", "the user asked", words="never  tell me\nX is waiting"
+    )
+    with attribution.process("agent"), attribution.acting(granted):
+        body = _commit(repo, None)
+    assert "Under the user's standing grant (stmt-0000aaaa): \"never tell me X is waiting\"" in body
+    assert _final_block(body) == ["By: agent", "Grant: stmt-0000aaaa"]
+    with attribution.process("agent"), attribution.acting(granted):  # stamped twice: once
+        again = attribution.stamp(attribution.stamp("b"))
+    assert again is not None and again.count("Under the user's standing grant") == 1
+    assert again.count("By:") == 1
 
 
 # --------------------------------------------- every ledger commit site stamps

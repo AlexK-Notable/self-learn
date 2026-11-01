@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,7 @@ from .scan import scan as secret_scan
 
 __all__ = [
     "GRANT_ID_RE",
+    "GRANT_KINDS",
     "Grant",
     "GrantError",
     "GrantUsageError",
@@ -54,6 +56,8 @@ __all__ = [
 ]
 
 GRANT_ID_RE = re.compile(r"^grant-[0-9a-f]{8}$")
+#: The statement kinds (``answers.kind``) a grant may be made from.
+GRANT_KINDS = frozenset({"proposition", "instruction"})
 
 
 class GrantError(Exception):
@@ -218,11 +222,26 @@ def add(home: Path | str, *, statement: str, note: str | None = None) -> tuple[G
             f"grant add: {statement} is scoped to a project; a standing grant is the "
             "user's own word for everything"
         )
+    kind = (row.get("answers") or {}).get("kind")
+    if kind not in GRANT_KINDS:
+        # Gate r1 finding 6: a question the user asked grants nothing. Which
+        # typed proposition or instruction is a grant is not something code
+        # can read; the words are copied into the record, printed on every
+        # command run under it and written into each commit it allows, so a
+        # wrong choice is visible wherever it is used, and `grant revoke`
+        # ends it (02 §3a.3a).
+        raise GrantError(
+            f"grant add: {statement} records a {kind or 'statement of no kind'}; a standing "
+            "grant is made from something the user stated or instructed "
+            f"({' or '.join(sorted(GRANT_KINDS))}), never from a question"
+        )
     verbatim = row.get("verbatim") or ""
     message_ref = (row.get("source") or {}).get("message_ref") or ""
     _typed_words(home, message_ref, verbatim)
     granted = (
-        attribution.Authority("grant", statement, reason) if shell == "agent" and reason else None
+        attribution.Authority("grant", statement, reason, words=verbatim)
+        if shell == "agent" and reason
+        else None
     )
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -243,10 +262,13 @@ def add(home: Path | str, *, statement: str, note: str | None = None) -> tuple[G
                 "by": shell,
                 "note": reason,
             }
+            # The user's words ride the commit either way (gate r1 finding 6):
+            # under the agent's authority as its paragraph, else as the body.
+            words = f'The user\'s words ({message_ref}): "{" ".join(verbatim.split())}"'
             with attribution.acting(granted):
                 _append(
                     home, new, f"self-learn: grant add {new['id']} ({statement})",
-                    reason if granted is None else None,
+                    "\n\n".join(p for p in (reason, words) if p) if granted is None else None,
                 )
     finally:
         hold.release()
@@ -307,13 +329,16 @@ def authorize(home: Path | str, surface: str, *, note: str | None) -> attributio
         return current
     markers = ", ".join(settings.agent_caller_markers())
     reason = clean_note(note, surface)
+    granted = active(home)
     if reason is None:
+        under = (
+            f" ({granted.statement}: \"{_flat(granted.verbatim)}\")" if granted is not None else ""
+        )
         raise _needs_note(
             f"{surface} is a person-only command; from an agent's shell it runs under "
-            "the user's standing grant and needs --note TEXT saying why (the ledger "
+            f"the user's standing grant{under} and needs --note TEXT saying why (the ledger "
             f"records By: agent, the grant and the reason) (agent shell detected: {markers})"
         )
-    granted = active(home)
     if granted is None:
         raise PersonOnlyRefusal(
             f"{surface} is a person-only command and this ledger holds no standing grant "
@@ -321,4 +346,15 @@ def authorize(home: Path | str, surface: str, *, note: str | None) -> attributio
             "they typed it in: `self-learn grant add --statement <stmt-id> --note "
             f"\"<why>\"` (`self-learn statement list` finds it) (agent shell detected: {markers})"
         )
-    return attribution.Authority("grant", granted.statement, reason)
+    # Gate r1 finding 6: every command run under the grant says, where it
+    # runs, which words of the user's it runs under.
+    print(
+        f"{surface}: running under the user's standing grant {granted.statement} "
+        f"(\"{_flat(granted.verbatim)}\"); the ledger records By: agent",
+        file=sys.stderr,
+    )
+    return attribution.Authority("grant", granted.statement, reason, words=granted.verbatim)
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
