@@ -10,12 +10,17 @@ recorder.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, fields
 from pathlib import Path
+from typing import Any
 
 from .contract import LOG_TEMPLATES, Outcome, SessionSpec
 
-__all__ = ["Writes", "Text", "Exits", "TimesOut", "NotFound", "Fails", "FakeStep", "FakeBackend"]
+__all__ = [
+    "Writes", "Text", "Exits", "TimesOut", "NotFound", "Fails", "Streams", "ToolCall",
+    "SessionOutcome", "FakeStep", "FakeBackend",
+]
 
 
 @dataclass(frozen=True)
@@ -49,7 +54,38 @@ class Fails:
     exc: OSError
 
 
-FakeStep = Writes | Text | Exits | TimesOut | NotFound | Fails
+@dataclass(frozen=True)
+class ToolCall:
+    """2026-10-31 (the ask agent): one call of the session's OWN tool
+    `name` (`SessionSpec.mcp_toolset`) with `args`, made inside a
+    `Streams` step; its reply lands in `FakeBackend.tool_replies`."""
+
+    name: str
+    args: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SessionOutcome(Outcome):
+    """An `Outcome` that names its Claude Code session, as `SdkOutcome`
+    does (2026-10-31): what a `Streams` step with a `session_id` returns."""
+
+    session_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Streams:
+    """2026-10-31 (the ask agent, design r2 §3.3): a scripted turn that
+    streams. Each entry of `events` is either a dict handed to
+    `spec.on_event` (when the spec has one) or a `ToolCall` run through
+    the session's own tools, in order; then `then` is performed as its own
+    step. A `session_id` makes the outcome a `SessionOutcome`."""
+
+    events: tuple[dict[str, Any] | ToolCall, ...]
+    then: "FakeStep"
+    session_id: str | None = None
+
+
+FakeStep = Writes | Text | Exits | TimesOut | NotFound | Fails | Streams
 
 
 class FakeBackend:
@@ -64,6 +100,7 @@ class FakeBackend:
         self.specs: list[SessionSpec] = []
         self.prompts: list[str] = []
         self.doctrines: list[str | None] = []
+        self.tool_replies: list[Any] = []
 
     def write_session(self, spec: SessionSpec) -> Outcome:
         return self._step(spec)
@@ -80,7 +117,29 @@ class FakeBackend:
 
         step = self._steps[self._index]
         self._index += 1
+        return self._perform(spec, step)
+
+    def _perform(self, spec: SessionSpec, step: "FakeStep") -> Outcome:
         templates = LOG_TEMPLATES[spec.surface]
+
+        if isinstance(step, Streams):
+            for entry in step.events:
+                if isinstance(entry, ToolCall):
+                    toolset = spec.mcp_toolset
+                    tool = next((t for t in toolset.tools if t.name == entry.name), None) \
+                        if toolset is not None else None
+                    if tool is None:
+                        raise LookupError(f"FakeBackend: the session has no tool {entry.name!r}")
+                    self.tool_replies.append(asyncio.run(tool.handler(dict(entry.args))))
+                elif spec.on_event is not None:
+                    spec.on_event(dict(entry))
+            outcome = self._perform(spec, step.then)
+            if step.session_id is None:
+                return outcome
+            return SessionOutcome(
+                **{f.name: getattr(outcome, f.name) for f in fields(Outcome)},
+                session_id=step.session_id,
+            )
 
         if isinstance(step, Writes):
             for path, content in step.files.items():

@@ -82,7 +82,7 @@ from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
 from .index import cli as index_cli
 from .overseer import cli as overseer_cli
-from . import attention_cli, skill_cli
+from . import ask, attention_cli, skill_cli
 from .overseer import conversation as overseer_conversation
 from .overseer import run as overseer_run
 from .ledger import (
@@ -1125,6 +1125,7 @@ def _build_parser() -> argparse.ArgumentParser:
     index_cli.add_parser(sub)
     skill_cli.add_parser(sub)
     attention_cli.add_parser(sub)
+    ask.add_parser(sub)
 
     steward_p = sub.add_parser(
         "steward", help="autonomous decision runner: run"
@@ -1693,44 +1694,41 @@ def _warn_intents_in_flight_report(status: intents.StatusClass) -> None:
         )
 
 
-def _cmd_status_fast() -> int:
-    """08 §7.1 SessionStart pin: guaranteed-cheap, pending/-only. The bash
-    hook consumes this — queue semantics live HERE, never in bash. Doc 12
-    R1 layer 3: the miner's staleness keys ride the same payload (two
-    stats, still cheap).
+def status_fast_data(home: Path) -> dict:
+    """The payload of ``self-learn status --json --fast`` for *home*, as a
+    dict, computed in process (attention round, design r2 §4.9): the ask
+    agent's ``status()`` tool reads it without running the CLI, which
+    would tick the miner watchdog. :func:`_cmd_status_fast` prints exactly
+    this."""
+    return _status_fast_parts(home)[0]
 
-    The hook jq-parses stdout, so stdout stays VALID JSON in every state
-    (audit 2026-07-16 BLOCKER 11) — the home's state rides the payload as
-    ``home_state`` and the hook prints the warning. A bad home also exits
-    non-zero and says so on stderr, for humans and for any caller that
-    checks."""
-    home = resolve_home()
+
+def _status_fast_parts(home: Path) -> tuple[dict, intents.StatusClass | None]:
+    """The fast-status payload and, for a usable home, the intent status
+    the CLI warns from after printing (computed once, so the payload and
+    the warning describe the same moment)."""
     state = home_state(home)
     if state != "ok":
-        # Valid-JSON stdout FIRST (the hook's contract), then the loud line.
-        print(
-            json.dumps(
-                {
-                    "home_state": state,
-                    "home": str(home),
-                    "total_pending": 0,
-                    "unanalyzed_total": 0,
-                    "oldest_days": 0,
-                    "staleness_alarm": False,
-                    "escalate": False,
-                    "miner_last_run": None,
-                    "miner_stale": False,
-                    "steward_last_run_at": steward.last_run_iso_from_cache(
-                        serve.cache_dir_readonly(home)
-                    ),
-                    "overseer_last_run": overseer_run.last_run_iso_from_cache(
-                        serve.cache_dir_readonly(home)
-                    ),
-                }
-            )
+        return (
+            {
+                "home_state": state,
+                "home": str(home),
+                "total_pending": 0,
+                "unanalyzed_total": 0,
+                "oldest_days": 0,
+                "staleness_alarm": False,
+                "escalate": False,
+                "miner_last_run": None,
+                "miner_stale": False,
+                "steward_last_run_at": steward.last_run_iso_from_cache(
+                    serve.cache_dir_readonly(home)
+                ),
+                "overseer_last_run": overseer_run.last_run_iso_from_cache(
+                    serve.cache_dir_readonly(home)
+                ),
+            },
+            None,
         )
-        print(f"self-learn: {home_state_message(state, home)}", file=sys.stderr)
-        return EXIT_OK if state == "uninitialized" else EXIT_NO_HOME
     queued_ids: list[str] = []
     data = worker.fast_status(home, queued_ids)
     data["home_state"] = state
@@ -1776,8 +1774,32 @@ def _cmd_status_fast() -> int:
     data["intents_probe"] = intent_status.probe
     data["intents_stopped"] = [i.id for i in intent_status.stopped]
     data["intents_stopped_count"] = len(intent_status.stopped)
+    return data, intent_status
+
+
+def _cmd_status_fast() -> int:
+    """08 §7.1 SessionStart pin: guaranteed-cheap, pending/-only. The bash
+    hook consumes this — queue semantics live HERE, never in bash. Doc 12
+    R1 layer 3: the miner's staleness keys ride the same payload (two
+    stats, still cheap).
+
+    The hook jq-parses stdout, so stdout stays VALID JSON in every state
+    (audit 2026-07-16 BLOCKER 11) — the home's state rides the payload as
+    ``home_state`` and the hook prints the warning. A bad home also exits
+    non-zero and says so on stderr, for humans and for any caller that
+    checks. The payload itself is :func:`status_fast_data` (attention
+    round, design r2 §4.9)."""
+    home = resolve_home()
+    data, intent_status = _status_fast_parts(home)
+    state = data["home_state"]
+    if state != "ok":
+        # Valid-JSON stdout FIRST (the hook's contract), then the loud line.
+        print(json.dumps(data))
+        print(f"self-learn: {home_state_message(state, home)}", file=sys.stderr)
+        return EXIT_OK if state == "uninitialized" else EXIT_NO_HOME
     print(json.dumps(data))
-    _warn_intents_in_flight_report(intent_status)
+    if intent_status is not None:
+        _warn_intents_in_flight_report(intent_status)
     return EXIT_OK
 
 
@@ -5317,6 +5339,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "attention":
         return args._attention_dispatch(args)
+
+    if args.command == "ask":
+        return args._ask_dispatch(args)
 
     if args.command == "serve":
         return _cmd_serve(args)

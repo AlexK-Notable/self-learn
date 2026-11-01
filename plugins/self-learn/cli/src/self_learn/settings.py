@@ -748,6 +748,15 @@ def _default_overseer_model() -> str:
     return _DEFAULT_OVERSEER_MODEL
 
 
+#: 2026-10-31 (attention round, decision C5): the inbox's "ask about this"
+#: agent runs on `opus` unless the person picks another model (tier A).
+_DEFAULT_ASK_MODEL = "opus"
+
+
+def _default_ask_model() -> str:
+    return _DEFAULT_ASK_MODEL
+
+
 def _bedrock_active(provider_value: str) -> bool:
     return provider_value == "bedrock"
 
@@ -1421,6 +1430,15 @@ REGISTRY: tuple[Setting, ...] = (
         default=80,  # invocation_sdk.backend._DEFAULT_MAX_TURNS["OVERSEER"]
         description="max agentic turns for an overseer SDK session",
     ),
+    Setting(
+        name="sdk.max_turns.ask",
+        env_var="SELF_LEARN_SDK_MAX_TURNS_ASK",
+        config_section="sdk",
+        config_key="max_turns.ask",
+        kind="int",
+        default=40,  # invocation_sdk.backend._DEFAULT_MAX_TURNS["ASK"]; design r2 §3.3
+        description="max agentic turns for one turn of the inbox's ask-about-this agent",
+    ),
     # --------------------------------------------------------- serve
     Setting(
         name="serve.tick_secs",
@@ -1597,6 +1615,17 @@ REGISTRY: tuple[Setting, ...] = (
         enabled_when=_bedrock_active,
     ),
     Setting(
+        name="provider.bedrock.models.ask",
+        env_var=None,
+        config_section="provider",
+        config_key="bedrock.models.ask",
+        kind="str",
+        default=None,
+        description="Bedrock model id for the ask agent surface (overrides models.ask)",
+        direction="env-first",
+        enabled_when=_bedrock_active,
+    ),
+    Setting(
         name="provider.bedrock.models.small_fast",
         # MAJOR-4: never had an env var -- its value feeds the CHILD
         # session's own ANTHROPIC_DEFAULT_HAIKU_MODEL (`session_env`),
@@ -1723,6 +1752,30 @@ REGISTRY: tuple[Setting, ...] = (
         default=_default_overseer_model,
         description="model id for the overseer surface, under either provider",
         direction="env-first",
+    ),
+    # 2026-10-31 (attention round, design r2 §3.3, §4.11; decision C5):
+    # the inbox's "ask about this" agent. Tier A: the person picks the
+    # model and the time bound of one answer on /settings.
+    Setting(
+        name="models.ask",
+        env_var="SELF_LEARN_ASK_MODEL",
+        config_section="models",
+        config_key="ask",
+        kind="str",
+        default=_default_ask_model,
+        description="model id for the inbox's ask-about-this agent, under either provider",
+        direction="env-first",
+    ),
+    Setting(
+        name="ask.timeout_secs",
+        env_var="SELF_LEARN_ASK_TIMEOUT",
+        config_section="ask",
+        config_key="timeout_secs",
+        kind="float",
+        default=300.0,
+        validate=lambda v: v if cast(float, v) > 0 else None,
+        validate_hint="must be > 0",
+        description="the time limit of one answer from the inbox's ask-about-this agent (seconds)",
     ),
 )
 

@@ -28,6 +28,7 @@ from claude_agent_sdk import (
     ProcessError,
     ResultMessage,
     SdkMcpTool,
+    StreamEvent,
     SystemMessage,
     TextBlock,
     ToolAnnotations,
@@ -76,6 +77,9 @@ _DEFAULT_MAX_TURNS: dict[str, int] = {
     "ANALYST": 30,
     "STEWARD": 80,
     "OVERSEER": 80,  # builder's judgment call -- no sourced number, see build-u8.md report
+    # 2026-10-31 (attention round, design r2 §3.3): one turn of the inbox's
+    # "ask about this" conversation.
+    "ASK": 40,
 }
 
 #: `Map-1` -- surfaces on which the SDK backend enters this build's
@@ -102,7 +106,9 @@ _OWN_TOOLS_ONLY = frozenset({"miner-session"})
 #: leaves them: `disallowed_tools` and the charter), and the containment
 #: must allow every one of the session's own tools and no other `mcp__`
 #: tool. Any other surface with a toolset keeps the exact-names rule.
-_OWN_TOOLS_WITH_BUILTINS = frozenset({"steward"})
+#: 2026-10-31 (attention round, design r2 §3.3): the ask agent keeps Read
+#: and Glob beside its own read tools.
+_OWN_TOOLS_WITH_BUILTINS = frozenset({"steward", "ask"})
 
 #: 2026-10-06 (U4-seam): the longest reply one of a session's own tools
 #: may give, in characters. Claude Code cuts a longer tool result silently
@@ -246,6 +252,7 @@ _MAX_TURNS_SETTING_NAME = {
     "ANALYST": "sdk.max_turns.analyst",
     "STEWARD": "sdk.max_turns.steward",
     "OVERSEER": "sdk.max_turns.overseer",
+    "ASK": "sdk.max_turns.ask",
 }
 
 
@@ -486,6 +493,20 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         kwargs["tools"] = []
         kwargs["mcp_servers"] = {toolset.server: _build_mcp_server(toolset)}
 
+    # 2026-10-31 (attention round, design r2 §3.3): a conversation's later
+    # turn continues its earlier Claude Code session, and a streaming
+    # producer gets the partial messages. Each key is set only when its
+    # field is, so every other producer's options are exactly as before.
+    if spec.resume_session_id is not None:
+        if "resume" not in supported:
+            raise ValueError(
+                "this claude-agent-sdk has no resume; cannot continue a session, "
+                "refusing the session"
+            )
+        kwargs["resume"] = spec.resume_session_id
+    if spec.on_event is not None:
+        kwargs["include_partial_messages"] = True
+
     if "max_turns" in supported:
         # A session that names its own limit (the steward sizes it to its
         # batch) gets that limit; every other session gets its surface's.
@@ -593,8 +614,9 @@ def _format(template: str, spec: SessionSpec, **kwargs: object) -> str:
 def _stdout_for(spec: SessionSpec, text: str) -> str:
     """`O-stdout`/`OU7` -- `""` on both worker surfaces, the extracted
     text on the miner, the analyst and (2026-10-06, U4-seam) the session
-    miner, whose answer is its final message."""
-    return text if spec.surface in ("miner-reader", "analyst", "miner-session") else ""
+    miner, whose answer is its final message, and (2026-10-31) the ask
+    agent, whose answer is too."""
+    return text if spec.surface in ("miner-reader", "analyst", "miner-session", "ask") else ""
 
 
 def _extract_text(result_message: ResultMessage, last_assistant_text: str) -> str:
@@ -712,6 +734,79 @@ def _map_result_message(
 # --------------------------------------------------------------- Sync-1 drive
 
 
+#: The `tool_input` keys a streamed tool-use event names as its target
+#: when no path key is present (2026-10-31, the ask agent's own tools).
+_EVENT_TARGET_KEYS = ("id", "statement_id", "path_or_id", "pattern", "unit", "target", "date")
+
+
+def _event_target(tool_input: object) -> str | None:
+    if not isinstance(tool_input, dict):
+        return None
+    path = charter._extract_target_path(tool_input)  # noqa: SLF001 -- the one shared extractor
+    if path is not None:
+        return path
+    for key in _EVENT_TARGET_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _result_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(part.get("text", "")) for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
+class _EventRelay:
+    """`SessionSpec.on_event`, made safe to call from the message drain
+    (2026-10-31): a callback that raises is logged once and never ends the
+    session."""
+
+    def __init__(self, spec: SessionSpec) -> None:
+        self._spec = spec
+        self._broken = False
+        self._own: frozenset[str] = (
+            frozenset(spec.mcp_toolset.qualified_names) if spec.mcp_toolset is not None else frozenset()
+        )
+        self._names: dict[str, str] = {}
+
+    def _emit(self, event: dict[str, Any]) -> None:
+        callback = self._spec.on_event
+        if callback is None or self._broken:
+            return
+        try:
+            callback(event)
+        except Exception as exc:  # noqa: BLE001 -- a streaming consumer never ends a session
+            self._broken = True
+            self._spec.log(f"run: sdk backend: on_event raised {type(exc).__name__}; streaming stopped")
+
+    def stream(self, message: StreamEvent) -> None:
+        event = message.event if isinstance(message.event, dict) else {}
+        delta = event.get("delta") if event.get("type") == "content_block_delta" else None
+        if isinstance(delta, dict) and delta.get("type") == "text_delta":
+            text = delta.get("text")
+            if isinstance(text, str) and text:
+                self._emit({"ev": "delta", "text": text})
+
+    def tool_use(self, tool_use_id: str, name: str, tool_input: object) -> None:
+        self._names[tool_use_id] = name
+        self._emit({"ev": "tool", "name": name, "target": _event_target(tool_input)})
+
+    def tool_result(self, tool_use_id: str, is_error: bool, content: object) -> None:
+        name = self._names.get(tool_use_id)
+        if name is not None and name in self._own:
+            self._emit({
+                "ev": "tool-result", "name": name, "is_error": is_error,
+                "text": _result_text(content),
+            })
+
+
 async def _run_session(
     spec: SessionSpec,
     client: ClaudeSDKClient,
@@ -749,6 +844,8 @@ async def _run_session(
 
     final: ResultMessage | None = None
     last_assistant_text = ""
+    # 2026-10-31: streaming, only for a producer that asked for it.
+    relay = _EventRelay(spec) if spec.on_event is not None else None
     async for message in session.drive():
         # 2026-09-28: the session id as soon as any message carries it, so
         # a session that times out or is killed before its result still
@@ -768,6 +865,8 @@ async def _run_session(
             for block in message.content:
                 if isinstance(block, ToolUseBlock):
                     events.add_tool_use(block.id, block.name, block.input)
+                    if relay is not None:
+                        relay.tool_use(block.id, block.name, block.input)
         elif isinstance(message, UserMessage):
             content = message.content
             if isinstance(content, list):
@@ -776,8 +875,12 @@ async def _run_session(
                         events.add_tool_result(
                             block.tool_use_id, bool(block.is_error), block.content
                         )
+                        if relay is not None:
+                            relay.tool_result(block.tool_use_id, bool(block.is_error), block.content)
         elif isinstance(message, ResultMessage):
             final = message
+        elif relay is not None and isinstance(message, StreamEvent):
+            relay.stream(message)
         # `O-drain` -- every other message type (StreamEvent, SystemMessage,
         # HookEventMessage, RateLimitEvent, Task*...) is tolerated by
         # skipping, never raised.

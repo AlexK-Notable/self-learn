@@ -43,6 +43,7 @@ __all__ = [
     "default_process_start",
     "read_sidecar",
     "sidecar_path",
+    "sweep_orphan",
     "sweep_orphans",
     "write_sidecar",
 ]
@@ -213,3 +214,37 @@ def sweep_orphans(
             cache_dir, surface, session_key, record,
             log=log, pid_alive=pid_alive, process_start=anchor, messages=messages,
         )
+
+
+def sweep_orphan(
+    cache_dir: Path,
+    surface: str,
+    session_key: str,
+    log: Callable[[str], None],
+    *,
+    pid_alive: Callable[[int], bool],
+    messages: ShutdownMessages,
+    process_start: float | None = None,
+) -> None:
+    """`K-5` for ONE sidecar (2026-10-31, the ask agent): judge only the
+    sidecar keyed *session_key* on *surface*, on the same three
+    corroborating checks as :func:`sweep_orphans`, and leave every other
+    sidecar of the surface alone -- a sibling session's that is running,
+    or a host job's. Silent when that sidecar does not exist; a sidecar
+    that cannot be parsed is unlinked."""
+    anchor = default_process_start() if process_start is None else process_start
+    path = sidecar_path(cache_dir, surface, session_key)
+    if not path.is_file():
+        return
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        path.unlink(missing_ok=True)
+        return
+    if not isinstance(record, dict):
+        path.unlink(missing_ok=True)
+        return
+    _sweep_one(
+        cache_dir, surface, session_key, record,
+        log=log, pid_alive=pid_alive, process_start=anchor, messages=messages,
+    )
