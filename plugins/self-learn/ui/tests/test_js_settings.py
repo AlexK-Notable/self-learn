@@ -332,6 +332,7 @@ def test_editing_retires_the_message_and_holds_until_the_edit_is_taken_back(page
     page.fill(f"{ROW} input[name=value]", "11")
     assert page.locator(f"{ROW} [data-setting-message]").count() == 0
     assert page.locator(f"{ROW} form[data-setting-dirty]").count() == 1
+    server.push_refresh()  # a NEW refresh arrives while the value is half-typed
     assert _held(page)  # the typed value is still there
     assert page.input_value(f"{ROW} input[name=value]") == "11"
     page.fill(f"{ROW} input[name=value]", "9.0")
@@ -352,3 +353,5 @@ def test_a_search_the_server_filtered_clears_in_the_page(page, server):
     assert "setting-row-miner-enabled" in _visible_rows(page)
     assert page.is_hidden("[data-settings-clear]")
     assert page.inner_text("#group-time [data-settings-count]") == "(2)"
+    page.fill("#settings-q", "sleeps")  # the page's own count, not the server's
+    assert page.inner_text("#group-time [data-settings-count]") == "(1 of 2)"
