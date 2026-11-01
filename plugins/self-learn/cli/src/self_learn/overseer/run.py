@@ -849,7 +849,9 @@ because: foreign-history.
 {ORDERED_CHECK}
 The NEEDS-YOU keys are a closed list ({keys}):
 {NEEDS_YOU_KEYS_TEXT}
-Every ask says needs: user or needs: stead. needs: stead is the ask described above: you act on its
+Every ask says needs: user or needs: stead; an ask with system: true or register and no needs is
+read as needs: user (because system-change, or foreign-history for register) and held to every
+needs: user rule below. needs: stead is the ask described above: you act on its
 default this run. needs: user adds because: one key from the list, and writes no default: the
 runner writes what holds meanwhile (nothing outside self-learn changes; for a conflict, the newer
 statement wins meanwhile). A needs: user ask with no valid because is filed as stead with its
@@ -877,7 +879,8 @@ and each of kind: approved is a change the user approved more than {STALE_APPROV
 that no agent has carried out (its plan summary and checks). The runner keeps each one open for you;
 re-judge whether it still matters. If it went moot, list it in questions.yaml under a top-level
 withdraw: [{{id, why}}], why being one sentence the user reads ("I stopped asking because ...").
-Re-asking an open ask's id (kind: ask) keeps it open with your new words. An approved item (kind:
+Re-asking an open ask's id (kind: ask) keeps it open with your new words, unless its entry says
+fixed (with why): keep that one or withdraw it, and ask anything new under a new id. An approved item (kind:
 approved) is kept or withdrawn, never re-asked: the user approved that plan, so re-asking its id is
 dropped and named; withdraw it and ask under a new id. Nor is an id the user already answered by
 choosing an option ever asked again: ask under a new id. Never ask a withdrawn question again in
@@ -976,7 +979,9 @@ under Hooks, not here.
 Every question is {{id, kind: ask, cases, text, why, default}} plus needs (below), a decision or
 fact only the user has. id is q-<short-kebab-slug>. text: ONE question, answerable in a sentence, written for someone
 who has not read the cases (say what would be built or changed and what yes and no each lead to).
-why: what the answer changes. Never bundle two decisions into one ask. If only the user can do
+why: what the answer changes. text names no lesson, case or statement ids (lrn-, case-, stmt-,
+um-): cite those in cases and statements, where the inbox shows them beside the question. Never
+bundle two decisions into one ask. If only the user can do
 something (it needs their hands, credentials, or a command agents may not run), you may ask
 whether they will; say exactly what and why.
 You never wait for an answer. default is ONE sentence saying what you did this run in the user's
@@ -1521,6 +1526,9 @@ def _open_asks(
     case_index = {str(row["case"]): row for row in cases.list_cases(home, only_ok=True) if row.get("case")}
     links = conversation.superseded_links(home)
     index_floor = _index_floor(home)
+    # Fix round 2 (gate r2 BLOCKER 1): an open ask whose id may not be
+    # asked again (a reopened approval) says so, with why.
+    fixed = _reask_problems(home, rows, choices=choices, outcomes=outcomes, answered=answered)
     entries: list[dict[str, Any]] = []
     targets: dict[str, str] = {}
     for row in asks:
@@ -1568,7 +1576,10 @@ def _open_asks(
                 continue
         elif q_id in answered:
             continue
-        entries.append({**base, "kind": "ask", "replies": replies, "feedback": feedback.get(q_id, [])})
+        entry = {**base, "kind": "ask", "replies": replies, "feedback": feedback.get(q_id, [])}
+        if q_id in fixed:
+            entry["fixed"] = fixed[q_id]
+        entries.append(entry)
         targets[q_id] = q_id
     gone = [
         {key: row.get(key) for key in ("id", "text", "because", "cases", "withdrawn_at", "why")}
@@ -2225,6 +2236,22 @@ def _questions(
         if kind not in QUESTION_KINDS:
             dropped.append(f"question {label}: dropped — kind must be ask")
             continue
+        if "needs" not in item and (item.get("system") is True or "register" in item):
+            # Fix round 2 (gate r2 MAJOR 2; answer 10, §3.8 "system: true
+            # with no needs reads as needs: user, because: system-change,
+            # and register as foreign-history"): read the same way here, a
+            # model-written ask is held to every needs: user rule (options,
+            # a recommendation, a plan with checks), so it never reaches the
+            # user as a page with nothing to click. S-117's rule stays: such
+            # an ask writes no default of its own (one could claim a change).
+            problem = _default_problem(item)
+            if problem is not None:
+                dropped.append(f"question {label}: dropped — {problem}")
+                continue
+            item = {
+                **item, "needs": "user",
+                "because": "foreign-history" if "register" in item else "system-change",
+            }
         problem = _question_problem(item, known_cases)
         if problem is None and item["id"] in seen:
             problem = "duplicate id"
@@ -2261,6 +2288,7 @@ def _questions(
                     dropped.append(f"question {label}: dropped — {problem}")
                     continue
             dropped.extend(notes)
+            dropped.extend(_ids_in_text_note(indexed, label))
             clean.append(indexed)
             continue
         row["default"] = _ask_default(item)
@@ -2271,8 +2299,28 @@ def _questions(
             if problem is not None:
                 dropped.append(f"question {label}: dropped — {problem}")
                 continue
+        dropped.extend(_ids_in_text_note(row, label))
         clean.append(row)
     return {"questions": clean}, dropped
+
+
+#: An id of the ledger's own records, which a question's wording never
+#: carries (§2.1 item 2: "one sentence, with no ids in it").
+_LEDGER_ID_RE = re.compile(r"\b(?:lrn|case|stmt|um)-[0-9a-f]{4,}\b")
+
+
+def _ids_in_text_note(row: dict[str, Any], label: str) -> list[str]:
+    """Fix round 2 (gate r2 NIT 5): a runner line naming an ask whose
+    question carries ledger ids. The ask is kept (a real question is not
+    lost for a week over wording); the line tells the next run, and the
+    report's reader, that the wording broke the rule."""
+    found = sorted(set(_LEDGER_ID_RE.findall(str(row.get("text") or ""))))
+    if not found:
+        return []
+    return [
+        f"question {label}: its question names {', '.join(found)} -- a question is one plain "
+        "sentence; the ids belong in its cases and statements, which the inbox shows beside it"
+    ]
 
 
 def _withdrawals(
@@ -5357,17 +5405,24 @@ def _parked_cited(home: Path, manifest: dict[str, Any]) -> dict[str, dict[str, l
 def _default_lines(
     manifest: dict[str, Any], parked: dict[str, dict[str, list[str]]] | None = None,
     *, withdrawn: list[dict[str, str]] | None = None,
+    dropped: set[str] | None = None,
 ) -> list[str]:
     """The report's "Decided in the user's stead" lines for the run's asks:
     each default applied, and, listed apart, the asks that would change the
     user's system or register a host, where the default changed nothing.
     An ask whose default did not reach a case still parked for the overseer
     (*parked*, from :func:`_parked_cited`) gets no "applied" line: it is
-    named under "Refused / could not do" (:func:`_default_refusals`)."""
+    named under "Refused / could not do" (:func:`_default_refusals`).
+    A needs-you ask the finalize dropped at publish (*dropped*, fix round 2,
+    gate r2 NIT 4) gets no "needs you" line: it was not indexed, and its
+    drop is named under "Refused / could not do"."""
     parked = parked or {}
+    dropped = dropped or set()
     applied: list[str] = []
     unchanged: list[str] = []
     for row in _defaulted_asks(manifest):
+        if row["id"] in dropped and conversation.asks_the_user(row):
+            continue
         if row.get("register"):
             unchanged.append(f"{row['id']} would register a host: {row['default']}")
         elif row.get("system") is True:
@@ -5453,8 +5508,9 @@ def _finalized_record(
 
 
 #: A report rendered inside the finalize's lock, from what the finalize
-#: actually applied: `(withdrawals applied, runner notes) -> report text`.
-ReportRender = Callable[[list[dict[str, str]], list[str]], str]
+#: actually applied: `(withdrawals applied, runner notes, ids of the run's
+#: asks dropped at publish) -> report text`.
+ReportRender = Callable[[list[dict[str, str]], list[str], set[str]], str]
 
 
 def _write_manifest_truth(
@@ -5500,6 +5556,7 @@ def _write_manifest_truth(
         withdrawn_rows: list[dict[str, Any]] | None = None
         applied: list[dict[str, str]] = []
         carry_notes: list[str] = []
+        carry_dropped: set[str] = set()
         if complete:
             # S-NEXT-overseer-asks (§3.8; critique 32): the previous index is
             # read HERE, inside the finalize's own lock span, so an answer or
@@ -5511,11 +5568,15 @@ def _write_manifest_truth(
             )
             index_rows, withdrawn_rows = carried.index, carried.withdrawn
             applied, carry_notes = carried.applied, carried.notes
+            carry_dropped = set(carried.dropped)
             if withdrawn_rows is not None:
                 paths.append(conversation.withdrawn_path(home))
         # Fix round 1 (gate r1 MINOR 6): the report says what this finalize
         # applied, so it is rendered here, after the carry-forward.
-        text = report_text(applied, carry_notes) if callable(report_text) else report_text
+        text = (
+            report_text(applied, carry_notes, carry_dropped) if callable(report_text)
+            else report_text
+        )
         # A17: the record re-read from HEAD after the render and under this
         # lock, so no writer can advance a field it does not own between
         # this read and the write below (the report is rendered in here
@@ -5570,6 +5631,11 @@ REASK_APPROVED = (
 )
 REASK_DONE = "the user approved its plan and an agent carried it out; ask under a new id"
 REASK_CHOSEN = "the user already answered it by choosing an option; ask under a new id"
+#: Fix round 2 (gate r2 BLOCKER 1): an ask reopened after an approval.
+REASK_REOPENED = (
+    "it was reopened after the user approved an earlier plan, and the inbox still shows that "
+    "approval; keep it or withdraw it, and ask a new plan under a new id"
+)
 
 
 def _reask_problems(
@@ -5594,7 +5660,14 @@ def _reask_problems(
       inbox would show that old answer against new words.
 
     Words (statements) never block a re-ask: both walks floor them, so a
-    later run may ask the same id again (S-117's floor)."""
+    later run may ask the same id again (S-117's floor).
+
+    Fix round 2 (gate r2 BLOCKER 1): a plan ask whose floored track is
+    open, but which the user approved at any time before (a reopened ask:
+    "Ask me anyway" moved its floor past the old click), is not re-asked
+    either (:data:`REASK_REOPENED`). The inbox's walk has no floor, so it
+    still counts that click; a new plan under the same id would show as
+    approved by it, and "Run it now" would carry out the new plan."""
     choices = conversation.choice_rows(home) if choices is None else choices
     outcomes = conversation.outcome_rows(home) if outcomes is None else outcomes
     index_floor = _index_floor(home)
@@ -5615,7 +5688,11 @@ def _reask_problems(
             elif track.state == "done":
                 out[q_id] = REASK_DONE
             elif track.state == "open":
-                still_open.add(q_id)
+                ever = conversation.approval_track(row, choices, outcomes, since=None)
+                if ever.state in ("approved", "awaiting-sudo", "done"):
+                    out[q_id] = REASK_REOPENED
+                else:
+                    still_open.add(q_id)
         elif q_id not in answered:
             still_open.add(q_id)
     for choice in choices:
@@ -5658,12 +5735,15 @@ class Carried:
     written); the withdrawals it actually applied (`{id, why}`), which are
     the only ones the report says were withdrawn; and the runner lines for
     "Refused / could not do" (a withdrawal it could not apply, a re-ask it
-    dropped at publish)."""
+    dropped at publish); and the ids of the run's own asks it dropped at
+    publish, which the report then does not list as needing the user (fix
+    round 2, gate r2 NIT 4)."""
 
     index: dict[str, Any]
     withdrawn: list[dict[str, Any]] | None
     applied: list[dict[str, str]]
     notes: list[str]
+    dropped: tuple[str, ...] = ()
 
 
 def _carry_forward(
@@ -5708,9 +5788,11 @@ def _carry_forward(
         home, previous, choices=choices, outcomes=outcomes, answered=answered,
     )
     kept_rows: list[dict[str, Any]] = []
+    dropped_ids: list[str] = []
     for row in new_rows:
         if row["id"] in reask:
             notes.append(f"question {row['id']}: dropped at publish -- {reask[row['id']]}")
+            dropped_ids.append(row["id"])
             continue
         kept_rows.append(row)
     new_rows = kept_rows
@@ -5781,7 +5863,9 @@ def _carry_forward(
                 f"withdraw {entry['id']}: not applied -- {exc}; it stays open"
                 for entry in gone
             )
-    return Carried({"questions": [*new_rows, *carried]}, withdrawn_rows, applied, notes)
+    return Carried(
+        {"questions": [*new_rows, *carried]}, withdrawn_rows, applied, notes, tuple(dropped_ids),
+    )
 
 
 def _refusal_line(sheet_name: str, item: batch.ItemResult) -> str:
@@ -6868,10 +6952,13 @@ def _execute_manifest(
             "applied": application_count,
         })
     try:
-        def _render(withdrawn: list[dict[str, str]], carry_notes: list[str]) -> str:
+        def _render(
+            withdrawn: list[dict[str, str]], carry_notes: list[str], publish_dropped: set[str],
+        ) -> str:
             # Rendered by `_write_manifest_truth` inside its lock, after the
             # carry-forward (fix round 1, gate r1 MINOR 6): *withdrawn* are the
-            # withdrawals it applied, *carry_notes* what it could not do.
+            # withdrawals it applied, *carry_notes* what it could not do, and
+            # *publish_dropped* the run's asks it dropped at publish.
             return _finalize_model_report(
                 stage / "report.md", date=cast(str, manifest["date"]), run_id=run_id,
                 model=cast(str, manifest["model"]), selected=selected,
@@ -6888,7 +6975,10 @@ def _execute_manifest(
                     # record them; fix round 1, gate r1 MINOR 2).
                     *(
                         [] if halted or default_parked is None
-                        else _default_lines(manifest, default_parked, withdrawn=withdrawn)
+                        else _default_lines(
+                            manifest, default_parked, withdrawn=withdrawn,
+                            dropped=publish_dropped,
+                        )
                     ),
                     *decided_lines,
                     *host_lines,
