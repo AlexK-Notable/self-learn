@@ -62,6 +62,8 @@ __all__ = [
     "done",
     "fix",
     "outcomes_path",
+    "preview",
+    "recorded_as_words",
     "redo_offered",
     "resolve_terminal",
     "run",
@@ -425,9 +427,13 @@ def _sudo_steps(plan: dict | None) -> tuple[list[dict], list[dict]]:
     return [s for s in steps if s.get("sudo") is True], [s for s in steps if s.get("sudo") is not True]
 
 
-def _paste_match(text: str, agent_texts: list[str]) -> str | None:
-    """The agent row whose text shares a whitespace-normalised run of
-    :data:`PASTE_MATCH_CHARS` characters with *text*, or ``None``."""
+def _paste_run(text: str, agent_texts: list[str]) -> tuple[str, str] | None:
+    """``(the agent row's text, the shared run)`` for the first agent row
+    whose text shares a whitespace-normalised run of
+    :data:`PASTE_MATCH_CHARS` characters with *text*, or ``None``. The run
+    is grown to the longest shared stretch from where it was found, so the
+    page can show the person which words made the match (walk fixes,
+    item 2)."""
     reply = _norm(text)
     if len(reply) < PASTE_MATCH_CHARS:
         return None
@@ -436,9 +442,127 @@ def _paste_match(text: str, agent_texts: list[str]) -> str | None:
         if len(theirs) < PASTE_MATCH_CHARS:
             continue
         for start in range(len(reply) - PASTE_MATCH_CHARS + 1):
-            if reply[start:start + PASTE_MATCH_CHARS] in theirs:
-                return original
+            end = start + PASTE_MATCH_CHARS
+            if reply[start:end] in theirs:
+                while end < len(reply) and reply[start:end + 1] in theirs:
+                    end += 1
+                return original, reply[start:end]
     return None
+
+
+def _paste_match(text: str, agent_texts: list[str]) -> str | None:
+    """The agent row whose text shares a whitespace-normalised run of
+    :data:`PASTE_MATCH_CHARS` characters with *text*, or ``None``."""
+    hit = _paste_run(text, agent_texts)
+    return hit[0] if hit is not None else None
+
+
+def recorded_as_words(origin: str, *, with_choice: bool, words_from: bool = False) -> str:
+    """How an answer of *origin* is recorded, in the page's words: the
+    answer verb's ``recorded_as`` and the page's preview line before
+    sending (:func:`preview`) both read this one table, so the page can
+    never say more than the record does (walk fixes, item 2; C6)."""
+    if words_from:
+        return "as your choice of the offered option, with the words you sent before"
+    if origin == "typed":
+        return "as your choice of the offered option, with your words" if with_choice else "as your words"
+    if origin == "clicked":
+        return "as your choice of the offered option"
+    if origin == "draft-accepted":
+        return "as the agent's draft, accepted by you"
+    if origin == "draft-edited":
+        return "as the agent's draft, edited and sent by you"
+    return "as your words, relayed by an agent from your session"
+
+
+def _origin_of(home: Path, item_id: str, text: str | None, draft_id: str | None) -> dict[str, Any]:
+    """§3.4.1's order for a reply that is the person's own act (the page,
+    or their own shell): a ``draft_id`` naming no sealed draft of the item
+    is refused; with one, equal text is ``draft-accepted`` and different
+    text ``draft-edited``; with none, a :data:`PASTE_MATCH_CHARS` match
+    against an agent row is ``draft-edited``; otherwise ``typed``; no text
+    at all is ``clicked``. The ONE rule :func:`answer` records by and
+    :func:`preview` reports. Returns ``{origin, text, draft_text,
+    draft_option, matched}``."""
+    if draft_id is not None:
+        draft_row = next(
+            (row for row in workspace.rows(home, item_id, pending=False)
+             if row.get("kind") == "draft" and row.get("role") == "agent"
+             and row.get("draft_id") == draft_id and isinstance(row.get("t"), int)),
+            None,
+        )
+        if draft_row is None or not isinstance(draft_row.get("text"), str):
+            raise AnswerError(f"--draft {draft_id} names no sealed draft of {item_id}", EXIT_USAGE)
+        sealed_text: str = draft_row["text"]
+        sent = sealed_text if text is None else text
+        return {
+            "origin": "draft-accepted" if sent.strip() == sealed_text.strip() else "draft-edited",
+            "text": sent, "draft_text": sealed_text,
+            "draft_option": draft_row["option"] if isinstance(draft_row.get("option"), str) else None,
+            "matched": None,
+        }
+    if text is None:
+        return {"origin": "clicked", "text": None, "draft_text": None, "draft_option": None,
+                "matched": None}
+    agent_texts = [
+        str(row["text"]) for row in workspace.rows(home, item_id, pending=False)
+        if row.get("role") == "agent" and row.get("kind") in ("answer", "draft")
+        and isinstance(row.get("text"), str)
+    ]
+    hit = _paste_run(text, agent_texts)
+    return {
+        "origin": "draft-edited" if hit is not None else "typed", "text": text,
+        "draft_text": hit[0] if hit is not None else None, "draft_option": None,
+        "matched": hit[1] if hit is not None else None,
+    }
+
+
+def preview(home: Path | str, item_id: str, *, text: str | None = None,
+            draft_id: str | None = None, option: str | None = None) -> dict[str, Any]:
+    """What :func:`answer` would record for this reply, read-only (walk
+    fixes, item 2): the page shows it under the reply box before anything
+    is sent, from the same rule (:func:`_origin_of`) and the same words
+    (:func:`recorded_as_words`). Returns ``{origin, recorded_as, matched,
+    problem}``; ``origin`` is ``None`` when nothing would be sent or the
+    reply would be refused (``problem`` then says why)."""
+    home = Path(home)
+    if isinstance(text, str) and not text.strip():
+        text = None
+    empty = {"origin": None, "recorded_as": None, "matched": None, "problem": None}
+    if text is None and draft_id is None:
+        return empty
+    if text is not None and (rule := workspace.secret_rule(text)) is not None:
+        return {**empty, "problem": f"it matches the secret scan ({rule}), so it would be refused"}
+    try:
+        found = _origin_of(home, item_id, text, draft_id)
+    except AnswerError as exc:
+        return {**empty, "problem": str(exc)}
+    origin = found["origin"]
+    with_choice = (option is not None or found["draft_option"] is not None
+                   or origin.startswith("draft-"))
+    return {"origin": origin, "recorded_as": recorded_as_words(origin, with_choice=with_choice),
+            "matched": found["matched"], "problem": None}
+
+
+def _reused_words(home: Path, item_id: str, t: int) -> tuple[str, str | None]:
+    """Walk fixes, item 3: the words the person typed and sent on this item
+    as row ``T<t>`` (a reply with no option), and the statement that
+    already records them, so a note-required option can take them as its
+    note without the person typing them again and without a second
+    statement of the same words."""
+    row = next((r for r in workspace.rows(home, item_id, pending=False) if r.get("t") == t), None)
+    if (row is None or row.get("role") != "user" or row.get("origin") != "typed"
+            or row.get("kind") != "reply" or row.get("option")
+            or not isinstance(row.get("text"), str) or not row["text"].strip()):
+        raise AnswerError(f"--words-from T{t} names no reply you typed and sent on {item_id}",
+                          EXIT_USAGE)
+    ref = f"workspace:{item_id}#T{t}"
+    statement = next(
+        (str(s.get("id")) for s in statements.list_statements(home)
+         if (s.get("source") or {}).get("message_ref") == ref),
+        None,
+    )
+    return row["text"], statement
 
 
 def _conflict_statements(ask_row: dict | None) -> list[str]:
@@ -588,14 +712,27 @@ def answer(
     confirm: bool = False,
     note: str | None = None,
     launch: bool = True,
+    words_from: int | None = None,
 ) -> AnswerResult:
     """``self-learn attention answer`` (design r2 §3.4.1, §3.4.4). Raises
     :class:`AnswerError` with the exit code of §4.6 when refused; nothing is
-    recorded then, except where the message says otherwise."""
+    recorded then, except where the message says otherwise.
+
+    *words_from* (walk fixes, item 3) is the transcript row of words the
+    person already typed and sent on this item: an option is sent with
+    them as its note, citing the statement that already records them, so
+    they are never typed twice nor recorded as a second statement."""
     home = Path(home)
     agent = _agent()
     if isinstance(text, str) and not text.strip():
         text = None
+    if words_from is not None:
+        if agent:
+            raise AnswerError("--words-from is the person's click on the page; refused from an "
+                              "agent's shell", EXIT_USAGE)
+        if option is None or text is not None or draft_id is not None:
+            raise AnswerError("--words-from goes with --option alone (no --text-file, no --draft)",
+                              EXIT_USAGE)
     if option is None and text is None and draft_id is None:
         raise AnswerError("answer needs --option, --text-file or --draft", EXIT_USAGE)
     if agent:
@@ -652,37 +789,19 @@ def answer(
         ask_row = None
     options = _options_for(item, ask_row)
 
-    # -- the origin (§3.4.1's order)
-    draft_row: dict | None = None
+    # -- the origin (§3.4.1's order; one rule with the page's preview)
     draft_text: str | None = None
-    if draft_id is not None:
-        draft_row = next(
-            (row for row in workspace.rows(home, item["id"], pending=False)
-             if row.get("kind") == "draft" and row.get("role") == "agent"
-             and row.get("draft_id") == draft_id and isinstance(row.get("t"), int)),
-            None,
-        )
-        if draft_row is None or not isinstance(draft_row.get("text"), str):
-            raise AnswerError(f"--draft {draft_id} names no sealed draft of {item['id']}", EXIT_USAGE)
-        sealed_text: str = draft_row["text"]
-        draft_text = sealed_text
-        if text is None:
-            text = sealed_text
-        origin = "draft-accepted" if text.strip() == sealed_text.strip() else "draft-edited"
-        if option is None and isinstance(draft_row.get("option"), str):
-            option = draft_row["option"]
+    reused_statement: str | None = None
+    if words_from is not None:
+        text, reused_statement = _reused_words(home, item["id"], words_from)
+        origin = "clicked"
     elif agent:
         origin = "relayed"
-    elif text is not None:
-        agent_texts = [
-            str(row["text"]) for row in workspace.rows(home, item["id"], pending=False)
-            if row.get("role") == "agent" and row.get("kind") in ("answer", "draft")
-            and isinstance(row.get("text"), str)
-        ]
-        draft_text = _paste_match(text, agent_texts)
-        origin = "draft-edited" if draft_text is not None else "typed"
     else:
-        origin = "clicked"
+        found = _origin_of(home, item["id"], text, draft_id)
+        origin, text, draft_text = found["origin"], found["text"], found["draft_text"]
+        if option is None and found["draft_option"] is not None:
+            option = found["draft_option"]
 
     # -- the option
     chosen: dict | None = None
@@ -782,6 +901,8 @@ def answer(
         "draft_id": draft_id, "draft_text": draft_text if origin.startswith("draft-") else None,
         "ref": ref,
     }
+    if words_from is not None:
+        row["words_from"] = words_from
     t = _seal(home, item, row)
     result.transcript_row = t
     message_ref = f"workspace:{item['id']}#T{t}"
@@ -812,7 +933,8 @@ def answer(
             "text": text if effect != "ran-sudo" else None,
             "draft_id": draft_id, "draft_text": draft_text if how.startswith("draft-") else None,
             "offered_by": offered_by, "answers": _answers_for(item, ask_row, for_choice=True),
-            "source": {"message_ref": message_ref}, "statement": result.statement,
+            "source": {"message_ref": message_ref},
+            "statement": result.statement or reused_statement,
             "proof": proof_ref, "recorded_by": _actor(), "note": note,
         }
         from .overseer import conversation
@@ -838,13 +960,8 @@ def answer(
     plan = _plan_of(item, ask_row)
     result.state = _downstream(home, item, ask_row, chosen, plan, decided_by, result,
                                launch=launch, origin=origin)
-    result.recorded_as = (
-        "as your words" if origin == "typed" and result.choice is None
-        else "as your choice of the offered option, with your words" if origin == "typed"
-        else "as your choice of the offered option" if origin == "clicked"
-        else "as the agent's draft, accepted by you" if origin == "draft-accepted"
-        else "as the agent's draft, edited and sent by you" if origin == "draft-edited"
-        else "as your words, relayed by an agent from your session"
+    result.recorded_as = recorded_as_words(
+        origin, with_choice=result.choice is not None, words_from=words_from is not None,
     )
     return result
 

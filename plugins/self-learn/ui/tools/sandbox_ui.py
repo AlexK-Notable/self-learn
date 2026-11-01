@@ -616,6 +616,57 @@ def _seed_active_hook(ledger: Path) -> str:
     return record.id
 
 
+def _hours_ago(hours: float) -> str:
+    dt = datetime.now(timezone.utc) - timedelta(hours=hours)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _seed_transcript(session: str, line: int, words: str, at: str) -> None:
+    """Walk fixes, item 6: a real transcript file under the sandbox's
+    ``~/.claude/projects`` (the default transcript root, inside the
+    redirected HOME), so a statement's ``transcript:<session>#L<line>`` ref
+    resolves and the page shows the conversation around the words. Before
+    this the seed cited sessions that did not exist, and every quote read
+    "the conversation around it was not read"."""
+    import json as _json
+
+    folder = Path(os.environ["HOME"]) / ".claude" / "projects" / "-sandbox-walk"
+    folder.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for n in range(1, line + 3):
+        if n == line:
+            role, text = "user", words
+        elif n == line - 1:
+            role, text = "assistant", ("The steward asked you about a lesson again; do you want "
+                                       "to see questions like that?")
+        elif n == line + 1:
+            role, text = "assistant", "Understood. I will note that."
+        else:
+            role, text = ("user" if n % 2 else "assistant"), f"(earlier turn {n} of this session)"
+        rows.append(_json.dumps({
+            "type": role, "uuid": f"{session}-{n:04d}", "sessionId": session, "timestamp": at,
+            "message": {"role": role, "content": text},
+        }))
+    (folder / f"{session}.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def _backdate_statements(ledger: Path, when: dict[str, str]) -> None:
+    """Walk fixes, item 6: give the seeded statements the times they were
+    said (``statements.add`` stamps "now", which made both quotes of the
+    conflict read "just now" and neither could be told newer)."""
+    import json as _json
+
+    path = ledger / "user-statements.jsonl"
+    lines = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        row = _json.loads(raw) if raw.strip() else None
+        if isinstance(row, dict) and row.get("id") in when:
+            row["at"] = when[row["id"]]
+            raw = _json.dumps(row, sort_keys=True)
+        lines.append(raw)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def world_attention(host: Path, ledger: Path) -> list[str]:
     import json as _json
 
@@ -636,12 +687,28 @@ def world_attention(host: Path, ledger: Path) -> list[str]:
         "triage() {\n  case \"$1\" in\n    linux-firmware*) echo benign ;;\n"
         "    *) echo review ;;\n  esac\n}\n", encoding="utf-8")
 
+    # Walk fixes, item 6: the two statements were said hours apart in two
+    # real (sandbox) sessions, so the conflict's quotes carry their times,
+    # one reads as the newer, and each shows the conversation around it.
+    older_at, newer_at = _hours_ago(2 * 24 + 5), _hours_ago(2 * 24 + 0.25)
+    _seed_transcript("sandbox-older", 12, ATTENTION_WORDS_OLDER, older_at)
+    _seed_transcript("sandbox-newer", 40, ATTENTION_WORDS_NEWER, newer_at)
     older = statements.add(ledger, verbatim=ATTENTION_WORDS_OLDER,
                            source={"message_ref": "transcript:sandbox-older#L12"},
                            recorded_by="human")
     newer = statements.add(ledger, verbatim=ATTENTION_WORDS_NEWER,
                            source={"message_ref": "transcript:sandbox-newer#L40"},
                            recorded_by="human")
+    _backdate_statements(ledger, {older: older_at, newer: newer_at})
+    # Walk fixes, item 6: the safe-update ask says each package "came up at
+    # least twice"; the evidence now holds the dated log that shows when.
+    state_dir = sandbox_home / ".local" / "state" / "safe-update"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "triage.log").write_text("".join(
+        f"{days_ago(d)[:10]} review {pkg} (asked you; you said harmless)\n"
+        for d, pkg in ((40, "linux-firmware-intel"), (33, "intel-ucode"), (26, "amd-ucode"),
+                       (19, "linux-firmware-intel"), (12, "intel-ucode"), (5, "amd-ucode"))
+    ), encoding="utf-8")
     yes_no = [
         {"id": "opt-yes", "label": "Yes, add the binding", "effect": "approve"},
         {"id": "opt-yes-conditions", "label": "Yes, with conditions", "effect": "approve",
@@ -703,7 +770,7 @@ def world_attention(host: Path, ledger: Path) -> list[str]:
                            "sudo": False}],
                 "files": [],
             },
-            "look_at": [str(script_dir / "safe-update")],
+            "look_at": [str(state_dir / "triage.log"), str(script_dir / "safe-update")],
         },
         {
             "id": "q-which-statement-holds", "kind": "ask", "cases": [],

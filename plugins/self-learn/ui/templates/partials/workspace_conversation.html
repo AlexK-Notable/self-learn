@@ -3,7 +3,9 @@
   sealed rows, then rows kept on this machine while the ledger is STOPPED,
   then the in-flight turn's text so far (a page reopened mid-turn shows it
   and continues). Drafts are cards: "Use this draft" fills the reply box;
-  "Send as is" sends it, recorded as the agent's draft accepted by you.
+  "Send the draft as is" sends it, recorded as the agent's draft accepted
+  by you (walk fixes, item 8: never "Send as is", which read like the
+  reply box's own Send).
 #}
 {% set any_rows = rows or in_flight %}
 {% if not any_rows %}
@@ -22,7 +24,7 @@
       <input type="hidden" name="text" value="{{ row.text }}">
       {% if row.option %}<input type="hidden" name="option" value="{{ row.option }}">{% endif %}
       <button type="button" class="btn" data-use-draft>Use this draft</button>
-      <button type="submit" class="btn btn-primary">Send as is</button>
+      <button type="submit" class="btn btn-primary" data-send-draft>Send the draft as is</button>
     </form>
   </div>
   {% elif row.role == "user" %}

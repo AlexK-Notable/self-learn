@@ -192,6 +192,41 @@ class _Limits:
 # ------------------------------------------------------------------ evidence
 
 
+#: Walk fixes, item 6: the most sightings a lesson entry lists.
+MAX_SIGHTINGS = 10
+
+
+def _sections(body: str) -> dict[str, str]:
+    """A record body's ``## Name`` sections, name -> text."""
+    from .primitives import text as text_mod
+
+    out: dict[str, str] = {}
+    matches = list(text_mod.HEADING_RE.finditer(body))
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        out[m.group(1)] = body[m.end():end].strip()
+    return out
+
+
+def _sightings(record: Any, limits: _Limits, where: str) -> list[dict]:
+    """Walk fixes, item 6: each time the lesson was seen (its frontmatter
+    ``evidence``: a session and time with the quote, or an origin with a
+    note), newest first, so a claim like "came up at least twice" can be
+    checked in place."""
+    rows = [dict(e) for e in getattr(record, "evidence", ()) or () if isinstance(e, dict)]
+    rows.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
+    out: list[dict] = []
+    for index, entry in enumerate(rows[:MAX_SIGHTINGS]):
+        out.append({
+            "at": entry.get("ts") if isinstance(entry.get("ts"), str) else None,
+            "session": entry.get("session") if isinstance(entry.get("session"), str) else None,
+            "origin": entry.get("origin") if isinstance(entry.get("origin"), str) else None,
+            "quote": limits.clip(entry.get("quote") or entry.get("note"),
+                                 f"{where}.seen[{index}]", 400),
+        })
+    return out
+
+
 def _lesson(home: Path, lesson_id: str, limits: _Limits, where: str) -> dict | None:
     from .ledger_ops import LedgerOpsError, find_record_path
     from .records import Record
@@ -201,12 +236,25 @@ def _lesson(home: Path, lesson_id: str, limits: _Limits, where: str) -> dict | N
     except (LedgerOpsError, OSError, ValueError):
         return None
     body = record.body
-    title = next((ln.lstrip("# ").strip() for ln in body.splitlines() if ln.strip()), lesson_id)
+    sections = _sections(body)
+    # Walk fixes, item 6: the title is what the lesson is about (its
+    # trigger, or its fact), never the first heading's name ("Trigger").
+    lead = sections.get("Trigger") or sections.get("Fact")
+    title = (
+        " ".join(lead.split()) if lead
+        else next((ln.lstrip("# ").strip() for ln in body.splitlines() if ln.strip()), lesson_id)
+    )
     routing = record.routing or {}
+    sightings = getattr(record, "sightings", None)
     return {
         "kind": "lesson", "id": lesson_id, "title": limits.clip(title, f"{where}.title", 300),
         "text": limits.clip(body, f"{where}.text"), "status": record.status,
         "placement": routing.get("destination") if isinstance(routing, dict) else None,
+        "trigger": limits.clip(sections.get("Trigger"), f"{where}.trigger", 1000),
+        "instruction": limits.clip(sections.get("Instruction"), f"{where}.instruction", 1000),
+        "fact": limits.clip(sections.get("Fact"), f"{where}.fact", 1000),
+        "sightings": sightings if isinstance(sightings, int) else None,
+        "seen": _sightings(record, limits, where),
     }
 
 
@@ -230,10 +278,24 @@ def _context(home: Path, ref: str, limits: _Limits, where: str, deadline: float)
         else:
             return None, "no context for this kind of ref"
     except Exception as exc:  # noqa: BLE001 -- context is a courtesy
-        return None, f"not read ({type(exc).__name__})"
+        return None, _context_problem(exc)
     if text is None:
-        return None, "the ref did not resolve"
+        return None, "not found: the place it points to is not there any more"
     return limits.clip(text, f"{where}.context", MAX_CONTEXT_CHARS), None
+
+
+def _context_problem(exc: Exception) -> str:
+    """Walk fixes, item 6: why a statement's conversation was not shown, in
+    plain words (the page prints "The conversation around it was <this>."),
+    never an exception's class name."""
+    from . import refs
+
+    if isinstance(exc, refs.RefError):
+        return ("not found on this machine: the conversation file it came from was moved or "
+                "deleted (the words themselves are kept)")
+    if isinstance(exc, OSError):
+        return "not readable here (the file could not be opened)"
+    return "not read (it could not be parsed)"
 
 
 def _statement(home: Path, row: dict, limits: _Limits, where: str, deadline: float) -> dict:
@@ -479,9 +541,22 @@ def _report(home: Path, date: str | None, limits: _Limits, where: str) -> dict |
     }
 
 
+def _display_path(path: str) -> str:
+    """Walk fixes, item 6: a path as a person reads it, the home folder
+    written ``~``, whole (never cut)."""
+    try:
+        home = str(Path.home())
+    except RuntimeError:
+        return path
+    if home and home != "/" and (path == home or path.startswith(home.rstrip("/") + "/")):
+        return "~" + path[len(home.rstrip("/")):]
+    return path
+
+
 def _file(path: str, limits: _Limits, where: str) -> dict:
     p = Path(path)
-    if p.is_dir():
+    is_dir = p.is_dir()
+    if is_dir:
         try:
             names = sorted(child.name + ("/" if child.is_dir() else "") for child in p.iterdir())
         except OSError as exc:
@@ -497,8 +572,8 @@ def _file(path: str, limits: _Limits, where: str) -> dict:
             text = f"(cannot read: {exc})"
         truncated = p.stat().st_size > len(text) if p.exists() else False
     excerpt = limits.clip(text, f"{where}.excerpt")
-    return {"kind": "file", "path": path, "excerpt": excerpt,
-            "truncated": bool(truncated or (excerpt or "").endswith("…"))}
+    return {"kind": "file", "path": path, "display": _display_path(path), "is_dir": is_dir,
+            "excerpt": excerpt, "truncated": bool(truncated or (excerpt or "").endswith("…"))}
 
 
 def _hook(home: Path, lesson_id: str, limits: _Limits, where: str) -> dict | None:
@@ -530,8 +605,12 @@ def _hook(home: Path, lesson_id: str, limits: _Limits, where: str) -> dict | Non
             except OSError:
                 script = None
     registration = {k: v for k, v in meta.items() if k not in ("script", "script_path")}
+    sections = _sections(record.body)
     return {
         "kind": "hook", "record": lesson_id,
+        # Walk fixes, item 6: what the hook is for leads, before its script.
+        "trigger": limits.clip(sections.get("Trigger"), f"{where}.trigger", 1000),
+        "instruction": limits.clip(sections.get("Instruction"), f"{where}.instruction", 1000),
         "script_excerpt": limits.clip(script if script is not None else meta.get("script"),
                                       f"{where}.script_excerpt"),
         "registration": limits.clip(json.dumps(registration, sort_keys=True, default=str),
@@ -623,9 +702,14 @@ def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str],
         if isinstance(answers, dict) and answers.get("ref") in answering:
             done.add(str(row.get("id")))
             out.append(_statement(home, row, limits, f"evidence[{len(out)}]", deadline))
+    _mark_conflict_sides(item, out)
     if item["kind"] == "decided.hook-activated" and isinstance(item.get("_lesson"), str):
         hook = _hook(home, item["_lesson"], limits, f"evidence[{len(out)}]")
         if hook is not None:
+            # Walk fixes, item 6: the hook leads, and it opens with the
+            # lesson's trigger and instruction; the lesson itself is not
+            # repeated below the script.
+            out[:] = [e for e in out if not (e.get("kind") == "lesson" and e.get("id") == item["_lesson"])]
             out.insert(0, hook)
     if item["kind"] == "decided.overseer-run":
         report = _report(home, (item.get("source") or {}).get("report"), limits, f"evidence[{len(out)}]")
@@ -639,6 +723,27 @@ def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str],
             out.append({"kind": "fact", "label": fact.get("label"),
                         "value": limits.clip(value, "evidence.fact") if isinstance(value, str) else value})
     return out
+
+
+def _mark_conflict_sides(item: dict, out: list[dict]) -> None:
+    """Walk fixes, item 6: on a conflict between two statements, each
+    quote says whether it is the newer or the older one (the words the
+    options use), by when it was said: the same comparison the answer verb
+    makes when it observes the losing side (``attention_answers.
+    _conflict_losers``). Equal or unknown times mark neither."""
+    ask = item.get("_ask") if isinstance(item.get("_ask"), dict) else {}
+    named = ask.get("statements") if ask.get("because") == "conflict" else None
+    if not (isinstance(named, list) and len(named) == 2):
+        return
+    quoted = {e.get("id"): e for e in out if e.get("kind") == "statement" and e.get("id") in named}
+    if len(quoted) != 2:
+        return
+    first, second = (quoted[named[0]], quoted[named[1]])
+    a_at, b_at = str(first.get("at") or ""), str(second.get("at") or "")
+    if not a_at or not b_at or a_at == b_at:
+        return
+    newer, older = (first, second) if a_at > b_at else (second, first)
+    newer["side"], older["side"] = "newer", "older"
 
 
 def _evidence_ref(entry: dict) -> dict:

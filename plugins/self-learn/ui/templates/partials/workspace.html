@@ -9,11 +9,19 @@
          data-item-state="{{ item.state }}" data-item-title="{{ item.title }}"
          aria-labelledby="ws-question">
   <div class="ws-main">
+    {# Walk fixes, items 4 and 8: results that belong at the top of the
+       page (a login check) land here, and /inbox says why it opened this
+       item rather than a bare list. #}
+    <div id="ws-top-result"></div>
+    {% if opened_first %}<p class="ws-meta ws-opened-first" data-opened-first>The most pressing item is open first. Every item is in the list (beside this one, or above it on a narrow window); pick any of them there.</p>{% endif %}
     <header class="ws-head">
       <p class="ws-chips">
         <span class="chip chip-{{ item.class }}">{{ item.chip }}</span>
         {% if item.class == "needs-you" and item.age %}<span class="ws-age">open {{ item.age }}</span>{% endif %}
-        {% if item.class == "decided" and item.flagged and not item.seen %}<span class="dot-new">new</span>{% endif %}
+        {# Walk fixes, item 8: the same mark, with the same word, as the
+           item's row in the list; inbox.js drops both together once the
+           seen click is recorded. #}
+        {% if item.class == "decided" and not item.seen %}<span class="dot-new" data-new-mark>{% if item.flagged %}new{% else %}unseen{% endif %}</span>{% endif %}
       </p>
       <h1 id="ws-question">{{ (packet.question if packet and packet.question else item.title) }}</h1>
     </header>
@@ -27,14 +35,7 @@
     </section>
     {% endif %}
 
-    <section class="ws-section" aria-labelledby="ws-meanwhile-h">
-      <h2 id="ws-meanwhile-h">{% if item.class == "decided" %}What it changes now{% else %}Meanwhile{% endif %}</h2>
-      {% set meanwhile = (packet.meanwhile if packet else None) or item.meanwhile %}
-      {% if item.class == "decided" and packet and packet.decided and packet.decided.changes_now %}
-      <p>{{ packet.decided.changes_now }}</p>
-      {% elif meanwhile %}<p>{{ meanwhile }}</p>
-      {% else %}<p>Nothing is done until you answer.</p>{% endif %}
-    </section>
+    {% include "partials/workspace_meanwhile.html" %}
 
     {% include "partials/workspace_packet.html" %}
 

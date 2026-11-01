@@ -268,13 +268,66 @@
   function applyDraftMeta(id, option) {
     var hidden = $("#ws-reply-draft");
     var form = $("#ws-answer-form");
-    var note = $("#ws-reply-draft-note");
+    var changed = !!hidden && hidden.value !== (id || "");
     if (hidden) hidden.value = id || "";
     if (form) {
       if (id && option) form.setAttribute("data-draft-option", option);
       else form.removeAttribute("data-draft-option");
     }
-    if (note) note.hidden = !id;
+    if (changed) askProvenance(true);
+  }
+
+  // ------------------------------------------------------------ provenance
+
+  // Walk fixes, item 2 (C6): ONE line under the reply box says how its
+  // text would be recorded, and it comes from the answer verb's own rule
+  // (POST .../provenance runs the CLI's preview: the draft id, then the
+  // 40-character match against the agent's text). While the box changed
+  // and the answer is not back, the line claims nothing ("Checking..."), so
+  // the page is never more generous than the record. Answers that arrive
+  // out of order are dropped.
+  var PROVENANCE_CHECKING = "Checking how this would be recorded\u2026";
+  var PROVENANCE_UNKNOWN = "How this would be recorded could not be checked; the line under " +
+    "your answer says how it was recorded once you send it.";
+  var provenanceSeq = 0;
+  var provenanceTimer = null;
+
+  function setProvenance(line, origin) {
+    var el = $("#ws-reply-line");
+    if (!el) return;
+    el.textContent = line;
+    el.setAttribute("data-origin", origin || "");
+  }
+
+  function askProvenance(now) {
+    var box = $("#ws-reply-text");
+    var el = $("#ws-reply-line");
+    var item = currentItem();
+    if (!box || !el || !item) return;
+    var seq = ++provenanceSeq;
+    if (provenanceTimer) { window.clearTimeout(provenanceTimer); provenanceTimer = null; }
+    setProvenance(PROVENANCE_CHECKING, "");
+    var send = function () {
+      provenanceTimer = null;
+      var hidden = $("#ws-reply-draft");
+      var body = new URLSearchParams();
+      body.set("text", box.value || "");
+      body.set("draft_id", hidden ? hidden.value || "" : "");
+      fetch("/inbox/" + encodeURIComponent(item) + "/provenance", {
+        method: "POST", credentials: "same-origin", body: body,
+        headers: { "HX-Request": "true" },
+      }).then(function (resp) { return resp.ok ? resp.json() : null; })
+        .then(function (data) {
+          if (seq !== provenanceSeq || currentItem() !== item) return;
+          if (data && typeof data.line === "string") setProvenance(data.line, data.origin);
+          else setProvenance(PROVENANCE_UNKNOWN, "");
+        }, function () {
+          if (seq !== provenanceSeq) return;
+          setProvenance(PROVENANCE_UNKNOWN, "");
+        });
+    };
+    if (now) send();
+    else provenanceTimer = window.setTimeout(send, 300);
   }
 
   function storeDraftMeta(item, id, option) {
@@ -299,6 +352,7 @@
     applyDraftMeta(id, option);
     store("reply", currentItem(), text);
     storeDraftMeta(currentItem(), id, option);
+    askProvenance(true);
     box.focus();
   }
 
@@ -397,6 +451,7 @@
       } else {
         reattachDraft(t, e.inputType);
       }
+      askProvenance(false);
     } else if (t.id === "ws-ask-text") {
       store("ask", currentItem(), t.value);
     }
@@ -411,6 +466,7 @@
       var hidden = $("#ws-reply-draft");
       var meta = reply.value ? recallDraftMeta(id) : null;
       if (meta && hidden && !hidden.value) applyDraftMeta(meta.id, meta.option);
+      if (reply.value) askProvenance(true);
     }
     if (ask && !ask.value && !ask.disabled) ask.value = recall("ask", id);
   }
@@ -435,18 +491,51 @@
       var status = $("#ws-ask-status");
       if (status) status.textContent = "";
     }
-    if (elt && elt.closest && elt.closest("#ws-answer")) {
+    // Walk fixes, item 7: "Recording..." and the busy buttons are for a
+    // request that redraws the answer bar (an answer, an undo, a stop).
+    // Run it now, a fix, a login check or feedback swap only their own
+    // result box; they used to leave every button aria-disabled and
+    // "Recording..." under the box for good, so the next Send click on a
+    // running item was refused as a click on a disabled button.
+    if (elt && elt.closest && elt.closest("#ws-answer") && redrawsAnswerBar(e.detail)) {
       $all("#ws-answer button").forEach(function (b) { b.setAttribute("aria-disabled", "true"); });
       var line = $("#ws-reply-line");
-      if (line) line.textContent = "Recording…";
+      if (line) {
+        line.setAttribute("data-before-recording", line.textContent);
+        line.textContent = "Recording…";
+      }
     }
   });
+
+  var BAR_PATH_RE = /^\/inbox\/att-[0-9a-f]{12}\/(answer|undo|stop)$/;
+
+  function redrawsAnswerBar(detail) {
+    return BAR_PATH_RE.test(requestPath(detail).split("?")[0]);
+  }
+
+  function dropNewMarks(id) {
+    if (currentItem() === id) $all("#ws [data-new-mark]").forEach(function (m) { m.remove(); });
+    $all("#inbox-list [data-inbox-item=\"" + id + "\"] .dot-new").forEach(function (m) { m.remove(); });
+  }
 
   document.addEventListener("htmx:afterRequest", function (e) {
     var own = ownItem(e.detail);
     if (own && own === ownAction.item) {
       ownAction.pending = false;
       ownAction.until = Date.now() + OWN_GRACE_MS;
+    }
+    // Whatever the request was, a bar it did not redraw is live again.
+    $all("#ws-answer [aria-disabled=\"true\"]").forEach(function (b) { b.removeAttribute("aria-disabled"); });
+    var line = $("#ws-reply-line");
+    if (line && line.textContent === "Recording…") {
+      line.textContent = line.getAttribute("data-before-recording") || "";
+      line.removeAttribute("data-before-recording");
+    }
+    // Walk fixes, item 8: once the seen click is recorded, the "new" mark
+    // goes from the page header and from the item's list row together.
+    var seen = /^\/inbox\/(att-[0-9a-f]{12})\/seen$/.exec(requestPath(e.detail).split("?")[0]);
+    if (seen && e.detail.xhr && e.detail.xhr.status >= 200 && e.detail.xhr.status < 300) {
+      dropNewMarks(seen[1]);
     }
   });
 
@@ -461,6 +550,18 @@
         setAsking(status === 409 && !!liveBubble());
       }
     }
+  });
+
+  // Walk fixes, item 4: a result that belongs at the top of the page (a
+  // login check that worked) is brought into view and announced, so it is
+  // never left below the fold while the item quietly leaves the list.
+  document.addEventListener("htmx:oobAfterSwap", function (e) {
+    var swapped = e.detail && e.detail.target;
+    if (!swapped || swapped.id !== "ws-top-result") return;
+    var target = $("#ws-top-result");  // the element now in the page
+    if (!target || !target.textContent.trim()) return;
+    try { target.scrollIntoView({ block: "start" }); } catch (err) { target.scrollIntoView(); }
+    announce(target.textContent.replace(/\s+/g, " ").trim());
   });
 
   document.addEventListener("htmx:afterSwap", function (e) {
@@ -511,6 +612,10 @@
     }
     var err = $("#ws-answer [data-answer-error]");
     if (err && target.id === "ws-answer") announce(err.textContent.replace(/\s+/g, " ").trim());
+    if (target.id === "ws-answer" || target.id === "inbox-workspace") {
+      var kept = $("#ws-reply-text");
+      if (kept && kept.value) askProvenance(true);
+    }
     if (target.id === "ws-ask-live") {
       store("ask", currentItem(), "");
       var box = $("#ws-ask-text");
@@ -534,6 +639,27 @@
     if (el.id === "ws-ask-text") return clickIfPresent("[data-ask-send]");
     return false;
   }
+
+  // Walk fixes, item 1: a number key never approves or registers. On an
+  // option whose effect is approve or register it ARMS the option (the
+  // answer route answers `keyed=1` with the once-more confirmation a
+  // confirm option gets); a mouse click on the same button still sends at
+  // once (design r2 §0 call 3).
+  var keyedClick = false;
+
+  function pressOption(key) {
+    var btn = $("#ws-answer [data-option-index=\"" + key + "\"]");
+    if (!btn || btn.disabled || btn.hidden) return;
+    var effect = btn.getAttribute("data-effect");
+    keyedClick = effect === "approve" || effect === "register";
+    try { btn.click(); } finally { keyedClick = false; }
+  }
+
+  document.addEventListener("htmx:configRequest", function (e) {
+    if (!keyedClick) return;
+    var path = String(e.detail.path || "").split("?")[0];
+    if (/\/answer$/.test(path)) e.detail.parameters.keyed = "1";
+  });
 
   function onKey(event) {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -570,7 +696,7 @@
       case "inbox_option": {
         var armed = $("[data-confirm-armed]");
         if (armed && event.key === "1") { armed.click(); break; }
-        clickIfPresent("#ws-answer [data-option-index=\"" + event.key + "\"]");
+        pressOption(event.key);
         break;
       }
       case "inbox_reply": { var r = $("#ws-reply-text"); if (r) r.focus(); break; }

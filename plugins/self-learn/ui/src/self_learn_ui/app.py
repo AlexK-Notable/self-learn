@@ -48,6 +48,10 @@ def _build_templates() -> Jinja2Templates:
     env.filters["pygments_yaml"] = lambda text: markupsafe.Markup(rendering.render_yaml(text))
     env.filters["pygments_bash"] = lambda text: markupsafe.Markup(rendering.render_bash(text))
     env.filters["humanize_ts"] = lambda value: markupsafe.Markup(rendering.humanize_ts(value))
+    # Walk fixes (S-NEXT-walkfix), items 5 and 6: a verb's sentence with its
+    # instants humanized; an instant written out whole.
+    env.filters["plain_times"] = lambda value: markupsafe.Markup(rendering.plain_times(value))
+    env.filters["exact_time"] = rendering.exact_time
     # F5-9 (feedback round 5, U19 §1.5): the ONE label map (models.py's
     # _GROUP_LABELS, already Bucket's group-header source) — Detail's
     # action bar + Why region gloss through this same filter, never a

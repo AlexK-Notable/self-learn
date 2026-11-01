@@ -177,7 +177,8 @@ INBOX_KEYMAP: tuple[KeymapEntry, ...] = (
     KeymapEntry(("Enter",), "inbox_open", "Open the selected item", "inbox"),
     KeymapEntry(
         ("1", "2", "3", "4"), "inbox_option",
-        "That option (sends it, or arms one that asks first)", "inbox",
+        "That option; a key never approves or registers: on such an option it asks you to "
+        "confirm first", "inbox",
     ),
     KeymapEntry(("r",), "inbox_reply", "Write your own answer", "inbox"),
     KeymapEntry(("a",), "inbox_ask", "Ask about this", "inbox"),

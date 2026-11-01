@@ -1198,6 +1198,27 @@ def _case_for_lesson(manifest: dict, lesson: str) -> str | None:
     return None
 
 
+def _lesson_words(home: Path, lesson: str) -> str | None:
+    """Walk fixes, item 5: what a lesson is about, in its own words (its
+    trigger, or its fact), for an item title that names no id; ``None``
+    when the lesson cannot be read."""
+    from .ledger_ops import LedgerOpsError, find_record_path
+    from .primitives import text as text_mod
+    from .records import Record
+
+    try:
+        body = Record.from_path(find_record_path(home, lesson)).body
+    except (LedgerOpsError, OSError, ValueError):
+        return None
+    matches = list(text_mod.HEADING_RE.finditer(body))
+    for i, m in enumerate(matches):
+        if m.group(1) in ("Trigger", "Fact"):
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+            words = " ".join(body[m.end():end].split())
+            return _first_line(words, 120) or None
+    return None
+
+
 def _src_runs(home: Path, ctx: "_Ctx") -> list[dict]:
     """Decided items from the committed run manifests (``cases/runs/*.json``)
     completed in the window: one digest per run, and one item per
@@ -1267,13 +1288,18 @@ def _src_runs(home: Path, ctx: "_Ctx") -> list[dict]:
             lesson = effect["lesson"]
             at = str(effect.get("at") or done_at)
             case_id = _case_for_lesson(manifest, lesson)
+            about = _lesson_words(home, lesson)
             if effect.get("hook_activated"):
                 out.append(_new_item(
                     "decided.hook-activated", f"{lesson}@{at}",
-                    title=f"The {actor} turned on a hook for {lesson}", since=at, by=str(actor),
+                    title=(f"The {actor} turned on a hook: {about}" if about
+                           else f"The {actor} turned on a hook for {lesson}"),
+                    since=at, by=str(actor),
                     run=run_id, refs=[lesson, *([case_id] if case_id else [])],
                     meanwhile="The hook is active in every new Claude Code session.",
-                    decided={"what": f"turned on the hook compiled from {lesson}", "by": actor,
+                    decided={"what": (f"turned on the hook for this lesson: {about}" if about
+                                     else f"turned on the hook compiled from {lesson}"),
+                             "by": actor,
                              "at": at, "because": None, "changes_now": "the hook runs on matching tool calls"},
                     lesson=lesson, case=case_id,
                 ))
@@ -1281,7 +1307,8 @@ def _src_runs(home: Path, ctx: "_Ctx") -> list[dict]:
                 subject = case_id or lesson
                 out.append(_new_item(
                     "decided.always-loaded", subject,
-                    title=f"The {actor} changed a line every session loads ({lesson})",
+                    title=(f"The {actor} changed a line every session loads: {about}" if about
+                           else f"The {actor} changed a line every session loads ({lesson})"),
                     since=at, by=str(actor), run=run_id,
                     refs=[lesson, *([case_id] if case_id else [])],
                     meanwhile="The line is in effect in every new session.",
@@ -1584,6 +1611,20 @@ def _apply_override(item: dict, wanted: str) -> dict | None:
     return out
 
 
+#: Walk fixes, item 5: what a decided item changes now once the person
+#: undid it (its transcript's last undo/redo row is an undo), so the page's
+#: "What it changes now" says so instead of describing the undone act.
+UNDONE_NOW = {
+    "decided.hook-activated": ("Nothing now: you turned the hook off, so it does not run in new "
+                               "sessions. Turn it back on below if you want it again."),
+    "decided.registration": ("Nothing now: you removed the registration, so self-learn writes "
+                             "nothing into that repository."),
+    "decided.grant-use": "Nothing now: you undid what the agent did under your grant.",
+    "decided.skill": "Nothing now: you undid the change to the skill.",
+}
+UNDONE_NOW_DEFAULT = "Nothing now: you undid it."
+
+
 def _conversation(home: Path, item_id_: str) -> tuple[dict, bool]:
     """The item's conversation summary (§4.1 `conversation`) and whether a
     redo is what its undo offers next: its transcript's last undo/redo row
@@ -1643,6 +1684,11 @@ def collect(home: Path | str, *, all_items: bool = False) -> list[dict]:
         item["conversation"], redo = _conversation(home, item["id"])
         if isinstance(item.get("undo"), dict):
             item["undo"] = {**item["undo"], "redo": redo}
+            if redo:
+                undone = UNDONE_NOW.get(item["kind"], UNDONE_NOW_DEFAULT)
+                item["meanwhile"] = undone
+                if isinstance(item.get("_decided"), dict):
+                    item["_decided"] = {**item["_decided"], "changes_now": undone}
         out.append(item)
     return out
 

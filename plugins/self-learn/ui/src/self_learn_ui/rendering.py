@@ -19,6 +19,7 @@ computation).
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,7 +32,9 @@ from pygments.lexers import BashLexer, DiffLexer, YamlLexer
 __all__ = [
     "PYGMENTS_CSS_CLASS",
     "PREVIEW_HONESTY_CAPTION",
+    "exact_time",
     "humanize_ts",
+    "plain_times",
     "pygments_stylesheet",
     "render_bash",
     "render_diff",
@@ -181,6 +184,40 @@ def humanize_ts(value: Any, *, now: datetime | None = None) -> str:
     if seconds < 0:
         return _wrap(_absolute_date_words(parsed, reference), value)
     return _wrap(_bucket_words(parsed, reference, seconds), value)
+
+
+#: Walk fixes, item 5: an ISO-8601 instant inside a sentence a verb wrote
+#: ("Running in a terminal (started 2026-11-01T13:03:19Z).").
+_ISO_IN_TEXT_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})"
+)
+
+
+def plain_times(value: Any, *, now: datetime | None = None) -> str:
+    """Walk fixes, item 5: a verb's sentence with every ISO-8601 instant in
+    it read through :func:`humanize_ts` ("started just now", the exact
+    instant on hover), the rest HTML-escaped. Registered as the
+    ``plain_times`` filter (wrapped in ``Markup`` at registration)."""
+    if value is None:
+        return ""
+    escaped = str(markupsafe.escape(str(value)))
+    return _ISO_IN_TEXT_RE.sub(lambda m: humanize_ts(m.group(0), now=now), escaped)
+
+
+def exact_time(value: Any) -> str:
+    """Walk fixes, item 6: an instant as a person reads it, whole: "Oct 30,
+    2026 at 15:13 UTC" (a conflict's two statements are told apart by
+    when each was said). Unparseable values pass through verbatim."""
+    if not value or not isinstance(value, str):
+        return ""
+    try:
+        parsed = _parse_iso(value)
+    except (ValueError, TypeError):
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    parsed = parsed.astimezone(timezone.utc)
+    return f"{parsed.strftime('%b')} {parsed.day}, {parsed.year} at {parsed.strftime('%H:%M')} UTC"
 
 
 def _parse_iso(value: str) -> datetime:

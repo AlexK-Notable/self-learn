@@ -1,3 +1,5 @@
-{# POST /inbox/<id>/feedback (answer 7): the person's click only. #}
-{% if ok %}<p class="ws-meta" data-feedback-ok>Noted. {{ message }} You can change this on the settings page.</p>
+{# POST /inbox/<id>/feedback (answer 7): the person's click only.
+   Walk fixes, item 5: what changed in plain words; the verb's own line
+   (with its ids) only in a small details fold. #}
+{% if ok %}<div class="ws-meta" data-feedback-ok><p>{{ words }}</p>{% if message %}<details class="ws-details"><summary>Details</summary><p data-verb-line>{{ message }}</p></details>{% endif %}</div>
 {% else %}<p class="error-strip" role="alert">{{ message }}</p>{% endif %}

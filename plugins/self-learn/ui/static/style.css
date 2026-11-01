@@ -1859,10 +1859,109 @@ body[data-page="inbox"] .keymap-footer-entry[data-context="inbox"] {
   margin: 0.6rem 0;
 }
 
-.ws-ask-off,
 .ws-ask-note {
   font-size: 0.85rem;
   color: var(--slu-warning);
+}
+
+/* Walk fixes, item 4: the ask panel's off state is a boxed notice under
+   its heading, in body-size text, not small amber text below the
+   conversation. */
+.ws-ask-off {
+  border: 1px solid color-mix(in srgb, var(--slu-warning) 45%, transparent);
+  border-left: 4px solid var(--slu-warning);
+  background: var(--slu-warning-bg);
+  color: var(--slu-fg);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.6rem 0.85rem;
+  margin: 0.4rem 0 0.8rem;
+  font-size: 0.92rem;
+}
+
+.ws-ask-off p {
+  margin: 0 0 0.3rem;
+}
+
+.ws-ask-off-ok {
+  border-color: color-mix(in srgb, var(--slu-success) 45%, transparent);
+  border-left-color: var(--slu-success);
+  background: var(--slu-success-bg);
+}
+
+.ws-ask-off[hidden] {
+  display: none;
+}
+
+/* Walk fixes, item 8: the workspace's title block is a <header>, which the
+   page-wide sticky header rule above also matched, so it stuck over the
+   status strip and covered the first line scrolling under it. It is an
+   ordinary block; sections scrolled to keep clear of the page header. */
+header.ws-head {
+  position: static;
+  z-index: auto;
+  background: transparent;
+  border-bottom: none;
+}
+
+.ws-section,
+#ws-answer,
+#ws-top-result {
+  scroll-margin-top: 4rem;
+}
+
+/* The [hidden] attribute must win over .btn's display (the ask panel's
+   Stop button showed while nothing was being answered). */
+.btn[hidden] {
+  display: none;
+}
+
+.banner-ok {
+  border-left: 4px solid var(--slu-success);
+  background: var(--slu-success-bg);
+  padding: 0.6rem 0.85rem;
+  border-radius: var(--slu-radius-sm);
+  margin: 0 0 1rem;
+}
+
+.banner-ok p {
+  margin: 0 0 0.3rem;
+}
+
+.ws-key-hints kbd {
+  font-family: var(--slu-font-mono);
+  font-size: 0.78rem;
+  border: 1px solid var(--slu-border-strong);
+  border-radius: 3px;
+  padding: 0 0.3em;
+}
+
+.ws-details > summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+.ws-path {
+  overflow-wrap: anywhere;
+}
+
+.chip-side {
+  font-size: 0.72rem;
+}
+
+.chip-side[data-side="newer"] {
+  background: var(--slu-accent-bg);
+  color: var(--slu-accent);
+}
+
+.ws-sightings {
+  margin: 0.2rem 0 0.4rem;
+  padding-left: 1.2rem;
+  font-size: 0.85rem;
+}
+
+.ws-reply-foot #ws-reply-plan {
+  flex-basis: 100%;
 }
 
 .bubble {

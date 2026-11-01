@@ -3,7 +3,7 @@ design r2 §4.6), registered from ``attention_cli``'s reserved block:
 
     self-learn attention answer <id> [--option OPT] [--text-file PATH|-] [--draft DRF]
                                      [--ref transcript:<s>#L<n>] [--session ID] [--confirm]
-                                     [--note TEXT] [--json]
+                                     [--note TEXT] [--words-from T] [--json]
         0 recorded | 2 unknown or closed id | 3 refused downstream | 10 held | 64 usage
     self-learn attention undo <id> [--redo] [--note TEXT]
         0 | 2 unknown id | 3 no inverse / inverse refused | 10 held
@@ -50,6 +50,9 @@ def add_parsers(commands) -> None:
     answer_p.add_argument("--session", default=None, metavar="ID")
     answer_p.add_argument("--confirm", action="store_true")
     answer_p.add_argument("--note", default=None)
+    # Walk fixes, item 3: the option's note is words already sent on this
+    # item (transcript row T<n>), cited, never typed or recorded twice.
+    answer_p.add_argument("--words-from", dest="words_from", type=int, default=None, metavar="T")
     answer_p.add_argument("--json", action="store_true", dest="as_json")
 
     undo_p = commands.add_parser("undo", help="the one-step inverse of a decided item")
@@ -164,6 +167,7 @@ def _answer(home: Path, args: argparse.Namespace) -> int:
     result = answers.answer(
         home, args.id, option=args.option, text=text, draft_id=args.draft_id, ref=args.ref,
         session=args.session, confirm=args.confirm, note=args.note,
+        words_from=getattr(args, "words_from", None),
     )
     if args.as_json:
         print(json.dumps(result.to_json(), ensure_ascii=False))

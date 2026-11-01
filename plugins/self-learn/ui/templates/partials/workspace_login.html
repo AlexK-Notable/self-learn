@@ -2,12 +2,16 @@
    call through the ask runner, never the verb runner. On success the item
    clears (data-item-resolved: the page's own click did it), and the page
    says when the held jobs run again, in the host's own words from
-   serve.heartbeat. #}
+   serve.heartbeat.
+
+   Walk fixes, item 4: on success the result is ALSO put at the top of the
+   page (#ws-top-result, out of band) in plain words: the login works, this
+   item is closed, why it left the Needs you list, and where to go next;
+   the list is redrawn with it, and the ask panel's "login is broken" note
+   is replaced. #}
 <div class="ws-run" data-login-exit="{{ exit }}">
   {% if ok %}
-  <p class="ws-run-ok" data-item-resolved><strong>The login works.</strong> This item clears now, and each held job runs again at its next scheduled time.</p>
-  {% if next_jobs %}<p class="ws-meta" data-next-jobs>Next scheduled: {{ next_jobs }}</p>
-  {% else %}<p class="ws-meta" data-next-jobs>The host's schedule could not be read (it may not be running), so no next time is known.</p>{% endif %}
+  <p class="ws-run-ok" data-item-resolved><strong>The login works.</strong> This item is closed; the result is at the top of the page.</p>
   {% elif exit == 3 %}
   <p role="alert"><strong>The login is still broken.</strong> {{ message }}</p>
   {% elif exit == 4 %}
@@ -16,3 +20,14 @@
   <p class="error-strip" role="alert">{{ message }}</p>
   {% endif %}
 </div>
+{% if ok %}
+<div id="ws-top-result" hx-swap-oob="true">
+  <div class="banner banner-ok" role="status" data-login-fixed data-item-resolved>
+    <p><strong>The Claude login works again. This item is closed.</strong></p>
+    <p>{% if still_open %}It is leaving the Needs you list now{% else %}It has left the Needs you list{% endif %}, because nothing is waiting on you here any more. Each job that was held runs again at its next scheduled time{% if next_jobs %}: {{ next_jobs }}{% else %} (the host's schedule could not be read, so no time is shown; it may not be running){% endif %}.</p>
+    <p>{% if next_item %}Next: <a href="/inbox/{{ next_item.id }}" hx-get="/inbox/{{ next_item.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML" hx-push-url="/inbox/{{ next_item.id }}">{{ next_item.title }}</a>{% else %}Nothing else needs you.{% endif %}</p>
+  </div>
+</div>
+<p id="ws-ask-off" class="ws-ask-off ws-ask-off-ok" role="note" hx-swap-oob="true" data-ask-off-cleared>The login works again, so the agent can answer, but this item is closed. Open another item to ask about it.</p>
+{% include "partials/workspace_list.html" %}
+{% endif %}

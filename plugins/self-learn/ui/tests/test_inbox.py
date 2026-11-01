@@ -211,14 +211,15 @@ HX = {"HX-Request": "true"}
 # ----------------------------------------------------------------- 1. order
 
 
-def test_inbox_redirects_to_the_login_hold_ahead_of_an_older_system_change(tmp_path, monkeypatch):
+def test_inbox_opens_the_login_hold_ahead_of_an_older_system_change(tmp_path, monkeypatch):
     """§2.1 item 1. The reader's order is not trusted: the fixture lists
-    the older system-change ask first, the login hold second.
-    Mutation: sort by `since` only -> red."""
+    the older system-change ask first, the login hold second. Walk fixes,
+    item 8: /inbox renders the list with that item open and says why
+    (no redirect). Mutation: sort by `since` only -> red."""
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7, HOOK, LOGIN)))
     resp = client.get("/inbox", follow_redirects=False)
-    assert resp.status_code == 303
-    assert resp.headers["location"] == f"/inbox/{ID_LOGIN}"
+    assert resp.status_code == 200
+    assert f'data-item-id="{ID_LOGIN}"' in resp.text and "data-opened-first" in resp.text
 
 
 def test_inbox_with_nothing_renders_the_empty_state_and_no_list_items(tmp_path, monkeypatch):
@@ -236,7 +237,7 @@ def test_only_decided_items_select_the_first_unseen_one(tmp_path, monkeypatch):
                 "since": "2026-10-31T10:00:00Z", "updated_at": "2026-10-31T10:00:00Z"}
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(seen_old, HOOK)))
     resp = client.get("/inbox", follow_redirects=False)
-    assert resp.headers["location"] == f"/inbox/{ID_HOOK}"
+    assert f'data-item-id="{ID_HOOK}"' in resp.text
     page = client.get(f"/inbox/{ID_HOOK}")
     assert "Nothing needs you" in page.text
 
@@ -550,7 +551,7 @@ def test_run_and_fix_run_their_verbs_and_a_missing_terminal_shows_the_command(tm
     copied = resp.text.split('id="ws-run-cmd" data-run-command>')[1].split("</pre>")[0]
     assert copied == "claude &#39;self-learn: read the brief&#39;"
     assert "/c/attention/runs/x/brief.md" in resp.text
-    assert "Run it now" in resp.text and 'hx-target="closest .ws-run"' in resp.text
+    assert "Try again: open a new terminal" in resp.text and 'hx-target="closest .ws-run"' in resp.text
     fix = client.post(f"/inbox/{ID_HOST}/fix", data={"option": "opt-restart"}, headers=HX)
     assert runner.calls[1] == ["attention", "fix", ID_HOST, "--option", "opt-restart"]
     assert "restarted" in fix.text
@@ -786,7 +787,7 @@ def test_an_undo_that_moves_the_item_on_says_so(tmp_path, monkeypatch):
     client, runner, *_ = make_client(tmp_path, monkeypatch, reads, runner=Moves(RunResult(0, stdout="reopened")))
     resp = client.post(f"/inbox/{withdrawn['id']}/undo", headers=HX)
     assert runner.calls[0] == ["attention", "undo", withdrawn["id"]]
-    assert "Undone." in resp.text  # control
+    assert "data-undone" in resp.text and "Asked again" in resp.text  # control
     assert "data-answer-closed" in resp.text and 'href="/inbox/att-0000000000bb"' in resp.text
     bar = resp.text[: resp.text.index('id="inbox-list"')]
     assert "Ask me anyway" not in bar and 'id="ws-answer-form"' not in bar
@@ -851,7 +852,7 @@ def test_a_working_login_says_when_the_held_jobs_run_again(tmp_path, monkeypatch
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(LOGIN)))
     resp = client.post(f"/inbox/{ID_LOGIN}/check-login", headers=HX)
     assert "The login works." in resp.text and "data-item-resolved" in resp.text
-    assert "Next scheduled: mine at 2026-11-02T03:31:00" in resp.text
+    assert "runs again at its next scheduled time: mine at 2026-11-02T03:31:00" in resp.text
 
 
 def test_the_apps_idle_monitor_waits_for_an_ask_turn(tmp_path, monkeypatch):
