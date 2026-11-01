@@ -82,6 +82,7 @@ import io
 import json
 import re
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace as dataclass_replace
 from pathlib import Path
 from typing import Any
@@ -102,6 +103,7 @@ from .primitives import chrono, fsops
 from .primitives.yamlio import rt_yaml
 from .records import Record, RecordError
 from .scan import attach_hits, format_refusal
+from .scan import redact as redact_secrets
 from .scan import scan as secret_scan
 
 __all__ = [
@@ -137,6 +139,7 @@ __all__ = [
     "rebuild_index",
     "receipt",
     "observe",
+    "decided_text",
 ]
 
 # --------------------------------------------------------------- vocab
@@ -2229,19 +2232,78 @@ class RefreezeError(CaseError):
         self.exit_code = exit_code
 
 
-def _frozen_history(home: Path, path: Path) -> list[str]:
-    """The case file's committed texts, newest first (``git log`` of its
-    path, then ``git show`` of each): a read of the ledger's history."""
+def _frozen_history(home: Path, path: Path) -> Iterator[tuple[str, str, str]]:
+    """The case file's committed texts, newest first, as ``(commit, commit
+    time, text)`` (``git log`` of its path, then ``git show`` of each, one
+    at a time, so a caller that stops early reads no further): a read of
+    the ledger's history."""
     rel = path.resolve().relative_to(home.resolve()).as_posix()
-    shas = gitops._git(  # noqa: SLF001 -- committed case history, read-only
-        home, "log", "--format=%H", "--", rel
-    ).stdout.split()
-    out: list[str] = []
-    for sha in shas:
+    log = gitops._git(  # noqa: SLF001 -- committed case history, read-only
+        home, "log", "--format=%H %cI", "--", rel
+    ).stdout.splitlines()
+    for line in log:
+        sha, _sep, when = line.strip().partition(" ")
+        if not sha:
+            continue
         shown = gitops._git(home, "show", f"{sha}:{rel}")  # noqa: SLF001
         if shown.returncode == 0:
-            out.append(shown.stdout)
-    return out
+            yield sha, when, shown.stdout
+
+
+def _decided_version(home: Path, path: Path) -> tuple[str, str, str, str] | None:
+    """The newest commit of the case file at *path* whose own frozen part
+    (sections 1-4) matched its own ``decided_sha256``: ``(commit, commit
+    time, frozen text, hash)``, or ``None`` when no commit did. The one
+    lookup both ``refreeze --restore`` (which puts that text back) and
+    :func:`decided_text` (which shows it) use."""
+    for sha, when, text in _frozen_history(home, path):
+        try:
+            old_fm, old_body = _split_frontmatter(text)
+            old_frozen, _old_rest = _split_frozen(old_body)
+        except (CaseError, ValueError, IndexError):
+            continue
+        digest = _hash_frozen(old_frozen)
+        if digest == old_fm.get("decided_sha256"):
+            return sha, when, old_frozen, digest
+    return None
+
+
+#: The most of a decided text :func:`decided_text` returns.
+DECIDED_TEXT_MAX_CHARS = 20_000
+
+
+def decided_text(home: Path | str, case_id: str) -> dict[str, Any] | None:
+    """What a case said when it was decided (follow-ups 2 of the attention
+    round, gap 1): sections 1-4 -- the frozen part the freeze hash covers --
+    from the newest commit whose frozen part matched its own hash, found by
+    the same lookup ``refreeze --restore`` uses (:func:`_decided_version`).
+    For a ``conflict.case-tampered`` item this is "what was decided" beside
+    "what the file says now".
+
+    Read-only: ``git log`` and ``git show`` of the one case file, no lock,
+    no write. Every secret-scan hit becomes ``[redacted:<rule>]``
+    (:func:`scan.redact`), and the text is cut at
+    :data:`DECIDED_TEXT_MAX_CHARS`. Returns ``{case, commit, committed_at,
+    decided_sha256, text, truncated, redacted}`` (``redacted`` lists the
+    rules that matched), or ``None`` when no commit holds a frozen part
+    that matches its own hash. Raises :class:`CaseUsageError` for an
+    unknown case, and :class:`gitops.GitOpsError` when git does not answer
+    in time."""
+    home = Path(home)
+    path = _case_path_for_id(home, case_id)
+    found = _decided_version(home, path)
+    if found is None:
+        return None
+    sha, when, frozen, digest = found
+    text, hits = redact_secrets(frozen)
+    truncated = len(text) > DECIDED_TEXT_MAX_CHARS
+    if truncated:
+        text = text[:DECIDED_TEXT_MAX_CHARS].rstrip() + "…"
+    return {
+        "case": case_id, "commit": sha, "committed_at": when or None,
+        "decided_sha256": digest, "text": text, "truncated": truncated,
+        "redacted": sorted({hit.rule for hit in hits}),
+    }
 
 
 def refreeze(home: Path | str, case_id: str, *, keep: bool, note: str | None = None) -> str:
@@ -2282,23 +2344,13 @@ def refreeze(home: Path | str, case_id: str, *, keep: bool, note: str | None = N
                 fm["decided_sha256"] = _hash_frozen(frozen_text)
                 action = "keep"
             else:
-                restored: str | None = None
-                restored_hash: str | None = None
-                for text in _frozen_history(home, path):
-                    try:
-                        old_fm, old_body = _split_frontmatter(text)
-                        old_frozen, _old_rest = _split_frozen(old_body)
-                    except (CaseError, ValueError, IndexError):
-                        continue
-                    digest = _hash_frozen(old_frozen)
-                    if digest == old_fm.get("decided_sha256"):
-                        restored, restored_hash = old_frozen, digest
-                        break
-                if restored is None or restored_hash is None:
+                decided = _decided_version(home, path)
+                if decided is None:
                     raise RefreezeError(
                         f"case refreeze: no commit of {case_id} holds a frozen part that "
                         "matches its own hash; nothing was changed", 3,
                     )
+                _sha, _when, restored, restored_hash = decided
                 new_body = restored + rest
                 fm["decided_sha256"] = restored_hash
                 action = "restore"

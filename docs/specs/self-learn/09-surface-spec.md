@@ -524,11 +524,30 @@ section records what the surface is.
   options; if that approval's launch found no terminal, **Run it now**
   is offered for the item it moved to.
 - **Being carried out** shows "Running in a terminal (started <time>)"
-  and **Run it now** (`attention run`; the login variant passes
+  and **Run it now** (`attention run --json`; the login variant passes
   `--login`), the verb's reason when a launch is refused, and, when no
-  terminal can be opened, the command alone in a copy block (split from
-  the verb's sentence: `claude '<brief line>'`, or `claude` for a login)
-  with the brief's path beside it.
+  terminal can be opened, the command alone in a copy block (the verb's
+  `command` field, never parsed from its sentence, follow-ups 2:
+  `claude '<brief line>'`, or `claude` for a login) with the brief's
+  path (its `brief` field) beside it. *(Follow-ups 2.)* A change of mind
+  is a click: before a session claims the work, the ask's other options
+  (decline, other) are buttons answered through `attention answer`, and
+  the page says that the session in the terminal is refused when it then
+  tries to claim it. Once a session has claimed it they are off, each
+  with its reason in a line ("… is off: …"), and the page says why: a
+  different answer cannot reach that session. When the page opened that
+  terminal it offers **Stop it**, which arms first (what stopping does:
+  the terminal closes, a step in progress stops and is not undone, what
+  was already changed stays changed, the approval stands) and on
+  confirm runs `attention stop` and draws the bar again, with the other
+  options clickable and Run it now offered; otherwise it says to tell
+  the session in its own terminal.
+- **A hand-edited case** (`conflict.case-tampered`) shows "What was
+  decided, and what the file says now" from the packet's `case_edit`
+  (follow-ups 2): each passage that differs as "Was decided:" beside
+  "The file says now:", then the whole decided text and the whole file
+  in folded blocks; when the decided text cannot be shown, the reason,
+  and the file as it is now.
   `awaiting-sudo` shows each sudo command with a copy button and **I ran
   it**. Code kinds (§3.4.8 of the design) render their own options; the
   `fix` ones run `attention fix`, the rest go through `attention answer`.

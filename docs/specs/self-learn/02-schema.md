@@ -1164,13 +1164,20 @@ questions:
   default, and as waiting when it has neither, as before. *(Fix round 2.)* The
   runner reads a new `questions.yaml` the same way: an ask the model wrote
   with `system: true` or `register` and no `needs` is validated as `needs:
-  user` with that `because` (and, as in S-117, writes no default of its own),
+  user` with that `because` (and, as in S-117, writes no default of its own;
+  *follow-ups 2:* a `because` the model wrote is kept when it is one of the
+  closed list, and only a missing or invalid one is inferred, a `register`
+  ask's being `foreign-history` always),
   so one without options, a recommendation or, for a system change, a plan is
   dropped and named, never indexed as a needs-you page with nothing to click
   (answer 10). An ask with neither and a default stays S-117's stead ask.
   A question whose `text` names ledger ids (`lrn-`, `case-`, `stmt-`, `um-`)
-  is kept and named in "Refused / could not do": its ids belong in `cases`
-  and `statements`, which the inbox shows beside it.
+  is kept and named, on the `needs` path and S-117's stead path alike: its
+  ids belong in `cases` and `statements`, which the inbox shows beside it.
+  *(Follow-ups 2.)* The note reads "question <id> (kept, and asked as
+  written): …" and is published under "Questions for you", after the
+  model's own lines (the manifest's `question_notes`), never under
+  "Refused / could not do", since nothing was refused.
 - **Options, recommendation, plan.** `options` are 2-4 `{id, label, effect:
   approve|decline|other|register, confirm?, note?: required}`, ids unique; a
   `register` effect only on an ask with `register`; `recommend.option` names
@@ -4749,8 +4756,23 @@ so an ask whose case was edited by hand still shows the case and its
 lesson. On any page but the case's own `conflict.case-tampered` item the
 fact says the text may not be what was decided and names that item, which
 asks about the edit. The case's own page also points to `ledger_history`
-for the case file: the commits that touched it, subjects and trailers only;
-the packet shows no decided text and no diff. The plan's texts (its
+for the case file: the commits that touched it, subjects and trailers only.
+*(Follow-ups 2.)* That page's packet also carries `case_edit`: `{case,
+decided: {text, commit, committed_at, truncated} | null, now, changes:
+[{was, now}], note}`, sections 1-4 as decided beside the file as it is
+now and the passages that differ (line by line, at most 12, each at most
+1,200 characters), so the person sees the edit before choosing keep or
+restore. The decided text is `cases.decided_text(home, case_id)`: the
+newest commit whose own frozen part matched its own `decided_sha256`,
+found by the same lookup `case refreeze --restore` uses
+(`cases._decided_version`), read-only (`git log` and `git show` of the
+one file, no lock), every secret-scan hit redacted, cut at 20,000
+characters. `attention_packet.build` itself still runs no git: the
+verbs that build the packet (`attention packet`, `ask`) hand it
+`cases.decided_text` as `decided_reader`; without one, or when no commit
+matches or git fails, `decided` is null and `note` says why. Every other
+kind's `case_edit` is null. The ask agent's `case` tool shows the same
+decided text for a case that fails its freeze check. The plan's texts (its
 summary and conditions, each check's and step's `say` and `command`, each
 file's `content`) are clipped and secret-scanned like every excerpt, and
 the size fit trims them too. Bounds: the whole JSON at most 64 KiB; each text at most 4,000
@@ -4922,7 +4944,32 @@ live claim's session (3 otherwise, naming the claimant), appends an
 outcome (`by` the process actor) and removes the claim; `--failed` returns
 the item to the person, the reason first among its evidence, and the
 approval no longer stands. `run` on work already done is 3 (not
-approved), whichever of the three ids names it. **While the ledger is
+approved), whichever of the three ids names it. **Changing your mind by
+a click** *(follow-ups 2)*: an `approved.pending` item's `options` are
+the ask's own options other than an approval (decline, other), each
+answered by `attention answer` like the first click
+(`attention.change_options`; an approval is not repeated, "Run it now"
+is the relaunch). While a session holds a live claim they carry
+`disabled` with the reason in words, and `answer` still refuses (3), since
+a different answer cannot reach a session already carrying the work out.
+When the claim was made at or after the page's own launch (the run
+record, not stopped: `attention.stoppable`), the item also offers
+`opt-stop` "Stop it" (`via: stop`, `confirm`): `attention stop <id>`
+runs `systemctl --user is-active` on the run record's
+`self-learn-run-<12 hex>` unit and, when it still runs, `systemctl --user
+stop` and checks again (3 when it will not stop, the claim kept); then
+it writes `stopped_at` into the run record (the item reads `approved`,
+not running), removes the claim and seals a workspace row `kind: stop`,
+`origin: clicked`. It undoes nothing the session did and the approval
+stands until the person answers otherwise. A claim older than the launch,
+or with no launch, is a session the page did not open: no Stop it, and
+`stop` exits 3 ("tell it in its own terminal"); with no live claim it
+exits 3 (a different answer is taken already). Refused from an agent's
+shell (64). **`attention run --json`** prints `RunResult.to_json()`, `{exit,
+message, command, brief}`, on stdout whatever the exit; `command` is the
+command alone a person runs when no terminal was found (exit 5: `claude
+'<brief line>'`, or `claude` for a login), else null, and the answer
+verb's `run` object carries the same keys. **While the ledger is
 STOPPED** nothing can be
 committed and every answer is refused (10), except the person's *Have an
 agent look at it* on the `broken.stopped` item that says so: its choice is
@@ -4979,8 +5026,8 @@ are not listed (the inbox records a typed reply as a statement itself).
 
 **Verbs** (exit codes as contract §4.6): `attention answer` (0 recorded; 2
 unknown or closed; 3 refused downstream; 10 held; 64 usage), `attention
-undo` (0; 2; 3; 10), `attention run [--login]` (0; 2; 3; 4; 5; 64),
-`attention fix` (0; 2; 3; 64), `attention claim` (0; 2; 3), `attention done`
+undo` (0; 2; 3; 10), `attention run [--login] [--json]` (0; 2; 3; 4; 5; 64),
+`attention fix` (0; 2; 3; 64), `attention stop` (0; 2; 3; 64), `attention claim` (0; 2; 3), `attention done`
 (0; 2; 3; 10; 64), `case refreeze` (§3a.2).
 
 ## 4. Managed sections (the compile targets' contract)

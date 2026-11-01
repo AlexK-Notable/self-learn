@@ -375,7 +375,8 @@ def test_an_approve_click_launches_the_brief_in_a_terminal(tmp_path, monkeypatch
     result = answers.answer(home, item["id"], option="opt-yes")
 
     approved_id = attention.item_id("approved.pending", "q-restart-daemon")
-    assert result.state == "running" and result.run == {"exit": 0, "message": result.run["message"]}
+    assert result.state == "running" and result.run == {"exit": 0, "message": result.run["message"],
+                                                           "command": None, "brief": result.run["brief"]}
     brief = attention.cache_dir(home) / "attention" / "runs" / approved_id / "brief.md"
     title = item["title"]
     assert brief.read_text(encoding="utf-8") == answers.RUN_BRIEF.format(id=approved_id, title=title)

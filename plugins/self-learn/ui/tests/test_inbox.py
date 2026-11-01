@@ -529,15 +529,20 @@ def test_the_reader_failing_shows_the_error_panel_with_retry(tmp_path, monkeypat
 
 
 def test_run_and_fix_run_their_verbs_and_a_missing_terminal_shows_the_command(tmp_path, monkeypatch):
+    import json as _json
+
     runner = FakeRunner()
-    # attention_answers.run's own exit-5 sentence, word for word.
-    runner.queue_result(RunResult(5, stderr=(
-        "no terminal found. The brief is at /c/attention/runs/x/brief.md; open a terminal and "
-        "run: claude 'self-learn: read the brief'")))
+    # `attention run --json`'s exit-5 object (follow-ups 2, gap 3): the page
+    # copies `command` and names `brief`; it never parses the sentence, so
+    # here the sentence names neither.
+    runner.queue_result(RunResult(5, stdout=_json.dumps({
+        "exit": 5, "message": "no terminal found, so nothing was started",
+        "command": "claude 'self-learn: read the brief'",
+        "brief": "/c/attention/runs/x/brief.md"})))
     runner.queue_result(RunResult(0, stdout="self-learn-host.service restarted"))
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(APPROVED, HOST)), runner=runner)
     resp = client.post(f"/inbox/{ID_APPROVED}/run", headers=HX)
-    assert runner.calls[0] == ["attention", "run", ID_APPROVED]
+    assert runner.calls[0] == ["attention", "run", ID_APPROVED, "--json"]
     assert "No terminal was found" in resp.text
     assert 'data-copy="#ws-run-cmd"' in resp.text
     # Gate r1 finding 3: the copy block holds the command alone, which runs
@@ -552,10 +557,11 @@ def test_run_and_fix_run_their_verbs_and_a_missing_terminal_shows_the_command(tm
 
 
 def test_open_a_login_terminal_runs_run_login(tmp_path, monkeypatch):
-    runner = FakeRunner(RunResult(0, stdout="A terminal is open running claude: type /login there."))
+    runner = FakeRunner(RunResult(0, stdout='{"exit": 0, "message": "A terminal is open running '
+                                         'claude: type /login there.", "command": null, "brief": null}'))
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(LOGIN)), runner=runner)
     resp = client.post(f"/inbox/{ID_LOGIN}/run", data={"login": "1"}, headers=HX)
-    assert runner.calls == [["attention", "run", ID_LOGIN, "--login"]]
+    assert runner.calls == [["attention", "run", ID_LOGIN, "--login", "--json"]]
     assert "/login" in resp.text
 
 
@@ -682,9 +688,13 @@ def test_an_approval_that_moves_the_item_on_links_to_it_and_offers_no_old_option
 
 def test_a_login_no_terminal_offers_claude_alone_to_copy(tmp_path, monkeypatch):
     """Gate r1 finding 3, the login variant: the copy block holds `claude`,
-    not the verb's sentence."""
-    runner = FakeRunner(RunResult(5, stderr="no terminal found: open one yourself, run `claude`, "
-                                             "then type /login"))
+    not the verb's sentence. Follow-ups 2 (gap 3): the command comes from
+    `attention run --json`'s `command` field; the sentence is not parsed."""
+    import json as _json
+
+    runner = FakeRunner(RunResult(5, stdout=_json.dumps({
+        "exit": 5, "message": "no terminal found, so nothing was started",
+        "command": "claude", "brief": None})))
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(LOGIN)), runner=runner)
     resp = client.post(f"/inbox/{ID_LOGIN}/run", data={"login": "1"}, headers=HX)
     assert "No terminal was found" in resp.text  # control: the no-terminal branch rendered
@@ -707,8 +717,10 @@ def test_an_approval_whose_launch_found_no_terminal_offers_run_it_now_for_the_su
             reads.doc = _doc(approved)
             return await super().run(argv)
 
-    run = {"exit": 5, "message": ("no terminal found. The brief is at /c/b.md; open a terminal "
-                                  "and run: claude 'go'")}
+    # Follow-ups 2 (gap 3): the answer verb's `run` carries `command` and
+    # `brief`; the sentence is not parsed, so it names neither here.
+    run = {"exit": 5, "message": "no terminal found, so nothing was started",
+           "command": "claude 'go'", "brief": "/c/b.md"}
     import json as _json
 
     runner = Moves(RunResult(0, stdout=_json.dumps({

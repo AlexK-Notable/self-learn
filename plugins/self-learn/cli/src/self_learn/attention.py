@@ -715,14 +715,63 @@ def _approval_track(
     item["answer"] = answer
     record = _run_record(home, item["id"])
     claim = _claim(home, item["id"], now)
-    launched = record is not None and str(record.get("at") or "") >= str(approved_at or "")
+    # Follow-ups 2 (gap 2): a launch the person stopped from the page
+    # (`attention stop`) no longer counts as running.
+    launched = (record is not None and str(record.get("at") or "") >= str(approved_at or "")
+                and not record.get("stopped_at"))
     if launched or claim is not None:
         item["state"] = "running"
         item["run"] = {
             "unit": (record or {}).get("unit"), "at": (record or {}).get("at"),
             "claimed_by": (claim or {}).get("session"),
         }
+    item["options"] = change_options(base.get("options") or [], record, claim)
     return [item]
+
+
+#: Follow-ups 2 (gap 2): the page's "Stop it" on approved work a session
+#: claimed in a terminal this page opened (`attention stop`).
+STOP_OPTION_ID = "opt-stop"
+STOP_LABEL = "Stop it"
+
+
+def stoppable(record: dict | None, claim: dict | None) -> bool:
+    """Whether ``attention stop`` may act on approved work: a live *claim*
+    made at or after the page's own launch (*record*, not already
+    stopped). A claim older than the launch, or one with no launch, is a
+    session the page did not open (an agent the person approved it in);
+    the page cannot stop that one."""
+    if claim is None or record is None or record.get("stopped_at"):
+        return False
+    launched_at = _dt(record.get("at"))
+    claimed_at = _dt(claim.get("at"))
+    return launched_at is not None and claimed_at is not None and claimed_at >= launched_at
+
+
+def change_options(options: list[dict], record: dict | None, claim: dict | None) -> list[dict]:
+    """Follow-ups 2 (gap 2): the one-click changes of mind on approved
+    work. The originally offered options other than an approval (decline,
+    other), each answered by ``attention answer`` like the first click;
+    while a session holds a live claim they are off (``disabled``, in
+    words), since the answer verb refuses a new answer then, and ``Stop
+    it`` is offered when the claiming session runs in the terminal this
+    page opened (:func:`stoppable`). An approval is not repeated here:
+    "Run it now" is the page's relaunch."""
+    out = [dict(o) for o in options
+           if isinstance(o, dict) and o.get("id") and o.get("effect") != "approve"]
+    if claim is not None:
+        session = claim.get("session")
+        if stoppable(record, claim):
+            reason = (f"a session ({session}) is carrying it out now and a different answer "
+                      "cannot reach it; Stop it first")
+        else:
+            reason = (f"a session ({session}) that this page did not open is carrying it out "
+                      "now; tell it in its own terminal")
+        for option in out:
+            option["disabled"] = reason
+        if stoppable(record, claim):
+            out.append(_option(STOP_OPTION_ID, STOP_LABEL, "other", via="stop", confirm=True))
+    return out
 
 
 def _src_asks(home: Path, ctx: "_Ctx") -> list[dict]:

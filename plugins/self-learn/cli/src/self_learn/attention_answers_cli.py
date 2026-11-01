@@ -7,11 +7,14 @@ design r2 §4.6), registered from ``attention_cli``'s reserved block:
         0 recorded | 2 unknown or closed id | 3 refused downstream | 10 held | 64 usage
     self-learn attention undo <id> [--redo] [--note TEXT]
         0 | 2 unknown id | 3 no inverse / inverse refused | 10 held
-    self-learn attention run <id> [--login]
+    self-learn attention run <id> [--login] [--json]
         0 launched | 2 unknown id | 3 not approved | 4 would spend money | 5 no terminal
         | 64 agent shell
     self-learn attention fix <id> --option OPT
         0 done | 2 unknown id | 3 no such option, or the command failed | 64 agent shell
+    self-learn attention stop <id>
+        0 stopped (or its terminal had already closed) | 2 not approved work | 3 nothing claimed it,
+        the claiming session is not one this page launched, or the unit would not stop | 64 agent shell
     self-learn attention claim <id> --session ID
         0 | 2 not approved | 3 claimed by another session
     self-learn attention done <id> --note TEXT --session ID [--failed]
@@ -32,7 +35,7 @@ from . import attention_answers as answers
 from . import cases, gitops, intents, settings, statements
 from .attention_answers import AnswerError
 
-COMMANDS = frozenset({"answer", "undo", "run", "fix", "claim", "done"})
+COMMANDS = frozenset({"answer", "undo", "run", "fix", "stop", "claim", "done"})
 
 
 def add_parsers(commands) -> None:
@@ -61,10 +64,17 @@ def add_parsers(commands) -> None:
     run_p.add_argument("id", metavar="ID")
     run_p.add_argument("--login", action="store_true",
                        help="open a terminal running claude to log in (a log-in item only)")
+    run_p.add_argument("--json", action="store_true", dest="as_json",
+                       help="print {exit, message, command, brief} on stdout, whatever the exit")
 
     fix_p = commands.add_parser("fix", help="a code item's own fix (Restart self-learn)")
     fix_p.add_argument("id", metavar="ID")
     fix_p.add_argument("--option", required=True, metavar="OPT")
+
+    stop_p = commands.add_parser(
+        "stop", help="close the terminal carrying out approved work, so you can change your answer",
+    )
+    stop_p.add_argument("id", metavar="ID")
 
     claim_p = commands.add_parser("claim", help="the carrying-out session claims an approved change")
     claim_p.add_argument("id", metavar="ID")
@@ -97,10 +107,19 @@ def dispatch(home: Path, args: argparse.Namespace) -> int:
             return answers.EXIT_OK
         if command == "run":
             result = answers.run(home, args.id, login=args.login)
-            print(result.message, file=sys.stdout if result.exit == answers.EXIT_OK else sys.stderr)
+            if getattr(args, "as_json", False):
+                # Follow-ups 2 (gap 3): machine-readable on every exit, so
+                # a page copies `command` (exit 5) without parsing words.
+                print(json.dumps(result.to_json(), ensure_ascii=False))
+            else:
+                print(result.message,
+                      file=sys.stdout if result.exit == answers.EXIT_OK else sys.stderr)
             return result.exit
         if command == "fix":
             print(answers.fix(home, args.id, args.option))
+            return answers.EXIT_OK
+        if command == "stop":
+            print(answers.stop(home, args.id))
             return answers.EXIT_OK
         if command == "claim":
             item = answers.claim(home, args.id, args.session)

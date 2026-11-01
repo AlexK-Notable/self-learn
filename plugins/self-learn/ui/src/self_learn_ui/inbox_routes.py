@@ -14,7 +14,7 @@ The rules this module keeps (the same as :mod:`self_learn_ui.routes`):
 - every read goes through :mod:`self_learn_ui.ledger` (``attention --json``,
   ``attention packet <id> --json``, the workspace transcript);
 - every mutation goes through the app's :class:`VerbRunner`
-  (``attention answer|undo|feedback|seen|run|fix``, ``case refreeze``);
+  (``attention answer|undo|feedback|seen|run|fix|stop``, ``case refreeze``);
 - ask turns and ``attention check-login`` go through the app's
   :class:`self_learn_ui.ask_runner.AskRunner`, never the verb runner, so a
   click never waits behind a model call;
@@ -28,6 +28,7 @@ The rules this module keeps (the same as :mod:`self_learn_ui.routes`):
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import secrets
@@ -144,44 +145,46 @@ def _age_words(since: object, now: datetime | None = None) -> str:
     return f"{weeks} weeks"
 
 
-#: ``attention run``'s exit-5 sentences (attention_answers.run): the
-#: approved-work one ends "...; open a terminal and run: claude '<line>'",
-#: the login one says "run `claude`, then type /login".
-_NO_TERMINAL_BRIEF_RE = re.compile(
-    r"The brief is at (?P<brief>.+?); open a terminal and run: (?P<cmd>\S.*)$", re.S)
-_NO_TERMINAL_LOGIN_RE = re.compile(r"run `(?P<cmd>[^`]+)`, then type /login")
-_NO_TERMINAL_ANY_RE = re.compile(r"\brun: (?P<cmd>\S.*)$", re.S)
-
-
-def no_terminal(message: str) -> dict[str, str | None]:
-    """Split the verb's no-terminal sentence into the command alone (the
-    copy block holds only what runs when pasted; gate r1 finding 3) and a
-    line of prose for around it. With no command in the sentence, the
-    sentence itself is the prose and nothing is offered to copy."""
-    text = (message or "").strip()
-    match = _NO_TERMINAL_BRIEF_RE.search(text)
-    if match:
-        return {"command": match.group("cmd").strip(),
-                "lead": f"The brief it follows is at {match.group('brief').strip()}."}
-    match = _NO_TERMINAL_LOGIN_RE.search(text)
-    if match:
-        return {"command": match.group("cmd").strip(),
-                "lead": "Then type /login in that session, and press Check now."}
-    match = _NO_TERMINAL_ANY_RE.search(text)
-    if match:
-        return {"command": match.group("cmd").strip(), "lead": None}
-    return {"command": None, "lead": text or None}
+def no_terminal(run: dict, *, login: bool = False) -> dict[str, str | None]:
+    """The copy block and its prose for ``attention run``'s exit 5 (no
+    terminal found), from the verb's machine-readable fields
+    (``RunResult.to_json()``: ``command``, ``brief``; follow-ups 2, gap 3)
+    -- never parsed from its sentence. The copy block holds only the
+    command (gate r1 finding 3); with no command, the sentence itself is
+    the prose and nothing is offered to copy."""
+    command = run.get("command")
+    command = command.strip() if isinstance(command, str) and command.strip() else None
+    brief = run.get("brief")
+    if command is None:
+        message = str(run.get("message") or "").strip()
+        return {"command": None, "lead": message or None}
+    if isinstance(brief, str) and brief.strip():
+        return {"command": command, "lead": f"The brief it follows is at {brief.strip()}."}
+    if login:
+        return {"command": command, "lead": "Then type /login in that session, and press Check now."}
+    return {"command": command, "lead": None}
 
 
 def _with_command(run: object, exit_code: int | None = None) -> object:
-    """A run result (``{exit, message}``) with ``command``/``lead`` added
-    when it is the no-terminal refusal."""
+    """A run result (``{exit, message, command, brief}``) with
+    ``command``/``lead`` set for the page when it is the no-terminal
+    refusal."""
     if not isinstance(run, dict):
         return run
     code = run.get("exit") if exit_code is None else exit_code
     if code != 5:
         return run
-    return {**run, **no_terminal(str(run.get("message") or ""))}
+    return {**run, **no_terminal(run)}
+
+
+def _run_json(result: RunResult) -> dict | None:
+    """``attention run --json``'s object (printed on every exit), or
+    ``None`` when stdout holds none (an older CLI, or a crash)."""
+    try:
+        data = json.loads((result.stdout or "").strip() or "null")
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def redo_next(item: dict, rows: list[dict]) -> bool:
@@ -552,6 +555,10 @@ async def inbox_answer(
     chosen = next((o for o in item.get("options") or [] if o.get("id") == option), None)
     if option is not None and chosen is None and option != "opt-ran-sudo":
         return fail("That option is not one this item offers.", 400)
+    if chosen is not None and chosen.get("disabled"):
+        # Follow-ups 2 (gap 2): a change of mind is off while a session
+        # holds the work; the reason says what to do instead.
+        return fail(f"“{chosen.get('label')}” is off: {chosen.get('disabled')}.")
     if chosen is not None and chosen.get("note") == "required" and text is None:
         return fail(f"“{chosen.get('label')}” needs a note: write it in the box, then click it "
                     "again.")
@@ -675,14 +682,59 @@ async def inbox_run(request: Request, item_id: str, login: str | None = Form(Non
     item = _find(read, item_id)
     if item is None:
         return _render(request, "partials/workspace_gone.html", {"gone": item_id}, status_code=404)
-    argv = ["attention", "run", item_id] + (["--login"] if login == "1" else [])
+    argv = ["attention", "run", item_id] + (["--login"] if login == "1" else []) + ["--json"]
     result = await _run_verb(request, argv)
-    message = ((result.stdout if result.ok else result.stderr) or "").strip() or _verb_message(result)
-    split = no_terminal(message) if result.exit_code == 5 else {"command": None, "lead": None}
+    data = _run_json(result)
+    if data is not None and isinstance(data.get("message"), str) and data["message"].strip():
+        message = data["message"].strip()
+    else:
+        message = ((result.stdout if result.ok else result.stderr) or "").strip() or _verb_message(result)
+    split = (no_terminal({**(data or {}), "message": message}, login=login == "1")
+             if result.exit_code == 5 else {"command": None, "lead": None})
     return _render(request, "partials/workspace_run.html", {
         "item": _view_item(item), "exit": result.exit_code, "login": login == "1",
         "message": message, **split,
     })
+
+
+#: Follow-ups 2 (gap 2): what "Stop it" does, said before the person
+#: confirms it (the same facts the verb's own sentence states after).
+STOP_ARMED_LINE = (
+    "Stop it closes the terminal carrying this out, so its session changes nothing more. A step "
+    "it is in the middle of stops there and is not undone, and anything it already changed "
+    "stays changed. Your approval stands until you choose a different answer. Stop it?"
+)
+
+
+@router.post("/inbox/{item_id}/stop", response_class=HTMLResponse)
+async def inbox_stop(request: Request, item_id: str, confirm: str | None = Form(None)) -> HTMLResponse:
+    """Follow-ups 2 (gap 2): "Stop it" on approved work a session claimed in
+    the terminal this page opened. The first click arms it (what stopping
+    does and does not do, in words); the confirm runs ``attention stop``.
+    Afterwards the answer bar is drawn again from a fresh read, so the
+    person's other options are clickable at once."""
+    read = await _doc(request)
+    item = _find(read, item_id)
+    if item is None:
+        return _render(request, "partials/workspace_gone.html", {"gone": item_id}, status_code=404)
+    offered = any(o.get("via") == "stop" for o in item.get("options") or [])
+    if not offered:
+        return _answer_partial(request, item, None, {
+            "state": "stop-error",
+            "message": "There is nothing this page can stop on this item now.",
+        }, status_code=400)
+    if confirm != "1":
+        return _answer_partial(request, item, None, {"state": "armed-stop",
+                                                     "message": STOP_ARMED_LINE})
+    result = await _run_verb(request, ["attention", "stop", item_id])
+    if not result.ok:
+        return _answer_partial(request, item, None,
+                               {"state": "stop-error", "message": _verb_message(result)})
+    list_read = await _doc(request)
+    fresh = _find(list_read, item_id)
+    return _answer_partial(request, fresh or item, None, {
+        "state": "stopped", "message": (result.stdout or "").strip(), "closed": fresh is None,
+    }, list_read=list_read)
 
 
 @router.post("/inbox/{item_id}/fix", response_class=HTMLResponse)

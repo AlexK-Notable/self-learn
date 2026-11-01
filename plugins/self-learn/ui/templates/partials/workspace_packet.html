@@ -24,6 +24,34 @@
   </section>
   {% endif %}
 
+  {% if packet.case_edit %}
+  {# Follow-ups 2 (gap 1): a hand-edited case shows what was decided beside
+     what the file says now, passage by passage, so the person sees the
+     edit before choosing keep or restore. #}
+  {% set edit = packet.case_edit %}
+  <section class="ws-section ws-case-edit" aria-labelledby="ws-edit-h" data-case-edit>
+    <h2 id="ws-edit-h">What was decided, and what the file says now</h2>
+    {% if edit.decided %}
+    <p class="ws-meta">The decided version is the one saved{% if edit.decided.committed_at %} {{ edit.decided.committed_at | humanize_ts }}{% endif %}. Each place where the file now differs from it:</p>
+    {% for change in edit.changes or [] %}
+    <div class="ws-change" data-case-change>
+      <p><strong>Was decided:</strong></p>
+      {% if change.was %}<pre class="ws-pre ws-was">{{ change.was }}</pre>{% else %}<p class="ws-meta">(nothing: these lines were added by hand)</p>{% endif %}
+      <p><strong>The file says now:</strong></p>
+      {% if change.now %}<pre class="ws-pre ws-now">{{ change.now }}</pre>{% else %}<p class="ws-meta">(nothing: these lines were taken out by hand)</p>{% endif %}
+    </div>
+    {% else %}
+    <p data-case-no-change>No line reads differently; the edit is only in spacing or line endings.</p>
+    {% endfor %}
+    <details class="ws-ev"><summary>The whole decided text (sections 1-4)</summary><pre class="ws-pre" data-decided-text>{{ edit.decided.text }}</pre></details>
+    {% if edit.now %}<details class="ws-ev"><summary>The whole file as it is now (sections 1-4)</summary><pre class="ws-pre">{{ edit.now }}</pre></details>{% endif %}
+    {% else %}
+    <p data-decided-missing>The decided version cannot be shown: {{ edit.note }}.</p>
+    {% if edit.now %}<details class="ws-ev" open><summary>The file as it is now (sections 1-4)</summary><pre class="ws-pre">{{ edit.now }}</pre></details>{% endif %}
+    {% endif %}
+  </section>
+  {% endif %}
+
   {% if packet.recommendation %}
   <section class="ws-section ws-recommendation" aria-labelledby="ws-rec-h">
     <h2 id="ws-rec-h">Recommendation</h2>

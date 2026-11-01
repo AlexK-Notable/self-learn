@@ -1,0 +1,93 @@
+"""Follow-ups 2 of the attention round (2026-11-01; S-NEXT-followups2),
+item 4: the overseer-asks gate r3 NITs.
+
+- A `because` the model wrote on a `system: true` ask without `needs` is
+  kept when it is one of the closed list; only a missing or invalid one is
+  inferred (NIT 2a).
+- The note on a kept ask whose wording names ledger ids is published under
+  "Questions for you", beside the question, never under "Refused / could
+  not do" (NIT 2b); S-117's stead path names it too (NIT 1, pinned in
+  `test_overseer_asks_needs.test_a_question_naming_ledger_ids_is_kept_and_named`).
+
+Each test names the mutation it was checked against.
+"""
+
+from __future__ import annotations
+
+from self_learn.overseer import conversation
+from self_learn.overseer import run as overseer_run
+from support import make_home
+from test_overseer_answered_questions import _deferred_case
+from test_overseer_asks_needs import (  # noqa: F401 -- `redirect` is an autouse fixture
+    SUDO_OPTIONS,
+    _ids,
+    _phases,
+    _refused_block,
+    _run,
+    _user_ask,
+    _validate,
+    redirect,
+)
+
+
+def test_a_valid_because_the_model_wrote_is_kept_when_needs_is_inferred(tmp_path):
+    """Mutation: the inference always writes `system-change` (the old
+    rule) -> red (the ask is dropped for a missing plan)."""
+    case_id = "case-12345678"
+    sudo = {k: v for k, v in _user_ask("q-sudo", [case_id]).items() if k != "needs"}
+    sudo["system"] = True
+    invalid = {**sudo, "id": "q-invalid", "because": "credentials"}
+
+    index, dropped = _validate(tmp_path, [sudo, invalid], {case_id})
+
+    assert _ids(index) == ["q-sudo"]
+    row = index["questions"][0]
+    assert (row["needs"], row["because"]) == ("user", "sudo")
+    assert row["default"] == conversation.NEEDS_USER_DEFAULTS["sudo"]
+    assert [o["id"] for o in row["options"]] == [o["id"] for o in SUDO_OPTIONS]
+    # Control: an invalid `because` is still inferred as system-change, and
+    # then held to that kind's rules (a plan).
+    assert "question q-invalid: dropped — a system-change ask needs a plan" in dropped
+
+
+def test_a_kept_asks_wording_note_is_published_beside_the_questions(tmp_path, monkeypatch):
+    """Mutations: the run passes no `notes_out` to `_questions` -> red (the
+    note lands under "Refused / could not do"); the finalize drops
+    `question_notes` -> red (the note is nowhere)."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    state = _phases(monkeypatch)
+    state["questions"] = [
+        _user_ask("q-ids", [case_id], text=f"Should {case_id} be read again? Yes reads it; no leaves it."),
+    ]
+
+    _run(home, first=True)
+
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    questions = report.split("## Questions for you\n", 1)[1].split("\n## ", 1)[0]
+    assert f"- question q-ids (kept, and asked as written): its question names {case_id}" in questions
+    assert "q-ids" not in _refused_block(home)
+    assert [row["id"] for row in conversation._load_questions(home)] == ["q-ids"]  # noqa: SLF001
+
+
+def test_finalize_puts_question_notes_last_under_questions_for_you(tmp_path):
+    path = tmp_path / "report.md"
+    headings = ["Examined", "Decided in the user's stead", "Hooks", "User model",
+                "Catalogue health", "Questions for you", "Refused / could not do"]
+    body = {h: "- none" for h in headings}
+    body["Questions for you"] = "- q-a: a question"
+    path.write_text("# draft\n" + "\n".join(f"## {h}\n{body[h]}\n" for h in headings),
+                    encoding="utf-8")
+
+    text = overseer_run._finalize_model_report(  # noqa: SLF001
+        path, date="2026-11-01", run_id="12345678", model="m", selected=(),
+        population_count=0, excluded=0, model_calls=1, guard=50, refusals=[],
+        question_notes=["question q-a (kept, and asked as written): its question names lrn-1a2b3c4d"],
+    )
+
+    questions = text.split("## Questions for you\n", 1)[1].split("\n## ", 1)[0]
+    assert questions.splitlines()[:2] == [
+        "- q-a: a question",
+        "- question q-a (kept, and asked as written): its question names lrn-1a2b3c4d",
+    ]
+    assert "lrn-1a2b3c4d" not in text.split("## Refused / could not do\n", 1)[1]

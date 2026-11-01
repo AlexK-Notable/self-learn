@@ -19,6 +19,9 @@ The verbs the inbox's buttons and reply box run, and their library halves:
 * :func:`fix` (``attention fix``): "Restart self-learn" on a ``broken.host``
   item: ``systemctl --user reset-failed`` then ``restart`` of
   ``self-learn-host.service`` only.
+* :func:`stop` (``attention stop``, follow-ups 2): "Stop it" on approved
+  work a session claimed in the terminal the page opened: stops that unit
+  and clears the claim, so the person can change their answer.
 * :func:`claim` / :func:`done` (``attention claim|done``): the carrying-out
   session's own verbs.
 * :func:`undo` (``attention undo [--redo]``): the one-step inverse of a
@@ -62,6 +65,7 @@ __all__ = [
     "redo_offered",
     "resolve_terminal",
     "run",
+    "stop",
     "undo",
 ]
 
@@ -85,6 +89,7 @@ RAN_SUDO_LABEL = "I ran it"
 RUN_UNIT_PREFIX = "self-learn-run-"
 LAUNCH_TIMEOUT_SECS = 10
 FIX_TIMEOUT_SECS = 10
+STOP_TIMEOUT_SECS = 10
 HOST_UNIT = attention.HOST_UNIT
 #: §3.4.7's terminal fallbacks, in order: the binary and the argv that
 #: follows it before the command.
@@ -157,9 +162,16 @@ class RunResult:
     unit: str | None = None
     brief: str | None = None
     argv: list[str] | None = None
+    #: Follow-ups 2 (gap 3): the command a person runs in a terminal of
+    #: their own when none was found (exit 5), alone, so a page copies it
+    #: without parsing :attr:`message`; ``None`` otherwise.
+    command: str | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {"exit": self.exit, "message": self.message}
+        """``attention run --json`` and the answer verb's ``run``:
+        ``{exit, message, command, brief}``."""
+        return {"exit": self.exit, "message": self.message, "command": self.command,
+                "brief": self.brief}
 
 
 # ------------------------------------------------------------------ helpers
@@ -380,7 +392,11 @@ def _code_kind_for_subject(subject: str) -> str:
 
 def _options_for(item: dict, ask_row: dict | None) -> list[dict]:
     options = [dict(o) for o in item.get("options") or []]
-    if not options and item["kind"] == "approved.pending":
+    if item["kind"] == "approved.pending":
+        # Follow-ups 2 (gap 2): the approved item's own options are the
+        # page's changes of mind (no approval, `disabled` while claimed,
+        # "Stop it"); what an answer may choose is still every option the
+        # ask offered, and a live claim is checked in `answer` itself.
         if ask_row is not None:
             options = [_option_view(o, ask_row.get("recommend"))
                        for o in ask_row.get("options") or [] if isinstance(o, dict) and o.get("id")]
@@ -1104,7 +1120,7 @@ def _run_item(home: Path | str, item_id: str, *, login: bool = False) -> RunResu
         terminal = resolve_terminal(home)
         if terminal is None:
             return RunResult(EXIT_NO_TERMINAL, "no terminal found: open one yourself, run "
-                                               "`claude`, then type /login")
+                                               "`claude`, then type /login", command="claude")
         unit = RUN_UNIT_PREFIX + item_id[len("att-"):]
         argv = ["--user", "--collect", "--quiet", f"--unit={unit}",
                 f"--working-directory={_working_directory(None)}", "--", *terminal, "claude"]
@@ -1148,10 +1164,10 @@ def _run_item(home: Path | str, item_id: str, *, login: bool = False) -> RunResu
     message = f"{first_line} Read {brief} and follow it."
     terminal = resolve_terminal(home)
     if terminal is None:
+        command = f"claude {shlex.quote(message)}"
         return RunResult(EXIT_NO_TERMINAL, (
-            f"no terminal found. The brief is at {brief}; open a terminal and run: claude "
-            f"{shlex.quote(message)}"
-        ), brief=str(brief))
+            f"no terminal found. The brief is at {brief}; open a terminal and run: {command}"
+        ), brief=str(brief), command=command)
     unit = RUN_UNIT_PREFIX + item["id"][len("att-"):]
     plan = item.get("_plan") if isinstance(item.get("_plan"), dict) else None
     argv = ["--user", "--collect", "--quiet", f"--unit={unit}",
@@ -1230,6 +1246,113 @@ def fix(home: Path | str, item_id: str, option: str) -> str:
     _try_seal(home, item, {"role": "user", "origin": "clicked", "kind": "fix", "text": None,
                            "option": option})
     return f"{HOST_UNIT} restarted; the item ends when its heartbeat is fresh again"
+
+
+# ------------------------------------------------------------------ stop
+
+
+#: A unit `attention run` launched (``RUN_UNIT_PREFIX`` + 12 hex).
+_RUN_UNIT_RE = re.compile(r"^self-learn-run-[0-9a-f]{12}$")
+#: ``systemctl is-active`` answers that mean the unit still runs.
+_STILL_RUNNING = frozenset({"active", "activating", "deactivating", "reloading", "refreshing"})
+STOPPED_MESSAGE = (
+    "Stopped. The terminal opened for this work is closed, so its session can change nothing "
+    "more. A step it was in the middle of stopped where it was and was not undone, and "
+    "anything it had already changed stays changed. Your approval still stands but nothing is "
+    "carrying it out: choose a different answer, or Run it now to start again."
+)
+ALREADY_CLOSED_MESSAGE = (
+    "The terminal opened for this work had already closed, so its session could change "
+    "nothing more; its hold on the work is cleared. Anything it changed before it closed "
+    "stays changed. Your approval still stands but nothing is carrying it out: choose a "
+    "different answer, or Run it now to start again."
+)
+
+
+def _unit_state(binary: str, unit: str) -> str:
+    try:
+        proc = subprocess.run(
+            [binary, "--user", "is-active", unit], capture_output=True, text=True,
+            timeout=STOP_TIMEOUT_SECS, check=False, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AnswerError(f"systemctl --user is-active {unit} failed: {exc}", EXIT_REFUSED) from exc
+    return str(proc.stdout or "").strip() or "unknown"
+
+
+def _mark_run_stopped(home: Path, item_id: str, record: dict) -> None:
+    """The run record (cache) gains ``stopped_at``: the reader then counts
+    the launch as stopped, not running."""
+    target = _cache(home) / "attention" / "runs" / f"{item_id}.json"
+    fsops.atomic_write(target, json.dumps({**record, "stopped_at": chrono.now_iso()}) + "\n",
+                       fsync=False)
+
+
+def stop(home: Path | str, item_id: str) -> str:
+    """``self-learn attention stop <id>`` (follow-ups 2, gap 2): the page's
+    "Stop it" on approved work a session has claimed. A new answer is
+    refused while a live claim holds the work (:func:`answer`), because a
+    different answer cannot reach a session already carrying it out; this
+    is the one honest way to change course then. It acts only on a claim
+    made in the terminal this page launched (``attention.stoppable``): it
+    stops that unit (``systemctl --user stop``, bounded), checks it no
+    longer runs, marks the launch stopped and clears the claim (both
+    cache), and seals a workspace row ``kind: stop``. It undoes nothing the
+    session already did, and the approval stands until the person answers
+    otherwise. Refused from an agent's shell (64): it acts on the person's
+    click. Exits 2 when *item_id* is not approved work, 3 when nothing
+    holds a claim, the claim is a session the page did not open, or the
+    unit would not stop."""
+    home = Path(home)
+    if _agent():
+        raise AnswerError(
+            "refused from an agent's shell: stopping work the person approved is the person's "
+            "click", EXIT_USAGE,
+        )
+    item = _approved_for(_items(home), item_id)
+    if item is None or item["kind"] != "approved.pending":
+        raise AnswerError(f"{item_id} is not approved work being carried out", EXIT_UNKNOWN)
+    claim_row = attention._claim(home, item["id"], _now())  # noqa: SLF001
+    if claim_row is None:
+        raise AnswerError(
+            "no session has claimed it, so there is nothing to stop: a different answer is "
+            "taken now, and a session that tries to claim the work afterwards is refused and "
+            "changes nothing", EXIT_REFUSED,
+        )
+    record = attention._run_record(home, item["id"])  # noqa: SLF001
+    if not attention.stoppable(record, claim_row) or record is None:
+        raise AnswerError(
+            f"session {claim_row.get('session')} is carrying it out in a terminal this page did "
+            "not open, so the page cannot stop it; tell it in its own terminal", EXIT_REFUSED,
+        )
+    unit = str(record.get("unit") or "")
+    if _RUN_UNIT_RE.fullmatch(unit) is None:
+        raise AnswerError(f"the launch record names no unit this page started ({unit!r})",
+                          EXIT_REFUSED)
+    binary = shutil.which("systemctl")
+    if binary is None:
+        raise AnswerError("systemctl is not on PATH", EXIT_REFUSED)
+    message = ALREADY_CLOSED_MESSAGE
+    if _unit_state(binary, unit) in _STILL_RUNNING:
+        try:
+            subprocess.run(
+                [binary, "--user", "stop", unit], capture_output=True, text=True,
+                timeout=STOP_TIMEOUT_SECS, check=False, stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AnswerError(f"systemctl --user stop {unit} failed: {exc}", EXIT_REFUSED) from exc
+        state = _unit_state(binary, unit)
+        if state in _STILL_RUNNING:
+            raise AnswerError(
+                f"{unit} did not stop (systemd says it is {state}); nothing else was changed",
+                EXIT_REFUSED,
+            )
+        message = STOPPED_MESSAGE
+    _mark_run_stopped(home, item["id"], record)
+    _clear_claim(home, item["id"])
+    _try_seal(home, item, {"role": "user", "origin": "clicked", "kind": "stop", "text": None,
+                           "option": None})
+    return message
 
 
 # ------------------------------------------------------------------ claim and done

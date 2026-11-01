@@ -2181,6 +2181,7 @@ def _questions(
     look_at_home: Path | None = None,
     now: str | None = None,
     reask: dict[str, str] | None = None,
+    notes_out: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Validate questions.yaml ENTRY BY ENTRY (2026-09-24).
 
@@ -2226,6 +2227,7 @@ def _questions(
     now_dt = conversation._utc(stamp) or datetime.now(timezone.utc)  # noqa: SLF001
     clean: list[dict[str, Any]] = []
     dropped: list[str] = []
+    wording: list[str] = []
     seen: set[str] = set()
     for ordinal, item in enumerate(data["questions"], start=1):
         if not isinstance(item, dict):
@@ -2253,9 +2255,16 @@ def _questions(
             if problem is not None:
                 dropped.append(f"question {label}: dropped — {problem}")
                 continue
+            # Follow-ups 2 (overseer-asks gate r3 NIT 2): a `because` the
+            # model wrote is kept when it is one of the closed list (a
+            # register ask's only valid one is foreign-history); only a
+            # missing or invalid one is inferred.
+            written = item.get("because")
             item = {
                 **item, "needs": "user",
-                "because": "foreign-history" if "register" in item else "system-change",
+                "because": "foreign-history" if "register" in item else (
+                    written if written in conversation.BECAUSE_KEYS else "system-change"
+                ),
             }
         problem = _question_problem(item, known_cases)
         if problem is None and item["id"] in seen:
@@ -2293,7 +2302,7 @@ def _questions(
                     dropped.append(f"question {label}: dropped — {problem}")
                     continue
             dropped.extend(notes)
-            dropped.extend(_ids_in_text_note(indexed, label))
+            wording.extend(_ids_in_text_note(indexed, label))
             clean.append(indexed)
             continue
         row["default"] = _ask_default(item)
@@ -2304,8 +2313,12 @@ def _questions(
             if problem is not None:
                 dropped.append(f"question {label}: dropped — {problem}")
                 continue
-        dropped.extend(_ids_in_text_note(row, label))
+        wording.extend(_ids_in_text_note(row, label))
         clean.append(row)
+    # Follow-ups 2 (overseer-asks gate r3 NIT 2): a note on a KEPT ask's
+    # wording is not a refusal; with *notes_out* it goes there (the report's
+    # "Questions for you"), not into the "Refused / could not do" lines.
+    (notes_out if notes_out is not None else dropped).extend(wording)
     return {"questions": clean}, dropped
 
 
@@ -2323,8 +2336,9 @@ def _ids_in_text_note(row: dict[str, Any], label: str) -> list[str]:
     if not found:
         return []
     return [
-        f"question {label}: its question names {', '.join(found)} -- a question is one plain "
-        "sentence; the ids belong in its cases and statements, which the inbox shows beside it"
+        f"question {label} (kept, and asked as written): its question names "
+        f"{', '.join(found)} -- a question is one plain sentence; the ids belong in its cases "
+        "and statements, which the inbox shows beside it"
     ]
 
 
@@ -2635,13 +2649,17 @@ def _finalize_model_report(
     notes: list[str] | None = None,
     decided: list[str] | None = None,
     hand_steps: dict[str, Any] | None = None,
+    question_notes: list[str] | None = None,
 ) -> str:
     """The published report: the model's own text, whole, with the
     runner's factual lines added. *notes* are runner lines for "Refused /
     could not do" that are not refusals of any decision (a dropped
     question, the report's own length); they are not counted as refused.
     *decided* (2026-09-28, follow-up 4) are runner lines for "Decided in
-    the user's stead" (how many staged decisions were dropped)."""
+    the user's stead" (how many staged decisions were dropped).
+    *question_notes* (follow-ups 2) are runner lines about asks that were
+    KEPT (a wording note), put under "Questions for you" beside the
+    questions, never under "Refused / could not do"."""
     lines = _validate_model_report(path)
     model_line_count = len(lines)
     runner_notes = list(notes or [])
@@ -2682,6 +2700,17 @@ def _finalize_model_report(
         ) + 1
         lines[questions_at:questions_at] = [f"- {item}" for item in questions]
         _drop_bare_none(lines, questions_at)
+    if question_notes:
+        notes_at = next(
+            i for i, line in enumerate(lines) if line.startswith("## Questions for you")
+        ) + 1
+        notes_end = next(
+            (i for i in range(notes_at, len(lines)) if lines[i].startswith("## ")), len(lines),
+        )
+        while notes_end > notes_at and not lines[notes_end - 1].strip():
+            notes_end -= 1
+        lines[notes_end:notes_end] = [f"- {item}" for item in question_notes]
+        _drop_bare_none(lines, notes_at)
     user_model_at = next(i for i, line in enumerate(lines) if line.startswith("## User model")) + 1
     next_heading = next(
         (i for i in range(user_model_at, len(lines)) if lines[i].startswith("## ")),
@@ -4800,6 +4829,7 @@ def _prepare_manifest(
     registration_rows: list[dict[str, str]] | None = None,
     policy_lines: list[str] | None = None,
     withdraw: list[dict[str, str]] | None = None,
+    question_notes: list[str] | None = None,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -4911,6 +4941,9 @@ def _prepare_manifest(
         "reconsider_observations": [],
         "report": (stage / "report.md").read_text(encoding="utf-8"),
         "questions": questions,
+        # Follow-ups 2 (overseer-asks gate r3 NIT 2): runner notes on kept
+        # asks (wording), published under "Questions for you".
+        "question_notes": list(question_notes or []),
         # S-122 (§3.8): the asks and approvals phase B
         # withdrew as moot ({id, why}); the finalize applies them under its
         # lock, against the index as it stands then.
@@ -6974,6 +7007,8 @@ def _execute_manifest(
                 user_model_lines=user_model_lines,
                 questions=questions,
                 notes=[*runner_notes, *carry_notes],
+                question_notes=[str(line) for line in cast(
+                    list[Any], manifest.get("question_notes") or [])],
                 decided=[
                     # S-117: each ask's default, applied by
                     # `_record_defaults` above (not on an attempt that did not
@@ -7831,6 +7866,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 withdrawn_rows = conversation.load_withdrawn(home)
             except conversation.ConversationError:
                 pass  # the open-asks read already answered none
+            question_notes: list[str] = []
             questions, question_drops = _questions(
                 stage / "questions.yaml", model_doc,
                 {row["case"] for row in cases.list_cases(home, only_ok=True)},
@@ -7844,6 +7880,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 # one the user answered with a click, is never re-asked.
                 # The finalize checks again under its lock.
                 reask=_reask_problems(home, _safe_questions(home)),
+                # Follow-ups 2: notes on kept asks' wording, for "Questions
+                # for you", not "Refused / could not do".
+                notes_out=question_notes,
             )
             withdraw, withdraw_drops = _withdrawals(
                 stage / "questions.yaml", withdraw_targets,
@@ -8351,6 +8390,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 selected=examined_ids, population_count=len(week_rows), excluded=excluded,
                 model_calls=model_calls, guard=guard, coverage_text=coverage_text,
                 questions=questions, findings=findings, prepared=prepared,
+                question_notes=question_notes,
                 model_updates=model_updates, withdraw=withdraw,
                 sessions=sessions,
                 project_notice_rows=notice_rows,

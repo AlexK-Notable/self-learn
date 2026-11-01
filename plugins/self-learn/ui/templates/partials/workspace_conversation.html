@@ -28,7 +28,7 @@
   {% elif row.role == "user" %}
   <div class="bubble bubble-user">
     <p class="bubble-who">{% if row.kind == "question" %}You asked{% elif row.origin == "clicked" %}You clicked{% elif row.origin in ("draft-accepted", "draft-edited") %}You sent the agent's draft{% else %}You answered{% endif %}{% if row.at %} · {{ row.at | humanize_ts }}{% endif %}</p>
-    {% if row.text %}<p>{{ row.text }}</p>{% elif row.option %}<p>{{ (options_by_id.get(row.option) or {}).get("label", row.option) }}</p>{% elif row.kind %}<p>{{ row.kind }}</p>{% endif %}
+    {% if row.text %}<p>{{ row.text }}</p>{% elif row.kind == "stop" %}<p>Stop it (the terminal carrying it out was closed)</p>{% elif row.option %}<p>{{ (options_by_id.get(row.option) or {}).get("label", row.option) }}</p>{% elif row.kind %}<p>{{ row.kind }}</p>{% endif %}
     {% if pending %}<p class="ws-meta">kept on this machine until the ledger is repaired</p>{% endif %}
   </div>
   {% elif row.role == "agent" %}

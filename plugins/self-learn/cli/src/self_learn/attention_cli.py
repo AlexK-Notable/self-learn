@@ -140,8 +140,12 @@ def _seen(home: Path, args) -> int:
 
 
 def _packet(home: Path, args) -> int:
+    # Follow-ups 2 (gap 1): this verb, not the packet builder, reads the
+    # ledger's history, and only for a hand-edited case's decided text.
+    from . import cases
+
     try:
-        packet = attention_packet.build(home, args.id)
+        packet = attention_packet.build(home, args.id, decided_reader=cases.decided_text)
     except attention_packet.UnknownItem:
         print(f"self-learn attention packet: unknown or expired item {args.id}", file=sys.stderr)
         return EXIT_UNKNOWN
