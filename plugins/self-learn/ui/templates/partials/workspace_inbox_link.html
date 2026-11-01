@@ -1,0 +1,9 @@
+{# The front page's "Inbox (N)" (design r2 §4.7), from GET /inbox/count:
+   N = items that need you plus new decisions made for you; "?" when the
+   inbox could not be read. With no `inbox` it is the placeholder the front
+   page renders, which fetches the count once the page has loaded. #}
+{% if inbox %}
+<a class="status-item inbox-link{% if inbox.count %} inbox-link-active{% endif %}" href="/inbox" title="What needs you, and what was decided for you" data-inbox-link data-inbox-count="{{ inbox.label }}">Inbox ({{ inbox.label }})</a>
+{% else %}
+<a class="status-item inbox-link" href="/inbox" title="What needs you, and what was decided for you" data-inbox-link hx-get="/inbox/count" hx-trigger="load" hx-swap="outerHTML">Inbox</a>
+{% endif %}

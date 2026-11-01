@@ -142,6 +142,60 @@ def _age_words(since: object, now: datetime | None = None) -> str:
     return f"{weeks} weeks"
 
 
+#: ``attention run``'s exit-5 sentences (attention_answers.run): the
+#: approved-work one ends "...; open a terminal and run: claude '<line>'",
+#: the login one says "run `claude`, then type /login".
+_NO_TERMINAL_BRIEF_RE = re.compile(
+    r"The brief is at (?P<brief>.+?); open a terminal and run: (?P<cmd>\S.*)$", re.S)
+_NO_TERMINAL_LOGIN_RE = re.compile(r"run `(?P<cmd>[^`]+)`, then type /login")
+_NO_TERMINAL_ANY_RE = re.compile(r"\brun: (?P<cmd>\S.*)$", re.S)
+
+
+def no_terminal(message: str) -> dict[str, str | None]:
+    """Split the verb's no-terminal sentence into the command alone (the
+    copy block holds only what runs when pasted; gate r1 finding 3) and a
+    line of prose for around it. With no command in the sentence, the
+    sentence itself is the prose and nothing is offered to copy."""
+    text = (message or "").strip()
+    match = _NO_TERMINAL_BRIEF_RE.search(text)
+    if match:
+        return {"command": match.group("cmd").strip(),
+                "lead": f"The brief it follows is at {match.group('brief').strip()}."}
+    match = _NO_TERMINAL_LOGIN_RE.search(text)
+    if match:
+        return {"command": match.group("cmd").strip(),
+                "lead": "Then type /login in that session, and press Check now."}
+    match = _NO_TERMINAL_ANY_RE.search(text)
+    if match:
+        return {"command": match.group("cmd").strip(), "lead": None}
+    return {"command": None, "lead": text or None}
+
+
+def _with_command(run: object, exit_code: int | None = None) -> object:
+    """A run result (``{exit, message}``) with ``command``/``lead`` added
+    when it is the no-terminal refusal."""
+    if not isinstance(run, dict):
+        return run
+    code = run.get("exit") if exit_code is None else exit_code
+    if code != 5:
+        return run
+    return {**run, **no_terminal(str(run.get("message") or ""))}
+
+
+def redo_next(item: dict, rows: list[dict]) -> bool:
+    """Whether the decided item's next one-click act is redo (gate r1
+    finding 4): the reader's ``undo.redo`` when it says so, else the
+    item's transcript, whose last undo/redo row is the last act (the
+    CLI's own ``attention_answers.redo_offered`` reads the same rows)."""
+    undo = item.get("undo") if isinstance(item.get("undo"), dict) else None
+    if undo is None:
+        return False
+    if undo.get("redo"):
+        return True
+    acts = [r.get("kind") for r in rows if r.get("kind") in ("undo", "redo")]
+    return bool(acts) and acts[-1] == "undo"
+
+
 def _sudo_steps(packet: dict | None) -> list[dict]:
     plan = (packet or {}).get("plan") or {}
     return [s for s in plan.get("steps") or [] if isinstance(s, dict) and s.get("sudo")]
@@ -237,6 +291,7 @@ def _conversation_ctx(request: Request, item: dict) -> dict[str, Any]:
     visible = [r for r in rows if r.get("kind") != "header"]
     return {
         "rows": visible,
+        "redo_next": redo_next(item, rows),
         "in_flight": ask_runner(request).in_flight(str(item.get("id"))),
         "options_by_id": {o.get("id"): o for o in item.get("options") or []},
     }
@@ -352,6 +407,26 @@ async def inbox_list(request: Request, selected: str | None = None) -> HTMLRespo
     """The list alone (the page refreshes it on an ``attention`` envelope)."""
     read = await _doc(request)
     return _render(request, "partials/workspace_list.html", _list_ctx(read, selected))
+
+
+def inbox_link(read: ledger.CliRead) -> dict[str, Any]:
+    """The front page's "Inbox (N)" (design r2 §4.7): N is the items that
+    need you plus the new decisions made for you; "?" when the inbox could
+    not be read (the inbox page then says why)."""
+    data = read.data if isinstance(read.data, dict) else None
+    if data is None or read.error or data.get("error"):
+        return {"count": 0, "label": "?"}
+    counts = data.get("counts") or {}
+    count = int(counts.get("needs_you") or 0) + int(counts.get("new") or 0)
+    return {"count": count, "label": str(count)}
+
+
+@router.get("/inbox/count", response_class=HTMLResponse)
+async def inbox_count(request: Request) -> HTMLResponse:
+    """The front page's link, filled in after the page loaded, so the front
+    page itself never waits on ``attention --json`` (gate r1 NIT 2)."""
+    read = await _doc(request)
+    return _render(request, "partials/workspace_inbox_link.html", {"inbox": inbox_link(read)})
 
 
 async def _workspace_for(request: Request, item_id: str, *, budget: float | None):
@@ -483,8 +558,14 @@ async def inbox_answer(
         if chosen.get("confirm") or chosen.get("effect") == "register":
             return _answer_partial(request, item, packet_read, {
                 "state": "armed", "option": chosen, "text": text, "draft_id": draft_id,
-                "message": f"“{chosen.get('label')}” acts outside self-learn once you confirm it. "
-                           "Confirm?",
+                # §3.7 "This registers <path> in git mode. Confirm?": the
+                # path and mode are in the question itself (the overseer's
+                # validator refuses an ask whose text does not name the
+                # register path exactly and its mode), so the armed line
+                # repeats the question rather than a path field §4.1/§4.3
+                # do not carry.
+                "message": f"“{chosen.get('label')}” answers “{item.get('title')}”, and it acts "
+                           "outside self-learn once you confirm it. Confirm?",
             })
         if chosen.get("effect") == "approve":
             packet_read = await _packet(request, item_id)
@@ -540,7 +621,7 @@ async def inbox_answer(
         "words_alone_on_plan": no_option and state == "open" and (
             any(o.get("effect") == "approve" for o in item.get("options") or [])
         ),
-        "run": evidence.get("run"),
+        "run": _with_command(evidence.get("run")),
         "warnings": evidence.get("warnings") or [],
         "registration": evidence.get("registration"),
     }, list_read=list_read)
@@ -554,9 +635,20 @@ async def inbox_undo(request: Request, item_id: str, redo: str | None = Form(Non
         return _render(request, "partials/workspace_gone.html", {"gone": item_id}, status_code=404)
     argv = ["attention", "undo", item_id] + (["--redo"] if redo == "1" else [])
     result = await _run_verb(request, argv)
-    answer = ({"state": "undone", "redo": redo == "1", "message": (result.stdout or "").strip()}
-              if result.ok else {"state": "error", "message": _verb_message(result)})
-    return _answer_partial(request, item, None, answer)
+    if not result.ok:
+        return _answer_partial(request, item, None,
+                               {"state": "error", "message": _verb_message(result)})
+    # An undo can move the item on (reopening a withdrawn ask makes it a
+    # needs-you item again, under its own id): the page then says so, so
+    # its own click is never reported as "resolved elsewhere".
+    list_read = await _doc(request)
+    fresh = _find(list_read, item_id)
+    successor = None if fresh is not None else next(
+        (_view_item(i) for i in _items(list_read)
+         if i.get("subject") == item.get("subject") and i.get("id") != item_id), None)
+    answer = {"state": "undone", "redo": redo == "1", "message": (result.stdout or "").strip(),
+              "closed": fresh is None, "successor": successor}
+    return _answer_partial(request, fresh or item, None, answer, list_read=list_read)
 
 
 @router.post("/inbox/{item_id}/feedback", response_class=HTMLResponse)
@@ -578,10 +670,11 @@ async def inbox_run(request: Request, item_id: str, login: str | None = Form(Non
         return _render(request, "partials/workspace_gone.html", {"gone": item_id}, status_code=404)
     argv = ["attention", "run", item_id] + (["--login"] if login == "1" else [])
     result = await _run_verb(request, argv)
+    message = ((result.stdout if result.ok else result.stderr) or "").strip() or _verb_message(result)
+    split = no_terminal(message) if result.exit_code == 5 else {"command": None, "lead": None}
     return _render(request, "partials/workspace_run.html", {
         "item": _view_item(item), "exit": result.exit_code, "login": login == "1",
-        "message": ((result.stdout if result.ok else result.stderr) or "").strip()
-        or _verb_message(result),
+        "message": message, **split,
     })
 
 
@@ -612,9 +705,11 @@ async def inbox_check_login(request: Request, item_id: str) -> HTMLResponse:
         await publish_attention(request)
     except Exception as exc:  # noqa: BLE001
         uilog.log(f"inbox: attention envelope not published: {exc}")
+    next_jobs = (await asyncio.to_thread(ledger.scheduler_next, _home(request))
+                 if outcome.ok else None)
     return _render(request, "partials/workspace_login.html", {
         "ok": outcome.ok, "exit": outcome.exit_code, "message": outcome.message,
-        "item_id": item_id,
+        "item_id": item_id, "next_jobs": next_jobs,
     })
 
 

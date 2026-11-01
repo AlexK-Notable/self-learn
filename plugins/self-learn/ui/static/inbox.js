@@ -117,10 +117,40 @@
     }, 250);
   }
 
+  // The person's own click on this item (an answer, an undo, a run, a
+  // fix, a login check) publishes an `attention` envelope from inside the
+  // verb, so the envelope can arrive before or just after the response.
+  // An item that left the list because of that click was not "resolved
+  // elsewhere" (gate r1 finding 2): while the request is in flight, and
+  // for a short grace after it, the banner stays off; after that, the
+  // response's own markers (data-answer-closed, data-item-resolved) say
+  // the click did it.
+  var OWN_GRACE_MS = 3000;
+  var ownAction = { item: null, pending: false, until: 0 };
+  var OWN_PATH_RE = /^\/inbox\/(att-[0-9a-f]{12})\/(answer|undo|run|fix|check-login)$/;
+
+  function requestPath(detail) {
+    if (!detail) return "";
+    if (detail.pathInfo && detail.pathInfo.requestPath) return String(detail.pathInfo.requestPath);
+    if (detail.requestConfig && detail.requestConfig.path) return String(detail.requestConfig.path);
+    return "";
+  }
+
+  function ownItem(detail) {
+    var m = OWN_PATH_RE.exec(requestPath(detail).split("?")[0]);
+    return m ? m[1] : null;
+  }
+
+  function resolvedByThisPage(id) {
+    if (ownAction.item === id && (ownAction.pending || Date.now() < ownAction.until)) return true;
+    return !!$("#ws [data-answer-closed], #ws [data-item-resolved]");
+  }
+
   function noteResolved(ids) {
     var id = currentItem();
     if (!id || !Array.isArray(ids) || ids.indexOf(id) !== -1) return;
     if ($("[data-resolved-banner]")) return;
+    if (resolvedByThisPage(id)) return;
     var ws = $("#ws .ws-main");
     if (!ws) return;
     var p = document.createElement("p");
@@ -227,18 +257,48 @@
 
   // ------------------------------------------------------------ drafts, chips, copy
 
-  function setDraft(id, text, option) {
-    var box = $("#ws-reply-text");
+  // A reply that started as the agent's draft keeps the draft's id and
+  // option with its text, in the page and in localStorage alike (C6, gate
+  // r1 finding 1): restored text without its draft id would reach the
+  // answer verb with no --draft, and a short draft would be recorded as
+  // the person's own typed words.
+  var DRAFT_ID_RE = /^drf-[0-9a-f]{8}$/;
+  var OPTION_ID_RE = /^opt-[a-z0-9-]{1,48}$/;
+
+  function applyDraftMeta(id, option) {
     var hidden = $("#ws-reply-draft");
     var form = $("#ws-answer-form");
     var note = $("#ws-reply-draft-note");
-    if (!box || !hidden || !form) return;
-    box.value = text;
-    hidden.value = id || "";
-    if (option) form.setAttribute("data-draft-option", option);
-    else form.removeAttribute("data-draft-option");
+    if (hidden) hidden.value = id || "";
+    if (form) {
+      if (id && option) form.setAttribute("data-draft-option", option);
+      else form.removeAttribute("data-draft-option");
+    }
     if (note) note.hidden = !id;
+  }
+
+  function storeDraftMeta(item, id, option) {
+    store("reply-draft", item, id ? JSON.stringify({ id: id, option: option || "" }) : "");
+  }
+
+  function recallDraftMeta(item) {
+    var raw = recall("reply-draft", item);
+    if (!raw) return null;
+    try {
+      var meta = JSON.parse(raw);
+      if (!meta || !DRAFT_ID_RE.test(String(meta.id || ""))) return null;
+      var option = String(meta.option || "");
+      return { id: String(meta.id), option: OPTION_ID_RE.test(option) ? option : "" };
+    } catch (err) { return null; }
+  }
+
+  function setDraft(id, text, option) {
+    var box = $("#ws-reply-text");
+    if (!box || !$("#ws-reply-draft") || !$("#ws-answer-form")) return;
+    box.value = text;
+    applyDraftMeta(id, option);
     store("reply", currentItem(), text);
+    storeDraftMeta(currentItem(), id, option);
     box.focus();
   }
 
@@ -281,12 +341,8 @@
     if (t.id === "ws-reply-text") {
       store("reply", currentItem(), t.value);
       if (!t.value) {
-        var hidden = $("#ws-reply-draft");
-        var form = $("#ws-answer-form");
-        var note = $("#ws-reply-draft-note");
-        if (hidden) hidden.value = "";
-        if (form) form.removeAttribute("data-draft-option");
-        if (note) note.hidden = true;
+        applyDraftMeta("", "");
+        storeDraftMeta(currentItem(), "", "");
       }
     } else if (t.id === "ws-ask-text") {
       store("ask", currentItem(), t.value);
@@ -297,7 +353,12 @@
     var id = currentItem();
     var reply = $("#ws-reply-text");
     var ask = $("#ws-ask-text");
-    if (reply && !reply.value) reply.value = recall("reply", id);
+    if (reply && !reply.value) {
+      reply.value = recall("reply", id);
+      var hidden = $("#ws-reply-draft");
+      var meta = reply.value ? recallDraftMeta(id) : null;
+      if (meta && hidden && !hidden.value) applyDraftMeta(meta.id, meta.option);
+    }
     if (ask && !ask.value && !ask.disabled) ask.value = recall("ask", id);
   }
 
@@ -314,6 +375,8 @@
 
   document.addEventListener("htmx:beforeRequest", function (e) {
     var elt = e.detail.elt;
+    var own = ownItem(e.detail);
+    if (own) { ownAction.item = own; ownAction.pending = true; ownAction.until = 0; }
     if (elt && elt.id === "ws-ask-form") {
       setAsking(true);
       var status = $("#ws-ask-status");
@@ -323,6 +386,14 @@
       $all("#ws-answer button").forEach(function (b) { b.setAttribute("aria-disabled", "true"); });
       var line = $("#ws-reply-line");
       if (line) line.textContent = "Recording…";
+    }
+  });
+
+  document.addEventListener("htmx:afterRequest", function (e) {
+    var own = ownItem(e.detail);
+    if (own && own === ownAction.item) {
+      ownAction.pending = false;
+      ownAction.until = Date.now() + OWN_GRACE_MS;
     }
   });
 
@@ -351,6 +422,7 @@
     var recorded = $("#ws-answer [data-recorded]");
     if (recorded && (target.id === "ws-answer" || target.closest && target.closest("#ws-answer"))) {
       store("reply", currentItem(), "");
+      storeDraftMeta(currentItem(), "", "");
       announce(recorded.textContent.replace(/\s+/g, " ").trim());
     }
     var err = $("#ws-answer [data-answer-error]");
@@ -401,12 +473,15 @@
       case "inbox_next": moveInList(1); break;
       case "inbox_prev": moveInList(-1); break;
       case "inbox_open": {
+        // §3.6: Enter opens from the list. A focused control anywhere
+        // else (an option, Copy, an evidence <summary>, a link) does its
+        // own thing on Enter, and the selected item is not reloaded over
+        // it (gate r1 finding 5); a focused list link opens natively.
         var a = document.activeElement;
-        if (!(a && a.closest && a.closest("#inbox-list"))) {
-          var sel = $("#inbox-list [data-inbox-item].selected a") || listLinks()[0];
-          if (sel) sel.click();
-        }
-        return; // a focused link opens natively
+        if (a && a !== document.body && a !== document.documentElement) return;
+        var sel = $("#inbox-list [data-inbox-item].selected a") || listLinks()[0];
+        if (sel) sel.click();
+        break;
       }
       case "inbox_option": {
         var armed = $("[data-confirm-armed]");

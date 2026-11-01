@@ -27,7 +27,10 @@
     {% if r.run %}
       {% set run_exit = r.run.exit %}
       {% set run_message = r.run.message %}
-      {% set run_item = item %}
+      {% set run_command = r.run.command %}
+      {% set run_lead = r.run.lead %}
+      {# An approval moves the item on: Run it now is the successor's. #}
+      {% set run_item = r.successor or item %}
       {% include "partials/workspace_run_body.html" %}
     {% endif %}
     {% if r.closed %}
@@ -39,7 +42,9 @@
   {% elif r and r.state == "error" %}
   <div class="error-strip" role="alert" data-answer-error><p>{{ r.message }}</p><p class="ws-meta">Your text is kept in the box.</p></div>
   {% elif r and r.state == "undone" %}
-  <div class="ws-recorded" data-recorded><p><strong>{% if r.redo %}Done again.{% else %}Undone.{% endif %}</strong> {{ r.message }}</p></div>
+  <div class="ws-recorded" data-recorded><p><strong>{% if r.redo %}Done again.{% else %}Undone.{% endif %}</strong> {{ r.message }}</p>
+    {% if r.closed %}<p data-answer-closed>This item has left the list.{% if r.successor %} It is now under {{ r.successor.chip }}: <a href="/inbox/{{ r.successor.id }}" hx-get="/inbox/{{ r.successor.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML" hx-push-url="/inbox/{{ r.successor.id }}">open it</a>.{% endif %}</p>{% endif %}
+  </div>
   {% elif item.answer %}
   <p class="ws-last-answer">Your last answer{% if item.answer.at %}, {{ item.answer.at | humanize_ts }}{% endif %}: {{ item.answer.summary }} <span class="ws-meta">(recorded {{ how_words.get(item.answer.how, item.answer.how) }})</span></p>
   {% endif %}
@@ -73,10 +78,16 @@
   </div>
   {% endif %}
 
-  {% if item.class == "decided" and item.undo %}
-  <div class="ws-undo">
-    {% if r and r.state == "undone" and not r.redo and item.undo.redo_label %}
+  {% if item.class == "decided" and item.undo and not (r and r.closed) %}
+  {# Redo is what comes next after an undo: in the same response, or on a
+     later load, from the item's own record (`undo.redo`, or the
+     transcript's last undo/redo row; gate r1 finding 4). #}
+  {% if r and r.state == "undone" %}{% set offer_redo = not r.redo %}{% else %}{% set offer_redo = redo_next %}{% endif %}
+  <div class="ws-undo" data-undo-next="{{ 'redo' if offer_redo else 'undo' }}">
+    {% if offer_redo and item.undo.redo_label %}
     <button type="button" class="btn" hx-post="/inbox/{{ item.id }}/undo" hx-vals='{"redo": "1"}' hx-target="#ws-answer" hx-swap="outerHTML" data-undo>{{ item.undo.redo_label }}</button>
+    {% elif offer_redo %}
+    <p class="ws-meta" data-redo-words>It is undone. To have it done again, say so in the box below.</p>
     {% else %}
     <button type="button" class="btn" hx-post="/inbox/{{ item.id }}/undo" hx-target="#ws-answer" hx-swap="outerHTML" data-undo>{{ item.undo.label }}</button>
     {% endif %}

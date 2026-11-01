@@ -7,9 +7,8 @@
 {% block status_strip %}
 <div class="status-strip">
   <span class="brand">self-learn</span>
-  {# Attention round (design r2 §4.7): N = items that need you plus new
-     decisions made for you; "?" when the inbox could not be read. #}
-  <a class="status-item inbox-link{% if inbox.count %} inbox-link-active{% endif %}" href="/inbox" title="What needs you, and what was decided for you" data-inbox-link>Inbox ({{ inbox.label }})</a>
+  {# Attention round (design r2 §4.7): "Inbox (N)", filled in after load. #}
+  {% include "partials/workspace_inbox_link.html" %}
   <span class="status-item" title="The background analyst that pre-reads new lessons and drafts a routing proposal for each. Overdue means lessons are waiting but it hasn't run recently.">worker: {{ model.status.worker_stale_label }}</span>
   <span class="status-item" title="Lessons waiting for your decision, across every bucket.">pending: {{ model.status.total_pending }}</span>
   <span class="status-item" title="Promises recorded while routing (things to circle back on) that are still open.">follow-ups: {{ model.status.open_followups }}</span>

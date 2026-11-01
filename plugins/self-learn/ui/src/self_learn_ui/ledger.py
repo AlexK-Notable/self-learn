@@ -347,6 +347,22 @@ def overseer_report_dates(home: Path) -> list[str]:
     return sorted((n for n in names if _REPORT_DATE_RE.match(n)), reverse=True)
 
 
+def scheduler_next(home: Path) -> str | None:
+    """The host's own words for when its jobs next run: ``serve.heartbeat``'s
+    ``next_job`` (design r2 §2.3 d, "the page says when each held job
+    retries"). ``None`` when there is no heartbeat (the host is not running)
+    or it names nothing. A cache read only; never raises."""
+    try:
+        from self_learn import attention as sl_attention
+        from self_learn import serve as sl_serve
+
+        beat = sl_serve.read_heartbeat(sl_attention.cache_dir(home))
+    except Exception:  # noqa: BLE001 - a missing line, never a failed page
+        return None
+    value = (beat or {}).get("next_job")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 # ------------------------------------------------------------ raw reads
 
 

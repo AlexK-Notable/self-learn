@@ -1,8 +1,13 @@
 {# POST /inbox/<id>/check-login (design r2 §2.3 d, §3.3): one tiny model
-   call through the ask runner, never the verb runner. #}
+   call through the ask runner, never the verb runner. On success the item
+   clears (data-item-resolved: the page's own click did it), and the page
+   says when the held jobs run again, in the host's own words from
+   serve.heartbeat. #}
 <div class="ws-run" data-login-exit="{{ exit }}">
   {% if ok %}
-  <p class="ws-run-ok"><strong>The login works.</strong> This item clears now, and each held job runs again on its next schedule.</p>
+  <p class="ws-run-ok" data-item-resolved><strong>The login works.</strong> This item clears now, and each held job runs again at its next scheduled time.</p>
+  {% if next_jobs %}<p class="ws-meta" data-next-jobs>Next scheduled: {{ next_jobs }}</p>
+  {% else %}<p class="ws-meta" data-next-jobs>The host's schedule could not be read (it may not be running), so no next time is known.</p>{% endif %}
   {% elif exit == 3 %}
   <p role="alert"><strong>The login is still broken.</strong> {{ message }}</p>
   {% elif exit == 4 %}
