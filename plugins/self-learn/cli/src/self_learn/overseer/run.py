@@ -34,11 +34,12 @@ from typing import Any, cast
 from ruamel.yaml import YAML, YAMLError
 
 from .. import always_loaded, attribution, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, skill_writer, statements, user_model, verbs, worker
+from .. import effects as effects_mod
 from .. import hosts as hosts_mod
 from .. import notices as project_notices
 from .. import report as report_mod
 from ..ledger import discover_buckets, resolve_home
-from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
+from ..ledger_ops import DEFAULT_DEFER_DAYS
 from ..primitives import chrono, fsops, procs
 from ..records import Record, build_covered_by
 from . import discovery as discovery_mod, formats, health, notify, population as population_mod, skills as skills_mod
@@ -114,14 +115,44 @@ QUESTION_KINDS = ("ask",)
 #: about the user's system (`system: true`) or carries `register`: those
 #: take no default of their own, and the runner writes the fixed
 #: change-nothing default (`conversation.SYSTEM_DEFAULT` / `REGISTER_DEFAULT`).
-ASK_KEYS = ("id", "kind", "cases", "text", "why", "default", "system", "register")
+#: S-NEXT-overseer-asks (attention design r2.1 §3.8, §4.5): `needs`,
+#: `because`, `options`, `recommend`, `plan`, `look_at` and `statements`.
+#: `asked_at` is the runner's, never the model's.
+ASK_KEYS = (
+    "id", "kind", "cases", "text", "why", "default", "system", "register",
+    "needs", "because", "options", "recommend", "plan", "look_at", "statements",
+)
+#: An option's keys, and its id's shape (§3.8).
+OPTION_KEYS = ("id", "label", "effect", "confirm", "note")
+_OPTION_ID_RE = re.compile(r"^opt-[a-z0-9][a-z0-9-]{0,40}$")
+OPTIONS_MIN, OPTIONS_MAX = 2, 4
+#: A plan's keys as the model writes them (`sudo` is derived, never read).
+PLAN_MODEL_KEYS = ("summary", "cwd", "checks", "steps", "files")
+#: The top-level key of questions.yaml that withdraws a moot ask or a stale
+#: approval (§3.8): `withdraw: [{id, why}]`.
+WITHDRAW_KEYS = ("id", "why")
+#: The backstop of §1.3: a new ask with the same `because` and the same set
+#: of cases as one withdrawn this many days ago or fewer is dropped.
+WITHDRAWN_BACKSTOP_DAYS = 90
+#: An approval not carried out after this many days joins the weekly
+#: re-judgement as `kind: approved` (§3.4.7, "Stale approvals").
+STALE_APPROVAL_DAYS = 7
+#: How long a done approval's ask stays in the index, so the inbox can still
+#: show the decided "done" item it derives from it (attention's window).
+DONE_APPROVAL_KEEP_DAYS = 30
+#: The phase B input listing what is open (§3.8, "Relevance re-judgement").
+OPEN_ASKS_FILE = "open-asks.yaml"
 #: The runner's one line in the report's User model section: no reading is
 #: put to the user as a question, so the report says how to correct one.
+#: S-NEXT-overseer-asks (§3.8): the inbox first, and a relaying agent
+#: records the person's words as `--recorded-by agent` (an agent's shell
+#: may not record as human, §3.9), never `human`.
 READING_CORRECTION_LINE = (
-    "None of these readings is asked about. To correct one, tell any session in your "
-    "own words; it records them with `self-learn statement add --verbatim \"<your words>\" "
-    "--ref transcript:<session>#L<line> --recorded-by human --answers-kind proposition "
-    "--answers-ref <um-id>@r<revision>`, and the next overseer run acts on them."
+    "None of these readings is asked about. To correct one, open it in your inbox (the "
+    "tray icon), or tell any session in your own words; it records them with "
+    "`self-learn statement add --verbatim \"<your words>\" --ref transcript:<session>#L<line> "
+    "--recorded-by agent --answers-kind proposition --answers-ref <um-id>@r<revision>`, "
+    "and the next overseer run acts on them."
 )
 REQUIRED_OUTPUT_FILES = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
 MAINTENANCE_CASE_FIELDS = ("kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision")
@@ -779,6 +810,74 @@ def _discovery_prompt_lines(discovery: bool) -> str:
     )
 
 
+#: r1 §2.2's ordered check, verbatim (attention design r2.1 §3.8): the
+#: overseer applies it to every question before it asks one.
+ORDERED_CHECK = """1. Is it machinery with no decision in it (a count, a completion, a retry that worked, a census)?
+   **SILENT.**
+2. Does it fit one of the NEEDS-YOU keys above? Then it is **NEEDS YOU**, but only if step 3 fails.
+3. Is there a recorded statement or user-model reading that settles it (quote it), or will an agent
+   in the project do it as a project notice? Then **DECIDED FOR YOU**, citing the statement.
+   (Example: `q-task-routing-models` was settled by stmt-5bb55a2e "use the task routing skill to
+   decide which agents/llms do what".)
+4. Everything else is **DECIDED FOR YOU**: decide by the default and report it."""
+
+#: The closed list the overseer may name in `because` (answer 2), each
+#: with what it means.
+NEEDS_YOU_KEYS_TEXT = """- system-change: it changes how the user's computer or tools behave, outside self-learn's own
+  surfaces (a systemd binding, the user's dotfiles or update script, archiving a checkout).
+  Self-learn's own surfaces are the ledger, its cache, and what it deploys under its markers.
+- foreign-history: it writes into another repository's git history or pushes there (a git-mode
+  host, a push to someone else's project).
+- conflict: two of the user's own recorded statements disagree and the decision turns on which
+  one wins. Meanwhile the newer statement wins.
+- money: it spends real money.
+- sudo: it needs root; only the user runs sudo.
+(credentials and broken are self-learn's own code's to raise, never yours.)"""
+
+
+def _needs_user_prompt() -> str:
+    """S-NEXT-overseer-asks (§3.8): what makes an ask need the user, and
+    the keys such an ask carries."""
+    keys = ", ".join(conversation.BECAUSE_KEYS)
+    return f"""Before you ask anything, apply this check in order and stop at the first yes. NEEDS YOU means an
+ask with needs: user; DECIDED FOR YOU means you decide it yourself (an ask with needs: stead and its
+default, or no question at all); SILENT is never a question. A register ask (below) is needs: user,
+because: foreign-history.
+{ORDERED_CHECK}
+The NEEDS-YOU keys are a closed list ({keys}):
+{NEEDS_YOU_KEYS_TEXT}
+Every ask says needs: user or needs: stead. needs: stead is the ask described above: you act on its
+default this run. needs: user adds because: one key from the list, and writes no default: the
+runner writes what holds meanwhile (nothing outside self-learn changes; for a conflict, the newer
+statement wins meanwhile). A needs: user ask with no valid because is filed as stead with its
+default and named, so give it a default only if you would act on one. Such an ask stays open until
+the user answers or you withdraw it; it is never closed for age.
+An ask may offer options: 2 to 4 entries {{id: opt-<slug>, label, effect: approve, decline, other or
+register, confirm?: true, note?: required}}, and recommend: {{option, reasoning}} naming one of them.
+A system-change or money ask carries a plan, and an ask with a plan offers at least one approve and
+one decline option; only the user's click on an approve option approves it, and an agent then carries
+the plan out in a terminal the user watches. plan is {{summary, cwd?, checks: [{{say, command?}}],
+steps: [{{say, command?, sudo: true|false}}], files: [{{path, content}}]}}. checks are read-only
+commands the carrying-out agent runs before it changes anything (a system-change plan needs at least
+one); steps are what it then does. Every step with sudo: true comes before every step without it (the
+user runs those; an agent never runs sudo), or the ask is filed as stead and named. Never write
+plan.sudo: the runner derives it. A conflict ask names the two statements: statements: [stmt-…,
+stmt-…], two distinct ids the user recorded. look_at lists up to five absolute paths whose contents
+help the user decide (the inbox excerpts them; secret files are refused).
+{OPEN_ASKS_FILE} lists what is already open: each asks entry of kind: ask is an earlier needs: user
+question not yet answered (its weeks open, its cases now, the user's replies and feedback clicks),
+and each of kind: approved is a change the user approved more than {STALE_APPROVAL_DAYS} days ago
+that no agent has carried out (its plan summary and checks). The runner keeps each one open for you;
+re-judge whether it still matters. If it went moot, list it in questions.yaml under a top-level
+withdraw: [{{id, why}}], why being one sentence the user reads ("I stopped asking because ...").
+Re-asking an open ask's id keeps it open with your new words. Never ask a withdrawn question again in
+other words: {OPEN_ASKS_FILE}'s withdrawn list holds what you withdrew, and a new needs: user ask with
+the same because and cases as one withdrawn within {WITHDRAWN_BACKSTOP_DAYS} days is dropped.
+In answers.yaml, choices are options the user chose (or an agent's draft they sent), never their own
+words, and feedback holds their "didn't need me" or "should have asked me" clicks on your asks:
+weigh them as evidence of where the user's line falls."""
+
+
 def _phase_b_prompt(
     stage: Path, selected: tuple[str, ...], parked: tuple[str, ...], *, discovery: bool = True,
 ) -> str:
@@ -788,7 +887,8 @@ This folder, {stage}, is your workspace: you can read and write only inside it.
 {_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
 answers.yaml (the user's answers to earlier overseer questions, and corrections of your readings
 made since your last completed run, newest first, each with its kind: question or proposition;
-it may be empty);
+it may be empty, with the user's chosen options and feedback clicks beside them), and
+{OPEN_ASKS_FILE} (the questions still open from earlier runs, and stale approvals);
 projects.yaml lists the projects a notice may name.
 {LESSONS_DIR}/lrn-<id>.md is the current record of every lesson in the ledger: its status, routing,
 history, and loaded text (## Trigger and ## Instruction). Read the record of any lesson you name or
@@ -863,8 +963,8 @@ yourself from the evidence. If you can decide it, decide it: that is your job, a
 instead hands the work back. Never ask the user to approve a lesson decision you are entitled
 to make; make it and report it under "Decided in the user's stead". A hook you decided belongs
 under Hooks, not here.
-Every question is {{id, kind: ask, cases, text, why, default}}, a decision or fact only the user
-has. id is q-<short-kebab-slug>. text: ONE question, answerable in a sentence, written for someone
+Every question is {{id, kind: ask, cases, text, why, default}} plus needs (below), a decision or
+fact only the user has. id is q-<short-kebab-slug>. text: ONE question, answerable in a sentence, written for someone
 who has not read the cases (say what would be built or changed and what yes and no each lead to).
 why: what the answer changes. Never bundle two decisions into one ask. If only the user can do
 something (it needs their hands, credentials, or a command agents may not run), you may ask
@@ -878,9 +978,7 @@ applied and its lessons stay held for next week. The runner reports every defaul
 in the user's stead" and hands each lesson a cited case deferred back to the steward with your
 default as its context; the user's answer, whenever it comes, can overturn it, and you act on
 such an answer in answers.yaml like any other evidence.
-An ask whose answer would change the user's system outside self-learn (their files, services,
-settings or repositories; anything but the ledger and what self-learn deploys) adds system: true
-and writes no default: its default is always to change nothing, and the runner says so.
+{_needs_user_prompt()}
 Never ask the user to confirm or correct one of your readings of them: a reading is evidence you
 act on and show under User model, and the user corrects one when they choose to (any entry of
 answers.yaml whose kind is proposition is such a correction). A kind: reading entry is dropped.
@@ -1317,6 +1415,192 @@ def _question_answers(home: Path, *, since: str | None) -> list[dict[str, Any]]:
     ]
 
 
+def _choice_input(choice: dict[str, Any]) -> dict[str, Any]:
+    """One choice row as phase B reads it: what the person CHOSE, never
+    words they said (§3.8; C6). A note typed on an option is kept as the
+    option's note; an agent's draft is labelled as the agent's words."""
+    how = str(choice.get("how") or "clicked")
+    text = choice.get("text") if isinstance(choice.get("text"), str) else None
+    answers = choice.get("answers") if isinstance(choice.get("answers"), dict) else {}
+    row: dict[str, Any] = {
+        "id": choice.get("id"),
+        "ref": answers.get("ref") or choice.get("subject"),
+        "chose": choice.get("label") or choice.get("option") or (
+            "the agent's draft" if how.startswith("draft-") else how
+        ),
+        "how": how,
+        "effect": choice.get("effect"),
+        "date": str(choice.get("at") or "")[:10] or None,
+    }
+    if text is not None:
+        row["agent_draft" if how.startswith("draft-") else "note"] = text
+    return row
+
+
+def _ask_item_ids(row: dict[str, Any]) -> set[str]:
+    """The inbox item ids an ask can have shown as (its kind, or its stead
+    kind), so the person's feedback clicks on it can be found."""
+    from .. import attention
+
+    kind, _key = attention.classify(row)
+    return {attention.item_id(kind, row["id"]), attention.item_id("decided.ask-default", row["id"])}
+
+
+def _ask_feedback(rows: list[dict[str, Any]], feedback: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """The person's "didn't need me" / "should have asked me" clicks on
+    each ask (answer 7: for an overseer ask, evidence only)."""
+    by_item: dict[str, str] = {}
+    for row in rows:
+        if row.get("kind") == "ask":
+            for item in _ask_item_ids(row):
+                by_item[item] = row["id"]
+    out: dict[str, list[dict[str, Any]]] = {}
+    for click in feedback:
+        q_id = by_item.get(str(click.get("item")))
+        if q_id is None:
+            continue
+        out.setdefault(q_id, []).append({
+            "date": str(click.get("at") or "")[:10] or None,
+            "shown_as": click.get("class_shown"), "the_user_wanted": click.get("class_wanted"),
+            **({"note": click["note"]} if isinstance(click.get("note"), str) else {}),
+        })
+    return out
+
+
+def _case_states(home: Path, cited: list[str], index: dict[str, dict[str, Any]],
+                 links: dict[str, str]) -> list[dict[str, Any]]:
+    """Each cited case and the case its line of successors ends at now."""
+    out: list[dict[str, Any]] = []
+    for case_id in cited:
+        now_id = conversation.current_case(home, case_id, links)
+        row = index.get(now_id, {})
+        out.append({
+            "case": case_id, "now": now_id,
+            "outcome": row.get("outcome"), "parked_for": row.get("parked_for"),
+        })
+    return out
+
+
+def _open_asks(
+    home: Path, now_dt: datetime,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str]]:
+    """What phase B re-judges (§1.3, §3.8, "Relevance re-judgement"): every
+    `needs: user` ask still open in the index, and every approval of one
+    not carried out after :data:`STALE_APPROVAL_DAYS` days, as
+    `kind: approved`. Answers `(entries, withdrawn, targets)`: the entries,
+    the withdrawn asks (for "never ask these again in other words"), and
+    each id a `withdraw:` may name mapped to the question id it withdraws
+    (an approval may be named by its inbox item id too)."""
+    from .. import attention
+
+    try:
+        rows = conversation._load_questions(home)  # noqa: SLF001
+        withdrawn = conversation.load_withdrawn(home)
+    except conversation.ConversationError:
+        return [], [], {}
+    asks = [row for row in rows if conversation.asks_the_user(row)]
+    answered = conversation._answered_ids(home, {row["id"] for row in asks}, rows)  # noqa: SLF001
+    choices = conversation.choice_rows(home)
+    outcomes = conversation.outcome_rows(home)
+    feedback = _ask_feedback(asks, conversation.feedback_rows(home))
+    said = [
+        row for row in statements.list_statements(home)
+        if isinstance(row.get("answers"), dict) and isinstance(row["answers"].get("ref"), str)
+    ]
+    case_index = {str(row["case"]): row for row in cases.list_cases(home, only_ok=True) if row.get("case")}
+    links = conversation.superseded_links(home)
+    index_floor = _index_floor(home)
+    entries: list[dict[str, Any]] = []
+    targets: dict[str, str] = {}
+    for row in asks:
+        q_id = row["id"]
+        floor = conversation._floor(row, index_floor)  # noqa: SLF001
+        asked = row.get("asked_at") or (
+            floor.strftime("%Y-%m-%dT%H:%M:%SZ") if floor is not None else None
+        )
+        base = {
+            "id": q_id, "text": row.get("text"), "why": row.get("why"),
+            "because": row.get("because") or ("system-change" if row.get("system") else
+                                              "foreign-history" if row.get("register") else None),
+            "asked_at": asked,
+            "weeks_open": max(0, (now_dt - floor).days // 7) if floor is not None else None,
+            "cases": _case_states(home, list(row.get("cases") or []), case_index, links),
+        }
+        refs = {q_id, conversation.conflict_ref(row)} - {None}
+        replies: list[dict[str, Any]] = [
+            {"said": stmt.get("verbatim"), "statement": stmt.get("id"),
+             "date": str(stmt.get("at") or "")[:10] or None}
+            for stmt in said if stmt["answers"].get("ref") in refs
+        ]
+        replies += [_choice_input(c) for c in choices if conversation.choice_names_ask(c, row)]
+        if conversation.has_plan(row):
+            track = conversation.approval_track(row, choices, outcomes, since=floor)
+            approved_at = conversation._utc(track.approved_at)  # noqa: SLF001
+            if track.state in ("approved", "awaiting-sudo") and approved_at is not None:
+                if (now_dt - approved_at).days >= STALE_APPROVAL_DAYS:
+                    item = attention.item_id("approved.pending", q_id)
+                    entries.append({
+                        **base, "kind": "approved", "item": item, "state": track.state,
+                        "approved_at": track.approved_at,
+                        "days_since_approved": (now_dt - approved_at).days,
+                        "plan": {"summary": row["plan"].get("summary"),
+                                 "checks": row["plan"].get("checks") or []},
+                        "replies": replies, "feedback": feedback.get(q_id, []),
+                    })
+                    targets[q_id] = q_id
+                    targets[item] = q_id
+                continue
+            if track.state != "open":
+                continue
+        elif q_id in answered:
+            continue
+        entries.append({**base, "kind": "ask", "replies": replies, "feedback": feedback.get(q_id, [])})
+        targets[q_id] = q_id
+    gone = [
+        {key: row.get(key) for key in ("id", "text", "because", "cases", "withdrawn_at", "why")}
+        for row in withdrawn
+    ]
+    return entries, gone, targets
+
+
+def _index_floor(home: Path) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(
+            int((home / "overseer" / "open-questions.yaml").stat().st_mtime), tz=timezone.utc,
+        )
+    except OSError:
+        return None
+
+
+def _choice_answers(home: Path) -> list[dict[str, Any]]:
+    """Every choice on an overseer ask, newest first, labelled as chosen."""
+    rows = [
+        row for row in conversation.choice_rows(home)
+        if str(row.get("subject") or "").startswith("q-")
+        or (isinstance(row.get("answers"), dict) and row["answers"].get("kind") == "question")
+    ]
+    rows.sort(key=lambda row: str(row.get("at") or ""), reverse=True)
+    return [_choice_input(row) for row in rows]
+
+
+def _stage_open_asks(home: Path, stage: Path) -> dict[str, str]:
+    """Write `open-asks.yaml` and answers.yaml's `choices`/`feedback` for
+    phase B; answer the ids a `withdraw:` may name."""
+    entries, gone, targets = _open_asks(home, datetime.now(timezone.utc))
+    text = _yaml_text({"asks": entries, "withdrawn": gone})
+    if scan.scan(text):
+        # An input file's hit would refuse the run: keep the ids and why only.
+        text = _yaml_text({
+            "asks": [{"id": e["id"], "kind": e["kind"], "because": e["because"],
+                      "weeks_open": e["weeks_open"]} for e in entries],
+            "withdrawn": [{"id": g["id"], "because": g["because"]} for g in gone],
+        })
+    _write_stage(stage, stage / OPEN_ASKS_FILE, text)
+    return targets
+
+
+#: S-101: the folder phase B finds every lesson record in.
+LESSONS_DIR = "lessons"
 #: S-101: the folder phase B finds every lesson record in.
 LESSONS_DIR = "lessons"
 
@@ -1385,7 +1669,23 @@ def _full_inputs(
     _stage_lessons(home, stage)
     model_doc = user_model.show(home)
     _write_stage(stage, stage / "user-model.yaml", _yaml_text(model_doc))
-    _write_stage(stage, stage / "answers.yaml", _yaml_text({"answers": _question_answers(home, since=answers_since)}))
+    # S-NEXT-overseer-asks (§3.8): the person's option clicks, labelled
+    # as chosen (never as said), and their feedback clicks on asks.
+    asks_now = [
+        row for row in _safe_questions(home) if row.get("kind") == "ask"
+    ]
+    clicked = _ask_feedback(asks_now, conversation.feedback_rows(home))
+    answers_text = _yaml_text({
+        "answers": _question_answers(home, since=answers_since),
+        "choices": _choice_answers(home),
+        "feedback": [
+            {"ask": q_id, **row} for q_id, rows in clicked.items() for row in rows
+        ],
+    })
+    if scan.scan(answers_text):
+        answers_text = _yaml_text({"answers": _question_answers(home, since=answers_since)})
+    _write_stage(stage, stage / "answers.yaml", answers_text)
+    _stage_open_asks(home, stage)
     # S-106: the projects a notice may name (names and real paths only).
     # Each project also carries `showing`: the overseer notices still up there, so
     # the model does not write a reworded copy (a new notice, a fresh 14 days).
@@ -1420,6 +1720,13 @@ def _full_inputs(
         ),
     )
     return model_doc
+
+
+def _safe_questions(home: Path) -> list[dict[str, Any]]:
+    try:
+        return conversation._load_questions(home)  # noqa: SLF001
+    except conversation.ConversationError:
+        return []
 
 
 def _flat(text: str) -> str:
@@ -1474,7 +1781,303 @@ def _question_problem(item: dict[str, Any], known_cases: set[str]) -> str | None
         register, problem = conversation.normalize_register(item["register"], item["text"])
         if register is None:
             return problem
+    if "needs" in item:
+        # S-NEXT-overseer-asks: an ask that says who it needs follows the
+        # r2 rules (`_r2_ask`); its default is the runner's for `user`.
+        if item["needs"] not in conversation.NEEDS_VALUES:
+            return f"needs must be one of {list(conversation.NEEDS_VALUES)}"
+        return None
     return _default_problem(item)
+
+
+def _strings(value: Any) -> Iterable[str]:
+    """Every string inside a YAML value (for the secret scan)."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for inner in value.values():
+            yield from _strings(inner)
+    elif isinstance(value, list):
+        for inner in value:
+            yield from _strings(inner)
+
+
+def _text(value: Any) -> str | None:
+    return _flat(value) if isinstance(value, str) and value.strip() else None
+
+
+def _options_problem(
+    raw: Any, *, register: bool,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """§3.8's options: 2-4 `{id: opt-<slug>, label, effect, confirm?,
+    note?: required}`, ids unique. `register` is an effect only on an ask
+    that carries `register` (the click registers, §3.4.4)."""
+    if not isinstance(raw, list) or not OPTIONS_MIN <= len(raw) <= OPTIONS_MAX:
+        return None, f"options must be a list of {OPTIONS_MIN} to {OPTIONS_MAX} entries"
+    out: list[dict[str, Any]] = []
+    for option in raw:
+        if not isinstance(option, dict) or not set(option) <= set(OPTION_KEYS):
+            return None, f"each option is a mapping with only {list(OPTION_KEYS)}"
+        oid = option.get("id")
+        if not isinstance(oid, str) or not _OPTION_ID_RE.fullmatch(oid):
+            return None, "an option's id must be opt-<short-kebab-slug>"
+        if any(row["id"] == oid for row in out):
+            return None, f"duplicate option id {oid}"
+        label = _text(option.get("label"))
+        if label is None:
+            return None, f"option {oid} needs a label"
+        effect = option.get("effect")
+        if effect not in conversation.OPTION_EFFECTS:
+            return None, f"option {oid}'s effect must be one of {list(conversation.OPTION_EFFECTS)}"
+        if effect == "register" and not register:
+            return None, f"option {oid} registers, but the ask carries no register"
+        row: dict[str, Any] = {"id": oid, "label": label, "effect": effect}
+        if "confirm" in option:
+            if not isinstance(option["confirm"], bool):
+                return None, f"option {oid}'s confirm must be true or false"
+            if option["confirm"]:
+                row["confirm"] = True
+        if "note" in option and option["note"] is not None:
+            if option["note"] != "required":
+                return None, f"option {oid}'s note may only be required"
+            row["note"] = "required"
+        out.append(row)
+    return out, None
+
+
+def _plan_problem(raw: Any) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """§3.8's plan: `{summary, cwd?, checks: [{say, command?}], steps:
+    [{say, command?, sudo}], files: [{path, content}]}`. Answers `(plan,
+    problem, refile)`: a sudo step after a step without sudo is a refile
+    (the ask goes in the user's stead, named), never a plan an agent could
+    reach a sudo step in. `plan.sudo` is derived from the steps; a `sudo`
+    key the model wrote is ignored."""
+    if not isinstance(raw, dict):
+        return None, "plan must be a mapping", None
+    unknown = set(raw) - set(PLAN_MODEL_KEYS) - {"sudo"}
+    if unknown:
+        return None, f"plan has unknown key(s) {', '.join(sorted(unknown))}", None
+    summary = _text(raw.get("summary"))
+    if summary is None:
+        return None, "a plan needs a summary", None
+    cwd = raw.get("cwd")
+    if cwd is not None and (not isinstance(cwd, str) or not cwd.startswith("/") or "\n" in cwd):
+        return None, "plan.cwd must be one absolute path, or null", None
+
+    def say_rows(key: str, *, sudo: bool) -> list[dict[str, Any]] | str:
+        rows = raw.get(key, [])
+        if not isinstance(rows, list):
+            return f"plan.{key} must be a list"
+        out: list[dict[str, Any]] = []
+        for entry in rows:
+            allowed = {"say", "command", "sudo"} if sudo else {"say", "command"}
+            if not isinstance(entry, dict) or not set(entry) <= allowed:
+                return f"each plan.{key} entry is a mapping with only {sorted(allowed)}"
+            say = _text(entry.get("say"))
+            if say is None:
+                return f"each plan.{key} entry needs say"
+            command = entry.get("command")
+            if command is not None and (not isinstance(command, str) or not command.strip()):
+                return f"a plan.{key} command must be text, or null"
+            row: dict[str, Any] = {"say": say, "command": command.strip() if command else None}
+            if sudo:
+                if not isinstance(entry.get("sudo", False), bool):
+                    return "a step's sudo must be true or false"
+                row["sudo"] = bool(entry.get("sudo", False))
+            out.append(row)
+        return out
+
+    checks = say_rows("checks", sudo=False)
+    if isinstance(checks, str):
+        return None, checks, None
+    steps = say_rows("steps", sudo=True)
+    if isinstance(steps, str):
+        return None, steps, None
+    if not steps:
+        return None, "a plan needs at least one step", None
+    files = raw.get("files", [])
+    if not isinstance(files, list) or not all(
+        isinstance(entry, dict) and set(entry) == {"path", "content"}
+        and isinstance(entry["path"], str) and entry["path"].strip()
+        and isinstance(entry["content"], str)
+        for entry in files
+    ):
+        return None, "plan.files must be a list of {path, content}", None
+    seen_plain = False
+    for step in steps:
+        if not step["sudo"]:
+            seen_plain = True
+        elif seen_plain:
+            return None, None, (
+                "its plan has a sudo step after a step without sudo; the user runs every "
+                "sudo step first, so sudo steps must come first"
+            )
+    plan = {
+        "summary": summary, "cwd": cwd, "checks": checks, "steps": steps,
+        "files": [{"path": f["path"].strip(), "content": f["content"]} for f in files],
+        "sudo": any(step["sudo"] for step in steps),
+    }
+    return plan, None, None
+
+
+def _r2_ask(
+    item: dict[str, Any], row: dict[str, Any], *,
+    known_statements: set[str] | None, look_at_home: Path | None, now: str,
+    notes: list[str], label: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Index an ask that says who it needs (§3.8, §4.5) into *row* (which
+    holds id, kind, cases, text, why and any register). Answers `(row,
+    None)`, or `(None, problem)` to drop it. A `needs: user` ask with no
+    valid `because`, or whose plan puts a sudo step after a plain one, is
+    filed in the user's stead with its own default, and named in *notes*."""
+    for key in ("options", "recommend", "plan", "look_at", "statements"):
+        hits = [hit for text in _strings(item.get(key)) for hit in scan.scan(text)]
+        if hits:
+            return None, f"{key} matched the secret scan ({hits[0].rule})"
+    register = row.get("register")
+    options: list[dict[str, Any]] | None = None
+    if item.get("options") is not None:
+        options, problem = _options_problem(item["options"], register=bool(register))
+        if problem is not None:
+            return None, problem
+    recommend = item.get("recommend")
+    if recommend is not None:
+        if (
+            not isinstance(recommend, dict) or set(recommend) - {"option", "reasoning"}
+            or not options or recommend.get("option") not in {o["id"] for o in options}
+        ):
+            return None, "recommend must be {option, reasoning} naming one of the ask's options"
+        reasoning = _text(recommend.get("reasoning"))
+        if reasoning is None:
+            return None, "recommend needs its reasoning"
+        recommend = {"option": recommend["option"], "reasoning": reasoning}
+    look_at: list[str] = []
+    if item.get("look_at") is not None:
+        raw_paths = item["look_at"]
+        if not isinstance(raw_paths, list) or not all(
+            isinstance(path, str) and path.startswith("/") and "\n" not in path for path in raw_paths
+        ):
+            return None, "look_at must be a list of absolute paths"
+        if look_at_home is not None:
+            from .. import attention_packet
+
+            kept, refused = attention_packet.filter_look_at(look_at_home, list(raw_paths))
+            notes.extend(f"question {label}: look_at {why}" for why in refused)
+            look_at = kept
+        else:
+            look_at = list(raw_paths)[:5]
+    named: list[str] = []
+    if item.get("statements") is not None:
+        raw_named = item["statements"]
+        if not isinstance(raw_named, list) or not all(isinstance(s, str) for s in raw_named):
+            return None, "statements must be a list of statement ids"
+        unknown = [s for s in raw_named if known_statements is not None and s not in known_statements]
+        if unknown:
+            return None, f"names unknown statement(s) {', '.join(unknown)}"
+        named = list(raw_named)
+
+    needs = item["needs"]
+    because = item.get("because")
+    plan: dict[str, Any] | None = None
+    refile: str | None = None
+    if needs == "user":
+        if because not in conversation.BECAUSE_KEYS:
+            refile = (
+                "needs: user requires because to be one of "
+                f"{', '.join(conversation.BECAUSE_KEYS)}"
+            )
+        else:
+            if item.get("plan") is not None:
+                plan, problem, refile = _plan_problem(item["plan"])
+                if problem is not None:
+                    return None, problem
+            elif because in conversation.PLAN_REQUIRED_BECAUSE:
+                return None, f"a {because} ask needs a plan"
+            if refile is None and because == "conflict" and (
+                len(named) != 2 or named[0] == named[1]
+            ):
+                return None, "a conflict ask names exactly two distinct statements"
+            if refile is None and plan is not None:
+                effects = {o["effect"] for o in options or []}
+                if not {"approve", "decline"} <= effects:
+                    return None, (
+                        "an ask with a plan needs at least one approve and one decline option"
+                    )
+                if because == "system-change" and not plan["checks"]:
+                    return None, (
+                        "a system-change plan needs at least one check (a read-only command "
+                        "the carrying-out agent runs before it changes anything)"
+                    )
+            if register and because != "foreign-history":
+                return None, "an ask with register needs the user because of foreign-history"
+    if refile is not None:
+        if register:
+            return None, f"{refile}; a register ask cannot be decided in your stead"
+        needs = "stead"
+        plan = None
+    if needs == "stead":
+        if item.get("system") or register:
+            return None, "an ask decided in the user's stead carries no system or register"
+        problem = _default_problem({k: v for k, v in item.items() if k not in ("system", "register")})
+        if problem is not None:
+            return None, f"{refile}, and {problem}" if refile else problem
+        if refile is not None:
+            notes.append(f"question {label}: filed as decided in your stead — {refile}")
+        elif item.get("plan") is not None:
+            notes.append(
+                f"question {label}: plan left out — only an ask that needs the user carries one"
+            )
+        row["needs"] = "stead"
+        row["default"] = _flat(cast(str, item["default"]))
+    else:
+        assert because is not None
+        row["needs"] = "user"
+        row["because"] = because
+        # The meanwhile sentence is the runner's (§3.8): nothing outside
+        # self-learn changes until the user answers.
+        row["default"] = conversation.needs_user_default(because, register)
+        row["asked_at"] = now
+        if because == "system-change":
+            row["system"] = True  # legacy key, still written for old readers
+    if options:
+        row["options"] = options
+    if recommend:
+        row["recommend"] = recommend
+    if plan is not None:
+        row["plan"] = plan
+    if look_at:
+        row["look_at"] = look_at
+    if named:
+        row["statements"] = named
+    return row, None
+
+
+def _backstop_problem(
+    row: dict[str, Any], withdrawn: list[dict[str, Any]], now_dt: datetime,
+) -> str | None:
+    """§1.3: never asked again in other words. A new `needs: user` ask whose
+    id was withdrawn, or with the same `because` and the same set of cases
+    as an ask withdrawn within the backstop, is dropped."""
+    for gone in withdrawn:
+        if gone.get("id") == row["id"]:
+            return (
+                "it was withdrawn as moot and is not asked again (the inbox's "
+                "\"Ask me anyway\" puts it back)"
+            )
+    if row.get("needs") != "user":
+        return None
+    for gone in withdrawn:
+        at = conversation._utc(gone.get("withdrawn_at"))  # noqa: SLF001
+        if at is None or (now_dt - at).days > WITHDRAWN_BACKSTOP_DAYS:
+            continue
+        if gone.get("because") == row.get("because") and set(gone.get("cases") or []) == set(
+            row["cases"]
+        ):
+            return (
+                f"it asks again, in other words, what {gone.get('id')} asked before it was "
+                f"withdrawn (same reason and cases, within {WITHDRAWN_BACKSTOP_DAYS} days)"
+            )
+    return None
 
 
 def _default_problem(item: dict[str, Any]) -> str | None:
@@ -1520,7 +2123,12 @@ def _ask_default(item: dict[str, Any]) -> str:
 
 
 def _questions(
-    path: Path, model_doc: dict[str, Any], known_cases: set[str]
+    path: Path, model_doc: dict[str, Any], known_cases: set[str], *,
+    known_statements: set[str] | None = None,
+    withdrawn: list[dict[str, Any]] | None = None,
+    carried: set[str] | None = None,
+    look_at_home: Path | None = None,
+    now: str | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Validate questions.yaml ENTRY BY ENTRY (2026-09-24).
 
@@ -1537,7 +2145,16 @@ def _questions(
     carries `default` -- the model's sentence, or the fixed change-nothing
     one for a `system: true` or `register` ask -- and `system: true` when it
     was set. *model_doc* is no longer read (it was what a reading was
-    validated against); the parameter stays for the callers."""
+    validated against); the parameter stays for the callers.
+
+    S-NEXT-overseer-asks (§3.8): an ask that says `needs` is indexed by
+    :func:`_r2_ask` (options, recommend, plan, look_at, statements; a
+    `needs: user` ask gets the runner's meanwhile sentence and `asked_at`
+    *now*). *known_statements* are the statement ids a conflict may name;
+    *withdrawn* the rows of `overseer/withdrawn.yaml`, for §1.3's backstop,
+    which spares the ids in *carried* (asks still open from earlier runs: a
+    re-emitted one is the same ask); *look_at_home* filters `look_at` paths
+    through the packet's deny list."""
     del model_doc
     try:
         data = _yaml_mapping(path)
@@ -1547,6 +2164,8 @@ def _questions(
         return {"questions": []}, [
             "question questions.yaml: dropped — not a mapping with a questions list"
         ]
+    stamp = now or chrono.now_iso()
+    now_dt = conversation._utc(stamp) or datetime.now(timezone.utc)  # noqa: SLF001
     clean: list[dict[str, Any]] = []
     dropped: list[str] = []
     seen: set[str] = set()
@@ -1583,11 +2202,73 @@ def _questions(
                 dropped.append(f"question {label}: dropped — {problem}")
                 continue
             row["register"] = register
+        if "needs" in item:
+            notes: list[str] = []
+            indexed, problem = _r2_ask(
+                item, row, known_statements=known_statements, look_at_home=look_at_home,
+                now=stamp, notes=notes, label=label,
+            )
+            if indexed is None:
+                dropped.append(f"question {label}: dropped — {problem}")
+                continue
+            if row["id"] not in (carried or set()):
+                problem = _backstop_problem(indexed, withdrawn or [], now_dt)
+                if problem is not None:
+                    dropped.append(f"question {label}: dropped — {problem}")
+                    continue
+            dropped.extend(notes)
+            clean.append(indexed)
+            continue
         row["default"] = _ask_default(item)
         if item.get("system") is True:
             row["system"] = True
+        if row["id"] not in (carried or set()):
+            problem = _backstop_problem(row, withdrawn or [], now_dt)
+            if problem is not None:
+                dropped.append(f"question {label}: dropped — {problem}")
+                continue
         clean.append(row)
     return {"questions": clean}, dropped
+
+
+def _withdrawals(
+    path: Path, open_entries: dict[str, str], asked: set[str],
+) -> tuple[list[dict[str, str]], list[str]]:
+    """questions.yaml's optional top-level `withdraw: [{id, why}]` (§3.8):
+    the moot asks and stale approvals the overseer stops asking about.
+    *open_entries* maps each id phase B was shown in open-asks.yaml (an
+    approval's inbox item id too) to the question id it withdraws; any
+    other id is dropped and named, and so is one the model also asked
+    again this run (*asked*). Answers `([{id, why}], dropped_lines)`."""
+    try:
+        data = _yaml_mapping(path)
+    except OverseerError:
+        return [], []
+    raw = data.get("withdraw") if isinstance(data, dict) else None
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        return [], ["withdraw: dropped — must be a list of {id, why}"]
+    out: list[dict[str, str]] = []
+    dropped: list[str] = []
+    for ordinal, entry in enumerate(raw, start=1):
+        label = _question_label(entry.get("id") if isinstance(entry, dict) else None, ordinal)
+        if not isinstance(entry, dict) or not set(entry) <= set(WITHDRAW_KEYS):
+            dropped.append(f"withdraw {label}: dropped — each entry is {{id, why}}")
+            continue
+        why = _text(entry.get("why"))
+        target = open_entries.get(entry.get("id")) if isinstance(entry.get("id"), str) else None
+        if target is None:
+            dropped.append(f"withdraw {label}: dropped — not an open ask or approval in {OPEN_ASKS_FILE}")
+        elif why is None:
+            dropped.append(f"withdraw {label}: dropped — a withdrawal needs its why")
+        elif scan.scan(why):
+            dropped.append(f"withdraw {label}: dropped — why matched the secret scan")
+        elif target in asked:
+            dropped.append(f"withdraw {label}: dropped — it is also asked this run")
+        elif not any(row["id"] == target for row in out):
+            out.append({"id": target, "why": why})
+    return out, dropped
 
 
 def _report_text(
@@ -4020,6 +4701,7 @@ def _prepare_manifest(
     project_notice_rows: list[dict[str, str]] | None = None,
     registration_rows: list[dict[str, str]] | None = None,
     policy_lines: list[str] | None = None,
+    withdraw: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -4131,6 +4813,10 @@ def _prepare_manifest(
         "reconsider_observations": [],
         "report": (stage / "report.md").read_text(encoding="utf-8"),
         "questions": questions,
+        # S-NEXT-overseer-asks (§3.8): the asks and approvals phase B
+        # withdrew as moot ({id, why}); the finalize applies them under its
+        # lock, against the index as it stands then.
+        "withdraw": [dict(row) for row in (withdraw or [])],
         # Runner lines for "Refused / could not do" that refuse no decision
         # (a dropped question). Carried here so a resume's report has them.
         "runner_notes": notes,
@@ -4640,11 +5326,21 @@ def _default_lines(
             unchanged.append(f"{row['id']} would register a host: {row['default']}")
         elif row.get("system") is True:
             unchanged.append(f"{row['id']} would change your system: {row['default']}")
+        elif conversation.asks_the_user(row):
+            # S-NEXT-overseer-asks: a key of the closed list; nothing done.
+            unchanged.append(f"{row['id']} needs you ({row.get('because')}): {row['default']}")
         elif row["id"] not in parked:
             applied.append(
                 f"{row['id']} asked and not waited for; applied its default: {row['default']}"
             )
-    return [*applied, *unchanged]
+    # S-NEXT-overseer-asks (§1.3): each ask or approval withdrawn as moot,
+    # with its reason; the inbox shows it with "Ask me anyway".
+    withdrawn = [
+        f"{entry['id']} withdrawn: I stopped asking because {entry['why']}"
+        for entry in manifest.get("withdraw") or []
+        if isinstance(entry, dict) and entry.get("id") and entry.get("why")
+    ]
+    return [*applied, *unchanged, *withdrawn]
 
 
 def _default_refusals(
@@ -4676,6 +5372,8 @@ _FINALIZE_OWNED_FIELDS = (
     "failure", "failure_detail", "halt_code", "week", "outcome",
     # S-112: each registration's outcome, written as it executes.
     "registrations",
+    # S-NEXT-overseer-asks: the inbox's rows for each applied lesson.
+    "attention_effects",
 )
 
 
@@ -4744,6 +5442,19 @@ def _write_manifest_truth(
     if cursor is not None:
         paths.append(cursor[0])
     with intents.ledger_write(home):
+        index_rows: dict[str, Any] | None = None
+        withdrawn_rows: list[dict[str, Any]] | None = None
+        if complete:
+            # S-NEXT-overseer-asks (§3.8; critique 32): the previous index is
+            # read HERE, inside the finalize's own lock span, so an answer or
+            # a reopen made while this run was in progress is never lost.
+            index_rows, withdrawn_rows = _carry_forward(
+                home, cast(dict[str, Any], record["questions"]),
+                cast(list[dict[str, str]], record.get("withdraw") or []),
+                run_id=cast(str, manifest["run_id"]),
+            )
+            if withdrawn_rows is not None:
+                paths.append(conversation.withdrawn_path(home))
         intent = intents.begin(
             home, "overseer-run-finalize", paths,
             f"self-learn: overseer finalize {manifest['run_id']}",
@@ -4769,12 +5480,119 @@ def _write_manifest_truth(
             # reaches this write, so a failed attempt can never blank last
             # week's open questions.
             fsops.atomic_write(
-                questions_path, _yaml_text(record["questions"]), fsync=True
+                questions_path, _yaml_text(index_rows), fsync=True
             )
+            if withdrawn_rows is not None:
+                fsops.atomic_write(
+                    conversation.withdrawn_path(home),
+                    _yaml_text({"withdrawn": withdrawn_rows}), fsync=True,
+                )
         intents.complete(intent)
         gitops.stage_and_commit(home, paths, intent.commit_subject, None)
         intents.finish(intent)
     return record, report_path, latest
+
+
+def _still_open(
+    row: dict[str, Any], answered: set[str], choices: list[dict[str, Any]],
+    outcomes: list[dict[str, Any]], floor: datetime | None, now_dt: datetime,
+) -> bool:
+    """Whether a `needs: user` ask of the previous index stays indexed: it
+    is unanswered (answer 4: no age close), or it carries a plan whose
+    approval is not finished -- approved, awaiting the user's sudo steps,
+    or done within :data:`DONE_APPROVAL_KEEP_DAYS` (the inbox derives the
+    approved and done items from the indexed ask)."""
+    if conversation.has_plan(row):
+        track = conversation.approval_track(row, choices, outcomes, since=floor)
+        if track.state in ("open", "approved", "awaiting-sudo"):
+            return True
+        done = conversation._utc(track.done_at)  # noqa: SLF001
+        return track.state == "done" and done is not None and (
+            (now_dt - done).days < DONE_APPROVAL_KEEP_DAYS
+        )
+    return row["id"] not in answered
+
+
+def _carry_forward(
+    home: Path, index: dict[str, Any], withdraw: list[dict[str, str]], *, run_id: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]] | None]:
+    """The index a complete run publishes (§3.8, "Carry-forward"): the
+    run's own asks, then every `needs: user` ask of the previous index the
+    run did not ask again and that is still open (:func:`_still_open`),
+    with its first `asked_at`. A re-emitted id takes the model's new text
+    and keeps its `asked_at`. The run's `withdraw:` entries leave the index
+    and are appended to `overseer/withdrawn.yaml` with their `why` and the
+    whole row (so a reopen puts back exactly what was asked). Called under
+    the finalize's lock. Answers `(index, withdrawn rows or None when
+    withdrawn.yaml is not to be written)`. A previous index or withdrawn
+    file that cannot be read carries nothing and withdraws nothing."""
+    now = chrono.now_iso()
+    now_dt = conversation._utc(now) or datetime.now(timezone.utc)  # noqa: SLF001
+    new_rows = [dict(row) for row in index.get("questions") or [] if isinstance(row, dict)]
+    try:
+        previous = conversation._load_questions(home)  # noqa: SLF001
+    except conversation.ConversationError:
+        return {"questions": new_rows}, None
+    prior = [row for row in previous if conversation.asks_the_user(row)]
+    answered = conversation._answered_ids(home, {row["id"] for row in prior}, previous)  # noqa: SLF001
+    choices = conversation.choice_rows(home)
+    outcomes = conversation.outcome_rows(home)
+    index_floor = _index_floor(home)
+    by_id = {row["id"]: row for row in prior}
+    asked_now = {row["id"] for row in new_rows}
+
+    def first_asked(row: dict[str, Any]) -> str | None:
+        floor = conversation._floor(row, index_floor)  # noqa: SLF001
+        return row.get("asked_at") or (
+            floor.strftime("%Y-%m-%dT%H:%M:%SZ") if floor is not None else None
+        )
+
+    for row in new_rows:
+        earlier = by_id.get(row["id"])
+        if earlier is not None and row.get("needs") == "user" and _still_open(
+            earlier, answered, choices, outcomes,
+            conversation._floor(earlier, index_floor), now_dt,  # noqa: SLF001
+        ):
+            asked = first_asked(earlier)
+            if asked:
+                row["asked_at"] = asked
+    why_by_id = {entry["id"]: entry["why"] for entry in withdraw}
+    carried: list[dict[str, Any]] = []
+    gone: list[dict[str, Any]] = []
+    for row in prior:
+        if row["id"] in asked_now:
+            continue
+        if not _still_open(
+            row, answered, choices, outcomes,
+            conversation._floor(row, index_floor), now_dt,  # noqa: SLF001
+        ):
+            continue
+        kept = dict(row)
+        asked = first_asked(row)
+        if asked:
+            kept["asked_at"] = asked
+        if row["id"] in why_by_id:
+            because = row.get("because") or (
+                "system-change" if row.get("system") else
+                "foreign-history" if row.get("register") else None
+            )
+            gone.append({
+                "id": row["id"], "text": row.get("text"), "because": because,
+                "cases": list(row.get("cases") or []), "asked_at": asked,
+                "withdrawn_at": now, "run": run_id, "why": why_by_id[row["id"]],
+                "row": kept,
+            })
+            continue
+        carried.append(kept)
+    withdrawn_rows: list[dict[str, Any]] | None = None
+    if gone:
+        try:
+            withdrawn_rows = [*conversation.load_withdrawn(home), *gone]
+        except conversation.ConversationError:
+            # The file cannot be read: never blank it. The asks stay open.
+            carried.extend(entry["row"] for entry in gone)
+            withdrawn_rows = None
+    return {"questions": [*new_rows, *carried]}, withdrawn_rows
 
 
 def _refusal_line(sheet_name: str, item: batch.ItemResult) -> str:
@@ -5370,22 +6188,6 @@ def _with_final_refusals(
     return result
 
 
-def _always_loaded_user_scope(home: Path, record_id: str) -> bool:
-    try:
-        record = Record.from_path(find_record_path(home, record_id))
-    except (LedgerOpsError, OSError, ValueError):
-        return False
-    if record.scope != "user":
-        return False
-    routing = record.routing or {}
-    if routing.get("destination") == "claude-md":
-        return True
-    covered = record.superseded_by or ""
-    return covered.startswith("covered_by:claude-md:") or covered.startswith(
-        "covered_by:output-style:"
-    )
-
-
 def _execute_manifest(
     home: Path,
     manifest: dict[str, Any],
@@ -5425,6 +6227,14 @@ def _execute_manifest(
     hook_lines: list[str] = []
     user_model_lines: list[str] = []
     cue_outcomes: list[dict[str, Any]] = []
+    #: S-NEXT-overseer-asks: the run manifest's `attention_effects` (§4.4),
+    #: one row per applied lesson, kept across a resume (the finalize
+    #: writes it, `_FINALIZE_OWNED_FIELDS`).
+    attention_effects: list[dict[str, Any]] = [
+        dict(row) for row in cast(list[Any], manifest.get("attention_effects") or [])
+        if isinstance(row, dict)
+    ]
+    manifest["attention_effects"] = attention_effects
     hook_ids: list[str] = []
     notice_ids: list[str] = []
     application_count = 0
@@ -5593,6 +6403,23 @@ def _execute_manifest(
                 )
                 if hook_activated:
                     hook_ids.append(item_result.id)
+                # S-NEXT-overseer-asks (§3.8; critique 8): the inbox's row
+                # for this applied lesson, built from the same facts as the
+                # cue below. A line an earlier attempt applied
+                # (`already-applied`) gets its row once: the row is keyed on
+                # lesson, verb and destination.
+                dest = sheet_item.fields.get("dest")
+                effect = effects_mod.effect_row(
+                    home, lesson=item_result.id, verb=sheet_item.verb,
+                    destination=dest if isinstance(dest, str) else None,
+                    hook_activation=gate,
+                )
+                if not any(
+                    (row.get("lesson"), row.get("verb"), row.get("destination"))
+                    == (effect["lesson"], effect["verb"], effect["destination"])
+                    for row in attention_effects
+                ):
+                    attention_effects.append(effect)
                 cue_outcomes.append(
                     {
                         "verb": sheet_item.verb,
@@ -5600,7 +6427,7 @@ def _execute_manifest(
                         "always_loaded_user_scope": bool(
                             sheet_item.verb
                             in {"route", "retire", "supersede", _LEGACY_RETIRE_ALIAS}
-                            and _always_loaded_user_scope(home, item_result.id)
+                            and effects_mod.always_loaded_user_scope(home, item_result.id)
                         ),
                         "close_call": bool(recipe_item.get("close_call")),
                     }
@@ -5673,6 +6500,7 @@ def _execute_manifest(
         if "registrations" in manifest:
             # S-112: the outcomes `_register_hosts` wrote this attempt.
             refreshed["registrations"] = manifest["registrations"]
+        refreshed["attention_effects"] = attention_effects
         manifest = refreshed
         maintenance = cast(list[dict[str, Any]], manifest.get("maintenance") or [])
         application_count += sum(row.get("state") == "applied" for row in maintenance)
@@ -6704,10 +7532,30 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             # truncate model prose rather than turning a landed decision into
             # a late refusal.
             # Never raises: a failed entry is dropped and named (2026-09-24).
+            # S-NEXT-overseer-asks: what is still open (the asks phase B
+            # was shown in open-asks.yaml), for the backstop and `withdraw:`.
+            _open_entries, withdrawn_rows, withdraw_targets = _open_asks(
+                home, datetime.now(timezone.utc),
+            )
+            try:
+                withdrawn_rows = conversation.load_withdrawn(home)
+            except conversation.ConversationError:
+                pass  # the open-asks read already answered none
             questions, question_drops = _questions(
                 stage / "questions.yaml", model_doc,
                 {row["case"] for row in cases.list_cases(home, only_ok=True)},
+                known_statements={
+                    str(row.get("id")) for row in statements.list_statements(home)
+                },
+                withdrawn=withdrawn_rows,
+                carried={row["id"] for row in _safe_questions(home)},
+                look_at_home=home,
             )
+            withdraw, withdraw_drops = _withdrawals(
+                stage / "questions.yaml", withdraw_targets,
+                {row["id"] for row in questions["questions"]},
+            )
+            question_drops = [*question_drops, *withdraw_drops]
             # 2026-09-27: a bad finding is dropped and named, not a refusal.
             # 2026-09-27 (run c2b9192b): so is a findings.yaml that does not
             # parse -- it reads as no findings, so no selected case counts
@@ -7209,7 +8057,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 selected=examined_ids, population_count=len(week_rows), excluded=excluded,
                 model_calls=model_calls, guard=guard, coverage_text=coverage_text,
                 questions=questions, findings=findings, prepared=prepared,
-                model_updates=model_updates,
+                model_updates=model_updates, withdraw=withdraw,
                 sessions=sessions,
                 project_notice_rows=notice_rows,
                 registration_rows=registration_rows,
