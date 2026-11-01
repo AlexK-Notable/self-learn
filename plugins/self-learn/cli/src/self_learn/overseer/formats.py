@@ -393,7 +393,10 @@ named pair: a case with outcome: route and decision.skill {{name, why, lessons}}
 (kind: maintenance, or the successor of a skill-proposal parked case), whose sheet
 routes each lesson in with dest: new-skill:<name>. A lesson already placed elsewhere moves
 in by the same route line in a kind: reconsider successor of the case that placed it,
-which the runner applies as a reroute once the skill is written. See {SKILL_EXAMPLE_DIR}/,
+which the runner applies as a reroute once the skill is written. One build may gather
+lessons placed by several cases: the build pair is the successor of one of them, and each
+other case gets a kind: reconsider successor of its own whose sheet routes its lesson in with
+dest: new-skill:<name> and no folder; the runner applies the build pair first. See {SKILL_EXAMPLE_DIR}/,
 case-skill-example.yaml and sheet-skill-example.yaml. The runner writes the skill
 first, then records the case and applies the sheet; if the write is refused, the whole
 pair is dropped and named under "Refused / could not do", and no lesson moves. The

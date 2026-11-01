@@ -6018,15 +6018,26 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             # skills/<name>/ folder whose case is dropped before its skill
             # step is looked at is not reported as named by no case.
             skill_named: set[str] = set()
+            staged_cases: list[dict[str, Any]] = []
             for staged_case, _staged_sheet in pairs:
                 if staged_case is None:
                     continue
                 try:
-                    named = skills_mod.claimed_name(_yaml_mapping(staged_case))
+                    staged_data = _yaml_mapping(staged_case)
                 except OverseerError:
                     continue  # the pair loop below names the file's trouble
+                staged_cases.append(staged_data)
+                named = skills_mod.claimed_name(staged_data)
                 if named is not None:
                     skill_named.add(named)
+            # S-NEXT-skills-chain (SK-F): every skill a pair of this run
+            # builds, known before any pair is previewed, so a reconsider pair
+            # of another case that moves its placed lesson into one is judged
+            # as it will be once the skill is written. With writing off
+            # nothing is built, and such lines are believed refused.
+            building = (
+                skills_mod.building_names(home, stage, staged_cases) if skill_state.deploy else set()
+            )
             # SK4: the steward's skill proposals in the parked queue.
             proposals_now = discovery_mod.proposal_ids(parked_rows)
             for case_file, sheet_file in pairs:
@@ -6147,8 +6158,17 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                             skill_step = skills_mod.step_for_case(
                                 home, stage, case_data, staged=skill_stage,
                                 deploy=skill_state.deploy, sheet_dests=sheet_dests,
-                                sheet_ids=sheet_ids,
+                                sheet_ids=sheet_ids, building=building,
                             )
+                        if (
+                            skill_step is not None and skill_step.name in skill_pairs
+                            and skill_step.action == "write" and not skill_step.updating
+                            and skill_step.name in building
+                        ):
+                            # S-NEXT-skills-chain (SK-F): two cases name the
+                            # skill this run builds; the first builds it from
+                            # its folder, and this one moves its own lessons in.
+                            skill_step = None
                         if skill_step is not None and skill_step.name in skill_pairs:
                             raise OverseerError(
                                 f"{case_file.name}: a second pair for the skill "
@@ -6222,6 +6242,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     # round 2, gate r2 MAJOR).
                     preview = skills_mod.preview_for_step(
                         home, preview, sheet, skill_step, reconsidered=reconsidered,
+                        building=building,
                     )
                     _refuse_doomed_reconsider(case_file, predecessor, preview)
                     # S-101: a preview that says would-refuse is
@@ -6271,6 +6292,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 if skill_step is not None:
                     skill_steps[case_file] = skill_step
                     skill_pairs[skill_step.name] = case_file.name
+            # S-NEXT-skills-chain (SK-F): a pair that builds a skill applies
+            # before the pairs that move lessons into it (the order is
+            # otherwise kept).
+            prepared.sort(key=lambda pair: 0 if (
+                pair[0] is not None and pair[0] in skill_steps
+                and skill_steps[pair[0]].action == "write" and not skill_steps[pair[0]].updating
+            ) else 1)
             # SK3: a skills/<name>/ folder no case names is not written; what
             # the skills staging could not show, and an unknown
             # overseer.skill_writing value, are said in the report.

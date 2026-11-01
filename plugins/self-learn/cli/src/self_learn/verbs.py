@@ -10108,6 +10108,31 @@ def _reroute_plan(
     )
 
 
+def reroute_old_side_problem(
+    home: Path | str, record_id: str, *, note: str | None = None,
+) -> str | None:
+    """S-NEXT-skills-chain (SK-F): the checks a reroute of a placed lesson
+    INTO a skill being built this run makes on its OLD side -- the note's
+    secret scan, the lesson still routed, the old placement's retirement
+    preflight (``_retirement_preflight``), and the loaded-text cut a managed
+    line would make -- run before the skill exists, so a line doomed on its
+    old side is dropped before the skill is written. ``None`` when they
+    pass; otherwise the refusal's words. Writes nothing."""
+    home = Path(home)
+    try:
+        path = find_record_path(home, record_id)
+        _scan_or_refuse([path], note)
+        try:
+            _, record = require_status(home, record_id, ROUTED_ONLY, verb="reroute")
+        except LedgerOpsError as exc:
+            raise VerbError(str(exc)) from exc
+        _retirement_preflight(home, record, path.parent.parent, [])
+        _abort_if_loaded_text_cut(record, "new-skill")
+    except (VerbError, LedgerOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS) as exc:
+        return f"{record_id}: {exc}"
+    return None
+
+
 def reroute(
     home: Path | str,
     record_id: str,

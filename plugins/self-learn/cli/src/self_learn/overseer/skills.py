@@ -104,6 +104,7 @@ __all__ = [
     "apply_rename",
     "apply_retire",
     "apply_write",
+    "building_names",
     "claimed_name",
     "decision_lessons",
     "draft_entry",
@@ -737,9 +738,32 @@ def _refuse_a_retire_that_leaves_lessons(
         )
 
 
+def building_names(home: Path | str, stage: Path, cases_data: list[dict]) -> set[str]:
+    """S-NEXT-skills-chain (SK-F): every skill a staged case of this run
+    builds -- a ``decision.skill`` name self-learn does not own, with its
+    ``skills/<name>/`` folder written, renaming and retiring nothing -- read
+    before any pair is previewed, so another pair's lines into it are judged
+    as they will be once it is written."""
+    try:
+        registry = skill_registry.load(home)
+    except SkillRegistryError:
+        return set()
+    names: set[str] = set()
+    for data in cases_data:
+        name = claimed_name(data)
+        if (
+            name is not None and not registry.is_owned(name)
+            and renamed_from(data) is None and data.get("outcome") != "retire"
+            and (stage / STAGE_SKILLS_DIR / name).is_dir()
+        ):
+            names.add(name)
+    return names
+
+
 def step_for_case(
     home: Path | str, stage: Path, case_data: dict, *, staged: StagedSkills, deploy: bool,
     sheet_dests: Collection[str] = (), sheet_ids: Collection[str] = (),
+    building: Collection[str] = (),
 ) -> SkillStep | None:
     """The skill step a staged case carries, checked; ``None`` when it
     carries none. Raises :class:`SkillPairError` (the pair is dropped) when
@@ -798,6 +822,10 @@ def step_for_case(
     if not folder.is_dir():
         if owned:
             return None  # lessons routed into an owned skill: ordinary routing
+        if name in building:
+            # SK-F: another pair of this run builds the skill; this one
+            # moves lessons into it (applied after the build pair).
+            return None
         if f"new-skill:{name}" in sheet_dests:
             raise SkillPairError(
                 f"decision.skill names {name}, which is not a skill self-learn owns, and its "
@@ -965,6 +993,12 @@ def _preview_once_written(
     if item.verb != "route":
         return replace(item, state="would-apply", kind=None, detail=once)
     if item.id in reconsidered and _is_placed(home, item.id):
+        # S-NEXT-skills-chain (SK-F): the reroute's checks on its OLD side
+        # need no skill, so they run now; a line doomed there is dropped
+        # before the skill is written.
+        problem = verbs.reroute_old_side_problem(home, item.id, note=line.fields.get("note"))
+        if problem is not None:
+            return replace(item, detail=f"reconsider: reroute refused on its old side: {problem}")
         return replace(
             item, state="would-apply", kind=None,
             detail=f"reconsider: reroute; {once}",
@@ -989,41 +1023,51 @@ def _preview_once_written(
 
 def preview_for_step(
     home: Path | str, preview: Any, sheet: Any, step: SkillStep | None,
-    *, reconsidered: Collection[str] = (),
+    *, reconsidered: Collection[str] = (), building: Collection[str] = (),
 ) -> Any:
-    """The preview a build pair's sheet is judged by.
+    """The preview a pair's sheet is judged by when it routes lessons into a
+    skill being built this run.
 
-    A line that routes a lesson into the skill this pair builds (``dest:
-    new-skill:<name>``) is previewed before the skill exists, so the
-    refusal "not a skill self-learn owns" says nothing about the line after
-    the write: that one refusal is set aside and the line is judged as it
-    will be once the skill is written (:func:`_preview_once_written`). Any
-    other refusal is believed, as S-101 believes every preview refusal (fix
-    round 1, gate r1: before, every refused line into the skill became
-    would-apply, whatever the reason). *reconsidered* is the record ids the
-    pair's ``kind: reconsider`` case covers: a placed one among them moves
-    in by reroute (fix round 2).
+    A line that routes a lesson into a skill a pair of this run builds
+    (``dest: new-skill:<name>``: this pair's own build, or, S-NEXT-skills-chain
+    SK-F, any name in *building*) is previewed before the skill exists, so
+    the refusal "not a skill self-learn owns" says nothing about the line
+    after the write: that one refusal is set aside and the line is judged as
+    it will be once the skill is written (:func:`_preview_once_written`).
+    Any other refusal is believed, as S-101 believes every preview refusal
+    (fix round 1, gate r1). *reconsidered* is the record ids the pair's
+    ``kind: reconsider`` case covers: a placed one among them moves in by
+    reroute (fix round 2), after its old side's checks (SK-F).
 
-    Raises :class:`SkillPairError` when no line would move a lesson into the
-    new skill: the skill would be written first and then stand live and
-    owned with no lesson in it."""
-    if step is None or step.action != "write" or step.updating:
+    For a build pair, raises :class:`SkillPairError` when no line would move
+    a lesson into the new skill: the skill would be written first and then
+    stand live and owned with no lesson in it."""
+    building_here = step is not None and step.action == "write" and not step.updating
+    names = set(building)
+    if building_here:
+        assert step is not None
+        names.add(step.name)
+    if not names:
         return preview
     from dataclasses import replace
 
     home = Path(home)
-    target = f"new-skill:{step.name}"
     lines = {line.n: line for line in sheet}
     items = []
     for item in preview.items:
         line = lines.get(item.n)
+        dest = line.fields.get("dest") if line is not None else None
+        name = dest[len("new-skill:"):] if isinstance(dest, str) and dest.startswith("new-skill:") else None
         if (
-            item.state == "would-refuse" and line is not None
-            and line.fields.get("dest") == target
-            and f"{target} {_NOT_OWNED_YET}" in (item.detail or "")
+            item.state == "would-refuse" and line is not None and name in names
+            and f"{dest} {_NOT_OWNED_YET}" in (item.detail or "")
         ):
-            item = _preview_once_written(home, item, line, step.name, reconsidered)
+            item = _preview_once_written(home, item, line, name, reconsidered)
         items.append(item)
+    if not building_here:
+        return replace(preview, items=items)
+    assert step is not None
+    target = f"new-skill:{step.name}"
     from .. import batch
 
     # A refusal of a retried kind (git or lock trouble) may clear by apply

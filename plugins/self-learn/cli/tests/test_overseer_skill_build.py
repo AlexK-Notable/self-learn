@@ -1663,3 +1663,134 @@ def test_sk_e_4_lessons_yaml_marks_a_lesson_in_an_authored_reference(env, monkey
     lessons = YAML(typ="safe").load(seen["stage"][f"{skills.OWNED_DIR}/{NAME}/{skills.LESSONS_FILE}"])
     assert RID in lessons["lessons"]  # control: the lesson is in the skill
     assert lessons["in_reference_files"] == {RID: sk1.REF}
+
+
+# ============================ SK-F: a skill built from several cases' lessons
+
+
+def _two_placed(env: sk1.Env) -> tuple[str, str]:
+    from test_u3b_steward_authority import _route_through_a_case
+
+    setup = env.tmp / "setup"
+    setup.mkdir(exist_ok=True)
+    first = _route_through_a_case(env.home, setup, RID)
+    setup2 = env.tmp / "setup2"
+    setup2.mkdir(exist_ok=True)
+    second = _route_through_a_case(env.home, setup2, RID2)
+    return first, second
+
+
+def _multi_b(first: str, second: str, *, second_names_skill: bool = True):
+    def write_b(stage):
+        _write_folder(stage, NAME, sk1.draft())
+        build = _case([RID], kind="reconsider", supersedes=first)
+        build["evidence"] = [{"ref": f"record:{RID}", "quote": "status: routed"}]
+        _dump(stage / "case-build.yaml", build)
+        _dump(stage / "sheet-build.yaml", _route_sheet([RID]))
+        more = _case([RID2], kind="reconsider", supersedes=second, lessons=[RID2])
+        more["evidence"] = [{"ref": f"record:{RID2}", "quote": "status: routed"}]
+        if not second_names_skill:
+            del more["decision"]["skill"]
+        # sorted before the build pair by name, so only the runner's
+        # ordering applies the build first
+        _dump(stage / "case-a-more.yaml", more)
+        _dump(stage / "sheet-a-more.yaml", _route_sheet([RID2]))
+    return write_b
+
+
+@pytest.mark.parametrize("names_skill", [True, False])
+def test_sk_f_1_two_cases_placed_lessons_both_move_into_the_new_skill(env, monkeypatch, names_skill):
+    _set_writing(env, '"on"')
+    first, second = _two_placed(env)
+    assert RID in _old_skill_md(env) and RID2 in _old_skill_md(env)  # control
+    _phases(monkeypatch, _multi_b(first, second, second_names_skill=names_skill))
+
+    result = _run(env)
+
+    refused = _section(_report(result), "Refused / could not do")
+    text = env.skill_md().read_text(encoding="utf-8")
+    assert f"({RID})" in text and f"({RID2})" in text, refused
+    old = _old_skill_md(env)
+    assert RID not in old and RID2 not in old
+    for rid in (RID, RID2):
+        routing = Record.from_path(find_record_path(env.home, rid)).routing or {}
+        assert routing.get("destination") == "new-skill" and routing.get("new_skill") == NAME
+
+
+def test_sk_f_2_a_line_doomed_on_its_old_side_drops_before_the_skill_is_written(env):
+    """The reroute's old-side checks run in the preview (the check itself:
+    test 2b): a line they refuse is refused there, not believed
+    would-apply."""
+    from test_u3b_steward_authority import _route_through_a_case
+
+    setup = env.tmp / "setup"
+    setup.mkdir()
+    _route_through_a_case(env.home, setup, RID)
+    target = f"new-skill:{NAME}"
+    sheet = [
+        batch.SheetItem(n=1, id=RID, verb="route", fields={"dest": target}),
+        batch.SheetItem(n=2, id=RID2, verb="route", fields={"dest": target}),
+    ]
+    _lesson(env, RID2)
+    preview = batch.DryRunResult(items=[
+        batch.DryRunItem(n=n, id=rid, verb="route", state="would-refuse",
+                         detail=_sk2_refusal(rid), kind="bad-line")
+        for n, rid in ((1, RID), (2, RID2))
+    ])
+    step = skills.SkillStep(action="write", name=NAME)
+    ok = skills.preview_for_step(env.home, preview, sheet, step, reconsidered={RID})
+    assert ok.items[0].state == "would-apply"  # control: the placed lesson passes
+
+    def doomed(home, record_id, *, note=None):
+        return f"{record_id}: the old placement cannot be retired"
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verbs, "reroute_old_side_problem", doomed)
+        out = skills.preview_for_step(env.home, preview, sheet, step, reconsidered={RID})
+    assert out.items[0].state == "would-refuse"
+    assert "old side" in (out.items[0].detail or "")
+
+
+def test_sk_f_2b_the_old_side_check_refuses_a_lesson_no_longer_routed(env):
+    from self_learn import verbs as v
+
+    _lesson(env, RID)
+    problem = v.reroute_old_side_problem(env.home, RID)
+    assert problem is not None and RID in problem
+    from test_u3b_steward_authority import _route_through_a_case
+
+    setup = env.tmp / "setup"
+    setup.mkdir()
+    _route_through_a_case(env.home, setup, RID2)
+    assert v.reroute_old_side_problem(env.home, RID2) is None  # control
+
+
+def test_sk_f_3_a_sheetless_rewrite_meeting_git_trouble_is_finished_by_the_resume(env, monkeypatch):
+    """The owed test for the pair-level retry branch (lane-handoff NIT on
+    `run.py`): a sheetless pair has no item to keep the run open, so the
+    pair itself is named in `retry_pending`."""
+    _set_writing(env, '"on"')
+    _lesson(env, RID)
+    assert env.write().ok
+    _phases(monkeypatch, _rewrite_b("The rewritten closing line."))
+    real_write = skill_writer.write
+    calls: list[str] = []
+
+    def write(home, name, files, **kwargs):
+        calls.append(name)
+        if len(calls) == 1:
+            return _git_refusal(name)
+        return real_write(home, name, files, **kwargs)
+
+    monkeypatch.setattr(skill_writer, "write", write)
+
+    first = _run(env)
+    assert calls == [NAME]  # control: the write was tried
+    assert "The rewritten closing line." not in env.skill_md().read_text(encoding="utf-8")
+    assert overseer_run._unfinished_manifest(env.home) is not None, _report(first)
+
+    _run(env)
+
+    assert len(calls) == 2
+    assert "The rewritten closing line." in env.skill_md().read_text(encoding="utf-8")
+    assert overseer_run._unfinished_manifest(env.home) is None
