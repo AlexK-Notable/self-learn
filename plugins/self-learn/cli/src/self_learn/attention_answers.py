@@ -1182,6 +1182,7 @@ def _run_argv(home: Path, argv: list[str], *, note: str, no_push: bool) -> str:
     ``grants.authorize`` from an agent's shell, and are themselves a grant
     use then."""
     from . import grant_uses, hosts, skill_writer
+    from .skill_writer import rename as rename_skill  # as skill_cli: not a Path.rename
 
     words = [w for w in argv]
     if words[:2] == ["config", "set"] and len(words) >= 3:
@@ -1233,7 +1234,7 @@ def _run_argv(home: Path, argv: list[str], *, note: str, no_push: bool) -> str:
                     raise AnswerError(f"skill retire refused: {'; '.join(outcome.problems)}",
                                       EXIT_REFUSED)
             else:
-                outcome2 = skill_writer.rename(home, args[0], args[1], case=None,
+                outcome2 = rename_skill(home, args[0], args[1], case=None,
                                                by="agent" if granted else "human", no_push=no_push)
                 if not outcome2.ok:
                     if use is not None:
