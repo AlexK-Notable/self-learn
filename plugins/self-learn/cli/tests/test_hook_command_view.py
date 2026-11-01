@@ -177,6 +177,7 @@ CORPUS: dict[str, tuple[str, str]] = {
     "r1: bash-c--": ("bash -c -- 'pkill -f foo'", "warn"),
     "r1: quoted-cmd": ('"pkill" -f foo', "warn"),
     "r1: quoted-arg": ('rm -rf "$HOME/.self-learn" danger', "warn"),
+    "r1: quoted-arg, verbatim": ('rm -rf "$HOME/.self-learn"', "none"),
     "r1: python-c": ('python3 -c \'import os; os.system("pkill -f foo")\'', "warn"),
     "r1: heredoc-commit": ("git commit -m \"$(cat <<'EOF'\nfix: pkill -f foo danger\nEOF\n)\"", "silent"),
     "r1: heredoc-sh": ("bash <<EOF\npkill -f foo\nEOF", "warn"),
