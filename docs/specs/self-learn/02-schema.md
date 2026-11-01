@@ -808,7 +808,7 @@ older home):*
   user-statements.jsonl            # append-only; the user's own words (§3a)
   user-model.md                    # the model of the user (§3a)
   overseer/{<date>-report.md, latest-report.md, coverage.yaml,
-    open-questions.yaml, evaluation-<date>.md,
+    open-questions.yaml, withdrawn.yaml, evaluation-<date>.md,
     journal/<date>-<run>.md}        # the overseer's own
                                     # subtree, owned by the overseer plan
   owned-skills.yaml                # skills self-learn owns (S-107)
@@ -1027,7 +1027,10 @@ questions:
   corrects one when they choose to"). Readings remain evidence, shown in the
   report's User model section; the runner adds one line there saying how to
   correct one (`statement add … --answers-kind proposition --answers-ref
-  <um-id>@r<revision>`), and phase B's `answers.yaml` now carries such
+  <um-id>@r<revision>`; *amended S-NEXT-overseer-asks:* the line names the
+  inbox first, and the command it shows records with `--recorded-by agent`,
+  for a session relaying the person's words, never `human`), and phase B's
+  `answers.yaml` now carries such
   corrections beside the answers to asks, each row with its `kind`
   (`question` or `proposition`; a proposition answer whose `ref` is not a
   reading's id is left out). *(Fix round 1.)* A correction is offered once:
@@ -1103,6 +1106,157 @@ questions:
   last week's asks can no longer be answered with `overseer respond`; a
   `statement add --answers-kind question --answers-ref <q-id>` still reaches
   phase B through `answers.yaml`.
+
+*(Added 2026-10-31, S-NEXT-overseer-asks.)* **Asks say who they need;
+a needs-you ask stays open until answered or withdrawn.** The attention round
+(`misc/build-2026-10-31c/attention-design-r2.md` r2.1 §1.3, §3.8, §4.4, §4.5),
+under the user's answers of 2026-10-31 20:45 (answer 2, the closed needs-you
+list; answer 3, a system-change idea is raised and nothing is changed
+meanwhile; answer 4, "until i answer or it stops mattering, indefinitely. it
+become part of the overseer's weekly 'is this shit still relevant' checks.";
+answer 6, a conflict: the newer statement wins meanwhile; answer 7, a
+feedback click on an overseer ask is evidence only) and the orchestrator's C2:
+
+```yaml
+questions:
+  - id: q-example-daemon-binding
+    kind: ask
+    cases: [case-0123abcd]
+    text: "Bind the example daemon to the session bus so it survives a bus restart?"
+    why: "It changes how your desktop starts a service, outside self-learn."
+    needs: user                 # user | stead (absent: inferred, below)
+    because: system-change      # needs: user only; one of the closed list
+    default: "Nothing on your system was changed; answer if you want it done."  # the runner's
+    asked_at: "2026-09-28T04:15:00Z"   # the runner's; kept across carry-forward and reopen
+    reopened_at: null           # the runner's: when "Ask me anyway" put it back
+    options:                    # 2-4; ids opt-<slug>, unique
+      - {id: opt-yes, label: "Yes, add the binding", effect: approve}
+      - {id: opt-yes-conditions, label: "Yes, with conditions", effect: approve, note: required}
+      - {id: opt-no, label: "No, keep the manual note", effect: decline}
+    recommend: {option: opt-yes, reasoning: "…"}
+    plan:                       # required for system-change and money
+      summary: "Add a systemd drop-in binding the example daemon to dbus-broker."
+      cwd: null                 # one absolute path, or null
+      checks: [{say: "…", command: "systemctl --user show …"}]   # read-only; >= 1 for system-change
+      steps: [{say: "…", command: null, sudo: false}]
+      files: [{path: "~/.config/systemd/user/…", content: "…"}]
+      sudo: false               # derived from the steps, never the model's
+    look_at: ["/home/<user>/.config/systemd/user"]
+    statements: []              # conflict: exactly two distinct existing stmt ids
+    system: true                # legacy, still written for old readers
+```
+
+- **Who an ask needs.** `needs: user` with `because` one of `system-change`,
+  `foreign-history`, `conflict`, `money`, `sudo` (`credentials` and `broken`
+  are code's kinds, never the overseer's). Such an ask writes no default: the
+  runner indexes the meanwhile sentence for its key
+  (`conversation.NEEDS_USER_DEFAULTS`: the change-nothing sentences, and for
+  a conflict "The newer statement holds until you say otherwise."), and
+  `asked_at`, the time the run validated it. `needs: stead` is S-117's ask:
+  the model's default, acted on in the same run. A `needs: user` ask with no
+  valid `because`, or whose plan puts a sudo step after a step without sudo,
+  is filed as `needs: stead` with its own default (dropped when it has none)
+  and named in "Refused / could not do" (`filed as decided in your stead —
+  …`); a stead ask carries no plan, `system` or `register`. A register ask is
+  `needs: user, because: foreign-history`. An ask with no `needs` (an index
+  written before) reads as needing the user when it has `system: true`
+  (`system-change`) or `register` (`foreign-history`), as stead when it has a
+  default, and as waiting when it has neither, as before. *(Fix round 2.)* The
+  runner reads a new `questions.yaml` the same way: an ask the model wrote
+  with `system: true` or `register` and no `needs` is validated as `needs:
+  user` with that `because` (and, as in S-117, writes no default of its own),
+  so one without options, a recommendation or, for a system change, a plan is
+  dropped and named, never indexed as a needs-you page with nothing to click
+  (answer 10). An ask with neither and a default stays S-117's stead ask.
+  A question whose `text` names ledger ids (`lrn-`, `case-`, `stmt-`, `um-`)
+  is kept and named in "Refused / could not do": its ids belong in `cases`
+  and `statements`, which the inbox shows beside it.
+- **Options, recommendation, plan.** `options` are 2-4 `{id, label, effect:
+  approve|decline|other|register, confirm?, note?: required}`, ids unique; a
+  `register` effect only on an ask with `register`; `recommend.option` names
+  one of them, with its reasoning. *(Fix round 1.)* Every `needs: user` ask
+  carries both `options` and `recommend` (answer 10: every needs-you page
+  offers a one-click answer and a recommendation with its reasoning); one
+  without them is dropped and named, and a register ask offers at least one
+  `register` and one `decline` option. A stead ask may carry them. `system-change` and `money` need a `plan`; an ask with a plan
+  offers at least one `approve` and one `decline`; a `system-change` plan has
+  at least one check. Every `sudo: true` step comes before every other step.
+  `plan.sudo` is derived; a model-written `sudo` key is ignored. A conflict
+  ask names exactly two distinct existing statement ids. `look_at` paths go
+  through the packet's deny list (`attention_packet.filter_look_at`); a
+  refused path is named, the ask kept. Every text of these keys is
+  secret-scanned; a hit drops the ask.
+- **What answers an ask** (`conversation._answered_ids`). An answer counts
+  from the ask's `reopened_at`, else its `asked_at` (else the index file's
+  last write). An ask without
+  a plan is answered by a statement whose `answers.ref` is its id (a conflict
+  ask also by an `instruction` on `conflict:<a>+<b>`) or by a choice
+  (`attention/choices.jsonl`) about it. An ask with a plan is answered only by
+  a choice naming one of its options; words alone are recorded and leave it
+  open, and approved work that failed (`attention/outcomes.jsonl`) puts it
+  back. `waits_on_the_user` reads `needs`, not `default`.
+- **Carry-forward.** A complete run's index is its own asks, then every
+  `needs: user` ask of the previous index it did not ask again and that is
+  still open: unanswered (no age limit: nothing closes an ask for its age), or
+  with a plan whose approval stands (approved, awaiting the user's sudo
+  steps, or done within 30 days, because the inbox derives the approved and
+  done items from the indexed ask). It keeps its first `asked_at`; a
+  re-emitted id of a still-open ask takes the model's new words and keeps
+  `asked_at` (and `reopened_at`). The finalize reads the previous index inside
+  its own `ledger_write` span, so an answer or a reopen made while the run was
+  in progress is never lost.
+- **An answered id is never asked again** *(fix round 1)*. A new ask whose id
+  names an indexed ask whose plan the user approved (approved, awaiting their
+  sudo steps, or done) is dropped and named, and the earlier row is kept
+  exactly as it was: the approval was for that plan, and re-asking under the
+  same id would carry the user's click over to a plan written after it. The
+  overseer keeps or withdraws an approved item and asks a new plan under a new
+  id. So is a new ask whose id a choice row names (`subject` or
+  `answers.ref`) when that ask is not still open: the user answered it by a
+  click. Words never block a re-ask (both the runner and the inbox floor
+  statements). The check runs when the run validates `questions.yaml` and
+  again in the finalize, under the lock (`dropped at publish -- …`), and an
+  ask dropped at publish gets no "needs you" line in the report. *(Fix round
+  2.)* Nor is a plan ask re-asked that the user approved at any time before,
+  even when its own floor no longer counts that click (a reopened approval:
+  the inbox's walk has no floor and would show the old click behind the new
+  plan). `open-asks.yaml` marks such an open ask `fixed: <why>`; the
+  overseer keeps or withdraws it and asks a new plan under a new id.
+- **Relevance re-judgement and withdrawal.** Phase B's stage holds
+  `open-asks.yaml`: `asks` lists each carried ask (`kind: ask`, with its
+  weeks open, its cases and the case each one's line of successors ends at
+  now, the user's replies -- words as `said`, choices as `chose` -- and
+  feedback clicks) and each approval of one older than 7 days and not done
+  (`kind: approved`, with its inbox item id, plan summary and checks); and
+  `withdrawn` lists what was withdrawn. `answers.yaml` gains `choices`
+  (labelled `chose`, never `said`) and `feedback`. `questions.yaml` may carry a
+  top-level `withdraw: [{id, why}]` naming such an ask, or an approval by its
+  question or item id; any other id, and one asked again in the same run, is
+  dropped and named. The finalize takes each withdrawn ask out of the index
+  and appends `{id, text, because, cases, asked_at, withdrawn_at, run, why,
+  row}` to `overseer/withdrawn.yaml` (`row`: the whole index row, so a reopen
+  puts back what was asked); the report lists it under "Decided in the user's
+  stead" as `<q-id> withdrawn: I stopped asking because <why>`. *(Fix round
+  1.)* The report is rendered inside the finalize's lock from the withdrawals
+  it applied: a named ask answered while the run was in progress, or one
+  `withdrawn.yaml` could not take (an unreadable file is never blanked; the
+  ask stays open), is named under "Refused / could not do" instead.
+- **Never asked again in other words.** A new ask whose id was withdrawn, or
+  a new `needs: user` ask with the same `because` and the same set of cases as
+  an ask withdrawn within 90 days, is dropped and named. `overseer.
+  conversation.reopen(home, q_id)` is the one writer that puts a withdrawn
+  ask back: under `ledger_write` it moves the row from `withdrawn.yaml` to
+  the index as `needs: user` with its first `asked_at` and `reopened_at`
+  stamped now, and commits both. *(Fix round 1.)* An answer, a choice or an
+  outcome counts only from `reopened_at`, so a withdrawn approval comes back
+  as a question: the approve click made before the withdrawal no longer
+  stands, and a new approve click is a new approval. (The inbox's own
+  approval walk, `attention._approval_track`, has no floor yet; until it
+  takes `reopened_at`/`asked_at` as one, the inbox can still show the old
+  approval for a reopened ask.)
+- "Decided in the user's stead" lists a `needs: user` ask as `<q-id> needs
+  you (<because>): <meanwhile>` (a system or register ask keeps S-117's
+  line).
 
 *(Added 2026-10-30, S-101.)* **Lesson records and the preview.**
 Phase B's stage also holds `lessons/<id>.md`, every lesson record in the ledger
@@ -1403,7 +1557,11 @@ own subtree.*
    span; `coverage.yaml` and `open-questions.yaml` carry no free text at
    all (structured records only) — *amended 2026-09-24:* except an ask's
    `text` and `why` in `open-questions.yaml`, and the overseer's journal
-   (`overseer/journal/`), both secret-scanned — matching the content discipline
+   (`overseer/journal/`), both secret-scanned — *amended S-NEXT-overseer-asks:*
+   and an ask's option labels, recommendation, plan (summary, check and step
+   texts, commands, file contents) and `look_at` paths, and the `text` and
+   `why` of a withdrawn ask in `overseer/withdrawn.yaml`, every one
+   secret-scanned — matching the content discipline
    `11-telemetry-and-lifecycle.md` §4.4 already states for telemetry.
 3. Sections 1–4 of a case are frozen at commit; sections 5–6 are
    append-only; a change of decision is a **successor case**, never an edit.

@@ -452,11 +452,20 @@ def test_the_actor_guard_is_for_cases_outside_the_parked_queue_only(tmp_path, de
     overseer_run._validate_successor(_staged(tmp_path, _reconsider_of(human_id)), {human_id}, home)
 
 
+_CORRECTABLE_ACTORS_ARE_THE_RUNNERS = frozenset({"steward", "overseer"})
+
+
 def test_the_correctable_actors_are_the_case_actors_but_a_person():
     from self_learn import cases as cases_mod
 
     assert "human" in cases_mod.ACTORS  # control: the closed set has a person in it
-    assert overseer_run._CORRECTABLE_ACTORS == cases_mod.ACTORS - {"human"}
+    # S-NEXT-overseer-asks: the attention round's C7 added `agent` to the
+    # closed set (an agent's own act is recorded as the agent's). A case an
+    # agent recorded may carry a person's decision it relayed, so it stays
+    # out of reach of a reconsider, as it was before `agent` existed: the
+    # correctable set is named, not derived from the closed set.
+    assert overseer_run._CORRECTABLE_ACTORS == frozenset({"steward", "overseer"})
+    assert _CORRECTABLE_ACTORS_ARE_THE_RUNNERS <= cases_mod.ACTORS
 
 
 # ------------- 2026-10-05 fold: a reconsider that would change nothing
