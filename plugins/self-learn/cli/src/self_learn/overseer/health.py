@@ -295,7 +295,7 @@ def _one_line(text: str, limit: int) -> str:
 
 def premise_refreshes(
     home: Path | str, *, now: datetime | None = None, days: int = _REFRESH_WINDOW_DAYS,
-    limit: int = _REFRESH_LIMIT,
+    limit: int = _REFRESH_LIMIT, cursor: str | None = None, cursor_run: str | None = None,
 ) -> dict[str, Any]:
     """The week's ``self-learn: premises refresh`` commits: baselines the
     premise sweep re-recorded by CODE, with no model call and no decision, so
@@ -303,33 +303,22 @@ def premise_refreshes(
     (design D11). ``state`` is ``unavailable`` when git cannot be read: never
     "no refreshes"."""
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    since = now - timedelta(days=days)
     out: dict[str, Any] = {"state": "ok", "window_days": days, "total": 0, "commits": []}
-    try:
-        proc = gitops._git(
-            Path(home), "log", "--no-merges", f"--since={(since - timedelta(days=1)).date().isoformat()}",
-            "--grep=^self-learn: premises refresh ", "--format=%x1e%h%x1f%aI%x1f%s%x1f%b",
-        )
-    except (gitops.GitOpsError, OSError, UnicodeDecodeError) as exc:
-        return {**out, "state": "unavailable", "reason": _one_line(str(exc), 200)}
-    if proc.returncode != 0:
-        return {**out, "state": "unavailable",
-                "reason": _one_line(proc.stderr or proc.stdout or "git log failed", 200)}
+    walk = report.ledger_log(
+        home, cursor=cursor, fallback_days=days, now=now, cursor_run=cursor_run,
+        grep="^self-learn: premises refresh ",
+    )
+    out["label"] = walk["label"]
+    if walk["state"] != "ok":
+        return {**out, "state": "unavailable", "reason": walk["reason"]}
     rows: list[dict[str, Any]] = []
-    for chunk in proc.stdout.split("\x1e"):
-        if not chunk.strip():
-            continue
-        short, _, rest = chunk.partition("\x1f")
-        stamp, _, rest = rest.partition("\x1f")
-        subject, _, body = rest.partition("\x1f")
+    for short, stamp, subject, body in walk["commits"]:
         match = _REFRESH_SUBJECT_RE.match(subject.strip())
         if match is None:
             continue
         try:
             when = datetime.fromisoformat(stamp.strip()).astimezone(timezone.utc)
         except ValueError:
-            continue
-        if when < since:
             continue
         # The body's first line is the runner's fixed sentence; the rest are
         # "<premise id>: <before> -> <after>" (secret-scan clean by the
@@ -425,7 +414,12 @@ def premise_facts(
         row.update(state="unavailable", reason=_one_line(f"{type(exc).__name__}: {exc}", 200))
         return row
     row["state"] = "ok"
-    row["refreshed_this_week"] = premise_refreshes(home, now=now)
+    cursor = report.read_census_cursor(home)
+    row["refreshed_this_week"] = premise_refreshes(
+        home, now=now,
+        cursor=cursor["head"] if cursor else None,
+        cursor_run=(cursor or {}).get("run") or None,
+    )
     return row
 
 
@@ -442,7 +436,12 @@ def hand_steps_row(home: Path | str, *, now: datetime | None = None) -> dict[str
     fact row (S-105, lane C): every ledger change made from a person's
     or an agent's shell rather than by a job, so the overseer can name, for
     each, the gap in self-learn that made the hand step necessary."""
-    census = report.hand_steps(home, now=now)
+    cursor = report.read_census_cursor(home)
+    census = report.hand_steps(
+        home, now=now,
+        cursor=cursor["head"] if cursor else None,
+        cursor_run=(cursor or {}).get("run") or None,
+    )
     return {
         "kind": "hand-steps-this-week",
         **census,
