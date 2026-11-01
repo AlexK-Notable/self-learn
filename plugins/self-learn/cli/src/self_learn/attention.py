@@ -1487,6 +1487,11 @@ def _src_registrations(home: Path, ctx: "_Ctx") -> list[dict]:
     return out
 
 
+#: The past tense each skill event reads as in a title ("The overseer wrote
+#: the skill X"); the event names themselves stay as the registry has them.
+_SKILL_VERB = {"written": "wrote", "updated": "updated", "retired": "retired", "renamed": "renamed"}
+
+
 def _src_skills(home: Path, ctx: "_Ctx") -> list[dict]:
     from . import skill_registry
 
@@ -1524,9 +1529,9 @@ def _src_skills(home: Path, ctx: "_Ctx") -> list[dict]:
             )
             item = _new_item(
                 "decided.skill", f"{name}:{action}@{at}",
-                title=f"The {by} {action} the skill {name}", since=at, by=str(by),
+                title=f"The {by} {_SKILL_VERB[action]} the skill {name}", since=at, by=str(by),
                 refs=[r for r in (stamp.get("case"),) if isinstance(r, str)],
-                decided={"what": f"{action} the skill {name}", "by": by, "at": at,
+                decided={"what": f"{_SKILL_VERB[action].capitalize()} the skill {name}", "by": by, "at": at,
                          "because": None, "changes_now": None},
                 undo_verb=undo_verb,
             )
