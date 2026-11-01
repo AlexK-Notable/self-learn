@@ -24,6 +24,7 @@ from self_learn.cli import EXIT_HELD
 from self_learn.records import Record
 from self_learn_ui.app import create_app
 from self_learn_ui.env import load_env
+from self_learn_ui.health import build_health
 from self_learn_ui.keymap import keymap_as_dicts, keymap_json
 from self_learn_ui.routes import build_argv, cycle_destination, next_record_url
 from self_learn_ui.runner import FakeRunner, RunResult
@@ -3236,18 +3237,25 @@ class TestKeymapSingleSource:
 
 
 class TestReportPage:
-    def test_renders_counted_fields_verbatim(self, tmp_path: Path) -> None:
+    def test_renders_counted_fields_in_words(self, tmp_path: Path) -> None:
+        """Humane lane 2 (S-NEXT-humane-l2): the page that printed
+        `report --json` field by field (and the raw JSON) is the Health page
+        now. Same behaviour pinned: the CLI's counted fields reach the page,
+        verbatim in value, under their CLI names in the counters fold; the
+        raw JSON dump is gone on purpose (no JSON shown to a person)."""
         sb = make_env(tmp_path)
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
         c, _runner = make_client(sb)
         r = c.get("/report")
         assert r.status_code == 200
-        assert "routed_ever" in r.text
-        assert "Raw (verbatim)" in r.text
-        # The raw JSON dump must contain the actual computed fields.
-        assert "recurrence_suspects" in r.text
-        assert "open_followups" in r.text
+        assert "Health" in r.text
+        fold = r.text.split("All counters, with their names", 1)[1]
+        assert "<code>routed_ever</code>" in fold
+        assert "<code>superseded_after_routing</code>" in fold
+        assert 'aria-label="rules seen again"' in r.text
+        assert 'aria-label="open follow-ups"' in r.text
+        assert "Raw (verbatim)" not in r.text and 'class="raw-report"' not in r.text
 
 
 class TestHumanizeTsRenderSites:
@@ -3288,37 +3296,36 @@ class TestHumanizeTsRenderSites:
         c, _runner = make_client(sb)
         app = c.app
         template = app.state.templates.env.get_template("report.html")
+        report = {
+            "routed_ever": 0,
+            "superseded_after_routing": 0,
+            "supersede_rate": 0,
+            "graduated": 0,
+            "rejected": 0,
+            "routed_live": [],
+            "recurrence_suspects": [],
+            "open_followups": [
+                {
+                    "id": "lrn-x0000001",
+                    "bucket": "s",
+                    "action": "check back on this",
+                    "unblocks_on": "2026-08-01T00:00:00Z",
+                    "routed_at": "2026-07-01T00:00:00Z",
+                }
+            ],
+            "mined": {},
+            "telemetry": {},
+        }
         html = template.render(
             request=None,
             keymap_json=keymap_json(),
             keymap_entries=keymap_as_dicts(),
-            report={
-                "routed_ever": 0,
-                "superseded_after_routing": 0,
-                "supersede_rate": 0,
-                "graduated": 0,
-                "rejected": 0,
-                "routed_live": [],
-                "recurrence_suspects": [],
-                "open_followups": [
-                    {
-                        "id": "lrn-x0000001",
-                        "bucket": "s",
-                        "action": "check back on this",
-                        "unblocks_on": "2026-08-01T00:00:00Z",
-                        "routed_at": "2026-07-01T00:00:00Z",
-                    }
-                ],
-                "mined": {},
-                "telemetry": {},
-            },
+            report=report,
             report_error=None,
             status_error=None,
-            metrics=None,
-            supply_mix=None,
+            health=build_health(report, None, None, None),
         )
-        # the raw-JSON dump at the bottom is EXEMPT (09 §11 Y-12: verbatim
-        # by design) — scope the scan to the followups table only.
+        # scope the scan to the followups table only.
         table = html.split('aria-label="open follow-ups"', 1)[1].split("</table>", 1)[0]
         assert not self._ISO_RE.search(self._visible_text(table))
         assert "2026-08-01" in table  # still present, humanized
