@@ -899,3 +899,52 @@ def test_the_cli_answers_with_json_and_refuses_an_unknown_item(tmp_path, monkeyp
     assert cli.main(["attention", "answer", "att-000000000000", "--option", "opt-x"]) == 2
     assert cli.main(["attention", "undo", item["id"]]) == 3
     assert cli.main(["attention", "run", "att-000000000000"]) == 2
+
+
+# --------------------------------------------------------- the STOPPED ledger
+
+
+def test_an_agent_look_at_a_stopped_ledger_is_held_launched_and_committed_by_done(tmp_path):
+    """§3.4.8's `broken.stopped` "Have an agent look at it": nothing can be
+    committed while the ledger is STOPPED, so the click is held on this
+    machine and launched; `done` commits it once the intent is cleared.
+    Mutation: refuse every answer while STOPPED (no held path) -> red."""
+    from self_learn import intents
+    from test_recover_or_refuse import _plant_stop
+
+    home = make_home(tmp_path)
+    settings.config_set(home, "attention.terminal", "alacritty -e")
+    target = home / "user" / "stop-probe.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("seed\n", encoding="utf-8")
+    git(home, "add", "--", str(target))
+    git(home, "commit", "-q", "-m", "seed probe")
+    intent = _plant_stop(home, target)
+    with pytest.raises(intents.LedgerStoppedError):
+        with intents.ledger_write(home):
+            pass
+    path = home / ".intents" / f"{intent.id}.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["started"] = _iso(-timedelta(days=2))
+    path.write_text(json.dumps(data), encoding="utf-8")
+    item = _item(home, intent.id, "broken.stopped")
+    head = git(home, "rev-parse", "HEAD").stdout
+
+    with pytest.raises(answers.AnswerError) as words:
+        answers.answer(home, item["id"], text="please look")
+    assert words.value.exit_code == 10  # words cannot be held: nothing to cite
+    result = answers.answer(home, item["id"], option="opt-agent")
+
+    assert result.state == "running" and len(_calls(tmp_path, "systemd-run")) == 1
+    assert git(home, "rev-parse", "HEAD").stdout == head and _choices(home) == []
+    answers.claim(home, item["id"], "sess-fix")
+    with pytest.raises(answers.AnswerError) as early:
+        answers.done(home, item["id"], session="sess-fix", note="cleared it")
+    assert early.value.exit_code == 10
+
+    assert intents.clear_stopped(home, intent.id) == "cleared"
+    answers.done(home, item["id"], session="sess-fix", note="inspected and cleared the intent")
+    (choice,) = _choices(home)
+    assert choice["id"] == result.choice and choice["effect"] == "approve"
+    (outcome,) = conversation.outcome_rows(home)
+    assert outcome["result"] == "done" and outcome["item"] == item["id"]

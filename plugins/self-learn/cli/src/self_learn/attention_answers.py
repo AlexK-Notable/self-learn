@@ -318,15 +318,60 @@ def _find(home: Path, item_id: str, items: list[dict] | None = None) -> dict | N
     return _answered_ask_item(home, item_id)
 
 
-def _approved_for(items: list[dict], item_id: str) -> dict | None:
+def _approved_for(items: list[dict], item_id: str, home: Path | None = None) -> dict | None:
     """The approved item *item_id* names: itself, or the approved item that
-    replaced the needs-you item *item_id* when it was approved."""
+    replaced the needs-you item *item_id* when it was approved; or, while
+    the ledger is STOPPED, a ``broken.stopped`` item whose approval is held
+    on this machine (:func:`_held_approval`)."""
     for item in items:
         if item["kind"] == "approved.pending" and (
             item["id"] == item_id or item.get("_source_item") == item_id
         ):
             return item
+    held = _held_approval(home, item_id) if home is not None else None
+    if held is not None:
+        found = next((i for i in items if i["id"] == item_id and i["kind"] == "broken.stopped"), None)
+        if found is not None:
+            return found
+        # Once the session cleared the intent the item is gone (its condition
+        # ended); `done` still needs it, to commit the held click and the
+        # outcome.
+        subject = str(held.get("subject") or "")
+        return {
+            "id": item_id, "kind": "broken.stopped", "class": "needs-you", "subject": subject,
+            "title": "A ledger write stopped half-way and self-learn could not repair it",
+            "state": "approved", "refs": [],
+            "_plan": attention._plan_for(attention.PLAN_BROKEN_STOPPED, subject),  # noqa: SLF001
+        }
     return None
+
+
+def _held_path(home: Path, item_id: str) -> Path:
+    return _cache(home) / "attention" / "held-approvals" / f"{item_id}.json"
+
+
+def _held_approval(home: Path, item_id: str) -> dict | None:
+    try:
+        data = json.loads(_held_path(home, item_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_held_approval(home: Path, item_id: str, choice_row: dict) -> None:
+    """``<cache>/attention/held-approvals/<id>.json``: the person's approve
+    click on a ``broken.stopped`` item, kept on this machine because the
+    ledger is STOPPED and no choice can be committed. ``done`` commits it
+    (before its outcome) once the intent is cleared. Cache, never ledger
+    truth."""
+    target = _held_path(home, item_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fsops.atomic_write(target, json.dumps(choice_row, sort_keys=True) + "\n", fsync=False)
+
+
+def _clear_held_approval(home: Path, item_id: str) -> None:
+    """Remove a held approval once ``done`` committed it (cache only)."""
+    _held_path(home, item_id).unlink(missing_ok=True)
 
 
 def _code_kind_for_subject(subject: str) -> str:
@@ -567,12 +612,20 @@ def answer(
             f"the reply matched the secret scan ({rule}); nothing was recorded. Leave the "
             "secret out and send it again", EXIT_USAGE,
         )
-    if _ledger_stopped(home):
-        raise _held()
+    stopped = _ledger_stopped(home)
     items = _items(home)
     item = _find(home, item_id, items)
     if item is None:
         raise AnswerError(f"unknown or closed item {item_id}", EXIT_UNKNOWN)
+    if stopped:
+        # Nothing can be committed while a ledger write is STOPPED. The one
+        # answer that must still work then is the person's "Have an agent
+        # look at it" on the item that says so (§3.4.8): it is held on this
+        # machine and launched; `done` commits it once the intent is cleared.
+        if (item["kind"] == "broken.stopped" and option is not None and not agent
+                and text is None and draft_id is None):
+            return _approve_while_stopped(home, item, option)
+        raise _held()
     ask_row = item.get("_ask") if isinstance(item.get("_ask"), dict) else _ask_row(
         home, item.get("subject"))
     options = _options_for(item, ask_row)
@@ -772,7 +825,7 @@ def _downstream(
         _observe_all(home, _cases_citing(home, losers),
                      f"user ruled on {conflict} in the inbox", decided_by, warnings)
         return "answered"
-    if effect in ("approve", "ran-sudo"):
+    if effect in ("approve", "ran-sudo") and plan is not None:
         return _approve(home, item, plan, result, launch=launch, ran_sudo=effect == "ran-sudo")
     if kind == "approved.pending":
         return str(item.get("state"))
@@ -830,6 +883,39 @@ def _approve(home: Path, item: dict, plan: dict | None, result: AnswerResult, *,
     outcome = run(home, approved_id)
     result.run = outcome.to_json()
     return "running" if outcome.exit == EXIT_OK else "approved"
+
+
+def _approve_while_stopped(home: Path, item: dict, option: str) -> AnswerResult:
+    """A ``broken.stopped`` item's agent option, clicked while the ledger is
+    STOPPED: the choice row is held in the cache, the transcript row is kept
+    pending by ``workspace.append``, and the session is launched on the
+    item itself. Its ``claim`` is a cache write and its ``done`` commits the
+    held choice, then the outcome, once the session cleared the intent."""
+    chosen = next((o for o in _options_for(item, None) if o.get("id") == option), None)
+    if chosen is None or chosen.get("effect") != "approve":
+        raise _held()
+    choice_row = {
+        "id": "chc-" + uuid.uuid4().hex[:8], "at": chrono.now_iso(), "item": item["id"],
+        "item_kind": item["kind"], "subject": item.get("subject"), "how": "clicked",
+        "option": option, "label": chosen.get("label"), "effect": "approve", "text": None,
+        "draft_id": None, "draft_text": None, "offered_by": "system",
+        "answers": {"kind": "instruction", "ref": item.get("subject"), "text": item.get("title")},
+        "source": {"message_ref": None}, "statement": None, "proof": None,
+        "recorded_by": "human", "note": "held on this machine while the ledger was STOPPED",
+    }
+    _write_held_approval(home, item["id"], choice_row)
+    _try_seal(home, item, {"role": "user", "origin": "clicked", "kind": "reply", "text": None,
+                           "option": option})
+    result = AnswerResult(item=item["id"], choice=choice_row["id"],
+                          recorded_as="as your choice of the offered option")
+    outcome = run(home, item["id"])
+    result.run = outcome.to_json()
+    result.state = "running" if outcome.exit == EXIT_OK else "approved"
+    result.warnings.append(
+        "the ledger is STOPPED, so your click is kept on this machine; it is committed when "
+        "the agent clears the stopped write and reports done"
+    )
+    return result
 
 
 # ------------------------------------------------------------------ run
@@ -977,7 +1063,7 @@ def run(home: Path | str, item_id: str, *, login: bool = False) -> RunResult:
                                "option": "opt-login"})
         return RunResult(EXIT_OK, "A terminal is open running claude: type /login there.",
                          unit=unit, argv=argv)
-    item = _approved_for(items, item_id)
+    item = _approved_for(items, item_id, home)
     if item is None:
         other = next((i for i in items if i["id"] == item_id), None)
         if other is None:
@@ -1093,7 +1179,7 @@ def _clear_claim(home: Path, item_id: str) -> None:
 
 
 def _approved_or_refuse(home: Path, item_id: str, code: int = EXIT_UNKNOWN) -> dict:
-    item = _approved_for(_items(home), item_id)
+    item = _approved_for(_items(home), item_id, home)
     if item is None:
         raise AnswerError(f"{item_id} is not an approved change waiting to be carried out", code)
     return item
@@ -1138,6 +1224,12 @@ def done(home: Path | str, item_id: str, *, session: str, note: str | None,
             else "no session holds a live claim (run `attention claim` first)"
         )
         raise AnswerError(f"{item['id']}: {claimant}; nothing was recorded", EXIT_REFUSED)
+    held = _held_approval(home, item["id"])
+    if held is not None:
+        from .overseer import conversation
+
+        conversation.record_choice(home, held)
+        _clear_held_approval(home, item["id"])
     outcome = append_outcome(home, {
         "item": item["id"], "subject": item.get("subject"),
         "result": "failed" if failed else "done", "note": note, "session": session,
