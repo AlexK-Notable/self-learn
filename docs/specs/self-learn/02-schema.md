@@ -35,8 +35,8 @@ routing:                  # written on routing; null before
                           #   proposals — verbs.py's `ROUTING_BY_VALUES`;
                           #   `steward` and `overseer` widen the same list,
                           #   2026-09-13, S-65 — every sheet item and case
-                          #   `actor` field draws from it). *S-NEXT-
-                          #   attribution:* who chose, never who ran the
+                          #   `actor` field draws from it). *S-109:*
+                          #    who chose, never who ran the
                           #   verb (that is the commit's `By:` trailer); from
                           #   an agent's shell the verb must be told (`--by
                           #   analyst|human|agent`), and so must a `batch`
@@ -360,8 +360,8 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   or the same truthful "already absent"/"left untouched" string when
   nothing changed. `reconsidered` is the
   successor-case pointer a dependency-moved observation queues
-  (`02-schema.md` §3a.2) — a decision, made once, here. *(S-NEXT-
-  attribution.)* A `reconsidered` entry also carries `by`, who decided the
+  (`02-schema.md` §3a.2) — a decision, made once, here. *(S-109.)*
+   A `reconsidered` entry also carries `by`, who decided the
   reconsideration (`--by`); the commit's `By:` trailer says who ran the verb.
 - **`history`'s closed set widens to six kinds** *(2026-10-06, L8,
   `03-decisions.md` S-78)*: `moved` joins the five above.
