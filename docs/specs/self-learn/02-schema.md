@@ -4853,9 +4853,14 @@ side reads the other again after writing: `claim` reads the items after
 writing its claim and takes the claim back (2) when the answer changed
 meanwhile, and `answer` reads the claim after its commit and adds a warning
 naming a session that claimed meanwhile; one of the two always sees the
-other. Once the work is done, a new answer is an overturn (below). A redo of
-a `skill write` grant use whose `--from` was recorded relative is refused
-(3): the folder is relative to a shell the inbox cannot know.
+other; the warning says that a session which saw the answer when it claimed
+has already let go, and to tell it in its terminal only if it is carrying
+out the earlier approval. Once the work is done, a new answer is an
+overturn (below). `skill write` records its `--from` folder resolved to an
+absolute path in the grant-use row (integration of 2026-10-31c), so the
+inbox can redo it; a redo of an older row whose `--from` was recorded
+relative is refused (3): the folder is relative to a shell the inbox cannot
+know.
 
 **Downstream** (§3.4.4). The `answers` of a statement or choice: an ask's
 question id (`kind: question`), a conflict's `conflict:<a>+<b>` (a

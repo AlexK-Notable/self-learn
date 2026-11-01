@@ -1191,6 +1191,23 @@ def test_redo_of_a_skill_write_writes_it_again_from_its_draft(tmp_path, monkeypa
     assert len(written) == 1
 
 
+def test_a_skill_write_grant_use_keeps_its_draft_folder_absolute(tmp_path, monkeypatch):
+    """answers gate r3 NIT B (added at integration): the grant-use row keeps
+    `--from` resolved against the shell the write ran in, so the inbox's
+    redo can run it instead of refusing a relative folder. Mutation: keep
+    `str(args.source)` as typed -> red."""
+    import argparse
+
+    from self_learn import skill_cli
+
+    monkeypatch.chdir(tmp_path)
+    typed = argparse.Namespace(skill_command="write", name="diagrams", source="drafts/diagrams")
+    assert skill_cli._use_args(typed) == [  # noqa: SLF001
+        "diagrams", "--from", str((tmp_path / "drafts" / "diagrams").resolve())]
+    absolute = argparse.Namespace(skill_command="write", name="d", source=str(tmp_path / "x"))
+    assert skill_cli._use_args(absolute) == ["d", "--from", str((tmp_path / "x").resolve())]  # noqa: SLF001
+
+
 def test_done_failed_on_a_stopped_ledger_gives_the_item_back(tmp_path):
     """Gate r1 NIT 8: the session that looked and chose not to clear the
     stopped write reports it with --failed; nothing can be committed, so the

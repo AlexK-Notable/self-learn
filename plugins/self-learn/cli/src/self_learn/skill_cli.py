@@ -234,10 +234,13 @@ def dispatch(args) -> int:
 
 def _use_args(args) -> list[str]:
     """The argv a skill verb's grant-use row keeps (attention round,
-    design r2 §3.4.6): enough to run it again as the redo."""
+    design r2 §3.4.6): enough to run it again as the redo. The draft folder
+    is kept absolute (answers gate r3 NIT B, at integration): the redo runs
+    from the inbox, whose working directory is not the shell the write ran
+    in, and refuses a relative `--from` rather than guess."""
     command = args.skill_command
     if command == "write":
-        return [args.name, "--from", str(args.source)]
+        return [args.name, "--from", str(Path(args.source).resolve())]
     if command == "rename":
         return [args.old, args.new]
     if command == "veto":

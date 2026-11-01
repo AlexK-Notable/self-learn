@@ -812,8 +812,9 @@ def answer(
             if late is not None:
                 result.warnings.append(
                     f"session {late.get('session')} claimed this change at {late.get('at')}, "
-                    "just as your answer was recorded, and may carry out the earlier "
-                    "approval; tell that session in its terminal"
+                    "just as your answer was recorded. If it saw your answer when it "
+                    "claimed, it has already let go and changes nothing; if its terminal "
+                    "shows it carrying out the earlier approval, tell it there"
                 )
 
     # -- what it does downstream (§3.4.4)
