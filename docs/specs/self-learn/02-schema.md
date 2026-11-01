@@ -2785,8 +2785,16 @@ with `um-0012` and `um-0019` marked `LAPSED`,
 A list field of an entry (`conditions`, `statements`, `basis`) given as one
 string is stored as one item, never as its characters
 *(S-96; um-cea0's `basis` was written one character per
-item)*. A stored `basis` of two or more one-character items reads back as the
-one string it spells and is rewritten that way by the next write.
+item)*. A stored `basis` of two or more one-character items reads back as one
+item and is rewritten that way by the next write. *(Amended 2026-11-01, a bug
+fix: the item used to be the characters joined, which lost the spaces and
+commas, and a 40+ letter run trips the secret scan's high-entropy rule, so
+the overseer's stage `user-model.yaml` was refused, run 5b769e3a.)* The item
+is the original wording when exactly one distinct `basis` string among the
+ledger's run manifests (`cases/runs/*.json`, read only, no git) matches the
+characters once whitespace, commas and brackets are removed from both;
+otherwise it is a plain-words placeholder naming the entry's id and the
+2026-10-11 storage bug, never the joined characters.
 
 `um-<4hex>` ids are stable for the life of the entry; every write that changes
 the claim bumps its `r<n>` (a presentation flipping `provisional` is not a
