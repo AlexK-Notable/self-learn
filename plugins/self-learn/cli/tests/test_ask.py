@@ -586,3 +586,24 @@ def test_the_ledger_tools_answer_from_the_record(tmp_path, monkeypatch):
     assert tools.report({}).startswith("# Week")
     with pytest.raises(ask._Refused):
         tools.report({"date": "last week"})
+
+
+def test_an_unexpected_failure_puts_the_stop_handler_back_and_frees_the_item(monkeypatch, home, item):
+    """A seam that raises (a programming error) leaves no SIGTERM handler of
+    the turn behind and no lock on the item: the next question runs.
+    Mutation: drop the `finally` restore -> red."""
+    before = signal.getsignal(signal.SIGTERM)
+
+    class _Broken:
+        def write_session(self, spec):
+            raise RuntimeError("a bug in the seam")
+
+        text_session = write_session
+
+    monkeypatch.setattr(ask, "_backend", _Broken())
+    with pytest.raises(RuntimeError):
+        ask.run_ask(home, item, "First?", stream=True, out=io.StringIO(), err=io.StringIO())
+    assert signal.getsignal(signal.SIGTERM) is before
+    code, events, _backend, _ = _turn(monkeypatch, home, item, [Text("now it works")],
+                                      message="Second?")
+    assert code == 0 and events[-1]["ev"] == "done"
