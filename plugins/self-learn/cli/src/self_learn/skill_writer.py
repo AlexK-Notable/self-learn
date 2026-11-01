@@ -172,6 +172,7 @@ __all__ = [
     "SkillLinkError",
     "SkillWriteCheck",
     "WriteResult",
+    "authored_sha256_at",
     "check",
     "deployed_authored_sha256",
     "deployed_files",
@@ -183,6 +184,7 @@ __all__ = [
     "retire",
     "routed_lessons",
     "skill_dir",
+    "stamp_skill_md",
     "unlink_skill",
     "write",
 ]
@@ -537,6 +539,28 @@ def deployed_authored_sha256(home: Path | str, name: str) -> str | None:
     return None if files is None else _authored_sha(files)
 
 
+def authored_sha256_at(skills_root: Path | str, name: str) -> str | None:
+    """:func:`deployed_authored_sha256` for a skills root the caller already
+    holds (a route's host), or ``None`` when no SKILL.md is there
+    (S-NEXT-skills-chain, SK-G)."""
+    if not _valid_name(name):
+        return None
+    files = _read_tree(skill_dir(skills_root, name))
+    return _authored_sha(files) if SKILL_ENTRY_FILE in files else None
+
+
+def stamp_skill_md(text: str, *, by: str, case: str | None, created: str) -> str:
+    """SKILL.md *text* with the runner's ``metadata.self-learn`` stamp, the
+    one :func:`write` puts on a skill it creates (S-NEXT-skills-chain, SK-G:
+    a person's route scaffold that becomes self-learn's). Raises
+    :class:`ValueError` when the stamp cannot be added without changing the
+    rest of the frontmatter."""
+    try:
+        return _stamped(text, {"authored_by": by, "case": case, "created": created})
+    except _Refused as exc:
+        raise ValueError("; ".join(exc.problems)) from exc
+
+
 def draft_view(files: Mapping[str, str]) -> dict[str, str]:
     """A deployed skill's files as a draft the overseer can edit and hand
     back: SKILL.md without the runner's stamp and without the two blocks
@@ -666,7 +690,7 @@ def _rt_dump(data: Any) -> str:
     return buf.getvalue()
 
 
-def _stamped(text: str, stamp: Mapping[str, str]) -> str:
+def _stamped(text: str, stamp: Mapping[str, Any]) -> str:
     """SKILL.md *text* with ``metadata.self-learn`` set to *stamp*. A
     frontmatter with no ``metadata`` key gets a block appended at its end,
     every other byte unchanged; one with a ``metadata`` mapping is edited

@@ -94,10 +94,28 @@ def test_retiring_a_retired_skill_is_a_no_op(env):
 
 
 def test_a_skill_self_learn_does_not_own_is_not_retired(env):
-    """A person's ``new-skill`` scaffold is not in the registry: retire
-    leaves it alone."""
+    """A person's skill that is not in the registry (a ``new-skill``
+    scaffold made before S-NEXT-skills-chain SK-G, which now makes a fresh
+    one owned: a managed section, no stamp, no row): retire leaves it
+    alone."""
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+
+    folder = env.skill_dir("scaffolded")
+    folder.mkdir(parents=True)
+    (env.plugin_dir("scaffolded") / ".claude-plugin").mkdir()
+    (env.plugin_dir("scaffolded") / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "scaffolded", "description": "a person's skill"}) + "\n",
+        encoding="utf-8",
+    )
+    (folder / "SKILL.md").write_text(
+        "---\nname: scaffolded\ndescription: a person's skill\n---\n\n# scaffolded\n\n"
+        f"{BEGIN_MARKER}\n{END_MARKER}\n",
+        encoding="utf-8",
+    )
+    commit_all(env.root, "a person's own skill")
     create_record(env.home, make_behavior(scope="skill:s", record_id=RID))
     verbs.route(env.home, RID, dest="new-skill:scaffolded", no_push=True)
+    assert env.row("scaffolded") is None  # control: not owned
     assert env.skill_md("scaffolded").is_file()  # control: the skill exists
     before = env.snapshot()
     result = skill_writer.retire(env.home, "scaffolded", case=CASE2, by="overseer", no_push=True)
