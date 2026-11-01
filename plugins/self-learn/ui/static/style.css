@@ -2429,3 +2429,24 @@ table.health-table td.health-rule {
     margin-left: 0.4rem;
   }
 }
+
+/* gate r2 fold (lane 2): the search indicator, long paths, flagged checks */
+.health-searching {
+  display: none;
+  color: var(--slu-fg-muted);
+  font-size: 0.86rem;
+}
+
+.health-filter.htmx-request .health-searching {
+  display: inline;
+}
+
+.health-where {
+  overflow-wrap: anywhere;
+}
+
+ul.health-warnings {
+  margin: 0.2rem 0 0.4rem;
+  padding-left: 1.2rem;
+  font-size: 0.9rem;
+}

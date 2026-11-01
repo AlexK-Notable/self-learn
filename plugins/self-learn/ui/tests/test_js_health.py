@@ -6,6 +6,11 @@ form does NOTHING in a browser while every `TestClient` test of it passes
 (no JavaScript runs there). This module drives the real page: type a query,
 submit by Enter and by the Find button, and read the filtered list.
 
+Waits use LOCATORS (`expect(locator)...`), never `page.wait_for_function("<js>")`:
+the app's CSP has no `unsafe-eval`, so Playwright's string predicate can be
+evaluated once but not re-polled, and a test that only passes when the swap is
+already done at the first check is flaky (gate r2 M-1: 4 failures in 10 runs).
+
 Same bring-up as `test_js_dom_targeting.py` (uvicorn in a thread, one
 browser per module via `conftest._browser_or_sentinel`). `ledger.report` and
 `ledger.status` are monkeypatched at module level (page reads are, per
@@ -15,6 +20,7 @@ CLAUDE.md), and the server shares this process, so the patch reaches it.
 from __future__ import annotations
 
 import asyncio
+import re
 import socket
 import threading
 import time
@@ -37,7 +43,8 @@ from test_charts import REPORT, STATUS
 if TYPE_CHECKING:
     from playwright.sync_api import Browser, Page
 
-pytest.importorskip("playwright.sync_api")
+sync_api = pytest.importorskip("playwright.sync_api")
+expect = sync_api.expect
 pytestmark = pytest.mark.js
 
 TOKEN = "u-health-js-token"
@@ -102,48 +109,123 @@ def page(browser: "Browser", health_server: str) -> Iterator["Page"]:
         context.close()
 
 
+RULES = "#health-rules-list td.health-rule"
+
+
 def _titles(page: "Page") -> list[str]:
-    return [t.strip() for t in page.locator("#health-rules-list td.health-rule").all_inner_texts()]
+    return [t.strip() for t in page.locator(RULES).all_inner_texts()]
 
 
 class TestRuleFilterInABrowser:
     def test_positive_control_all_rules_are_listed_before_filtering(self, page: "Page") -> None:
-        assert len(_titles(page)) == 3
+        expect(page.locator(RULES)).to_have_count(3)
         assert page.locator("#health-rule-filter").is_visible()
 
     def test_enter_filters_the_list(self, page: "Page") -> None:
         box = page.locator("#health-rule-filter")
         box.fill("pkill")
         box.press("Enter")
-        page.wait_for_function(
-            "document.querySelectorAll('#health-rules-list td.health-rule').length === 1", timeout=5000
-        )
+        expect(page.locator(RULES)).to_have_count(1)
         assert "pkill" in _titles(page)[0]
-        assert "1 of 3 rules match" in page.locator("#health-rules-list").inner_text()
-        assert "q=pkill" in page.url  # the filter is in the address: Back and a shared link keep it
+        expect(page.locator("#health-rules-list p.health-more", has_text="rules match")).to_contain_text("1 of 3 rules match")
+        expect(page).to_have_url(re.compile(r"/report\?q=pkill$"))  # Back and a shared link keep the filter
         # the box keeps what was typed and stays on the page (only the list was swapped)
-        assert page.locator("#health-rule-filter").input_value() == "pkill"
+        expect(page.locator("#health-rule-filter")).to_have_value("pkill")
 
     def test_the_find_button_filters_the_list(self, page: "Page") -> None:
         page.locator("#health-rule-filter").fill("empty result")
         page.locator(".health-filter button[type=submit]").click()
-        page.wait_for_function(
-            "document.querySelectorAll('#health-rules-list td.health-rule').length === 1", timeout=5000
-        )
+        expect(page.locator(RULES)).to_have_count(1)
         assert "empty result" in _titles(page)[0]
 
     def test_a_query_with_no_match_says_so_and_can_be_cleared(self, page: "Page") -> None:
         box = page.locator("#health-rule-filter")
         box.fill("zzzz-nothing")
         box.press("Enter")
-        page.wait_for_selector("#health-rules-list >> text=No rule matches", timeout=5000)
+        expect(page.locator("#health-rules-list p.health-more", has_text="No rule matches")).to_be_visible()
+        expect(page.locator(RULES)).to_have_count(0)
         page.locator("#health-rules-list a", has_text="Show every rule").click()
-        page.wait_for_function(
-            "document.querySelectorAll('#health-rules-list td.health-rule').length === 3", timeout=5000
-        )
+        expect(page.locator(RULES)).to_have_count(3)
 
-    def test_typing_in_the_box_does_not_fire_the_keymap(self, page: "Page") -> None:
+    def test_a_cleared_box_leaves_a_clean_address(self, page: "Page", health_server: str) -> None:
+        box = page.locator("#health-rule-filter")
+        box.fill("pkill")
+        box.press("Enter")
+        expect(page.locator(RULES)).to_have_count(1)
+        box.fill("")
+        box.press("Enter")
+        expect(page.locator(RULES)).to_have_count(3)
+        expect(page).to_have_url(f"{health_server}/report")  # not /report?q=
+
+    def test_filtering_from_the_all_view_keeps_it(self, page: "Page", health_server: str) -> None:
+        page.goto(f"{health_server}/report?all=1", wait_until="load")
+        box = page.locator("#health-rule-filter")
+        box.fill("rule")
+        box.press("Enter")
+        expect(page).to_have_url(re.compile(r"/report\?all=1&q=rule$"))
+
+    def test_while_searching_it_says_so_and_the_button_is_off(self, page: "Page") -> None:
+        held: list = []
+        page.route("**/report?q=*", lambda route: held.append(route))  # hold the request in flight
+        page.locator("#health-rule-filter").fill("pkill")
+        page.locator(".health-filter button[type=submit]").click()
+        searching = page.locator(".health-filter .health-searching")
+        expect(searching).to_be_visible()
+        expect(page.locator(".health-filter button[type=submit]")).to_be_disabled()
+        assert len(held) == 1
+        held[0].continue_()  # let it through
+        expect(page.locator(RULES)).to_have_count(1)
+        expect(searching).to_be_hidden()
+        expect(page.locator(".health-filter button[type=submit]")).to_be_enabled()
+
+    def test_back_and_forward_keep_the_filter_without_console_errors(self, page: "Page") -> None:
+        errors: list[str] = []
+        page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+        box = page.locator("#health-rule-filter")
+        box.fill("pkill")
+        box.press("Enter")
+        expect(page.locator(RULES)).to_have_count(1)
+        page.go_back()
+        expect(page.locator(RULES)).to_have_count(3)
+        page.go_forward()
+        expect(page.locator(RULES)).to_have_count(1)
+        assert errors == [], errors
+
+
+class TestTypingInTheBoxLeavesTheKeymapAlone:
+    def test_letters_that_navigate_elsewhere_stay_in_the_box(self, page: "Page", health_server: str) -> None:
+        """`h` goes up a level, `s` and `w` move, `a` acts, `?` opens help,
+        outside a text box. Inside it they are text. Deleting the text-input
+        guard in app.js (`focusIsTextInput`) makes `h` navigate away, which
+        this test sees as a document request and a changed address."""
+        requests: list[str] = []
+        page.on("request", lambda r: requests.append(r.url) if r.resource_type == "document" else None)
         box = page.locator("#health-rule-filter")
         box.click()
-        box.type("? j")
-        assert box.input_value() == "? j"
+        box.type("hasdw? j")
+        page.wait_for_timeout(500)  # long enough for a navigation a deleted guard would start
+        expect(page).to_have_url(f"{health_server}/report")
+        expect(box).to_have_value("hasdw? j")
+        assert requests == [], requests
+        expect(page.locator("#self-learn-ui-help")).to_be_hidden()
+
+
+class TestNarrowScreen:
+    def test_lessons_by_place_counts_stay_on_screen_at_390px(self, browser: "Browser", health_server: str) -> None:
+        """Gate r2 m-4: a long path in the Place column pushed the counts
+        past the right edge."""
+        ctx = browser.new_context(viewport={"width": 390, "height": 844})
+        try:
+            pg = ctx.new_page()
+            pg.goto(f"{health_server}/?token={TOKEN}", wait_until="load")
+            pg.goto(f"{health_server}/report", wait_until="load")
+            fold = pg.locator('details[aria-label="lessons by place"]')
+            fold.locator("summary").click()
+            cell = fold.locator('td[data-label="Lessons"]').first
+            expect(cell).to_be_visible()
+            assert "in use" in cell.inner_text()  # positive control: the counts rendered
+            box = cell.bounding_box()
+            assert box is not None and box["x"] >= 0 and box["x"] + box["width"] <= 390 + 1, box
+            assert pg.evaluate("document.documentElement.scrollWidth") <= 390
+        finally:
+            ctx.close()

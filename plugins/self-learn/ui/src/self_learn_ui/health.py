@@ -57,6 +57,37 @@ BASIS_WORDS: dict[str, str] = {
     "fire-suspected-violation": "A session may have broken the rule",
 }
 
+#: The same kinds in the plural, for a count ("42 skills").
+KIND_PLURALS: dict[str, str] = {
+    "claude-md": "instructions files",
+    "claude-md:local": "local instructions files",
+    "claude-md:rules": "rules files",
+    "skill-md": "skills",
+    "hook": "warning hooks",
+    "rules": "rules files",
+    "reference": "reference files",
+    "new-skill": "new skills",
+}
+
+#: What a file check's state reads as. Unknown states show as sent.
+STATE_WORDS: dict[str, str] = {
+    "ok": "measured",
+    "absent": "no file",
+}
+
+#: Why reads of the reference files are not counted. Unknown values show as sent.
+INSTRUMENT_WORDS: dict[str, str] = {
+    "script-missing": "the counting script is not installed",
+    "not-instrumented": "the counting hook is not registered",
+}
+
+#: Why a file's own composition check flagged it (``flagged_by``).
+FLAG_WORDS: dict[str, str] = {
+    "share": "self-learn's lines are a large share of the file",
+    "growth": "self-learn's share of the file grew fast this month",
+    "caution": "most of what self-learn wrote there is warnings",
+}
+
 #: Why a sighting was dismissed (``verbs.DISMISS_REASONS``), in words.
 DISMISS_WORDS: dict[str, str] = {
     "rule-followed": "The rule was followed",
@@ -138,7 +169,9 @@ def _flatten(prefix: str, value: Any, out: list[tuple[str, str]], depth: int = 0
     """Counters as ``(CLI name, value in words)``. Dicts open up (up to
     four levels); a list becomes a count of entries; booleans become
     yes/no."""
-    if isinstance(value, dict) and depth < 4:
+    if isinstance(value, dict) and not value:
+        out.append((prefix, "empty"))
+    elif isinstance(value, dict) and depth < 4:
         for key, inner in value.items():
             _flatten(f"{prefix}.{key}" if prefix else str(key), inner, out, depth + 1)
     elif isinstance(value, bool):
@@ -318,6 +351,11 @@ def _place_label(report: dict, bucket: str) -> str:
     return bucket
 
 
+def _kind_count(key: str, n: int) -> str:
+    one = KIND_WORDS.get(key, key).lower()
+    return f"{n} {one if n == 1 else KIND_PLURALS.get(key, one + 's')}"
+
+
 def _destinations_line(report: dict) -> str:
     d = report.get("destinations")
     if not isinstance(d, dict):
@@ -326,7 +364,7 @@ def _destinations_line(report: dict) -> str:
     pairs = sorted(((k, n) for k, n in pairs if n is not None), key=lambda p: -p[1])
     if not pairs:
         return ""
-    return "By kind: " + ", ".join(f"{n} {KIND_WORDS.get(k, k).lower()}" for k, n in pairs) + "."
+    return "By kind: " + ", ".join(_kind_count(k, n) for k, n in pairs) + "."
 
 
 def _due_words(overdue: Any) -> str:
@@ -340,20 +378,28 @@ def _due_words(overdue: Any) -> str:
     return "due tomorrow" if n == -1 else f"due in {-n} days"
 
 
-def _deferred_rows(report: dict) -> list[dict]:
+def _deferred_rows(report: dict, titles: dict[str, str] | None) -> list[dict]:
+    """The lessons put off for later. ``deferred[]`` carries no text, so the
+    route looks each lesson's own words up and passes them as *titles*; a
+    lesson it could not read is shown as "A lesson" with its link."""
+    titles = titles or {}
     rows = []
     for r in _list(report.get("deferred")):
+        rid = _text(r.get("id"))
+        overdue = _int(r.get("overdue_days"))
         rows.append(
             {
-                "id": _text(r.get("id")),
+                "id": rid,
+                "title": _text(titles.get(rid)) or "A lesson (its text could not be read)",
                 "where": _place_label(report, _text(r.get("bucket"))),
                 "until": r.get("until") or "",
-                "due": _due_words(r.get("overdue_days")),
-                "overdue": (_int(r.get("overdue_days")) or 0) > 0,
+                "due": _due_words(overdue),
+                "overdue": (overdue or 0) > 0,
+                "overdue_days": overdue,
             }
         )
-    # most overdue first
-    rows.sort(key=lambda x: x["overdue"], reverse=True)
+    # most overdue first; a lesson with no overdue figure last
+    rows.sort(key=lambda x: -(x["overdue_days"] if x["overdue_days"] is not None else -10**9))
     return rows
 
 
@@ -424,7 +470,7 @@ def _budget_rows(report: dict) -> list[dict]:
         rows.append(
             {
                 "name": name,
-                "state": _text(sfc.get("state")),
+                "state": STATE_WORDS.get(_text(sfc.get("state")), _text(sfc.get("state"))),
                 "words": _int(sfc.get("file_words")),
                 "written": _int(sfc.get("managed_words")),
                 "share": f"{round(share * 100)}%" if isinstance(share, (int, float)) and not isinstance(share, bool) else "",
@@ -432,6 +478,49 @@ def _budget_rows(report: dict) -> list[dict]:
             }
         )
     return rows
+
+
+def _warnings(report: dict) -> list[str]:
+    """One plain line for each file or place the context checks flagged
+    (composition, rules that fire together, crowding, growth), so the
+    counters fold's "yes" has a name beside it. The per-pair and per-entry
+    rows behind these stay in the command-line report."""
+    cb = report.get("context_budget")
+    if not isinstance(cb, dict):
+        return []
+    out: list[str] = []
+
+    def file_name(surface: str, key: str) -> str:
+        return "Your instructions" if surface == "user-claude-md" else (_place_label(report, key) or key)
+
+    comp = cb.get("composition")
+    for sfc in _list(comp.get("surfaces") if isinstance(comp, dict) else None):
+        if not sfc.get("flagged"):
+            continue
+        reasons = sfc.get("flagged_by")
+        reasons = reasons if isinstance(reasons, list) else []
+        why = "; ".join(FLAG_WORDS.get(str(r), str(r)) for r in reasons) or "flagged"
+        out.append(f"{file_name(_text(sfc.get('surface')), _text(sfc.get('key')))}: {why}.")
+    cof = (cb.get("conditional") or {}).get("rules_cofire") if isinstance(cb.get("conditional"), dict) else None
+    limit = _int(cof.get("threshold_max_fanin")) if isinstance(cof, dict) else None
+    for sc in _list(cof.get("scopes") if isinstance(cof, dict) else None):
+        if not sc.get("crowded"):
+            continue
+        name = "Your instructions" if sc.get("scope") == "user" else (_place_label(report, _text(sc.get("key"))) or _text(sc.get("key")))
+        fan = _int(sc.get("max_fanin"))
+        out.append(
+            f"{name}: many rules files are read together (up to {fan if fan is not None else 'an unknown number'} at once"
+            + (f"; the limit is {limit}" if limit is not None else "")
+            + ")."
+        )
+    crowd = cb.get("crowding")
+    for sfc in _list(crowd.get("surfaces") if isinstance(crowd, dict) else None):
+        if sfc.get("flagged"):
+            out.append(f"{file_name(_text(sfc.get('surface')), _text(sfc.get('key')))}: some entries say nearly the same thing.")
+    growth = cb.get("growth")
+    if isinstance(growth, dict) and growth.get("flagged"):
+        out.append("The always-on instructions grew fast this month.")
+    return out
 
 
 def _bucket_counts(report: dict) -> list[dict]:
@@ -463,7 +552,8 @@ def _reference_note(report: dict) -> str:
     tracked = "" if total is None else f"{total} reference files are tracked. "
     if rs.get("instrumented") is False:
         state = _text(rs.get("instrument_state"))
-        return tracked + "Reads of them are not being counted yet" + (f" ({state})." if state else ".")
+        why = INSTRUMENT_WORDS.get(state, state)
+        return tracked + "Reads of them are not being counted yet" + (f": {why}." if why else ".")
     return tracked.strip()
 
 
@@ -475,6 +565,7 @@ def build_health(
     *,
     query: str = "",
     show_all: bool = False,
+    titles: dict[str, str] | None = None,
 ) -> dict:
     """Everything ``report.html`` shows, ready to print. *report* ``None``
     (the CLI failed) gives an empty page model; the route shows the CLI's
@@ -505,10 +596,11 @@ def build_health(
         "limit": DEFAULT_LIMIT,
         "generated": _text(report.get("generated")),
         "destinations_line": _destinations_line(report),
-        "deferred": _deferred_rows(report),
+        "deferred": _deferred_rows(report, titles),
         "dismissed": _dismissed_rows(report),
         "reach": _reach(report),
         "budget": _budget_rows(report),
         "bucket_counts": _bucket_counts(report),
         "reference_note": _reference_note(report),
+        "warnings": _warnings(report),
     }

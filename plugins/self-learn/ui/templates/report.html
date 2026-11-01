@@ -66,10 +66,12 @@
      shared link keep the filter. #}
   <form class="health-filter" method="get" action="/report" role="search"
         hx-get="/report" hx-target="#health-rules-list" hx-select="#health-rules-list"
-        hx-swap="outerHTML" hx-push-url="true">
+        hx-swap="outerHTML" hx-push-url="true" hx-disabled-elt="find button">
     <label for="health-rule-filter" class="visually-hidden">Find a rule</label>
     <input id="health-rule-filter" type="search" name="q" value="{{ health.query }}" placeholder="Find a rule" autocomplete="off" />
+    {% if health.show_all %}<input type="hidden" name="all" value="1" />{% endif %}
     <button type="submit">Find</button>
+    <span class="health-searching" role="status">Searching&hellip;</span>
   </form>
   <div id="health-rules-list">
   {% if health.rules %}
@@ -161,7 +163,7 @@
     <tbody>
       {% for d in health.deferred %}
       <tr>
-        <td class="health-rule">{% if d.id %}<a href="/record/{{ d.id }}">Open the lesson</a>{% else %}A lesson{% endif %}</td>
+        <td class="health-rule">{% if d.id %}<a href="/record/{{ d.id }}">{{ d.title }}</a>{% else %}{{ d.title }}{% endif %}</td>
         <td data-label="Where">{{ d.where }}</td>
         <td data-label="Put off until">{{ d.until }}</td>
         <td data-label="When">{{ d.due }}{% if d.overdue %} (overdue){% endif %}</td>
@@ -204,11 +206,11 @@
   <p class="health-more">Of {{ health.reach.checked if health.reach.checked is not none else "an unknown number of" }} rules checked: {{ health.reach.reachable if health.reach.reachable is not none else "not known" }} reach a place the assistant reads, {{ health.reach.unreachable if health.reach.unreachable is not none else "not known" }} do not, and {{ health.reach.unmeasurable if health.reach.unmeasurable is not none else "not known" }} could not be measured.</p>
   {% if health.reach.kinds %}
   <div class="health-table-wrap">
-  <table class="health-table">
+  <table class="health-table health-stack">
     <thead><tr><th scope="col">Kind</th><th scope="col" class="num">Reach</th><th scope="col" class="num">Do not reach</th><th scope="col" class="num">Could not be measured</th></tr></thead>
     <tbody>
       {% for k in health.reach.kinds %}
-      <tr><td>{{ k.what }}</td><td class="num">{{ k.reachable if k.reachable is not none else "not known" }}</td><td class="num">{{ k.unreachable if k.unreachable is not none else "not known" }}</td><td class="num">{{ k.unmeasurable if k.unmeasurable is not none else "not known" }}</td></tr>
+      <tr><td class="health-rule">{{ k.what }}</td><td class="num" data-label="Reach">{{ k.reachable if k.reachable is not none else "not known" }}</td><td class="num" data-label="Do not reach">{{ k.unreachable if k.unreachable is not none else "not known" }}</td><td class="num" data-label="Could not be measured">{{ k.unmeasurable if k.unmeasurable is not none else "not known" }}</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -219,13 +221,20 @@
 
 {% if health.budget %}
 <details class="health-fold" aria-label="instruction file size">
-  <summary>How big the instruction files are ({{ health.budget | length }})</summary>
+  <summary>How big the instruction files are ({{ health.budget | length }}){% if health.warnings %}, {{ health.warnings | length }} flagged{% endif %}</summary>
+  {% if health.warnings %}
+  <p class="health-more">What the checks flagged:</p>
+  <ul class="health-warnings">
+    {% for w in health.warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+  <p class="health-more">The pair-by-pair detail behind these is in the command-line report.</p>
+  {% endif %}
   <div class="health-table-wrap">
-  <table class="health-table">
+  <table class="health-table health-stack">
     <thead><tr><th scope="col">File</th><th scope="col" class="num">Words</th><th scope="col" class="num">Written by self-learn</th><th scope="col">State</th></tr></thead>
     <tbody>
       {% for b in health.budget %}
-      <tr><td>{{ b.name }}</td><td class="num">{{ b.words if b.words is not none else "not known" }}</td><td class="num">{% if b.written is not none %}{{ b.written }} words{% if b.share %} ({{ b.share }}){% endif %}{% else %}not known{% endif %}</td><td>{{ b.state }}{% if b.flagged %} (flagged){% endif %}</td></tr>
+      <tr><td class="health-rule">{{ b.name }}</td><td class="num" data-label="Words">{{ b.words if b.words is not none else "not known" }}</td><td class="num" data-label="Written by self-learn">{% if b.written is not none %}{{ b.written }} words{% if b.share %} ({{ b.share }}){% endif %}{% else %}not known{% endif %}</td><td data-label="State">{{ b.state }}{% if b.flagged %} (flagged){% endif %}</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -237,11 +246,11 @@
 <details class="health-fold" aria-label="lessons by place">
   <summary>Lessons by place ({{ health.bucket_counts | length }})</summary>
   <div class="health-table-wrap">
-  <table class="health-table">
+  <table class="health-table health-stack">
     <thead><tr><th scope="col">Place</th><th scope="col">Lessons</th></tr></thead>
     <tbody>
       {% for b in health.bucket_counts %}
-      <tr><td>{{ b.name }}{% if b.path %}<span class="health-where">{{ b.path }}</span>{% endif %}</td><td>{{ b.words }}</td></tr>
+      <tr><td class="health-rule">{{ b.name }}{% if b.path %}<span class="health-where">{{ b.path }}</span>{% endif %}</td><td data-label="Lessons">{{ b.words }}</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -253,7 +262,7 @@
 
 <details class="health-fold">
   <summary>All counters, with their names (for checking against the command line)</summary>
-  <p class="health-more">These are the numbers behind this page, under the names the command line uses for them. Rates are shown as percentages.</p>
+  <p class="health-more">These are the numbers behind this page, under the names the command line uses for them. Rates are shown as percentages. A list of rows (the per-rule reach rows, the reference files, the pairs behind the flagged checks) shows as its number of entries; the rows themselves are in the command-line report.</p>
   <div class="health-table-wrap">
   <table class="health-table health-counters">
     <thead><tr><th scope="col">Name</th><th scope="col" class="num">Value</th></tr></thead>
