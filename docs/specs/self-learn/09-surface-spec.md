@@ -575,7 +575,7 @@ section records what the surface is.
 - **Weekly report** (`/overseer-report[/<date>]`): a read-only render of
   the overseer's report, newest by default, with links to earlier ones.
 
-### 2.5 The tray icon *(added 2026-10-31, S-NEXT-tray; attention-design-r2 §3.5, §3.10)*
+### 2.6 The tray icon *(added 2026-10-31, S-NEXT-tray; attention-design-r2 §3.5, §3.10)*
 
 A StatusNotifierItem in the desktop bar's tray (Waybar's `tray` module on the
 maintainer's host) is the one place self-learn shows that something is waiting.
@@ -620,7 +620,7 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
 - **Registration.** It owns `org.kde.StatusNotifierItem-<pid>-1`, serves
   `/StatusNotifierItem`, and calls `RegisterStatusNotifierItem` whenever
   `org.kde.StatusNotifierWatcher` appears or changes owner (a bar restart).
-- **Unit and deployment.** `13-hosting-and-separation.md` §7.6.
+- **Unit and deployment.** `13-hosting-and-separation.md` §7.7.
 
 ## 3. Process & data architecture
 

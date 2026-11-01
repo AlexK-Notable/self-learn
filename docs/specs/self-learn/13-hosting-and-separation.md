@@ -2270,11 +2270,11 @@ approval an agent relayed from its own session launches nothing; that
 session, the one the person typed the yes in and is watching, may carry it
 out by the same brief, or the person clicks Run it now.
 
-## 7.6 The tray unit (added 2026-10-31, S-NEXT-tray)
+## 7.7 The tray unit (added 2026-10-31, S-NEXT-tray)
 
 `systemd/self-learn-tray.service` runs `plugins/self-learn/scripts/self-learn-tray`
 (linked to `~/.local/bin/self-learn-tray`): the tray icon of `09-surface-spec.md`
-§2.5. Its shape:
+§2.6. Its shape:
 
 - `Type=simple`, `Restart=always`, `RestartSec=5`, `WantedBy=default.target`.
   The tray uses only the session bus, so it starts at login without

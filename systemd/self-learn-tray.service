@@ -1,4 +1,4 @@
-# self-learn tray icon (attention-design-r2 §3.10; 13 §7.6; 09 §2.5) -- a
+# self-learn tray icon (attention-design-r2 §3.10; 13 §7.7; 09 §2.6) -- a
 # StatusNotifierItem on the session bus that shows what
 # `self-learn attention --json` says: idle (grey, always shown), new,
 # needs you, or broken. A left click opens the inbox page of the web UI,
@@ -24,8 +24,9 @@ Description=self-learn tray icon (StatusNotifierItem)
 [Service]
 Type=simple
 # B-1 (doc 13 §7.1), as in the host and UI units: the systemd user manager
-# does not inherit the shell's env. The tray watches
-# $SELF_LEARN_HOME/overseer/ and $SELF_LEARN_HOME/attention/, and the
+# does not inherit the shell's env. The tray watches $SELF_LEARN_HOME
+# (not recursively), $SELF_LEARN_HOME/overseer/ and
+# $SELF_LEARN_HOME/attention/, and the
 # `self-learn attention` it runs reads the same ledger, so pin it here.
 Environment=SELF_LEARN_HOME=%h/.self-learn
 # U-uvpath (2026-08-29), the same PATH floor as the other units: the tray

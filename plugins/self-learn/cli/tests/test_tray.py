@@ -1,4 +1,4 @@
-"""The tray icon (attention-design-r2 §3.5, §3.10, §5.6; 09 §2.5; 13 §7.6).
+"""The tray icon (attention-design-r2 §3.5, §3.10, §5.6; 09 §2.6; 13 §7.7).
 
 `plugins/self-learn/scripts/self-learn-tray` runs under the SYSTEM python
 (`#!/usr/bin/python3 -I`, because the uv venv has no `gi`), so every test here
