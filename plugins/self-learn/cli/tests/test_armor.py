@@ -319,7 +319,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
             "func:test_wr7_seam_is_only_called_from_the_three_call_sites": (
                 "2026-10-31, attention round design r2 §5.4 (03-decisions.md, the ask "
                 "agent's row, S-NEXT-ask-agent): ask.py joins the seam's callers -- the "
-                "inbox's read-only ask agent is the eighth surface, one question one session"
+                "inbox's read-only ask agent is the eighth surface, one question one session. "
+                "2026-11-01, attention round design r2 §3.9 (S-NEXT-surfaces): the same node "
+                "also drops `worker._notify` and `worker._notify_with_ids` from its excluded "
+                "spawn sites, removed with the worker's popups"
             ),
         },
     ),

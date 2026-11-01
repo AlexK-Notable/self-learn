@@ -318,9 +318,9 @@ Offers, in this order, and only for signals that are actually flagged:
   should be folded sooner, stage a `kind: reconsider` case with one
   `replace` line naming the survivor and the rest in `also` (§ Cases) and
   apply it; nobody folds them by hand. When the fold is a fresh capture
-  instead, it links one predecessor with `self-learn teach …
-  --supersedes <lrn-id>` (**one id — the flag is single-valued and the
-  field is scalar; never repeat it**).
+  instead, it links one predecessor with
+  `self-learn teach … --supersedes <lrn-id>` (**one id — the flag is
+  single-valued and the field is scalar; never repeat it**).
 - **`composition` flagged** → offer **Retire**
   (`self-learn retire <id> --covered-by <surface>`) for the named oldest
   entries, showing `managed_share`, `managed_share_growth_30d_pp`, and
