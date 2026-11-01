@@ -1,0 +1,72 @@
+{#
+  A nightly review's decisions (humane UI lane 3, proposal §4): the split by
+  outcome group as a thin bar with its counts beside it, then one line per
+  decision -- the lesson, the outcome in words, a short reason -- each with
+  "Why?" opening the question and the full reason. The counts and the lines
+  are the CLI's (`attention packet`'s `run` block, grouped by
+  self_learn.series.OUTCOME_GROUPS); `run` is inbox_routes.run_view of it.
+  The bar draws counts only, and its table view sits under it.
+#}
+<section class="ws-section ws-run" aria-labelledby="ws-run-h" data-run-decisions>
+  <h2 id="ws-run-h">What the steward decided</h2>
+  {% if packet.decided %}<p class="ws-meta">By the steward{% if packet.decided.at %}, {{ packet.decided.at | humanize_ts }}{% endif %}.</p>{% endif %}
+  {% if run.error %}<p class="ws-meta" data-run-error>The run's own record could not be read: {{ run.error }}.</p>{% endif %}
+  {% if run.total %}
+  <figure class="run-split" data-run-split>
+    <svg class="run-split-bar" viewBox="0 0 1000 10" preserveAspectRatio="none" role="img"
+         aria-label="{% for g in run.segments %}{{ g.words }} {{ g.count }}{% if not loop.last %}, {% endif %}{% endfor %}">
+      {% for g in run.segments %}<rect class="run-seg run-seg-{{ g.group }}" x="{{ g.x }}" y="0" width="{{ g.width }}" height="10" rx="4"><title>{{ g.words }}: {{ g.count }}</title></rect>{% endfor %}
+    </svg>
+    <figcaption>
+      <ul class="run-legend">
+        {% for group, count in run.groups %}<li data-group="{{ group }}"><span class="run-swatch run-seg-{{ group }}" aria-hidden="true"></span>{{ group_words[group] }} <strong>{{ count }}</strong></li>{% endfor %}
+      </ul>
+    </figcaption>
+    <details class="run-table">
+      <summary>Show as a table</summary>
+      <table>
+        <thead><tr><th scope="col">Outcome</th><th scope="col">Lessons</th></tr></thead>
+        <tbody>
+          {% for group, count in run.groups %}<tr><th scope="row">{{ group_words[group] }}</th><td>{{ count }}</td></tr>{% endfor %}
+          {% if run.other %}<tr><th scope="row">Other</th><td>{{ run.other }}</td></tr>{% endif %}
+          <tr><th scope="row">All</th><td>{{ run.total + run.other }}</td></tr>
+        </tbody>
+      </table>
+    </details>
+  </figure>
+  {% endif %}
+
+  {% if run.decisions %}
+  <h3>Each decision</h3>
+  {% macro decision_line(d) -%}
+  <li class="run-decision" data-run-decision data-group="{{ d.group or 'other' }}">
+    <details>
+      <summary>
+        <span class="run-swatch run-seg-{{ d.group or 'other' }}" aria-hidden="true"></span>
+        <span class="run-decision-text">
+          <span class="run-decision-title">{{ d.title or d.question or "A lesson" }}</span>
+          <span class="run-decision-line">{{ verb_words.get(d.verb, d.verb or "No outcome recorded") }}{% if d.reason %} · {{ d.reason }}{% endif %}</span>
+        </span>
+        <span class="run-why">Why?</span>
+      </summary>
+      <div class="run-decision-body">
+        {% if d.question %}<p><strong>Question:</strong> {{ d.question }}</p>{% endif %}
+        {% if d.because %}<p><strong>Because:</strong> {{ d.because }}</p>{% endif %}
+        <details class="ws-ids"><summary>Its ids, for an agent</summary><code>{{ d.case }}</code>{% if d.record %} <code>{{ d.record }}</code>{% endif %}</details>
+      </div>
+    </details>
+  </li>
+  {%- endmacro %}
+  <ul class="run-decisions">
+    {% for d in run.shown %}{{ decision_line(d) }}{% endfor %}
+  </ul>
+  {% if run.rest %}
+  <details class="run-rest" data-run-rest>
+    <summary>Show all {{ run.decisions | length }} ({{ run.rest | length }} more)</summary>
+    <ul class="run-decisions">
+      {% for d in run.rest %}{{ decision_line(d) }}{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  {% endif %}
+</section>

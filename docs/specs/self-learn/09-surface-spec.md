@@ -554,8 +554,31 @@ section records what the surface is.
   pressing then *(S-130, item 8)*. The order: needs-you items by key (`credentials`, `broken`, `money`,
   `sudo`, `conflict`, `system-change`, `foreign-history`) oldest first,
   then unseen flagged decided items, then other unseen decided items.
-  The list groups items as Needs you, Being carried out and Decided for
-  you; each chip carries words, never colour alone. With nothing at all,
+  *(Amended 2026-11-01, S-NEXT-humane-l3, proposal §4.)* The list
+  groups items as **Needs you** (always shown: with nothing in it, the
+  line "Nothing needs you right now."), **Being carried out**, then the
+  decided items by time: **Today**, **Earlier this week** (the last seven
+  days) and **Older**, by the machine's local day of the item's
+  `updated_at`. The order is restated, not dropped: needs-you by key
+  first, then the work being carried out, then each time group in
+  `inbox_order`'s order (unseen flagged, then unseen, then the rest newest
+  first); the item opened first is still the first by `inbox_order` over
+  the whole inbox. In a time group, two or more nightly reviews
+  (`decided.steward-run`) that are not flagged fold into one row,
+  "Nightly reviews, 25–31 Oct", whose second line says how many and how
+  many are not seen yet; each review keeps its own row and mark inside
+  the fold, a fold holding the open item is drawn open, and `j`/`k` stop
+  on a closed fold once (Enter or Space opens it) and walk its rows once
+  open. A row says who did it and when ("steward · 03:52", "overseer ·
+  Sat 31 Oct"); a decided row has no "Decided" chip (its group says so),
+  while a needs-you or carried-out row keeps its chip, which carries
+  words, never colour alone. "new" and "unseen" are one dot whose word is
+  its accessible name, the word the page header shows. Run titles are in
+  words ("Nightly review, 31 October: 27 lessons decided", "Weekly
+  report, 1 November"; never "lesson(s)"). Below 760 px the list folds
+  behind an "All items (N)" button above the open item, so the item is
+  the first thing on screen; `j`/`k` show the list, and opening an item
+  hides it again. With nothing at all,
   the page says "Nothing needs you, and nothing new." and links the
   weekly report. Clicking an item swaps only the workspace and pushes
   the item's URL. **Mark all seen** runs `attention seen
@@ -584,7 +607,28 @@ section records what the surface is.
   trigger and rule and folds its script and registration; a lesson is
   titled by its trigger (or fact) and lists when it was seen (its
   sightings, with their quotes); a folder is said to be one, with its
-  whole path written from `~`.
+  whole path written from `~`. *(Amended 2026-11-01, S-NEXT-humane-l3,
+  proposal §4.)* A case is told once: Question, Decision (the verb in
+  words, "Turned down (held firmly)", from the packet's `verb` and
+  `confidence`; the Decision section's list is never printed as one
+  paragraph), Because, then "The case file as written" folded. Ids are
+  for an agent and sit in a small fold ("Its id, for an agent"), never in
+  running text; the packet's `more[]` reads "The agent can also open 12
+  lessons, 30 cases and 7 of your statements that belong to this item."
+  with the ids in its fold, and a cut packet says "Some long passages are
+  shortened here; the agent can read them in full." (never the cut
+  fields' names). A nightly review shows, in place of "What was
+  decided", the split of its decisions by outcome group
+  (`series.OUTCOME_GROUPS`: Put to use, Turned down, Left for later,
+  Looked at, kept as is) as a thin bar of counts with the counts in words
+  beside it and a "Show as a table" view, then one line per decision:
+  the lesson, the outcome in words and the opening of its reason, with
+  "Why?" opening the question and the reason; six lines show, the rest
+  fold under "Show all". The counts and lines are the CLI's (the
+  packet's `run` block, read from the run's record and its committed
+  cases); the page counts nothing. Its evidence folds under "The case
+  files and lessons, in full". A nightly review and a weekly run item
+  carry an empty, marked slot for the "In short" box (lane 5).
 - **Answers** go to `attention answer` with the option, the reply text as
   a 0600 `--text-file` that is deleted after the run, `--draft` when the
   text started as an agent draft, and `--confirm` on the second click of
@@ -859,6 +903,25 @@ section records what the surface is.
   together, with the same word in both (S-130, item 8).
 - **Weekly report** (`/overseer-report[/<date>]`): a read-only render of
   the overseer's report, newest by default, with links to earlier ones.
+  *(Amended 2026-11-01, S-NEXT-humane-l3, proposal §5.)* The report file
+  is never changed, only how it is drawn (`report_view.py`). Its first
+  line becomes a title in words ("Weekly report · Sunday 1 November",
+  with "finished at 15:21" under it) and its run id, actor and model move
+  to an "About this run" fold; "Earlier reports" is a small menu beside
+  the title. Then an empty, marked slot for the "In short" box (lane 5);
+  then the "Questions for you" section lifted to the top: "Nothing needs
+  you this week." when it says none, otherwise its questions and a link
+  to the inbox, never folded. Counts sit in tiles, from the run's own
+  record (`weekly_facts.run_facts`: past decisions re-checked of those it
+  could have, decided in the person's stead, questions), never from the
+  prose; a report with no record has no tiles. The overseer's sections
+  follow in its own words at a reading width of about 75 characters.
+  Inside a bullet, machine text reads as a short placeholder with the
+  original in its tooltip ("the 35 cases", "a path" written from `~`,
+  "a hash", "a settings entry"), and the bullet ends with one fold
+  holding it as written; a run of fewer than three ids, text in `code`
+  (a command to copy) and text in a paragraph stay as written.
+  "Refused / could not do" folds by default with its count.
 
 ### 2.6 The tray icon *(added 2026-10-31, S-126; attention-design-r2 §3.5, §3.10)*
 
@@ -1790,7 +1853,7 @@ notifications are absent.
 | Worker overdue / never ran | Status strip alarm (reuses the worker's own escalation thresholds); everything else functions — the surface is not the worker's supervisor. |
 | *Inbox rows below added 2026-10-31 (lane `ui-workspace`, S-125; `attention-design-r2.md` §3.7).* | |
 | `attention --json` fails (no JSON) | The inbox shows an error panel with the stderr text, "The inbox itself may be broken; the tray icon shows the same state.", and Retry. The front page's link reads "Inbox (?)". |
-| Inbox empty | "Nothing needs you, and nothing new." plus a link to the weekly report; no list items. With no needs-you items but some decided ones, the first unseen decided item is selected and the list header reads "Nothing needs you". |
+| Inbox empty | "Nothing needs you, and nothing new." plus a link to the weekly report; no list items. With no needs-you items but some decided ones, the first unseen decided item is selected and the list's "Needs you" heading stands over the line "Nothing needs you right now." (S-NEXT-humane-l3). |
 | Packet slow (> 1.5 s) | The item's list data renders at once; the evidence region shows "assembling…" and fills by htmx when the packet arrives. |
 | Packet failed | An error block naming the failure; the question, options and reply box from the list data still work. |
 | Item resolved or moved elsewhere (answered in a terminal, withdrawn, login fixed) | An `attention` envelope refreshes the list; an open item no longer listed shows "This item was resolved elsewhere (answered, withdrawn, or its condition cleared)." and offers the next one. An answer that moves the item on says where it went and offers no options. The page's own click is never reported as "elsewhere": not while its request is in flight (plus a 3 s grace), nor once its response said the item moved on or cleared. |

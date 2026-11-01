@@ -426,6 +426,37 @@ def _first_line(text: object, limit: int = 140) -> str:
     return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
 
 
+def plural(count: int, noun: str) -> str:
+    """``"1 lesson"``, ``"27 lessons"``: never ``"lesson(s)"`` (humane UI
+    lane 3, proposal §10)."""
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def day_words(day: str) -> str:
+    """``"2026-11-01"`` -> ``"1 November"``; anything that is not such a
+    date comes back unchanged."""
+    try:
+        parsed = datetime.strptime(day[:10], "%Y-%m-%d")
+    except ValueError:
+        return day
+    return f"{parsed.day} {parsed.strftime('%B')}"
+
+
+def _local_day(at: object) -> str | None:
+    """The machine's local calendar day of ISO instant *at* ("2026-10-31"
+    for 03:52Z on 1 November in a UTC-7 zone), so a title names the day
+    the person lived it; ``None`` when *at* does not parse."""
+    if not isinstance(at, str) or not at:
+        return None
+    try:
+        parsed = datetime.fromisoformat(at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone().strftime("%Y-%m-%d")
+
+
 def _within(at: object, days: int, now: datetime) -> bool:
     when = _dt(at)
     return when is not None and now - when <= timedelta(days=days)
@@ -1312,11 +1343,15 @@ def _src_runs(home: Path, ctx: "_Ctx") -> list[dict]:
         day = str(done_at)[:10]
         raw_decided = manifest.get("decided")
         decided: list[Any] = raw_decided if isinstance(raw_decided, list) else []
+        # Humane UI lane 3 (proposal §4, §10): titles in words -- "Nightly
+        # review, 1 November: 27 lessons decided", "Weekly report, 1
+        # November" -- never "lesson(s)" or a bare ISO date.
         if actor == "steward":
-            title = f"Steward, {day}: decided {len(decided)} lesson(s)"
+            title = (f"Nightly review, {day_words(_local_day(done_at) or day)}: "
+                     f"{plural(len(decided), 'lesson')} decided")
             kind = "decided.steward-run"
         else:
-            title = f"The overseer's weekly run, {manifest.get('week') or day}"
+            title = f"Weekly report, {day_words(str(manifest.get('week') or day))}"
             kind = "decided.overseer-run"
         # Gate r1 MAJOR 1: the run's cases hold the reasoning ("why was this
         # decided?"), so they lead; the packet expands each case into its

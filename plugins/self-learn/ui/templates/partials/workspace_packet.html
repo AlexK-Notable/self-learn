@@ -14,7 +14,9 @@
     <p>The question, the options and the reply box below still work.</p>
   </div>
 {% elif packet %}
-  {% if packet.decided %}
+  {% if run %}
+  {% include "partials/workspace_steward_run.html" %}
+  {% elif packet.decided %}
   <section class="ws-section" aria-labelledby="ws-decided-h">
     <h2 id="ws-decided-h">What was decided</h2>
     <p>{{ packet.decided.what }}</p>
@@ -111,7 +113,14 @@
   {% endif %}
 
   <section class="ws-section ws-evidence" aria-labelledby="ws-evidence-h">
+    {% if run %}
+    {# Humane UI lane 3: on a nightly review the lines above tell each
+       decision; the full case files and lessons fold here. #}
+    <details class="ws-evidence-fold" data-evidence-fold>
+    <summary><h2 id="ws-evidence-h">The case files and lessons, in full</h2></summary>
+    {% else %}
     <h2 id="ws-evidence-h">Evidence</h2>
+    {% endif %}
     {% if not packet.evidence %}
     <p class="ws-meta">No evidence was attached to this item beyond what is shown above. The agent below can look further.</p>
     {% endif %}
@@ -119,7 +128,7 @@
     <details class="ws-ev ws-ev-{{ ev.kind }}" data-evidence-kind="{{ ev.kind }}"{% if loop.index <= 2 %} open{% endif %}>
       {% if ev.kind == "lesson" %}
       <summary>The lesson{% if ev.title %}: {{ ev.title }}{% endif %}</summary>
-      <p class="ws-meta">{{ ev.status }}{% if ev.placement %} · {{ ev.placement }}{% endif %} · <code>{{ ev.id }}</code></p>
+      <p class="ws-meta">{{ status_words.get(ev.status, ev.status) }}{% if ev.placement %} · {{ placement_words.get(ev.placement, ev.placement) }}{% endif %}</p>
       {% if ev.trigger or ev.instruction %}
       {% if ev.trigger %}<p><strong>When:</strong> {{ ev.trigger }}</p>{% endif %}
       {% if ev.instruction %}<p><strong>Do:</strong> {{ ev.instruction }}</p>{% endif %}
@@ -137,21 +146,29 @@
         {% endfor %}
       </ul>
       {% endif %}
+      <details class="ws-ids"><summary>Its id, for an agent</summary><code>{{ ev.id }}</code></details>
       {% elif ev.kind == "statement" %}
       {# Walk fixes, item 6: when it was said, and, on a conflict, which
          one is newer (the words the options use). #}
       <summary>Your words{% if ev.side %}: <span class="chip chip-side" data-side="{{ ev.side }}">the {{ ev.side }} one</span>{% endif %}{% if ev.at %}, said {{ ev.at | humanize_ts }}{% endif %}</summary>
       <blockquote class="ws-quote">“{{ ev.verbatim }}”</blockquote>
-      <p class="ws-meta">{% if ev.at %}Said {{ ev.at | exact_time }}{% if ev.side == "newer" %}; it holds until you answer{% endif %}. {% endif %}Recorded as <code>{{ ev.id }}</code>.</p>
+      {% if ev.at %}<p class="ws-meta">Said {{ ev.at | exact_time }}{% if ev.side == "newer" %}; it holds until you answer{% endif %}.</p>{% endif %}
       {% if ev.answers and ev.answers.ref %}<p class="ws-meta">Answering {{ ev.answers.kind }} {{ ev.answers.ref }}</p>{% endif %}
       {% if ev.context %}<p class="ws-meta">Around it:</p><pre class="ws-pre">{{ ev.context }}</pre>
       {% elif ev.context_note %}<p class="ws-meta">The conversation around it was {{ ev.context_note }}.</p>{% endif %}
+      <details class="ws-ids"><summary>Its id, for an agent</summary><code>{{ ev.id }}</code></details>
       {% elif ev.kind == "case" %}
-      <summary>The case <code>{{ ev.id }}</code></summary>
+      {# Humane UI lane 3 (proposal §4): the case told once -- Question,
+         Decision in words, Because -- and the file as written in a fold.
+         The Decision section's own list ("- verb: … - because: …") is never
+         printed as one paragraph. #}
+      {% set dverb = ev.verb or (ev.decision if ev.decision and "- " not in ev.decision else none) %}
+      <summary>The decision{% if dverb %}: {{ verb_words.get(dverb, dverb) }}{% endif %}</summary>
       {% if ev.question %}<p><strong>Question:</strong> {{ ev.question }}</p>{% endif %}
-      {% if ev.decision %}<p><strong>Decision:</strong> {{ ev.decision }}</p>{% endif %}
+      {% if dverb %}<p data-case-decision><strong>Decision:</strong> {{ verb_words.get(dverb, dverb) }}{% if ev.confidence %} ({{ confidence_words.get(ev.confidence, ev.confidence) }}){% endif %}</p>{% endif %}
       {% if ev.because %}<p><strong>Because:</strong> {{ ev.because }}</p>{% endif %}
-      {% if ev.excerpt %}<pre class="ws-pre">{{ ev.excerpt }}</pre>{% endif %}
+      {% if ev.excerpt %}<details class="ws-ev ws-case-file" data-case-file><summary>The case file as written</summary><pre class="ws-pre">{{ ev.excerpt }}</pre></details>{% endif %}
+      <details class="ws-ids"><summary>Its id, for an agent</summary><code>{{ ev.id }}</code></details>
       {% elif ev.kind == "report" %}
       <summary>The weekly report, {{ ev.date }}{% if ev.section %} ({{ ev.section }}){% endif %}</summary>
       <div class="ws-quote">{{ ev.excerpt | markdown }}</div>
@@ -169,7 +186,7 @@
       {# Walk fixes, item 6: what it is for, before the script. #}
       {% if ev.trigger %}<p data-hook-trigger><strong>When:</strong> {{ ev.trigger }}</p>{% endif %}
       {% if ev.instruction %}<p data-hook-instruction><strong>The rule:</strong> {{ ev.instruction }}</p>{% endif %}
-      <p class="ws-meta">From the lesson <code>{{ ev.record }}</code>.</p>
+      <details class="ws-ids"><summary>Its lesson's id, for an agent</summary><code>{{ ev.record }}</code></details>
       {% if ev.script_excerpt or ev.registration %}<details class="ws-details" data-hook-script><summary>The script it runs, and how it is registered</summary>
       {% if ev.script_excerpt %}<pre class="ws-pre">{{ ev.script_excerpt }}</pre>{% endif %}
       {% if ev.registration %}<p class="ws-meta">Registered as:</p><pre class="ws-pre">{{ ev.registration }}</pre>{% endif %}
@@ -184,24 +201,30 @@
         <button type="button" class="btn btn-quiet" data-copy="#ws-fix-{{ loop.index }}">Copy</button></div>
       {% endif %}
       {% elif ev.kind == "grant" %}
-      <summary>Your standing grant <code>{{ ev.id }}</code></summary>
+      <summary>Your standing grant</summary>
       {% if ev.verbatim %}<blockquote class="ws-quote">“{{ ev.verbatim }}”</blockquote>{% endif %}
-      <p class="ws-meta">{% if ev.statement %}<code>{{ ev.statement }}</code>{% endif %}{% if ev.verb %} · used for {{ ev.verb }}{% endif %}</p>
+      {% if ev.verb %}<p class="ws-meta">Used for <code>{{ ev.verb }}</code></p>{% endif %}
+      {% if ev.id or ev.statement %}<details class="ws-ids"><summary>Its ids, for an agent</summary>{% if ev.id %}<code>{{ ev.id }}</code> {% endif %}{% if ev.statement %}<code>{{ ev.statement }}</code>{% endif %}</details>{% endif %}
       {% elif ev.kind == "fact" %}
       <summary>{{ ev.label }}</summary>
       <p>{{ ev.value }}</p>
       {% else %}
-      <summary>{{ ev.kind }}{% if ev.id %} <code>{{ ev.id }}</code>{% endif %}</summary>
-      <pre class="ws-pre">{{ ev | tojson(indent=1) }}</pre>
+      <summary>{{ ev.kind | capitalize }}</summary>
+      <details class="ws-ids"><summary>As recorded, for an agent</summary><pre class="ws-pre">{{ ev | tojson(indent=1) }}</pre></details>
       {% endif %}
     </details>
     {% endfor %}
     {% if packet.more %}
-    <p class="ws-meta">More the agent can open for you: {% for m in packet.more %}{{ m.kind }} <code>{{ m.id }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+    {# Humane UI lane 3: the ids are for the agent; the sentence says how many. #}
+    <details class="ws-ids ws-more" data-more>
+      <summary>The agent can also open {{ more_words(packet.more) }} that belong to this item.</summary>
+      <p class="ws-meta">{% for m in packet.more %}{{ m.kind }} <code>{{ m.id }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    </details>
     {% endif %}
     {% if packet.limits and packet.limits.truncated %}
-    <p class="ws-meta">Shortened to fit: {{ packet.limits.truncated | join(", ") }}.</p>
+    <p class="ws-meta" data-shortened>Some long passages are shortened here; the agent can read them in full.</p>
     {% endif %}
+    {% if run %}</details>{% endif %}
   </section>
 {% endif %}
 </div>

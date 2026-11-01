@@ -1,35 +1,43 @@
 {#
-  The inbox list (design r2 §2.2, §3.6): links with aria-current on the
-  selected one, grouped Needs you / Being carried out / Decided for you.
-  Rendered whole on the page, by GET /inbox/list, by POST /inbox/seen-all,
-  and out of band after an answer (oob_list), so an answered item leaves
-  "Needs you" without a reload.
+  The inbox list (design r2 §2.2, §3.6; humane UI lane 3, proposal §4):
+  links with aria-current on the selected one, under "Needs you" (always:
+  with nothing in it, it says so), "Being carried out", then the decided
+  items by time -- Today, Earlier this week, Older. The nightly reviews
+  not flagged for attention fold into one row per time group (`sections` from
+  inbox_routes.list_sections). Rendered whole on the page, by GET
+  /inbox/list, by POST /inbox/seen-all, and out of band after an answer
+  (oob_list), so an answered item leaves "Needs you" without a reload.
 #}
 <div id="inbox-list" class="inbox-list" data-ids="{{ ids | join(' ') }}"{% if oob_list %} hx-swap-oob="true"{% endif %}>
   {% if reader_error and not ids %}
   <p class="inbox-list-error" role="alert">The inbox could not be read.</p>
   {% endif %}
-  {% set needs = groups.get("needs-you", []) %}
-  {% set approved = groups.get("approved", []) %}
   {% set decided = groups.get("decided", []) %}
-  <h2 class="inbox-group-h" id="inbox-needs-h">{% if needs %}Needs you ({{ needs | length }}){% else %}Nothing needs you{% endif %}</h2>
-  {% if needs %}
-  <ul class="inbox-items" aria-labelledby="inbox-needs-h" data-group="needs-you">
-    {% for it in needs %}{% include "partials/workspace_list_item.html" %}{% endfor %}
+  {% for section in sections %}
+  {% set count = section.rows | length %}
+  <h2 class="inbox-group-h" id="inbox-{{ section.key }}-h">{{ section.title }}{% if section.key == "needs-you" and count %} ({{ count }}){% endif %}</h2>
+  {% if section.rows %}
+  <ul class="inbox-items" aria-labelledby="inbox-{{ section.key }}-h" data-group="{{ section.key }}">
+    {% for row in section.rows %}
+    {% if row.fold %}
+    <li class="inbox-fold" data-inbox-fold>
+      <details{% if row.fold.open %} open{% endif %}>
+        <summary><span class="inbox-item-title">{% if row.fold.unseen %}<span class="dot-new" title="some not seen yet"><span class="visually-hidden">some unseen</span></span> {% endif %}{{ row.fold.label }}</span>
+          <span class="inbox-item-meta">{{ row.fold.meta }}</span></summary>
+        <ul class="inbox-items">
+          {% for it in row.fold["items"] %}{% include "partials/workspace_list_item.html" %}{% endfor %}
+        </ul>
+      </details>
+    </li>
+    {% else %}
+    {% set it = row.item %}{% include "partials/workspace_list_item.html" %}
+    {% endif %}
+    {% endfor %}
   </ul>
+  {% elif section.key == "needs-you" %}
+  <p class="inbox-group-empty" data-nothing-needs-you>Nothing needs you right now.</p>
   {% endif %}
-  {% if approved %}
-  <h2 class="inbox-group-h" id="inbox-approved-h">Being carried out ({{ approved | length }})</h2>
-  <ul class="inbox-items" aria-labelledby="inbox-approved-h" data-group="approved">
-    {% for it in approved %}{% include "partials/workspace_list_item.html" %}{% endfor %}
-  </ul>
-  {% endif %}
-  {% if decided %}
-  <h2 class="inbox-group-h" id="inbox-decided-h">Decided for you</h2>
-  <ul class="inbox-items" aria-labelledby="inbox-decided-h" data-group="decided">
-    {% for it in decided %}{% include "partials/workspace_list_item.html" %}{% endfor %}
-  </ul>
-  {% endif %}
+  {% endfor %}
   <div class="inbox-list-actions">
     {% if decided %}
     <button type="button" class="btn btn-quiet" data-inbox-action="seen_all" data-arm="local"

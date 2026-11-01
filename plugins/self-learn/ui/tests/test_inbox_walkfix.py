@@ -445,7 +445,9 @@ def test_the_new_mark_reads_the_same_in_the_header_and_the_list(tmp_path, monkey
     page = client.get(f"/inbox/{ID_HOOK}").text
     head = page[page.index('class="ws-head"'):page.index("</header>", page.index('class="ws-head"'))]
     row = page[page.index(f'data-inbox-item="{ID_HOOK}"'):].split("</li>")[0]
-    assert '<span class="dot-new" title="not seen yet">unseen</span>' in row  # control
+    # Humane UI lane 3 (proposal §4): the row's mark is a dot whose word is
+    # its accessible name; the word is still the header's.
+    assert '<span class="dot-new" title="not seen yet"><span class="visually-hidden">unseen</span></span>' in row  # control
     assert '<span class="dot-new" data-new-mark>unseen</span>' in head
 
 

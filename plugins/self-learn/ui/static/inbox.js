@@ -82,17 +82,48 @@
 
   function listLinks() { return $all("#inbox-list [data-inbox-item] a"); }
 
+  // Humane UI lane 3: `j`/`k` walk the rows a person can see. A folded
+  // group of nightly reviews is one stop (its summary: Enter or Space opens
+  // it), and once open, its rows are stops too. On a narrow window the list
+  // sits behind "All items"; moving in it shows it.
+  function inClosedFold(el) {
+    var d = el.closest ? el.closest("[data-inbox-fold] details") : null;
+    return !!(d && !d.open);
+  }
+
+  function listStops() {
+    return $all("#inbox-list [data-inbox-item] a, #inbox-list [data-inbox-fold] > details > summary")
+      .filter(function (el) { return el.tagName === "SUMMARY" || !inClosedFold(el); });
+  }
+
+  function showList(on) {
+    var root = $("[data-inbox]");
+    if (!root) return;
+    if (on) root.setAttribute("data-list-open", ""); else root.removeAttribute("data-list-open");
+    var btn = $("[data-show-list]");
+    if (btn) btn.setAttribute("aria-expanded", on ? "true" : "false");
+  }
+
   function moveInList(step) {
-    var links = listLinks();
+    var links = listStops();
     if (!links.length) return;
+    showList(true);
     var idx = links.indexOf(document.activeElement);
     if (idx === -1) {
       var cur = $("#inbox-list [data-inbox-item].selected a");
+      if (cur && inClosedFold(cur)) cur = cur.closest("[data-inbox-fold]").querySelector("summary");
       idx = cur ? links.indexOf(cur) : -1;
     }
     var next = links[Math.max(0, Math.min(links.length - 1, idx + step))];
     if (next) next.focus();
   }
+
+  document.addEventListener("click", function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest("[data-show-list]") : null;
+    if (!btn) return;
+    var root = $("[data-inbox]");
+    showList(!(root && root.hasAttribute("data-list-open")));
+  });
 
   function markSelected(id) {
     $all("#inbox-list [data-inbox-item]").forEach(function (li) {
@@ -591,6 +622,7 @@
     if (!target) return;
     if (target.id === "inbox-workspace") {
       detachedDraft = null;
+      showList(false);
       markSelected(currentItem());
       restoreUnsent();
       var title = $("#ws");

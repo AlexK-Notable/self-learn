@@ -13,11 +13,18 @@
        page (a login check) land here, and /inbox says why it opened this
        item rather than a bare list. #}
     <div id="ws-top-result"></div>
-    {% if opened_first %}<p class="ws-meta ws-opened-first" data-opened-first>The most pressing item is open first. Every item is in the list (beside this one, or above it on a narrow window); pick any of them there.</p>{% endif %}
+    {% if opened_first %}<p class="ws-meta ws-opened-first" data-opened-first>The most pressing item is open first. Every item is in the list (beside this one, or behind "All items" at the top on a narrow window); pick any of them there.</p>{% endif %}
     <header class="ws-head">
       {% set chipset = item %}{% include "partials/workspace_chips.html" %}
       <h1 id="ws-question">{{ (packet.question if packet and packet.question else item.title) }}</h1>
     </header>
+
+    {% if item.kind in ("decided.steward-run", "decided.overseer-run") %}
+    {# === humane lane 5 slot: the "In short" summary box (proposal §7). ===
+       Lane 3 leaves this empty on purpose; lane 5 adds
+       partials/in_short.html. Until then the include renders nothing. #}
+    <div class="in-short-slot" data-in-short-slot>{% include "partials/in_short.html" ignore missing %}</div>
+    {% endif %}
 
     {% if item.class != "decided" %}
     <section class="ws-section" aria-labelledby="ws-why-h">
