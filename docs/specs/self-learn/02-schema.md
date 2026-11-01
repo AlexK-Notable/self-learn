@@ -2084,12 +2084,16 @@ staged sheet the way apply time will — skipping a case the model parked and
 a case the runner will park — and collects the lines the ledger would
 refuse that are the model's to fix: kind `bad-line`, kind
 `destination-unavailable`, and kind `status` when the lesson's status is
-still the one the run selected it with. One exception: this preview runs
-without the staged case, which is not in the ledger yet, so a `reject`,
-`defer` or `revise` of a routed lesson under a staged `kind: reconsider`
-case previews as a `status` refusal that the case itself widens at apply
-time; such a refusal is not collected for a lesson that a reconsider case
-of the same staged case/sheet pair covers. If any line is collected, the
+still the one the run selected it with. This preview runs without the
+staged case, which is not in the ledger yet, but it widens each line a
+staged `kind: reconsider` case covers as that case will at apply time
+(S-73 item 6), so a `status` refusal left in it is one apply time gives
+too, and it is collected like any other *(amended 2026-11-01,
+S-NEXT-steward: until then such a refusal was never collected for a lesson
+a reconsider case of the same staged pair covered, a rule from before the
+preview could widen a line; run `run-14405f3da1fe`'s `confirm-held` lines
+on two rejected lessons reached apply time that way and were parked
+`ledger-refused`)*. If any line is collected, the
 repair turn is spent on those lines exactly as on a format failure (the
 spent allowance committed first), with a message naming each sheet, item,
 verb, lesson and the ledger's words. Refusals left after the repair never

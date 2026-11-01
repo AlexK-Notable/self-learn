@@ -3888,16 +3888,24 @@ def _ledger_repair_message(
     its lines is applied.
     Each other sheet is previewed exactly as apply time will (the same
     `[reopen, verb]` sequence rule). A `status` refusal is collected only
-    when the lesson's status is unchanged since selection, and never for a
-    lesson a staged `kind: reconsider` case of the same pair covers. The
-    preview runs without that case (it is not in the ledger yet), but
-    since S-73 item 6 it passes the covered ids to `batch.dry_run`
-    (`reconsidered=`), which widens those lines as the real case will at
-    apply time: every check after the status gate runs -- a
-    re-decision's hook shape, its replay, its destination -- so a bad
+    when the lesson's status is unchanged since selection. The preview
+    runs without a staged `kind: reconsider` case (it is not in the
+    ledger yet), but since S-73 item 6 it passes the ids that case covers
+    to `batch.dry_run` (`reconsidered=`), which widens those lines as the
+    real case will at apply time: every check after the status gate runs
+    -- a re-decision's hook shape, its replay, its destination -- so a bad
     example is found while the repair turn can still fix it. A pair in
     *skip* (its stem) failed the runner's own per-pair check and is left
     out (2026-09-27).
+
+    S-NEXT-steward (2026-11-01): a `status` refusal of a lesson such a
+    case covers is collected too. It used to be dropped (S-71), from when
+    this preview could not widen a covered line; since S-73 item 6 it does,
+    so a status refusal left in the widened preview is one apply time
+    gives as well. Dropping it sent run-14405f3da1fe's two `confirm-held`
+    lines on REJECTED lessons (a no-action reconsider keeping each
+    rejection) to apply time, where the ledger refused them and both
+    lessons were parked `ledger-refused` for the overseer.
 
     2026-10-07: a staged `kind: reconsider` case is also held to the
     status `verbs.reconsider` needs of each lesson it names
@@ -3974,8 +3982,6 @@ def _ledger_repair_message(
             kind = line.get("kind")
             record_id = str(line.get("id"))
             if kind == "status":
-                if record_id in reconsidered:
-                    continue
                 if not _status_unchanged(home, record_id, selected.get(record_id)):
                     continue
             elif kind not in _REPAIRABLE_KINDS:

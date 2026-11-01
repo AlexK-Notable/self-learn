@@ -1262,10 +1262,17 @@ def _render_output_contract(owned_skills: Sequence[str] | None = ()) -> str:
         f"    replace (the line's id and each id in also):  {_words(ledger_ops.RESOLVABLE_STATUSES)}",
         f"    undefer:  {_words(ledger_ops.DEFERRED_ONLY)}      reopen:  {_words(verbs.REOPEN_ADMITTED_STATUSES)}",
         "    confirm-recurrence, dismiss-suspect:  routed",
+        # S-NEXT-steward (2026-11-01): run-14405f3da1fe kept two
+        # rejections with `confirm-held`, which only a placed rule takes
+        # (`verbs._preflight_confirm_held`); the ledger refused both.
+        f"    confirm-held:  {_words(ledger_ops.ROUTED_ONLY)}      note:  any status",
         f"    every lesson a `kind: reconsider` case names:  {_words(ledger_ops.RECONSIDERABLE_STATUSES)}",
         "      and an earlier case that covers it, named in `supersedes` (a pending lesson -- even",
         "      one an earlier case moved -- and a deferred lesson no case covers take",
         "      `kind: resolution`)",
+        "  A `kind: reconsider` case that keeps a rejected or deferred lesson's decision",
+        "  (`outcome: no-action`) records why with a `note` line, never `confirm-held`: that",
+        "  verb says a placed rule was seen working.",
         "  A SUSPECTED VIOLATION input (method section 10) is decided with these two verbs.",
         "  `event` is the nonce of one event its brief lists (`event <nonce>: ...`), one item",
         "  per event you decide. `confirm-recurrence` with `tolerate: true` needs a `note`",
