@@ -134,7 +134,10 @@ def _notifications(monkeypatch) -> list:
     sent: list = []
     monkeypatch.setattr(
         overseer_notify, "send",
-        lambda home_, cue, summary, ids: sent.append((cue, summary, list(ids))),
+        # 2026-11-01 (attention round, S-127): `send` takes `kind=`; a fake
+        # without it raised TypeError, which the callers swallow as a failed
+        # notification, so a hold looked as if nothing had been sent.
+        lambda home_, cue, summary, ids, *, kind="silent": sent.append((cue, summary, list(ids))),
     )
     return sent
 

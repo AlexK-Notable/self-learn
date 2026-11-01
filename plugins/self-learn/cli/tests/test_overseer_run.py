@@ -1318,7 +1318,8 @@ def _silence_notifications(monkeypatch):
     notices = []
     monkeypatch.setattr(
         overseer_run.notify, "send",
-        lambda home, cue, summary, ids: notices.append((cue, summary, list(ids))),
+        # 2026-11-01 (attention round, S-127): `send` takes `kind=`.
+        lambda home, cue, summary, ids, *, kind="silent": notices.append((cue, summary, list(ids))),
     )
     return notices
 
