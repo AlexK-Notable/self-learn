@@ -711,6 +711,14 @@ permission surface of §4.3).
 
 ## 4. The adjudication pane
 
+*Note 2026-10-31 (attention round, lane `ask-agent`): the inbox's "ask about
+this" agent (`17-invocation-runbook.md` §1c) is a separate surface beside the
+Iterate pane, not a mode of it. It runs through the CLI's invocation seam on the
+`ask` surface, reads only (no write tool, no Bash, no Grep), is keyed to one
+inbox item rather than one record, and writes nothing but its draft rows into
+that item's workspace transcript. `ui/engine/sdk.py` and this section's charter
+are unchanged by it.*
+
 ### 4.1 Engine decision — SDK default, empirically re-grounded
 
 07 §3 recorded the pane as "a small Agent SDK session". The TUI
