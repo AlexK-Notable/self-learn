@@ -177,6 +177,35 @@ def test_1_four_states_map_to_status_icon_and_tooltip(env):
     assert all(_near_grey(c) for c in colours), colours
 
 
+_PIXBUF_LOAD = """
+import sys, gi
+try:
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf
+except (ImportError, ValueError) as exc:
+    print("SKIP", exc); sys.exit(0)
+for path in sys.argv[1:]:
+    print(path, GdkPixbuf.Pixbuf.new_from_file_at_size(path, 22, 22).get_width())
+"""
+
+
+def test_1b_every_icon_loads_through_gdk_pixbuf():
+    """Waybar draws the icon through GTK's icon theme, which loads the SVG with
+    gdk-pixbuf. On this host's gdk-pixbuf an XML declaration followed by a
+    leading comment hides the file's type ("Couldn't recognize the image file
+    format"; measured on the launcher icon `assets/self-learn-ui.svg`), and the
+    tray would show `image-missing`. Mutation: move a comment back above `<svg`
+    -> red."""
+    icons = sorted(ICON_DIR.glob("self-learn-tray-*.svg"))
+    assert [p.stem for p in icons] == sorted(f"self-learn-tray-{s}" for s in ("idle", "new", "needs-you", "broken"))
+    res = subprocess.run([SYSTEM_PYTHON, "-I", "-c", _PIXBUF_LOAD, *map(str, icons)],
+                         capture_output=True, text=True, timeout=60)
+    if res.stdout.startswith("SKIP"):
+        pytest.skip(f"no GdkPixbuf for the system python: {res.stdout.strip()}")
+    assert res.returncode == 0, res.stderr
+    assert [line.rsplit(" ", 1)[1] for line in res.stdout.splitlines()] == ["22"] * 4, res.stdout
+
+
 def _near_grey(hex6: str) -> bool:
     r, g, b = (int(hex6[i:i + 2], 16) for i in (0, 2, 4))
     return max(r, g, b) - min(r, g, b) <= 12
