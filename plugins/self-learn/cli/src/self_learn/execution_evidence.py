@@ -28,7 +28,7 @@ _RECORD_ID_RE = re.compile(r"^lrn-[0-9a-f]{8}$")
 _SHORT_SHA_RE = re.compile(r"^[0-9a-f]{8}$")
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _VERB_RE = re.compile(r"^[a-z][a-z0-9-]*$")
-_ACTORS = frozenset({"human", "steward", "overseer"})
+_ACTORS = frozenset({"human", "steward", "overseer", "agent"})
 
 
 @dataclass(frozen=True)

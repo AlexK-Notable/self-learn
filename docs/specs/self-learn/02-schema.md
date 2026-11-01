@@ -1438,6 +1438,21 @@ own subtree.*
    is read as a `covered_by:` reference with the covering surface
    unrecorded. See §2's amendment note on `superseded_by` for the field's
    two live shapes.
+8. *(S-NEXT-attention-core, attention round 2026-10-31c)* The inbox's
+   files are ledger truth too, each append-only JSON Lines, written under
+   `intents.ledger_write` and committed (§3a.11):
+   `<ledger>/attention/workspace/<item-id>.jsonl` (one decision workspace's
+   transcript; writer `workspace.append`), `<ledger>/attention/choices.jsonl`
+   (the person's clicks and accepted drafts), `<ledger>/attention/feedback.jsonl`
+   (the person's "didn't need me" / "should have asked me" clicks),
+   `<ledger>/attention/outcomes.jsonl` (approved work carried out or failed),
+   and `<ledger>/grant-uses.jsonl` (one row per person-only verb an agent ran
+   under an authority; writer `grant_uses.append`, through
+   `attribution.acting(use=)`). Every committed run manifest gains
+   `attention_effects`: one row per lesson a sheet applied,
+   `{lesson, verb, destination, always_loaded, hook_activated, at}`, written
+   by both runners. It is never mixed into `ledger_effects`, which stays
+   `execution_evidence`'s crash-recovery proof list.
 
 ### 3a.2 Decision-case record
 
@@ -2412,7 +2427,15 @@ a new line naming the line it amends.
   grammar, for words found in a transcript) or `conversation:<obs-id>` (for
   words typed into the overseer conversation, where no transcript line
   exists at record time — `<obs-id>` is the `presented` observation the
-  reply answers). Dedupe key: `(source.message_ref, verbatim)`.
+  reply answers), or *(S-NEXT-attention-core)* `workspace:att-<12 hex>#T<n>`
+  (a row the person typed into an inbox item's decision workspace, §3a.11;
+  checked by rule 11 of §3a.6: the row must exist and be sealed, be
+  `role: user, origin: typed` of kind `reply` or `question`, and hold the
+  words; unlike a transcript, a missing or still-pending row refuses).
+  Grammar: `^(transcript:.+#L\d+|conversation:obs-[0-9a-f]{8}|workspace:att-[0-9a-f]{12}#T\d+)$`.
+  `answers.ref` is not validated by kind, so a conflict ruling answers
+  `conflict:<stmt-a>+<stmt-b>` as an `instruction` with no further form.
+  Dedupe key: `(source.message_ref, verbatim)`.
   On a new write, resolve a `transcript:` ref using the ledger's configured
   `refs.transcript_roots` (the same roots as steward evidence packs). If it
   resolves, its evidence role must be `user`; any other role is refused with
@@ -2448,10 +2471,12 @@ a new line naming the line it amends.
   when `project`.
 - `uncertainty` is the recorder's doubt about what the words *mean*, kept
   beside them, never inside them.
-- `recorded_by` ∈ `human | steward | overseer` — whoever captured the words
-  records them, the steward included. An agent records a statement only
-  with a `transcript:` or `conversation:` reference, never from memory of a
-  conversation.
+- `recorded_by` ∈ `human | steward | overseer | agent` — whoever captured
+  the words records them, the steward included. *(S-NEXT-attention-core:)*
+  `agent` is an agent's shell recording the person's words it relayed; the
+  words stay the person's through the reference. An agent records a
+  statement only with a `transcript:`, `conversation:` or `workspace:`
+  reference, never from memory of a conversation.
 - `amends` is a `stmt-…` id when this line corrects an earlier one; readers
   follow `amends` chains to the newest line.
 
@@ -2526,17 +2551,17 @@ source (the grouping adds no meaning of its own):
 ---
 revision: 7
 updated_at: 2026-09-13T21:00:00Z
-updated_by: human           # human | steward | overseer
+updated_by: human           # human | steward | overseer | agent
 ---
 ```
 
 | Container | Holds | Who may add | Who may mark LAPSED |
 |---|---|---|---|
-| `## A. From the user's own words` | `own-words` entries | human; steward or overseer, with a `transcript:` or `conversation:` reference | human; steward or overseer, naming the changed condition or contrary evidence |
-| `## B. System readings the user has seen` | `system-reading, provisional: false`; ≥1 `stmt-…` each | nobody directly — an entry moves here when a presentation record names it in `entries` (§3a.2) | steward, overseer, human |
-| `## C. System readings, provisional` | `system-reading, provisional: true`; ≥1 `stmt-…` each | steward; overseer, including a consolidation of two or more entries into one, with a `basis` citing the lapsed entries and their statements | steward, overseer, human |
-| `## D. Observed regularities` | system readings whose reference is telemetry or receipts rather than one episode; `provisional` as above; ≥1 `stmt-…` where the regularity is about a preference, else the telemetry refs alone | overseer | overseer, human |
-| `## E. Declared conditions` | facts about the environment no probe observes (§3a.5) | human; steward or overseer with an own-words reference | human; steward or overseer, when the feed starts observing the key |
+| `## A. From the user's own words` | `own-words` entries | human (or `agent`, an agent's shell recording as itself, S-NEXT-attention-core); steward or overseer, with a `transcript:` or `conversation:` reference | human or agent; steward or overseer, naming the changed condition or contrary evidence |
+| `## B. System readings the user has seen` | `system-reading, provisional: false`; ≥1 `stmt-…` each | nobody directly — an entry moves here when a presentation record names it in `entries` (§3a.2) | steward, overseer, human, agent |
+| `## C. System readings, provisional` | `system-reading, provisional: true`; ≥1 `stmt-…` each | steward; overseer, including a consolidation of two or more entries into one, with a `basis` citing the lapsed entries and their statements | steward, overseer, human, agent |
+| `## D. Observed regularities` | system readings whose reference is telemetry or receipts rather than one episode; `provisional` as above; ≥1 `stmt-…` where the regularity is about a preference, else the telemetry refs alone | overseer | overseer, human, agent |
+| `## E. Declared conditions` | facts about the environment no probe observes (§3a.5) | human or agent; steward or overseer with an own-words reference | human or agent; steward or overseer, when the feed starts observing the key |
 
 One entry, and the same entry after its condition clears:
 
@@ -2838,6 +2863,12 @@ tool call as its name and the string values of its input, an attachment's
    An `agent` turn is context around a moment, never the person's own
    words. Not covered: variable-built paths, shell wrappers or transformations,
    unavailable or modified historical briefs, and unrecognised harness formats.
+11. *(S-NEXT-attention-core, attention round 2026-10-31c)* A workspace row
+   is the person's typing exactly when self-learn's UI recorded it with
+   `role: user, origin: typed`. `clicked`, `draft-accepted`, `draft-edited`
+   and `ran-sudo` rows are the person's acts, never their words. A `relayed`
+   row points at the transcript line that holds the words, and the statement
+   cites that line, not the row.
 
 Rules 3 and 8 are the miner's structural split. Since S-90 the live miner
 labels every user text turn of its digest by this rule (12 §Phase 1).
@@ -4441,6 +4472,166 @@ steward packet (`index.related.MAX_GROUP`) is never offered whole and stays
 switched off reads as `@reach` unreachable (`skill-override-off`,
 `plugin-disabled`); the method tells the steward to park rather than move
 the lesson out from under the person's switch.
+
+### 3a.11 The inbox: items, the kind table, the packet, the workspace transcript *(S-NEXT-attention-core)*
+
+*(Added by the attention round, 2026-10-31c; design
+`misc/build-2026-10-31c/attention-design-r2.md` §1, §3.1-§3.5, §4.1-§4.4,
+§4.11, which holds the full frozen contracts; code `attention.py`,
+`attention_packet.py`, `workspace.py`, `attention_cli.py`, `effects.py`,
+`grant_uses.py`.)*
+
+**Classes.** Everything self-learn puts in front of the user is one *item*
+in one of three classes. NEEDS YOU: only the user can supply it, and the key
+says why, from a closed list (the user's answer 2): `credentials`, `sudo`,
+`money`, `system-change`, `foreign-history`, `conflict`, `broken`. DECIDED
+FOR YOU: self-learn acted; the item says what, why, what it changes, and
+its one-step undo where one exists. SILENT: never shown. An **approved**
+item is a needs-you change the person approved (an `approve` option click)
+that is not done yet; it is neither class, never lights the icon, and an
+approved plan whose sudo steps are still the person's is needs-you again
+(`state: awaiting-sudo`, key `sudo`).
+
+**The kind table** (`attention.KINDS`; code classifies every fixed event
+kind from it, the overseer classifies its own asks with `needs`/`because`):
+
+| kind | class | key | flagged | subject (id input) |
+|---|---|---|---|---|
+| `hold.credentials` | needs-you | credentials | no (the one popup kind) | `credentials@<episode start>` |
+| `hold.money` | needs-you | money | no | `money@<episode start>` |
+| `broken.host` | needs-you | broken | no | `host@<episode start>` |
+| `broken.stopped` | needs-you | broken | no | intent id |
+| `broken.job` | needs-you | broken | no | `job:<steward\|overseer\|miner>@<episode start>` |
+| `conflict.case-tampered` | needs-you | conflict | no | case id |
+| `ask.<key>` (five) | needs-you | the ask's `because` | no | question id |
+| `approved.pending` | approved | – | no | the ask's (or code item's) subject |
+| `decided.overseer-run`, `.always-loaded`, `.hook-activated`, `.approved-done` | decided | – | **yes** | run id; case id; lesson + time; subject |
+| `decided.steward-run`, `.ask-default`, `.reading`, `.grant-use`, `.registration`, `.skill`, `.notice`, `.withdrawn`, `.ledger-paths` | decided | – | no | run id; question id; `um-…@r<n>`; `gu-…`; path + time; skill + action + time; notice id; question id; path-set hash |
+
+Each code needs-you kind carries code-written options (none written by a
+model): `hold.credentials` *Open a login terminal* and *Check now*;
+`hold.money` *Check now*; `broken.host` *Restart self-learn*;
+`broken.stopped` and `broken.job` *Have an agent look at it* (an `approve`
+option with a code-written plan); `conflict.case-tampered` *keep my edit* /
+*restore it*. `attention.class.<kind-key>` (tier A, `.` → `-`, default
+`table`, values `needs-you|decided|silent|table`) moves any non-ask kind to
+another class; the person's "didn't need me" click sets it (answer 7). An
+ask's class is the overseer's; feedback on one is evidence only.
+
+**Ids.** `att-` plus the first 12 hex of `sha256(kind + "\0" + subject)`.
+The subject never holds reworded text, so an id survives an ask's new
+wording; a hold or broken subject carries its episode start, so a new
+episode is a new item with a fresh conversation.
+
+**Sources** (file reads only: no git, no model call, no ledger write; the
+only subprocess is one 1-second `systemctl --user is-active
+self-learn-host.service`, asked only when the unit is installed and the
+heartbeat is stale): the overseer's open-question index (legacy rows infer
+`system: true` → `system-change`, `register` → `foreign-history`, anything
+else stead), statements and `attention/choices.jsonl` for answers,
+`attention/outcomes.jsonl` and the cache's claims and runs for approved
+work, the steward's and overseer's journals and the miner's journal for
+holds (an episode starts at the first held row of its key after the last
+success on any surface, and ends at the next success or a newer
+`<cache>/attention/login-ok.json`), the heartbeat and `.intents/` for
+`broken.*` (bounds: heartbeat 15 minutes stale while the unit is not active;
+a STOPPED intent 24 hours old; a job with no completed run for 72 hours and
+failures since, with no hold cause), the case index for tampered parked
+cases, `cases/runs/*.json` for run digests and their `attention_effects`
+(whichever runner wrote them: answer 5; a digest's refs lead with the
+run's case ids, then its decided lessons), `grant-uses.jsonl`, `hosts.yaml`
+(a plain registration that appeared since the inbox last looked; the first
+read only learns, `<cache>/attention/registrations.json`, and records that
+it looked even when it found none; no record names who registered it, so
+the item's source is `code`, never an actor, and an agent's registration
+under an authority shows as its `decided.grant-use` item instead), the skill
+registry (writes, retirements and renames by the overseer or an agent), live
+project notices, the steward's latest unexplained-ledger-paths refusal, and
+`overseer/withdrawn.yaml`. Each source has a 0.5 s budget; a slower one
+keeps its items, marked `partial: true`.
+
+**Seen and the state.** `<cache>/attention/seen.json` maps an item id to the
+`updated_at` seen (a lost or corrupt file only shows items once more).
+Seen clears the "new" dot only; it never takes a needs-you item out of the
+count. `state` is `broken` when the reader failed or a `broken.*` item is
+open, else `needs-you` when any needs-you item is open, else `new` when a
+flagged decided item is unseen, else `idle`. A steward digest is never
+flagged.
+
+**The packet** (`self-learn attention packet <id> --json`, `attention_packet.build`):
+the item, the question, why it needs the user, what happens meanwhile, the
+recommendation and alternatives with what each option does, the plan, what
+was decided and its undo, the evidence (lessons, statements with their
+transcript or workspace context, cases, the report excerpt, `look_at`
+files, holds, grants, facts), `more[]` pointers past the first 12 entries,
+where to look further, the conversation's state, the latest answer, and
+`limits`. A case in the evidence is followed directly by the lessons its
+frontmatter `records` names and the statements its section 4 names, each
+shown once, so an ask shows the lesson it is about and the user's earlier
+words, not the case alone. A case whose freeze hash fails is read as the
+file is now, on every page that cites it (a plain size-capped file read, no
+git; the excerpt is sections 1-4, the span the hash covers), followed by a
+`fact` naming the mismatch and then by the lessons and statements it names,
+so an ask whose case was edited by hand still shows the case and its
+lesson. On any page but the case's own `conflict.case-tampered` item the
+fact says the text may not be what was decided and names that item, which
+asks about the edit. The case's own page also points to `ledger_history`
+for the case file: the commits that touched it, subjects and trailers only;
+the packet shows no decided text and no diff. The plan's texts (its
+summary and conditions, each check's and step's `say` and `command`, each
+file's `content`) are clipped and secret-scanned like every excerpt, and
+the size fit trims them too. Bounds: the whole JSON at most 64 KiB; each text at most 4,000
+characters; each statement context at most 1,200; transcript context reads
+share a 1.5 s budget; every cut is named in `limits.truncated`. Every text
+is secret-scanned and a hit becomes `[redacted: <rule>]`. One deny list,
+`attention_packet.SECRET_DENY` (paths under `~/.ssh`, `~/.gnupg`,
+`~/.claude/.credentials.json`, `~/.config/gh`, `~/.config/bws`,
+`~/.local/share/keyrings`, `<cache>/ui-token`, `$XDG_RUNTIME_DIR/self-learn`;
+basename globs `*.env`, `.env*`, `*credential*`, `*token*`, `*secret*`,
+`id_*`, `*.pem`, `*.key`, `.mcp.json`, `.netrc`, `hosts.yml`), serves the
+packet and the ask agent's read fence. A `look_at` path is kept only when it
+is absolute and exists, neither it nor its resolved target is under a deny
+path or has a deny name, it is not `/` or `$HOME`, and it is at least two
+components deep (below `$HOME` when under it); at most five are kept.
+
+**The workspace transcript** (`<ledger>/attention/workspace/<item-id>.jsonl`;
+the ref kind `workspace:<item-id>#T<n>`, rule 11 of §3a.6): row 0 a header,
+then one row per exchange (`role` user|agent|system; `origin`
+typed|clicked|draft-accepted|draft-edited|relayed|agent|system; `kind`
+question|answer|draft|reply|undo|redo|reopen|check-login|ran-sudo|run|fix|note).
+`workspace.append` takes `intents.ledger_write`, numbers rows under the
+lock, secret-scans each (a hit stores `text: null` and the rule in
+`redacted`), and commits. When the ledger is STOPPED it keeps the rows in
+`<cache>/workspace/<item-id>/pending.jsonl` (`t: null`); the next append
+that gets the lock seals them first, in order, and removes the file.
+
+**The other inbox files** (each append-only and committed):
+`attention/choices.jsonl` (`{id: chc-…, at, item, item_kind, subject, how,
+option, label, effect, text, draft_id, draft_text, offered_by, answers,
+source, statement, proof, recorded_by, note}`; a choice is never the
+person's words), `attention/feedback.jsonl` (`{id: fb-…, at, item, kind,
+class_shown, class_wanted, by: human, note}`; `attention feedback` is
+refused from an agent's shell, exit 64), `attention/outcomes.jsonl`
+(`{id: out-…, at, item, subject, result: done|failed, note, session, by}`),
+and `grant-uses.jsonl` (`{id: gu-…, at, verb, args, statement | proof,
+note, prior}`): `attribution.acting(granted, use=…)` appends one row as its
+own commit, right after the verb and while the authority is still in force
+(the verb itself runs under no outer lock span: the skill verbs push, and a
+lock never covers a push; each verb's own `ledger_write` keeps announcing
+its recovery), on a normal exit of a
+person-only verb run under an authority (`config set|unset` of a tier-C
+setting, `host add|set-mode|remove|rebind`, `skill write|retire|rename|veto`,
+and a registration under a proved yes, which cites its `proof`). `prior`,
+read before the verb acts, gives the inbox's undo its exact inverse.
+
+**Verbs** (this lane's; `answers` and `ask-agent` add theirs):
+`self-learn attention [--json] [--all]` (0, or 1 when the reader failed:
+the JSON is still printed with `state: broken`), `attention seen <id>... |
+--all-decided` (0, or 2 for an unknown id; cache write only), `attention
+packet <id> --json` (0, 1 build failed, 2 unknown id), `attention feedback
+<id> --wanted needs-you|decided|silent [--note TEXT]` (0, 2 unknown id, 64
+from an agent's shell). Neither `attention` nor `ask` ticks the miner
+watchdog.
 
 ## 4. Managed sections (the compile targets' contract)
 

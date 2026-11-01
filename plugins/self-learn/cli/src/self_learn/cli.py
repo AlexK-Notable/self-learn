@@ -56,6 +56,7 @@ from . import (
     cases,
     config,
     gitops,
+    grant_uses,
     grants,
     intents,
     miner,
@@ -81,7 +82,7 @@ from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
 from .index import cli as index_cli
 from .overseer import cli as overseer_cli
-from . import skill_cli
+from . import attention_cli, skill_cli
 from .overseer import conversation as overseer_conversation
 from .overseer import run as overseer_run
 from .ledger import (
@@ -1123,6 +1124,7 @@ def _build_parser() -> argparse.ArgumentParser:
     overseer_cli.add_parser(sub)
     index_cli.add_parser(sub)
     skill_cli.add_parser(sub)
+    attention_cli.add_parser(sub)
 
     steward_p = sub.add_parser(
         "steward", help="autonomous decision runner: run"
@@ -2471,6 +2473,29 @@ def _cmd_config_inner(args: argparse.Namespace, home: Path) -> int:
     return EXIT_USAGE
 
 
+def _config_prior(home: Path, name: str) -> str | None:
+    """The raw config.yaml value of setting *name* before a person-only
+    ``config set``/``unset`` changes it, in the form ``config set`` takes
+    (``1``/``0`` for a bool), or ``None`` when config.yaml has none: the
+    grant-use record's ``prior``, so the inbox's undo can restore it."""
+    try:
+        setting = settings.by_name(name)
+    except KeyError:
+        return None
+    if setting.config_section is None or setting.config_key is None:
+        return None
+    try:
+        found = config.settings_leaf(home, setting.config_section, setting.config_key)
+    except Exception:  # noqa: BLE001 -- a prior is a courtesy; the verb reports its own errors
+        return None
+    if found is None:
+        return None
+    value = found[1]
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return None if value is None else str(value)
+
+
 def _is_tier_c(name: str) -> bool:
     """Whether *name* is a tier-C (person-only) setting; an unknown name is
     not, and ``config set`` refuses it on its own terms."""
@@ -2518,9 +2543,20 @@ def _cmd_config(args: argparse.Namespace) -> int:
         except grants.GrantError as exc:
             print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
             return exc.exit_code
+    use = (
+        grant_uses.GrantUse(
+            home, f"config {args.config_command}",
+            [args.name, *([args.value] if args.config_command == "set" else [])],
+            prior=_config_prior(home, args.name),
+        )
+        if granted is not None else None
+    )
     try:
-        with attribution.acting(granted):
-            return _cmd_config_inner(args, home)
+        with attribution.acting(granted, use=use):
+            code = _cmd_config_inner(args, home)
+            if use is not None and code != EXIT_OK:
+                use.applies = False
+            return code
     except settings.UnknownSettingError as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -3397,9 +3433,18 @@ def _cmd_host(args: argparse.Namespace) -> int:
         except grants.GrantError as exc:
             print(f"self-learn host {args.host_command}: {exc}", file=sys.stderr)
             return exc.exit_code
+    use = (
+        grant_uses.GrantUse(
+            home, f"host {args.host_command}", _host_args(args), prior=_host_prior(home, args)
+        )
+        if granted is not None else None
+    )
     try:
-        with attribution.acting(granted):
-            return _cmd_host_inner(args, home)
+        with attribution.acting(granted, use=use):
+            code = _cmd_host_inner(args, home)
+            if use is not None and code != EXIT_OK:
+                use.applies = False
+            return code
     except gitops.HalfWrittenError as exc:
         return _report_half_written(f"host {args.host_command}", exc)
     except intents.LedgerStoppedError as exc:
@@ -3412,6 +3457,59 @@ def _cmd_host(args: argparse.Namespace) -> int:
     except gitops.GitOpsError as exc:  # lock timeout / wedged git: nothing written
         print(f"self-learn host {args.host_command}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
+
+
+def _host_args(args: argparse.Namespace) -> list[str]:
+    """The argv of a person-only ``host`` verb as its grant-use row keeps
+    it (attention round, design r2 §3.4.6): enough to run it again."""
+    command = args.host_command
+    if command == "add":
+        out = [str(args.path)]
+        if getattr(args, "skills_root", False):
+            out.append("--skills-root")
+        if getattr(args, "mode", None):
+            out += ["--mode", str(args.mode)]
+        return out
+    if command == "set-mode":
+        out = [str(args.path), str(args.mode)]
+        registration = getattr(args, "registration", None)
+        return out + ([f"--{registration}"] if registration else [])
+    if command == "remove":
+        out = [str(args.path)]
+        registration = getattr(args, "registration", None)
+        return out + ([f"--{registration}"] if registration else [])
+    return [str(getattr(args, "ref", "")), str(getattr(args, "new_path", ""))]
+
+
+def _host_prior(home: Path, args: argparse.Namespace) -> dict | None:
+    """The registration a person-only ``host`` verb is about to change, read
+    BEFORE it acts: ``{"kind", "path", "mode"}``, or ``None`` when the path
+    is not registered (the grant-use record's ``prior``, design r2
+    §3.4.6). Never raises: a prior is a courtesy for the inbox's undo."""
+    path = getattr(args, "path", None)
+    if path is None:
+        return None
+    try:
+        before = hosts_mod.load_hosts(home)
+        target = Path(path).expanduser().resolve()
+        wanted = getattr(args, "registration", None)
+        if args.host_command == "add":
+            wanted = "skills-root" if getattr(args, "skills_root", False) else "project"
+        kinds = [wanted] if wanted else ["project", "skills-root"]
+        for kind in kinds:
+            registered = (
+                hosts_mod.is_project_host(before, target) if kind == "project"
+                else before.skills_root is not None
+                and Path(before.skills_root).expanduser().resolve() == target
+            )
+            if registered:
+                return {
+                    "kind": kind, "path": str(target),
+                    "mode": hosts_mod.host_mode(home, target, registration=kind),
+                }
+    except Exception:  # noqa: BLE001 -- the verb reports its own errors
+        return None
+    return None
 
 
 def _report_half_written(surface: str, exc: gitops.HalfWrittenError) -> int:
@@ -5049,7 +5147,10 @@ def _main(argv: list[str] | None = None) -> int:
     # the home may not exist or may be unusable — ticking the miner
     # watchdog first spawned a detached run against a home `init` was
     # about to refuse.
-    if args.command not in ("mine", "init", "serve"):
+    # Attention round (design r2 §3.1, critique 15): `attention` (the tray
+    # polls it) and `ask` (the inbox's agent) never tick it either, so
+    # neither ever starts a mining run.
+    if args.command not in ("mine", "init", "serve", "attention", "ask"):
         try:
             # no_push is passed EXPLICITLY (BLOCKER D): this tick runs
             # before dispatch for every command, so `reject --no-push` used
@@ -5213,6 +5314,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "skill":
         return args._skill_dispatch(args)
+
+    if args.command == "attention":
+        return args._attention_dispatch(args)
 
     if args.command == "serve":
         return _cmd_serve(args)

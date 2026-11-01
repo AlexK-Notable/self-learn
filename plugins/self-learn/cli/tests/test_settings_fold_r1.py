@@ -209,6 +209,27 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "premises.backfill_per_night",  # S-104, tier C, default 10
         "premises.rotation_days",  # S-114, tier C, default 90
         "premises.rotation_per_night",  # S-114, tier C, default auto
+        "attention.terminal",  # attention round 2026-10-31c (design r2 §4.11)
+        "attention.class.hold-credentials",  # attention round: answer 7
+        "attention.class.hold-money",  # attention round: answer 7
+        "attention.class.broken-host",  # attention round: answer 7
+        "attention.class.broken-stopped",  # attention round: answer 7
+        "attention.class.broken-job",  # attention round: answer 7
+        "attention.class.conflict-case-tampered",  # attention round: answer 7
+        "attention.class.approved-pending",  # attention round: answer 7
+        "attention.class.decided-overseer-run",  # attention round: answer 7
+        "attention.class.decided-steward-run",  # attention round: answer 7
+        "attention.class.decided-always-loaded",  # attention round: answer 7
+        "attention.class.decided-hook-activated",  # attention round: answer 7
+        "attention.class.decided-ask-default",  # attention round: answer 7
+        "attention.class.decided-reading",  # attention round: answer 7
+        "attention.class.decided-grant-use",  # attention round: answer 7
+        "attention.class.decided-registration",  # attention round: answer 7
+        "attention.class.decided-skill",  # attention round: answer 7
+        "attention.class.decided-notice",  # attention round: answer 7
+        "attention.class.decided-withdrawn",  # attention round: answer 7
+        "attention.class.decided-approved-done",  # attention round: answer 7
+        "attention.class.decided-ledger-paths",  # attention round: answer 7
         "overseer.skill_writing",  # SK3 (S-107 part 6): on|off (auto reads as on), the rollback switch
         "overseer.skill_discovery",  # SK4 (S-107): phase S on or off, the user's switch
         "sdk.max_budget_usd",

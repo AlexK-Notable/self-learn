@@ -142,14 +142,13 @@ __all__ = [
 # --------------------------------------------------------------- vocab
 
 #: 02-schema.md §3a.2 frontmatter, `actor` — closed set, no alias. A case's
-#: actor is the tighter 3-name subset of `verbs.ROUTING_BY_VALUES`
-#: (`{human, analyst, agent, steward, overseer}`, widened by U1): a case
-#: is decided by a human or one of the two delegated decision-makers,
-#: never by `analyst`/`agent` directly (those write PROPOSALS, not
-#: decisions — §3a.1 rule 5 names the wider 5-name list for attribution
-#: FIELDS generally; this module pins the narrower set the spec's own
-#: case-frontmatter comment gives literally: "human | steward | overseer").
-ACTORS = frozenset({"human", "steward", "overseer"})
+#: actor is a subset of `verbs.ROUTING_BY_VALUES` (`{human, analyst,
+#: agent, steward, overseer}`, widened by U1): a case is recorded or
+#: observed by a human, one of the two delegated decision-makers, or an
+#: agent's shell (C7, attention round 2026-10-31c: `agent` joins so an
+#: agent never has to record its own act as the person's; the CLI stamps
+#: such a commit `By: agent`). Never `analyst` (it writes PROPOSALS).
+ACTORS = frozenset({"human", "steward", "overseer", "agent"})
 
 KINDS = frozenset({"resolution", "maintenance", "parked", "reconsider"})
 TRIGGERS = frozenset({"nightly", "reconsider", "maiden", "human", "weekly"})

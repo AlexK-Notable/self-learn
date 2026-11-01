@@ -59,7 +59,7 @@ from typing import TextIO
 
 from ruamel.yaml import YAML
 
-from .. import attribution, cases, consent, gitops, hosts, intents, sentinel, settings, statements, user_model
+from .. import attribution, cases, consent, gitops, grant_uses, hosts, intents, sentinel, settings, statements, user_model
 from ..primitives import chrono, fsops
 
 
@@ -786,7 +786,26 @@ def _carry_out_registration(
         # in place (it restores a plain host's missing marker, as before); an
         # agent's shell has nothing to do then, and no authority to do it with.
         if not already or (not set_mode and not settings.agent_caller()):
-            with attribution.acting(granted):
+            use = None
+            if granted is not None:
+                # Design r2 §3.4.6: the registration under a proved yes is a
+                # grant use too, citing its proof; its prior is read first.
+                use = grant_uses.GrantUse(
+                    home,
+                    "host set-mode" if set_mode else "host add",
+                    (
+                        [str(target), register["mode"], f"--{register['kind']}"] if set_mode
+                        else [str(target),
+                              *(["--skills-root"] if register["kind"] == "skills-root" else []),
+                              "--mode", register["mode"]]
+                    ),
+                    prior=(
+                        {"kind": register["kind"], "path": str(target),
+                         "mode": hosts.host_mode(home, target, registration=register["kind"])}
+                        if registered else None
+                    ),
+                )
+            with attribution.acting(granted, use=use):
                 if set_mode:
                     switched = hosts.host_set_mode(
                         home, register["path"], register["mode"],

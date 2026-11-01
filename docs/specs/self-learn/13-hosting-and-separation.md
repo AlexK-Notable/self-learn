@@ -958,6 +958,19 @@ secrets manager and never reads a key file itself. Without the file the
 index runs word-search only and its status says why. A unit edit is
 inert until the unit is reloaded and the host restarted.
 
+**The inbox's cache (S-NEXT-attention-core, 2026-10-31c).** The
+attention reader (`02-schema.md` §3a.11) keeps only cache here, never
+ledger truth: `attention/seen.json` (which items the person has seen; a
+lost file only shows items once more), `attention/registrations.json`
+(the plain registrations the inbox has seen and when each first appeared),
+`attention/login-ok.json` (a successful login check, which ends a
+`credentials` hold), `attention/claims/<id>.json` and
+`attention/runs/<id>.json` (approved work's claim and launch, written by
+later lanes), and `workspace/<item-id>/` (the ask agent's working directory
+and `pending.jsonl`, the workspace rows kept while the ledger is STOPPED,
+which `workspace.append` seals into the ledger and removes). Each writer is
+a `NOT_REPO_TRUTH` entry of the lock invariant.
+
 ## 7. Migration plan (ledger-first; worktree + pre-migration audit)
 
 - **T-H1 · Home bootstrap** — `~/.self-learn` git init, private remote,
