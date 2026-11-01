@@ -172,12 +172,14 @@ def test_an_answer_does_not_bring_back_a_case_that_did_not_defer(tmp_path):
     assert steward._reconsider_proposals(home)[0] == []
 
 
-def test_a_reply_to_a_reading_reopens_only_the_decisions_that_rest_on_it(tmp_path):
-    """S-NEXT-reopen (overseer notice ntc-bf6e631b): the live shape. Two
-    rejected lessons whose cases both list the reading um-…@r1 among their
-    dependencies; only the first case's `because` cites it. The user's reply
-    to the reading, recorded as a correction, brings back the first lesson
-    for the steward to reconsider and leaves the second decided."""
+def test_a_reply_to_a_reading_brings_no_lesson_back_to_the_steward(tmp_path):
+    """S-NEXT-reopen (the orchestrator's decision on overseer notice
+    ntc-bf6e631b): the live shape. Two rejected lessons whose cases both list
+    the reading um-…@r1 among their dependencies, the first case's `because`
+    citing it. The user's reply to the reading (the 2026-10-29 wording,
+    recorded as a correction) reopens neither: the overseer reads the reply
+    at its next run and reopens a case through its own `dependency-moved`
+    finding, which still brings the lesson back."""
     home = make_home(tmp_path)
     proposition = f"{_reading(home, 1)}@r1"
     decided: dict[str, str] = {}
@@ -201,11 +203,21 @@ def test_a_reply_to_a_reading_reopens_only_the_decisions_that_rest_on_it(tmp_pat
         [f"- {proposition}: confirm you prefer act-and-report with a veto"],
     )
     conversation.open_questions(home, out=io.StringIO())
-    conversation.respond(
+    result = conversation.respond(
         home, proposition=proposition, scope="user",
         text="yes, register variety variations. i don't read ci.",
     )
 
+    assert any(row["id"] == result.statement_id for row in statements.list_statements(home))
+    assert steward._reconsider_proposals(home)[0] == []
+
+    # Positive control: the overseer's own finding on the case that rested on
+    # the reading still reopens it.
+    cases.observe(
+        home, decided["lrn-d0a00011"], "dependency-moved",
+        text="the 10-29 reply narrows the reading this decision used", by="overseer",
+        ref=proposition,
+    )
     proposals = steward._reconsider_proposals(home)[0]
     assert [(entry.record.id, entry.predecessor) for entry, _card in proposals] == [
         ("lrn-d0a00011", decided["lrn-d0a00011"])

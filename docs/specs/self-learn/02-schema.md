@@ -2486,16 +2486,7 @@ dependency-moved | reconsider-queued | abandoned`. A `statement` or
 section-4 dependencies makes the CLI enqueue the case for the steward's next
 nightly run (a `kind: reconsider, trigger: reconsider` case, run through
 `reconsider`); the queue itself is cache, rebuildable from the observations.
-*(Amended 2026-11-01, S-NEXT-reopen.)* A user's reply to a reading (`overseer
-respond` on an indexed reading, `user replied to um-…@rN`) is observed only on
-a case whose decision's `because` cites that reading by its entry id (`um-…`,
-bare or with any revision). A case that merely lists the reading, or one of
-the statements the reading rests on, among its section-4 dependencies is not
-told and stays as decided: before, every such case reopened on any reply,
-and the overseer's 2026-11-01 run found decisions reopened that the reply
-could not change. A case whose decision cannot be read (it fails its
-freeze-hash check) is told as before; a case that depends on the reply's own
-statement always is.
+*(Amended 2026-11-01, S-NEXT-reopen, the orchestrator's decision.)* A user's reply to a reading (`overseer respond` on an indexed reading) tells no case. It is recorded as the person's words (a statement answering `um-…@rN` as a proposition), exactly as the inbox and `statement add --answers-kind proposition` record a correction, and the overseer's next run reads it among its corrections and reopens a case only through its own `dependency-moved` finding. Before, `respond` observed every case that listed the reading, or one of the statements it rests on, among its section-4 dependencies, and the steward reopened each; the overseer's 2026-11-01 run (notice `ntc-bf6e631b`) found decisions reopened that the reply could not change, and a check of the decision's `because` cannot tell a decision that mentions the reading from one that rests on it.
 
 **Two views.** `case show --evidence-only` is **blind by default** (no
 separate `--blind` flag): frontmatter reduced to exactly `case`, `opened_at`,

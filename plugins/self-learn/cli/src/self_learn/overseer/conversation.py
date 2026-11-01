@@ -1034,65 +1034,6 @@ def _set_presentation_outcome(
         hold.release()
 
 
-#: S-NEXT-reopen: a decision's `because` as `cases._render_decision` writes
-#: it, one `- because:` line up to the `- confidence:` line that always
-#: follows it.
-_BECAUSE_RE = re.compile(r"^- because: (?P<because>.*?)^- confidence: ", re.MULTILINE | re.DOTALL)
-
-
-def _decision_because(home: Path, case_id: str) -> str | None:
-    """The `because` of *case_id*'s decision, or None when it cannot be
-    read (the case fails its freeze-hash check, or has no `because` line)."""
-    try:
-        view = cases.show(home, case_id, evidence_only=False)
-    except cases.CaseError:
-        return None
-    match = _BECAUSE_RE.search(view.sections.get("Decision", ""))
-    return match.group("because") if match else None
-
-
-def _cites_reading(because: str, entry_id: str) -> bool:
-    """Whether *because* names the reading *entry_id* (`um-cea0`, bare or
-    with any revision, `um-cea0@r1`); a longer id that merely starts with it
-    (`um-cea01`, `um-cea0-old`) is not a citation."""
-    return re.search(rf"(?<![\w-]){re.escape(entry_id)}(?![\w-])", because) is not None
-
-
-def _dependent_cases(home: Path, proposition: str, statement_id: str) -> list[tuple[str, str]]:
-    """The cases a reply to the reading *proposition* is observed on, with
-    the dependency each is observed through.
-
-    S-NEXT-reopen (overseer notice ntc-bf6e631b, 2026-11-01): a case that
-    lists the reading, or one of the statements it rests on, among its
-    dependencies is told only when its decision's `because` cites the
-    reading. The observation is what brings the case back to the steward
-    (`steward._reconsider_proposals`), and a decision that never rested on
-    the reading has nothing for the reply to change; before, every listed
-    case reopened on any reply. A case whose decision cannot be read is
-    told as before; one that depends on the reply's own statement always
-    is."""
-    entry_id, _revision, entry = _entry_and_revision(home, proposition)
-    proposition_statement_refs = {
-        ref for ref in (entry.get("statements") or []) if isinstance(ref, str)
-    }
-    matches: list[tuple[str, str]] = []
-    for row in cases.list_cases(home, only_ok=True):
-        refs = row.get("dependency_refs") or []
-        ref = proposition if proposition in refs else None
-        if ref is None:
-            ref = next((candidate for candidate in refs if candidate in proposition_statement_refs), None)
-        if ref is None and statement_id in refs:
-            matches.append((row["case"], statement_id))
-            continue
-        if ref is None:
-            continue
-        because = _decision_because(home, row["case"])
-        if because is not None and not _cites_reading(because, entry_id):
-            continue
-        matches.append((row["case"], ref))
-    return matches
-
-
 _PLAIN_YES_RE = consent.PLAIN_YES_RE
 
 
@@ -1454,19 +1395,18 @@ def respond(
         return ResponseResult(
             statement_id, tuple(row["cases"]), registration=registration, registered=registered
         )
-    dependent = _dependent_cases(resolved, proposition, statement_id)
-    for case_id, dependency_ref in dependent:
-        cases.observe(
-            resolved,
-            case_id,
-            "statement",
-            text=f"user replied to {proposition}",
-            by="overseer",
-            ref=dependency_ref,
-        )
+    # S-NEXT-reopen (the orchestrator's decision, 2026-11-01, on the
+    # overseer's notice ntc-bf6e631b): a reply to a reading tells no case,
+    # the same as a correction from the inbox or `statement add
+    # --answers-kind proposition`. The statement above is the record; the
+    # overseer reads it at its next run and reopens a case only through its
+    # own `dependency-moved` finding. Before, every case listing the reading
+    # (or one of its statements) among its dependencies was observed and the
+    # steward reopened each, whether or not its decision rested on the
+    # reading, which no text check can tell.
     outcome = "agreed" if text.strip().casefold() in {"yes", "agreed", "correct"} else "corrected"
     _set_presentation_outcome(resolved, presentations, outcome)
-    return ResponseResult(statement_id, tuple(case_id for case_id, _ in dependent))
+    return ResponseResult(statement_id)
 
 
 def decline(home: Path | str, *, proposition: str) -> ResponseResult:

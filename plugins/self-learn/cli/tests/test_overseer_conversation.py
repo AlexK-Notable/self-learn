@@ -12,6 +12,7 @@ from ruamel.yaml import YAML
 from self_learn import cases, settings, statements, user_model
 from self_learn.overseer import conversation
 from self_learn.overseer import cli as overseer_cli
+from self_learn.overseer import run as overseer_run
 from support import commit_all, make_home
 
 
@@ -223,20 +224,19 @@ def test_open_records_nothing_when_the_print_does_not_complete(tmp_path):
     assert cases.show(home, case_id, evidence_only=False).frontmatter["presented"] == []
 
 
-def test_respond_preserves_words_scope_question_version_and_only_observes_dependencies(tmp_path):
+def test_respond_preserves_words_scope_question_version_and_observes_no_case(tmp_path):
     home = make_home(tmp_path)
     entry = _reading(home, 1)
     proposition = f"{entry}@r1"
-    # S-NEXT-reopen: each observed case's decision rests on the reading, and
-    # its `because` says so by citing it.
+    # S-NEXT-reopen (the orchestrator's decision, 2026-11-01): a reply to a
+    # reading tells no case -- not one that lists the reading, not one that
+    # lists a statement the reading rests on, not even one whose `because`
+    # cites the reading.
     direct = _case(
         home, tmp_path, "1", {"user_model": [proposition]},
         because=f"the reading {proposition} decides this",
     )
-    by_statement = _case(
-        home, tmp_path, "2", {"statements": ["stmt-00000001"]},
-        because=f"stmt-00000001, read as {entry}, decides this",
-    )
+    by_statement = _case(home, tmp_path, "2", {"statements": ["stmt-00000001"]})
     unrelated = _case(home, tmp_path, "3", {"user_model": ["um-dead@r1"]})
     displayed = f"- {proposition}: Does this apply to every repository?"
     _report_and_index(home, [{"id": proposition, "cases": [direct]}], [displayed])
@@ -245,6 +245,11 @@ def test_respond_preserves_words_scope_question_version_and_only_observes_depend
         cid: cases.show(home, cid, evidence_only=False)
         for cid in (direct, by_statement, unrelated)
     }
+    # Positive control: the reading and its statement are dependencies the
+    # old rule observed through.
+    rows = {row["case"]: row for row in cases.list_cases(home, only_ok=True)}
+    assert proposition in rows[direct]["dependency_refs"]
+    assert "stmt-00000001" in rows[by_statement]["dependency_refs"]
 
     result = conversation.respond(
         home,
@@ -266,112 +271,19 @@ def test_respond_preserves_words_scope_question_version_and_only_observes_depend
     assert stored["source"]["message_ref"].startswith("conversation:obs-")
 
     after = {cid: cases.show(home, cid, evidence_only=False) for cid in before}
-    assert set(result.observed_cases) == {direct, by_statement}
-    assert f"(ref: {proposition})" in after[direct].sections["Later observations"]
-    assert "(ref: stmt-00000001)" in after[by_statement].sections["Later observations"]
-    assert " statement:" not in after[unrelated].sections["Later observations"]
+    assert result.observed_cases == ()
     for cid in before:
+        assert " statement:" not in after[cid].sections["Later observations"], cid
         assert after[cid].frontmatter["decided_sha256"] == before[cid].frontmatter["decided_sha256"]
         for section in ("Identity and scope", "Evidence", "Decision", "Dependencies"):
             assert after[cid].sections[section] == before[cid].sections[section]
+    # The presentation still records how the user answered it.
     assert after[direct].frontmatter["presented"][-1]["outcome"] == "corrected"
-
-
-def test_a_reply_to_a_reading_reaches_only_the_cases_whose_because_cites_it(tmp_path):
-    """S-NEXT-reopen (overseer notice ntc-bf6e631b, run 92d6fec6): the user's
-    2026-10-29 reply to um-cea0@r1 was logged as a correction and observed
-    on every case listing the reading among its dependencies, or one of the
-    statements the reading rests on, and the steward then reopened them
-    (live: case-ce3b2130 and case-7f71d792, whose decisions cite neither the
-    reading nor anything the reply changed). A case is told only when its
-    decision's `because` cites the reading; any other stays as decided."""
-    home = make_home(tmp_path)
-    entry = _reading(home, 1)
-    proposition = f"{entry}@r1"
-    cites_versioned = _case(
-        home, tmp_path, "1", {"user_model": [proposition]},
-        because=f"the user prefers action with a veto ({proposition}), so I decide now",
-    )
-    cites_bare = _case(
-        home, tmp_path, "2", {"user_model": [proposition]},
-        because=f"my reading {entry} is why this is not deferred",
-    )
-    lists_only = _case(
-        home, tmp_path, "3", {"user_model": [proposition]},
-        because="the guard's own denial text contradicts the lesson's claim",
-    )
-    statement_only = _case(
-        home, tmp_path, "4", {"statements": ["stmt-00000001"]},
-        because="the placement rests on stmt-00000001 and the skill file",
-    )
-    # A longer id that starts with the reading's own is not a citation of it.
-    lookalike = _case(
-        home, tmp_path, "5", {"user_model": [proposition]},
-        because=f"see {entry}0 and {entry}-old, which are other things",
-    )
-    every = (cites_versioned, cites_bare, lists_only, statement_only, lookalike)
-    _report_and_index(
-        home, [{"id": proposition, "kind": "reading", "cases": list(every)}],
-        [f"- {proposition}: confirm you prefer act-and-report with a veto"],
-    )
-    conversation.open_questions(home, out=io.StringIO())
-    # Positive control: every case listed the reading (or its statement) as a
-    # dependency, so the old rule would have told all five.
-    rows = {row["case"]: row for row in cases.list_cases(home, only_ok=True)}
-    for case_id in every:
-        assert {proposition, "stmt-00000001"} & set(rows[case_id]["dependency_refs"]), case_id
-
-    result = conversation.respond(
-        home, proposition=proposition, scope="user",
-        text="yes, register variety variations. i don't read ci.",
-    )
-
-    assert set(result.observed_cases) == {cites_versioned, cites_bare}
-    for case_id in every:
-        observations = cases.show(home, case_id, evidence_only=False).sections["Later observations"]
-        replied = f"overseer statement: user replied to {proposition}" in observations
-        assert replied is (case_id in {cites_versioned, cites_bare}), case_id
-    # The reply itself is recorded whoever was told.
-    stored = next(row for row in statements.list_statements(home) if row["id"] == result.statement_id)
-    assert stored["answers"]["ref"] == proposition
-
-
-def test_a_case_whose_decision_cannot_be_read_is_told_as_before(tmp_path, monkeypatch):
-    """S-NEXT-reopen: when a dependent case's decision cannot be read, the
-    reply cannot be checked against its `because`, so the case is told as it
-    was before the narrowing (a re-examination costs less than a stale
-    decision nobody looks at again)."""
-    home = make_home(tmp_path)
-    entry = _reading(home, 1)
-    proposition = f"{entry}@r1"
-    unreadable = _case(
-        home, tmp_path, "1", {"user_model": [proposition]}, because="nothing about the reading",
-    )
-    readable = _case(
-        home, tmp_path, "2", {"user_model": [proposition]}, because="nothing about the reading",
-    )
-    # The reading was shown on the readable case only, so the presentation
-    # lookup never reads the unreadable one.
-    _report_and_index(
-        home, [{"id": proposition, "kind": "reading", "cases": [readable]}],
-        [f"- {proposition}: Apply everywhere?"],
-    )
-    conversation.open_questions(home, out=io.StringIO())
-    real_show = cases.show
-    asked: list[str] = []
-
-    def show(home_arg, case_id, *, evidence_only=True):
-        asked.append(case_id)
-        if case_id == unreadable:
-            raise cases.CaseError(f"case show: {case_id} failed its freeze-hash check")
-        return real_show(home_arg, case_id, evidence_only=evidence_only)
-
-    monkeypatch.setattr(cases, "show", show)
-
-    result = conversation.respond(home, proposition=proposition, scope="user", text="No.")
-
-    assert unreadable in asked  # control: its decision was looked for
-    assert result.observed_cases == (unreadable,)
+    # The overseer's next run is handed the reply as a correction of the reading.
+    offered = [row for row in overseer_run._question_answers(home, since=None)
+               if row["id"] == result.statement_id]
+    assert offered and offered[0]["kind"] == "proposition" and offered[0]["ref"] == proposition
+    assert offered[0]["verbatim"] == "Only this repository, while its deployment stays manual."
 
 
 @pytest.mark.parametrize("scope", ["", "project:"])
