@@ -560,3 +560,27 @@ def test_a_summary_rolled_forward_after_a_crash_does_not_ask_for_a_recompile(
     assert "rolled forward: its commit landed" in err
     assert "recompile" not in err
     assert git(home, "status", "--porcelain").stdout.strip() == ""
+
+
+def test_two_summaries_ending_together_keep_both_journal_rows(monkeypatch, home):
+    """Gate r1 NIT 2. The rewrite is made slow so two writers overlap.
+    Mutation: drop the journal's flock -> red (a row is lost)."""
+    import threading
+    import time as _time
+
+    real = summarise._write_cache  # noqa: SLF001
+
+    def slow(path, text):
+        _time.sleep(0.2)
+        real(path, text)
+
+    monkeypatch.setattr(summarise, "_write_cache", slow)
+    threads = [threading.Thread(target=summarise._journal, args=(home, {"n": n}))  # noqa: SLF001
+               for n in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    rows = [json.loads(line) for line in
+            summarise.journal_path(home).read_text(encoding="utf-8").splitlines()]
+    assert sorted(r["n"] for r in rows) == [0, 1]
