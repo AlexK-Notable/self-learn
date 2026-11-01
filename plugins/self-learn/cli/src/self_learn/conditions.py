@@ -135,6 +135,31 @@ _STEWARD_RUN_KEYS = ("last_run_at", "last_run_outcome", "cases_since_overseer")
 _OVERSEER_RUN_KEYS = ("last_run_at", "last_examined_at")
 
 
+#: Row fields of `report.gather` that carry lesson BODY text, per report
+#: key. `02-schema.md` §3a.5 withholds lesson bodies from the feed (they
+#: arrive through the brief, §3a.8). S-135 (the humane UI, lane 0) gave
+#: `routed_live` and `recurrence_suspects` rows a `title` -- the first
+#: line of the lesson's Trigger/Fact section (`ledger_ops.record_title`)
+#: -- for the UI's pages; the feed drops it and keeps the row's ids,
+#: places and counts.
+_BODY_FIELDS: dict[str, tuple[str, ...]] = {
+    "routed_live": ("title",),
+    "recurrence_suspects": ("title",),
+}
+
+
+def _withhold_bodies(key: str, value: Any) -> Any:
+    """*value* with :data:`_BODY_FIELDS`'s fields removed from each row;
+    a value that is not a list of rows (``"unavailable"``) passes."""
+    fields = _BODY_FIELDS.get(key)
+    if not fields or not isinstance(value, list):
+        return value
+    return [
+        {k: v for k, v in row.items() if k not in fields} if isinstance(row, dict) else row
+        for row in value
+    ]
+
+
 def _report_items(home: Path, observed_at: str) -> list[Item]:
     source = "report.gather(home)"
     try:
@@ -145,7 +170,7 @@ def _report_items(home: Path, observed_at: str) -> list[Item]:
             for k in _REPORT_KEYS
         ]
     return [
-        Item(f"report.{k}", facts.get(k, "unavailable"), observed_at, source)
+        Item(f"report.{k}", _withhold_bodies(k, facts.get(k, "unavailable")), observed_at, source)
         for k in _REPORT_KEYS
     ]
 
