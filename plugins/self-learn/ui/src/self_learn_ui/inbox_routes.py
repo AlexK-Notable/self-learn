@@ -41,7 +41,7 @@ from fastapi.responses import HTMLResponse, Response
 
 import self_learn.primitives.chrono as chrono
 
-from . import ledger, uilog
+from . import ledger, report_view, summary_routes, uilog
 from .ask_runner import AskRunner, build_ask_runner
 from .keymap import ARMED_HOW, INBOX_HELP_INTRO, inbox_keymap_as_dicts, inbox_keymap_json
 from .runner import RunResult
@@ -542,6 +542,252 @@ def _group(items: list[dict]) -> dict[str, list[dict]]:
     return out
 
 
+# ------------------------------------------------------------------ the list in time groups
+#
+# Humane UI lane 3 (proposal §4): under "Needs you" and "Being carried out",
+# the decided items stand in time groups -- Today, Earlier this week, Older --
+# and the nightly reviews already seen fold into one row per group. The
+# order inside a group is still :func:`inbox_order`'s (unseen flagged, then
+# unseen, then seen newest first), and the item that opens first is still
+# the first by :func:`inbox_order` over the whole inbox.
+
+#: The time groups of decided items, in page order: (key, heading).
+TIME_GROUPS = (("today", "Today"), ("week", "Earlier this week"), ("older", "Older"))
+#: Who did it, in the list's meta line (``source.by``).
+BY_WORDS = {"steward": "steward", "overseer": "overseer", "agent": "an agent",
+            "code": "self-learn", "human": "you"}
+#: The fewest seen nightly reviews a group folds into one row.
+FOLD_MIN = 2
+
+
+def _now() -> datetime:
+    """The reference instant for the time groups (a seam for the tests)."""
+    return datetime.now(timezone.utc)
+
+
+def _when(item: dict) -> datetime | None:
+    return _parse(item.get("updated_at") or item.get("since"))
+
+
+def _time_group(item: dict, now: datetime) -> str:
+    when = _when(item)
+    if when is None:
+        return "older"
+    local_now, local = now.astimezone(), when.astimezone()
+    if local.date() == local_now.date():
+        return "today"
+    if chrono.age_days(when, now) < 7:
+        return "week"
+    return "older"
+
+
+def _when_words(item: dict, now: datetime) -> str:
+    """The list's time: "03:52" today, "Sat 31 Oct" before."""
+    when = _when(item)
+    if when is None:
+        return ""
+    local = when.astimezone()
+    if local.date() == now.astimezone().date():
+        return local.strftime("%H:%M")
+    return f"{local.strftime('%a')} {local.day} {local.strftime('%b')}"
+
+
+def _day_span(items: list[dict]) -> str:
+    """"26–31 Oct", "28 Sep – 3 Oct", or "1 Nov" for one day."""
+    days = sorted({w.astimezone().date() for w in (_when(i) for i in items) if w is not None})
+    if not days:
+        return ""
+    first, last = days[0], days[-1]
+    if first == last:
+        return f"{first.day} {first.strftime('%b')}"
+    if (first.year, first.month) == (last.year, last.month):
+        return f"{first.day}–{last.day} {last.strftime('%b')}"
+    return f"{first.day} {first.strftime('%b')} – {last.day} {last.strftime('%b')}"
+
+
+def _list_row(item: dict, now: datetime) -> dict:
+    by = (item.get("source") or {}).get("by") if isinstance(item.get("source"), dict) else None
+    return {**item, "by_words": BY_WORDS.get(str(by), str(by or "")),
+            "when_words": _when_words(item, now)}
+
+
+def _fold_rows(items: list[dict], selected: str | None, now: datetime) -> list[dict]:
+    """The rows of one time group: each item, except that the nightly
+    reviews (``decided.steward-run``) not flagged for attention, when there
+    are at least :data:`FOLD_MIN` of them, become one fold row where the
+    first of them stood. Seen or not: on the live inbox of 1 November all 30
+    nightly reviews were unseen, so folding only the seen ones folded
+    nothing. The fold says how many are not seen yet, and each row inside
+    keeps its own mark. A fold holding the selected item is drawn open."""
+    folded = [i for i in items if i.get("kind") == "decided.steward-run" and not i.get("flagged")]
+    if len(folded) < FOLD_MIN:
+        return [{"item": _list_row(i, now)} for i in items]
+    folded_ids = {str(i.get("id")) for i in folded}
+    unseen = sum(1 for i in folded if not i.get("seen"))
+    count = len(folded)
+    rows: list[dict] = []
+    placed = False
+    for item in items:
+        if str(item.get("id")) in folded_ids:
+            if not placed:
+                placed = True
+                rows.append({"fold": {
+                    "label": f"Nightly reviews, {_day_span(folded)}",
+                    "meta": (f"{count} reviews, all seen" if not unseen
+                             else f"{count} reviews, {unseen} not seen yet"),
+                    "unseen": unseen,
+                    "items": [_list_row(i, now) for i in folded],
+                    "open": any(i.get("id") == selected for i in folded),
+                }})
+            continue
+        rows.append({"item": _list_row(item, now)})
+    return rows
+
+
+def list_sections(items: list[dict], selected: str | None, now: datetime | None = None) -> list[dict]:
+    """The list's sections in page order: ``needs-you`` (always, so an
+    empty one can say so), ``approved`` (when any), then the time groups
+    that hold an item. Each section has ``key``, ``title`` and ``rows``
+    (``{"item": …}`` or ``{"fold": …}``)."""
+    now = now or _now()
+    ordered = sorted(items, key=inbox_order)
+    needs = [i for i in ordered if i.get("class") == "needs-you"]
+    approved = [i for i in ordered if i.get("class") == "approved"]
+    rest = [i for i in ordered if i.get("class") not in ("needs-you", "approved")]
+    out: list[dict] = [{"key": "needs-you", "title": "Needs you",
+                        "rows": [{"item": _list_row(i, now)} for i in needs]}]
+    if approved:
+        out.append({"key": "approved", "title": "Being carried out",
+                    "rows": [{"item": _list_row(i, now)} for i in approved]})
+    for key, title in TIME_GROUPS:
+        group = [i for i in rest if _time_group(i, now) == key]
+        if group:
+            out.append({"key": key, "title": title, "rows": _fold_rows(group, selected, now)})
+    return out
+
+
+# ------------------------------------------------------------------ words for the item page
+#
+# Humane UI lane 3 (proposal §4): a case is told once -- Question, Decision
+# in words, Because -- and a nightly review lists each decision on one line.
+# The groups are ``self_learn.series.OUTCOME_GROUPS`` (the charts' groups);
+# the words for them are contract §4's.
+
+#: A case's outcome verb in words.
+VERB_WORDS = {
+    "route": "Put to use", "replaced": "Replaced with a new version", "rehome": "Moved",
+    "revise": "Reworded", "reject": "Turned down", "retire": "Retired",
+    "defer": "Left for later", "parked": "Left for the weekly check",
+    "no-action": "Looked at, kept as is",
+    # The Decision section's own verbs (a case's frontmatter `outcome` uses
+    # the words above; its "- verb:" line sometimes these).
+    "replace": "Replaced with a new version", "rescope": "Moved to another place",
+    "note": "A note added", "premises": "Recorded what it rests on",
+    "premises set": "Recorded what it rests on", "confirm-held": "Confirmed it still holds",
+    "confirm-recurrence": "Confirmed it came up again",
+    "dismiss-suspect": "A suspected repeat set aside", "supersede": "Replaced with a new version",
+    "propose a skill": "A skill proposed",
+}
+#: An outcome group in words (contract §4).
+GROUP_WORDS = {"use": "Put to use", "no": "Turned down", "later": "Left for later",
+               "kept": "Looked at, kept as is"}
+#: A nightly review's groups: the four above, plus the decisions that were
+#: not carried out (gate r1 MAJOR 1: what the steward meant is never counted
+#: as done; gate r2 NIT E: refused is only one of the reasons).
+RUN_GROUP_WORDS = {**GROUP_WORDS, "refused": "Not carried out, nothing changed"}
+#: Why one decision was not carried out (the CLI row's ``not_done``), in
+#: words; each says nothing changed, which is what the run record shows.
+NOT_DONE_WORDS = {
+    "refused": "Refused by the ledger, nothing changed",
+    "unfinished": "Not finished yet, it will be tried again",
+    "failed": "Failed when it was applied, nothing changed",
+    "stopped": "Stopped before it was applied, nothing changed",
+    "not-attempted": "Never attempted, nothing changed",
+}
+#: A decision not carried out whose reason is not one of the above.
+NOT_DONE_FALLBACK = "Not carried out, nothing changed"
+#: A case's ``confidence`` in words.
+CONFIDENCE_WORDS = {"settled": "held firmly", "firm": "held firmly", "provisional": "provisional",
+                    "moderate": "held moderately", "tentative": "tentative"}
+#: A lesson's status in words.
+STATUS_WORDS = {"pending": "Waiting for a decision", "routed": "In use", "rejected": "Turned down",
+                "deferred": "Left for later", "superseded": "Replaced", "retired": "Retired"}
+#: Where a lesson is placed, in words (unknown values show as recorded).
+PLACEMENT_WORDS = {"claude-md": "in your instructions", "skill-md": "in a skill",
+                   "new-skill": "in a new skill", "hook": "as a warning hook",
+                   "rules": "in a rules file", "reference": "in a reference file",
+                   "user": "in your instructions"}
+#: The most decision lines a nightly review shows before "Show all".
+RUN_LINES_SHOWN = 6
+
+
+def run_view(packet: dict | None) -> dict | None:
+    """The page's view of a nightly review's ``run`` block (built by the CLI's
+    packet, counted there): the decision lines, and the split bar's segments
+    as fractions of 1,000 for a server-drawn SVG, in group order, with a 2-unit
+    gap between segments. Nothing is counted here; the counts are the CLI's."""
+    run = (packet or {}).get("run")
+    if not isinstance(run, dict):
+        return None
+    raw_counts = run.get("counts")
+    counts: dict = raw_counts if isinstance(raw_counts, dict) else {}
+    groups = [(g, int(counts.get(g) or 0)) for g in RUN_GROUP_WORDS
+              if g in GROUP_WORDS or int(counts.get(g) or 0)]
+    total = sum(n for _, n in groups)
+    segments: list[dict] = []
+    x = 0.0
+    shown = [(g, n) for g, n in groups if n]
+    gap = 4.0
+    width_all = 1000.0 - gap * max(0, len(shown) - 1)
+    for g, n in shown:
+        width = width_all * n / total
+        segments.append({"group": g, "count": n, "x": round(x, 2), "width": round(width, 2),
+                         "words": RUN_GROUP_WORDS[g]})
+        x += width + gap
+    decisions = [d for d in run.get("decisions") or [] if isinstance(d, dict)]
+    return {
+        "decisions": decisions, "shown": decisions[:RUN_LINES_SHOWN],
+        "rest": decisions[RUN_LINES_SHOWN:], "groups": groups, "total": total,
+        "other": int(run.get("other") or 0), "segments": segments, "error": run.get("error"),
+        "omitted": int(run.get("omitted") or 0),
+        "omitted_words": _omitted_words(run.get("omitted_groups")),
+    }
+
+
+def _omitted_words(groups: object) -> str:
+    """"12 put to use and 3 turned down": the rows the CLI left out of the
+    packet, by group, in the groups' order (gate r2 MINOR B)."""
+    counts = groups if isinstance(groups, dict) else {}
+    short = {"refused": "not carried out", "use": "put to use", "no": "turned down",
+             "later": "left for later", "kept": "kept as is"}
+    parts = []
+    for group, words in short.items():
+        n = counts.get(group)
+        if isinstance(n, int) and n > 0:
+            parts.append(f"{n} {words}")
+    if len(parts) > 1:
+        return ", ".join(parts[:-1]) + " and " + parts[-1]
+    return parts[0] if parts else ""
+
+
+def more_words(more: object) -> str:
+    """"12 more lessons, 30 cases and 7 of your statements": the kinds in
+    ``packet.more``, counted for the sentence that folds their ids away."""
+    rows = [m for m in more if isinstance(m, dict)] if isinstance(more, list) else []
+    nouns = {"lesson": ("lesson", "lessons"), "case": ("case", "cases"),
+             "statement": ("of your statements", "of your statements")}
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[str(row.get("kind"))] = counts.get(str(row.get("kind")), 0) + 1
+    parts = []
+    for kind, n in counts.items():
+        one, many = nouns.get(kind, (kind, kind))
+        parts.append(f"{n} {one if n == 1 else many}")
+    if len(parts) > 1:
+        return ", ".join(parts[:-1]) + " and " + parts[-1]
+    return parts[0] if parts else ""
+
+
 def _view_item(item: dict) -> dict:
     """The item plus the words the templates need."""
     return {**item, "chip": _chip(item), "age": _age_words(item.get("since"))}
@@ -580,6 +826,14 @@ def _render(request: Request, name: str, ctx: dict[str, Any], status_code: int =
         # the same steps (keymap.ARMED_HOW is the one string).
         "armed_how": ARMED_HOW,
         "inbox_help_intro": INBOX_HELP_INTRO,
+        "verb_words": VERB_WORDS,
+        "group_words": RUN_GROUP_WORDS,
+        "not_done_words": NOT_DONE_WORDS,
+        "not_done_fallback": NOT_DONE_FALLBACK,
+        "confidence_words": CONFIDENCE_WORDS,
+        "status_words": STATUS_WORDS,
+        "placement_words": PLACEMENT_WORDS,
+        "more_words": more_words,
         **ctx,
     }
     return _templates(request).TemplateResponse(request, name, context, status_code=status_code)
@@ -609,6 +863,7 @@ def _list_ctx(read: ledger.CliRead, selected: str | None) -> dict[str, Any]:
     reader_error = read.error or data.get("error")
     return {
         "groups": groups,
+        "sections": list_sections(items, selected),
         "selected_id": selected,
         "counts": data.get("counts") or {},
         "reader_error": reader_error,
@@ -660,6 +915,9 @@ def _workspace_ctx(
         "key_hints": key_hints(view_options) if item.get("state") != "awaiting-sudo" else [],
         "launch_unclaimed": launch_unclaimed(item),
         "packet": packet,
+        "run": run_view(packet),
+        # Humane UI lane 5: the "In short" box of a report item (read only).
+        "in_short": summary_routes.box_for_item(request, item, packet, deferred=deferred),
         "packet_error": None if packet_read is None or packet_read.data is not None else packet_read.error,
         "deferred": deferred,
         "options": view_options,
@@ -836,12 +1094,67 @@ async def inbox_conversation(request: Request, item_id: str) -> HTMLResponse:
                    {"item": _view_item(item), **_conversation_ctx(request, item)})
 
 
+_CASE_ID_RE = re.compile(r"case-[0-9a-f]{8}")
+
+
+@router.get("/inbox/case/{case_id}", response_class=HTMLResponse)
+async def inbox_case(request: Request, case_id: str, not_done: str | None = None) -> HTMLResponse:
+    """One case, told once, for a nightly review's "Why?" (humane UI lane 3,
+    gate r1 MAJOR 3: the packet's decision rows carry only a short reason, so
+    the full reason is read here when asked). Read-only: ``cases.show``'s
+    full view, which re-checks the freeze hash and refuses a tampered case.
+
+    Gate r2: everything shown passes ``attention_packet.redact_text``, as
+    every packet path does (MINOR A); the decision is worded as its line
+    words it -- the frontmatter ``outcome`` first, and ``not_done`` (one of
+    the CLI's reasons, passed by the line) says it was not carried out (NIT
+    C); "Because" reads without ids or line references, and an error is said
+    in words with the raw text folded for an agent (NIT D). The id must match
+    whole (NIT G)."""
+    if not _CASE_ID_RE.fullmatch(case_id):
+        return _render(request, "partials/workspace_case.html",
+                       {"case": None, "case_error": "no such case"}, status_code=404)
+    reason = not_done if not_done in NOT_DONE_WORDS else None
+
+    def read() -> tuple[dict | None, str | None]:
+        from self_learn import cases
+        from self_learn.attention_packet import plain_reason, redact_text
+
+        try:
+            view = cases.show(_home(request), case_id, evidence_only=False)
+        except Exception as exc:  # noqa: BLE001 -- a missing or tampered case says so
+            return None, redact_text(str(exc))
+        sections = view.sections
+        decision = sections.get("Decision") or ""
+
+        def line(text: str, key: str) -> str | None:
+            for row in text.splitlines():
+                if row.strip().startswith(f"- {key}:"):
+                    return redact_text(row.strip()[len(key) + 3:].strip()) or None
+            return None
+
+        outcome = view.frontmatter.get("outcome")
+        body = "\n\n".join(f"## {k}\n{v}" for k, v in sections.items())
+        return {"id": case_id, "question": line(sections.get("Identity and scope") or "", "question"),
+                "verb": (outcome if isinstance(outcome, str) and outcome else None) or line(decision, "verb"),
+                "not_done": reason,
+                "confidence": line(decision, "confidence"), "because": plain_reason(line(decision, "because")),
+                "excerpt": redact_text(body)}, None
+
+    case, error = await asyncio.to_thread(read)
+    return _render(request, "partials/workspace_case.html", {"case": case, "case_error": error},
+                   status_code=200 if case else 404)
+
+
 @router.get("/overseer-report", response_class=HTMLResponse)
 @router.get("/overseer-report/{date}", response_class=HTMLResponse)
 async def overseer_report(request: Request, date: str | None = None) -> HTMLResponse:
     text, error = ledger.overseer_report(_home(request), date)
+    view = report_view.build(text, _home(request)) if text is not None else None
     return _render(request, "overseer_report.html", {
-        "report_text": text, "report_error": error, "date": date,
+        "report_text": text, "report_error": error, "date": date, "view": view,
+        # Humane UI lane 5: the "In short" box (read only).
+        "in_short": summary_routes.box_for_report(request, text, date),
         "dates": ledger.overseer_report_dates(_home(request)),
     }, status_code=200 if text is not None or date is None else 404)
 

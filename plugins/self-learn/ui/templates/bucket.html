@@ -3,13 +3,9 @@
 {% block page_kind %}bucket{% endblock %}
 {% block body_attrs %} data-bucket="{{ model.bucket }}"{% endblock %}
 
-{% block status_strip %}
-<div class="status-strip">
-  <span class="brand">self-learn</span>
-  <a data-key-action="up" href="/" title="Back to the front page (Esc or h)">&larr; Front</a>
-  <span class="status-item" title="The bucket you're reviewing, and where its lessons apply">{{ model.bucket }} ({{ model.scope }})</span>
-</div>
-{% endblock %}
+{# Humane lane 1 (proposal §2): no page-own strip any more. The shared
+   header's Home link carries the `up` key action on this page (base.html),
+   and the place's own name heads the content below. #}
 
 {% block content %}
 {% if notice == "resolved-elsewhere" %}
@@ -32,6 +28,18 @@
    proposal region are both stable swap targets. #}
 <div class="bucket-grid">
 <div class="bucket-left">
+
+{# Humane lane 1 (proposal §2/§10): the place's own name (lane 0's
+   `label`, never the directory slug) heads the page, and an empty place
+   says so in words instead of showing a blank column. #}
+<div class="place-head">
+  <h1 class="place-title">{{ place.label if place is defined and place else model.bucket }}</h1>
+  {% if place is defined and place and place.path %}<p class="place-path">{{ place.path }}</p>{% endif %}
+</div>
+{% if not model.groups and not model.clusters %}
+{% set _in_use = model.archive | length %}
+<p class="place-empty">Nothing is waiting here.{% if _in_use %} {{ _in_use }} rule{{ "s" if _in_use != 1 else "" }} from here {{ "is" if _in_use == 1 else "are" }} in use; {{ "it is" if _in_use == 1 else "they are" }} listed under &ldquo;Routed here&rdquo; below.{% endif %}{% if replaced_here %} {{ replaced_here }} earlier rule{{ "s" if replaced_here != 1 else "" }} from here {{ "was" if replaced_here == 1 else "were" }} later replaced or retired.{% endif %}</p>
+{% endif %}
 
 {% if bucket_proposal %}
   {% with proposal=bucket_proposal, kind="bucket", verb_label=proposal_verb_label, error=None %}
@@ -111,7 +119,7 @@
        grouping; the armable dest is always scope-valid. #}
     {# A1 (O-2 c): scope=model.scope threaded explicitly (one bucket page
        = one scope) — mirrors detail.html's include site. #}
-    {% with kind="detail", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, dest=row.destination_default, dest_note=row.destination_note, event=None, target=None, already_canon=row.already_canon, destination_cycle=row.destination_cycle, scope=model.scope, dest_touched=False %}
+    {% with kind="detail", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, dest=row.destination_default, dest_note=row.destination_note, event=None, target=None, already_canon=row.already_canon, destination_cycle=row.destination_cycle, scope=model.scope, dest_touched=False, no_suggestion=(row.destination is none) %}
       {% include "partials/action_bar.html" %}
     {% endwith %}
   </div>

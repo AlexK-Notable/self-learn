@@ -1,0 +1,8 @@
+{# Humane lane 1 (proposal §2): the shared header's one line about the
+   jobs. A late or failed job is named in words, with a "!" mark beside
+   the amber colour (Y-10: never colour alone). Links to Home's Jobs list. #}
+{% if jobs_line.late %}
+<a class="jobs-line jobs-line-late" href="/#jobs" role="status"><span class="jobs-mark" aria-hidden="true">!</span>{{ jobs_line.text }}</a>
+{% else %}
+<a class="jobs-line" href="/#jobs"><span class="jobs-dot{% if jobs_line.waiting %} jobs-dot-waiting{% endif %}" aria-hidden="true"></span>{{ jobs_line.text }}{% if jobs_line.last_read %} &middot; last overnight read {{ jobs_line.last_read | humanize_ts }}{% endif %}</a>
+{% endif %}

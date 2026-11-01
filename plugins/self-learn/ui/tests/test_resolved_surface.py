@@ -607,7 +607,8 @@ class TestResolvedTitleFix:
         resolve_record_directly(sb.ledger, _bucket_dir(sb), rec)
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}", follow_redirects=False).text
-        assert f"<h2>{TRIGGER}</h2>" in r
+        # Humane lane 1: an h1 in sentence case (was an uppercase h2).
+        assert f'<h1 class="resolved-title">{TRIGGER}</h1>' in r
         assert "(untitled)" not in r
 
     def test_resolved_record_with_blank_trigger_section_falls_back_to_untitled(
@@ -629,7 +630,7 @@ class TestResolvedTitleFix:
         resolve_record_directly(sb.ledger, bucket_dir, rec)
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}", follow_redirects=False).text
-        assert "<h2>(untitled)</h2>" in r
+        assert '<h1 class="resolved-title">(untitled)</h1>' in r
 
 
 # ===================================================================== #

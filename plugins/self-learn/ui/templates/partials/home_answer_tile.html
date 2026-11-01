@@ -1,0 +1,24 @@
+{# Humane lane 1 (proposal §3): Home's "Needs your answer" tile. Rendered
+   twice: first as a placeholder that asks GET /home/needs-you after the
+   page has loaded (the front page never waits on the inbox reader), then
+   as that route's answer, with the reader's own `counts.needs_you`.
+   `count` is None ("?") when the inbox could not be read. The
+   placeholder is a background read (`data-background-read`): app.js never
+   holds a key back for it. #}
+{% if count is defined %}
+{# The same inbox read fills the header's Inbox link (out of band). #}
+{% if inbox is defined and inbox %}
+<span id="nav-inbox" class="nav-inbox" hx-swap-oob="true">{% include "partials/workspace_inbox_link.html" %}</span>
+{% endif %}
+<a class="home-tile{% if count == 0 %} home-tile-zero{% endif %}" href="/inbox">
+  <span class="home-tile-label">Needs your answer</span>
+  <span class="home-tile-value">{{ "?" if count is none else count }}</span>
+  <span class="home-tile-note">{% if count is none %}the inbox could not be read{% elif count == 0 %}the inbox is clear{% else %}question{{ "s" if count != 1 else "" }} in the inbox{% endif %}</span>
+</a>
+{% else %}
+<a class="home-tile" href="/inbox" data-background-read hx-get="/home/needs-you" hx-trigger="load" hx-swap="outerHTML">
+  <span class="home-tile-label">Needs your answer</span>
+  <span class="home-tile-value">&hellip;</span>
+  <span class="home-tile-note">reading the inbox</span>
+</a>
+{% endif %}

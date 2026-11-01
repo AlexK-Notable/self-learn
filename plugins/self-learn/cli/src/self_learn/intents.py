@@ -486,6 +486,10 @@ class RecoverResult:
     restored: list[str] = field(default_factory=list)
     stopped: list[str] = field(default_factory=list)
     stopped_detail: list[StopDetail] = field(default_factory=list)
+    #: Humane UI lane 5 (gate r1 MINOR 3): the rolled-forward ids whose
+    #: transaction has no host phase (:data:`NO_HOST_PHASE_OPS`), so the
+    #: "run 'self-learn recompile'" advice does not apply to them.
+    no_host_phase: list[str] = field(default_factory=list)
 
     def _stop(self, id_: str, reason: str, *, marker_uncertain: bool = False) -> None:
         self.stopped_detail.append(StopDetail(id_, reason, marker_uncertain))
@@ -494,6 +498,21 @@ class RecoverResult:
     @property
     def acted(self) -> bool:
         return bool(self.rolled_forward or self.restored)
+
+
+#: Humane UI lane 5 (gate r1 MINOR 3): transaction ops that never have a
+#: host phase -- a report summary (``summarise.save``) writes only its own
+#: ledger file -- so their roll-forward needs no recompile.
+NO_HOST_PHASE_OPS = frozenset({"summary"})
+
+
+def rolled_forward_words(result: RecoverResult, intent_id: str) -> str:
+    """What a roll-forward of *intent_id* tells a person: that its commit
+    landed, and -- for a transaction with a host phase -- that the host
+    phase did not run and ``self-learn recompile`` repairs it."""
+    if intent_id in getattr(result, "no_host_phase", ()):
+        return "rolled forward: its commit landed"
+    return "rolled forward: its commit landed — the host phase did not run; run 'self-learn recompile'"
 
 
 def _recover_one(home: Path, intent: Intent, result: RecoverResult) -> None:
@@ -508,6 +527,8 @@ def _recover_one(home: Path, intent: Intent, result: RecoverResult) -> None:
             return
         finish(intent)
         result.rolled_forward.append(intent.id)
+        if intent.op in NO_HOST_PHASE_OPS:
+            result.no_host_phase.append(intent.id)
         return
 
     plan: list[tuple[Path, bytes | None]] = []
@@ -674,8 +695,7 @@ class LedgerStoppedError(gitops.GitOpsError):
         lines = []
         for intent_id in result.rolled_forward:
             lines.append(
-                f"self-learn: recovered {intent_id} (rolled forward: its commit "
-                "landed — the host phase did not run; run 'self-learn recompile')"
+                f"self-learn: recovered {intent_id} ({rolled_forward_words(result, intent_id)})"
             )
         for intent_id in result.restored:
             lines.append(f"self-learn: recovered {intent_id} (restored: its mutation was undone)")
@@ -769,8 +789,7 @@ def announce_recovered(result: RecoverResult) -> None:
     result ever prints anything."""
     for intent_id in result.rolled_forward:
         print(
-            f"self-learn: recovered {intent_id} (rolled forward: its commit "
-            "landed — the host phase did not run; run 'self-learn recompile')",
+            f"self-learn: recovered {intent_id} ({rolled_forward_words(result, intent_id)})",
             file=sys.stderr,
         )
     for intent_id in result.restored:

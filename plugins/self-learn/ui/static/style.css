@@ -2042,3 +2042,1870 @@ header.ws-head {
   flex-wrap: wrap;
   gap: 0.6rem;
 }
+
+/* === humane lane 1: shared header, Home, bucket and detail fixes === */
+/* Proposal §2/§3/§10 (S-136). Only new classes are styled
+   here, plus three narrow overrides named below: the inbox link's
+   `.status-item[title]` dotted underline inside the nav, the primary
+   colour on an Approve with no suggestion yet, and the resolved page's
+   heading. */
+
+.site-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 1.25rem;
+  max-width: 96rem;
+  margin: 0 auto;
+  padding: 0.5rem 1.5rem;
+  font-size: 0.9rem;
+}
+
+.site-brand {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--slu-fg);
+}
+
+.site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+}
+
+.site-nav a {
+  color: var(--slu-fg-muted);
+  text-decoration: none;
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--slu-radius-sm);
+}
+
+.site-nav a:hover {
+  color: var(--slu-fg);
+  background: var(--slu-bg-elevated);
+}
+
+.site-nav a[aria-current="page"] {
+  color: var(--slu-accent);
+  background: var(--slu-accent-bg);
+  font-weight: 600;
+}
+
+/* Override: the inbox link partial carries `.status-item` + a title, which
+   the old strip styled as a dotted "hover me" item. In the nav it is a
+   plain place link. */
+.site-nav .status-item[title] {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.site-nav .inbox-link-active {
+  color: var(--slu-fg);
+  font-weight: 600;
+}
+
+.jobs-line {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--slu-fg-muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.jobs-line:hover {
+  color: var(--slu-fg);
+}
+
+.jobs-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--slu-success);
+  flex: none;
+}
+
+.jobs-line-late {
+  color: var(--slu-warning);
+  background: var(--slu-warning-bg);
+  border: 1px solid color-mix(in srgb, var(--slu-warning) 35%, transparent);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.15rem 0.6rem;
+  font-weight: 600;
+}
+
+.jobs-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  background: var(--slu-warning);
+  color: var(--slu-bg-raised);
+  font-size: 0.75rem;
+  font-weight: 800;
+  flex: none;
+}
+
+.jobs-line-loading {
+  color: var(--slu-fg-faint);
+}
+
+.crumbs {
+  max-width: 96rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 0.5rem;
+  font-size: 0.85rem;
+  color: var(--slu-fg-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.45rem;
+  align-items: baseline;
+}
+
+.crumbs a {
+  text-decoration: none;
+}
+
+.crumbs a:hover {
+  text-decoration: underline;
+}
+
+.crumb-sep {
+  color: var(--slu-fg-faint);
+}
+
+/* ---- Home */
+
+.home-head h1 {
+  font-size: 1.5rem;
+  margin-bottom: 0.2rem;
+}
+
+.home-sub,
+.home-intro,
+.home-note,
+.home-empty {
+  color: var(--slu-fg-muted);
+  margin: 0 0 0.9rem;
+}
+
+.home-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.home-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  height: 100%;
+  padding: 0.8rem 1rem;
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  box-shadow: var(--slu-shadow);
+  color: var(--slu-fg);
+  text-decoration: none;
+}
+
+.home-tile:hover {
+  border-color: var(--slu-accent);
+}
+
+.home-tile-label {
+  font-size: 0.85rem;
+  color: var(--slu-fg-muted);
+}
+
+.home-tile-value {
+  font-size: 1.7rem;
+  font-weight: 650;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.home-tile-note {
+  font-size: 0.8rem;
+  color: var(--slu-fg-faint);
+}
+
+/* A tile at zero is greyed, and says so in its note too. */
+.home-tile-zero .home-tile-value {
+  color: var(--slu-fg-faint);
+}
+
+.home-tile-wrap[data-row].selected .home-tile {
+  outline: 2px solid var(--slu-focus-ring);
+  outline-offset: -2px;
+}
+
+/* Section headings on Home read as headings, not uppercase runners. */
+h2.home-h {
+  font-size: 1.05rem;
+  font-weight: 650;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--slu-fg);
+  margin: 2rem 0 0.35rem;
+}
+
+.home-section {
+  scroll-margin-top: 4rem;
+}
+
+.home-rows {
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  box-shadow: var(--slu-shadow);
+}
+
+/* The rows sit inside one card; the per-row card look of the old
+   `.holding-row` / `.followup-row` is cancelled for these rows only. */
+.home-rows > .home-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem 1rem;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.home-rows > .home-row + .home-row {
+  border-top: 1px solid var(--slu-border);
+}
+
+.home-rows > .home-row[data-row].selected {
+  outline: 2px solid var(--slu-focus-ring);
+  outline-offset: -2px;
+}
+
+.home-row-main {
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+
+.home-row-what {
+  margin: 0;
+  color: var(--slu-fg);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+a.home-row-what {
+  text-decoration: none;
+}
+
+a.home-row-what:hover {
+  text-decoration: underline;
+}
+
+.home-row-meta {
+  margin: 0.15rem 0 0;
+  font-size: 0.83rem;
+  color: var(--slu-fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.home-row-side {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.home-row-side .action-bar form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.btn-link {
+  font-size: 0.83rem;
+  font-weight: 550;
+  padding: 0.32em 0.85em;
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius-sm);
+  background: var(--slu-bg-elevated);
+  color: var(--slu-fg);
+  text-decoration: none;
+}
+
+.btn-link:hover {
+  border-color: var(--slu-accent);
+  color: var(--slu-accent);
+}
+
+/* "Decide…": one button per rule; its actions open below the row. */
+.decide-fold {
+  flex: 0 0 auto;
+}
+
+.decide-fold[open] {
+  flex: 1 0 100%;
+  order: 3;
+}
+
+.decide-summary {
+  display: inline-block;
+  list-style: none;
+  cursor: pointer;
+  font-size: 0.83rem;
+  font-weight: 550;
+  padding: 0.32em 0.85em;
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius-sm);
+  background: var(--slu-bg-elevated);
+}
+
+.decide-summary::-webkit-details-marker {
+  display: none;
+}
+
+.decide-summary:hover {
+  border-color: var(--slu-accent);
+  color: var(--slu-accent);
+}
+
+.decide-fold[open] > .decide-summary {
+  margin-bottom: 0.6rem;
+}
+
+.decide-fold .action-bar form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+}
+
+.decide-fold .session-note {
+  font-size: 0.8rem;
+  color: var(--slu-fg-faint);
+  margin: 0.5rem 0 0;
+}
+
+/* Where lessons live. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.places-table .num {
+  text-align: right;
+}
+
+.place-path {
+  font-size: 0.8rem;
+  color: var(--slu-fg-faint);
+  overflow-wrap: anywhere;
+}
+
+.places-more,
+.places-gone {
+  margin-top: 0.75rem;
+}
+
+.places-more > summary,
+.places-gone > summary,
+.job-more > summary {
+  cursor: pointer;
+  color: var(--slu-fg-muted);
+}
+
+.places-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 0.35rem 1.5rem;
+}
+
+.places-list a {
+  text-decoration: none;
+  font-weight: 550;
+}
+
+.place-count {
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+/* Jobs. */
+.job-row-late .home-row-what {
+  color: var(--slu-warning);
+}
+
+.job-more {
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.job-runs {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--slu-fg-muted);
+}
+
+.job-run-day {
+  color: var(--slu-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Bucket and detail pages (proposal §10) */
+
+.place-head {
+  margin: 0 0 1rem;
+}
+
+.place-title {
+  margin: 0;
+}
+
+.place-head .place-path {
+  margin: 0.1rem 0 0;
+}
+
+.place-empty {
+  color: var(--slu-fg-muted);
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  padding: 0.8rem 1rem;
+}
+
+.change-none kbd {
+  font-size: 0.8rem;
+  padding: 0.05em 0.4em;
+  border: 1px solid var(--slu-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--slu-bg-elevated);
+}
+
+/* Override: with no suggestion yet, Approve keeps working but is not the
+   blue primary; "Ask for a suggestion" (Iterate) is. */
+button[data-key-action="route"].approve-unsuggested {
+  background: var(--slu-bg-elevated);
+  border-color: var(--slu-border-strong);
+  color: var(--slu-fg);
+}
+
+button[data-key-action="route"].approve-unsuggested:hover {
+  background: var(--slu-bg-elevated);
+  border-color: var(--slu-accent);
+  color: var(--slu-accent);
+}
+
+/* Override: the resolved page's heading is the rule in sentence case. */
+h1.resolved-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: 0;
+  margin: 0 0 0.6rem;
+}
+
+/* ---- Narrow screens (390 px): nothing scrolls sideways. */
+@media (max-width: 720px) {
+  /* Three wrapped header lines would cover a fifth of a phone screen if
+     they stayed stuck to the top; on a narrow screen the header scrolls
+     away with the page. */
+  header.site-header {
+    position: static;
+  }
+
+  [data-row] {
+    scroll-margin-top: 0.5rem;
+  }
+
+  .site-bar {
+    padding: 0.45rem 1rem;
+    gap: 0.25rem 0.75rem;
+  }
+
+  .site-nav a {
+    padding: 0.25rem 0.45rem;
+  }
+
+  .jobs-line {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+
+  .crumbs {
+    padding: 0 1rem 0.45rem;
+  }
+
+  main#self-learn-ui-content {
+    padding: 1rem 1rem 2.5rem;
+  }
+
+  .home-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .home-tile {
+    padding: 0.65rem 0.75rem;
+  }
+
+  .home-row-main {
+    flex-basis: 100%;
+  }
+
+  .home-row-side {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .home-row-side .action-bar,
+  .home-row-side .action-bar form,
+  .home-row-side label {
+    width: 100%;
+  }
+
+  .home-row-side .action-bar input[type="text"] {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .decide-fold .action-bar input[type="text"] {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .decide-fold .action-bar label {
+    flex: 1 1 100%;
+  }
+
+  .bucket-walk a {
+    max-width: 22ch;
+  }
+}
+
+.home-row-meta .holding-basis,
+.home-row-meta .followup-note {
+  font-size: inherit;
+  color: inherit;
+  margin: 0;
+}
+
+/* The keys footer (base.html): an entry stays on one line where it fits,
+   but a long one (the inbox's "Send the box you are typing in …") may wrap
+   on a narrow screen instead of pushing the page sideways (390 px). */
+@media (max-width: 720px) {
+  .keymap-footer {
+    padding: 0.6rem 1rem;
+  }
+
+  .keymap-footer-entry {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+}
+
+/* === humane lane 2: charts (charts.py) and the Health page === */
+
+/* Chart colours. Light and dark are each their own validated steps, not a
+   flip (dataviz validate_palette.js: light on #ffffff, dark on #1a1c21).
+   use / no / later are slots 1-3 of the categorical order; "kept" is a
+   quiet neutral on purpose: it is the background case. The light aqua is
+   below 3:1, which the legend plus the "Show as a table" fold relieve. */
+:root {
+  --chart-use: #2a78d6;
+  --chart-no: #eb6834;
+  --chart-later: #1baf7a;
+  --chart-kept: #a9adb8;
+  --chart-grid: #e6e7ec;
+  --chart-axis: #b4b8c2;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --chart-use: #3987e5;
+    --chart-no: #d95926;
+    --chart-later: #199e70;
+    --chart-kept: #565a66;
+    --chart-grid: #2b2d35;
+    --chart-axis: #3d404a;
+  }
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+  gap: 0.75rem;
+  margin: 0 0 0.75rem;
+}
+
+.chart-card {
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  padding: 0.85rem 1rem 0.6rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.chart-card-full {
+  margin: 0 0 1.9rem;
+}
+
+h2.chart-q {
+  font-size: 0.98rem;
+  font-weight: 650;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--slu-fg);
+  margin: 0;
+}
+
+.chart-a {
+  color: var(--slu-fg-muted);
+  font-size: 0.9rem;
+  margin: 0.15rem 0 0.5rem;
+}
+
+.chart-empty {
+  color: var(--slu-fg-muted);
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1rem;
+  list-style: none;
+  padding: 0;
+  margin: 0.2rem 0 0.4rem;
+  font-size: 0.84rem;
+  color: var(--slu-fg-muted);
+}
+
+.chart-key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 0.4rem;
+  vertical-align: -1px;
+}
+
+.chart-key-use { background: var(--chart-use); }
+.chart-key-no { background: var(--chart-no); }
+.chart-key-later { background: var(--chart-later); }
+.chart-key-kept { background: var(--chart-kept); }
+
+/* Two SVGs per chart; the chart's own width picks one (a container query,
+   so a half-width card on a laptop and a full-width card on a phone both
+   get text they can read). */
+.chart-fig {
+  margin: 0;
+  container-type: inline-size;
+  container-name: chartfig;
+}
+
+.chart-v-narrow,
+.chart-v-xwide {
+  display: none;
+}
+
+@container chartfig (max-width: 459px) {
+  .chart-v-wide { display: none; }
+  .chart-v-narrow { display: block; }
+}
+
+@container chartfig (min-width: 820px) {
+  .chart-v-wide { display: none; }
+  .chart-v-xwide { display: block; }
+}
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-v-narrow .chart-svg {
+  max-width: 440px;
+}
+
+.chart-v-wide .chart-svg {
+  max-width: 640px;
+}
+
+.chart-svg text {
+  font-family: var(--slu-font);
+  font-size: 12px;
+  fill: var(--slu-fg-muted);
+}
+
+.chart-v-wide .chart-svg text {
+  font-size: 14px;
+}
+
+.chart-v-xwide .chart-svg text {
+  font-size: 13px;
+}
+
+.chart-svg text.cv-lbl {
+  fill: var(--slu-fg);
+}
+
+.chart-svg .cv-grid { stroke: var(--chart-grid); stroke-width: 1; }
+.chart-svg .cv-base { stroke: var(--chart-axis); stroke-width: 1; }
+.chart-svg .cv-line {
+  fill: none;
+  stroke: var(--chart-use);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.chart-svg .cv-area { fill: var(--chart-use); opacity: 0.12; }
+.chart-svg .cv-dot { fill: var(--chart-use); }
+.chart-svg .cv-end { fill: var(--chart-use); stroke: var(--slu-bg-raised); stroke-width: 2; }
+.chart-svg .cv-use { fill: var(--chart-use); }
+.chart-svg .cv-no { fill: var(--chart-no); }
+.chart-svg .cv-later { fill: var(--chart-later); }
+.chart-svg .cv-kept { fill: var(--chart-kept); }
+
+@media (forced-colors: active) {
+  .chart-svg .cv-line { stroke: CanvasText; }
+  .chart-svg .cv-area,
+  .chart-svg .cv-dot,
+  .chart-svg .cv-end,
+  .chart-svg .cv-use,
+  .chart-svg .cv-no,
+  .chart-svg .cv-later,
+  .chart-svg .cv-kept { fill: CanvasText; }
+  .chart-key { background: CanvasText; forced-color-adjust: none; }
+}
+
+.chart-table {
+  margin: 0.4rem 0 0.2rem;
+}
+
+.chart-table-scroll {
+  max-height: 18rem;
+  overflow: auto;
+}
+
+table.chart-data {
+  font-size: 0.85rem;
+}
+
+table.chart-data th,
+table.chart-data td {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--slu-fg);
+}
+
+table.chart-data thead th {
+  color: var(--slu-fg-muted);
+  font-size: 0.78rem;
+  position: sticky;
+  top: 0;
+  background: var(--slu-bg-raised);
+}
+
+table.chart-data th.num,
+table.chart-data td.num,
+table.health-table th.num,
+table.health-table td.num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+table.chart-data th[scope="row"] {
+  white-space: nowrap;
+  text-align: left;
+}
+
+table.chart-data caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Health page. */
+.health-sub {
+  color: var(--slu-fg-muted);
+  margin: -0.4rem 0 1rem;
+}
+
+.health-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.65rem;
+  margin: 0 0 0.9rem;
+}
+
+.health-tile {
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  padding: 0.7rem 0.9rem;
+  min-width: 0;
+}
+
+.health-tile-label {
+  font-size: 0.84rem;
+  color: var(--slu-fg-muted);
+}
+
+.health-tile-value {
+  font-size: 1.7rem;
+  font-weight: 600;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.health-tile-note {
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+.health-section {
+  margin: 0 0 1.9rem;
+}
+
+.health-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+}
+
+.health-filter input[type="search"] {
+  flex: 1 1 14rem;
+  max-width: 24rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--slu-fg);
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.35rem 0.6rem;
+}
+
+.health-filter input[type="search"]:focus {
+  outline: 2px solid var(--slu-focus-ring);
+  outline-offset: 1px;
+}
+
+.health-table-wrap {
+  overflow-x: auto;
+}
+
+table.health-table td {
+  vertical-align: top;
+  font-size: 0.9rem;
+}
+
+table.health-table td.health-rule {
+  min-width: 14rem;
+  overflow-wrap: anywhere;
+}
+
+.health-where {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+.health-more {
+  color: var(--slu-fg-muted);
+  font-size: 0.86rem;
+  margin: 0.4rem 0;
+}
+
+.health-fold {
+  margin: 0 0 1.5rem;
+}
+
+/* On a phone the three lists become stacked rows: the rule's words first,
+   then each figure beside its name (data-label). The header row stays for
+   screen readers. */
+@media (max-width: 640px) {
+  table.health-stack thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  table.health-stack,
+  table.health-stack tbody {
+    display: block;
+  }
+
+  table.health-stack tr {
+    display: block;
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--slu-border);
+  }
+
+  table.health-stack td {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border: 0;
+    padding: 0.1rem 0.25rem;
+    text-align: right;
+    font-size: 0.86rem;
+  }
+
+  table.health-stack td::before {
+    content: attr(data-label);
+    color: var(--slu-fg-muted);
+    text-align: left;
+    flex: none;
+  }
+
+  table.health-stack td.health-rule {
+    display: block;
+    text-align: left;
+    min-width: 0;
+    font-size: 0.92rem;
+    padding-bottom: 0.25rem;
+  }
+
+  table.health-stack td.health-rule::before {
+    content: none;
+  }
+
+  table.health-stack .health-where {
+    display: inline;
+    margin-left: 0.4rem;
+  }
+}
+
+/* === humane lane 3: inbox list groups, item layout, weekly report layout === */
+/* Proposal §4, §5, §10. Outcome colours match the charts' (categorical
+   slots 1-3, a neutral for "kept"); every colour carries words beside it. */
+:root {
+  --run-use: #2a78d6;
+  --run-no: #eb6834;
+  --run-later: #1baf7a;
+  --run-kept: #a9adb8;
+  --run-other: #c4c7d0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --run-use: #3987e5;
+    --run-no: #d95926;
+    --run-later: #199e70;
+    --run-kept: #565a66;
+    --run-other: #3d404a;
+  }
+}
+
+:root[data-theme="dark"] {
+  --run-use: #3987e5;
+  --run-no: #d95926;
+  --run-later: #199e70;
+  --run-kept: #565a66;
+  --run-other: #3d404a;
+}
+
+/* The list: an empty "Needs you" says so; rows show who and when. */
+.inbox-group-empty {
+  margin: 0 0 0.4rem;
+  padding: 0 0.6rem;
+  font-size: 0.83rem;
+  color: var(--slu-fg-muted);
+}
+
+.inbox-item-by {
+  color: var(--slu-fg-muted);
+}
+
+.inbox-item-title .dot-new::before {
+  content: "●";
+}
+
+.inbox-fold > details > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--slu-radius-sm);
+  border: 1px solid transparent;
+  color: var(--slu-fg);
+  font-size: inherit;
+  list-style: none;
+}
+
+.inbox-fold > details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.inbox-fold > details > summary .inbox-item-title::before {
+  content: "▸ ";
+  color: var(--slu-fg-muted);
+}
+
+.inbox-fold > details[open] > summary .inbox-item-title::before {
+  content: "▾ ";
+}
+
+.inbox-fold > details > summary:hover {
+  border-color: var(--slu-border-strong);
+}
+
+.inbox-fold > details > summary .inbox-item-meta {
+  color: var(--slu-fg-muted);
+}
+
+.inbox-fold .inbox-items {
+  padding-left: 0.8rem;
+}
+
+/* Narrow windows: the open item comes first; the list sits behind
+   "All items" until asked for (inbox.js toggles data-list-open). */
+.inbox-all-items {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .inbox[data-selected]:not([data-selected=""]) .inbox-all-items {
+    display: inline-flex;
+    justify-self: start;
+  }
+  .inbox[data-selected]:not([data-selected=""]):not([data-list-open]) .inbox-nav {
+    display: none;
+  }
+  .inbox-nav {
+    position: static;
+  }
+}
+
+/* The "In short" slot stays out of the layout until lane 5 fills it. */
+.in-short-slot:empty {
+  display: none;
+}
+
+/* Ids are for an agent: a small fold, never running text. */
+.ws-ids {
+  margin: 0.25rem 0;
+}
+
+.ws-ids > summary {
+  font-size: 0.75rem;
+  color: var(--slu-fg-faint);
+}
+
+.ws-ids code {
+  font-size: 0.75rem;
+}
+
+.ws-evidence-fold > summary h2 {
+  display: inline;
+  font-size: 0.95rem;
+}
+
+/* A nightly review: the split bar, its counts, one line per decision. */
+.run-split {
+  margin: 0.4rem 0 0.8rem;
+}
+
+.run-split-bar {
+  display: block;
+  width: 100%;
+  height: 10px;
+}
+
+.run-seg-use { fill: var(--run-use); background: var(--run-use); }
+.run-seg-no { fill: var(--run-no); background: var(--run-no); }
+.run-seg-later { fill: var(--run-later); background: var(--run-later); }
+.run-seg-kept { fill: var(--run-kept); background: var(--run-kept); }
+.run-seg-other { fill: var(--run-other); background: var(--run-other); }
+/* Refused by the ledger: the status colour for "serious", always with its
+   words beside it (gate r1 MAJOR 1). */
+.run-seg-refused { fill: var(--slu-danger); background: var(--slu-danger); }
+
+.answered-q {
+  color: var(--slu-fg-muted);
+}
+
+.rv-callout-asked {
+  background: var(--slu-bg-raised);
+}
+
+.run-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  font-size: 0.83rem;
+  color: var(--slu-fg-muted);
+}
+
+.run-legend strong {
+  color: var(--slu-fg);
+}
+
+.run-swatch {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+  margin-right: 0.35rem;
+  vertical-align: -0.05rem;
+  flex: none;
+}
+
+.run-table table {
+  border-collapse: collapse;
+  font-size: 0.83rem;
+}
+
+.run-table th,
+.run-table td {
+  text-align: left;
+  padding: 0.2rem 0.8rem 0.2rem 0;
+  border-bottom: 1px solid var(--slu-border);
+}
+
+.run-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.run-decisions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius-sm);
+  background: var(--slu-bg-raised);
+}
+
+.run-decision + .run-decision {
+  border-top: 1px solid var(--slu-border);
+}
+
+.run-decision > details > summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.2rem;
+  padding: 0.55rem 0.75rem;
+  list-style: none;
+  color: var(--slu-fg);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.run-decision > details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.run-decision > details > summary .run-swatch {
+  margin-top: 0.3rem;
+}
+
+.run-decision-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.run-decision-line {
+  font-size: 0.82rem;
+  color: var(--slu-fg-muted);
+}
+
+.run-why {
+  flex: none;
+  color: var(--slu-accent);
+  font-size: 0.83rem;
+  margin-left: 0.5rem;
+}
+
+.run-decision > details[open] > summary .run-why {
+  color: var(--slu-fg-muted);
+}
+
+.run-decision-body {
+  padding: 0 0.75rem 0.6rem 1.75rem;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.run-rest {
+  margin-top: 0.5rem;
+}
+
+.run-rest > .run-decisions {
+  margin-top: 0.4rem;
+}
+
+/* The weekly report: a reading width, the questions first, counted tiles,
+   machine text folded inside bullets. */
+.overseer-report {
+  max-width: 52rem;
+}
+
+.rv-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 1.2rem;
+}
+
+.rv-title-row h1 {
+  margin: 0;
+  font-size: 1.45rem;
+}
+
+.rv-menu {
+  position: relative;
+}
+
+.rv-menu > summary {
+  color: var(--slu-accent);
+}
+
+.rv-menu .report-dates ul {
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius-sm);
+  background: var(--slu-bg-raised);
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.rv-about-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.15rem 0.8rem;
+  margin: 0.2rem 0 0;
+  font-size: 0.83rem;
+}
+
+.rv-about-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rv-callout {
+  margin: 1rem 0;
+  padding: 0.65rem 0.9rem;
+  border-radius: var(--slu-radius-sm);
+  border: 1px solid var(--slu-border);
+}
+
+.rv-callout-ok {
+  background: var(--slu-success-bg);
+  color: var(--slu-success);
+  border-color: color-mix(in srgb, var(--slu-success) 35%, transparent);
+}
+
+.rv-callout-ask {
+  background: var(--slu-warning-bg);
+  border-color: color-mix(in srgb, var(--slu-warning) 40%, transparent);
+}
+
+.rv-callout-ask h2 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+.rv-tiles {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.6rem;
+  margin: 1rem 0 1.4rem;
+  padding: 0;
+}
+
+.rv-tile {
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius-sm);
+  background: var(--slu-bg-raised);
+  padding: 0.6rem 0.8rem;
+}
+
+.rv-tile-label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+.rv-tile-value {
+  font-size: 1.6rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.rv-tile-of {
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+.rv-body {
+  max-width: 75ch;
+  overflow-wrap: anywhere;
+}
+
+.rv-section h2,
+.rv-section-folded > summary h2 {
+  font-size: 1.05rem;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--slu-fg);
+  margin: 1.4rem 0 0.4rem;
+}
+
+.rv-section-folded > summary h2 {
+  display: inline;
+}
+
+.rv-token {
+  color: var(--slu-fg-muted);
+  border-bottom: 1px dotted currentColor;
+}
+
+.rv-fold {
+  margin: 0.15rem 0 0.25rem;
+}
+
+.rv-fold > summary {
+  font-size: 0.78rem;
+  color: var(--slu-fg-faint);
+}
+
+.rv-fold-body {
+  margin: 0.2rem 0 0.3rem;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.8rem;
+  background: var(--slu-bg-inset);
+  border-radius: var(--slu-radius-sm);
+  overflow-wrap: anywhere;
+}
+
+/* === humane lane 4: settings, grouped by what a person is trying to do === */
+/* The settings page: a narrow column of groups, each a list of settings with
+   a plain name, one sentence, a control and where the value comes from. The
+   rules reuse the page's existing tokens; the old table rules above
+   (.settings-table, .settings-name) are no longer used. */
+
+.settings-page {
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+.settings-title {
+  font-size: 1.5rem;
+  margin: 0 0 0.4rem;
+}
+
+.settings-find {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1rem 0 0.25rem;
+}
+
+.settings-find label {
+  flex: 0 0 100%;
+  font-size: 0.85rem;
+  color: var(--slu-fg-muted);
+}
+
+.settings-find input[type="search"] {
+  flex: 1 1 16rem;
+  min-width: 0;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius-sm);
+  background: var(--slu-bg-raised);
+  color: var(--slu-fg);
+  font: inherit;
+}
+
+.settings-find-status {
+  min-height: 1.4em;
+  margin: 0.25rem 0;
+  font-size: 0.85rem;
+  color: var(--slu-fg-muted);
+}
+
+.settings-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0.5rem;
+}
+
+.settings-chip {
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--slu-border-strong);
+  border-radius: 999px;
+  background: var(--slu-bg-raised);
+  color: var(--slu-fg);
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+.settings-chip:hover {
+  background: var(--slu-bg-elevated);
+}
+
+.settings-none {
+  color: var(--slu-fg-muted);
+}
+
+.settings-none[hidden],
+.settings-chip[hidden],
+.settings-group[hidden],
+.settings-classes[hidden],
+.setting[hidden],
+.settings-find-status:empty {
+  display: none;
+}
+
+.settings-group {
+  margin: 0 0 1.5rem;
+  scroll-margin-top: 4rem;
+}
+
+.settings-group h2,
+.settings-group summary h2 {
+  display: inline;
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 650;
+  text-transform: none;
+  letter-spacing: -0.005em;
+  color: var(--slu-fg);
+}
+
+.settings-group:not(.settings-group-folded) > h2 {
+  display: block;
+  margin: 1.75rem 0 0.25rem;
+}
+
+.settings-group-folded > summary {
+  cursor: pointer;
+  padding: 0.4rem 0;
+}
+
+.settings-group-count {
+  color: var(--slu-fg-muted);
+  font-size: 0.9rem;
+}
+
+.settings-group-intro {
+  margin: 0.15rem 0 0.6rem;
+  color: var(--slu-fg-muted);
+  max-width: 60ch;
+}
+
+.settings-classes h3 {
+  font-size: 0.95rem;
+  margin: 1.1rem 0 0.15rem;
+}
+
+.settings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  background: var(--slu-bg-raised);
+  box-shadow: var(--slu-shadow);
+}
+
+.setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(11rem, 15rem);
+  gap: 0.25rem 1rem;
+  padding: 0.8rem 1rem;
+  border-top: 1px solid var(--slu-border);
+}
+
+.setting:first-child {
+  border-top: 0;
+}
+
+.setting-text,
+.setting-control {
+  min-width: 0;
+}
+
+.setting-label {
+  margin: 0;
+  font-weight: 600;
+}
+
+.setting-plain {
+  margin: 0.15rem 0 0;
+  color: var(--slu-fg-muted);
+  max-width: 60ch;
+}
+
+.setting-meta {
+  margin: 0.35rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.6rem;
+  font-size: 0.78rem;
+  color: var(--slu-fg-faint);
+}
+
+.setting-key {
+  background: none;
+  padding: 0;
+  color: var(--slu-fg-faint);
+  overflow-wrap: anywhere;
+}
+
+.setting-more {
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+.setting-more summary {
+  cursor: pointer;
+  color: var(--slu-fg-faint);
+}
+
+.setting-more dl {
+  margin: 0.3rem 0 0;
+}
+
+.setting-more dt {
+  font-weight: 600;
+  margin-top: 0.3rem;
+}
+
+.setting-more dd {
+  overflow-wrap: anywhere;
+}
+
+.setting-control form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.setting-control input,
+.setting-control select {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius-sm);
+  background: var(--slu-bg);
+  color: var(--slu-fg);
+  font: inherit;
+}
+
+.setting-control input[type="number"] {
+  width: 8rem;
+}
+
+.setting-control .setting-text-input {
+  flex: 1 1 100%;
+}
+
+.setting-control button[hidden] {
+  display: none;
+}
+
+.setting-unit {
+  color: var(--slu-fg-muted);
+  font-size: 0.85rem;
+}
+
+.setting-saved {
+  margin: 0.3rem 0 0;
+  font-size: 0.85rem;
+  color: var(--slu-success);
+}
+
+.setting .settings-value-readonly {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.setting .settings-tier-c-note {
+  margin: 0.15rem 0 0;
+  border: 0;
+  cursor: auto;
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+.setting .settings-row-error {
+  margin: 0.4rem 0 0;
+}
+
+.setting .settings-warn {
+  grid-column: 1 / -1;
+  max-width: none;
+  margin: 0.4rem 0 0;
+}
+
+.setting .settings-warn p {
+  margin: 0;
+}
+
+.setting .settings-warn details {
+  margin-top: 0.25rem;
+}
+
+.setting-compact {
+  padding: 0.5rem 1rem;
+  align-items: center;
+}
+
+.setting-compact .setting-meta {
+  margin: 0;
+}
+
+@media (max-width: 40rem) {
+  .setting {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .setting-control input[type="number"] {
+    width: 100%;
+  }
+  main#self-learn-ui-content:has(.settings-page) {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+}
+
+/* gate r2 fold (lane 2): the search indicator, long paths, flagged checks */
+.health-searching {
+  display: none;
+  color: var(--slu-fg-muted);
+  font-size: 0.86rem;
+}
+
+.health-filter.htmx-request .health-searching {
+  display: inline;
+}
+
+.health-where {
+  overflow-wrap: anywhere;
+}
+
+ul.health-warnings {
+  margin: 0.2rem 0 0.4rem;
+  padding-left: 1.2rem;
+  font-size: 0.9rem;
+}
+
+/* === humane lane 4 (gate r1 fold): a message's Dismiss button === */
+.setting-message {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.6rem;
+  margin: 0.3rem 0 0;
+}
+
+.setting-message p {
+  margin: 0;
+}
+
+.setting-dismiss {
+  padding: 0.1rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+/* === humane lane 5: the "In short" summary box === */
+.in-short {
+  margin: 1rem 0;
+  padding: 0.8rem 1rem;
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-left: 3px solid var(--slu-accent);
+  border-radius: var(--slu-radius-sm);
+  max-width: 48rem;
+  overflow-wrap: anywhere;
+}
+
+.in-short-h {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--slu-fg-muted);
+}
+
+.in-short-text {
+  margin: 0.25rem 0;
+  line-height: 1.55;
+}
+
+.in-short-text p {
+  margin: 0.25rem 0;
+}
+
+.in-short-stale {
+  color: var(--slu-fg-faint);
+}
+
+.in-short-prov,
+.in-short-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.82rem;
+  color: var(--slu-fg-muted);
+}
+
+.in-short-failed {
+  margin: 0.35rem 0;
+  color: var(--slu-danger);
+}
+
+.in-short-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.in-short-actions .in-short-note {
+  margin: 0;
+  flex: 1 1 16rem;
+}
+
+.in-short-how {
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.in-short-how > summary {
+  cursor: pointer;
+  color: var(--slu-accent);
+}
+
+.in-short-again {
+  margin: 0.25rem 0 0;
+}
+
+.in-short-spinner {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.45em;
+  vertical-align: -0.05em;
+  border: 2px solid var(--slu-border-strong);
+  border-top-color: var(--slu-accent);
+  border-radius: 50%;
+  animation: in-short-spin 0.9s linear infinite;
+}
+
+@keyframes in-short-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .in-short-spinner {
+    animation: none;
+  }
+}
+
+/* Gate r1 MINOR-4: at phone width the places table reflows instead of
+   hiding columns behind a sideways scroll. Each place becomes a short
+   block: its name on one line, then every column as "label value" pairs
+   that wrap (the labels come from each cell's data-label). The column
+   headers, and with them the sort buttons, are a desktop affordance. */
+@media (max-width: 720px) {
+  .table-scroll {
+    overflow-x: visible;
+  }
+
+  .places-table,
+  .places-table tbody,
+  .places-table tr,
+  .places-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .places-table thead {
+    display: none;
+  }
+
+  .places-table tr {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 1rem;
+    padding: 0.6rem 0.5rem;
+    border-bottom: 1px solid var(--slu-border);
+  }
+
+  .places-table td {
+    border: 0;
+    padding: 0;
+    width: auto;
+    text-align: left;
+  }
+
+  .places-table td:first-child {
+    flex: 1 1 100%;
+  }
+
+  .places-table td[data-label]::before {
+    content: attr(data-label) " ";
+    color: var(--slu-fg-faint);
+    font-size: 0.8rem;
+  }
+
+  .places-table .num {
+    text-align: left;
+  }
+
+  .places-table .bucket-walk a,
+  .places-table a {
+    max-width: 100%;
+    white-space: normal;
+  }
+}
+
+.jobs-dot-waiting {
+  background: var(--slu-fg-faint);
+}

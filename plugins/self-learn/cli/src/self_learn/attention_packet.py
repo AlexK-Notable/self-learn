@@ -28,6 +28,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,7 @@ __all__ = [
     "deny_paths",
     "denied_name",
     "filter_look_at",
+    "plain_reason",
     "redact_text",
     "render_md",
 ]
@@ -343,6 +345,11 @@ def _case_entry(case_id: str, sections: dict[str, str], body: str, limits: _Limi
         "question": limits.clip(
             _line_value(sections.get("Identity and scope"), "question"), f"{where}.question", 600),
         "decision": limits.clip(decision, f"{where}.decision", 1200),
+        # Humane UI lane 3 (proposal §4): the decision's own fields, so a
+        # page tells the case once (Question, Decision in words, Because)
+        # instead of printing the section's list as one paragraph.
+        "verb": _line_value(decision, "verb"),
+        "confidence": _line_value(decision, "confidence"),
         "because": limits.clip(_line_value(decision, "because"), f"{where}.because", 1200),
         "excerpt": limits.clip(body, f"{where}.excerpt"),
     }
@@ -910,6 +917,7 @@ def build(home: Path | str, item_id: str, *,
         ),
         "undo": {"label": undo.get("label"), "redo_label": undo.get("redo_label")} if isinstance(undo, dict) else None,
         "case_edit": _case_edit(home, item, limits, decided_reader),
+        "run": _run_decisions(home, item, limits),
         "evidence": evidence,
         "more": more,
         "pointers": _pointers(home, item),
@@ -919,6 +927,271 @@ def build(home: Path | str, item_id: str, *,
         "limits": {"bytes": 0, "truncated": limits.truncated},
     }
     return _fit(packet)
+
+
+#: Humane UI lane 3: the most the ``run`` block of a nightly review may take
+#: of the packet (gate r1 MAJOR 3). Its rows carry a title and a short
+#: reason only; the page opens a case's full text on request, so the block
+#: never crowds the evidence out of :data:`MAX_BYTES`.
+MAX_RUN_BYTES = 12 * 1024
+#: The longest title and reason a decision row carries, before the budget.
+MAX_RUN_TITLE_CHARS = 160
+MAX_RUN_REASON_CHARS = 200
+#: ...and the shortest opening a reason settles for (see :func:`_first_sentence`).
+MIN_REASON_CHARS = 60
+#: A case whose apply did not happen (the run record's ``phase``): its
+#: outcome is the steward's intent, never an effect (gate r1 MAJOR 1).
+#: ``unfinished`` is the steward's own phase for a case it will drive again;
+#: ``failed`` and ``stopped`` are taken as said, should a run ever write them.
+NOT_CARRIED_OUT_PHASES = frozenset({"refused", "unfinished", "failed", "stopped"})
+#: Why a decision was not carried out, as the row's ``not_done`` says it.
+NOT_DONE_REASONS = ("refused", "unfinished", "failed", "stopped", "not-attempted")
+#: The group a decision not carried out is counted in.
+REFUSED_GROUP = "refused"
+
+_PAREN_REF_RE = re.compile(
+    r"\s*\((?=[^()]*\b(?:L\d{2,}|(?:case|lrn|stmt|um|op|q|grant|obs)-[0-9a-z]))[^()]*\)")
+_BARE_REF_WORDS = (
+    (re.compile(r"\bcase-[0-9a-f]{6,}\b"), "an earlier case"),
+    (re.compile(r"\blrn-[0-9a-f]{6,}\b"), "a lesson"),
+    (re.compile(r"\bstmt-[0-9a-f]{6,}\b"), "your statement"),
+    (re.compile(r"\s*\bum-[0-9a-z]{3,}(?:@r\d+)?"), ""),
+)
+_LINE_REF_RE = re.compile(r"\s*\b(?:at |on |in )?L\d{2,}(?:-L?\d+)?\b")
+
+
+def plain_reason(text: str | None) -> str | None:
+    """*text* without its ids and transcript line references (gate r1 NIT 8):
+    a parenthesis that holds one goes; a bare id reads as words ("an earlier
+    case", "your statement"), a reading's id goes; "at L20505" goes. The
+    case file keeps them."""
+    if not text:
+        return text
+    out = _PAREN_REF_RE.sub("", text)
+    for pattern, words in _BARE_REF_WORDS:
+        out = pattern.sub(words, out)
+    out = _LINE_REF_RE.sub("", out)
+    out = re.sub(r"\s+([,.;:])", r"\1", out)
+    out = re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", out)
+    return " ".join(out.split())
+
+
+_plain_reason = plain_reason
+
+
+def _first_sentence(text: str | None) -> str | None:
+    """The opening of *text*: its first sentence, and the next ones while
+    that is still shorter than :data:`MIN_REASON_CHARS` (a first sentence
+    such as "Evidence check." says nothing alone); the whole of it when it
+    has no sentence end."""
+    if not text:
+        return None
+    flat = " ".join(text.split())
+    parts = re.split(r"(?<=[.!?])\s+", flat)
+    out = ""
+    for part in parts:
+        out = f"{out} {part}".strip()
+        if len(out) >= MIN_REASON_CHARS:
+            break
+    return out
+
+
+def _clip_plain(text: str | None, limit: int) -> str | None:
+    if text is None or len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _not_done(entry: object) -> str | None:
+    """Why the run record says a case's apply did not happen, or ``None``
+    when it did (gate r2 NIT E): its ``phase`` (one of
+    :data:`NOT_CARRIED_OUT_PHASES`), or a result that applied nothing while
+    it refused, stopped or never attempted something (``refused``,
+    ``stopped``, ``not-attempted``): nothing changed in that run, whatever
+    it found already in place."""
+    if not isinstance(entry, dict):
+        return None
+    phase = entry.get("phase")
+    if phase in NOT_CARRIED_OUT_PHASES:
+        return str(phase)
+    result = entry.get("result")
+    summary = result.get("summary") if isinstance(result, dict) else None
+    if isinstance(summary, dict) and summary.get("applied") == 0:
+        for key, why in (("refused", "refused"), ("stopped", "stopped"),
+                         ("not_attempted", "not-attempted")):
+            count = summary.get(key)
+            if isinstance(count, int) and count > 0:
+                return why
+    return None
+
+
+def _carried_out(entry: object) -> bool:
+    """Whether the run record says a case's apply happened."""
+    return _not_done(entry) is None
+
+
+def _fit_run(rows: list[dict]) -> dict[str, int]:
+    """Shorten the rows in place until they take at most
+    :data:`MAX_RUN_BYTES`: reasons to 120 characters, then titles to 100,
+    then reasons to 60, then titles to 60, then no reasons. If that is still
+    too much (a run of very many cases), drop rows -- always the last row of
+    the group with the most rows (a tie spares the decisions not carried
+    out), and never a group's last row, so every group keeps a line (gate r2
+    MINOR B). Returns how many rows of each group were dropped; the counts
+    still cover them."""
+    def size() -> int:
+        return len(json.dumps(rows, ensure_ascii=False).encode("utf-8"))
+
+    dropped: dict[str, int] = {}
+    for key, limit in (("reason", 120), ("title", 100), ("reason", 60), ("title", 60), ("reason", 0)):
+        if size() <= MAX_RUN_BYTES:
+            return dropped
+        for row in rows:
+            row[key] = None if limit == 0 else _clip_plain(row.get(key), limit)
+    while rows and size() > MAX_RUN_BYTES:
+        sizes: dict[str, int] = {}
+        for row in rows:
+            sizes[str(row.get("group"))] = sizes.get(str(row.get("group")), 0) + 1
+        group = max(sizes, key=lambda g: (sizes[g], g != REFUSED_GROUP))
+        if sizes[group] <= 1:
+            break  # one line per group stays, whatever the budget
+        index = max(i for i, row in enumerate(rows) if str(row.get("group")) == group)
+        rows.pop(index)
+        dropped[group] = dropped.get(group, 0) + 1
+    return dropped
+
+
+def _run_decisions(home: Path, item: dict, limits: _Limits) -> dict | None:
+    """Humane UI lane 3 (proposal §4, contract §6; gate r1): a nightly
+    review's decisions, one row per case the run wrote (its manifest's
+    ``cases``; the item's title counts the same cases, so the two always
+    agree), each with the lesson it is about, its outcome verb and that
+    verb's group (:data:`self_learn.series.OUTCOME_GROUPS`), and the opening
+    of its reason in plain words; plus the count per group. A case the run
+    record says was not carried out (:func:`_not_done`) is counted under
+    :data:`REFUSED_GROUP`, never under the group of what it meant to do, and
+    its row says why (``not_done``). Rows not carried out come first; when
+    the block is too big, :func:`_fit_run` drops rows from the largest group
+    and ``omitted_groups`` says how many of each group are not listed.
+    Read from the run's manifest and its committed case files; counted,
+    never modelled; at most :data:`MAX_RUN_BYTES`. ``None`` for any other
+    item."""
+    if item.get("kind") != "decided.steward-run":
+        return None
+    from . import cases
+    from .series import OUTCOME_GROUPS
+
+    group_of = {verb: group for group, verbs in OUTCOME_GROUPS.items() for verb in verbs}
+    counts = {g: 0 for g in OUTCOME_GROUPS}
+    counts[REFUSED_GROUP] = 0
+    manifest_path = item.get("_manifest_path")
+    try:
+        manifest = json.loads(Path(str(manifest_path)).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {"decisions": [], "counts": counts, "other": 0, "omitted": 0, "omitted_groups": {},
+                "error": "the run's record could not be read"}
+    recipes = manifest.get("cases") if isinstance(manifest, dict) else None
+    recipes = recipes if isinstance(recipes, dict) else {}
+    case_ids = [c for c in recipes if isinstance(c, str) and c.startswith("case-")]
+    other = 0
+    rows: list[dict] = []
+    for case_id in case_ids:
+        try:
+            text = cases._case_path_for_id(home, case_id).read_text(encoding="utf-8")  # noqa: SLF001
+            frontmatter, body = cases._split_frontmatter(text)  # noqa: SLF001
+        except Exception:  # noqa: BLE001 -- a missing case is a row without words
+            frontmatter, body = {}, ""
+        decision = _sections(body).get("Decision")
+        verb = frontmatter.get("outcome") if isinstance(frontmatter.get("outcome"), str) else None
+        verb = verb or _line_value(decision, "verb")
+        not_done = _not_done(recipes.get(case_id))
+        carried = not_done is None
+        group = group_of.get(verb or "") if carried else REFUSED_GROUP
+        if group is None:
+            other += 1
+        else:
+            counts[group] += 1
+        records = [str(r) for r in frontmatter.get("records") or [] if isinstance(r, str)]
+        title = None
+        if records:
+            lesson = _lesson(home, records[0], _Limits(), "run")
+            title = (lesson or {}).get("title")
+        reason = _first_sentence(_plain_reason(_line_value(decision, "because")))
+        rows.append({
+            "case": case_id,
+            "record": records[0] if records else None,
+            "records": len(records),
+            "title": _clip_plain(redact_text(title) if title else None, MAX_RUN_TITLE_CHARS),
+            "verb": verb,
+            "group": group,
+            "carried_out": carried,
+            "not_done": not_done,
+            "reason": _clip_plain(redact_text(reason) if reason else None, MAX_RUN_REASON_CHARS),
+        })
+    # Gate r2 MINOR B: what was not carried out comes first, where a person
+    # sees it without opening "Show all".
+    order = {g: i for i, g in enumerate([REFUSED_GROUP, *OUTCOME_GROUPS])}
+    rows.sort(key=lambda r: (order.get(str(r["group"]), len(order)), str(r["case"])))
+    dropped = _fit_run(rows)
+    # Humane UI lane 5 (proposal §7a): the run's "In short", counted from
+    # the same record -- the groups above, in the same unit (decisions, the
+    # run's cases, which the item's title counts too) -- and the run's own
+    # effects rows; never written by a model.
+    effects = manifest.get("attention_effects") if isinstance(manifest, dict) else None
+    effects = [e for e in effects if isinstance(e, dict)] if isinstance(effects, list) else []
+    hooks_on = sum(1 for e in effects if e.get("hook_activated"))
+    always_loaded = sum(1 for e in effects if e.get("always_loaded"))
+    return {"decisions": rows, "counts": counts, "other": other,
+            "omitted": sum(dropped.values()), "omitted_groups": dropped, "error": None,
+            "hooks_on": hooks_on, "always_loaded": always_loaded,
+            "in_short": counted_in_short(counts, other, hooks_on=hooks_on,
+                                         always_loaded=always_loaded)}
+
+
+def counted_in_short(counts: dict, other: int = 0, *, hooks_on: int = 0,
+                     always_loaded: int = 0) -> str:
+    """A nightly review's summary in words, counted (humane UI lane 5; gate
+    r1 MINOR 4): "27 decisions: 9 put to use, 4 turned down, 3 left for
+    later and 11 looked at and kept as they are. 2 were not carried out, so
+    nothing changed for them." One unit, decisions (the run's cases), so the
+    total is the number the item's title says; the groups are
+    :data:`self_learn.series.OUTCOME_GROUPS`'s and :data:`REFUSED_GROUP`, the
+    bar's own; a group with no decision is left out; the warnings the run
+    turned on and the always-loaded lines it changed are added when any."""
+    from .attention import plural
+
+    use, no, later, kept = (int(counts.get(g) or 0) for g in ("use", "no", "later", "kept"))
+    refused = int(counts.get(REFUSED_GROUP) or 0)
+    total = use + no + later + kept + refused + int(other or 0)
+    if total == 0:
+        sentences = ["The run's record lists no decisions."]
+    else:
+        parts: list[str] = []
+        if use:
+            parts.append(f"{use} put to use")
+        if no:
+            parts.append(f"{no} turned down")
+        if later:
+            parts.append(f"{later} left for later")
+        if kept:
+            parts.append(f"{kept} looked at and kept as {'it is' if kept == 1 else 'they are'}")
+        head = plural(total, "decision")
+        if parts:
+            joined = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+            sentences = [f"{head}: {joined}."]
+        else:
+            sentences = [f"{head}."]
+        if refused:
+            sentences.append(f"{refused} {'was' if refused == 1 else 'were'} not carried out, "
+                             f"so nothing changed for {'it' if refused == 1 else 'them'}.")
+        if other:
+            sentences.append(f"{other} ended another way.")
+    if hooks_on:
+        sentences.append(f"It turned on {plural(hooks_on, 'warning')} that "
+                         f"{'runs' if hooks_on == 1 else 'run'} before matching commands.")
+    if always_loaded:
+        sentences.append(f"It changed {plural(always_loaded, 'line')} that every session loads.")
+    return " ".join(sentences)
 
 
 def _pointers(home: Path, item: dict) -> list[dict]:

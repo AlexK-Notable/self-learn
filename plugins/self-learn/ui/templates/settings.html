@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}self-learn — settings{% endblock %}
 {% block page_kind %}settings{% endblock %}
+{% block extra_scripts %}<script src="/static/settings.js" defer></script>{% endblock %}
 
 {# U-target: keyboard dispatch is scoped per page kind; this page adds no
    [data-key-action] anywhere in it, so it gains no new global binding --
@@ -17,38 +18,72 @@
 {% block content %}
 {# Y-11 (09 §11, template-source guard test_terminal_command_text_only_
    in_the_y11_exempt_surfaces): no surface text here spells out a
-   runnable `self-learn …` command line — this page names WHAT verb
-   applies (config set/unset), never an imperative "type this". #}
-<p class="settings-intro">Every operator setting this machine reads, its
-current value, and where that value comes from — an active
-<strong>override</strong>, your committed <code>config.yaml</code>, an
-ambient <strong>environment</strong> variable, or the built-in
-<strong>default</strong>. Saving a row writes and commits
-<code>config.yaml</code> through the same config verb the CLI uses.</p>
+   runnable `self-learn …` command line. #}
+<div class="settings-page">
+<h1 class="settings-title">Settings</h1>
+<p class="settings-intro">Saving a setting writes it to your config.yaml and
+commits it, the same way the command line does. Each setting says where its
+current value comes from.</p>
 
 {% if settings_error %}
 <div class="error-strip" role="alert"><p>{{ settings_error }}</p></div>
 {% endif %}
 
+{% if groups %}
+<form class="settings-find" method="get" action="/settings" role="search">
+  <label for="settings-q">Find a setting</label>
+  <input id="settings-q" type="search" name="q" value="{{ query }}" autocomplete="off"
+         placeholder="Try “model” or “night”" data-settings-find>
+  <button type="submit">Find</button>
+  {% if query %}<a class="settings-find-clear" href="/settings" data-settings-clear>Show all</a>{% endif %}
+</form>
+<p class="settings-find-status" role="status" aria-live="polite" data-settings-status>
+  {%- if query -%}
+  {{ shown }} {{ "setting matches" if shown == 1 else "settings match" }} “{{ query }}”.
+  {%- endif -%}
+</p>
+<nav class="settings-chips" aria-label="Jump to a group">
+  {% for group in groups %}
+  <a class="settings-chip" href="#group-{{ group.id }}" data-settings-chip="{{ group.id }}"{% if group.hidden %} hidden{% endif %}>{{ group.title }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+
+<div id="settings-groups">
 {% for group in groups %}
-<section aria-label="{{ group.section }} settings">
-  <h2>{{ group.section }}</h2>
-  <table class="settings-table">
-    <thead>
-      <tr>
-        <th>setting</th>
-        <th>value</th>
-        <th>source</th>
-        <th>kind</th>
-        <th>default</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in group.rows %}
+{% if group.folded %}
+<details class="settings-group settings-group-folded" id="group-{{ group.id }}" data-settings-group {% if group.open %}open{% endif %}{% if group.hidden %} hidden{% endif %}>
+  <summary><h2>{{ group.title }}</h2> <span class="settings-group-count" data-settings-count data-total="{{ group.count }}">({% if query and group.shown < group.count %}{{ group.shown }} of {% endif %}{{ group.count }})</span></summary>
+{% else %}
+<section class="settings-group" id="group-{{ group.id }}" aria-labelledby="group-{{ group.id }}-h" data-settings-group{% if group.hidden %} hidden{% endif %}>
+  <h2 id="group-{{ group.id }}-h">{{ group.title }}</h2>
+{% endif %}
+  {% if group.intro %}<p class="settings-group-intro">{{ group.intro }}</p>{% endif %}
+  {% if group.rows %}
+  <ul class="settings-list">
+    {% for row in group.rows %}
+    {% include "partials/settings_row.html" %}
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if group.class_rows %}
+  <div class="settings-classes" data-settings-classes{% if group.classes_hidden %} hidden{% endif %}>
+    <h3>Where each kind of item goes</h3>
+    <p class="settings-group-intro">Each kind of inbox item can wait for you, show as decided, stay silent, or follow its kind's default. A “Didn't need me” click on an item sets it.</p>
+    <ul class="settings-list">
+      {% for row in group.class_rows %}
       {% include "partials/settings_row.html" %}
       {% endfor %}
-    </tbody>
-  </table>
+    </ul>
+  </div>
+  {% endif %}
+{% if group.folded %}
+</details>
+{% else %}
 </section>
+{% endif %}
 {% endfor %}
+</div>
+<p class="settings-none" data-settings-none{% if not (query and shown == 0) %} hidden{% endif %}>No setting matches what you typed. <a href="/settings">Show all settings</a>.</p>
+</div>
 {% endblock %}

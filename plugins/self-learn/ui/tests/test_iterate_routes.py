@@ -331,7 +331,10 @@ class TestPaneCloseDestinationPersistence:
         runner.queue_result(RunResult(0))  # the pane's post-session validate call
 
         before = c.get(f"/record/{rec.id}")
-        assert 'name="dest" value=""' in before.text  # starts at "(analyst suggestion)"
+        assert 'name="dest" value=""' in before.text  # starts at "not suggested yet"
+        # Positive control for the absence check below (humane lane 1 renamed
+        # "(analyst suggestion)" to "not suggested yet"): the words render here.
+        assert "Destination: not suggested yet (o)" in before.text
 
         cycled = c.post(
             f"/record/{rec.id}/action/cycle-destination", data={"dest": ""}, headers=HX
@@ -346,9 +349,9 @@ class TestPaneCloseDestinationPersistence:
         assert redirect == f"/record/{rec.id}?dest=skill-md"
 
         detail = c.get(redirect)
-        # SURVIVED the round trip — not reverted to "(analyst suggestion)".
+        # SURVIVED the round trip — not reverted to "not suggested yet".
         assert 'name="dest" value="skill-md"' in detail.text
-        assert "(analyst suggestion)" not in detail.text
+        assert "not suggested yet" not in detail.text
 
         arm = c.post(
             f"/record/{rec.id}/action/arm",

@@ -1410,6 +1410,20 @@ def _failure(outcome: object, home: Path) -> tuple[str, int, str, str | None]:
 
 
 # ===================================================================== #
+# The summary verb's one seam call (humane UI lane 5)
+# ===================================================================== #
+
+
+def summary_session(spec: invocation.SessionSpec) -> object:
+    """``self-learn summarise``'s one model session (``summarise.py``), on
+    the ``ask`` surface. The seam is called from here, not from that
+    module, so the seam keeps its six caller files (``test_invocation``'s
+    wr7 census); tests drive it through :data:`_backend`, like every ask
+    session. The caller has already checked the bill (:func:`spec_billing`)."""
+    return invocation.write_session(spec, backend=_backend)
+
+
+# ===================================================================== #
 # check-login (`self-learn attention check-login`)
 # ===================================================================== #
 

@@ -488,6 +488,7 @@
         );
         return;
       }
+      revealFold(live);
       live.click();
       live.scrollIntoView({ block: "nearest" });
     }
@@ -598,6 +599,21 @@
     overlay.hidden = !overlay.hidden;
   }
 
+  /**
+   * Humane lane 1 (proposal §3): Home folds each rule's four choices
+   * behind a "Decide…" button (`<details class="decide-fold">`). A key
+   * that acts on something inside a CLOSED fold opens that fold first:
+   * otherwise `t`/`c`/`g`/`k` would arm a bar the person cannot see, and
+   * `n` could not focus a note field at all (a browser will not focus
+   * an element inside a closed <details>). Only this one fold class is
+   * opened -- the episode brief's own <summary> toggle (`b`) must keep
+   * toggling, never be forced open first.
+   */
+  function revealFold(el) {
+    const fold = el && el.closest ? el.closest("details.decide-fold") : null;
+    if (fold && !fold.open) fold.open = true;
+  }
+
   function focusNote() {
     // The note input lives in the unarmed bar only — there is nothing to
     // focus while a confirm strip is up, which is why the armed branch
@@ -620,6 +636,7 @@
     //      name the visible one (`F1b`).
     const resolved = resolveScoped('.action-bar input[type="text"][name="note"]');
     if (resolved.status === "one") {
+      revealFold(resolved.el);
       resolved.el.focus();
       return;
     }
@@ -1097,6 +1114,15 @@
    *       at the exact file being extended. Release is navigation-only
    *       (§3.5: "persistent, no auto-dismiss") — same shape as leg (d),
    *       never an explicit dismiss like (a)/(e).
+   *   (g) a [data-setting-dirty] form is in the document (humane lane 4,
+   *       the settings page): a setting field whose value differs from the
+   *       stored one. A reload would throw away what the person is typing —
+   *       the (c) hazard. static/settings.js sets and clears the marker.
+   *   The settings page also produces (a) and (f): a save's "Saved." line
+   *   carries [data-verb-success], a refused save's strip [data-verb-error],
+   *   each with a Dismiss button. static/settings.js dispatches the
+   *   `self-learn:release-reload` event when a message is dismissed, or the
+   *   last edit is taken back; the listener below re-checks the predicate.
    * Deferred-not-dropped: the pending reload fires when no leg holds
    * (dismiss removes (a), completion/error/abort clears (b),
    * disarm-or-resolve removes (c), navigating away is (d)'s only
@@ -1526,6 +1552,7 @@
     if (document.querySelector("[data-contradicts-offer]")) return true; // leg (d)
     // leg (e) retired — see the docblock above.
     if (document.querySelector("[data-verb-success]")) return true; // leg (f)
+    if (document.querySelector("[data-setting-dirty]")) return true; // leg (g)
     return false;
   }
 
@@ -1550,6 +1577,9 @@
       reload(); // re-checks the predicate; re-defers if a leg still holds
     }
   }
+  // The settings page releases its own holds (a dismissed message, a taken-
+  // back edit) without an htmx swap to settle; see leg (g)'s note above.
+  document.addEventListener("self-learn:release-reload", releaseReload);
 
   /** Leg (b)'s flag: a verb-confirm POST (any .../confirm route) in
    * flight. Set at htmx's request start; cleared unconditionally on
@@ -1568,11 +1598,34 @@
   document.addEventListener("htmx:beforeRequest", function (evt) {
     if (isConfirmRequest(evt)) confirmInFlight = true;
   });
+
+  /**
+   * Humane lane 1 (gate r1 MAJOR-1): is this htmx event for one of the
+   * page's background reads? The requesting element says so itself with
+   * `data-background-read` (base.html's jobs line and inbox link, Home's
+   * answer tile). That element is `detail.requestConfig.elt`: it keeps its
+   * attributes after its own outerHTML swap detached it. `detail.elt` is
+   * NOT it -- in htmx 2.0.9 it is the NEW content of an outerHTML swap
+   * (measured: the swapped-in jobs line, unmarked), and for an
+   * out-of-band swap (Home's tile filling the header's inbox link) it is
+   * the out-of-band element; the requester is the marked tile either way.
+   */
+  function isBackgroundRead(evt) {
+    const d = evt && evt.detail;
+    const elt = d && d.requestConfig && d.requestConfig.elt;
+    return !!(elt && elt.hasAttribute && elt.hasAttribute("data-background-read"));
+  }
   // pendingSwaps' own add leg: a swap just landed new content for
   // this request's OWN key (M2: its xhr, not merely its target) — one
   // more resolution (its OWN settle or an F14 failure that owns it)
   // now owed, bounded by its own N9 fallback regardless.
   document.addEventListener("htmx:afterSwap", function (evt) {
+    // Humane lane 1 (gate r1 MAJOR-1): the shared header's after-load
+    // reads (the jobs line, the inbox count, Home's "Needs your answer"
+    // tile) are not page swaps a keystroke could race: they replace only
+    // their own header/tile element, which no key action ever targets.
+    // They owe no settle, so they never hold a key back.
+    if (isBackgroundRead(evt)) return;
     addPendingSwap(pendingSwapKey(evt));
   });
   // Success leg: cleared at swap SETTLE (never earlier — the error
@@ -1583,7 +1636,22 @@
     if (isConfirmRequest(evt)) confirmInFlight = false;
     removePendingSwapForKey(pendingSwapKey(evt)); // N1, drains at zero
     releaseReload();
+    revealArmedFoldBar(evt);
   });
+
+  /**
+   * Humane lane 1 (gate r1 MINOR-5): a rule's armed bar on Home lands
+   * inside its "Decide…" fold, which opened and grew AFTER the key's own
+   * scroll ran (clickAction scrolls the button, before the swap). Once the
+   * armed bar has settled, bring the whole bar on screen -- its Confirm,
+   * Cancel and its lower edge.
+   */
+  function revealArmedFoldBar(evt) {
+    const el = evt && evt.target;
+    if (!el || !el.closest) return;
+    const bar = el.closest('.decide-fold .action-bar[data-armed="true"]');
+    if (bar) bar.scrollIntoView({ block: "nearest" });
+  }
   // Failure legs (F14, extended to pendingSwaps/pendingDispatches,
   // M1/M2/N1): no swap will come for THIS request — remove ONLY the
   // token this request's OWN key owns (M1/M2: a request whose OWN key

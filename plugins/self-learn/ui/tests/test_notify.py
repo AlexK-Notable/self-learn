@@ -123,7 +123,13 @@ fi
 exit 0
 """
 
+# `--version` is self-learn-ui-open's can-it-start probe (31b29c3b,
+# 2026-11-01), not a launch, so the fake browser answers it without
+# logging -- the same convention as test_launcher.py's
+# `_LOGGING_LAUNCH_TMPL`. Logged, it would be the log's first line and
+# `_wait_for_nonempty` would return before the real launch arrived.
 _HYPRCTL_ABSENT_CHROMIUM = """
+[[ "$1" == "--version" ]] && exit 0
 echo "$*" >> "{log}"
 exit 0
 """

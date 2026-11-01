@@ -3660,15 +3660,22 @@ def status_infos(home: Path, *, now: datetime | None = None) -> list[dict]:
     fail to read or parse (09 §5 FW-18), sourced from the SAME
     :func:`unparseable_pending` skip computation `list`/`status` already
     warn on — never a second definition."""
+    from .places import bucket_places  # deferred: places imports this module
+
     now = _now(now)
     infos = []
-    for bucket in discover_buckets(home):
+    buckets = discover_buckets(home)
+    places = bucket_places(buckets)
+    for bucket in buckets:
         entries = queue(bucket, now=now)
         ages = [_age_days(e.record.created_at, now) for e in entries]
         infos.append(
             {
                 "bucket": bucket.name,
                 "scope": bucket.scope,
+                # S-135 (w33-humane lane 0): a name a person reads,
+                # the compiled-into path from `~`, and whether it exists.
+                **places[(bucket.scope, bucket.name)],
                 "pending": len(entries),
                 "oldest_days": max(ages) if ages else None,
                 "unanalyzed": sum(1 for e in entries if is_unanalyzed(e, now=now)),

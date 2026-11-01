@@ -1,0 +1,25 @@
+{# Humane lane 2 (S-137, proposal §3 item 2 and §8): the two charts
+   on Home. Lane 1 includes this partial with `ignore missing` and passes a
+   `series` variable -- `report --json`'s `series` block (contract.md §4).
+   Nothing here is computed: the sentences and marks come from charts.py,
+   which draws only counts the CLI wrote. A `pending: null` day is a gap in
+   the first chart, never a zero. Decisions are grouped by the CLI's own
+   `series.OUTCOME_GROUPS` (use / no / later / kept).
+   Every chart has a "Show as a table" fold and a 390 px variant. #}
+{% if series is defined and series is not none %}
+<section class="home-charts" aria-label="how it is going">
+  <div class="chart-grid">
+    <section class="chart-card" aria-label="is it keeping up">
+      <h2 class="chart-q">Is it keeping up?</h2>
+      <p class="chart-a">{{ chart_waiting_sentence(series) }}</p>
+      {{ chart_waiting(series) }}
+    </section>
+    <section class="chart-card" aria-label="what got decided">
+      <h2 class="chart-q">What got decided, night by night</h2>
+      <p class="chart-a">{{ chart_decided_sentence(series) }}</p>
+      {{ chart_decided_legend() }}
+      {{ chart_decided(series) }}
+    </section>
+  </div>
+</section>
+{% endif %}

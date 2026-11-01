@@ -1,54 +1,90 @@
-{# One settings-registry row (U-settings Phase 2). Rendered both inline
-   (settings.html's per-section loop, `row` from the loop var) and as the
-   htmx swap target of `POST /settings/set` (routes.py passes `row`
-   explicitly) -- the WHOLE `<tr>` is the swap unit so a warn banner that
-   appears or disappears on save is never stranded in a sibling element
-   the swap didn't touch.
-   CSP: no inline style/script. No [data-key-action]/[data-row] anywhere
-   in this partial -- the settings page adds no keyboard binding
-   (dispatch pin). #}
-{% set dom_name = row.name | replace(".", "-") %}
-{% set source_kind = row.source.split(":")[0] %}
+{# One setting (U-settings Phase 2; humane lane 4). Rendered inline by
+   settings.html and as the htmx swap target of `POST /settings/set` (routes.py
+   passes a `settings_view.decorate`d `row`). The WHOLE `<li>` is the swap unit
+   so the override note that appears or goes away on a save is never stranded
+   in a sibling element the swap did not touch.
+   `row`: the CLI's own fields (name, value, source, kind, default, description,
+   tier, warn, note, group, label, plain) plus the words `decorate` adds.
+   CSP: no inline style/script. No [data-key-action]/[data-row] anywhere in
+   this partial: the settings page adds no keyboard binding (dispatch pin).
+   Y-11 (09 §11): no surface text here spells out a runnable terminal command;
+   it says only that the setting is changed from a terminal. #}
+{% set dom_name = row.dom_name %}
 {% set editable = row.tier == "A" %}
-<tr id="setting-row-{{ dom_name }}" class="settings-row">
-  <td class="settings-name" title="{{ row.description }}">{{ row.name }}</td>
-  <td class="settings-value">
+<li id="setting-row-{{ dom_name }}" class="setting{% if row.is_class %} setting-compact{% endif %}{% if row.error %} setting-failed{% endif %}"
+    data-find="{{ row.find }}"{% if row.hidden %} hidden{% endif %}>
+  <div class="setting-text">
+    <p class="setting-label">{{ row.label }}</p>
+    {% if row.show_plain %}<p class="setting-plain">{{ row.plain }}</p>{% endif %}
+    <p class="setting-meta">
+      <span class="badge badge-source-{{ row.source_kind }}" title="{{ row.source }}">{{ row.source_words }}</span>
+      <code class="setting-key">{{ row.name }}</code>
+    </p>
+    {% if not row.is_class %}
+    <details class="setting-more">
+      <summary>Details</summary>
+      <dl>
+        <dt>Technical note</dt><dd>{{ row.description }}</dd>
+        <dt>Built-in default</dt><dd>{{ row.default_words }}</dd>
+        {% if row.note %}<dt>Note</dt><dd>{{ row.note }}</dd>{% endif %}
+      </dl>
+    </details>
+    {% endif %}
+  </div>
+  <div class="setting-control settings-value">
     {% if editable %}
     <form hx-post="/settings/set" hx-target="#setting-row-{{ dom_name }}"
-          hx-swap="outerHTML" hx-disabled-elt="find button">
+          hx-swap="outerHTML" hx-disabled-elt="find button" data-setting-form>
       <input type="hidden" name="name" value="{{ row.name }}">
-      {% if row.kind == "bool" %}
-      <select name="value">
-        <option value="1" {% if row.value %}selected{% endif %}>on</option>
-        <option value="0" {% if not row.value %}selected{% endif %}>off</option>
+      {% if row.is_class %}
+      <select name="value" aria-label="{{ row.label }}">
+        {% for val, words in class_options %}
+        <option value="{{ val }}" {% if row.value == val %}selected{% endif %}>{{ words }}</option>
+        {% endfor %}
+      </select>
+      {% elif row.kind == "bool" %}
+      <select name="value" aria-label="{{ row.label }}">
+        <option value="1" {% if row.value %}selected{% endif %}>On</option>
+        <option value="0" {% if not row.value %}selected{% endif %}>Off</option>
       </select>
       {% elif row.kind == "int" %}
-      <input type="number" step="1" name="value" value="{{ row.value if row.value is not none else '' }}">
+      <input type="number" step="1" name="value" aria-label="{{ row.label }}" value="{{ row.value if row.value is not none else '' }}">
       {% elif row.kind == "float" %}
-      <input type="number" step="any" name="value" value="{{ row.value if row.value is not none else '' }}">
+      <input type="number" step="any" name="value" aria-label="{{ row.label }}" value="{{ row.value if row.value is not none else '' }}">
       {% else %}
-      <input type="text" name="value" value="{{ row.value if row.value is not none else '' }}">
+      <input type="text" class="setting-text-input" name="value" aria-label="{{ row.label }}" value="{{ row.value if row.value is not none else '' }}">
       {% endif %}
-      <button type="submit">Save</button>
+      {% if row.unit %}<span class="setting-unit">{{ row.unit }}</span>{% endif %}
+      <button type="submit" data-setting-save>Save</button>
     </form>
+    {# The save's own message. data-verb-success / data-verb-error: app.js holds
+       a page reload while either is in the page (Y-16 legs f and a), so the
+       refresh the save itself causes does not wipe it. Each has a Dismiss
+       button (static/settings.js removes the message and releases the held
+       reload), and editing the row's field retires it too. #}
+    {% if saved %}
+    <div class="setting-message" data-setting-message>
+      <p class="setting-saved" role="status" data-verb-success>Saved.</p>
+      <button type="button" class="setting-dismiss" data-setting-dismiss>Dismiss</button>
+    </div>
+    {% endif %}
     {% if row.error %}
-    <p class="error-strip settings-row-error" role="alert" data-setting-error>{{ row.error }}</p>
+    <div class="setting-message" data-setting-message>
+      <p class="error-strip settings-row-error" role="alert" data-setting-error data-verb-error="true">{{ row.error }}</p>
+      <button type="button" class="setting-dismiss" data-setting-dismiss>Dismiss</button>
+    </div>
     {% endif %}
     {% else %}
-    <span class="settings-value-readonly">{{ row.value }}</span>
-    {# Y-11 (09 §11): no runnable `self-learn …` command line here --
-       names the escape hatch (the CLI's own config verb) without
-       spelling it as an instruction to type. #}
-    <span class="settings-tier-c-note"
-          title="a boundary, not a preference -- changeable only through the CLI's own config verb, outside this page">read-only</span>
+    <p class="settings-value-readonly">{{ row.value_words }}</p>
+    {# A boundary, not a preference: changeable only from a terminal, outside
+       this page. No command line is spelled out here (Y-11). #}
+    <p class="settings-tier-c-note">Read-only here: only you can change this, from a terminal.</p>
     {% endif %}
-  </td>
-  <td class="settings-source">
-    <span class="badge badge-source-{{ source_kind }}">{{ source_kind }}</span>
-    {% if row.warn %}
-    <p class="banner banner-warning settings-warn" role="alert">{{ row.warn }}</p>
-    {% endif %}
-  </td>
-  <td class="settings-kind">{{ row.kind }}</td>
-  <td class="settings-default">{{ row.default if row.default is not none else "—" }}</td>
-</tr>
+  </div>
+  {% if row.warn %}
+  <div class="banner banner-warning settings-warn" role="alert">
+    <p>Set for this terminal only. It outranks config.yaml while it lasts.{% if editable %} A value saved here does not take effect until it is removed.{% endif %}</p>
+    <details><summary>The full note</summary><p>{{ row.warn }}</p></details>
+  </div>
+  {% endif %}
+</li>

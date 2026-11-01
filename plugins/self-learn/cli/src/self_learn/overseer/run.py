@@ -77,6 +77,23 @@ _REPORT_SECTIONS_WITH_HAND_STEPS = (
     HAND_STEPS_SECTION,
     *_REPORT_SECTIONS[_REPORT_SECTIONS.index(_HAND_STEPS_AFTER) + 1 :],
 )
+#: Humane UI lane 5 (S-140, proposal §7a): an OPTIONAL first
+#: heading, three to five plain sentences written in the same phase B call
+#: (no extra model call). A report without it is still valid, exactly like
+#: the hand-steps heading, so a model that forgets it costs nothing and
+#: older reports still read; when present it must come first. The UI lifts
+#: it into the report's "In short" box.
+IN_SHORT_SECTION = "In short"
+
+
+def _heading_orders() -> tuple[list[str], ...]:
+    """Every heading order a model report may have: the seven required
+    headings, with or without the hand-steps heading, each with or without
+    the "In short" heading first."""
+    bases: tuple[list[str], ...] = (list(_REPORT_SECTIONS), list(_REPORT_SECTIONS_WITH_HAND_STEPS))
+    return (*bases, *([IN_SHORT_SECTION, *base] for base in bases))
+
+
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 #: 2026-09-24: the report's length is GUIDANCE, not a refusal (the user
 #: asked "do we need a size limit at all?"; the orchestrator answered no).
@@ -91,7 +108,7 @@ _CASE_ID_RE = re.compile(r"^case-[0-9a-f]{8}$")
 #: values and cannot drift apart.
 INITIAL_VIEW_KEYS = ("id", "what_i_would_do", "why", "what_evidence_decides_it", "confidence")
 INITIAL_CONFIDENCE = ("clear", "close-call")
-FINDING_KEYS = ("case", "kind", "text", "ref")
+FINDING_KEYS = ("case", "kind", "text", "ref", "holds")
 FINDING_KINDS = ("examined", "dependency-moved")
 #: S-106 (hand-maintenance cures, lane D): the optional phase B file
 #: of one-line project notices, and the phase B input listing the projects a
@@ -970,7 +987,9 @@ Every text field is secret-scanned: an evidence item whose quote or ref matches 
 a trace) and the case records with its remaining evidence; a hit in any other field refuses the
 case. Quote the part of a line that proves the point and leave out long tokens, hashes or ids
 that are not the point (a folder path is fine).
-findings.yaml is {{findings: [{{case, kind: examined|dependency-moved, text, ref?}}]}}.
+findings.yaml is {{findings: [{{case, kind: examined|dependency-moved, text, ref?, holds?}}]}}.
+On an examined finding, holds is true when the steward's decision stands as it was decided and
+false when it does not; the weekly report counts these, so give it on every examined finding.
 A finding's case must be one of the selected cases; the runner drops a finding that names any
 other case, a parked case included (what you found about a parked case goes in its successor
 case and the report).
@@ -1048,9 +1067,11 @@ system readings only. A lapse must name exactly one changed condition, contrary 
 {textwrap.fill(formats.user_model_one_line_rule(), width=100, break_long_words=False, break_on_hyphens=False)}
 report.md should stay under about 60 lines: it is the summary, not the record. Its
 "Questions for you" section lists each question as - <id>: <a few words>; the full text lives
-in questions.yaml. It has these headings, in this exact order: Examined; Decided in the user's
-stead; Hooks; User model; Catalogue health; Hand steps this week; Questions for you; Refused /
-could not do. Use ``- none`` for an empty section.
+in questions.yaml. It has these headings, in this exact order: In short; Examined; Decided in the
+user's stead; Hooks; User model; Catalogue health; Hand steps this week; Questions for you;
+Refused / could not do. Use ``- none`` for an empty section. "In short" is three to five plain
+sentences for the user, as one paragraph, no list: what you checked, what you changed, and
+whether anything needs them. No ids, paths or hashes there; the sections below hold those.
 {_journal_block("B")}"""
 
 
@@ -2498,7 +2519,7 @@ def _validate_model_report(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     headings = [line[3:].partition(" (")[0] for line in lines if line.startswith("## ")]
-    if headings not in (list(_REPORT_SECTIONS), list(_REPORT_SECTIONS_WITH_HAND_STEPS)):
+    if headings not in _heading_orders():
         raise OverseerError("report.md: section headings are missing or out of order")
     return lines
 
@@ -2527,12 +2548,13 @@ def _repair_report_headings(path: Path) -> list[str]:
     lines = path.read_text(encoding="utf-8").splitlines()
     starts = [i for i, line in enumerate(lines) if line.startswith("## ")]
     names = [_heading_name(lines[i]) for i in starts]
-    if names in (list(_REPORT_SECTIONS), list(_REPORT_SECTIONS_WITH_HAND_STEPS)):
+    if names in _heading_orders():
         return []
     if (
         not names
-        or any(name not in _REPORT_SECTIONS_WITH_HAND_STEPS for name in names)
+        or any(name not in (IN_SHORT_SECTION, *_REPORT_SECTIONS_WITH_HAND_STEPS) for name in names)
         or len(set(names)) != len(names)
+        or names == [IN_SHORT_SECTION]
     ):
         _validate_model_report(path)  # raises: not a heading-only problem
     bounds = [*starts, len(lines)]
@@ -2544,6 +2566,10 @@ def _repair_report_headings(path: Path) -> list[str]:
     order = (
         _REPORT_SECTIONS_WITH_HAND_STEPS if HAND_STEPS_SECTION in sections else _REPORT_SECTIONS
     )
+    # Humane UI lane 5: the optional "In short" heading, when written, goes
+    # first; it is never reported missing.
+    if IN_SHORT_SECTION in sections:
+        order = (IN_SHORT_SECTION, *order)
     missing = [name for name in _REPORT_SECTIONS if name not in sections]
     present = [name for name in names if name in order]
     for name in order:
@@ -2865,6 +2891,9 @@ def _validate_findings(
             problem = "a finding needs non-empty text"
         elif finding["kind"] == "dependency-moved" and not isinstance(finding.get("ref"), str):
             problem = "dependency-moved needs a ref"
+        elif "holds" in finding and not isinstance(finding.get("holds"), bool):
+            # Humane UI lane 5: the optional verdict is true or false only.
+            problem = "holds must be true or false"
         if problem is not None:
             dropped.append(f"{label}: dropped — {problem}")
             continue
@@ -2877,6 +2906,36 @@ def _validate_findings(
         for case_id in selected if case_id not in examined
     )
     return clean, tuple(case_id for case_id in selected if case_id in examined), dropped
+
+
+def review_counts(
+    data: dict[str, Any], clean: list[dict[str, Any]], *, parsed: bool = True,
+    withheld: bool = False,
+) -> dict[str, int | None]:
+    """The week's review in counts (humane UI lane 5, 02 §3a.13a), from
+    findings.yaml as written (*data*) and the findings the runner kept
+    (*clean*): ``examined`` (kept examined findings), ``agreed`` and
+    ``disagreed`` (of those, ``holds: true`` and ``holds: false``),
+    ``no_verdict`` (examined findings without ``holds``), and
+    ``findings_dropped``: the findings the overseer wrote this week that the
+    runner dropped (malformed, or naming a case not selected).
+    ``findings_dropped`` is ``None`` when the file did not parse or was
+    withheld by the secret scan (blanked before it was read), so its
+    entries cannot be counted."""
+    examined = [f for f in clean if f.get("kind") == "examined"]
+    raw = data.get("findings") if isinstance(data, dict) else None
+    written = len(raw) if isinstance(raw, list) else None
+    if not parsed or withheld or written is None:
+        dropped: int | None = None
+    else:
+        dropped = written - len(clean)
+    return {
+        "examined": len(examined),
+        "agreed": sum(1 for f in examined if f.get("holds") is True),
+        "disagreed": sum(1 for f in examined if f.get("holds") is False),
+        "no_verdict": sum(1 for f in examined if not isinstance(f.get("holds"), bool)),
+        "findings_dropped": dropped,
+    }
 
 
 def _validate_notices(
@@ -4899,6 +4958,7 @@ def _prepare_manifest(
     policy_lines: list[str] | None = None,
     withdraw: list[dict[str, str]] | None = None,
     question_notes: list[str] | None = None,
+    review: dict[str, int | None] | None = None,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -5066,6 +5126,10 @@ def _prepare_manifest(
             # their preview said they would be refused (not pairs).
             "lines_dropped": int(decisions.get("lines_dropped") or 0),
         }
+    if review is not None:
+        # Humane UI lane 5 (02 §3a.13a): the week's review in counts, for
+        # the weekly report's tiles -- never read from the report's prose.
+        manifest["review"] = dict(review)
     if skills_info is not None:
         # SK3 (S-107 part 6): what overseer.skill_writing meant for
         # this run and the steps kept as drafts (committed with this record).
@@ -7975,6 +8039,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             findings, examined_ids, finding_drops = _validate_findings(
                 findings_data, selected,
             )
+            review = review_counts(findings_data, findings, parsed=not findings_parse,
+                                   withheld="findings.yaml" in withheld)
             if "findings.yaml" in withheld:
                 findings_parse.append(
                     "findings.yaml: withheld — the secret scan matched "
@@ -8461,7 +8527,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 selected=examined_ids, population_count=len(week_rows), excluded=excluded,
                 model_calls=model_calls, guard=guard, coverage_text=coverage_text,
                 questions=questions, findings=findings, prepared=prepared,
-                question_notes=question_notes,
+                question_notes=question_notes, review=review,
                 model_updates=model_updates, withdraw=withdraw,
                 sessions=sessions,
                 project_notice_rows=notice_rows,

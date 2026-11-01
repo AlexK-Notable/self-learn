@@ -757,6 +757,16 @@ def _default_ask_model() -> str:
     return _DEFAULT_ASK_MODEL
 
 
+#: 2026-11-01 (humane UI lane 5, proposal §7b): "Summarise this" runs on
+#: `sonnet` unless the person picks another model (tier A). A summary needs
+#: no reasoning over tools, so it does not share the ask agent's `opus`.
+_DEFAULT_SUMMARY_MODEL = "sonnet"
+
+
+def _default_summary_model() -> str:
+    return _DEFAULT_SUMMARY_MODEL
+
+
 def _bedrock_active(provider_value: str) -> bool:
     return provider_value == "bedrock"
 
@@ -1777,6 +1787,19 @@ REGISTRY: tuple[Setting, ...] = (
         validate_hint="must be > 0",
         description="the time limit of one answer from the inbox's ask-about-this agent (seconds)",
     ),
+    # 2026-11-01 (humane UI lane 5, proposal §7b): the model of the
+    # on-demand "Summarise this" (`self-learn summarise`). Tier A; no
+    # Bedrock twin, because a summary refuses any setup that bills money.
+    Setting(
+        name="models.summary",
+        env_var="SELF_LEARN_SUMMARY_MODEL",
+        config_section="models",
+        config_key="summary",
+        kind="str",
+        default=_default_summary_model,
+        description="model id for the on-demand report summary (self-learn summarise)",
+        direction="env-first",
+    ),
 )
 
 #: Attention round (design r2 §4.2, §4.11; the user's answer 7): every
@@ -2479,7 +2502,10 @@ def setting_row(home: Path | str, setting: Setting) -> dict[str, object]:
     it"), and this is the one place that text is computed for JSON
     consumers, so the CLI table (`preflight`) and the page can never
     drift apart."""
+    from .settings_plain import plain_for  # deferred: it imports this module
+
     value, source = resolve_setting(home, setting)
+    plain = plain_for(setting.name)
     return {
         "name": setting.name,
         "value": value,
@@ -2487,6 +2513,12 @@ def setting_row(home: Path | str, setting: Setting) -> dict[str, object]:
         "kind": setting.kind,
         "default": _default_value(setting),
         "description": setting.description,
+        # S-135 (w33-humane lane 0): the settings page's grouping
+        # and plain words, from `settings_plain` (one source, checked
+        # against this registry at import).
+        "group": plain.group,
+        "label": plain.label,
+        "plain": plain.plain,
         "tier": setting.tier,
         "warn": _override_warn_text(setting) if source.startswith("override:") else None,
         # M-S (S-58, r5-m1(c)): the fold detail, named `note` outright

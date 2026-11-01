@@ -219,7 +219,8 @@ class TestWorkerOverdueRendersAsATextLabel:
         c, _runner = make_client(sb)
         r = c.get("/")
         assert r.status_code == 200
-        assert "worker overdue" in r.text.lower()
+        # Humane lane 1: the header and the Jobs row say it in words.
+        assert "drafting suggestions is behind" in r.text.lower()
 
     def test_no_unanalyzed_supply_never_alarms_even_on_a_fresh_ledger(
         self, tmp_path: Path
@@ -228,7 +229,11 @@ class TestWorkerOverdueRendersAsATextLabel:
         c, _runner = make_client(sb)
         r = c.get("/")
         assert r.status_code == 200
-        assert "worker overdue" not in r.text.lower()
+        # Positive control: the header's jobs line rendered. Humane lane 1
+        # gate r1 NIT-4: on a ledger whose overnight read never ran it says
+        # so rather than "all jobs ran on time".
+        assert "the overnight read has not run yet" in r.text.lower()
+        assert "drafting suggestions is behind" not in r.text.lower()
 
 
 # ---------------------------------------------- stale proposal, approve live

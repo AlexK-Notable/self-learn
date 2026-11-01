@@ -521,7 +521,7 @@ HOOK_VERBATIM_CAPTION = (
     "aborts at the verb, never silently regenerates"
 )
 
-NO_ANALYSIS_MESSAGE = "no analysis yet — `i` to analyze now"
+NO_ANALYSIS_MESSAGE = "No suggestion yet."
 
 #: 09 §2.2 group labels — plain words, deliberately NOT "unanalyzed"
 #: (W-6: that word names the Front page's eligibility *count*, a
@@ -703,6 +703,12 @@ class BucketRow:
     #: currently snoozed (deferred_until in the future). Counted from the
     #: SAME list read Front already makes — never a second CLI call.
     deferred: int
+    #: Humane lane 1: the CLI's own place words (`status --json` buckets'
+    #: `label` / `path` / `path_exists`, lane 0). Display only — the
+    #: bucket identity stays ``(scope, name)``. Empty/None on an older CLI.
+    label: str = ""
+    path: str | None = None
+    path_exists: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -735,6 +741,16 @@ class HoldingRow:
     #: telemetry, or a producer that omits it) — the row still renders,
     #: it just says less.
     basis_text: str = ""
+    #: Humane lane 1: the rule's own words (`report --json`
+    #: `recurrence_suspects[].title`, falling back to `routed_live[].title`),
+    #: the place it lives in, and the routing destination as recorded.
+    #: Empty/None on an older CLI — the row still renders, it says less.
+    title: str = ""
+    place_label: str = ""
+    scope: str = ""
+    destination: str | None = None
+    #: The distinct bases themselves (``basis_text`` joins their words).
+    bases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -760,6 +776,9 @@ class MinerRun:
     folded: int | None
     recurrences: int | None
     fires: int | None
+    #: Humane lane 1 (proposal §10): one date style for the run list,
+    #: "Sat 31 Oct" in the server's local time; "" when unparseable.
+    day_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -915,6 +934,11 @@ def _build_holding_rows(report_data: dict | None) -> tuple[HoldingRow, ...]:
                 seen_bases.append(basis)
         live = routed_live.get(record_id)
         bucket = live["bucket"] if live else ""
+        title = str(newest.get("title") or (live or {}).get("title") or "")
+        place_label = str(
+            newest.get("bucket_label") or (live or {}).get("bucket_label") or ""
+        )
+        row_scope = str(newest.get("scope") or (live or {}).get("scope") or "")
         routed_days_ago = live.get("routed_days_ago") if live else None
         count = len(events)
         when = (
@@ -933,6 +957,11 @@ def _build_holding_rows(report_data: dict | None) -> tuple[HoldingRow, ...]:
                 newest_nonce=str(newest.get("nonce", "")),
                 text=text,
                 basis_text=_basis_text(seen_bases),
+                title=title,
+                place_label=place_label,
+                scope=row_scope,
+                destination=(live or {}).get("destination"),
+                bases=tuple(seen_bases),
             )
         )
     return tuple(sorted(rows, key=lambda r: r.id))
@@ -969,6 +998,7 @@ def _build_miner_runs(runs: list[dict]) -> tuple[MinerRun, ...]:
                 folded=e.get("folded"),
                 recurrences=e.get("recurrences"),
                 fires=e.get("fires"),
+                day_text=day_words(e.get("ts")),
             )
         )
     return tuple(out)
@@ -1153,6 +1183,9 @@ def build_front_model(
                     oldest_days=b.get("oldest_days"),
                     unanalyzed=b["unanalyzed"],
                     deferred=deferred_by_bucket.get((b["scope"], b["bucket"]), 0),
+                    label=str(b.get("label") or ""),
+                    path=b.get("path"),
+                    path_exists=b.get("path_exists"),
                 )
                 for b in buckets_raw
             ),
@@ -1200,6 +1233,476 @@ def build_front_model(
         holding=_build_holding_rows(report_data),
         followups=_build_followup_rows(report_data),
         miner=_build_miner_block(mine_read),
+    )
+
+
+# ------------------------------------------------- Home (humane lane 1)
+#
+# Proposal §3 (misc/build-2026-11-01/humane/proposal.md, S-136):
+# the front page reorganised around "what is waiting for me". Everything
+# here formats numbers the CLI already counted (status/report/list/mine
+# --json, plus lane 0's place words and rule titles); nothing is
+# estimated. Lengths of lists the CLI returned are the only sums taken.
+
+
+def day_words(value: Any) -> str:
+    """One date style for a person: "Sat 31 Oct", in the server's local
+    time. "" for anything that does not parse (never a crash, never the
+    string "None")."""
+    local = _local_dt(value)
+    if local is None:
+        return ""
+    return f"{local.strftime('%a')} {local.day} {local.strftime('%b')}"
+
+
+def _local_dt(value: Any) -> datetime | None:
+    """An ISO instant in the server's local time. A value with no offset
+    (``status --json``'s ``overseer_next`` is one: a schedule written in
+    local time) is read as local, not as UTC."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt.astimezone()
+
+
+def days_ago_words(days: int | None) -> str:
+    """"today" / "yesterday" / "N days ago"; "" when unknown."""
+    if days is None:
+        return ""
+    if days <= 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    return f"{days} days ago"
+
+
+#: How a routing destination reads after "Placed in <place>". claude-md
+#: and skill-md add nothing: the place's own name already says it. An
+#: unknown value is shown raw, never dropped (lane 0 contract §2).
+_PLACED_AS: dict[str, str] = {
+    "claude-md": "",
+    "skill-md": "",
+    "hook": "a warning hook",
+    "reference": "a reference file",
+    "rules": "a rules file",
+    "new-skill": "a new skill",
+}
+
+
+def place_words(label: str, scope: str) -> str:
+    """A place's name inside a sentence: the user bucket reads "your
+    instructions" mid-sentence; every other label stays as the CLI wrote
+    it."""
+    if scope == "user" and label:
+        return label[:1].lower() + label[1:]
+    return label
+
+
+def placed_text(destination: str | None, scope: str, place_label: str) -> str:
+    """"Placed in your instructions" / "Placed in self-learn, as a reference
+    file". Says less, never something false, when a field is missing."""
+    place = place_words(place_label, scope)
+    as_words = ""
+    if destination:
+        base = destination.split(":", 1)[0]
+        if destination.startswith("claude-md:rules"):
+            as_words = _PLACED_AS["rules"]
+        else:
+            as_words = _PLACED_AS.get(base, destination)
+    if place and as_words:
+        return f"Placed in {place}, as {as_words}"
+    if place:
+        return f"Placed in {place}"
+    if as_words:
+        return f"Placed as {as_words}"
+    return ""
+
+
+#: Where a pending lesson came from, in words. Unknown sources show raw.
+_SOURCE_WORDS: dict[str, str] = {
+    "teach": "taught in a session",
+    "session": "found by the overnight read",
+    "miner": "found by the overnight read",
+    "import": "imported",
+    "rewrite": "a rewrite of an older lesson",
+}
+
+
+@dataclass(frozen=True)
+class HomeTile:
+    key: str
+    label: str
+    #: ``None`` only for the "Needs your answer" tile, whose number comes
+    #: from the inbox reader after the page has loaded (the front page
+    #: never waits on ``attention --json``).
+    value: int | None
+    note: str
+    href: str
+    #: An ISO instant the template appends to ``note``, read relative.
+    note_ts: str | None = None
+
+
+@dataclass(frozen=True)
+class LessonRow:
+    id: str
+    title: str
+    place: str
+    source_text: str
+    created_at: str | None
+    suggestion_text: str
+    has_suggestion: bool
+
+
+@dataclass(frozen=True)
+class PlaceRow:
+    scope: str
+    name: str
+    label: str
+    path: str | None
+    pending: int
+    deferred: int
+    unanalyzed: int
+    in_use: int | None
+    oldest_days: int | None
+
+
+@dataclass(frozen=True)
+class JobRow:
+    key: str
+    title: str
+    #: The ISO instant of its last run, rendered relative by the template
+    #: (``humanize_ts``); ``None`` when it never ran or is unknown.
+    last_run: str | None
+    detail: str
+    late: bool
+    #: "worker" / "miner": a Run now button posting to that job's route.
+    run: str | None = None
+    link_href: str | None = None
+    link_text: str | None = None
+
+
+@dataclass(frozen=True)
+class JobsLine:
+    """The header's one line about the jobs (proposal §2). ``late`` names
+    the job in words — never colour alone (Y-10)."""
+
+    late: bool
+    text: str
+    last_read: str | None
+    #: Nothing is late, but a job has not run yet: the line says so and
+    #: shows a neutral mark, never the "on time" green.
+    waiting: bool = False
+
+
+@dataclass(frozen=True)
+class HomeModel:
+    date_text: str
+    tiles: tuple[HomeTile, ...]
+    lessons: tuple[LessonRow, ...]
+    lessons_later: int
+    places_waiting: tuple[PlaceRow, ...]
+    places_quiet: tuple[PlaceRow, ...]
+    places_gone: tuple[PlaceRow, ...]
+    jobs: tuple[JobRow, ...]
+    jobs_line: JobsLine
+
+
+def _miner_days_since(last_run: str | None, now: datetime) -> int | None:
+    dt = _parse_dt(last_run)
+    if dt is None:
+        return None
+    return max(0, int((now - dt).total_seconds() // 86400))
+
+
+def build_jobs(
+    status_read: CliRead,
+    mine_read: CliRead,
+    *,
+    worker_stale: bool,
+    total_unanalyzed: int,
+    now: datetime,
+) -> tuple[tuple[JobRow, ...], JobsLine]:
+    """The four jobs a person thinks in (overnight read, drafting
+    suggestions, nightly review, weekly check) and the header line that
+    sums them up. Late means the CLI's own staleness verdict (miner
+    ``stale``, the worker's own threshold) or a failed last run; the weekly
+    check is late only a full day after its own scheduled time."""
+    status = status_read.data if status_read.ok and isinstance(status_read.data, dict) else {}
+    mine = mine_read.data if mine_read.ok and isinstance(mine_read.data, dict) else None
+    problems: list[str] = []
+
+    # Overnight read (the miner).
+    if mine is None:
+        miner = JobRow("miner", "Overnight read of your sessions", None,
+                       "Its status could not be read.", True, run="miner")
+        problems.append("The overnight read's status could not be read")
+        last_read = None
+    else:
+        runs = mine.get("runs") or []
+        last = runs[-1] if runs else None
+        last_read = mine.get("last_run")
+        stale = bool(mine.get("stale"))
+        if last is None and not last_read:
+            detail, late = "Has not run yet.", False
+        elif last is not None and last.get("status") == "failed":
+            detail, late = "The last run failed.", True
+            problems.append("The last overnight read failed")
+        else:
+            latest_ok = _latest_ok_run(runs)
+            parts = []
+            if latest_ok is not None:
+                n = latest_ok.get("sessions_scanned")
+                k = latest_ok.get("landed")
+                r = latest_ok.get("recurrences")
+                if isinstance(n, int):
+                    parts.append(f"read {n} session{'s' if n != 1 else ''}")
+                if isinstance(k, int):
+                    parts.append(f"found {k} new lesson{'s' if k != 1 else ''}")
+                if isinstance(r, int) and r:
+                    parts.append(f"saw {r} rule{'s' if r != 1 else ''} come up again")
+            detail = (", ".join(parts) + ".").capitalize() if parts else "Nothing new to read."
+            late = stale
+            if stale:
+                days = _miner_days_since(last_read, now)
+                problems.append(
+                    f"The overnight read has not run for {days} days"
+                    if days and days > 1
+                    else "The overnight read is overdue"
+                )
+        miner = JobRow("miner", "Overnight read of your sessions", last_read, detail, late,
+                       run="miner")
+
+    # Drafting suggestions (the worker).
+    worker_last = status.get("worker_last_run")
+    if total_unanalyzed < 1:
+        wdetail = "Up to date: every waiting lesson has a suggestion."
+    else:
+        noun = "lesson has" if total_unanalyzed == 1 else "lessons have"
+        wdetail = f"{total_unanalyzed} {noun} no suggestion yet."
+        if worker_stale:
+            wdetail += " It is behind."
+            problems.append("Drafting suggestions is behind")
+    worker = JobRow("worker", "Drafting suggestions for new lessons", worker_last, wdetail,
+                    worker_stale, run="worker")
+
+    # Nightly review (the steward).
+    steward_last = status.get("steward_last_run_at")
+    since = status.get("steward_cases_since_overseer")
+    sdetail = (
+        f"{since} decision{'s' if since != 1 else ''} since the last weekly check."
+        if isinstance(since, int)
+        else ("Has not run yet." if not steward_last else "")
+    )
+    # Gate r1 MINOR-3: the steward's OWN verdicts, carried by `status
+    # --json` (`steward.nudge_fields`, the same facts `status --fast` has):
+    # held by its environment, or no completed run for longer than its
+    # threshold while lessons it may take are waiting. Absent on an older
+    # CLI, or with the steward off: then it is never called late.
+    hold = status.get("steward_hold")
+    slate = False
+    if isinstance(hold, str) and hold:
+        slate = True
+        sdetail = f"On hold: {hold}."
+        problems.append("The nightly review is on hold")
+    elif status.get("steward_stale") is True:
+        slate = True
+        hours = status.get("steward_stale_hours")
+        sdetail = (
+            f"Behind: no finished run for over {hours} hours while lessons wait."
+            if isinstance(hours, int)
+            else "Behind: lessons are waiting and it has not finished a run."
+        )
+        problems.append("The nightly review is behind")
+    steward = JobRow("steward", "Nightly review", steward_last, sdetail, slate,
+                     link_href="/inbox", link_text="See what it decided")
+
+    # Weekly check (the overseer).
+    overseer_last = status.get("overseer_last_run")
+    overseer_next = status.get("overseer_next")
+    next_dt = _local_dt(overseer_next)
+    olate = bool(next_dt and (now - next_dt).total_seconds() > 86400)
+    odetail = f"Next run {day_words(overseer_next)}." if day_words(overseer_next) else ""
+    if not overseer_last:
+        odetail = ("Has not run yet. " + odetail).strip()
+    if olate:
+        odetail = f"Overdue: it was due {day_words(overseer_next)}."
+        problems.append("The weekly check is overdue")
+    overseer = JobRow("overseer", "Weekly check", overseer_last, odetail, olate,
+                      link_href="/overseer-report", link_text="Read the report")
+
+    if not status_read.ok:
+        problems.append("Job status could not be read")
+    if problems:
+        line = JobsLine(True, "; ".join(problems), last_read)
+    elif miner.last_run is None and miner.detail == "Has not run yet.":
+        # Gate r1 NIT-4: nothing is late, but "ran on time" would be false
+        # beside an overnight read that never ran.
+        line = JobsLine(False, "The overnight read has not run yet", None, waiting=True)
+    else:
+        line = JobsLine(False, "All jobs ran on time", last_read)
+    return (miner, worker, steward, overseer), line
+
+
+def build_jobs_line(
+    status_read: CliRead,
+    mine_read: CliRead,
+    list_read: CliRead | None = None,
+    *,
+    now: datetime | None = None,
+) -> JobsLine:
+    """The header's line on a page that has not built the Home model:
+    the same verdict as :func:`build_jobs`, from the same reads."""
+    now = now if now is not None else datetime.now(timezone.utc)
+    status = status_read.data if status_read.ok and isinstance(status_read.data, dict) else {}
+    total_unanalyzed = sum(
+        int(b.get("unanalyzed") or 0) for b in (status.get("buckets") or [])
+        if isinstance(b, dict)
+    )
+    stale = _worker_stale(status.get("worker_last_run"), now, total_unanalyzed)
+    _jobs, line = build_jobs(
+        status_read, mine_read, worker_stale=stale, total_unanalyzed=total_unanalyzed, now=now
+    )
+    return line
+
+
+def build_home_model(
+    front: FrontModel,
+    list_read: CliRead,
+    status_read: CliRead,
+    report_read: CliRead,
+    mine_read: CliRead,
+    *,
+    proposals: dict[str, dict | None] | None = None,
+    now: datetime | None = None,
+) -> HomeModel:
+    """Proposal §3: tiles, lessons to decide, the places table split into
+    "something waiting" / "nothing waiting" / "folder gone", and the jobs.
+    Built beside :func:`build_front_model` (which still owns the bucket
+    walk, holding and follow-up rows) rather than reshaping it."""
+    now = now if now is not None else datetime.now(timezone.utc)
+
+    labels: dict[tuple[str, str], str] = {(b.scope, b.name): b.label or b.name
+                                           for b in front.buckets}
+    names_by_bucket: dict[str, set[str]] = {}
+    for b in front.buckets:
+        names_by_bucket.setdefault(b.name, set()).add(b.scope)
+
+    lessons: list[LessonRow] = []
+    later = 0
+    if list_read.ok:
+        for item in list_read.data or []:
+            if not isinstance(item, dict):
+                continue
+            if _is_deferred(item.get("deferred_until"), now):
+                later += 1
+                continue
+            name = str(item.get("bucket") or "")
+            scope = _bare_scope(item.get("scope"))
+            if not scope and len(names_by_bucket.get(name) or ()) == 1:
+                scope = next(iter(names_by_bucket[name]))
+            label = labels.get((scope, name), name)
+            dest = item.get("destination")
+            if item.get("already_canon"):
+                suggestion = "suggested: already covered by what is loaded"
+            elif item.get("has_proposal") and dest:
+                # Gate r1 NIT-3: the SAME destination the lesson's own bucket
+                # row would arm (scope correction, a "defer" recommendation,
+                # a rules topic), so Home and the bucket page never disagree.
+                if proposals is not None:
+                    armed, _note = proposed_destination(
+                        scope, dest, proposals.get(str(item.get("id") or ""))
+                    )
+                else:
+                    armed, _note = correct_destination(scope, dest)
+                if armed is None:
+                    suggestion = "no place chosen yet: the suggestion does not fit here"
+                elif armed == "claude-md" and scope == "user":
+                    suggestion = "suggested: your instructions"
+                else:
+                    words = destination_label(armed, scope) or str(armed)
+                    suggestion = "suggested: " + words[:1].lower() + words[1:]
+            else:
+                suggestion = "no suggestion yet"
+            source = str(item.get("source") or "")
+            lessons.append(
+                LessonRow(
+                    id=str(item.get("id") or ""),
+                    title=str(item.get("title") or item.get("id") or ""),
+                    place=place_words(label, scope),
+                    source_text=_SOURCE_WORDS.get(source, source),
+                    created_at=item.get("created_at"),
+                    suggestion_text=suggestion,
+                    has_suggestion=bool(item.get("has_proposal") and dest),
+                )
+            )
+    lessons.sort(key=lambda r: r.created_at or "")
+
+    report = report_read.data if report_read.ok and isinstance(report_read.data, dict) else {}
+    in_use: dict[tuple[str, str], int] = {}
+    for b in report.get("buckets") or []:
+        if isinstance(b, dict) and isinstance(b.get("counts"), dict):
+            in_use[(str(b.get("scope")), str(b.get("bucket")))] = int(
+                b["counts"].get("routed") or 0
+            )
+
+    waiting: list[PlaceRow] = []
+    quiet: list[PlaceRow] = []
+    gone: list[PlaceRow] = []
+    for b in front.buckets:  # already oldest-waiting first
+        row = PlaceRow(
+            scope=b.scope,
+            name=b.name,
+            label=b.label or b.name,
+            path=b.path,
+            pending=b.pending,
+            deferred=b.deferred,
+            unanalyzed=b.unanalyzed,
+            in_use=in_use.get((b.scope, b.name)) if report else None,
+            oldest_days=b.oldest_days,
+        )
+        if b.pending or b.deferred:
+            waiting.append(row)
+        elif b.path_exists is False:
+            gone.append(row)
+        else:
+            quiet.append(row)
+    quiet.sort(key=lambda r: (-(r.in_use or 0), r.label.lower()))
+    gone.sort(key=lambda r: r.label.lower())
+
+    total_unanalyzed = sum(b.unanalyzed for b in front.buckets)
+    jobs, line = build_jobs(
+        status_read,
+        mine_read,
+        worker_stale=front.status.worker_stale,
+        total_unanalyzed=total_unanalyzed,
+        now=now,
+    )
+
+    newest = max((r.created_at for r in lessons if r.created_at), default=None)
+    tiles = (
+        HomeTile("answer", "Needs your answer", None, "questions in the inbox", "/inbox"),
+        HomeTile("lessons", "Lessons to decide", len(lessons),
+                 "newest captured" if newest else "nothing new", "#lessons", newest),
+        HomeTile("holding", "Rules seen again", len(front.holding),
+                 "is each rule still right?", "#holding"),
+        HomeTile("followups", "Follow-ups", len(front.followups),
+                 "promises to come back to", "#followups"),
+    )
+    local = now.astimezone()
+    date_text = f"{local.strftime('%A')} {local.day} {local.strftime('%B')}"
+    return HomeModel(
+        date_text=date_text,
+        tiles=tiles,
+        lessons=tuple(lessons),
+        lessons_later=later,
+        places_waiting=tuple(waiting),
+        places_quiet=tuple(quiet),
+        places_gone=tuple(gone),
+        jobs=jobs,
+        jobs_line=line,
     )
 
 
@@ -1670,7 +2173,10 @@ def _build_finding(record: Record, title: str) -> FindingRegion:
     # Jinja filter could reach — it is dropped here and rendered from the
     # discrete `created_at` field below instead, as its own
     # `humanize_ts`-filtered element on the same line (detail.html).
-    parts = [record.source, f"{record.sightings} sighting(s)"]
+    parts = [
+        record.source,
+        f"{record.sightings} sighting{'' if record.sightings == 1 else 's'}",
+    ]
     body, episode_brief = _split_episode_brief(record.body)
     return FindingRegion(
         title=title or "(untitled)",
@@ -2017,6 +2523,29 @@ class ResolvedDetailModel:
     #: supersession_display`, the ONE display helper every surface
     #: routes through; never built a second time here).
     supersession: str | None = None
+    #: Humane lane 1 (proposal §10): the body without its leading
+    #: Trigger/Fact section when that section only repeats the heading
+    #: (``finding.title``); ``None`` means "render ``finding.body``".
+    body_rest: str | None = None
+
+
+def body_without_title_section(body: str, title: str) -> str | None:
+    """Humane lane 1 (proposal §10): the resolved page shows the rule's
+    Trigger/Fact text as its heading, so the same words under a "Trigger"
+    label right below it is the one thing said twice. Return the body
+    with that FIRST section dropped when its text is exactly the heading
+    (whitespace-trimmed); otherwise ``None`` (nothing is ever dropped that
+    the heading does not already say)."""
+    matches = list(_HEADING_RE.finditer(body))
+    if not matches or not title:
+        return None
+    first = matches[0]
+    if first.group(1) not in ("Trigger", "Fact"):
+        return None
+    end = matches[1].start() if len(matches) > 1 else len(body)
+    if body[first.end() : end].strip() != title.strip():
+        return None
+    return (body[: first.start()] + body[end:]).strip("\n") + "\n"
 
 
 def build_resolved_detail_model(
@@ -2037,12 +2566,13 @@ def build_resolved_detail_model(
     decision)."""
     routing = record.routing or {}
     destination = routing.get("destination")
+    finding = _build_finding(record, title)
     return ResolvedDetailModel(
         id=record.id,
         bucket=bucket,
         scope=scope,
         status=record.status,
-        finding=_build_finding(record, title),
+        finding=finding,
         routing=ResolvedRoutingFacts(
             destination=destination,
             destination_label_text=(
@@ -2064,4 +2594,5 @@ def build_resolved_detail_model(
         supersession=(
             supersession_display(record) if record.status == "superseded" else None
         ),
+        body_rest=body_without_title_section(finding.body, finding.title),
     )

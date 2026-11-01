@@ -19,7 +19,9 @@ needed for T-A (09 §7 / 10 §2 T-A).
 
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Any
@@ -29,12 +31,12 @@ from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
+from self_learn import places as sl_places
 from self_learn.hosts import HOST_MODES, effective_default_mode, is_repo_root
 from self_learn.records import Record
-from self_learn.settings import REGISTRY as SETTINGS_REGISTRY
 from self_learn.verbs import GITOPS_DIRTY_MARKER, NO_PROPOSAL_MARKER
 
-from . import ledger, models, pane, proposals, rendering, runner
+from . import health, ledger, models, pane, proposals, rendering, runner, settings_view
 from .keymap import keymap_as_dicts, keymap_json
 from .prefetch import DetailPrefetchCache
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
@@ -576,12 +578,109 @@ def front(request: Request, notice: str | None = None) -> HTMLResponse:
         mine_read,
         sentinel_mtime=ledger.sentinel_mtime(),
     )
+    # Humane lane 1 (proposal §3): the Home page's own model, built beside
+    # the front model from the SAME four reads -- no extra CLI call.
+    home_model = models.build_home_model(
+        model, list_read, status_read, report_read, mine_read,
+        proposals=_home_proposals(home, list_read),
+    )
+    _jobs_line_cache(request)["line"] = (time.monotonic(), home_model.jobs_line)
+    report_data = report_read.data if report_read.ok and isinstance(report_read.data, dict) else {}
     # The "Inbox (N)" link fills itself in after load (GET /inbox/count,
     # inbox_routes.py), so the front page never waits on `attention --json`.
+    # So does the "Needs your answer" tile (GET /home/needs-you, below).
     return _render(
         request,
         "index.html",
-        {"model": model, "notice": notice},
+        {
+            "model": model,
+            "home": home_model,
+            "notice": notice,
+            # Lane 0's per-day counts, for lane 2's two Home charts
+            # (`partials/home_charts.html`); None when the report failed.
+            "series": report_data.get("series"),
+            # The shared header's jobs line, already known here, so the
+            # front page does not fetch it a second time.
+            "jobs_line": home_model.jobs_line,
+            # Two small word helpers the Home template calls (kept out of
+            # the shared filter table in app.py).
+            "placed_text": models.placed_text,
+            "days_ago_words": models.days_ago_words,
+        },
+    )
+
+
+def _home_proposals(home: Path, list_read: ledger.CliRead) -> dict[str, dict | None]:
+    """Gate r1 NIT-3: each waiting lesson's own proposal, read the way the
+    bucket page reads it (`ledger.read_proposal_raw`), so Home words its
+    suggested destination exactly as that lesson's bucket row arms it.
+    Only lessons with a proposal; a failed read is simply absent."""
+    if not list_read.ok:
+        return {}
+    paths = {(b.scope, b.name): b.path for b in ledger.discover_buckets(home)}
+    out: dict[str, dict | None] = {}
+    for item in list_read.data or []:
+        if not isinstance(item, dict) or not item.get("has_proposal"):
+            continue
+        path = paths.get((str(item.get("scope") or "").split(":", 1)[0], str(item.get("bucket"))))
+        if path is None:
+            continue
+        proposal, _err = ledger.read_proposal_raw(path, str(item.get("id")))
+        out[str(item.get("id"))] = proposal
+    return out
+
+
+# ------------------------------------------------- shared header (lane 1)
+
+
+@router.get("/header/jobs", response_class=HTMLResponse)
+def header_jobs(request: Request) -> HTMLResponse:
+    """Humane lane 1 (proposal §2): the shared header's one line about the
+    jobs, fetched after a page has loaded (every page but Home, which
+    renders it inline), so no page waits on `status --json` for it."""
+    cache = _jobs_line_cache(request)
+    now = time.monotonic()
+    cached = cache.get("line")
+    if cached is not None and now - cached[0] < _JOBS_LINE_TTL_SECS:
+        line = cached[1]
+    else:
+        home = _home(request)
+        line = models.build_jobs_line(ledger.status(home), ledger.mine_status(home))
+        cache["line"] = (now, line)
+    return _render(request, "partials/jobs_line.html", {"jobs_line": line})
+
+
+#: The header asks for its jobs line on every page view, and `status
+#: --json` takes seconds on a large ledger; one answer serves every page
+#: viewed within this many seconds (Home always renders a fresh one and
+#: refreshes this copy).
+_JOBS_LINE_TTL_SECS = 30.0
+
+
+def _jobs_line_cache(request: Request) -> dict[str, Any]:
+    cache = getattr(request.app.state, "humane_jobs_line", None)
+    if cache is None:
+        cache = {}
+        request.app.state.humane_jobs_line = cache
+    return cache
+
+
+@router.get("/home/needs-you", response_class=HTMLResponse)
+async def home_needs_you(request: Request) -> HTMLResponse:
+    """The Home page's "Needs your answer" tile, filled in after load from
+    the inbox reader's own `counts.needs_you` (the front page never waits
+    on `attention --json`). `None` (rendered "?") when it could not be read."""
+    from .inbox_routes import inbox_link  # the header link's own words
+
+    read = await asyncio.to_thread(ledger.attention, _home(request))
+    data = read.data if isinstance(read.data, dict) else None
+    count: int | None = None
+    if data is not None and not read.error and not data.get("error"):
+        count = int((data.get("counts") or {}).get("needs_you") or 0)
+    # The same read also fills the header's "Inbox (N)" link, out of band,
+    # so Home reads the inbox once (gate r1 NIT-1).
+    return _render(
+        request, "partials/home_answer_tile.html", {"count": count, "inbox": inbox_link(read)}
     )
 
 
@@ -593,6 +692,39 @@ def _find_bucket(home: Path, scope: str, name: str) -> ledger.Bucket | None:
         if bucket.scope == scope and bucket.name == name:
             return bucket
     return None
+
+
+def _place(home: Path, scope: str, name: str) -> dict[str, Any]:
+    """Humane lane 1 (proposal §2/§10): a bucket's plain name and folder,
+    from lane 0's `self_learn.places` (the same words `status --json`
+    carries), for the page heading and the detail pages' "where you are"
+    line. Display only: a failed read falls back to the bucket name and
+    never breaks the page."""
+    try:
+        # Gate r1 NIT-2: resolved over EVERY bucket at once, as `status
+        # --json` resolves them, so two projects sharing a folder name get
+        # the same path-labels here as on Home.
+        info = sl_places.bucket_places(ledger.discover_buckets(home)).get((scope, name)) or {}
+        if info.get("label"):
+            return {"label": info["label"], "path": info.get("path")}
+    except Exception:  # noqa: BLE001 -- display words only
+        pass
+    return {"label": name, "path": None}
+
+
+def _replaced_here(report_read: "ledger.CliRead", scope: str, name: str) -> int | None:
+    """Humane lane 1 (gate r1 MINOR-6, proposal §10): how many rules from
+    this place were later replaced or retired -- `report --json`'s own
+    per-bucket `counts.superseded`, never counted here. ``None`` when the
+    report could not be read (the page then says nothing about it)."""
+    data = report_read.data if report_read.ok and isinstance(report_read.data, dict) else None
+    if data is None:
+        return None
+    for b in data.get("buckets") or []:
+        if isinstance(b, dict) and b.get("scope") == scope and b.get("bucket") == name:
+            counts = b.get("counts")
+            return int(counts.get("superseded") or 0) if isinstance(counts, dict) else 0
+    return 0
 
 
 def _belongs_to_bucket(home: Path, record_id: object, scope: str, name: str) -> bool:
@@ -627,7 +759,7 @@ def _belongs_to_bucket(home: Path, record_id: object, scope: str, name: str) -> 
 
 
 def _gather_archive_entries(
-    home: Path, scope: str, name: str
+    home: Path, scope: str, name: str, *, report_read: "ledger.CliRead | None" = None
 ) -> tuple[list[dict], str | None]:
     """B1 (U-grad-ui §4/§7): the Bucket page's routed-record archive
     section, INDEX-SET (§2.2) — `report --json`'s `routed_live`, taken
@@ -672,7 +804,10 @@ def _gather_archive_entries(
     no error line" posture — `models.build_front_model` already treats a
     `None` `.data` this way, and this fix does not widen the disagreement
     between the two call sites beyond what already existed."""
-    report_read = ledger.report(home)
+    # Humane lane 1 (gate r1 MINOR-6): a caller that already made this
+    # read passes it in, so the bucket page reads the report once.
+    if report_read is None:
+        report_read = ledger.report(home)
     if not report_read.ok:
         return [], report_read.error
     data = report_read.data
@@ -733,7 +868,11 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
     registry = ledger.read_registry()
     host_registered = items[0].get("host_registered", True) if items else True
     host_add_command = models.host_add_command(scope, ledger.project_path_for(bucket.path))
-    archive_entries, archive_error = _gather_archive_entries(home, scope, name)
+    report_read = ledger.report(home)
+    archive_entries, archive_error = _gather_archive_entries(
+        home, scope, name, report_read=report_read
+    )
+    replaced_here = _replaced_here(report_read, scope, name)
 
     # 09 §5 unreadable-record row: the skip-and-count line's number comes
     # from `status --json`'s per-bucket `unreadable` field — never a
@@ -782,6 +921,8 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
         "bucket.html",
         {
             "model": model,
+            "place": _place(home, scope, name),
+            "replaced_here": replaced_here,
             "notice": notice,
             "list_error": list_read.error,
             "pane": pane_snapshot,
@@ -850,6 +991,7 @@ def detail_page(
                 "record_id": record_id,
                 "bucket": location.bucket_name,
                 "scope": location.scope,
+                "place": _place(home, location.scope, location.bucket_name),
             },
         )
     location, record, item = bundle.location, bundle.record, bundle.item
@@ -896,6 +1038,7 @@ def detail_page(
             "detail_resolved.html",
             {
                 "model": resolved_model,
+                "place": _place(home, location.scope, location.bucket_name),
                 "record_id": record_id,
                 "record_proposal": record_proposal,
                 "proposal_verb_label": (
@@ -953,6 +1096,7 @@ def detail_page(
         "detail.html",
         {
             "model": model,
+            "place": _place(home, location.scope, location.bucket_name),
             "armed": None,
             "record_id": record_id,
             # FW-64 × the pane_close carry-forward. `?dest=` can ONLY be on
@@ -1295,24 +1439,90 @@ async def mine_near_miss_promote(
 # -------------------------------------------------------------------- Report
 
 
+#: The Health page re-reads `report --json` and `status --json` (about 8 s
+#: on the real ledger) on every full load. A filter or "show all" request
+#: from the page's own htmx form re-arranges what that page already showed, so
+#: it reuses the last full load's reads for this long (gate r2 m-1). A full
+#: page load (no HX-Request) always re-reads and refreshes the cache.
+_REPORT_CACHE_TTL = 300.0
+_REPORT_CACHE: dict[str, tuple[float, Any, Any]] = {}
+
+
+def _deferred_titles(home: Path, report: Any) -> dict[str, str]:
+    """Each deferred lesson's own words (`report --json`'s `deferred[]`
+    carries only its id): the first line of its Trigger or Fact."""
+    from self_learn.ledger_ops import record_title
+
+    titles: dict[str, str] = {}
+    rows = report.get("deferred") if isinstance(report, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        rid = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(rid, str):
+            continue
+        loc = ledger.locate_record(home, rid)
+        record = ledger.read_record(loc.path) if loc is not None else None
+        if record is not None:
+            titles[rid] = record_title(record)
+    return titles
+
+
+def _report_url(q: str, show_all: bool) -> str:
+    params = []
+    if show_all:
+        params.append("all=1")
+    if q:
+        params.append(f"q={quote(q)}")
+    return "/report" + ("?" + "&".join(params) if params else "")
+
+
 @router.get("/report", response_class=HTMLResponse)
 def report_page(request: Request) -> HTMLResponse:
+    """The Health page (humane lane 2, 09 §2.7): `report --json` and
+    `status --json`'s counted facts, arranged in a person's words by
+    :func:`health.build_health` -- tiles, three charts, a table of the
+    rules in use by their own text. `?q=` filters that table on the
+    server through the page's htmx form, `?all=1` lifts its row limit."""
+    import time
+
     home = _home(request)
-    report_read = ledger.report(home)
-    status_read = ledger.status(home)
-    metrics = (status_read.data or {}).get("metrics") if status_read.ok else None
-    supply_mix = (status_read.data or {}).get("supply_mix") if status_read.ok else None
-    return _render(
+    is_htmx = request.headers.get("HX-Request") == "true"
+    restoring = request.headers.get("HX-History-Restore-Request") == "true"
+    key = str(home)
+    cached = _REPORT_CACHE.get(key)
+    if is_htmx and cached is not None and time.monotonic() - cached[0] < _REPORT_CACHE_TTL:
+        report_read, status_read = cached[1], cached[2]
+    else:
+        report_read = ledger.report(home)
+        status_read = ledger.status(home)
+        _REPORT_CACHE[key] = (time.monotonic(), report_read, status_read)
+    status_data = status_read.data if status_read.ok and isinstance(status_read.data, dict) else {}
+    metrics = status_data.get("metrics")
+    supply_mix = status_data.get("supply_mix")
+    q = request.query_params.get("q", "").strip()
+    show_all = request.query_params.get("all", "") not in ("", "0")
+    model = health.build_health(
+        report_read.data,
+        metrics,
+        supply_mix,
+        status_data.get("buckets"),
+        query=q,
+        show_all=show_all,
+        titles=_deferred_titles(home, report_read.data),
+    )
+    response = _render(
         request,
         "report.html",
         {
             "report": report_read.data,
             "report_error": report_read.error,
-            "metrics": metrics,
-            "supply_mix": supply_mix,
+            "health": model,
             "status_error": status_read.error,
         },
     )
+    if is_htmx and not restoring:
+        # the address bar shows the clean form: no empty `?q=` after a cleared box
+        response.headers["HX-Push-Url"] = _report_url(q, show_all)
+    return response
 
 
 # ---------------------------------------------------------------- settings
@@ -1326,63 +1536,26 @@ def report_page(request: Request) -> HTMLResponse:
 # own argv and runs it through the SAME `VerbRunner` seam every other
 # write in this app uses (never a second mutation path).
 
-#: The registry's own section order (`settings.py`'s `REGISTRY` literal,
-#: worker -> miner -> analyst -> sdk -> serve -> ledger today) -- the
-#: page reads in the same order a human reading the registry source
-#: would, never re-sorted alphabetically.
-#:
-#: NIT-3 (code-gate review r1 2026-09-01): this used to be a HAND-
-#: MAINTAINED tuple, a second copy of a fact `settings.REGISTRY` already
-#: states -- a new section added there and never mirrored here would
-#: silently vanish from the page (no error, no test failure, just a
-#: table that never renders). Derived directly from the registry now:
-#: `dict.fromkeys` dedupes while preserving first-seen order (a section
-#: appears once per `Setting` entry, `REGISTRY` has many entries per
-#: section), and `config_section is not None` skips the one reserved
-#: shape (MINOR-4, same review) that has no section to group under.
-_SETTINGS_SECTION_ORDER: tuple[str, ...] = tuple(
-    dict.fromkeys(
-        s.config_section for s in SETTINGS_REGISTRY if s.config_section is not None
-    )
-)
-
-
-def _setting_section(name: str) -> str:
-    """The top-level `config.yaml` section a dotted setting name lives
-    under -- `"worker.no_notify"` -> `"worker"`, `"sdk.max_turns.worker"`
-    -> `"sdk"`. Mirrors `settings.Setting.config_section` without
-    needing the CLI package's registry object here (`config get --json`
-    already gives every row's plain fields; this is a display-grouping
-    derivation over the `name` string it returns, not a second source of
-    truth for what the section actually is)."""
-    return name.split(".", 1)[0]
-
-
-def _group_settings(rows: list[dict]) -> list[dict[str, Any]]:
-    """`config get --json`'s flat row list, grouped by section in the
-    registry's own order (`_SETTINGS_SECTION_ORDER`) -- a section with no
-    rows (should not happen against the real registry, but a partial/
-    filtered read must not crash the page) is simply omitted."""
-    by_section: dict[str, list[dict]] = {}
-    for row in rows:
-        by_section.setdefault(_setting_section(row["name"]), []).append(row)
-    return [
-        {"section": section, "rows": by_section[section]}
-        for section in _SETTINGS_SECTION_ORDER
-        if by_section.get(section)
-    ]
-
-
 @router.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request) -> HTMLResponse:
+def settings_page(request: Request, q: str = "") -> HTMLResponse:
+    """Grouped by what a person is trying to do (the CLI's own `group`,
+    `label` and `plain` fields; `settings_view` only arranges them). `?q=`
+    is the "Find a setting" box without script: the page script filters
+    live, and a plain form submit reaches the same filter here."""
     home = _home(request)
     settings_read = ledger.settings(home)
-    groups = _group_settings(settings_read.data) if settings_read.ok and settings_read.data else []
+    ok = settings_read.ok and bool(settings_read.data)
+    rows = settings_read.data if ok and settings_read.data else []
+    query = q.strip()
+    groups = settings_view.build_groups(rows, query)
     return _render(
         request,
         "settings.html",
         {
             "groups": groups,
+            "shown": sum(g["shown"] for g in groups),
+            "query": query,
+            "class_options": settings_view.class_options(),
             "settings_error": settings_read.error,
         },
     )
@@ -1476,7 +1649,16 @@ async def settings_set(
             idx = stderr.find(marker)
             trimmed = stderr[idx:].strip() if idx != -1 else stderr
             row["error"] = trimmed or f"self-learn config set {name} failed"
-    return _render(request, "partials/settings_row.html", {"row": row})
+    saved = bool(result.ok and result.evidence is not None)
+    return _render(
+        request,
+        "partials/settings_row.html",
+        {
+            "row": settings_view.decorate(row),
+            "saved": saved,
+            "class_options": settings_view.class_options(),
+        },
+    )
 
 
 # ------------------------------------------------------------------ cluster

@@ -24,6 +24,10 @@
 
 {% block content %}
 <div class="inbox" data-inbox data-selected="{{ item.id if item else '' }}" data-armed-how="{{ armed_how }}">
+  {# Humane UI lane 3 (proposal §4): on a narrow window the list folds
+     behind this button, so the open item is the first thing on screen. #}
+  <button type="button" class="btn btn-quiet inbox-all-items" data-show-list aria-expanded="false"
+          aria-controls="inbox-list">&#9666; All items ({{ ids | length }})</button>
   <nav aria-label="Inbox" class="inbox-nav">
     {% include "partials/workspace_list.html" %}
   </nav>

@@ -24,6 +24,7 @@ from self_learn.cli import EXIT_HELD
 from self_learn.records import Record
 from self_learn_ui.app import create_app
 from self_learn_ui.env import load_env
+from self_learn_ui.health import build_health
 from self_learn_ui.keymap import keymap_as_dicts, keymap_json
 from self_learn_ui.routes import build_argv, cycle_destination, next_record_url
 from self_learn_ui.runner import FakeRunner, RunResult
@@ -205,10 +206,18 @@ class TestFrontPage:
         assert 'rel="icon"' in html
 
     def test_status_strip_renders(self, tmp_path: Path) -> None:
+        """Humane lane 1 (proposal §2): the page-own status strip became ONE
+        shared header -- the five places, Home marked current, and the jobs
+        line rendered inline on Home (no second fetch)."""
         sb = make_env(tmp_path)
         c, _runner = make_client(sb)
         r = c.get("/")
-        assert "status-strip" in r.text
+        assert 'class="site-header"' in r.text
+        for place in (">Weekly report<", ">Health<", ">Settings<"):
+            assert place in r.text
+        assert '<a href="/" aria-current="page">Home</a>' in r.text
+        assert 'class="jobs-line' in r.text
+        assert 'hx-get="/header/jobs"' not in r.text
 
     def test_notice_resolved_elsewhere_renders_banner(self, tmp_path: Path) -> None:
         """Code-gate MINOR 5, adjudicated: as of U-grad-ui, NOTHING emits
@@ -230,7 +239,8 @@ class TestFrontPage:
         sb = make_env(tmp_path)
         c, _runner = make_client(sb)
         r = c.get("/?notice=bucket-clear")
-        assert "bucket clear" in r.text.lower()
+        # Humane lane 1: plain words for "bucket clear".
+        assert "nothing is waiting in that place now" in r.text.lower()
 
     def test_notice_not_found_renders_banner(self, tmp_path: Path) -> None:
         """F4's third banner (index.html:24-25). Unlike the redirect target
@@ -257,15 +267,17 @@ class TestFeedbackRound1Chrome:
         return c.get("/").text
 
     def test_every_bucket_column_is_sortable(self, tmp_path: Path) -> None:
+        # Humane lane 1: the places table drops the Scope column (the place
+        # name says it) and gains "In use"; every column still sorts.
         html = self._front_html(tmp_path)
-        for key in ("name", "scope", "pending", "oldest", "unanalyzed", "deferred"):
+        for key in ("name", "pending", "oldest", "unanalyzed", "deferred", "in_use"):
             assert f'data-sort-key="{key}"' in html
         assert 'aria-sort="none"' in html
         assert 'class="sort-header"' in html
 
     def test_deferred_column_renders(self, tmp_path: Path) -> None:
         html = self._front_html(tmp_path)
-        assert ">Deferred<" in html
+        assert ">Left for later<" in html  # humane lane 1: was "Deferred"
 
     def test_oldest_cell_carries_numeric_sort_value(self, tmp_path: Path) -> None:
         # "—"/"3d" render text must never feed the client sort compare
@@ -273,11 +285,16 @@ class TestFeedbackRound1Chrome:
         assert 'data-sort-key="oldest" data-sort-value="' in html
 
     def test_status_items_carry_plain_words_tooltips(self, tmp_path: Path) -> None:
+        # Y-9 register. Humane lane 1: the strip's item-by-item status words
+        # moved into Home's Jobs section, where each job is named in plain
+        # words and says what it last did; column headers still explain
+        # themselves on hover.
         html = self._front_html(tmp_path)
-        # Y-9 register: explanations in human words, one per status item
-        assert 'title="Lessons waiting for your decision' in html
-        assert 'title="The background analyst' in html
-        assert html.count('<span class="status-item" title=') >= 4
+        assert 'title="Sort by lessons waiting for a decision' in html
+        for job in ("Overnight read of your sessions", "Drafting suggestions for new lessons",
+                    "Nightly review", "Weekly check"):
+            assert f'<p class="home-row-what">{job}' in html
+        assert 'title="Whether background syncing' in html
 
     def test_footer_entries_carry_context_and_action(self, tmp_path: Path) -> None:
         html = self._front_html(tmp_path)
@@ -946,11 +963,15 @@ class TestDetailPage:
         seed_record(sb.ledger, rec)
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
-        assert "no analysis yet" in r.text.lower()
-        # the whole message, `i` instruction included (it carried over from
-        # a removed duplicate, test audit L9, 2026-10-24)
+        # Humane lane 1 (proposal §10): the whole message with its `i`
+        # instruction drawn as a key cap (never literal backticks), said
+        # ONCE -- the Why section's "no analysis yet" badge no longer
+        # repeats it -- and the Iterate button reads "Ask for a suggestion".
         from self_learn_ui.models import NO_ANALYSIS_MESSAGE
-        assert NO_ANALYSIS_MESSAGE in r.text
+        assert f"{NO_ANALYSIS_MESSAGE} Press <kbd>i</kbd> to ask for one now." in r.text
+        assert "`i`" not in r.text
+        assert "no analysis yet" not in r.text.lower()
+        assert "Ask for a suggestion (i)" in r.text
 
     def test_episode_brief_renders_collapsed_below_decision_content(
         self, tmp_path: Path
@@ -1154,16 +1175,22 @@ class TestTerminologyDefinitions:
         monkeypatch.setattr(ledger_mod, "report", lambda home, **kw: CliRead(data=report_data))
         c, _runner = make_client(sb)
         r = c.get("/")
-        assert "Is it holding?" in r.text  # positive control
-        assert "Rules already written into canon" in r.text
+        # Humane lane 1: "Is it holding?" became "Rules seen again"; the
+        # heading still explains itself on hover.
+        assert "Rules seen again (1)" in r.text  # positive control
+        assert "Rules already placed that a later session" in r.text
 
     def test_near_miss_summary_is_defined(self, tmp_path: Path, monkeypatch) -> None:
         sb = _sandboxed(tmp_path, monkeypatch)
         _seed_miner_run()
         c, _runner = make_client(sb)
         r = c.get("/")
-        assert re.search(r"<summary[^>]*>near-misses \(\d+\)</summary>", r.text)  # positive control
-        assert "Candidates the miner considered but did not capture" in r.text
+        # Humane lane 1: the drill sits under the overnight read's job row,
+        # in plain words.
+        assert re.search(
+            r"<summary[^>]*>Near-misses in the latest run \(\d+\)</summary>", r.text
+        )  # positive control
+        assert "Things the overnight read considered but did not keep" in r.text
 
 
 class TestSurfaceFillWhyRegion:
@@ -3210,18 +3237,25 @@ class TestKeymapSingleSource:
 
 
 class TestReportPage:
-    def test_renders_counted_fields_verbatim(self, tmp_path: Path) -> None:
+    def test_renders_counted_fields_in_words(self, tmp_path: Path) -> None:
+        """Humane lane 2 (S-137): the page that printed
+        `report --json` field by field (and the raw JSON) is the Health page
+        now. Same behaviour pinned: the CLI's counted fields reach the page,
+        verbatim in value, under their CLI names in the counters fold; the
+        raw JSON dump is gone on purpose (no JSON shown to a person)."""
         sb = make_env(tmp_path)
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
         c, _runner = make_client(sb)
         r = c.get("/report")
         assert r.status_code == 200
-        assert "routed_ever" in r.text
-        assert "Raw (verbatim)" in r.text
-        # The raw JSON dump must contain the actual computed fields.
-        assert "recurrence_suspects" in r.text
-        assert "open_followups" in r.text
+        assert "Health" in r.text
+        fold = r.text.split("All counters, with their names", 1)[1]
+        assert "<code>routed_ever</code>" in fold
+        assert "<code>superseded_after_routing</code>" in fold
+        assert 'aria-label="rules seen again"' in r.text
+        assert 'aria-label="open follow-ups"' in r.text
+        assert "Raw (verbatim)" not in r.text and 'class="raw-report"' not in r.text
 
 
 class TestHumanizeTsRenderSites:
@@ -3262,37 +3296,36 @@ class TestHumanizeTsRenderSites:
         c, _runner = make_client(sb)
         app = c.app
         template = app.state.templates.env.get_template("report.html")
+        report = {
+            "routed_ever": 0,
+            "superseded_after_routing": 0,
+            "supersede_rate": 0,
+            "graduated": 0,
+            "rejected": 0,
+            "routed_live": [],
+            "recurrence_suspects": [],
+            "open_followups": [
+                {
+                    "id": "lrn-x0000001",
+                    "bucket": "s",
+                    "action": "check back on this",
+                    "unblocks_on": "2026-08-01T00:00:00Z",
+                    "routed_at": "2026-07-01T00:00:00Z",
+                }
+            ],
+            "mined": {},
+            "telemetry": {},
+        }
         html = template.render(
             request=None,
             keymap_json=keymap_json(),
             keymap_entries=keymap_as_dicts(),
-            report={
-                "routed_ever": 0,
-                "superseded_after_routing": 0,
-                "supersede_rate": 0,
-                "graduated": 0,
-                "rejected": 0,
-                "routed_live": [],
-                "recurrence_suspects": [],
-                "open_followups": [
-                    {
-                        "id": "lrn-x0000001",
-                        "bucket": "s",
-                        "action": "check back on this",
-                        "unblocks_on": "2026-08-01T00:00:00Z",
-                        "routed_at": "2026-07-01T00:00:00Z",
-                    }
-                ],
-                "mined": {},
-                "telemetry": {},
-            },
+            report=report,
             report_error=None,
             status_error=None,
-            metrics=None,
-            supply_mix=None,
+            health=build_health(report, None, None, None),
         )
-        # the raw-JSON dump at the bottom is EXEMPT (09 §11 Y-12: verbatim
-        # by design) — scope the scan to the followups table only.
+        # scope the scan to the followups table only.
         table = html.split('aria-label="open follow-ups"', 1)[1].split("</table>", 1)[0]
         assert not self._ISO_RE.search(self._visible_text(table))
         assert "2026-08-01" in table  # still present, humanized
@@ -3452,7 +3485,7 @@ class TestWorkerKick:
         c, _runner = make_client(sb)
         r = c.get("/")
         assert '/worker/kick' in r.text
-        assert "Force run" in r.text
+        assert "Run now" in r.text  # humane lane 1: was "Force run"
 
 
 # ------------------------------ UI-walk defect fix: "Force run" feedback
@@ -3888,7 +3921,10 @@ class TestNearMissDrillRendering:
         _seed_miner_run()
         c, _runner = make_client(sb)
         html = c.get("/").text
-        m = re.search(r"<details>\s*<summary[^>]*>near-misses \(\d+\)</summary>", html)
+        m = re.search(
+            r'<details class="job-more">\s*<summary[^>]*>Near-misses in the latest run \(\d+\)</summary>',
+            html,
+        )
         assert m is not None
         # the <details> tag itself carries no `open` attribute
         details_tag = html[: m.start()].rsplit("<details", 1)[-1]
@@ -4317,9 +4353,9 @@ class TestHoldingRowShowsWhyItWasFlagged:
         c, _runner = make_client(sb)
         r = c.get("/")
         assert r.status_code == 200
-        assert "Is it holding?" in r.text  # positive control: the holding region rendered
+        assert "Rules seen again (1)" in r.text  # positive control: the holding region rendered
         assert 'class="holding-basis"' in r.text
-        assert "Flagged because the model reported violating this rule." in r.text
+        assert "because the model reported violating this rule</span>" in r.text
 
 
 class TestFrontPageDeferredCountIsScoped:
@@ -4461,8 +4497,10 @@ class TestMinerRunRowNeverPrintsNone:
         # "kick" was the original choice and was worthless — the worker's
         # own Force-run button posts to /worker/kick, so it appears on the
         # page whether or not the run row rendered.
-        assert "scanned" in r.text, "the run row did not render at all"
-        for field in ("scanned", "landed", "folded", "recurrences"):
+        # Humane lane 1: the run row reads "read —, new lessons —, folded in
+        # —, rules seen again —" under the overnight read's job.
+        assert "new lessons —" in r.text, "the run row did not render at all"
+        for field in ("read", "new lessons", "folded in", "rules seen again"):
             assert f"{field} None" not in r.text, f"literal None rendered for {field}"
 
 

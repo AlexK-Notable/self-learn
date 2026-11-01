@@ -156,6 +156,92 @@ ignoring costs nothing. This section pins the mechanics.
 
 ### 2.1 Front page — the bucket walk
 
+*Amended 2026-11-01 (S-136, humane lane 1; proposal
+`misc/build-2026-11-01/humane/proposal.md` §2, §3, §10). The page is
+now called **Home**, and every page shares one header:*
+
+- **One header for every page** (`base.html`): the places, in this
+  order, *Home · Inbox · Weekly report · Health · Settings*, with the
+  current one marked (`aria-current`); and on the right **one line
+  about the jobs**: "All jobs ran on time · last overnight read <age>",
+  or, when a job is late or failed, that job named in words ("The
+  overnight read has not run for 3 days", "Drafting suggestions is
+  behind", "The last overnight read failed", "The weekly check is
+  overdue", "The nightly review is on hold", "The nightly review is
+  behind", "Job status could not be read"), amber with a "!" mark,
+  never colour alone (Y-10). Late means the CLI's own verdict: the
+  miner's `stale`, the worker's own escalation threshold, a failed last
+  run, a weekly check a full day past its own `overseer_next`, or the
+  steward's own `steward_hold` / `steward_stale` (which `status --json`
+  carries, from the same `steward.nudge_fields` as `status --fast`); a
+  failed run is also marked on that job's own row. When nothing is late
+  but the overnight read has never run, the line says "The overnight
+  read has not run yet" with a neutral mark, never "All jobs ran on
+  time". Home renders the line inline; every
+  other page fetches it after load (`GET /header/jobs`, cached for 30
+  seconds per server), so no page waits on `status --json` for it.
+  These after-load header reads (`data-background-read`) never hold a
+  key back: a key pressed while one is in flight acts at once. Home
+  reads the inbox once: the "Needs your answer" tile's response also
+  fills the header's "Inbox (N)" link out of band. A
+  page no longer draws its own strip; a page one level below a place
+  (a record) adds a "where you are" line (*Home › <place> › this
+  lesson*), the record's id on hover only. The `up` key (Esc) keeps
+  its targets: the Home link on a bucket page and on Health, the place
+  link on a record's page, none on Home.
+- **Home, top to bottom:** four **tiles** (Needs your answer, from the
+  inbox reader's `counts.needs_you` fetched after load, `GET
+  /home/needs-you`; Lessons to decide; Rules seen again; Follow-ups),
+  each a keyboard row that jumps to its section, greyed at zero; the
+  **charts** (S-137, a partial reading `report --json`'s
+  `series`); **Lessons to decide**, each titled by its own trigger or
+  fact, with its place, where it came from and whether a suggestion
+  exists; **Rules seen again** (was "Is it holding?", Y-4), each titled
+  by the rule's own words (`report --json` suspect/routed `title`),
+  with where it is placed, how long ago, and why it was seen again, its
+  four choices (t/c/g/k), note, reason and "covered by" folded behind
+  one **Decide…** button; a key acting inside a closed fold opens it
+  first, and the armed bar is scrolled into view once it lands, so it
+  is always wholly on screen; a lesson's suggested destination is worded
+  as its bucket row arms it (scope correction, a "wait" recommendation:
+  "no place chosen yet"); **Follow-ups** (Y-6);
+  **Where lessons live** (below); **Jobs**: the overnight read, drafting
+  suggestions, the nightly review and the weekly check, each with its
+  last run and result in a sentence, a **Run now** button for the two
+  that have one (the miner's and the worker's former Force-run), the
+  miner's run list (one date style, "Sat 31 Oct") and near-misses
+  (Y-24) under the overnight read, and the sentinel state in words.
+- **Where lessons live** replaces the all-buckets table: only places
+  with something waiting or left for later are rows (and keyboard
+  rows), named by the CLI's `label` with their `path`, sorted
+  oldest-waiting first, columns Waiting / Left for later / No suggestion
+  yet / In use (`report --json` bucket `counts.routed`) / Oldest
+  waiting, still sortable by header. Every other place folds under "N
+  more places with nothing waiting", and inside that, places whose
+  folder no longer exists (`path_exists: false`) fold apart. A gone
+  folder that still holds waiting work is never folded. Folded rows
+  carry no `data-row`, like the bucket page's archive. Below 720 px
+  the table reflows: each place is a block with its counts labelled
+  inline, no column hidden behind a sideways scroll. Labels are resolved
+  over every bucket at once, on Home and on a bucket or record page
+  alike, so two projects sharing a folder name read by their `~` path
+  on both.
+- Bucket and record pages *(§10 of the proposal)*: a bucket page is
+  headed by its place's name and says "Nothing is waiting here." when
+  it is empty, with how many rules from there are in use and how many
+  were later replaced or retired (`report --json`'s per-bucket
+  `counts.superseded`, from the one report read the page makes); a record with no suggestion yet says "No suggestion yet.
+  Press `i` to ask for one now." once (the key drawn as a key cap), its
+  Approve stays available but is not the primary button, its Iterate
+  button reads "Ask for a suggestion (i)", and its destination reads
+  "not suggested yet"; a decided record's heading is its rule in
+  sentence case, not repeated as a Trigger/Fact section below it;
+  sighting counts read "1 sighting" / "2 sightings".
+
+*The bullets below are the original 2026-07 text; where they describe
+the bucket table's columns or the status strip, the amendment above
+governs.*
+
 - A table of buckets with pending learnings: bucket name, scope
   (skill/project/user), pending count, oldest pending age, unanalyzed
   count (records with no *usable* analysis — the worker's own
@@ -489,8 +575,34 @@ section records what the surface is.
   pressing then *(S-130, item 8)*. The order: needs-you items by key (`credentials`, `broken`, `money`,
   `sudo`, `conflict`, `system-change`, `foreign-history`) oldest first,
   then unseen flagged decided items, then other unseen decided items.
-  The list groups items as Needs you, Being carried out and Decided for
-  you; each chip carries words, never colour alone. With nothing at all,
+  *(Amended 2026-11-01, S-138, proposal §4.)* The list
+  groups items as **Needs you** (always shown: with nothing in it, the
+  line "Nothing needs you right now."), **Being carried out**, then the
+  decided items by time: **Today**, **Earlier this week** (the last seven
+  days) and **Older**, by the machine's local day of the item's
+  `updated_at`. The order is restated, not dropped: needs-you by key
+  first, then the work being carried out, then each time group in
+  `inbox_order`'s order (unseen flagged, then unseen, then the rest newest
+  first); the item opened first is still the first by `inbox_order` over
+  the whole inbox. In a time group, two or more nightly reviews
+  (`decided.steward-run`) that are not flagged fold into one row,
+  "Nightly reviews, 25–31 Oct", whose second line says how many and how
+  many are not seen yet; each review keeps its own row and mark inside
+  the fold, a fold holding the open item is drawn open, and `j`/`k` stop
+  on a closed fold once (Enter or Space opens it) and walk its rows once
+  open. A row says who did it and when ("steward · 03:52", "overseer ·
+  Sat 31 Oct"); a decided row has no "Decided" chip (its group says so),
+  while a needs-you or carried-out row keeps its chip, which carries
+  words, never colour alone. "new" and "unseen" are one dot whose word is
+  its accessible name, the word the page header shows. Run titles are in
+  words ("Nightly review, 31 October: 27 decisions", "Weekly report, 1
+  November"; never "lesson(s)"). A nightly review counts its decisions,
+  the run's cases, the same unit its page's split and lines count, so the
+  two never disagree; a run recorded without cases says "N lessons
+  decided". "Being carried out" carries its count, as "Needs you" does. Below 760 px the list folds
+  behind an "All items (N)" button above the open item, so the item is
+  the first thing on screen; `j`/`k` show the list, and opening an item
+  hides it again. With nothing at all,
   the page says "Nothing needs you, and nothing new." and links the
   weekly report. Clicking an item swaps only the workspace and pushes
   the item's URL. **Mark all seen** runs `attention seen
@@ -519,7 +631,49 @@ section records what the surface is.
   trigger and rule and folds its script and registration; a lesson is
   titled by its trigger (or fact) and lists when it was seen (its
   sightings, with their quotes); a folder is said to be one, with its
-  whole path written from `~`.
+  whole path written from `~`. *(Amended 2026-11-01, S-138,
+  proposal §4.)* A case is told once: Question, Decision (the verb in
+  words, "Turned down (held firmly)", from the packet's `verb` and
+  `confidence`; the Decision section's list is never printed as one
+  paragraph), Because, then "The case file as written" folded. Ids are
+  for an agent and sit in a small fold ("Its id, for an agent"), never in
+  running text; the packet's `more[]` reads "The agent can also open 12
+  lessons, 30 cases and 7 of your statements that belong to this item."
+  with the ids in its fold, and a cut packet says "Some long passages are
+  shortened here; the agent can read them in full." (never the cut
+  fields' names). A nightly review shows, in place of "What was
+  decided", the split of its decisions by outcome group
+  (`series.OUTCOME_GROUPS`: Put to use, Turned down, Left for later,
+  Looked at, kept as is) as a thin bar of counts with the counts in words
+  beside it and a "Show as a table" view (its column is "Decisions"), then
+  one line per decision: the lesson, the outcome in words and the opening
+  of its reason with its ids and transcript line references taken out;
+  "Why?" fetches the case itself when opened (`GET /inbox/case/<id>`,
+  read-only, `cases.show`'s full view, told once, the id matched whole):
+  its Decision is worded as its line words it (the case's `outcome`
+  first), its Because reads without ids or line references, everything it
+  shows passes the same redaction as every packet path (`redact_text`),
+  and an error is said as "The case could not be opened." with the raw
+  text folded for an agent; the line's own ids fold stays on the line,
+  outside the part the panel replaces. Six lines show, the rest fold
+  under "Show all". A decision whose apply the run record says did not
+  happen (`phase` refused, unfinished, failed or stopped, or a result that
+  applied nothing and refused, stopped or never attempted something) is counted under "Not carried out, nothing
+  changed", never under the group of its intended outcome; its line says
+  why ("Refused by the ledger", "Not finished yet, it will be tried
+  again", "Stopped before it was applied", "Never attempted"), with what
+  it was to be, and "Why?" says the same. These lines come first. The
+  counts and lines are the CLI's (the packet's `run` block, read from the
+  run's record and its committed cases, at most 12 KiB so the packet
+  keeps its 64 KiB cap and its evidence: lines are shortened first; a run
+  too large even then drops lines from its largest group, never a group's
+  last line, and says how many of each kind its counts cover beyond the
+  list, "to keep what the agent is given within its size limit"); the
+  page counts nothing. Its evidence folds under "The case
+  files and lessons, in full". A nightly review and a weekly run item
+  carry the "In short" box (*S-140*, "Summaries" below): a
+  nightly review shows its counts in words, and a weekly run item the
+  box of its weekly report.
 - **Answers** go to `attention answer` with the option, the reply text as
   a 0600 `--text-file` that is deleted after the run, `--draft` when the
   text started as an agent draft, and `--confirm` on the second click of
@@ -794,6 +948,81 @@ section records what the surface is.
   together, with the same word in both (S-130, item 8).
 - **Weekly report** (`/overseer-report[/<date>]`): a read-only render of
   the overseer's report, newest by default, with links to earlier ones.
+  *(Amended 2026-11-01, S-138, proposal §5.)* The report file
+  is never changed, only how it is drawn (`report_view.py`). Its first
+  line becomes a title in words ("Weekly report · Sunday 1 November",
+  with "finished at 15:21" under it) and its run id, actor and model move
+  to an "About this run" fold; "Earlier reports" is a small menu beside
+  the title. Then the "In short" box (*S-140*, "Summaries"
+  below);
+  then the "Questions for you" section lifted to the top, never folded:
+  "Nothing needs you this week." when it says none; otherwise each
+  question with where it stands now (`weekly_facts.question_states`):
+  still open, answered (the person's own words and when), or no longer
+  asked. Only when one is still open does the box read "Questions for
+  you" with a link to the inbox; otherwise it reads "The questions it
+  asked". The tile says "Questions it asked". Counts sit in tiles, from the run's own
+  record (`weekly_facts.run_facts`: past decisions re-checked of those it
+  could have, decided in the person's stead, questions), never from the
+  prose; a report with no record has no tiles. *(S-140.)* Two
+  more tiles come from the record's `review` block (02 §3a.13a): "Re-checked
+  and agreed with" (the re-checked decisions the overseer said still hold,
+  with how many it said do not and how many it gave no verdict on) and
+  "Its own findings dropped" (its findings of the week the runner dropped);
+  a record made before that block draws neither. The overseer's sections
+  follow in its own words at a reading width of about 75 characters.
+  Inside a bullet, machine text reads as a short placeholder with the
+  original in its tooltip ("the 35 cases", "a path" written from `~`,
+  "a hash", "a settings entry"), and the bullet ends with one fold
+  holding it as written; a run of fewer than three ids, text in `code`
+  (a command to copy) and text in a paragraph stay as written.
+  "Refused / could not do" folds by default with its count. The weekly
+  report page is read-only apart from the "In short" box's one control,
+  which writes a summary, never the report.
+- **Summaries** *(added 2026-11-01, S-140; humane proposal §7;
+  the user's words: "let's give me a way to get summaries on demaand")*.
+  A weekly report, and an inbox item for a nightly review or a weekly
+  run, open with an "In short" box (`partials/in_short.html`, built by
+  `summary_routes.py`). It holds, in this order of preference:
+  - **the overseer's own summary**: a weekly report's optional first
+    section `## In short`, three to five plain sentences written in the
+    same weekly call (no extra model call), lifted out of the body and
+    labelled "Written by the overseer in its weekly run, with no extra
+    model call.";
+  - **a nightly review's counts**: the packet's `run.in_short`, words the
+    CLI counts from the run's record in the bar's own groups and unit,
+    decisions, so its total is the title's ("27 decisions: 9 put to use,
+    4 turned down, 3 left for later and 11 looked at and kept as they
+    are. 2 were not carried out, so nothing changed for them."), plus the
+    warnings it turned on and the always-loaded lines it changed,
+    labelled "Counted from the run's own record. No model call.";
+  - **a summary written on request**: "Summarise this report" (on a
+    nightly review, "Summarise this in words") runs `self-learn
+    summarise <kind>:<ref>` (17 §1c; 02 §3a.13) once. Under the button: "One
+    model call on your Claude plan (no API charge), usually 10 to 30
+    seconds. The summary is saved, so it is only written once for this
+    report." While it runs the box says "Writing a summary of this
+    report… N seconds so far." with **Stop** and `aria-busy`, and reads
+    itself again every second (a GET) so the words arrive as they are
+    written; then it shows the summary with "Summary written on request
+    <when> by <model>, from this exact report.", a "How it was made" fold
+    (one call, no tools, this text only; its notional cost and seconds)
+    and "Write it again" (`--again`, the only way to spend a second call
+    on the same text). A report whose text changed shows the older
+    summary greyed, "This summary was written for an earlier version of
+    this report.", and "Summarise again"; it never re-summarises by
+    itself. A setup that would bill money says "Summaries are off: this
+    setup would bill money." and offers no button.
+
+  **Nothing calls a model on a page view.** Every page and `GET
+  /summary/<kind>/<ref>` only read: the summary saved for the report's
+  current text (`summarise.state`, files only) and the runner's view of a
+  run in flight. Only `POST /summary/<kind>/<ref>` starts the verb,
+  through the inbox's ask runner (the same cap of two model turns in
+  flight across questions and summaries, the same watchdog and Stop,
+  `POST /summary/<kind>/<ref>/stop`). A second click while one runs gets
+  409 and the running box. A saved summary is found by the report's
+  SHA-256, so a reload, a second click or another viewer costs nothing.
 
 ### 2.6 The tray icon *(added 2026-10-31, S-126; attention-design-r2 §3.5, §3.10)*
 
@@ -845,6 +1074,83 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   `/StatusNotifierItem`, and calls `RegisterStatusNotifierItem` whenever
   `org.kde.StatusNotifierWatcher` appears or changes owner (a bar restart).
 - **Unit and deployment.** `13-hosting-and-separation.md` §7.7.
+
+### 2.7 Settings *(added 2026-11-01, S-139; humane proposal §9)*
+
+`GET /settings` is the page where a person reads and changes the operator
+settings (`self-learn config get|set`). Before this subsection 09 said nothing
+about it beyond the Y-11 command rule. The page renders what `config get --json`
+returns, row for row; it computes no value and keeps no copy of the registry.
+
+- **Grouped by what a person is trying to do.** The CLI's `group` field names one
+  of `settings_plain.GROUPS`; the page shows the groups in that order, each under
+  its `title` and `intro`: What runs on its own, Limits on model use, Which model
+  does what, How it gets your attention, then the folded groups (what the
+  overnight read looks at, time limits, turn limits, Amazon Bedrock, everything
+  else). A group the CLI marks `folded` is a closed `<details>`; the others are
+  open. A row with no or an unknown `group` goes in the last group, so a partial
+  read never drops a setting. Within a group the page shows the switches a person
+  reaches for first (the jobs' `enabled` switches, then skill writing and hook
+  activation), then the registry's order.
+- **A row says what it is in words.** The row's `label` is its heading and its
+  `plain` is a sentence under it, on the page and not only in a hover title. Under
+  that: where the value comes from in words (Default, Set in config.yaml, Set in
+  the environment, Set for this terminal only; any other source is shown as the
+  CLI wrote it), and the key in small faint type for checking against the command
+  line. The registry's technical `description`, the built-in default and any fold
+  `note` sit in the row's "Details" fold. A row from a CLI that sent no `label`
+  shows its key as its heading and no sentence.
+- **Controls.** A bool is an On/Off choice (the verb takes 1 or 0), an int or float
+  a number field with its unit when the key says one (`_usd` dollars, `_secs` and
+  `_s` seconds), anything else a text field. Each row keeps its own form and
+  `POST /settings/set`, which runs the same `config set` verb; the row's DOM id
+  stays `setting-row-<key with dots as dashes>`. With script, a row's Save button
+  shows once its value differs from the stored one; without script it always
+  shows. A saved row comes back with "Saved." and a refused one with the verb's
+  one-line refusal in its error strip, never as "Saved.". A value the refused
+  write left is the stored one, never the posted one.
+- **Tier C is read-only.** A row with `tier` `C` has no editor, here or on the
+  server (`POST /settings/set` refuses it with 400 before the runner is touched);
+  the page says "Read-only here: only you can change this, from a terminal." and
+  spells out no command (Y-11).
+- **A terminal override is one line.** A row whose `warn` is set shows "Set for
+  this terminal only. It outranks config.yaml while it lasts." (on an editable
+  row, plus that a saved value does not take effect until it is removed), and the
+  CLI's full `warn` sentence verbatim in a fold under it.
+- **Where each kind of item goes.** The `attention.class.*` rows are one table
+  under that heading in the attention group, each kind named as in the inbox
+  (the `Inbox: ` prefix is dropped) with a choice among the values the registry
+  accepts, in words: Waits for you, Shows as decided, Stays silent, Its kind's
+  default.
+- **Find a setting.** A search box filters the rows by every typed word, matched
+  against the key, the plain name, the sentence, the technical note and the
+  group's heading. `static/settings.js` filters as you type; the same filter
+  runs on the server for `?q=` (a plain form submit), marking non-matching rows
+  `hidden` and not dropping them, so clearing the box restores them. A group with
+  a match opens; a group with none is hidden along with its jump chip; the page
+  says how many settings match, or that none does. A row of chips jumps to a
+  group and opens it if it is folded.
+- **No new key.** The settings page binds no key (the dispatch pin stands).
+- **A message after a save holds the page's refresh, and can be dismissed.** A
+  saved row says "Saved." (`data-verb-success`) and a refused one shows the verb's
+  refusal (`data-verb-error`); each has a Dismiss button. Y-16 legs (f) and (a)
+  make `app.js` hold a broadcast refresh while either is in the page, so the
+  refresh the save itself causes does not wipe the message. Dismissing removes
+  it and the held refresh fires. Editing the row's field retires its message
+  at once; a field whose value differs from the stored one marks its form
+  `data-setting-dirty`, the new Y-16 leg (g), which holds the refresh so
+  nothing half-typed is thrown away; taking the edit back releases it. So the
+  settings tab is stale only while a message, or an unsaved edit, is on it.
+- **Reading the CLI.** If the CLI read fails, the page shows the CLI's error in
+  an error strip and no groups, never a 500. A malformed `config.yaml` that the
+  CLI can still read past (it warns and falls back to defaults) shows every row
+  it resolved; a save then shows the CLI's one-line refusal in that row.
+- **Search matches the CLI's own words.** The searchable text holds the full
+  `label` as the CLI wrote it (an inbox kind's `Inbox: ` prefix is dropped only
+  for display). A group's count reads "1 of 10" while a search narrows it, and
+  "Show all" appears only while the box holds a search. A few read-only enum
+  values show in words (`session` as "Each session on its own", `digest`,
+  `auto` as "Automatic"); any other value shows as the CLI sent it.
 
 ## 3. Process & data architecture
 
@@ -1096,7 +1402,8 @@ permission surface of §4.3).
   `attention-design-r2.md` §4.7 and §4.8)*. The inbox lives in its own
   router (`ui/inbox_routes.py`): `GET /inbox`, `/inbox/list`,
   `/inbox/<id>` and its `workspace`, `evidence` and `conversation`
-  partials, `/overseer-report[/<date>]`; `POST /inbox/seen-all`,
+  partials, `/inbox/case/<case id>` (a nightly review's "Why?", read-only;
+  S-138), `/overseer-report[/<date>]`; `POST /inbox/seen-all`,
   `/inbox/<id>/{seen,answer,undo,feedback,run,fix,check-login,ask,ask/stop}`
   and `POST /navigate`. The middleware is unchanged: every POST needs the
   cookie and `HX-Request`. Reads are `attention --json` and `attention
@@ -1729,7 +2036,7 @@ notifications are absent.
 | Worker overdue / never ran | Status strip alarm (reuses the worker's own escalation thresholds); everything else functions — the surface is not the worker's supervisor. |
 | *Inbox rows below added 2026-10-31 (lane `ui-workspace`, S-125; `attention-design-r2.md` §3.7).* | |
 | `attention --json` fails (no JSON) | The inbox shows an error panel with the stderr text, "The inbox itself may be broken; the tray icon shows the same state.", and Retry. The front page's link reads "Inbox (?)". |
-| Inbox empty | "Nothing needs you, and nothing new." plus a link to the weekly report; no list items. With no needs-you items but some decided ones, the first unseen decided item is selected and the list header reads "Nothing needs you". |
+| Inbox empty | "Nothing needs you, and nothing new." plus a link to the weekly report; no list items. With no needs-you items but some decided ones, the first unseen decided item is selected and the list's "Needs you" heading stands over the line "Nothing needs you right now." (S-138). |
 | Packet slow (> 1.5 s) | The item's list data renders at once; the evidence region shows "assembling…" and fills by htmx when the packet arrives. |
 | Packet failed | An error block naming the failure; the question, options and reply box from the list data still work. |
 | Item resolved or moved elsewhere (answered in a terminal, withdrawn, login fixed) | An `attention` envelope refreshes the list; an open item no longer listed shows "This item was resolved elsewhere (answered, withdrawn, or its condition cleared)." and offers the next one. An answer that moves the item on says where it went and offers no options. The page's own click is never reported as "elsewhere": not while its request is in flight (plus a 3 s grace), nor once its response said the item moved on or cleared. |
@@ -1854,7 +2161,13 @@ at the httpx level (`test_inbox.py`, `test_ask_runner.py`,
   scale is 06's staged path, not a v1 latch.
 - **No dashboards/scores** — the status strip and the `/report`
   screen (§11 Y-12) render counted facts with 04's honesty labels
-  only; nothing modeled, no charts in v1 (counted-not-modeled, 04).
+  only; nothing modeled (counted-not-modeled, 04). *Amended 2026-11-01
+  (S-137): "no charts in v1" is now "no modelled numbers".
+  A chart is allowed when every mark draws a count the CLI computed;
+  there is never a target, a score, a forecast or a fitted line; each
+  chart has a "Show as a table" view holding every value and a
+  narrow variant that reads at a 390 px width. Charts are drawn on the
+  server as inline SVG (`charts.py`): no chart library, no script.*
 - **No in-surface capture** (`teach` lives where the lesson happens;
   this is the adjudication surface, not a fifth producer).
 - **No notification ownership** — the server never sends
@@ -2157,6 +2470,34 @@ removed the last competing workstream — the build gate is open.*
   recurrence counts, telemetry counters. Reached by a Front link
   (no dedicated key). No charts, no scores, no derived numbers the
   CLI didn't compute (04 counted-not-modeled; §8 amended in place).
+  **Amended 2026-11-01 (S-137): the screen is the Health
+  page.** Reached by the "Health" link in the shared header. Top to
+  bottom: four tiles (rules in use and in how many places; lessons
+  waiting for a decision and how long the oldest has waited; the typical
+  wait; rules later corrected, of those put to use), three charts ("Is
+  it keeping up?" — lessons waiting at each day's end, 28 days; "Where
+  do lessons come from?" — ranked bars from `supply_mix`; "What got
+  decided, night by night" — stacked columns by outcome group, 21
+  nights), a table of the rules in use, each listed by its own words
+  (`routed_live[].title`) never by its id, with where it lives, how long
+  it has been in use and how often it was seen again (most seen first;
+  `?q=` filters on the server, `?all=1` lifts the row limit), the rules
+  seen again (sightings not yet decided; the rules table's "Confirmed
+  again" column counts the confirmed ones), the open follow-ups, the
+  lessons put off for later (with how overdue), and folds for the
+  dismissed sightings, whether the rules reach where the assistant reads
+  them, the size of the instruction files, and the lessons by place;
+  and a closed fold "All counters, with their names" for checking against
+  the command line (every key of `report --json`, `metrics` and
+  `supply_mix`; rates as percentages; a list of rows as its entry count).
+  The rules filter is an htmx `hx-get` (only the list is swapped and the
+  address is pushed): `app.js`'s submit guard cancels any form submit
+  htmx does not take. **No raw JSON is shown.** A number the CLI did not send
+  reads "not known", never zero. A `null` day in the series is a gap in
+  the line. The page's only counting is the length of a list the CLI
+  sent. The same two Home charts ("Is it keeping up?", "What got
+  decided") come from `partials/home_charts.html`, fed the same
+  `series`.
 
 - **Y-13 · Agentic chat panes with verb proposals (feedback round 1
   item 7 — G-3's second act; design brief
@@ -2405,6 +2746,17 @@ removed the last competing workstream — the build gate is open.*
   while rendered), and the empirical wipe-pin must rule EXPLICITLY
   on the SSE-frame-vs-swap ordering (the F4 pre-render race)
   before the defense is accepted.
+  *(Amended 2026-11-01, S-139 gate r1: two more producers and one
+  more leg. The settings page's "Saved." line carries `[data-verb-success]`
+  (leg f) and a refused save's strip `[data-verb-error]` (leg a), each with a
+  Dismiss button that removes the message and releases the held reload — so
+  the settings holds have a user-reachable release, not navigation only. A
+  **(g)** leg: any `[data-setting-dirty]` form, a setting field whose value
+  differs from the stored one, defers the reload, because a reload would throw
+  away what is being typed (the leg (c) hazard); taking the edit back, or
+  saving it, releases it. `app.js` listens for `self-learn:release-reload`
+  to re-check the predicate when a message is dismissed or an edit is taken
+  back, where no htmx swap settles.)*
   **(2) Plain words (Y-9) — the NARROW dated §5 exception.** The
   failed-registration leg leads with a human sentence; required
   content: **registration did not complete** (exact copy the

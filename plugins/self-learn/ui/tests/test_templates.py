@@ -19,7 +19,9 @@ BASE_HTML_NO_COMMENTS = _re.sub(r"<!--.*?-->", "", BASE_HTML, flags=_re.S)
 def test_base_template_exists_with_expected_blocks() -> None:
     for block in (
         "{% block header %}",
-        "{% block status_strip %}",
+        # Humane lane 1: the shared header replaced each page's own
+        # `status_strip`; a deeper page adds its "where you are" line here.
+        "{% block crumbs %}",
         "{% block content %}",
         "{% block keymap_footer %}",
         "{% block keymap_json %}",

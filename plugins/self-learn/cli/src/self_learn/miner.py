@@ -193,6 +193,10 @@ SELF_PROMPT_HEADERS = (
     # this" agent; `ask.SESSION_OPENING` is this text, and its first prompt
     # opens `self-learn ask-about-this session for <item-id>.`
     "self-learn ask-about-this session for ",
+    # 2026-11-01 (humane UI lane 5): the on-demand report summary;
+    # `summarise.SESSION_OPENING` is this text, and its one prompt opens
+    # `self-learn summary session for <kind>:<ref>.`
+    "self-learn summary session for ",
 )
 #: Self-learn command spans inside otherwise-minable sessions (M-5).
 _COMMAND_SPAN_RE = re.compile(r"<command-name>/?self-learn:")

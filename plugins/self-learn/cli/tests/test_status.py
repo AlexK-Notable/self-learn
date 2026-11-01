@@ -47,6 +47,9 @@ def test_status_zero_state_json_exact_shape(sandbox_home, capsys, monkeypatch):
         "steward_cases_since_overseer": 0,
         "overseer_last_run": None,
         "overseer_next": "2026-09-20T04:15:00",
+        # S-136: the steward's own verdicts (`nudge_fields`);
+        # off by default, so only that.
+        "steward_enabled": False,
         # T19: supply mix + 04 success-metrics counters ride full status;
         # zero-state is honest — empty mix, null medians, never fake zeros.
         "supply_mix": {},
@@ -83,6 +86,11 @@ def test_status_counts_seeded_pending_record(monkeypatch, tmp_path, capsys):
         "oldest_days": 0,
         "unanalyzed": 1,  # no proposal sibling → eligible (08 §7.1 step 2)
         "unreadable": 0,
+        # S-135: a skill bucket's label is its name; its folder is
+        # found through the skills root, so no path is recorded.
+        "label": "home-assistant",
+        "path": None,
+        "path_exists": None,
     }
     assert rows["user"]["pending"] == 0
 
