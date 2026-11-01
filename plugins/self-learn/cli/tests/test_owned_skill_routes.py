@@ -533,3 +533,46 @@ def test_the_ledger_is_never_written_by_a_refused_preview(env, tmp_path):
     assert git(env.home, "rev-parse", "HEAD").stdout == head
     assert env.status(env.home) == status
     assert ledger_ops.find_record_path(env.home, RID).parent.name == "pending"
+
+
+# ===================== SK-D (S-NEXT-skills-chain): the last lesson leaves a skill
+
+
+def test_sk_d_1_the_last_lesson_leaving_an_owned_skill_leaves_an_empty_section(env, capsys):
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+
+    _owned(env)
+    _pending(env, RID)
+    verbs.route(env.home, RID, dest=f"new-skill:{NAME}", no_push=True)
+    text = env.skill_md().read_text(encoding="utf-8")
+    assert f"({RID})" in text[text.index(BEGIN_MARKER):text.index(END_MARKER)]  # control
+    capsys.readouterr()
+
+    rc = cli.main(["retire", RID, "--covered-by", "claude-md:user", "--no-push"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert "HOST PHASE FAILED" not in captured.err and "nothing to compile" not in captured.err
+    text = env.skill_md().read_text(encoding="utf-8")
+    section = text[text.index(BEGIN_MARKER):text.index(END_MARKER) + len(END_MARKER)]
+    assert RID not in section and "lrn-" not in section
+    assert env.status(env.root) == ""  # the empty section was committed
+
+
+def test_sk_d_2_with_the_folder_gone_and_no_lesson_left_nothing_is_written(env, capsys):
+    _pending(env, RID)
+    assert cli.main(["route", RID, "--dest", f"new-skill:{FRESH}", "--no-push"]) == 0
+    assert env.skill_md(FRESH).is_file()  # control: a person's scaffold
+    git(env.root, "rm", "-r", "-q", f"plugins/{FRESH}")
+    git(env.root, "commit", "-q", "-m", "a person removed the skill")
+    head = env.head(env.root)
+    capsys.readouterr()
+
+    rc = cli.main(["retire", RID, "--covered-by", "claude-md:user", "--no-push"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert "HOST PHASE FAILED" not in captured.err
+    assert not env.plugin_dir(FRESH).exists()
+    assert env.head(env.root) == head
+    assert _record(env.home, RID).status != "routed"

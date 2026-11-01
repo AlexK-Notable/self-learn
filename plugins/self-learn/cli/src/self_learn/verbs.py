@@ -4832,18 +4832,35 @@ class NewSkillApplyResult:
         return getattr(self.section, "word_count", None)
 
 
+def _empty_new_skill_section(spec: TargetSpec) -> tuple[NewSkillApplyResult, list[Path]]:
+    """SK-D: the host apply of a ``new-skill`` target no routed lesson
+    resolves to any more (:func:`_apply_new_skill`)."""
+    target = spec.target
+    assert target is not None  # a new-skill target always resolves one
+    if not target.is_file():
+        return NewSkillApplyResult(path=target, changed=False, scaffolded=False), []
+    section = compile_managed_file(target, [])
+    return (
+        NewSkillApplyResult(path=target, changed=section.changed, scaffolded=False, section=section),
+        [target],
+    )
+
+
 def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult, list[Path]]:
     """The T18 host apply: deterministic scaffold on first route (M3-9 —
     plugin.json + SKILL.md, marketplace entry appended exactly once),
     ordinary managed-section recompile ever after. Idempotent: a second
-    run over unchanged records writes nothing."""
+    run over unchanged records writes nothing.
+
+    S-NEXT-skills-chain (SK-D): when the last lesson has left the skill
+    (retired, superseded, rerouted away), an existing SKILL.md gets an
+    empty managed section -- its lines would otherwise stay stale until
+    something else rewrote it -- and a missing one is left missing: no
+    error, no scaffold (a scaffold's description is seeded from a first
+    lesson, and there is none)."""
     records = _compile_set(home, spec)
     if not records:
-        raise VerbError(
-            f"no routed records resolve to {spec.target} — nothing to "
-            "compile (the union may be empty even though records once "
-            f"named new-skill:{spec.new_skill}, if every one retired)"
-        )
+        return _empty_new_skill_section(spec)
     name = spec.new_skill
     root = spec.host_path
     target = spec.target
