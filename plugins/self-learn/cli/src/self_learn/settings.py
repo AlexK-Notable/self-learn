@@ -1783,7 +1783,7 @@ REGISTRY: tuple[Setting, ...] = (
 #: code-classified inbox kind -- every kind but the overseer's own asks,
 #: whose class the overseer judges -- can be moved to another class by one
 #: "didn't need me" / "should have asked me" click, reversible on the
-#: settings page. ``<kind-key>`` is the kind with ``.`` replaced by ``-``.
+#: settings page. ``<kind-key>`` is the kind with each ``.`` written as ``-``.
 #: `tests/test_attention.py` pins this tuple to ``attention.KINDS``.
 ATTENTION_CODE_KINDS: tuple[str, ...] = (
     "hold.credentials", "hold.money", "broken.host", "broken.stopped", "broken.job",

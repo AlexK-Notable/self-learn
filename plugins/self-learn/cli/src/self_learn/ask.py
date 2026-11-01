@@ -165,7 +165,7 @@ _PEM_WITHHELD = "[redacted: private-key]"
 
 
 def redact(text: str) -> str:
-    """*text* with every secret-scan hit replaced by ``[redacted: <rule>]``
+    """*text* with every secret-scan hit swapped for ``[redacted: <rule>]``
     and every private-key block withheld whole. What this module shows or
     seals goes through here, never through ``redact_text`` alone."""
     return attention_packet.redact_text(_PEM_BLOCK.sub(_PEM_WITHHELD, text))

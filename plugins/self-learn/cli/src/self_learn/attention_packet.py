@@ -153,7 +153,7 @@ def filter_look_at(home: Path | str, paths: list[object]) -> tuple[list[str], li
 
 
 def redact_text(text: str) -> str:
-    """*text* with every secret-scan hit replaced by ``[redacted: <rule>]``."""
+    """*text* with every secret-scan hit swapped for ``[redacted: <rule>]``."""
     hits = secret_scan(text)
     if not hits:
         return text
