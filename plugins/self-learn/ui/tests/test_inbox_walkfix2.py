@@ -229,8 +229,11 @@ def test_a_receipt_names_the_decision_what_happens_next_and_offers_a_change(tmp_
     resp = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-no"}, headers=HX)
     text = _words(resp.text)
     assert "data-recorded" in text  # control
+    # The receipt itself (the same sentence also feeds the out-of-band
+    # Meanwhile, so it is read from the receipt's own element).
+    receipt = text.split("data-receipt>")[1].split("</p>")[0]
     assert ("You answered “No, keep the manual note”: nothing will be changed; the overseer reads "
-            "this on its next run.") in text
+            "this on its next run.") in receipt
     assert "Recorded as your choice of the offered option." in text
     chips = text.split('id="ws-chips"')[1].split("</p>")[0]
     assert 'hx-swap-oob="true"' in chips and "Answered" in chips and "Needs you" not in chips
