@@ -329,7 +329,7 @@ def test_the_evidence_reads_as_a_person_needs_it(tmp_path, monkeypatch):
         {"kind": "hook", "record": "lrn-9b4bb8f0", "trigger": "About to edit .storage.",
          "instruction": "Stop the container first.", "script_excerpt": "#!/bin/sh\nexit 2",
          "registration": "{}"},
-        {"kind": "file", "path": "/home/u/.config/systemd/user", "display": "~/.config/systemd/user",
+        {"kind": "file", "path": "/home/user/.config/systemd/user", "display": "~/.config/systemd/user",
          "is_dir": True, "excerpt": "oo7-daemon.service", "truncated": False},
         {"kind": "lesson", "id": "lrn-9b4250f5", "title": "An update to intel-ucode comes up.",
          "trigger": "An update to intel-ucode comes up.", "instruction": "Treat it as harmless.",
