@@ -205,7 +205,7 @@ def test_a_telemetry_flush_made_by_a_real_cli_process_is_not_a_hand_step(tmp_pat
 
 
 def test_a_case_trailer_does_not_hide_a_shell_s_commit(repo):
-    _commit(repo, "self-learn: defer lrn-0000a005", note="Case: x", trailer="By: agent")
+    _commit(repo, "self-learn: defer lrn-0000a005", note="x", trailer="Case: case-0123abcd\nBy: agent")
     assert [s["subject"] for s in report.hand_steps(repo, now=NOW)["steps"]] == [
         "self-learn: defer lrn-0000a005"
     ]
@@ -367,7 +367,15 @@ def test_a_schema_failure_below_the_cap_stages_a_census_but_leaves_the_cursor(tm
     _silence_notifications(monkeypatch)
     _fake_two_phase(monkeypatch)
     real = overseer_run.invocation.write_session
-    seen = {"staged": 0}
+    staged: list[dict | None] = []
+    real_staged = overseer_run._staged_census_if_any
+
+    def spy_staged(stage):
+        out = real_staged(stage)
+        staged.append(out)
+        return out
+
+    monkeypatch.setattr(overseer_run, "_staged_census_if_any", spy_staged)
 
     def duplicate_a_heading(spec):
         out = real(spec)
@@ -377,8 +385,6 @@ def test_a_schema_failure_below_the_cap_stages_a_census_but_leaves_the_cursor(tm
                 rep.read_text(encoding="utf-8").replace("## Hooks\n", "## Hooks\n- one\n## Hooks\n"),
                 encoding="utf-8",
             )
-        if (spec.cwd / "hand-steps.yaml").exists() or any(spec.cwd.glob("*hand*")):
-            seen["staged"] += 1
         return out
 
     monkeypatch.setattr(overseer_run.invocation, "write_session", duplicate_a_heading)
@@ -388,9 +394,10 @@ def test_a_schema_failure_below_the_cap_stages_a_census_but_leaves_the_cursor(tm
 
     assert (result.status, result.code) == ("refused", 1), result
     # Positive control: the failed attempt really was committed (its note), and
-    # the census was staged for it (the manifest of the run records it).
+    # the census was staged for it, state ok with a head.
     week = overseer_run.week_key(overseer_run.week_boundary(__import__("time").time()))
     assert len(overseer_run._committed_failure_notes(home, week)) == 1
+    assert staged and all(c is not None and c.get("state") == "ok" and c.get("head") for c in staged), staged
     assert not report.census_path(home).exists(), "nothing was published: the cursor stays"
     # The next census still lists the step the failed run had counted.
     row = health.hand_steps_row(home)
