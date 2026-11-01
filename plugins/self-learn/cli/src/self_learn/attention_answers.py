@@ -707,6 +707,13 @@ def _cases_citing(home: Path, statement_ids: list[str]) -> list[str]:
 # ------------------------------------------------------------------ answer
 
 
+#: Walk fixes gate r2 N1: the words of the refusal :func:`answer` gives an
+#: approval sent with the agent's draft and no ``confirm``; the page finds
+#: them in the verb's message and arms the option instead of showing an error.
+DRAFT_NEEDS_CONFIRM = ("comes with the agent's draft and approves this change: confirm it first, "
+                       "nothing is approved until you do")
+
+
 def answer(
     home: Path | str,
     item_id: str,
@@ -838,6 +845,16 @@ def answer(
             raise AnswerError(
                 f"«{chosen.get('label')}» asks once more before it acts; send it again with "
                 "--confirm", EXIT_REFUSED,
+            )
+        # Walk fixes gate r2 N1: an approval that comes with the agent's
+        # draft (its option named here, or taken from the draft) is never
+        # sent in one step, whatever the page remembered: the verb itself
+        # asks once more, so the confirmation does not depend on browser
+        # storage. (A register option is refused above already.)
+        if draft_id is not None and chosen.get("effect") == "approve" and not confirm:
+            raise AnswerError(
+                f"«{chosen.get('label')}» {DRAFT_NEEDS_CONFIRM}; nothing was recorded. Send it "
+                "again with --confirm", EXIT_REFUSED,
             )
         if item["kind"] == "approved.pending" and chosen.get("effect") != "approve":
             # "The answer stays changeable until it is carried out" (design

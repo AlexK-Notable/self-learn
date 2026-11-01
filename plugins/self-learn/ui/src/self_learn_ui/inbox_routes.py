@@ -691,6 +691,35 @@ def _sent_words(request: Request, item_id: str, t: int | None) -> str | None:
     return words if isinstance(words, str) and words.strip() else None
 
 
+def _draft_option(request: Request, item: dict, draft_id: str | None) -> dict | None:
+    """Walk fixes gate r2 N1: the offered option the agent's draft
+    *draft_id* carries, read from the item's own transcript on the server,
+    so a page that forgot it (blocked browser storage) still arms an
+    approval that comes with the draft. ``None`` when the draft carries no
+    offered option."""
+    if draft_id is None:
+        return None
+    row = next((r for r in ledger.workspace_rows(_home(request), item["id"])
+                if r.get("kind") == "draft" and r.get("draft_id") == draft_id), None)
+    wanted = (row or {}).get("option")
+    return next((o for o in item.get("options") or [] if o.get("id") == wanted), None) if wanted else None
+
+
+def _needs_draft_confirm(message: str) -> bool:
+    """Gate r2 N1: the answer verb refused an approval sent with the
+    agent's draft until it is confirmed (its own words, not re-typed)."""
+    from self_learn.attention_answers import DRAFT_NEEDS_CONFIRM
+
+    return DRAFT_NEEDS_CONFIRM in message
+
+
+#: Gate r2 N1: what the page says when the verb asked for a confirmation
+#: the page could not arm itself (it could not tell which option it was).
+DRAFT_CONFIRM_UNARMED = ("The agent's draft carries an option that approves this change, so it "
+                         "is confirmed first; nothing was recorded. Click that option's own button "
+                         "to choose it, then confirm.")
+
+
 #: Walk fixes, item 1: an approve option armed by its number key.
 KEYED_APPROVE_LINE = ("“{label}” approves this change: an agent then carries it out in a terminal "
                       "you can see. You pressed a key, and a key never approves on its own. "
@@ -744,6 +773,13 @@ async def inbox_answer(
     chosen = next((o for o in item.get("options") or [] if o.get("id") == option), None)
     if option is not None and chosen is None and option != "opt-ran-sudo":
         return fail("That option is not one this item offers.", 400)
+    if option is None and draft_id is not None:
+        # Gate r2 N1: the draft's own option, from the server's transcript:
+        # an approval or register it carries arms like any other.
+        carried = _draft_option(request, item, draft_id)
+        if carried is not None and (carried.get("confirm") or carried.get("effect") in (
+                "approve", "register")):
+            chosen = carried
     if chosen is not None and chosen.get("disabled"):
         # Follow-ups 2 (gap 2): a change of mind is off while a session
         # holds the work; the reason says what to do instead.
@@ -763,7 +799,10 @@ async def inbox_answer(
                     if offer is not None else None)
     armed = confirm == "1"
     by_key = keyed == "1"
-    by_draft = from_draft == "1"
+    # Gate r1 F2 / r2 N1: any approval that goes with the agent's draft
+    # (the page's mark, or a draft id on the request) asks once more; the
+    # answer verb refuses it without --confirm anyway.
+    by_draft = from_draft == "1" or draft_id is not None
     if chosen is not None and not armed:
         if chosen.get("confirm") or chosen.get("effect") == "register":
             # §3.7 "This registers <path> in git mode. Confirm?": the path
@@ -817,7 +856,9 @@ async def inbox_answer(
             argv += ["--draft", draft_id]
         if reuse_t is not None:
             argv += ["--words-from", str(reuse_t)]
-        if armed and chosen is not None and (chosen.get("confirm") or chosen.get("effect") == "register"):
+        if armed and chosen is not None and (
+                chosen.get("confirm") or chosen.get("effect") == "register"
+                or (draft_id is not None and chosen.get("effect") == "approve")):
             argv.append("--confirm")
         argv.append("--json")
         result = await _run_verb(request, argv)
@@ -828,7 +869,13 @@ async def inbox_answer(
             except OSError:
                 pass
     if not result.ok:
-        return fail(_verb_message(result))
+        message = _verb_message(result)
+        if _needs_draft_confirm(message):
+            # Gate r2 N1: the verb asked for the confirmation the page
+            # could not arm (it could not read which option the draft
+            # carries); say so in words, never the verb's flag.
+            return fail(DRAFT_CONFIRM_UNARMED)
+        return fail(message)
     evidence = result.evidence or {}
     state = evidence.get("state")
     # No option chosen (typed words, or an agent draft sent without one):

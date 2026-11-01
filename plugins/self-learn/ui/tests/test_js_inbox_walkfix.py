@@ -411,3 +411,45 @@ def test_a_working_login_shows_its_result_at_the_top_in_view(page, server):
     top = page.evaluate("() => document.querySelector('#ws-top-result').getBoundingClientRect().top")
     assert 0 <= top < 400
     assert "this item is closed" in page.inner_text("#ws-ask-off")
+
+
+# ------------------------------------------------------------ gate r2 N1
+
+
+def test_with_storage_blocked_a_draft_send_after_a_failed_confirm_still_arms(page, server):
+    """Gate r2 N1 (the gate's probe P9): site storage throws (a private
+    window, blocked site data). Use this draft, Send, Confirm; the verb
+    refuses; the bar comes back with the draft id but no option (the page
+    could not remember it). A second Send must still arm, and its Confirm
+    sends `--confirm`. Mutation: drop the server's read of the draft's
+    option -> red (the second Send goes straight to the verb)."""
+    from test_js_inbox import RunResult
+
+    page.add_init_script(
+        "Object.defineProperty(window, 'localStorage', {get() { throw new Error('blocked'); }});")
+    _open(page, server, ID_OO7)
+    page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] [data-use-draft]')
+    _wait_for(lambda: page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions")
+    page.click("[data-send-reply]")
+    _armed_and_wired(page)
+    server.runner.queue_result(RunResult(3, stderr="refused for this test"))
+    page.click("[data-confirm-armed]")
+    page.wait_for_selector("#ws-answer [data-answer-error]", timeout=_WAIT_MS)
+    first = list(_answer_calls(server))
+    assert len(first) == 1 and "--confirm" in first[0]  # the confirm went with --confirm
+    assert page.input_value("#ws-reply-draft") == DRAFT_ID  # control: the draft id is kept
+    assert page.get_attribute("#ws-answer-form", "data-draft-option") is None  # the option is lost
+    page.wait_for_function("() => !!document.querySelector('#ws-answer-form')['htmx-internal-data']",
+                           timeout=_WAIT_MS)
+    page.click("[data-send-reply]")
+    _armed_and_wired(page)
+    assert "Yes, with conditions" in page.inner_text("[data-armed-answer]")
+    try:
+        _wait_for(lambda: len(_answer_calls(server)) > 1, timeout=1.5)
+    except AssertionError:
+        pass
+    assert len(_answer_calls(server)) == 1  # the second Send sent nothing
+    page.click("[data-confirm-armed]")
+    _wait_for(lambda: len(_answer_calls(server)) == 2)
+    argv = _answer_calls(server)[-1]
+    assert argv[argv.index("--option") + 1] == "opt-yes-conditions" and "--confirm" in argv

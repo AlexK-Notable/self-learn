@@ -11,6 +11,7 @@ mutation it was checked against.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import markupsafe
@@ -457,7 +458,8 @@ def test_an_approve_option_carried_by_a_draft_arms_whatever_sent_it(tmp_path, mo
     (`from_draft=1`: inbox.js sets it when the option comes from the used
     draft, the draft card carries it) arms with words that say sending the
     draft approves, and runs no verb; Ctrl+Enter (`keyed=1` as well) arms
-    the same way; the option's own button, clicked, still sends at once.
+    the same way; the option's own button, clicked with no draft, still
+    sends at once (with a draft id it arms too: gate r2 N1).
     The armed bar says only Confirm goes ahead and carries a Cancel the
     page can focus. Mutation: ignore `from_draft` -> red."""
     runner = FakeRunner(_OK)
@@ -475,8 +477,9 @@ def test_an_approve_option_carried_by_a_draft_arms_whatever_sent_it(tmp_path, mo
     assert "data-armed-answer" in keyed.text and "a key never approves on its own" in keyed.text
     assert _answers(runner) == []
 
-    client.post(f"/inbox/{ID_OO7}/answer", data=sent, headers=HX)
-    assert _answers(runner)[-1][:5] == ["attention", "answer", ID_OO7, "--option", "opt-yes"]
+    # The option's own button, clicked with no draft, still sends at once.
+    client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX)
+    assert _answers(runner)[-1] == ["attention", "answer", ID_OO7, "--option", "opt-yes", "--json"]
 
 
 def test_the_draft_card_marks_its_option_as_carried_by_the_draft(tmp_path, monkeypatch):
@@ -525,3 +528,81 @@ def test_a_terminal_already_open_is_said_in_words_with_no_retry(tmp_path, monkey
     other, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(approved)), runner=failed)
     plain = other.post(f"/inbox/{ID_APPROVED}/run", headers=HX)
     assert "data-run-now" in plain.text and "data-already-open" not in plain.text  # control
+
+
+# ------------------------------------------------------------ gate r2
+
+
+_DRAFT_ROWS = {ID_OO7: [
+    {"t": 1, "role": "agent", "origin": "agent", "kind": "draft", "draft_id": "drf-1a2b3c4d",
+     "option": "opt-yes-conditions", "text": "Only the first two."}]}
+
+
+def test_a_draft_send_without_its_option_still_arms_from_the_server(tmp_path, monkeypatch):
+    """Gate r2 N1: a send that carries only the draft id (the page forgot
+    the draft's option: blocked storage) arms the approval the draft
+    carries, read from the item's transcript on the server, and runs no
+    verb; a click on an approve option's own button with a draft id arms
+    too; the Confirm sends `--confirm`, which the verb now requires.
+    Mutations: drop the server's draft-option read -> red; drop
+    `--confirm` for a draft's approval -> red."""
+    runner = FakeRunner(_OK)
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7), {ID_OO7: OO7_PACKET},
+                                                          rows=_DRAFT_ROWS), runner=runner)
+    sent = {"text": "Only the first two.", "draft_id": "drf-1a2b3c4d"}
+    bare = client.post(f"/inbox/{ID_OO7}/answer", data=sent, headers=HX)
+    assert "data-armed-answer" in bare.text and "Yes, with conditions" in bare.text
+    clicked = client.post(f"/inbox/{ID_OO7}/answer", data={**sent, "option": "opt-yes"}, headers=HX)
+    assert "data-armed-answer" in clicked.text
+    assert _answers(runner) == []
+
+    client.post(f"/inbox/{ID_OO7}/answer",
+                data={**sent, "option": "opt-yes-conditions", "confirm": "1"}, headers=HX)
+    argv = _answers(runner)[-1]
+    assert argv[argv.index("--option") + 1] == "opt-yes-conditions"
+    assert argv[argv.index("--draft") + 1] == "drf-1a2b3c4d" and "--confirm" in argv
+
+
+def test_the_verbs_draft_confirm_refusal_reads_in_words(tmp_path, monkeypatch):
+    """Gate r2 N1: when the page could not tell which option the draft
+    carries (no such row) and the verb asks for the confirmation, the page
+    says in words what to do, never the verb's `--confirm`. Mutation: show
+    the verb's message -> red."""
+    from self_learn.attention_answers import DRAFT_NEEDS_CONFIRM
+
+    refusal = ("self-learn attention answer: «Yes, with conditions» " + DRAFT_NEEDS_CONFIRM
+               + "; nothing was recorded. Send it again with --confirm")
+    runner = FakeRunner(RunResult(3, stderr=refusal))
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7), {ID_OO7: OO7_PACKET}),
+                             runner=runner)
+    resp = client.post(f"/inbox/{ID_OO7}/answer",
+                       data={"text": "Only the first two.", "draft_id": "drf-1a2b3c4d"}, headers=HX)
+    assert len(_answers(runner)) == 1 and "data-answer-error" in resp.text  # control
+    words = markupsafe.Markup(resp.text).unescape()
+    assert inbox_routes.DRAFT_CONFIRM_UNARMED in words and "--confirm" not in words
+
+
+def test_an_approvals_own_launch_finding_its_terminal_open_is_a_plain_status(tmp_path, monkeypatch):
+    """Gate r2 N2: the approval click's own launch answering `already_open`
+    shows the verb's plain sentence under the recorded answer as a status,
+    with no error strip and no "Try again". Mutation: drop `run_already_open` from
+    the answer bar -> red."""
+    message = "A terminal for this is already open: the one opened for it earlier is still running."
+
+    def answered(already_open: bool) -> str:
+        run = {"exit": 3, "message": message, "command": None, "brief": "/b"}
+        if already_open:
+            run["already_open"] = True
+        stdout = json.dumps({"state": "running", "recorded_as": "as your choice of the offered option",
+                             "transcript_row": 3, "run": run})
+        runner = FakeRunner(RunResult(0, stdout=stdout))
+        client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7), {ID_OO7: OO7_PACKET}),
+                                 runner=runner)
+        return _bar(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"},
+                                headers=HX).text)
+
+    plain = answered(False)
+    assert message in plain and "error-strip" in plain  # control: the old rendering
+    bar = answered(True)
+    assert "data-already-open" in bar and message in bar
+    assert "error-strip" not in bar and "Try again: open a new terminal" not in bar

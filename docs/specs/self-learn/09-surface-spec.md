@@ -535,7 +535,15 @@ section records what the surface is.
   option carried by the agent's draft rather than by a click on that
   option's own button (`from_draft=1`: Send, `Ctrl+Enter`, or a draft
   card's "Send the draft as is"; the armed line says that sending the
-  draft approves). Under the options a key hint gives
+  draft approves). *(Gate r2 N1.)* The server decides this, not the
+  browser: a request that carries a draft id arms an approve option it
+  names, and, when it names none, the approve or register option the
+  draft itself carries (read from the item's transcript), so a browser
+  that cannot keep site storage still arms it; the Confirm passes
+  `--confirm`, which the answer verb requires for an approval sent with a
+  draft. If the verb asks for that confirmation and the page could not
+  tell the option, it says so in words ("click that option's own button
+  to choose it, then confirm"), never the verb's flag. Under the options a key hint gives
   each number key and what it does, "approve: …" or "register: …" in
   words for such options. *(Gate r1 F1.)* On an armed bar only its own
   Confirm button goes ahead (a click, or `Enter`/`Space` with it
@@ -585,7 +593,9 @@ section records what the surface is.
   --user is-active`, asked only once a launch record exists) and answers
   exit 3 with `already_open: true` and a plain sentence saying a
   terminal for it is already open; the page shows that sentence as a
-  status with no retry, never systemd's own error. *(Gate r1 F5.)* The
+  status with no retry, never systemd's own error, both under "Being
+  carried out" and under the answer whose approval launched it (gate r2
+  N2). A unit still `deactivating` counts as open (N3). *(Gate r1 F5.)* The
   provenance line is asked again when an ask turn ends and on an
   attention event while the box holds text, since the agent texts the
   rule reads change under it. Words told to running work say

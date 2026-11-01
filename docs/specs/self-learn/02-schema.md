@@ -4911,7 +4911,12 @@ plan; words alone on an item with a plan are recorded (a statement,
 `answers.kind: question`), the item stays open and counted, and nothing is
 launched. An option marked `note: required` refuses to send without words
 (3); an option marked `confirm`, and every `register` option, needs
-`--confirm` (3). An item without a plan (a stead ask, a sudo ask, a
+`--confirm` (3). *(S-NEXT-walkfix, gate r2 N1.)* So does an `approve`
+option that comes with `--draft`, whether named by `--option` or taken
+from the draft: without `--confirm` it is refused (3, nothing recorded,
+no terminal opened) with the words of `DRAFT_NEEDS_CONFIRM` ("comes with
+the agent's draft and approves this change: confirm it first …"), so a
+page's confirmation never depends on what the browser remembered. An item without a plan (a stead ask, a sudo ask, a
 conflict, a registration) is decided by an option or by words; an agent
 draft sent with no option, or a reply that pastes the agent's text, is a
 choice that decides nothing on an item with a plan, exactly like words

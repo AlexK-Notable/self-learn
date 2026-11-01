@@ -36,6 +36,9 @@
       {% set run_message = r.run.message %}
       {% set run_command = r.run.command %}
       {% set run_lead = r.run.lead %}
+      {# Gate r2 N2: the approval's own launch can find this item's
+         terminal still open; the plain status, never an error and retry. #}
+      {% set run_already_open = r.run.already_open %}
       {# An approval moves the item on: Run it now is the successor's. #}
       {% set run_item = r.successor or item %}
       {% include "partials/workspace_run_body.html" %}

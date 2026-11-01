@@ -388,9 +388,11 @@ def test_a_new_terminal_while_this_approvals_terminal_is_open_says_so_in_words(t
     waiting at a prompt): one bounded `systemctl --user is-active` on this
     approval's own unit, no second `systemd-run`, and a plain sentence
     saying a terminal for it is already open, never systemd's own error.
-    Once that unit is gone, a new terminal opens. Mutations: skip the
-    is-active check -> red; check it before any launch (no run record) ->
-    red (the approval's first launch is refused)."""
+    A unit still stopping ("deactivating") counts as open. Once that unit
+    is gone, a new terminal opens. Mutations: skip the is-active check ->
+    red; check it before any launch (no run record) -> red (the approval's
+    first launch is refused); drop "deactivating" from the open states ->
+    red (gate r2 N3)."""
     from test_followups2 import _launched
 
     home = make_home(tmp_path)
@@ -408,7 +410,48 @@ def test_a_new_terminal_while_this_approvals_terminal_is_open_says_so_in_words(t
     assert ["systemctl", "--user", "is-active", attention.run_unit(approved_id)] in _calls(
         tmp_path, "systemctl")
 
+    (tmp_path / "unit-state").write_text("deactivating\n", encoding="utf-8")
+    stopping = answers.run(home, approved_id)
+    assert stopping.exit == 3 and stopping.already_open is True
+    assert len(_calls(tmp_path, "systemd-run")) == launches
+
     (tmp_path / "unit-state").write_text("inactive\n", encoding="utf-8")
     again = answers.run(home, approved_id)
     assert again.exit == 0 and again.already_open is False
     assert len(_calls(tmp_path, "systemd-run")) == launches + 1
+
+
+# ------------------------------------------------------------ gate r2 N1
+
+
+DRAFTED = "Only the first two steps, please; leave the binary check out of it for now."
+
+
+def test_an_approval_sent_with_the_agents_draft_needs_confirm_at_the_verb(tmp_path):
+    """Gate r2 N1: the verb itself refuses an approve option that comes
+    with the agent's draft, whether the option is named or taken from the
+    draft, unless `confirm` is passed; nothing is recorded and no terminal
+    opens. With `confirm` it is recorded as the agent's draft, accepted.
+    So a page that forgot the draft's option (blocked storage) still
+    cannot approve in one step. Mutation: drop the verb's draft check ->
+    red."""
+    home, item = _plan_item(tmp_path)
+    _seal_agent(home, item, DRAFTED, draft="drf-1a2b3c4d", option="opt-yes-conditions")
+    before = (len(_stmts(home)), len(_choices(home)))
+
+    for kwargs in ({"draft_id": "drf-1a2b3c4d"},
+                   {"draft_id": "drf-1a2b3c4d", "option": "opt-yes-conditions"},
+                   {"draft_id": "drf-1a2b3c4d", "option": "opt-yes"}):
+        with pytest.raises(answers.AnswerError) as refused:
+            answers.answer(home, item["id"], **kwargs)
+        assert refused.value.exit_code == 3, kwargs
+        assert answers.DRAFT_NEEDS_CONFIRM in str(refused.value)
+    assert (len(_stmts(home)), len(_choices(home))) == before
+    assert _calls(tmp_path, "systemd-run") == []
+    assert _item(home, "q-restart-daemon")["state"] == "open"
+
+    sent = answers.answer(home, item["id"], draft_id="drf-1a2b3c4d", confirm=True)
+    choice = _choices(home)[-1]
+    assert (choice["option"], choice["how"], choice["text"]) == (
+        "opt-yes-conditions", "draft-accepted", DRAFTED)
+    assert sent.recorded_as == "as the agent's draft, accepted by you"
