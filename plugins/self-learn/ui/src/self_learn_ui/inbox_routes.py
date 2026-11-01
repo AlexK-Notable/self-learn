@@ -950,7 +950,25 @@ def _last_sent(request: Request, item_id: str, t: int | None) -> dict | None:
         if hit is not None:
             return hit
     answers = [r for r in rows if r.get("role") == "user" and r.get("kind") in ("reply", "ran-sudo")]
-    return _reusable(answers[-1]) if answers else None
+    # Gate r2 R2-F2: the newest answer row that holds words, walking back
+    # past a plain click (or a ran-sudo row), which holds none; a row that
+    # reused words stands for the typed row it cites. The first row with
+    # words decides: an agent's relayed words are never passed over.
+    for row in reversed(answers):
+        words = row.get("text")
+        if isinstance(words, str) and words.strip():
+            return _reusable(_cited(rows, row))
+    return None
+
+
+def _cited(rows: list[dict], row: dict | None) -> dict | None:
+    """Gate r2 R2-F2: a row that took its words by ``--words-from`` (origin
+    ``clicked``, the same text) stands for the typed row it cites, so the
+    offer cites that row's statement again, never a second one."""
+    cited = (row or {}).get("words_from")
+    if row is None or row.get("origin") != "clicked" or not isinstance(cited, int):
+        return row
+    return next((r for r in rows if r.get("t") == cited), None)
 
 
 def _draft_option(request: Request, item: dict, draft_id: str | None) -> dict | None:
@@ -1033,6 +1051,12 @@ MOVED_APPROVED = ("This question has moved on: you approved it, and it is being 
                   "below; while a session holds the work they are off.")
 MOVED_DONE = ("This change was already carried out by an agent, so nothing was recorded: a new "
               "answer here would start it over. To overturn it, say so in your own words below.")
+#: Gate r2 R2-F1: a note offered on the old question cannot go with an
+#: answer on the item that took it over (its rows are numbered apart).
+MOVED_WORDS = ("This question has moved on: you approved it, and it is being carried out, so "
+               "the note offered with this answer, sent on the old question, cannot go with it. "
+               "Nothing was recorded. Its own options are below: pick one again, with a note "
+               "written here.")
 #: ... and what "Change my answer" (a read, nothing sent) shows for it.
 MOVED_APPROVED_VIEW = ("This question has moved on: you approved it, and it is being carried out. "
                        "Its own options are below; while a session holds the work they are off.")
@@ -1095,10 +1119,18 @@ async def inbox_answer(
         # Walk 2 gate r1 F1: the page showed a question that has moved on;
         # the answer belongs to the item that took it over, by its rules.
         item_id = str(item["id"])
+        # Gate r2 R2-F1: the old tab's row numbers (a reused note, the
+        # words sent alone) and its draft id are the ASK's; the item that
+        # took it over numbers its own rows, so they are never read there.
+        moved_words = reuse_t is not None or draft_id is not None
+        last_sent = None
         if item.get("class") == "decided":
             return fail(MOVED_DONE)
         if option is not None and not any(o.get("id") == option for o in item.get("options") or []):
             return fail(MOVED_APPROVED)
+        if moved_words:
+            draft_id = None
+            return fail(MOVED_WORDS)
     if option is not None and not _OPTION_ID_RE.match(option):
         return fail("That option is not one this item offers.", 400)
     if draft_id is not None and not _DRAFT_ID_RE.match(draft_id):

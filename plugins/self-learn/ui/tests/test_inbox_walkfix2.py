@@ -610,3 +610,103 @@ def test_the_agents_draft_is_called_the_agents_in_receipts_and_panels(tmp_path, 
                               headers=HX).text)
     assert ("You answered in your own words: nothing is decided yet, and the overseer reads your "
             "words on its next run.") in mine.split("data-receipt>")[1].split("</p>")[0]
+
+
+# ------------------------------------------------------------ gate r2
+
+
+def test_a_stale_tabs_note_is_never_read_in_the_approved_items_rows(tmp_path, monkeypatch):
+    """Gate r2 R2-F1: the old tab's row numbers and draft id are the ASK's;
+    the approved item numbers its own rows. A reused note (`words_from`)
+    or a draft id sent through the redirect is refused in plain words and
+    runs no verb; the old tab's `sent_t` is dropped, so the note offer is
+    the approved item's own newest words, never its row of the same
+    number. Mutations: drop the refusal -> red; keep the old `sent_t` ->
+    red (offers T2, not T3)."""
+    moved = {**_UNCLAIMED, "subject": OO7["subject"], "options": [
+        _opt("opt-no", "No, keep the manual note", "decline"),
+        _opt("opt-other", "Something else", note="required")]}
+    _moved(monkeypatch, moved)
+    rows = {ID_APPROVED: [
+        {"t": 0, "kind": "header"},
+        {"t": 2, "role": "user", "origin": "typed", "kind": "reply", "option": None,
+         "text": "Leave the .d folder alone."},
+        {"t": 3, "role": "user", "origin": "typed", "kind": "reply", "option": None,
+         "text": "Not on Fridays."},
+    ]}
+    runner = FakeRunner()
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(moved), rows=rows), runner=runner)
+    armed = _words(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-no"}, headers=HX).text)
+    assert "data-armed-answer" in armed  # control: the approved item answers by its own rules
+    for data in ({"option": "opt-other", "words_from": "2"},
+                 {"option": "opt-no", "draft_id": "drf-1a2b3c4d"}):
+        resp = _words(client.post(f"/inbox/{ID_OO7}/answer", data=data, headers=HX).text)
+        assert "data-answer-error" in resp
+        assert ("the note offered with this answer, sent on the old question, cannot go with it. "
+                "Nothing was recorded.") in resp
+    asked = _words(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-other", "sent_t": "2"},
+                               headers=HX).text)
+    assert "needs a note" in asked  # control: the refusal rendered
+    offer = asked.split("data-reuse-offer")[1].split("</div>")[0]
+    assert 'name="words_from" value="3"' in offer and "“Not on Fridays.”" in offer
+    assert runner.calls == []
+
+
+def test_the_note_offer_walks_back_to_the_words_last_sent(tmp_path, monkeypatch):
+    """Gate r2 R2-F2 (the gate's `d6` and `d6b` cases): after one reuse
+    (a `clicked` row carrying `words_from`) or after a plain click (no
+    words), a note-required option still offers the words last sent: the
+    person's typed row, cited by its own number (one statement). The first
+    row with words decides: an agent's relayed words are never passed over
+    for older ones. Mutations: offer only the newest row (the r1 rule) ->
+    red; drop the follow of a reused row -> red; skip rows that are not
+    reusable -> red."""
+    typed = {"t": 2, "role": "user", "origin": "typed", "kind": "reply", "option": None,
+             "text": "Only on weekdays."}
+    rows = {ID_OO7: [{"t": 0, "kind": "header"}, typed,
+                     {"t": 3, "role": "user", "origin": "clicked", "kind": "reply",
+                      "option": "opt-no", "text": "Only on weekdays.", "words_from": 2}]}
+    runner = FakeRunner()
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7), {ID_OO7: OO7_PACKET}, rows=rows),
+                             runner=runner)
+
+    def offer() -> str:
+        resp = _words(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes-conditions"},
+                                  headers=HX).text)
+        assert "needs a note" in resp  # control: the refusal rendered
+        return resp.split("data-reuse-offer")[1].split("</div>")[0] if "data-reuse-offer" in resp else ""
+
+    reused = offer()
+    assert "“Only on weekdays.”" in reused and 'name="words_from" value="2"' in reused
+    rows[ID_OO7][2] = {"t": 3, "role": "user", "origin": "clicked", "kind": "reply",
+                       "option": "opt-no", "text": None}
+    clicked = offer()
+    assert "“Only on weekdays.”" in clicked and 'name="words_from" value="2"' in clicked
+    rows[ID_OO7].append({"t": 4, "role": "user", "origin": "relayed", "kind": "reply",
+                         "option": None, "text": "Relayed by an agent."})
+    assert offer() == ""
+    assert runner.calls == []
+
+
+def test_pasted_agent_text_sent_by_a_key_is_called_the_agents_draft(tmp_path, monkeypatch):
+    """Gate r2 R2-N1: with no draft id, the armed panel learns whose words
+    the box holds from the verb's preview; text pasted from the agent
+    (`origin: draft-edited`) is "the agent's draft", typed text "your
+    words". Mutation R11: `whose_words` ignores a `draft-` origin -> red."""
+    origin = {"value": "draft-edited"}
+    monkeypatch.setattr(ledger, "answer_preview", lambda home, item_id, **kw: {
+        "origin": origin["value"], "recorded_as": None, "matched": None, "problem": None})
+    _no_answered(monkeypatch)
+    runner = FakeRunner()
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(CONFLICT)), runner=runner)
+
+    def armed_line() -> str:
+        panel = _words(client.post(f"/inbox/{ID_CONFLICT}/answer",
+                                   data={"text": "Both hold, as the agent put it.", "keyed": "1"},
+                                   headers=HX).text)
+        return panel.split("data-armed-answer>")[1].split("</p>")[0].strip()
+
+    assert armed_line().startswith("<p>Send the agent's draft? This settles it")
+    origin["value"] = "typed"
+    assert armed_line().startswith("<p>Send your words? This settles it")
+    assert runner.calls == []

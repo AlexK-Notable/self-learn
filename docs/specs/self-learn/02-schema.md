@@ -4959,7 +4959,7 @@ fields) so the page answers by its rules. *(Gate r1 F4, the
 orchestrator's ruling.)* `--words-from T` also takes the person's own
 typed reply that went with an option (their statement, cited again, never
 a second one), so after "Change my answer" the note they typed is not
-typed twice; agent and relayed rows stay refused (64). An approved change stays changeable until a
+typed twice; agent and relayed rows stay refused (64). *(Gate r2 R2-F1.)* On a redirected answer `--words-from` and `--draft` are refused (3, `MOVED_WORDS`) before the redirect: their row numbers and draft ids are the ask's, and the item that took it over numbers its own rows from 1. An approved change stays changeable until a
 session claims it: another option on the approved item is recorded, both
 readers (`attention._approval_track`, `conversation.approval_track`) then
 read the item as answered, and a later `claim` is refused (2, "change

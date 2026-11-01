@@ -394,6 +394,15 @@ ALREADY_APPROVED = (
     "«{label}» is already approved: it is being carried out as {approved}, so nothing was "
     "recorded and nothing was started again"
 )
+#: Walk 2 gate r2 R2-F1: a reused note (``--words-from``) or the agent's
+#: draft (``--draft``) offered on the old ask names a row of the ASK's
+#: transcript; the item that took it over numbers its own rows from 1, so
+#: the same number there is other words. Refused, never re-read there.
+MOVED_WORDS = (
+    "{asked} has moved on: it is now {moved}, and the note offered with this answer was sent on "
+    "{asked}, so it cannot go with an answer on {moved}; nothing was recorded. Answer {moved} "
+    "with a note written there"
+)
 
 
 def conflict_side(option: dict | None) -> str:
@@ -874,6 +883,11 @@ def answer(
             if asked is not None and asked.get("effect") == "approve":
                 raise AnswerError(ALREADY_APPROVED.format(label=asked.get("label"),
                                                           approved=successor["id"]), EXIT_REFUSED)
+            if words_from is not None or draft_id is not None:
+                # Gate r2 R2-F1: checked before the redirect, while the
+                # row number still means the ask's row.
+                raise AnswerError(MOVED_WORDS.format(asked=item_id, moved=successor["id"]),
+                                  EXIT_REFUSED)
             item = successor
         elif successor is not None:
             raise AnswerError(

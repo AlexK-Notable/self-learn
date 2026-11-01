@@ -235,3 +235,36 @@ def test_words_typed_with_an_option_are_reusable_without_a_second_statement(tmp_
     assert _choices(home)[-1]["statement"] == first.statement
     assert _choices(home)[-1]["text"] == "Not while I am at work."
     assert result.recorded_as == "as your choice of the offered option, with the words you sent before"
+
+
+# ------------------------------------------------------------ gate r2
+
+
+_OPTS_R2 = [{"id": "opt-yes", "label": "Yes, restart it", "effect": "approve"},
+            {"id": "opt-no", "label": "No, leave it", "effect": "decline"},
+            {"id": "opt-other", "label": "Something else", "effect": "other", "note": "required"}]
+
+
+def test_a_stale_reused_note_is_refused_never_read_in_the_approved_items_rows(tmp_path):
+    """Gate r2 R2-F1 (the gate's `words` case): the ask's T1 and the
+    approved item's T1 are different words. An old tab's "use these words"
+    (`--words-from 1` on the ask's id) is refused before the redirect, in
+    plain words, and records nothing; it never takes the approved item's
+    T1 as the note. Mutation: drop the refusal -> red (the choice lands on
+    the approved item with "Leave the .d folder alone.")."""
+    home = make_home(tmp_path)
+    _index(home, [_system_ask("q-restart-daemon", [], options=_OPTS_R2)])
+    ask = _item(home, "q-restart-daemon")
+    ask_t = answers.answer(home, ask["id"], text="Only on weekdays.").transcript_row
+    answers.answer(home, ask["id"], option="opt-yes", launch=False)
+    approved = _item(home, "q-restart-daemon", "approved.pending")
+    approved_t = answers.answer(home, approved["id"], text="Leave the .d folder alone.").transcript_row
+    assert ask_t == approved_t  # control: one number, two transcripts, two texts
+    assert [r["text"] for r in workspace.rows(home, approved["id"]) if r.get("t") == approved_t] == [
+        "Leave the .d folder alone."]
+    before = len(_choices(home))
+    with pytest.raises(answers.AnswerError) as stale:
+        answers.answer(home, ask["id"], option="opt-other", words_from=ask_t)
+    assert stale.value.exit_code == 3
+    assert f"the note offered with this answer was sent on {ask['id']}" in str(stale.value)
+    assert approved["id"] in str(stale.value) and len(_choices(home)) == before

@@ -664,6 +664,17 @@ section records what the surface is.
   offered again for a note-required option (by reference, citing their
   statement); the agent's draft sent with an option only with its draft
   id.
+  *(S-134, gate r2 fold.)* **R2-F1.** On a page whose question has
+  moved on, a reused note, the agent's draft and the words sent alone
+  (`words_from`, `draft_id`, `sent_t`) are the old question's: the
+  first two are refused ("the note offered with this answer, sent on
+  the old question, cannot go with it. Nothing was recorded."), the
+  last is dropped, so the note offer is the new item's own. **R2-F2.**
+  The note offer walks back from the newest answer row to the first
+  that holds words, past a plain click; a row that reused words stands
+  for the typed row it cites (offered by that row's number, one
+  statement). The first row with words decides, so an agent's relayed
+  words are never passed over for older ones.
 - **Being carried out** shows "Running in a terminal (started <time>)",
   never with a relaunch while it runs *(S-130, item 7)*: a new
   terminal (`attention run --json`; the login variant passes `--login`)
