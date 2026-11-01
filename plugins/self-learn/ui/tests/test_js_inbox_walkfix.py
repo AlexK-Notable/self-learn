@@ -122,6 +122,8 @@ def test_a_held_keys_auto_repeat_never_acts(page, server):
     assert _nothing_sent_for(server)
     page.locator("#ws-answer [data-armed-cancel]").click()
     page.wait_for_selector('#ws-answer [data-option-index="3"]', timeout=_WAIT_MS)
+    page.wait_for_function("() => !!document.querySelector('#ws-answer-form')['htmx-internal-data']",
+                           timeout=_WAIT_MS)
     page.click("h1")
     page.keyboard.press("3")  # control: a real press of 3 sends the decline
     _wait_for(lambda: bool(_answer_calls(server)))
@@ -133,15 +135,27 @@ def test_ctrl_enter_on_a_draft_carrying_an_approve_option_arms_it(page, server):
     """Gate r1 F2 (the gate's probe): "Use this draft" on a draft whose
     option approves, then Ctrl+Enter in the box: the page arms it and asks
     once more; nothing is sent until Confirm. A mouse click on Send arms
-    the same way (the person never clicked a button naming the approval).
-    Mutations: drop `from_draft` in inbox.js -> red (sent at once)."""
+    the same way (the person never clicked a button naming the approval),
+    in words that say sending the draft approves. Mutations: drop
+    `from_draft` in inbox.js -> red (the mouse Send sends at once); drop
+    the key mark on Ctrl+Enter -> red (the bar does not say a key was
+    pressed); both together (the gate's code) -> red."""
     _open(page, server, ID_OO7)
     page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] [data-use-draft]')
     _wait_for(lambda: page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions")
+    page.click("[data-send-reply]")
+    _armed_and_wired(page)
+    assert "Sending a draft never approves on its own" in page.inner_text("[data-armed-answer]")
+    assert _nothing_sent_for(server)
+    page.click("#ws-answer [data-armed-cancel]")
+    _wait_for(lambda: page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions")
+    page.wait_for_function("() => !!document.querySelector('#ws-answer-form')['htmx-internal-data']",
+                           timeout=_WAIT_MS)
     page.locator("#ws-reply-text").focus()
     page.keyboard.press("Control+Enter")
     _armed_and_wired(page)
     assert "Yes, with conditions" in page.inner_text("[data-armed-answer]")
+    assert "a key never approves on its own" in page.inner_text("[data-armed-answer]")
     assert _nothing_sent_for(server)
     page.locator("[data-confirm-armed]").click()
     _wait_for(lambda: bool(_answer_calls(server)))
@@ -177,6 +191,8 @@ def test_the_page_never_moves_focus_onto_an_approve_button(page, server):
         "() => document.activeElement.hasAttribute('data-armed-cancel')"))
     page.keyboard.press("Enter")  # on Cancel: backs out, approves nothing
     page.wait_for_selector('#ws-answer [data-option-index="1"]', timeout=_WAIT_MS)
+    page.wait_for_function("() => !!document.querySelector('#ws-answer-form')['htmx-internal-data']",
+                           timeout=_WAIT_MS)
     page.click("h1")
     page.keyboard.press("1")
     _armed_and_wired(page)
@@ -184,6 +200,8 @@ def test_the_page_never_moves_focus_onto_an_approve_button(page, server):
         "() => document.activeElement.hasAttribute('data-armed-cancel')"))
     page.keyboard.press("Space")
     page.wait_for_selector('#ws-answer [data-option-index="3"]', timeout=_WAIT_MS)
+    page.wait_for_function("() => !!document.querySelector('#ws-answer-form')['htmx-internal-data']",
+                           timeout=_WAIT_MS)
     page.click("h1")
     page.keyboard.press("3")
     page.wait_for_selector("#ws-answer [data-recorded]", timeout=_WAIT_MS)
