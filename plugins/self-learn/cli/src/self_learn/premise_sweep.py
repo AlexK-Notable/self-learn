@@ -70,7 +70,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from . import (
     attribution,
@@ -93,6 +93,7 @@ from .records import Record, RecordError
 
 __all__ = [
     "BROKEN_PROBE_SWEEPS",
+    "MOUNT_WAIT_DAYS",
     "CheckRow",
     "DoctorRow",
     "HISTORY_KEEP",
@@ -101,6 +102,7 @@ __all__ = [
     "STABLE_SWEEPS",
     "SWEEP_INTERVAL_SECS",
     "SweepResult",
+    "broken_tail",
     "check",
     "confirmed_intact_values",
     "confirmed_moves",
@@ -108,16 +110,20 @@ __all__ = [
     "default_cache_dir",
     "doctor_rows",
     "enabled",
+    "fenced_roots",
     "is_due",
     "judge_placement",
     "judge_probe",
     "observations_path",
+    "placement_ids",
+    "placement_reader",
     "read_history",
     "read_state",
     "render_check",
     "routed_lessons",
     "run",
     "state_path",
+    "waiting_for_mount",
 ]
 
 # ------------------------------------------------------------- vocabulary
@@ -136,6 +142,13 @@ STABLE_SWEEPS = 2
 #: is "broken" in doctor and selftest. Equal to :data:`HISTORY_KEEP`: the
 #: history cannot show a longer run.
 BROKEN_PROBE_SWEEPS = 3
+#: S-NEXT-probes-chain (02 §3a.10.5 (3)): a written probe `unavailable`
+#: only because its filesystem is not mounted (cause `mount-absent`) is
+#: waiting, not broken, for this many days from the first sweep that found
+#: the mount absent. After that it counts as broken again: a disk removed
+#: for good whose fstab line was kept has become a question about the
+#: lesson, not about the probe.
+MOUNT_WAIT_DAYS = 30
 
 CACHE_SUBDIR = "premises"
 OBSERVATIONS_FILENAME = "observations.jsonl"
@@ -190,6 +203,17 @@ def default_cache_dir(home: Path | str) -> Path:
     from .serve import cache_dir_readonly
 
     return cache_dir_readonly(Path(home))
+
+
+def fenced_roots(home: Path | str) -> tuple[str, ...]:
+    """S-NEXT-probes-chain: the directories no premise probe of this
+    ledger reads or stats -- the kept copies of model sessions,
+    ``<cache>/sessions/`` (the steward's ``Containment.read_denied``, by
+    the same resolver, without creating the cache). The steward's tool
+    honours the session's own fence; the sweep and the ``premises`` sheet
+    verb's apply-time probes honour this, so a premise the steward writes
+    cannot read another run's session on a later night either."""
+    return (str(default_cache_dir(home) / "sessions"),)
 
 
 def observations_path(cache_dir: Path) -> Path:
@@ -366,6 +390,13 @@ def _row(
         "claim": obs.claim,
         "reason": obs.reason,
         "observed_at": obs.observed_at,
+        # S-NEXT-probes-chain: why it was unavailable, when that matters to
+        # the broken-probe count (`mount-absent` is waiting, not broken), the
+        # mount point it names, and since when that mount has been absent
+        # (set by `run` from the previous row, so it outlives the history).
+        "cause": obs.cause,
+        "mount": obs.mount,
+        "absent_since": None,
         "failing": failing,
         "detail": detail,
         "group": group,
@@ -380,7 +411,70 @@ def _obs(row: Mapping) -> premises.Observation:
         claim=str(row.get("claim") or premises.CLAIM_UNJUDGED),
         reason=str(row.get("reason") or ""),
         observed_at=str(row.get("observed_at") or row.get("sweep")),
+        cause=str(row.get("cause") or ""),
+        mount=str(row.get("mount") or ""),
     )
+
+
+def _absent_since(prev: Mapping | None, row: Mapping) -> str:
+    """When the mount *row* finds absent was first found absent: carried
+    from the previous row of the same premise while that row was absent on
+    the same mount under the same question, else this row's own time."""
+    if (
+        prev is not None
+        and prev.get("cause") == premises.CAUSE_MOUNT_ABSENT
+        and prev.get("mount") == row.get("mount")
+        and prev.get("psha") == row.get("psha")
+    ):
+        carried = prev.get("absent_since") or prev.get("observed_at") or prev.get("sweep")
+        if isinstance(carried, str) and carried:
+            return carried
+    return str(row.get("observed_at") or row.get("sweep"))
+
+
+def _waiting(row: Mapping, ref_epoch: float | None) -> bool:
+    """Is *row* a `mount-absent` row still inside :data:`MOUNT_WAIT_DAYS`,
+    judged at *ref_epoch* (the newest row's time)? An age that cannot be
+    told is not waiting: it counts, so it is never hidden for good."""
+    if row.get("cause") != premises.CAUSE_MOUNT_ABSENT:
+        return False
+    since = _epoch(row.get("absent_since") or row.get("observed_at") or row.get("sweep"))
+    if since is None or ref_epoch is None:
+        return False
+    return ref_epoch - since < MOUNT_WAIT_DAYS * 86400
+
+
+def _question_tail(premise: Mapping, rows: Iterable[Mapping]) -> list[dict]:
+    sig = _premise_sig(premise)
+    return [dict(r) for r in rows if r.get("psha") == sig][-BROKEN_PROBE_SWEEPS:]
+
+
+def broken_tail(premise: Mapping, rows: Iterable[Mapping]) -> list[dict] | None:
+    """THE broken-probe test (02 §3a.10.5 (3)), shared by ``doctor``, the
+    steward's briefs (``steward_inputs.broken_probes``) and the overseer's
+    facts: the last :data:`BROKEN_PROBE_SWEEPS` rows of *premise* under
+    its current question, when every one of them is `unavailable` and none
+    is merely waiting for a filesystem (a `mount-absent` row younger than
+    :data:`MOUNT_WAIT_DAYS`, measured to the newest row); else ``None``."""
+    tail = _question_tail(premise, rows)
+    if len(tail) < BROKEN_PROBE_SWEEPS:
+        return None
+    ref = _epoch(tail[-1].get("observed_at") or tail[-1].get("sweep"))
+    if all(r.get("state") == premises.OBS_UNAVAILABLE and not _waiting(r, ref) for r in tail):
+        return tail
+    return None
+
+
+def waiting_for_mount(premise: Mapping, rows: Iterable[Mapping]) -> dict | None:
+    """The newest row of *premise* under its current question when it is a
+    `mount-absent` row still waiting (see :func:`broken_tail`), else
+    ``None``: what doctor's `waiting-for-filesystem` row counts."""
+    tail = _question_tail(premise, rows)
+    if not tail:
+        return None
+    last = tail[-1]
+    ref = _epoch(last.get("observed_at") or last.get("sweep"))
+    return last if _waiting(last, ref) else None
 
 
 def _failed_probe_rows(record: Record, sweep: str, why: str) -> list[dict]:
@@ -687,10 +781,7 @@ def _unavailable_placement_rows(
     nothing could be measured. ``unavailable`` never counts either way."""
     out: list[dict] = []
     for _bucket, rec in placed:
-        destination = (rec.routing or {}).get("destination")
-        if destination not in _PLACED_DESTINATIONS:
-            continue
-        ids = [REACH, WRITABLE] + ([INTACT] if destination in _REGION_DESTINATIONS else [])
+        ids = placement_ids((rec.routing or {}).get("destination"))
         out.extend(_fact_row(_Fact(rec.id, pid, "unavailable", detail=reason), sweep) for pid in ids)
     return out
 
@@ -941,6 +1032,117 @@ def confirmed_placement_moves(
     return out
 
 
+#: The placement reader's "stale" line: a reading older than this many
+#: hours is said to be old (the sweep runs daily; S-NEXT-probes-chain).
+PLACEMENT_STALE_HOURS = 48
+
+
+def placement_ids(destination: object) -> tuple[str, ...]:
+    """The placement premises a lesson placed at *destination* has (02
+    §3a.10.3): all three for ``claude-md``/``skill-md``, ``@reach`` and
+    ``@writable`` for ``new-skill``/``hook``, none otherwise."""
+    if destination not in _PLACED_DESTINATIONS:
+        return ()
+    return (REACH, WRITABLE) + ((INTACT,) if destination in _REGION_DESTINATIONS else ())
+
+
+def _failing_run(rows: list[dict]) -> int:
+    """How many of the newest rows fail with the newest row's value."""
+    latest = rows[-1]
+    count = 0
+    for row in reversed(rows):
+        if row.get("failing") and row.get("value_sha") == latest.get("value_sha"):
+            count += 1
+        else:
+            break
+    return count
+
+
+def _reading_words(row: Mapping) -> str:
+    shown = _clip(str(row.get("shown") or ""), 80)
+    detail = _clip(str(row.get("detail") or row.get("reason") or ""), 200)
+    if shown and detail and detail != shown:
+        return f"{shown}: {detail}"
+    return shown or detail or "no detail"
+
+
+def _placement_reading(
+    pid: str, rows: list[dict], routed_at: object, last_sweep: object, now_epoch: float
+) -> tuple[str, str]:
+    """``(verdict, detail)`` for one placement premise from its cached rows:
+    the same :func:`judge_placement` the steward's input is built with."""
+    if not rows:
+        when = str(last_sweep) if last_sweep else "never"
+        return premises.VERDICT_UNAVAILABLE, f"no sweep has measured it yet; last sweep {when}"
+    routed = chrono.to_dt(routed_at)
+    if routed is not None:
+        current = [r for r in rows if (chrono.to_dt(r.get("observed_at") or r.get("sweep")) or routed) >= routed]
+        if not current:
+            last_at = rows[-1].get("observed_at") or rows[-1].get("sweep")
+            return premises.VERDICT_UNAVAILABLE, (
+                f"placed again ({routed_at}) after the last sweep that measured it ({last_at}); "
+                "the next sweep measures the new placement"
+            )
+        rows = current
+    judged = judge_placement(rows)
+    latest = judged.row or rows[-1]
+    at = str(latest.get("observed_at") or latest.get("sweep"))
+    detail = f"{_reading_words(latest)}; as of the sweep at {at}"
+    if judged.verdict == premises.VERDICT_UNAVAILABLE:
+        verdict = premises.VERDICT_UNAVAILABLE
+        detail = f"could not be measured: {detail}"
+    elif judged.verdict == premises.VERDICT_MOVED:
+        verdict = premises.VERDICT_MOVED
+        if judged.confirmed:
+            detail += f"; confirmed: failing on {_failing_run(rows)} sweeps running since {judged.since}"
+        else:
+            detail += "; first sight: the next sweep confirms it"
+    else:
+        verdict = premises.VERDICT_HOLDS
+    row_epoch = _epoch(at)
+    if row_epoch is not None and now_epoch - row_epoch > PLACEMENT_STALE_HOURS * 3600:
+        detail += f"; stale: the sweep has not measured it since {at}"
+    return verdict, detail
+
+
+def placement_reader(
+    cache_dir: Path | None = None, *, now: Callable[[], float] | None = None
+) -> Callable[[Path, Record], list]:
+    """S-NEXT-probes-chain (02 §3a.10.2, the ``premise_probe`` paragraph):
+    the steward tool's reader of a lesson's placement premises, as the last
+    daily sweep judged them. It reads the sweep's cache only
+    (*cache_dir*, else the ledger's :func:`default_cache_dir`): never a
+    probe, never a derivation (:func:`_placement_rows` over the whole
+    ledger took 35 s on the live one, more than the tool's bound allows),
+    never a write. Each reading carries the sweep's time; a lesson placed
+    again after its last row reads ``unavailable`` (an old placement's
+    failure is never shown as current), and a reading older than
+    :data:`PLACEMENT_STALE_HOURS` says so. Returns a
+    ``premise_tool.PlacementReader``."""
+    from .premise_tool import PlacementReading  # late: keeps the sweep free of the seam
+
+    def read(home: Path, record: Record) -> list:
+        cache = cache_dir if cache_dir is not None else default_cache_dir(Path(home))
+        routing = record.routing or {}
+        ids = placement_ids(routing.get("destination"))
+        if not ids:
+            return []
+        history = read_history(cache)
+        state = read_state(cache)
+        last_sweep = state.get("last_finished_at") or state.get("last_attempt_at")
+        now_epoch = time.time() if now is None else float(now())
+        out = []
+        for pid in ids:
+            verdict, detail = _placement_reading(
+                pid, list(history.get((record.id, pid), [])), routing.get("routed_at"),
+                last_sweep, now_epoch,
+            )
+            out.append(PlacementReading(pid, verdict, detail))
+        return out
+
+    return read
+
+
 def _same_path(a: object, b: object) -> bool:
     try:
         return Path(str(a)).resolve() == Path(str(b)).resolve()
@@ -1103,10 +1305,12 @@ def run(
         result.status = "idle"
     if unparseable:
         result.errors.append(f"{unparseable} record file(s) did not parse and were skipped")
+    base_env = env if env is not None else premises.ProbeEnv()
     probe_env = dataclasses.replace(
-        env if env is not None else premises.ProbeEnv(),
+        base_env,
         ledger_home=(env.ledger_home if env is not None and env.ledger_home else home),
         now=lambda: sweep_at,
+        denied_roots=tuple(dict.fromkeys((*base_env.denied_roots, *fenced_roots(home)))),
     )
 
     rows: list[dict] = []
@@ -1152,7 +1356,10 @@ def run(
     }
     for row in rows:
         key = (str(row["record"]), str(row["premise"]))
-        fresh[key] = [*fresh.get(key, []), row][-HISTORY_KEEP:]
+        prior = fresh.get(key, [])
+        if row.get("cause") == premises.CAUSE_MOUNT_ABSENT:
+            row["absent_since"] = _absent_since(prior[-1] if prior else None, row)
+        fresh[key] = [*prior, row][-HISTORY_KEEP:]
     _store_history(cache_dir, fresh)
 
     result.moved = len(confirmed_moves(home, cache_dir, placed=placed, history=fresh))
@@ -1380,21 +1587,33 @@ def doctor_rows(
     rows: list[DoctorRow] = []
 
     broken: list[str] = []
+    waiting: dict[str, list[str]] = {}
     for _bucket, record in placed:
         for pid, premise in _premise_by_id(record).items():
             if premise.get("probe") is None:
                 continue
-            tail = [r for r in history.get((record.id, pid), []) if r.get("psha") == _premise_sig(premise)]
-            tail = tail[-BROKEN_PROBE_SWEEPS:]
-            if len(tail) == BROKEN_PROBE_SWEEPS and all(
-                r.get("state") == premises.OBS_UNAVAILABLE for r in tail
-            ):
+            prior = history.get((record.id, pid), [])
+            tail = broken_tail(premise, prior)
+            if tail is not None:
                 broken.append(f"{record.id}/{pid} ({_clip(str(tail[-1].get('reason') or ''), 60)})")
+                continue
+            held = waiting_for_mount(premise, prior)
+            if held is not None:
+                since = str(held.get("absent_since") or held.get("observed_at") or "")
+                waiting.setdefault(str(held.get("mount") or "?"), []).append(since)
     if broken:
         rows.append(
             DoctorRow("WARN", "broken-probes",
                       f"{len(broken)} probe(s) unavailable on {BROKEN_PROBE_SWEEPS} sweeps in a row: "
                       + "; ".join(broken))
+        )
+    for mount in sorted(waiting):
+        sinces = sorted(s for s in waiting[mount] if s)
+        first = sinces[0] if sinces else "an unknown time"
+        rows.append(
+            DoctorRow("INFO", "waiting-for-filesystem",
+                      f"{mount} not mounted ({len(waiting[mount])} probe(s), since {first}); "
+                      f"they count as broken after {MOUNT_WAIT_DAYS} days")
         )
 
     failing: list[str] = []

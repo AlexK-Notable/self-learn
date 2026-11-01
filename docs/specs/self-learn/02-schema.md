@@ -3671,7 +3671,14 @@ Every probe obeys these rules, enforced by the runner, not by the writer:
 3. **Credential paths are refused** when the premise is written: a basename of
    `.env` or `token.env`, `.credentials.json`, `hosts.yml`, an `id_*` key, and
    anything under `~/.ssh`. A path is absolute or starts with `~/`; a path
-   with a `..` part is refused.
+   with a `..` part is refused. *(S-NEXT-probes-chain:)* **No probe reads
+   the kept copies of model sessions** (`<cache>/sessions/`, the steward's
+   own read fence, `Containment.read_denied`): the runner refuses a path
+   whose resolved form lies there, a link into it included, as
+   `unavailable` ("the path lies in a directory this caller may not
+   read"), in the steward's `premise_probe` tool, the nightly sweep and
+   the `premises` verb's apply-time probes alike. Otherwise a `file-match`
+   would answer yes or no about another run's session.
 4. **`unavailable` is its own answer.** A probe that cannot read its target
    (file gone, unit unknown, `systemctl`/`pacman`/`git` missing, timeout,
    parse error) yields `unavailable`, which is never read as "unchanged" and
@@ -3679,13 +3686,43 @@ Every probe obeys these rules, enforced by the runner, not by the writer:
    whole target and the absence is what it observed: a `path` that is
    `missing`, a key not in a file that parsed, a package not installed, and
    a `which` name not on the PATH.
+   *(S-NEXT-probes-chain:)* **`missing` is a value only when the path's
+   filesystem is mounted.** `lstat` cannot tell a deleted path from one on
+   a disk that is not there (this host mounts two disks `nofail`, so a
+   machine can run for days without one), and two daily sweeps would
+   confirm the second as a move. So when a target is not found, the runner
+   reads the mount table (`/proc/self/mountinfo`; the mount points
+   `/etc/fstab` and the `.mount`/`.automount` units in
+   `/etc/systemd/system` declare; three plain reads, once per sweep) and
+   takes the longest mount point covering the target that is declared or a
+   removable-media root (`/run/media/<user>/<label>`, `/media/<label>`;
+   `/` never counts). When that filesystem is not mounted, or only an
+   `autofs` trap sits there (an automount that did not mount), the answer
+   is `unavailable` with cause `mount-absent` ("the filesystem mounted at
+   M is not mounted"); when the mount table cannot be read, `unavailable`
+   with cause `mount-unknown`. Otherwise the answer is unchanged: with the
+   filesystem mounted, a gone path is still `missing` and moves as before,
+   so a real deletion is never hidden. The same test sets the reason and
+   cause of a content kind's "the file does not exist", of a `git-file`
+   repository that is not there, and of a `which` name not found while a
+   PATH directory lies on an absent mount (`unavailable`, not
+   `not-found`). The cause is kept on the sweep's observation row
+   (`cause`, `mount`, and `absent_since`, carried from row to row while
+   the same mount stays absent).
 5. Every stored value passes the secret scan or is stored as a hash only.
 
 The steward still has no Bash tool. It runs probes through a read-only MCP
 tool, `premise_probe`, on its session (`SessionSpec.mcp_toolset`, the way the
 miner's tools are given): the same catalog, the same runner, the same rules.
 It uses it to check a probe it is writing and to look at a premise while it
-decides.
+decides. *(S-NEXT-probes-chain:)* A lesson's placement premises (`@reach`,
+`@writable`, `@intact`, 3a.10.3) are shown as the last daily sweep judged
+them, with its time; the tool never derives them itself (the derivation
+walks the whole ledger, 35 s on the live one, past the tool's bound). Each
+reading is `holds`, `moved` (confirmed, or first sight that the next sweep
+confirms) or `unavailable`; a lesson placed again after its last row reads
+`unavailable` until the next sweep, so an old placement's failure is never
+shown as current, and a reading older than 48 hours says it is stale.
 
 **Behaviour is written down, not probed.** "oo7-daemon can outlive a bus
 restart" cannot be checked without restarting the bus, which a probe must
@@ -3839,7 +3876,14 @@ name is reserved for it.
    for one written probe show as a broken probe in `doctor` and `--selftest`,
    and in that lesson's brief the next time it comes up, where the steward
    fixes or drops the probe. Placement premises do not count toward it
-   (3a.10.3).
+   (3a.10.3). *(S-NEXT-probes-chain:)* A `mount-absent` row (3a.10.2 rule
+   4) is **waiting, not broken**, for 30 days (`MOUNT_WAIT_DAYS`) from the
+   first sweep that found that mount absent, measured to the newest row;
+   after that it counts again, so a disk removed for good whose fstab line
+   was kept becomes a question about the lesson. One predicate,
+   `premise_sweep.broken_tail`, decides "broken" for `doctor`, the
+   steward's briefs (`steward_inputs.broken_probes`) and the overseer's
+   facts alike.
 4. **`on_change: refresh`** premises (a version pin, the hash of a file where
    any edit is uninteresting) are re-baselined by code, with no model call:
    the sweep writes the new baseline under the commit lock with the subject
@@ -3879,6 +3923,9 @@ whole file's hash; never `host.<path>.head`, which moves on every commit.
   sweeps in a row (a WARN naming each), placement premises failing, how many
   placement premises are `unavailable` (a count, not a WARN, 3a.10.3), how many
   placed lessons have no `premises` field yet, and when the sweep last ran.
+  *(S-NEXT-probes-chain:)* Probes waiting for an unmounted filesystem
+  (3a.10.5 (3)) are an INFO per mount point, `waiting-for-filesystem: <M>
+  not mounted (N probe(s), since <first>)`, never a WARN while they wait.
 
 #### 3a.10.7 The steward's part
 

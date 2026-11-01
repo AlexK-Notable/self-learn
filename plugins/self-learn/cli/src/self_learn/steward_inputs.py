@@ -801,12 +801,15 @@ def broken_probes(
     """``record id -> [{premise, probe, reason}, ...]``: the written probes
     the sweep saw `unavailable` on its last
     :data:`premise_sweep.BROKEN_PROBE_SWEEPS` sweeps in a row, under the
-    premise's current question (02 §3a.10.5 (3); the same rule as
-    :func:`premise_sweep.doctor_rows`). Every brief of the lesson shows
-    them, whatever brought it to the steward, so the steward can fix or drop
-    the probe with ``premises set``. Never an input by itself. Placement
-    premises are never "broken" (02 §3a.10.3)."""
-    from . import premise_sweep, premises
+    premise's current question (02 §3a.10.5 (3); one predicate,
+    :func:`premise_sweep.broken_tail`, shared with
+    :func:`premise_sweep.doctor_rows` and the overseer's facts, so a probe
+    only waiting for an unmounted filesystem is not broken here either).
+    Every brief of the lesson shows them, whatever brought it to the
+    steward, so the steward can fix or drop the probe with ``premises
+    set``. Never an input by itself. Placement premises are never "broken"
+    (02 §3a.10.3)."""
+    from . import premise_sweep
 
     placed = placed if placed is not None else placed_with_premises(home)
     if not placed:
@@ -819,12 +822,8 @@ def broken_probes(
             if premise.get("probe") is None:
                 continue
             pid = str(premise.get("id"))
-            sig = premise_sweep._premise_sig(premise)
-            tail = [r for r in history.get((record.id, pid), []) if r.get("psha") == sig]
-            tail = tail[-premise_sweep.BROKEN_PROBE_SWEEPS:]
-            if len(tail) == premise_sweep.BROKEN_PROBE_SWEEPS and all(
-                r.get("state") == premises.OBS_UNAVAILABLE for r in tail
-            ):
+            tail = premise_sweep.broken_tail(premise, history.get((record.id, pid), []))
+            if tail is not None:
                 out.setdefault(record.id, []).append({
                     "premise": pid,
                     "probe": probe_words(premise.get("probe")),

@@ -387,15 +387,15 @@ def premise_facts(
         broken: list[dict[str, str]] = []
         failing: list[str] = []
         unmeasurable = 0
-        need = premise_sweep.BROKEN_PROBE_SWEEPS
         for _bucket, rec in placed:
             for premise in rec.premises or []:
                 if premise.get("probe") is None:
                     continue
                 pid = str(premise.get("id"))
-                sig = premise_sweep._premise_sig(premise)  # noqa: SLF001 -- the sweep's own key
-                tail = [r for r in history.get((rec.id, pid), []) if r.get("psha") == sig][-need:]
-                if len(tail) == need and all(r.get("state") == premises.OBS_UNAVAILABLE for r in tail):
+                # The one shared predicate (S-NEXT-probes-chain): a probe only
+                # waiting for an unmounted filesystem is not broken.
+                tail = premise_sweep.broken_tail(premise, history.get((rec.id, pid), []))
+                if tail is not None:
                     broken.append(
                         {"lesson": rec.id, "premise": pid,
                          "reason": _staged_reason(tail[-1].get("reason"))}
