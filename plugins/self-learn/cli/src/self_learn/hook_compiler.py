@@ -319,7 +319,7 @@ function lex(    c, d, k) {
             continue
         }
         if (!INW) {
-            if (NEXTMSG && OK && (c == "\047" || c == "\"") && trymsg()) continue
+            if (NEXTMSG && (c == "\047" || c == "\"") && trymsg()) continue
             if (WN == 0 && (c == "c" || c == "t") && a2()) continue
         }
         startword()

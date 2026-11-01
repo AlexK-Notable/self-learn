@@ -421,6 +421,21 @@ CORPUS: dict[str, tuple[str, str]] = {
     'A2 near-miss: the file is sourced': ('cat > f.sh <<\'E\'\ngit() { bash -c "$4"; }\nE\nsource f.sh; git commit -m \'pkill -f foo\'', 'warn'),
     'A2 near-miss: inside bash -c': ('bash -c "cat > f <<\'E\'\npkill -f foo\nE"', 'warn'),
     'A2: a real command after the body': ("cat > f.md <<'E'\nx\nE\npkill -f foo", 'warn'),
+    # --- allowlist controls (mutation-driven)
+    'A1: newline-separated segments': ("git add x\ngit commit -m 'pkill -f foo'", 'silent'),
+    'A1: a line continuation between git and commit': ("git \\\n  commit -m 'pkill -f foo'", 'silent'),
+    'A1: &> before -m': ("git commit &>/dev/null -m 'pkill -f foo'", 'silent'),
+    'A1: 2>&1 before -m': ("git commit 2>&1 -m 'pkill -f foo'", 'silent'),
+    'A1: a pipe in a later segment': ("git commit -m 'pkill -f foo'; ls | wc -l", 'silent'),
+    'A1 near-miss: gh with a quoted noun': ("gh 'pr' create -t 'pkill -f foo'", 'warn'),
+    'A1 near-miss: the word after the message': ("git commit -m x 'pkill -f foo'", 'warn'),
+    'A1 near-miss: a piece glued after the message': ("git commit -m 'pkill -f foo''a'", 'warn'),
+    'A1 near-miss: a word glued after a double quote': ('git commit -m "pkill -f foo"x', 'warn'),
+    'idiom near-miss at -m: more text inside': ('git commit -m "$(cat <<\'E\'\npkill -f foo\nE\necho y)"', 'warn'),
+    'idiom near-miss at -m: a mismatched delimiter quote': ('git commit -m "$(cat <<\'E"\npkill -f foo\nE\n)"', 'warn'),
+    'idiom near-miss at -m: text after the delimiter word': ('git commit -m "$(cat <<\'E\' >&2\npkill -f foo\nE\n)"', 'warn'),
+    'idiom near-miss at -m: tac, not cat': ('git commit -m "$(tac <<\'E\'\npkill -f foo\nE\n)"', 'warn'),
+    'A2 near-miss: two heredocs on the A2 line': ("cat <<'X' | sh; cat > f.md <<'E'\npkill -f foo\nX\ny\nE", 'warn'),
 }
 
 
@@ -502,6 +517,10 @@ def _viewed(command: str) -> str:
     # parts the scan follows, kept as written around a hidden span
     ("git commit -m 'x' 2>&1 >/dev/null &>log", "git commit -m '' 2>&1 >/dev/null &>log"),
     ("echo \"$HOME\" a\\ b # c 'd'\ngit commit -m 'x'", "echo \"$HOME\" a\\ b # c 'd'\ngit commit -m ''"),
+    ("ls # don't\ngit commit -m 'x'", "ls # don't\ngit commit -m ''"),
+    ("echo it\\'s; git commit -m 'x'", "echo it\\'s; git commit -m ''"),
+    ("echo \"`ls`\"; git commit -m 'x'", "echo \"`ls`\"; git commit -m 'x'"),
+    ("echo \"$(ls)\"; git commit -m 'x'", "echo \"$(ls)\"; git commit -m 'x'"),
 ])
 def test_the_view_hides_only_what_it_understands(command, view):
     assert _viewed(command) == view
