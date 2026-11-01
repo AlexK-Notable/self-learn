@@ -168,9 +168,19 @@ echo '[]'
 exit 0
 """
 
+# `--version` is the launcher's can-it-start probe (2026-11-01); it is not
+# a launch, so it is answered without logging.
 _LOGGING_LAUNCH_TMPL = """
+[[ "$1" == "--version" ]] && exit 0
 echo "$*" >> "{log}"
 exit 0
+"""
+
+# A browser on PATH that cannot start: every run fails, as a binary
+# missing a shared library does (exit 127).
+_BROKEN_BROWSER_TMPL = """
+echo "$*" >> "{log}"
+exit 127
 """
 
 # Y-14 readiness-wait fakes: a systemctl that reports a snapshot state
@@ -750,6 +760,32 @@ def test_opener_still_works_without_timeout_on_path(tmp_path: Path) -> None:
     hyprctl_content = hyprctl_log.read_text(encoding="utf-8")
     assert "clients -j" in hyprctl_content
     assert _wait_for_nonempty(chromium_log), "the launch must still happen"
+
+
+def test_a_browser_that_cannot_start_is_skipped(tmp_path: Path) -> None:
+    """2026-11-01: `chromium` on PATH but unable to start (a missing shared
+    library) took every tray click, and nothing opened. The launcher probes
+    `--version` and takes the next browser. Mutation: drop the probe -> the
+    broken chromium is launched and google-chrome-stable never is."""
+    chromium_log = tmp_path / "chromium.log"
+    chrome_log = tmp_path / "chrome.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_HYPRCTL_BODY_TMPL.format(log=tmp_path / "hyprctl.log", clients_json="[]"),
+        chromium=_BROKEN_BROWSER_TMPL.format(log=chromium_log),
+        google_chrome_stable=_LOGGING_LAUNCH_TMPL.format(log=chrome_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    chrome_content = _wait_for_nonempty(chrome_log)
+    assert "--app=http://127.0.0.1:7357/" in chrome_content
+    assert "--class=self-learn-ui" in chrome_content
+    assert chromium_log.read_text(encoding="utf-8").splitlines() == ["--version"]
 
 
 def test_window_present_by_title_focuses_when_class_is_url_derived(

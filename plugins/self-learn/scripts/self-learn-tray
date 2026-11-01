@@ -35,7 +35,11 @@ TIMED_OUT = 124  # timeout(1)'s exit status when the command ran out of time
 ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "assets", "tray")
 STATES = ("idle", "new", "needs-you", "broken")
 STATUS = {"idle": "Passive", "new": "Active", "needs-you": "NeedsAttention", "broken": "NeedsAttention"}
-ACTIVATE_ARGV = ["systemd-run", "--user", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
+# `--scope`, not a transient service: the launcher backgrounds the browser
+# and exits, and a service's exit kills everything left in its cgroup, so a
+# freshly started browser died with it (2026-11-01). A scope lives on while
+# the browser runs, outside the tray's own cgroup.
+ACTIVATE_ARGV = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
 SECONDARY_ARGV = ["self-learn", "attention", "seen", "--all-decided"]
 BROKEN_TITLE = "self-learn: could not check what needs you"
 WATCH_EVENTS = {
