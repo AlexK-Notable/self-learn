@@ -879,3 +879,17 @@ def test_the_apps_idle_monitor_waits_for_an_ask_turn(tmp_path, monkeypatch):
         ask.release(ID_OO7)
         client.portal.call(ask.wait, ID_OO7)
         assert ask_leg() is False
+
+
+def test_a_decision_self_learn_noticed_says_so_in_words(tmp_path, monkeypatch):
+    """Integration: attention-core writes `decided.by: code` for what
+    self-learn noticed itself (a plain registration); the page says so in
+    words instead of "By the code". Mutation: render the raw value -> red."""
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(HOOK), {ID_HOOK: HOOK_PACKET}))
+    page = client.get(f"/inbox/{ID_HOOK}").text
+    assert "By the overseer" in page  # positive control: the known actor in words
+    noticed = {**HOOK_PACKET, "decided": {**HOOK_PACKET["decided"], "by": "code"}}
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(HOOK), {ID_HOOK: noticed}))
+    page = client.get(f"/inbox/{ID_HOOK}").text
+    assert "By self-learn itself (it noticed this; no model decided it)" in page
+    assert "By the code" not in page
