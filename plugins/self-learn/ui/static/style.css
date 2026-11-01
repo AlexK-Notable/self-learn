@@ -2598,3 +2598,18 @@ h1.resolved-title {
   color: inherit;
   margin: 0;
 }
+
+/* The keys footer (base.html): an entry stays on one line where it fits,
+   but a long one (the inbox's "Send the box you are typing in …") may wrap
+   on a narrow screen instead of pushing the page sideways (390 px). */
+@media (max-width: 720px) {
+  .keymap-footer {
+    padding: 0.6rem 1rem;
+  }
+
+  .keymap-footer-entry {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+}
