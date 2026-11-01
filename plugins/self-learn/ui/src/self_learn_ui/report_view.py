@@ -99,7 +99,7 @@ def _token(words: str, original: str, kind: str, seen: set[str]) -> str:
 
 
 def _fold_text(text: str, seen: set[str]) -> str:
-    """One escaped text node with its machine text replaced by placeholders."""
+    """One escaped text node with placeholders standing in for its machine text."""
     chunks: list[tuple[bool, str]] = []
     cursor = 0
     for start, end in _json_spans(text):

@@ -98,13 +98,15 @@ DISMISS_WORDS: dict[str, str] = {
 }
 
 #: What a bucket's lesson counts are called (``report --json`` ``buckets[].counts``
-#: keys are lesson statuses). Unknown statuses show as recorded.
+#: keys are lesson statuses, ``records.STATUSES``). Unknown statuses show as
+#: recorded. ``superseded`` counts both a lesson a rewrite took the place of and
+#: one retired because something else covers it (``records.is_retirement``), so
+#: its words name both; the one-lesson phrases are ``records.supersession_display``'s.
 STATUS_WORDS: dict[str, str] = {
     "pending": "waiting for a decision",
     "deferred": "put off",
     "routed": "in use",
-    "superseded": "replaced by a better rule",
-    "graduated": "retired",
+    "superseded": "replaced or retired",
     "rejected": "turned down",
 }
 

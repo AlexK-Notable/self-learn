@@ -653,7 +653,7 @@ class TestHealthPage:
         assert '<td data-label="State">measured (flagged)</td>' in budget
         assert ">ok<" not in budget and ">absent<" not in budget
         places = text.split('aria-label="lessons by place"', 1)[1].split("</details>", 1)[0]
-        assert "3 in use, 1 replaced by a better rule" in places and "herdr" not in places  # empty places are not listed
+        assert "3 in use, 1 replaced or retired" in places and "herdr" not in places  # empty places are not listed
         assert 'data-label="Lessons"' in places  # stacked on a phone, like the rules tables
         assert "By kind: 107 instructions files, 42 skills, 8 warning hooks." in text  # plurals (gate r2 n-6)
         assert "13 reference files are tracked. Reads of them are not being counted yet: the counting script is not installed." in text
