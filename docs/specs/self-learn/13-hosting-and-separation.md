@@ -421,7 +421,14 @@ revert). Doc 13 promotes that to the general rule:
    commits or pushes there, which is the deployment the user described.
    Each registration is listed in the weekly report under "Decided in the
    user's stead" with `self-learn host remove <path> --project`, the
-   command that undoes it. The S-103 typed-yes path stays for the user's own
+   command that undoes it, and what that command needs once lessons are
+   routed there (move each with `rehome`, or `--gate-only`). **The undo
+   stands** (fix round 1): a path a `host remove` took out of the registry,
+   by anyone but the overseer itself, is never registered by self-learn
+   again (`hosts.registration_problem` reads the ledger's history of
+   `hosts.yaml`; `projects.yaml` shows it `removed`). The policy's own
+   switches since the last run are listed in the same section with their
+   undo, and its commits (`By: policy`) are a job's, never a hand step. The S-103 typed-yes path stays for the user's own
    answers (a git-mode registration, a mode switch).
 
    **What replaces git for a plain host, and what does not.** Item 2's

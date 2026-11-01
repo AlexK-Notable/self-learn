@@ -992,7 +992,9 @@ commit of the last seven days that no job made. A commit is a job's when its sub
 begins `self-learn: steward manifest|telemetry flush|case |worker |mine |overseer`
 (the runners' own), `capture |statement add|user-model ` (new knowledge, not upkeep)
 or `premises refresh ` (reported on the row above), or when it carries a `Case:`
-trailer or `By: steward|overseer|analyst`; everything else is a hand step, whoever's
+trailer or a job's `By:` (any stamped actor but `human` and `agent`: `steward`,
+`overseer`, `analyst`, `miner`, `worker`, `sweep`, `serve`, `policy`; S-NEXT-hosts fix
+round 1, read from `attribution.ACTORS`); everything else is a hand step, whoever's
 shell ran it, including a subject no list anticipated. Each step is `{commit, at,
 subject, by, note}`: `by` is `human` or `agent` from a `By:` trailer, `none` when the
 commit has no trailer (the commit cannot say whether a person or an agent ran it); the
@@ -1039,7 +1041,8 @@ applied and again, idempotently, on a resume (13 §7.5). A
 
 *(Added 2026-10-31, S-NEXT-hosts.)* **Phase B's optional `hosts.yaml`: plain
 registrations the overseer makes itself.** Each `projects.yaml` row also carries
-`registered`: `git` or `plain` (its project registration's mode) or `no`. Phase B MAY
+`registered`: `git` or `plain` (its project registration's mode), `removed` (a `host
+remove` that was not the overseer's took it out; that undo stands) or `no`. Phase B MAY
 write `hosts.yaml`, `{registrations: [{path, case, why}]}`, naming project directories
 to register as PLAIN canon hosts (decision 5; 13 §4 item 5). It is not a required
 output file. The runner keeps an entry whose `path` is absolute, whose `case` is a
@@ -1052,15 +1055,24 @@ mode stays the user's); every other failure drops that entry, named by ordinal i
 notices and before any sheet, each is registered through
 `hosts.register_plain_project` unless `hosts.registration_problem` names why not (not
 an existing directory strictly inside the user's home; the ledger or self-learn's
-cache, inside either or above either; already registered in either registration);
+cache, inside either or above either; already registered in either registration;
+taken out of the registry by a `host remove` commit not made `By: overseer`, the most
+recent one for that path in the ledger's history of `hosts.yaml`, which an unreadable
+history also refuses);
 the outcome is written into the row (`result: registered|refused`, `reason`), which
 the finalize commit owns, so a resume reports the same outcome without registering
 again (a row a resume finds already registered by this run's own commit, found by its
 `Overseer run <run id>` body line, reads `registered`). Each registration is a "Decided
 in the user's stead" line, `[host registered] <path> as a plain project (<case>:
 <why>)`, ending in the command that undoes it, `self-learn host remove <path>
---project`; each refusal is a "Refused / could not do" line. A dry run registers nothing. A `hosts.yaml` the secret scan
-matches is replaced in the stage by `registrations: []`.
+--project`, and what that command needs once lessons are routed there (each moved with
+`self-learn rehome <id> --to <target>`, or `--gate-only`); each refusal is a "Refused / could not do" line. A dry run registers nothing. A `hosts.yaml` the secret scan
+matches is replaced in the stage by `registrations: []`. The host policy's own
+switches since the last run (ledger commits `self-learn: host set-mode … (policy)`
+with `By: policy`, `hosts.policy_commits`) are listed under "Decided in the user's
+stead" too, as `[host mode set by the policy] <kind> <path> <old> → <new> (…; ledger
+commit <sha>); undo: …`, and kept in the run record as `policy_lines` so a resume
+reports the same.
 
 *(Added 2026-09-27.)* **Findings.** Phase B's staged `findings.yaml` is
 `{findings: [{case, kind: examined|dependency-moved, text, ref?}]}`. The runner
