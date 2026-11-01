@@ -11,7 +11,7 @@ proposition), and an `ask` puts a decision or fact only the user has (its id
 is `q-<slug>`, and the index carries its `text` and `why`). There is no
 limit on how many are shown.
 
-S-NEXT-overseer-asks (decision 4 of the 2026-10-31b round: the overseer
+S-117 (decision 4 of the 2026-10-31b round: the overseer
 never waits on the user): the runner indexes asks only, each with the
 `default` it applied in the run that asked (a fixed change-nothing sentence
 for an ask about the user's system or a host registration). Such an ask is
@@ -22,7 +22,7 @@ whatever that case decided, so the answer can overturn the default. A
 reading, or an ask without a default, can still be read from an index
 written before, and behaves as it did.
 
-Skills are not shown here and never asked about (S-NEXT-skills-chain,
+Skills are not shown here and never asked about (S-110,
 the user's words of 2026-10-31: *"skills should be created unattended. i
 don't want to be asked about them."*). The weekly report lists what the
 overseer did to skills; a user who wants a skill's name banned, the skill
@@ -41,7 +41,7 @@ its own shell carries it out only when its own session
 person's last typed row to be a plain yes AND the assistant's own message
 between that yes and the person's previous typed row names the question's id,
 the path and the mode, and no other open registration question
-(`consent.prove_typed_yes`, S-NEXT-attribution); a yes it cannot prove records
+(`consent.prove_typed_yes`, S-109); a yes it cannot prove records
 nothing and leaves the question open. A proved registration commits `By:
 agent` with `Proof: <transcript line>` and `Answers: <question id>`.
 """
@@ -93,7 +93,7 @@ _OBS_LINE_RE = re.compile(
 
 _INDEX_KEYS = frozenset({"id", "kind", "cases", "text", "why", "register", "default", "system"})
 
-#: S-NEXT-overseer-asks (decision 4 of the 2026-10-31b round: "The overseer
+#: S-117 (decision 4 of the 2026-10-31b round: "The overseer
 #: never waits on the user"). Every ask the runner indexes carries `default`:
 #: what the overseer did that run in the user's stead. An ask about the
 #: user's system outside self-learn (`system: true`) and an ask that would
@@ -143,7 +143,7 @@ def superseded_links(home: Path) -> dict[str, str]:
     }
 
 _REGISTER_KEYS = frozenset({"path", "mode", "kind", "action"})
-#: What a yes does with the register (S-NEXT-attribution): ``add`` registers
+#: What a yes does with the register (S-109): ``add`` registers
 #: the path (the default), ``set-mode`` switches a registered host's mode.
 REGISTER_ACTIONS = ("add", "set-mode")
 
@@ -179,7 +179,7 @@ def normalize_register(raw: object, text: str) -> tuple[dict[str, str] | None, s
     return register, None
 
 
-# Moved to :mod:`self_learn.consent` (S-NEXT-attribution), which the
+# Moved to :mod:`self_learn.consent` (S-109), which the
 # registration proof shares; the old names stay for their callers and tests.
 _names_path = consent.names_path
 _names_mode = consent.names_mode
@@ -238,7 +238,7 @@ def _load_questions(home: Path) -> list[dict]:
                         f"overseer open: indexed question {row['id']} has a bad register: {problem}"
                     )
                 ask_row["register"] = register
-            # S-NEXT-overseer-asks: the default the overseer applied. An
+            # S-117: the default the overseer applied. An
             # index written before it carries none, and its asks still wait.
             if "default" in row:
                 if not isinstance(row["default"], str) or not row["default"].strip():
@@ -311,7 +311,7 @@ def _unanswered(home: Path, rows: list[dict]) -> tuple[list[dict], set[str]]:
 
 
 def waits_on_the_user(row: dict) -> bool:
-    """S-NEXT-overseer-asks: whether an indexed question is still waiting
+    """S-117: whether an indexed question is still waiting
     for the user. An ask with a default does not: the overseer applied it in
     the run that asked, and an answer only overturns it. A reading, or an
     ask from an index written before defaults, still waits."""
@@ -612,7 +612,7 @@ _OWN_SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
 def _hand_command(register: dict[str, str]) -> str:
     """The `host` line that does what the register asks, with the path quoted
     for a shell: a person types it, or an agent runs it under the user's
-    standing grant with `--note` (S-NEXT-attribution)."""
+    standing grant with `--note` (S-109)."""
     which = " --skills-root" if register["kind"] == "skills-root" else ""
     if register.get("action") == "set-mode":
         return (
@@ -652,7 +652,7 @@ def _agent_shell_proof(
     AskUserQuestion click is not typing), and the assistant's visible text
     between the person's previous typed row and that yes must name the
     question's id, the path and the mode, and no other open register question
-    (`consent.prove_typed_yes`, S-NEXT-attribution: a yes to "shall I run the
+    (`consent.prove_typed_yes`, S-109: a yes to "shall I run the
     tests?" never registers a host)."""
     own = (os.environ.get(_OWN_SESSION_ENV) or "").strip()
     named = (session or "").strip()
@@ -725,7 +725,7 @@ def _carry_out_registration(
     happened would read as done. What is already so needs no proof (nothing
     is being done), so "do it by hand, then answer" works.
 
-    `register.action: set-mode` (S-NEXT-attribution) switches a registered
+    `register.action: set-mode` (S-109) switches a registered
     host's mode with `host set-mode` instead of registering it."""
     register = row["register"]
     phrase = _register_phrase(register)
@@ -870,7 +870,7 @@ def respond(
         # `noted`; the answer itself is the statement. Each case the ask
         # cited is observed as `statement`, pointing at it.
         if row.get("default"):
-            # S-NEXT-overseer-asks: the overseer did not wait, so the cited
+            # S-117: the overseer did not wait, so the cited
             # cases may already be decided again (a deferral the default
             # released, a parked case the overseer decided): the answer goes
             # to the case each cited case's line of successors ends at, in a

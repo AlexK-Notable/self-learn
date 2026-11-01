@@ -1,4 +1,4 @@
-"""SK-B (S-NEXT-skills-chain): the user stops a skill by saying so; nothing is
+"""SK-B (S-110): the user stops a skill by saying so; nothing is
 presented and nothing is asked.
 
 Skills design ``misc/build-2026-10-31b/skills.md`` lane SK-B, as amended by

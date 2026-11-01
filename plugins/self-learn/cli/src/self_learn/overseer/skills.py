@@ -137,7 +137,7 @@ LESSONS_FILE = "lessons.yaml"
 DIFF_FILE = "changed-since-last-write.diff"
 VETOES_FILE = "vetoes.yaml"
 #: Beside ``row.yaml`` of an owned skill whose folder is gone: its files as
-#: self-learn last wrote them (S-NEXT-skills-chain, SK-E).
+#: self-learn last wrote them (S-110, SK-E).
 LAST_WRITE_DIR = "last-write"
 PROPOSALS_FILE = "skill-proposals.yaml"
 WRITING_FILE = "skill-writing.yaml"
@@ -298,7 +298,7 @@ class StagedSkills:
     #: not be shown.
     missing: set[str] = field(default_factory=set)
     #: Live skills whose folder is gone from the skills root (a subset of
-    #: ``missing``): phase B may restore one (S-NEXT-skills-chain, SK-E).
+    #: ``missing``): phase B may restore one (S-110, SK-E).
     absent: set[str] = field(default_factory=set)
     #: Lines for "Refused / could not do" (nothing here refuses the run).
     notes: list[str] = field(default_factory=list)
@@ -417,7 +417,7 @@ def _reference_held(home: Path, name: str) -> dict[str, str]:
     """``{lesson id: references/<file>.md}`` for each lesson routed into
     one of the skill's AUTHORED reference files (not the compilers' shelf):
     a rewrite that changes or removes that file is refused until the lesson
-    is moved out (S-NEXT-skills-chain, SK-E)."""
+    is moved out (S-110, SK-E)."""
     root = _skills_root(home)
     if root is None:
         return {}
@@ -457,7 +457,7 @@ def _removal_commit(root: Path, name: str) -> dict[str, str] | None:
 def _stage_absent(
     home: Path, stage: Path, folder: Path, name: str, row: dict, write: Writer,
 ) -> None:
-    """S-NEXT-skills-chain (SK-E): an owned skill whose folder is gone from
+    """S-110 (SK-E): an owned skill whose folder is gone from
     the skills root. Phase B is shown the files as self-learn last wrote
     them (``last-write/``) and the commit that removed the folder, and
     decides: restore it (write ``skills/<name>/`` from ``last-write/``) or
@@ -495,7 +495,7 @@ def _stage_absent(
 
 
 def relink_owned(home: Path | str) -> tuple[list[str], list[str]]:
-    """S-NEXT-skills-chain (SK-E): before phase B is staged, every live
+    """S-110 (SK-E): before phase B is staged, every live
     skill self-learn owns whose folder exists gets its
     ``~/.claude/skills/<name>`` link made again when it is missing or
     dangling (``skill_writer.relink``). ``(repairs, problems)``: a line per
@@ -587,7 +587,7 @@ def _stage_vetoes(
     """``vetoes.yaml``: the vetoed names, the live skills under a vetoed
     name (``renames_owed``) and the live skills the user asked to retire
     (``retire_requests``), all read from the registry alone
-    (:mod:`self_learn.skill_requests`, S-NEXT-skills-chain)."""
+    (:mod:`self_learn.skill_requests`, S-110)."""
     from .. import skill_requests
 
     data: dict[str, Any] = {
@@ -628,7 +628,7 @@ def _stage_proposals(stage: Path, parked_rows: list[dict], write: Writer) -> Non
 @dataclass(frozen=True)
 class SkillStep:
     """One skill step a pair carries: ``write`` (build or rewrite, with the
-    folder phase B wrote), ``retire``, or ``rename`` (S-NEXT-skills-chain,
+    folder phase B wrote), ``retire``, or ``rename`` (S-110,
     SK-C2: *renamed_from* is the name the skill has, *name* the new one).
     Kept in the run record, so a resumed run makes the same step."""
 
@@ -741,7 +741,7 @@ def _refuse_a_retire_that_leaves_lessons(
 
 
 def building_names(home: Path | str, stage: Path, cases_data: list[dict]) -> set[str]:
-    """S-NEXT-skills-chain (SK-F): every skill a staged case of this run
+    """S-110 (SK-F): every skill a staged case of this run
     builds -- a ``decision.skill`` name self-learn does not own, with its
     ``skills/<name>/`` folder written, renaming and retiring nothing -- read
     before any pair is previewed, so another pair's lines into it are judged
@@ -880,7 +880,7 @@ def _rename_step(
     home: Path, folder: Path, registry: skill_registry.Registry, old: str, new: str,
     outcome: object, *, staged: StagedSkills, deploy: bool,
 ) -> SkillStep:
-    """S-NEXT-skills-chain (SK-C2): a case whose ``decision.skill`` names
+    """S-110 (SK-C2): a case whose ``decision.skill`` names
     ``renamed_from`` renames that skill self-learn owns to ``name``. The
     rename is checked by the writer's own rules (``skill_writer.rename_check``:
     the new name as a write would check it, a vetoed name included, and the
@@ -995,7 +995,7 @@ def _preview_once_written(
     if item.verb != "route":
         return replace(item, state="would-apply", kind=None, detail=once)
     if item.id in reconsidered and _is_placed(home, item.id):
-        # S-NEXT-skills-chain (SK-F): the reroute's checks on its OLD side
+        # S-110 (SK-F): the reroute's checks on its OLD side
         # need no skill, so they run now; a line doomed there is dropped
         # before the skill is written.
         problem = verbs.reroute_old_side_problem(home, item.id, note=line.fields.get("note"))
@@ -1031,7 +1031,7 @@ def preview_for_step(
     skill being built this run.
 
     A line that routes a lesson into a skill a pair of this run builds
-    (``dest: new-skill:<name>``: this pair's own build, or, S-NEXT-skills-chain
+    (``dest: new-skill:<name>``: this pair's own build, or, S-110
     SK-F, any name in *building*) is previewed before the skill exists, so
     the refusal "not a skill self-learn owns" says nothing about the line
     after the write: that one refusal is set aside and the line is judged as

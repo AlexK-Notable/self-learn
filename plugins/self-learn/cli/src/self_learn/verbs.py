@@ -3312,7 +3312,7 @@ def _hook_commit_or_undo(
     land" is the over-cautious direction; treating it as "the commit
     landed, keep the runtime change" on nothing more than a failed read
     would be the dangerous one."""
-    # S-NEXT-attribution (cures CU-2): the stated reason, when given, opens
+    # S-109 (cures CU-2): the stated reason, when given, opens
     # the body; the receipts follow.
     commit_body = _body_with_by_trailer(
         "\n\n".join(part for part in (note, "\n".join(result.receipts)) if part), by
@@ -3422,7 +3422,7 @@ def hook_activate(
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
     _by_trailer(by)  # validates *by*; raises before any lock is taken
-    _scan_or_refuse([], note)  # S-NEXT-attribution: the stated reason rides the body
+    _scan_or_refuse([], note)  # S-109: the stated reason rides the body
     claude_dir = selfcheck.claude_runtime_dir()
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -4829,7 +4829,7 @@ class NewSkillApplyResult:
     #: failed host write) or it was refused (``link_problem`` says why).
     linked: str | None = None
     link_problem: str | None = None
-    #: S-NEXT-skills-chain (SK-G): the ``metadata.self-learn`` stamp this
+    #: S-110 (SK-G): the ``metadata.self-learn`` stamp this
     #: scaffold wrote into SKILL.md -- ``{authored_by, case: None,
     #: created}`` -- when a person's (or an agent's) route created a skill
     #: under a name nothing used, so it becomes self-learn's to maintain.
@@ -4867,14 +4867,14 @@ def _apply_new_skill(
     ordinary managed-section recompile ever after. Idempotent: a second
     run over unchanged records writes nothing.
 
-    S-NEXT-skills-chain (SK-D): when the last lesson has left the skill
+    S-110 (SK-D): when the last lesson has left the skill
     (retired, superseded, rerouted away), an existing SKILL.md gets an
     empty managed section -- its lines would otherwise stay stale until
     something else rewrote it -- and a missing one is left missing: no
     error, no scaffold (a scaffold's description is seeded from a first
     lesson, and there is none).
 
-    S-NEXT-skills-chain (SK-G): *owner* (``human`` or ``agent``,
+    S-110 (SK-G): *owner* (``human`` or ``agent``,
     :func:`_scaffold_owner`) is set on a person's route. When this apply
     scaffolds the whole skill -- neither plugin.json nor SKILL.md was there
     -- the seed SKILL.md carries the runner's stamp (``case: null``,
@@ -5019,7 +5019,7 @@ def _link_routed_skill(spec: TargetSpec, compile_result: object, warnings: list[
 
 
 def _scaffold_owner(home: Path, spec: TargetSpec) -> str | None:
-    """S-NEXT-skills-chain (SK-G; decision 2 of the 2026-10-31b round): who
+    """S-110 (SK-G; decision 2 of the 2026-10-31b round): who
     a route's new-skill scaffold is owned by -- ``human`` for a person's
     shell (or a library call, which no job makes), ``agent`` for an agent's
     -- or ``None`` when the scaffold stays the person's unowned skill as
@@ -7714,7 +7714,7 @@ def _refuse_moving_a_person_s_lesson(
     (the same destination, in the same bucket), or the replace is refused
     as :class:`NeedsPerson` before anything is written. A person's own
     replace (``actor == "human"``) is never refused here, and neither is one
-    typed into an agent's shell (``actor == "agent"``, S-NEXT-attribution):
+    typed into an agent's shell (``actor == "agent"``, S-109):
     that shell acts in the person's session (cures CU-5), and before a
     command-line ``batch`` named its runner it ran here as ``human``; naming
     who ran it changes the record, not what it may do."""
@@ -8241,7 +8241,7 @@ def replace_lesson(
             merged = supersede(
                 home, also_id, plan.new_id,
                 note=f"merged into {plan.new_id} by replace {record_id}",
-                # S-NEXT-attribution (cures CU-2): supersede's `by` IS its
+                # S-109 (cures CU-2): supersede's `by` IS its
                 # trailer, so the leg carries the runner the main commit does.
                 by=stamp_by if stamp_by is not None else by,
                 no_push=no_push, user_claude_md=user_claude_md, execution=execution,
@@ -9666,7 +9666,7 @@ def reconsider(
     shell must give (`cli._agent_attribution`); it rides the commit body
     only, secret-scanned like every verb's note.
 
-    S-NEXT-attribution (cures CU-2): *by* is who DECIDED the
+    S-109 (cures CU-2): *by* is who DECIDED the
     reconsideration and is kept in the ``reconsidered`` history entry;
     *stamp_by* is who RAN the verb and is the commit's ``By:`` trailer
     (``None``: the trailer is *by*, as before)."""
@@ -9766,7 +9766,7 @@ def _rejecter(
     execution: execution_evidence.ExecutionRef | None,
     runner: str | None = None,
 ) -> str | None:
-    """Who is rejecting (S-NEXT-attribution, cures CU-5): a sheet runner's
+    """Who is rejecting (S-109, cures CU-5): a sheet runner's
     own actor when a sheet line runs (*execution*'s, or *runner*, which
     ``batch`` passes; never the line's ``by``), else a ``by`` naming an
     actor, else the process's (:mod:`attribution`: ``human`` or ``agent``
@@ -9832,7 +9832,7 @@ def person_reject_case(
     displacement (times have second precision). A lesson an agent rejected is
     the overseer's to reconsider (S-76); only a person's is protected here.
 
-    S-NEXT-attribution (cures CU-5): the ledger now stores who rejected a
+    S-109 (cures CU-5): the ledger now stores who rejected a
     lesson (``resolution_by``), and that is read FIRST: ``human`` or
     ``agent`` (a shell; an agent's shell acts in a person's session, as a
     CLI reject always read) is a person's decision, ``steward`` or
@@ -10268,7 +10268,7 @@ def _reroute_plan(
 def reroute_old_side_problem(
     home: Path | str, record_id: str, *, note: str | None = None,
 ) -> str | None:
-    """S-NEXT-skills-chain (SK-F): the checks a reroute of a placed lesson
+    """S-110 (SK-F): the checks a reroute of a placed lesson
     INTO a skill being built this run makes on its OLD side -- the note's
     secret scan, the lesson still routed, the old placement's retirement
     preflight (``_retirement_preflight``), and the loaded-text cut a managed
@@ -11351,7 +11351,7 @@ def _premise_probe_env(home: Path) -> premises_mod.ProbeEnv:
     as the ledger a ``ledger`` probe reads. The one seam tests replace (a
     fake command runner), so no test ever runs ``systemctl`` or ``pacman``.
     Fenced like the sweep (``premise_sweep.fenced_roots``): no probe reads
-    the kept session copies (S-NEXT-probes-chain)."""
+    the kept session copies (S-113)."""
     from . import premise_sweep  # late: premise_sweep imports this module
 
     return premises_mod.ProbeEnv(ledger_home=home, denied_roots=premise_sweep.fenced_roots(home))

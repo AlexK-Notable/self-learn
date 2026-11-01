@@ -1,5 +1,5 @@
 """What the user asks of a skill self-learn owns, kept on the skill's own
-record (S-NEXT-skills-chain; skills.md SK-B, decisions 1 and 6 of the
+record (S-110; skills.md SK-B, decisions 1 and 6 of the
 2026-10-31b round).
 
 Nothing in self-learn shows the user a skill or asks them about one (the

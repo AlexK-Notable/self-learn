@@ -406,7 +406,7 @@ def has_prefix(home: Path | str, slug: str, prefix: str) -> bool:
 
 def rekey_prefix(home: Path | str, slug: str, old_prefix: str, new_prefix: str) -> Path | None:
     """Re-key every entry whose key starts with *old_prefix* to start with
-    *new_prefix* instead, the entry itself unchanged (S-NEXT-skills-chain:
+    *new_prefix* instead, the entry itself unchanged (S-110:
     a skill rename moves the folder, and every region in it moves byte for
     byte). An entry already under the new key wins over the old one.
     ``None`` when nothing changed. Commits nothing."""

@@ -324,7 +324,7 @@ def test_e_a_persons_new_skill_route_scaffolds_links_and_prints_no_install_step(
     assert env.link(FRESH).resolve() == env.skill_dir(FRESH).resolve()
     assert f"new skill scaffolded at plugins/{FRESH}, linked at" in out
     assert "install.sh" not in out
-    # S-NEXT-skills-chain (SK-G, decision 2): a person's scaffold under a
+    # S-110 (SK-G, decision 2): a person's scaffold under a
     # fresh name is self-learn's to maintain from now on (was: not owned, D2)
     assert skill_registry.load(env.home).is_owned(FRESH)
     assert "self-learn maintains it from now on" in out
@@ -537,7 +537,7 @@ def test_the_ledger_is_never_written_by_a_refused_preview(env, tmp_path):
     assert ledger_ops.find_record_path(env.home, RID).parent.name == "pending"
 
 
-# ===================== SK-D (S-NEXT-skills-chain): the last lesson leaves a skill
+# ===================== SK-D (S-110): the last lesson leaves a skill
 
 
 def test_sk_d_1_the_last_lesson_leaving_an_owned_skill_leaves_an_empty_section(env, capsys):
@@ -580,7 +580,7 @@ def test_sk_d_2_with_the_folder_gone_and_no_lesson_left_nothing_is_written(env, 
     assert _record(env.home, RID).status != "routed"
 
 
-# ============ SK-G (S-NEXT-skills-chain): a person's scaffold becomes owned
+# ============ SK-G (S-110): a person's scaffold becomes owned
 
 
 def _stamp_of(path: Path) -> dict | None:

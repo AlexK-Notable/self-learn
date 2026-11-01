@@ -121,7 +121,7 @@ if [ -n "$unreadable" ] && [ "$unreadable" -gt 0 ] 2>/dev/null; then
   unreadable_positive=1
 fi
 
-# L3 (S-NEXT-nudges): while the steward owns the queue, a person is not
+# L3 (S-116): while the steward owns the queue, a person is not
 # asked to review it. `steward_enabled` absent or false (the steward is
 # off, or an older CLI) keeps every line below byte for byte as it was.
 steward_enabled="$(jq -r '.steward_enabled // false' <<<"$out" 2>/dev/null)" || exit 0

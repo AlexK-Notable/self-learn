@@ -846,7 +846,7 @@ def _retired_new_skill(tmp_path, rid, name, *, retire=True, vetoed=False):
     git(env.host, "commit", "-q", "-m", "marketplace seed")
     create_record(env.ledger, make_behavior(scope="skill:s", record_id=rid))
     if vetoed:
-        # S-NEXT-skills-chain SK-G: a route scaffold under a vetoed name stays
+        # S-110 SK-G: a route scaffold under a vetoed name stays
         # the person's (no owned row), so recompile may scaffold it again.
         def add(registry):
             registry.add_veto(name, at="2026-10-31T00:00:00Z", by="human")
@@ -967,7 +967,7 @@ def _notice(home, nid):
 
 def test_a_live_owned_new_skill_whose_plugin_is_gone_is_not_counted_gone(tmp_path):
     """The other side of the retired-and-gone skip, for a skill self-learn
-    owns: since S-NEXT-skills-chain SK-G a route's scaffold under a fresh name
+    owns: since S-110 SK-G a route's scaffold under a fresh name
     is owned, and an owned skill's missing SKILL.md is restored by the overseer
     (SK-E), never scaffolded by a recompile. The LIVE lesson is still never
     counted gone: recompile names the owned skill's repair instead

@@ -60,7 +60,7 @@ CASE FILE's shape, not the CLI's input format for ``case record``):
               renamed_from: <kebab>}   # required, lessons included, when
                                        # parked_reason is skill-proposal;
                                        # renamed_from: the overseer renames
-                                       # that skill to name (S-NEXT-skills-chain)
+                                       # that skill to name (S-110)
     dependencies:
       statements: [stmt-...]
       user_model: [um-...@r...]

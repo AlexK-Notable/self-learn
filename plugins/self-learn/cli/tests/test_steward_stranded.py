@@ -1,4 +1,4 @@
-"""S-NEXT-cadence, part 2: the stranded-lesson census.
+"""S-115, part 2: the stranded-lesson census.
 
 The case (interventions survey 2026-10-31, §3): `lrn-e92861b2` and
 `lrn-f55e9e47` sat about 55 days in the queue. A steward run deferred both

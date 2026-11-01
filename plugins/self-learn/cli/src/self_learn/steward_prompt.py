@@ -1460,7 +1460,7 @@ def _premise_lines() -> list[str]:
         "  false: write it with the probe that shows it; its first value is recorded as",
         "  contradicting the claim and the lesson comes back the next night as a premise-moved",
         "  input. When no probe can show it, park the case (`authority-unclear`).",
-        # S-NEXT-rotation (02 §3a.10.4, §3a.10.7): the rotation.
+        # S-114 (02 §3a.10.4, §3a.10.7): the rotation.
         "  A PREMISE-REVIEW INPUT is a placed lesson back to be re-read whole (about once a",
         "  rotation period, 90 days by default, or now because a probe of it is broken); nothing",
         "  was observed to change. Decide it like an extract: a `kind: resolution` case with",

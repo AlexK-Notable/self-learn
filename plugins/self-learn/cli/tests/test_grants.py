@@ -1,4 +1,4 @@
-"""S-NEXT-attribution (2026-10-31b decision 6): the user's standing grant.
+"""S-109 (2026-10-31b decision 6): the user's standing grant.
 
 An agent's shell runs a person-only command (host add|remove|rebind|set-mode,
 tier-C config set|unset, skill write|rename|retire) only under the user's

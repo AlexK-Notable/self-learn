@@ -1,6 +1,6 @@
 """``self-learn skill write|retire|rename|veto|list`` (SK1, S-107;
 ``rename``: SK8, S-107; ``veto`` and the case-less steps:
-S-NEXT-skills-chain).
+S-110).
 
 The person's door to :mod:`self_learn.skill_writer` and
 :mod:`self_learn.skill_requests`; the overseer's runner calls the same
@@ -11,7 +11,7 @@ retired, they say so and these commands do it. ``write``, ``retire``,
 person-only commands:
 from an agent shell (``settings.agent_caller``) they run only under the
 user's standing grant with ``--note`` (:func:`grants.authorize`,
-S-NEXT-attribution), refused before anything is read or locked otherwise,
+S-109), refused before anything is read or locked otherwise,
 the way a tier-C ``config set`` is; under the grant the registry and the
 commits say ``agent``, never ``human``. ``write --check`` and ``list`` only
 read, and run anywhere.
@@ -302,7 +302,7 @@ def _retire(home: Path, args) -> int:
         home, args.name, case=args.case, by=args.by, no_push=args.no_push
     )
     if not result.ok and result.routed:
-        # S-NEXT-skills-chain: lessons still route in, so the person's
+        # S-110: lessons still route in, so the person's
         # retire is a request the overseer carries out (it moves them out
         # first), never a hand job of rerouting each.
         return _request_retire(home, args, tuple(result.routed))

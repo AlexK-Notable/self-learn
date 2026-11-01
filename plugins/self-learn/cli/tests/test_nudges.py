@@ -1,4 +1,4 @@
-"""L3 (S-NEXT-nudges): person-facing nudges follow the queue's owner.
+"""L3 (S-116): person-facing nudges follow the queue's owner.
 
 While `steward.enabled` is on the queue is the steward's: no review popups,
 no "review session is due", and a session-start line only when the steward

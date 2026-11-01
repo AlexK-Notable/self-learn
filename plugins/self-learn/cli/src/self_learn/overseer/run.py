@@ -99,13 +99,13 @@ FINDING_KINDS = ("examined", "dependency-moved")
 NOTICES_FILE = "notices.yaml"
 PROJECTS_FILE = "projects.yaml"
 NOTICE_KEYS = ("project", "text", "case")
-#: S-NEXT-hosts (decision 5, interventions L5): the optional phase B file
+#: S-112 (decision 5, interventions L5): the optional phase B file
 #: listing projects self-learn registers itself, in PLAIN mode only. `mode`
 #: is accepted only so a request for git mode is refused by name.
 HOSTS_FILE = "hosts.yaml"
 REGISTRATION_KEYS = ("path", "case", "why", "mode")
 REGISTRATION_WHY_MAX = 200
-#: S-NEXT-overseer-asks (decision 4 of the 2026-10-31b round): an ask is the
+#: S-117 (decision 4 of the 2026-10-31b round): an ask is the
 #: only question kind. A `kind: reading` entry (confirm or correct one of the
 #: overseer's readings of the user) is dropped and named: a reading is
 #: evidence the overseer acts on, shown in the report's User model section.
@@ -1370,7 +1370,7 @@ def _full_inputs(
 ) -> dict[str, Any]:
     """Write phase B's inputs; answer the user-model document it was given
     (which a `kind: reading` question was validated against until readings
-    stopped being asked, S-NEXT-overseer-asks). *answers_since*: the
+    stopped being asked, S-117). *answers_since*: the
     `last_run_at` the run found before writing its own coverage
     (:func:`_question_answers`)."""
     full_dir = stage / "full"
@@ -1401,7 +1401,7 @@ def _full_inputs(
         if done.get(row["path"]):
             extra["done"] = done[row["path"]]
         project_rows.append({**row, **extra})
-    # S-NEXT-hosts: whether each is a registered project host, and in which
+    # S-112: whether each is a registered project host, and in which
     # mode, so phase B can list an unregistered one in hosts.yaml.
     labels = _registered_labels(home, [row["path"] for row in project_rows])
     project_rows = [{**row, "registered": labels[row["path"]]} for row in project_rows]
@@ -1438,7 +1438,7 @@ def _question_label(value: object, ordinal: int) -> str:
     return f"entry {ordinal}"
 
 
-#: Why a `kind: reading` entry is dropped (S-NEXT-overseer-asks; decision 4
+#: Why a `kind: reading` entry is dropped (S-117; decision 4
 #: of the 2026-10-31b round: "Questions that only ask the user to confirm the
 #: overseer's reading of them are dropped").
 _READING_DROPPED = (
@@ -1478,7 +1478,7 @@ def _question_problem(item: dict[str, Any], known_cases: set[str]) -> str | None
 
 
 def _default_problem(item: dict[str, Any]) -> str | None:
-    """S-NEXT-overseer-asks: why an ask's default is unusable, or ``None``.
+    """S-117: why an ask's default is unusable, or ``None``.
 
     The overseer never waits on the user (decision 4 of the 2026-10-31b
     round): every ask states the default it acted on this run. An ask about
@@ -1532,7 +1532,7 @@ def _questions(
     ``({"questions": [...]}, dropped_lines)``, the index in the model's
     order.
 
-    S-NEXT-overseer-asks: a `kind: reading` entry (or a legacy `{id, cases}`
+    S-117: a `kind: reading` entry (or a legacy `{id, cases}`
     entry with a proposition id) is dropped and named, and every kept ask
     carries `default` -- the model's sentence, or the fixed change-nothing
     one for a `system: true` or `register` ask -- and `system: true` when it
@@ -1913,7 +1913,7 @@ def _finalize_model_report(
     else:
         existing = [line for line in lines[user_model_at:next_heading] if line.strip()]
         replacement = existing or ["- none"]
-    # S-NEXT-overseer-asks: readings are no longer asked about; the
+    # S-117: readings are no longer asked about; the
     # section says once how the user corrects one when they choose to.
     replacement = [line for line in replacement if line.strip() != "- none"]
     replacement.append(f"- {READING_CORRECTION_LINE}")
@@ -2123,7 +2123,7 @@ def _write_project_notices(home: Path, manifest: dict[str, Any]) -> int:
 
 
 def _registered_labels(home: Path, paths: Iterable[str]) -> dict[str, str]:
-    """projects.yaml's ``registered`` for each project (S-NEXT-hosts): its
+    """projects.yaml's ``registered`` for each project (S-112): its
     project registration's mode (``git``/``plain``); ``removed`` when a
     ``host remove`` took it out (the user's undo, which stands: the runner
     refuses to register it again, gate r1 MAJOR 1); else ``no``. The
@@ -2156,7 +2156,7 @@ def _registered_labels(home: Path, paths: Iterable[str]) -> dict[str, str]:
 def _validate_registrations(
     data: object, known_cases: Iterable[str]
 ) -> tuple[list[dict[str, str]], list[str]]:
-    """Validate hosts.yaml (S-NEXT-hosts) ENTRY BY ENTRY, as notices are: a
+    """Validate hosts.yaml (S-112) ENTRY BY ENTRY, as notices are: a
     bad entry costs that entry, named by its ordinal (never its text) in
     one runner line for "Refused / could not do". Shape only: the path's
     own checks (an existing directory inside the user's home, not the
@@ -2281,7 +2281,7 @@ def _host_line(row: dict[str, Any]) -> str:
 
 def _policy_lines(home: Path, since: str | None) -> tuple[list[str], list[str]]:
     """The host policy's switches since *since* as "Decided in the user's
-    stead" lines, each with its undo (S-NEXT-hosts, gate r1 MINOR 1: the
+    stead" lines, each with its undo (S-112, gate r1 MINOR 1: the
     policy decides in the user's stead too), and a runner note when the
     ledger's history cannot be read. Never raises."""
     try:
@@ -2298,7 +2298,7 @@ def _policy_lines(home: Path, since: str | None) -> tuple[list[str], list[str]]:
 
 def _register_hosts(home: Path, manifest: dict[str, Any], runner_notes: list[str]) -> list[str]:
     """Register each of the record's plain project registrations
-    (S-NEXT-hosts, decision 5) through :func:`hosts.register_plain_project`
+    (S-112, decision 5) through :func:`hosts.register_plain_project`
     (self-learn's own act: the commit says ``By: overseer``, whatever shell
     started the run) and answer the report's "Decided in the user's stead"
     lines, one per registration made, each with the command that undoes it.
@@ -4148,12 +4148,12 @@ def _prepare_manifest(
         # case?}), kept in the record so a resumed run writes the same ones.
         # A record made before this field has none.
         "notices": [dict(row) for row in (project_notice_rows or [])],
-        # S-NEXT-hosts: the plain project registrations phase B asked for
+        # S-112: the plain project registrations phase B asked for
         # ({path, case, why}), validated for shape. The runner registers each
         # when the record executes and writes the outcome into its row
         # (`result`, `reason`), so a resume reports the same outcome.
         "registrations": [dict(row) for row in (registration_rows or [])],
-        # S-NEXT-hosts (gate r1 MINOR 1): the host policy's switches since the
+        # S-112 (gate r1 MINOR 1): the host policy's switches since the
         # last run, as report lines with their undo, so a resume reports the same.
         "policy_lines": list(policy_lines or []),
         "findings": findings,
@@ -4525,7 +4525,7 @@ def _observation_id(run_id: str, index: int) -> str:
 
 def _defaulted_asks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     """The run's indexed asks that carry a default (every ask this runner
-    indexes since S-NEXT-overseer-asks; none in a record made before)."""
+    indexes since S-117; none in a record made before)."""
     index = manifest.get("questions")
     rows = index.get("questions") if isinstance(index, dict) else None
     return [
@@ -4537,7 +4537,7 @@ def _defaulted_asks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _record_defaults(home: Path, manifest: dict[str, Any]) -> list[str]:
-    """S-NEXT-overseer-asks (decision 4 of the 2026-10-31b round: "every
+    """S-117 (decision 4 of the 2026-10-31b round: "every
     question carries a stated default and the overseer acts on it in the same
     run, reports it as a decision, and releases the waiting lessons").
 
@@ -4674,7 +4674,7 @@ def _default_refusals(
 _FINALIZE_OWNED_FIELDS = (
     "cases", "remaining", "attempt_count", "last_attempt_at", "progress_at",
     "failure", "failure_detail", "halt_code", "week", "outcome",
-    # S-NEXT-hosts: each registration's outcome, written as it executes.
+    # S-112: each registration's outcome, written as it executes.
     "registrations",
 )
 
@@ -4845,7 +4845,7 @@ def _drop_movers_without_build(
     skill_steps: dict[Path, "skills_mod.SkillStep"],
     building: Collection[str],
 ) -> list[tuple[tuple[Path | None, Path, "batch.Sheet | None"], str]]:
-    """S-NEXT-skills-chain (SK-F, gate r1 finding 3a): take out of
+    """S-110 (SK-F, gate r1 finding 3a): take out of
     *prepared* (and *skill_steps*) every pair that routes lessons into a
     skill of *building* that no kept pair builds; returns each pair taken
     out with the name it needed. Repeated until nothing changes, since a
@@ -4907,7 +4907,7 @@ class _SkillRefused(Exception):
 def _waits_on_unbuilt(
     case_id: str, recipe: dict[str, Any], unbuilt: dict[str, str | None],
 ) -> _SkillRefused | None:
-    """S-NEXT-skills-chain (SK-F, gate r1 finding 3b): a pair applied after
+    """S-110 (SK-F, gate r1 finding 3b): a pair applied after
     the build of a skill this run was refused, whose lines move lessons into
     that skill, is dropped with it (a retried kind: it waits for the resume
     with the build). ``None`` when the pair needs no such skill."""
@@ -4991,7 +4991,7 @@ def _apply_skill_rename(
     home: Path, run_id: str, case_id: str, recipe: dict[str, Any],
     cue_outcomes: list[dict[str, Any]], notes: list[str],
 ) -> None:
-    """S-NEXT-skills-chain (SK-C2): rename the pair's skill before its case
+    """S-110 (SK-C2): rename the pair's skill before its case
     is recorded, as a write is. A step made or refused in an earlier attempt
     of this run is not made again; a refusal raises :class:`_SkillRefused`
     (the pair is dropped), and a ``git`` refusal leaves the step open for
@@ -5022,7 +5022,7 @@ def _apply_skill_rename(
 
 def _owed_requests_not_carried(home: Path, skill_steps: dict[Path, "skills_mod.SkillStep"],
                                skill_drafts: list[dict[str, Any]]) -> list[str]:
-    """S-NEXT-skills-chain (SK-C2): a "Refused / could not do" line for each
+    """S-110 (SK-C2): a "Refused / could not do" line for each
     vetoed live skill no kept pair renames, and each skill the user asked to
     retire that no kept pair retires. The request stays on the registry for
     the next run; nothing is asked of the user."""
@@ -5415,7 +5415,7 @@ def _execute_manifest(
     runner_notes = [
         str(line) for line in cast(list[Any], manifest.get("runner_notes") or [])
     ]
-    # S-NEXT-hosts: the plain project registrations, before the cases (so a
+    # S-112: the plain project registrations, before the cases (so a
     # resume that halts later still has them), each outcome kept in its row.
     host_lines = _register_hosts(home, manifest, runner_notes)
     recipes = cast(dict[str, dict[str, Any]], manifest["cases"])
@@ -5444,7 +5444,7 @@ def _execute_manifest(
     cap = attempt_cap(home)
     attempts = week_attempts(home, week)
 
-    #: S-NEXT-skills-chain (SK-F, gate r1 finding 3b): each skill whose
+    #: S-110 (SK-F, gate r1 finding 3b): each skill whose
     #: build was refused this attempt, with the refusal's retried kind
     #: (``None``: final); a later pair moving lessons into it is dropped.
     unbuilt: dict[str, str | None] = {}
@@ -5461,7 +5461,7 @@ def _execute_manifest(
             # SK3: a pair that builds or rewrites a skill writes it first; a
             # refused write drops the pair (`_SkillRefused`, below).
             _apply_skill_write(home, run_id, case_id, recipe, cue_outcomes, runner_notes)
-            # S-NEXT-skills-chain (SK-C2): a pair that renames a skill renames
+            # S-110 (SK-C2): a pair that renames a skill renames
             # it first, as a write is made first.
             _apply_skill_rename(home, run_id, case_id, recipe, cue_outcomes, runner_notes)
             if recipe.get("sheet") is None:
@@ -5671,7 +5671,7 @@ def _execute_manifest(
         refreshed["cases"] = manifest["cases"]
         refreshed["remaining"] = manifest["remaining"]
         if "registrations" in manifest:
-            # S-NEXT-hosts: the outcomes `_register_hosts` wrote this attempt.
+            # S-112: the outcomes `_register_hosts` wrote this attempt.
             refreshed["registrations"] = manifest["registrations"]
         manifest = refreshed
         maintenance = cast(list[dict[str, Any]], manifest.get("maintenance") or [])
@@ -5862,7 +5862,7 @@ def _execute_manifest(
             questions=questions,
             notes=runner_notes,
             decided=[
-                # S-NEXT-overseer-asks: each ask's default, applied by
+                # S-117: each ask's default, applied by
                 # `_record_defaults` above (not on an attempt that did not
                 # record them; fix round 1, gate r1 MINOR 2).
                 *(
@@ -6414,7 +6414,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             # SK3: the skills self-learn owns, the vetoes and the steward's
             # skill proposals, as phase B's inputs (never raises for the
             # ledger's content; what it could not show is a note).
-            # S-NEXT-skills-chain (SK-E): an owned skill's missing or broken
+            # S-110 (SK-E): an owned skill's missing or broken
             # link is made again before phase B is shown the skills (never on
             # a dry run, never with writing off: the rollback deploys nothing).
             skill_repairs, link_problems = (
@@ -6741,14 +6741,14 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 ),
             )
             finding_drops = [*finding_drops, *notice_drops]
-            # S-NEXT-hosts: the optional hosts.yaml. A bad entry costs that
+            # S-112: the optional hosts.yaml. A bad entry costs that
             # entry; it is said in "Refused / could not do".
             registration_rows, registration_drops = _read_registrations(
                 stage, withheld,
                 {row["case"] for row in cases.list_cases(home, only_ok=True)},
             )
             finding_drops = [*finding_drops, *registration_drops]
-            # S-NEXT-hosts (gate r1 MINOR 1): the policy's switches since the
+            # S-112 (gate r1 MINOR 1): the policy's switches since the
             # last run are listed as decided in the user's stead.
             policy_report_lines, policy_drops = _policy_lines(home, since)
             finding_drops = [*finding_drops, *policy_drops]
@@ -6819,7 +6819,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 named = skills_mod.claimed_name(staged_data)
                 if named is not None:
                     skill_named.add(named)
-            # S-NEXT-skills-chain (SK-F): every skill a pair of this run
+            # S-110 (SK-F): every skill a pair of this run
             # builds, known before any pair is previewed, so a reconsider pair
             # of another case that moves its placed lesson into one is judged
             # as it will be once the skill is written. With writing off
@@ -6957,7 +6957,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                             and skill_step.action == "write" and not skill_step.updating
                             and skill_step.name in building
                         ):
-                            # S-NEXT-skills-chain (SK-F): two cases name the
+                            # S-110 (SK-F): two cases name the
                             # skill this run builds; the first builds it from
                             # its folder, and this one moves its own lessons in.
                             skill_step = None
@@ -7088,7 +7088,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 if skill_step is not None:
                     skill_steps[case_file] = skill_step
                     skill_pairs[skill_step.name] = case_file.name
-            # S-NEXT-skills-chain (SK-F, gate r1 finding 3a): a pair whose
+            # S-110 (SK-F, gate r1 finding 3a): a pair whose
             # lines move lessons into a skill this run was to build was
             # judged "would-apply once written". When no kept pair builds
             # that skill after all (its build pair was dropped later in the
@@ -7116,7 +7116,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     for skill_name, owner in list(skill_pairs.items()):
                         if owner == case_file.name:
                             del skill_pairs[skill_name]
-            # S-NEXT-skills-chain (SK-F): a pair that builds a skill applies
+            # S-110 (SK-F): a pair that builds a skill applies
             # before the pairs that move lessons into it (the order is
             # otherwise kept).
             prepared.sort(key=lambda pair: 0 if (
@@ -7139,7 +7139,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             case_drops.extend(
                 _failure_detail(note) or note for note in skill_stage.notes
             )
-            # S-NEXT-skills-chain (SK-C2): a vetoed name or a retirement the
+            # S-110 (SK-C2): a vetoed name or a retirement the
             # user asked for that no kept pair carries out is reported and
             # carried to the next run; it is never a question.
             case_drops.extend(

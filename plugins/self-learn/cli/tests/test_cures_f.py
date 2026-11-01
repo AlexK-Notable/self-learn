@@ -114,7 +114,7 @@ def _record_case(env: Env, name: str, records: list[str], outcome: str, actor: s
 
 def _applied(env: Env, case: str, rid: str, state: str = "applied") -> str:
     """The receipt a sheet run leaves on *case*: its `reject` line of *rid*
-    took effect (or *state*). S-NEXT-attribution (cures CU-5): an agent's
+    took effect (or *state*). S-109 (cures CU-5): an agent's
     reject case speaks for a lesson's rejection only with this receipt."""
     cases.receipt(env.home, case, {
         "sheet": f"{case}.yaml", "items": [{"n": 1, "id": rid, "verb": "reject", "state": state, "rc": 0}],
@@ -838,7 +838,7 @@ def test_a_failed_stamp_does_not_refuse_the_case_it_follows(env, monkeypatch):
 
 
 # ================================ (3) the ledger stores who rejected a lesson
-#                                      (S-NEXT-attribution, cures CU-5)
+#                                      (S-109, cures CU-5)
 
 
 def test_each_rejecter_is_recorded_on_the_lesson(env, monkeypatch):

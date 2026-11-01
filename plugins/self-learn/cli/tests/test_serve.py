@@ -108,7 +108,7 @@ def test_u10_steward_due_requires_fresh_proposal_cooldown_and_no_stop(
     monkeypatch.setattr(serve, "_input_commit_epoch", lambda actual, path: 200.0)
     monkeypatch.setattr(serve, "_eligible_input_paths", lambda actual: [proposal])
     monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: "1970-01-01T00:01:40+00:00")
-    # S-NEXT-cadence: the night's slot opened at 120, after the last run
+    # S-115: the night's slot opened at 120, after the last run
     # (100): the minimum gap (`cooldown_secs`) and the input rules below are
     # what this test pins; the slot itself is pinned in
     # test_serve_steward_cadence.py.
@@ -161,7 +161,7 @@ def test_u10_steward_due_for_committed_unfinished_work_without_proposals(
     monkeypatch.setattr(serve.steward, "_reconsider_proposals", lambda actual: ([], {}))
     monkeypatch.setattr(serve, "_eligible_input_paths", lambda actual: [])
 
-    # S-NEXT-cadence: an unfinished run is retried `steward.RETRY_SECS`
+    # S-115: an unfinished run is retried `steward.RETRY_SECS`
     # (2 h) after its committed attempt when the cache holds none --
     # `cooldown_secs` (50 here) no longer applies to it.
     retry = serve.steward.RETRY_SECS

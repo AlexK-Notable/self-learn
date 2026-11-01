@@ -201,7 +201,7 @@ def test_the_cli_maps_the_agent_refusal_to_exit_1_and_a_usage_mistake_to_64(
     monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
 
     monkeypatch.setenv("AI_AGENT", "1")
-    # S-NEXT-attribution: person-only; an agent's shell needs --note (64)
+    # S-109: person-only; an agent's shell needs --note (64)
     # and the user's standing grant (1), and has neither here.
     assert cli.main(["host", "set-mode", str(proj), "plain"]) == 64
     assert "person-only" in capsys.readouterr().err
@@ -346,7 +346,7 @@ def _transcript(
 ) -> str:
     """A synthetic transcript under a configured root; returns the session id.
     With *naming* (an ask), every `_ASSISTANT` row becomes the assistant's
-    message naming that ask's id, path and mode (S-NEXT-attribution: a yes
+    message naming that ask's id, path and mode (S-109: a yes
     proves consent only to a message that named the question)."""
     if naming is not None:
         rows = [_asking(naming) if row is _ASSISTANT else row for row in rows]

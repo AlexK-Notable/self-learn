@@ -1,4 +1,4 @@
-"""S-103 as amended by S-NEXT-attribution (cures CU-1): a typed yes
+"""S-103 as amended by S-109 (cures CU-1): a typed yes
 registers a host from an agent's shell only when it answers THAT question.
 
 Part A: the assistant's own visible message between the person's previous

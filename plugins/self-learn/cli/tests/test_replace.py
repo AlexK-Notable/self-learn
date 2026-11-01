@@ -361,7 +361,7 @@ def test_a_merge_of_three_with_a_refused_middle_step_then_a_retry(env, tmp_path,
 
 
 def test_every_leg_of_an_agent_shell_merge_carries_the_runner_s_trailer(env):
-    """S-NEXT-attribution (cures CU-2 item 3): `replace --also` writes the
+    """S-109 (cures CU-2 item 3): `replace --also` writes the
     main commit and one `supersede` commit per merged lesson; each carries
     the runner (`stamp_by`), never the chooser (`by`). Mutation: pass
     `by=by` to the also-leg's `supersede` again -> the leg says `By: human`."""
@@ -643,7 +643,7 @@ def test_a_lesson_a_person_s_case_covers_keeps_its_placement(env, tmp_path):
 def test_an_agent_shell_batch_may_move_a_lesson_a_person_s_case_covers(
     env, tmp_path, monkeypatch, capsys
 ):
-    """S-NEXT-attribution (gate r2 finding 2): a command-line `batch` from
+    """S-109 (gate r2 finding 2): a command-line `batch` from
     an agent's shell runs as `agent`, which acts in the person's session, so
     S-76's placement rule lets it move a lesson a person's case covers, as
     it did when that batch ran as `human`. Control first: the same line run

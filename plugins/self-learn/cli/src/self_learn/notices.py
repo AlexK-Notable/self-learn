@@ -20,7 +20,7 @@ What a notice is. One short line about one project, with:
 - ``source``: ``overseer`` (a finding the overseer wrote to its
   ``notices.yaml``, for a project the ledger knows), ``code`` (the runner of
   a plain-host removal, for each tracked file it left changed) or ``health``
-  (S-NEXT-cadence: self-learn's own health, for the self-learn checkout
+  (S-115: self-learn's own health, for the self-learn checkout
   the host process runs -- today the stranded-lesson census, which the
   people who can fix the selection code see in that repo, not the user).
 - an end: it stops showing when a person runs ``self-learn notice done <id>``
@@ -155,7 +155,7 @@ GIT_TOTAL_BUDGET = 2.0
 
 SOURCE_OVERSEER = "overseer"
 SOURCE_CODE = "code"
-#: S-NEXT-cadence: a measured fact about self-learn's own health, written by
+#: S-115: a measured fact about self-learn's own health, written by
 #: code for the installed self-learn checkout. Its condition is the fact
 #: itself: the writer rewrites it while the fact holds and removes it when
 #: the next measurement is clean (:func:`set_health`, :func:`clear_health`).
@@ -666,7 +666,7 @@ def add_uncommitted(
 def set_health(
     home: Path | str, *, project: Path | str, key: str, text: str, now: datetime | None = None
 ) -> Notice | None:
-    """The ``health`` notice *key* for *project*, saying *text* (S-NEXT-cadence).
+    """The ``health`` notice *key* for *project*, saying *text* (S-115).
     Called each time the measurement behind it finds the fault. A live notice
     keeps its first ``created_at`` and takes the new words (a count that
     changed is shown as it is now); one a person marked done stays done while

@@ -1,4 +1,4 @@
-"""S-NEXT-attribution (cures CU-4): every ledger commit says who made it.
+"""S-109 (cures CU-4): every ledger commit says who made it.
 
 Written under the user's 2026-10-30 rule (tests run only for a significant
 change): the orchestrator runs these once over the combined landing. Each

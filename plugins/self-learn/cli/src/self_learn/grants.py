@@ -1,4 +1,4 @@
-"""The user's standing grant (S-NEXT-attribution; 2026-10-31b decision 6).
+"""The user's standing grant (S-109; 2026-10-31b decision 6).
 
 One recorded grant replaces every "a person must run this": an agent's
 shell may run a person-only command (``host add|remove|rebind|set-mode``,

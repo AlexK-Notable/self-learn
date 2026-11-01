@@ -115,7 +115,7 @@ _ASK_ANSWER_OBSERVATION_RE = re.compile(
     r"^- obs-[0-9a-f]{8} \S+ overseer statement: user answered "
     r"q-[a-z0-9][a-z0-9-]{1,62} \(ref: stmt-[0-9a-f]+\)$"
 )
-#: S-NEXT-overseer-asks: the observation the overseer's runner records on a
+#: S-117: the observation the overseer's runner records on a
 #: case its ask cites when it applies the ask's default in the same run
 #: (`overseer.run._record_defaults`, text from
 #: `overseer.conversation.ask_defaulted_text`). Like an answer (S-96) it
@@ -126,7 +126,7 @@ _ASK_DEFAULTED_OBSERVATION_RE = re.compile(
     r"(?P<question>q-[a-z0-9][a-z0-9-]{1,62}); default applied: (?P<default>.+) "
     r"\(ref: overseer-run:[0-9a-f]+\)$"
 )
-#: S-NEXT-overseer-asks: the user's answer to an ask whose default was
+#: S-117: the user's answer to an ask whose default was
 #: applied (`overseer.conversation.respond`), recorded on the case each cited
 #: case's line of successors ends at. It brings that case back WHATEVER it
 #: decided: the default already decided it, and the answer may overturn that.
@@ -882,7 +882,7 @@ def _terminal_versions(
     is what brings back a lesson moved project->project before that -- its
     bytes, and so its version, never changed.
 
-    S-NEXT-rotation (P4): an input row may name further versions its one
+    S-114 (P4): an input row may name further versions its one
     decision SETTLES (`settles`, :func:`_premise_moved_row`: a combined
     follow-up + premise input settles the follow-up's own version too).
     Each is terminal exactly when the row's own version is."""
@@ -898,11 +898,11 @@ def _terminal_rows(
     defers_decide: bool = True,
     manifests: list[dict] | None = None,
 ) -> dict[tuple[str, str], dict[str, str]]:
-    """:func:`_terminal_versions` with its evidence (S-NEXT-cadence, the
+    """:func:`_terminal_versions` with its evidence (S-115, the
     stranded-lesson census): each decided ``(record, input version)`` maps to
     the ``{run, case, state}`` of the newest committed row that decided it, so
     the census can say WHICH run makes a queued lesson terminal. A version a
-    row SETTLES (S-NEXT-rotation P4) carries that row's evidence."""
+    row SETTLES (S-114 P4) carries that row's evidence."""
     terminal: dict[tuple[str, str], dict[str, str]] = {}
     for manifest in (committed_manifests(home) if manifests is None else manifests):
         recipes = manifest.get("cases") or {}
@@ -939,7 +939,7 @@ def _terminal_rows(
 
 def _settled_versions(packet: Mapping) -> dict[tuple[str, str], list[str]]:
     """``{(record, input version): [settled version, ...]}`` from a packet's
-    input rows that carry `settles` (S-NEXT-rotation, P4). The manifest
+    input rows that carry `settles` (S-114, P4). The manifest
     keeps each input row whole, so the list persists beside the
     disposition that decides it."""
     out: dict[tuple[str, str], list[str]] = {}
@@ -1094,7 +1094,7 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         rid = entry.record.id
         if (rid, identity["version"]) in terminal:
             continue
-        # S-NEXT-skills-chain (SK-C1): a lesson a skill rename carried to the
+        # S-110 (SK-C1): a lesson a skill rename carried to the
         # renamed skill's bucket, unchanged since, is the version it was;
         # decided then, it stays decided.
         carried = ledger_ops.carried_version(entry.record)
@@ -1113,7 +1113,7 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
 
 @dataclass(frozen=True)
 class Stranded:
-    """One queued lesson the steward will never select (S-NEXT-cadence):
+    """One queued lesson the steward will never select (S-115):
     not an input of any kind, not held by the overseer, and not in an
     unfinished run. ``reason`` is one plain line; ``run``/``case``/``state``/
     ``version`` name the committed row that makes it terminal, when one does."""
@@ -1155,7 +1155,7 @@ def _unfinished_inputs(manifests: list[dict]) -> set[str]:
 
 
 def stranded_lessons(home: Path | str) -> list[Stranded]:
-    """THE census of the positive selection invariant (S-NEXT-cadence,
+    """THE census of the positive selection invariant (S-115,
     `02-schema.md` §3a.8): every queued lesson (pending, its deferral not in
     the future, in any bucket) is selectable -- an eligible `lesson` input or
     a `reconsider` input -- or held by the overseer (`cases.held_lessons`), or
@@ -1299,7 +1299,7 @@ def _premise_predecessor(home: Path, record_id: str) -> str | None:
     refuse), or `None` when no case does (a lesson routed before cases
     existed).
 
-    S-NEXT-rotation (u6 "an extract case becomes the newest covering
+    S-114 (u6 "an extract case becomes the newest covering
     case"): a records-only case (an extract or review case: `kind:
     resolution`, `no-action`, no `supersedes`) decided nothing about what
     the lesson says, so the newest covering case whose outcome DID
@@ -1431,7 +1431,7 @@ def _premise_moved_unit_lists(
         if rid in held:
             continue
         followup = followups.get(rid)
-        # S-NEXT-rotation (P4): a follow-up a committed run already settled
+        # S-114 (P4): a follow-up a committed run already settled
         # -- alone, or inside a combined input (`settles`) -- neither comes
         # back by itself nor rides along with a later premise move.
         if followup is not None and (
@@ -1491,7 +1491,7 @@ def _premise_moved_row(
         "moved": moved,
     }
     if followup is not None and movers:
-        # S-NEXT-rotation (P4): one decision of a combined input settles
+        # S-114 (P4): one decision of a combined input settles
         # both. The follow-up-alone version is recorded beside this row so
         # :func:`_terminal_versions` marks it decided with this one.
         row["settles"] = [
@@ -1665,7 +1665,7 @@ def _premise_extract_inputs(
         version = f"extract:{blob}"
         if (record.id, version) in terminal:
             continue
-        # S-NEXT-skills-chain (SK-C1): a lesson a skill rename carried is the
+        # S-110 (SK-C1): a lesson a skill rename carried is the
         # version it was before the move.
         carried = ledger_ops.carried_version(record)
         if carried is not None and (record.id, f"extract:{carried}") in terminal:
@@ -1690,7 +1690,7 @@ def _premise_extract_candidates(
     """The ids of the routed lessons that are still `premise-extract`
     candidates: no `premises` key, and an extract version no committed run
     decided (an uncommitted record waits, and counts). Its extract is its
-    look, so rotation never offers it (S-NEXT-rotation). A lesson whose
+    look, so rotation never offers it (S-114). A lesson whose
     extract version is terminal without premises being written (a parked,
     refused or abandoned extract) is NOT a candidate: rotation picks it up
     (the u6 open item)."""
@@ -1705,7 +1705,7 @@ def _premise_extract_candidates(
     }
 
 
-# ------------------------- premise-review: the rotation (S-NEXT-rotation)
+# ------------------------- premise-review: the rotation (S-114)
 
 #: The card line of a `premise-review` input brought by its age ...
 _PREMISE_REVIEW_REASON = (
@@ -1854,7 +1854,7 @@ def _premise_review_candidates(
 def _premise_review_inputs(
     home: Path, exclude: set[str] | None = None, *, today: date | None = None,
 ) -> list[dict]:
-    """S-NEXT-rotation (premises design P1): the `premise-review` rows one
+    """S-114 (premises design P1): the `premise-review` rows one
     run takes -- :func:`_premise_review_candidates` under the nightly quota
     `premises.rotation_per_night` (`auto`: ceil(live placed lessons /
     rotation_days) + 1). Offered last, after `premise-extract`."""
@@ -1942,7 +1942,7 @@ def premise_rotation_status(
 def _premise_inputs(home: Path, exclude: set[str]) -> list[dict]:
     """The run's premise rows, after every other input (S-104):
     the `premise-moved` rows under their nightly cap, then the backfill's
-    `premise-extract` rows, then (S-NEXT-rotation) the rotation's
+    `premise-extract` rows, then (S-114) the rotation's
     `premise-review` rows. A lesson with a `premise-moved` input -- taken
     tonight or waiting past the cap -- is not offered for its premises to
     be written (02 §3a.10.7) nor to be re-read: its move is decided first,
@@ -2048,7 +2048,7 @@ def _reconsider_unresolved(home: Path, record: Record) -> str:
 
 
 def _ask_context(home: Path, line: str) -> str | None:
-    """S-NEXT-overseer-asks: the card sentence for a reconsider input that an
+    """S-117: the card sentence for a reconsider input that an
     overseer ask brought back -- its default applied without waiting, or the
     user's later answer to it -- else `None`."""
     defaulted = _ASK_DEFAULTED_OBSERVATION_RE.match(line)
@@ -2210,7 +2210,7 @@ def _brief_input(row: dict) -> dict:
     out = {"id": row.get("record"), "kind": row.get("kind") or steward_inputs.INPUT_LESSON}
     # `moved` and `predecessor`: a `premise-moved` input's facts and the case
     # whose own "what would change this" the brief quotes.
-    # `review`: a `premise-review` input's facts (S-NEXT-rotation).
+    # `review`: a `premise-review` input's facts (S-114).
     for key in ("reason", "events", "moved", "predecessor", "review"):
         if row.get(key):
             out[key] = row[key]
@@ -2269,7 +2269,7 @@ def _pair_problem(
     every moved premise (:func:`_premise_decision_problem`).
     S-104: and of a `premise-extract` input, whose case only
     writes the lesson's premises (:func:`_premise_extract_problem`).
-    S-NEXT-rotation: and of a `premise-review` input, whose case changes
+    S-114: and of a `premise-review` input, whose case changes
     nothing but the lesson's premises and a note
     (:func:`_premise_review_problem`)."""
     try:
@@ -2574,7 +2574,7 @@ _REVIEW_LINES = {("premises", "set"): 1, ("premises", "rebaseline"): 1, ("note",
 def _premise_review_problem(
     case_data: dict, items: list, inputs: Mapping[str, Mapping] | None, *, label: str
 ) -> str | None:
-    """S-NEXT-rotation (02 §3a.10.7): a `premise-review` input came to be
+    """S-114 (02 §3a.10.7): a `premise-review` input came to be
     re-read, not changed. Its case is a `kind: resolution` case with
     `outcome: no-action` and no `supersedes` (the extract's shape), and its
     sheet holds, on the lesson, at most one `premises` line (`set` or
@@ -3169,7 +3169,7 @@ def _quarantine_dir(home: Path, run_id: str, packet_index: int, attempt: int) ->
 
 def _placement_reader(home: Path) -> premise_tool.PlacementReader:
     """The `premise_probe` tool's placement reader: the sweep's cache for
-    this ledger, read only (S-NEXT-probes-chain)."""
+    this ledger, read only (S-113)."""
     from . import premise_sweep  # late: premise_sweep imports verbs
 
     return premise_sweep.placement_reader(premise_sweep.default_cache_dir(home))
@@ -3239,11 +3239,11 @@ def _session_spec(
         # the built-in tools; `containment.allowed_tools` names it, and the
         # seam refuses the session when the two disagree. It reads the
         # ledger this run decides for and writes nothing anywhere.
-        # S-NEXT-probes-chain: a lesson's placement premises as the last
+        # S-113: a lesson's placement premises as the last
         # daily sweep judged them (the cache `placement_moves` reads).
         # The probes honour the session's read fence on the kept session
         # copies too: a `file-match` there would be a yes/no oracle on
-        # another run's session (S-NEXT-probes-chain).
+        # another run's session (S-113).
         mcp_toolset=premise_tool.build_toolset(
             home, placement=_placement_reader(home),
             denied_roots=containment.read_denied,
@@ -4927,14 +4927,14 @@ def _records_waiting_for_close_out(
     return list(dict.fromkeys(waiting))
 
 
-#: S-NEXT-cadence: a failed or held steward run is tried again this long
+#: S-115: a failed or held steward run is tried again this long
 #: after its last attempt -- the miner's and the overseer's attempt cooldown
 #: (`serve._steward_is_due` reads the same constant).
 RETRY_SECS = 2 * 60 * 60
 
 
 def hold_notice_text(run_id: str, cause: str, *, now: float | None = None) -> str:
-    """The words of the environment-hold notification (S-NEXT-cadence): the
+    """The words of the environment-hold notification (S-115): the
     cause, when the next try comes (the scheduler retries a held run
     :data:`RETRY_SECS` after its last attempt, so "after" this minute is
     true), and, for a login that no longer works, the user's fix."""
@@ -4953,7 +4953,7 @@ def hold_notice_text(run_id: str, cause: str, *, now: float | None = None) -> st
 def _notify_environment_hold(home: Path, run_id: str, cause: str) -> None:
     """Once per DISTINCT cause (2026-09-27, fail-state audit finding 4):
     the steward is held, not failing, until the environment is fixed.
-    S-NEXT-cadence: the words say when it tries again and, for a login, what
+    S-115: the words say when it tries again and, for a login, what
     to type (:func:`hold_notice_text`)."""
     summary = hold_notice_text(run_id, cause)
     try:
@@ -6345,7 +6345,7 @@ def last_run_iso_from_cache(resolved_cache_dir: Path) -> str | None:
         return None
 
 
-#: L3 (S-NEXT-nudges): a person is nudged about the steward only when it
+#: L3 (S-116): a person is nudged about the steward only when it
 #: is not keeping up -- no completed run for this long while lessons wait.
 STALE_AFTER_SECS = 48 * 60 * 60
 

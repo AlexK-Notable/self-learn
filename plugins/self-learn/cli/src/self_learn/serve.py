@@ -621,7 +621,7 @@ def _steward_journal(cache_dir: Path) -> Path:
 def _steward_recently_attempted(cache_dir: Path, now: float) -> bool:
     """S-68's ordering rule: the steward's cooldown test reads the cache
     attempt journal ONLY, so it can be evaluated before any git read.
-    S-NEXT-cadence: the interval is `steward.RETRY_SECS` (2 h, the same as
+    S-115: the interval is `steward.RETRY_SECS` (2 h, the same as
     `miner.ATTEMPT_COOLDOWN_SECS`), and it is the whole retry rule for an
     unfinished run."""
     epoch = _journal_attempt_epoch(_steward_journal(cache_dir), now)
@@ -756,7 +756,7 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     except Exception as exc:  # noqa: BLE001 — a preview must never raise
         when = f"held: {_short_cause(exc)}"
     try:
-        # S-NEXT-cadence: cache-only, like the overseer's preview -- the
+        # S-115: cache-only, like the overseer's preview -- the
         # attempt journal and the last-run marker, never the case store -- and
         # through the same rules the predicate uses, so the instant it prints
         # is the instant the steward becomes due.
@@ -780,7 +780,7 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     )
 
 
-#: S-NEXT-cadence: the steward's nightly slot opens when the night's mine
+#: S-115: the steward's nightly slot opens when the night's mine
 #: pass has finished, or this long after the mine target when it has not
 #: (the mine failed, is off, or is still running), so a broken mine never
 #: costs the steward its night.
@@ -820,7 +820,7 @@ def _mine_target_today(cache_dir: Path, now: float) -> float:
 
 
 def _steward_slot(cache_dir: Path, now: float) -> float:
-    """S-NEXT-cadence: the START of the newest nightly steward slot that is
+    """S-115: the START of the newest nightly steward slot that is
     open at *now* -- the mine target that begins it. Today's slot opens
     once today's mine pass has finished after its target (`miner.last-run`
     newer than the target), or at the target plus
@@ -892,7 +892,7 @@ def _journal_run_start_epoch(path: Path, now: float) -> float | None:
 
 def _steward_next(home: Path, cache_dir: Path, now: float) -> tuple[float, str]:
     """When the steward is next due, from the cache alone (the heartbeat
-    preview, S-NEXT-cadence), and why.
+    preview, S-115), and why.
 
     A run is unfinished when the journal's newest `attempt-start` is newer
     than the last COMPLETED run (`steward.last-run`): a completed run writes
@@ -931,7 +931,7 @@ def _steward_next(home: Path, cache_dir: Path, now: float) -> tuple[float, str]:
 
 
 def _deferral_due_epochs(paths: list[Path], now: float) -> dict[str, float]:
-    """S-NEXT-cadence: lesson id -> when its deferral came due, for each
+    """S-115: lesson id -> when its deferral came due, for each
     eligible lesson whose `deferred_until` has passed. A record that cannot
     be read is left out (it is then no newer than before)."""
     from .records import Record  # late: a record parse is only needed here
@@ -980,14 +980,14 @@ def _premise_extract_waiting(home: Path) -> bool:
 
 
 def _rotation_on(home: Path) -> bool:
-    """S-NEXT-rotation: whether the rotation could offer anything at all
+    """S-114: whether the rotation could offer anything at all
     (`premises.enabled` and a `premises.rotation_days` above 0): two
     settings reads, cheap enough for every tick."""
     return steward_inputs.premises_enabled(home) and steward_inputs.premise_rotation_days(home) > 0
 
 
 def _premise_review_overdue(home: Path, manifests: list[dict]) -> bool:
-    """S-NEXT-rotation (premises design P1): reviews ride along with a run
+    """S-114 (premises design P1): reviews ride along with a run
     something else starts, sharing its packet; by themselves they make the
     steward due only once the oldest due one is
     `steward_inputs.ROTATION_GRACE_DAYS` days past due
@@ -1018,7 +1018,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     manifests = steward.committed_manifests(home)
     unfinished = [row for row in manifests if row.get("status") != "complete"]
     if unfinished:
-        # S-NEXT-cadence: committed unfinished work -- a failed attempt, an
+        # S-115: committed unfinished work -- a failed attempt, an
         # environment hold, a partial run -- is retried `steward.RETRY_SECS`
         # (2 h) after its last attempt, the overseer's rule (13 §5), never
         # after the 20 hours a new run waited: a login the user restored
@@ -1060,13 +1060,13 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     if not reconsider and not input_paths and not violations and not premise_moved:
         premise_extract = _premise_extract_waiting(home)
         if not premise_extract:
-            # S-NEXT-rotation: a review can still make it due by itself, but
+            # S-114: a review can still make it due by itself, but
             # that is asked only after the cooldown (below), and only when
             # the rotation is on at all -- a settings read, nothing more, here.
             if not _rotation_on(home):
                 return False
             only_review = True
-    # S-NEXT-cadence: new work. The steward runs once a night, after the
+    # S-115: new work. The steward runs once a night, after the
     # mine (`_steward_slot`), and never twice within `steward.cooldown_secs`
     # of a start. Before, the 20-hour cooldown rolled from the last run, so
     # the run drifted about 4 hours earlier every day.
@@ -1076,7 +1076,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     else:
         last_iso = steward.last_run_iso(home)
         if last_iso is None:
-            # never run: the first run takes the queue now (S-NEXT-rotation:
+            # never run: the first run takes the queue now (S-114:
             # with only reviews waiting, when one is overdue)
             return _premise_review_overdue(home, manifests) if only_review else True
         selected_epoch = _attempt_epoch(last_iso, now)
@@ -1095,7 +1095,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     if premise_extract:
         return True
     if not input_paths:
-        # S-NEXT-rotation: nothing else is waiting; only an overdue review
+        # S-114: nothing else is waiting; only an overdue review
         # can make the steward due now.
         return _premise_review_overdue(home, manifests)
     # S-81 (gate S1d R2): an input is new work when no run has SELECTED
@@ -1104,7 +1104,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     # run resumed later selects none, so measuring from the last run's END
     # left a lesson committed or released while an earlier run was
     # unfinished behind that end, waiting for an unrelated input.
-    # S-NEXT-cadence: and a lesson whose deferral came due since then is new
+    # S-115: and a lesson whose deferral came due since then is new
     # work too -- its record is older than that selection, so before, a due
     # deferral waited for an unrelated input to make the steward due.
     released = _release_epochs(home, {path.stem for path in input_paths})
@@ -1119,7 +1119,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
         for path in input_paths
     ):
         return True
-    # S-NEXT-rotation: asked last, and only now -- after the cooldown and
+    # S-114: asked last, and only now -- after the cooldown and
     # every cheaper reason -- because it reads every placed lesson.
     return _premise_review_overdue(home, manifests)
 
@@ -1287,7 +1287,7 @@ def _log_job_crash(home: Path | None, cache_dir: Path, job: str, exc: BaseExcept
         pass
 
 
-#: S-NEXT-attribution: the actor each scheduled job's ledger commits carry
+#: S-109: the actor each scheduled job's ledger commits carry
 #: (``By:``). The entry points stamp themselves too; this keeps a job that
 #: reaches the ledger some other way attributed.
 _JOB_ACTORS = {
@@ -1297,7 +1297,7 @@ _JOB_ACTORS = {
     "premises": "sweep",
     "steward": "steward",
     "overseer": "overseer",
-    # S-NEXT-self-maint: the daily maintenance recompile.
+    # S-119: the daily maintenance recompile.
     "maintenance": "maintenance",
 }
 
@@ -1400,14 +1400,14 @@ def _run_worker_job(home: Path) -> "worker.RunResult":
     return worker.run(home, coalesce=True, no_push=False)
 
 
-#: S-NEXT-hosts: the host policy's attempt marker in the cache, and how
+#: S-112: the host policy's attempt marker in the cache, and how
 #: often the policy is applied (once a day, like the premise sweep).
 HOSTS_POLICY_FILENAME = "hosts-policy.json"
 HOSTS_POLICY_INTERVAL_SECS = 24 * 3600
 
 
 def _hosts_policy_is_due(home: Path, cache_dir: Path, now: float) -> bool:
-    """The host policy (S-NEXT-hosts) is due when the registry has a
+    """The host policy (S-112) is due when the registry has a
     registration the policy would change (:func:`hosts.policy_changes`, a
     read of ``hosts.yaml``) and its attempt marker is absent, unreadable,
     future-dated or at least a day old: checked every tick, acted on at
@@ -1498,7 +1498,7 @@ def _run_overseer_job(home: Path) -> "overseer_run.RunResult":
 
 # ------------------------------------------- the stranded-lesson census
 
-#: S-NEXT-cadence: where the last census of stranded queued lessons is kept,
+#: S-115: where the last census of stranded queued lessons is kept,
 #: under ``<cache>/steward/`` (`NOT_REPO_TRUTH`): the session-start status
 #: reads its count without walking the ledger.
 STRANDED_FILENAME = "stranded.json"
@@ -1569,7 +1569,7 @@ def stranded_notice_text(rows: list["steward.Stranded"]) -> str:
 def census_stranded(
     home: Path, cache_dir: Path, *, now: float | None = None
 ) -> list["steward.Stranded"] | None:
-    """S-NEXT-cadence: take the stranded-lesson census
+    """S-115: take the stranded-lesson census
     (`steward.stranded_lessons`), keep it in the cache, and keep the
     `health` notice for the installed self-learn checkout in step with it:
     written (or its words updated) while the census finds a lesson, removed
@@ -1673,7 +1673,7 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 )
                 ran.append(worker_record)
                 _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
-        # S-NEXT-hosts: the host policy, at most once a day and only when
+        # S-112: the host policy, at most once a day and only when
         # a registration does not follow it, before the premise sweep, so a
         # registration it changes is probed in its new mode the same night.
         # Code only; no switch (it applies a rule the user typed).
@@ -1704,7 +1704,7 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             _log_stopped_refusal(
                 "premises", getattr(premises_record.result, "stopped", None) or []
             )
-            # S-NEXT-cadence: the daily census, whether or not a steward
+            # S-115: the daily census, whether or not a steward
             # job follows (with the steward off, or nothing due, this is
             # the only one that day).
             census_stranded(home, cache_dir, now=now)
@@ -1739,7 +1739,7 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             _log_stopped_refusal(
                 "steward", getattr(steward_record.result, "stopped", None) or []
             )
-            # S-NEXT-cadence: and after every steward job, which is when
+            # S-115: and after every steward job, which is when
             # the selection changes.
             census_stranded(home, cache_dir, now=now)
         if _due_or_hold(
@@ -2304,7 +2304,7 @@ def run_forever(
 
     prev_term = signal.signal(signal.SIGTERM, _handler)
     prev_int = signal.signal(signal.SIGINT, _handler)
-    # S-NEXT-attribution: outside a job the daemon is `serve`, never the
+    # S-109: outside a job the daemon is `serve`, never the
     # `human` its command line would otherwise stamp.
     actor = attribution.process("serve")
     actor.__enter__()

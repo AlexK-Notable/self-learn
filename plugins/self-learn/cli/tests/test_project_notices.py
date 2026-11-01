@@ -773,7 +773,7 @@ def test_phase_b_is_shown_the_overseer_notices_still_up_in_each_project(tmp_path
     assert row["showing"] == [WORDS]
 
 
-# ============================ hand-maintenance round b, lane CU-6 (S-NEXT-notices)
+# ============================ hand-maintenance round b, lane CU-6 (S-118)
 #
 # A condition notice outlives 14 days while its condition holds; its words name
 # the exact commit; the overseer sees the waiting ones; a notice marked done is

@@ -321,7 +321,7 @@ MISSING_KEY = "<missing-key>"
 OUT_OF_RANGE = "out-of-range"
 
 #: Why an observation is ``unavailable``, when that is more than "could not
-#: look" (``Observation.cause``; S-NEXT-probes-chain, 02 §3a.10.2 rule 4).
+#: look" (``Observation.cause``; S-113, 02 §3a.10.2 rule 4).
 #: ``mount-absent``: the target lies on a filesystem that is declared (fstab,
 #: a ``.mount`` unit) or removable and is not mounted now -- the probe is
 #: waiting for it, not broken (02 §3a.10.5 (3)). ``mount-unknown``: such a
@@ -1323,7 +1323,7 @@ class ProbeEnv:
     it is read at most once per env (:meth:`mount_table`), and the sweep
     makes one env per sweep. ``denied_roots``: directories no probe of this
     env may read or stat (the steward's read fence on the kept session
-    copies, S-NEXT-probes-chain); checked on the resolved path."""
+    copies, S-113); checked on the resolved path."""
 
     home: Path = field(default_factory=_process_home)
     path_env: str = field(default_factory=_process_path)
@@ -1616,7 +1616,7 @@ def _home_problem(path: str, env: ProbeEnv) -> _Unavailable | None:
 
 
 def _denied_problem(real: str, env: ProbeEnv) -> _Unavailable | None:
-    """S-NEXT-probes-chain: the caller's own read fence
+    """S-113: the caller's own read fence
     (:attr:`ProbeEnv.denied_roots`), checked on the RESOLVED path beside
     the credential rules, so a link into a fenced tree is refused like the
     tree itself. A refusal says only that the path is fenced, never

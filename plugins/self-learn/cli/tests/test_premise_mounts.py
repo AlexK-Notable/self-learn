@@ -1,5 +1,5 @@
 """A path on a filesystem that is not mounted is `unavailable`, not `missing`
-(premises design lane P3; S-NEXT-probes-chain; 02 §3a.10.2 rule 4,
+(premises design lane P3; S-113; 02 §3a.10.2 rule 4,
 §3a.10.5 (3), §3a.10.6).
 
 Every mount table here is a fake (:class:`premises.MountTable` injected

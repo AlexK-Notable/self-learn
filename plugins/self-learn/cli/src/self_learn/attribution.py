@@ -1,4 +1,4 @@
-"""Who made a ledger commit (cures CU-4, S-NEXT-attribution).
+"""Who made a ledger commit (cures CU-4, S-109).
 
 One actor per running piece of work, read at commit time:
 
@@ -63,8 +63,8 @@ __all__ = [
 #: Every value a stamped ``By:`` trailer may carry. ``human``/``agent`` are
 #: the two shells; the rest are the jobs (``sweep`` is the premise sweep,
 #: ``serve`` the daemon outside any job, ``policy`` the daily host policy,
-#: S-NEXT-hosts, ``maintenance`` the daily maintenance recompile,
-#: S-NEXT-self-maint); ``analyst`` stays for the verbs' own ``routing.by``
+#: S-112, ``maintenance`` the daily maintenance recompile,
+#: S-119); ``analyst`` stays for the verbs' own ``routing.by``
 #: trailers written before this module.
 ACTORS = frozenset(
     {

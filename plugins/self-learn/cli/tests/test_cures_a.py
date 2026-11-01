@@ -406,7 +406,7 @@ class TestAgentShellAttribution:
         assert list(home.glob(f"skills/s/resolved/{rid}.md"))
 
     def test_a_persons_terminal_is_unchanged(self, tmp_path, monkeypatch):
-        """No --note needed; since S-NEXT-attribution the commit says
+        """No --note needed; since S-109 the commit says
         `By: human` (every ledger commit says who made it)."""
         home = make_home(tmp_path)
         rid = _seed_pending(home)
@@ -461,7 +461,7 @@ class TestAgentShellAttribution:
         assert _head(env2.home) == head  # refused before any write
         assert Record.from_path(next(env2.home.glob(f"skills/a/resolved/{rid2}.md"))).follow_up is None
 
-        # S-NEXT-attribution (cures CU-2): an agent shell also says who decided
+        # S-109 (cures CU-2): an agent shell also says who decided
         assert cli.main(reconsider + ["--note", "the user said the placement was wrong"]) == cli.EXIT_USAGE
         assert "say who chose" in capsys.readouterr().err
         assert cli.main(
@@ -535,7 +535,7 @@ class TestAgentShellAttribution:
         assert git(env2.home, "log", "-1", "--format=%B").stdout.rstrip().endswith("By: agent")
 
 
-# ------------------------------------------- who chose (S-NEXT-attribution)
+# ------------------------------------------- who chose (S-109)
 
 
 def _pending_routable(env2, rid="lrn-0000ab01"):

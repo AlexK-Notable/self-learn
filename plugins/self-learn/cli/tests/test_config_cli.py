@@ -161,7 +161,7 @@ class TestConfigGet:
             # S-104: the premise backfill's nightly pace (0
             # pauses it) is the person's, like `premises.enabled`.
             "premises.backfill_per_night",
-            # S-NEXT-rotation: the rotation's period and nightly quota are
+            # S-114: the rotation's period and nightly quota are
             # the person's, like the backfill's pace.
             "premises.rotation_days",
             "premises.rotation_per_night",

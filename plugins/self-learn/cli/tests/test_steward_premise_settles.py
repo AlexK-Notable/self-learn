@@ -1,4 +1,4 @@
-"""P4 of the 2026-10-31 premises design (S-NEXT-rotation): one decision of a
+"""P4 of the 2026-10-31 premises design (S-114): one decision of a
 combined follow-up + premise input settles both.
 
 Before it, a `premise-moved` input whose lesson had both a closed follow-up

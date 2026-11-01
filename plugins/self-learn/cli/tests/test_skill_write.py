@@ -901,7 +901,7 @@ def test_cli_refuses_a_change_from_an_agent_shell(env, monkeypatch, capsys, mark
 
     monkeypatch.setattr(intents, "ledger_write", no_lock)
     capsys.readouterr()
-    # S-NEXT-attribution: person-only; an agent's shell needs --note (64) and
+    # S-109: person-only; an agent's shell needs --note (64) and
     # the user's standing grant (1), and gets neither here.
     assert cli.main([*argv, "--no-push"]) == 64
     err = capsys.readouterr().err

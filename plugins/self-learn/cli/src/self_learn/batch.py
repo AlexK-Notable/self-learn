@@ -299,7 +299,7 @@ RESTATE_REFUSED_ACTORS: frozenset[str] = frozenset({"steward"})
 #: this ONE set, as for the shelf.
 NEW_SKILL_OWNED_ONLY_ACTORS = frozenset({"overseer", "steward"})
 
-#: S-NEXT-attribution (cures CU-2; gate r2 finding 1): the sheet verbs whose
+#: S-109 (cures CU-2; gate r2 finding 1): the sheet verbs whose
 #: line ``by:`` says who CHOSE (``routing.by`` for a route, and a reroute,
 #: which is a ``route`` line under a reconsider case; the chooser a
 #: ``replace`` or a ``revise`` records), never who ran the sheet (that is the
@@ -1996,7 +1996,7 @@ def _dispatch(
                 no_push=True,
                 reconsider_case=_reconsider_case_for(home, item.id, case, verb),
                 execution=execution,
-                runner=actor,  # S-NEXT-attribution: who rejects is the runner, not the line
+                runner=actor,  # S-109: who rejects is the runner, not the line
             )
         elif verb == "defer":
             until = f.get("until")

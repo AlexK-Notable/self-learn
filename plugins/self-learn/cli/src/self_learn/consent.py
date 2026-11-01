@@ -1,5 +1,5 @@
 """A typed yes, tied to the question it answers (S-103 as amended by
-S-NEXT-attribution; cures CU-1 part A).
+S-109; cures CU-1 part A).
 
 The overseer's registration path lets an agent's shell carry out a
 question's ``register`` on the person's typed yes. Proving that the person

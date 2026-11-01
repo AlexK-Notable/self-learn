@@ -401,7 +401,7 @@ class TestOwnership:
         assert registry.row(NAME)["renamed_from"] == ["old-name"]
 
     def test_a_person_s_step_may_answer_no_case_and_an_old_veto_still_loads(self, home):
-        """S-NEXT-skills-chain (SK-B test 8): ``case: null`` loads with ``by:
+        """S-110 (SK-B test 8): ``case: null`` loads with ``by:
         human`` or ``by: agent``; the overseer's never (``_REFUSED``'s
         caseless rows). A veto written before it, with ``statement``, loads."""
         row = _row(

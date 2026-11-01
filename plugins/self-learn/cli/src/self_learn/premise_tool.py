@@ -36,7 +36,7 @@ A call's arguments are checked by the tool's JSON Schema and again by
 :func:`premises.validate_premises`, the function that validates a premise
 on a record, so the tool accepts exactly the probes a record would.
 
-**Placement premises (unit U8; S-NEXT-probes-chain).** ``@reach``,
+**Placement premises (unit U8; S-113).** ``@reach``,
 ``@writable`` and ``@intact`` are derived by code from a lesson's
 placement, never written. The tool shows them as the last daily sweep
 judged them, with that sweep's time: ``build_toolset(home,
@@ -338,7 +338,7 @@ class PremiseProbeTool:
     ``None``; *denied_roots* are the directories the calling session may
     not read (the steward's fence on the kept session copies,
     ``Containment.read_denied``): no probe of this tool reads or stats
-    anything under them (S-NEXT-probes-chain), or a ``file-match`` would
+    anything under them (S-113), or a ``file-match`` would
     be a yes/no oracle on another run's session."""
 
     def __init__(

@@ -2271,7 +2271,7 @@ class TestDeactivateChecksRoutingHookToolsSameAsActivate:
 
 
 class TestAgentShellIsStamped:
-    """S-102 (M5.2), as amended by S-NEXT-attribution (cures CU-2): an
+    """S-102 (M5.2), as amended by S-109 (cures CU-2): an
     agent shell's `hook activate|deactivate` needs `--note` like every other
     ledger verb and is stamped `By: agent`; a person's terminal says `By:
     human` (every ledger commit says who made it)."""

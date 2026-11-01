@@ -355,7 +355,7 @@ def user_message_ref(home: Path | str, session: str, verbatim: str) -> str:
 @dataclass(frozen=True)
 class TypedTurn:
     """The person's last typed row of a session and what they were answering
-    (S-103 as amended by S-NEXT-attribution / cures CU-1).
+    (S-103 as amended by S-109 / cures CU-1).
 
     ``ref`` and ``text`` are that row (``transcript:<session>#L<n>`` and its
     words); ``asked`` is the visible assistant text written between the

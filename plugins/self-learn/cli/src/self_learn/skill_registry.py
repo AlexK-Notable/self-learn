@@ -27,7 +27,7 @@ The file::
     vetoed:
       - {name: <name>, at: <iso>, by: human|agent, grant: stmt-xxxxxxxx}
         # by and grant are optional (a veto recorded before
-        # S-NEXT-skills-chain has neither); a veto recorded then carries
+        # S-110 has neither); a veto recorded then carries
         # statement: stmt-xxxxxxxx, the user's words through the old
         # ``overseer respond --veto-skill``; statement may be null.
 
@@ -152,7 +152,7 @@ STATUSES = (STATUS_LIVE, STATUS_RETIRED)
 
 #: Who made a registry change: the overseer's runner, a person through the CLI,
 #: or an agent's shell running the CLI under the user's standing grant
-#: (S-NEXT-attribution: an agent's act is never recorded as the person's).
+#: (S-109: an agent's act is never recorded as the person's).
 BY_VALUES = ("overseer", "human", "agent")
 
 _TOP_KEYS = ("version", "skills", "vetoed")
@@ -166,7 +166,7 @@ _REQUEST_KEYS = ("at", "by", "grant")
 #: Who may make a request (a veto, a retirement request): the person, or an
 #: agent under the user's standing grant. The overseer never asks itself.
 REQUEST_BY_VALUES = ("human", "agent")
-#: Who may take a step that answers no case (S-NEXT-skills-chain).
+#: Who may take a step that answers no case (S-110).
 CASELESS_BY_VALUES = ("human", "agent")
 
 _PLUGIN_RE = re.compile(r"plugins/[a-z0-9][a-z0-9-]*")

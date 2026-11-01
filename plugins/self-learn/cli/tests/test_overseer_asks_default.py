@@ -1,4 +1,4 @@
-"""S-NEXT-overseer-asks: the overseer never waits on the user.
+"""S-117: the overseer never waits on the user.
 
 Decision 4 of the 2026-10-31b round (the orchestrator's, under the user's
 words of 15:13, "unless sudo is involved, you should never have to tell me,

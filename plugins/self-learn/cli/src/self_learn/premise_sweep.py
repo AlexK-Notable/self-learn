@@ -142,7 +142,7 @@ STABLE_SWEEPS = 2
 #: is "broken" in doctor and selftest. Equal to :data:`HISTORY_KEEP`: the
 #: history cannot show a longer run.
 BROKEN_PROBE_SWEEPS = 3
-#: S-NEXT-probes-chain (02 §3a.10.5 (3)): a written probe `unavailable`
+#: S-113 (02 §3a.10.5 (3)): a written probe `unavailable`
 #: only because its filesystem is not mounted (cause `mount-absent`) is
 #: waiting, not broken, for this many days from the first sweep that found
 #: the mount absent. After that it counts as broken again: a disk removed
@@ -206,7 +206,7 @@ def default_cache_dir(home: Path | str) -> Path:
 
 
 def fenced_roots(home: Path | str) -> tuple[str, ...]:
-    """S-NEXT-probes-chain: the directories no premise probe of this
+    """S-113: the directories no premise probe of this
     ledger reads or stats -- the kept copies of model sessions,
     ``<cache>/sessions/`` (the steward's ``Containment.read_denied``, by
     the same resolver, without creating the cache). The steward's tool
@@ -390,7 +390,7 @@ def _row(
         "claim": obs.claim,
         "reason": obs.reason,
         "observed_at": obs.observed_at,
-        # S-NEXT-probes-chain: why it was unavailable, when that matters to
+        # S-113: why it was unavailable, when that matters to
         # the broken-probe count (`mount-absent` is waiting, not broken), the
         # mount point it names, and since when that mount has been absent
         # (set by `run` from the previous row, so it outlives the history).
@@ -1033,7 +1033,7 @@ def confirmed_placement_moves(
 
 
 #: The placement reader's "stale" line: a reading older than this many
-#: hours is said to be old (the sweep runs daily; S-NEXT-probes-chain).
+#: hours is said to be old (the sweep runs daily; S-113).
 PLACEMENT_STALE_HOURS = 48
 
 
@@ -1108,7 +1108,7 @@ def _placement_reading(
 def placement_reader(
     cache_dir: Path | None = None, *, now: Callable[[], float] | None = None
 ) -> Callable[[Path, Record], list]:
-    """S-NEXT-probes-chain (02 §3a.10.2, the ``premise_probe`` paragraph):
+    """S-113 (02 §3a.10.2, the ``premise_probe`` paragraph):
     the steward tool's reader of a lesson's placement premises, as the last
     daily sweep judged them. It reads the sweep's cache only
     (*cache_dir*, else the ledger's :func:`default_cache_dir`): never a
@@ -1660,7 +1660,7 @@ def doctor_rows(
 
 
 def _rotation_row(home: Path, cache_dir: Path, now_epoch: float) -> DoctorRow:
-    """S-NEXT-rotation (02 §3a.10.6): the rotation's doctor row --
+    """S-114 (02 §3a.10.6): the rotation's doctor row --
     `rotation: every N days; M due, oldest overdue D days; K reviewed in
     the last 30 days`. A WARN when the oldest due review is overdue by more
     than the period itself (the steward is not running, or a number set by

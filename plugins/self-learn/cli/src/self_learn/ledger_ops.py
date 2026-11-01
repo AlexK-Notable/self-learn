@@ -2668,7 +2668,7 @@ def resolve_record(
     ``None`` (every pre-U5 caller) leaves the closed-set gate exactly as
     it was — no widening by default.
 
-    ``resolution_by`` (S-NEXT-attribution, cures CU-5): who made a
+    ``resolution_by`` (S-109, cures CU-5): who made a
     rejection (the sheet runner's actor, or the shell's: ``human`` /
     ``agent``), written to the record's ``resolution_by`` for ``rejected``
     only; ``None`` (unknown) leaves the field absent, and any other status
@@ -2913,7 +2913,7 @@ def move_record(
 
 
 #: The history event a skill rename writes on every record it carries
-#: from ``skills/<old>/`` to ``skills/<new>/`` (S-NEXT-skills-chain).
+#: from ``skills/<old>/`` to ``skills/<new>/`` (S-110).
 SKILL_RENAMED_EVENT = "skill-renamed"
 
 
@@ -2928,7 +2928,7 @@ def _head_blob(home: Path, rel: str) -> str | None:
 
 def carried_from_blob(record: Record) -> str | None:
     """The ``from_blob`` of the record's newest history entry when that
-    entry is a skill rename's carry (S-NEXT-skills-chain); ``None``
+    entry is a skill rename's carry (S-110); ``None``
     otherwise."""
     history = record.history if isinstance(record.history, (list, tuple)) else ()
     if not history:
@@ -2948,7 +2948,7 @@ def _git_blob_sha(data: bytes) -> str:
 
 def carried_version(record: Record) -> str | None:
     """The version a lesson had before skill renames carried it, when it
-    is unchanged since (S-NEXT-skills-chain, SK-C1): the trailing run of
+    is unchanged since (S-110, SK-C1): the trailing run of
     ``skill-renamed`` history entries is taken back off, the scope set to
     the first of them's ``from``, and the result must hash to that entry's
     ``from_blob``. ``None`` for a record no rename carried last, or one
@@ -3006,7 +3006,7 @@ def skill_bucket_carry_plan(home: Path, old: str, new: str) -> list[tuple[Path, 
 def carry_skill_bucket(
     home: Path, old: str, new: str, *, by: str, case: str | None,
 ) -> list[Path]:
-    """The file-op half of a skill rename's bucket move (S-NEXT-skills-chain,
+    """The file-op half of a skill rename's bucket move (S-110,
     skills.md SK-C1): every file under ``skills/<old>/`` is ``git mv``ed to
     the same place under ``skills/<new>/``; each record among them
     (``<sub>/lrn-*.md``) gets ``scope: skill:<new>`` and one history entry
@@ -3094,7 +3094,7 @@ def _displace_resolution_note(record: Record) -> None:
     already the one just appended — never a silent second writer)."""
     payload: dict = {"status": record.status, "note": record.resolution_note}
     if record.resolution_by is not None:
-        # S-NEXT-attribution: who made the displaced rejection goes with it.
+        # S-109: who made the displaced rejection goes with it.
         payload["by"] = record.resolution_by
     record.append_history("resolution", payload)
     record.clear_resolution_note()

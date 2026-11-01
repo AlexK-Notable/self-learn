@@ -654,7 +654,7 @@ def commit(
     becomes the commit body. Returns the new commit's sha.
 
     A LEDGER commit's body says who made it: every call that commits the
-    ledger home passes ``body=attribution.stamp(...)`` (S-NEXT-attribution;
+    ledger home passes ``body=attribution.stamp(...)`` (S-109;
     ``tests/test_attribution.py`` checks each call site), and
     :func:`stage_and_commit`, which only ever commits the ledger, always
     does. Host-repo commits are never stamped.
@@ -741,7 +741,7 @@ def stage_and_commit(
         stage(root, touched)
         if allow_empty and not staged_diff(root, touched):
             return None
-        # S-NEXT-attribution: every commit made here is a ledger commit.
+        # S-109: every commit made here is a ledger commit.
         return commit(root, subject, body=attribution.stamp(body), paths=touched)
     except HalfWrittenError:
         raise
@@ -1017,7 +1017,7 @@ def drop_excluded(
     """Take out of *repo*'s self-learn ``info/exclude`` block every line
     under *prefix* (an anchored ``/<rel>/`` the lines start with, ``/`` for
     the whole repo) whose file name is not in *keep_names*; return the
-    lines removed (S-NEXT-attribution, cures CU-1 part B: a host switched
+    lines removed (S-109, cures CU-1 part B: a host switched
     to git mode commits the files it writes, and git refuses to stage a
     file its ignore rules match). Lines outside the block, the block's own
     marker lines, and a malformed block are never touched (the last raises,

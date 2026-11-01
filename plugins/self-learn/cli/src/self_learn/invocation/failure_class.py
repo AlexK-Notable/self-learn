@@ -91,7 +91,7 @@ _TRANSIENT = re.compile(
 )
 
 #: The login half of ``_ENVIRONMENT``: a failure only the user can cure by
-#: logging in again (S-NEXT-cadence: the steward's hold notice names that fix
+#: logging in again (S-115: the steward's hold notice names that fix
 #: for these causes, and only for these).
 _LOGIN = re.compile(
     r"authentication(?:_error| error| failed)"

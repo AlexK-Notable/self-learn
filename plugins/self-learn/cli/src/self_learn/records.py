@@ -72,7 +72,7 @@ KINDS = frozenset({"anti-pattern", "surface-rule", "reasoning-pattern"})
 SOURCES = frozenset({"teach", "auto-memory", "backlog", "session", "rewrite"})
 STATUSES = frozenset({"pending", "routed", "rejected", "deferred", "superseded"})
 #: Who may be recorded as having rejected a lesson (``resolution_by``,
-#: S-NEXT-attribution): the two shells and the two sheet runners.
+#: S-109): the two shells and the two sheet runners.
 RESOLUTION_BY_VALUES = frozenset({"human", "agent", "steward", "overseer"})
 
 #: 11 §3: capture-time grounding classes. The strongest known predictor of
@@ -713,7 +713,7 @@ class Record:
 
     @property
     def resolution_by(self) -> str | None:
-        """Who made the current rejection (S-NEXT-attribution, cures CU-5):
+        """Who made the current rejection (S-109, cures CU-5):
         ``human``/``agent`` (a shell), ``steward``/``overseer`` (a sheet
         runner). Absent on a record rejected before the field existed."""
         return self._fm.get("resolution_by")

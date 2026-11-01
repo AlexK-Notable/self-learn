@@ -33,7 +33,7 @@ def test_each_tier_c_refused_before_lock(setting, operation, tmp_path, monkeypat
         pytest.fail("agent refusal must happen before requesting the ledger lock")
 
     monkeypatch.setattr(intents, "ledger_write", locked)
-    # S-NEXT-attribution: with no authority in force (the CLI puts the
+    # S-109: with no authority in force (the CLI puts the
     # user's standing grant there, grants.authorize) the library refuses.
     with pytest.raises(settings.AgentSettingRefusal, match="person-only"):
         if operation == "set":
@@ -65,7 +65,7 @@ def test_each_marker_cli_refuses(markers, marker_value, operation, tmp_path, mon
     capsys.readouterr()
     for marker in markers:
         monkeypatch.setenv(marker, marker_value)
-    # S-NEXT-attribution: an agent's shell sets a tier-C switch only under the
+    # S-109: an agent's shell sets a tier-C switch only under the
     # user's standing grant and with --note; without the note it is a usage
     # refusal (64), before the lock.
     assert cli.main(args) == 64

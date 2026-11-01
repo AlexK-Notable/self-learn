@@ -195,7 +195,7 @@ def _rotation_per_night_value(value: object) -> str | None:
     """`premises.rotation_per_night` as stored: ``"auto"`` or a whole
     number >= 0 written as text, stripped; ``None`` for anything else (the
     setting's clamp then reads it as ``auto``, and `config set` refuses
-    it). S-NEXT-rotation."""
+    it). S-114."""
     text = str(value).strip() if isinstance(value, str) else ""
     if text == "auto" or (text.isascii() and text.isdigit()):
         return text
@@ -1076,7 +1076,7 @@ REGISTRY: tuple[Setting, ...] = (
         config_section="steward",
         config_key="cooldown_secs",
         kind="int",
-        # S-NEXT-cadence: was 72000 (20 h) and rolled from the last run, so
+        # S-115: was 72000 (20 h) and rolled from the last run, so
         # the run drifted 4 h earlier every day and a failed run waited 20 h.
         # The steward now runs nightly after the mine and retries a failed or
         # held run after 2 h; this is only the minimum gap between two starts,
@@ -1147,7 +1147,7 @@ REGISTRY: tuple[Setting, ...] = (
         tier="C",
         override_channel=False,
     ),
-    # S-NEXT-rotation (premises design P1; decisions 2026-10-31b item 3):
+    # S-114 (premises design P1; decisions 2026-10-31b item 3):
     # every placed lesson is re-read by the steward about once per this
     # many days (`premise-review` inputs), so slow drift that no probe sees
     # is caught without a person. On at 90 by default: the backfill's
@@ -1171,7 +1171,7 @@ REGISTRY: tuple[Setting, ...] = (
         tier="C",
         override_channel=False,
     ),
-    # S-NEXT-rotation: how many `premise-review` inputs one run may take.
+    # S-114: how many `premise-review` inputs one run may take.
     # `auto` (the default) is ceil(live placed lessons / rotation_days) + 1,
     # which grows with the ledger, so the backlog always drains and the
     # number never needs a person; a non-negative integer (as text, the
@@ -2503,7 +2503,7 @@ def config_set(
         raise UnknownSettingError(name) from None
 
     if setting.tier == "C":
-        # S-NEXT-attribution: the CLI puts the user's standing grant in force
+        # S-109: the CLI puts the user's standing grant in force
         # (grants.authorize) before it calls this; without it an agent's
         # shell is refused here, as before.
         attribution.refuse_unless_authorized(

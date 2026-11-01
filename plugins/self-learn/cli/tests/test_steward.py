@@ -205,7 +205,7 @@ def _iso_epoch(stamp: str) -> float:
 def test_steward_settings_are_registered_with_safe_defaults():
     assert settings.by_name("steward.packet_size").default == 10
     cooldown = settings.by_name("steward.cooldown_secs")
-    # S-NEXT-cadence: the minimum gap between two starts (was a 20 h rolling
+    # S-115: the minimum gap between two starts (was a 20 h rolling
     # cooldown); the run itself is nightly, after the mine.
     assert cooldown.default == 43200
     assert cooldown.validate_hint == "must be >= 0"
@@ -2086,7 +2086,7 @@ def test_a_zero_call_attempt_arms_the_committed_cooldown_without_the_cache(
 
     cache = steward.cache_dir(home)
     shutil.rmtree(cache)
-    # S-NEXT-cadence: an unfinished run retries `steward.RETRY_SECS` (2 h)
+    # S-115: an unfinished run retries `steward.RETRY_SECS` (2 h)
     # after its last attempt; with the cache gone the committed stamp is
     # that clock.
     cooldown = steward.RETRY_SECS

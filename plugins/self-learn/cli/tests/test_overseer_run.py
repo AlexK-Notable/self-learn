@@ -914,7 +914,7 @@ def test_runner_added_lines_remove_bare_none_placeholders(tmp_path):
     hooks = text.split("## Hooks\n", 1)[1].split("\n## User model", 1)[0]
     model = text.split("## User model\n", 1)[1].split("\n## Catalogue health", 1)[0]
     assert hooks == "- lrn-0123abcd: route applied"
-    # S-NEXT-overseer-asks: the runner's one line on correcting a reading.
+    # S-117: the runner's one line on correcting a reading.
     assert model == f"- um-abcd: add applied\n- {overseer_run.READING_CORRECTION_LINE}"
 
 
@@ -2494,7 +2494,7 @@ def test_a_mixed_questions_file_keeps_the_valid_and_names_the_dropped(tmp_path, 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
     assert (result.status, result.code, result.refused) == ("applied", 0, 0), result
-    # S-NEXT-overseer-asks: a reading is no longer asked, current or not.
+    # S-117: a reading is no longer asked, current or not.
     assert [row["id"] for row in _index(home)] == ["q-diagram-skill"]
     refused = _refused_section(home)
     for revision in (1, 2):
@@ -2737,7 +2737,7 @@ def _without_paragraph(prompt: str, first: str, followers: tuple[str, ...]) -> s
 
 def _without_notices_paragraph(prompt: str) -> str:
     """*prompt* without phase B's two capped file paragraphs: notices.yaml's
-    (S-106) and, after it, hosts.yaml's (S-NEXT-hosts: a one-line `why` of at
+    (S-106) and, after it, hosts.yaml's (S-112: a one-line `why` of at
     most N characters, at most N registrations a run). Each is cut on its own,
     up to the paragraph that follows it, so a cut never runs past its paragraph
     (integration w31b: the two together are longer than one paragraph's bound)."""
@@ -2785,7 +2785,7 @@ def test_both_prompts_carry_the_journal_and_phase_b_the_question_bar(tmp_path, m
     assert "There is no limit on\nhow many you ask" in b
     assert "A question clears the bar only when all three hold" in b
     assert "clears the bar" not in a
-    # S-NEXT-overseer-asks: one kind, a default on every ask, no readings asked.
+    # S-117: one kind, a default on every ask, no readings asked.
     assert "Every question is {id, kind: ask, cases, text, why, default}" in b
     assert "You never wait for an answer." in b
     assert "Never ask the user to confirm or correct one of your readings of them" in b
@@ -2812,7 +2812,7 @@ def test_phase_b_sees_the_users_answers_to_earlier_asks(tmp_path, monkeypatch):
     seen = _wrap_phases(monkeypatch)
     overseer_run.run(home, dry_run=True, no_push=True)
     answers = YAML(typ="safe").load(seen["b_stage"]["answers.yaml"])["answers"]
-    # S-NEXT-overseer-asks: a correction of a reading reaches phase B too,
+    # S-117: a correction of a reading reaches phase B too,
     # now that readings are no longer asked; each row says which it is.
     by_ref = {row["ref"]: row for row in answers}
     assert set(by_ref) == {"q-diagram-skill", "um-1a2b@r1"}

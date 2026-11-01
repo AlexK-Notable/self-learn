@@ -1,4 +1,4 @@
-"""S-NEXT-cadence, part 1: the steward runs once a night after the mine, and a
+"""S-115, part 1: the steward runs once a night after the mine, and a
 run that failed or was held is retried after two hours.
 
 The case (interventions survey 2026-10-31, §4): run `run-c5fa4e3c0a78` was

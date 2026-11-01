@@ -113,7 +113,7 @@ def test_healthy_home_exits_0_no_worker_placeholder_row(env, capsys):
     # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
     # S-107 (2026-10-31): so did `owned_skills` and
     # S-104's `premises` (ten before both).
-    # S-NEXT-cadence: the `steward-queue` row joined it, one more PASS.
+    # S-115: the `steward-queue` row joined it, one more PASS.
     assert "13 passed, 0 unmeasured, 0 failed" in out
 
 

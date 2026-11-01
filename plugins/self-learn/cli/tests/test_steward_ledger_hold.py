@@ -451,7 +451,7 @@ _BATCH_CASES_CALLS = {
 _VERBS_CASES_CALLS = {
     "require_reconsider_case": "read",
     "list_cases": "read (E1: `replace` looks for a person's case, S-76)",
-    "show": "read (S-NEXT-attribution, CU-5: `person_reject_case` reads a reject case's receipt)",
+    "show": "read (S-109, CU-5: `person_reject_case` reads a reject case's receipt)",
 }
 
 

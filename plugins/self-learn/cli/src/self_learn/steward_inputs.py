@@ -27,7 +27,7 @@ This module builds, for one run:
    with no ``premises`` field at all, offered so its premises get written
    (:func:`routed_without_premises`, :func:`extract_rank`): the backfill of
    the lessons placed before premises existed, and the safety net for a
-   route that wrote none. The sixth, ``premise-review`` (S-NEXT-rotation,
+   route that wrote none. The sixth, ``premise-review`` (S-114,
    the premises design's lane P1), is a placed lesson whose last look is
    ``premises.rotation_days`` old, or one with a broken probe, offered to be
    re-read whole (:func:`last_reviews`, :func:`render_premise_review`).
@@ -116,7 +116,7 @@ __all__ = [
     "placement_moves",
     "quotable_line",
     "scan_hit",
-    # S-NEXT-rotation
+    # S-114
     "INPUT_PREMISE_REVIEW",
     "ROTATION_GRACE_DAYS",
     "last_review",
@@ -141,7 +141,7 @@ INPUT_PREMISE_MOVED = "premise-moved"
 #: S-104 (premise-check design D10): a routed lesson with no
 #: ``premises`` field, offered for its premises to be written (the backfill).
 INPUT_PREMISE_EXTRACT = "premise-extract"
-#: S-NEXT-rotation (premises design P1): a placed lesson offered to be
+#: S-114 (premises design P1): a placed lesson offered to be
 #: re-read whole, about once every ``premises.rotation_days`` days, or now
 #: when one of its probes is broken. Offered last.
 INPUT_PREMISE_REVIEW = "premise-review"
@@ -1880,7 +1880,7 @@ def render_premise_extract(
     return "\n".join(lines), stats
 
 
-# ------------------------- premise-review: the rotation (S-NEXT-rotation)
+# ------------------------- premise-review: the rotation (S-114)
 #
 # The premises design's lane P1 (misc/build-2026-10-31b/premises.md §1;
 # decisions 2026-10-31b item 3: on at 90 days, `auto` a night): every
@@ -2161,7 +2161,7 @@ def render_premise_review(
     home: Path, record: Record, row: Mapping[str, Any], *, path: str | None, head: str | None
 ) -> tuple[str, dict]:
     """The part of a ``premise-review`` brief that is not the lesson itself
-    (S-NEXT-rotation): why now (when it was last looked at and by what, the
+    (S-114): why now (when it was last looked at and by what, the
     rotation period, or the broken probe that brought it), every premise
     with the daily check's latest verdict and the placement premises'
     latest state (from the sweep's cache), the "What would change this
@@ -2770,7 +2770,7 @@ def build_briefs(
             parts.append(f"[why it is back] {_one_line(row['reason'])}")
         elif kind in (INPUT_PREMISE_EXTRACT, INPUT_PREMISE_REVIEW) and row.get("reason"):
             # S-104: nothing brought it BACK; it is here to be
-            # completed (extract) or re-read (review, S-NEXT-rotation).
+            # completed (extract) or re-read (review, S-114).
             parts.append(f"[why it is here] {_one_line(row['reason'])}")
         parts.append(render_record(
             record, path=rel, head=head, bucket=_bucket_of(home, path),
@@ -2792,7 +2792,7 @@ def build_briefs(
             text, pack_stats = render_premise_extract(home, record, row, path=rel, head=head)
             parts.append(text)
         elif kind == INPUT_PREMISE_REVIEW:
-            # S-NEXT-rotation: is it true NOW -- its premises, its cases'
+            # S-114: is it true NOW -- its premises, its cases'
             # predictions and what recurred since, not its teaching session.
             text, pack_stats = render_premise_review(home, record, row, path=rel, head=head)
             parts.append(text)

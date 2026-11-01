@@ -95,7 +95,7 @@ def test_retiring_a_retired_skill_is_a_no_op(env):
 
 def test_a_skill_self_learn_does_not_own_is_not_retired(env):
     """A person's skill that is not in the registry (a ``new-skill``
-    scaffold made before S-NEXT-skills-chain SK-G, which now makes a fresh
+    scaffold made before S-110 SK-G, which now makes a fresh
     one owned: a managed section, no stamp, no row): retire leaves it
     alone."""
     from self_learn.compilers import BEGIN_MARKER, END_MARKER
@@ -259,7 +259,7 @@ def test_cli_retire_from_an_agent_shell_under_the_grant_is_the_agents(env, monke
 
 
 def test_cli_retire_of_a_skill_with_lessons_records_a_request_naming_them(env, capsys):
-    """S-NEXT-skills-chain (SK-B): the person's retire is no longer refused
+    """S-110 (SK-B): the person's retire is no longer refused
     while lessons route in; it is a request the overseer carries out."""
     assert env.write().ok
     _route_in(env)

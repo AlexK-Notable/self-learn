@@ -150,7 +150,7 @@ class HostRemoveRefused(HostsError):
 
 
 class HostModeAgentRefusal(HostsError):
-    """S-103, as widened by S-NEXT-attribution: ``host add``, ``host
+    """S-103, as widened by S-109: ``host add``, ``host
     remove``, ``host rebind`` or ``host set-mode`` called from an agent's
     shell with no authority in force. Registration is disclosed consent
     (S-29 / Y-17) and a mode change or a removal is the same kind of act,
@@ -217,7 +217,7 @@ class HostSetModeResult:
     changed: bool
     marker_restored: bool = False
     routed: tuple[str, ...] = ()
-    #: S-NEXT-attribution: the lines a switch to git mode took out of
+    #: S-109: the lines a switch to git mode took out of
     #: self-learn's own ``info/exclude`` block (files git mode now commits).
     unexcluded: tuple[str, ...] = ()
     #: Gate r1 finding 5: why that cleanup failed, when it did. The mode
@@ -781,7 +781,7 @@ def host_add(
     window round 3 closed in ``verbs.py`` and left open here.
 
     From an agent's shell it runs only with an authority in force
-    (:func:`attribution.refuse_unless_authorized`; S-NEXT-attribution)."""
+    (:func:`attribution.refuse_unless_authorized`; S-109)."""
     attribution.refuse_unless_authorized("host add", HostModeAgentRefusal)
     return _host_add(home, path, kind, init=init, mode=mode, note=note)
 
@@ -795,7 +795,7 @@ def _host_add(
     mode: str = "git",
     note: str | None = None,
 ) -> HostAddResult:
-    """:func:`host_add` without the agent-shell check (S-NEXT-hosts). Its
+    """:func:`host_add` without the agent-shell check (S-112). Its
     other caller is :func:`register_plain_project`, self-learn's own plain
     registration (decision 5): an act of the overseer's, not of whatever
     shell started the run, so the shell's markers are not asked."""
@@ -959,7 +959,7 @@ def host_set_mode(
     the mode is the same kind of act. The authority is the user's standing
     grant (the CLI's ``--note``, :func:`grants.authorize`) or a typed yes
     the overseer proved for a ``register: {action: set-mode}`` question
-    (S-NEXT-attribution); the commit then says ``By: agent``. Never part of
+    (S-109); the commit then says ``By: agent``. Never part of
     a sheet (``batch`` refuses every ``host`` verb).
 
     What it changes: the registration's ``mode`` in ``hosts.yaml``, and, going
@@ -990,7 +990,7 @@ def _host_set_mode(
     note: str | None = None,
     subject_suffix: str = "",
 ) -> HostSetModeResult:
-    """:func:`host_set_mode` without the agent-shell check (S-NEXT-hosts).
+    """:func:`host_set_mode` without the agent-shell check (S-112).
     Its other caller is :func:`apply_policy`, which runs in code (the serve
     daemon's daily step) and applies a rule the user typed, so no shell's
     markers are asked. *subject_suffix* is appended to the pinned subject
@@ -1103,7 +1103,7 @@ _KEEP_EXCLUDED = ("CLAUDE.local.md", MARKER_FILENAME)
 
 
 def _unexclude_for_git(hosts: Hosts, target: Path) -> tuple[str, ...]:
-    """After a switch to git mode (S-NEXT-attribution, cures CU-1 part B):
+    """After a switch to git mode (S-109, cures CU-1 part B):
     take out of self-learn's own ``info/exclude`` block the lines under
     *target* for files git mode now commits, keeping ``CLAUDE.local.md`` and
     the marker. Nothing when another registration of the same path is still
@@ -1152,7 +1152,7 @@ def _nested_plain_prefixes(hosts: Hosts, target: Path, repo: Path, prefix: str) 
     return tuple(out)
 
 
-# ------------------------------------------------- the host policy (S-NEXT-hosts)
+# ------------------------------------------------- the host policy (S-112)
 
 #: The user's typed policy the host policy applies (2026-10-08: skill repos
 #: are written directly). Cited in every commit the policy makes.
@@ -1197,7 +1197,7 @@ def _same_path(a: Path | str, b: Path | str) -> bool:
 
 def policy_mode(hosts: Hosts, path: Path | str, kind: str = "project") -> str | None:
     """The mode the host policy gives *path*'s *kind* registration, or
-    ``None`` when the policy says nothing about it (S-NEXT-hosts, decision
+    ``None`` when the policy says nothing about it (S-112, decision
     5, interventions L5). The one rule: a project registration whose real
     path is the skills root's real path takes the skills root's mode (one
     repo, one mode: self-learn already writes that repository as the skills
@@ -1296,7 +1296,7 @@ def policy_commits(home: Path | str, since: str | None = None) -> list[dict[str,
     ``By: policy``), oldest first, made at or after *since* (an ISO time;
     ``None`` is all of them). Each is ``{commit, at, kind, path, old, new,
     undo}``. The overseer lists them in its report as decided in the user's
-    stead (S-NEXT-hosts, gate r1 MINOR 1). Raises :class:`HostsError` when
+    stead (S-112, gate r1 MINOR 1). Raises :class:`HostsError` when
     the history cannot be read."""
     cut: datetime | None = None
     if since:
@@ -1333,7 +1333,7 @@ def removed_hosts(home: Path | str) -> dict[str, tuple[str, str]]:
     registration), with the most recent such commit's short sha and its
     ``By:`` actor (``""`` when the commit records none): real path ->
     ``(sha, actor)``. Raises :class:`HostsError` when the history cannot be
-    read. A removal is the user's undo of a registration (S-NEXT-hosts, gate
+    read. A removal is the user's undo of a registration (S-112, gate
     r1 MAJOR 1); :func:`registration_problem` reads it so self-learn never
     registers that path again on its own."""
     out: dict[str, tuple[str, str]] = {}
@@ -1347,7 +1347,7 @@ def removed_hosts(home: Path | str) -> dict[str, tuple[str, str]]:
 
 
 def apply_policy(home: Path | str) -> PolicyResult:
-    """Apply :func:`policy_mode` to every registration (S-NEXT-hosts). Code
+    """Apply :func:`policy_mode` to every registration (S-112). Code
     applies a rule the user typed, so this calls the set-mode core
     (:func:`_host_set_mode`) without the agent-shell check; ``host set-mode``
     typed in an agent's shell is still refused without the grant. One
@@ -1427,7 +1427,7 @@ def _under(path: Path, root: Path) -> bool:
 
 def registration_problem(home: Path | str, raw_path: object) -> str | None:
     """Why self-learn may not register *raw_path* as a plain project on its
-    own (S-NEXT-hosts, decision 5), or ``None``. The checks, in order: an
+    own (S-112, decision 5), or ``None``. The checks, in order: an
     absolute path; an existing directory; strictly under the user's home
     directory (``$HOME`` itself is refused); not the ledger, inside it or
     above it; not inside self-learn's cache (or above it); not registered
@@ -1477,7 +1477,7 @@ def registration_problem(home: Path | str, raw_path: object) -> str | None:
 
 def register_plain_project(home: Path | str, path: str, *, note: str) -> HostAddResult:
     """Register *path* as a PLAIN project host as self-learn's own act
-    (S-NEXT-hosts; decision 5; interventions D1, the overseer's runner
+    (S-112; decision 5; interventions D1, the overseer's runner
     action). Plain only: a plain registration writes only files git ignores
     (the marker and its private ``info/exclude`` line now, compiled lines
     later) and never commits or pushes in that repository, which is the
@@ -1512,7 +1512,7 @@ def _commit_or_half_written(
     verbs raised the bare class, which dispatch would have rendered as
     "nothing was written").
 
-    *note* (S-NEXT-attribution) is the commit body: the ``--note`` a person
+    *note* (S-109) is the commit body: the ``--note`` a person
     or an agent gave, or what an overseer question's yes answered. The
     subject stays pinned."""
     gitops.stage_and_commit(home, touched, message, note)
@@ -1562,7 +1562,7 @@ def host_rebind(
     every mutation of this verb is inside it.
 
     From an agent's shell it runs only with an authority in force
-    (S-NEXT-attribution)."""
+    (S-109)."""
     from . import gitops
 
     attribution.refuse_unless_authorized("host rebind", HostModeAgentRefusal)

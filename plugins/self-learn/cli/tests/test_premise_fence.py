@@ -1,5 +1,5 @@
 """No premise probe reads the kept copies of model sessions (premises design
-lane P7; S-NEXT-probes-chain; 02 §3a.10.2).
+lane P7; S-113; 02 §3a.10.2).
 
 The steward's session may not read `<cache>/sessions/` (its
 `Containment.read_denied`). Its `premise_probe` tool used to ignore that

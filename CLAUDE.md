@@ -87,7 +87,7 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
   across a session boundary. Do mutation testing in a git worktree, and prove the
   venv resolves there with `realpath(self_learn.__file__)` — a worktree venv can
   resolve back to the original tree.
-- **The user's standing grant** (S-NEXT-attribution, `02-schema.md` §3a.3a):
+- **The user's standing grant** (S-109, `02-schema.md` §3a.3a):
   when the ledger holds one (`self-learn grant list` shows it IN FORCE), an
   agent may do what the rules below reserve to the human, giving its reason
   (`--note` on the CLI, where the commit records `By: agent` and the grant) and

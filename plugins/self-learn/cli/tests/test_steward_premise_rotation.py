@@ -1,4 +1,4 @@
-"""P1 of the 2026-10-31 premises design (S-NEXT-rotation): every placed
+"""P1 of the 2026-10-31 premises design (S-114): every placed
 lesson is re-read by the steward about once every `premises.rotation_days`
 days (default 90, decisions 2026-10-31b item 3), and a lesson with a broken
 probe is re-read now.

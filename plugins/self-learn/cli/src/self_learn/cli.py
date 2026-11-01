@@ -287,7 +287,7 @@ def _add_statement_parser(sub) -> None:
 
 
 def _add_grant_parser(sub) -> None:
-    """`grant add|revoke|list` (S-NEXT-attribution): the user's standing
+    """`grant add|revoke|list` (S-109): the user's standing
     grant, under which an agent's shell runs person-only commands."""
     grant_p = sub.add_parser(
         "grant",
@@ -313,7 +313,7 @@ def _add_grant_parser(sub) -> None:
 
 
 def _cmd_grant(args: argparse.Namespace) -> int:
-    """`grant add|revoke|list` (S-NEXT-attribution)."""
+    """`grant add|revoke|list` (S-109)."""
     home = resolve_home()
     if (code := _home_gate(home)) is not None:
         return code
@@ -2508,7 +2508,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
         return code
     granted: attribution.Authority | None = None
     if args.config_command in ("set", "unset") and _is_tier_c(args.name):
-        # S-NEXT-attribution: a tier-C switch is person-only (S-92); an agent's
+        # S-109: a tier-C switch is person-only (S-92); an agent's
         # shell sets it under the user's standing grant with --note, recorded
         # By: agent with the grant and the reason.
         try:
@@ -3063,7 +3063,7 @@ def _agent_attribution(args: argparse.Namespace, surface: str) -> tuple[str | No
 
 
 #: Verbs whose ``--by`` names who CHOSE (``routing.by``, a reconsideration's
-#: decider), apart from who ran the verb (the trailer). S-NEXT-attribution
+#: decider), apart from who ran the verb (the trailer). S-109
 #: (cures CU-2): from an agent's shell they must say which.
 _BY_REQUIRED_SURFACES = frozenset({"route", "reroute", "replace", "revise", "reconsider"})
 #: What an agent's shell may say chose: the person accepting the proposal as
@@ -3147,7 +3147,7 @@ def _route_verb(home: Path, args: argparse.Namespace, runner: str | None) -> int
         home,
         args.id,
         dest=args.dest,
-        # S-NEXT-attribution (cures CU-2): `by` is who chose; who ran the
+        # S-109 (cures CU-2): `by` is who chose; who ran the
         # verb is `stamp_by` (the trailer), never folded into `by`.
         by=args.by,
         note=args.note,
@@ -3389,7 +3389,7 @@ def _cmd_host(args: argparse.Namespace) -> int:
         return code
     granted: attribution.Authority | None = None
     if args.host_command in ("add", "rebind", "remove", "set-mode"):
-        # S-NEXT-attribution: person-only; an agent's shell runs it under the
+        # S-109: person-only; an agent's shell runs it under the
         # user's standing grant with a reason, recorded By: agent.
         try:
             args.note = grants.clean_note(getattr(args, "note", None), f"host {args.host_command}")
@@ -4637,7 +4637,7 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     except batch.BatchError as exc:
         print(f"self-learn batch: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    # S-NEXT-attribution (gate r1 finding 1, gate r2 finding 1): the runner
+    # S-109 (gate r1 finding 1, gate r2 finding 1): the runner
     # of a command-line batch is the shell it was typed into, `agent` from an
     # agent's shell, so a reject line records `resolution_by: agent` and the
     # commits say `By: agent`, never the `human` default. The runner is also
@@ -4843,7 +4843,7 @@ def _cmd_hook(args: argparse.Namespace) -> int:
     if (code := _home_gate(resolve_home())) is not None:  # see _cmd_verb
         return code
     verb_fn = verbs.hook_activate if args.hook_command == "activate" else verbs.hook_deactivate
-    # S-NEXT-attribution (cures CU-2): an agent shell says why, like every
+    # S-109 (cures CU-2): an agent shell says why, like every
     # other ledger verb, and is stamped `By: agent`.
     runner, refusal = _agent_attribution(args, f"hook {args.hook_command}")
     if refusal is not None:
@@ -4879,7 +4879,7 @@ def _cmd_hook(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """One command line, in its own copy of the context, with the process
-    actor set (S-NEXT-attribution): ``agent`` in an agent's shell, ``human``
+    actor set (S-109): ``agent`` in an agent's shell, ``human``
     otherwise, so every ledger commit it makes says who made it. The copy
     keeps an actor, a job or a standing grant one in-process call puts in
     force from reaching the next (the tests run ``main`` many times in one

@@ -255,7 +255,7 @@ def _commit_allow_empty(target: Path) -> None:
     # Via gitops._git — this is THE call the lock invariant cares about
     # (step 6 commits a pre-existing repo). Raw subprocess made it
     # invisible to the structural analysis (delta code gate).
-    # S-NEXT-attribution: the ledger's first commit says who made it too.
+    # S-109: the ledger's first commit says who made it too.
     by = attribution.stamp(None)
     proc = gitops._git(
         target, "commit", "--allow-empty", "-m", INIT_COMMIT_SUBJECT,

@@ -1405,7 +1405,7 @@ def _check_hosts(home: Path) -> tuple[Verdict, str]:
     )
     if root_mode == project_mode:
         return Verdict.PASS, shown
-    # S-NEXT-hosts: the registration the daily host policy will change.
+    # S-112: the registration the daily host policy will change.
     owed = policy_changes(hosts)
     if owed:
         shown += "; the host policy (" + POLICY_RULE + ") sets " + ", ".join(
@@ -1429,7 +1429,7 @@ def _check_hosts(home: Path) -> tuple[Verdict, str]:
     if stranded:
         if root_mode == "git":
             # A removal is never refused there (S-82), and a git skills
-            # root takes the lesson in its SKILL.md. S-NEXT-hosts: the host
+            # root takes the lesson in its SKILL.md. S-112: the host
             # policy makes the project git too, after which the two modes
             # agree and the destination is accepted again.
             advice = (
@@ -1741,7 +1741,7 @@ def _check_premises(home: Path) -> tuple[Verdict, str]:
 
 
 def _check_steward_queue(home: Path) -> tuple[Verdict, str]:
-    """S-NEXT-cadence: the positive selection invariant
+    """S-115: the positive selection invariant
     (`steward.stranded_lessons`): every queued lesson is selectable by the
     steward, held by the overseer, or in an unfinished run. FAIL lists each
     stranded lesson with what makes it terminal -- a defect in the selection
@@ -1774,7 +1774,7 @@ def run_selftest(home: Path) -> int:
     time this function actually RUNS, :mod:`cli` has always finished
     loading) on any UNMEASURED with no FAIL; else 0.
 
-    Thirteen checks since S-NEXT-cadence added ``steward-queue``
+    Thirteen checks since S-115 added ``steward-queue``
     (twelve since S-107 added ``owned_skills`` and
     S-104 added ``premises``; ten since S-82 added ``hosts``,
     2026-10-08). There is no

@@ -393,7 +393,7 @@ def premise_facts(
                 if premise.get("probe") is None:
                     continue
                 pid = str(premise.get("id"))
-                # The one shared predicate (S-NEXT-probes-chain): a probe only
+                # The one shared predicate (S-113): a probe only
                 # waiting for an unmounted filesystem is not broken.
                 tail = premise_sweep.broken_tail(premise, history.get((rec.id, pid), []))
                 if tail is not None:
@@ -428,7 +428,7 @@ def premise_facts(
 
 
 def _rotation_facts(home: Path, *, now: datetime | None = None) -> dict[str, Any]:
-    """S-NEXT-rotation (02 §3a.10.8): the rotation's facts -- its period
+    """S-114 (02 §3a.10.8): the rotation's facts -- its period
     and nightly quota, how many lessons are due, the oldest one's days past
     due, and how many a committed run reviewed in the last 30 days. `off`
     when `premises.rotation_days` is 0; `unavailable` with a reason when it
@@ -486,7 +486,7 @@ def hand_steps_row(
 
 
 def stranded_lessons_row(home: Path | str) -> dict[str, Any]:
-    """S-NEXT-cadence: the stranded-lesson census as a phase-B fact row --
+    """S-115: the stranded-lesson census as a phase-B fact row --
     every queued lesson the steward will never select (not an input, not
     held by the overseer, not in an unfinished run), each with the committed
     row that makes it terminal. Measured now, from the ledger; a census that
@@ -577,9 +577,9 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         # census of hand steps (hand-maintenance cures, lane C).
         premise_facts(resolved, head=census_head),
         hand_steps_row(resolved, head=census_head),
-        # S-NEXT-cadence: queued lessons the steward will never select.
+        # S-115: queued lessons the steward will never select.
         stranded_lessons_row(resolved),
-        # S-NEXT-notices: plain-mode removals nobody has committed yet.
+        # S-118: plain-mode removals nobody has committed yet.
         uncommitted_host_removals_row(resolved),
         {
             "kind": "consolidation-policy",

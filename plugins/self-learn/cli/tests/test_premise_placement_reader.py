@@ -1,6 +1,6 @@
 """The steward's `premise_probe` tool shows a lesson's placement premises as
 the last daily sweep judged them (premises design lane P2;
-S-NEXT-probes-chain; 02 §3a.10.2's `premise_probe` paragraph).
+S-113; 02 §3a.10.2's `premise_probe` paragraph).
 
 The reader, `premise_sweep.placement_reader`, reads the sweep's cache only.
 Every cache here is written by the sweep's own row builder

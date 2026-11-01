@@ -152,7 +152,7 @@ def closed_sets() -> dict[str, Any]:
             "entry_keys": list(run.FINDING_KEYS),
             "kind": list(run.FINDING_KINDS),
         },
-        # S-NEXT-overseer-asks: an ask is the only kind, and every ask
+        # S-117: an ask is the only kind, and every ask
         # states its default (a system or register ask takes the runner's).
         "questions": {
             "kind": list(run.QUESTION_KINDS),
@@ -168,7 +168,7 @@ def closed_sets() -> dict[str, Any]:
             "max_per_run": project_notices.MAX_PER_RUN,
             "ends_after_days": project_notices.NOTICE_DAYS,
         },
-        # S-NEXT-hosts: the optional plain project registrations.
+        # S-112: the optional plain project registrations.
         "registrations": {
             "entry_keys": [key for key in run.REGISTRATION_KEYS if key != "mode"],
             "mode": ["plain"],

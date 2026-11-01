@@ -1,4 +1,4 @@
-"""S-NEXT-hosts (decision 5, interventions L5): host modes follow the policy
+"""S-112 (decision 5, interventions L5): host modes follow the policy
 the user typed, applied by code, and self-learn registers a project in plain
 mode on its own.
 

@@ -7,7 +7,7 @@ rename is compiled into it after (the control first: both lines are in the
 skill under its old name); (b) a skill whose own ledger bucket
 ``skills/<old>/`` holds a record is refused by name, and the control: an
 empty bucket renames; (c) a rename leaves the old name free (a veto is
-``skill veto``'s, S-NEXT-skills-chain). The rest
+``skill veto``'s, S-110). The rest
 covers the move itself, the refusals, interrupted runs and the CLI.
 
 The scratch environment is ``test_skill_write``'s (a ledger, a skills root
@@ -190,7 +190,7 @@ def _skill_md_route(env: Env, rid: str) -> None:
 
 
 def test_b_the_skill_s_own_bucket_moves_with_it(env):
-    """S-NEXT-skills-chain (SK-C1 test 1): one pending and one routed
+    """S-110 (SK-C1 test 1): one pending and one routed
     ``skill-md`` record in ``skills/<old>/`` move to ``skills/<new>/``, with
     the new scope, and the routed one's line is in the new section."""
     assert env.write().ok
@@ -387,7 +387,7 @@ def test_b_a_new_skill_is_not_written_over_a_bucket_holding_records(env):
 
 
 def test_c_a_rename_leaves_the_old_name_free(env):
-    """A rename no longer records a veto (S-NEXT-skills-chain: ``skill veto``
+    """A rename no longer records a veto (S-110: ``skill veto``
     records it before any rename); the old name stays free."""
     assert env.write().ok
     result = _rename(env)
@@ -717,7 +717,7 @@ def test_cli_rename_as_the_person(env, capsys):
 
 
 def test_cli_rename_without_a_case_records_a_null_case(env, capsys):
-    """S-NEXT-skills-chain (decision 8 of 2026-10-31): a person's rename
+    """S-110 (decision 8 of 2026-10-31): a person's rename
     needs no case id."""
     assert env.write().ok
     capsys.readouterr()
@@ -766,7 +766,7 @@ def test_cli_rename_is_refused_from_an_agent_shell(env, monkeypatch, capsys, mar
 
     monkeypatch.setattr(intents, "ledger_write", no_lock)
     capsys.readouterr()
-    # S-NEXT-attribution: person-only; an agent's shell needs --note (64) and
+    # S-109: person-only; an agent's shell needs --note (64) and
     # the user's standing grant (1), and gets neither here.
     argv = ["skill", "rename", NAME, NEW, "--case", CASE2, "--no-push"]
     assert cli.main(argv) == 64

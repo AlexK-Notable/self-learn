@@ -401,7 +401,7 @@ def _place_link(link: Path, target: Path) -> str:
 
 
 def relink(home: Path | str, name: str) -> tuple[str | None, str | None]:
-    """S-NEXT-skills-chain (SK-E): make sure a live skill self-learn owns
+    """S-110 (SK-E): make sure a live skill self-learn owns
     is linked at ``~/.claude/skills/<name>`` (a fresh machine, a cleaned
     ``~/.claude``). ``(outcome, problem)``: *outcome* is what
     :func:`link_skill` did (``created``, ``replaced``, ``unchanged``), or
@@ -542,7 +542,7 @@ def deployed_authored_sha256(home: Path | str, name: str) -> str | None:
 def authored_sha256_at(skills_root: Path | str, name: str) -> str | None:
     """:func:`deployed_authored_sha256` for a skills root the caller already
     holds (a route's host), or ``None`` when no SKILL.md is there
-    (S-NEXT-skills-chain, SK-G)."""
+    (S-110, SK-G)."""
     if not _valid_name(name):
         return None
     files = _read_tree(skill_dir(skills_root, name))
@@ -551,7 +551,7 @@ def authored_sha256_at(skills_root: Path | str, name: str) -> str | None:
 
 def stamp_skill_md(text: str, *, by: str, case: str | None, created: str) -> str:
     """SKILL.md *text* with the runner's ``metadata.self-learn`` stamp, the
-    one :func:`write` puts on a skill it creates (S-NEXT-skills-chain, SK-G:
+    one :func:`write` puts on a skill it creates (S-110, SK-G:
     a person's route scaffold that becomes self-learn's). Raises
     :class:`ValueError` when the stamp cannot be added without changing the
     rest of the frontmatter."""
@@ -1283,7 +1283,7 @@ def _preflight(
             taken.append(f"{link} already exists")
         held = _bucket_records(home, name)
         if held:
-            # S-NEXT-skills-chain (SK-C1): a new skill never silently starts
+            # S-110 (SK-C1): a new skill never silently starts
             # compiling records left in an old bucket of its name.
             taken.append(
                 f"the ledger bucket skills/{name}/ holds record(s) {', '.join(held)} of another "
@@ -1362,7 +1362,7 @@ def _preflight(
 
     # -- the compare-and-swap (D4)
     if expect_missing:
-        # S-NEXT-skills-chain (SK-E): the overseer restores an owned skill
+        # S-110 (SK-E): the overseer restores an owned skill
         # whose folder was gone when phase B was staged; the swap is
         # against absence, so anything found there now refuses it.
         if not updating:
@@ -1475,7 +1475,7 @@ def _preflight(
 def _check_case_by(case: object, by: object) -> None:
     """*case* is a case id, or ``None`` for a step a person (``by:
     human``), or an agent under the user's standing grant (``by: agent``),
-    takes without one (S-NEXT-skills-chain). The overseer's steps always
+    takes without one (S-110). The overseer's steps always
     answer a case."""
     problems = []
     if case is None:
@@ -1740,7 +1740,7 @@ def write(
     content: a second identical write makes no commit. *files* maps
     ``SKILL.md`` and ``references/<file>.md`` to their text; *case* is the
     case the write belongs to; *by* is ``overseer`` or ``human``.
-    *expect_missing* (S-NEXT-skills-chain, SK-E): the caller read the owned
+    *expect_missing* (S-110, SK-E): the caller read the owned
     skill's folder as missing and restores it; anything there now refuses
     the write ``target-busy``."""
     home = Path(home)
@@ -1834,7 +1834,7 @@ def _registry_after_retire(
         return
     row["status"] = STATUS_RETIRED
     row["retired"] = {"at": now, "case": case, "by": by}
-    # A retirement the user asked for is met (S-NEXT-skills-chain).
+    # A retirement the user asked for is met (S-110).
     row.pop("retire_requested", None)
 
 
@@ -1990,7 +1990,7 @@ def retire(
 #    old name added to ``renamed_from``. The old row stays live until step
 #    6, so nothing can scaffold a fresh skill under the old name meanwhile.
 #    A veto of the old name is recorded before any rename by ``skill veto``
-#    (S-NEXT-skills-chain), never by the rename;
+#    (S-110), never by the rename;
 # 2. the plugin folder moves in ONE skills-root commit:
 #    ``plugins/<old>/skills/<old>/`` becomes ``plugins/<new>/skills/<new>/``;
 #    SKILL.md's frontmatter ``name`` and plugin.json's ``name`` change; the
@@ -1999,7 +1999,7 @@ def retire(
 #    managed section and its lessons' lines included;
 # 3. the links: ``~/.claude/skills/<old>`` goes, ``~/.claude/skills/<new>``
 #    is made;
-# 3a. the skill's own ledger bucket moves with it (S-NEXT-skills-chain,
+# 3a. the skill's own ledger bucket moves with it (S-110,
 #    SK-C1): every file under ``skills/<old>/`` is ``git mv``ed to the same
 #    place under ``skills/<new>/``, each record's scope becomes
 #    ``skill:<new>`` with one ``skill-renamed`` history entry naming the
@@ -2024,7 +2024,7 @@ def retire(
 # is loaded on this machine, is already used in the skills root or in
 # ``~/.claude/skills``, or whose own ledger bucket ``skills/<new>/`` holds
 # records of another skill (``bad-line``: the caller chooses another name;
-# S-NEXT-skills-chain, no person is asked); a skill self-learn does not
+# S-110, no person is asked); a skill self-learn does not
 # own (``needs-person``); a skill changed since self-learn last wrote it,
 # unless ``expect_sha`` names
 # its files as they are now (the row then records the hash of the files as
@@ -2202,7 +2202,7 @@ def files_at_last_write(
     when they cannot be found. The last write is the newest commit that is
     ``skill write <name>`` or a rename to *name*; a rename's files are the
     files of the last write of the name it had, with the name line changed
-    (S-NEXT-skills-chain, SK-C1: a rename keeps a person's edit visible as a
+    (S-110, SK-C1: a rename keeps a person's edit visible as a
     change since self-learn last wrote the skill). A skill a person's route
     scaffolded (SK-G) has no such commit: its last write is the commit that
     added its stamped SKILL.md (:func:`_scaffold_files`). *row*, when the
@@ -2436,7 +2436,7 @@ def _carried_by_this_rename(home: Path, old: str, record_id: str, path: Path) ->
 
 
 def _rename_bucket_check(home: Path, plan: _RenamePlan) -> None:
-    """S-NEXT-skills-chain (SK-C1): the rename carries ``skills/<old>/``
+    """S-110 (SK-C1): the rename carries ``skills/<old>/``
     with it, so only the NEW name's bucket can stop it: one that holds
     records of another skill refuses the name (``bad-line``: the caller
     chooses another; no person is needed). Records this rename already
@@ -2705,7 +2705,7 @@ def _rename_preflight(
         assert plan.new_sha is not None
         recorded_new = plan.new_sha
         if plan.current_sha != recorded:
-            # S-NEXT-skills-chain (SK-C1, sk8 finding 7k): a person edited the
+            # S-110 (SK-C1, sk8 finding 7k): a person edited the
             # skill since self-learn last wrote it. The row keeps naming what
             # self-learn wrote (renamed), so phase B still sees the edit.
             recorded_new = _last_written_sha_renamed(home, old, old_row, new) or recorded
@@ -3146,7 +3146,7 @@ def rename_check(
 ) -> RenameCheck:
     """Everything :func:`rename` checks before it writes, writing nothing
     (the overseer's runner checks a rename pair with this before any pair
-    reaches the ledger; S-NEXT-skills-chain, SK-C2)."""
+    reaches the ledger; S-110, SK-C2)."""
     try:
         _rename_preflight(
             Path(home), old, new, case=_PLACEHOLDER_CASE, by="overseer", now=chrono.now_iso(),
