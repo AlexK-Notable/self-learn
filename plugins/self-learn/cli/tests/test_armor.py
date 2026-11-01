@@ -253,7 +253,7 @@ class Behaviour:
 #: 2026-11-01 (attention round, lane `surfaces`; design r2 §3.9, answer 1):
 #: the shared reason for test_worker.py's nine `missing` doors.
 _NO_WORKER_POPUPS_REASON = (
-    "2026-11-01, attention round design r2 §3.9 (03-decisions.md, S-NEXT-surfaces; "
+    "2026-11-01, attention round design r2 §3.9 (03-decisions.md, S-127; "
     "the user's answer 1: only a login hold may pop up): the worker's popups P1 "
     "(_notify_proposals) and P2 (_maybe_escalate) were removed outright, so the tests "
     "of their template, transports, kill switch and debounce went with them"
@@ -318,9 +318,9 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         edited={
             "func:test_wr7_seam_is_only_called_from_the_three_call_sites": (
                 "2026-10-31, attention round design r2 §5.4 (03-decisions.md, the ask "
-                "agent's row, S-NEXT-ask-agent): ask.py joins the seam's callers -- the "
+                "agent's row, S-124): ask.py joins the seam's callers -- the "
                 "inbox's read-only ask agent is the eighth surface, one question one session. "
-                "2026-11-01, attention round design r2 §3.9 (S-NEXT-surfaces): the same node "
+                "2026-11-01, attention round design r2 §3.9 (S-127): the same node "
                 "also drops `worker._notify` and `worker._notify_with_ids` from its excluded "
                 "spawn sites, removed with the worker's popups"
             ),
@@ -351,7 +351,7 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=139, dump_sha="972fd53200074d879f5cd4ef85282573a75e0cfca5a0deacb2c808fecc1514b7",
     ),
     # 2026-11-01, attention round lane `surfaces` (design r2 §3.9, answer 1;
-    # 03-decisions.md S-NEXT-surfaces): the worker's popups P1 and P2 were
+    # 03-decisions.md S-127): the worker's popups P1 and P2 were
     # removed outright, and with them the nine tests of their template,
     # transports, kill switch and escalation debounce (nine `missing` doors).
     # `test_a_worker_run_that_writes_proposals_spawns_no_popup` (added) guards
@@ -976,7 +976,7 @@ MEASURED: dict[str, Measured] = {
         value=9,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-NEXT-surfaces): 0 -> 9, "
+            "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-127): 0 -> 9, "
             "the nine `missing` doors on test_worker.py (the worker popups' tests, removed with "
             "P1 and P2). Counted by this module's own run at the unchanged ANCHOR; the landing "
             "remeasure confirms. Previous entry: "
@@ -1072,7 +1072,7 @@ MEASURED: dict[str, Measured] = {
         value=109,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-NEXT-surfaces): 100 -> 109, "
+            "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-127): 100 -> 109, "
             "the nine deleted test_worker.py popup tests are absent at HEAD and present at the "
             "retired control anchor c3b48e7. Previous entry: "
             "2026-10-30 audit-merges (S-100; test audit L1-1): 97 -> 100, `test_wr2_...`, `_FakePopen` and `_PopenRaises` are absent at HEAD and present at the retired control anchor c3b48e7. "
@@ -1093,7 +1093,7 @@ MEASURED: dict[str, Measured] = {
         value=168,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-NEXT-surfaces): 176 -> 168; "
+            "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-127): 176 -> 168; "
             "eight of the nine deleted test_worker.py popup tests differed from c3b48e7 and, "
             "deleted, no longer count as edited. Measured by this module's own run. Previous entry: "
             "2026-10-30 tests-fix (S-98; 11-telemetry-and-lifecycle.md §2.5): 175 -> 176; "

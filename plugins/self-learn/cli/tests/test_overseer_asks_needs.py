@@ -1,4 +1,4 @@
-"""S-NEXT-overseer-asks: the overseer's asks say who they need.
+"""S-122: the overseer's asks say who they need.
 
 The attention round (`misc/build-2026-10-31c/attention-design-r2.md` r2.1
 §1.3, §3.8, §4.4, §4.5, §5.2). The user's answers of 2026-10-31 20:45, in

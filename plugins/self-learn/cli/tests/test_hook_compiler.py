@@ -291,7 +291,7 @@ class TestReplay:
 #: exactly these bytes, since placed guards are re-derived and
 #: byte-compared (verbs m-5).
 #: Re-pinned 2026-11-01 (attention round, lane `surfaces`, congruence n5;
-#: 03-decisions.md S-NEXT-surfaces): the oracle's message already begins with
+#: 03-decisions.md S-127): the oracle's message already begins with
 #: the record's own `self-learn lrn-0a1b2c3d: ` prefix, which the compiler now
 #: strips once before prefixing, so the bytes are exactly those of the same
 #: block with the unprefixed message (checked: equal), and no longer carry the

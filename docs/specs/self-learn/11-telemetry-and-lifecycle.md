@@ -337,7 +337,7 @@ and briefly to capture it (self-learn teach); if declined, log it:
 `self-learn telemetry note offer-declined [--reason <enum>]`."*
 
 **The offer ledger after silent capture (amended 2026-11-01,
-S-NEXT-surfaces).** The user's answer 9 of the attention round: "no,
+S-127).** The user's answer 9 of the attention round: "no,
 capturing a lesson should happen quietly in the background." Since
 2026-10-31 an agent composes and captures with `self-learn teach` and
 reports the id in one line only if the user is mid-conversation about it:

@@ -95,7 +95,7 @@ _OBS_LINE_RE = re.compile(
 
 _INDEX_KEYS = frozenset({
     "id", "kind", "cases", "text", "why", "register", "default", "system",
-    # S-NEXT-overseer-asks (attention design r2.1 §3.8, §4.5): who an ask
+    # S-122 (attention design r2.1 §3.8, §4.5): who an ask
     # needs, the closed reason it needs the user, the options it offers
     # and the one recommended, the plan an approve option carries out, the
     # files the packet may excerpt, the two statements a conflict names,
@@ -127,7 +127,7 @@ PLAN_KEYS = frozenset({"summary", "cwd", "checks", "steps", "files", "sudo"})
 #: these change-nothing sentences.
 SYSTEM_DEFAULT = "Nothing on your system was changed; answer if you want it done."
 REGISTER_DEFAULT = "Nothing was registered or switched; a plain yes does it."
-#: S-NEXT-overseer-asks: what holds meanwhile for each needs-you key, the
+#: S-122: what holds meanwhile for each needs-you key, the
 #: `default` the runner indexes for a `needs: user` ask (the model writes
 #: none of its own; nothing outside self-learn is changed until the user
 #: answers, and a conflict follows answer 6: the newer statement wins).
@@ -573,7 +573,7 @@ def _answered_ids(home: Path, ids: set[str], rows: list[dict] | None = None) -> 
     sees the answer (`run._question_answers`). A store or index that cannot
     be read answers nothing: the question stays listed.
 
-    S-NEXT-overseer-asks (§3.8, critique 1): an ask **without a plan** is
+    S-122 (§3.8, critique 1): an ask **without a plan** is
     answered by a statement or a choice whose `answers.ref` is its id (a
     conflict ask also by words on its `conflict:<a>+<b>` ref); an ask **with
     a plan** is answered only by a choice naming one of its options, because
@@ -639,7 +639,7 @@ def _unanswered(home: Path, rows: list[dict]) -> tuple[list[dict], set[str]]:
 def waits_on_the_user(row: dict) -> bool:
     """Whether an indexed question is still waiting for the user.
 
-    S-NEXT-overseer-asks (§3.8): it reads `needs`, not `default`. A
+    S-122 (§3.8): it reads `needs`, not `default`. A
     `needs: user` ask waits, whatever meanwhile sentence it carries (only the
     user can settle it, answer 2); a `needs: stead` ask does not: the
     overseer applied its default in the run that asked (S-117), and an
@@ -794,7 +794,7 @@ def _yes_does(register: dict[str, str]) -> str:
 
 #: How `overseer open` labels an ask's applied default.
 DEFAULT_LABEL = "done in your stead without waiting (your answer can change it)"
-#: S-NEXT-overseer-asks: how `overseer open` labels what holds meanwhile on
+#: S-122: how `overseer open` labels what holds meanwhile on
 #: an ask only the user can settle (it waits; nothing was done in its stead).
 NEEDS_YOU_LABEL = "needs you; meanwhile"
 

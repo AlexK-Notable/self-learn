@@ -115,7 +115,7 @@ QUESTION_KINDS = ("ask",)
 #: about the user's system (`system: true`) or carries `register`: those
 #: take no default of their own, and the runner writes the fixed
 #: change-nothing default (`conversation.SYSTEM_DEFAULT` / `REGISTER_DEFAULT`).
-#: S-NEXT-overseer-asks (attention design r2.1 §3.8, §4.5): `needs`,
+#: S-122 (attention design r2.1 §3.8, §4.5): `needs`,
 #: `because`, `options`, `recommend`, `plan`, `look_at` and `statements`.
 #: `asked_at` is the runner's, never the model's.
 ASK_KEYS = (
@@ -144,7 +144,7 @@ DONE_APPROVAL_KEEP_DAYS = 30
 OPEN_ASKS_FILE = "open-asks.yaml"
 #: The runner's one line in the report's User model section: no reading is
 #: put to the user as a question, so the report says how to correct one.
-#: S-NEXT-overseer-asks (§3.8): the inbox first, and a relaying agent
+#: S-122 (§3.8): the inbox first, and a relaying agent
 #: records the person's words as `--recorded-by agent` (an agent's shell
 #: may not record as human, §3.9), never `human`.
 READING_CORRECTION_LINE = (
@@ -839,7 +839,7 @@ NEEDS_YOU_KEYS_TEXT = """- system-change: it changes how the user's computer or 
 
 
 def _needs_user_prompt() -> str:
-    """S-NEXT-overseer-asks (§3.8): what makes an ask need the user, and
+    """S-122 (§3.8): what makes an ask need the user, and
     the keys such an ask carries."""
     keys = ", ".join(conversation.BECAUSE_KEYS)
     return f"""Before you ask anything, apply this check in order and stop at the first yes. NEEDS YOU means an
@@ -1697,7 +1697,7 @@ def _full_inputs(
     _stage_lessons(home, stage)
     model_doc = user_model.show(home)
     _write_stage(stage, stage / "user-model.yaml", _yaml_text(model_doc))
-    # S-NEXT-overseer-asks (§3.8): the person's option clicks, labelled
+    # S-122 (§3.8): the person's option clicks, labelled
     # as chosen (never as said), and their feedback clicks on asks.
     asks_now = [
         row for row in _safe_questions(home) if row.get("kind") == "ask"
@@ -1816,7 +1816,7 @@ def _question_problem(item: dict[str, Any], known_cases: set[str]) -> str | None
         if register is None:
             return problem
     if "needs" in item:
-        # S-NEXT-overseer-asks: an ask that says who it needs follows the
+        # S-122: an ask that says who it needs follows the
         # r2 rules (`_r2_ask`); its default is the runner's for `user`.
         if item["needs"] not in conversation.NEEDS_VALUES:
             return f"needs must be one of {list(conversation.NEEDS_VALUES)}"
@@ -2199,7 +2199,7 @@ def _questions(
     was set. *model_doc* is no longer read (it was what a reading was
     validated against); the parameter stays for the callers.
 
-    S-NEXT-overseer-asks (§3.8): an ask that says `needs` is indexed by
+    S-122 (§3.8): an ask that says `needs` is indexed by
     :func:`_r2_ask` (options, recommend, plan, look_at, statements; a
     `needs: user` ask gets the runner's meanwhile sentence and `asked_at`
     *now*). *known_statements* are the statement ids a conflict may name;
@@ -4911,7 +4911,7 @@ def _prepare_manifest(
         "reconsider_observations": [],
         "report": (stage / "report.md").read_text(encoding="utf-8"),
         "questions": questions,
-        # S-NEXT-overseer-asks (§3.8): the asks and approvals phase B
+        # S-122 (§3.8): the asks and approvals phase B
         # withdrew as moot ({id, why}); the finalize applies them under its
         # lock, against the index as it stands then.
         "withdraw": [dict(row) for row in (withdraw or [])],
@@ -5433,13 +5433,13 @@ def _default_lines(
         elif row.get("system") is True:
             unchanged.append(f"{row['id']} would change your system: {row['default']}")
         elif conversation.asks_the_user(row):
-            # S-NEXT-overseer-asks: a key of the closed list; nothing done.
+            # S-122: a key of the closed list; nothing done.
             unchanged.append(f"{row['id']} needs you ({row.get('because')}): {row['default']}")
         elif row["id"] not in parked:
             applied.append(
                 f"{row['id']} asked and not waited for; applied its default: {row['default']}"
             )
-    # S-NEXT-overseer-asks (§1.3): each ask or approval withdrawn as moot,
+    # S-122 (§1.3): each ask or approval withdrawn as moot,
     # with its reason; the inbox shows it with "Ask me anyway". Fix round 1
     # (gate r1 MINOR 6): only the withdrawals the finalize APPLIED
     # (*withdrawn*, `Carried.applied`), never the model's list: one it could
@@ -5481,7 +5481,7 @@ _FINALIZE_OWNED_FIELDS = (
     "failure", "failure_detail", "halt_code", "week", "outcome",
     # S-112: each registration's outcome, written as it executes.
     "registrations",
-    # S-NEXT-overseer-asks: the inbox's rows for each applied lesson.
+    # S-122: the inbox's rows for each applied lesson.
     "attention_effects",
 )
 
@@ -5563,7 +5563,7 @@ def _write_manifest_truth(
         carry_notes: list[str] = []
         carry_dropped: set[str] = set()
         if complete:
-            # S-NEXT-overseer-asks (§3.8; critique 32): the previous index is
+            # S-122 (§3.8; critique 32): the previous index is
             # read HERE, inside the finalize's own lock span, so an answer or
             # a reopen made while this run was in progress is never lost.
             carried = _carry_forward(
@@ -6505,7 +6505,7 @@ def _execute_manifest(
     hook_lines: list[str] = []
     user_model_lines: list[str] = []
     cue_outcomes: list[dict[str, Any]] = []
-    #: S-NEXT-overseer-asks: the run manifest's `attention_effects` (§4.4),
+    #: S-122: the run manifest's `attention_effects` (§4.4),
     #: one row per applied lesson, kept across a resume (the finalize
     #: writes it, `_FINALIZE_OWNED_FIELDS`).
     attention_effects: list[dict[str, Any]] = [
@@ -6681,7 +6681,7 @@ def _execute_manifest(
                 )
                 if hook_activated:
                     hook_ids.append(item_result.id)
-                # S-NEXT-overseer-asks (§3.8; critique 8): the inbox's row
+                # S-122 (§3.8; critique 8): the inbox's row
                 # for this applied lesson, built from the same facts as the
                 # cue below. A line an earlier attempt applied
                 # (`already-applied`) gets its row once: the row is keyed on
@@ -7822,7 +7822,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             # truncate model prose rather than turning a landed decision into
             # a late refusal.
             # Never raises: a failed entry is dropped and named (2026-09-24).
-            # S-NEXT-overseer-asks: what is still open (the asks phase B
+            # S-122: what is still open (the asks phase B
             # was shown in open-asks.yaml), for the backstop and `withdraw:`.
             _open_entries, withdrawn_rows, withdraw_targets = _open_asks(
                 home, datetime.now(timezone.utc),

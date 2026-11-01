@@ -472,7 +472,7 @@ user-measured failure
 this repairs, their words: "there was no indication that anything
 was happening after i clicked the button.")*
 
-### 2.5 Inbox and decision workspace *(added 2026-10-31 — attention round, lane `ui-workspace`; S-NEXT-ui-workspace)*
+### 2.5 Inbox and decision workspace *(added 2026-10-31 — attention round, lane `ui-workspace`; S-125)*
 
 The user's answer 10 (`misc/build-2026-10-31c/your-calls.md`, decisions
 C4–C6): "i should have everything i need to make the decision that's
@@ -579,7 +579,7 @@ section records what the surface is.
 - **Weekly report** (`/overseer-report[/<date>]`): a read-only render of
   the overseer's report, newest by default, with links to earlier ones.
 
-### 2.6 The tray icon *(added 2026-10-31, S-NEXT-tray; attention-design-r2 §3.5, §3.10)*
+### 2.6 The tray icon *(added 2026-10-31, S-126; attention-design-r2 §3.5, §3.10)*
 
 A StatusNotifierItem in the desktop bar's tray (Waybar's `tray` module on the
 maintainer's host) is the one place self-learn shows that something is waiting.
@@ -852,7 +852,7 @@ permission surface of §4.3).
   §10). Worker code passes the same ids it already logs. swaync
   renders actions natively; without an action-capable daemon the
   helper degrades to informative-only, exactly M2's behavior.
-  *(Amended 2026-11-01, S-NEXT-surfaces, the user's answer 1 of the
+  *(Amended 2026-11-01, S-127, the user's answer 1 of the
   attention round: the worker sends no notification any more. The one
   popup left is a login hold: `overseer.notify.send(...,
   kind="hold.credentials")`, called by the steward, the overseer and
@@ -872,7 +872,7 @@ permission surface of §4.3).
   §4.5's server-held pending proposal; never persisted, cleared per
   §4.5's exhaustive clear-set, gone on restart by construction.)*
 - **Inbox routes, envelopes and the ask runner** *(added 2026-10-31 —
-  lane `ui-workspace`, S-NEXT-ui-workspace; the frozen contract is
+  lane `ui-workspace`, S-125; the frozen contract is
   `attention-design-r2.md` §4.7 and §4.8)*. The inbox lives in its own
   router (`ui/inbox_routes.py`): `GET /inbox`, `/inbox/list`,
   `/inbox/<id>` and its `workspace`, `evidence` and `conversation`
@@ -1507,7 +1507,7 @@ notifications are absent.
 | swaync/action support absent | Notifications degrade to M2's informative-only behavior. |
 | Browser has no `--app` mode / Hyprland absent | Plain tab via `xdg-open`; everything works, minus the dedicated-window feel. |
 | Worker overdue / never ran | Status strip alarm (reuses the worker's own escalation thresholds); everything else functions — the surface is not the worker's supervisor. |
-| *Inbox rows below added 2026-10-31 (lane `ui-workspace`, S-NEXT-ui-workspace; `attention-design-r2.md` §3.7).* | |
+| *Inbox rows below added 2026-10-31 (lane `ui-workspace`, S-125; `attention-design-r2.md` §3.7).* | |
 | `attention --json` fails (no JSON) | The inbox shows an error panel with the stderr text, "The inbox itself may be broken; the tray icon shows the same state.", and Retry. The front page's link reads "Inbox (?)". |
 | Inbox empty | "Nothing needs you, and nothing new." plus a link to the weekly report; no list items. With no needs-you items but some decided ones, the first unseen decided item is selected and the list header reads "Nothing needs you". |
 | Packet slow (> 1.5 s) | The item's list data renders at once; the evidence region shows "assembling…" and fills by htmx when the packet arrives. |
@@ -1601,7 +1601,7 @@ proper — "does it look good" — is unchanged and stays a human
 acceptance item (`10 §4`). Full reasoning and the rejected
 computed-style-digest alternative: `03-decisions.md` S-20.
 
-*Added 2026-10-31 (lane `ui-workspace`, S-NEXT-ui-workspace):* **the
+*Added 2026-10-31 (lane `ui-workspace`, S-125):* **the
 inbox's walk world.** The inbox (§2.5) is checked after landing by the
 user's walk instrument: a fresh, source-blind agent drives the page as
 the person would and records, per surface, what it expected, what it

@@ -448,7 +448,7 @@ def test_g_every_external_command_is_timeout_wrapped(tmp_path):
     M-U fold r1 (Major 1): `daemon-reload` has FIVE call sites (miner
     block, UI block, host block, the overseer unit-pair block added
     2026-09-13 under S-66, and the tray unit block added under
-    S-NEXT-tray) and the string occurs five times in a
+    S-126) and the string occurs five times in a
     --legacy-miner run -- a bare substring-presence check leaves 4 of
     the 5 sites undefended (any one of them could drop its `timeout`
     wrapper and the substring would still match). Checked here by COUNT,

@@ -459,7 +459,7 @@ def test_the_correctable_actors_are_the_case_actors_but_a_person():
     from self_learn import cases as cases_mod
 
     assert "human" in cases_mod.ACTORS  # control: the closed set has a person in it
-    # S-NEXT-overseer-asks: the attention round's C7 added `agent` to the
+    # S-122: the attention round's C7 added `agent` to the
     # closed set (an agent's own act is recorded as the agent's). A case an
     # agent recorded may carry a person's decision it relayed, so it stays
     # out of reach of a reconsider, as it was before `agent` existed: the

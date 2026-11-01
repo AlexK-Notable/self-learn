@@ -160,7 +160,7 @@ def closed_sets() -> dict[str, Any]:
             "default_required_unless": ["system: true", "register", "needs: user"],
             "system_default": conversation.SYSTEM_DEFAULT,
             "register_default": conversation.REGISTER_DEFAULT,
-            # S-NEXT-overseer-asks (attention design r2.1 §3.8, §4.5).
+            # S-122 (attention design r2.1 §3.8, §4.5).
             "needs": list(conversation.NEEDS_VALUES),
             "because": list(conversation.BECAUSE_KEYS),
             "needs_user_defaults": dict(conversation.NEEDS_USER_DEFAULTS),
@@ -801,7 +801,7 @@ def phase_b_examples() -> dict[str, str]:
             "needs": "stead",
             "default": "I kept the lesson loaded this week; a no from you retires it.",
         }, {
-            # S-NEXT-overseer-asks: an ask only the user can settle.
+            # S-122: an ask only the user can settle.
             "id": "q-example-system-change", "kind": "ask", "cases": [EXAMPLE_CASE],
             "text": (
                 "Bind the example daemon to the session bus so it restarts with it? Yes adds a "

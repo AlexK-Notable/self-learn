@@ -254,7 +254,7 @@ measurement; a denied call shows in the run's `denials` and in the journal.
 
 *Added 2026-10-31 (attention round, lane `ask-agent`;
 `misc/build-2026-10-31c/attention-design-r2.md` §3.3, §4.10; `03-decisions.md`
-row S-NEXT-ask-agent).* On each item of the inbox the person can ask an agent
+row S-124).* On each item of the inbox the person can ask an agent
 about the decision in front of them (the user's answer 10, decision C5). One
 question is one seam session on the `ask` surface: `ask.py` builds the
 `SessionSpec` and calls `invocation.write_session`, so the ask agent gets the

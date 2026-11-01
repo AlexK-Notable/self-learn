@@ -958,7 +958,7 @@ secrets manager and never reads a key file itself. Without the file the
 index runs word-search only and its status says why. A unit edit is
 inert until the unit is reloaded and the host restarted.
 
-**The inbox's cache (S-NEXT-attention-core, 2026-10-31c).** The
+**The inbox's cache (S-121, 2026-10-31c).** The
 attention reader (`02-schema.md` §3a.11) keeps only cache here, never
 ledger truth: `attention/seen.json` (which items the person has seen; a
 lost file only shows items once more), `attention/registrations.json`
@@ -2163,7 +2163,7 @@ included, and nowhere else (containment is by path, so `proj2` is not inside
 `self-learn-pending.sh` prints each `line` and, when there are more, one line
 naming `self-learn notice list`. The line's wording lives in
 `notices.format_line`, once. A hook cannot fail a session on this: an absent or
-malformed field prints nothing. *(Amended 2026-11-01, S-NEXT-surfaces,
+malformed field prints nothing. *(Amended 2026-11-01, S-127,
 congruence M9: before the notices the hook prints one header, once —
 "self-learn notices for this project — yours to carry out in this session (no
 sudo needed): do it, then `self-learn notice done <id>`" — because the design
@@ -2251,7 +2251,7 @@ into a session, so it is held to one clean line, secret-scanned, validated again
 when read, and printed with the `self-learn:` prefix; it is the overseer's reading
 and is not a user instruction.
 
-## 7.6 Approved work runs in a terminal the person opens (added 2026-10-31c, S-NEXT-answers)
+## 7.6 Approved work runs in a terminal the person opens (added 2026-10-31c, S-123)
 
 A change the person approved in the inbox (an `approve` option click on an
 item with a plan, design r2 §3.4.7) is carried out by an interactive Claude
@@ -2270,7 +2270,7 @@ approval an agent relayed from its own session launches nothing; that
 session, the one the person typed the yes in and is watching, may carry it
 out by the same brief, or the person clicks Run it now.
 
-## 7.7 The tray unit (added 2026-10-31, S-NEXT-tray)
+## 7.7 The tray unit (added 2026-10-31, S-126)
 
 `systemd/self-learn-tray.service` runs `plugins/self-learn/scripts/self-learn-tray`
 (linked to `~/.local/bin/self-learn-tray`): the tray icon of `09-surface-spec.md`

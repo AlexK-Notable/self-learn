@@ -64,7 +64,7 @@ def _ask(qid: str, case_ids: list[str], **extra) -> dict:
 
 def _needs_shape(*, register: bool = False) -> dict:
     """What a `system: true` or `register` ask written without `needs`
-    carries since S-NEXT-overseer-asks fix round 2 (gate r2 MAJOR 2): it is
+    carries since S-122 fix round 2 (gate r2 MAJOR 2): it is
     read as `needs: user` and held to those rules -- options and a
     recommendation, and for a system change a plan with a check."""
     if register:

@@ -119,7 +119,7 @@ def test_findings_example_validates(formats_dir):
 def test_questions_example_validates(formats_dir, tmp_path):
     path = formats_dir / "questions.yaml"
     index, dropped = overseer_run._questions(path, {}, {formats.EXAMPLE_CASE})
-    # S-NEXT-overseer-asks: a stead ask and a needs-user ask with a plan.
+    # S-122: a stead ask and a needs-user ask with a plan.
     assert dropped == [] and len(index["questions"]) == 2
     broken = _load(path)
     broken["questions"][0]["id"] = "Not A Slug"

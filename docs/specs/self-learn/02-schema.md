@@ -1027,7 +1027,7 @@ questions:
   corrects one when they choose to"). Readings remain evidence, shown in the
   report's User model section; the runner adds one line there saying how to
   correct one (`statement add … --answers-kind proposition --answers-ref
-  <um-id>@r<revision>`; *amended S-NEXT-overseer-asks:* the line names the
+  <um-id>@r<revision>`; *amended S-122:* the line names the
   inbox first, and the command it shows records with `--recorded-by agent`,
   for a session relaying the person's words, never `human`), and phase B's
   `answers.yaml` now carries such
@@ -1107,7 +1107,7 @@ questions:
   `statement add --answers-kind question --answers-ref <q-id>` still reaches
   phase B through `answers.yaml`.
 
-*(Added 2026-10-31, S-NEXT-overseer-asks.)* **Asks say who they need;
+*(Added 2026-10-31, S-122.)* **Asks say who they need;
 a needs-you ask stays open until answered or withdrawn.** The attention round
 (`misc/build-2026-10-31c/attention-design-r2.md` r2.1 §1.3, §3.8, §4.4, §4.5),
 under the user's answers of 2026-10-31 20:45 (answer 2, the closed needs-you
@@ -1557,7 +1557,7 @@ own subtree.*
    span; `coverage.yaml` and `open-questions.yaml` carry no free text at
    all (structured records only) — *amended 2026-09-24:* except an ask's
    `text` and `why` in `open-questions.yaml`, and the overseer's journal
-   (`overseer/journal/`), both secret-scanned — *amended S-NEXT-overseer-asks:*
+   (`overseer/journal/`), both secret-scanned — *amended S-122:*
    and an ask's option labels, recommendation, plan (summary, check and step
    texts, commands, file contents) and `look_at` paths, and the `text` and
    `why` of a withdrawn ask in `overseer/withdrawn.yaml`, every one
@@ -1596,7 +1596,7 @@ own subtree.*
    is read as a `covered_by:` reference with the covering surface
    unrecorded. See §2's amendment note on `superseded_by` for the field's
    two live shapes.
-8. *(S-NEXT-attention-core, attention round 2026-10-31c)* The inbox's
+8. *(S-121, attention round 2026-10-31c)* The inbox's
    files are ledger truth too, each append-only JSON Lines, written under
    `intents.ledger_write` and committed (§3a.11):
    `<ledger>/attention/workspace/<item-id>.jsonl` (one decision workspace's
@@ -1639,7 +1639,7 @@ YAML frontmatter plus six fixed Markdown sections, in this order:
 sections 1–4 exactly as committed; a later append re-hashes them and refuses
 if they differ. A change of mind is a successor case, never an edit.
 
-*(S-NEXT-answers, attention round 2026-10-31c, design r2 §3.4.8.)* A parked
+*(S-123, attention round 2026-10-31c, design r2 §3.4.8.)* A parked
 case edited by hand after it was decided fails the check and holds its
 lessons (`conflict.case-tampered`, a needs-you item). Only the person who
 edited it knows whether the edit was meant, so only the person answers:
@@ -2600,7 +2600,7 @@ a new line naming the line it amends.
   grammar, for words found in a transcript) or `conversation:<obs-id>` (for
   words typed into the overseer conversation, where no transcript line
   exists at record time — `<obs-id>` is the `presented` observation the
-  reply answers), or *(S-NEXT-attention-core)* `workspace:att-<12 hex>#T<n>`
+  reply answers), or *(S-121)* `workspace:att-<12 hex>#T<n>`
   (a row the person typed into an inbox item's decision workspace, §3a.11;
   checked by rule 11 of §3a.6: the row must exist and be sealed, be
   `role: user, origin: typed` of kind `reply` or `question`, and hold the
@@ -2645,7 +2645,7 @@ a new line naming the line it amends.
 - `uncertainty` is the recorder's doubt about what the words *mean*, kept
   beside them, never inside them.
 - `recorded_by` ∈ `human | steward | overseer | agent` — whoever captured
-  the words records them, the steward included. *(S-NEXT-attention-core:)*
+  the words records them, the steward included. *(S-121:)*
   `agent` is an agent's shell recording the person's words it relayed; the
   words stay the person's through the reference. An agent records a
   statement only with a `transcript:`, `conversation:` or `workspace:`
@@ -2730,7 +2730,7 @@ updated_by: human           # human | steward | overseer | agent
 
 | Container | Holds | Who may add | Who may mark LAPSED |
 |---|---|---|---|
-| `## A. From the user's own words` | `own-words` entries | human (or `agent`, an agent's shell recording as itself, S-NEXT-attention-core); steward or overseer, with a `transcript:` or `conversation:` reference | human or agent; steward or overseer, naming the changed condition or contrary evidence |
+| `## A. From the user's own words` | `own-words` entries | human (or `agent`, an agent's shell recording as itself, S-121); steward or overseer, with a `transcript:` or `conversation:` reference | human or agent; steward or overseer, naming the changed condition or contrary evidence |
 | `## B. System readings the user has seen` | `system-reading, provisional: false`; ≥1 `stmt-…` each | nobody directly — an entry moves here when a presentation record names it in `entries` (§3a.2) | steward, overseer, human, agent |
 | `## C. System readings, provisional` | `system-reading, provisional: true`; ≥1 `stmt-…` each | steward; overseer, including a consolidation of two or more entries into one, with a `basis` citing the lapsed entries and their statements | steward, overseer, human, agent |
 | `## D. Observed regularities` | system readings whose reference is telemetry or receipts rather than one episode; `provisional` as above; ≥1 `stmt-…` where the regularity is about a preference, else the telemetry refs alone | overseer | overseer, human, agent |
@@ -3036,7 +3036,7 @@ tool call as its name and the string values of its input, an attachment's
    An `agent` turn is context around a moment, never the person's own
    words. Not covered: variable-built paths, shell wrappers or transformations,
    unavailable or modified historical briefs, and unrecognised harness formats.
-11. *(S-NEXT-attention-core, attention round 2026-10-31c)* A workspace row
+11. *(S-121, attention round 2026-10-31c)* A workspace row
    is the person's typing exactly when self-learn's UI recorded it with
    `role: user, origin: typed`. `clicked`, `draft-accepted`, `draft-edited`
    and `ran-sudo` rows are the person's acts, never their words. A `relayed`
@@ -4646,7 +4646,7 @@ switched off reads as `@reach` unreachable (`skill-override-off`,
 `plugin-disabled`); the method tells the steward to park rather than move
 the lesson out from under the person's switch.
 
-### 3a.11 The inbox: items, the kind table, the packet, the workspace transcript *(S-NEXT-attention-core)*
+### 3a.11 The inbox: items, the kind table, the packet, the workspace transcript *(S-121)*
 
 *(Added by the attention round, 2026-10-31c; design
 `misc/build-2026-10-31c/attention-design-r2.md` §1, §3.1-§3.5, §4.1-§4.4,
@@ -4806,7 +4806,7 @@ packet <id> --json` (0, 1 build failed, 2 unknown id), `attention feedback
 from an agent's shell). Neither `attention` nor `ask` ticks the miner
 watchdog.
 
-### 3a.12 Answers in the inbox: choices, approved work, outcomes *(S-NEXT-answers)*
+### 3a.12 Answers in the inbox: choices, approved work, outcomes *(S-123)*
 
 *(Added by the attention round's `answers` lane, 2026-10-31c; design
 `misc/build-2026-10-31c/attention-design-r2.md` §1.3, §3.4.1, §3.4.3-§3.4.8,
