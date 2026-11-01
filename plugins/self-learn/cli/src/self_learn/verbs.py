@@ -82,6 +82,7 @@ from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
+from functools import partial
 from pathlib import Path
 
 from . import cases
@@ -4661,6 +4662,7 @@ def _apply_target(
     user_push: bool = True,
     notes: list[str] | None = None,
     keep_empty_rules: bool = False,
+    scaffold_owner: str | None = None,
 ) -> tuple[object, list[Path]]:
     """HOST-phase compile (doc 13 §4 step e): write the target from the
     committed ledger state. Returns (compile_result, host paths to stage —
@@ -4685,7 +4687,7 @@ def _apply_target(
     for a file whose region its compile record does not accept as it
     stands: that file is rewritten as before, never removed."""
     if spec.destination == "new-skill":
-        compile_result, host_paths = _apply_new_skill(home, spec)
+        compile_result, host_paths = _apply_new_skill(home, spec, owner=scaffold_owner)
     elif spec.destination == "hook":
         # M3-2 verbatim apply: the APPROVED bytes ride the routing block
         # (copied there at the ledger phase), so the host phase — and any
@@ -4826,24 +4828,60 @@ class NewSkillApplyResult:
     #: failed host write) or it was refused (``link_problem`` says why).
     linked: str | None = None
     link_problem: str | None = None
+    #: S-NEXT-skills-chain (SK-G): the ``metadata.self-learn`` stamp this
+    #: scaffold wrote into SKILL.md -- ``{authored_by, case: None,
+    #: created}`` -- when a person's (or an agent's) route created a skill
+    #: under a name nothing used, so it becomes self-learn's to maintain.
+    #: ``None`` for every other apply. :func:`_own_routed_scaffold` adds the
+    #: registry row from it once the host write stood.
+    owned_stamp: dict | None = None
+    #: Whether that registry row was added (``False`` with a warning when
+    #: the registry write failed; the SKILL.md then reads as a stray stamp).
+    owned: bool = False
 
     @property
     def word_count(self):
         return getattr(self.section, "word_count", None)
 
 
-def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult, list[Path]]:
+def _empty_new_skill_section(spec: TargetSpec) -> tuple[NewSkillApplyResult, list[Path]]:
+    """SK-D: the host apply of a ``new-skill`` target no routed lesson
+    resolves to any more (:func:`_apply_new_skill`)."""
+    target = spec.target
+    assert target is not None  # a new-skill target always resolves one
+    if not target.is_file():
+        return NewSkillApplyResult(path=target, changed=False, scaffolded=False), []
+    section = compile_managed_file(target, [])
+    return (
+        NewSkillApplyResult(path=target, changed=section.changed, scaffolded=False, section=section),
+        [target],
+    )
+
+
+def _apply_new_skill(
+    home: Path, spec: TargetSpec, *, owner: str | None = None
+) -> tuple[NewSkillApplyResult, list[Path]]:
     """The T18 host apply: deterministic scaffold on first route (M3-9 —
     plugin.json + SKILL.md, marketplace entry appended exactly once),
     ordinary managed-section recompile ever after. Idempotent: a second
-    run over unchanged records writes nothing."""
+    run over unchanged records writes nothing.
+
+    S-NEXT-skills-chain (SK-D): when the last lesson has left the skill
+    (retired, superseded, rerouted away), an existing SKILL.md gets an
+    empty managed section -- its lines would otherwise stay stale until
+    something else rewrote it -- and a missing one is left missing: no
+    error, no scaffold (a scaffold's description is seeded from a first
+    lesson, and there is none).
+
+    S-NEXT-skills-chain (SK-G): *owner* (``human`` or ``agent``,
+    :func:`_scaffold_owner`) is set on a person's route. When this apply
+    scaffolds the whole skill -- neither plugin.json nor SKILL.md was there
+    -- the seed SKILL.md carries the runner's stamp (``case: null``,
+    authored by *owner*) and the result's ``owned_stamp`` says so; the
+    registry row follows the host write (:func:`_own_routed_scaffold`)."""
     records = _compile_set(home, spec)
     if not records:
-        raise VerbError(
-            f"no routed records resolve to {spec.target} — nothing to "
-            "compile (the union may be empty even though records once "
-            f"named new-skill:{spec.new_skill}, if every one retired)"
-        )
+        return _empty_new_skill_section(spec)
     name = spec.new_skill
     root = spec.host_path
     target = spec.target
@@ -4863,6 +4901,21 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
 
     changed = False
     scaffolded = False
+    owned_stamp: dict | None = None
+    seed_text = skill_md_seed(name, description) if name else ""
+    if owner is not None and name and not manifest.is_file() and not target.is_file():
+        from . import skill_writer  # local: skill_writer reads verbs lazily too
+
+        stamp = {"authored_by": owner, "case": None, "created": chrono.now_iso()}
+        try:
+            seed_text = skill_writer.stamp_skill_md(
+                seed_text, by=owner, case=None, created=stamp["created"]
+            )
+            owned_stamp = stamp
+        except ValueError:
+            # Not reachable for the seed's own frontmatter; if it ever is,
+            # the scaffold goes ahead unowned, exactly as before SK-G.
+            owned_stamp = None
     if name and target is not None and not target.is_file():
         # SK2: also checked when the target is resolved (route and recompile
         # alike); here it is the last stop, for a SKILL.md that went missing
@@ -4884,7 +4937,7 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
         target.parent.mkdir(parents=True, exist_ok=True)
         fsops.atomic_write(
             target,
-            skill_md_seed(name, description),
+            seed_text,
             preserve_mode=True,
             fsync=True,
             follow_symlinks=True,
@@ -4916,6 +4969,7 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
         # skill, where the description is untouched and only the managed
         # BODY (Class B) grew.
         description_words=len(description.split()) if scaffolded else None,
+        owned_stamp=owned_stamp,
     )
     # SKILL.md first: the pinned apply subject names host_paths[0].
     return result, [target, manifest, marketplace]
@@ -4963,6 +5017,101 @@ def _link_routed_skill(spec: TargetSpec, compile_result: object, warnings: list[
     return replace(compile_result, linked=outcome)
 
 
+def _scaffold_owner(home: Path, spec: TargetSpec) -> str | None:
+    """S-NEXT-skills-chain (SK-G; decision 2 of the 2026-10-31b round): who
+    a route's new-skill scaffold is owned by -- ``human`` for a person's
+    shell (or a library call, which no job makes), ``agent`` for an agent's
+    -- or ``None`` when the scaffold stays the person's unowned skill as
+    before: a job routing (the overseer's own builds go through
+    ``skill write``), a name the registry already has a row for (a retired
+    skill's name stays retired), a vetoed name (a person's veto is never
+    turned into a rename of the person's own skill), or a registry that
+    does not read back (no stamp is written that no row could follow)."""
+    from . import attribution, skill_registry  # local: kept off verbs' import-time graph
+
+    actor = attribution.current_actor()
+    if actor is None or actor == "human":
+        by = "human"
+    elif actor == "agent":
+        by = "agent"
+    else:
+        return None
+    name = spec.new_skill
+    if not name:
+        return None
+    try:
+        registry = skill_registry.load(home)
+    except skill_registry.SkillRegistryError:
+        return None
+    if name in registry.skills or name in registry.vetoed_names():
+        return None
+    return by
+
+
+def _add_owned_scaffold_row(
+    registry, *, name: str, sha: str, stamp: dict
+) -> None:
+    """SK-G's registry change: a live row for the person's scaffold, with
+    the stamp's ``created`` and its authored hash as the last write. A row
+    that exists by now (a race with another writer) is left alone."""
+    if name in registry.skills:
+        return
+    step = {"at": stamp["created"], "case": None, "by": stamp["authored_by"]}
+    registry.skills[name] = {
+        "status": "live",
+        "plugin": f"plugins/{name}",
+        "created": dict(step),
+        "last_write": {**step, "authored_sha256": sha},
+    }
+
+
+def _own_routed_scaffold(
+    home: Path, spec: TargetSpec, compile_result: object, warnings: list[str]
+) -> object:
+    """SK-G: after a person's route scaffolded a skill under a fresh name
+    (``owned_stamp`` set by :func:`_apply_new_skill`) and the host write
+    stood, add its live registry row (``created: {case: null, by:
+    human|agent}``), so the overseer maintains its text from its next run
+    that writes skills. One ledger commit, through
+    :func:`skill_registry.with_update` (the route already holds the ledger
+    lock: a re-entrant pass-through). A failure is a warning, never a
+    failed route: the lesson is routed either way, and the selftest then
+    names the stamped SKILL.md that has no row.
+
+    Returns *compile_result* with ``owned`` set; any other result type, or
+    one with no stamp, comes back unchanged."""
+    from . import attribution, skill_registry, skill_writer  # local, as above
+
+    if not isinstance(compile_result, NewSkillApplyResult) or compile_result.owned_stamp is None:
+        return compile_result
+    name = spec.new_skill or ""
+    stamp = compile_result.owned_stamp
+    granted = attribution.authority()
+    body = (
+        granted.trailer()
+        if stamp["authored_by"] == "agent" and granted is not None
+        else f"By: {stamp['authored_by']}"
+    )
+    try:
+        sha = skill_writer.authored_sha256_at(spec.host_path, name)
+        if sha is None:
+            raise OSError(f"no SKILL.md under {skill_writer.skill_dir(spec.host_path, name)}")
+        skill_registry.with_update(
+            home,
+            partial(_add_owned_scaffold_row, name=name, sha=sha, stamp=stamp),
+            subject=f"skill owned {name} (scaffolded by a route)",
+            body=body,
+        )
+    except Exception as exc:  # noqa: BLE001 -- the write stood; nothing here may undo it
+        warnings.append(
+            f"new skill {name}: its registry row was not added ({exc}); the skill is "
+            "stamped as self-learn's but is not in the registry -- `self-learn --selftest` "
+            "names it"
+        )
+        return compile_result
+    return replace(compile_result, owned=True)
+
+
 def _new_skill_scaffold_note(spec: TargetSpec, compile_result: object) -> str:
     """The one line a person's ``new-skill`` scaffold prints (M3-11, as SK2
     changed it): where the skill is and whether it is linked. No manual
@@ -4976,6 +5125,13 @@ def _new_skill_scaffold_note(spec: TargetSpec, compile_result: object) -> str:
         where = f"linked at {link}, so new sessions load it"
     else:
         where = f"NOT linked at {link} (see the warning)"
+    if getattr(compile_result, "owned", False):
+        # SK-G: the overseer writes its text from now on.
+        return (
+            f"new skill scaffolded at plugins/{name}, {where}; self-learn maintains it "
+            "from now on: the overseer writes its text around its lessons, and reads any "
+            "edit of yours before its next write"
+        )
     return (
         f"new skill scaffolded at plugins/{name}, {where}; enrich the prose "
         "post-hoc whenever you like"
@@ -5527,6 +5683,13 @@ def _host_phase(
                 user_push=user_push,
                 notes=warnings,
                 keep_empty_rules=keep_empty_rules,
+                scaffold_owner=(
+                    _scaffold_owner(home, spec)
+                    if spec.destination == "new-skill"
+                    and routed_record is not None
+                    and not removal
+                    else None
+                ),
             )
             if tracked:
                 _notice_tracked_removals(
@@ -5567,6 +5730,10 @@ def _host_phase(
                 # refused commit, whose undo removes a fresh scaffold, never
                 # leaves a link to a missing folder.
                 compile_result = _link_routed_skill(spec, compile_result, warnings)
+                # SK-G: likewise only once the write stood -- a refused
+                # commit's undo removed the stamped scaffold, and no row
+                # may name a folder that is not there.
+                compile_result = _own_routed_scaffold(home, spec, compile_result, warnings)
         return compile_result, host_sha
     except _HOST_PHASE_ERRORS as exc:
         warning = (
@@ -10089,6 +10256,31 @@ def _reroute_plan(
         old_retire=old_retire, warnings=warnings, destination=destination,
         ref_name=ref_name, spec=spec, hook_route=hook_route,
     )
+
+
+def reroute_old_side_problem(
+    home: Path | str, record_id: str, *, note: str | None = None,
+) -> str | None:
+    """S-NEXT-skills-chain (SK-F): the checks a reroute of a placed lesson
+    INTO a skill being built this run makes on its OLD side -- the note's
+    secret scan, the lesson still routed, the old placement's retirement
+    preflight (``_retirement_preflight``), and the loaded-text cut a managed
+    line would make -- run before the skill exists, so a line doomed on its
+    old side is dropped before the skill is written. ``None`` when they
+    pass; otherwise the refusal's words. Writes nothing."""
+    home = Path(home)
+    try:
+        path = find_record_path(home, record_id)
+        _scan_or_refuse([path], note)
+        try:
+            _, record = require_status(home, record_id, ROUTED_ONLY, verb="reroute")
+        except LedgerOpsError as exc:
+            raise VerbError(str(exc)) from exc
+        _retirement_preflight(home, record, path.parent.parent, [])
+        _abort_if_loaded_text_cut(record, "new-skill")
+    except (VerbError, LedgerOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS) as exc:
+        return f"{record_id}: {exc}"
+    return None
 
 
 def reroute(

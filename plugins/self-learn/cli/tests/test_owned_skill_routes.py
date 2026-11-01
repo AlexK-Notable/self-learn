@@ -324,8 +324,10 @@ def test_e_a_persons_new_skill_route_scaffolds_links_and_prints_no_install_step(
     assert env.link(FRESH).resolve() == env.skill_dir(FRESH).resolve()
     assert f"new skill scaffolded at plugins/{FRESH}, linked at" in out
     assert "install.sh" not in out
-    # not owned: a person's scaffold is not a skill self-learn owns (D2)
-    assert not skill_registry.load(env.home).is_owned(FRESH)
+    # S-NEXT-skills-chain (SK-G, decision 2): a person's scaffold under a
+    # fresh name is self-learn's to maintain from now on (was: not owned, D2)
+    assert skill_registry.load(env.home).is_owned(FRESH)
+    assert "self-learn maintains it from now on" in out
 
 
 def test_e_the_route_result_carries_the_link_and_a_second_route_leaves_it(env):
@@ -533,3 +535,214 @@ def test_the_ledger_is_never_written_by_a_refused_preview(env, tmp_path):
     assert git(env.home, "rev-parse", "HEAD").stdout == head
     assert env.status(env.home) == status
     assert ledger_ops.find_record_path(env.home, RID).parent.name == "pending"
+
+
+# ===================== SK-D (S-NEXT-skills-chain): the last lesson leaves a skill
+
+
+def test_sk_d_1_the_last_lesson_leaving_an_owned_skill_leaves_an_empty_section(env, capsys):
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+
+    _owned(env)
+    _pending(env, RID)
+    verbs.route(env.home, RID, dest=f"new-skill:{NAME}", no_push=True)
+    text = env.skill_md().read_text(encoding="utf-8")
+    assert f"({RID})" in text[text.index(BEGIN_MARKER):text.index(END_MARKER)]  # control
+    capsys.readouterr()
+
+    rc = cli.main(["retire", RID, "--covered-by", "claude-md:user", "--no-push"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert "HOST PHASE FAILED" not in captured.err and "nothing to compile" not in captured.err
+    text = env.skill_md().read_text(encoding="utf-8")
+    section = text[text.index(BEGIN_MARKER):text.index(END_MARKER) + len(END_MARKER)]
+    assert RID not in section and "lrn-" not in section
+    assert env.status(env.root) == ""  # the empty section was committed
+
+
+def test_sk_d_2_with_the_folder_gone_and_no_lesson_left_nothing_is_written(env, capsys):
+    _pending(env, RID)
+    assert cli.main(["route", RID, "--dest", f"new-skill:{FRESH}", "--no-push"]) == 0
+    assert env.skill_md(FRESH).is_file()  # control: a person's scaffold
+    git(env.root, "rm", "-r", "-q", f"plugins/{FRESH}")
+    git(env.root, "commit", "-q", "-m", "a person removed the skill")
+    head = env.head(env.root)
+    capsys.readouterr()
+
+    rc = cli.main(["retire", RID, "--covered-by", "claude-md:user", "--no-push"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert "HOST PHASE FAILED" not in captured.err
+    assert not env.plugin_dir(FRESH).exists()
+    assert env.head(env.root) == head
+    assert _record(env.home, RID).status != "routed"
+
+
+# ============ SK-G (S-NEXT-skills-chain): a person's scaffold becomes owned
+
+
+def _stamp_of(path: Path) -> dict | None:
+    from self_learn.skill_scaffold import SKILL_RUNNER_METADATA_KEY, _read_frontmatter
+
+    front = _read_frontmatter(path.read_text(encoding="utf-8"))
+    assert front.mapping is not None
+    meta = front.mapping.get("metadata")
+    return meta.get(SKILL_RUNNER_METADATA_KEY) if isinstance(meta, dict) else None
+
+
+def _registry_bytes(env: Env) -> bytes | None:
+    path = env.home / skill_registry.REGISTRY_FILENAME
+    return path.read_bytes() if path.exists() else None
+
+
+def test_sk_g_1_a_persons_first_route_into_a_fresh_name_leaves_an_owned_stamped_skill(env):
+    _pending(env, RID)
+    assert env.row(FRESH) is None  # control: no row before
+
+    result = verbs.route(env.home, RID, dest=f"new-skill:{FRESH}", no_push=True)
+
+    assert result.warnings == [], result.warnings
+    row = env.row(FRESH)
+    assert row is not None and row["status"] == "live" and row["plugin"] == f"plugins/{FRESH}"
+    assert row["created"]["case"] is None and row["created"]["by"] == "human"
+    assert row["last_write"]["case"] is None and row["last_write"]["by"] == "human"
+    # the row records exactly what is deployed, so no write reads it as a hand edit
+    assert row["last_write"]["authored_sha256"] == skill_writer.authored_sha256_at(env.root, FRESH)
+    stamp = _stamp_of(env.skill_md(FRESH))
+    assert stamp == {"authored_by": "human", "case": None, "created": row["created"]["at"]}
+    assert getattr(result.compile_result, "owned", None) is True
+    assert env.status(env.root) == ""  # the stamped seed was committed with the scaffold
+    # and the overseer may now write its text: the lesson's line stays in the managed section
+    written = env.write(skill_writer.draft_view(skill_writer.deployed_files(env.home, FRESH) or {}),
+                        name=FRESH)
+    assert written.ok, written.problems
+    assert f"({RID})" in env.skill_md(FRESH).read_text(encoding="utf-8")
+
+
+def test_sk_g_2_a_second_route_into_it_changes_no_row(env):
+    _pending(env, RID)
+    _pending(env, RID2)
+    verbs.route(env.home, RID, dest=f"new-skill:{FRESH}", no_push=True)
+    assert env.row(FRESH) is not None  # control: the first route owned it
+    before = _registry_bytes(env)
+
+    second = verbs.route(env.home, RID2, dest=f"new-skill:{FRESH}", no_push=True)
+
+    assert _registry_bytes(env) == before
+    assert getattr(second.compile_result, "owned_stamp", "x") is None
+    assert f"({RID2})" in env.skill_md(FRESH).read_text(encoding="utf-8")
+
+
+def test_sk_g_3_control_a_route_into_an_existing_unowned_skill_leaves_the_registry_alone(env):
+    """A skill self-learn scaffolded for a person before SK-G (a managed
+    section, no stamp, no row) stays the person's."""
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+
+    _pending(env, RID)
+    folder = env.skill_dir(FRESH)
+    folder.mkdir(parents=True)
+    (env.plugin_dir(FRESH) / ".claude-plugin").mkdir()
+    (env.plugin_dir(FRESH) / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": FRESH, "description": "a person's skill"}) + "\n", encoding="utf-8"
+    )
+    (folder / "SKILL.md").write_text(
+        f"---\nname: {FRESH}\ndescription: a person's skill\n---\n\n# {FRESH}\n\n"
+        f"{BEGIN_MARKER}\n{END_MARKER}\n",
+        encoding="utf-8",
+    )
+    commit_all(env.root, "a person's own skill")
+    before = _registry_bytes(env)
+
+    result = verbs.route(env.home, RID, dest=f"new-skill:{FRESH}", no_push=True)
+
+    assert _record(env.home, RID).status == "routed"
+    assert f"({RID})" in env.skill_md(FRESH).read_text(encoding="utf-8")  # control: it routed
+    assert _registry_bytes(env) == before
+    assert _stamp_of(env.skill_md(FRESH)) is None
+    assert not getattr(result.compile_result, "owned", False)
+
+
+def test_sk_g_4_an_agents_route_makes_it_owned_by_agent(env):
+    from self_learn import attribution
+
+    _pending(env, RID)
+    with attribution.process("agent"):
+        result = verbs.route(env.home, RID, dest=f"new-skill:{FRESH}", no_push=True)
+
+    assert result.warnings == [], result.warnings
+    row = env.row(FRESH)
+    assert row is not None and row["created"] == {
+        "at": row["created"]["at"], "case": None, "by": "agent",
+    }
+    assert (_stamp_of(env.skill_md(FRESH)) or {}).get("authored_by") == "agent"
+    body = git(env.home, "log", "-1", "--format=%B", "--", skill_registry.REGISTRY_FILENAME).stdout
+    assert "By: agent" in body
+
+
+def test_sk_g_5_a_vetoed_name_is_scaffolded_as_the_persons_and_not_owned(env):
+    _pending(env, RID)
+    env.veto(FRESH)
+    before = _registry_bytes(env)
+
+    verbs.route(env.home, RID, dest=f"new-skill:{FRESH}", no_push=True)
+
+    assert env.skill_md(FRESH).is_file()  # control: the scaffold happened
+    assert _registry_bytes(env) == before
+    assert _stamp_of(env.skill_md(FRESH)) is None
+
+
+def test_sk_g_6_a_failed_registry_write_is_a_warning_and_the_route_stands(env, monkeypatch):
+    _pending(env, RID)
+
+    def refuse(*args, **kwargs):
+        raise skill_registry.SkillRegistryError("simulated: the registry write failed")
+
+    monkeypatch.setattr(skill_registry, "with_update", refuse)
+    result = verbs.route(env.home, RID, dest=f"new-skill:{FRESH}", no_push=True)
+
+    assert _record(env.home, RID).status == "routed"
+    assert env.skill_md(FRESH).is_file()
+    assert any(f"new skill {FRESH}: its registry row was not added" in w for w in result.warnings)
+    assert not getattr(result.compile_result, "owned", True)
+    assert not any("self-learn maintains it" in note for note in result.post_notes)
+
+
+def test_sk_g_7_a_persons_edit_of_a_route_scaffold_shows_phase_b_a_real_diff(env, tmp_path):
+    """Gate r1 finding 4: an SK-G skill's last write is the route's scaffold
+    commit (it has no ``skill write`` commit), so a person's later edit is
+    shown to phase B as a diff against it, and a removed one could be
+    restored from it. The diff header says "no case", never ``None``."""
+    from self_learn.overseer import skills as overseer_skills
+
+    _pending(env, RID)
+    verbs.route(env.home, RID, dest=f"new-skill:{FRESH}", no_push=True)
+    row = env.row(FRESH)
+    assert row is not None  # control: the route owned it
+    scaffold = skill_writer.files_at_last_write(env.home, FRESH, row)
+    assert scaffold is not None
+    assert scaffold["SKILL.md"] == env.skill_md(FRESH).read_text(encoding="utf-8")
+    path = env.skill_md(FRESH)
+    path.write_text(path.read_text(encoding="utf-8") + "\nA line the person adds.\n", encoding="utf-8")
+    commit_all(env.root, "a person edits the scaffold")
+
+    stage = tmp_path / "stage"
+
+    def write(_stage, target, text):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+
+    overseer_skills.stage_phase_b(
+        env.home, stage, [], overseer_skills.writing_state(env.home), write,
+    )
+
+    diff = (stage / overseer_skills.OWNED_DIR / FRESH / overseer_skills.DIFF_FILE).read_text(
+        encoding="utf-8"
+    )
+    assert "no diff can be shown" not in diff
+    assert "+A line the person adds." in diff
+    assert f"wrote {FRESH} (no case)" in diff and "None" not in diff
+    # a stamp that is not the row's is not taken for the scaffold
+    other = {**row, "created": {**row["created"], "at": "2020-01-01T00:00:00Z"}}
+    assert skill_writer.files_at_last_write(env.home, FRESH, other) is None

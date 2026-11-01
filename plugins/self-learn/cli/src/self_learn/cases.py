@@ -56,9 +56,11 @@ CASE FILE's shape, not the CLI's input format for ``case record``):
         ideas:
           - {idea: <text>, now: loaded | context | field:<name> | dropped,
              why: <text>}              # `why` required for dropped
-      skill: {name: <kebab>, why: <text>, lessons: [lrn-...]}
-                                       # required, lessons included, when
-                                       # parked_reason is skill-proposal
+      skill: {name: <kebab>, why: <text>, lessons: [lrn-...],
+              renamed_from: <kebab>}   # required, lessons included, when
+                                       # parked_reason is skill-proposal;
+                                       # renamed_from: the overseer renames
+                                       # that skill to name (S-NEXT-skills-chain)
     dependencies:
       statements: [stmt-...]
       user_model: [um-...@r...]
@@ -636,15 +638,25 @@ def _skill_problem(block: object) -> str | None:
     ``None`` (E1, D-AUTHOR §6.2; the build plan's K2 adds ``lessons``)."""
     if not isinstance(block, dict):
         return "decision.skill must be a mapping of name, why, lessons"
-    unknown = sorted(str(k) for k in block if k not in ("name", "why", "lessons"))
+    unknown = sorted(str(k) for k in block if k not in ("name", "why", "lessons", "renamed_from"))
     if unknown:
-        return f"decision.skill has unknown key(s) {unknown}; allowed: ['lessons', 'name', 'why']"
+        return (
+            f"decision.skill has unknown key(s) {unknown}; allowed: "
+            "['lessons', 'name', 'renamed_from', 'why']"
+        )
     name = block.get("name")
     if not isinstance(name, str) or not _SKILL_NAME_RE.match(name):
         return f"decision.skill.name must be a kebab-case skill name, got {name!r}"
     why = block.get("why")
     if not isinstance(why, str) or not why.strip():
         return "decision.skill.why is required text"
+    if "renamed_from" in block:
+        old = block.get("renamed_from")
+        if not isinstance(old, str) or not _SKILL_NAME_RE.match(old) or old == name:
+            return (
+                "decision.skill.renamed_from must be the kebab-case name the skill has now, "
+                f"other than decision.skill.name, got {old!r}"
+            )
     lessons = block.get("lessons")
     if lessons is not None and (
         not isinstance(lessons, list)

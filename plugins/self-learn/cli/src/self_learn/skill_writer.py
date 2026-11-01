@@ -16,9 +16,12 @@ Public surface::
     write(home, name, files, *, case, by, expect_sha=None, updating=None,
           no_push=False) -> WriteResult
     retire(home, name, *, case, by, no_push=False) -> RetireResult
-    rename(home, old, new, *, case, by, veto_statement=None, expect_sha=None,
+    rename(home, old, new, *, case, by, expect_sha=None,
            no_push=False) -> RenameResult      # SK8; see the rename section
+    rename_check(home, old, new, *, expect_sha=None) -> RenameCheck
     link_skill(skills_root, name) -> str
+    relink(home, name) -> (outcome | None, problem | None)
+    files_at_last_write(home, name, row=None) -> dict[str, str] | None
     routed_lessons(home, name) -> list[str]
     deployed_files(home, name) -> dict[str, str] | None
     deployed_authored_sha256(home, name) -> str | None
@@ -154,7 +157,6 @@ from .skill_scaffold import (
     check_skill,
     plugin_manifest_text,
 )
-from .statements import STMT_ID_RE
 
 __all__ = [
     "BY_VALUES",
@@ -170,6 +172,7 @@ __all__ = [
     "SkillLinkError",
     "SkillWriteCheck",
     "WriteResult",
+    "authored_sha256_at",
     "check",
     "deployed_authored_sha256",
     "deployed_files",
@@ -181,6 +184,7 @@ __all__ = [
     "retire",
     "routed_lessons",
     "skill_dir",
+    "stamp_skill_md",
     "unlink_skill",
     "write",
 ]
@@ -396,6 +400,25 @@ def _place_link(link: Path, target: Path) -> str:
     return outcome
 
 
+def relink(home: Path | str, name: str) -> tuple[str | None, str | None]:
+    """S-NEXT-skills-chain (SK-E): make sure a live skill self-learn owns
+    is linked at ``~/.claude/skills/<name>`` (a fresh machine, a cleaned
+    ``~/.claude``). ``(outcome, problem)``: *outcome* is what
+    :func:`link_skill` did (``created``, ``replaced``, ``unchanged``), or
+    ``None`` when nothing was done; *problem* names a path that is a
+    person's (a real file or folder, or a working link elsewhere), which is
+    left alone. A skill whose folder is missing is not linked (``(None,
+    None)``: the restore or retirement handles it)."""
+    home = Path(home)
+    root = _skills_root_or_none(home)
+    if root is None or not (skill_dir(root, name) / SKILL_ENTRY_FILE).is_file():
+        return None, None
+    try:
+        return link_skill(root, name), None
+    except SkillLinkError as exc:
+        return None, str(exc)
+
+
 def unlink_skill(skills_root: Path | str, name: str) -> bool:
     """Remove ``~/.claude/skills/<name>`` when it is a link to the skill's
     folder (working or dangling). Anything else at that path is left alone
@@ -516,6 +539,28 @@ def deployed_authored_sha256(home: Path | str, name: str) -> str | None:
     return None if files is None else _authored_sha(files)
 
 
+def authored_sha256_at(skills_root: Path | str, name: str) -> str | None:
+    """:func:`deployed_authored_sha256` for a skills root the caller already
+    holds (a route's host), or ``None`` when no SKILL.md is there
+    (S-NEXT-skills-chain, SK-G)."""
+    if not _valid_name(name):
+        return None
+    files = _read_tree(skill_dir(skills_root, name))
+    return _authored_sha(files) if SKILL_ENTRY_FILE in files else None
+
+
+def stamp_skill_md(text: str, *, by: str, case: str | None, created: str) -> str:
+    """SKILL.md *text* with the runner's ``metadata.self-learn`` stamp, the
+    one :func:`write` puts on a skill it creates (S-NEXT-skills-chain, SK-G:
+    a person's route scaffold that becomes self-learn's). Raises
+    :class:`ValueError` when the stamp cannot be added without changing the
+    rest of the frontmatter."""
+    try:
+        return _stamped(text, {"authored_by": by, "case": case, "created": created})
+    except _Refused as exc:
+        raise ValueError("; ".join(exc.problems)) from exc
+
+
 def draft_view(files: Mapping[str, str]) -> dict[str, str]:
     """A deployed skill's files as a draft the overseer can edit and hand
     back: SKILL.md without the runner's stamp and without the two blocks
@@ -627,11 +672,14 @@ def _split_frontmatter(text: str) -> tuple[str, str, str, str]:
 
 
 def _stamp_block(stamp: Mapping[str, Any]) -> str:
+    # A person's step that answers no case stamps ``case: null`` (YAML's
+    # null), never Python's ``None``, which YAML would read as a string.
+    case = stamp["case"] if stamp["case"] is not None else "null"
     return (
         "metadata:\n"
         f"  {SKILL_RUNNER_METADATA_KEY}:\n"
         f"    authored_by: {stamp['authored_by']}\n"
-        f"    case: {stamp['case']}\n"
+        f"    case: {case}\n"
         f"    created: {json.dumps(stamp['created'])}\n"
     )
 
@@ -642,7 +690,7 @@ def _rt_dump(data: Any) -> str:
     return buf.getvalue()
 
 
-def _stamped(text: str, stamp: Mapping[str, str]) -> str:
+def _stamped(text: str, stamp: Mapping[str, Any]) -> str:
     """SKILL.md *text* with ``metadata.self-learn`` set to *stamp*. A
     frontmatter with no ``metadata`` key gets a block appended at its end,
     every other byte unchanged; one with a ``metadata`` mapping is edited
@@ -1175,8 +1223,9 @@ def _preflight(
     files: object,
     *,
     expect_sha: str | None,
+    expect_missing: bool = False,
     updating: bool | None,
-    case: str,
+    case: str | None,
     by: str,
     now: str,
 ) -> _Plan:
@@ -1232,6 +1281,14 @@ def _preflight(
         link = link_path(name)
         if link.is_symlink() or link.exists():
             taken.append(f"{link} already exists")
+        held = _bucket_records(home, name)
+        if held:
+            # S-NEXT-skills-chain (SK-C1): a new skill never silently starts
+            # compiling records left in an old bucket of its name.
+            taken.append(
+                f"the ledger bucket skills/{name}/ holds record(s) {', '.join(held)} of another "
+                "skill: choose another name"
+            )
         problems += [f"name-collision: {t}" for t in taken]
 
     # -- the template and the secret scan
@@ -1304,7 +1361,34 @@ def _preflight(
     plan.new_sha = _authored_sha_or_refuse(after, "the files this write would leave")
 
     # -- the compare-and-swap (D4)
-    if expect_sha is not None:
+    if expect_missing:
+        # S-NEXT-skills-chain (SK-E): the overseer restores an owned skill
+        # whose folder was gone when phase B was staged; the swap is
+        # against absence, so anything found there now refuses it.
+        if not updating:
+            raise _Refused(KIND_BAD_LINE, ["only a skill self-learn owns is restored"])
+        # Gate r1 finding 2: a rerun of the same restore (the overseer's
+        # resume after a crash) finds exactly this write's own files there:
+        # every deployed file is one the draft writes and the authored hash
+        # is the one this write leaves. That is idempotent, like the update
+        # branch's current == new; the dirty check below still refuses any
+        # uncommitted byte that is not this write's own. Anything else at the
+        # folder (a foreign file, other text) still refuses.
+        own_restore = (
+            bool(deployed)
+            and set(deployed) <= set(draft)
+            and plan.current_sha == plan.new_sha
+        )
+        if (deployed or folder.exists()) and not own_restore:
+            raise _Refused(
+                KIND_TARGET_BUSY,
+                [
+                    f"{name}'s folder was missing when it was read, and something is there now "
+                    f"({os.path.relpath(folder, root)}); it is read again next run"
+                ],
+                notes=plan.notes,
+            )
+    elif expect_sha is not None:
         if plan.current_sha != expect_sha:
             raise _Refused(
                 KIND_TARGET_BUSY,
@@ -1358,7 +1442,8 @@ def _preflight(
                 [
                     f"{name}'s references hold lessons routed there as references "
                     f"({', '.join(reference_lessons)}); this write would change or remove the "
-                    "files they live in, so a person must move the lessons first"
+                    "files they live in: move those lessons out in one pair first (lessons.yaml "
+                    "marks them), and rewrite the file in a later run"
                 ],
                 notes=plan.notes,
             )
@@ -1388,8 +1473,18 @@ def _preflight(
 
 
 def _check_case_by(case: object, by: object) -> None:
+    """*case* is a case id, or ``None`` for a step a person (``by:
+    human``), or an agent under the user's standing grant (``by: agent``),
+    takes without one (S-NEXT-skills-chain). The overseer's steps always
+    answer a case."""
     problems = []
-    if not isinstance(case, str) or CASE_ID_RE.fullmatch(case) is None:
+    if case is None:
+        if by not in skill_registry.CASELESS_BY_VALUES:
+            problems.append(
+                "a step with no case is a person's (by: human) or an agent's under the user's "
+                f"standing grant (by: agent), not by: {by!r}"
+            )
+    elif not isinstance(case, str) or CASE_ID_RE.fullmatch(case) is None:
         problems.append(f"{case!r} is not a case id (case-xxxxxxxx)")
     if by not in BY_VALUES:
         problems.append(f"by must be one of {', '.join(BY_VALUES)}, got {by!r}")
@@ -1404,6 +1499,7 @@ def check(
     *,
     expect_sha: str | None = None,
     updating: bool | None = None,
+    expect_missing: bool = False,
 ) -> SkillWriteCheck:
     """Everything :func:`write` checks, writing nothing. *updating* is
     worked out from the registry when not given (a live row means update);
@@ -1414,6 +1510,7 @@ def check(
         plan = _preflight(
             home, name, files, expect_sha=expect_sha, updating=updating,
             case=_PLACEHOLDER_CASE, by="overseer", now=chrono.now_iso(),
+            expect_missing=expect_missing,
         )
     except _Refused as refused:
         return SkillWriteCheck(
@@ -1430,7 +1527,7 @@ def check(
 
 
 def _registry_after_write(
-    registry: skill_registry.Registry, *, name: str, sha: str, case: str, by: str, now: str
+    registry: skill_registry.Registry, *, name: str, sha: str, case: str | None, by: str, now: str
 ) -> None:
     """The row a write leaves: unchanged when it already records *sha* for a
     live skill; else ``last_write`` updated, or a new row."""
@@ -1524,11 +1621,16 @@ def _undo_deploy(
     return "the skills root was put back as it was"
 
 
-def _subject(verb: str, name: str, case: str) -> str:
-    return f"self-learn: skill {verb} {name} ({case})"
+#: What a commit subject says in place of a case id for a step that
+#: answers none (a person's, or an agent's under the grant).
+NO_CASE = "no case"
 
 
-def _apply_write(home: Path, plan: _Plan, *, case: str, by: str, now: str) -> WriteResult:
+def _subject(verb: str, name: str, case: str | None) -> str:
+    return f"self-learn: skill {verb} {name} ({case if case is not None else NO_CASE})"
+
+
+def _apply_write(home: Path, plan: _Plan, *, case: str | None, by: str, now: str) -> WriteResult:
     """The locked half of :func:`write`: registry row, files, link. The
     caller holds the ledger lock and the skills root's lock."""
     name = plan.name
@@ -1588,11 +1690,12 @@ def _write_locked(
     files: Mapping[str, str | bytes],
     root: Path,
     *,
-    case: str,
+    case: str | None,
     by: str,
     expect_sha: str | None,
     updating: bool | None,
     now: str,
+    expect_missing: bool = False,
 ) -> WriteResult:
     """Take the ledger lock, then the skills root's lock (the one order),
     decide again from the state now, and apply."""
@@ -1601,7 +1704,7 @@ def _write_locked(
         try:
             plan = _preflight(
                 home, name, files, expect_sha=expect_sha, updating=updating,
-                case=case, by=by, now=now,
+                case=case, by=by, now=now, expect_missing=expect_missing,
             )
         except _Refused as refused:
             return _refused_write(name, refused)
@@ -1626,23 +1729,27 @@ def write(
     name: str,
     files: Mapping[str, str | bytes],
     *,
-    case: str,
+    case: str | None,
     by: str,
     expect_sha: str | None = None,
     updating: bool | None = None,
     no_push: bool = False,
+    expect_missing: bool = False,
 ) -> WriteResult:
     """Check, then deploy the skill (module docstring). Idempotent by
     content: a second identical write makes no commit. *files* maps
     ``SKILL.md`` and ``references/<file>.md`` to their text; *case* is the
-    case the write belongs to; *by* is ``overseer`` or ``human``."""
+    case the write belongs to; *by* is ``overseer`` or ``human``.
+    *expect_missing* (S-NEXT-skills-chain, SK-E): the caller read the owned
+    skill's folder as missing and restores it; anything there now refuses
+    the write ``target-busy``."""
     home = Path(home)
     now = chrono.now_iso()
     try:
         _check_case_by(case, by)
         plan = _preflight(
             home, name, files, expect_sha=expect_sha, updating=updating,
-            case=case, by=by, now=now,
+            case=case, by=by, now=now, expect_missing=expect_missing,
         )
     except _Refused as refused:
         return _refused_write(name, refused)
@@ -1651,7 +1758,7 @@ def write(
     try:
         result = _write_locked(
             home, name, files, plan.root, case=case, by=by,
-            expect_sha=expect_sha, updating=updating, now=now,
+            expect_sha=expect_sha, updating=updating, now=now, expect_missing=expect_missing,
         )
     except (gitops.GitOpsError, SkillRegistryError) as exc:
         return WriteResult(name=name, ok=False, kind=KIND_GIT, problems=(str(exc),))
@@ -1720,13 +1827,15 @@ def _retire_preflight(home: Path, name: str) -> _RetirePlan | None:
 
 
 def _registry_after_retire(
-    registry: skill_registry.Registry, *, name: str, case: str, by: str, now: str
+    registry: skill_registry.Registry, *, name: str, case: str | None, by: str, now: str
 ) -> None:
     row = registry.skills.get(name)
     if row is None or row.get("status") != STATUS_LIVE:
         return
     row["status"] = STATUS_RETIRED
     row["retired"] = {"at": now, "case": case, "by": by}
+    # A retirement the user asked for is met (S-NEXT-skills-chain).
+    row.pop("retire_requested", None)
 
 
 def _remove_plugin(plan: _RetirePlan, subject: str, body: str) -> str | None:
@@ -1782,7 +1891,7 @@ def _undo_remove(plan: _RetirePlan, snapshot: dict[Path, bytes | None], relink: 
     return "the skills root and the link were put back as they were"
 
 
-def _apply_retire(home: Path, plan: _RetirePlan, *, case: str, by: str, now: str) -> RetireResult:
+def _apply_retire(home: Path, plan: _RetirePlan, *, case: str | None, by: str, now: str) -> RetireResult:
     """The locked half of :func:`retire`: link, then files, then the row.
     The caller holds the ledger lock and the skills root's lock."""
     name = plan.name
@@ -1822,7 +1931,7 @@ def _apply_retire(home: Path, plan: _RetirePlan, *, case: str, by: str, now: str
     )
 
 
-def _retire_locked(home: Path, name: str, root: Path, *, case: str, by: str, now: str) -> RetireResult:
+def _retire_locked(home: Path, name: str, root: Path, *, case: str | None, by: str, now: str) -> RetireResult:
     with intents.ledger_write(home) as recovered, gitops.host_lock(root, "git"):
         intents.announce_recovered(recovered)
         try:
@@ -1838,7 +1947,7 @@ def _retire_locked(home: Path, name: str, root: Path, *, case: str, by: str, now
 
 
 def retire(
-    home: Path | str, name: str, *, case: str, by: str, no_push: bool = False
+    home: Path | str, name: str, *, case: str | None, by: str, no_push: bool = False
 ) -> RetireResult:
     """Retire a skill self-learn owns (module docstring). Refused while any
     routed lesson still compiles into it; a skill already retired is a
@@ -1880,8 +1989,8 @@ def retire(
 #    this rename (the authored sha256 changes with the name line), and the
 #    old name added to ``renamed_from``. The old row stays live until step
 #    6, so nothing can scaffold a fresh skill under the old name meanwhile.
-#    A rename that comes from the user's veto (``veto_statement``) bans the
-#    old name for ever in the same commit;
+#    A veto of the old name is recorded before any rename by ``skill veto``
+#    (S-NEXT-skills-chain), never by the rename;
 # 2. the plugin folder moves in ONE skills-root commit:
 #    ``plugins/<old>/skills/<old>/`` becomes ``plugins/<new>/skills/<new>/``;
 #    SKILL.md's frontmatter ``name`` and plugin.json's ``name`` change; the
@@ -1890,6 +1999,14 @@ def retire(
 #    managed section and its lessons' lines included;
 # 3. the links: ``~/.claude/skills/<old>`` goes, ``~/.claude/skills/<new>``
 #    is made;
+# 3a. the skill's own ledger bucket moves with it (S-NEXT-skills-chain,
+#    SK-C1): every file under ``skills/<old>/`` is ``git mv``ed to the same
+#    place under ``skills/<new>/``, each record's scope becomes
+#    ``skill:<new>`` with one ``skill-renamed`` history entry naming the
+#    blob it had (``ledger_ops.carry_skill_bucket``), and the skills root's
+#    compile-record entries under ``plugins/<old>/skills/<old>/`` are
+#    re-keyed to the new path (the regions are byte for byte the same) --
+#    one ledger commit, or none when the bucket is empty;
 # 4. every lesson routed ``new-skill:<old>`` is re-routed to
 #    ``new-skill:<new>``, one ledger commit each. Its routing block stays
 #    whole except ``new_skill`` (``routed_at`` keeps the compiler's line
@@ -1904,12 +2021,16 @@ def retire(
 # 6. the old row goes (one ledger commit), once no lesson routes to it.
 #
 # Refused: a new name that is not a skill name, is the old name, is vetoed,
-# is loaded on this machine, or is already used in the skills root or in
-# ``~/.claude/skills`` (``bad-line``); a skill self-learn does not own, or
-# whose own ledger bucket ``skills/<old>/`` -- or the new name's bucket --
-# holds records (``needs-person``: D15, "the overseer asks instead"); a
-# skill changed since self-learn last wrote it, unless ``expect_sha`` names
-# its files as they are now, and uncommitted changes in either plugin
+# is loaded on this machine, is already used in the skills root or in
+# ``~/.claude/skills``, or whose own ledger bucket ``skills/<new>/`` holds
+# records of another skill (``bad-line``: the caller chooses another name;
+# S-NEXT-skills-chain, no person is asked); a skill self-learn does not
+# own (``needs-person``); a skill changed since self-learn last wrote it,
+# unless ``expect_sha`` names
+# its files as they are now (the row then records the hash of the files as
+# self-learn last wrote them, renamed, so phase B still sees the person's
+# edit as a change since self-learn's last write), and uncommitted changes
+# in either plugin
 # folder or in ``marketplace.json`` (``target-busy``); a plugin folder that
 # holds a symlink, a file that is not UTF-8 text, or another skill's folder
 # (``needs-person``).
@@ -1918,7 +2039,7 @@ def retire(
 # and the ledger as they are, so running the same rename again finishes
 # it. An uncommitted half-move is taken up only when every changed file
 # holds this rename's own bytes. A rerun of a finished rename changes
-# nothing beyond making sure of the link and the veto. A skills-root commit
+# nothing beyond making sure of the link. A skills-root commit
 # that FAILS puts the skills root back as HEAD has it and, on a first run,
 # the registry row too.
 #
@@ -1953,8 +2074,6 @@ class RenameResult:
     link: str | None = None
     #: Whether ``~/.claude/skills/<old>`` was removed.
     unlinked: bool = False
-    #: Whether this run added the old name to the vetoed names.
-    vetoed: bool = False
     #: The authored sha256 of the skill's files under the new name.
     authored_sha256: str | None = None
     warnings: tuple[str, ...] = ()
@@ -1977,17 +2096,14 @@ class _RenamePlan:
     new: str
     root: Path
     #: ``fresh`` (nothing done yet), ``resume`` (step 1 is committed and
-    #: the old row is still live) or ``done`` (only the link and the veto
-    #: are made sure of).
+    #: the old row is still live) or ``done`` (only the link is made sure
+    #: of).
     stage: str
     #: The row step 1 writes under the new name (``None``: it is there).
     new_row: dict | None = None
     #: The new name's registry row before step 1, put back when a first
     #: run's skills-root move fails.
     new_row_before: dict | None = None
-    #: ``{at, statement}`` of the user's veto of the old name, if any.
-    veto: dict | None = None
-    adds_veto: bool = False
     #: Whether HEAD already has the plugin under its new name.
     host_moved: bool = False
     #: Each file under its new path, with its text after the rename.
@@ -2000,13 +2116,126 @@ class _RenamePlan:
     marketplace_text: str = ""
     current_sha: str | None = None
     new_sha: str | None = None
-    #: ``(id, path)`` of every lesson routed ``new-skill:<old>``.
-    lessons: list[tuple[str, Path]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
-def _rename_subject(old: str, new: str, case: str) -> str:
-    return f"self-learn: skill rename {old} → {new} ({case})"
+def _last_write_commit(root: Path, name: str, before: str | None) -> tuple[str, str] | None:
+    """``(sha, subject)`` of the newest skills-root commit that is
+    self-learn's write of *name*, or its rename to *name*, at or before
+    *before* (``None``: HEAD); ``None`` when there is none."""
+    write_prefix = f"self-learn: skill write {name} ("
+    rename_infix = f" → {name} ("
+    args = [
+        "log", "--format=%H%x00%s", "--fixed-strings",
+        f"--grep={write_prefix}", "--grep=self-learn: skill rename ",
+        before or "HEAD", "--", f"plugins/{name}",
+    ]
+    proc = gitops._git(root, *args)  # noqa: SLF001 -- a read
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        sha, _nul, subject = line.partition("\0")
+        if subject.startswith(write_prefix):
+            return sha, subject
+        if subject.startswith("self-learn: skill rename ") and rename_infix in subject:
+            return sha, subject
+    return None
+
+
+def _skill_files_at(root: Path, sha: str, name: str) -> dict[str, str] | None:
+    prefix = f"plugins/{name}/skills/{name}/"
+    listing = gitops._git(root, "ls-tree", "-r", "-z", "--name-only", sha, "--", prefix)  # noqa: SLF001
+    if listing.returncode != 0:
+        return None
+    files: dict[str, str] = {}
+    for path in listing.stdout.split("\0"):
+        if not path.startswith(prefix):
+            continue
+        shown = gitops._git(root, "show", f"{sha}:{path}")  # noqa: SLF001
+        if shown.returncode == 0:
+            files[path[len(prefix):]] = shown.stdout
+    return files if SKILL_ENTRY_FILE in files else None
+
+
+def _scaffold_files(
+    root: Path, name: str, before: str | None, created: Mapping[str, Any] | None,
+) -> dict[str, str] | None:
+    """Gate r1 finding 4 (SK-G): a skill a person's route scaffolded under
+    a fresh name has no ``skill write`` commit; its last write is the commit
+    that added its SKILL.md, stamped by the route (``case: null``, authored
+    by ``human`` or ``agent``) with the row's ``created`` when the caller has
+    the row. The files at that commit, or ``None`` when there is none or its
+    stamp is not the route's."""
+    rel = f"plugins/{name}/skills/{name}/{SKILL_ENTRY_FILE}"
+    proc = gitops._git(  # noqa: SLF001 -- a read
+        root, "log", "--format=%H", "--no-renames", "--diff-filter=A",
+        before or "HEAD", "--", rel,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    sha = proc.stdout.split()[0]
+    files = _skill_files_at(root, sha, name)
+    if files is None:
+        return None
+    mapping = _read_frontmatter(files[SKILL_ENTRY_FILE]).mapping
+    metadata = mapping.get("metadata") if isinstance(mapping, dict) else None
+    stamp = metadata.get(SKILL_RUNNER_METADATA_KEY) if isinstance(metadata, dict) else None
+    if (
+        not isinstance(stamp, dict)
+        or stamp.get("case") is not None
+        or stamp.get("authored_by") not in skill_registry.CASELESS_BY_VALUES
+    ):
+        return None
+    if created is not None and (
+        stamp.get("authored_by") != created.get("by") or stamp.get("created") != created.get("at")
+    ):
+        return None
+    return files
+
+
+def files_at_last_write(
+    home: Path | str, name: str, row: dict | None = None, *, _before: str | None = None,
+    _depth: int = 0, _created: Mapping[str, Any] | None = None,
+) -> dict[str, str] | None:
+    """The skill's files as self-learn last wrote them to the skills root
+    (keys relative to the skill folder, as :func:`deployed_files`); ``None``
+    when they cannot be found. The last write is the newest commit that is
+    ``skill write <name>`` or a rename to *name*; a rename's files are the
+    files of the last write of the name it had, with the name line changed
+    (S-NEXT-skills-chain, SK-C1: a rename keeps a person's edit visible as a
+    change since self-learn last wrote the skill). A skill a person's route
+    scaffolded (SK-G) has no such commit: its last write is the commit that
+    added its stamped SKILL.md (:func:`_scaffold_files`). *row*, when the
+    caller has it, names the ``created`` stamp that scaffold must carry; the
+    history is the record."""
+    created = _created
+    if created is None and isinstance(row, dict) and isinstance(row.get("created"), dict):
+        created = row["created"]
+    root = _skills_root_or_none(Path(home))
+    if root is None or _depth > 16:
+        return None
+    found = _last_write_commit(root, name, _before)
+    if found is None:
+        return _scaffold_files(root, name, _before, created)
+    sha, subject = found
+    if subject.startswith(f"self-learn: skill write {name} ("):
+        return _skill_files_at(root, sha, name)
+    old = subject[len("self-learn: skill rename "):].split(" → ", 1)[0]
+    if not _valid_name(old) or old == name:
+        return None
+    files = files_at_last_write(
+        home, old, _before=f"{sha}^", _depth=_depth + 1, _created=created,
+    )
+    if files is None:
+        return None
+    try:
+        return {**files, SKILL_ENTRY_FILE: _renamed_skill_md(files[SKILL_ENTRY_FILE], old, name)}
+    except _Refused:
+        return None
+
+
+def _rename_subject(old: str, new: str, case: str | None) -> str:
+    return f"self-learn: skill rename {old} → {new} ({case if case is not None else NO_CASE})"
 
 
 def _head_entries(root: Path, rel_dir: str) -> list[tuple[str, str]]:
@@ -2183,21 +2412,49 @@ def _marketplace_renamed(raw: str, old: str, new: str) -> str:
 # -- the preflight (writes nothing)
 
 
+def _carried_by_this_rename(home: Path, old: str, record_id: str, path: Path) -> bool:
+    """Whether the record at *path* (under ``skills/<new>/``) is one this
+    rename of *old* carried, or is still carrying: it still says
+    ``scope: skill:<old>``, or its newest history entry is the rename's
+    ``skill-renamed`` from ``skills/<old>``."""
+    from . import ledger_ops
+    from .records import Record
+
+    try:
+        record = Record.from_path(path)
+    except ledger_ops.UNREADABLE_RECORD_ERRORS:
+        return False
+    if record.scope == f"skill:{old}":
+        return True
+    history = record.history
+    last = history[-1] if history else None
+    return (
+        isinstance(last, dict)
+        and last.get("event") == ledger_ops.SKILL_RENAMED_EVENT
+        and last.get("from") == f"skills/{old}"
+    )
+
+
 def _rename_bucket_check(home: Path, plan: _RenamePlan) -> None:
-    """D15: a skill whose own ledger bucket (``skills/<old>/`` or
-    ``skills/<new>/``) holds records is not renamed. Run on a first run AND
-    on every resumed run that is not done (integration 2026-10-31, the sk8
-    gate's MINOR): a record filed there between a crash and the rerun would
-    otherwise be stranded on a folder that no longer exists, or start
-    compiling into the renamed skill."""
-    held = [(name, ids) for name in (plan.old, plan.new) if (ids := _bucket_records(home, name))]
-    if held:
+    """S-NEXT-skills-chain (SK-C1): the rename carries ``skills/<old>/``
+    with it, so only the NEW name's bucket can stop it: one that holds
+    records of another skill refuses the name (``bad-line``: the caller
+    chooses another; no person is needed). Records this rename already
+    carried there (an interrupted run) are its own. Run on a first run and
+    on every resumed run that is not done."""
+    bucket = home / "skills" / plan.new
+    if not bucket.is_dir():
+        return
+    others = sorted(
+        path.stem for path in bucket.rglob("lrn-*.md")
+        if path.is_file() and not _carried_by_this_rename(home, plan.old, path.stem, path)
+    )
+    if others:
         raise _Refused(
-            KIND_NEEDS_PERSON,
+            KIND_BAD_LINE,
             [
-                f"the ledger bucket skills/{name}/ holds record(s) {', '.join(ids)}; a skill "
-                "whose own bucket holds records is not renamed, so a person must decide"
-                for name, ids in held
+                f"the name's bucket skills/{plan.new}/ holds records of another skill "
+                f"({', '.join(others)}): choose another name"
             ],
         )
 
@@ -2345,11 +2602,10 @@ def _rename_preflight(
     old: str,
     new: str,
     *,
-    case: str,
+    case: str | None,
     by: str,
     now: str,
     expect_sha: str | None,
-    veto_statement: str | None,
 ) -> _RenamePlan:
     """Decide the rename from the state on disk; raises :class:`_Refused`.
     Writes nothing.
@@ -2397,9 +2653,6 @@ def _rename_preflight(
         stage = _STAGE_FRESH
     plan = _RenamePlan(old=old, new=new, root=root, stage=stage, new_row_before=new_row)
     vetoed = {name.casefold() for name in registry.vetoed_names()}
-    if veto_statement is not None:
-        plan.veto = {"at": now, "statement": veto_statement}
-        plan.adds_veto = old.casefold() not in vetoed
 
     if stage == _STAGE_DONE:
         assert new_row is not None
@@ -2450,17 +2703,27 @@ def _rename_preflight(
         if old not in renamed_from:
             renamed_from.append(old)
         assert plan.new_sha is not None
+        recorded_new = plan.new_sha
+        if plan.current_sha != recorded:
+            # S-NEXT-skills-chain (SK-C1, sk8 finding 7k): a person edited the
+            # skill since self-learn last wrote it. The row keeps naming what
+            # self-learn wrote (renamed), so phase B still sees the edit.
+            recorded_new = _last_written_sha_renamed(home, old, old_row, new) or recorded
         plan.new_row = {
             "status": STATUS_LIVE,
             "plugin": f"plugins/{new}",
             "created": dict(old_row["created"]),
-            "last_write": {"at": now, "case": case, "by": by, "authored_sha256": plan.new_sha},
+            "last_write": {"at": now, "case": case, "by": by, "authored_sha256": recorded_new},
             "renamed_from": renamed_from,
         }
     else:
         assert new_row is not None
         recorded_new = new_row["last_write"]["authored_sha256"]
-        if not plan.host_moved and plan.new_sha != recorded_new:
+        if (
+            not plan.host_moved
+            and plan.new_sha != recorded_new
+            and not _resumed_hand_edit(home, plan, old_row, recorded_new, expect_sha)
+        ):
             raise _Refused(
                 KIND_NEEDS_PERSON,
                 [
@@ -2469,9 +2732,40 @@ def _rename_preflight(
                     "a person must decide"
                 ],
             )
-        plan.new_sha = recorded_new
-    plan.lessons = _lessons_routed_to(home, old)
+        if plan.new_sha == recorded_new or plan.host_moved:
+            plan.new_sha = recorded_new
     return plan
+
+
+def _last_written_sha_renamed(
+    home: Path, old: str, old_row: dict, new: str
+) -> str | None:
+    """The authored sha256 of *old*'s files as self-learn last wrote them,
+    with the name line changed to *new*; ``None`` when those files cannot
+    be found in the skills root's history (the caller keeps the recorded
+    hash)."""
+    files = files_at_last_write(home, old, old_row)
+    if files is None:
+        return None
+    try:
+        files = {**files, SKILL_ENTRY_FILE: _renamed_skill_md(files[SKILL_ENTRY_FILE], old, new)}
+        return _authored_sha(files)
+    except (_Refused, SkillRegistryError):
+        return None
+
+
+def _resumed_hand_edit(
+    home: Path, plan: _RenamePlan, old_row: dict | None, recorded_new: str,
+    expect_sha: str | None,
+) -> bool:
+    """A resumed rename of a skill a person had edited: the row step 1
+    wrote records the last-written files renamed, not the files as they
+    are, so the plan's hash differs from it by design. It is the same
+    rename when the caller names the files as they are (``expect_sha``)
+    and step 1's hash is the last-written one."""
+    if old_row is None or expect_sha is None or plan.current_sha != expect_sha:
+        return False
+    return _last_written_sha_renamed(home, plan.old, old_row, plan.new) == recorded_new
 
 
 # -- the registry steps
@@ -2483,16 +2777,13 @@ def _registry_rename_begin(
     old: str,
     new: str,
     row: dict | None,
-    veto: dict | None,
 ) -> None:
     """Step 1: the row under the new name, unless a live one is there
-    already, and the user's veto of the old name, unless it is banned."""
+    already."""
     if row is not None:
         current = registry.skills.get(new)
         if current is None or current.get("status") != STATUS_LIVE:
             registry.skills[new] = copy.deepcopy(row)
-    if veto is not None:
-        registry.add_veto(old, at=veto["at"], statement=veto["statement"])
 
 
 def _registry_rename_finish(registry: skill_registry.Registry, *, old: str, new: str) -> None:
@@ -2591,6 +2882,38 @@ def _reroute_lesson(
     return sha
 
 
+def _carry_bucket(
+    home: Path, plan: _RenamePlan, subject: str, body: str, *, by: str, case: str | None,
+) -> str | None:
+    """Step 3a: carry ``skills/<old>/`` to ``skills/<new>/`` and re-key the
+    skills root's compile-record entries for the old folder, in one ledger
+    commit under an intent. ``None`` when there is nothing to carry. The
+    caller holds the ledger lock."""
+    from . import compiled, ledger_ops
+    from .hosts import host_slug
+
+    plan_files = ledger_ops.skill_bucket_carry_plan(home, plan.old, plan.new)
+    slug = host_slug(home, plan.root, scope_kind="skill")
+    record_path = compiled.compiled_record_path(home, slug)
+    old_prefix = f"plugins/{plan.old}/skills/{plan.old}/"
+    new_prefix = f"plugins/{plan.new}/skills/{plan.new}/"
+    rekey = compiled.has_prefix(home, slug, old_prefix)
+    if not plan_files and not rekey:
+        return None
+    paths = [p for pair in plan_files for p in pair] + ([record_path] if rekey else [])
+    message = f"{subject}: carry skills/{plan.old}/ to skills/{plan.new}/"
+    intent = intents.begin(home, "skill-rename", sorted(set(paths)), message)
+    touched = ledger_ops.carry_skill_bucket(home, plan.old, plan.new, by=by, case=case)
+    if rekey:
+        written = compiled.rekey_prefix(home, slug, old_prefix, new_prefix)
+        if written is not None:
+            touched.append(written)
+    intents.complete(intent)
+    sha = gitops.stage_and_commit(home, sorted(set(touched)), message, body)
+    intents.finish(intent)
+    return sha
+
+
 def _settle_section(
     home: Path, plan: _RenamePlan, body: str
 ) -> tuple[str | None, str | None]:
@@ -2649,7 +2972,7 @@ def _rename_outcome(plan: _RenamePlan, **fields: Any) -> RenameResult:
     return RenameResult(old=plan.old, new=plan.new, **fields)
 
 
-def _apply_rename(home: Path, plan: _RenamePlan, *, case: str, by: str) -> RenameResult:
+def _apply_rename(home: Path, plan: _RenamePlan, *, case: str | None, by: str) -> RenameResult:
     """The locked half of :func:`rename`: steps 1 to 6 of the section
     comment, each skipped when an earlier run finished it. The caller
     holds the ledger lock and the skills root's lock."""
@@ -2662,12 +2985,11 @@ def _apply_rename(home: Path, plan: _RenamePlan, *, case: str, by: str) -> Renam
 
     begun = skill_registry.with_update(
         home,
-        partial(_registry_rename_begin, old=old, new=new, row=plan.new_row, veto=plan.veto),
+        partial(_registry_rename_begin, old=old, new=new, row=plan.new_row),
         subject=subject,
     )
     if begun is not None:
         shas.append(begun)
-    vetoed = plan.adds_veto and begun is not None
 
     host_sha = None
     if not plan.host_moved:
@@ -2691,7 +3013,7 @@ def _apply_rename(home: Path, plan: _RenamePlan, *, case: str, by: str) -> Renam
                     if restored is not None:
                         shas.append(restored)
             return _rename_outcome(
-                plan, ok=False, kind=KIND_GIT, ledger_shas=shas, vetoed=vetoed,
+                plan, ok=False, kind=KIND_GIT, ledger_shas=shas,
                 problems=[f"the skills-root move failed ({exc}); {undone}"],
             )
 
@@ -2701,19 +3023,39 @@ def _apply_rename(home: Path, plan: _RenamePlan, *, case: str, by: str) -> Renam
     except (SkillLinkError, OSError) as exc:
         return _rename_outcome(
             plan, ok=False, kind=KIND_NEEDS_PERSON, ledger_shas=shas, host_sha=host_sha,
-            vetoed=vetoed,
             problems=[
                 f"{old} was moved to {new} but could not be linked: {exc}; fix that path and "
                 "run the same rename again to finish"
             ],
         )
 
+    try:
+        carried = _carry_bucket(home, plan, subject, body, by=by, case=case)
+    except (gitops.GitOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS, ledger_ops.LedgerOpsError) as exc:
+        return _rename_outcome(
+            plan, ok=False,
+            kind=KIND_GIT if isinstance(exc, gitops.GitOpsError) else KIND_NEEDS_PERSON,
+            ledger_shas=shas, host_sha=host_sha, link=link, unlinked=unlinked,
+            problems=[
+                f"moving the ledger bucket skills/{old}/ to skills/{new}/ stopped ({exc}); run "
+                "the same rename again to finish"
+            ],
+        )
+    if carried is not None:
+        shas.append(carried)
+
     rerouted: list[str] = []
     try:
-        for record_id, path in plan.lessons:
+        # Read again after step 3a: a lesson filed in the skill's own bucket
+        # (scope skill:<old>) and routed new-skill:<old> was just carried to
+        # skills/<new>/, so the path the preflight read is gone.
+        for record_id, path in _lessons_routed_to(home, old):
             sha = _reroute_lesson(
                 home, path, old=old, new=new, body=body,
-                subject=f"self-learn: reroute {record_id} → new-skill:{new} (skill rename {old}, {case})",
+                subject=(
+                    f"self-learn: reroute {record_id} → new-skill:{new} (skill rename {old}, "
+                    f"{case if case is not None else NO_CASE})"
+                ),
             )
             if sha is not None:
                 shas.append(sha)
@@ -2723,7 +3065,7 @@ def _apply_rename(home: Path, plan: _RenamePlan, *, case: str, by: str) -> Renam
             plan, ok=False,
             kind=KIND_GIT if isinstance(exc, gitops.GitOpsError) else KIND_NEEDS_PERSON,
             ledger_shas=shas, host_sha=host_sha, link=link, unlinked=unlinked,
-            rerouted=rerouted, vetoed=vetoed,
+            rerouted=rerouted,
             problems=[
                 f"re-routing the lessons of {old} stopped ({exc}); run the same rename again "
                 "to finish"
@@ -2741,7 +3083,7 @@ def _apply_rename(home: Path, plan: _RenamePlan, *, case: str, by: str) -> Renam
             return _rename_outcome(
                 plan, ok=False, kind=KIND_NEEDS_PERSON, ledger_shas=shas, host_sha=host_sha,
                 settle_sha=settle_sha, link=link, unlinked=unlinked, rerouted=rerouted,
-                vetoed=vetoed, warnings=warnings,
+                warnings=warnings,
                 problems=[
                     f"lesson(s) {', '.join(remaining)} still route to new-skill:{old}, so its "
                     "registry row stays; run the same rename again to finish"
@@ -2754,7 +3096,7 @@ def _apply_rename(home: Path, plan: _RenamePlan, *, case: str, by: str) -> Renam
             shas.append(finished)
     return _rename_outcome(
         plan, ok=True, ledger_shas=shas, host_sha=host_sha, settle_sha=settle_sha, link=link,
-        unlinked=unlinked, rerouted=rerouted, vetoed=vetoed, warnings=warnings,
+        unlinked=unlinked, rerouted=rerouted, warnings=warnings,
     )
 
 
@@ -2771,11 +3113,10 @@ def _rename_locked(
     new: str,
     root: Path,
     *,
-    case: str,
+    case: str | None,
     by: str,
     now: str,
     expect_sha: str | None,
-    veto_statement: str | None,
 ) -> RenameResult:
     """Take the ledger lock, then the skills root's lock (the one order),
     decide again from the state now, and apply."""
@@ -2784,11 +3125,38 @@ def _rename_locked(
         try:
             plan = _rename_preflight(
                 home, old, new, case=case, by=by, now=now,
-                expect_sha=expect_sha, veto_statement=veto_statement,
+                expect_sha=expect_sha,
             )
         except _Refused as refused:
             return _refused_rename(old, new, refused)
         return _apply_rename(home, plan, case=case, by=by)
+
+
+@dataclass(frozen=True)
+class RenameCheck:
+    old: str
+    new: str
+    ok: bool
+    kind: str | None = None
+    problems: tuple[str, ...] = ()
+
+
+def rename_check(
+    home: Path | str, old: str, new: str, *, expect_sha: str | None = None
+) -> RenameCheck:
+    """Everything :func:`rename` checks before it writes, writing nothing
+    (the overseer's runner checks a rename pair with this before any pair
+    reaches the ledger; S-NEXT-skills-chain, SK-C2)."""
+    try:
+        _rename_preflight(
+            Path(home), old, new, case=_PLACEHOLDER_CASE, by="overseer", now=chrono.now_iso(),
+            expect_sha=expect_sha,
+        )
+    except _Refused as refused:
+        return RenameCheck(old=old, new=new, ok=False, kind=refused.kind, problems=refused.problems)
+    except gitops.GitOpsError as exc:
+        return RenameCheck(old=old, new=new, ok=False, kind=KIND_GIT, problems=(str(exc),))
+    return RenameCheck(old=old, new=new, ok=True)
 
 
 def rename(
@@ -2796,16 +3164,15 @@ def rename(
     old: str,
     new: str,
     *,
-    case: str,
+    case: str | None,
     by: str,
-    veto_statement: str | None = None,
     expect_sha: str | None = None,
     no_push: bool = False,
 ) -> RenameResult:
     """Rename a skill self-learn owns from *old* to *new* (the rename
-    section above). *veto_statement* is the statement id of the user's
-    veto when the rename comes from one: the old name is then banned for
-    ever. *expect_sha* is the authored sha256 of the skill's files as the
+    section above). *case* is ``None`` for a person's rename (or an
+    agent's under the user's standing grant) that answers no case.
+    *expect_sha* is the authored sha256 of the skill's files as the
     caller read them, needed when they changed since self-learn last wrote
     them. Running the same rename again finishes an interrupted one and
     changes nothing after a finished one."""
@@ -2813,15 +3180,9 @@ def rename(
     now = chrono.now_iso()
     try:
         _check_case_by(case, by)
-        if veto_statement is not None and (
-            not isinstance(veto_statement, str) or STMT_ID_RE.fullmatch(veto_statement) is None
-        ):
-            raise _Refused(
-                KIND_BAD_LINE, [f"{veto_statement!r} is not a statement id (stmt-xxxxxxxx)"]
-            )
         plan = _rename_preflight(
             home, old, new, case=case, by=by, now=now,
-            expect_sha=expect_sha, veto_statement=veto_statement,
+            expect_sha=expect_sha,
         )
     except _Refused as refused:
         return _refused_rename(old, new, refused)
@@ -2832,7 +3193,7 @@ def rename(
     try:
         result = _rename_locked(
             home, old, new, plan.root, case=case, by=by, now=now,
-            expect_sha=expect_sha, veto_statement=veto_statement,
+            expect_sha=expect_sha,
         )
     except (gitops.GitOpsError, SkillRegistryError) as exc:
         return RenameResult(old=old, new=new, ok=False, kind=KIND_GIT, problems=(str(exc),))

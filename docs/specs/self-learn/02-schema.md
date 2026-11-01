@@ -373,6 +373,20 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   only under a delegated sheet. A move is therefore never byte-identical:
   it is a new version of the lesson (§3a.8). Code older than this widening
   refuses such a record.
+- **`history`'s closed set widens to seven kinds** *(2026-10-31,
+  S-NEXT-skills-chain)*: `skill-renamed` joins the six above. A skill
+  rename (`skill_writer.rename`, by a person, an agent under the grant, or
+  the overseer's runner) carries the skill's ledger bucket `skills/<old>/`
+  to `skills/<new>/` (`ledger_ops.carry_skill_bucket`, a `git mv`) and
+  appends one entry to every record it carries, in the same commit:
+  `{at, event: "skill-renamed", from, to, from_blob?, by, case?}`, where
+  `from`/`to` are the buckets and `from_blob` the record's git blob before
+  the carry. `ledger_ops.carried_version` takes trailing `skill-renamed`
+  entries back off, so the steward reads a carried lesson it has decided
+  as the version it decided (no new version, §3a.8) unless the lesson was
+  edited afterwards. The bucket's compile records are re-keyed to the new
+  plugin path (`compiled.rekey_prefix`). Code older than this widening
+  refuses such a record.
 - **`<ledger>/overseer/` is not a bucket** *(2026-09-13 — the overseer
   build, O-0)*: it holds no `pending/resolved/proposals` records, is never
   a route destination, and never appears in `list --json`'s bucket
@@ -814,26 +828,44 @@ skills:
   <name>:
     status: live            # live | retired
     plugin: plugins/<name>  # relative to the skills root
-    created: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human}
-    last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human,
+    created: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent}
+    last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent,
                  authored_sha256: <hex>}
-    retired: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human}  # only when retired
+    retired: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent}  # only when retired
     renamed_from: [<old name>, ...]                                 # optional
+    retire_requested: {at: <iso>, by: human|agent, grant: stmt-xxxxxxxx}  # optional, live rows only
 vetoed:
-  - {name: <name>, at: <iso>, statement: stmt-xxxxxxxx}
+  - {name: <name>, at: <iso>, by: human|agent, grant: stmt-xxxxxxxx}  # S-NEXT-skills-chain
+  - {name: <name>, at: <iso>, statement: stmt-xxxxxxxx}              # written before it
 ```
 
 A skill is owned when it has a `live` row; a retired row keeps its history
 and owns nothing. `by` is `overseer` only when the overseer's runner calls
-the writer itself (a Python call, not the CLI), and `human` for every write,
-retirement or rename made through the CLI; an agent's shell cannot make one
-(`03-decisions.md` S-107 part 2), so no third value is needed.
-`case` always names a case in this build: the CLI's `write`, `retire` and
-`rename` require `--case`, and the registry refuses any other value
-(`skill_registry._check_case`). A person's step that answers no case
-(`case: null` with `by: human`, which the skills plan allows) is not built;
-until it is, a person names the case the step belongs to. The runner always
-names its case. `authored_sha256` is the sha256 of the skill's authored
+the writer itself (a Python call, not the CLI), `human` for every write,
+retirement or rename made through the CLI in a person's own terminal, and
+`agent` for one made from an agent's shell under the user's standing grant
+(`03-decisions.md` S-107 part 2, as amended by S-NEXT-attribution).
+*(Amended S-NEXT-skills-chain.)* `--case` is optional on the CLI's `write`,
+`retire`, `rename` and `veto`: a step that answers no case records `case:
+null`, which the registry accepts only with `by: human` or `by: agent`
+(`skill_registry.CASELESS_BY_VALUES`), and the skill's frontmatter stamp then
+reads `case: null`. The runner always names its case. A person's (or an
+agent's) route that scaffolds a skill under a name no row, veto or skill
+folder uses makes the skill owned the same way: its seed `SKILL.md` is
+stamped (`authored_by: human|agent`, `case: null`) and, once the host write
+stood, the route adds a `live` row whose `created` and `last_write` say
+`case: null` and whose `authored_sha256` is the scaffold's (`verbs.
+_own_routed_scaffold`, one ledger commit `skill owned <name> (scaffolded by a
+route)`; a failure is a warning, and `--selftest` then names the stamped
+`SKILL.md` with no row). A route by a job, into an existing skill, or under a
+vetoed or retired name adds nothing. `retire_requested` is a request to
+retire a live skill lessons still route into (`skill retire` of such a skill,
+`skill_requests.request_retire`): the next overseer run that writes skills
+moves the lessons out and retires it, and the key goes with the retirement.
+A veto entry written from S-NEXT-skills-chain on carries who made it (`by`)
+and, from an agent's shell, the grant's statement (`grant`, only with `by:
+agent`); an older entry's `statement` is read as before. Every registry write
+goes through `skill_registry.with_update` with a named callback. `authored_sha256` is the sha256 of the skill's authored
 files as the last `skill write` left them, frontmatter stamp included:
 `SKILL.md` with its managed section, its pointer block and trailing white
 space taken out, and every `references/*.md` in full except the compilers'
@@ -878,10 +910,23 @@ ignored.
 `skill-candidates.yaml`. Phase B's stage adds `owned-skills/<name>/` (the
 skill's files as they are now, its registry row,
 `changed-since-last-write.diff` and the ids of the lessons routed into it),
-`vetoes.yaml` (the vetoed names, and the open retirement requests: for
-each live skill, its newest `overseer respond --retire-skill` request made
-since the skill was created, with its statement id, staged in every run
-until the skill is retired) and `skill-proposals.yaml`; it writes
+`vetoes.yaml` (the vetoed names, and the open requests, read from the
+registry alone: each live skill whose name is vetoed, to be renamed, and each
+live row's `retire_requested`, staged in every run until the skill is renamed
+or retired; *amended S-NEXT-skills-chain*, before which a retirement request
+was an `overseer respond --retire-skill` statement) and
+`skill-proposals.yaml`. *(S-NEXT-skills-chain.)* Each owned skill's
+`lessons.yaml` lists the lessons routed into it and, under
+`in_reference_files`, each lesson held in one of its authored reference files
+(`{id: references/<file>.md}`), which a rewrite may not change or remove. An
+owned skill whose folder is gone from the skills root is staged with
+`last-write/` (its files as self-learn last wrote them, read from the skills
+root's history, following renames) and the commit that removed the folder;
+phase B brings it back (a pair whose `skills/<name>/` is written from
+`last-write/`, deployed only into an empty place) or retires it. Before phase
+B is staged, a writing run makes again every missing or wrong
+`~/.claude/skills/<name>` link of an owned skill whose folder exists, and the
+report names each repair; it writes
 `skills/<name>/` (one folder per skill to build or rewrite: `SKILL.md`,
 optional `references/*.md`) and `skill-dispositions.yaml`.
 
@@ -1352,6 +1397,19 @@ without it the case is refused by name. A skill-building pair is `outcome: route
 `decision.skill`, and a skill retirement is `outcome: retire` with `decision.skill`. The overseer's
 runner writes the skill before it applies a building pair's sheet (a refused write drops the pair),
 and retires the skill only after the retirement pair's sheet has moved its lessons out.
+*(Amended S-NEXT-skills-chain.)* `decision.skill` may carry `renamed_from: <old name>`: a rename
+pair (`kind: maintenance`, `outcome: no-action`, an empty sheet, and no `skills/<new>/` folder: a
+rename pair writes no files, and the skill's text is changed in a later run under its new name) makes
+the runner rename the live owned skill `<old>` to the pair's name before the pair's case is recorded
+(`skill_writer.rename`, which carries the lessons and the skill's ledger bucket), reported as
+"[skill renamed] <new>: renamed from <old>" (under writing `off`, "would rename <old> to it"). One
+build may gather the lessons of several cases in a week: the first pair naming a skill being built
+builds it, and every later pair naming it only moves its lessons in after the build; a pair moving
+lessons into a skill whose build pair was dropped, or whose `skill write` was refused, is dropped
+with it (a `git` refusal makes both wait for the resume). A request
+the registry holds (a vetoed live name, a `retire_requested`) that a writing run did not carry out
+is named under "Refused / could not do". No pair, report line or question asks the user about a
+skill.
 
 **Section 4, Dependencies** — everything the decision rests on, each cited
 from the evidence table:
@@ -2233,7 +2291,7 @@ records it (from an agent's shell only with `--note`, committed `By: agent`
 and `Grant: <statement>`); `grant revoke <id>` ends it (anyone may);
 `grant list` shows them. While a grant is in force, an agent's shell may run
 a person-only command (`host add|remove|rebind|set-mode`, a tier-C `config
-set|unset`, `skill write|rename|retire`) with `--note <reason>`; without a
+set|unset`, `skill write|rename|retire|veto`) with `--note <reason>`; without a
 grant in force, or without the note, the command refuses before any lock.
 
 ### 3a.4 The user model

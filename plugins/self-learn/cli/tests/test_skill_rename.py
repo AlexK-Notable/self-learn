@@ -6,8 +6,8 @@ The plan's three tests: (a) every lesson compiled into the skill before the
 rename is compiled into it after (the control first: both lines are in the
 skill under its old name); (b) a skill whose own ledger bucket
 ``skills/<old>/`` holds a record is refused by name, and the control: an
-empty bucket renames; (c) the old name joins ``vetoed`` when the rename
-came from a veto, and the control: without one it stays free. The rest
+empty bucket renames; (c) a rename leaves the old name free (a veto is
+``skill veto``'s, S-NEXT-skills-chain). The rest
 covers the move itself, the refusals, interrupted runs and the CLI.
 
 The scratch environment is ``test_skill_write``'s (a ledger, a skills root
@@ -33,7 +33,6 @@ from test_skill_write import CASE2, DESCRIPTION, NAME, REF, REF_TEXT, Env, _hand
 
 NEW = "pointer-care"
 CASE3 = "case-9c0d1e2f"
-STMT = "stmt-0000bbbb"
 RID_A = "lrn-5a8e0001"
 RID_B = "lrn-5a8e0002"
 RID_C = "lrn-5a8e0003"
@@ -156,7 +155,7 @@ def test_the_rename_moves_the_folder_the_entry_the_link_and_the_row(env):
     assert row["last_write"]["case"] == CASE2 and row["last_write"]["by"] == "overseer"
     deployed = skill_writer.deployed_authored_sha256(env.home, NEW)
     assert row["last_write"]["authored_sha256"] == deployed == result.authored_sha256
-    assert NAME not in registry.vetoed_names() and not result.vetoed
+    assert NAME not in registry.vetoed_names()
 
     # git: the move is one commit; both trees clean
     tracked = git(env.root, "ls-tree", "-r", "--name-only", "HEAD").stdout.split()
@@ -179,23 +178,163 @@ def test_the_rename_moves_the_folder_the_entry_the_link_and_the_row(env):
 # ===================================== (b) a skill whose bucket holds records
 
 
-def test_b_a_skill_whose_own_bucket_holds_a_record_is_not_renamed(env):
+def _skill_md_route(env: Env, rid: str) -> None:
+    """A person files a lesson in the skill's own bucket and routes it into
+    the skill's SKILL.md (``skill-md``)."""
+    create_record(
+        env.home,
+        make_behavior(scope=f"skill:{NAME}", record_id=rid, trigger=f"About to press {rid}."),
+    )
+    commit_all(env.home, f"seed {rid}")
+    verbs.route(env.home, rid, dest="skill-md", no_push=True)
+
+
+def test_b_the_skill_s_own_bucket_moves_with_it(env):
+    """S-NEXT-skills-chain (SK-C1 test 1): one pending and one routed
+    ``skill-md`` record in ``skills/<old>/`` move to ``skills/<new>/``, with
+    the new scope, and the routed one's line is in the new section."""
     assert env.write().ok
+    _skill_md_route(env, RID_A)
     create_record(
         env.home,
         make_behavior(scope=f"skill:{NAME}", record_id=RID_HELD, trigger="About to press a side button."),
     )
-    commit_all(env.home, "a lesson filed under the skill's own bucket")
-    assert (env.home / "skills" / NAME / "pending" / f"{RID_HELD}.md").is_file()  # control
-    before = env.snapshot()
+    commit_all(env.home, "a pending lesson in the skill's own bucket")
+    assert RID_A in _section_ids(env, NAME)  # control: the line is in the old section
+    blob_before = git(env.home, "rev-parse", f"HEAD:skills/{NAME}/resolved/{RID_A}.md").stdout.strip()
 
     result = _rename(env)
 
-    assert not result.ok and result.kind == "needs-person"
-    assert f"skills/{NAME}/" in result.problems[0] and RID_HELD in result.problems[0]
-    assert env.snapshot() == before
-    assert env.skill_md().is_file() and env.row()["status"] == "live"
-    assert skill_registry.load(env.home).row(NEW) is None
+    assert result.ok, result.problems
+    assert not (env.home / "skills" / NAME).exists()
+    routed = _record(env, RID_A)
+    pending = _record(env, RID_HELD)
+    assert routed.scope == f"skill:{NEW}" and pending.scope == f"skill:{NEW}"
+    assert (env.home / "skills" / NEW / "resolved" / f"{RID_A}.md").is_file()
+    assert (env.home / "skills" / NEW / "pending" / f"{RID_HELD}.md").is_file()
+    entry = routed.history[-1]
+    assert entry["event"] == "skill-renamed" and entry["from"] == f"skills/{NAME}"
+    assert entry["to"] == f"skills/{NEW}" and entry["from_blob"] == blob_before
+    assert entry["by"] == "overseer" and entry["case"] == CASE2
+    assert RID_A in _section_ids(env, NEW)
+    assert env.status(env.home) == "" and env.status(env.root) == ""
+    subjects = git(env.home, "log", "--format=%s").stdout.splitlines()
+    assert f"self-learn: skill rename {NAME} → {NEW} ({CASE2}): carry skills/{NAME}/ to skills/{NEW}/" in subjects
+    # the carried lesson is the version it was (the steward's identity)
+    from self_learn import ledger_ops
+
+    assert ledger_ops.carried_version(routed) == blob_before
+
+
+def test_b_a_carried_lesson_decided_before_is_not_offered_again_and_an_edited_one_is(
+    env, monkeypatch
+):
+    """SK-C1 test 4: the steward's premise-extract identity follows a
+    carried lesson's earlier version; one edited after the carry is a new
+    version and is offered (the control)."""
+    from self_learn import steward
+
+    assert env.write().ok
+    _skill_md_route(env, RID_A)
+    _skill_md_route(env, RID_B)
+    blobs = {
+        rid: git(env.home, "rev-parse", f"HEAD:skills/{NAME}/resolved/{rid}.md").stdout.strip()
+        for rid in (RID_A, RID_B)
+    }
+    decided = {(rid, f"extract:{blob}") for rid, blob in blobs.items()}
+    monkeypatch.setattr(steward, "_terminal_versions", lambda *_a, **_k: decided)
+    offered = lambda: {row["record"] for row in steward._premise_extract_inputs(env.home)}  # noqa: E731
+    assert offered() == set()  # control: both decided at their versions
+
+    assert _rename(env).ok
+
+    assert offered() == set()  # carried, unchanged: still decided
+    path = env.home / "skills" / NEW / "resolved" / f"{RID_B}.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("Stop the container first.", "Stop it first."), encoding="utf-8")
+    commit_all(env.home, "an edit after the carry")
+    assert offered() == {RID_B}
+
+
+def test_b_a_carried_pending_lesson_the_steward_decided_is_not_selected_again(env, monkeypatch):
+    """Gate r1 finding 5: the steward's lesson selection
+    (``_eligible_lessons``) reads a carried pending lesson's identity
+    through its earlier version, as ``_premise_extract_inputs`` does. A
+    decided one stays decided after the rename; one edited after the carry
+    is a new version and is selected (the control)."""
+    from self_learn import steward
+
+    assert env.write().ok
+    for rid in (RID_A, RID_B):
+        create_record(
+            env.home,
+            make_behavior(scope=f"skill:{NAME}", record_id=rid, trigger=f"About to press {rid}."),
+        )
+    commit_all(env.home, "two pending lessons in the skill's own bucket")
+    blobs = {
+        rid: git(env.home, "rev-parse", f"HEAD:skills/{NAME}/pending/{rid}.md").stdout.strip()
+        for rid in (RID_A, RID_B)
+    }
+    decided = {(rid, blob) for rid, blob in blobs.items()}
+    monkeypatch.setattr(steward, "_terminal_versions", lambda *_a, **_k: decided)
+    selected = lambda: {entry.record.id for entry, _row in steward._eligible_lessons(env.home)}  # noqa: E731
+    assert selected() == set()  # control: both decided at their versions
+
+    assert _rename(env).ok
+    assert (env.home / "skills" / NEW / "pending" / f"{RID_A}.md").is_file()  # control: carried
+
+    assert selected() == set()  # carried, unchanged: still decided
+    path = env.home / "skills" / NEW / "pending" / f"{RID_B}.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("Stop the container first.", "Stop it first."), encoding="utf-8")
+    commit_all(env.home, "an edit after the carry")
+    assert selected() == {RID_B}
+
+
+def test_b_the_compile_record_entry_follows_the_skill_md(env):
+    """The skills root's compile record keys the SKILL.md's managed region
+    by its path; the rename re-keys it, entry unchanged."""
+    from self_learn import compiled
+    from self_learn.hosts import host_slug
+
+    assert env.write().ok
+    _skill_md_route(env, RID_A)
+    slug = host_slug(env.home, env.root, scope_kind="skill")
+    old_key = f"plugins/{NAME}/skills/{NAME}/SKILL.md"
+    before = compiled.load_record(env.home, slug)["targets"]
+    assert old_key in before  # control: the route wrote the entry
+
+    assert _rename(env).ok
+
+    after = compiled.load_record(env.home, slug)["targets"]
+    new_key = f"plugins/{NEW}/skills/{NEW}/SKILL.md"
+    assert old_key not in after and dict(after[new_key]) == dict(before[old_key])
+
+
+def test_b_a_lesson_in_the_skill_s_own_bucket_routed_into_it_by_name_is_carried_and_rerouted(env):
+    """Gate r1 finding 1: a lesson filed in ``skills/<old>/`` and routed
+    ``new-skill:<old>`` is carried by step 3a and then rerouted from where
+    the carry put it, in one run; the old row is gone. A person's rename
+    (no case) names the step "no case" in the reroute commit."""
+    assert env.write().ok
+    _route(env, RID_A, scope=f"skill:{NAME}")
+    _route(env, RID_B)
+    # control: the lesson is in the skill's own bucket and routed by name
+    assert (env.home / "skills" / NAME / "resolved" / f"{RID_A}.md").is_file()
+    assert skill_writer.routed_lessons(env.home, NAME) == sorted([RID_A, RID_B])
+
+    result = _rename(env, case=None, by="human")
+
+    assert result.ok, result.problems
+    assert sorted(result.rerouted) == sorted([RID_A, RID_B])
+    carried = _record(env, RID_A)
+    assert find_record_path(env.home, RID_A) == env.home / "skills" / NEW / "resolved" / f"{RID_A}.md"
+    assert carried.scope == f"skill:{NEW}" and carried.routing["new_skill"] == NEW
+    rows = skill_registry.load(env.home)
+    assert rows.row(NEW)["status"] == "live" and rows.row(NAME) is None
+    assert _section_ids(env, NEW) == {RID_A, RID_B}
+    subjects = git(env.home, "log", "--format=%s").stdout.splitlines()
+    assert f"self-learn: reroute {RID_A} → new-skill:{NEW} (skill rename {NAME}, no case)" in subjects
+    assert not any("None" in s for s in subjects)
+    assert env.status(env.home) == "" and env.status(env.root) == ""
 
 
 def test_b_control_a_skill_whose_bucket_is_empty_is_renamed(env):
@@ -210,10 +349,10 @@ def test_b_control_a_skill_whose_bucket_is_empty_is_renamed(env):
     assert env.skill_md(NEW).is_file() and not env.plugin_dir(NAME).exists()
 
 
-def test_b_a_record_filed_under_the_new_name_refuses_too(env):
-    """Records in ``skills/<new>/`` would start compiling into the renamed
-    skill (a skill-scope lesson resolves to the skill of its bucket's name),
-    so they are a person's to settle first."""
+def test_b_a_record_filed_under_the_new_name_refuses_it_as_a_bad_name(env):
+    """SK-C1 test 2: records in ``skills/<new>/`` belong to another skill,
+    so the new name is refused (``bad-line``: choose another), and nothing
+    moves. No person is asked."""
     assert env.write().ok
     folder = env.home / "skills" / NEW / "resolved"
     folder.mkdir(parents=True)
@@ -223,53 +362,38 @@ def test_b_a_record_filed_under_the_new_name_refuses_too(env):
 
     result = _rename(env)
 
-    assert not result.ok and result.kind == "needs-person"
+    assert not result.ok and result.kind == "bad-line"
     assert f"skills/{NEW}/" in result.problems[0] and RID_HELD in result.problems[0]
+    assert "choose another name" in result.problems[0]
     assert env.snapshot() == before
 
 
-# ============================================== (c) a rename from a veto
+def test_b_a_new_skill_is_not_written_over_a_bucket_holding_records(env):
+    """SK-C1 test 3: ``skill write --check`` of a create whose bucket holds
+    records is refused; control: the same draft under a free name passes."""
+    assert skill_writer.check(env.home, NEW, draft(NEW)).ok  # control
+    folder = env.home / "skills" / NEW / "resolved"
+    folder.mkdir(parents=True)
+    make_behavior(scope=f"skill:{NEW}", record_id=RID_HELD).write(folder / f"{RID_HELD}.md")
+    commit_all(env.home, "an old lesson in the bucket of that name")
+
+    checked = skill_writer.check(env.home, NEW, draft(NEW))
+
+    assert not checked.ok and checked.kind == "bad-line"
+    assert any(f"skills/{NEW}/" in p and RID_HELD in p for p in checked.problems)
 
 
-def test_c_a_rename_that_comes_from_a_veto_bans_the_old_name(env):
-    assert env.write().ok
-    assert NAME not in skill_registry.load(env.home).vetoed_names()  # control
-
-    result = _rename(env, by="human", veto_statement=STMT)
-
-    assert result.ok and result.vetoed, result.problems
-    (veto,) = [v for v in skill_registry.load(env.home).vetoed if v["name"] == NAME]
-    assert veto["statement"] == STMT
-    # the old name is never used again
-    again = env.write(case=CASE3)
-    assert not again.ok and "name-vetoed" in _rules(again.problems)
+# ======================================== (c) a rename never bans the old name
 
 
-def test_c_control_a_rename_without_a_veto_leaves_the_old_name_free(env):
+def test_c_a_rename_leaves_the_old_name_free(env):
+    """A rename no longer records a veto (S-NEXT-skills-chain: ``skill veto``
+    records it before any rename); the old name stays free."""
     assert env.write().ok
     result = _rename(env)
-    assert result.ok and not result.vetoed, result.problems
+    assert result.ok, result.problems
     assert NAME not in skill_registry.load(env.home).vetoed_names()
     assert skill_writer.check(env.home, NAME, draft()).ok
-
-
-def test_c_a_veto_recorded_before_the_rename_is_not_added_twice(env):
-    """``overseer respond --veto-skill`` records the veto first (SK7); the
-    rename that follows it names the same veto and adds nothing."""
-    assert env.write().ok
-    env.veto(NAME)  # statement stmt-0000aaaa
-    result = _rename(env, veto_statement=STMT)
-    assert result.ok and not result.vetoed, result.problems
-    vetoes = [v for v in skill_registry.load(env.home).vetoed if v["name"] == NAME]
-    assert [v["statement"] for v in vetoes] == ["stmt-0000aaaa"]
-
-
-def test_a_veto_that_is_not_a_statement_id_is_refused(env):
-    assert env.write().ok
-    before = env.snapshot()
-    result = _rename(env, veto_statement="the user said so")
-    assert not result.ok and result.kind == "bad-line"
-    assert env.snapshot() == before
 
 
 # ======================================================== refusals
@@ -417,12 +541,7 @@ def test_an_interrupted_rename_is_finished_by_running_it_again(env, monkeypatch,
     assert env.status(env.home) == "" and env.status(env.root) == ""
 
 
-def test_a_record_filed_in_the_old_bucket_after_a_crash_refuses_the_rerun(env, monkeypatch):
-    """Gate M8 (d3e5dc6): the bucket check runs on a RESUMED rename too. A
-    lesson filed under `skills/<old>/` between the crash and the rerun would
-    be stranded on a folder that no longer exists, so the rerun is refused
-    `needs-person` and changes nothing."""
-    assert env.write().ok
+def _crash_after_step_1(env: Env, monkeypatch) -> None:
     real_move = skill_writer._move_plugin
 
     def crash(*_args, **_kwargs):
@@ -431,24 +550,112 @@ def test_a_record_filed_in_the_old_bucket_after_a_crash_refuses_the_rerun(env, m
     monkeypatch.setattr(skill_writer, "_move_plugin", crash)
     with pytest.raises(_Crash):
         _rename(env)
-    # the rename began: the new row names the old one, the old row is still live
     registry = skill_registry.load(env.home)
     assert registry.is_owned(NAME) and NAME in registry.row(NEW)["renamed_from"]
     monkeypatch.setattr(skill_writer, "_move_plugin", real_move)
+
+
+def test_a_record_filed_in_the_old_bucket_after_a_crash_is_carried_by_the_rerun(env, monkeypatch):
+    """The owed resumed-rename bucket test (d3e5dc6, integration.md "Tests
+    owed"), under SK-C1: a lesson filed under ``skills/<old>/`` between the
+    crash and the rerun is carried, not stranded and not refused."""
+    assert env.write().ok
+    _crash_after_step_1(env, monkeypatch)
     create_record(
         env.home,
         make_behavior(scope=f"skill:{NAME}", record_id=RID_HELD, trigger="About to press a side button."),
     )
     commit_all(env.home, "a lesson filed under the old bucket after the crash")
     assert (env.home / "skills" / NAME / "pending" / f"{RID_HELD}.md").is_file()  # control
+
+    result = _rename(env)
+
+    assert result.ok, result.problems
+    assert _record(env, RID_HELD).scope == f"skill:{NEW}"
+    assert (env.home / "skills" / NEW / "pending" / f"{RID_HELD}.md").is_file()
+    assert env.status(env.home) == "" and env.status(env.root) == ""
+
+
+def test_a_record_filed_in_the_new_bucket_after_a_crash_refuses_the_rerun(env, monkeypatch):
+    """The other half of the owed test: a record of another skill filed
+    under ``skills/<new>/`` between the crash and the rerun refuses it, and
+    the rerun changes nothing."""
+    assert env.write().ok
+    _crash_after_step_1(env, monkeypatch)
+    folder = env.home / "skills" / NEW / "pending"
+    folder.mkdir(parents=True)
+    make_behavior(scope=f"skill:{NEW}", record_id=RID_HELD).write(folder / f"{RID_HELD}.md")
+    commit_all(env.home, "a record of another skill under the new name")
     before = env.snapshot()
 
     refused = _rename(env)
 
-    assert not refused.ok and refused.kind == "needs-person"
-    assert f"skills/{NAME}/" in refused.problems[0] and RID_HELD in refused.problems[0]
+    assert not refused.ok and refused.kind == "bad-line"
+    assert f"skills/{NEW}/" in refused.problems[0] and RID_HELD in refused.problems[0]
     assert env.snapshot() == before
     assert env.skill_md().is_file() and not env.plugin_dir(NEW).exists()
+
+
+def test_an_interrupted_carry_is_finished_by_the_next_run_and_a_third_changes_nothing(
+    env, monkeypatch
+):
+    """SK-C1 test 5: one of two records is already in ``skills/<new>/``
+    still saying ``skill:<old>`` (the move was committed without its
+    rewrite), the other still in ``skills/<old>/``: the rerun finishes
+    both, and a third run makes no ledger commit."""
+    assert env.write().ok
+    for rid in (RID_A, RID_B):
+        create_record(env.home, make_behavior(scope=f"skill:{NAME}", record_id=rid, trigger=f"About {rid}."))
+    commit_all(env.home, "two lessons in the skill's own bucket")
+    _crash_after_step_1(env, monkeypatch)
+    (env.home / "skills" / NEW / "pending").mkdir(parents=True)
+    git(env.home, "mv", f"skills/{NAME}/pending/{RID_A}.md", f"skills/{NEW}/pending/{RID_A}.md")
+    git(env.home, "commit", "-q", "-m", "half a carry")
+    assert _record(env, RID_A).scope == f"skill:{NAME}"  # control: moved, not rewritten
+
+    second = _rename(env)
+
+    assert second.ok, second.problems
+    for rid in (RID_A, RID_B):
+        record = _record(env, rid)
+        assert record.scope == f"skill:{NEW}", rid
+        assert [h["event"] for h in record.history].count("skill-renamed") == 1, rid
+        assert (env.home / "skills" / NEW / "pending" / f"{rid}.md").is_file()
+    head = env.head(env.home)
+    third = _rename(env)
+    assert third.ok and env.head(env.home) == head
+
+
+def test_a_hand_edited_skill_renamed_with_expect_keeps_the_edit_visible_to_phase_b(env):
+    """SK-C1 test 6: the row records what self-learn last wrote (renamed),
+    not the person's edit, so phase B's staged diff still shows the edit."""
+    from self_learn.overseer import skills as skills_mod
+
+    assert env.write().ok
+    _hand_edit(env, "How the pieces fit together", "How the pieces fit together, by hand")
+    current = skill_writer.deployed_authored_sha256(env.home, NAME)
+    assert current != env.row()["last_write"]["authored_sha256"]  # control: an edit
+
+    result = _rename(env, expect_sha=current)
+
+    assert result.ok, result.problems
+    row = skill_registry.load(env.home).row(NEW)
+    assert row["last_write"]["authored_sha256"] != skill_writer.deployed_authored_sha256(env.home, NEW)
+    deployed = skill_writer.deployed_files(env.home, NEW)
+    diff = skills_mod._changed_since_last_write(  # noqa: SLF001
+        env.home, NEW, row, deployed,
+        skill_writer.deployed_authored_sha256(env.home, NEW), row["last_write"]["authored_sha256"],
+    )
+    assert "+How the pieces fit together, by hand" in diff
+    assert "-How the pieces fit together;" in diff or "-How the pieces fit together" in diff
+
+
+def test_an_unedited_skill_s_rename_records_its_new_hash(env):
+    """Control for test 6: with no hand edit the row's hash is the files'."""
+    assert env.write().ok
+    assert _rename(env).ok
+    row = skill_registry.load(env.home).row(NEW)
+    assert row["last_write"]["authored_sha256"] == skill_writer.deployed_authored_sha256(env.home, NEW)
 
 
 def test_a_failed_move_commit_puts_the_skills_root_and_the_row_back(env, monkeypatch):
@@ -499,14 +706,27 @@ def test_running_a_finished_rename_again_changes_nothing(env):
 def test_cli_rename_as_the_person(env, capsys):
     assert env.write().ok
     capsys.readouterr()
-    code = cli.main(["skill", "rename", NAME, NEW, "--case", CASE2, "--veto", STMT, "--no-push"])
+    code = cli.main(["skill", "rename", NAME, NEW, "--case", CASE2, "--no-push"])
     assert code == 0, capsys.readouterr().err
     registry = skill_registry.load(env.home)
     assert registry.row(NEW)["last_write"]["by"] == "human"
-    assert NAME in registry.vetoed_names()
+    assert NAME not in registry.vetoed_names()
     assert git(env.root, "log", "-1", "--format=%b").stdout.strip() == "By: human"
     out = capsys.readouterr().out
-    assert f"{NAME} is now {NEW}" in out and "vetoed" in out
+    assert f"{NAME} is now {NEW}" in out
+
+
+def test_cli_rename_without_a_case_records_a_null_case(env, capsys):
+    """S-NEXT-skills-chain (decision 8 of 2026-10-31): a person's rename
+    needs no case id."""
+    assert env.write().ok
+    capsys.readouterr()
+    code = cli.main(["skill", "rename", NAME, NEW, "--no-push"])
+    assert code == 0, capsys.readouterr().err
+    row = skill_registry.load(env.home).row(NEW)
+    assert row["last_write"]["case"] is None and row["last_write"]["by"] == "human"
+    subject = git(env.root, "log", "-1", "--format=%s").stdout.strip()
+    assert subject == f"self-learn: skill rename {NAME} → {NEW} (no case)"
 
 
 def test_cli_rename_from_an_agent_shell_under_the_grant_is_the_agents(env, monkeypatch, capsys):

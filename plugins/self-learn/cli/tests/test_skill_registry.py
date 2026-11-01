@@ -249,6 +249,36 @@ _REFUSED = [
         ),
         ["vetoed[1]", "already vetoed"],
     ),
+    (
+        "caseless-overseer-step",
+        _mut(lambda d: _ROW(d)["created"].update(case=None)),
+        ["case may be null only for a person's step", "overseer", "created"],
+    ),
+    (
+        "caseless-overseer-write",
+        _mut(lambda d: _ROW(d)["last_write"].update(case=None)),
+        ["case may be null only for a person's step", "last_write"],
+    ),
+    (
+        "veto-by",
+        _mut(lambda d: d.update(vetoed=[{"name": "x", "at": AT, "by": "overseer"}])),
+        ["overseer", "vetoed[0].by"],
+    ),
+    (
+        "veto-grant-without-agent",
+        _mut(lambda d: d.update(vetoed=[{"name": "x", "at": AT, "by": "human", "grant": STATEMENT}])),
+        ["vetoed[0].grant", "agent"],
+    ),
+    (
+        "retire-request-key",
+        _mut(lambda d: _ROW(d).update(retire_requested={"at": AT, "by": "human", "why": "x"})),
+        ["why", "retire_requested"],
+    ),
+    (
+        "retire-request-without-by",
+        _mut(lambda d: _ROW(d).update(retire_requested={"at": AT})),
+        ["by", "retire_requested"],
+    ),
     ("version-missing", _mut(lambda d: d.pop("version")), ["version"]),
     ("version-two", _mut(lambda d: d.update(version=2)), ["version", "2"]),
     ("version-true", _mut(lambda d: d.update(version=True)), ["version", "True"]),
@@ -370,6 +400,33 @@ class TestOwnership:
         assert registry.vetoed_names() == ["old-name"]
         assert registry.row(NAME)["renamed_from"] == ["old-name"]
 
+    def test_a_person_s_step_may_answer_no_case_and_an_old_veto_still_loads(self, home):
+        """S-NEXT-skills-chain (SK-B test 8): ``case: null`` loads with ``by:
+        human`` or ``by: agent``; the overseer's never (``_REFUSED``'s
+        caseless rows). A veto written before it, with ``statement``, loads."""
+        row = _row(
+            created={"at": AT, "case": None, "by": "human"},
+            last_write={"at": AT, "case": None, "by": "agent", "authored_sha256": SHA},
+            retire_requested={"at": AT_2, "by": "agent", "grant": STATEMENT},
+        )
+        data = _data(**{NAME: row})
+        data["vetoed"] = [
+            {"name": "old-name", "at": AT, "statement": STATEMENT},
+            {"name": "never-used", "at": AT_2, "by": "human"},
+            {"name": "said-null", "at": AT_2, "statement": None},
+        ]
+        _put(home, _dump(data))
+        registry = sr.load(home)
+        assert registry.row(NAME) == row
+        assert registry.vetoed_names() == ["old-name", "never-used", "said-null"]
+
+    def test_a_retired_row_cannot_carry_a_retire_request(self, home):
+        row = _retired_row()
+        row["retire_requested"] = {"at": AT, "by": "human"}
+        _put(home, _dump(_data(**{NAME: row})))
+        with pytest.raises(sr.SkillRegistryError, match="only a live skill can be asked to retire"):
+            sr.load(home)
+
     def test_a_non_string_name_is_not_owned(self, home):
         registry = sr.load(home)
         assert registry.is_owned(None) is False  # type: ignore[arg-type]
@@ -377,9 +434,11 @@ class TestOwnership:
 
     def test_add_veto_is_idempotent_and_compares_without_regard_to_case(self):
         registry = sr.Registry()
-        assert registry.add_veto("Bad-Name", at=AT, statement=STATEMENT) is True
-        assert registry.add_veto("bad-name", at=AT_2, statement="stmt-ffffffff") is False
-        assert registry.vetoed == [{"name": "Bad-Name", "at": AT, "statement": STATEMENT}]
+        assert registry.add_veto("Bad-Name", at=AT, by="human") is True
+        assert registry.add_veto("bad-name", at=AT_2, by="agent", grant=STATEMENT) is False
+        assert registry.vetoed == [{"name": "Bad-Name", "at": AT, "by": "human"}]
+        assert registry.veto_of("BAD-NAME") == {"name": "Bad-Name", "at": AT, "by": "human"}
+        assert registry.veto_of("other-name") is None
 
 
 # =========================================================== (d) one commit
@@ -451,7 +510,7 @@ class TestWriting:
     def test_a_veto_is_recorded_and_kept_in_the_order_added(self, home):
         def veto(name: str, statement: str):
             def apply(registry: sr.Registry) -> None:
-                registry.add_veto(name, at=AT, statement=statement)
+                registry.add_veto(name, at=AT, by="agent", grant=statement)
 
             return apply
 
@@ -468,7 +527,7 @@ class TestFileShape:
         def build(registry: sr.Registry) -> None:
             _add_row(registry, NAME, _row(renamed_from=["old-name"]))
             _add_row(registry, "gone-one", _retired_row("gone-one"))
-            registry.add_veto("old-name", at=AT, statement=STATEMENT)
+            registry.add_veto("old-name", at=AT, by="agent", grant=STATEMENT)
 
         sr.with_update(home, build, subject="shape")
         loaded = sr.load(home)
@@ -476,7 +535,7 @@ class TestFileShape:
             NAME: _row(renamed_from=["old-name"]),
             "gone-one": _retired_row("gone-one"),
         }
-        assert loaded.vetoed == [{"name": "old-name", "at": AT, "statement": STATEMENT}]
+        assert loaded.vetoed == [{"name": "old-name", "at": AT, "by": "agent", "grant": STATEMENT}]
 
     def test_a_sha_made_only_of_digits_and_timestamps_stay_text_through_the_round_trip(self, home):
         digits = "1" * 64
