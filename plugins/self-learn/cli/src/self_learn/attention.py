@@ -1535,16 +1535,22 @@ def _apply_override(item: dict, wanted: str) -> dict | None:
     return out
 
 
-def _conversation(home: Path, item_id_: str) -> dict:
+def _conversation(home: Path, item_id_: str) -> tuple[dict, bool]:
+    """The item's conversation summary (§4.1 `conversation`) and whether a
+    redo is what its undo offers next: its transcript's last undo/redo row
+    is an undo (§4.1 `undo.redo`; the same rule as
+    `attention_answers.redo_offered`, read from the rows already loaded).
+    Before the integration of 2026-10-31c `undo.redo` was always false."""
     from . import workspace
 
     try:
         rows = workspace.rows(home, item_id_)
     except Exception:  # noqa: BLE001
-        return {"turns": 0, "last_at": None}
+        return {"turns": 0, "last_at": None}, False
     turns = sum(1 for r in rows if r.get("role") == "user" and r.get("kind") == "question")
     last = max((str(r.get("at") or "") for r in rows if r.get("kind") != "header"), default="")
-    return {"turns": turns, "last_at": last or None}
+    acts = [r.get("kind") for r in rows if r.get("kind") in ("undo", "redo")]
+    return {"turns": turns, "last_at": last or None}, bool(acts) and acts[-1] == "undo"
 
 
 def collect(home: Path | str, *, all_items: bool = False) -> list[dict]:
@@ -1585,7 +1591,9 @@ def collect(home: Path | str, *, all_items: bool = False) -> list[dict]:
         ids.add(item["id"])
         seen_at = seen.get(item["id"])
         item["seen"] = seen_at is not None and seen_at >= str(item.get("updated_at") or "")
-        item["conversation"] = _conversation(home, item["id"])
+        item["conversation"], redo = _conversation(home, item["id"])
+        if isinstance(item.get("undo"), dict):
+            item["undo"] = {**item["undo"], "redo": redo}
         out.append(item)
     return out
 

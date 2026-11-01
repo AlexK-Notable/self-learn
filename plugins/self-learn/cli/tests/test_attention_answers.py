@@ -596,11 +596,17 @@ def test_undo_runs_each_kinds_inverse(tmp_path, monkeypatch):
     hook = _item(home, "lrn-0000aaaa@" + json.loads(
         (runs / "run-aaaaaaaaaaaa.json").read_text())["attention_effects"][0]["at"])
 
+    subject = hook["subject"]
+    assert hook["undo"]["redo"] is False  # control: nothing undone yet
     answers.undo(home, hook["id"])
     assert answers.redo_offered(home, hook["id"])
+    # Integration: `attention --json` says so too (§4.1 `undo.redo`, which
+    # the reader hard-coded false). Mutation: drop the flag -> red.
+    assert _item(home, subject)["undo"]["redo"] is True
     answers.undo(home, hook["id"], redo=True)
     assert calls == [("off", "lrn-0000aaaa"), ("on", "lrn-0000aaaa")]
     assert not answers.redo_offered(home, hook["id"])
+    assert _item(home, subject)["undo"]["redo"] is False
 
     digest = _item(home, "run-aaaaaaaaaaaa", "decided.steward-run")
     with pytest.raises(answers.AnswerError) as none:
