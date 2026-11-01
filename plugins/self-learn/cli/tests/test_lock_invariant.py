@@ -308,7 +308,7 @@ NOT_REPO_TRUTH = {
     "attention_answers._write_run_record": "XDG cache: <cache>/attention/runs/<id>.json {unit, at}, which systemd unit a launch started; never ledger truth",
     "attention_answers._write_claim": "XDG cache: <cache>/attention/claims/<id>.json {session, at}, the carrying-out session's 2-hour claim; never ledger truth",
     "attention_answers._clear_claim": "XDG cache: removes <cache>/attention/claims/<id>.json once its work is done; never ledger truth",
-    # Follow-ups 2 (S-NEXT-followups2): "Stop it" marks the launch stopped.
+    # Follow-ups 2 (S-129): "Stop it" marks the launch stopped.
     "attention_answers._mark_run_stopped": "XDG cache: rewrites <cache>/attention/runs/<id>.json with stopped_at after `attention stop` closed the launched unit; never ledger truth",
     "attention_answers._write_held_approval": "XDG cache: <cache>/attention/held-approvals/<id>.json, a broken.stopped approval clicked while the ledger is STOPPED; `done` commits it under the lock once the intent is cleared",
     "attention_answers._clear_held_approval": "XDG cache: removes a held approval once `done` committed it; never ledger truth",

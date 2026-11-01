@@ -1,4 +1,4 @@
-"""Follow-ups 2 of the attention round (2026-11-01; S-NEXT-followups2).
+"""Follow-ups 2 of the attention round (2026-11-01; S-129).
 
 1. A hand-edited case's decided text: ``cases.decided_text`` (read-only,
    capped, secret-scanned, the lookup ``refreeze --restore`` uses), shown in

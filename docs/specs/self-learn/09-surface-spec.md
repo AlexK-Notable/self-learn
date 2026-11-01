@@ -486,7 +486,7 @@ section records what the surface is.
   column from 1,280 px). `/inbox` renders the list with the most pressing
   item already open, and a line under it says so (every item is in the
   list); it no longer redirects, so a reload opens whatever is most
-  pressing then *(S-NEXT-walkfix, item 8)*. The order: needs-you items by key (`credentials`, `broken`, `money`,
+  pressing then *(S-130, item 8)*. The order: needs-you items by key (`credentials`, `broken`, `money`,
   `sudo`, `conflict`, `system-change`, `foreign-history`) oldest first,
   then unseen flagged decided items, then other unseen decided items.
   The list groups items as Needs you, Being carried out and Decided for
@@ -507,7 +507,7 @@ section records what the surface is.
   checks, commands and files), and the "Ask about this" conversation.
   The list data renders at once; when the packet takes longer than
   1.5 s, the evidence region says "assembling…" and fills by a deferred
-  htmx request. *(S-NEXT-walkfix, items 6 and 8.)* The title block is an
+  htmx request. *(S-130, items 6 and 8.)* The title block is an
   ordinary block, never sticky over the text scrolled under it. A
   decided item's "What it changes now" never says "Nothing is done until
   you answer": with nothing to say it reads as a record of what was
@@ -528,7 +528,7 @@ section records what the surface is.
   armed line repeats the packet's full question, never the list title
   cut at 200 characters, since the question names the path and mode;
   "This registers <path> in git mode. Confirm?"), an approve option
-  on a plan with sudo steps (it lists the sudo commands), and *(S-NEXT-walkfix,
+  on a plan with sudo steps (it lists the sudo commands), and *(S-130,
   item 1)* an approve option chosen by its number key (`keyed=1`: a key
   never approves on its own; a mouse click on the same button still
   sends at once, design r2 §0 call 3), and *(gate r1 F2)* an approve
@@ -554,7 +554,7 @@ section records what the surface is.
   activation for keyboard and screen-reader users; so the page itself
   never moves focus onto such a button: "Use this draft" focuses the
   reply box, an armed bar focuses its Cancel, and nothing focuses an
-  option or Confirm on load or after an answer. *(S-NEXT-walkfix, item 2; C6.)* One line under
+  option or Confirm on load or after an answer. *(S-130, item 2; C6.)* One line under
   the reply box says how its text would be recorded, before anything is
   sent: the page asks `POST /inbox/<id>/provenance`, which runs the
   answer verb's own rule (`attention_answers.preview`: the draft id, then
@@ -563,7 +563,7 @@ section records what the surface is.
   answer is not back the line says "Checking how this would be
   recorded…", so the page is never more generous than the record. There
   is no second "using the agent's draft" line; on an item with a plan a
-  separate line says only what words alone do. *(S-NEXT-walkfix, item 3.)*
+  separate line says only what words alone do. *(S-130, item 3.)*
   After words sent alone, the bar carries their transcript row
   (`sent_t`), and a `note: required` option clicked with an empty box
   offers those words as its note in one click (`attention answer
@@ -579,7 +579,7 @@ section records what the surface is.
   offered for the item it moved to. Verb sentences show their times in
   words ("started just now"), the exact instant on hover.
 - **Being carried out** shows "Running in a terminal (started <time>)",
-  never with a relaunch while it runs *(S-NEXT-walkfix, item 7)*: a new
+  never with a relaunch while it runs *(S-130, item 7)*: a new
   terminal (`attention run --json`; the login variant passes `--login`)
   is offered as "Start it in a new terminal" when nothing runs (never
   launched, refused, or stopped), as "Try again: open a new terminal"
@@ -634,7 +634,7 @@ section records what the surface is.
   when the held jobs run next, in the host's words from
   `serve.heartbeat`; a stale heartbeat (older than one tick: the host
   stopped) names no time, and the page says none is known.
-  *(S-NEXT-walkfix, item 4.)* That result goes to the top of the page in
+  *(S-130, item 4.)* That result goes to the top of the page in
   plain words and is brought into view: the login works, the item is
   closed, it left the Needs you list because nothing waits there any
   more, and which item is next; the list is redrawn with it, and the ask
@@ -645,7 +645,7 @@ section records what the surface is.
   an undo, redo is what is offered, on a reload too: from the item's
   `undo.redo`, or from its transcript, whose last undo/redo row is the
   last act. An undo that takes the item off the list (a reopened
-  withdrawn ask) says so and links to where it went. *(S-NEXT-walkfix,
+  withdrawn ask) says so and links to where it went. *(S-130,
   item 5.)* An undo, a redo or a feedback click answers in plain words
   ("Turned off: the hook no longer runs in new Claude Code sessions.";
   "Noted: items like this one now wait for you under Needs you, so this
@@ -659,7 +659,7 @@ section records what the surface is.
   line ("reading case-…"), **Stop** (only while an answer streams), and
   any drafts as cards with **Use this draft** and **Send the draft as is**
   (never "Send as is", which read like the reply box's Send;
-  S-NEXT-walkfix, item 8). A draft placed in the reply box keeps
+  S-130, item 8). A draft placed in the reply box keeps
   its `draft_id` and option, also when the page restores the unsent
   reply after a reload or a switch to another item; the server decides
   the origin. Emptying the box, or selecting all of it and typing over
@@ -671,12 +671,12 @@ section records what the surface is.
   when the login is broken or asking would bill money, and the panel says
   so first, in a boxed notice under its heading (not small text under the
   conversation), with the input's placeholder saying it is off
-  (S-NEXT-walkfix, item 4); every other part of the page still works.
+  (S-130, item 4); every other part of the page still works.
 - **Keys** (`INBOX_KEYMAP`, listed in the `?` overlay on inbox pages):
   `j`/`k`, `Enter`, `1`–`4`, `r`, `a`, `Ctrl+Enter`, `Esc`, `u`, `s`,
   `?`. They are inert while a text field has focus except `Ctrl+Enter`
   and `Esc`. `1`–`4` arm an option that approves or registers instead of
-  sending it (S-NEXT-walkfix, item 1); on an armed bar they do nothing,
+  sending it (S-130, item 1); on an armed bar they do nothing,
   their auto-repeat never acts, and `Ctrl+Enter` on a reply carrying such
   an option arms it too (gate r1 F1, F2). `Enter` opens the selected item only when nothing has
   focus; on a focused list link, button or `<summary>` it does what that
@@ -693,7 +693,7 @@ section records what the surface is.
   answer bar without sending the box's text, and the bar's box is
   refilled from what was typed. Once the seen click is recorded, the
   "new" (or "unseen") mark leaves the page header and the item's list row
-  together, with the same word in both (S-NEXT-walkfix, item 8).
+  together, with the same word in both (S-130, item 8).
 - **Weekly report** (`/overseer-report[/<date>]`): a read-only render of
   the overseer's report, newest by default, with links to earlier ones.
 

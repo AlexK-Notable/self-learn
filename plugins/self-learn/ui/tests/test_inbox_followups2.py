@@ -1,4 +1,4 @@
-"""Follow-ups 2 of the attention round (2026-11-01; S-NEXT-followups2), the
+"""Follow-ups 2 of the attention round (2026-11-01; S-129), the
 page's side.
 
 - Gap 1: a hand-edited case's page shows what was decided beside what the

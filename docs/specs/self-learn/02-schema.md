@@ -4803,7 +4803,7 @@ packet and the ask agent's read fence. A `look_at` path is kept only when it
 is absolute and exists, neither it nor its resolved target is under a deny
 path or has a deny name, it is not `/` or `$HOME`, and it is at least two
 components deep (below `$HOME` when under it); at most five are kept.
-*(S-NEXT-walkfix, item 6.)* Evidence entries carry what a person decides
+*(S-130, item 6.)* Evidence entries carry what a person decides
 by: a `lesson` entry is titled by its trigger (or fact), never the first
 heading's name, and carries `trigger`, `instruction`, `fact`,
 `sightings` and `seen` (its frontmatter `evidence`, newest first, at most
@@ -4888,7 +4888,7 @@ no sealed draft row of this item carries is refused (64). A draft carrying
 an option is sent as that option. Free text is secret-scanned before
 anything is written (64).
 
-*(S-NEXT-walkfix, item 2.)* The origin of a reply from the page or a
+*(S-130, item 2.)* The origin of a reply from the page or a
 person's shell is decided by ONE function, `attention_answers._origin_of`
 (the draft id, then the 40-character match, then typed), and its words by
 ONE table, `recorded_as_words`. `attention_answers.preview(home, id, *,
@@ -4911,7 +4911,7 @@ plan; words alone on an item with a plan are recorded (a statement,
 `answers.kind: question`), the item stays open and counted, and nothing is
 launched. An option marked `note: required` refuses to send without words
 (3); an option marked `confirm`, and every `register` option, needs
-`--confirm` (3). *(S-NEXT-walkfix, gate r2 N1.)* So does an `approve`
+`--confirm` (3). *(S-130, gate r2 N1.)* So does an `approve`
 option that comes with `--draft`, whether named by `--option` or taken
 from the draft: without `--confirm` it is refused (3, nothing recorded,
 no terminal opened) with the words of `DRAFT_NEEDS_CONFIRM` ("comes with

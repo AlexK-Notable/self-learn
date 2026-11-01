@@ -1,4 +1,4 @@
-"""Follow-ups 2 of the attention round (2026-11-01; S-NEXT-followups2),
+"""Follow-ups 2 of the attention round (2026-11-01; S-129),
 item 4: the overseer-asks gate r3 NITs.
 
 - A `because` the model wrote on a `system: true` ask without `needs` is

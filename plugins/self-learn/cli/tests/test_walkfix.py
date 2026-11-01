@@ -1,4 +1,4 @@
-"""Walk fixes of the attention round (S-NEXT-walkfix; the source-blind
+"""Walk fixes of the attention round (S-130; the source-blind
 walk of 2026-11-01, misc/build-2026-10-31c/walk-attention.md).
 
 The CLI halves of the fixes:

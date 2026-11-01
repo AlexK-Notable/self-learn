@@ -1,4 +1,4 @@
-"""The inbox's walk fixes, server side (S-NEXT-walkfix; the source-blind
+"""The inbox's walk fixes, server side (S-130; the source-blind
 walk of 2026-11-01, misc/build-2026-10-31c/walk-attention.md).
 
 As in test_inbox.py: page reads (`ledger.attention`,

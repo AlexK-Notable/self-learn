@@ -1,4 +1,4 @@
-"""The inbox's walk fixes in a real browser (S-NEXT-walkfix; the
+"""The inbox's walk fixes in a real browser (S-130; the
 source-blind walk of 2026-11-01, misc/build-2026-10-31c/walk-attention.md).
 
 Keys, the live provenance line, the busy state a non-answer request left

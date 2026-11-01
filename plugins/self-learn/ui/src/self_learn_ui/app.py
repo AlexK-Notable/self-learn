@@ -48,7 +48,7 @@ def _build_templates() -> Jinja2Templates:
     env.filters["pygments_yaml"] = lambda text: markupsafe.Markup(rendering.render_yaml(text))
     env.filters["pygments_bash"] = lambda text: markupsafe.Markup(rendering.render_bash(text))
     env.filters["humanize_ts"] = lambda value: markupsafe.Markup(rendering.humanize_ts(value))
-    # Walk fixes (S-NEXT-walkfix), items 5 and 6: a verb's sentence with its
+    # Walk fixes (S-130), items 5 and 6: a verb's sentence with its
     # instants humanized; an instant written out whole.
     env.filters["plain_times"] = lambda value: markupsafe.Markup(rendering.plain_times(value))
     env.filters["exact_time"] = rendering.exact_time
