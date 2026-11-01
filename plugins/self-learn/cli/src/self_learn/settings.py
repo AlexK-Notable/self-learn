@@ -1775,8 +1775,11 @@ def _attention_settings() -> tuple[Setting, ...]:
             config_key="terminal",
             kind="str",
             default="",
-            validate=_terminal_value,
-            validate_hint="empty, or a command whose first word is on PATH (e.g. 'alacritty -e')",
+            # Like every `accepts` entry: `config set` refuses a bad value,
+            # and a hand-edited one folds in place to the default on read.
+            validate=lambda v: _terminal_value(v) or "",
+            accepts=lambda v: _terminal_value(v) is not None,
+            accepts_hint="empty, or a command whose first word is on PATH (e.g. 'alacritty -e')",
             description=(
                 "the terminal an approved change or a login opens in, as an argv prefix "
                 "such as 'alacritty -e'; empty: $TERMINAL, else the first of alacritty, "
