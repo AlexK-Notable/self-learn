@@ -21,6 +21,19 @@ folder (`<cache>/premises/`) and, for a premise marked `on_change: refresh`, one
 ledger commit under the commit lock (the job commits its own writes, as the
 others do); it never calls a model.
 
+Self-maintenance (L6, 2026-10-31; 13 §5). Between ticks, never during a
+job, ``serve`` compares a hash of the package's source files with the one
+it started on; once a changed hash has read the same on two ticks and the
+new code imports, it re-executes itself with the same command line, so a
+landing needs no hand restart (``serve.restart_on_new_code``, default on,
+is the rollback switch). The hash covers the uv project's ``pyproject.toml``
+and ``uv.lock`` too: when they changed, ``serve`` runs ``uv sync`` first,
+the step the unit's ``uv run`` takes and a re-exec skips. New code it
+cannot run is retried hourly and leaves a project notice saying why. A host unit file that changed after the process
+started cannot be picked up that way; it gets a project notice naming the
+``daemon-reload`` and restart. A daily ``maintenance`` job recompiles the
+targets that carry markers with no compile record (``maintenance.py``).
+
 Jobs run SERIALLY (orchestrator ruling, spec §5.2a): the producers this
 unit schedules are already serialised by their own locks
 (``worker.lock``, ``miner.spawn.lock``), so a daemon that runs one job at
@@ -54,7 +67,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import attribution, cache_gc, cases, gitops, intents, miner, notices, overseer, premise_sweep, settings, steward, steward_inputs, worker
+from . import (
+    attribution, cache_gc, cases, gitops, intents, maintenance, miner, notices, overseer,
+    premise_sweep, settings, steward, steward_inputs, worker,
+)
 from . import hosts as hosts_mod
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
@@ -547,7 +563,7 @@ def _holds_text(cache_dir: Path, now: float) -> str:
     job currently held by a failing due check."""
     held = [
         f"{job} ({_held_cause(cache_dir, job, now)})"
-        for job in ("mine", "hosts", "premises", "steward", "overseer")
+        for job in ("mine", "hosts", "premises", "maintenance", "steward", "overseer")
         if _held_cause(cache_dir, job, now) is not None
     ]
     return f"; holding: {', '.join(held)}" if held else ""
@@ -1294,18 +1310,24 @@ def run_one_job(
     `run_forever`'s real tick loop and `MS1-seq`'s test drive jobs
     through this exact function, so "a real serve scheduler loop" means
     the same code path in both places."""
+    global _jobs_in_flight
     started = time.time()
     beat_pid = pid if pid is not None else os.getpid()
     actor = _JOB_ACTORS.get(job.name)
     with _RunningHeartbeat(cache_dir, pid=beat_pid, job=job.name, tick_secs=tick_secs), (
         attribution.job(actor) if actor is not None else contextlib.nullcontext()
     ):
+        # L6: counted while it runs, so the re-exec on new code can never
+        # replace this process in the middle of a job.
+        _jobs_in_flight += 1
         try:
             result = job.run()
             record = JobRecord(job.name, job.surface, True, started, time.time(), result=result)
         except Exception as exc:  # noqa: BLE001 — a crashed job must not crash the daemon
             record = JobRecord(job.name, job.surface, False, started, time.time(), error=f"{exc}")
             _log_job_crash(home, cache_dir, job.name, exc)
+        finally:
+            _jobs_in_flight -= 1
     write_heartbeat(
         cache_dir,
         pid=pid if pid is not None else os.getpid(),
@@ -1449,6 +1471,19 @@ def _run_premises_job(home: Path, cache_dir: Path, now: float) -> "premise_sweep
     are the ones the due check read, so the attempt marker it leaves is the one
     that stops the job being due again the same day."""
     return premise_sweep.run(home, cache_dir, now=now)
+
+
+def _maintenance_is_due(home: Path, cache_dir: Path, now: float) -> bool:
+    """L6: the daily maintenance recompile is due once a day (marker in the
+    cache, written when an attempt starts) when the ledger registers any
+    host. Reads the cache and one file's presence only."""
+    return maintenance.is_due(home, cache_dir, now)
+
+
+def _run_maintenance_job(home: Path, cache_dir: Path, now: float) -> "maintenance.MaintenanceResult":
+    """L6: recompiles the targets `--selftest` reports as carrying markers
+    with no compile record (never `--adopt`), and logs any it refuses."""
+    return maintenance.run(home, cache_dir, now=now)
 
 
 def _run_steward_job(home: Path) -> "steward.RunResult":
@@ -1671,6 +1706,23 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             # job follows (with the steward off, or nothing due, this is
             # the only one that day).
             census_stranded(home, cache_dir, now=now)
+        # L6: the daily maintenance recompile, at the premises job's hook
+        # point and before the steward: targets whose self-learn markers have
+        # no compile record get one, so nobody has to run `recompile` for it.
+        if _due_or_hold(
+            "maintenance", home, cache_dir, now,
+            lambda: _maintenance_is_due(home, cache_dir, now),
+        ):
+            ran.append(
+                run_one_job(
+                    cache_dir,
+                    Job("maintenance", "maintenance",
+                        lambda: _run_maintenance_job(home, cache_dir, now)),
+                    pid=pid,
+                    tick_secs=tick_secs,
+                    home=home,
+                )
+            )
         if _due_or_hold(
             "steward", home, cache_dir, now, lambda: _steward_is_due(home, cache_dir, now)
         ):
@@ -1716,6 +1768,444 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
         tick_secs=tick_secs,
     )
     return ran
+
+
+# ------------------------------------------------- re-exec on new code (L6)
+
+#: L6 (2026-10-31): jobs running right now in this process. `run_one_job`
+#: counts each job while it runs; the re-exec below never fires while this
+#: is above zero, so a landing can never cut a job off (the 10-31 03:45 hand
+#: restart killed the nightly mine 9 s in).
+_jobs_in_flight = 0
+
+#: A changed code fingerprint must read the same on this many consecutive
+#: checks (one per tick) before `serve` re-executes onto it, so a merge or a
+#: checkout that is still writing files is not caught half-way.
+REEXEC_STABLE_TICKS = 2
+
+#: Carried across the re-exec in the new image's environment (never written
+#: into this process's own `os.environ`): when the process that systemd
+#: started first began, so the unit-file check below still compares against
+#: the real start after any number of re-execs.
+_STARTED_AT_ENV = "SELF_LEARN_SERVE_STARTED_AT"
+
+HOST_UNIT_NAME = "self-learn-host.service"
+
+#: Fix r1 (gate finding 1): a refused fingerprint is tried again after this
+#: long even though the code has not changed, because what failed may have
+#: been the environment (a venv synced since, by hand or by any `uv run`).
+REEXEC_RETRY_SECS = 3600
+
+#: The files of the uv project that decide what the venv holds. A change to
+#: either means the venv must be synced before the new code can run: the
+#: re-exec runs the interpreter directly, never `uv run`, so nothing else
+#: would sync it.
+_ENV_FILES = ("pyproject.toml", "uv.lock")
+
+#: The key of the one project notice that says the host process is held on
+#: its old code (fix r1, gate finding 1).
+_REFUSED_NOTICE_KEY = "host-code-refused"
+
+
+def _code_root() -> Path:
+    """The `self_learn` package directory this process imported (symlinks
+    resolved): the code a re-exec would load again."""
+    return Path(__file__).resolve().parent
+
+
+def _project_root() -> Path | None:
+    """The uv project the package belongs to (`plugins/self-learn/cli`: the
+    directory above `src/` that holds `pyproject.toml`), or `None` when the
+    package does not sit in one (an installed wheel, a test's copy)."""
+    root = _code_root().parent.parent
+    return root if (root / "pyproject.toml").is_file() else None
+
+
+def env_fingerprint(project: Path | None = None) -> str | None:
+    """A hash of the uv project's `pyproject.toml` and `uv.lock` (fix r1,
+    gate finding 1): what the venv must hold. `None` when there is no
+    project or it cannot be read."""
+    base = project if project is not None else _project_root()
+    if base is None:
+        return None
+    digest = hashlib.sha256()
+    try:
+        for name in _ENV_FILES:
+            path = base / name
+            digest.update(name.encode("utf-8") + b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest() if path.is_file() else b"-")
+    except OSError:
+        return None
+    return digest.hexdigest()[:16]
+
+
+def _fingerprint(code: str | None, env: str | None) -> str | None:
+    """The one fingerprint the stability count runs on: the code's, joined
+    with the project files' when there are any."""
+    if code is None:
+        return None
+    return code if env is None else f"{code}.{env}"
+
+
+def code_fingerprint(root: Path | None = None) -> str | None:
+    """A hash of every Python source file under the package *root* (default:
+    the one this process runs), by relative path and CONTENT. A landing
+    (a new `HEAD`) and an uncommitted edit both change it; a commit that
+    changes no file, or a touch, does not. `None` when the tree cannot be
+    read, which never triggers a re-exec. About 4 MB of source; a few
+    milliseconds once a tick."""
+    base = root if root is not None else _code_root()
+    digest = hashlib.sha256()
+    try:
+        files = sorted(
+            p for p in base.rglob("*.py") if "__pycache__" not in p.relative_to(base).parts
+        )
+        for path in files:
+            digest.update(path.relative_to(base).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    except OSError:
+        return None
+    return digest.hexdigest()[:16] if files else None
+
+
+@dataclass
+class _CodeWatch:
+    """What the re-exec check remembers between ticks."""
+
+    running: str | None
+    started_at: float
+    candidate: str | None = None
+    seen: int = 0
+    #: A fingerprint the re-exec was refused for (it did not import, or the
+    #: venv could not be synced): not tried again until the code changes
+    #: once more or `REEXEC_RETRY_SECS` have passed (fix r1).
+    refused: str | None = None
+    refused_at: float = 0.0
+    #: The unit file mtime a notice was last written (or cleared) for.
+    unit_mtime_seen: int | None = None
+    #: The project files' fingerprint (`env_fingerprint`) this process
+    #: started on; a different one means the venv needs a sync (fix r1).
+    running_env: str | None = None
+
+
+def _start_time_from_env(now: float) -> float:
+    raw = os.environ.get(_STARTED_AT_ENV)
+    try:
+        value = float(raw) if raw is not None else None
+    except ValueError:
+        value = None
+    return value if value is not None and 0 < value <= now else now
+
+
+def _append_serve_journal(cache_dir: Path, entry: dict[str, Any]) -> None:
+    """One row in `serve.journal.jsonl` (the cache, `NOT_REPO_TRUTH`), the
+    same file `_log_job_crash` writes for a job with no journal of its own.
+    Never raises."""
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with open(cache_dir / SERVE_JOURNAL_FILENAME, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"at": chrono.now_iso(), **entry}, separators=(",", ":")) + "\n")
+    except Exception:  # noqa: BLE001 -- a journal row never widens anything
+        pass
+
+
+def _restart_on_new_code(home: Path) -> bool:
+    """`serve.restart_on_new_code` (default on); a read that fails reads as
+    off for this tick, never as a crash."""
+    try:
+        value, _source = settings.resolve_setting(
+            home, settings.by_name("serve.restart_on_new_code")
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return value is True
+
+
+def _new_code_imports(timeout: float = 120.0) -> tuple[bool, str]:
+    """Whether the code on disk imports in a fresh interpreter, the same
+    interpreter and environment the re-exec would use (`-P`: the working
+    directory is not put on the path). A half-written or broken tree must
+    not replace a running daemon with one that dies on start."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-P", "-c", "import self_learn.cli, self_learn.serve"],
+            capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, _short_cause(exc)
+    if proc.returncode == 0:
+        return True, ""
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    return False, (tail[-1] if tail else f"exit {proc.returncode}")[:300]
+
+
+def _is_import_failure(why: str) -> bool:
+    """Whether the import check failed on a missing or broken dependency
+    (the last traceback line names `ModuleNotFoundError`/`ImportError`),
+    which a venv sync may cure, rather than on the code itself."""
+    return why.startswith(("ModuleNotFoundError", "ImportError"))
+
+
+def _sync_venv(project: Path, timeout: float = 600.0) -> tuple[bool, str]:
+    """Fix r1 (gate finding 1): bring the venv up to the project's lock, the
+    step the unit's `uv run` takes on every start and the re-exec skips.
+    Runs `uv sync --project <project> --inexact` (`--inexact`: like `uv
+    run`, it never removes packages). The `uv` is the one that started this
+    process (`uv run` puts its own path in `UV`), else the one on `PATH`.
+    Called between jobs only, before the import check, so a failed or
+    partial sync is followed by that check and never by a blind re-exec."""
+    import shutil
+    import subprocess
+
+    uv = os.environ.get("UV") or shutil.which("uv")
+    if not uv:
+        return False, "no `uv` to sync the venv with (`UV` is unset and none is on PATH)"
+    try:
+        proc = subprocess.run(
+            [uv, "sync", "--project", str(project), "--inexact"],
+            capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, _short_cause(exc)
+    if proc.returncode == 0:
+        return True, ""
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    return False, (tail[-1] if tail else f"uv sync exit {proc.returncode}")[:300]
+
+
+def _checkout_of_code() -> Path:
+    """The checkout the running code lives in (its git work tree), for the
+    project notice; the package directory itself when it is in none."""
+    root = _code_root()
+    return gitops.work_tree_of(root) or root
+
+
+def _refused_notice_id() -> str:
+    return notices.notice_id(
+        os.path.realpath(_checkout_of_code()), notices.SOURCE_CODE, _REFUSED_NOTICE_KEY
+    )
+
+
+def _refuse_reexec(
+    home: Path, cache_dir: Path, watch: _CodeWatch, current: str, why: str, now: float
+) -> None:
+    """The new code is not run (fix r1): remembered with its time, so it is
+    tried again after `REEXEC_RETRY_SECS` or on the next change; one journal
+    row and one stderr line per attempt; and one project notice for the
+    checkout (S-106), so a session working there sees that the host process
+    is held on its old code and why. The notice is marked done when the next
+    image starts (`_clear_refused_notice`: a fresh start runs what is on
+    disk) or the code on disk is back to what this one runs. Never raises."""
+    watch.refused, watch.refused_at = current, now
+    _append_serve_journal(cache_dir, {
+        "status": "reexec-refused", "from": watch.running, "to": current, "error": why,
+    })
+    print(
+        f"serve: the self-learn code on disk changed but cannot be run ({why}); "
+        "staying on the running code; retrying when it changes again or in "
+        f"{REEXEC_RETRY_SECS // 60} minutes.",
+        file=sys.stderr,
+    )
+    _hold_notice(home, why)
+
+
+def _hold_notice(home: Path, why: str) -> None:
+    """The one project notice saying the host process is held on its old
+    code, with the current reason. A live notice with another reason is
+    replaced (fix r2, gate NIT 5): the notice names why the process is held
+    now, not why it was first held. Never raises."""
+    short = " ".join(why.split())
+    short = "".join(ch for ch in short if ch.isprintable())[:90]
+    text = (
+        "the self-learn host process is held on its old code: the new code "
+        f"cannot run ({short}); it retries hourly"
+    )
+    try:
+        project = _checkout_of_code()
+        held = notices.add(
+            home, project=project, text=text, source=notices.SOURCE_CODE,
+            key=_REFUSED_NOTICE_KEY, renew=True,
+        )
+        if held is not None and held.text != text and held.done_at is None:
+            # `add` leaves a live notice as it is; once done, `renew`
+            # replaces it with the words of this refusal.
+            notices.mark_done(home, held.id)
+            notices.add(
+                home, project=project, text=text, source=notices.SOURCE_CODE,
+                key=_REFUSED_NOTICE_KEY, renew=True,
+            )
+    except Exception:  # noqa: BLE001 -- a hint never widens anything
+        pass
+
+
+def _clear_refused_notice(home: Path) -> None:
+    """Fix r2 (gate finding 2): the hold has ended -- this process has just
+    started on the code on disk, or the code on disk is again the code it
+    runs -- so the "held on its old code" notice is marked done. Never
+    raises."""
+    try:
+        notices.mark_done(home, _refused_notice_id())
+    except Exception:  # noqa: BLE001 -- a hint never widens anything
+        pass
+
+
+def _exec_argv() -> list[str]:
+    """The command line this process was started with, interpreter first,
+    so the re-exec runs exactly the same command."""
+    argv = list(getattr(sys, "orig_argv", None) or [])
+    return argv if argv else [sys.executable, "-m", "self_learn.cli", *sys.argv[1:]]
+
+
+def _reexec(argv: list[str], env: dict[str, str]) -> None:
+    """Replace this process with *argv*. The one call the tests stub."""
+    os.execve(sys.executable, argv, env)
+
+
+def _check_unit_file(home: Path, watch: _CodeWatch) -> None:
+    """A host unit file changed after this process started: the code is
+    picked up by the re-exec, but a unit file change needs systemd to
+    reload it and restart the service, which a process cannot do for
+    itself. Writes one project notice for the checkout the unit file lives
+    in (S-106; shown in a session working there), and clears it once the
+    service has been restarted onto that file. Only under systemd
+    (`INVOCATION_ID` set) and only when the unit is linked. Never raises."""
+    try:
+        if not os.environ.get("INVOCATION_ID") or not is_configured(HOST_UNIT_NAME):
+            return
+        unit = unit_dir() / HOST_UNIT_NAME
+        mtime_ns = unit.stat().st_mtime_ns
+        if watch.unit_mtime_seen == mtime_ns:
+            return
+        real = Path(os.path.realpath(unit))
+        project = gitops.work_tree_of(real) or real.parent
+        key = f"host-unit:{real}:{mtime_ns}"
+        if mtime_ns / 1e9 <= watch.started_at:
+            # Started after the file last changed: any notice for this exact
+            # file version is dealt with.
+            notices.mark_done(home, notices.notice_id(os.path.realpath(project), notices.SOURCE_CODE, key))
+        else:
+            notices.add(
+                home,
+                project=project,
+                # Fix r1 (gate NIT 4): the restart waits for a moment with no
+                # job running -- a restart mid-job kills the job, as the
+                # 10-31 03:45 one killed the mine.
+                text=(
+                    "the host unit file changed after the host process started: run "
+                    f"`systemctl --user daemon-reload`, then restart {HOST_UNIT_NAME} "
+                    f"while no job runs ({HEARTBEAT_FILENAME} has no `running` key)"
+                ),
+                source=notices.SOURCE_CODE,
+                key=key,
+            )
+            print(
+                f"serve: {real} changed after this process started; it needs "
+                "`systemctl --user daemon-reload` and a restart of "
+                f"{HOST_UNIT_NAME} while no job runs (code changes need neither).",
+                file=sys.stderr,
+            )
+        watch.unit_mtime_seen = mtime_ns
+    except Exception:  # noqa: BLE001 -- a hint never widens anything
+        pass
+
+
+def _consider_reexec(
+    home: Path, cache_dir: Path, watch: _CodeWatch, *, pid: int, tick_secs: float,
+    now: float | None = None,
+) -> None:
+    """L6, one check per tick, called between ticks only. When the code on
+    disk (its `*.py` files, and the uv project's `pyproject.toml` and
+    `uv.lock`) has changed from what this process runs, has read the same on
+    `REEXEC_STABLE_TICKS` consecutive checks, no job is running, and
+    `serve.restart_on_new_code` is on:
+
+    - when the project files changed, sync the venv first (`_sync_venv`;
+      the re-exec skips the unit's `uv run`, which is what synced it);
+    - check the new code imports; when it fails on a missing or broken
+      dependency and the venv was not synced yet, sync it and check again;
+    - then write a heartbeat and a journal row saying so, and replace this
+      process with the same command (`os.execve`), which loads the new code.
+
+    A refusal (no sync, no import, a failed exec) leaves a project notice and
+    is tried again on the next change or after `REEXEC_RETRY_SECS`; the
+    notice is done once the code on disk is back to the running code or the
+    next image starts. Returns only when it does not re-exec."""
+    moment = now if now is not None else time.time()
+    _check_unit_file(home, watch)
+    env_now = env_fingerprint()
+    current = _fingerprint(code_fingerprint(), env_now)
+    if current is None or current == watch.running:
+        watch.candidate, watch.seen = None, 0
+        if current is not None and watch.refused is not None:
+            # Fix r2 (gate finding 2): the code on disk is back to what this
+            # process runs (a revert), so nothing is held any more.
+            watch.refused, watch.refused_at = None, 0.0
+            _clear_refused_notice(home)
+        return
+    if current != watch.candidate:
+        watch.candidate, watch.seen = current, 1
+    else:
+        watch.seen += 1
+    if watch.seen < REEXEC_STABLE_TICKS:
+        return
+    if current == watch.refused and moment - watch.refused_at < REEXEC_RETRY_SECS:
+        return
+    if _jobs_in_flight > 0:
+        return  # never mid-job; the next check between jobs takes it
+    if not _restart_on_new_code(home):
+        return
+    project = _project_root()
+    synced = False
+    if env_now != watch.running_env and project is not None:
+        ok, why = _sync_venv(project)
+        if not ok:
+            _refuse_reexec(home, cache_dir, watch, current, f"uv sync failed: {why}", moment)
+            return
+        synced = True
+    ok, why = _new_code_imports()
+    if not ok and not synced and project is not None and _is_import_failure(why):
+        synced_ok, sync_why = _sync_venv(project)
+        if synced_ok:
+            ok, why = _new_code_imports()
+        else:
+            why = f"{why}; uv sync failed: {sync_why}"
+    if not ok:
+        _refuse_reexec(home, cache_dir, watch, current, why, moment)
+        return
+    # Fix r2 (gate NIT 5): the hold notice is not marked done here; the new
+    # image marks it done as it starts (`run_forever`), so a failed exec
+    # below leaves it live.
+    _append_serve_journal(cache_dir, {"status": "reexec", "from": watch.running, "to": current})
+    try:
+        write_heartbeat(
+            cache_dir, pid=pid, next_job=f"restarting on new code ({current})",
+            tick_secs=tick_secs,
+        )
+    except OSError:
+        pass
+    print(
+        f"serve: the self-learn code changed ({watch.running} -> {current}); "
+        "restarting the host process between jobs.",
+        file=sys.stderr,
+    )
+    sys.stdout.flush()
+    sys.stderr.flush()
+    env = dict(os.environ)
+    env[_STARTED_AT_ENV] = repr(watch.started_at)
+    try:
+        _reexec(_exec_argv(), env)
+    except OSError as exc:
+        watch.refused, watch.refused_at = current, moment
+        _append_serve_journal(cache_dir, {
+            "status": "reexec-failed", "from": watch.running, "to": current,
+            "error": _short_cause(exc),
+        })
+        print(f"serve: the restart failed ({_short_cause(exc)}); staying on the running code.",
+              file=sys.stderr)
+        _hold_notice(home, f"the restart failed: {_short_cause(exc)}")
 
 
 # --------------------------------------------------------------- the loop
@@ -1794,6 +2284,18 @@ def run_forever(
     secs = tick_secs if tick_secs is not None else tick_secs_from_env(home=home)
     pid = os.getpid()
     stop = threading.Event()
+    # L6: the code this process runs, read once at start; checked between
+    # ticks for a landing (`_consider_reexec`).
+    running_env = env_fingerprint()
+    watch = _CodeWatch(
+        running=_fingerprint(code_fingerprint(), running_env),
+        started_at=_start_time_from_env(time.time()),
+        running_env=running_env,
+    )
+    # Fix r2 (gate finding 2): whatever held an earlier image on its old
+    # code, this one runs the code on disk (a re-exec, a reboot, a restart
+    # of the unit), so the hold notice is done.
+    _clear_refused_notice(home)
 
     def _handler(signum: int, frame: Any) -> None:  # noqa: ARG001
         stop.set()
@@ -1830,6 +2332,14 @@ def run_forever(
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 break
+            # L6: between ticks no job is running (every job ran to its end
+            # inside `_run_tick`), so this is where new code is picked up.
+            if not stop.is_set():
+                try:
+                    _consider_reexec(home, cd, watch, pid=pid, tick_secs=secs)
+                except Exception as exc:  # noqa: BLE001 — never ends the daemon
+                    print(f"serve: the code-change check failed — {_short_cause(exc)}",
+                          file=sys.stderr)
             stop.wait(secs)
     finally:
         actor.__exit__(None, None, None)

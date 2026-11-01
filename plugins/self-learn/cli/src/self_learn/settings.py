@@ -1230,6 +1230,26 @@ REGISTRY: tuple[Setting, ...] = (
         default=False,
         description="whether the scheduled overseer may run (config-only opt-in)",
     ),
+    # L6 (self-maintenance, 2026-10-31): registered so `doctor settings`
+    # stops warning "unknown settings config key" on every read. The
+    # reader stays `config.hook_activation_enabled` (13 §7.4), which reads
+    # only the YAML boolean `true` as on; this entry has the same single
+    # rung (config.yaml: no env var, no override channel) and the same
+    # parse (a non-boolean is not a value), so the two always agree.
+    Setting(
+        name="overseer.hook_activation",
+        env_var=None,
+        config_section="overseer",
+        config_key="hook_activation",
+        kind="bool",
+        default=False,
+        description=(
+            "whether the overseer's own hook route may go on from placing a hook to "
+            "registering and verifying it (13 §7.4); a rollback switch"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
     Setting(
         name="overseer.timeout_secs",
         env_var="SELF_LEARN_OVERSEER_TIMEOUT",
@@ -1412,6 +1432,21 @@ REGISTRY: tuple[Setting, ...] = (
         description="seconds between the daemon's scheduler ticks",
         validate=lambda v: v if cast(float, v) > 0 else None,
         validate_hint="must be > 0",
+    ),
+    # L6 (self-maintenance, 2026-10-31): `serve` re-executes itself on new
+    # code between jobs, so a landing needs no hand restart and can never
+    # kill a running job. On by default; this is the rollback switch.
+    Setting(
+        name="serve.restart_on_new_code",
+        env_var="SELF_LEARN_SERVE_RESTART_ON_NEW_CODE",
+        config_section="serve",
+        config_key="restart_on_new_code",
+        kind="bool",
+        default=True,
+        description=(
+            "whether the host process restarts itself, between jobs, once the "
+            "self-learn code it runs has changed on disk"
+        ),
     ),
     # -------------------------------------------------------- ledger
     Setting(

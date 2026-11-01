@@ -171,6 +171,9 @@ class TestConfigGet:
             # SK4 (S-107): whether the overseer looks for
             # skills (phase S) is the user's switch too.
             "overseer.skill_discovery",
+            # L6 (2026-10-31): registered so `doctor settings` stops
+            # warning; the overseer's hook route stays a rollback switch.
+            "overseer.hook_activation",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 

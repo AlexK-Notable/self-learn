@@ -1151,8 +1151,9 @@ walk, the next cursor (one HEAD read serves the premise-refresh walk and this on
 commit landing between them is listed by the next run, never skipped by both). A commit is a
 job's when it carries a `By:`
 trailer naming a job (any stamped actor but `human` and `agent`, read from
-`attribution.ACTORS`: `miner|worker|sweep|steward|overseer|serve|policy|analyst`, the
-`policy` actor from S-NEXT-hosts; every ledger
+`attribution.ACTORS`: `miner|worker|sweep|steward|overseer|serve|policy|maintenance|analyst`,
+the `policy` actor from S-NEXT-hosts, `maintenance` the daily recompile job (13 §5,
+S-NEXT-self-maint); every ledger
 commit carries one since S-102 as extended, so the trailer is read FIRST); `By: human`
 or `By: agent` is a hand step whatever its subject, except the never-a-hand-step subjects
 below. Only a commit with NO `By:` trailer

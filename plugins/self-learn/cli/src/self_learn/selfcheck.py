@@ -627,6 +627,123 @@ def _rules_target_owes_nothing(target: Path, records: list[Record]) -> bool:
     return True
 
 
+def _plain_region_verdict(
+    home: Path,
+    bucket: Bucket,
+    record: Record,
+    target: Path,
+    text: str,
+    *,
+    user_claude_md: Path | str | None = None,
+) -> str | None:
+    """The compile record's verdict (``clean`` / ``stale`` / ``edited`` /
+    ``unknown``) for *target*'s managed region, or ``None`` when no verdict
+    applies: a ``git`` host (git status is its instrument), a host that does
+    not resolve, or no managed region in *text*. The one computation the drift
+    check and :func:`unrecorded_targets` share (L6, 2026-10-31)."""
+    host_path = _managed_host_for(home, bucket, record, user_claude_md=user_claude_md)
+    registration = "skills-root" if bucket.scope == "skill" else "project"
+    if host_path is None or host_mode(home, host_path, registration=registration) == "git":
+        return None
+    try:
+        region = compiled.region_bytes(text, "managed")
+    except compiled.CompiledRecordError:
+        region = None
+    if region is None:
+        return None
+    scope_kind = "user" if bucket.scope == "user" else (
+        "skill" if bucket.scope == "skill" else "project"
+    )
+    slug = host_slug(home, host_path, scope_kind=scope_kind)
+    entry = compiled.entry_for(
+        compiled.load_record(home, slug),
+        compiled.region_key(host_path, target, "managed"),
+        region="managed",
+    )
+    return compiled.verdict_for(entry, compiled.sha256_hex(region))
+
+
+def unrecorded_targets(
+    home: Path, *, user_claude_md: Path | str | None = None
+) -> dict[Path, list[str]]:
+    """L6 (2026-10-31): every managed target the drift check reports as
+    carrying self-learn's markers with no compile record (verdict
+    ``unknown``), mapped to the live lessons whose entry markers it holds,
+    in first-seen order. The daily maintenance recompile
+    (:mod:`maintenance`) recompiles exactly these lessons' targets. Read
+    only; a target or record that cannot be read is left out, as the drift
+    check leaves it to its own failure line."""
+    found: dict[Path, list[str]] = {}
+    if home_state(home) in ("missing", "not-a-repo") or not hosts_path(home).is_file():
+        return found
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except (RecordError, UnicodeDecodeError):
+                continue
+            if not domain.is_canon_live(record):
+                continue
+            if (record.routing or {}).get("destination") not in (
+                "skill-md", "claude-md", "new-skill"
+            ):
+                continue
+            try:
+                target = _target_for(home, bucket, record)
+                if target is None or not target.is_file():
+                    continue
+                text = target.read_text(encoding="utf-8")
+                begin, end = text.find(BEGIN_MARKER), text.find(END_MARKER)
+                section = text[begin:end] if 0 <= begin < end else ""
+                if f"({record.id})" not in section:
+                    continue
+                verdict = _plain_region_verdict(
+                    home, bucket, record, target, text, user_claude_md=user_claude_md
+                )
+            except (OSError, UnicodeDecodeError, HostsError, compiled.CompiledRecordError):
+                continue
+            if verdict == "unknown":
+                found.setdefault(target, []).append(record.id)
+    return found
+
+
+def _unrecorded_advice(home: Path, unknown_targets: list[str]) -> str:
+    """The drift row's words for targets with markers and no compile record.
+    While the host process runs (its heartbeat is fresh), its daily
+    maintenance recompile records them, so the row names that instead of a
+    command; a target that recompile could not record (its last result, in
+    the cache) keeps its own repair. With no host process running, the old
+    advice stands: run ``self-learn recompile``."""
+    from . import maintenance  # late: maintenance imports this module
+
+    n = len(unknown_targets)
+    head = f" — {n} target(s) carry self-learn markers with no compile record"
+    if not maintenance.job_on(home):
+        adopt = "; ".join(f"`self-learn recompile --adopt {t}`" for t in unknown_targets)
+        return head + (
+            " — run `self-learn recompile` to record them; if it "
+            f"refuses one as hand-edited, adopt that target: {adopt}"
+        )
+    refused = maintenance.last_refusals(home)
+    words = head + " — the host process's daily maintenance recompile records them"
+    failure = maintenance.last_failure(home)
+    if failure is not None:
+        # Fix r1 (gate NIT 5): say so when its last run failed; it tries
+        # again the next day.
+        words += f", but its last run failed ({failure}); it tries again tomorrow"
+    stuck = [t for t in unknown_targets if t in refused]
+    if stuck:
+        words += "; its last run could not record " + "; ".join(
+            f"{t} ({refused[t]}) — if that names a hand edit, adopt it: "
+            f"`self-learn recompile --adopt {t}`"
+            for t in stuck
+        )
+    return words
+
+
 def _check_drift(
     home: Path, *, user_claude_md: Path | str | None = None
 ) -> tuple[Verdict, str]:
@@ -770,58 +887,38 @@ def _check_drift(
             # that can see a hand edit here — rendered as one of four
             # distinguishable strings (no compile record yet / clean /
             # stale / edited), only "edited" counted as drift.
-            host_path = _managed_host_for(
-                home, bucket, record, user_claude_md=user_claude_md
+            verdict = _plain_region_verdict(
+                home, bucket, record, target, text, user_claude_md=user_claude_md
             )
-            registration = "skills-root" if bucket.scope == "skill" else "project"
-            if (
-                host_path is not None
-                and host_mode(home, host_path, registration=registration) != "git"
-            ):
-                try:
-                    region = compiled.region_bytes(text, "managed")
-                except compiled.CompiledRecordError:
-                    region = None
-                if region is not None:
-                    scope_kind = "user" if bucket.scope == "user" else (
-                        "skill" if bucket.scope == "skill" else "project"
+            if verdict is not None:
+                if verdict == "edited":
+                    # the ONE verdict that is drift — GATE2/REC2's own
+                    # refusal semantics, mirrored here as a FAILURE.
+                    failures.append(
+                        f"{record.id}: {target} was hand-edited outside "
+                        f"self-learn (edited) — run `self-learn "
+                        f"recompile --adopt {target}`"
                     )
-                    slug = host_slug(home, host_path, scope_kind=scope_kind)
-                    entry = compiled.entry_for(
-                        compiled.load_record(home, slug),
-                        compiled.region_key(host_path, target, "managed"),
-                        region="managed",
+                    continue
+                if verdict == "unknown":
+                    if str(target) not in unknown_targets:
+                        unknown_targets.append(str(target))
+                    plain_notes.append(
+                        f"{record.id}: {target} has no compile record "
+                        "yet (unknown provenance) — SKIP, tracking "
+                        "begins at the next route/recompile"
                     )
-                    observed = compiled.sha256_hex(region)
-                    verdict = compiled.verdict_for(entry, observed)
-                    if verdict == "edited":
-                        # the ONE verdict that is drift — GATE2/REC2's own
-                        # refusal semantics, mirrored here as a FAILURE.
-                        failures.append(
-                            f"{record.id}: {target} was hand-edited outside "
-                            f"self-learn (edited) — run `self-learn "
-                            f"recompile --adopt {target}`"
-                        )
-                        continue
-                    if verdict == "unknown":
-                        if str(target) not in unknown_targets:
-                            unknown_targets.append(str(target))
-                        plain_notes.append(
-                            f"{record.id}: {target} has no compile record "
-                            "yet (unknown provenance) — SKIP, tracking "
-                            "begins at the next route/recompile"
-                        )
-                    elif verdict == "stale":
-                        plain_notes.append(
-                            f"{record.id}: {target} matches the compile "
-                            "record's prior observation (stale) — an "
-                            "unlanded apply; `self-learn recompile` repairs it"
-                        )
-                    else:  # "clean" — the ordinary, quiet case
-                        plain_notes.append(
-                            f"{record.id}: {target} matches its compile "
-                            "record (clean)"
-                        )
+                elif verdict == "stale":
+                    plain_notes.append(
+                        f"{record.id}: {target} matches the compile "
+                        "record's prior observation (stale) — an "
+                        "unlanded apply; `self-learn recompile` repairs it"
+                    )
+                else:  # "clean" — the ordinary, quiet case
+                    plain_notes.append(
+                        f"{record.id}: {target} matches its compile "
+                        "record (clean)"
+                    )
             # U-glob §6.6: for a pathed rule, EITHER scope, re-assert
             # every recorded glob still matches ≥1 file via the same
             # anchored probe route time uses (`glob_reaches`) — the same
@@ -880,15 +977,7 @@ def _check_drift(
         # recompile --adopt`" failed with "expected one argument". A plain
         # `recompile` records a region that is already correct (M2.4); a
         # target it refuses as hand-edited is adopted by name.
-        n = len(unknown_targets)
-        adopt = "; ".join(
-            f"`self-learn recompile --adopt {t}`" for t in unknown_targets
-        )
-        ok_message = ok_message + (
-            f" — {n} target(s) carry self-learn markers with no compile "
-            "record — run `self-learn recompile` to record them; if it "
-            f"refuses one as hand-edited, adopt that target: {adopt}"
-        )
+        ok_message = ok_message + _unrecorded_advice(home, unknown_targets)
     if plain_notes:
         ok_message = ok_message + " — " + "; ".join(plain_notes)
     return Verdict.PASS, ok_message
