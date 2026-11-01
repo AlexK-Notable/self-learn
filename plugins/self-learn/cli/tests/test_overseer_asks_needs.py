@@ -537,8 +537,10 @@ def test_the_formats_contract_and_the_prompt_carry_the_r2_rules(tmp_path):
     assert "for a conflict, the newer statement wins meanwhile" in flat
     assert "never re-asked" in flat and "ask under a new id" in flat
     # Fix round 1 (gate r1 MAJOR 3): no real ledger ids in the product prompt.
-    assert "stmt-0123abcd" in overseer_run.ORDERED_CHECK
-    assert "5bb55a2e" not in flat and "q-task-routing" not in flat
+    assert __import__("re").findall(r"stmt-[0-9a-f]{8}", overseer_run.ORDERED_CHECK) == [
+        "stmt-0123abcd"
+    ]
+    assert "`q-example-models`" in overseer_run.ORDERED_CHECK
     readme = " ".join((formats.write(tmp_path / "ws", "B") / "README.md").read_text("utf-8").split())
     assert "checks are read-only commands" in readme
     example = YAML(typ="safe").load(formats.phase_b_examples()["questions.yaml"])
