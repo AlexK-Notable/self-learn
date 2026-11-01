@@ -179,7 +179,7 @@ def test_words_from_names_only_the_persons_own_reply(tmp_path, monkeypatch):
     with pytest.raises(answers.AnswerError) as agent:
         answers.answer(home, item["id"], option="opt-yes-conditions",
                        words_from=words.transcript_row, note="n")
-    assert agent.value.exit_code == 64 and "agent" in str(agent.value)
+    assert agent.value.exit_code == 64 and "--words-from is the person's click" in str(agent.value)
     assert (len(_stmts(home)), len(_choices(home))) == before
 
 
