@@ -1530,8 +1530,10 @@ def _remove_folder(env: sk1.Env) -> None:
     git(env.root, "commit", "-q", "-m", "a person removes the skill folder")
 
 
-def _restore_b(*, during=None):
-    """Phase B restores the owned skill from the staged last-write/."""
+def _restore_b(*, during=None, extra: str | None = None):
+    """Phase B restores the owned skill from the staged last-write/ (with
+    *extra* appended to its SKILL.md when given: a restore that also
+    changes the text)."""
     def write_b(stage: Path) -> None:
         shown = stage / skills.OWNED_DIR / NAME / skills.LAST_WRITE_DIR
         files = {
@@ -1539,6 +1541,8 @@ def _restore_b(*, during=None):
             for p in shown.rglob("*") if p.is_file()
         }
         assert "SKILL.md" in files
+        if extra is not None:
+            files["SKILL.md"] = files["SKILL.md"].rstrip() + "\n\n" + extra + "\n"
         _write_folder(stage, NAME, files)
         _dump(stage / "case-restore.yaml", _case([RID], outcome="no-action", lessons=[]))
         _dump(stage / "sheet-restore.yaml", {"version": 1, "items": []})
@@ -1594,6 +1598,23 @@ def test_sk_e_2_a_missing_folder_is_restored_with_the_recorded_hash(env, monkeyp
     assert skill_writer.deployed_authored_sha256(env.home, NAME) == recorded
     assert env.row()["last_write"]["authored_sha256"] == recorded
     assert f"[skill changed] {NAME}" in _section(_report(result), "Decided in the user's stead")
+
+
+def test_sk_e_2b_a_restore_that_also_changes_the_text_is_written(env, monkeypatch):
+    """The write's own rule lets an exact restore through (the interrupted
+    create's case); a restore that also changes the text needs the
+    compare-and-swap against absence (``expect_missing``)."""
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    _lesson(env, RID)
+    _remove_folder(env)
+    _phases(monkeypatch, _restore_b(extra="A line the restore adds."))
+
+    result = _run(env)
+
+    assert "A line the restore adds." in env.skill_md().read_text(encoding="utf-8")
+    assert env.row()["last_write"]["authored_sha256"] == skill_writer.deployed_authored_sha256(env.home, NAME)
+    assert "is missing from the skills root" not in _report(result)
 
 
 def test_sk_e_3_a_file_appearing_before_the_restore_refuses_it(env, monkeypatch):
