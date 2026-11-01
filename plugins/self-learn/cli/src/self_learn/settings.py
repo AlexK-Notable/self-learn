@@ -128,7 +128,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from . import config, gitops, intents, ledger
+from . import attribution, config, gitops, intents, ledger
 
 __all__ = [
     "Kind",
@@ -189,6 +189,17 @@ SKILL_WRITING_MODES: tuple[str, ...] = ("on", "off")
 #: reading it as ``off`` would turn writing off for exactly the person who
 #: never touched the switch (S-107 amended 2026-10-31).
 SKILL_WRITING_LEGACY_ON = "auto"
+
+
+def _rotation_per_night_value(value: object) -> str | None:
+    """`premises.rotation_per_night` as stored: ``"auto"`` or a whole
+    number >= 0 written as text, stripped; ``None`` for anything else (the
+    setting's clamp then reads it as ``auto``, and `config set` refuses
+    it). S-114."""
+    text = str(value).strip() if isinstance(value, str) else ""
+    if text == "auto" or (text.isascii() and text.isdigit()):
+        return text
+    return None
 
 
 def _warn(message: str) -> None:
@@ -1065,10 +1076,19 @@ REGISTRY: tuple[Setting, ...] = (
         config_section="steward",
         config_key="cooldown_secs",
         kind="int",
-        default=72000,
+        # S-115: was 72000 (20 h) and rolled from the last run, so
+        # the run drifted 4 h earlier every day and a failed run waited 20 h.
+        # The steward now runs nightly after the mine and retries a failed or
+        # held run after 2 h; this is only the minimum gap between two starts,
+        # short enough that a hand run in the afternoon leaves that night's run
+        # alone, long enough that two scheduled runs can never pile up.
+        default=43200,
         validate=lambda v: max(cast(int, v), 0),
         validate_hint="must be >= 0",
-        description="minimum seconds between scheduled steward runs",
+        description=(
+            "minimum seconds between two steward run starts (the run itself is "
+            "nightly, after the mine; a failed or held run retries after 2 h)"
+        ),
     ),
     Setting(
         name="steward.enabled",
@@ -1127,6 +1147,57 @@ REGISTRY: tuple[Setting, ...] = (
         tier="C",
         override_channel=False,
     ),
+    # S-114 (premises design P1; decisions 2026-10-31b item 3):
+    # every placed lesson is re-read by the steward about once per this
+    # many days (`premise-review` inputs), so slow drift that no probe sees
+    # is caught without a person. On at 90 by default: the backfill's
+    # extract case counts as each lesson's first look, so rotation is idle
+    # for about the first three months with no later step by anyone. 0
+    # turns it off (the rollback). Tier C like the other premise settings,
+    # with no process-override rung.
+    Setting(
+        name="premises.rotation_days",
+        env_var=None,
+        config_section="premises",
+        config_key="rotation_days",
+        kind="int",
+        default=90,
+        validate=lambda v: max(cast(int, v), 0),
+        validate_hint="must be >= 0",
+        description=(
+            "how many days after its last look a placed lesson is offered to the steward "
+            "to be re-read (premise-review); 0 turns the rotation off"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
+    # S-114: how many `premise-review` inputs one run may take.
+    # `auto` (the default) is ceil(live placed lessons / rotation_days) + 1,
+    # which grows with the ledger, so the backlog always drains and the
+    # number never needs a person; a non-negative integer (as text, the
+    # `config set` form) overrides it. The `overseer.skill_writing`
+    # precedent for a str setting with an `auto` value; the 2026-09-20 rule
+    # that numbers sizing a step are not hardcoded. A malformed value in
+    # config.yaml folds to `auto` in place (like every `accepts` entry's
+    # clamp); `config set` refuses it.
+    Setting(
+        name="premises.rotation_per_night",
+        env_var=None,
+        config_section="premises",
+        config_key="rotation_per_night",
+        kind="str",
+        default="auto",
+        validate=lambda v: _rotation_per_night_value(v) or "auto",
+        accepts=lambda v: _rotation_per_night_value(v) is not None,
+        accepts_hint="auto, or a whole number >= 0",
+        description=(
+            "how many placed lessons the steward re-reads a night: auto (enough to read "
+            "every lesson once per rotation_days, plus one) or a number written in quotes "
+            "in config.yaml ('5'; an unquoted 5 is not text and reads as auto)"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
     # ---------------------------------------------------------- runs
     # U1 (S-68, `03-decisions.md`): ONE cap shared by both delegated
     # runners and by the overseer's week -- a run left unfinished either
@@ -1158,6 +1229,26 @@ REGISTRY: tuple[Setting, ...] = (
         kind="bool",
         default=False,
         description="whether the scheduled overseer may run (config-only opt-in)",
+    ),
+    # L6 (self-maintenance, 2026-10-31): registered so `doctor settings`
+    # stops warning "unknown settings config key" on every read. The
+    # reader stays `config.hook_activation_enabled` (13 §7.4), which reads
+    # only the YAML boolean `true` as on; this entry has the same single
+    # rung (config.yaml: no env var, no override channel) and the same
+    # parse (a non-boolean is not a value), so the two always agree.
+    Setting(
+        name="overseer.hook_activation",
+        env_var=None,
+        config_section="overseer",
+        config_key="hook_activation",
+        kind="bool",
+        default=False,
+        description=(
+            "whether the overseer's own hook route may go on from placing a hook to "
+            "registering and verifying it (13 §7.4); a rollback switch"
+        ),
+        tier="C",
+        override_channel=False,
     ),
     Setting(
         name="overseer.timeout_secs",
@@ -1341,6 +1432,21 @@ REGISTRY: tuple[Setting, ...] = (
         description="seconds between the daemon's scheduler ticks",
         validate=lambda v: v if cast(float, v) > 0 else None,
         validate_hint="must be > 0",
+    ),
+    # L6 (self-maintenance, 2026-10-31): `serve` re-executes itself on new
+    # code between jobs, so a landing needs no hand restart and can never
+    # kill a running job. On by default; this is the rollback switch.
+    Setting(
+        name="serve.restart_on_new_code",
+        env_var="SELF_LEARN_SERVE_RESTART_ON_NEW_CODE",
+        config_section="serve",
+        config_key="restart_on_new_code",
+        kind="bool",
+        default=True,
+        description=(
+            "whether the host process restarts itself, between jobs, once the "
+            "self-learn code it runs has changed on disk"
+        ),
     ),
     # -------------------------------------------------------- ledger
     Setting(
@@ -2194,10 +2300,11 @@ def agent_caller() -> bool:
 class AgentSettingRefusal(SettingsError):
     """A tier-C write from an agent shell; CLI business-rule refusal (exit 1)."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, message: str | None = None) -> None:
         super().__init__(
-            f"{name} is the human's switch; run the same command in your own "
-            "terminal (not through an agent) "
+            message
+            or f"{name} is a person-only switch; from an agent's shell it is set under "
+            "the user's standing grant with --note saying why "
             f"(agent shell detected: {', '.join(agent_caller_markers())})"
         )
 
@@ -2395,8 +2502,13 @@ def config_set(
     except KeyError:
         raise UnknownSettingError(name) from None
 
-    if setting.tier == "C" and agent_caller():
-        raise AgentSettingRefusal(name)
+    if setting.tier == "C":
+        # S-109: the CLI puts the user's standing grant in force
+        # (grants.authorize) before it calls this; without it an agent's
+        # shell is refused here, as before.
+        attribution.refuse_unless_authorized(
+            f"config set {name}", lambda message: AgentSettingRefusal(name, message)
+        )
 
     # MINOR-4 (review r1 2026-09-01): this used to be a bare `assert`
     # AFTER value-parsing -- checked first now, both because "can this
@@ -2528,8 +2640,10 @@ def config_unset(home: Path | str, name: str, *, note: str | None = None) -> tup
             config_key=name.partition(".")[2], kind="str", default="",
             description="retired backend selector", operator_facing=False,
         )
-    if setting.tier == "C" and agent_caller():
-        raise AgentSettingRefusal(name)
+    if setting.tier == "C":
+        attribution.refuse_unless_authorized(
+            f"config unset {name}", lambda message: AgentSettingRefusal(name, message)
+        )
 
     if setting.config_section is None or setting.config_key is None:
         raise NoConfigRungError(name)  # MINOR-4, same fix as config_set

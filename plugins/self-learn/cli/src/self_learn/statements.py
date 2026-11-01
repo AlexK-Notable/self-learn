@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import gitops, intents, provenance, refs, sentinel
@@ -33,9 +34,11 @@ __all__ = [
     "STMT_ID_RE",
     "StatementError",
     "StatementUsageError",
+    "TypedTurn",
     "add",
     "latest_user_typed",
     "list_statements",
+    "typed_turn",
     "user_message_ref",
 ]
 
@@ -349,21 +352,32 @@ def user_message_ref(home: Path | str, session: str, verbatim: str) -> str:
     )
 
 
-def latest_user_typed(home: Path | str, session: str) -> tuple[str, str]:
-    """``(message_ref, text)`` of the LAST row of *session*'s transcript that
-    the user typed (S-103). The proof an agent's shell needs before a
-    registration may ride on a "yes": the words the person typed most recently
-    must be that yes, so an older "yes" (to another question) or anything the
-    person typed after it never counts.
+@dataclass(frozen=True)
+class TypedTurn:
+    """The person's last typed row of a session and what they were answering
+    (S-103 as amended by S-109 / cures CU-1).
 
-    Read-only. Only a row whose role is ``user`` counts, judged the way
-    :func:`add` judges one (rule 10 in full, with the sends swept once, and
-    the subagent-file flag when the session resolves into a subagent's
-    file); a tool result (an AskUserQuestion click), an agent-written turn
-    (including a line another agent typed into the pane without the
-    ``<agent-message>`` tag), a skill text or a subagent's reply is never
-    "typed". A row an agent wrote is passed over, not stopped at: the
-    person's own typing is what is wanted. Raises
+    ``ref`` and ``text`` are that row (``transcript:<session>#L<n>`` and its
+    words); ``asked`` is the visible assistant text written between the
+    person's previous typed row and this one: only ``text`` blocks of rows
+    whose role is ``assistant``, never a ``tool_use`` input or a
+    ``tool_result`` the person may not have read."""
+
+    ref: str
+    text: str
+    asked: str
+
+
+def typed_turn(home: Path | str, session: str) -> TypedTurn:
+    """The last row of *session*'s transcript the user typed, and the
+    assistant text that came after the previous one (:class:`TypedTurn`).
+
+    Read-only. A row counts as typed exactly as :func:`add` judges one (rule
+    10 in full, with the sends swept once, and the subagent-file flag when the
+    session resolves into a subagent's file); a tool result (an
+    AskUserQuestion click), an agent-written turn, a skill text or a
+    subagent's reply is never "typed", and is passed over, not stopped at.
+    With no earlier typed row the window starts at the first row. Raises
     :class:`StatementUsageError` when the session has no transcript or holds
     no typed row."""
     roots = refs.transcript_roots(home)
@@ -379,17 +393,55 @@ def latest_user_typed(home: Path | str, session: str) -> tuple[str, str]:
         raise _transcript_problem(error) from error
     in_subagent_file = ref.subagent_file is not None
     sent: provenance.SentIndex | None = None
-    for number in range(len(lines), 0, -1):
+
+    def typed(number: int) -> dict | None:
+        nonlocal sent
         entry = refs._entry(lines[number - 1])  # noqa: SLF001
         if entry is None or refs.role_of(entry, in_subagent_file=in_subagent_file) != "user":
-            continue  # a cheap prefilter; rule 10's sends are swept only for a row that passes it
+            return None  # a cheap prefilter; rule 10's sends are swept only for a row that passes it
         if sent is None:
             sent = refs.sent_index(roots)
         if refs.role_of(entry, in_subagent_file=in_subagent_file, sent=sent) == "user":
-            return f"transcript:{session}#L{number}", refs._raw_text(entry).strip()  # noqa: SLF001
-    raise StatementUsageError(
-        f"statement: session {session!r} holds no row the user typed"
+            return entry
+        return None
+
+    last: tuple[int, dict] | None = None
+    previous = 0
+    for number in range(len(lines), 0, -1):
+        entry = typed(number)
+        if entry is None:
+            continue
+        if last is None:
+            last = (number, entry)
+            continue
+        previous = number
+        break
+    if last is None:
+        raise StatementUsageError(
+            f"statement: session {session!r} holds no row the user typed"
+        )
+    asked: list[str] = []
+    for number in range(previous + 1, last[0]):
+        entry = refs._entry(lines[number - 1])  # noqa: SLF001
+        if entry is None or refs.role_of(entry, in_subagent_file=in_subagent_file) != "assistant":
+            continue
+        asked.extend(
+            str(block.get("text", ""))
+            for block in refs._blocks(entry)  # noqa: SLF001
+            if block.get("type") == "text"
+        )
+    return TypedTurn(
+        ref=f"transcript:{session}#L{last[0]}",
+        text=refs._raw_text(last[1]).strip(),  # noqa: SLF001
+        asked="\n".join(part for part in asked if part),
     )
+
+
+def latest_user_typed(home: Path | str, session: str) -> tuple[str, str]:
+    """``(message_ref, text)`` of the LAST row of *session*'s transcript that
+    the user typed (S-103): :func:`typed_turn` without what it answered."""
+    turn = typed_turn(home, session)
+    return turn.ref, turn.text
 
 
 def add(

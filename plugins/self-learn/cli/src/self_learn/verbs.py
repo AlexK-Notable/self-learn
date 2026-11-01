@@ -74,6 +74,7 @@ import difflib
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -81,6 +82,7 @@ from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
+from functools import partial
 from pathlib import Path
 
 from . import cases
@@ -3272,6 +3274,7 @@ def _hook_commit_or_undo(
     message: str,
     *,
     by: str | None = None,
+    note: str | None = None,
 ) -> tuple[list[Path], str]:
     """Fold r1, F2(b): *by* — pre-validated by the caller
     (:func:`hook_activate`, before any lock) — rides the commit body as
@@ -3309,7 +3312,11 @@ def _hook_commit_or_undo(
     land" is the over-cautious direction; treating it as "the commit
     landed, keep the runtime change" on nothing more than a failed read
     would be the dangerous one."""
-    commit_body = _body_with_by_trailer("\n".join(result.receipts), by)
+    # S-109 (cures CU-2): the stated reason, when given, opens
+    # the body; the receipts follow.
+    commit_body = _body_with_by_trailer(
+        "\n\n".join(part for part in (note, "\n".join(result.receipts)) if part), by
+    )
     head_before = gitops.head_sha(home)
     try:
         path = ledger_ops.find_record_path(home, record_id)
@@ -3376,6 +3383,7 @@ def hook_activate(
     register: bool = True,
     no_push: bool = False,
     by: str | None = None,
+    note: str | None = None,
 ) -> VerbResult:
     """13 §7.4 — the human path: ``self-learn hook activate <id>``
     always performs every step (placed, registered, activation-
@@ -3414,6 +3422,7 @@ def hook_activate(
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
     _by_trailer(by)  # validates *by*; raises before any lock is taken
+    _scan_or_refuse([], note)  # S-109: the stated reason rides the body
     claude_dir = selfcheck.claude_runtime_dir()
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -3431,7 +3440,7 @@ def hook_activate(
                 raise VerbError(_residual_message(exc)) from exc
             message = f"self-learn: hook activate {record_id}"
             staged, sha = _hook_commit_or_undo(
-                home, record_id, result, "hook-activated", message, by=by,
+                home, record_id, result, "hook-activated", message, by=by, note=note,
             )
             prune_note = _prune_hook_backups(claude_dir, result)
         push = _push_ledger(home, no_push)
@@ -3463,6 +3472,7 @@ def hook_deactivate(
     *,
     no_push: bool = False,
     by: str | None = None,
+    note: str | None = None,
 ) -> VerbResult:
     """13 §7.4: reverses :func:`hook_activate` — removes the symlink
     (only if it points at the expected target) and surgically removes
@@ -3481,6 +3491,7 @@ def hook_deactivate(
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
     _by_trailer(by)  # S-102: validates before any lock is taken
+    _scan_or_refuse([], note)
 
     claude_dir = selfcheck.claude_runtime_dir()
     hold = sentinel.hold()
@@ -3497,7 +3508,7 @@ def hook_deactivate(
                 raise VerbError(_residual_message(exc)) from exc
             message = f"self-learn: hook deactivate {record_id}"
             staged, sha = _hook_commit_or_undo(
-                home, record_id, result, "hook-deactivated", message, by=by,
+                home, record_id, result, "hook-deactivated", message, by=by, note=note,
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -4427,6 +4438,7 @@ def _retire_reference_host_phase(
                     _notice_tracked_removals(
                         home, spec,
                         _settle_tracked_removals(tracked, warnings, restore=touched),
+                        tracked,
                     )
                 except NeedsPerson:
                     step = "check"  # every touched file is back as it was
@@ -4651,6 +4663,7 @@ def _apply_target(
     user_push: bool = True,
     notes: list[str] | None = None,
     keep_empty_rules: bool = False,
+    scaffold_owner: str | None = None,
 ) -> tuple[object, list[Path]]:
     """HOST-phase compile (doc 13 §4 step e): write the target from the
     committed ledger state. Returns (compile_result, host paths to stage —
@@ -4675,7 +4688,7 @@ def _apply_target(
     for a file whose region its compile record does not accept as it
     stands: that file is rewritten as before, never removed."""
     if spec.destination == "new-skill":
-        compile_result, host_paths = _apply_new_skill(home, spec)
+        compile_result, host_paths = _apply_new_skill(home, spec, owner=scaffold_owner)
     elif spec.destination == "hook":
         # M3-2 verbatim apply: the APPROVED bytes ride the routing block
         # (copied there at the ledger phase), so the host phase — and any
@@ -4816,24 +4829,60 @@ class NewSkillApplyResult:
     #: failed host write) or it was refused (``link_problem`` says why).
     linked: str | None = None
     link_problem: str | None = None
+    #: S-110 (SK-G): the ``metadata.self-learn`` stamp this
+    #: scaffold wrote into SKILL.md -- ``{authored_by, case: None,
+    #: created}`` -- when a person's (or an agent's) route created a skill
+    #: under a name nothing used, so it becomes self-learn's to maintain.
+    #: ``None`` for every other apply. :func:`_own_routed_scaffold` adds the
+    #: registry row from it once the host write stood.
+    owned_stamp: dict | None = None
+    #: Whether that registry row was added (``False`` with a warning when
+    #: the registry write failed; the SKILL.md then reads as a stray stamp).
+    owned: bool = False
 
     @property
     def word_count(self):
         return getattr(self.section, "word_count", None)
 
 
-def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult, list[Path]]:
+def _empty_new_skill_section(spec: TargetSpec) -> tuple[NewSkillApplyResult, list[Path]]:
+    """SK-D: the host apply of a ``new-skill`` target no routed lesson
+    resolves to any more (:func:`_apply_new_skill`)."""
+    target = spec.target
+    assert target is not None  # a new-skill target always resolves one
+    if not target.is_file():
+        return NewSkillApplyResult(path=target, changed=False, scaffolded=False), []
+    section = compile_managed_file(target, [])
+    return (
+        NewSkillApplyResult(path=target, changed=section.changed, scaffolded=False, section=section),
+        [target],
+    )
+
+
+def _apply_new_skill(
+    home: Path, spec: TargetSpec, *, owner: str | None = None
+) -> tuple[NewSkillApplyResult, list[Path]]:
     """The T18 host apply: deterministic scaffold on first route (M3-9 —
     plugin.json + SKILL.md, marketplace entry appended exactly once),
     ordinary managed-section recompile ever after. Idempotent: a second
-    run over unchanged records writes nothing."""
+    run over unchanged records writes nothing.
+
+    S-110 (SK-D): when the last lesson has left the skill
+    (retired, superseded, rerouted away), an existing SKILL.md gets an
+    empty managed section -- its lines would otherwise stay stale until
+    something else rewrote it -- and a missing one is left missing: no
+    error, no scaffold (a scaffold's description is seeded from a first
+    lesson, and there is none).
+
+    S-110 (SK-G): *owner* (``human`` or ``agent``,
+    :func:`_scaffold_owner`) is set on a person's route. When this apply
+    scaffolds the whole skill -- neither plugin.json nor SKILL.md was there
+    -- the seed SKILL.md carries the runner's stamp (``case: null``,
+    authored by *owner*) and the result's ``owned_stamp`` says so; the
+    registry row follows the host write (:func:`_own_routed_scaffold`)."""
     records = _compile_set(home, spec)
     if not records:
-        raise VerbError(
-            f"no routed records resolve to {spec.target} — nothing to "
-            "compile (the union may be empty even though records once "
-            f"named new-skill:{spec.new_skill}, if every one retired)"
-        )
+        return _empty_new_skill_section(spec)
     name = spec.new_skill
     root = spec.host_path
     target = spec.target
@@ -4853,6 +4902,21 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
 
     changed = False
     scaffolded = False
+    owned_stamp: dict | None = None
+    seed_text = skill_md_seed(name, description) if name else ""
+    if owner is not None and name and not manifest.is_file() and not target.is_file():
+        from . import skill_writer  # local: skill_writer reads verbs lazily too
+
+        stamp = {"authored_by": owner, "case": None, "created": chrono.now_iso()}
+        try:
+            seed_text = skill_writer.stamp_skill_md(
+                seed_text, by=owner, case=None, created=stamp["created"]
+            )
+            owned_stamp = stamp
+        except ValueError:
+            # Not reachable for the seed's own frontmatter; if it ever is,
+            # the scaffold goes ahead unowned, exactly as before SK-G.
+            owned_stamp = None
     if name and target is not None and not target.is_file():
         # SK2: also checked when the target is resolved (route and recompile
         # alike); here it is the last stop, for a SKILL.md that went missing
@@ -4874,7 +4938,7 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
         target.parent.mkdir(parents=True, exist_ok=True)
         fsops.atomic_write(
             target,
-            skill_md_seed(name, description),
+            seed_text,
             preserve_mode=True,
             fsync=True,
             follow_symlinks=True,
@@ -4906,6 +4970,7 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
         # skill, where the description is untouched and only the managed
         # BODY (Class B) grew.
         description_words=len(description.split()) if scaffolded else None,
+        owned_stamp=owned_stamp,
     )
     # SKILL.md first: the pinned apply subject names host_paths[0].
     return result, [target, manifest, marketplace]
@@ -4953,6 +5018,101 @@ def _link_routed_skill(spec: TargetSpec, compile_result: object, warnings: list[
     return replace(compile_result, linked=outcome)
 
 
+def _scaffold_owner(home: Path, spec: TargetSpec) -> str | None:
+    """S-110 (SK-G; decision 2 of the 2026-10-31b round): who
+    a route's new-skill scaffold is owned by -- ``human`` for a person's
+    shell (or a library call, which no job makes), ``agent`` for an agent's
+    -- or ``None`` when the scaffold stays the person's unowned skill as
+    before: a job routing (the overseer's own builds go through
+    ``skill write``), a name the registry already has a row for (a retired
+    skill's name stays retired), a vetoed name (a person's veto is never
+    turned into a rename of the person's own skill), or a registry that
+    does not read back (no stamp is written that no row could follow)."""
+    from . import attribution, skill_registry  # local: kept off verbs' import-time graph
+
+    actor = attribution.current_actor()
+    if actor is None or actor == "human":
+        by = "human"
+    elif actor == "agent":
+        by = "agent"
+    else:
+        return None
+    name = spec.new_skill
+    if not name:
+        return None
+    try:
+        registry = skill_registry.load(home)
+    except skill_registry.SkillRegistryError:
+        return None
+    if name in registry.skills or name in registry.vetoed_names():
+        return None
+    return by
+
+
+def _add_owned_scaffold_row(
+    registry, *, name: str, sha: str, stamp: dict
+) -> None:
+    """SK-G's registry change: a live row for the person's scaffold, with
+    the stamp's ``created`` and its authored hash as the last write. A row
+    that exists by now (a race with another writer) is left alone."""
+    if name in registry.skills:
+        return
+    step = {"at": stamp["created"], "case": None, "by": stamp["authored_by"]}
+    registry.skills[name] = {
+        "status": "live",
+        "plugin": f"plugins/{name}",
+        "created": dict(step),
+        "last_write": {**step, "authored_sha256": sha},
+    }
+
+
+def _own_routed_scaffold(
+    home: Path, spec: TargetSpec, compile_result: object, warnings: list[str]
+) -> object:
+    """SK-G: after a person's route scaffolded a skill under a fresh name
+    (``owned_stamp`` set by :func:`_apply_new_skill`) and the host write
+    stood, add its live registry row (``created: {case: null, by:
+    human|agent}``), so the overseer maintains its text from its next run
+    that writes skills. One ledger commit, through
+    :func:`skill_registry.with_update` (the route already holds the ledger
+    lock: a re-entrant pass-through). A failure is a warning, never a
+    failed route: the lesson is routed either way, and the selftest then
+    names the stamped SKILL.md that has no row.
+
+    Returns *compile_result* with ``owned`` set; any other result type, or
+    one with no stamp, comes back unchanged."""
+    from . import attribution, skill_registry, skill_writer  # local, as above
+
+    if not isinstance(compile_result, NewSkillApplyResult) or compile_result.owned_stamp is None:
+        return compile_result
+    name = spec.new_skill or ""
+    stamp = compile_result.owned_stamp
+    granted = attribution.authority()
+    body = (
+        granted.trailer()
+        if stamp["authored_by"] == "agent" and granted is not None
+        else f"By: {stamp['authored_by']}"
+    )
+    try:
+        sha = skill_writer.authored_sha256_at(spec.host_path, name)
+        if sha is None:
+            raise OSError(f"no SKILL.md under {skill_writer.skill_dir(spec.host_path, name)}")
+        skill_registry.with_update(
+            home,
+            partial(_add_owned_scaffold_row, name=name, sha=sha, stamp=stamp),
+            subject=f"skill owned {name} (scaffolded by a route)",
+            body=body,
+        )
+    except Exception as exc:  # noqa: BLE001 -- the write stood; nothing here may undo it
+        warnings.append(
+            f"new skill {name}: its registry row was not added ({exc}); the skill is "
+            "stamped as self-learn's but is not in the registry -- `self-learn --selftest` "
+            "names it"
+        )
+        return compile_result
+    return replace(compile_result, owned=True)
+
+
 def _new_skill_scaffold_note(spec: TargetSpec, compile_result: object) -> str:
     """The one line a person's ``new-skill`` scaffold prints (M3-11, as SK2
     changed it): where the skill is and whether it is linked. No manual
@@ -4966,6 +5126,13 @@ def _new_skill_scaffold_note(spec: TargetSpec, compile_result: object) -> str:
         where = f"linked at {link}, so new sessions load it"
     else:
         where = f"NOT linked at {link} (see the warning)"
+    if getattr(compile_result, "owned", False):
+        # SK-G: the overseer writes its text from now on.
+        return (
+            f"new skill scaffolded at plugins/{name}, {where}; self-learn maintains it "
+            "from now on: the overseer writes its text around its lessons, and reads any "
+            "edit of yours before its next write"
+        )
     return (
         f"new skill scaffolded at plugins/{name}, {where}; enrich the prose "
         "post-hoc whenever you like"
@@ -5113,7 +5280,7 @@ _PLAIN_RULE = (
 
 _PLAIN_REMOVAL_RULE = (
     "in a plain-mode host self-learn may take its own lines out of a file git "
-    "tracks (leaving the commit to a person) but never deletes a tracked file, "
+    "tracks (leaving the commit to the next agent working there) but never deletes a tracked file, "
     "and rewrites any other file only when git ignores it, so nothing was written"
 )
 
@@ -5171,8 +5338,8 @@ def _settle_tracked_removals(
     a shelf it deleted included) is put back byte for byte and
     :class:`NeedsPerson` is raised -- a plain host never gains a line in,
     or loses, a tracked file. Each tracked file the write did change is
-    named in *warnings*: self-learn never commits in a plain host, so its
-    commit is a person's. Answers those changed files, so the caller can
+    named in *warnings*: self-learn never commits in a plain host, so the next
+    agent working there commits it (the project notice says how). Answers those changed files, so the caller can
     leave the person a project notice (:func:`_notice_tracked_removals`)."""
     problems: list[str] = []
     changed: list[Path] = []
@@ -5198,20 +5365,26 @@ def _settle_tracked_removals(
     for path in changed:
         warnings.append(
             f"{path} is tracked by git: self-learn took its own lines out of it "
-            "and left the change uncommitted -- a person commits it"
+            "and left the change uncommitted -- the project's notice carries the "
+            "commit line for the next agent working there"
         )
     return changed
 
 
-def _notice_tracked_removals(home: Path, spec: TargetSpec, changed: list[Path]) -> None:
-    """S-106 (M6 part 3): the person S-89 leaves a commit to is told
+def _notice_tracked_removals(
+    home: Path, spec: TargetSpec, changed: list[Path], snapshot: _TrackedSnapshot
+) -> None:
+    """S-106 (M6 part 3): whoever S-89 leaves a commit to is told
     where they will be looking -- one project notice per tracked file the
     removal left changed, shown at the start of a session inside that host
     (:mod:`notices`). Cache only: no ledger write, no host write, so it needs
     no lock of its own and runs inside the host's. Never raises, never refuses
     the removal it follows."""
     for path in changed:
-        notices.add_uncommitted(home, project=spec.host_path, file=path)
+        notices.add_uncommitted(
+            home, project=spec.host_path, file=path,
+            before=snapshot[path][0] if path in snapshot else None,
+        )
 
 
 def _refuse_unsafe_plain_paths(
@@ -5517,10 +5690,17 @@ def _host_phase(
                 user_push=user_push,
                 notes=warnings,
                 keep_empty_rules=keep_empty_rules,
+                scaffold_owner=(
+                    _scaffold_owner(home, spec)
+                    if spec.destination == "new-skill"
+                    and routed_record is not None
+                    and not removal
+                    else None
+                ),
             )
             if tracked:
                 _notice_tracked_removals(
-                    home, spec, _settle_tracked_removals(tracked, warnings)
+                    home, spec, _settle_tracked_removals(tracked, warnings), tracked
                 )
             host_sha = None
             if spec.mode == "git" and host_paths:
@@ -5557,6 +5737,10 @@ def _host_phase(
                 # refused commit, whose undo removes a fresh scaffold, never
                 # leaves a link to a missing folder.
                 compile_result = _link_routed_skill(spec, compile_result, warnings)
+                # SK-G: likewise only once the write stood -- a refused
+                # commit's undo removed the stamped scaffold, and no row
+                # may name a folder that is not there.
+                compile_result = _own_routed_scaffold(home, spec, compile_result, warnings)
         return compile_result, host_sha
     except _HOST_PHASE_ERRORS as exc:
         warning = (
@@ -7529,8 +7713,12 @@ def _refuse_moving_a_person_s_lesson(
     keeps its placement: the new lesson must land where that lesson is now
     (the same destination, in the same bucket), or the replace is refused
     as :class:`NeedsPerson` before anything is written. A person's own
-    replace (``actor == "human"``) is never refused here."""
-    if actor == "human":
+    replace (``actor == "human"``) is never refused here, and neither is one
+    typed into an agent's shell (``actor == "agent"``, S-109):
+    that shell acts in the person's session (cures CU-5), and before a
+    command-line ``batch`` named its runner it ran here as ``human``; naming
+    who ran it changes the record, not what it may do."""
+    if actor in ("human", "agent"):
         return
     for lesson, path in lessons:
         if lesson.status != "routed":
@@ -8053,7 +8241,10 @@ def replace_lesson(
             merged = supersede(
                 home, also_id, plan.new_id,
                 note=f"merged into {plan.new_id} by replace {record_id}",
-                by=by, no_push=no_push, user_claude_md=user_claude_md, execution=execution,
+                # S-109 (cures CU-2): supersede's `by` IS its
+                # trailer, so the leg carries the runner the main commit does.
+                by=stamp_by if stamp_by is not None else by,
+                no_push=no_push, user_claude_md=user_claude_md, execution=execution,
             )
         except (VerbError, LedgerOpsError) as exc:
             # E3b fold (gate R3): the new lesson exists and is live; say so
@@ -8805,6 +8996,7 @@ def reject(
     no_push: bool = False,
     reconsider_case: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
+    runner: str | None = None,
 ) -> VerbResult:
     """Reject a pending (or deferred) record. Commit: ``self-learn:
     reject lrn-…``. FW-51: refuses BEFORE any lock/mutation, naming the
@@ -8851,6 +9043,7 @@ def reject(
             touched = resolve_record(
                 home, record_id, "rejected", note=note, verb="reject",
                 extra_allowed_source=extra_allowed,
+                resolution_by=_rejecter(by, execution, runner),
             )
             if retire is not None:
                 touched = touched + _reconsider_retirement_records(
@@ -9425,6 +9618,7 @@ def reconsider(
     note: str | None = None,
     no_push: bool = False,
     any_status: bool = False,
+    stamp_by: str | None = None,
 ) -> VerbResult:
     """U5 (`commands/review.md` ~160-186, `02-schema.md` §2/§3a): record
     a successor decision against a record whose prior resolution (route,
@@ -9470,10 +9664,16 @@ def reconsider(
 
     Integration 2026-10-31 (decision 7): *note* is the stated reason an agent
     shell must give (`cli._agent_attribution`); it rides the commit body
-    only, secret-scanned like every verb's note."""
+    only, secret-scanned like every verb's note.
+
+    S-109 (cures CU-2): *by* is who DECIDED the
+    reconsideration and is kept in the ``reconsidered`` history entry;
+    *stamp_by* is who RAN the verb and is the commit's ``By:`` trailer
+    (``None``: the trailer is *by*, as before)."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _by_trailer(by)  # validates `by` before any lock/mutation
+    _by_trailer(stamp_by)
     _scan_or_refuse([], note)  # the note only; a clean or absent note passes
     if not cases.CASE_ID_RE.match(case or ""):
         raise VerbError(f"reconsider: not a case id: {case!r}")
@@ -9514,13 +9714,14 @@ def reconsider(
         message = f"self-learn: reconsider {record_id} (case {case})"
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
-            record.append_history(
-                "reconsidered",
-                {"case": case, "supersedes": case_fm.get("supersedes")},
-            )
+            entry = {"case": case, "supersedes": case_fm.get("supersedes")}
+            if by is not None:
+                entry["by"] = by
+            record.append_history("reconsidered", entry)
             record.write(path)
             staged, sha = _commit_ledger(
-                home, [path], message, _body_with_by_trailer(note, by)
+                home, [path], message,
+                _body_with_by_trailer(note, stamp_by if stamp_by is not None else by),
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -9558,6 +9759,37 @@ _REOPEN_ADMITTED_STATUSES = REOPEN_ADMITTED_STATUSES
 #: never include a rejected lesson, and it reopens only ones it or the
 #: overseer rejected. Keyed on the runner's actor, never the line's `by:`.
 REOPEN_PERSON_REJECT_REFUSED_ACTORS = frozenset({"overseer"})
+
+
+def _rejecter(
+    by: str | None,
+    execution: execution_evidence.ExecutionRef | None,
+    runner: str | None = None,
+) -> str | None:
+    """Who is rejecting (S-109, cures CU-5): a sheet runner's
+    own actor when a sheet line runs (*execution*'s, or *runner*, which
+    ``batch`` passes; never the line's ``by``), else a ``by`` naming an
+    actor, else the process's (:mod:`attribution`: ``human`` or ``agent``
+    for a command line, the job's name inside one). ``None`` when none of
+    them is an actor a rejection can record."""
+    from . import attribution
+
+    if execution is not None:
+        actor: str | None = execution.actor
+    elif runner is not None:
+        actor = runner
+    elif by in records_mod.RESOLUTION_BY_VALUES:
+        actor = by
+    else:
+        actor = attribution.current_actor()
+    return actor if actor in records_mod.RESOLUTION_BY_VALUES else None
+
+
+#: A case's receipt line saying a ``reject`` of the lesson took effect.
+def _reject_applied_re(record_id: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"item=[1-9][0-9]* {re.escape(record_id)} reject → (?:applied|already-applied)\b"
+    )
 
 
 def person_reject_case(
@@ -9598,15 +9830,48 @@ def person_reject_case(
     person's. A tie in time between a person's reject case and an agent's goes
     to the person; so does a case opened in the same second as the latest
     displacement (times have second precision). A lesson an agent rejected is
-    the overseer's to reconsider (S-76); only a person's is protected here."""
+    the overseer's to reconsider (S-76); only a person's is protected here.
+
+    S-109 (cures CU-5): the ledger now stores who rejected a
+    lesson (``resolution_by``), and that is read FIRST: ``human`` or
+    ``agent`` (a shell; an agent's shell acts in a person's session, as a
+    CLI reject always read) is a person's decision, ``steward`` or
+    ``overseer`` the agent's. Only a lesson rejected before the field existed
+    falls back to the cases above, and there a reject case counts only when
+    its own receipt shows this lesson's ``reject`` line ``applied`` or
+    ``already-applied`` (a steward case whose line was refused is not behind
+    the rejection), and a supersede chain is followed through every case,
+    not only those naming the lesson."""
     hand = "no case an agent recorded covers it, so it was rejected by hand"
     try:
+        record = Record.from_path(find_record_path(home, record_id))
+    except (LedgerOpsError, RecordError, OSError, ValueError):
+        record = None
+    recorded = record.resolution_by if record is not None else None
+    if recorded in ("human", "agent"):
+        return f"the ledger records it was rejected from a {'person' if recorded == 'human' else 'agent'}'s shell"
+    if recorded in ("steward", "overseer"):
+        return ""
+    try:
         if history is None:
-            history = Record.from_path(find_record_path(home, record_id)).history
+            if record is None:
+                return hand
+            history = record.history
         rows = cases.list_cases(home, record_id=record_id)
+        every = cases.list_cases(home)
     except (cases.CaseError, LedgerOpsError, RecordError, OSError, ValueError):
         return hand
-    by_id = {str(row.get("case")): row for row in rows}
+    by_id = {str(row.get("case")): row for row in every}
+    applied = _reject_applied_re(record_id)
+
+    def took_effect(row: dict) -> bool:
+        try:
+            application = cases.show(
+                home, str(row.get("case")), evidence_only=False
+            ).sections.get("Application", "")
+        except cases.CaseError:
+            return False
+        return applied.search(application) is not None
     displaced = max(
         (
             str(entry.get("at") or "")
@@ -9618,6 +9883,8 @@ def person_reject_case(
 
     def behind_the_rejection(row: dict) -> bool:
         if row.get("outcome") != "reject":
+            return False
+        if row.get("actor") in ("steward", "overseer") and not took_effect(row):
             return False
         if displaced and str(row.get("opened_at") or "") <= displaced:
             return False
@@ -9996,6 +10263,31 @@ def _reroute_plan(
         old_retire=old_retire, warnings=warnings, destination=destination,
         ref_name=ref_name, spec=spec, hook_route=hook_route,
     )
+
+
+def reroute_old_side_problem(
+    home: Path | str, record_id: str, *, note: str | None = None,
+) -> str | None:
+    """S-110 (SK-F): the checks a reroute of a placed lesson
+    INTO a skill being built this run makes on its OLD side -- the note's
+    secret scan, the lesson still routed, the old placement's retirement
+    preflight (``_retirement_preflight``), and the loaded-text cut a managed
+    line would make -- run before the skill exists, so a line doomed on its
+    old side is dropped before the skill is written. ``None`` when they
+    pass; otherwise the refusal's words. Writes nothing."""
+    home = Path(home)
+    try:
+        path = find_record_path(home, record_id)
+        _scan_or_refuse([path], note)
+        try:
+            _, record = require_status(home, record_id, ROUTED_ONLY, verb="reroute")
+        except LedgerOpsError as exc:
+            raise VerbError(str(exc)) from exc
+        _retirement_preflight(home, record, path.parent.parent, [])
+        _abort_if_loaded_text_cut(record, "new-skill")
+    except (VerbError, LedgerOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS) as exc:
+        return f"{record_id}: {exc}"
+    return None
 
 
 def reroute(
@@ -11057,8 +11349,12 @@ PREMISE_RUNNER_KEYS = frozenset({"baseline", "decided_at"})
 def _premise_probe_env(home: Path) -> premises_mod.ProbeEnv:
     """The environment the verb's probes run in: this machine, and *home*
     as the ledger a ``ledger`` probe reads. The one seam tests replace (a
-    fake command runner), so no test ever runs ``systemctl`` or ``pacman``."""
-    return premises_mod.ProbeEnv(ledger_home=home)
+    fake command runner), so no test ever runs ``systemctl`` or ``pacman``.
+    Fenced like the sweep (``premise_sweep.fenced_roots``): no probe reads
+    the kept session copies (S-113)."""
+    from . import premise_sweep  # late: premise_sweep imports this module
+
+    return premises_mod.ProbeEnv(ledger_home=home, denied_roots=premise_sweep.fenced_roots(home))
 
 
 def premises_line_problem(action: object, premises: object, ids: object) -> str | None:
@@ -12086,10 +12382,59 @@ class RecompileResult:
     #: single-commit verb pushes; None under ``no_push``, when nothing was
     #: committed, and on every ordinary recompile (which pushes hosts only).
     ledger_push: gitops.PushResult | None = None
+    #: L6 (2026-10-31): retired lessons skipped because the target they once
+    #: compiled into is gone from disk -- an unregistered project host whose
+    #: recorded path no longer exists, or a skill whose folder is gone
+    #: (:func:`_retired_target_gone`). Counted, never warned: there is no
+    #: line left anywhere to take out.
+    gone: list[str] = field(default_factory=list)
 
     @property
     def committed(self) -> int:
         return sum(1 for e in self.entries if e.commit_sha is not None)
+
+
+def _retired_target_gone(
+    home: Path, bucket_dir: Path, record: Record, destination: str
+) -> bool:
+    """L6 (13 §4 item 2, amended 2026-10-31): True when the target a RETIRED
+    lesson once compiled into cannot exist on disk any more, so a recompile
+    has no line to take out of it:
+
+    - a ``project`` lesson (``claude-md``, any variant): its host is not a
+      registered project AND the bucket's recorded path no longer exists
+      (a registered host whose path vanished is a broken registration that
+      still warns: ``host rebind`` repairs it);
+    - a ``skill-md`` lesson: the skills root is registered and on disk, and
+      no ``plugins/*/skills/<name>`` folder exists under it;
+    - a ``new-skill`` lesson: the skills root is registered and on disk, and
+      its ``plugins/<name>`` folder does not exist.
+
+    Anything this cannot read answers False, so the old warning stands."""
+    try:
+        if record.scope == "project":
+            if destination != "claude-md":
+                return False
+            path = bucket_project_path(bucket_dir)
+            if path is None or Path(path).expanduser().exists():
+                return False
+            return not is_project_host(load_hosts(home), path)
+        if destination not in ("skill-md", "new-skill"):
+            return False
+        root = load_hosts(home).skills_root
+        if root is None or not Path(root).is_dir():
+            return False
+        if destination == "skill-md":
+            if not record.scope.startswith("skill:"):
+                return False
+            name = record.scope.partition(":")[2]
+            return not any(p.is_dir() for p in Path(root).glob(f"plugins/*/skills/{name}"))
+        name = (record.routing or {}).get("new_skill")
+        if not isinstance(name, str) or not name or "/" in name:
+            return False
+        return not (Path(root) / "plugins" / name).exists()
+    except (HostsError, OSError, ValueError):
+        return False
 
 
 def recompile_refusals(result: RecompileResult, record_id: str) -> list[str]:
@@ -12249,7 +12594,7 @@ def post_run_recompile(
     same run. Only pairs whose id is in *record_ids* (the item applied)."""
     ids = sorted(dict.fromkeys(str(rid) for rid in record_ids))
     if not ids:
-        return {"records": [], "changed": [], "skipped": [], "warnings": []}
+        return {"records": [], "changed": [], "skipped": [], "warnings": [], "gone": 0}
     origins = [(rid, Path(bucket)) for rid, bucket in moved_from if rid in ids]
     result = recompile(home, no_push=True, only_records=ids, moved_from=origins)
     return {
@@ -12257,6 +12602,8 @@ def post_run_recompile(
         "changed": [str(e.target) for e in result.entries if e.changed],
         "skipped": [f"{e.target}: {e.skipped}" for e in result.entries if e.skipped],
         "warnings": list(result.warnings),
+        # L6: retired lessons whose target is gone, skipped without a warning.
+        "gone": len(result.gone),
     }
 
 
@@ -12405,6 +12752,7 @@ def recompile(
     adopt: "Path | str | Iterable[Path | str] | None" = None,
     only_records: Iterable[str] | None = None,
     moved_from: Iterable[tuple[str, Path]] = (),
+    commit_note: str | None = None,
 ) -> RecompileResult:
     """The doc-13 drift repair (H-2: recompile is always safe and repairs
     any two-phase interruption). For every ROUTED record, recompute each
@@ -12458,7 +12806,12 @@ def recompile(
 
     Idempotent overall: a second run compiles byte-identical content and
     commits nothing. Unregistered/unsound hosts and dirty targets are
-    skipped LOUDLY, never guessed at (H-3)."""
+    skipped LOUDLY, never guessed at (H-3).
+
+    ``commit_note`` (L6 fix r1): the body of the resync ledger commit, for
+    a job that runs recompile and stamps its own ``By:`` trailer (the
+    host process's maintenance job: ``By: maintenance``). ``None`` (every
+    hand run) leaves the body empty, as before."""
     home = Path(home)
     result = RecompileResult()
     # Gate r1 MAJOR-1 (§7.2a.5(4), multi-span): `recompile` takes several
@@ -12589,7 +12942,26 @@ def recompile(
                     rules_topic=(record.routing or {}).get("rules_topic"),
                 )
             except VerbError as exc:
+                if retired and _retired_target_gone(home, bucket.path, record, destination):
+                    # L6 (13 §4 item 2, amended 2026-10-31): a retired
+                    # lesson whose host or skill is gone from disk has no
+                    # file left to take its line out of. Nothing to do and
+                    # nothing to tell anyone; counted once, never warned.
+                    result.gone.append(record.id)
+                    continue
                 result.warnings.append(f"{record.id}: {exc}")
+                continue
+            if (
+                retired
+                and destination == "new-skill"
+                and _retired_target_gone(home, bucket.path, record, destination)
+            ):
+                # L6 fix r1 (gate finding 3b): a new-skill target always
+                # resolves (it names a path under the skills root whether or
+                # not the plugin is there), so the gone check for it runs
+                # here; left to the compile below, a deleted plugin's
+                # SKILL.md warned "nothing to compile" on every run.
+                result.gone.append(record.id)
                 continue
             if destination == "reference":
                 probe = reference_target_path(spec.refs_dir, spec.ref_name)
@@ -13640,6 +14012,9 @@ def recompile(
                     resync_touched,
                     "self-learn: recompile resync record(s) "
                     f"({len(resync_touched)})",
+                    # L6 fix r1: a job's recompile says so (`By: maintenance`),
+                    # so the hand-step census never counts it as a shell's.
+                    commit_note,
                 )
 
         if not no_push:

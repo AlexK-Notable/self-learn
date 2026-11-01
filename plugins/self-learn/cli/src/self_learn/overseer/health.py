@@ -16,6 +16,7 @@ from typing import Any, Iterable
 from ruamel.yaml import YAML
 
 from .. import conditions, gitops, report, scan, settings, telemetry
+from .. import notices as project_notices
 from ..always_loaded import is_always_loaded
 from ..ledger import discover_buckets
 from ..records import Record, RecordError, is_replacement
@@ -295,7 +296,8 @@ def _one_line(text: str, limit: int) -> str:
 
 def premise_refreshes(
     home: Path | str, *, now: datetime | None = None, days: int = _REFRESH_WINDOW_DAYS,
-    limit: int = _REFRESH_LIMIT,
+    limit: int = _REFRESH_LIMIT, cursor: str | None = None, cursor_run: str | None = None,
+    head: str | None = None,
 ) -> dict[str, Any]:
     """The week's ``self-learn: premises refresh`` commits: baselines the
     premise sweep re-recorded by CODE, with no model call and no decision, so
@@ -303,33 +305,22 @@ def premise_refreshes(
     (design D11). ``state`` is ``unavailable`` when git cannot be read: never
     "no refreshes"."""
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    since = now - timedelta(days=days)
     out: dict[str, Any] = {"state": "ok", "window_days": days, "total": 0, "commits": []}
-    try:
-        proc = gitops._git(
-            Path(home), "log", "--no-merges", f"--since={(since - timedelta(days=1)).date().isoformat()}",
-            "--grep=^self-learn: premises refresh ", "--format=%x1e%h%x1f%aI%x1f%s%x1f%b",
-        )
-    except (gitops.GitOpsError, OSError, UnicodeDecodeError) as exc:
-        return {**out, "state": "unavailable", "reason": _one_line(str(exc), 200)}
-    if proc.returncode != 0:
-        return {**out, "state": "unavailable",
-                "reason": _one_line(proc.stderr or proc.stdout or "git log failed", 200)}
+    walk = report.ledger_log(
+        home, cursor=cursor, fallback_days=days, now=now, cursor_run=cursor_run,
+        grep="^self-learn: premises refresh ", head=head,
+    )
+    out["label"] = walk["label"]
+    if walk["state"] != "ok":
+        return {**out, "state": "unavailable", "reason": walk["reason"]}
     rows: list[dict[str, Any]] = []
-    for chunk in proc.stdout.split("\x1e"):
-        if not chunk.strip():
-            continue
-        short, _, rest = chunk.partition("\x1f")
-        stamp, _, rest = rest.partition("\x1f")
-        subject, _, body = rest.partition("\x1f")
+    for short, stamp, subject, body in walk["commits"]:
         match = _REFRESH_SUBJECT_RE.match(subject.strip())
         if match is None:
             continue
         try:
             when = datetime.fromisoformat(stamp.strip()).astimezone(timezone.utc)
         except ValueError:
-            continue
-        if when < since:
             continue
         # The body's first line is the runner's fixed sentence; the rest are
         # "<premise id>: <before> -> <after>" (secret-scan clean by the
@@ -355,6 +346,7 @@ def premise_refreshes(
 
 def premise_facts(
     home: Path | str, *, cache_dir: Path | None = None, now: datetime | None = None,
+    head: str | None = None,
 ) -> dict[str, Any]:
     """The overseer's phase-B facts about the premise check (design D11,
     ``02-schema.md`` §3a.10.8): how many placed lessons record no premises,
@@ -396,15 +388,15 @@ def premise_facts(
         broken: list[dict[str, str]] = []
         failing: list[str] = []
         unmeasurable = 0
-        need = premise_sweep.BROKEN_PROBE_SWEEPS
         for _bucket, rec in placed:
             for premise in rec.premises or []:
                 if premise.get("probe") is None:
                     continue
                 pid = str(premise.get("id"))
-                sig = premise_sweep._premise_sig(premise)  # noqa: SLF001 -- the sweep's own key
-                tail = [r for r in history.get((rec.id, pid), []) if r.get("psha") == sig][-need:]
-                if len(tail) == need and all(r.get("state") == premises.OBS_UNAVAILABLE for r in tail):
+                # The one shared predicate (S-113): a probe only
+                # waiting for an unmounted filesystem is not broken.
+                tail = premise_sweep.broken_tail(premise, history.get((rec.id, pid), []))
+                if tail is not None:
                     broken.append(
                         {"lesson": rec.id, "premise": pid,
                          "reason": _staged_reason(tail[-1].get("reason"))}
@@ -425,8 +417,40 @@ def premise_facts(
         row.update(state="unavailable", reason=_one_line(f"{type(exc).__name__}: {exc}", 200))
         return row
     row["state"] = "ok"
-    row["refreshed_this_week"] = premise_refreshes(home, now=now)
+    cursor = report.read_census_cursor(home)
+    row["refreshed_this_week"] = premise_refreshes(
+        home, now=now,
+        cursor=cursor["head"] if cursor else None,
+        cursor_run=(cursor or {}).get("run") or None, head=head,
+    )
+    row["rotation"] = _rotation_facts(home, now=now)
     return row
+
+
+def _rotation_facts(home: Path, *, now: datetime | None = None) -> dict[str, Any]:
+    """S-114 (02 §3a.10.8): the rotation's facts -- its period
+    and nightly quota, how many lessons are due, the oldest one's days past
+    due, and how many a committed run reviewed in the last 30 days. `off`
+    when `premises.rotation_days` is 0; `unavailable` with a reason when it
+    cannot be read (never a zero)."""
+    from .. import steward
+
+    try:
+        status = steward.premise_rotation_status(
+            Path(home), today=(now.astimezone(timezone.utc).date() if now is not None else None),
+        )
+    except Exception as exc:  # noqa: BLE001 -- health facts degrade, never break a run
+        return {"state": "unavailable", "reason": _one_line(f"{type(exc).__name__}: {exc}", 200)}
+    if status.period <= 0:
+        return {"state": "off", "value": "premises.rotation_days is 0: no lesson is re-read"}
+    return {
+        "state": "ok",
+        "period_days": status.period,
+        "per_night": status.per_night,
+        "due": status.due,
+        "oldest_overdue_days": status.oldest_overdue,
+        "reviewed_last_30_days": status.reviewed_30d,
+    }
 
 
 def _staged_reason(raw: Any) -> str:
@@ -437,12 +461,19 @@ def _staged_reason(raw: Any) -> str:
     return f"(withheld: the secret scan matched {hits[0].rule})" if hits else text
 
 
-def hand_steps_row(home: Path | str, *, now: datetime | None = None) -> dict[str, Any]:
+def hand_steps_row(
+    home: Path | str, *, now: datetime | None = None, head: str | None = None,
+) -> dict[str, Any]:
     """The week's census of hand steps (``report.hand_steps``) as a phase-B
     fact row (S-105, lane C): every ledger change made from a person's
     or an agent's shell rather than by a job, so the overseer can name, for
     each, the gap in self-learn that made the hand step necessary."""
-    census = report.hand_steps(home, now=now)
+    cursor = report.read_census_cursor(home)
+    census = report.hand_steps(
+        home, now=now,
+        cursor=cursor["head"] if cursor else None,
+        cursor_run=(cursor or {}).get("run") or None, head=head,
+    )
     return {
         "kind": "hand-steps-this-week",
         **census,
@@ -450,6 +481,60 @@ def hand_steps_row(home: Path | str, *, now: datetime | None = None) -> dict[str
             "by: none means the commit carries no By trailer, so a person or an agent ran "
             "it and the commit cannot say which. A step the user alone may take (a tier C "
             "switch, an answer they typed) is by design."
+        ),
+    }
+
+
+def stranded_lessons_row(home: Path | str) -> dict[str, Any]:
+    """S-115: the stranded-lesson census as a phase-B fact row --
+    every queued lesson the steward will never select (not an input, not
+    held by the overseer, not in an unfinished run), each with the committed
+    row that makes it terminal. Measured now, from the ledger; a census that
+    cannot be taken says so (``state: unavailable``) instead of reading as
+    an empty list."""
+    from .. import steward
+
+    row: dict[str, Any] = {
+        "kind": "stranded-lessons",
+        "caution": (
+            "A stranded lesson is a defect in the steward's selection code or a state it "
+            "never meant to leave, not a judgment on the lesson: name each in the report "
+            "for the people who maintain self-learn, and decide the lesson yourself only "
+            "if it needs a decision now."
+        ),
+    }
+    try:
+        rows = steward.stranded_lessons(Path(home))
+    except Exception as exc:  # noqa: BLE001 -- health facts degrade, never break a run
+        row.update(state="unavailable", reason=_one_line(f"{type(exc).__name__}: {exc}", 200))
+        return row
+    row["state"] = "ok"
+    row["count"] = len(rows)
+    row["lessons"] = [
+        {"record": item.record, "bucket": item.bucket, "reason": _one_line(item.reason, 200)}
+        for item in rows
+    ]
+    return row
+
+
+def uncommitted_host_removals_row(home: Path | str) -> dict[str, Any]:
+    """Plain-mode projects where a lesson removal left a tracked file changed
+    and nobody has committed it (cures lane CU-6, decision 7): every not-done
+    ``code`` notice whose condition git still answers "holds". Asked here, in
+    the run, so the overseer's report names it weekly even if no session
+    opens in that project. The notice's own words carry the commit command."""
+    found = project_notices.uncommitted_removals(home)
+    return {
+        "kind": "uncommitted-host-removals",
+        **found,
+        "caution": (
+            "Self-learn never commits in a plain-mode project. The next agent working in the "
+            "project commits the file (the notice shows it the exact git commit line); an item with "
+            "mixed true held other changes first, so the agent reviews the diff before committing. items "
+            "are removals still uncommitted; unknown are notices git could not answer (say "
+            "so, they may be waiting); state unavailable means the notices could not be "
+            "read, so say that and list nothing. Only state ok with both lists empty means "
+            "nothing is waiting."
         ),
     }
 
@@ -478,6 +563,9 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         current=current,
         baseline=baseline,
     )
+    # HEAD is read once and both census walks end there, so a commit landing
+    # between them is listed by the next run, never skipped by both.
+    census_head = report.ledger_head(resolved)
     return [
         context_budget_crowding(gathered),
         reference_read_verdict(gathered),
@@ -487,8 +575,12 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         condition_row,
         # S-105: the premise check's facts (design D11) and the week's
         # census of hand steps (hand-maintenance cures, lane C).
-        premise_facts(resolved),
-        hand_steps_row(resolved),
+        premise_facts(resolved, head=census_head),
+        hand_steps_row(resolved, head=census_head),
+        # S-115: queued lessons the steward will never select.
+        stranded_lessons_row(resolved),
+        # S-118: plain-mode removals nobody has committed yet.
+        uncommitted_host_removals_row(resolved),
         {
             "kind": "consolidation-policy",
             "value": (

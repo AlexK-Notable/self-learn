@@ -96,7 +96,12 @@ has to run it after a skill is made or scaffolded (a person's `new-skill`
 route makes the link too). `~/.claude` is not a git repository, so S-80's
 tracked-file guard does not apply to the link. Retiring or renaming an owned
 skill removes or moves its folder, its entry and its link in one skills-root
-commit. Codex's skill folder is not linked.
+commit. Codex's skill folder is not linked. *(Amended S-110.)*
+A person's `new-skill` route under a name nothing uses also makes an owned
+skill: the scaffold is the same plugin, stamped, and the route adds its
+registry row once the host write stood. An overseer run that writes skills
+makes a missing or wrong link of an owned skill again, and a rename carries
+the skill's ledger bucket with it.
 
 ## 3. Ledger home layout
 
@@ -274,6 +279,22 @@ revert). Doc 13 promotes that to the general rule:
    emptied before this change only when its region is exactly what the
    compile record says self-learn wrote (`clean`). `CLAUDE.md` and
    `CLAUDE.local.md` keep their marker pair.
+   *Amended 2026-10-31 (S-119):* `recompile` revisits a retired
+   lesson's target so a stale line leaves it; when that target is gone from
+   disk there is no line left anywhere, and the run no longer warns about it
+   (before, every steward run's post-run recompile warned "host not
+   registered — self-learn host add …" and "no skill named …" for two
+   superseded lessons, `lrn-4c75079e` and `lrn-98d42215`). Gone means: a
+   project lesson whose host is not registered and whose bucket's recorded path
+   no longer exists; a `skill-md` lesson whose skill folder
+   (`plugins/*/skills/<name>`) is gone from a registered skills root that is on
+   disk; a `new-skill` lesson whose `plugins/<name>` folder is gone (its target
+always resolves, so this one is checked after resolution). Such a
+   lesson is skipped and counted once in the result (`gone`; the CLI prints
+   one line, the post-run recompile's journal row carries the count). A
+   retired lesson whose unregistered path still exists still warns (its file
+   may hold the line), and so does a registered host whose path vanished
+   (`host rebind` repairs it).
 3. **The rejected-proposal digest moves its grep to the ledger repo**
    (resolution commits live there now).
 4. **The sentinel contract SHRINKS.** The ledger repo has no watcher
@@ -320,16 +341,24 @@ revert). Doc 13 promotes that to the general rule:
    each registration has its own mode. Going to `plain` writes the marker and
    its `info/exclude` line before the commit, exactly as `host add --mode
    plain` does; going to `git` needs a git work tree at the path (the same
-   check) and leaves the marker in place, as `host remove` does. The bucket, the
+   check) and leaves the marker in place, as `host remove` does, and takes out
+   of self-learn's own `info/exclude` block the lines under the path for files
+   git mode now commits (git refuses to stage an ignored file), keeping
+   `CLAUDE.local.md`, the marker and every line outside the block, unless the
+   path's other registration is still plain (S-109). The bucket, the
    records and the compile records are never touched, and the command names how
    many routed records compile into the registration. A host already in the
    asked mode writes nothing (a plain host's missing marker is restored). It is
-   a **person's command**: from an agent's shell (the markers S-92 reads for a
-   tier-C `config set`) it exits 1 before the lock, before any marker is written
-   and also for a request that would change nothing, naming the markers and never
-   their values; there is no override, and no sheet can run it (every `host` verb
-   is refused in a sheet), because a registration is disclosed consent (S-29,
-   Y-17) and a mode change is the same kind of act. Like S-92 it is not a
+   a **person-only command**: from an agent's shell (the markers S-92 reads for a
+   tier-C `config set`) it runs only under the user's standing grant with
+   `--note <reason>` (S-109, `02-schema.md` §3a.3a; so are `host
+   add`, `host remove` and `host rebind`), committed `By: agent` and `Grant:
+   <statement>`; without the note it exits 64 and without a grant in force 1,
+   before the lock, before any marker is written and also for a request that
+   would change nothing, naming the markers and never their values; no sheet
+   can run it (every `host` verb is refused in a sheet), because a registration
+   is disclosed consent (S-29, Y-17) and a mode change is the same kind of act.
+   Like S-92 it is not a
    security boundary. A person's yes can also carry a registration: the
    overseer may put `register: {path, mode, kind?}` on an ask whose whole point is
    registering a repository it cannot register itself (the 2026-10-25 report:
@@ -354,14 +383,74 @@ revert). Doc 13 promotes that to the general rule:
    that variable. The LAST row the person typed there must be a plain yes (an
    AskUserQuestion click, an earlier yes, an agent-written turn, a line another
    agent typed into the pane and anything typed after the yes do not count;
-   `statements.latest_user_typed`, which judges a row as `statement add` does).
+   `statements.typed_turn`, which judges a row as `statement add` does), and
+   *(S-109)* the assistant's own visible text between the person's
+   previous typed row and that yes (text blocks only, never a tool call's input
+   or a tool's output) must name the ask's id, the path and the mode, and no
+   other open ask carrying a `register` (`consent.prove_typed_yes`): a yes to
+   "shall I run the tests?" never registers a host. A proved registration
+   commits `Answers: <id>` in its body and `By: agent`, `Proof: <transcript
+   line>` as its trailer; the subject is unchanged. An ask's `register` may
+   carry `action: set-mode`, and its yes then runs `host set-mode` instead.
    When the agent's shell cannot prove it, `respond` records NOTHING and the
    question stays open (the same as a refused `host add`: an answered question
-   whose registration never happened would read as done); the error says to have
-   the person type a plain yes and answer again, answer in their own terminal, or
-   run the `host add` line themselves (a registration already in place is left as
-   it is and needs no proof). A "yes" that is not a plain yes is still recorded
+   whose registration never happened would read as done); the error says what
+   was missing and to ask again naming the question, have the person answer in
+   their own terminal, or run the `host add` / `host set-mode` line under the
+   standing grant with `--note` (what is already done is left as it is and needs
+   no proof). A "yes" that is not a plain yes is still recorded
    and the overseer reads it.
+
+   **The host policy: one repo, one mode, applied by code (S-112,
+   2026-10-31).** The user typed the policy (stmt-7364bdbe, stmt-526d9b44:
+   projects plain; stmt-60e41e67: "we straight up write in the skill repos"),
+   and applying a rule the user typed is not a new consent, so two things no
+   longer wait on a person. (1) **A project registration of the skills
+   root's path takes the skills root's mode** (`hosts.policy_mode`; today
+   claude-skills' project registration, plain, follows its git skills root).
+   Self-learn already writes that repository as the skills root, so the
+   project registration following it adds no repository, no remote and no
+   kind of write. Nothing else is changed automatically: the skills root's
+   own mode never is, and no other project is touched. `hosts.apply_policy`
+   makes each change through the set-mode core without the agent-shell
+   check (it runs in code; `host set-mode` typed in an agent's shell is still
+   refused without the grant): one ledger commit per change, subject
+   `self-learn: host set-mode project <path> <old> → <new> (policy)`, body
+   citing stmt-60e41e67 and "one repo, one mode" and naming the undo,
+   trailer `By: policy`; under the ledger lock exactly as `host set-mode`
+   (a switch to git takes self-learn's own `info/exclude` lines, above).
+   It then recompiles the records routed into that registration, so its
+   targets are rendered and committed in the new mode (the drift row's
+   repair, done by code). `serve` evaluates it every tick before the premise
+   sweep and runs it only when a registration does not follow the policy,
+   at most once a day (attempt marker `<cache>/hosts-policy.json`); a change
+   it cannot make is a line on serve's stderr and the doctor's `hosts` row
+   names a change still owed. (2) **Self-learn registers a project in plain
+   mode on its own** (decision 5, interventions D1): the overseer may list
+   project directories in phase B's optional `hosts.yaml` (02 §
+   overseer, "Phase B's optional `hosts.yaml`"), and the runner registers
+   each as a PLAIN project host through `hosts.register_plain_project`,
+   committed `By: overseer` whatever shell started the run, with the case,
+   the reason and the undo command in the body. It refuses, writing nothing,
+   a path that is not an existing directory strictly inside the user's home,
+   that is the ledger or self-learn's cache (inside either or above either),
+   or that is registered already; it never registers git mode, which stays a
+   person's act (or the agent's under the grant): git mode is the one case
+   where self-learn would write into another repository's history and
+   remote. A plain registration writes only files git ignores (the marker
+   and its private `info/exclude` line now, compiled lines later) and never
+   commits or pushes there, which is the deployment the user described.
+   Each registration is listed in the weekly report under "Decided in the
+   user's stead" with `self-learn host remove <path> --project`, the
+   command that undoes it, and what that command needs once lessons are
+   routed there (move each with `rehome`, or `--gate-only`). **The undo
+   stands** (fix round 1): a path a `host remove` took out of the registry,
+   whoever ran it, is never registered by self-learn again
+   (`hosts.registration_problem` reads the ledger's history of
+   `hosts.yaml`; `projects.yaml` shows it `removed`). The policy's own
+   switches since the last run are listed in the same section with their
+   undo, and its commits (`By: policy`) are a job's, never a hand step. The S-103 typed-yes path stays for the user's own
+   answers (a git-mode registration, a mode switch).
 
    **What replaces git for a plain host, and what does not.** Item 2's
    drift check is unaffected: it was never a git check — it compares the
@@ -563,6 +652,80 @@ commits or pushes. It needs no model call, no new unit and no timer.
 `premises.enabled` (tier C, default true) gates it; `_steward_is_due` counts
 the `premise-moved` and `premise-extract` inputs it makes selectable.
 
+**The host process picks up new code itself, between jobs** *(Added
+2026-10-31, `03-decisions.md` S-119)*. A landing used to need a
+hand restart of `self-learn-host.service`, and on 2026-10-31 at 03:45 that
+restart killed the nightly mine nine seconds in. Now `serve` records, at start,
+a hash of every Python source file of the `self_learn` package it imported
+(path and content, so a landing and an uncommitted edit both change it, and a
+commit that changes no file does not). At the end of every tick, when no job
+is running (each job is counted while it runs and the check refuses while the
+count is above zero), it hashes again. A changed hash that reads the same on
+two consecutive checks, so a merge still writing files is not caught half-way,
+is first imported in a fresh interpreter (`python -P -c "import
+self_learn.cli, self_learn.serve"`); if that fails, `serve` stays on the code
+it runs (`reexec-refused`). Otherwise it
+writes the heartbeat ("restarting on new code") and a `reexec` row in
+`serve.journal.jsonl`, and replaces itself with the same command line
+(`os.execve` of `sys.orig_argv`): same pid, so systemd sees no restart, and
+the new image loads the new code. A job is never interrupted, so a landing can
+never kill a running mine. `serve.restart_on_new_code` (tier A, default
+`true`) is the rollback switch. What a re-exec cannot pick up is the unit file
+itself: when the host unit file changed after the process started (read only
+under systemd, `INVOCATION_ID` set, and only when the unit is linked), `serve`
+writes one project notice (§7.5, source `code`) for the checkout the unit file
+lives in, naming `systemctl --user daemon-reload` and then a restart of
+`self-learn-host.service` while no job runs (the heartbeat file has no
+`running` key; a restart mid-job kills the job), and marks it done once the
+service has been restarted onto that file. `serve` itself never runs
+`systemctl` (the module's host-safety and portability rule, stated at
+`serve.unit_dir`).
+
+*Amended 2026-10-31 (S-119, gate r1):* the venv. The unit starts
+`serve` through the wrapper's `uv run`, which syncs the venv to the lock; a
+re-exec runs the interpreter directly and syncs nothing. So the hash also
+covers the uv project's `pyproject.toml` and `uv.lock`. When they changed,
+`serve` first runs `uv sync --project <cli> --inexact` (the `uv` in `UV`, which
+`uv run` sets, else the one on `PATH`; `--inexact` because `uv run` never
+removes packages either), then the import check, then the re-exec. When the
+import check fails with `ModuleNotFoundError` or `ImportError` and the venv
+was not synced yet, `serve` syncs it and checks again. A refusal (a failed
+sync, or code that still does not import) keeps the running code, is tried
+again when the code changes or after an hour (an environment fixed meanwhile
+is picked up), and writes one project notice for the checkout the code lives
+in (source `code`, renewed on a later refusal) saying the host process is held
+on its old code and why. *Amended 2026-10-31 (S-119, gate r2):* the
+notice follows the hold. A later refusal for another reason replaces its words;
+an `os.execve` that fails leaves it (or writes it, "the restart failed"); and it
+is marked done when the hold ends, by whichever way it ends: the code on disk is
+back to the running code (a revert), or a process starts (`run_forever`'s
+start-up: the new image after a re-exec, a reboot, or a restart of the unit,
+each of which runs the code on disk). It is never marked done before the exec,
+so a failed exec cannot leave a done notice over a held process.
+
+**A daily maintenance recompile joins the tick** *(Added 2026-10-31,
+S-119)*. A `maintenance` job, due once a day (marker in
+`<cache>/maintenance/recompile.json`, written when an attempt starts) when
+`hosts.yaml` exists, runs after the premises job and before the steward. It
+asks the drift check's own computation (`selfcheck.unrecorded_targets`) which
+managed targets carry self-learn's markers with no compile record (verdict
+`unknown`) and runs one `recompile` narrowed to the live lessons on them
+(`only_records`, never `--adopt`). Where the region on disk is what the ledger
+renders, that writes the missing record (S-102 M2.4) in one `recompile resync
+record(s)` ledger commit, which the job pushes once, the way a steward run
+publishes. A target the recompile refuses (a plain host's tracked file, S-80;
+a hand edit; two registrations under two modes, S-82) is left as it is, and
+named with its reason on stderr and in the cache file, once a day, for the
+host policy or the steward's `@writable` input. While the host process runs
+(its heartbeat is fresh), `--selftest`'s drift row says the daily maintenance
+recompile records such targets instead of telling a person to run `self-learn
+recompile`, and names `recompile --adopt <target>` only for a target the last
+run could not record, and says when its last run failed, with the error. The
+job's ledger commit carries `By: maintenance`, so the overseer's hand-step
+census (S-105) counts it as a job's act, not a shell's. The job never calls a
+model. Its two cache writes (the marker file and the re-exec rows) are
+`NOT_REPO_TRUTH`.
+
 **The overseer's catch-up rule and the same-week guard** *(Added 2026-09-19,
 `03-decisions.md` S-68)*. The weekly job is due on the first tick at or after
 **Sunday 04:15 local for which that week is not done — whatever the weekday**.
@@ -595,6 +758,69 @@ run` is a manual run and is exempt from this guard — the user's words, "user
 initiated runs don't count toward the weekly limit" — and, by the user's choice
 of "No, Sunday still runs", its completion does not make the week done, so the
 scheduled run still happens.)*
+
+**The steward's schedule and retry** *(Added 2026-10-31, `03-decisions.md`
+S-115; the steward's mirror of the overseer paragraph above)*. The
+steward runs **once a night, after the mine**, and **a run that failed or was
+held is retried after two hours**. Before, one rule did both jobs badly: a
+20-hour `steward.cooldown_secs` rolled from the last attempt, so every run
+started about four hours earlier than the one before (live: 10-19 03:04Z,
+23:22Z, 10-20 19:36Z, …), and a run held by an expired login at 22:07 PDT on
+2026-10-30 waited 20 hours after the user logged in again at about 22:30.
+`serve._steward_is_due`, after the S-68 cache test and the STOP check:
+
+1. **Committed unfinished work** (a failed attempt, an environment hold, a
+   partial run) is due once its last attempt is `steward.RETRY_SECS` old — two
+   hours, the same value as `miner.ATTEMPT_COOLDOWN_SECS` — on any day. The
+   last attempt is the later of the cache attempt journal's newest attempt row
+   and the committed `last_attempt_at`; the journal's rows of an attempt (its
+   end and push rows included) are written after that stamp, so the journal is
+   normally the later one, and the committed stamp stands alone when the cache
+   was lost. `steward.cooldown_secs` does not apply. The attempt cap still closes a run
+   that keeps failing on its content (`runs.attempt_cap`, 02 §3a); an
+   environment hold counts nothing and costs one fast failing call every two
+   hours while its cause lasts, and the user is told once per cause.
+2. **New work** (no unfinished run; at least one input, §3a.8 of
+   `02-schema.md`) is due in the **nightly slot**: the slot opens on the first
+   tick at which today's mine pass has finished after today's mine target
+   (`miner.last-run` newer than the jittered target `serve` already keeps),
+   or at that target plus three hours whatever the mine did (failed, off,
+   still running); until it opens, yesterday's slot is the current one. A
+   slot is taken by a run that started (selected its inputs) at or after its
+   target. New work is due when the current slot is not taken and the last
+   start is at least `steward.cooldown_secs` ago (default 43200 s, 12 h: only a
+   minimum gap between two starts, so a run started by hand in the afternoon
+   leaves the night's run alone and two runs can never pile up). A steward that
+   has never run takes the queue at once. Inputs keep S-81's rule (an
+   eligible lesson is new work when committed or released after the last
+   selection), and a lesson whose deferral came due since then is new work too.
+   In the same tick the mine job runs first, then the premises job, then the
+   steward, so on a normal night the steward starts right after the mine.
+
+The heartbeat's preview (`next_job`, which `doctor`'s serve row prints) reads
+the cache only, like the overseer's: when the journal's newest `attempt-start`
+row is newer than the last completed run (`steward.last-run`) a run is
+unfinished and the preview names the instant the predicate makes it due (the
+journal's newest attempt row plus two hours); otherwise it names the next slot
+not yet taken, no sooner than the minimum gap nor than two hours after the
+journal's newest attempt row (the cache test holds every run that long).
+Unfinished is judged from `attempt-start` rows, never from the newest attempt
+row of any status: a completed run writes its last-run stamp with its end row,
+and its `recompile` and `push` rows come seconds later, so that comparison
+would read almost every completed run as unfinished *(gate r1 of
+S-115)*. The environment-hold notification says when the run tries again
+("after <date> <time> (every 2 h while the cause lasts)") and, when the cause is
+an expired or missing login (`failure_class.is_login_failure`), "run `claude`
+and `/login`"; another environment cause keeps its cause line.
+
+**The stranded-lesson census** *(Added 2026-10-31, S-115)*. After
+every steward job, and once a day after the premises job, `serve` takes the
+census of `02-schema.md` §3a.8's positive invariant (`steward.stranded_lessons`)
+and keeps it in `<cache>/steward/stranded.json` (`{at, count, lessons}`,
+`NOT_REPO_TRUTH`), where the session-start status can read
+its count without walking the ledger. A census that could not be taken leaves
+the last file as it was. While it finds a lesson it also keeps one `health`
+notice (§7.5) for the installed self-learn checkout.
 
 **A job that raises is logged** *(Added 2026-09-27, fail-state audit
 finding 6)*. `run_one_job` still turns a job's exception into a failed job
@@ -1425,7 +1651,12 @@ recorded at or after the index file's last write -- so an answer takes
 effect when `overseer respond` records it, not when the next weekly run
 rewrites the index. A later run that asks the same id again writes a newer
 index, so the question is open again. The statement store is only read;
-the next run still sees the answer.)* These are additive JSON fields on an existing read-only surface,
+the next run still sees the answer.)* *(Amended S-117: nor does the
+count include an ask that carries a `default` -- the overseer applied it in
+the run that asked, so it waits on nobody (`conversation.waits_on_the_user`);
+`overseer open` still shows it, with its default, so the user can overturn
+it. Readings are no longer indexed; an index written before still counts
+its readings and its asks without a default.)* These are additive JSON fields on an existing read-only surface,
 not a new command; a `status`/`doctor` run that omits them is not this
 section's fault, but a build that never wires them through is.
 
@@ -1735,7 +1966,11 @@ relaxation of the batch refusal above.
 
 **The gate.** `overseer.hook_activation` is a committed-config key (the
 S-10 opt-in pattern), **default `false`, fail-closed on anything but YAML
-`true`.** It governs only the overseer's own automatic path, never a
+`true`.** *(Amended 2026-10-31, S-119: it is a registered setting,
+tier C, config only — no env var, no override channel — so `doctor settings`
+shows it instead of warning "unknown settings config key" on every read;
+`config.hook_activation_enabled` stays its reader and agrees with the
+registry on every value.)* It governs only the overseer's own automatic path, never a
 human's: with it `false`, the overseer applies an approved hook route only
 as far as step 1 below (placed) and then parks it, with a receipt saying
 activation is delegated but switched off — the same two-manual-steps state
@@ -1858,13 +2093,28 @@ ledger: it carries a machine path, ends by itself, and is a hint, not a record. 
 lost cache loses the hint and nothing the ledger holds (the report still has the
 finding; the removal's warning still printed). One file per notice, so two writers
 never read-modify-write one file. Its id is `ntc-` and eight hex digits of a hash
-of the project, the source and a key (an overseer notice: its words; a code
-notice: the file), so the same finding written again by the next weekly run is
-the same notice: it does not start a new 14 days and does not come back after a
-person marked it done. A code notice is written only right after a removal changed
+of the project, the source and a key (an overseer notice: `case:<case id>` when
+it names a case, else its words; a code notice: the file), so the same finding
+written again by the next weekly run is the same notice: it does not start a new
+14 days and does not come back after a person marked it done. A notice marked
+done keeps its key done for 30 days: the overseer is shown those notices
+(`done` in `projects.yaml`), and a run that writes one for the same case, however
+worded, has it dropped and named "already marked done" in "Refused / could not
+do" (S-118). A code notice is written only right after a removal changed
 the file: while the notice for that file is live a further removal leaves it as it
 is (two removals before a commit are one line, not two), and one that was marked
-done or ran out its days is replaced by a fresh one.
+done, or ended (its condition answers clear or changed -- committed, or the file edited
+since -- or its days are past and git cannot answer), is replaced by a fresh one. The words name the step for whoever reads the line,
+usually the agent working in the project: "a retired lesson's lines were taken out
+of <rel>; nothing else changed. Commit it: `git commit -m "remove retired lesson
+lines" -- <path from the repo root>` run as `git -C <the checkout the removal was
+made in>`, so it commits that checkout's file from any directory, a linked worktree
+included; a path too long for the 200 characters falls back to naming the file). The
+whole-file commit is offered only when the file held no other change before the
+removal; otherwise the words say the file held other uncommitted changes too and to
+review the diff and commit what is meant. Self-learn itself never commits
+in a plain-mode repo; the next agent working there does (decision 7 of the
+2026-10-31b round), and the weekly report lists any left (below).
 
 **Where a session sees it.** A notice shows in a session whose working directory
 is the notice's project (a real path) or inside it, a git worktree of the project
@@ -1878,10 +2128,30 @@ naming `self-learn notice list`. The line's wording lives in
 malformed field prints nothing.
 
 **How a notice ends.** Whichever comes first: (1) `self-learn notice done <id>`
-(a person's or an agent's word; cache only); (2) its condition clears; (3) 14 days
-after it was first made. A file older than 30 days is deleted by the next writer.
+(a person's or an agent's word; cache only); (2) its condition clears, and a
+cleared condition does not come back; (3) for a notice WITHOUT a condition, 14 days
+after it was first made. The `uncommitted` condition names the removal, not the
+file: the notice stores the hash of the bytes the removal left, and holds only while
+the working file still has that hash and `HEAD` does not. `HEAD` holding the file
+clears it; the working file being something else (edited since, by anyone) ends it
+(`changed`): the notice's claim, "nothing else changed", is no longer true of that
+file. A further removal that starts from the recorded bytes moves the hash on. A
+notice WITH a condition has no age limit: it is live while git answers that the condition still
+holds (an uncommitted removal outlives 14 days, and so must the note about it).
+Past 14 days a condition git cannot answer (missing, a timeout, the session
+budget spent) hides it; inside the 14 days it still keeps the notice. A notice
+file older than 30 days is deleted by the next writer, except a not-done condition
+notice whose repo and file still exist and whose condition git has not answered
+clear or changed, and a done notice, which is kept until 30 days after it was marked
+done (its "already done" memory, below). **The overseer sees what is left:** phase B's `health.yaml` carries an
+`uncommitted-host-removals` row, `{project, file, since}` for every not-done `code`
+notice whose condition holds (asked in the run, not at session start, so there is
+no 2-second budget), `unknown` for those git could not answer, and `state:
+unavailable` with a reason when the notices could not be read; the weekly report
+names each under Catalogue health, so a removal is not forgotten when no session
+opens in that project, and an unanswerable question is never read as nothing waiting.
 
-**Two sources.**
+**Three sources** *(two until S-115 added `health`)*.
 
 1. `source: overseer`. Phase B may write an optional `notices.yaml`,
    `{notices: [{project, text, case?}]}`, beside its other files, and is given
@@ -1905,6 +2175,21 @@ after it was first made. A file older than 30 days is deleted by the next writer
    `<file>` and the change is uncommitted: review it and commit it." (printed after
    the `self-learn:` prefix, so the words do not repeat it) Its
    condition is that `git status --porcelain` still reports the file changed.
+3. `source: health` *(added 2026-10-31, S-115)*. A measured fact about
+   self-learn's own health, written by code for the self-learn checkout the
+   host process runs (the git work tree of the real path of the running
+   module), and only when that checkout is a registered project host: the
+   people who can change self-learn's code work there, and the user does not
+   need the line elsewhere. Today one: the stranded-lesson census (§5), key
+   `steward-stranded-lessons`, "N queued lesson(s) the steward never selects
+   (oldest `<id>`, terminal by `<run>`); see `self-learn --selftest`". Its
+   condition is the fact itself, judged by its writer, not by the reader: each
+   census that finds a lesson rewrites the words of the live notice (keeping its
+   first `created_at`), and the first census that finds none deletes the file
+   (`notices.set_health`, `notices.clear_health`). A notice marked done stays
+   done while the fault lasts; one past its 14 days is made afresh, so a fault
+   that outlasts them is shown again; a fault that clears and returns is a new
+   notice.
 
 **What reading costs.** `status --fast` stays git-free in every directory outside a
 notice's project: a notice for another project costs a path comparison. Only a

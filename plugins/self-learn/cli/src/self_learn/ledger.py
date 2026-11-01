@@ -22,7 +22,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import gitops, intents
+from . import attribution, gitops, intents
 from .hosts import is_repo_root
 
 DEFAULT_HOME = "~/.self-learn"
@@ -255,8 +255,11 @@ def _commit_allow_empty(target: Path) -> None:
     # Via gitops._git — this is THE call the lock invariant cares about
     # (step 6 commits a pre-existing repo). Raw subprocess made it
     # invisible to the structural analysis (delta code gate).
+    # S-109: the ledger's first commit says who made it too.
+    by = attribution.stamp(None)
     proc = gitops._git(
-        target, "commit", "--allow-empty", "-m", INIT_COMMIT_SUBJECT
+        target, "commit", "--allow-empty", "-m", INIT_COMMIT_SUBJECT,
+        *(("-m", by) if by else ()),
     )
     if proc.returncode != 0:
         raise InitError(

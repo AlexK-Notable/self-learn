@@ -1367,3 +1367,545 @@ def test_off_keeps_a_sheetless_rewrite_as_a_draft_and_records_no_case(env, monke
     assert env.row()["last_write"] == recorded
     assert {row["case"] for row in cases.list_cases(env.home)} == before
     assert "[skill changed]" not in _report(result)
+
+
+# ============================== SK-C2: the overseer carries out the user's requests
+
+NEW_NAME = "pointer-care"
+
+
+def _rename_case(rids, *, old=NAME, new=NEW_NAME):
+    return {
+        "kind": "maintenance", "trigger": "weekly", "outcome": "no-action", "records": list(rids),
+        "scope": "skill:s", "question": "The user vetoed the name; what is the skill called now?",
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: routed"} for rid in rids],
+        "decision": {
+            "verb": "no-action", "because": "the user vetoed the name", "confidence": "settled",
+            "skill": {"name": new, "renamed_from": old, "why": "the user vetoed the old name"},
+        },
+    }
+
+
+def _rename_b(rids, *, new=NEW_NAME):
+    def write_b(stage: Path) -> None:
+        _dump(stage / "case-rename.yaml", _rename_case(rids, new=new))
+        _dump(stage / "sheet-rename.yaml", {"version": 1, "items": []})
+    return write_b
+
+
+def _owned_with_a_lesson(env: sk1.Env) -> None:
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    _lesson(env, RID)
+    verbs.route(env.home, RID, dest=f"new-skill:{NAME}", no_push=True)
+
+
+def test_sk_c2_1_a_vetoed_skill_is_renamed_by_the_run(env, monkeypatch):
+    _owned_with_a_lesson(env)
+    env.veto(NAME)
+    from self_learn import skill_requests
+
+    assert [r["name"] for r in skill_requests.pending_renames(env.home)] == [NAME]  # control
+    _phases(monkeypatch, _rename_b([RID]))
+
+    result = _run(env)
+
+    registry = skill_registry.load(env.home)
+    row = registry.row(NEW_NAME)
+    assert row is not None and row["status"] == "live" and row["renamed_from"] == [NAME]
+    assert registry.row(NAME) is None
+    assert env.link(NEW_NAME).is_symlink() and not env.link(NAME).exists()
+    assert f'"name": "{NEW_NAME}"' in env.marketplace.read_text(encoding="utf-8")
+    assert skill_writer.routed_lessons(env.home, NEW_NAME) == [RID]
+    report = _report(result)
+    assert f"[skill renamed] {NEW_NAME}: renamed from {NAME}" in _section(report, "Decided in the user's stead")
+    assert "the user vetoed its name" not in report
+
+
+def test_sk_c2_2_an_owed_rename_phase_b_skipped_is_reported_never_asked(env, monkeypatch):
+    _owned_with_a_lesson(env)
+    env.veto(NAME)
+    seen: dict = {}
+    _phases(monkeypatch, lambda stage: None, seen=seen)
+
+    result = _run(env)
+
+    refused = _section(_report(result), "Refused / could not do")
+    assert f"skill {NAME}: the user vetoed its name" in refused and "not renamed this run" in refused
+    questions = _load(env.home / "overseer" / "open-questions.yaml")
+    assert not (questions or {}).get("questions")
+    assert skill_registry.load(env.home).is_owned(NAME)  # still there, still owed
+    seen2: dict = {}
+    _phases(monkeypatch, lambda stage: None, seen=seen2)
+    _run(env)
+    vetoes = YAML(typ="safe").load(seen2["stage"][skills.VETOES_FILE])
+    assert [r["name"] for r in vetoes["renames_owed"]] == [NAME]
+
+
+def test_sk_c2_2b_an_owed_retirement_phase_b_skipped_is_reported(env, monkeypatch):
+    from self_learn import skill_requests
+
+    _owned_with_a_lesson(env)
+    assert skill_requests.request_retire(env.home, NAME, by="human").ok
+    _phases(monkeypatch, lambda stage: None)
+    result = _run(env)
+    refused = _section(_report(result), "Refused / could not do")
+    assert f"skill {NAME}: the user asked on" in refused and "not retired this run" in refused
+
+
+def test_sk_c2_3_a_requested_retirement_is_carried_out(env, monkeypatch):
+    from self_learn import skill_requests
+
+    _owned_with_a_lesson(env)
+    _lesson(env, RID2)
+    assert skill_requests.request_retire(env.home, NAME, by="human").ok
+    assert "retire_requested" in env.row()  # control
+
+    def write_b(stage):
+        _dump(stage / "case-retire.yaml", _case([RID, RID2], outcome="retire", lessons=[RID]))
+        _dump(stage / "sheet-retire.yaml", {"version": 1, "items": [
+            {"id": RID, "verb": "supersede", "new_id": RID2},
+        ]})
+
+    _phases(monkeypatch, write_b)
+    result = _run(env)
+
+    row = env.row()
+    assert row["status"] == "retired" and "retire_requested" not in row
+    assert skill_writer.routed_lessons(env.home, NAME) == []
+    report = _report(result)
+    assert f"[skill retired] {NAME}" in report and "not retired this run" not in report
+
+
+def test_sk_c2_4_the_formats_never_ask_about_a_skill(formats_dir):
+    readme = (formats_dir / "README.md").read_text(encoding="utf-8")
+    assert "Never ask the user anything about a skill" in readme
+    assert "ask the user in questions.yaml why you did not" not in readme
+    assert "renamed_from" in readme and "case-skill-rename-example.yaml" in readme
+
+
+def test_sk_c2_the_rename_example_validates(formats_dir):
+    case = formats_dir / "case-skill-rename-example.yaml"
+    overseer_run._validate_maintenance_case(case)
+    assert overseer_run._case_rule_problem(case, "abcd1234") is None
+    data = _load(case)
+    assert skills.renamed_from(data) == formats.EXAMPLE_SKILL
+    assert skills.claimed_name(data) == "writing-release-notes"
+
+
+def test_sk_c2_5_a_rename_to_a_vetoed_name_is_dropped_and_reported(env, monkeypatch):
+    _owned_with_a_lesson(env)
+    env.veto(NAME)
+    env.veto(NEW_NAME)
+    _phases(monkeypatch, _rename_b([RID]))
+
+    result = _run(env)
+
+    assert skill_registry.load(env.home).is_owned(NAME)
+    assert skill_registry.load(env.home).row(NEW_NAME) is None
+    refused = _section(_report(result), "Refused / could not do")
+    assert f"the rename of {NAME} to {NEW_NAME} would be refused" in refused
+    assert "name-vetoed" in refused
+
+
+def test_sk_c2_with_writing_off_a_rename_is_a_draft_saying_would_rename(env, monkeypatch):
+    _owned_with_a_lesson(env)
+    env.veto(NAME)
+    _set_writing(env, "off")
+    _phases(monkeypatch, _rename_b([RID]))
+
+    result = _run(env)
+
+    assert skill_registry.load(env.home).is_owned(NAME)
+    decided = _section(_report(result), "Decided in the user's stead")
+    assert f"[skill drafted] {NEW_NAME}: would rename {NAME} to it" in decided
+    assert "not renamed this run" not in _report(result)
+
+
+# ====================================== SK-E: an owned skill repairs itself
+
+
+def _remove_folder(env: sk1.Env) -> None:
+    git(env.root, "rm", "-r", "-q", f"plugins/{NAME}")
+    git(env.root, "commit", "-q", "-m", "a person removes the skill folder")
+
+
+def _restore_b(*, during=None, extra: str | None = None):
+    """Phase B restores the owned skill from the staged last-write/ (with
+    *extra* appended to its SKILL.md when given: a restore that also
+    changes the text)."""
+    def write_b(stage: Path) -> None:
+        shown = stage / skills.OWNED_DIR / NAME / skills.LAST_WRITE_DIR
+        files = {
+            p.relative_to(shown).as_posix(): p.read_text(encoding="utf-8")
+            for p in shown.rglob("*") if p.is_file()
+        }
+        assert "SKILL.md" in files
+        if extra is not None:
+            files["SKILL.md"] = files["SKILL.md"].rstrip() + "\n\n" + extra + "\n"
+        _write_folder(stage, NAME, files)
+        _dump(stage / "case-restore.yaml", _case([RID], outcome="no-action", lessons=[]))
+        _dump(stage / "sheet-restore.yaml", {"version": 1, "items": []})
+        if during is not None:
+            during()
+    return write_b
+
+
+def test_sk_e_1_a_missing_link_is_made_again_and_a_person_s_folder_is_left(env, monkeypatch):
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    assert env.write(sk1.draft("other-skill"), name="other-skill").ok
+    env.link().unlink()
+    env.link("other-skill").unlink()
+    (env.link("other-skill")).mkdir()  # a real folder: the person's
+    assert not env.link().exists()  # control: the link is gone
+    _phases(monkeypatch, lambda stage: None)
+
+    result = _run(env)
+
+    assert env.link().is_symlink() and env.link().resolve() == env.skill_dir().resolve()
+    assert env.link("other-skill").is_dir() and not env.link("other-skill").is_symlink()
+    report = _report(result)
+    assert f"[skill relinked] {NAME}" in _section(report, "Decided in the user's stead")
+    refused = _section(report, "Refused / could not do")
+    assert "skill other-skill: its link was not made" in refused
+
+
+def test_sk_e_1b_a_dry_run_relinks_nothing(env, monkeypatch):
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    env.link().unlink()
+    _phases(monkeypatch, lambda stage: None)
+    _run(env, dry_run=True)
+    assert not env.link().exists()
+
+
+def test_sk_e_2_a_missing_folder_is_restored_with_the_recorded_hash(env, monkeypatch):
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    recorded = env.row()["last_write"]["authored_sha256"]
+    _lesson(env, RID)
+    _remove_folder(env)
+    seen: dict = {}
+    _phases(monkeypatch, _restore_b(), seen=seen)
+
+    result = _run(env)
+
+    row_staged = YAML(typ="safe").load(seen["stage"][f"{skills.OWNED_DIR}/{NAME}/{skills.ROW_FILE}"])
+    assert row_staged["deployed"] is False and "retire it" in row_staged["says"]
+    assert row_staged["removed_by"]["subject"] == "a person removes the skill folder"
+    assert env.skill_md().is_file()
+    assert skill_writer.deployed_authored_sha256(env.home, NAME) == recorded
+    assert env.row()["last_write"]["authored_sha256"] == recorded
+    assert f"[skill changed] {NAME}" in _section(_report(result), "Decided in the user's stead")
+
+
+def test_sk_e_2b_a_restore_that_also_changes_the_text_is_written(env, monkeypatch):
+    """The write's own rule lets an exact restore through (the interrupted
+    create's case); a restore that also changes the text needs the
+    compare-and-swap against absence (``expect_missing``)."""
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    _lesson(env, RID)
+    _remove_folder(env)
+    _phases(monkeypatch, _restore_b(extra="A line the restore adds."))
+
+    result = _run(env)
+
+    assert "A line the restore adds." in env.skill_md().read_text(encoding="utf-8")
+    assert env.row()["last_write"]["authored_sha256"] == skill_writer.deployed_authored_sha256(env.home, NAME)
+    assert "is missing from the skills root" not in _report(result)
+
+
+def test_sk_e_3_a_file_appearing_before_the_restore_refuses_it(env, monkeypatch):
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    _lesson(env, RID)
+    _remove_folder(env)
+    placed = "---\nname: mouse-care\ndescription: a person's own\n---\n\n# Mine\n"
+
+    def a_person_puts_it_back():
+        path = env.skill_md()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(placed, encoding="utf-8")
+
+    _phases(monkeypatch, _restore_b(during=a_person_puts_it_back))
+
+    result = _run(env)
+
+    assert env.skill_md().read_text(encoding="utf-8") == placed
+    refused = _section(_report(result), "Refused / could not do")
+    assert "target-busy" in refused and "something is there now" in refused
+
+
+def test_sk_e_3b_the_same_restore_run_again_is_idempotent(env):
+    """Gate r1 finding 2: the overseer's resume re-calls the restore with
+    ``expect_missing``; finding exactly that write's own files there is ok
+    with no second commit. Control: a file the restore does not write,
+    placed beside them, still refuses."""
+    assert env.write().ok
+    _remove_folder(env)
+    restored = sk1.draft()
+    restored["SKILL.md"] += "\nA line the restore adds.\n"
+    first = env.write(restored, case=sk1.CASE2, expect_missing=True)
+    assert first.ok, first.problems
+    ledger, root = env.head(env.home), env.head(env.root)
+
+    again = env.write(restored, case=sk1.CASE2, expect_missing=True)
+
+    assert again.ok, again.problems
+    assert (env.head(env.home), env.head(env.root)) == (ledger, root)
+    assert env.status(env.home) == "" and env.status(env.root) == ""
+
+    # an interrupted restore: its files landed, uncommitted, and the rerun finishes it
+    git(env.root, "reset", "-q", "--soft", "HEAD~1")
+    assert env.status(env.root) != ""  # control: the restore's own bytes are uncommitted
+    resumed = env.write(restored, case=sk1.CASE2, expect_missing=True)
+    assert resumed.ok, resumed.problems
+    assert env.status(env.root) == ""
+
+    # a file a write leaves alone (not a managed reference), so the authored
+    # hash before and after it would be the same: only the file list tells
+    foreign = env.skill_dir() / "notes.txt"
+    foreign.write_text("a person's own file\n", encoding="utf-8")
+    commit_all(env.root, "a person adds a file")
+    refused = env.write(restored, case=sk1.CASE2, expect_missing=True)
+    assert not refused.ok and refused.kind == "target-busy"
+    assert "something is there now" in refused.problems[0]
+
+
+def test_sk_e_a_skill_with_no_folder_and_no_marketplace_entry_retires(env):
+    assert env.write().ok
+    _remove_folder(env)
+    market = env.marketplace.read_text(encoding="utf-8")
+    env.marketplace.write_text(market.replace(f'"name": "{NAME}"', '"name": "gone-entry"'), encoding="utf-8")
+    commit_all(env.root, "the entry went too")
+    result = skill_writer.retire(env.home, NAME, case=sk1.CASE2, by="overseer", no_push=True)
+    assert result.ok, result.problems
+    assert env.row()["status"] == "retired"
+
+
+def test_sk_e_4_lessons_yaml_marks_a_lesson_in_an_authored_reference(env, monkeypatch):
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    create_record(env.home, make_behavior(scope=f"skill:{NAME}", record_id=RID))
+    commit_all(env.home, f"seed {RID}")
+    verbs.route(env.home, RID, dest=f"reference:{sk1.REF.split('/')[-1]}", no_push=True)
+    seen: dict = {}
+    _phases(monkeypatch, lambda stage: None, seen=seen)
+
+    _run(env)
+
+    lessons = YAML(typ="safe").load(seen["stage"][f"{skills.OWNED_DIR}/{NAME}/{skills.LESSONS_FILE}"])
+    assert RID in lessons["lessons"]  # control: the lesson is in the skill
+    assert lessons["in_reference_files"] == {RID: sk1.REF}
+
+
+# ============================ SK-F: a skill built from several cases' lessons
+
+
+def _two_placed(env: sk1.Env) -> tuple[str, str]:
+    from test_u3b_steward_authority import _route_through_a_case
+
+    setup = env.tmp / "setup"
+    setup.mkdir(exist_ok=True)
+    first = _route_through_a_case(env.home, setup, RID)
+    setup2 = env.tmp / "setup2"
+    setup2.mkdir(exist_ok=True)
+    second = _route_through_a_case(env.home, setup2, RID2)
+    return first, second
+
+
+def _multi_b(first: str, second: str, *, second_names_skill: bool = True):
+    def write_b(stage):
+        _write_folder(stage, NAME, sk1.draft())
+        build = _case([RID], kind="reconsider", supersedes=first)
+        build["evidence"] = [{"ref": f"record:{RID}", "quote": "status: routed"}]
+        _dump(stage / "case-build.yaml", build)
+        _dump(stage / "sheet-build.yaml", _route_sheet([RID]))
+        more = _case([RID2], kind="reconsider", supersedes=second, lessons=[RID2])
+        more["evidence"] = [{"ref": f"record:{RID2}", "quote": "status: routed"}]
+        if not second_names_skill:
+            del more["decision"]["skill"]
+        # sorted before the build pair by name, so only the runner's
+        # ordering applies the build first
+        _dump(stage / "case-a-more.yaml", more)
+        _dump(stage / "sheet-a-more.yaml", _route_sheet([RID2]))
+    return write_b
+
+
+@pytest.mark.parametrize("names_skill", [True, False])
+def test_sk_f_1_two_cases_placed_lessons_both_move_into_the_new_skill(env, monkeypatch, names_skill):
+    _set_writing(env, '"on"')
+    first, second = _two_placed(env)
+    assert RID in _old_skill_md(env) and RID2 in _old_skill_md(env)  # control
+    _phases(monkeypatch, _multi_b(first, second, second_names_skill=names_skill))
+
+    result = _run(env)
+
+    refused = _section(_report(result), "Refused / could not do")
+    text = env.skill_md().read_text(encoding="utf-8")
+    assert f"({RID})" in text and f"({RID2})" in text, refused
+    old = _old_skill_md(env)
+    assert RID not in old and RID2 not in old
+    for rid in (RID, RID2):
+        routing = Record.from_path(find_record_path(env.home, rid)).routing or {}
+        assert routing.get("destination") == "new-skill" and routing.get("new_skill") == NAME
+
+
+def test_sk_f_1a_a_mover_whose_build_pair_is_dropped_later_in_the_loop_is_dropped(env, monkeypatch):
+    """Gate r1 finding 3a: the mover (a plain reconsider pair, iterated
+    before the build pair) was judged "would-apply once written"; the build
+    pair is then dropped by its rule check. The mover is dropped whole: its
+    case is not recorded and its lesson stays where it was."""
+    _set_writing(env, '"on"')
+    first, second = _two_placed(env)
+    _phases(monkeypatch, _multi_b(first, second, second_names_skill=False))
+    real_rule = overseer_run._case_rule_problem
+
+    def rule(path, run_id):
+        if Path(path).name == "case-build.yaml":
+            return "a rule the test's case writer names"
+        return real_rule(path, run_id)
+
+    monkeypatch.setattr(overseer_run, "_case_rule_problem", rule)
+    before = {row["case"] for row in cases.list_cases(env.home)}
+
+    result = _run(env)
+
+    refused = _section(_report(result), "Refused / could not do")
+    assert "case-build.yaml" in refused and "a rule the test's case writer names" in refused  # control
+    assert (
+        f"case-a-more.yaml: dropped with sheet-a-more.yaml — it moves lessons into "
+        f"new-skill:{NAME}, and the pair that was to build {NAME} this run was dropped"
+    ) in refused
+    assert {row["case"] for row in cases.list_cases(env.home)} == before
+    assert RID2 in _old_skill_md(env) and not env.skill_md().exists()
+
+
+@pytest.mark.parametrize("kind", ["target-busy", "git"])
+def test_sk_f_1b_a_mover_after_a_refused_build_is_dropped_with_it(env, monkeypatch, kind):
+    """Gate r1 finding 3b: the build pair's write is refused at apply; the
+    mover applied after it is dropped with it, its case not recorded. A
+    ``git`` refusal is tried again by the resume, and the mover with it."""
+    _set_writing(env, '"on"')
+    first, second = _two_placed(env)
+    _phases(monkeypatch, _multi_b(first, second, second_names_skill=False))
+    real_write = skill_writer.write
+    calls: list[str] = []
+
+    def write(home, name, files, **kwargs):
+        calls.append(name)
+        if len(calls) == 1:
+            if kind == "git":
+                return _git_refusal(name)
+            return skill_writer.WriteResult(
+                name=name, ok=False, kind=skill_writer.KIND_TARGET_BUSY,
+                problems=("something is in the way",),
+            )
+        return real_write(home, name, files, **kwargs)
+
+    monkeypatch.setattr(skill_writer, "write", write)
+    before = {row["case"] for row in cases.list_cases(env.home)}
+
+    result = _run(env)
+
+    assert calls == [NAME]  # control: the build was tried, and refused
+    refused = _section(_report(result), "Refused / could not do")
+    why = (
+        f"whose build met {kind} trouble; the run's resume tries again" if kind == "git"
+        else "whose build was refused this run"
+    )
+    assert f"dropped with sheet-a-more.yaml — it moves lessons into new-skill:{NAME}, {why}" in refused
+    assert {row["case"] for row in cases.list_cases(env.home)} == before
+    assert RID2 in _old_skill_md(env)
+    if kind != "git":
+        assert overseer_run._unfinished_manifest(env.home) is None
+        return
+
+    assert overseer_run._unfinished_manifest(env.home) is not None
+    _run(env)
+
+    assert overseer_run._unfinished_manifest(env.home) is None
+    text = env.skill_md().read_text(encoding="utf-8")
+    assert f"({RID})" in text and f"({RID2})" in text
+    assert len({row["case"] for row in cases.list_cases(env.home)} - before) == 2
+
+
+def test_sk_f_2_a_line_doomed_on_its_old_side_drops_before_the_skill_is_written(env):
+    """The reroute's old-side checks run in the preview (the check itself:
+    test 2b): a line they refuse is refused there, not believed
+    would-apply."""
+    from test_u3b_steward_authority import _route_through_a_case
+
+    setup = env.tmp / "setup"
+    setup.mkdir()
+    _route_through_a_case(env.home, setup, RID)
+    target = f"new-skill:{NAME}"
+    sheet = [
+        batch.SheetItem(n=1, id=RID, verb="route", fields={"dest": target}),
+        batch.SheetItem(n=2, id=RID2, verb="route", fields={"dest": target}),
+    ]
+    _lesson(env, RID2)
+    preview = batch.DryRunResult(items=[
+        batch.DryRunItem(n=n, id=rid, verb="route", state="would-refuse",
+                         detail=_sk2_refusal(rid), kind="bad-line")
+        for n, rid in ((1, RID), (2, RID2))
+    ])
+    step = skills.SkillStep(action="write", name=NAME)
+    ok = skills.preview_for_step(env.home, preview, sheet, step, reconsidered={RID})
+    assert ok.items[0].state == "would-apply"  # control: the placed lesson passes
+
+    def doomed(home, record_id, *, note=None):
+        return f"{record_id}: the old placement cannot be retired"
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verbs, "reroute_old_side_problem", doomed)
+        out = skills.preview_for_step(env.home, preview, sheet, step, reconsidered={RID})
+    assert out.items[0].state == "would-refuse"
+    assert "old side" in (out.items[0].detail or "")
+
+
+def test_sk_f_2b_the_old_side_check_refuses_a_lesson_no_longer_routed(env):
+    from self_learn import verbs as v
+
+    _lesson(env, RID)
+    problem = v.reroute_old_side_problem(env.home, RID)
+    assert problem is not None and RID in problem
+    from test_u3b_steward_authority import _route_through_a_case
+
+    setup = env.tmp / "setup"
+    setup.mkdir()
+    _route_through_a_case(env.home, setup, RID2)
+    assert v.reroute_old_side_problem(env.home, RID2) is None  # control
+
+
+def test_sk_f_3_a_sheetless_rewrite_meeting_git_trouble_is_finished_by_the_resume(env, monkeypatch):
+    """The owed test for the pair-level retry branch (lane-handoff NIT on
+    `run.py`): a sheetless pair has no item to keep the run open, so the
+    pair itself is named in `retry_pending`."""
+    _set_writing(env, '"on"')
+    _lesson(env, RID)
+    assert env.write().ok
+    _phases(monkeypatch, _rewrite_b("The rewritten closing line."))
+    real_write = skill_writer.write
+    calls: list[str] = []
+
+    def write(home, name, files, **kwargs):
+        calls.append(name)
+        if len(calls) == 1:
+            return _git_refusal(name)
+        return real_write(home, name, files, **kwargs)
+
+    monkeypatch.setattr(skill_writer, "write", write)
+
+    first = _run(env)
+    assert calls == [NAME]  # control: the write was tried
+    assert "The rewritten closing line." not in env.skill_md().read_text(encoding="utf-8")
+    assert overseer_run._unfinished_manifest(env.home) is not None, _report(first)
+
+    _run(env)
+
+    assert len(calls) == 2
+    assert "The rewritten closing line." in env.skill_md().read_text(encoding="utf-8")
+    assert overseer_run._unfinished_manifest(env.home) is None

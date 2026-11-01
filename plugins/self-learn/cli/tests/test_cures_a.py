@@ -406,12 +406,16 @@ class TestAgentShellAttribution:
         assert list(home.glob(f"skills/s/resolved/{rid}.md"))
 
     def test_a_persons_terminal_is_unchanged(self, tmp_path, monkeypatch):
+        """No --note needed; since S-109 the commit says
+        `By: human` (every ledger commit says who made it)."""
         home = make_home(tmp_path)
         rid = _seed_pending(home)
         monkeypatch.setenv("SELF_LEARN_HOME", str(home))
         assert not settings.agent_caller()
         assert cli.main(["reject", rid]) == 0  # no --note needed
-        assert "By:" not in git(home, "log", "-1", "--format=%B").stdout
+        body = git(home, "log", "-1", "--format=%B").stdout
+        assert body.rstrip().endswith("By: human")
+        assert "By: agent" not in body
 
     def test_a_verb_whose_own_text_is_the_reason_needs_no_extra_note(
         self, tmp_path, monkeypatch
@@ -457,7 +461,12 @@ class TestAgentShellAttribution:
         assert _head(env2.home) == head  # refused before any write
         assert Record.from_path(next(env2.home.glob(f"skills/a/resolved/{rid2}.md"))).follow_up is None
 
-        assert cli.main(reconsider + ["--note", "the user said the placement was wrong"]) == 0
+        # S-109 (cures CU-2): an agent shell also says who decided
+        assert cli.main(reconsider + ["--note", "the user said the placement was wrong"]) == cli.EXIT_USAGE
+        assert "say who chose" in capsys.readouterr().err
+        assert cli.main(
+            reconsider + ["--note", "the user said the placement was wrong", "--by", "human"]
+        ) == 0
         body = git(env2.home, "log", "-1", "--format=%B").stdout
         assert "the user said the placement was wrong" in body
         assert body.rstrip().endswith("By: agent")
@@ -473,15 +482,15 @@ class TestAgentShellAttribution:
         write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
         commit_all(env2.home, "pending")
         _as_agent(monkeypatch)
-        assert cli.main(["route", rid, "--dest", "skill-md", "--note", "approved"]) == 0
+        assert cli.main(["route", rid, "--dest", "skill-md", "--note", "approved", "--by", "agent"]) == 0
         route_body = git(
             env2.home, "log", "-1", "--grep=self-learn: route", "--format=%B"
         ).stdout
         assert route_body.rstrip().endswith("By: agent")
         record = Record.from_path(next(env2.home.glob(f"skills/a/resolved/{rid}.md")))
-        assert record.routing["by"] == "agent"  # the default for an agent shell
+        assert record.routing["by"] == "agent"  # the agent said it chose (cures CU-2)
 
-        assert cli.main(["reroute", rid, "--dest", "claude-md", "--note", "moved"]) == 0
+        assert cli.main(["reroute", rid, "--dest", "claude-md", "--note", "moved", "--by", "agent"]) == 0
         reroute_body = git(
             env2.home, "log", "-1", "--grep=self-learn: reroute", "--format=%B"
         ).stdout
@@ -524,6 +533,184 @@ class TestAgentShellAttribution:
             by="analyst", no_push=True, stamp_by="agent",
         )
         assert git(env2.home, "log", "-1", "--format=%B").stdout.rstrip().endswith("By: agent")
+
+
+# ------------------------------------------- who chose (S-109)
+
+
+def _pending_routable(env2, rid="lrn-0000ab01"):
+    create_record(env2.home, make_behavior(record_id=rid, scope="skill:a"))
+    write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
+    commit_all(env2.home, "pending")
+    return rid
+
+
+def _routed_record(env2, rid):
+    return Record.from_path(next(env2.home.glob(f"skills/a/resolved/{rid}.md")))
+
+
+class TestWhoChoseInAnAgentShell:
+    """Cures CU-2: `routing.by` is who chose the destination, `By:` who ran
+    the verb. An agent's shell must say who chose."""
+
+    def test_an_agent_shell_route_without_by_is_refused_before_any_write(
+        self, env2, monkeypatch, capsys
+    ):
+        """Mutation: remove `_agent_chooser` from `_cmd_verb` -> exit 0."""
+        rid = _pending_routable(env2)
+        _as_agent(monkeypatch)
+        head = _head(env2.home)
+        assert cli.main(["route", rid, "--note", "approved", "--no-push"]) == cli.EXIT_USAGE
+        assert "say who chose" in capsys.readouterr().err
+        assert _head(env2.home) == head
+        assert cli.main(["route", rid, "--note", "approved", "--by", "analyst", "--no-push"]) == 0
+
+    def test_the_chooser_and_the_runner_are_recorded_apart(self, env2, monkeypatch):
+        """Mutation: restore `by=args.by or runner` -> `routing.by` is
+        `agent` whatever the agent said."""
+        rid = _pending_routable(env2)
+        _as_agent(monkeypatch)
+        assert cli.main(["route", rid, "--note", "the user accepted it", "--by", "analyst", "--no-push"]) == 0
+        assert _routed_record(env2, rid).routing["by"] == "analyst"
+        body = git(env2.home, "log", "-1", "--grep=self-learn: route", "--format=%B").stdout
+        assert body.rstrip().endswith("By: agent")
+
+    def test_an_agent_shell_cannot_claim_a_sheet_runner(self, env2, monkeypatch, capsys):
+        """Mutation: accept the full `--by` set from an agent shell -> exit 0."""
+        rid = _pending_routable(env2)
+        _as_agent(monkeypatch)
+        for who in ("steward", "overseer"):
+            assert cli.main(["route", rid, "--note", "n", "--by", who, "--no-push"]) == cli.EXIT_USAGE
+            assert "sheet runner" in capsys.readouterr().err
+
+    def test_a_persons_terminal_keeps_its_default(self, env2):
+        """The control for the refusal: no `--by` needed, and an override is
+        the person's choice."""
+        rid = _pending_routable(env2)
+        assert not settings.agent_caller()
+        assert cli.main(["route", rid, "--dest", "skill-md", "--no-push"]) == 0
+        assert _routed_record(env2, rid).routing["by"] == "human"
+
+    def test_reconsider_keeps_who_decided_in_the_history_and_who_ran_it_in_the_trailer(
+        self, env2, tmp_path, monkeypatch
+    ):
+        """Mutation: write `stamp_by` into the history entry -> it reads
+        `agent`."""
+        rid = seed_routed(env2.home, "lrn-0000ab02")
+        old_case = _u5_case(tmp_path, env2.home, records=[rid], kind="resolution", outcome="route")
+        case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider", outcome="reject",
+            supersedes=old_case,
+        )
+        _as_agent(monkeypatch)
+        assert cli.main(
+            ["reconsider", rid, "--case", case, "--by", "human", "--note", "the user said", "--no-push"]
+        ) == 0
+        entry = _routed_record(env2, rid).history[-1]
+        assert (entry["event"], entry["by"]) == ("reconsidered", "human")
+        assert git(env2.home, "log", "-1", "--format=%B").stdout.rstrip().endswith("By: agent")
+
+    @staticmethod
+    def _route_sheet(tmp_path, rid, name, **extra):
+        path = tmp_path / f"{name}.yaml"
+        line = {"id": rid, "verb": "route", "dest": "skill-md", "note": "n", **extra}
+        path.write_text(json.dumps({"version": 1, "items": [line]}), encoding="utf-8")
+        return str(path)
+
+    def test_an_agent_shell_batch_route_line_must_say_who_chose(
+        self, env2, tmp_path, monkeypatch, capsys
+    ):
+        """Gate r2 finding 1: a command-line `batch` runs as its shell, and
+        the runner is a route line's default `by`, so from an agent's shell a
+        by-less route line would record the person's choice as `agent`. The
+        whole sheet is refused before item 1, its preview too. Mutation:
+        `batch.agent_chooser_problem` returns None -> exit 0 and
+        `routing.by == "agent"`."""
+        rid = _pending_routable(env2)
+        _as_agent(monkeypatch)
+        head = _head(env2.home)
+        sheet = self._route_sheet(tmp_path, rid, "byless")
+        assert cli.main(["batch", sheet, "--dry-run"]) == cli.EXIT_USAGE
+        assert "says who chose" in capsys.readouterr().err
+        assert cli.main(["batch", sheet, "--no-push"]) == cli.EXIT_USAGE
+        assert "says who chose" in capsys.readouterr().err
+        assert _head(env2.home) == head
+        assert not list(env2.home.glob(f"skills/a/resolved/{rid}.md"))  # still pending
+
+        named = self._route_sheet(tmp_path, rid, "named", by="analyst")
+        assert cli.main(["batch", named, "--no-push"]) == 0, capsys.readouterr().err
+        assert _routed_record(env2, rid).routing["by"] == "analyst"
+        body = git(env2.home, "log", "-1", f"--grep=self-learn: route {rid}", "--format=%B").stdout
+        assert body.strip(), "control: the route commit is found"
+        assert body.strip().rpartition("\n\n")[2].splitlines() == ["By: agent"]
+
+    @pytest.mark.parametrize("verb", ["replace", "revise"])
+    def test_an_agent_shell_batch_replace_or_revise_line_must_say_who_chose(
+        self, env2, tmp_path, monkeypatch, capsys, verb
+    ):
+        """Gate r3 finding 1: `replace` and `revise` are chooser verbs too. A
+        by-less line from an agent's shell is refused before item 1, its
+        preview too, with the ledger untouched. Mutation:
+        `CHOOSER_VERBS = frozenset({"route"})` -> exit 0 and a commit."""
+
+        def sheet(rid, name, **extra):
+            if verb == "revise":
+                body = {"section": "Trigger", "text": "Reworded once.", "because": "b"}
+            else:
+                body = {"trigger": "when X", "instruction": "do Y", "because": "b"}
+            path = tmp_path / f"{name}.yaml"
+            item = {"id": rid, "verb": verb, **body, **extra}
+            path.write_text(json.dumps({"version": 1, "items": [item]}), encoding="utf-8")
+            return str(path)
+
+        _as_agent(monkeypatch)
+        # positive control: the same line, saying who chose, applies
+        ok_rid = _seed_pending_behavior(env2, rid="lrn-0000c0e1")
+        before_ok = _head(env2.home)
+        assert cli.main(["batch", sheet(ok_rid, "named", by="human"), "--no-push"]) == 0, capsys.readouterr().err
+        assert _head(env2.home) != before_ok, "control: the by-named line committed"
+        capsys.readouterr()
+
+        rid = _seed_pending_behavior(env2, rid="lrn-0000c0e2")
+        head = _head(env2.home)
+        byless = sheet(rid, "byless")
+        assert cli.main(["batch", byless, "--dry-run"]) == cli.EXIT_USAGE
+        assert "says who chose" in capsys.readouterr().err
+        assert cli.main(["batch", byless, "--no-push"]) == cli.EXIT_USAGE
+        assert "says who chose" in capsys.readouterr().err
+        assert _head(env2.home) == head
+
+    def test_an_agent_shell_sheet_cannot_claim_a_sheet_runner_as_chooser(
+        self, env2, tmp_path, monkeypatch, capsys
+    ):
+        """The narrowed set, as on the command line. Mutation: accept the
+        full `ROUTING_BY_VALUES` -> exit 0."""
+        rid = _pending_routable(env2)
+        _as_agent(monkeypatch)
+        head = _head(env2.home)
+        for who in ("steward", "overseer"):
+            sheet = self._route_sheet(tmp_path, rid, f"as-{who}", by=who)
+            assert cli.main(["batch", sheet, "--no-push"]) == cli.EXIT_USAGE
+            assert "sheet runner" in capsys.readouterr().err
+        assert _head(env2.home) == head
+
+    def test_a_persons_batch_route_line_keeps_the_verbs_default(self, env2, tmp_path, capsys):
+        """The control for the refusal: in a person's terminal a by-less
+        route line runs and the verb's own heuristic decides (`human`)."""
+        rid = _pending_routable(env2)
+        assert not settings.agent_caller()
+        sheet = self._route_sheet(tmp_path, rid, "person")
+        assert cli.main(["batch", sheet, "--no-push"]) == 0, capsys.readouterr().err
+        assert _routed_record(env2, rid).routing["by"] == "human"
+
+    def test_hook_activate_from_an_agent_shell_needs_a_note(self, env2, monkeypatch, capsys):
+        """Mutation: keep the old `runner = "agent" if ...` line (no reason
+        asked) -> the refusal never comes."""
+        _as_agent(monkeypatch)
+        head = _head(env2.home)
+        assert cli.main(["hook", "activate", "lrn-0000ab03", "--no-push"]) == cli.EXIT_USAGE
+        assert "needs --note" in capsys.readouterr().err
+        assert _head(env2.home) == head
 
 
 # ---------------------------------------------------------- teach --statement

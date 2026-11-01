@@ -2271,8 +2271,10 @@ class TestDeactivateChecksRoutingHookToolsSameAsActivate:
 
 
 class TestAgentShellIsStamped:
-    """S-102 (M5.2): `hook activate|deactivate` have no `--note`, so
-    an agent shell is stamped `By: agent` but not asked for a reason."""
+    """S-102 (M5.2), as amended by S-109 (cures CU-2): an
+    agent shell's `hook activate|deactivate` needs `--note` like every other
+    ledger verb and is stamped `By: agent`; a person's terminal says `By:
+    human` (every ledger commit says who made it)."""
 
     def test_activate_and_deactivate_record_by_agent_only_from_an_agent_shell(
         self, env, monkeypatch
@@ -2282,15 +2284,18 @@ class TestAgentShellIsStamped:
         def last_body():
             return git(env.home, "log", "-1", "--format=%B").stdout
 
-        # a person's terminal: unchanged, no trailer (positive control for the
-        # absence assertion: the activation did commit a new head)
+        # a person's terminal: no reason needed, recorded By: human
         head = git(env.home, "rev-parse", "HEAD").stdout.strip()
         assert cli.main(["hook", "activate", RID, "--no-push"]) == 0
         assert git(env.home, "rev-parse", "HEAD").stdout.strip() != head
-        assert "By:" not in last_body()
+        assert last_body().rstrip().endswith("By: human")
 
         monkeypatch.setenv("CLAUDECODE", "1")
-        assert cli.main(["hook", "deactivate", RID, "--no-push"]) == 0
+        head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+        assert cli.main(["hook", "deactivate", RID, "--no-push"]) == cli.EXIT_USAGE
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == head  # refused, nothing written
+        assert cli.main(["hook", "deactivate", RID, "--no-push", "--note", "the user asked"]) == 0
+        assert "the user asked" in last_body()
         assert last_body().rstrip().endswith("By: agent")
-        assert cli.main(["hook", "activate", RID, "--no-push"]) == 0
+        assert cli.main(["hook", "activate", RID, "--no-push", "--note", "back on"]) == 0
         assert last_body().rstrip().endswith("By: agent")

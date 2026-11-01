@@ -405,7 +405,7 @@ def test_flush_releases_each_spool_flock_before_the_git_commit(home, monkeypatch
     probed: list[int] = []
     real_commit = gitops.commit
 
-    def probing_commit(h, msg, paths=None):
+    def probing_commit(h, msg, body=None, paths=None):
         probed.append(1)
         fh = open(spool, "r+b")
         try:
@@ -415,7 +415,7 @@ def test_flush_releases_each_spool_flock_before_the_git_commit(home, monkeypatch
             held.append(1)
         finally:
             fh.close()
-        return real_commit(h, msg, paths=paths)
+        return real_commit(h, msg, body=body, paths=paths)
 
     monkeypatch.setattr(gitops, "commit", probing_commit)
     assert telemetry.flush(home, push=False).events == 1

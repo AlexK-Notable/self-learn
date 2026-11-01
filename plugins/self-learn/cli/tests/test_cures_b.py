@@ -201,8 +201,12 @@ def test_the_cli_maps_the_agent_refusal_to_exit_1_and_a_usage_mistake_to_64(
     monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
 
     monkeypatch.setenv("AI_AGENT", "1")
-    assert cli.main(["host", "set-mode", str(proj), "plain"]) == 1
-    assert "person's command" in capsys.readouterr().err
+    # S-109: person-only; an agent's shell needs --note (64)
+    # and the user's standing grant (1), and has neither here.
+    assert cli.main(["host", "set-mode", str(proj), "plain"]) == 64
+    assert "person-only" in capsys.readouterr().err
+    assert cli.main(["host", "set-mode", str(proj), "plain", "--note", "asked"]) == 1
+    assert "no standing grant" in capsys.readouterr().err
     assert host_mode(env.ledger, proj, registration="project") == "git"
     monkeypatch.delenv("AI_AGENT")
 
@@ -336,8 +340,16 @@ def _typed(text: str) -> dict:
     return {"type": "user", "message": {"content": text}}
 
 
-def _transcript(home: Path, tmp_path: Path, rows: list[dict], session: str = "sess-yes") -> str:
-    """A synthetic transcript under a configured root; returns the session id."""
+def _transcript(
+    home: Path, tmp_path: Path, rows: list[dict], session: str = "sess-yes",
+    naming: dict | None = None,
+) -> str:
+    """A synthetic transcript under a configured root; returns the session id.
+    With *naming* (an ask), every `_ASSISTANT` row becomes the assistant's
+    message naming that ask's id, path and mode (S-109: a yes
+    proves consent only to a message that named the question)."""
+    if naming is not None:
+        rows = [_asking(naming) if row is _ASSISTANT else row for row in rows]
     root = tmp_path / "transcripts"
     path = root / "project" / f"{session}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -349,6 +361,14 @@ def _transcript(home: Path, tmp_path: Path, rows: list[dict], session: str = "se
 
 
 _ASSISTANT = {"type": "assistant", "message": {"content": "Register it?"}}
+
+
+def _asking(ask: dict) -> dict:
+    reg = ask["register"]
+    return {"type": "assistant", "message": {"content": (
+        f"Register {reg['path']} as a {reg['kind']} host in {reg['mode']} mode ({ask['id']})? "
+        "Type yes to do it."
+    )}}
 _CLICK = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "yes"}]}}
 
 
@@ -359,7 +379,9 @@ def test_from_an_agent_shell_a_session_whose_last_typed_row_is_a_yes_registers(t
     new = tmp_path / "new-host"
     init_repo(new)
     home, ask, _shown = _seed_registration_question(tmp_path, new)
-    session = _transcript(home, tmp_path, [_typed("go ahead and register it"), _ASSISTANT, _typed("yes")])
+    session = _transcript(
+        home, tmp_path, [_typed("go ahead and register it"), _ASSISTANT, _typed("yes")], naming=ask
+    )
     # control: the proof itself reads the last typed row
     assert statements.latest_user_typed(home, session) == (f"transcript:{session}#L3", "yes")
     monkeypatch.setenv("CLAUDECODE", "1")
@@ -405,7 +427,7 @@ def test_from_an_agent_shell_a_yes_the_transcript_does_not_show_registers_nothin
     new = tmp_path / "new-host"
     init_repo(new)
     home, ask, _shown = _seed_registration_question(tmp_path, new)
-    session = _transcript(home, tmp_path, rows)
+    session = _transcript(home, tmp_path, rows, naming=ask)
     monkeypatch.setenv("CLAUDECODE", "1")
     answers = _answers(home)
     head = _head(home)
@@ -430,6 +452,7 @@ def test_a_yes_another_agent_typed_into_the_pane_is_not_the_persons(tmp_path, mo
     session = _transcript(
         home, tmp_path,
         [_typed("go on"), _ASSISTANT, {**_typed("yes"), **typed_at}],
+        naming=ask,
     )
     sender = {
         "type": "assistant", "timestamp": "2026-10-30T10:00:05Z", "sessionId": "orchestrator",
@@ -483,7 +506,9 @@ def test_an_agent_shell_proves_the_yes_in_its_own_session_without_being_told_the
     new = tmp_path / "new-host"
     init_repo(new)
     home, ask, _shown = _seed_registration_question(tmp_path, new)
-    session = _transcript(home, tmp_path, [_typed("register it?"), _ASSISTANT, _typed("yes")])
+    session = _transcript(
+        home, tmp_path, [_typed("register it?"), _ASSISTANT, _typed("yes")], naming=ask
+    )
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
 
@@ -525,7 +550,7 @@ def test_naming_the_shells_own_session_explicitly_is_fine(tmp_path, monkeypatch)
     new = tmp_path / "new-host"
     init_repo(new)
     home, ask, _shown = _seed_registration_question(tmp_path, new)
-    session = _transcript(home, tmp_path, [_typed("yes")])
+    session = _transcript(home, tmp_path, [_ASSISTANT, _typed("yes")], naming=ask)
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
 
@@ -658,7 +683,7 @@ def test_the_overseer_respond_command_takes_a_session_for_an_agent_shell(tmp_pat
     new = tmp_path / "new-host"
     init_repo(new)
     home, ask, _shown = _seed_registration_question(tmp_path, new)
-    session = _transcript(home, tmp_path, [_typed("yes")])
+    session = _transcript(home, tmp_path, [_ASSISTANT, _typed("yes")], naming=ask)
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
     monkeypatch.setenv("CLAUDECODE", "1")
     parser = argparse.ArgumentParser()
@@ -758,6 +783,7 @@ def test_an_ask_with_no_register_is_unchanged(tmp_path):
     plain = {
         "id": "q-plain-ask", "kind": "ask", "cases": [case_id],
         "text": "Will you keep using this repository next month?", "why": "decides retention",
+        "default": "I kept its lessons loaded this week.",
     }
     path = tmp_path / "questions.yaml"
     _dump(path, {"questions": [plain]})
@@ -778,7 +804,7 @@ def test_a_reading_in_the_index_cannot_carry_a_register(tmp_path):
 
 def test_the_phase_b_prompt_tells_the_overseer_about_register(tmp_path):
     flat = " ".join(overseer_run._phase_b_prompt(tmp_path, (), ()).split())
-    assert "kind: ask is a decision or fact only the user has" in flat  # control: the ask rules are there
+    assert "Every question is {id, kind: ask, cases, text, why, default}" in flat  # control: the ask rules are there
     assert "register: {path: <absolute path>, mode: git or plain" in flat
     assert "must name that path exactly and that mode" in flat
 

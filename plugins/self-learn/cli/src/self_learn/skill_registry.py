@@ -16,14 +16,20 @@ The file::
       <name>:
         status: live             # live | retired
         plugin: plugins/<name>   # relative to the skills root
-        created:    {at: <iso>, case: case-xxxxxxxx, by: overseer|human}
-        last_write: {at: <iso>, case: case-xxxxxxxx, by: overseer|human,
+        created:    {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent}
+        last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent,
                      authored_sha256: <64 hex>}
-        retired:    {at: <iso>, case: case-xxxxxxxx, by: overseer|human}
+        retired:    {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent}
                                  # only when status is retired
         renamed_from: [<old name>, ...]                     # optional
+        retire_requested: {at: <iso>, by: human|agent, grant: stmt-xxxxxxxx}
+                                 # optional, live rows only; grant only with by: agent
     vetoed:
-      - {name: <name>, at: <iso>, statement: stmt-xxxxxxxx}
+      - {name: <name>, at: <iso>, by: human|agent, grant: stmt-xxxxxxxx}
+        # by and grant are optional (a veto recorded before
+        # S-110 has neither); a veto recorded then carries
+        # statement: stmt-xxxxxxxx, the user's words through the old
+        # ``overseer respond --veto-skill``; statement may be null.
 
 Public surface:
 
@@ -32,7 +38,8 @@ Public surface:
     Registry.live() -> list[str]
     Registry.vetoed_names() -> list[str]
     Registry.row(name) -> dict | None       # any status; a copy
-    Registry.add_veto(name, *, at, statement) -> bool
+    Registry.add_veto(name, *, at, by, grant=None) -> bool
+    Registry.veto_of(name) -> dict | None
     with_update(home, fn, *, subject) -> str | None
     authored_sha256(skill_md_text, reference_files) -> str
 
@@ -41,9 +48,12 @@ Rules the file is held to (each refusal names the key and the skill):
 - an unknown top-level key, row key or sub-key is refused, not ignored;
 - ``status`` is ``live`` or ``retired``; a retired row carries ``retired``
   and a live row does not;
-- every ``case`` is a case id, every ``statement`` a statement id, every
-  ``by`` is ``overseer`` or ``human``, every ``authored_sha256`` is 64 lowercase
-  hex digits, every ``at`` is a timestamp;
+- every ``case`` is a case id, or ``null`` for a step a person or an agent
+  under the user's standing grant took without one (``by: human`` or
+  ``by: agent``; never the overseer's: its steps always answer a case);
+  every ``statement`` and ``grant`` a statement id, every ``by`` is
+  ``overseer``, ``human`` or ``agent``, every ``authored_sha256`` is 64
+  lowercase hex digits, every ``at`` is a timestamp;
 - ``plugin`` is exactly ``plugins/<the row's own name>``: a relative path
   that cannot climb out of the skills root and cannot name another skill's
   folder or one two rows share, because the retire and rename steps delete
@@ -116,7 +126,9 @@ from .statements import STMT_ID_RE
 
 __all__ = [
     "BY_VALUES",
+    "CASELESS_BY_VALUES",
     "REGISTRY_FILENAME",
+    "REQUEST_BY_VALUES",
     "REGISTRY_VERSION",
     "STATUSES",
     "STATUS_LIVE",
@@ -138,14 +150,24 @@ STATUS_LIVE = "live"
 STATUS_RETIRED = "retired"
 STATUSES = (STATUS_LIVE, STATUS_RETIRED)
 
-#: Who made a registry change: the overseer's runner, or a person through the CLI.
-BY_VALUES = ("overseer", "human")
+#: Who made a registry change: the overseer's runner, a person through the CLI,
+#: or an agent's shell running the CLI under the user's standing grant
+#: (S-109: an agent's act is never recorded as the person's).
+BY_VALUES = ("overseer", "human", "agent")
 
 _TOP_KEYS = ("version", "skills", "vetoed")
-_ROW_KEYS = ("status", "plugin", "created", "last_write", "retired", "renamed_from")
+_ROW_KEYS = (
+    "status", "plugin", "created", "last_write", "retired", "renamed_from", "retire_requested",
+)
 _STAMP_KEYS = ("at", "case", "by")
 _WRITE_KEYS = ("at", "case", "by", "authored_sha256")
-_VETO_KEYS = ("name", "at", "statement")
+_VETO_KEYS = ("name", "at", "statement", "by", "grant")
+_REQUEST_KEYS = ("at", "by", "grant")
+#: Who may make a request (a veto, a retirement request): the person, or an
+#: agent under the user's standing grant. The overseer never asks itself.
+REQUEST_BY_VALUES = ("human", "agent")
+#: Who may take a step that answers no case (S-110).
+CASELESS_BY_VALUES = ("human", "agent")
 
 _PLUGIN_RE = re.compile(r"plugins/[a-z0-9][a-z0-9-]*")
 
@@ -231,13 +253,58 @@ def _check_name(value: object, where: str) -> str:
     return value
 
 
+def _check_stamp_case(stamp: dict, where: str) -> str | None:
+    """A stamp's ``case``: a case id, or ``None`` for a person's step (or an
+    agent's under the grant) that answered no case. The overseer's steps
+    always answer one, so ``case: null`` with ``by: overseer`` is refused."""
+    case = _need(stamp, "case", where)
+    if case is None:
+        by = _need(stamp, "by", where)
+        if by not in CASELESS_BY_VALUES:
+            raise SkillRegistryError(
+                f"{where}.case: case may be null only for a person's step (by: human) or an "
+                f"agent's under the user's standing grant (by: agent), not by: {by!r}"
+            )
+        return None
+    return _check_case(case, f"{where}.case")
+
+
 def _check_stamp(value: object, where: str) -> dict:
     stamp = _check_keys(value, _STAMP_KEYS, where)
     return {
         "at": _check_at(_need(stamp, "at", where), f"{where}.at"),
-        "case": _check_case(_need(stamp, "case", where), f"{where}.case"),
+        "case": _check_stamp_case(stamp, where),
         "by": _check_by(_need(stamp, "by", where), f"{where}.by"),
     }
+
+
+def _check_request_by(entry: dict, where: str) -> dict:
+    """``by`` and ``grant`` of a request (a veto or a retirement request):
+    ``by`` is ``human`` or ``agent``; ``grant`` is the statement id of the
+    user's standing grant an agent acted under, and only an agent's request
+    carries one."""
+    out: dict = {}
+    if "by" in entry:
+        by = entry["by"]
+        if by not in REQUEST_BY_VALUES:
+            raise SkillRegistryError(
+                f"{where}.by: {by!r} must be one of {', '.join(REQUEST_BY_VALUES)}"
+            )
+        out["by"] = by
+    if "grant" in entry:
+        if out.get("by") != "agent":
+            raise SkillRegistryError(
+                f"{where}.grant: only an agent's request (by: agent) runs under the grant"
+            )
+        out["grant"] = _check_statement(entry["grant"], f"{where}.grant")
+    return out
+
+
+def _check_retire_request(value: object, where: str) -> dict:
+    request = _check_keys(value, _REQUEST_KEYS, where)
+    _need(request, "by", where)
+    return {"at": _check_at(_need(request, "at", where), f"{where}.at"),
+            **_check_request_by(request, where)}
 
 
 def _check_last_write(value: object, where: str) -> dict:
@@ -249,7 +316,7 @@ def _check_last_write(value: object, where: str) -> dict:
         )
     return {
         "at": _check_at(_need(stamp, "at", where), f"{where}.at"),
-        "case": _check_case(_need(stamp, "case", where), f"{where}.case"),
+        "case": _check_stamp_case(stamp, where),
         "by": _check_by(_need(stamp, "by", where), f"{where}.by"),
         "authored_sha256": sha,
     }
@@ -299,17 +366,31 @@ def _check_row(name: str, value: object) -> dict:
                 raise SkillRegistryError(f"{where}.renamed_from[{index}]: {old!r} is listed twice")
             seen.append(old)
         out["renamed_from"] = seen
+    if "retire_requested" in row:
+        if status != STATUS_LIVE:
+            raise SkillRegistryError(
+                f"{where}.retire_requested: only a live skill can be asked to retire"
+            )
+        out["retire_requested"] = _check_retire_request(
+            row["retire_requested"], f"{where}.retire_requested"
+        )
     return out
 
 
 def _check_veto(index: int, value: object) -> dict:
     where = _where(f"vetoed[{index}]")
     veto = _check_keys(value, _VETO_KEYS, where)
-    return {
+    out: dict = {
         "name": _check_name(_need(veto, "name", where), f"{where}.name"),
         "at": _check_at(_need(veto, "at", where), f"{where}.at"),
-        "statement": _check_statement(_need(veto, "statement", where), f"{where}.statement"),
     }
+    if "statement" in veto:
+        statement = veto["statement"]
+        out["statement"] = (
+            None if statement is None else _check_statement(statement, f"{where}.statement")
+        )
+    out.update(_check_request_by(veto, where))
+    return out
 
 
 def _normalise(skills: object, vetoed: object) -> tuple[dict[str, dict], list[dict]]:
@@ -374,14 +455,28 @@ class Registry:
 
     # -- helpers for a callback
 
-    def add_veto(self, name: str, *, at: str, statement: str) -> bool:
-        """Ban *name* for ever. ``False`` (and no change) when it is already
-        banned, compared without regard to case, which is how the template
-        check compares names."""
+    def add_veto(
+        self, name: str, *, at: str, by: str, grant: str | None = None,
+    ) -> bool:
+        """Ban *name* for ever, as *by* (``human``, or ``agent`` under the
+        user's standing grant *grant*). ``False`` (and no change) when it is
+        already banned, compared without regard to case, which is how the
+        template check compares names."""
         if name.casefold() in {n.casefold() for n in self.vetoed_names()}:
             return False
-        self.vetoed.append({"name": name, "at": at, "statement": statement})
+        entry: dict = {"name": name, "at": at, "by": by}
+        if grant is not None:
+            entry["grant"] = grant
+        self.vetoed.append(entry)
         return True
+
+    def veto_of(self, name: str) -> dict | None:
+        """The veto entry banning *name* (compared without regard to case),
+        as a copy; ``None`` when the name is not vetoed."""
+        for entry in self.vetoed:
+            if entry["name"].casefold() == name.casefold():
+                return copy.deepcopy(entry)
+        return None
 
     def copy(self) -> "Registry":
         return Registry(copy.deepcopy(self.skills), copy.deepcopy(self.vetoed))

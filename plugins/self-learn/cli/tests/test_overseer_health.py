@@ -84,7 +84,7 @@ def test_full_inputs_puts_catalogue_rows_beside_conditions(tmp_path, monkeypatch
     item = conditions.Item("models.overseer", "m", "now", "settings")
     monkeypatch.setattr(overseer_run.conditions, "feed", lambda _home: [item])
     monkeypatch.setattr(overseer_run.health, "gather", lambda _home: [{"kind": "health", "value": 1}])
-    overseer_run._full_inputs(home, stage, (), [])
+    overseer_run._full_inputs(home, stage, (), [], answers_since=None)
     data = YAML(typ="safe").load((stage / "health.yaml").read_text(encoding="utf-8"))
     assert data == {
         "facts": [{"key": "models.overseer", "value": "m", "observed_at": "now", "source": "settings"}],

@@ -56,15 +56,17 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import config as _config
-from . import gitops, intents
+from . import attribution, gitops, intents
 from .primitives import chrono, fsops, yamlio
 
 __all__ = [
@@ -77,7 +79,16 @@ __all__ = [
     "HostModeAgentRefusal",
     "HostSetModeResult",
     "HostsError",
+    "MAX_REGISTRATIONS_PER_RUN",
+    "POLICY_ACTOR",
+    "POLICY_RULE",
+    "POLICY_STATEMENT",
+    "PolicyChange",
+    "PolicyResult",
+    "RegistrationRefused",
+    "UNDO_ROUTED_CLAUSE",
     "ancestors_of",
+    "apply_policy",
     "canon_read_roots",
     "capture_host_path",
     "effective_default_mode",
@@ -93,6 +104,13 @@ __all__ = [
     "is_project_host",
     "is_repo_root",
     "load_hosts",
+    "policy_changes",
+    "policy_commits",
+    "policy_mode",
+    "policy_undo",
+    "removed_hosts",
+    "register_plain_project",
+    "registration_problem",
     "save_hosts",
     "skill_dir_for",
     "slug_for",
@@ -132,12 +150,19 @@ class HostRemoveRefused(HostsError):
 
 
 class HostModeAgentRefusal(HostsError):
-    """S-103: ``host set-mode`` called from an agent's shell. A
-    mode is the person's choice (registration is disclosed consent, S-29 /
-    Y-17, and a mode change is the same kind of act), so the CLI refuses it
-    the way it refuses a tier-C ``config set`` (S-92): exit 1, before the
-    lock, before any write. Distinguished from the other
-    :class:`HostsError` refusals, which are usage mistakes (64)."""
+    """S-103, as widened by S-109: ``host add``, ``host
+    remove``, ``host rebind`` or ``host set-mode`` called from an agent's
+    shell with no authority in force. Registration is disclosed consent
+    (S-29 / Y-17) and a mode change or a removal is the same kind of act,
+    so an agent runs these only under the user's standing grant
+    (:func:`grants.authorize`, with ``--note``) or, for an overseer
+    question's registration, a proved typed yes. Exit 1, before the lock,
+    before any write. Distinguished from the other :class:`HostsError`
+    refusals, which are usage mistakes (64)."""
+
+
+#: The same refusal under the name that says what it covers now.
+HostAgentRefusal = HostModeAgentRefusal
 
 
 @dataclass(frozen=True)
@@ -192,6 +217,12 @@ class HostSetModeResult:
     changed: bool
     marker_restored: bool = False
     routed: tuple[str, ...] = ()
+    #: S-109: the lines a switch to git mode took out of
+    #: self-learn's own ``info/exclude`` block (files git mode now commits).
+    unexcluded: tuple[str, ...] = ()
+    #: Gate r1 finding 5: why that cleanup failed, when it did. The mode
+    #: switch is committed by then and stands; the CLI warns and exits 0.
+    unexclude_error: str | None = None
 
 
 def slug_for(path: Path | str) -> str:
@@ -712,6 +743,7 @@ def host_add(
     *,
     init: bool = False,
     mode: str = "git",
+    note: str | None = None,
 ) -> HostAddResult:
     """The ``host add`` verb's backing function (doc 13 §3): validate the
     path (must exist; must be a git repo when ``mode == "git"``), rewrite
@@ -746,7 +778,27 @@ def host_add(
     BEFORE :func:`save_hosts`, not at the commit. hosts.yaml is TRACKED,
     so a rewrite of it is exactly what a racing ``pull --rebase
     --autostash`` stashes and then restores into a conflict — the same
-    window round 3 closed in ``verbs.py`` and left open here."""
+    window round 3 closed in ``verbs.py`` and left open here.
+
+    From an agent's shell it runs only with an authority in force
+    (:func:`attribution.refuse_unless_authorized`; S-109)."""
+    attribution.refuse_unless_authorized("host add", HostModeAgentRefusal)
+    return _host_add(home, path, kind, init=init, mode=mode, note=note)
+
+
+def _host_add(
+    home: Path | str,
+    path: Path | str,
+    kind: str,
+    *,
+    init: bool = False,
+    mode: str = "git",
+    note: str | None = None,
+) -> HostAddResult:
+    """:func:`host_add` without the agent-shell check (S-112). Its
+    other caller is :func:`register_plain_project`, self-learn's own plain
+    registration (decision 5): an act of the overseer's, not of whatever
+    shell started the run, so the shell's markers are not asked."""
     home = Path(home)
     if kind not in HOST_KINDS:
         raise HostsError(f"kind must be one of {list(HOST_KINDS)}, got {kind!r}")
@@ -879,7 +931,7 @@ def host_add(
         intent = intents.begin(home, "host_add", [hosts_path(home)], message)
         yaml_path = save_hosts(home, hosts)
         intents.complete(intent)
-        _commit_or_half_written(home, [yaml_path], message)
+        _commit_or_half_written(home, [yaml_path], message, note)
         intents.finish(intent)
     return HostAddResult(hosts=hosts, marker_restored=False)
 
@@ -890,6 +942,7 @@ def host_set_mode(
     mode: str,
     *,
     registration: str | None = None,
+    note: str | None = None,
 ) -> HostSetModeResult:
     """``host set-mode <path> <mode>`` (S-103, cures M6.1): change a
     registered host's mode in place, in one ledger commit (pinned subject
@@ -897,13 +950,17 @@ def host_set_mode(
     the only route was ``host remove`` then ``host add --mode``, two commits
     with the compile gate shut between them.
 
-    It is a PERSON'S command. From an agent's shell
+    It is a PERSON-ONLY command. From an agent's shell
     (:func:`settings.agent_caller`, the detection S-92 uses for tier-C
-    settings) it raises :class:`HostModeAgentRefusal` before anything else:
-    before the lock, before a marker is written, and also for a request that
-    would change nothing. Registration is disclosed consent (S-29 / Y-17) and
-    changing the mode is the same kind of act. No override: an agent could
-    pass it. Never part of a sheet (``batch`` refuses every ``host`` verb).
+    settings) with no authority in force it raises
+    :class:`HostModeAgentRefusal` before anything else: before the lock,
+    before a marker is written, and also for a request that would change
+    nothing. Registration is disclosed consent (S-29 / Y-17) and changing
+    the mode is the same kind of act. The authority is the user's standing
+    grant (the CLI's ``--note``, :func:`grants.authorize`) or a typed yes
+    the overseer proved for a ``register: {action: set-mode}`` question
+    (S-109); the commit then says ``By: agent``. Never part of
+    a sheet (``batch`` refuses every ``host`` verb).
 
     What it changes: the registration's ``mode`` in ``hosts.yaml``, and, going
     to ``plain``, the :data:`MARKER_FILENAME` marker (with its private
@@ -920,14 +977,24 @@ def host_set_mode(
     Idempotent: a host already in *mode* writes nothing (a plain host's
     missing marker is restored, as ``host add`` does). Lock discipline is
     ``host_add``'s: the ledger lock opens before ``hosts.yaml`` is rewritten."""
-    from . import settings as _settings  # lazy: settings imports ledger, which imports this module
+    attribution.refuse_unless_authorized("host set-mode", HostModeAgentRefusal)
+    return _host_set_mode(home, path, mode, registration=registration, note=note)
 
-    if _settings.agent_caller():
-        raise HostModeAgentRefusal(
-            "host set-mode is the person's command; run the same command in "
-            "your own terminal (not through an agent) "
-            f"(agent shell detected: {', '.join(_settings.agent_caller_markers())})"
-        )
+
+def _host_set_mode(
+    home: Path | str,
+    path: Path | str,
+    mode: str,
+    *,
+    registration: str | None = None,
+    note: str | None = None,
+    subject_suffix: str = "",
+) -> HostSetModeResult:
+    """:func:`host_set_mode` without the agent-shell check (S-112).
+    Its other caller is :func:`apply_policy`, which runs in code (the serve
+    daemon's daily step) and applies a rule the user typed, so no shell's
+    markers are asked. *subject_suffix* is appended to the pinned subject
+    (the policy's `` (policy)``)."""
     _check_registration(registration)
     home = Path(home)
     if mode not in HOST_MODES:
@@ -1005,22 +1072,431 @@ def host_set_mode(
             project_modes=new_modes,
         )
 
-    message = f"self-learn: host set-mode {kind} {target} {old_mode} → {mode}"
+    message = f"self-learn: host set-mode {kind} {target} {old_mode} → {mode}{subject_suffix}"
     with intents.ledger_write(home) as recovered:
         intents.announce_recovered(recovered)
         intent = intents.begin(home, "host_set_mode", [hosts_path(home)], message)
         yaml_path = save_hosts(home, hosts)
         intents.complete(intent)
-        _commit_or_half_written(home, [yaml_path], message)
+        _commit_or_half_written(home, [yaml_path], message, note)
         intents.finish(intent)
+    unexcluded: tuple[str, ...] = ()
+    unexclude_error: str | None = None
+    if mode == "git":
+        # After the commit: the switch stands whatever happens here, so a
+        # failure (a malformed block, the host lock timing out) is reported
+        # as that, never as "nothing was written" (gate r1 finding 5).
+        try:
+            unexcluded = _unexclude_for_git(hosts, target)
+        except gitops.GitOpsError as exc:
+            unexclude_error = str(exc)
     return HostSetModeResult(
         hosts=hosts, kind=kind, old_mode=old_mode, new_mode=mode,
-        changed=True, routed=routed,
+        changed=True, routed=routed, unexcluded=unexcluded,
+        unexclude_error=unexclude_error,
     )
 
 
+#: Files a git-mode host still keeps out of git: the private
+#: ``CLAUDE.local.md`` (claude-md:local is never committed) and the marker.
+_KEEP_EXCLUDED = ("CLAUDE.local.md", MARKER_FILENAME)
+
+
+def _unexclude_for_git(hosts: Hosts, target: Path) -> tuple[str, ...]:
+    """After a switch to git mode (S-109, cures CU-1 part B):
+    take out of self-learn's own ``info/exclude`` block the lines under
+    *target* for files git mode now commits, keeping ``CLAUDE.local.md`` and
+    the marker. Nothing when another registration of the same path is still
+    plain (its files stay private) or the path is in no work tree. Lines
+    outside the block are never touched (:func:`gitops.drop_excluded`)."""
+    still_plain = (
+        hosts.skills_root is not None
+        and Path(hosts.skills_root).expanduser().resolve() == target
+        and hosts.skills_root_mode == "plain"
+    ) or hosts.project_modes.get(str(target)) == "plain"
+    if still_plain:
+        return ()
+    repo = gitops.work_tree_of(target / MARKER_FILENAME)
+    if repo is None:
+        return ()
+    rel = Path(os.path.realpath(target)).relative_to(repo).as_posix()
+    prefix = "/" if rel in ("", ".") else f"/{rel}/"
+    return tuple(gitops.drop_excluded(
+        repo, prefix, _KEEP_EXCLUDED, keep_prefixes=_nested_plain_prefixes(hosts, target, repo, prefix),
+    ))
+
+
+def _nested_plain_prefixes(hosts: Hosts, target: Path, repo: Path, prefix: str) -> tuple[str, ...]:
+    """The anchored ``/<rel>/`` of every OTHER registration still in plain
+    mode whose path lies under *target* in the same work tree (gate r1
+    finding 5): its exclude lines are its own and stay, though *prefix*
+    covers them. A plain registration above *target* is not listed: its own
+    lines are not under *prefix* deeper than *target*'s."""
+    plain: list[Path] = [
+        Path(path) for path, mode in hosts.project_modes.items() if mode == "plain"
+    ]
+    if hosts.skills_root is not None and hosts.skills_root_mode == "plain":
+        plain.append(Path(hosts.skills_root).expanduser())
+    out: list[str] = []
+    for path in plain:
+        real = Path(os.path.realpath(path))
+        if real == Path(os.path.realpath(target)):
+            continue
+        try:
+            rel = real.relative_to(repo).as_posix()
+        except ValueError:
+            continue
+        other = "/" if rel in ("", ".") else f"/{rel}/"
+        if other != prefix and other.startswith(prefix):
+            out.append(other)
+    return tuple(out)
+
+
+# ------------------------------------------------- the host policy (S-112)
+
+#: The user's typed policy the host policy applies (2026-10-08: skill repos
+#: are written directly). Cited in every commit the policy makes.
+POLICY_STATEMENT = "stmt-60e41e67"
+#: The rule, in the words the commits and the doctor use.
+POLICY_RULE = "one repo, one mode"
+#: The actor the policy's commits carry (``By: policy``).
+POLICY_ACTOR = "policy"
+
+
+@dataclass(frozen=True)
+class PolicyChange:
+    """One registration the policy would change: its *kind* (always
+    ``project`` today), its resolved *path*, and the mode before and after."""
+
+    kind: str
+    path: Path
+    old_mode: str
+    new_mode: str
+
+    def text(self) -> str:
+        return f"{self.kind} {self.path} {self.old_mode} → {self.new_mode}"
+
+
+@dataclass
+class PolicyResult:
+    """What one :func:`apply_policy` pass did: the changes it committed, the
+    records it recompiled for each, and a line for each change it could not
+    make (or whose recompile failed), naming the path and why."""
+
+    changed: list[PolicyChange] = field(default_factory=list)
+    recompiled: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    failed: list[str] = field(default_factory=list)
+
+
+def _same_path(a: Path | str, b: Path | str) -> bool:
+    try:
+        return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+    except OSError:
+        return False
+
+
+def policy_mode(hosts: Hosts, path: Path | str, kind: str = "project") -> str | None:
+    """The mode the host policy gives *path*'s *kind* registration, or
+    ``None`` when the policy says nothing about it (S-112, decision
+    5, interventions L5). The one rule: a project registration whose real
+    path is the skills root's real path takes the skills root's mode (one
+    repo, one mode: self-learn already writes that repository as the skills
+    root, so its project registration adds no new kind of write). Nothing
+    else is decided here; the skills root's own mode is never changed."""
+    if kind != "project" or hosts.skills_root is None:
+        return None
+    if not _same_path(hosts.skills_root, path):
+        return None
+    return hosts.skills_root_mode
+
+
+def policy_changes(hosts: Hosts) -> list[PolicyChange]:
+    """Every registration whose mode differs from :func:`policy_mode`'s
+    answer, in registry order. Reads *hosts* only (the doctor's ``hosts``
+    row names these)."""
+    out: list[PolicyChange] = []
+    for p in hosts.projects:
+        try:
+            resolved = Path(p).expanduser().resolve()
+        except OSError:
+            continue
+        wanted = policy_mode(hosts, resolved)
+        current = hosts.project_modes.get(str(resolved), "git")
+        if wanted is not None and wanted != current:
+            out.append(PolicyChange("project", resolved, current, wanted))
+    return out
+
+
+#: What ``host remove`` needs once lessons are routed into the registration
+#: it removes (it refuses, naming the routed records, :class:`HostsError`
+#: from :func:`host_remove`). Every printed undo that is a ``host remove``
+#: carries it (gate r2 NIT 1).
+UNDO_ROUTED_CLAUSE = (
+    "once lessons are routed there it refuses until each is moved "
+    "(`self-learn rehome <id> --to <target>`) or `--gate-only` is added"
+)
+
+
+def policy_undo(path: Path | str, old_mode: str) -> str:
+    """The undo of one policy switch of *path*'s project registration away
+    from *old_mode*, in the words the commit body and the overseer's report
+    both use. Setting the project back by hand would be switched again the
+    next day (the rule stands), so the undo changes what the rule reads."""
+    return (
+        f"`self-learn host remove {path} --project` (the skills root "
+        f"registration stays; {UNDO_ROUTED_CLAUSE}), or set the skills root itself to "
+        f"{old_mode} with `self-learn host set-mode {path} {old_mode} "
+        "--skills-root`, which the project then follows"
+    )
+
+
+def _policy_note(change: PolicyChange) -> str:
+    return (
+        f"Applied by the host policy ({POLICY_RULE}): {change.path} is "
+        f"registered as the skills root in {change.new_mode} mode and as a "
+        f"project, so the project registration takes the skills root's mode. "
+        f"The user's policy for skill repos ({POLICY_STATEMENT}): they are "
+        f"written directly. Undo: {policy_undo(change.path, change.old_mode)}."
+    )
+
+
+_POLICY_SUBJECT_RE = re.compile(
+    r"^self-learn: host set-mode (project|skills-root) (/.*) (git|plain) → (git|plain) \(policy\)$"
+)
+
+
+def _ledger_log(home: Path, *args: str) -> list[tuple[str, str, str, dict[str, str]]]:
+    """``(short sha, author date, subject, final trailer block)`` for each
+    ledger commit touching hosts.yaml, newest first. Raises
+    :class:`HostsError` when git cannot read the history (a reader that
+    decides from it must never read an unreadable history as an empty one)."""
+    try:
+        proc = gitops._git(  # noqa: SLF001 -- same package
+            home, "log", "--no-merges", *args,
+            "--format=%x1e%h%x1f%aI%x1f%s%x1f%b", "--", "hosts.yaml",
+        )
+    except (gitops.GitOpsError, OSError, UnicodeDecodeError) as exc:
+        raise HostsError(f"the ledger's history could not be read: {exc}") from exc
+    if proc.returncode != 0:
+        detail = " ".join((proc.stderr or proc.stdout or "git log failed").split())[:200]
+        raise HostsError(f"the ledger's history could not be read: {detail}")
+    out: list[tuple[str, str, str, dict[str, str]]] = []
+    for chunk in proc.stdout.split("\x1e"):
+        if not chunk.strip():
+            continue
+        short, _, rest = chunk.partition("\x1f")
+        stamp, _, rest = rest.partition("\x1f")
+        subject, _, body = rest.partition("\x1f")
+        out.append((short.strip(), stamp.strip(), subject.strip(), attribution._final_block(body)[1]))  # noqa: SLF001
+    return out
+
+
+def policy_commits(home: Path | str, since: str | None = None) -> list[dict[str, str]]:
+    """The host policy's own ledger commits (subject ``… (policy)`` and
+    ``By: policy``), oldest first, made at or after *since* (an ISO time;
+    ``None`` is all of them). Each is ``{commit, at, kind, path, old, new,
+    undo}``. The overseer lists them in its report as decided in the user's
+    stead (S-112, gate r1 MINOR 1). Raises :class:`HostsError` when
+    the history cannot be read."""
+    cut: datetime | None = None
+    if since:
+        try:
+            cut = datetime.fromisoformat(since.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except ValueError:
+            cut = None
+    out: list[dict[str, str]] = []
+    for short, stamp, subject, trailers in _ledger_log(Path(home)):
+        match = _POLICY_SUBJECT_RE.match(subject)
+        if match is None or trailers.get("By") != POLICY_ACTOR:
+            continue
+        if cut is not None:
+            try:
+                when = datetime.fromisoformat(stamp).astimezone(timezone.utc)
+            except ValueError:
+                continue
+            if when < cut:
+                continue
+        kind, path, old, new = match.groups()
+        out.append({
+            "commit": short, "at": stamp, "kind": kind, "path": path,
+            "old": old, "new": new, "undo": policy_undo(path, old),
+        })
+    out.reverse()
+    return out
+
+
+_REMOVE_SUBJECT_RE = re.compile(r"^self-learn: host remove (?:(?:skills-root|project) )?(/.*)$")
+
+
+def removed_hosts(home: Path | str) -> dict[str, tuple[str, str]]:
+    """Every path a ``host remove`` commit took out of the registry (either
+    registration), with the most recent such commit's short sha and its
+    ``By:`` actor (``""`` when the commit records none): real path ->
+    ``(sha, actor)``. Raises :class:`HostsError` when the history cannot be
+    read. A removal is the user's undo of a registration (S-112, gate
+    r1 MAJOR 1); :func:`registration_problem` reads it so self-learn never
+    registers that path again on its own."""
+    out: dict[str, tuple[str, str]] = {}
+    for short, _stamp, subject, trailers in _ledger_log(Path(home)):
+        match = _REMOVE_SUBJECT_RE.match(subject)
+        if match is None:
+            continue
+        real = os.path.realpath(match.group(1))
+        out.setdefault(real, (short, trailers.get("By", "")))  # newest first: the first wins
+    return out
+
+
+def apply_policy(home: Path | str) -> PolicyResult:
+    """Apply :func:`policy_mode` to every registration (S-112). Code
+    applies a rule the user typed, so this calls the set-mode core
+    (:func:`_host_set_mode`) without the agent-shell check; ``host set-mode``
+    typed in an agent's shell is still refused without the grant. One
+    ledger commit per change, subject ``self-learn: host set-mode project
+    <path> <old> → <new> (policy)``, body citing the statement and the rule,
+    trailer ``By: policy``; under the ledger lock exactly as ``host
+    set-mode`` takes it (a switch to git also takes self-learn's own
+    ``info/exclude`` lines for the files git mode commits). Each changed
+    registration's routed records are then recompiled, so the compile
+    record of its targets is written (interventions I10).
+
+    Never raises for one registration: a change it cannot make (the path is
+    gone, not a git work tree for git mode) or a recompile that fails is a
+    line in ``failed`` and the next change is still tried. Run once a day by
+    ``serve`` (:func:`serve._run_hosts_policy_job`); idempotent, a registry
+    that already follows the policy writes nothing."""
+    from . import verbs  # lazy: verbs imports this module
+
+    home = Path(home)
+    result = PolicyResult()
+    with attribution.job(POLICY_ACTOR):
+        try:
+            pending = policy_changes(load_hosts(home))
+        except HostsError as exc:
+            result.failed.append(f"hosts.yaml unreadable: {exc}")
+            return result
+        for change in pending:
+            try:
+                done = _host_set_mode(
+                    home, change.path, change.new_mode, registration=change.kind,
+                    note=_policy_note(change), subject_suffix=" (policy)",
+                )
+            except (HostsError, gitops.GitOpsError) as exc:
+                result.failed.append(f"{change.text()}: not changed — {exc}")
+                continue
+            if not done.changed:
+                continue
+            result.changed.append(change)
+            if done.unexclude_error:
+                result.failed.append(
+                    f"{change.text()}: changed, but self-learn's info/exclude lines "
+                    f"were not taken out — {done.unexclude_error}"
+                )
+            if done.routed:
+                try:
+                    verbs.recompile(home, only_records=list(done.routed))
+                except Exception as exc:  # noqa: BLE001 -- the switch stands; say so
+                    result.failed.append(
+                        f"{change.text()}: changed, but the recompile of its "
+                        f"{len(done.routed)} routed record(s) failed — {exc}"
+                    )
+                    continue
+            result.recompiled[str(change.path)] = done.routed
+    return result
+
+
+# ------------------------------------- self-learn's own plain registration
+
+#: At most this many registrations from one overseer run.
+MAX_REGISTRATIONS_PER_RUN = 5
+
+
+class RegistrationRefused(HostsError):
+    """:func:`register_plain_project` refused a path: the reason is the
+    message. Nothing was written."""
+
+
+def _cache_root() -> Path:
+    cache = os.environ.get("XDG_CACHE_HOME")
+    base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
+    return base / "self-learn"
+
+
+def _under(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def registration_problem(home: Path | str, raw_path: object) -> str | None:
+    """Why self-learn may not register *raw_path* as a plain project on its
+    own (S-112, decision 5), or ``None``. The checks, in order: an
+    absolute path; an existing directory; strictly under the user's home
+    directory (``$HOME`` itself is refused); not the ledger, inside it or
+    above it; not inside self-learn's cache (or above it); not registered
+    already, in either registration or either mode; never taken out of the
+    registry by a ``host remove`` (gate r1 MAJOR 1: the removal is the
+    user's undo, and it stands; an unreadable ledger history refuses too).
+    Every removal counts, whoever made it: nothing in self-learn removes a
+    host on its own (gate r2 NIT 3)."""
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return "a registration needs a path"
+    text = raw_path.strip()
+    if not os.path.isabs(text):
+        return f"{text} is not an absolute path"
+    target = Path(text)
+    if not target.is_dir():
+        return f"{text} is not an existing directory"
+    real = Path(os.path.realpath(target))
+    user_home = Path(os.path.realpath(Path.home()))
+    if real == user_home or user_home not in real.parents:
+        return f"{real} is not inside the user's home directory {user_home}"
+    ledger = Path(os.path.realpath(Path(home).expanduser()))
+    if _under(real, ledger) or ledger in real.parents or real in ledger.parents:
+        return f"{real} is the ledger, inside it or above it"
+    cache = Path(os.path.realpath(_cache_root()))
+    if _under(real, cache) or real in cache.parents:
+        return f"{real} is self-learn's cache, inside it or above it"
+    hosts = load_hosts(home)
+    if hosts.skills_root is not None and _same_path(hosts.skills_root, real):
+        return f"{real} is already registered (the skills root)"
+    if is_project_host(hosts, real):
+        mode = hosts.project_modes.get(str(real), "git")
+        return f"{real} is already registered (a {mode} project)"
+    try:
+        removed = removed_hosts(home)
+    except HostsError as exc:
+        return f"{real}: the ledger's record of removed hosts could not be read ({exc})"
+    hit = removed.get(str(real))
+    if hit is not None:
+        sha, actor = hit
+        return (
+            f"{real} was taken out of the registry (ledger commit {sha}, By: "
+            f"{actor or 'not recorded'}); a removal undoes a registration and "
+            "stands, so self-learn never registers it again on its own"
+        )
+    return None
+
+
+def register_plain_project(home: Path | str, path: str, *, note: str) -> HostAddResult:
+    """Register *path* as a PLAIN project host as self-learn's own act
+    (S-112; decision 5; interventions D1, the overseer's runner
+    action). Plain only: a plain registration writes only files git ignores
+    (the marker and its private ``info/exclude`` line now, compiled lines
+    later) and never commits or pushes in that repository, which is the
+    deployment the user described (stmt-7364bdbe). Git mode for a new
+    repository stays a person's act and is never reached from here.
+
+    Refuses with :class:`RegistrationRefused` (nothing written) whatever
+    :func:`registration_problem` names. Calls the ``host add`` core without
+    the agent-shell check: the act is the overseer's (its commit says ``By:
+    overseer``), whatever shell started the run. *note* is the commit body
+    (the case, the reason, and the undo command)."""
+    problem = registration_problem(home, path)
+    if problem is not None:
+        raise RegistrationRefused(problem)
+    return _host_add(home, os.path.realpath(path.strip()), "project", mode="plain", note=note)
+
+
 def _commit_or_half_written(
-    home: Path, touched: list[Path], message: str
+    home: Path, touched: list[Path], message: str, note: str | None = None
 ) -> None:
     """stage → pinned commit, with the state fact attached to the
     failure — now the thin `hosts` face of :func:`gitops.stage_and_commit`
@@ -1034,8 +1510,12 @@ def _commit_or_half_written(
     :class:`gitops.HalfWrittenError` is the type that says so, and it
     carries the repair (audit 2026-07-16 round 7 BLOCKER 2: the ``host``
     verbs raised the bare class, which dispatch would have rendered as
-    "nothing was written")."""
-    gitops.stage_and_commit(home, touched, message)
+    "nothing was written").
+
+    *note* (S-109) is the commit body: the ``--note`` a person
+    or an agent gave, or what an overseer question's yes answered. The
+    subject stays pinned."""
+    gitops.stage_and_commit(home, touched, message, note)
 
 
 def _project_bucket_for(home: Path, ref: str) -> Path | None:
@@ -1049,7 +1529,9 @@ def _project_bucket_for(home: Path, ref: str) -> Path | None:
     return by_path if by_path.is_dir() else None
 
 
-def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
+def host_rebind(
+    home: Path | str, ref: str, new_path: Path | str, *, note: str | None = None
+) -> Path:
     """``host rebind <slug-or-old-path> <new-path>`` (audit 2026-07-16
     MAJOR 5): a moved/renamed project used to strand its bucket behind an
     impossible command — the route refused with ``host not registered —
@@ -1077,9 +1559,13 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
     other producer ever commits (every one of them pathspec-commits only
     its own paths), so the first non-FF push's ``pull --rebase
     --autostash`` destroys it. The lock now spans [git mv → commit]:
-    every mutation of this verb is inside it."""
+    every mutation of this verb is inside it.
+
+    From an agent's shell it runs only with an authority in force
+    (S-109)."""
     from . import gitops
 
+    attribution.refuse_unless_authorized("host rebind", HostModeAgentRefusal)
     home = Path(home)
     if not home.is_dir():
         raise HostsError(f"ledger home {home} does not exist")
@@ -1221,7 +1707,7 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
             )
         )
         intents.complete(intent)
-        _commit_or_half_written(home, touched, message)
+        _commit_or_half_written(home, touched, message, note)
         intents.finish(intent)
     return new_bucket if new_bucket is not None else target
 
@@ -1298,6 +1784,7 @@ def host_remove(
     *,
     gate_only: bool = False,
     registration: str | None = None,
+    note: str | None = None,
 ) -> Hosts:
     """``host remove <path>``: drop a registered host from hosts.yaml (one
     ledger commit, pinned subject ``self-learn: host remove <path>``). The
@@ -1338,6 +1825,7 @@ def host_remove(
     like the other two: hosts.yaml is tracked."""
     from . import gitops
 
+    attribution.refuse_unless_authorized("host remove", HostModeAgentRefusal)
     _check_registration(registration)
     home = Path(home)
     if not home.is_dir():
@@ -1399,7 +1887,7 @@ def host_remove(
         intent = intents.begin(home, "host_remove", [hosts_path(home)], message)
         yaml_path = save_hosts(home, hosts)
         intents.complete(intent)
-        _commit_or_half_written(home, [yaml_path], message)
+        _commit_or_half_written(home, [yaml_path], message, note)
         intents.finish(intent)
     return hosts
 

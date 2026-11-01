@@ -121,21 +121,51 @@ if [ -n "$unreadable" ] && [ "$unreadable" -gt 0 ] 2>/dev/null; then
   unreadable_positive=1
 fi
 
-if [ "$total" -gt 0 ] || [ "$unreadable_positive" -eq 1 ]; then
-  # pinned example format (08 §7.1): "📥 self-learn: 7 pending, oldest 9d — /self-learn:review"
-  line="📥 self-learn: ${total} pending, oldest ${oldest}d — /self-learn:review"
-  if [ "$unreadable_positive" -eq 1 ]; then
-    line="${line} (${unreadable} unreadable)"
+# L3 (S-116): while the steward owns the queue, a person is not
+# asked to review it. `steward_enabled` absent or false (the steward is
+# off, or an older CLI) keeps every line below byte for byte as it was.
+steward_enabled="$(jq -r '.steward_enabled // false' <<<"$out" 2>/dev/null)" || exit 0
+
+if [ "$steward_enabled" = "true" ]; then
+  # Informational lines, printed only when the steward is not keeping up.
+  steward_stale="$(jq -r '.steward_stale // false' <<<"$out" 2>/dev/null)" || exit 0
+  steward_hold="$(jq -r '.steward_hold // empty' <<<"$out" 2>/dev/null)" || steward_hold=""
+  steward_hold_fix="$(jq -r '.steward_hold_fix // empty' <<<"$out" 2>/dev/null)" || steward_hold_fix=""
+  steward_stale_hours="$(jq -r '.steward_stale_hours // 48' <<<"$out" 2>/dev/null)" || steward_stale_hours=48
+  stranded_count="$(jq -r '.stranded_count // 0' <<<"$out" 2>/dev/null)" || stranded_count=0
+  if [ "$steward_stale" = "true" ]; then
+    echo "⚠️  self-learn: the steward has not finished a run in over ${steward_stale_hours} hours — ${total} lesson(s) queued for it"
   fi
-  echo "$line"
-fi
+  if [ -n "$steward_hold" ]; then
+    if [ -n "$steward_hold_fix" ]; then
+      echo "⚠️  self-learn: the steward is held — ${steward_hold}; ${steward_hold_fix}"
+    else
+      echo "⚠️  self-learn: the steward is held — ${steward_hold}"
+    fi
+  fi
+  if [ "$stranded_count" -gt 0 ] 2>/dev/null; then
+    echo "⚠️  self-learn: ${stranded_count} queued lesson(s) the steward never selects — see \`self-learn --selftest\`"
+  fi
+  if [ "$unreadable_positive" -eq 1 ]; then
+    echo "⚠️  self-learn: ${unreadable} unreadable record(s) in the queue"
+  fi
+else
+  if [ "$total" -gt 0 ] || [ "$unreadable_positive" -eq 1 ]; then
+    # pinned example format (08 §7.1): "📥 self-learn: 7 pending, oldest 9d — /self-learn:review"
+    line="📥 self-learn: ${total} pending, oldest ${oldest}d — /self-learn:review"
+    if [ "$unreadable_positive" -eq 1 ]; then
+      line="${line} (${unreadable} unreadable)"
+    fi
+    echo "$line"
+  fi
 
-if [ "$stale" = "true" ]; then
-  echo "⚠️  self-learn: ${unanalyzed} record(s) await analysis and the worker hasn't run in >3 days (or ever) — check \`self-learn worker run\` / worker.log"
-fi
+  if [ "$stale" = "true" ]; then
+    echo "⚠️  self-learn: ${unanalyzed} record(s) await analysis and the worker hasn't run in >3 days (or ever) — check \`self-learn worker run\` / worker.log"
+  fi
 
-if [ "$escalate" = "true" ]; then
-  echo "🔺 self-learn: backlog over threshold (≥5 pending or oldest >7d) — a review session is due"
+  if [ "$escalate" = "true" ]; then
+    echo "🔺 self-learn: backlog over threshold (≥5 pending or oldest >7d) — a review session is due"
+  fi
 fi
 
 # Doc 12 R1 layer 3: the miner has not completed a run in >36h (timer,

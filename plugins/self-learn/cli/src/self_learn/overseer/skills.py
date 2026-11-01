@@ -17,8 +17,8 @@ link) is :mod:`self_learn.skill_writer`; the runner calls it in-process with
   and ``changed-since-last-write.diff`` (what changed in its authored text
   since self-learn last wrote it, read from the skills root's history);
 - ``vetoes.yaml``: the vetoed names, the live skills whose name is vetoed,
-  and the user's open retirement requests (SK7's readers in
-  ``overseer/conversation.py``);
+  and the user's open retirement requests (read from the registry by
+  :mod:`self_learn.skill_requests`);
 - ``skill-proposals.yaml``: the steward's parked ``skill-proposal`` cases
   (their files are in ``parked/``);
 - ``skill-writing.yaml``: whether this run deploys what phase B writes.
@@ -72,13 +72,19 @@ from typing import Any, Callable, Collection, Mapping, cast
 
 from ruamel.yaml import YAML
 
-from .. import config, gitops, scan, settings, skill_registry, skill_writer
+from .. import config, scan, settings, skill_registry, skill_writer
 from ..hosts import HostsError, load_hosts
 from ..skill_registry import STATUS_LIVE, SkillRegistryError
+
+# Called by its bare name, never as ``skill_writer.rename(...)``: the lock
+# invariant's walker reads every ``<x>.rename(...)`` call as ``Path.rename``
+# and would stop there instead of following the call into the writer.
+from ..skill_writer import rename as rename_skill
 
 __all__ = [
     "DIFF_FILE",
     "FILES_DIR",
+    "LAST_WRITE_DIR",
     "LESSONS_FILE",
     "LEDGER_DIR",
     "MODE_OFF",
@@ -95,14 +101,18 @@ __all__ = [
     "StagedSkills",
     "StepOutcome",
     "WritingState",
+    "apply_rename",
     "apply_retire",
     "apply_write",
+    "building_names",
     "claimed_name",
     "decision_lessons",
     "draft_entry",
     "draft_files",
     "drafts_dir",
     "preview_for_step",
+    "relink_owned",
+    "renamed_from",
     "report_lines",
     "short_hashes",
     "stage_phase_b",
@@ -126,6 +136,9 @@ ROW_FILE = "row.yaml"
 LESSONS_FILE = "lessons.yaml"
 DIFF_FILE = "changed-since-last-write.diff"
 VETOES_FILE = "vetoes.yaml"
+#: Beside ``row.yaml`` of an owned skill whose folder is gone: its files as
+#: self-learn last wrote them (S-110, SK-E).
+LAST_WRITE_DIR = "last-write"
 PROPOSALS_FILE = "skill-proposals.yaml"
 WRITING_FILE = "skill-writing.yaml"
 
@@ -144,15 +157,18 @@ LEDGER_DIR = "overseer/skills"
 _LABEL_BUILD = "build"
 _LABEL_CHANGE = "change"
 _LABEL_RETIRE = "retire"
+_LABEL_RENAME = "rename"
 _DONE_TAGS = {
     _LABEL_BUILD: "[new skill]",
     _LABEL_CHANGE: "[skill changed]",
     _LABEL_RETIRE: "[skill retired]",
+    _LABEL_RENAME: "[skill renamed]",
 }
 _WOULD = {
     _LABEL_BUILD: "would build",
     _LABEL_CHANGE: "would change",
     _LABEL_RETIRE: "would retire",
+    _LABEL_RENAME: "would rename",
 }
 
 
@@ -278,8 +294,12 @@ class StagedSkills:
     expect: dict[str, str] = field(default_factory=dict)
     #: Live skills a staged file of which was replaced by a stub.
     withheld: set[str] = field(default_factory=set)
-    #: Live skills with no ``SKILL.md`` in the skills root.
+    #: Live skills with no ``SKILL.md`` in the skills root, or that could
+    #: not be shown.
     missing: set[str] = field(default_factory=set)
+    #: Live skills whose folder is gone from the skills root (a subset of
+    #: ``missing``): phase B may restore one (S-110, SK-E).
+    absent: set[str] = field(default_factory=set)
     #: Lines for "Refused / could not do" (nothing here refuses the run).
     notes: list[str] = field(default_factory=list)
 
@@ -354,17 +374,16 @@ def _stage_owned(
     folder = stage / OWNED_DIR / name
     row = registry.row(name) or {}
     lessons = skill_writer.routed_lessons(home, name)
-    write(stage, folder / LESSONS_FILE, _yaml_text({"lessons": lessons}))
+    held = _reference_held(home, name)
+    write(stage, folder / LESSONS_FILE, _yaml_text({
+        "lessons": lessons,
+        **({"in_reference_files": held} if held else {}),
+    }))
     deployed = skill_writer.deployed_files(home, name)
     if deployed is None:
         staged.missing.add(name)
-        write(stage, folder / ROW_FILE, _yaml_text({
-            "name": name, "row": _row_for_stage(row), "deployed": False,
-            "says": (
-                "This skill's SKILL.md is not in the skills root. It cannot be changed until a "
-                "person restores it; the selftest names it."
-            ),
-        }))
+        staged.absent.add(name)
+        _stage_absent(home, stage, folder, name, row, write)
         return
     withheld: list[str] = []
     for rel, text in sorted(skill_writer.draft_view(deployed).items()):
@@ -394,6 +413,115 @@ def _stage_owned(
     }))
 
 
+def _reference_held(home: Path, name: str) -> dict[str, str]:
+    """``{lesson id: references/<file>.md}`` for each lesson routed into
+    one of the skill's AUTHORED reference files (not the compilers' shelf):
+    a rewrite that changes or removes that file is refused until the lesson
+    is moved out (S-110, SK-E)."""
+    root = _skills_root(home)
+    if root is None:
+        return {}
+    folder = skill_writer.skill_dir(root, name)
+    held: dict[str, str] = {}
+    for rid, destination, file in skill_writer._routed(home, name):  # noqa: SLF001
+        if destination != "reference" or file is None:
+            continue
+        try:
+            rel = file.resolve().relative_to(folder.resolve()).as_posix()
+        except ValueError:
+            continue
+        if skill_writer._is_managed_reference(rel):  # noqa: SLF001
+            held[rid] = rel
+    return held
+
+
+def _removal_commit(root: Path, name: str) -> dict[str, str] | None:
+    """``{subject, by}`` of the skills-root commit that took
+    ``plugins/<name>/`` away (``by`` from its ``By:`` trailer, empty when
+    it has none: a person's own commit), or ``None``."""
+    from .. import gitops
+
+    proc = gitops._git(  # noqa: SLF001 -- a read
+        root, "log", "-1", "--diff-filter=D", "--format=%s%x00%b", "--", f"plugins/{name}",
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    subject, _nul, body = proc.stdout.partition("\0")
+    by = ""
+    for line in body.splitlines():
+        if line.startswith("By: "):
+            by = line[len("By: "):].strip()
+    return {"subject": subject.strip(), "by": by}
+
+
+def _stage_absent(
+    home: Path, stage: Path, folder: Path, name: str, row: dict, write: Writer,
+) -> None:
+    """S-110 (SK-E): an owned skill whose folder is gone from
+    the skills root. Phase B is shown the files as self-learn last wrote
+    them (``last-write/``) and the commit that removed the folder, and
+    decides: restore it (write ``skills/<name>/`` from ``last-write/``) or
+    retire it. No person is needed."""
+    root = _skills_root(home)
+    removed = _removal_commit(root, name) if root is not None else None
+    last = skill_writer.files_at_last_write(home, name, row)
+    shown: list[str] = []
+    if last is not None:
+        for rel, text in sorted(skill_writer.draft_view(last).items()):
+            hits = scan.scan(text)
+            if hits:
+                text = _stub(hits[0].rule, "the skills root's history")
+            write(stage, folder / LAST_WRITE_DIR / rel, text)
+            shown.append(rel)
+    if removed is None:
+        how = "nothing in the skills root's history says how it went"
+    elif removed["by"] in ("", "human", "agent"):
+        how = (
+            f"a person's commit removed it ({removed['subject']!r}): that is their wish to be "
+            "rid of it -- retire it"
+        )
+    else:
+        how = f"self-learn's own commit removed it ({removed['subject']!r}, by {removed['by']})"
+    write(stage, folder / ROW_FILE, _yaml_text({
+        "name": name, "row": _row_for_stage(row), "deployed": False,
+        **({"removed_by": removed} if removed is not None else {}),
+        "says": (
+            "This skill's folder is not in the skills root; " + how + ". Restore it (write "
+            f"{STAGE_SKILLS_DIR}/{name}/ from {LAST_WRITE_DIR}/ in a pair whose case names it) or "
+            "retire it (a pair with outcome: retire)."
+            + ("" if shown else f" No {LAST_WRITE_DIR}/ could be found to restore it from.")
+        ),
+    }))
+
+
+def relink_owned(home: Path | str) -> tuple[list[str], list[str]]:
+    """S-110 (SK-E): before phase B is staged, every live
+    skill self-learn owns whose folder exists gets its
+    ``~/.claude/skills/<name>`` link made again when it is missing or
+    dangling (``skill_writer.relink``). ``(repairs, problems)``: a line per
+    link made, for "Decided in the user's stead", and a line per path that
+    is a person's and was left alone, for "Refused / could not do"."""
+    repairs: list[str] = []
+    problems: list[str] = []
+    try:
+        names = skill_registry.load(home).live()
+    except SkillRegistryError:
+        return repairs, problems
+    for name in names:
+        outcome, problem = skill_writer.relink(home, name)
+        if outcome in ("created", "replaced"):
+            repairs.append(
+                f"[skill relinked] {name}: ~/.claude/skills/{name} was "
+                + ("missing" if outcome == "created" else "a broken link")
+                + "; linked again"
+            )
+        if problem is not None:
+            problems.append(
+                f"skill {name}: its link was not made: {problem}; that path is left as it is"
+            )
+    return repairs, problems
+
+
 def _skills_root(home: Path) -> Path | None:
     try:
         return load_hosts(home).skills_root
@@ -402,34 +530,10 @@ def _skills_root(home: Path) -> Path | None:
 
 
 def _files_at_last_write(home: Path, name: str, row: dict) -> dict[str, str] | None:
-    """The skill's files as self-learn's last write committed them to the
-    skills root, found by that commit's subject; ``None`` when the commit
-    or its ``SKILL.md`` cannot be found."""
-    case = (row.get("last_write") or {}).get("case")
-    root = _skills_root(home)
-    if not isinstance(case, str) or root is None:
-        return None
-    # The writer's own subject (one definition: `skill_writer._subject`).
-    subject = skill_writer._subject("write", name, case)  # noqa: SLF001
-    proc = gitops._git(  # noqa: SLF001 -- a read
-        root, "log", "-1", "--format=%H", "--fixed-strings", f"--grep={subject}",
-        "--", f"plugins/{name}",
-    )
-    sha = proc.stdout.strip() if proc.returncode == 0 else ""
-    if not sha:
-        return None
-    prefix = f"plugins/{name}/skills/{name}/"
-    listing = gitops._git(root, "ls-tree", "-r", "-z", "--name-only", sha, "--", prefix)  # noqa: SLF001
-    if listing.returncode != 0:
-        return None
-    files: dict[str, str] = {}
-    for path in listing.stdout.split("\0"):
-        if not path.startswith(prefix):
-            continue
-        shown = gitops._git(root, "show", f"{sha}:{path}")  # noqa: SLF001
-        if shown.returncode == 0:
-            files[path[len(prefix):]] = shown.stdout
-    return files if "SKILL.md" in files else None
+    """The skill's files as self-learn's last write (or its last rename)
+    committed them to the skills root (one definition:
+    ``skill_writer.files_at_last_write``)."""
+    return skill_writer.files_at_last_write(home, name, row)
 
 
 def _diff_lines(old: str, new: str, rel: str) -> list[str]:
@@ -448,15 +552,17 @@ def _changed_since_last_write(
 ) -> str:
     """D4's view for phase B: what a person (or another agent) changed in
     the skill's authored text since self-learn last wrote it."""
-    case = (row.get("last_write") or {}).get("case")
+    last_case = (row.get("last_write") or {}).get("case")
+    # gate r1 NIT: a person's or an agent's step answers no case
+    case = f"case {last_case}" if last_case is not None else skill_writer.NO_CASE
     if current is not None and current == recorded:
         return (
-            f"# Unchanged: {name}'s text is as self-learn last wrote it (case {case}).\n"
+            f"# Unchanged: {name}'s text is as self-learn last wrote it ({case}).\n"
         )
     old = _files_at_last_write(home, name, row)
     if old is None:
         return (
-            f"# Changed: {name}'s text is not as self-learn last wrote it (case {case}), and that "
+            f"# Changed: {name}'s text is not as self-learn last wrote it ({case}), and that "
             "version could not be found in the skills root's history, so no diff can be shown. "
             f"{FILES_DIR}/ holds the text as it is now. Keep what a person wrote unless your case "
             "says why not.\n"
@@ -464,7 +570,7 @@ def _changed_since_last_write(
     before = skill_writer.draft_view(old)
     after = skill_writer.draft_view(deployed)
     lines = [
-        f"# Changed since self-learn last wrote {name} (case {case}): lines starting with + are "
+        f"# Changed since self-learn last wrote {name} ({case}): lines starting with + are "
         "new since then, lines starting with - were taken out. Keep what a person wrote unless "
         "your case says why not.\n"
     ]
@@ -478,36 +584,29 @@ def _stage_vetoes(
     home: Path, stage: Path, registry: skill_registry.Registry, staged: StagedSkills,
     write: Writer,
 ) -> None:
-    from . import conversation  # SK7's readers; local, conversation imports run
+    """``vetoes.yaml``: the vetoed names, the live skills under a vetoed
+    name (``renames_owed``) and the live skills the user asked to retire
+    (``retire_requests``), all read from the registry alone
+    (:mod:`self_learn.skill_requests`, S-110)."""
+    from .. import skill_requests
 
     data: dict[str, Any] = {
-        "vetoed": [
-            {"name": entry["name"], "at": entry["at"], "statement": entry["statement"]}
-            for entry in registry.vetoed
-        ],
+        "vetoed": [dict(entry) for entry in registry.vetoed],
         "renames_owed": [],
         "retire_requests": [],
     }
     try:
-        data["renames_owed"] = conversation.pending_renames(home)
+        data["renames_owed"] = skill_requests.pending_renames(home)
     except Exception as exc:  # noqa: BLE001 -- a note, never a refused run
         staged.notes.append(f"vetoes.yaml: the vetoed live skills could not be listed ({exc})")
     try:
-        data["retire_requests"] = conversation.pending_retire_requests(home)
+        data["retire_requests"] = skill_requests.pending_retire_requests(home)
     except Exception as exc:  # noqa: BLE001
         staged.notes.append(
             f"vetoes.yaml: the user's retirement requests could not be read ({exc}); "
             "they reach a later run"
         )
-    text = _yaml_text(data)
-    hits = scan.scan(text)
-    if hits:
-        # Words the user typed went through the statement store's own scan;
-        # this is the backstop, so the stage scan never refuses the run.
-        for request in data["retire_requests"]:
-            request["verbatim"] = f"withheld: the secret scan matched {hits[0].rule}"
-        text = _yaml_text(data)
-    write(stage, stage / VETOES_FILE, text)
+    write(stage, stage / VETOES_FILE, _yaml_text(data))
 
 
 def _stage_proposals(stage: Path, parked_rows: list[dict], write: Writer) -> None:
@@ -529,8 +628,9 @@ def _stage_proposals(stage: Path, parked_rows: list[dict], write: Writer) -> Non
 @dataclass(frozen=True)
 class SkillStep:
     """One skill step a pair carries: ``write`` (build or rewrite, with the
-    folder phase B wrote) or ``retire``. Kept in the run record, so a
-    resumed run makes the same step."""
+    folder phase B wrote), ``retire``, or ``rename`` (S-110,
+    SK-C2: *renamed_from* is the name the skill has, *name* the new one).
+    Kept in the run record, so a resumed run makes the same step."""
 
     action: str
     name: str
@@ -538,32 +638,44 @@ class SkillStep:
     files: dict[str, str] = field(default_factory=dict)
     expect_sha: str | None = None
     deploy: bool = True
+    renamed_from: str | None = None
+    #: A rewrite of an owned skill whose folder was gone when phase B was
+    #: staged: the write is a compare-and-swap against absence (SK-E).
+    expect_missing: bool = False
 
     @property
     def label(self) -> str:
         if self.action == "retire":
             return _LABEL_RETIRE
+        if self.action == "rename":
+            return _LABEL_RENAME
         return _LABEL_CHANGE if self.updating else _LABEL_BUILD
 
     @property
     def sheetless_ok(self) -> bool:
-        """A pair that only changes or retires a skill may have an empty
-        sheet (a skill whose lessons were all folded into its text has none
-        to move); a new skill is built with the lessons it takes in."""
-        return self.action == "retire" or self.updating
+        """A pair that only changes, renames or retires a skill may have an
+        empty sheet (a skill whose lessons were all folded into its text has
+        none to move; a rename moves its lessons itself); a new skill is
+        built with the lessons it takes in."""
+        return self.action in ("retire", "rename") or self.updating
 
     def to_json(self) -> dict[str, Any]:
         return {
             "action": self.action, "name": self.name, "updating": self.updating,
             "files": dict(self.files), "expect_sha": self.expect_sha, "deploy": self.deploy,
+            **({"renamed_from": self.renamed_from} if self.renamed_from else {}),
+            **({"expect_missing": True} if self.expect_missing else {}),
         }
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "SkillStep":
+        renamed_from = data.get("renamed_from")
         return cls(
             action=str(data["action"]), name=str(data["name"]),
             updating=bool(data.get("updating")), files=dict(data.get("files") or {}),
             expect_sha=data.get("expect_sha"), deploy=bool(data.get("deploy", True)),
+            renamed_from=str(renamed_from) if renamed_from else None,
+            expect_missing=bool(data.get("expect_missing")),
         )
 
 
@@ -573,6 +685,15 @@ def decision_lessons(case_data: dict) -> list[str]:
     skill = decision.get("skill") if isinstance(decision, dict) else None
     lessons = skill.get("lessons") if isinstance(skill, dict) else None
     return [str(rid) for rid in lessons] if isinstance(lessons, list) else []
+
+
+def renamed_from(case_data: dict) -> str | None:
+    """The skill a staged case renames (``decision.skill.renamed_from``),
+    or ``None``."""
+    decision = case_data.get("decision")
+    skill = decision.get("skill") if isinstance(decision, dict) else None
+    old = skill.get("renamed_from") if isinstance(skill, dict) else None
+    return old if isinstance(old, str) and old else None
 
 
 def claimed_name(case_data: dict) -> str | None:
@@ -619,9 +740,32 @@ def _refuse_a_retire_that_leaves_lessons(
         )
 
 
+def building_names(home: Path | str, stage: Path, cases_data: list[dict]) -> set[str]:
+    """S-110 (SK-F): every skill a staged case of this run
+    builds -- a ``decision.skill`` name self-learn does not own, with its
+    ``skills/<name>/`` folder written, renaming and retiring nothing -- read
+    before any pair is previewed, so another pair's lines into it are judged
+    as they will be once it is written."""
+    try:
+        registry = skill_registry.load(home)
+    except SkillRegistryError:
+        return set()
+    names: set[str] = set()
+    for data in cases_data:
+        name = claimed_name(data)
+        if (
+            name is not None and not registry.is_owned(name)
+            and renamed_from(data) is None and data.get("outcome") != "retire"
+            and (stage / STAGE_SKILLS_DIR / name).is_dir()
+        ):
+            names.add(name)
+    return names
+
+
 def step_for_case(
     home: Path | str, stage: Path, case_data: dict, *, staged: StagedSkills, deploy: bool,
     sheet_dests: Collection[str] = (), sheet_ids: Collection[str] = (),
+    building: Collection[str] = (),
 ) -> SkillStep | None:
     """The skill step a staged case carries, checked; ``None`` when it
     carries none. Raises :class:`SkillPairError` (the pair is dropped) when
@@ -658,6 +802,9 @@ def step_for_case(
         raise SkillPairError(f"owned-skills.yaml could not be read ({exc})") from exc
     owned = registry.is_owned(name)
     outcome = case_data.get("outcome")
+    old = renamed_from(case_data)
+    if old is not None:
+        return _rename_step(home, folder, registry, old, name, outcome, staged=staged, deploy=deploy)
     if outcome == "retire":
         if folder.exists():
             raise SkillPairError(
@@ -677,6 +824,10 @@ def step_for_case(
     if not folder.is_dir():
         if owned:
             return None  # lessons routed into an owned skill: ordinary routing
+        if name in building:
+            # SK-F: another pair of this run builds the skill; this one
+            # moves lessons into it (applied after the build pair).
+            return None
         if f"new-skill:{name}" in sheet_dests:
             raise SkillPairError(
                 f"decision.skill names {name}, which is not a skill self-learn owns, and its "
@@ -696,7 +847,8 @@ def step_for_case(
             f"{name} cannot be rewritten this run: part of its text matched the secret scan, so "
             "it was not shown to you in full; a person must remove that text first"
         )
-    if owned and name in staged.missing:
+    restoring = owned and name in staged.absent
+    if owned and name in staged.missing and not restoring:
         raise SkillPairError(
             f"{name} cannot be rewritten this run: its files could not be read from the skills root"
         )
@@ -709,6 +861,7 @@ def step_for_case(
         # A file that is not UTF-8 comes back as bytes; the template check names it.
         checked = skill_writer.check(
             home, name, cast(Mapping[str, str], files), expect_sha=expect, updating=owned,
+            expect_missing=restoring,
         )
     except Exception as exc:  # noqa: BLE001 -- a git or hosts read failed: this pair, not the run
         raise SkillPairError(
@@ -719,7 +872,50 @@ def step_for_case(
     text_files = {key: value for key, value in files.items() if isinstance(value, str)}
     return SkillStep(
         action="write", name=name, updating=owned, files=text_files, expect_sha=expect,
-        deploy=deploy,
+        deploy=deploy, expect_missing=restoring,
+    )
+
+
+def _rename_step(
+    home: Path, folder: Path, registry: skill_registry.Registry, old: str, new: str,
+    outcome: object, *, staged: StagedSkills, deploy: bool,
+) -> SkillStep:
+    """S-110 (SK-C2): a case whose ``decision.skill`` names
+    ``renamed_from`` renames that skill self-learn owns to ``name``. The
+    rename is checked by the writer's own rules (``skill_writer.rename_check``:
+    the new name as a write would check it, a vetoed name included, and the
+    bucket rule) before any pair reaches the ledger."""
+    if outcome == "retire":
+        raise SkillPairError(
+            f"a case that renames {old} to {new} does not retire it (outcome: retire)"
+        )
+    if folder.exists():
+        raise SkillPairError(
+            f"a case that renames {old} to {new} writes no {STAGE_SKILLS_DIR}/{new}/ folder; "
+            "change the skill's text in a later run, under its new name"
+        )
+    if not registry.is_owned(old):
+        raise SkillPairError(f"{old} is not a live skill self-learn owns, so it cannot be renamed")
+    if old in staged.missing:
+        raise SkillPairError(
+            f"{old} cannot be renamed this run: its files could not be read from the skills root"
+        )
+    expect = staged.expect.get(old)
+    try:
+        checked = skill_writer.rename_check(home, old, new, expect_sha=expect)
+    except Exception as exc:  # noqa: BLE001 -- a git or hosts read failed: this pair, not the run
+        raise SkillPairError(
+            f"the rename of {old} to {new} could not be checked ({type(exc).__name__}: {exc})"
+        ) from exc
+    if not checked.ok:
+        raise SkillPairError(short_hashes(
+            f"the rename of {old} to {new} would be refused"
+            + (f" [{checked.kind}]" if checked.kind else "")
+            + ": " + "; ".join(checked.problems)
+        ))
+    return SkillStep(
+        action="rename", name=new, updating=True, expect_sha=expect, deploy=deploy,
+        renamed_from=old,
     )
 
 
@@ -799,6 +995,12 @@ def _preview_once_written(
     if item.verb != "route":
         return replace(item, state="would-apply", kind=None, detail=once)
     if item.id in reconsidered and _is_placed(home, item.id):
+        # S-110 (SK-F): the reroute's checks on its OLD side
+        # need no skill, so they run now; a line doomed there is dropped
+        # before the skill is written.
+        problem = verbs.reroute_old_side_problem(home, item.id, note=line.fields.get("note"))
+        if problem is not None:
+            return replace(item, detail=f"reconsider: reroute refused on its old side: {problem}")
         return replace(
             item, state="would-apply", kind=None,
             detail=f"reconsider: reroute; {once}",
@@ -823,41 +1025,51 @@ def _preview_once_written(
 
 def preview_for_step(
     home: Path | str, preview: Any, sheet: Any, step: SkillStep | None,
-    *, reconsidered: Collection[str] = (),
+    *, reconsidered: Collection[str] = (), building: Collection[str] = (),
 ) -> Any:
-    """The preview a build pair's sheet is judged by.
+    """The preview a pair's sheet is judged by when it routes lessons into a
+    skill being built this run.
 
-    A line that routes a lesson into the skill this pair builds (``dest:
-    new-skill:<name>``) is previewed before the skill exists, so the
-    refusal "not a skill self-learn owns" says nothing about the line after
-    the write: that one refusal is set aside and the line is judged as it
-    will be once the skill is written (:func:`_preview_once_written`). Any
-    other refusal is believed, as S-101 believes every preview refusal (fix
-    round 1, gate r1: before, every refused line into the skill became
-    would-apply, whatever the reason). *reconsidered* is the record ids the
-    pair's ``kind: reconsider`` case covers: a placed one among them moves
-    in by reroute (fix round 2).
+    A line that routes a lesson into a skill a pair of this run builds
+    (``dest: new-skill:<name>``: this pair's own build, or, S-110
+    SK-F, any name in *building*) is previewed before the skill exists, so
+    the refusal "not a skill self-learn owns" says nothing about the line
+    after the write: that one refusal is set aside and the line is judged as
+    it will be once the skill is written (:func:`_preview_once_written`).
+    Any other refusal is believed, as S-101 believes every preview refusal
+    (fix round 1, gate r1). *reconsidered* is the record ids the pair's
+    ``kind: reconsider`` case covers: a placed one among them moves in by
+    reroute (fix round 2), after its old side's checks (SK-F).
 
-    Raises :class:`SkillPairError` when no line would move a lesson into the
-    new skill: the skill would be written first and then stand live and
-    owned with no lesson in it."""
-    if step is None or step.action != "write" or step.updating:
+    For a build pair, raises :class:`SkillPairError` when no line would move
+    a lesson into the new skill: the skill would be written first and then
+    stand live and owned with no lesson in it."""
+    building_here = step is not None and step.action == "write" and not step.updating
+    names = set(building)
+    if building_here:
+        assert step is not None
+        names.add(step.name)
+    if not names:
         return preview
     from dataclasses import replace
 
     home = Path(home)
-    target = f"new-skill:{step.name}"
     lines = {line.n: line for line in sheet}
     items = []
     for item in preview.items:
         line = lines.get(item.n)
+        dest = line.fields.get("dest") if line is not None else None
+        name = dest[len("new-skill:"):] if isinstance(dest, str) and dest.startswith("new-skill:") else None
         if (
-            item.state == "would-refuse" and line is not None
-            and line.fields.get("dest") == target
-            and f"{target} {_NOT_OWNED_YET}" in (item.detail or "")
+            item.state == "would-refuse" and line is not None and name in names
+            and f"{dest} {_NOT_OWNED_YET}" in (item.detail or "")
         ):
-            item = _preview_once_written(home, item, line, step.name, reconsidered)
+            item = _preview_once_written(home, item, line, name, reconsidered)
         items.append(item)
+    if not building_here:
+        return replace(preview, items=items)
+    assert step is not None
+    target = f"new-skill:{step.name}"
     from .. import batch
 
     # A refusal of a retried kind (git or lock trouble) may clear by apply
@@ -877,13 +1089,14 @@ def preview_for_step(
 def draft_entry(step: SkillStep, case_name: str, lessons: list[str]) -> dict[str, Any]:
     """A skill step kept, not made (writing not in effect), for the run
     record and the report. A build or a change carries its files, which
-    the runner commits as a draft."""
+    the runner commits as a draft; a rename names the skill it renames."""
     return {
         "name": step.name,
         "action": step.label,
         "case_name": case_name,
         "lessons": sorted(dict.fromkeys(lessons)),
         **({"files": dict(step.files)} if step.action == "write" else {}),
+        **({"renamed_from": step.renamed_from} if step.renamed_from else {}),
     }
 
 
@@ -956,6 +1169,10 @@ def _done_line(step: SkillStep, case_id: str) -> str:
         _LABEL_BUILD: "written to the skills root and linked",
         _LABEL_CHANGE: "its text rewritten",
         _LABEL_RETIRE: "removed from the skills root, with its link",
+        _LABEL_RENAME: (
+            f"renamed from {step.renamed_from}; its folder, marketplace entry, link, lessons "
+            "and ledger bucket moved with it"
+        ),
     }[step.label]
     return f"{_DONE_TAGS[step.label]} {step.name}: {what} ({case_id})"
 
@@ -969,6 +1186,7 @@ def apply_write(home: Path | str, case_id: str, step: SkillStep, *, case_name: s
     result = skill_writer.write(
         home, step.name, step.files, case=case_id, by="overseer",
         expect_sha=step.expect_sha, updating=step.updating, no_push=True,
+        expect_missing=step.expect_missing,
     )
     if result.ok:
         return StepOutcome("applied", _done_line(step, case_id))
@@ -989,6 +1207,35 @@ def apply_write(home: Path | str, case_id: str, step: SkillStep, *, case_name: s
         f"{STAGE_SKILLS_DIR}/{step.name}/ ({case_name}): "
         + _refusal(step.name, result.kind, result.problems).replace("would be", "was")
         + tail,
+        kind=result.kind,
+    )
+
+
+def apply_rename(home: Path | str, case_id: str, step: SkillStep, *, case_name: str) -> StepOutcome:
+    """Rename the skill before its pair is recorded (``by: overseer``,
+    ``no_push``). Idempotent: a resumed run finishes an interrupted rename,
+    and a finished one changes nothing."""
+    assert step.renamed_from is not None
+    result = rename_skill(
+        Path(home), step.renamed_from, step.name, case=case_id, by="overseer",
+        expect_sha=step.expect_sha, no_push=True,
+    )
+    if result.ok:
+        warning = (
+            short_hashes(f"{step.name}: " + "; ".join(result.warnings)) if result.warnings else None
+        )
+        return StepOutcome("applied", _done_line(step, case_id), warning=warning)
+    if result.kind == skill_writer.KIND_GIT:
+        tail = "; the pair waits, and the run's resume renames the skill again"
+    else:
+        tail = "; the pair was dropped"
+    return StepOutcome(
+        "refused",
+        short_hashes(
+            f"{step.renamed_from} → {step.name} ({case_name}): the rename was refused"
+            + (f" [{result.kind}]" if result.kind else "")
+            + ": " + "; ".join(result.problems)
+        ) + tail,
         kind=result.kind,
     )
 
@@ -1021,7 +1268,9 @@ def report_lines(manifest: dict[str, Any]) -> list[str]:
     info = manifest.get("skills")
     if not isinstance(info, dict):
         return []
-    lines: list[str] = []
+    lines: list[str] = [
+        str(line) for line in info.get("repairs") or [] if isinstance(line, str)
+    ]
     recipes = manifest.get("cases") or {}
     for case_id in manifest.get("case_order") or []:
         raw = (recipes.get(case_id) or {}).get("skill")
@@ -1038,10 +1287,16 @@ def report_lines(manifest: dict[str, Any]) -> list[str]:
             if isinstance(draft.get("files"), dict) else ""
         )
         lessons = draft.get("lessons") or []
-        moving = f"; it would move {', '.join(lessons)}" if lessons and label != _LABEL_RETIRE else ""
+        moving = (
+            f"; it would move {', '.join(lessons)}"
+            if lessons and label not in (_LABEL_RETIRE, _LABEL_RENAME) else ""
+        )
+        old = draft.get("renamed_from")
+        what = f"would rename {old} to it" if label == _LABEL_RENAME and old else (
+            f"{_WOULD.get(str(label), 'would change')} it"
+        )
         lines.append(
-            f"[skill drafted] {name}: {_WOULD.get(str(label), 'would change')} it "
-            f"({draft.get('case_name')}){where}{moving}"
+            f"[skill drafted] {name}: {what} ({draft.get('case_name')}){where}{moving}"
         )
     state = info.get("state") or {}
     if not state.get("deploy", True):

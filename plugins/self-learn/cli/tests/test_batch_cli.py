@@ -665,7 +665,7 @@ class TestF8WholeSheetRefusalReceipt:
             f"version: 1\ncase: {case_id}\nitems:\n  - id: {rid}\n    verb: reject\n",
         )
 
-        def fake_run(home_, items, *, no_push=False):
+        def fake_run(home_, items, *, no_push=False, actor="human"):  # S-109: the CLI names its runner
             return batch_mod.BatchResult(
                 case=case_id, sheet_sha="deadbeef", process_code=6,
                 stop_message="a live intent is STOPPED (simulated)",

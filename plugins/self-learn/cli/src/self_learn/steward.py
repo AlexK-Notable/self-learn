@@ -15,7 +15,7 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass, field, replace as dataclass_replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from operator import itemgetter
 from pathlib import Path
 from collections.abc import Iterable, Mapping, Sequence
@@ -24,6 +24,7 @@ from typing import cast
 from ruamel.yaml import YAML, YAMLError
 
 from . import (
+    attribution,
     always_loaded,
     model_failures,
     batch,
@@ -45,6 +46,7 @@ from . import (
     worker,
 )
 from .ledger import discover_buckets
+from .invocation import failure_class
 from .overseer import notify as overseer_notify
 from .records import Record, RecordError
 from .primitives import chrono
@@ -112,6 +114,26 @@ _RECONSIDER_OBSERVATION_RE = re.compile(
 _ASK_ANSWER_OBSERVATION_RE = re.compile(
     r"^- obs-[0-9a-f]{8} \S+ overseer statement: user answered "
     r"q-[a-z0-9][a-z0-9-]{1,62} \(ref: stmt-[0-9a-f]+\)$"
+)
+#: S-117: the observation the overseer's runner records on a
+#: case its ask cites when it applies the ask's default in the same run
+#: (`overseer.run._record_defaults`, text from
+#: `overseer.conversation.ask_defaulted_text`). Like an answer (S-96) it
+#: brings back a case that DEFERRED its lessons, with the default as the
+#: card's context, so no lesson waits on the user.
+_ASK_DEFAULTED_OBSERVATION_RE = re.compile(
+    r"^- obs-[0-9a-f]{8} \S+ overseer statement: ask defaulted "
+    r"(?P<question>q-[a-z0-9][a-z0-9-]{1,62}); default applied: (?P<default>.+) "
+    r"\(ref: overseer-run:[0-9a-f]+\)$"
+)
+#: S-117: the user's answer to an ask whose default was
+#: applied (`overseer.conversation.respond`), recorded on the case each cited
+#: case's line of successors ends at. It brings that case back WHATEVER it
+#: decided: the default already decided it, and the answer may overturn that.
+_ASK_OVERTURN_OBSERVATION_RE = re.compile(
+    r"^- obs-[0-9a-f]{8} \S+ overseer statement: user answered "
+    r"(?P<question>q-[a-z0-9][a-z0-9-]{1,62}) after its default was applied "
+    r"\(ref: (?P<statement>stmt-[0-9a-f]+)\)$"
 )
 
 
@@ -858,13 +880,36 @@ def _terminal_versions(
     pending, in its new bucket, and needs one there. Since L8 a move also
     changes the record's version (its `moved` history entry), so this skip
     is what brings back a lesson moved project->project before that -- its
-    bytes, and so its version, never changed."""
-    terminal: set[tuple[str, str]] = set()
+    bytes, and so its version, never changed.
+
+    S-114 (P4): an input row may name further versions its one
+    decision SETTLES (`settles`, :func:`_premise_moved_row`: a combined
+    follow-up + premise input settles the follow-up's own version too).
+    Each is terminal exactly when the row's own version is."""
+    return set(
+        _terminal_rows(home, states, defers_decide=defers_decide, manifests=manifests)
+    )
+
+
+def _terminal_rows(
+    home: Path,
+    states: frozenset[str] = _DECIDED_DISPOSITIONS,
+    *,
+    defers_decide: bool = True,
+    manifests: list[dict] | None = None,
+) -> dict[tuple[str, str], dict[str, str]]:
+    """:func:`_terminal_versions` with its evidence (S-115, the
+    stranded-lesson census): each decided ``(record, input version)`` maps to
+    the ``{run, case, state}`` of the newest committed row that decided it, so
+    the census can say WHICH run makes a queued lesson terminal. A version a
+    row SETTLES (S-114 P4) carries that row's evidence."""
+    terminal: dict[tuple[str, str], dict[str, str]] = {}
     for manifest in (committed_manifests(home) if manifests is None else manifests):
         recipes = manifest.get("cases") or {}
         for packet in manifest.get("packets") or []:
             if not isinstance(packet, dict):
                 continue
+            settles = _settled_versions(packet)
             for rid, disposition in (packet.get("dispositions") or {}).items():
                 if not isinstance(disposition, dict):
                     continue
@@ -881,8 +926,34 @@ def _terminal_versions(
                         continue
                     version = disposition.get("input_version")
                     if isinstance(rid, str) and isinstance(version, str):
-                        terminal.add((rid, version))
+                        evidence = {
+                            "run": str(manifest.get("run_id") or ""),
+                            "case": str(disposition.get("case") or ""),
+                            "state": str(disposition.get("state") or ""),
+                        }
+                        terminal[(rid, version)] = evidence
+                        for settled in settles.get((rid, version), ()):
+                            terminal[(rid, settled)] = dict(evidence)
     return terminal
+
+
+def _settled_versions(packet: Mapping) -> dict[tuple[str, str], list[str]]:
+    """``{(record, input version): [settled version, ...]}`` from a packet's
+    input rows that carry `settles` (S-114, P4). The manifest
+    keeps each input row whole, so the list persists beside the
+    disposition that decides it."""
+    out: dict[tuple[str, str], list[str]] = {}
+    for row in packet.get("inputs") or []:
+        if not isinstance(row, Mapping):
+            continue
+        settles = row.get("settles")
+        rid, version = row.get("record"), row.get("version")
+        if not (isinstance(settles, list) and isinstance(rid, str) and isinstance(version, str)):
+            continue
+        out.setdefault((rid, version), []).extend(
+            str(item) for item in settles if isinstance(item, str)
+        )
+    return out
 
 
 def _steward_filing_moves(home: Path) -> dict[str, int]:
@@ -1023,6 +1094,12 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         rid = entry.record.id
         if (rid, identity["version"]) in terminal:
             continue
+        # S-110 (SK-C1): a lesson a skill rename carried to the
+        # renamed skill's bucket, unchanged since, is the version it was;
+        # decided then, it stays decided.
+        carried = ledger_ops.carried_version(entry.record)
+        if carried is not None and (rid, carried) in terminal:
+            continue
         legacy = identity.get("legacy_version")
         if isinstance(legacy, str) and (rid, legacy) in legacy_terminal:
             continue
@@ -1031,6 +1108,142 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         if reason is not None:
             identity["reason"] = reason
         out.append((entry, identity))
+    return out
+
+
+@dataclass(frozen=True)
+class Stranded:
+    """One queued lesson the steward will never select (S-115):
+    not an input of any kind, not held by the overseer, and not in an
+    unfinished run. ``reason`` is one plain line; ``run``/``case``/``state``/
+    ``version`` name the committed row that makes it terminal, when one does."""
+
+    record: str
+    bucket: str
+    created_at: str | None
+    reason: str
+    run: str | None = None
+    case: str | None = None
+    state: str | None = None
+    version: str | None = None
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "record": self.record, "bucket": self.bucket, "created_at": self.created_at,
+            "reason": self.reason, "run": self.run, "case": self.case,
+            "state": self.state, "version": self.version,
+        }
+
+
+def _unfinished_inputs(manifests: list[dict]) -> set[str]:
+    """Every record an unfinished committed run selected: the run will
+    decide (or close out) each when it is next attempted."""
+    found: set[str] = set()
+    for manifest in manifests:
+        if manifest.get("status") == "complete":
+            continue
+        for packet in manifest.get("packets") or []:
+            if not isinstance(packet, dict):
+                continue
+            for row in packet.get("inputs") or []:
+                if isinstance(row, dict) and isinstance(row.get("record"), str):
+                    found.add(row["record"])
+            for rid in packet.get("records") or []:
+                if isinstance(rid, str):
+                    found.add(rid)
+    return found
+
+
+def stranded_lessons(home: Path | str) -> list[Stranded]:
+    """THE census of the positive selection invariant (S-115,
+    `02-schema.md` §3a.8): every queued lesson (pending, its deferral not in
+    the future, in any bucket) is selectable -- an eligible `lesson` input or
+    a `reconsider` input -- or held by the overseer (`cases.held_lessons`), or
+    an input of an unfinished committed run. Anything else is STRANDED: no
+    steward run will ever take it, and nothing else looks at it while the
+    steward owns the queue.
+
+    Selection is a negative set (a lesson is skipped when a committed run's
+    disposition matches it), so a new skip rule can strand a lesson in
+    silence: live, `lrn-e92861b2` and `lrn-f55e9e47` sat 55 days because a
+    pre-U3a deferral counted as a decision for ever (cured by S-95, found by a
+    person). This census finds the class, whatever the rule: it reads the
+    same selections the run reads, so a stranded row is a defect in the
+    selection code or a state the code never meant to leave, and the reason
+    names the committed row (run, case, state, version) that makes the lesson
+    terminal, or says the record's identity could not be read.
+
+    Read-only; about the cost of one `_eligible_lessons` call. Oldest first.
+    """
+    home = Path(home)
+    held = cases.held_lessons(home)
+    manifests = committed_manifests(home)
+    in_runs = _unfinished_inputs(manifests)
+    selectable = {entry.record.id for entry, _row in _eligible_lessons(home)}
+    selectable |= {entry.record.id for entry, _card in _reconsider_proposals(home)[0]}
+    queued: list[tuple[ledger_ops.QueueEntry, str]] = []
+    for bucket in discover_buckets(home):
+        for entry in ledger_ops.queue(bucket):
+            rid = entry.record.id
+            if rid in selectable or rid in held or rid in in_runs:
+                continue
+            queued.append((entry, f"{bucket.scope}:{bucket.name}"))
+    if not queued:
+        return []
+    queued.sort(
+        key=lambda pair: (
+            chrono.to_dt(pair[0].record.created_at)
+            or datetime.fromtimestamp(0, tz=timezone.utc),
+            pair[0].record.id,
+        )
+    )
+    # Evidence: the current rule first, then the rules the selection has
+    # used before (a deferral counted as a decision; the legacy bridge), so
+    # the reason names the row whichever rule made the lesson terminal.
+    rules = (
+        _terminal_rows(home, defers_decide=False, manifests=manifests),
+        _terminal_rows(home, _LEGACY_DECIDED_DISPOSITIONS, defers_decide=False, manifests=manifests),
+        _terminal_rows(home, manifests=manifests),
+    )
+    out: list[Stranded] = []
+    for entry, bucket_label in queued:
+        rid = entry.record.id
+        created = entry.record.created_at
+        created_text = str(created) if created is not None else None
+        try:
+            identity = _record_identity(home, entry)
+        except (ValueError, OSError) as exc:
+            out.append(Stranded(
+                rid, bucket_label, created_text,
+                f"identity unreadable: {_short_cause(exc)}",
+            ))
+            continue
+        versions = [identity.get("version"), identity.get("legacy_version")]
+        found: tuple[str, dict[str, str]] | None = None
+        for rows in rules:
+            for version in versions:
+                if isinstance(version, str) and (rid, version) in rows:
+                    found = (version, rows[(rid, version)])
+                    break
+            if found is not None:
+                break
+        if found is None:
+            out.append(Stranded(
+                rid, bucket_label, created_text,
+                "not selected, and no committed run decided it (the selection skips it "
+                "for a reason the census cannot name)",
+                version=identity.get("version"),
+            ))
+            continue
+        version, row = found
+        which = "proposal" if version == identity.get("legacy_version") else "record"
+        out.append(Stranded(
+            rid, bucket_label, created_text,
+            f"terminal by {row['run']} (case {row['case'] or '?'}, {row['state']}) at its "
+            f"{which} version {version[:12]}",
+            run=row["run"] or None, case=row["case"] or None,
+            state=row["state"] or None, version=version,
+        ))
     return out
 
 
@@ -1084,15 +1297,27 @@ def _premise_predecessor(home: Path, record_id: str) -> str | None:
     newest case that covers it (:func:`_covering_cases` -- the apply-time
     test, so the runner never fills in a predecessor the ledger would
     refuse), or `None` when no case does (a lesson routed before cases
-    existed)."""
+    existed).
+
+    S-114 (u6 "an extract case becomes the newest covering
+    case"): a records-only case (an extract or review case: `kind:
+    resolution`, `no-action`, no `supersedes`) decided nothing about what
+    the lesson says, so the newest covering case whose outcome DID
+    (`steward_inputs._DECIDING_OUTCOMES`: the routing case, a rewrite) is
+    preferred; only when none covers it is the newest covering case of any
+    outcome taken. Otherwise a later reconsider would supersede the extract
+    case and leave the routing case standing."""
     covering = _covering_cases(home, record_id)
     if not covering:
         return None
-    opened = {
-        str(row.get("case")): str(row.get("opened_at") or "")
-        for row in cases.list_cases(home, record_id=record_id, only_ok=True)
-    }
-    return max(covering, key=lambda case_id: (opened.get(case_id, ""), case_id))
+    rows = cases.list_cases(home, record_id=record_id, only_ok=True)
+    opened = {str(row.get("case")): str(row.get("opened_at") or "") for row in rows}
+    outcome = {str(row.get("case")): row.get("outcome") for row in rows}
+    deciding = [
+        case_id for case_id in covering
+        if outcome.get(case_id) in steward_inputs._DECIDING_OUTCOMES  # noqa: SLF001
+    ]
+    return max(deciding or covering, key=lambda case_id: (opened.get(case_id, ""), case_id))
 
 
 #: The card line a `premise-moved` input from a closed follow-up carries.
@@ -1205,8 +1430,16 @@ def _premise_moved_unit_lists(
     for rid in sorted(set(followups) | set(premise_moves) | set(placement)):
         if rid in held:
             continue
+        followup = followups.get(rid)
+        # S-114 (P4): a follow-up a committed run already settled
+        # -- alone, or inside a combined input (`settles`) -- neither comes
+        # back by itself nor rides along with a later premise move.
+        if followup is not None and (
+            rid, steward_inputs.premise_moved_version(followup_done=followup.done)
+        ) in terminal:
+            followup = None
         built = _premise_moved_row(
-            home, rid, followups.get(rid), premise_moves.get(rid), placement.get(rid)
+            home, rid, followup, premise_moves.get(rid), placement.get(rid)
         )
         if built is not None and (rid, built[1]["version"]) not in terminal:
             rows[rid] = built
@@ -1257,6 +1490,13 @@ def _premise_moved_row(
         ),
         "moved": moved,
     }
+    if followup is not None and movers:
+        # S-114 (P4): one decision of a combined input settles
+        # both. The follow-up-alone version is recorded beside this row so
+        # :func:`_terminal_versions` marks it decided with this one.
+        row["settles"] = [
+            steward_inputs.premise_moved_version(followup_done=followup.done)
+        ]
     predecessor = _premise_predecessor(home, rid)
     if predecessor:
         row["predecessor"] = predecessor
@@ -1425,6 +1665,11 @@ def _premise_extract_inputs(
         version = f"extract:{blob}"
         if (record.id, version) in terminal:
             continue
+        # S-110 (SK-C1): a lesson a skill rename carried is the
+        # version it was before the move.
+        carried = ledger_ops.carried_version(record)
+        if carried is not None and (record.id, f"extract:{carried}") in terminal:
+            continue
         rows.append((record, {
             "path": f"premise-extract:{record.id}",
             "blob": version,
@@ -1439,16 +1684,276 @@ def _premise_extract_inputs(
     return [row for _record, row in rows[:cap]]
 
 
+def _premise_extract_candidates(
+    home: Path, terminal: set[tuple[str, str]] | None = None,
+) -> set[str]:
+    """The ids of the routed lessons that are still `premise-extract`
+    candidates: no `premises` key, and an extract version no committed run
+    decided (an uncommitted record waits, and counts). Its extract is its
+    look, so rotation never offers it (S-114). A lesson whose
+    extract version is terminal without premises being written (a parked,
+    refused or abandoned extract) is NOT a candidate: rotation picks it up
+    (the u6 open item)."""
+    found = steward_inputs.routed_without_premises(home)
+    if not found:
+        return set()
+    blobs = _committed_blobs(home, [path for path, _record in found])
+    terminal = _terminal_versions(home) if terminal is None else terminal
+    return {
+        record.id for path, record in found
+        if blobs.get(path) is None or (record.id, f"extract:{blobs[path]}") not in terminal
+    }
+
+
+# ------------------------- premise-review: the rotation (S-114)
+
+#: The card line of a `premise-review` input brought by its age ...
+_PREMISE_REVIEW_REASON = (
+    "This placed lesson is re-read about once every {days} days, and its last look is "
+    "that old. Nothing was observed to change: check that every sentence is still true "
+    "and still relevant, and that its premises would notice the next change."
+)
+#: ... and one brought by a broken probe.
+_PREMISE_REVIEW_BROKEN_REASON = (
+    "A probe of this placed lesson could not observe anything on its last three daily "
+    "checks. Fix or drop the probe, and re-read the lesson while it is here."
+)
+
+
+@dataclass(frozen=True)
+class _ReviewCandidate:
+    """One lesson the rotation would offer, before the nightly cap: its
+    order key, its input row, how many days it counts toward the due
+    check's grace test (*overdue*: a broken-probe review counts from its
+    last look), and how many days it is past the age at which the rotation
+    would have offered it anyway (*past_due*: what `doctor` and the
+    overseer's facts call "overdue"; for a broken-probe review
+    ``max(age - period, 0)``, since how long the probe has been broken is
+    not kept -- the sweep cache holds three observations). Fix round 1
+    (gate MINOR 3): one number for both made a broken probe on a lesson
+    last looked at more than a period ago read as "the steward is not
+    running"."""
+
+    key: tuple
+    row: dict
+    overdue: int
+    past_due: int
+
+
+def _premise_review_candidates(
+    home: Path, exclude: set[str] | None = None, *,
+    today: date | None = None, manifests: list[dict] | None = None,
+    cache_dir: Path | None = None,
+) -> tuple[list[_ReviewCandidate], int, int]:
+    """Every lesson the rotation would offer tonight, in order, uncapped,
+    with the period and the number of live placed lessons (for the `auto`
+    quota). See 02 §3a.10.4 "Periodic re-reading".
+
+    Due: a live placed lesson whose last look (:func:`steward_inputs.
+    last_reviews`) is at least `premises.rotation_days` old, its version
+    ``review:<last-look day>:<cycle>`` undecided; or, whatever its age, one
+    with a broken probe (:func:`steward_inputs.broken_probes`), its version
+    ``review:broken:…`` undecided. Never: a lesson the overseer holds
+    (S-81), one *exclude* names (an earlier input of the run), one with an
+    undecided `premise-moved` input (taken tonight or waiting past its cap),
+    one that is still a `premise-extract` candidate
+    (:func:`_premise_extract_candidates`). Order: broken probe, then no
+    probe, then the rest (:func:`steward_inputs.review_rank`); in each the
+    longest since its last look first, then by id. A broken lesson is
+    `age` days past due (it is due from its last look); an age-due one
+    `age - period`. Off with `premises.enabled` false or a period of 0.
+    *cache_dir* is the sweep's cache (default: the ledger's own), where the
+    broken probes are read."""
+    from . import premise_sweep  # late: the sweep imports serve, serve the steward
+
+    if not steward_inputs.premises_enabled(home):
+        return [], 0, 0
+    days = steward_inputs.premise_rotation_days(home)
+    if days <= 0:
+        return [], days, 0
+    placed, _unparseable = premise_sweep.routed_lessons(home)
+    if not placed:
+        return [], days, 0
+    today = today or datetime.now(timezone.utc).date()
+    exclude = exclude or set()
+    held = cases.held_lessons(home)
+    terminal = _terminal_versions(home, manifests=manifests)
+    _units, moving = _premise_moved_unit_lists(home, manifests=manifests)
+    extracting = _premise_extract_candidates(home, terminal)
+    history = premise_sweep.read_history(
+        cache_dir if cache_dir is not None else premise_sweep.default_cache_dir(home)
+    )
+    broken = steward_inputs.broken_probes(
+        home, placed=[(bucket, record) for bucket, record in placed if record.premises],
+        history=history,
+    )
+    looks = steward_inputs.last_reviews(home, [record for _bucket, record in placed])
+    floor = datetime.fromtimestamp(0, tz=timezone.utc)
+    out: list[_ReviewCandidate] = []
+    for _bucket, record in placed:
+        rid = record.id
+        if rid in held or rid in exclude or rid in moving or rid in extracting:
+            continue
+        last, by = looks.get(rid, (None, ""))
+        last_day = (last or floor).astimezone(timezone.utc).date()
+        age = max(steward_inputs._calendar_days(last_day, today), 0)  # noqa: SLF001
+        broken_items = broken.get(rid) or []
+        version = None
+        overdue = 0
+        past_due = 0
+        if broken_items:
+            version = steward_inputs.review_broken_version(
+                record, [str(item.get("premise")) for item in broken_items]
+            )
+            if (rid, version) in terminal:
+                version = None  # decided: the lesson waits for its age, below
+            else:
+                overdue = age
+                past_due = max(age - days, 0)
+        rank = steward_inputs.review_rank(record, version is not None)
+        if version is None:
+            cycle = steward_inputs.review_cycle(last_day, today, days)
+            if cycle < 1:
+                continue
+            version = steward_inputs.review_version(last_day, cycle)
+            if (rid, version) in terminal:
+                continue
+            overdue = past_due = age - days
+        out.append(_ReviewCandidate(
+            key=(rank, last or floor, rid),
+            row={
+                "path": f"premise-review:{rid}",
+                "blob": version,
+                "version": version,
+                "record": rid,
+                "kind": steward_inputs.INPUT_PREMISE_REVIEW,
+                "record_status": "routed",
+                "reason": (
+                    _PREMISE_REVIEW_BROKEN_REASON
+                    if rank == steward_inputs.REVIEW_RANK_BROKEN
+                    else _PREMISE_REVIEW_REASON.format(days=days)
+                ),
+                "review": {
+                    "rank": steward_inputs.REVIEW_RANK_NAMES[rank],
+                    "last_look": last.strftime(chrono.ISO_FORMAT) if last else "",
+                    "looked_by": by,
+                    "age_days": age,
+                    "period": days,
+                    "has_premises": record.premises is not None,
+                    **({"broken": sorted(str(i.get("premise")) for i in broken_items)}
+                       if rank == steward_inputs.REVIEW_RANK_BROKEN else {}),
+                },
+            },
+            overdue=overdue,
+            past_due=past_due,
+        ))
+    out.sort(key=lambda candidate: candidate.key)
+    return out, days, len(placed)
+
+
+def _premise_review_inputs(
+    home: Path, exclude: set[str] | None = None, *, today: date | None = None,
+) -> list[dict]:
+    """S-114 (premises design P1): the `premise-review` rows one
+    run takes -- :func:`_premise_review_candidates` under the nightly quota
+    `premises.rotation_per_night` (`auto`: ceil(live placed lessons /
+    rotation_days) + 1). Offered last, after `premise-extract`."""
+    found, days, placed = _premise_review_candidates(home, exclude, today=today)
+    if not found:
+        return []
+    cap = steward_inputs.premise_rotation_per_night(home, placed, days)
+    return [candidate.row for candidate in found[:cap]]
+
+
+def _premise_review_overdue(
+    home: Path, *, today: date | None = None, manifests: list[dict] | None = None,
+) -> bool:
+    """Whether a due review makes the steward due BY ITSELF: the oldest is
+    at least `steward_inputs.ROTATION_GRACE_DAYS` days past due. Until
+    then reviews ride along with a run something else starts
+    (`serve._steward_is_due`).
+
+    Never while the nightly quota is 0 (`premises.rotation_per_night:
+    '0'`): the run would take none of them and end `idle`, which arms no
+    cooldown, so the next tick would start it again, every minute, for as
+    long as the setting stood (fix round 1, gate MAJOR 1). Above 0, any
+    due review counts, not only the first *quota* of them: a run started
+    for one takes the first in order and drains the queue from the top."""
+    found, days, placed = _premise_review_candidates(home, today=today, manifests=manifests)
+    if not found or steward_inputs.premise_rotation_per_night(home, placed, days) <= 0:
+        return False
+    return any(candidate.overdue >= steward_inputs.ROTATION_GRACE_DAYS for candidate in found)
+
+
+@dataclass(frozen=True)
+class RotationStatus:
+    """The rotation's state for `doctor` and the overseer's facts: the
+    period (0: off), tonight's quota, how many lessons are due, the oldest
+    one's days past due (:attr:`_ReviewCandidate.past_due`; `None` when
+    none is due), and how many lessons a
+    committed run reviewed (decided a `premise-review` input applied or
+    parked) in the last 30 days."""
+
+    period: int
+    per_night: int
+    due: int
+    oldest_overdue: int | None
+    reviewed_30d: int
+
+
+def premise_rotation_status(
+    home: Path, *, today: date | None = None, cache_dir: Path | None = None,
+) -> RotationStatus:
+    """:class:`RotationStatus` on *today* (default: now), the broken probes
+    read from the sweep cache *cache_dir* (default: the ledger's own).
+    Reads only."""
+    today = today or datetime.now(timezone.utc).date()
+    manifests = committed_manifests(home)
+    found, days, placed = _premise_review_candidates(
+        home, today=today, manifests=manifests, cache_dir=cache_dir,
+    )
+    if days <= 0:
+        return RotationStatus(0, 0, 0, None, 0)
+    cutoff = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=30)
+    reviewed: set[str] = set()
+    for manifest in manifests:
+        started = chrono.to_dt(manifest.get("started_at"))
+        if started is None or started < cutoff:
+            continue
+        for packet in manifest.get("packets") or []:
+            if not isinstance(packet, dict):
+                continue
+            dispositions = packet.get("dispositions") or {}
+            for row in packet.get("inputs") or []:
+                if not isinstance(row, dict) or row.get("kind") != steward_inputs.INPUT_PREMISE_REVIEW:
+                    continue
+                state = (dispositions.get(row.get("record")) or {}).get("state")
+                if state in ("applied", "parked"):
+                    reviewed.add(str(row.get("record")))
+    return RotationStatus(
+        period=days,
+        per_night=steward_inputs.premise_rotation_per_night(home, placed, days),
+        due=len(found),
+        oldest_overdue=max((candidate.past_due for candidate in found), default=None),
+        reviewed_30d=len(reviewed),
+    )
+
+
 def _premise_inputs(home: Path, exclude: set[str]) -> list[dict]:
     """The run's premise rows, after every other input (S-104):
     the `premise-moved` rows under their nightly cap, then the backfill's
-    `premise-extract` rows. A lesson with a `premise-moved` input -- taken
+    `premise-extract` rows, then (S-114) the rotation's
+    `premise-review` rows. A lesson with a `premise-moved` input -- taken
     tonight or waiting past the cap -- is not offered for its premises to
-    be written (02 §3a.10.7): its move is decided first, and that decision
-    writes or re-records them."""
+    be written (02 §3a.10.7) nor to be re-read: its move is decided first,
+    and that decision writes or re-records them."""
     units, waiting = _premise_moved_unit_lists(home, exclude)
     taken = [row for unit in units[: steward_inputs.PREMISE_MOVED_PER_RUN] for row in unit]
-    return taken + _premise_extract_inputs(home, exclude=set(exclude) | waiting)
+    extract = _premise_extract_inputs(home, exclude=set(exclude) | waiting)
+    review = _premise_review_inputs(
+        home, exclude=set(exclude) | waiting | {row["record"] for row in extract}
+    )
+    return taken + extract + review
 
 
 #: A reconsider input's card line (`_reconsider_proposals`): the lesson an
@@ -1542,6 +2047,50 @@ def _reconsider_unresolved(home: Path, record: Record) -> str:
     return _RECONSIDER_UNRESOLVED
 
 
+def _ask_context(home: Path, line: str) -> str | None:
+    """S-117: the card sentence for a reconsider input that an
+    overseer ask brought back -- its default applied without waiting, or the
+    user's later answer to it -- else `None`."""
+    defaulted = _ASK_DEFAULTED_OBSERVATION_RE.match(line)
+    if defaulted is not None:
+        return (
+            f"The overseer asked the user {defaulted.group('question')} and did not wait: "
+            f"it applied its stated default, \"{defaulted.group('default')}\" Re-decide this "
+            "lesson on that default; the user's answer may still overturn it."
+        )
+    overturn = _ASK_OVERTURN_OBSERVATION_RE.match(line)
+    if overturn is not None:
+        words = _statement_words(home, overturn.group("statement"))
+        said = f" Their words: \"{words}\"" if words else ""
+        return (
+            f"The user has now answered {overturn.group('question')}, whose default the "
+            f"overseer had applied ({overturn.group('statement')}): re-decide this lesson "
+            f"against their answer, keeping the decision if the answer agrees.{said}"
+        )
+    return None
+
+
+#: How much of the user's answer a reconsider card quotes.
+_ANSWER_QUOTE_MAX = 600
+
+
+def _statement_words(home: Path, statement_id: str) -> str | None:
+    """The verbatim words of one statement, on one line and cut at
+    `_ANSWER_QUOTE_MAX` characters, or `None` when it cannot be read. The
+    words were secret-scanned when the statement was recorded."""
+    try:
+        rows = statements.list_statements(home)
+    except Exception:  # noqa: BLE001 -- a card line never fails a run
+        return None
+    for row in rows:
+        if row.get("id") == statement_id and isinstance(row.get("verbatim"), str):
+            words = " ".join(row["verbatim"].split())
+            if len(words) > _ANSWER_QUOTE_MAX:
+                words = words[: _ANSWER_QUOTE_MAX - 1] + "…"
+            return words
+    return None
+
+
 def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]], dict[str, str]]:
     """Every lesson a case's new statement or dependency observation brings
     back, as a reconsider input. An observation counts when its `ref` is one
@@ -1589,12 +2138,17 @@ def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]
                 match.group(4) in dependencies
                 or (
                     row.get("outcome") == "defer"
-                    and _ASK_ANSWER_OBSERVATION_RE.match(match.group(0)) is not None
+                    and (
+                        _ASK_ANSWER_OBSERVATION_RE.match(match.group(0)) is not None
+                        or _ASK_DEFAULTED_OBSERVATION_RE.match(match.group(0)) is not None
+                    )
                 )
+                or _ASK_OVERTURN_OBSERVATION_RE.match(match.group(0)) is not None
             )
         ]
         if not matches:
             continue
+        context = _ask_context(home, matches[-1].group(0))
         if any(rid in held for rid in row.get("records") or []):
             continue
         for rid in row.get("records") or []:
@@ -1619,7 +2173,9 @@ def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]
                         "id": rid,
                         "card": {
                             "headline": "A dependency of the prior decision changed.",
-                            "unresolved": _reconsider_unresolved(home, record),
+                            "unresolved": " ".join(
+                                part for part in (_reconsider_unresolved(home, record), context) if part
+                            ),
                         },
                         "recommendation": "reconsider",
                     },
@@ -1654,7 +2210,8 @@ def _brief_input(row: dict) -> dict:
     out = {"id": row.get("record"), "kind": row.get("kind") or steward_inputs.INPUT_LESSON}
     # `moved` and `predecessor`: a `premise-moved` input's facts and the case
     # whose own "what would change this" the brief quotes.
-    for key in ("reason", "events", "moved", "predecessor"):
+    # `review`: a `premise-review` input's facts (S-114).
+    for key in ("reason", "events", "moved", "predecessor", "review"):
         if row.get(key):
             out[key] = row[key]
     return out
@@ -1711,7 +2268,10 @@ def _pair_problem(
     :func:`_steward_move_problem`), and a `no-action` decision re-records
     every moved premise (:func:`_premise_decision_problem`).
     S-104: and of a `premise-extract` input, whose case only
-    writes the lesson's premises (:func:`_premise_extract_problem`)."""
+    writes the lesson's premises (:func:`_premise_extract_problem`).
+    S-114: and of a `premise-review` input, whose case changes
+    nothing but the lesson's premises and a note
+    (:func:`_premise_review_problem`)."""
     try:
         case_data = _read_yaml(case_path)
     except ValueError as exc:
@@ -1812,6 +2372,10 @@ def _pair_problem(
         )
     if replace_problem is None:
         replace_problem = _premise_extract_problem(
+            case_data, lines, inputs, label=case_path.name
+        )
+    if replace_problem is None:
+        replace_problem = _premise_review_problem(
             case_data, lines, inputs, label=case_path.name
         )
     if replace_problem is None:
@@ -1998,6 +2562,95 @@ def _premise_extract_problem(
             return (
                 f"{label}: {rid} came to you only for its premises to be written; its one line "
                 f"is `premises` with `action: set` (got {got}); {how}"
+            )
+    return None
+
+
+#: What a `premise-review` case may hold on its lesson, with how many of
+#: each: one `premises` line that sets or re-records the list, one note.
+_REVIEW_LINES = {("premises", "set"): 1, ("premises", "rebaseline"): 1, ("note", None): 1}
+
+
+def _premise_review_problem(
+    case_data: dict, items: list, inputs: Mapping[str, Mapping] | None, *, label: str
+) -> str | None:
+    """S-114 (02 §3a.10.7): a `premise-review` input came to be
+    re-read, not changed. Its case is a `kind: resolution` case with
+    `outcome: no-action` and no `supersedes` (the extract's shape), and its
+    sheet holds, on the lesson, at most one `premises` line (`set` or
+    `rebaseline`) and at most one `note` -- and a `premises set` when the
+    lesson has no `premises` key (the input row's `review.has_premises`).
+    A `replace` (or a merge through another line's `also`), `retire`,
+    `route`, `reject`, a move or a `restore-region` is refused by name: the
+    authority to change a placed lesson comes only with a `premise-moved`
+    input. A sentence found false gets a premise whose probe shows it (the
+    lesson comes back as a `premise-moved` input), or the case is parked;
+    a parked case is never applied, so it is not judged."""
+    review = {
+        str(rid): row for rid, row in (inputs or {}).items()
+        if row.get("kind") == steward_inputs.INPUT_PREMISE_REVIEW
+    }
+    if not review or case_data.get("kind") == "parked":
+        return None
+    named = [str(rid) for rid in case_data.get("records") or [] if str(rid) in review]
+    if not named:
+        return None
+    how = (
+        "a sentence you find false gets a premise whose probe shows it, and the lesson comes "
+        "back the next night as a `premise-moved` input, where changing it is yours; when no "
+        "probe can show it, park the case (`authority-unclear`) (method section 17)"
+    )
+    shape = []
+    if case_data.get("kind") != "resolution":
+        shape.append(f"kind {case_data.get('kind')!r}")
+    if case_data.get("outcome") != "no-action":
+        shape.append(f"outcome {case_data.get('outcome')!r}")
+    if case_data.get("supersedes"):
+        shape.append(f"supersedes {case_data.get('supersedes')!r}")
+    if shape:
+        return (
+            f"{label}: {named} came to you to be re-read, not changed; decide them in a "
+            "`kind: resolution` case with `outcome: no-action` and no `supersedes` (got "
+            f"{', '.join(shape)}); {how}"
+        )
+    lines = [item for item in items if isinstance(item, dict)]
+    for rid in named:
+        own = [item for item in lines if str(item.get("id")) == rid]
+        merged = any(
+            item.get("verb") == "replace"
+            and rid in {str(other) for other in _listed(item.get("also"))}
+            for item in lines
+        )
+        if merged:
+            return (
+                f"{label}: {rid} came to you to be re-read; a `replace` that merges it through "
+                f"`also` is refused on this input; {how}"
+            )
+        counts: dict[tuple[str, str | None], int] = {}
+        for item in own:
+            verb = str(item.get("verb"))
+            key = (verb, str(item.get("action")) if verb == "premises" else None)
+            if key not in _REVIEW_LINES:
+                words = verb + (f" {item.get('action')}" if verb == "premises" else "")
+                return (
+                    f"{label}: {rid} came to you to be re-read; a `{words}` line on it is "
+                    "refused on this input (at most one `premises` line, `set` or "
+                    f"`rebaseline`, and at most one `note`); {how}"
+                )
+            counts[key] = counts.get(key, 0) + 1
+        premise_lines = counts.get(("premises", "set"), 0) + counts.get(("premises", "rebaseline"), 0)
+        if premise_lines > 1 or counts.get(("note", None), 0) > 1:
+            return (
+                f"{label}: {rid} came to you to be re-read; its sheet holds at most one "
+                f"`premises` line and at most one `note` (got {premise_lines} and "
+                f"{counts.get(('note', None), 0)})"
+            )
+        has_premises = (review[rid].get("review") or {}).get("has_premises", True)
+        if not has_premises and counts.get(("premises", "set"), 0) != 1:
+            return (
+                f"{label}: {rid} records no premises, so this review must write them: add a "
+                f"`premises` line on {rid} with `action: set` (the list, or `[]` with the "
+                "reason in `decision.because`)"
             )
     return None
 
@@ -2514,6 +3167,14 @@ def _quarantine_dir(home: Path, run_id: str, packet_index: int, attempt: int) ->
     )
 
 
+def _placement_reader(home: Path) -> premise_tool.PlacementReader:
+    """The `premise_probe` tool's placement reader: the sweep's cache for
+    this ledger, read only (S-113)."""
+    from . import premise_sweep  # late: premise_sweep imports verbs
+
+    return premise_sweep.placement_reader(premise_sweep.default_cache_dir(home))
+
+
 def _session_spec(
     home: Path, run_dir: Path, prompt: str, *, label: str, lessons: int = 1,
     run_id: str | None = None, shared_brief: Path | None = None,
@@ -2578,7 +3239,15 @@ def _session_spec(
         # the built-in tools; `containment.allowed_tools` names it, and the
         # seam refuses the session when the two disagree. It reads the
         # ledger this run decides for and writes nothing anywhere.
-        mcp_toolset=premise_tool.build_toolset(home),
+        # S-113: a lesson's placement premises as the last
+        # daily sweep judged them (the cache `placement_moves` reads).
+        # The probes honour the session's read fence on the kept session
+        # copies too: a `file-match` there would be a yes/no oracle on
+        # another run's session (S-113).
+        mcp_toolset=premise_tool.build_toolset(
+            home, placement=_placement_reader(home),
+            denied_roots=containment.read_denied,
+        ),
     )
 
 
@@ -4258,13 +4927,35 @@ def _records_waiting_for_close_out(
     return list(dict.fromkeys(waiting))
 
 
+#: S-115: a failed or held steward run is tried again this long
+#: after its last attempt -- the miner's and the overseer's attempt cooldown
+#: (`serve._steward_is_due` reads the same constant).
+RETRY_SECS = 2 * 60 * 60
+
+
+def hold_notice_text(run_id: str, cause: str, *, now: float | None = None) -> str:
+    """The words of the environment-hold notification (S-115): the
+    cause, when the next try comes (the scheduler retries a held run
+    :data:`RETRY_SECS` after its last attempt, so "after" this minute is
+    true), and, for a login that no longer works, the user's fix."""
+    moment = time.time() if now is None else now
+    retry = datetime.fromtimestamp(moment + RETRY_SECS).astimezone()
+    text = (
+        f"self-learn steward: run {run_id} is held: {cause}. Nothing was counted. "
+        f"It tries again after {retry.strftime('%Y-%m-%d %H:%M %Z').strip()} "
+        f"(every {RETRY_SECS // 3600} h while the cause lasts)."
+    )
+    if failure_class.is_login_failure(cause):
+        text += " The login has expired: run `claude` and `/login`."
+    return text
+
+
 def _notify_environment_hold(home: Path, run_id: str, cause: str) -> None:
     """Once per DISTINCT cause (2026-09-27, fail-state audit finding 4):
-    the steward is held, not failing, until the environment is fixed."""
-    summary = (
-        f"self-learn steward: run {run_id} is held — the model call cannot run "
-        f"here: {cause}. Nothing was counted; it retries on its next attempt."
-    )
+    the steward is held, not failing, until the environment is fixed.
+    S-115: the words say when it tries again and, for a login, what
+    to type (:func:`hold_notice_text`)."""
+    summary = hold_notice_text(run_id, cause)
     try:
         overseer_notify.send(home, "routine", summary, [run_id])
     except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
@@ -5137,10 +5828,18 @@ def _notify_parked_now(home: Path, run_id: str, parked: list[tuple[str, str]]) -
     once, through the shipped helper; a failure is journaled, never raised."""
     ids = list(dict.fromkeys(record_id for record_id, _kind in parked))
     kinds = sorted({kind for _record_id, kind in parked})
-    summary = (
-        f"self-learn steward: {len(ids)} lesson(s) parked for the overseer — "
-        f"the ledger refused a line a person must fix ({', '.join(kinds)})"
-    )
+    if "needs-person" in kinds:
+        summary = (
+            f"self-learn steward: {len(ids)} lesson(s) parked for the overseer — "
+            f"the ledger refused a line a person must fix ({', '.join(kinds)})"
+        )
+    else:
+        # L3: only a `needs-person` refusal waits on a person; the rest the
+        # overseer decides itself.
+        summary = (
+            f"self-learn steward: {len(ids)} lesson(s) parked for the overseer — "
+            f"it decides them on its next run ({', '.join(kinds)})"
+        )
     try:
         overseer_notify.send(home, "routine", summary, ids)
     except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
@@ -5646,6 +6345,148 @@ def last_run_iso_from_cache(resolved_cache_dir: Path) -> str | None:
         return None
 
 
+#: L3 (S-116): a person is nudged about the steward only when it
+#: is not keeping up -- no completed run for this long while lessons wait.
+STALE_AFTER_SECS = 48 * 60 * 60
+
+#: How much of the journal's tail the read-only hold probe reads.
+_HOLD_TAIL_BYTES = 65536
+
+
+#: A steward run's closing journal statuses (`RunResult.status` at the
+#: end of `_run`); a mid-run `refused` row has no `decided` field.
+_CLOSING_STATUSES = frozenset({"applied", "partial", "refused", "stopped"})
+
+
+def _hold_from_journal(resolved_cache_dir: Path) -> str | None:
+    """The cause of the steward's newest run when it ended held by its
+    environment, else `None`. Reads the journal's tail only, creates
+    nothing, skips dry-run rows (a rehearsal is not the steward's state),
+    and judges the NEWEST row that is positively a run outcome -- a
+    `held-environment` row or a closing row (a closing status carrying
+    `decided`); every other row (`push`, `recompile`, `model-log`,
+    `abandoned`, `notify-failed`, ...) is skipped, because the steward
+    journals some of them AFTER the closing row. A later run that did not
+    hold clears the hold. A held run writes `held-environment`, then its
+    closing row carries `held` (a string cause)."""
+    path = resolved_cache_dir / "steward" / "journal.jsonl"
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - _HOLD_TAIL_BYTES))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("dry_run"):
+            continue
+        status = row.get("status")
+        if status == model_failures.HELD_ENVIRONMENT:
+            cause = row.get("cause")
+            return str(cause) if cause else "the environment"
+        if status in _CLOSING_STATUSES and "decided" in row:
+            held = row.get("held")
+            return held if isinstance(held, str) and held else None
+    return None
+
+
+#: Environment-hold causes (the classifier's `_ENVIRONMENT` families) and
+#: the one step only the person can take. First match wins.
+_HOLD_FIXES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"authenticat|oauth|api[ -]?key|bearer|access token|(?:logged|signed) in|/login|\b40[13]\b", re.I),
+     "run `claude`, then `/login`"),
+    (re.compile(r"credit balance", re.I), "add credit to the Anthropic account"),
+    (re.compile(r"not[ _]found|\b404\b", re.I), "check the configured model name"),
+    (re.compile(r"update|upgrade|version|does not support|unsupported|not supported", re.I),
+     "update Claude Code (`claude update`)"),
+)
+
+
+def hold_fix(cause: str) -> str | None:
+    """The next step for an environment-hold *cause*, or `None` when the
+    cause is not one the classifier knows."""
+    for pattern, fix in _HOLD_FIXES:
+        if pattern.search(cause):
+            return fix
+    return None
+
+
+def _stranded_count(resolved_cache_dir: Path) -> int | None:
+    """The census count L2 caches at `<cache>/steward/stranded.json`
+    (`serve._write_stranded`: `{"at", "count", "lessons"}`); `None` when
+    the file is absent, unreadable or has no integer `count` -- unknown,
+    never zero."""
+    try:
+        data = json.loads((resolved_cache_dir / "steward" / "stranded.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    count = data.get("count") if isinstance(data, dict) else None
+    return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
+
+
+def _steward_takeable(home: Path | str, total_pending: int, queued_ids: Iterable[str] | None) -> int:
+    """Queued lessons the steward may take: the queue less the QUEUED
+    lessons the overseer holds (they wait for the overseer, not for the
+    steward). `cases.held_lessons` also names placed (resolved) lessons,
+    which are not in the queue, so only held ids that are queued count.
+    Without the queued ids, or on a failed read, the queue stays whole."""
+    if queued_ids is None:
+        return total_pending
+    try:
+        held = set(cases.held_lessons(home))
+    except Exception:  # noqa: BLE001 -- a hint must not break the status probe
+        return total_pending
+    ids = set(queued_ids)
+    return max(0, total_pending - len(ids & held))
+
+
+def nudge_fields(
+    home: Path | str,
+    resolved_cache_dir: Path,
+    total_pending: int,
+    *,
+    queued_ids: Iterable[str] | None = None,
+    now: float | None = None,
+) -> dict:
+    """`status --fast`'s steward facts (L3): whether the steward owns the
+    queue, and whether it is not keeping up. One settings read and cache
+    reads; no git, nothing written. `steward_stale` means no COMPLETED
+    run (the `steward.last-run` marker, not an attempt) for more than
+    `STALE_AFTER_SECS` while a lesson the steward may take is queued."""
+    enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
+    out: dict = {"steward_enabled": bool(enabled)}
+    if not enabled:
+        return out
+    stale = False
+    if total_pending > 0:
+        last_dt = chrono.to_dt(last_run_iso_from_cache(resolved_cache_dir))
+        if last_dt is not None and last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        behind = (
+            last_dt is None  # never completed (or unreadable): infinitely old
+            or (now if now is not None else time.time()) - last_dt.timestamp() > STALE_AFTER_SECS
+        )
+        # the held-lesson read opens the case files: only when it can matter
+        stale = behind and _steward_takeable(home, total_pending, queued_ids) > 0
+    out["steward_stale"] = stale
+    out["steward_stale_hours"] = STALE_AFTER_SECS // 3600
+    hold = _hold_from_journal(resolved_cache_dir)
+    if hold is not None:
+        out["steward_hold"] = hold
+        fix = hold_fix(hold)
+        if fix is not None:
+            out["steward_hold_fix"] = fix
+    stranded = _stranded_count(resolved_cache_dir)
+    if stranded is not None:
+        out["stranded_count"] = stranded
+    return out
+
+
 def last_run_iso(home: Path | str | None = None) -> str | None:
     resolved = Path(home) if home is not None else None
     return last_run_iso_from_cache(cache_dir(resolved))
@@ -5673,6 +6514,7 @@ def cases_since_overseer(home: Path | str) -> int:
     return count
 
 
+@attribution.as_job("steward")
 def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
     """One steward run, then one push of what it committed (doc 13 §5,
     H-5). Every write inside the run is ``no_push=True``, so before this

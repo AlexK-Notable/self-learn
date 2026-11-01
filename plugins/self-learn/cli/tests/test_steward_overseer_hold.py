@@ -518,7 +518,7 @@ def test_the_overseer_and_the_steward_read_one_definition_of_what_is_held(tmp_pa
     _enabled(monkeypatch)
     captured: list[dict] = []
     monkeypatch.setattr(overseer_run, "_full_inputs",
-                        lambda home_, stage, selected, parked_rows: captured.extend(parked_rows) or {})
+                        lambda home_, stage, selected, parked_rows, **_: captured.extend(parked_rows) or {})
     result = overseer_run.run(home, dry_run=False, no_push=True)
     assert result.status == "applied"  # control: the run reached its parked intake
     assert captured == queue

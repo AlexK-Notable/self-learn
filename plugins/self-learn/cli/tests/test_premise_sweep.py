@@ -1309,6 +1309,9 @@ class TestServeJob:
     def _quiet(self, monkeypatch):
         monkeypatch.setattr(serve, "_mine_is_due", lambda *a, **k: False)
         monkeypatch.setattr(serve, "_overseer_is_due", lambda *a, **k: False)
+        # L6: the daily maintenance recompile runs at this job's hook point;
+        # these tests are about the premise sweep alone.
+        monkeypatch.setattr(serve, "_maintenance_is_due", lambda *a, **k: False)
 
     def test_the_sweep_runs_before_the_steward(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "cache"

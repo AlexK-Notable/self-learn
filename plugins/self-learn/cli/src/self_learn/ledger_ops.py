@@ -96,6 +96,11 @@ __all__ = [
     "reopen_record",
     "reroute_record",
     "move_record",
+    "carry_skill_bucket",
+    "carried_from_blob",
+    "carried_version",
+    "skill_bucket_carry_plan",
+    "SKILL_RENAMED_EVENT",
     "require_status",
     "resolve_record",
     "REOPENABLE_STATUSES",
@@ -2641,6 +2646,7 @@ def resolve_record(
     rules_paths_from: str | None = None,
     verb: str | None = None,
     extra_allowed_source: frozenset[str] | None = None,
+    resolution_by: str | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -2660,7 +2666,13 @@ def resolve_record(
     own caller has already validated a ``kind: reconsider`` case naming
     this record (``verbs.reject``/``verbs.defer``, never a raw call).
     ``None`` (every pre-U5 caller) leaves the closed-set gate exactly as
-    it was — no widening by default."""
+    it was — no widening by default.
+
+    ``resolution_by`` (S-109, cures CU-5): who made a
+    rejection (the sheet runner's actor, or the shell's: ``human`` /
+    ``agent``), written to the record's ``resolution_by`` for ``rejected``
+    only; ``None`` (unknown) leaves the field absent, and any other status
+    clears it, so it always describes the current rejection or nothing."""
     if new_status not in RESOLUTION_STATUSES:
         raise LedgerOpsError(
             f"resolution status must be one of {sorted(RESOLUTION_STATUSES)}, "
@@ -2778,6 +2790,7 @@ def resolve_record(
     ):
         _displace_resolution_note(record)
     record.set_status(new_status)
+    record.set_resolution_by(resolution_by if new_status == "rejected" else None)
     if note is not None:
         record.set_resolution_note(note)
 
@@ -2899,6 +2912,170 @@ def move_record(
     return touched, swept
 
 
+#: The history event a skill rename writes on every record it carries
+#: from ``skills/<old>/`` to ``skills/<new>/`` (S-110).
+SKILL_RENAMED_EVENT = "skill-renamed"
+
+
+def _head_blob(home: Path, rel: str) -> str | None:
+    """The blob of *rel* (ledger-relative) at HEAD, or ``None``."""
+    from . import gitops
+
+    proc = gitops._git(home, "rev-parse", "--verify", "--quiet", f"HEAD:{rel}")  # noqa: SLF001
+    blob = proc.stdout.strip() if proc.returncode == 0 else ""
+    return blob or None
+
+
+def carried_from_blob(record: Record) -> str | None:
+    """The ``from_blob`` of the record's newest history entry when that
+    entry is a skill rename's carry (S-110); ``None``
+    otherwise."""
+    history = record.history if isinstance(record.history, (list, tuple)) else ()
+    if not history:
+        return None
+    last = history[-1]
+    if not isinstance(last, dict) or last.get("event") != SKILL_RENAMED_EVENT:
+        return None
+    blob = last.get("from_blob")
+    return blob if isinstance(blob, str) and blob else None
+
+
+def _git_blob_sha(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def carried_version(record: Record) -> str | None:
+    """The version a lesson had before skill renames carried it, when it
+    is unchanged since (S-110, SK-C1): the trailing run of
+    ``skill-renamed`` history entries is taken back off, the scope set to
+    the first of them's ``from``, and the result must hash to that entry's
+    ``from_blob``. ``None`` for a record no rename carried last, or one
+    edited after the carry (a new version the steward decides afresh).
+    The steward reads a carried lesson's identity through this."""
+    blob = carried_from_blob(record)
+    if blob is None:
+        return None
+    try:
+        copy_record = Record.from_text(record.to_text())
+        fm = copy_record._fm  # noqa: SLF001 -- undoing this module's own carry
+        history = list(fm.get("history") or [])
+        first: dict | None = None
+        while history and isinstance(history[-1], dict) and history[-1].get("event") == SKILL_RENAMED_EVENT:
+            first = history.pop()
+        if first is None:
+            return None
+        origin = str(first.get("from") or "")
+        if not origin.startswith("skills/"):
+            return None
+        if history:
+            fm["history"] = history
+        else:
+            del fm["history"]
+        copy_record.set_scope(f"skill:{origin[len('skills/'):]}")
+        before = copy_record.to_text().encode("utf-8")
+    except (*UNREADABLE_RECORD_ERRORS, ValueError, KeyError):
+        return None
+    return blob if _git_blob_sha(before) == blob else None
+
+
+def skill_bucket_carry_plan(home: Path, old: str, new: str) -> list[tuple[Path, Path]]:
+    """``(source, destination)`` of every file a rename of skill *old* to
+    *new* still has to carry: each file under ``skills/<old>/`` to the same
+    place under ``skills/<new>/``, and each record already under
+    ``skills/<new>/`` that still says ``scope: skill:<old>`` (an earlier run
+    moved the file and stopped before rewriting it; its source is then its
+    destination). Reads only."""
+    old_root, new_root = home / "skills" / old, home / "skills" / new
+    plan: list[tuple[Path, Path]] = []
+    if old_root.is_dir():
+        for path in sorted(p for p in old_root.rglob("*") if p.is_file()):
+            plan.append((path, new_root / path.relative_to(old_root)))
+    if new_root.is_dir():
+        for path in sorted(new_root.glob("*/lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except UNREADABLE_RECORD_ERRORS:
+                continue
+            if record.scope == f"skill:{old}":
+                plan.append((path, path))
+    return plan
+
+
+def carry_skill_bucket(
+    home: Path, old: str, new: str, *, by: str, case: str | None,
+) -> list[Path]:
+    """The file-op half of a skill rename's bucket move (S-110,
+    skills.md SK-C1): every file under ``skills/<old>/`` is ``git mv``ed to
+    the same place under ``skills/<new>/``; each record among them
+    (``<sub>/lrn-*.md``) gets ``scope: skill:<new>`` and one history entry
+    ``{event: skill-renamed, from, to, from_blob, by, case}``, where
+    ``from_blob`` is the record's committed blob before the move -- or, for
+    a record a rename already carried, the ``from_blob`` that rename
+    recorded, so a chain of renames keeps naming the version the steward
+    decided. Mv-first, as :func:`move_record`: a kill between the move and
+    the rewrite leaves the file at the destination still saying ``skill:<old>``,
+    which :func:`skill_bucket_carry_plan` finds and the next run finishes.
+
+    A destination that already exists for a different source is corruption
+    to surface (:class:`LedgerOpsError`), never merged into. Returns the
+    paths to stage (sources and destinations); commits nothing (the caller
+    holds the ledger lock and commits)."""
+    touched: list[Path] = []
+    for source, dest in skill_bucket_carry_plan(home, old, new):
+        if source != dest:
+            if dest.exists():
+                raise LedgerOpsError(
+                    f"{_ledger_relative(home, dest)} already exists while "
+                    f"{_ledger_relative(home, source)} is still to be carried there -- a "
+                    "duplicated file is corruption to surface, never to merge into; inspect "
+                    "both by hand"
+                )
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if _is_tracked(home, source):
+                _git_mv(home, source, dest)
+            else:
+                source.rename(dest)
+            touched += [source, dest]
+        else:
+            touched.append(dest)
+        if not (dest.name.startswith("lrn-") and dest.suffix == ".md"
+                and dest.parent.parent == home / "skills" / new):
+            continue
+        record = Record.from_path(dest)
+        if record.scope != f"skill:{old}":
+            continue
+        prior = carried_from_blob(record)
+        rel_before = _ledger_relative(home, home / "skills" / old / dest.relative_to(home / "skills" / new))
+        entry: dict = {"from": f"skills/{old}", "to": f"skills/{new}"}
+        before = prior or _head_blob(home, rel_before)
+        if before is None and source == dest:
+            # Moved by an earlier run and committed so: the file is as it was.
+            before = _head_blob(home, _ledger_relative(home, dest))
+        if before is not None:
+            entry["from_blob"] = before
+        entry["by"] = by
+        if case is not None:
+            entry["case"] = case
+        record.set_scope(f"skill:{new}")
+        record.append_history(SKILL_RENAMED_EVENT, entry)
+        record.write(dest)
+    for directory in sorted(
+        (p for p in (home / "skills" / old).rglob("*") if p.is_dir()),
+        key=lambda p: len(p.parts), reverse=True,
+    ) if (home / "skills" / old).is_dir() else []:
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    try:
+        (home / "skills" / old).rmdir()
+    except OSError:
+        pass
+    return touched
+
+
 def _displace_resolution_note(record: Record) -> None:
     """U5 fold r1 (F2): the ONE shared writer for a resolution-note
     displacement — :func:`reopen_record` (below) has always done this
@@ -2915,10 +3092,13 @@ def _displace_resolution_note(record: Record) -> None:
     (:meth:`Record.clear_resolution_note` is idempotent when there is
     nothing to clear, and refuses unless the note it would clear is
     already the one just appended — never a silent second writer)."""
-    record.append_history(
-        "resolution", {"status": record.status, "note": record.resolution_note}
-    )
+    payload: dict = {"status": record.status, "note": record.resolution_note}
+    if record.resolution_by is not None:
+        # S-109: who made the displaced rejection goes with it.
+        payload["by"] = record.resolution_by
+    record.append_history("resolution", payload)
     record.clear_resolution_note()
+    record.set_resolution_by(None)
 
 
 def reopen_record(home: Path, record_id: str) -> tuple[list[Path], list[Path]]:

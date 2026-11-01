@@ -203,9 +203,12 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "overseer.timeout_secs",  # U8
         "overseer.max_model_calls",  # U8
         "overseer.enabled",  # O-3
+        "overseer.hook_activation",  # L6 (2026-10-31)
         "overseer.broad_removal_threshold",  # O-6
         "premises.enabled",  # S-104, tier C switch, default true
         "premises.backfill_per_night",  # S-104, tier C, default 10
+        "premises.rotation_days",  # S-114, tier C, default 90
+        "premises.rotation_per_night",  # S-114, tier C, default auto
         "overseer.skill_writing",  # SK3 (S-107 part 6): on|off (auto reads as on), the rollback switch
         "overseer.skill_discovery",  # SK4 (S-107): phase S on or off, the user's switch
         "sdk.max_budget_usd",
@@ -219,6 +222,7 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "sdk.max_turns.steward",  # U8
         "sdk.max_turns.overseer",  # U8
         "serve.tick_secs",
+        "serve.restart_on_new_code",  # L6 (2026-10-31)
         "ledger.actor",
         "ledger.glob_probe_budget_s",
     ]

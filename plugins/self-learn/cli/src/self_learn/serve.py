@@ -21,6 +21,19 @@ folder (`<cache>/premises/`) and, for a premise marked `on_change: refresh`, one
 ledger commit under the commit lock (the job commits its own writes, as the
 others do); it never calls a model.
 
+Self-maintenance (L6, 2026-10-31; 13 §5). Between ticks, never during a
+job, ``serve`` compares a hash of the package's source files with the one
+it started on; once a changed hash has read the same on two ticks and the
+new code imports, it re-executes itself with the same command line, so a
+landing needs no hand restart (``serve.restart_on_new_code``, default on,
+is the rollback switch). The hash covers the uv project's ``pyproject.toml``
+and ``uv.lock`` too: when they changed, ``serve`` runs ``uv sync`` first,
+the step the unit's ``uv run`` takes and a re-exec skips. New code it
+cannot run is retried hourly and leaves a project notice saying why. A host unit file that changed after the process
+started cannot be picked up that way; it gets a project notice naming the
+``daemon-reload`` and restart. A daily ``maintenance`` job recompiles the
+targets that carry markers with no compile record (``maintenance.py``).
+
 Jobs run SERIALLY (orchestrator ruling, spec §5.2a): the producers this
 unit schedules are already serialised by their own locks
 (``worker.lock``, ``miner.spawn.lock``), so a daemon that runs one job at
@@ -50,14 +63,18 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass, replace as _dataclass_replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import cache_gc, cases, gitops, intents, miner, overseer, premise_sweep, settings, steward, worker
+from . import (
+    attribution, cache_gc, cases, gitops, intents, maintenance, miner, notices, overseer,
+    premise_sweep, settings, steward, steward_inputs, worker,
+)
+from . import hosts as hosts_mod
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, procs
 from .ledger import resolve_home
 
 __all__ = [
@@ -546,7 +563,7 @@ def _holds_text(cache_dir: Path, now: float) -> str:
     job currently held by a failing due check."""
     held = [
         f"{job} ({_held_cause(cache_dir, job, now)})"
-        for job in ("mine", "premises", "steward", "overseer")
+        for job in ("mine", "hosts", "premises", "maintenance", "steward", "overseer")
         if _held_cause(cache_dir, job, now) is not None
     ]
     return f"; holding: {', '.join(held)}" if held else ""
@@ -597,11 +614,18 @@ def _journal_attempt_epoch(path: Path, now: float) -> float | None:
     return None
 
 
+def _steward_journal(cache_dir: Path) -> Path:
+    return cache_dir / "steward" / "journal.jsonl"
+
+
 def _steward_recently_attempted(cache_dir: Path, now: float) -> bool:
     """S-68's ordering rule: the steward's cooldown test reads the cache
-    attempt journal ONLY, so it can be evaluated before any git read."""
-    epoch = _journal_attempt_epoch(cache_dir / "steward" / "journal.jsonl", now)
-    return epoch is not None and now - epoch < miner.ATTEMPT_COOLDOWN_SECS
+    attempt journal ONLY, so it can be evaluated before any git read.
+    S-115: the interval is `steward.RETRY_SECS` (2 h, the same as
+    `miner.ATTEMPT_COOLDOWN_SECS`), and it is the whole retry rule for an
+    unfinished run."""
+    epoch = _journal_attempt_epoch(_steward_journal(cache_dir), now)
+    return epoch is not None and now - epoch < steward.RETRY_SECS
 
 
 def _target_for(now: float) -> float:
@@ -732,18 +756,15 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     except Exception as exc:  # noqa: BLE001 — a preview must never raise
         when = f"held: {_short_cause(exc)}"
     try:
-        # This heartbeat preview reads one small cached marker, never the case store.
-        last_iso = steward.last_run_iso(home)
-        # S-68: the preview reads its timestamp through the SAME rule the
-        # real predicate uses, so "steward at ..." cannot disagree with it.
-        last_epoch = _attempt_epoch(last_iso, now) if last_iso is not None else 0.0
-        cooldown_value, _source = settings.resolve_setting(
-            home, settings.by_name("steward.cooldown_secs")
+        # S-115: cache-only, like the overseer's preview -- the
+        # attempt journal and the last-run marker, never the case store -- and
+        # through the same rules the predicate uses, so the instant it prints
+        # is the instant the steward becomes due.
+        steward_epoch, steward_why = _steward_next(home, cache_dir, now)
+        steward_when = (
+            datetime.fromtimestamp(steward_epoch).isoformat(timespec="seconds")
+            + f" {steward_why}"
         )
-        cooldown = cast(int | float | str, cooldown_value)
-        steward_when = datetime.fromtimestamp(
-            max(now, last_epoch + float(cooldown))
-        ).isoformat(timespec="seconds")
     except Exception as exc:  # noqa: BLE001 — a preview must never raise
         steward_when = f"held: {_short_cause(exc)}"
     try:
@@ -754,9 +775,179 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     except Exception as exc:  # noqa: BLE001 — a preview must never raise
         overseer_when = f"held: {_short_cause(exc)}"
     return (
-        f"mine at {when}; steward at {steward_when} when committed obligations exist; "
+        f"mine at {when}; steward at {steward_when}; "
         f"overseer at {overseer_when}" + _holds_text(cache_dir, now)
     )
+
+
+#: S-115: the steward's nightly slot opens when the night's mine
+#: pass has finished, or this long after the mine target when it has not
+#: (the mine failed, is off, or is still running), so a broken mine never
+#: costs the steward its night.
+STEWARD_MINE_GRACE_SECS = 3 * 60 * 60
+
+
+def _mine_finished_epoch() -> float | None:
+    """When the last mine pass finished (`miner.last-run`), or ``None``."""
+    iso = miner.last_run_iso()
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _day_target(now: float, days: int) -> float:
+    """The jittered mine target *days* calendar days from *now*'s date
+    (noon of that day picks the date, so a 23- or 25-hour day cannot pick
+    the wrong one). Pure, like :func:`_target_for`."""
+    local = time.localtime(now)
+    noon = time.mktime(
+        (local.tm_year, local.tm_mon, local.tm_mday + days, 12, 0, 0, 0, 0, -1)
+    )
+    return _target_for(noon)
+
+
+def _mine_target_today(cache_dir: Path, now: float) -> float:
+    """Today's mine target as the mine itself reads it (the schedule state),
+    or computed when the cache cannot be written: the steward's due check
+    must not fail on a cache the mine's own check would have created."""
+    try:
+        return _today_mine_target(cache_dir, now)
+    except OSError:
+        return _target_for(now)
+
+
+def _steward_slot(cache_dir: Path, now: float) -> float:
+    """S-115: the START of the newest nightly steward slot that is
+    open at *now* -- the mine target that begins it. Today's slot opens
+    once today's mine pass has finished after its target (`miner.last-run`
+    newer than the target), or at the target plus
+    :data:`STEWARD_MINE_GRACE_SECS` whatever the mine did; until then the
+    newest open slot is yesterday's (always open by now). A run that started
+    at or after the returned instant has taken that slot."""
+    today = _mine_target_today(cache_dir, now)
+    if now >= today:
+        finished = _mine_finished_epoch()
+        if (finished is not None and finished >= today) or now >= today + STEWARD_MINE_GRACE_SECS:
+            return today
+    return _day_target(now, -1)
+
+
+def _next_slot_open(cache_dir: Path, now: float, taken_from: float | None) -> float:
+    """The preview's half of :func:`_steward_slot`: the earliest instant at
+    or after *now* at which a slot not yet taken by a start at
+    *taken_from* is open. Today's slot, before the mine has finished, is
+    shown at the mine target: the slot opens between it and the grace."""
+    today = _mine_target_today(cache_dir, now)
+    if taken_from is None or taken_from < _steward_slot(cache_dir, now):
+        return now
+    if taken_from >= today:
+        return _day_target(now, 1)
+    return max(now, today)
+
+
+def _journal_run_starts(path: Path, now: float) -> tuple[float | None, float | None]:
+    """The steward cache journal's `attempt-start` rows, read newest first:
+    ``(first, newest)`` -- the FIRST `attempt-start` of the newest run (the
+    cache's view of when that run selected its inputs) and the NEWEST
+    `attempt-start` of all (when the latest attempt began). ``(None, None)``
+    when the journal holds none. Dry-run rows are never attempts."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None, None
+    newest_run: str | None = None
+    newest: float | None = None
+    first: float | None = None
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("status") != "attempt-start":
+            continue
+        if row.get("dry_run") is True:
+            continue
+        run_id = row.get("run_id")
+        stamp = row.get("at") or row.get("ts")
+        if not isinstance(stamp, str):
+            continue
+        epoch = _attempt_epoch(stamp, now)
+        if newest_run is None:
+            newest_run = run_id if isinstance(run_id, str) else ""
+            newest = epoch
+        elif run_id != newest_run:
+            break
+        first = epoch
+    return first, newest
+
+
+def _journal_run_start_epoch(path: Path, now: float) -> float | None:
+    """The first `attempt-start` of the newest run in the steward's cache
+    journal (:func:`_journal_run_starts`), or ``None``."""
+    return _journal_run_starts(path, now)[0]
+
+
+def _steward_next(home: Path, cache_dir: Path, now: float) -> tuple[float, str]:
+    """When the steward is next due, from the cache alone (the heartbeat
+    preview, S-115), and why.
+
+    A run is unfinished when the journal's newest `attempt-start` is newer
+    than the last COMPLETED run (`steward.last-run`): a completed run writes
+    its last-run stamp when it ends, after every `attempt-start` it made, so
+    only an attempt that has not completed since can be newer. (Gate r1
+    MAJOR 1: the first cut compared the newest attempt row of ANY status, and
+    a completed run's `recompile` and `push` rows come after its last-run
+    stamp, so after almost every completed run the preview said "retry its
+    unfinished run".) An unfinished run retries :data:`steward.RETRY_SECS`
+    after the journal's newest attempt row, exactly where
+    `_steward_recently_attempted` stops holding it. Otherwise the next run is
+    the next nightly slot not yet taken, no sooner than `steward.cooldown_secs`
+    after the last run's start nor inside the cache retry interval the
+    predicate tests first, and only if there is work then."""
+    journal = _steward_journal(cache_dir)
+    attempt = _journal_attempt_epoch(journal, now)
+    start, newest_start = _journal_run_starts(journal, now)
+    last_iso = steward.last_run_iso(home)
+    last = _attempt_epoch(last_iso, now) if last_iso is not None else None
+    if newest_start is not None and (last is None or last < newest_start):
+        retry_from = newest_start if attempt is None else max(attempt, newest_start)
+        return max(now, retry_from + steward.RETRY_SECS), "to retry its unfinished run"
+    if start is None:
+        start = last
+    when = _next_slot_open(cache_dir, now, start)
+    if start is not None:
+        cooldown_value, _source = settings.resolve_setting(
+            home, settings.by_name("steward.cooldown_secs")
+        )
+        when = max(when, start + float(cast(int | float | str, cooldown_value)))
+    if attempt is not None:
+        # `_steward_recently_attempted` holds every run for RETRY_SECS after
+        # the newest attempt row (a completed run's push row included).
+        when = max(when, attempt + steward.RETRY_SECS)
+    return when, "after the night's mine, when there is work"
+
+
+def _deferral_due_epochs(paths: list[Path], now: float) -> dict[str, float]:
+    """S-115: lesson id -> when its deferral came due, for each
+    eligible lesson whose `deferred_until` has passed. A record that cannot
+    be read is left out (it is then no newer than before)."""
+    from .records import Record  # late: a record parse is only needed here
+
+    due: dict[str, float] = {}
+    for path in paths:
+        try:
+            until = chrono.to_dt(getattr(Record.from_path(path), "deferred_until", None))
+        except Exception:  # noqa: BLE001 -- a hint for the due check, never a raise
+            continue
+        if until is None:
+            continue
+        epoch = until.timestamp()
+        if epoch <= now:
+            due[path.stem] = epoch
+    return due
 
 
 def _eligible_input_paths(home: Path) -> list[Path]:
@@ -788,6 +979,25 @@ def _premise_extract_waiting(home: Path) -> bool:
     return bool(steward._premise_extract_inputs(home, limit=1, ordered=False))
 
 
+def _rotation_on(home: Path) -> bool:
+    """S-114: whether the rotation could offer anything at all
+    (`premises.enabled` and a `premises.rotation_days` above 0): two
+    settings reads, cheap enough for every tick."""
+    return steward_inputs.premises_enabled(home) and steward_inputs.premise_rotation_days(home) > 0
+
+
+def _premise_review_overdue(home: Path, manifests: list[dict]) -> bool:
+    """S-114 (premises design P1): reviews ride along with a run
+    something else starts, sharing its packet; by themselves they make the
+    steward due only once the oldest due one is
+    `steward_inputs.ROTATION_GRACE_DAYS` days past due
+    (:func:`steward._premise_review_overdue`, one case-index read for every
+    lesson)."""
+    if not _rotation_on(home):
+        return False
+    return steward._premise_review_overdue(home, manifests=manifests)
+
+
 def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     """Apply the committed-obligation OR predicate outside cooldown and STOP.
 
@@ -807,6 +1017,31 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
         return False
     manifests = steward.committed_manifests(home)
     unfinished = [row for row in manifests if row.get("status") != "complete"]
+    if unfinished:
+        # S-115: committed unfinished work -- a failed attempt, an
+        # environment hold, a partial run -- is retried `steward.RETRY_SECS`
+        # (2 h) after its last attempt, the overseer's rule (13 §5), never
+        # after the 20 hours a new run waited: a login the user restored
+        # cost them a day. The cache attempt journal (tested above too) and
+        # the committed `last_attempt_at` both count; the committed stamp
+        # stands alone when the cache was lost. The attempt cap still bounds a
+        # run that keeps failing on its content; a hold counts nothing and
+        # makes one fast failing call per 2 h.
+        # The clock is the LATER of the two: an attempt's journal rows (its
+        # end and push rows) are written after its committed stamp, so the
+        # journal is normally the later one and the cache-only preview names
+        # this same instant; a lost or foreign cache can never make a retry
+        # come sooner than two hours after the committed attempt.
+        epochs = [
+            _attempt_epoch(str(row.get("last_attempt_at")), now)
+            for row in unfinished if row.get("last_attempt_at")
+        ]
+        journal = _journal_attempt_epoch(_steward_journal(cache_dir), now)
+        if journal is not None:
+            epochs.append(journal)
+        if not epochs:
+            return True
+        return now - max(epochs) >= steward.RETRY_SECS
     reconsider, _predecessors = steward._reconsider_proposals(home)
     input_paths = _eligible_input_paths(home)
     # U3a: an unhandled suspected rule violation is an input too; like a
@@ -821,48 +1056,72 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     # passed. Asked only when it can change the answer, and unordered (the
     # ordering reads case files; this runs on every tick).
     premise_extract: bool | None = None
-    if (
-        not unfinished and not reconsider and not input_paths
-        and not violations and not premise_moved
-    ):
+    only_review = False
+    if not reconsider and not input_paths and not violations and not premise_moved:
         premise_extract = _premise_extract_waiting(home)
         if not premise_extract:
-            return False
-    attempts = [str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")]
-    last_iso = max(attempts) if attempts else steward.last_run_iso(home)
-    if last_iso is None:
-        return True
-    last_epoch = _attempt_epoch(last_iso, now)
+            # S-114: a review can still make it due by itself, but
+            # that is asked only after the cooldown (below), and only when
+            # the rotation is on at all -- a settings read, nothing more, here.
+            if not _rotation_on(home):
+                return False
+            only_review = True
+    # S-115: new work. The steward runs once a night, after the
+    # mine (`_steward_slot`), and never twice within `steward.cooldown_secs`
+    # of a start. Before, the 20-hour cooldown rolled from the last run, so
+    # the run drifted about 4 hours earlier every day.
+    starts = [str(row.get("started_at")) for row in manifests if row.get("started_at")]
+    if starts:
+        selected_epoch = _attempt_epoch(max(starts), now)
+    else:
+        last_iso = steward.last_run_iso(home)
+        if last_iso is None:
+            # never run: the first run takes the queue now (S-114:
+            # with only reviews waiting, when one is overdue)
+            return _premise_review_overdue(home, manifests) if only_review else True
+        selected_epoch = _attempt_epoch(last_iso, now)
     cooldown_value, _source = settings.resolve_setting(
         home, settings.by_name("steward.cooldown_secs")
     )
     cooldown = cast(int | float | str, cooldown_value)
-    if now - last_epoch < float(cooldown):
-        return False
-    if unfinished or reconsider or violations or premise_moved:
+    if now - selected_epoch < float(cooldown):
+        return False  # the minimum gap between two starts
+    if selected_epoch >= _steward_slot(cache_dir, now):
+        return False  # tonight's run has already selected
+    if reconsider or violations or premise_moved:
         return True
     if premise_extract is None:
         premise_extract = _premise_extract_waiting(home)
     if premise_extract:
         return True
+    if not input_paths:
+        # S-114: nothing else is waiting; only an overdue review
+        # can make the steward due now.
+        return _premise_review_overdue(home, manifests)
     # S-81 (gate S1d R2): an input is new work when no run has SELECTED
     # inputs since its record -- or the overseer's release of it -- was
     # committed. A run selects its inputs when it starts (`started_at`); a
     # run resumed later selects none, so measuring from the last run's END
     # left a lesson committed or released while an earlier run was
     # unfinished behind that end, waiting for an unrelated input.
-    starts = [str(row.get("started_at")) for row in manifests if row.get("started_at")]
-    selected_epoch = _attempt_epoch(max(starts), now) if starts else last_epoch
+    # S-115: and a lesson whose deferral came due since then is new
+    # work too -- its record is older than that selection, so before, a due
+    # deferral waited for an unrelated input to make the steward due.
     released = _release_epochs(home, {path.stem for path in input_paths})
-    return any(
+    came_due = _deferral_due_epochs(input_paths, now)
+    if any(
         _input_commit_epoch(home, path) > selected_epoch
         # Not before the last selection: both clocks count whole seconds,
         # and an eligible lesson the overseer let go no earlier than that
         # selection is one no run has had the chance to select.
         or released.get(path.stem, -1.0) >= selected_epoch
+        or came_due.get(path.stem, -1.0) >= selected_epoch
         for path in input_paths
-    )
-
+    ):
+        return True
+    # S-114: asked last, and only now -- after the cooldown and
+    # every cheaper reason -- because it reads every placed lesson.
+    return _premise_review_overdue(home, manifests)
 
 def _release_epochs(home: Path, lessons: set[str]) -> dict[str, float]:
     """S-81 (gate S1c R3): lesson id -> when the overseer last let it go --
@@ -1028,6 +1287,21 @@ def _log_job_crash(home: Path | None, cache_dir: Path, job: str, exc: BaseExcept
         pass
 
 
+#: S-109: the actor each scheduled job's ledger commits carry
+#: (``By:``). The entry points stamp themselves too; this keeps a job that
+#: reaches the ledger some other way attributed.
+_JOB_ACTORS = {
+    "mine": "miner",
+    "worker": "worker",
+    "hosts": hosts_mod.POLICY_ACTOR,
+    "premises": "sweep",
+    "steward": "steward",
+    "overseer": "overseer",
+    # S-119: the daily maintenance recompile.
+    "maintenance": "maintenance",
+}
+
+
 def run_one_job(
     cache_dir: Path, job: Job, *, pid: int | None = None, tick_secs: float | None = None,
     home: Path | None = None,
@@ -1038,15 +1312,24 @@ def run_one_job(
     `run_forever`'s real tick loop and `MS1-seq`'s test drive jobs
     through this exact function, so "a real serve scheduler loop" means
     the same code path in both places."""
+    global _jobs_in_flight
     started = time.time()
     beat_pid = pid if pid is not None else os.getpid()
-    with _RunningHeartbeat(cache_dir, pid=beat_pid, job=job.name, tick_secs=tick_secs):
+    actor = _JOB_ACTORS.get(job.name)
+    with _RunningHeartbeat(cache_dir, pid=beat_pid, job=job.name, tick_secs=tick_secs), (
+        attribution.job(actor) if actor is not None else contextlib.nullcontext()
+    ):
+        # L6: counted while it runs, so the re-exec on new code can never
+        # replace this process in the middle of a job.
+        _jobs_in_flight += 1
         try:
             result = job.run()
             record = JobRecord(job.name, job.surface, True, started, time.time(), result=result)
         except Exception as exc:  # noqa: BLE001 — a crashed job must not crash the daemon
             record = JobRecord(job.name, job.surface, False, started, time.time(), error=f"{exc}")
             _log_job_crash(home, cache_dir, job.name, exc)
+        finally:
+            _jobs_in_flight -= 1
     write_heartbeat(
         cache_dir,
         pid=pid if pid is not None else os.getpid(),
@@ -1117,6 +1400,64 @@ def _run_worker_job(home: Path) -> "worker.RunResult":
     return worker.run(home, coalesce=True, no_push=False)
 
 
+#: S-112: the host policy's attempt marker in the cache, and how
+#: often the policy is applied (once a day, like the premise sweep).
+HOSTS_POLICY_FILENAME = "hosts-policy.json"
+HOSTS_POLICY_INTERVAL_SECS = 24 * 3600
+
+
+def _hosts_policy_is_due(home: Path, cache_dir: Path, now: float) -> bool:
+    """The host policy (S-112) is due when the registry has a
+    registration the policy would change (:func:`hosts.policy_changes`, a
+    read of ``hosts.yaml``) and its attempt marker is absent, unreadable,
+    future-dated or at least a day old: checked every tick, acted on at
+    most once a day. It needs no switch: it applies a rule the user typed.
+    A registry that cannot be read is not due (the doctor's ``hosts`` row
+    FAILs on it); a registry that follows the policy costs no job at all."""
+    try:
+        if not hosts_mod.policy_changes(hosts_mod.load_hosts(home)):
+            return False
+    except hosts_mod.HostsError:
+        return False
+    try:
+        data = json.loads((cache_dir / HOSTS_POLICY_FILENAME).read_text(encoding="utf-8"))
+        stamp = data["attempted_at"]
+        last = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return True  # a marker that cannot be read is rewritten by the next attempt
+    if last > now:
+        return True
+    return now - last >= HOSTS_POLICY_INTERVAL_SECS
+
+
+def _write_hosts_policy_marker(cache_dir: Path, now: float) -> None:
+    """The host policy's attempt marker: cache only, never ledger truth."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    fsops.atomic_write(
+        cache_dir / HOSTS_POLICY_FILENAME,
+        json.dumps({"attempted_at": chrono.now_iso(datetime.fromtimestamp(now, timezone.utc))}) + "\n",
+        fsync=False,
+    )
+
+
+def _run_hosts_policy_job(home: Path, cache_dir: Path, now: float) -> "hosts_mod.PolicyResult":
+    """Apply the host policy (:func:`hosts.apply_policy`): a project
+    registration of the skills root's path takes the skills root's mode.
+    The attempt marker is written FIRST, so a pass that crashes waits a day
+    instead of running every tick. Each change, and each change it could
+    not make, is one line on serve's stderr (the journal the operator
+    reads); the doctor's ``hosts`` row names a change still owed."""
+    _write_hosts_policy_marker(cache_dir, now)
+    result = hosts_mod.apply_policy(home)
+    for change in result.changed:
+        print(f"serve: host policy: {change.text()} ({hosts_mod.POLICY_RULE})", file=sys.stderr)
+    for line in result.failed:
+        print(f"serve: host policy: {line}", file=sys.stderr)
+    return result
+
+
 def _premises_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     """S-104 (premise-check design D5): the daily premise sweep is
     due when ``premises.enabled`` is on, it was last attempted at least a day
@@ -1134,12 +1475,137 @@ def _run_premises_job(home: Path, cache_dir: Path, now: float) -> "premise_sweep
     return premise_sweep.run(home, cache_dir, now=now)
 
 
+def _maintenance_is_due(home: Path, cache_dir: Path, now: float) -> bool:
+    """L6: the daily maintenance recompile is due once a day (marker in the
+    cache, written when an attempt starts) when the ledger registers any
+    host. Reads the cache and one file's presence only."""
+    return maintenance.is_due(home, cache_dir, now)
+
+
+def _run_maintenance_job(home: Path, cache_dir: Path, now: float) -> "maintenance.MaintenanceResult":
+    """L6: recompiles the targets `--selftest` reports as carrying markers
+    with no compile record (never `--adopt`), and logs any it refuses."""
+    return maintenance.run(home, cache_dir, now=now)
+
+
 def _run_steward_job(home: Path) -> "steward.RunResult":
     return steward.run(home)
 
 
 def _run_overseer_job(home: Path) -> "overseer_run.RunResult":
     return overseer_run.run(home)
+
+
+# ------------------------------------------- the stranded-lesson census
+
+#: S-115: where the last census of stranded queued lessons is kept,
+#: under ``<cache>/steward/`` (`NOT_REPO_TRUTH`): the session-start status
+#: reads its count without walking the ledger.
+STRANDED_FILENAME = "stranded.json"
+#: The key of the census's `health` notice (one per checkout).
+STRANDED_NOTICE_KEY = "steward-stranded-lessons"
+
+
+def stranded_path(cache_dir: Path) -> Path:
+    return cache_dir / "steward" / STRANDED_FILENAME
+
+
+def read_stranded(cache_dir: Path) -> dict[str, Any] | None:
+    """The last census as written (``{"at", "count", "lessons"}``), or
+    ``None`` when there is none or it cannot be read. Never raises."""
+    try:
+        data = json.loads(stranded_path(cache_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("count"), int) else None
+
+
+def _write_stranded(cache_dir: Path, rows: list["steward.Stranded"], at: str) -> None:
+    """THE census writer (`NOT_REPO_TRUTH`: one cache file, atomic)."""
+    path = stranded_path(cache_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fsops.atomic_write(
+        path,
+        json.dumps(
+            {"at": at, "count": len(rows), "lessons": [row.as_dict() for row in rows]},
+            sort_keys=True,
+        ) + "\n",
+        fsync=False,
+        preserve_mode=False,
+    )
+
+
+def _installed_checkout(home: Path) -> Path | None:
+    """The self-learn checkout this process runs -- the git work tree of
+    the real path of this module -- when it is a registered project host,
+    else ``None``: a health notice is shown in sessions inside it, where the
+    people who can change self-learn's code work."""
+    root = gitops.work_tree_of(Path(__file__))
+    if root is None:
+        return None
+    from .hosts import load_hosts  # late: hosts is only needed here
+
+    registered = {os.path.realpath(path) for path in load_hosts(home).projects}
+    return root if os.path.realpath(root) in registered else None
+
+
+def stranded_notice_text(rows: list["steward.Stranded"]) -> str:
+    """The `health` notice's words: the count, the oldest lesson and what
+    makes it terminal, and where the full list is."""
+    oldest = rows[0]
+    if oldest.run:
+        why = f"terminal by {oldest.run}"
+    elif oldest.reason.startswith("identity unreadable"):
+        why = "identity unreadable"
+    else:
+        why = "no deciding run found"
+    text = (
+        f"{len(rows)} queued lesson(s) the steward never selects (oldest {oldest.record}, "
+        f"{why}); see `self-learn --selftest`"
+    )
+    return text if len(text) <= notices.MAX_TEXT else text[: notices.MAX_TEXT - 3] + "..."
+
+
+def census_stranded(
+    home: Path, cache_dir: Path, *, now: float | None = None
+) -> list["steward.Stranded"] | None:
+    """S-115: take the stranded-lesson census
+    (`steward.stranded_lessons`), keep it in the cache, and keep the
+    `health` notice for the installed self-learn checkout in step with it:
+    written (or its words updated) while the census finds a lesson, removed
+    when it finds none. Run after every steward job and once a day after the
+    premises job. Answers the rows, or ``None`` when the census could not be
+    taken -- then the cache file and the notice are left as they were (an
+    unreadable ledger is not a clean census). Never raises."""
+    moment = time.time() if now is None else now
+    try:
+        rows = steward.stranded_lessons(home)
+    except Exception as exc:  # noqa: BLE001 -- a census must never end a tick
+        print(f"serve: the stranded-lesson census failed — {_short_cause(exc)}", file=sys.stderr)
+        return None
+    at = datetime.fromtimestamp(moment).astimezone().isoformat(timespec="seconds")
+    try:
+        _write_stranded(cache_dir, rows, at)
+    except OSError as exc:
+        print(f"serve: the stranded-lesson census was not kept — {_short_cause(exc)}", file=sys.stderr)
+    try:
+        checkout = _installed_checkout(home)
+    except Exception:  # noqa: BLE001 -- the notice is a hint
+        checkout = None
+    if checkout is not None:
+        if rows:
+            notices.set_health(
+                home, project=checkout, key=STRANDED_NOTICE_KEY, text=stranded_notice_text(rows)
+            )
+        else:
+            notices.clear_health(home, project=checkout, key=STRANDED_NOTICE_KEY)
+    if rows:
+        print(
+            f"serve: {len(rows)} queued lesson(s) the steward never selects: "
+            + ", ".join(f"{row.record} ({row.reason})" for row in rows[:5]),
+            file=sys.stderr,
+        )
+    return rows
 
 
 def _log_stopped_refusal(job_name: str, stopped: list[str]) -> None:
@@ -1207,6 +1673,20 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 )
                 ran.append(worker_record)
                 _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
+        # S-112: the host policy, at most once a day and only when
+        # a registration does not follow it, before the premise sweep, so a
+        # registration it changes is probed in its new mode the same night.
+        # Code only; no switch (it applies a rule the user typed).
+        if _due_or_hold("hosts", home, cache_dir, now, lambda: _hosts_policy_is_due(home, cache_dir, now)):
+            ran.append(
+                run_one_job(
+                    cache_dir,
+                    Job("hosts", "hosts", lambda: _run_hosts_policy_job(home, cache_dir, now)),
+                    pid=pid,
+                    tick_secs=tick_secs,
+                    home=home,
+                )
+            )
         # S-104: the premise sweep runs BEFORE the steward, so a
         # change it confirms is decided the same night (design D5). It is a
         # job like the others (serial, one at a time) and calls no model.
@@ -1224,6 +1704,27 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             _log_stopped_refusal(
                 "premises", getattr(premises_record.result, "stopped", None) or []
             )
+            # S-115: the daily census, whether or not a steward
+            # job follows (with the steward off, or nothing due, this is
+            # the only one that day).
+            census_stranded(home, cache_dir, now=now)
+        # L6: the daily maintenance recompile, at the premises job's hook
+        # point and before the steward: targets whose self-learn markers have
+        # no compile record get one, so nobody has to run `recompile` for it.
+        if _due_or_hold(
+            "maintenance", home, cache_dir, now,
+            lambda: _maintenance_is_due(home, cache_dir, now),
+        ):
+            ran.append(
+                run_one_job(
+                    cache_dir,
+                    Job("maintenance", "maintenance",
+                        lambda: _run_maintenance_job(home, cache_dir, now)),
+                    pid=pid,
+                    tick_secs=tick_secs,
+                    home=home,
+                )
+            )
         if _due_or_hold(
             "steward", home, cache_dir, now, lambda: _steward_is_due(home, cache_dir, now)
         ):
@@ -1238,6 +1739,9 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             _log_stopped_refusal(
                 "steward", getattr(steward_record.result, "stopped", None) or []
             )
+            # S-115: and after every steward job, which is when
+            # the selection changes.
+            census_stranded(home, cache_dir, now=now)
         if _due_or_hold(
             "overseer", home, cache_dir, now, lambda: _overseer_is_due(home, cache_dir, now)
         ):
@@ -1266,6 +1770,443 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
         tick_secs=tick_secs,
     )
     return ran
+
+
+# ------------------------------------------------- re-exec on new code (L6)
+
+#: L6 (2026-10-31): jobs running right now in this process. `run_one_job`
+#: counts each job while it runs; the re-exec below never fires while this
+#: is above zero, so a landing can never cut a job off (the 10-31 03:45 hand
+#: restart killed the nightly mine 9 s in).
+_jobs_in_flight = 0
+
+#: A changed code fingerprint must read the same on this many consecutive
+#: checks (one per tick) before `serve` re-executes onto it, so a merge or a
+#: checkout that is still writing files is not caught half-way.
+REEXEC_STABLE_TICKS = 2
+
+#: Carried across the re-exec in the new image's environment (never written
+#: into this process's own `os.environ`): when the process that systemd
+#: started first began, so the unit-file check below still compares against
+#: the real start after any number of re-execs.
+_STARTED_AT_ENV = "SELF_LEARN_SERVE_STARTED_AT"
+
+HOST_UNIT_NAME = "self-learn-host.service"
+
+#: Fix r1 (gate finding 1): a refused fingerprint is tried again after this
+#: long even though the code has not changed, because what failed may have
+#: been the environment (a venv synced since, by hand or by any `uv run`).
+REEXEC_RETRY_SECS = 3600
+
+#: The files of the uv project that decide what the venv holds. A change to
+#: either means the venv must be synced before the new code can run: the
+#: re-exec runs the interpreter directly, never `uv run`, so nothing else
+#: would sync it.
+_ENV_FILES = ("pyproject.toml", "uv.lock")
+
+#: The key of the one project notice that says the host process is held on
+#: its old code (fix r1, gate finding 1).
+_REFUSED_NOTICE_KEY = "host-code-refused"
+
+
+def _code_root() -> Path:
+    """The `self_learn` package directory this process imported (symlinks
+    resolved): the code a re-exec would load again."""
+    return Path(__file__).resolve().parent
+
+
+def _project_root() -> Path | None:
+    """The uv project the package belongs to (`plugins/self-learn/cli`: the
+    directory above `src/` that holds `pyproject.toml`), or `None` when the
+    package does not sit in one (an installed wheel, a test's copy)."""
+    root = _code_root().parent.parent
+    return root if (root / "pyproject.toml").is_file() else None
+
+
+def env_fingerprint(project: Path | None = None) -> str | None:
+    """A hash of the uv project's `pyproject.toml` and `uv.lock` (fix r1,
+    gate finding 1): what the venv must hold. `None` when there is no
+    project or it cannot be read."""
+    base = project if project is not None else _project_root()
+    if base is None:
+        return None
+    digest = hashlib.sha256()
+    try:
+        for name in _ENV_FILES:
+            path = base / name
+            digest.update(name.encode("utf-8") + b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest() if path.is_file() else b"-")
+    except OSError:
+        return None
+    return digest.hexdigest()[:16]
+
+
+def _fingerprint(code: str | None, env: str | None) -> str | None:
+    """The one fingerprint the stability count runs on: the code's, joined
+    with the project files' when there are any."""
+    if code is None:
+        return None
+    return code if env is None else f"{code}.{env}"
+
+
+def code_fingerprint(root: Path | None = None) -> str | None:
+    """A hash of every Python source file under the package *root* (default:
+    the one this process runs), by relative path and CONTENT. A landing
+    (a new `HEAD`) and an uncommitted edit both change it; a commit that
+    changes no file, or a touch, does not. `None` when the tree cannot be
+    read, which never triggers a re-exec. About 4 MB of source; a few
+    milliseconds once a tick."""
+    base = root if root is not None else _code_root()
+    digest = hashlib.sha256()
+    try:
+        files = sorted(
+            p for p in base.rglob("*.py") if "__pycache__" not in p.relative_to(base).parts
+        )
+        for path in files:
+            digest.update(path.relative_to(base).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    except OSError:
+        return None
+    return digest.hexdigest()[:16] if files else None
+
+
+@dataclass
+class _CodeWatch:
+    """What the re-exec check remembers between ticks."""
+
+    running: str | None
+    started_at: float
+    candidate: str | None = None
+    seen: int = 0
+    #: A fingerprint the re-exec was refused for (it did not import, or the
+    #: venv could not be synced): not tried again until the code changes
+    #: once more or `REEXEC_RETRY_SECS` have passed (fix r1).
+    refused: str | None = None
+    refused_at: float = 0.0
+    #: The unit file mtime a notice was last written (or cleared) for.
+    unit_mtime_seen: int | None = None
+    #: The project files' fingerprint (`env_fingerprint`) this process
+    #: started on; a different one means the venv needs a sync (fix r1).
+    running_env: str | None = None
+
+
+def _start_time_from_env(now: float) -> float:
+    raw = os.environ.get(_STARTED_AT_ENV)
+    try:
+        value = float(raw) if raw is not None else None
+    except ValueError:
+        value = None
+    return value if value is not None and 0 < value <= now else now
+
+
+def _append_serve_journal(cache_dir: Path, entry: dict[str, Any]) -> None:
+    """One row in `serve.journal.jsonl` (the cache, `NOT_REPO_TRUTH`), the
+    same file `_log_job_crash` writes for a job with no journal of its own.
+    Never raises."""
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with open(cache_dir / SERVE_JOURNAL_FILENAME, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"at": chrono.now_iso(), **entry}, separators=(",", ":")) + "\n")
+    except Exception:  # noqa: BLE001 -- a journal row never widens anything
+        pass
+
+
+def _restart_on_new_code(home: Path) -> bool:
+    """`serve.restart_on_new_code` (default on); a read that fails reads as
+    off for this tick, never as a crash."""
+    try:
+        value, _source = settings.resolve_setting(
+            home, settings.by_name("serve.restart_on_new_code")
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return value is True
+
+
+def _new_code_imports(timeout: float = 120.0) -> tuple[bool, str]:
+    """Whether the code on disk imports in a fresh interpreter, the same
+    interpreter and environment the re-exec would use (`-P`: the working
+    directory is not put on the path). A half-written or broken tree must
+    not replace a running daemon with one that dies on start."""
+    import subprocess
+
+    try:
+        proc = procs.run_bounded(
+            [sys.executable, "-P", "-c", "import self_learn.cli, self_learn.serve"],
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, _short_cause(exc)
+    if proc.returncode == 0:
+        return True, ""
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    return False, (tail[-1] if tail else f"exit {proc.returncode}")[:300]
+
+
+def _is_import_failure(why: str) -> bool:
+    """Whether the import check failed on a missing or broken dependency
+    (the last traceback line names `ModuleNotFoundError`/`ImportError`),
+    which a venv sync may cure, rather than on the code itself."""
+    return why.startswith(("ModuleNotFoundError", "ImportError"))
+
+
+def _sync_venv(project: Path, timeout: float = 600.0) -> tuple[bool, str]:
+    """Fix r1 (gate finding 1): bring the venv up to the project's lock, the
+    step the unit's `uv run` takes on every start and the re-exec skips.
+    Runs `uv sync --project <project> --inexact` (`--inexact`: like `uv
+    run`, it never removes packages). The `uv` is the one that started this
+    process (`uv run` puts its own path in `UV`), else the one on `PATH`.
+    Called between jobs only, before the import check, so a failed or
+    partial sync is followed by that check and never by a blind re-exec."""
+    import shutil
+    import subprocess
+
+    uv = os.environ.get("UV") or shutil.which("uv")
+    if not uv:
+        return False, "no `uv` to sync the venv with (`UV` is unset and none is on PATH)"
+    try:
+        proc = procs.run_bounded(
+            [uv, "sync", "--project", str(project), "--inexact"], timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, _short_cause(exc)
+    if proc.returncode == 0:
+        return True, ""
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    return False, (tail[-1] if tail else f"uv sync exit {proc.returncode}")[:300]
+
+
+def _checkout_of_code() -> Path:
+    """The checkout the running code lives in (its git work tree), for the
+    project notice; the package directory itself when it is in none."""
+    root = _code_root()
+    return gitops.work_tree_of(root) or root
+
+
+def _refused_notice_id() -> str:
+    return notices.notice_id(
+        os.path.realpath(_checkout_of_code()), notices.SOURCE_CODE, _REFUSED_NOTICE_KEY
+    )
+
+
+def _refuse_reexec(
+    home: Path, cache_dir: Path, watch: _CodeWatch, current: str, why: str, now: float
+) -> None:
+    """The new code is not run (fix r1): remembered with its time, so it is
+    tried again after `REEXEC_RETRY_SECS` or on the next change; one journal
+    row and one stderr line per attempt; and one project notice for the
+    checkout (S-106), so a session working there sees that the host process
+    is held on its old code and why. The notice is marked done when the next
+    image starts (`_clear_refused_notice`: a fresh start runs what is on
+    disk) or the code on disk is back to what this one runs. Never raises."""
+    watch.refused, watch.refused_at = current, now
+    _append_serve_journal(cache_dir, {
+        "status": "reexec-refused", "from": watch.running, "to": current, "error": why,
+    })
+    print(
+        f"serve: the self-learn code on disk changed but cannot be run ({why}); "
+        "staying on the running code; retrying when it changes again or in "
+        f"{REEXEC_RETRY_SECS // 60} minutes.",
+        file=sys.stderr,
+    )
+    _hold_notice(home, why)
+
+
+def _hold_notice(home: Path, why: str) -> None:
+    """The one project notice saying the host process is held on its old
+    code, with the current reason. A live notice with another reason is
+    replaced (fix r2, gate NIT 5): the notice names why the process is held
+    now, not why it was first held. Never raises."""
+    short = " ".join(why.split())
+    short = "".join(ch for ch in short if ch.isprintable())[:90]
+    text = (
+        "the self-learn host process is held on its old code: the new code "
+        f"cannot run ({short}); it retries hourly"
+    )
+    try:
+        project = _checkout_of_code()
+        held = notices.add(
+            home, project=project, text=text, source=notices.SOURCE_CODE,
+            key=_REFUSED_NOTICE_KEY, renew=True,
+        )
+        if held is not None and held.text != text and held.done_at is None:
+            # `add` leaves a live notice as it is; once done, `renew`
+            # replaces it with the words of this refusal.
+            notices.mark_done(home, held.id)
+            notices.add(
+                home, project=project, text=text, source=notices.SOURCE_CODE,
+                key=_REFUSED_NOTICE_KEY, renew=True,
+            )
+    except Exception:  # noqa: BLE001 -- a hint never widens anything
+        pass
+
+
+def _clear_refused_notice(home: Path) -> None:
+    """Fix r2 (gate finding 2): the hold has ended -- this process has just
+    started on the code on disk, or the code on disk is again the code it
+    runs -- so the "held on its old code" notice is marked done. Never
+    raises."""
+    try:
+        notices.mark_done(home, _refused_notice_id())
+    except Exception:  # noqa: BLE001 -- a hint never widens anything
+        pass
+
+
+def _exec_argv() -> list[str]:
+    """The command line this process was started with, interpreter first,
+    so the re-exec runs exactly the same command."""
+    argv = list(getattr(sys, "orig_argv", None) or [])
+    return argv if argv else [sys.executable, "-m", "self_learn.cli", *sys.argv[1:]]
+
+
+def _reexec(argv: list[str], env: dict[str, str]) -> None:
+    """Replace this process with *argv*. The one call the tests stub."""
+    os.execve(sys.executable, argv, env)
+
+
+def _check_unit_file(home: Path, watch: _CodeWatch) -> None:
+    """A host unit file changed after this process started: the code is
+    picked up by the re-exec, but a unit file change needs systemd to
+    reload it and restart the service, which a process cannot do for
+    itself. Writes one project notice for the checkout the unit file lives
+    in (S-106; shown in a session working there), and clears it once the
+    service has been restarted onto that file. Only under systemd
+    (`INVOCATION_ID` set) and only when the unit is linked. Never raises."""
+    try:
+        if not os.environ.get("INVOCATION_ID") or not is_configured(HOST_UNIT_NAME):
+            return
+        unit = unit_dir() / HOST_UNIT_NAME
+        mtime_ns = unit.stat().st_mtime_ns
+        if watch.unit_mtime_seen == mtime_ns:
+            return
+        real = Path(os.path.realpath(unit))
+        project = gitops.work_tree_of(real) or real.parent
+        key = f"host-unit:{real}:{mtime_ns}"
+        if mtime_ns / 1e9 <= watch.started_at:
+            # Started after the file last changed: any notice for this exact
+            # file version is dealt with.
+            notices.mark_done(home, notices.notice_id(os.path.realpath(project), notices.SOURCE_CODE, key))
+        else:
+            notices.add(
+                home,
+                project=project,
+                # Fix r1 (gate NIT 4): the restart waits for a moment with no
+                # job running -- a restart mid-job kills the job, as the
+                # 10-31 03:45 one killed the mine.
+                text=(
+                    "the host unit file changed after the host process started: run "
+                    f"`systemctl --user daemon-reload`, then restart {HOST_UNIT_NAME} "
+                    f"while no job runs ({HEARTBEAT_FILENAME} has no `running` key)"
+                ),
+                source=notices.SOURCE_CODE,
+                key=key,
+            )
+            print(
+                f"serve: {real} changed after this process started; it needs "
+                "`systemctl --user daemon-reload` and a restart of "
+                f"{HOST_UNIT_NAME} while no job runs (code changes need neither).",
+                file=sys.stderr,
+            )
+        watch.unit_mtime_seen = mtime_ns
+    except Exception:  # noqa: BLE001 -- a hint never widens anything
+        pass
+
+
+def _consider_reexec(
+    home: Path, cache_dir: Path, watch: _CodeWatch, *, pid: int, tick_secs: float,
+    now: float | None = None,
+) -> None:
+    """L6, one check per tick, called between ticks only. When the code on
+    disk (its `*.py` files, and the uv project's `pyproject.toml` and
+    `uv.lock`) has changed from what this process runs, has read the same on
+    `REEXEC_STABLE_TICKS` consecutive checks, no job is running, and
+    `serve.restart_on_new_code` is on:
+
+    - when the project files changed, sync the venv first (`_sync_venv`;
+      the re-exec skips the unit's `uv run`, which is what synced it);
+    - check the new code imports; when it fails on a missing or broken
+      dependency and the venv was not synced yet, sync it and check again;
+    - then write a heartbeat and a journal row saying so, and replace this
+      process with the same command (`os.execve`), which loads the new code.
+
+    A refusal (no sync, no import, a failed exec) leaves a project notice and
+    is tried again on the next change or after `REEXEC_RETRY_SECS`; the
+    notice is done once the code on disk is back to the running code or the
+    next image starts. Returns only when it does not re-exec."""
+    moment = now if now is not None else time.time()
+    _check_unit_file(home, watch)
+    env_now = env_fingerprint()
+    current = _fingerprint(code_fingerprint(), env_now)
+    if current is None or current == watch.running:
+        watch.candidate, watch.seen = None, 0
+        if current is not None and watch.refused is not None:
+            # Fix r2 (gate finding 2): the code on disk is back to what this
+            # process runs (a revert), so nothing is held any more.
+            watch.refused, watch.refused_at = None, 0.0
+            _clear_refused_notice(home)
+        return
+    if current != watch.candidate:
+        watch.candidate, watch.seen = current, 1
+    else:
+        watch.seen += 1
+    if watch.seen < REEXEC_STABLE_TICKS:
+        return
+    if current == watch.refused and moment - watch.refused_at < REEXEC_RETRY_SECS:
+        return
+    if _jobs_in_flight > 0:
+        return  # never mid-job; the next check between jobs takes it
+    if not _restart_on_new_code(home):
+        return
+    project = _project_root()
+    synced = False
+    if env_now != watch.running_env and project is not None:
+        ok, why = _sync_venv(project)
+        if not ok:
+            _refuse_reexec(home, cache_dir, watch, current, f"uv sync failed: {why}", moment)
+            return
+        synced = True
+    ok, why = _new_code_imports()
+    if not ok and not synced and project is not None and _is_import_failure(why):
+        synced_ok, sync_why = _sync_venv(project)
+        if synced_ok:
+            ok, why = _new_code_imports()
+        else:
+            why = f"{why}; uv sync failed: {sync_why}"
+    if not ok:
+        _refuse_reexec(home, cache_dir, watch, current, why, moment)
+        return
+    # Fix r2 (gate NIT 5): the hold notice is not marked done here; the new
+    # image marks it done as it starts (`run_forever`), so a failed exec
+    # below leaves it live.
+    _append_serve_journal(cache_dir, {"status": "reexec", "from": watch.running, "to": current})
+    try:
+        write_heartbeat(
+            cache_dir, pid=pid, next_job=f"restarting on new code ({current})",
+            tick_secs=tick_secs,
+        )
+    except OSError:
+        pass
+    print(
+        f"serve: the self-learn code changed ({watch.running} -> {current}); "
+        "restarting the host process between jobs.",
+        file=sys.stderr,
+    )
+    sys.stdout.flush()
+    sys.stderr.flush()
+    env = dict(os.environ)
+    env[_STARTED_AT_ENV] = repr(watch.started_at)
+    try:
+        _reexec(_exec_argv(), env)
+    except OSError as exc:
+        watch.refused, watch.refused_at = current, moment
+        _append_serve_journal(cache_dir, {
+            "status": "reexec-failed", "from": watch.running, "to": current,
+            "error": _short_cause(exc),
+        })
+        print(f"serve: the restart failed ({_short_cause(exc)}); staying on the running code.",
+              file=sys.stderr)
+        _hold_notice(home, f"the restart failed: {_short_cause(exc)}")
 
 
 # --------------------------------------------------------------- the loop
@@ -1344,12 +2285,28 @@ def run_forever(
     secs = tick_secs if tick_secs is not None else tick_secs_from_env(home=home)
     pid = os.getpid()
     stop = threading.Event()
+    # L6: the code this process runs, read once at start; checked between
+    # ticks for a landing (`_consider_reexec`).
+    running_env = env_fingerprint()
+    watch = _CodeWatch(
+        running=_fingerprint(code_fingerprint(), running_env),
+        started_at=_start_time_from_env(time.time()),
+        running_env=running_env,
+    )
+    # Fix r2 (gate finding 2): whatever held an earlier image on its old
+    # code, this one runs the code on disk (a re-exec, a reboot, a restart
+    # of the unit), so the hold notice is done.
+    _clear_refused_notice(home)
 
     def _handler(signum: int, frame: Any) -> None:  # noqa: ARG001
         stop.set()
 
     prev_term = signal.signal(signal.SIGTERM, _handler)
     prev_int = signal.signal(signal.SIGINT, _handler)
+    # S-109: outside a job the daemon is `serve`, never the
+    # `human` its command line would otherwise stamp.
+    actor = attribution.process("serve")
+    actor.__enter__()
     try:
         ticks = 0
         next_sweep = 0.0
@@ -1376,8 +2333,17 @@ def run_forever(
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 break
+            # L6: between ticks no job is running (every job ran to its end
+            # inside `_run_tick`), so this is where new code is picked up.
+            if not stop.is_set():
+                try:
+                    _consider_reexec(home, cd, watch, pid=pid, tick_secs=secs)
+                except Exception as exc:  # noqa: BLE001 — never ends the daemon
+                    print(f"serve: the code-change check failed — {_short_cause(exc)}",
+                          file=sys.stderr)
             stop.wait(secs)
     finally:
+        actor.__exit__(None, None, None)
         signal.signal(signal.SIGTERM, prev_term)
         signal.signal(signal.SIGINT, prev_int)
     return 0

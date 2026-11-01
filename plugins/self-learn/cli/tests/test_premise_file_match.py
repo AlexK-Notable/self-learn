@@ -1,4 +1,4 @@
-"""Lane P6 (S-NEXT-ft-file-match): a `file-match`/`git-file` premise that can
+"""Lane P6 (S-104 amended 2026-10-31): a `file-match`/`git-file` premise that can
 never fire is refused at validation, by name. The probes read the token
 `present`/`absent` (or a line-range hash), so a literal `match` is never
 found in the value."""

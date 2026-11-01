@@ -54,7 +54,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple, cast
 
-from . import gitops, intents, invocation, provenance, provider, refs, sentinel, settings, steward_prompt, telemetry, worker
+from . import attribution, gitops, intents, invocation, provenance, provider, refs, sentinel, settings, steward_prompt, telemetry, worker
 from .primitives import chrono, fsops
 from . import transcript_lines
 from . import reconcile as reconcile_mod
@@ -3350,6 +3350,29 @@ def run(
     preview: bool = False,
     sessions: Sequence[str] = (),
 ) -> MineResult:
+    """One mining run (:func:`_run_job`) under the ``miner`` job actor
+    (S-109): every commit it makes is the miner's, whoever started it. The
+    span is opened here rather than by :func:`attribution.as_job`, whose
+    ``(*args, **kwargs)`` wrapper would hide ``no_push`` from ``run``'s own
+    signature -- the parameter that makes the push policy data, not
+    ambience (BLOCKER D, ``test_round3_fixes.TestNoPushSurvivesSpawns``)."""
+    with attribution.job("miner"):
+        return _run_job(
+            home, trigger=trigger, since=since, no_push=no_push,
+            engine=engine, preview=preview, sessions=sessions,
+        )
+
+
+def _run_job(
+    home: Path | str,
+    *,
+    trigger: str = "manual",
+    since: str | None = None,
+    no_push: bool | None = None,
+    engine: str | None = None,
+    preview: bool = False,
+    sessions: Sequence[str] = (),
+) -> MineResult:
     """One mining run. ``engine`` (``digest`` or ``session``) overrides the
     ``miner.engine`` setting for this run (new-miner plan §3.8);
     ``preview`` runs the session engine without landing anything, over
@@ -4442,7 +4465,7 @@ def _commit_landing(
         subject = f"self-learn: mine {len(result.landed)} candidate(s), {len(result.folded)} fold(s) ({run_id})"
     try:
         gitops.stage(home, touched)
-        gitops.commit(home, subject, paths=touched)
+        gitops.commit(home, subject, body=attribution.stamp(None), paths=touched)
     except gitops.GitOpsError as exc:
         result.landing_uncommitted = True
         log(

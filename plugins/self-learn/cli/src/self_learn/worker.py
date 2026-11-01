@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from . import cache_gc, domain, intents, invocation, sentinel, settings, telemetry
+from . import attribution, cache_gc, domain, intents, invocation, sentinel, settings, telemetry
 from .primitives import chrono, fsops, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
@@ -2658,6 +2658,7 @@ def _commit_locked(home: Path, result: RunResult) -> bool:
             result.commit_sha = gitops.commit(
                 home,
                 f"self-learn: worker {n} proposal{'s' if n != 1 else ''}",
+                body=attribution.stamp(None),
                 paths=stage,
             )
     except intents.LedgerStoppedError as exc:
@@ -3720,8 +3721,32 @@ def _oldest_pending_days(home: Path) -> int:
     return oldest
 
 
+def _steward_owns_queue(home: Path | str) -> bool:
+    """True while `steward.enabled` is on: the queue is the steward's, so
+    the worker's person-facing popups ("review", "backlog needs
+    attention") stay silent (L3). A failed settings read is False: the
+    popups then behave as before rather than vanishing."""
+    try:
+        enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
+    except Exception:  # noqa: BLE001 -- a nudge decision never fails a run
+        return False
+    return bool(enabled)
+
+
+def _notify_proposals(home: Path | str, line: str, ids: list[str]) -> None:
+    """The new-proposals popup, unless the steward owns the queue (L3)."""
+    if _steward_owns_queue(home):
+        log("notify: proposals popup skipped — the steward owns the queue")
+        return
+    _notify_with_ids(line, ids)
+
+
 def _maybe_escalate(home: Path, total_pending: int, per_bucket: list[dict]) -> bool:
-    """Worker-run-end-only escalation, debounced 24 h (pinned)."""
+    """Worker-run-end-only escalation, debounced 24 h (pinned). Silent
+    while the steward owns the queue (L3)."""
+    if _steward_owns_queue(home):
+        log("escalation: skipped — the steward owns the queue")
+        return False
     oldest = _oldest_pending_days(home)
     if total_pending < ESCALATE_PENDING and oldest <= ESCALATE_OLDEST_DAYS:
         return False
@@ -3763,12 +3788,14 @@ def last_run_iso() -> str | None:
     )
 
 
-def fast_status(home: Path | str) -> dict:
+def fast_status(home: Path | str, queued_ids: list[str] | None = None) -> dict:
     """`status --json --fast` (08 §7.1 SessionStart pin): a pending/-only
     frontmatter scan — no git, no network, no resolved/ walk (follow-up
     counts deliberately excluded), <500 ms warm on 100 records. Queue
     semantics are THE same rules as `list` (deferred hidden), computed
-    here once so the bash hook never reimplements them."""
+    here once so the bash hook never reimplements them. When *queued_ids*
+    is given, the id of every queued record is appended to it (a side
+    channel for the steward-stale check; the returned payload is unchanged)."""
     from ruamel.yaml import YAML  # local: keep module import cost flat
 
     yaml = YAML(typ="safe")
@@ -3809,6 +3836,8 @@ def fast_status(home: Path | str) -> dict:
             if not domain.is_queued(fm, now):
                 continue  # hidden or non-draft — same rule as the queue
             pending += 1
+            if queued_ids is not None and fm.get("id"):
+                queued_ids.append(str(fm["id"]))
             # Full-timestamp floor (domain.record_age_days) — the old
             # ``str(created_at)[:10]`` truncation here was the A1
             # divergence from ``list --json``/``status --json``'s ages.
@@ -3936,6 +3965,20 @@ def _invoke_claude(
 
 
 def run(
+    home: Path | str, *, coalesce: bool = False, no_push: bool | None = None
+) -> RunResult:
+    """One worker run (:func:`_run_job`) under the ``worker`` job actor
+    (S-109): a worker auto-kicked from an agent's command line still commits
+    as ``worker``. The span is opened here rather than by
+    :func:`attribution.as_job`, whose ``(*args, **kwargs)`` wrapper would
+    hide ``no_push`` from ``run``'s own signature -- the parameter that makes
+    the push policy data, not ambience (BLOCKER D,
+    ``test_round3_fixes.TestNoPushSurvivesSpawns``)."""
+    with attribution.job("worker"):
+        return _run_job(home, coalesce=coalesce, no_push=no_push)
+
+
+def _run_job(
     home: Path | str, *, coalesce: bool = False, no_push: bool | None = None
 ) -> RunResult:
     """``no_push=None`` reads the process boundary once
@@ -4360,7 +4403,8 @@ def run(
                     aggregate = {"pending": total_pending, "buckets": per_bucket}
                     if ids:
                         append_event("proposals", ids, aggregate)
-                        _notify_with_ids(
+                        _notify_proposals(
+                            home,
                             render_notification(
                                 n,
                                 sorted(result.buckets) or ["(unknown)"],

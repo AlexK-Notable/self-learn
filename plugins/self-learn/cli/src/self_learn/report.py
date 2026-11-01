@@ -27,8 +27,10 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from . import attribution
 from . import domain
 from . import gitops
 from . import scan
@@ -194,8 +196,20 @@ _JOB_SUBJECT_RE = re.compile(
     r"^self-learn: (?:steward manifest|telemetry flush|case |worker |mine |overseer"
     r"|capture |statement add|user-model |premises refresh )"
 )
-#: Actors whose ``By:`` trailer says a job, not a shell, made the commit.
-_JOB_ACTORS = frozenset({"steward", "overseer", "analyst"})
+#: Subjects that are never a hand step, whoever's shell ran them and whatever
+#: ``By:`` they carry: NEW KNOWLEDGE (a captured lesson, a stated input, a
+#: user-model entry) and protocol bookkeeping a shell writes as a side effect
+#: of ordinary work (the telemetry flush after a verb, a presented-case
+#: observation, the overseer presentation response). These carry a shell's
+#: actor since the attribution lane, so the trailer cannot tell them from upkeep.
+_INPUT_SUBJECT_RE = re.compile(
+    r"^self-learn: (?:capture |statement add|user-model |telemetry flush "
+    r"|case observe |overseer presentation response)"
+)
+#: Actors whose ``By:`` trailer says a job, not a shell, made the commit
+#: (CU-4: every ledger commit carries one, so the trailer is read first and
+#: the subject list above only judges the commits made before it existed).
+_JOB_ACTORS = attribution.ACTORS - attribution.SHELL_ACTORS
 _TRAILER_LINE_RE = re.compile(r"^[A-Za-z][A-Za-z-]*: \S")
 _NO_NOTE = "(no reason recorded)"
 
@@ -222,27 +236,178 @@ def _clip_one_line(text: str, limit: int) -> str:
     return one if len(one) <= limit else one[: limit - 1] + "…"
 
 
+#: CU-3: the file that holds the commit the last published census reached.
+CENSUS_FILE = Path("overseer") / "census.yaml"
+_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
+_LOG_FORMAT = "--format=%x1e%h%x1f%aI%x1f%s%x1f%b"
+
+
+def census_path(home: Path | str) -> Path:
+    return Path(home) / CENSUS_FILE
+
+
+def read_census_cursor(home: Path | str) -> dict[str, str] | None:
+    """The ledger's census cursor ``{head, run, at}``, or ``None`` when there
+    is none or the file does not read as one (the census then falls back to
+    its dated window; a bad file never blocks a run)."""
+    try:
+        data = YAML(typ="safe").load(census_path(home).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, YAMLError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    head = data.get("head")
+    if not isinstance(head, str) or not _SHA_RE.match(head):
+        return None
+    return {"head": head, "run": str(data.get("run") or ""), "at": str(data.get("at") or "")}
+
+
+def census_cursor_text(*, head: str, run: str, at: str) -> str:
+    """The text of ``overseer/census.yaml`` for a census that reached *head*."""
+    return f"head: '{head}'\nrun: {run}\nat: '{at}'\n"
+
+
+def ledger_head(home: Path | str) -> str | None:
+    """The ledger's HEAD sha, or ``None`` when git cannot be read (the walks
+    that take it then read HEAD themselves and report ``unavailable``)."""
+    try:
+        proc = gitops._git(Path(home), "rev-parse", "HEAD")  # noqa: SLF001 -- same module family
+    except (gitops.GitOpsError, OSError, UnicodeDecodeError):
+        return None
+    return proc.stdout.strip() or None if proc.returncode == 0 else None
+
+
+def ledger_log(
+    home: Path | str,
+    *,
+    cursor: str | None,
+    fallback_days: int,
+    now: datetime | None = None,
+    cursor_run: str | None = None,
+    grep: str | None = None,
+    head: str | None = None,
+) -> dict:
+    """The ledger's non-merge commits a census covers (CU-3), read-only.
+
+    With a *cursor* that is an ancestor of HEAD the walk is the ancestry range
+    ``<cursor>..<head>`` and carries NO date option: a commit made on a clock
+    set to the past sits behind a newer one in ``git log --since`` and is
+    dropped by it, and ancestry cannot be fooled that way. With no cursor (a
+    first run, a lost cursor, or history rewritten so the cursor is not an
+    ancestor) it walks the whole history and keeps the rows whose author date
+    is within *fallback_days* of *now*; the label says which case.
+
+    Answers ``{"state", "reason", "head", "cursor_used", "label",
+    "cursor_at", "commits": [(short, author_iso, subject, body)]}``. ``head``
+    is read once, so the walk is stable while jobs commit. ``state`` is
+    ``unavailable`` when git cannot be read, never an empty list. A caller that
+    walks twice passes the *head* it read once, so both walks end at the same
+    commit and no commit falls between them."""
+    home = Path(home)
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    out: dict = {
+        "state": "ok", "reason": None, "head": None, "cursor_used": None,
+        "label": "", "cursor_at": None, "commits": [],
+    }
+
+    def _fail(why: str) -> dict:
+        out.update(state="unavailable", reason=_clip_one_line(why, 200))
+        return out
+
+    try:
+        tip: str
+        if head is None:
+            head_proc = gitops._git(home, "rev-parse", "HEAD")  # noqa: SLF001 -- same module family
+            if head_proc.returncode != 0:
+                return _fail(head_proc.stderr or head_proc.stdout or "git rev-parse HEAD failed")
+            tip = head_proc.stdout.strip()
+        else:
+            tip = head
+        head = tip
+        out["head"] = head
+        used: str | None = None
+        label = ""
+        if cursor:
+            anc = gitops._git(home, "merge-base", "--is-ancestor", cursor, head)  # noqa: SLF001
+            if anc.returncode == 0:
+                used = cursor
+                who = f"the census of {cursor_run}" if cursor_run else "the earlier census"
+                label = f"since {who} ({cursor[:7]})"
+            else:
+                label = (
+                    "the earlier census point is not in this history; "
+                    f"the last {fallback_days} days"
+                )
+        else:
+            label = f"no earlier census; the last {fallback_days} days"
+        args = ["log", "--no-merges", _LOG_FORMAT]
+        if grep:
+            args.append(f"--grep={grep}")
+        args.append(f"{used}..{head}" if used else head)
+        proc = gitops._git(home, *args)  # noqa: SLF001
+        if proc.returncode != 0:
+            return _fail(proc.stderr or proc.stdout or "git log failed")
+        cut = now - timedelta(days=fallback_days)
+        rows: list[tuple[str, str, str, str]] = []
+        for chunk in proc.stdout.split("\x1e"):
+            if not chunk.strip():
+                continue
+            short, _, rest = chunk.partition("\x1f")
+            stamp, _, rest = rest.partition("\x1f")
+            subject, _, body = rest.partition("\x1f")
+            if used is None:
+                try:
+                    when = datetime.fromisoformat(stamp.strip()).astimezone(timezone.utc)
+                except ValueError:
+                    continue
+                if when < cut:
+                    continue
+            rows.append((short.strip(), stamp.strip(), subject, body))
+        out["cursor_used"] = used
+        out["label"] = label
+        if used:
+            at = gitops._git(home, "log", "-1", "--format=%aI", used)  # noqa: SLF001
+            out["cursor_at"] = at.stdout.strip() if at.returncode == 0 else None
+        out["commits"] = rows
+    except (gitops.GitOpsError, OSError, UnicodeDecodeError) as exc:
+        return _fail(str(exc))
+    return out
+
+
 def hand_steps(
     home: Path | str,
     *,
     now: datetime | None = None,
     days: int = HAND_STEP_WINDOW_DAYS,
     limit: int = HAND_STEP_LIMIT,
+    cursor: str | None = None,
+    cursor_run: str | None = None,
+    head: str | None = None,
 ) -> dict:
-    """The week's hand steps: every ledger commit of the last *days* days
-    that no job made (S-105; ``design-manual-maintenance-cures.md`` M5.3).
+    """The hand steps since the last published census: every ledger commit
+    in that window that no job made (S-105; CU-3, CU-4).
 
-    A commit is a **hand step** when its subject is not a job's
-    (:data:`_JOB_SUBJECT_RE`) and it carries no job's identity: no ``Case:``
-    trailer and no ``By: steward|overseer|analyst``. What is left was run
-    from a person's or an agent's shell. ``by`` says which when the commit
-    says: ``human`` or ``agent`` from a ``By:`` trailer, ``none`` when there
-    is no trailer (every hand verb before the agent shell stamped its own).
+    The window is the ancestry range from *cursor* (the commit the last
+    published census reached; ``overseer/census.yaml``) to HEAD. With no
+    usable cursor it is the last *days* days, by a full walk (see
+    :func:`ledger_log`; a date cut would drop a commit made on a skewed clock).
 
-    Answers ``{"window_days", "since", "state", "reason", "total", "steps":
-    [...]}``, newest first, *steps* capped at *limit* (``total`` counts them
-    all). Each step is ``{"commit", "at", "subject", "by", "note"}``; the
-    note is the commit body without its trailer, one line, clipped, and
+    A commit is a **hand step** when it carries no job's identity. Read in
+    this order: a subject that is new knowledge or protocol bookkeeping
+    (:data:`_INPUT_SUBJECT_RE`) never is; a ``By:`` trailer names the
+    maker (CU-4: every ledger commit carries one), a job actor
+    (any actor in :data:`_JOB_ACTORS`: ``miner``, ``worker``, ``sweep``,
+    ``steward``, ``overseer``, ``serve``, ``policy``, ``maintenance``, ``analyst``) is not a
+    hand step, ``human`` and ``agent`` are; a commit with
+    NO trailer (history from before the stamp) falls back to its subject
+    (:data:`_JOB_SUBJECT_RE`): a job's subject is not a hand step, any other is,
+    with ``by`` ``none`` because the commit cannot say which shell.
+
+    Answers ``{"window_days", "since", "head", "label", "state", "reason",
+    "total", "steps": [...]}``, newest first, *steps* capped at *limit*
+    (``total`` counts them all). ``head`` is the commit the walk reached (the
+    next cursor). Each step is ``{"commit", "at", "subject", "by", "note"}``;
+    the note is the commit body without its trailer, one line, clipped, and
     replaced by a stub naming the rule when the secret scan matches it (the
     packet is a stage file, and a hit in a stage file refuses the whole run).
     ``state`` is ``ok`` or ``unavailable`` (git could not be read): an
@@ -253,47 +418,44 @@ def hand_steps(
     result: dict = {
         "window_days": days,
         "since": since.strftime("%Y-%m-%dT%H:%MZ"),
+        "head": None,
+        "label": "",
         "state": "ok",
         "reason": None,
         "total": 0,
         "steps": [],
     }
-    # git's own date cut is only a coarse first filter (a day wider than the
-    # window); the exact cut is made below on the parsed author date.
-    coarse = (since - timedelta(days=1)).date().isoformat()
-    try:
-        proc = gitops._git(  # noqa: SLF001 -- same module family
-            home, "log", "--no-merges", f"--since={coarse}",
-            "--format=%x1e%h%x1f%aI%x1f%s%x1f%b",
-        )
-    except (gitops.GitOpsError, OSError, UnicodeDecodeError) as exc:
-        result.update(state="unavailable", reason=_clip_one_line(str(exc), 200))
+    walk = ledger_log(
+        home, cursor=cursor, fallback_days=days, now=now, cursor_run=cursor_run, head=head,
+    )
+    result["head"] = walk["head"]
+    result["label"] = walk["label"]
+    if walk["state"] != "ok":
+        result.update(state="unavailable", reason=walk["reason"])
         return result
-    if proc.returncode != 0:
-        result.update(
-            state="unavailable",
-            reason=_clip_one_line(proc.stderr or proc.stdout or "git log failed", 200),
-        )
-        return result
+    if walk["cursor_used"] and walk["cursor_at"]:
+        try:
+            result["since"] = (
+                datetime.fromisoformat(walk["cursor_at"]).astimezone(timezone.utc)
+                .strftime("%Y-%m-%dT%H:%MZ")
+            )
+        except ValueError:
+            pass
     steps: list[dict] = []
-    for chunk in proc.stdout.split("\x1e"):
-        if not chunk.strip():
-            continue
-        short, _, rest = chunk.partition("\x1f")
-        stamp, _, rest = rest.partition("\x1f")
-        subject, _, body = rest.partition("\x1f")
+    for short, stamp, subject, body in walk["commits"]:
         try:
             when = datetime.fromisoformat(stamp.strip()).astimezone(timezone.utc)
         except ValueError:
             continue
-        if when < since:
-            continue
         subject = subject.strip()
-        if _JOB_SUBJECT_RE.match(subject):
-            continue
         note, trailers = _split_trailers(body)
         by = trailers.get("By")
-        if "Case" in trailers or by in _JOB_ACTORS:
+        if _INPUT_SUBJECT_RE.match(subject):
+            continue
+        if by is not None:
+            if by in _JOB_ACTORS:
+                continue
+        elif _JOB_SUBJECT_RE.match(subject):
             continue
         text = _clip_one_line(note, _HAND_STEP_NOTE_CHARS) or _NO_NOTE
         subject_hits = scan.scan(subject)

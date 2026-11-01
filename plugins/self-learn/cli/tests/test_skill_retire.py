@@ -94,10 +94,28 @@ def test_retiring_a_retired_skill_is_a_no_op(env):
 
 
 def test_a_skill_self_learn_does_not_own_is_not_retired(env):
-    """A person's ``new-skill`` scaffold is not in the registry: retire
-    leaves it alone."""
+    """A person's skill that is not in the registry (a ``new-skill``
+    scaffold made before S-110 SK-G, which now makes a fresh
+    one owned: a managed section, no stamp, no row): retire leaves it
+    alone."""
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+
+    folder = env.skill_dir("scaffolded")
+    folder.mkdir(parents=True)
+    (env.plugin_dir("scaffolded") / ".claude-plugin").mkdir()
+    (env.plugin_dir("scaffolded") / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "scaffolded", "description": "a person's skill"}) + "\n",
+        encoding="utf-8",
+    )
+    (folder / "SKILL.md").write_text(
+        "---\nname: scaffolded\ndescription: a person's skill\n---\n\n# scaffolded\n\n"
+        f"{BEGIN_MARKER}\n{END_MARKER}\n",
+        encoding="utf-8",
+    )
+    commit_all(env.root, "a person's own skill")
     create_record(env.home, make_behavior(scope="skill:s", record_id=RID))
     verbs.route(env.home, RID, dest="new-skill:scaffolded", no_push=True)
+    assert env.row("scaffolded") is None  # control: not owned
     assert env.skill_md("scaffolded").is_file()  # control: the skill exists
     before = env.snapshot()
     result = skill_writer.retire(env.home, "scaffolded", case=CASE2, by="overseer", no_push=True)
@@ -216,14 +234,41 @@ def test_cli_retire_as_the_person(env, capsys):
     assert not env.plugin_dir().exists()
 
 
-def test_cli_retire_names_the_lessons_that_block_it(env, capsys):
+def test_cli_retire_from_an_agent_shell_under_the_grant_is_the_agents(env, monkeypatch, capsys):
+    """Gate r1 finding 4 (decision 6): with the user's grant in force an
+    agent's shell retires the skill, and the registry and the ledger commit
+    say `agent`, the grant and the reason. Mutation: drop `args.by =
+    "agent"` from `skill_cli.dispatch` -> the registry says `human`."""
+    from self_learn import grants
+    from test_grants import _stmt
+
+    assert env.write().ok
+    stmt = _stmt(env.home, env.tmp)
+    assert grants.add(env.home, statement=stmt)[1] is True
+    monkeypatch.setenv("CLAUDECODE", "1")
+    capsys.readouterr()
+    code = cli.main(["skill", "retire", NAME, "--case", CASE2, "--no-push",
+                     "--note", "the user asked to retire it"])
+    assert code == 0, capsys.readouterr().err
+    assert not env.plugin_dir().exists()  # positive control: it was retired
+    assert env.row()["retired"]["by"] == "agent"
+    body = git(env.home, "log", "-1", "--format=%B").stdout
+    assert "the user asked to retire it" in body
+    assert body.strip().rpartition("\n\n")[2].splitlines() == ["By: agent", f"Grant: {stmt}"]
+    assert "By: human" not in body
+
+
+def test_cli_retire_of_a_skill_with_lessons_records_a_request_naming_them(env, capsys):
+    """S-110 (SK-B): the person's retire is no longer refused
+    while lessons route in; it is a request the overseer carries out."""
     assert env.write().ok
     _route_in(env)
     capsys.readouterr()
-    assert cli.main(["skill", "retire", NAME, "--case", CASE2, "--json"]) == 1
+    assert cli.main(["skill", "retire", NAME, "--case", CASE2, "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["ok"] is False and out["routed"] == [RID]
-    assert env.skill_md().is_file()
+    assert out["ok"] is True and out["requested"] is True and out["routed"] == [RID]
+    assert env.skill_md().is_file()  # nothing removed yet
+    assert skill_registry.load(env.home).row(NAME)["retire_requested"]["by"] == "human"
 
 
 def test_the_draft_helper_is_shared(env):

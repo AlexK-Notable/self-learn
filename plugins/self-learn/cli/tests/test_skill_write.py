@@ -165,7 +165,7 @@ class Env:
 
     def veto(self, name: str) -> None:
         def add(registry):
-            registry.add_veto(name, at="2026-10-31T00:00:00Z", statement="stmt-0000aaaa")
+            registry.add_veto(name, at="2026-10-31T00:00:00Z", by="human")
 
         skill_registry.with_update(self.home, add, subject=f"veto {name}")
 
@@ -901,9 +901,13 @@ def test_cli_refuses_a_change_from_an_agent_shell(env, monkeypatch, capsys, mark
 
     monkeypatch.setattr(intents, "ledger_write", no_lock)
     capsys.readouterr()
-    assert cli.main([*argv, "--no-push"]) == 1
+    # S-109: person-only; an agent's shell needs --note (64) and
+    # the user's standing grant (1), and gets neither here.
+    assert cli.main([*argv, "--no-push"]) == 64
     err = capsys.readouterr().err
-    assert "person's command" in err and marker in err
+    assert "person-only" in err and marker in err
+    assert cli.main([*argv, "--no-push", "--note", "asked"]) == 1
+    assert "no standing grant" in capsys.readouterr().err
     assert env.snapshot() == before
 
 

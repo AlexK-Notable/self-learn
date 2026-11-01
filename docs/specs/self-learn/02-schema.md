@@ -35,7 +35,13 @@ routing:                  # written on routing; null before
                           #   proposals — verbs.py's `ROUTING_BY_VALUES`;
                           #   `steward` and `overseer` widen the same list,
                           #   2026-09-13, S-65 — every sheet item and case
-                          #   `actor` field draws from it)
+                          #   `actor` field draws from it). *S-109:*
+                          #    who chose, never who ran the
+                          #   verb (that is the commit's `By:` trailer); from
+                          #   an agent's shell the verb must be told (`--by
+                          #   analyst|human|agent`), and so must a `batch`
+                          #   sheet's route/replace/revise line (`by:`,
+                          #   §3a.1 item 5)
   reference_file: null    # 2026-07-16 (doc 13 audit): `reference`
                           #   destination ONLY — WHICH references file got
                           #   the entry (`--dest reference:<file>`); absent
@@ -67,6 +73,13 @@ supersedes: null
 superseded_by: null
 resolution_note: null     # optional; the human's why, written once at
                           #   resolution (route/reject/graduate) — see §2
+resolution_by: steward    # *S-109*, a `rejected` record only:
+                          #   who made the current rejection — human |
+                          #   agent (a shell) | steward | overseer (a sheet
+                          #   runner, never the line's `by`). Absent when
+                          #   unknown (a record rejected before the field
+                          #   existed); a reopen displaces it into the
+                          #   `resolution` history entry as `by`
 ---
 
 ## Trigger
@@ -347,7 +360,9 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   or the same truthful "already absent"/"left untouched" string when
   nothing changed. `reconsidered` is the
   successor-case pointer a dependency-moved observation queues
-  (`02-schema.md` §3a.2) — a decision, made once, here.
+  (`02-schema.md` §3a.2) — a decision, made once, here. *(S-109.)*
+   A `reconsidered` entry also carries `by`, who decided the
+  reconsideration (`--by`); the commit's `By:` trailer says who ran the verb.
 - **`history`'s closed set widens to six kinds** *(2026-10-06, L8,
   `03-decisions.md` S-78)*: `moved` joins the five above.
   `ledger_ops.move_record` appends one per `rehome` or `rescope`, for every
@@ -357,6 +372,20 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   runner's own actor, else the verb's `by`, else `human`; `case` is present
   only under a delegated sheet. A move is therefore never byte-identical:
   it is a new version of the lesson (§3a.8). Code older than this widening
+  refuses such a record.
+- **`history`'s closed set widens to seven kinds** *(2026-10-31,
+  S-110)*: `skill-renamed` joins the six above. A skill
+  rename (`skill_writer.rename`, by a person, an agent under the grant, or
+  the overseer's runner) carries the skill's ledger bucket `skills/<old>/`
+  to `skills/<new>/` (`ledger_ops.carry_skill_bucket`, a `git mv`) and
+  appends one entry to every record it carries, in the same commit:
+  `{at, event: "skill-renamed", from, to, from_blob?, by, case?}`, where
+  `from`/`to` are the buckets and `from_blob` the record's git blob before
+  the carry. `ledger_ops.carried_version` takes trailing `skill-renamed`
+  entries back off, so the steward reads a carried lesson it has decided
+  as the version it decided (no new version, §3a.8) unless the lesson was
+  edited afterwards. The bucket's compile records are re-keyed to the new
+  plugin path (`compiled.rekey_prefix`). Code older than this widening
   refuses such a record.
 - **`<ledger>/overseer/` is not a bucket** *(2026-09-13 — the overseer
   build, O-0)*: it holds no `pending/resolved/proposals` records, is never
@@ -799,26 +828,44 @@ skills:
   <name>:
     status: live            # live | retired
     plugin: plugins/<name>  # relative to the skills root
-    created: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human}
-    last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human,
+    created: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent}
+    last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent,
                  authored_sha256: <hex>}
-    retired: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human}  # only when retired
+    retired: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent}  # only when retired
     renamed_from: [<old name>, ...]                                 # optional
+    retire_requested: {at: <iso>, by: human|agent, grant: stmt-xxxxxxxx}  # optional, live rows only
 vetoed:
-  - {name: <name>, at: <iso>, statement: stmt-xxxxxxxx}
+  - {name: <name>, at: <iso>, by: human|agent, grant: stmt-xxxxxxxx}  # S-110
+  - {name: <name>, at: <iso>, statement: stmt-xxxxxxxx}              # written before it
 ```
 
 A skill is owned when it has a `live` row; a retired row keeps its history
 and owns nothing. `by` is `overseer` only when the overseer's runner calls
-the writer itself (a Python call, not the CLI), and `human` for every write,
-retirement or rename made through the CLI; an agent's shell cannot make one
-(`03-decisions.md` S-107 part 2), so no third value is needed.
-`case` always names a case in this build: the CLI's `write`, `retire` and
-`rename` require `--case`, and the registry refuses any other value
-(`skill_registry._check_case`). A person's step that answers no case
-(`case: null` with `by: human`, which the skills plan allows) is not built;
-until it is, a person names the case the step belongs to. The runner always
-names its case. `authored_sha256` is the sha256 of the skill's authored
+the writer itself (a Python call, not the CLI), `human` for every write,
+retirement or rename made through the CLI in a person's own terminal, and
+`agent` for one made from an agent's shell under the user's standing grant
+(`03-decisions.md` S-107 part 2, as amended by S-109).
+*(Amended S-110.)* `--case` is optional on the CLI's `write`,
+`retire`, `rename` and `veto`: a step that answers no case records `case:
+null`, which the registry accepts only with `by: human` or `by: agent`
+(`skill_registry.CASELESS_BY_VALUES`), and the skill's frontmatter stamp then
+reads `case: null`. The runner always names its case. A person's (or an
+agent's) route that scaffolds a skill under a name no row, veto or skill
+folder uses makes the skill owned the same way: its seed `SKILL.md` is
+stamped (`authored_by: human|agent`, `case: null`) and, once the host write
+stood, the route adds a `live` row whose `created` and `last_write` say
+`case: null` and whose `authored_sha256` is the scaffold's (`verbs.
+_own_routed_scaffold`, one ledger commit `skill owned <name> (scaffolded by a
+route)`; a failure is a warning, and `--selftest` then names the stamped
+`SKILL.md` with no row). A route by a job, into an existing skill, or under a
+vetoed or retired name adds nothing. `retire_requested` is a request to
+retire a live skill lessons still route into (`skill retire` of such a skill,
+`skill_requests.request_retire`): the next overseer run that writes skills
+moves the lessons out and retires it, and the key goes with the retirement.
+A veto entry written from S-110 on carries who made it (`by`)
+and, from an agent's shell, the grant's statement (`grant`, only with `by:
+agent`); an older entry's `statement` is read as before. Every registry write
+goes through `skill_registry.with_update` with a named callback. `authored_sha256` is the sha256 of the skill's authored
 files as the last `skill write` left them, frontmatter stamp included:
 `SKILL.md` with its managed section, its pointer block and trailing white
 space taken out, and every `references/*.md` in full except the compilers'
@@ -863,10 +910,23 @@ ignored.
 `skill-candidates.yaml`. Phase B's stage adds `owned-skills/<name>/` (the
 skill's files as they are now, its registry row,
 `changed-since-last-write.diff` and the ids of the lessons routed into it),
-`vetoes.yaml` (the vetoed names, and the open retirement requests: for
-each live skill, its newest `overseer respond --retire-skill` request made
-since the skill was created, with its statement id, staged in every run
-until the skill is retired) and `skill-proposals.yaml`; it writes
+`vetoes.yaml` (the vetoed names, and the open requests, read from the
+registry alone: each live skill whose name is vetoed, to be renamed, and each
+live row's `retire_requested`, staged in every run until the skill is renamed
+or retired; *amended S-110*, before which a retirement request
+was an `overseer respond --retire-skill` statement) and
+`skill-proposals.yaml`. *(S-110.)* Each owned skill's
+`lessons.yaml` lists the lessons routed into it and, under
+`in_reference_files`, each lesson held in one of its authored reference files
+(`{id: references/<file>.md}`), which a rewrite may not change or remove. An
+owned skill whose folder is gone from the skills root is staged with
+`last-write/` (its files as self-learn last wrote them, read from the skills
+root's history, following renames) and the commit that removed the folder;
+phase B brings it back (a pair whose `skills/<name>/` is written from
+`last-write/`, deployed only into an empty place) or retires it. Before phase
+B is staged, a writing run makes again every missing or wrong
+`~/.claude/skills/<name>` link of an owned skill whose folder exists, and the
+report names each repair; it writes
 `skills/<name>/` (one folder per skill to build or rewrite: `SKILL.md`,
 optional `references/*.md`) and `skill-dispositions.yaml`.
 
@@ -902,8 +962,13 @@ questions:
       path: /abs/path       # the repository a plain yes registers as a canon host
       mode: plain           # git | plain
       kind: project         # project (default) | skills-root
+      action: add           # add (default) | set-mode (S-109: a yes
+                            #   switches that registered host to `mode`)
 ```
 
+*(Amended S-117, 2026-10-31: the shape above is the one an
+index written before this amendment may still hold. Since it, `ask` is the
+only kind the runner indexes; see "Asks carry a default" below.)*
 An index row written before this date is `{id, cases}` and reads as
 `kind: reading`. The runner validates each entry on its own — a reading's id
 must name an entry at that revision in the user model the run was given, an
@@ -925,7 +990,116 @@ because the user sees the text and a yes means exactly
 that registration. A reading never carries `register`. The index keeps the
 field as `{kind, path, mode}`; `overseer open` prints "a plain yes registers:
 …" under the ask, and the one-line text recorded on each cited case's
-presentation carries the same words.
+presentation carries the same words. *(S-109.)* `action:
+set-mode` (kept in the index only when given) makes the yes switch a host
+already registered as `kind` to `mode` (`host set-mode`); `overseer open`
+prints "a plain yes does: switch … to … mode". From an agent's shell the yes
+is proved only when the assistant's own visible message between the person's
+previous typed row and the yes names the ask's id, the path and the mode, and
+no other open ask with a `register` (13 §4 item 5); the registration commit
+carries `Answers: <id>` in its body and `By: agent` / `Proof: <transcript
+line>` as its trailer.
+
+*(Added 2026-10-31, S-117.)* **Asks carry a default; the
+overseer never waits on the user.** Decision 4 of the 2026-10-31b round (the
+orchestrator's, under the user's 15:13 words "unless sudo is involved, you
+should never have to tell me, 'X is waiting on you'"):
+
+```yaml
+questions:
+  - id: q-user-scope-shelf  # the only kind
+    kind: ask
+    text: "Do you want …?"
+    why: "…"
+    cases: [case-…]
+    default: "I left the lesson where it is."  # what the overseer did this run
+  - id: q-restart-daemon
+    kind: ask
+    text: "…"
+    why: "…"
+    cases: [case-…]
+    system: true            # would change the user's system outside self-learn: no default of its own
+```
+
+- A `kind: reading` entry, or a legacy `{id, cases}` entry whose id is a
+  user-model proposition, is DROPPED and named in "Refused / could not do"
+  ("a reading is not asked: show it under User model and act on it; the user
+  corrects one when they choose to"). Readings remain evidence, shown in the
+  report's User model section; the runner adds one line there saying how to
+  correct one (`statement add … --answers-kind proposition --answers-ref
+  <um-id>@r<revision>`), and phase B's `answers.yaml` now carries such
+  corrections beside the answers to asks, each row with its `kind`
+  (`question` or `proposition`; a proposition answer whose `ref` is not a
+  reading's id is left out). *(Fix round 1.)* A correction is offered once:
+  only one recorded after coverage's `last_run_at` (the last completed run,
+  stamped before it staged phase B's inputs) comes in, so a reply to a
+  reading already in front of a phase B, or applied by the old `overseer
+  respond` on a reading, is not offered again as a live correction. A stamp
+  that does not parse is kept. Answers to asks are unchanged. *(Fix round
+  2.)* The stamp is the one the run FOUND in coverage before writing its
+  own: a real run writes this run's coverage (its own `last_run_at`) before
+  it stages phase B, so the runner never re-reads `coverage.yaml` for this
+  cut-off; phase S and phase B use the same value. No completed run yet
+  offers every correction. A manual run leaves `last_run_at` where it was,
+  so a correction a manual run's phase B saw is offered again by the next
+  counted run (twice, never lost).
+- Every ask needs `default`: one sentence, secret-scanned, on what the
+  overseer did this run in the user's stead; an ask without one is dropped.
+  The overseer decides the lessons the ask is about by that default in the
+  same run and never defers a lesson to wait for the answer.
+- An ask with `system: true` (its answer would change the user's system
+  outside self-learn's own surfaces) or with `register` writes NO default:
+  one it writes is dropped, and the runner indexes the fixed change-nothing
+  sentence (`conversation.SYSTEM_DEFAULT`, "Nothing on your system was
+  changed; answer if you want it done.", or `REGISTER_DEFAULT`, "Nothing was
+  registered or switched; a plain yes does it.", one sentence for both a
+  register ask's `action: add` and its `action: set-mode`). The runner cannot tell a system ask
+  the model failed to flag; the prompt says which asks are.
+- The index row keeps `default` (and `system: true` when set). At publish,
+  for each ask, the runner observes on each cited case -- or on the case its
+  line of successors ends at, this run's own successor included -- a
+  `statement` by the overseer: `ask defaulted <q-id>; default applied:
+  <default>` with `ref: overseer-run:<run>`, under an observation id derived
+  from the run, the ask and the case (a resume records nothing twice). The
+  steward brings a case whose outcome is `defer` back on it, as on an answer
+  (S-96), with a card line quoting the default. *(Fix round 1.)* Defaults are
+  recorded only on the attempt that will publish the asks: an attempt held
+  for a retried refusal (A14: only a completed run publishes
+  `open-questions.yaml`) records none and reports none, so no lesson is
+  released on a default the user was never shown; the resume that completes
+  records them. "Will publish" is the runner's knowledge when it records:
+  an exception in the finalization after that (writing the report or the
+  run's truth) leaves the attempt partial, unpublished, with its defaults
+  already recorded and their lessons already released to the steward. The
+  resume that completes publishes them; only a week that then closes at the
+  attempt cap leaves a default applied that the report never showed. This is
+  accepted as narrow (it needs a finalization exception and the cap); the
+  `ask defaulted` observation on the case still records it. A cited case whose line of successors still ends at a case
+  parked for the overseer after this run's apply (`cases.awaiting_overseer`:
+  no successor of this run decided it, or its successor was refused) is NOT
+  observed: the default decided none of its lessons and the hold keeps them.
+- The report's "Decided in the user's stead" lists each default applied and,
+  after them, the `system` and `register` asks where nothing was changed
+  (`<q-id> would change your system: <default>`, `<q-id> would register a
+  host: <default>`). *(Fix round 1.)* An ask whose default did not reach a
+  cited parked case gets no "applied" line; "Refused / could not do" says
+  `<q-id>: default not applied to case-… — still parked for the overseer;
+  its lessons stay held until a successor decides it`, naming any case it
+  did reach. The phase B prompt says a parked case an ask cites is decided
+  by the default only through a successor staged that run.
+- `overseer open` shows an ask's default under its `why`; the recorded
+  presentation line carries it. `overseer_open_questions` and the
+  session-start count leave out an ask with a default: it is decided, not
+  waiting. An ask without one (an index written before) still counts.
+- An answer to an ask with a default is observed, not on the cited cases, but
+  on the case each one's line of successors ends at, as `user answered <q-id>
+  after its default was applied (ref: stmt-…)`. The steward brings that case
+  back WHATEVER it decided, with the user's words in the card, so an answer
+  can overturn what the default decided. An answer to an ask without a
+  default keeps S-96's form and rule. Once a later run rewrites the index,
+  last week's asks can no longer be answered with `overseer respond`; a
+  `statement add --answers-kind question --answers-ref <q-id>` still reaches
+  phase B through `answers.yaml`.
 
 *(Added 2026-10-30, S-101.)* **Lesson records and the preview.**
 Phase B's stage also holds `lessons/<id>.md`, every lesson record in the ledger
@@ -940,7 +1114,7 @@ not recorded.
 
 *(Added 2026-10-31, S-105.)* **Phase B's premise-check facts and the hand-step
 census.** Phase B's `health.yaml` `catalogue_health` list (`overseer/health.py`
-`gather`) gains two rows, both measured by code from the ledger and its git history,
+`gather`) gains four rows (the fourth, `stranded-lessons`, is S-115's, §3a.8), all measured by code from the ledger and its git history,
 neither calling a model nor writing anything. **`premise-check`** (premise design
 D11, `§3a.10.8`): `placed_lessons` and `without_premises` (a lesson whose `premises`
 field is absent; `[]`, a decision that nothing is checkable, counts as having
@@ -956,13 +1130,42 @@ no model and no case can still be reviewed). With `premises.enabled` false the r
 `state: off` and carries no counts. A part that cannot be read says `state:
 unavailable` with a reason, and an empty list beside a sweep that has not run is
 labelled by the row's `caution`: an unreadable target is never reported as zero.
-**`hand-steps-this-week`** (hand-maintenance cures, lane C; design M5.3): every ledger
-commit of the last seven days that no job made. A commit is a job's when its subject
-begins `self-learn: steward manifest|telemetry flush|case |worker |mine |overseer`
-(the runners' own), `capture |statement add|user-model ` (new knowledge, not upkeep)
-or `premises refresh ` (reported on the row above), or when it carries a `Case:`
-trailer or `By: steward|overseer|analyst`; everything else is a hand step, whoever's
-shell ran it, including a subject no list anticipated. Each step is `{commit, at,
+**`uncommitted-host-removals`** (hand-maintenance round b, lane CU-6): `items` is `[{project, file, since}]`, one
+per not-done `code` notice (S-106, 13 §7.5) whose condition git still answers "holds": a plain-mode project's
+tracked file that a lesson retirement left changed and nobody has committed. Asked in the run, so it does not depend on
+a session opening in that project. The overseer's report names each under Catalogue health; the agent working in
+that project commits the file with the line the notice carries. `unknown` lists, in the same shape, the
+notices git could not answer (a timeout, an error); `state: unavailable` with a `reason` means the notices could not
+be read. Only both lists empty under `state: ok` means none are waiting; an unreadable target is never reported as zero.
+**`hand-steps-this-week`** (hand-maintenance cures, lane C; design M5.3; amended
+2026-10-31, S-111): every ledger commit since the last published census that no
+job made. *The window* is the ancestry range `<cursor>..HEAD`, where the cursor is the
+`head` in `overseer/census.yaml` (`{head, run, at}`, a ledger file); the walk has no date
+option, because `git log --since` stops at a commit made on a clock set to the past and
+never reaches an in-window commit behind it. With no cursor (a first run), or one that
+is not an ancestor of HEAD (lost, or history rewritten), it walks the whole history and
+keeps the commits whose author date is within seven days, and the row's `label` says
+which case (`since the census of <run> (<sha>)`, `no earlier census; the last 7 days`,
+or `the earlier census point is not in this history; the last 7 days`); `since` is the
+cursor commit's author date, or the fallback cut; `head` is the HEAD read once before the
+walk, the next cursor (one HEAD read serves the premise-refresh walk and this one, so a
+commit landing between them is listed by the next run, never skipped by both). A commit is a
+job's when it carries a `By:`
+trailer naming a job (any stamped actor but `human` and `agent`, read from
+`attribution.ACTORS`: `miner|worker|sweep|steward|overseer|serve|policy|maintenance|analyst`,
+the `policy` actor from S-112, `maintenance` the daily recompile job (13 §5,
+S-119); every ledger
+commit carries one since S-102 as extended, so the trailer is read FIRST); `By: human`
+or `By: agent` is a hand step whatever its subject, except the never-a-hand-step subjects
+below. Only a commit with NO `By:` trailer
+(history from before the stamp) falls back to its subject: one beginning
+`self-learn: steward manifest|telemetry flush|case |worker |mine |overseer` or
+`premises refresh ` is a job's, and any other is a hand step, including a subject no list
+anticipated. A subject beginning `capture |statement add|user-model ` records new
+knowledge, and one beginning `telemetry flush |case observe |overseer presentation response`
+is protocol bookkeeping a shell writes as a side effect of ordinary work (it carries the
+shell's actor since S-102, so the trailer cannot tell it from upkeep); neither is ever a
+hand step, whatever `By:` they carry. Each step is `{commit, at,
 subject, by, note}`: `by` is `human` or `agent` from a `By:` trailer, `none` when the
 commit has no trailer (the commit cannot say whether a person or an agent ran it); the
 note is the commit body without its trailer paragraph, one line, at most 240
@@ -983,16 +1186,26 @@ completes it in the published report: a step of the census the overseer's sectio
 does not name is added as `- <commit> <when> by <by>: <subject> (<note>) — the
 overseer did not name the gap`, steps past the packet's cap are counted in one line,
 an empty week reads `- none`, and a census that could not be read says so in words.
+A report the RUNNER builds (a refused phase B, a failed attempt that closes a week,
+a partial run) carries the same section: the census the run staged, every step marked
+as having no named gap, or, when no census was staged, the line `the census was not
+taken this run; the next report covers this window too`. The window line
+`- window: <label>` heads the runner's additions. **The cursor moves with the report:**
+the commit that publishes a report carrying a census whose `state` is `ok` also writes
+`overseer/census.yaml` (`head` = the census's `head`, `run`, `at`); a run that
+publishes no report, or one whose census was not taken or could not be read, leaves it,
+so the next census covers both windows and no commit is skipped or listed twice. The
+`premise-check` row's `refreshed_this_week` list uses the same walk and the same cursor.
 The census is stored in the run record as `hand_steps` (`state`, `reason`, `total`,
-`steps`), because a resumed run rebuilds its stage without `health.yaml`; a record
+`head`, `label`, `steps`), because a resumed run rebuilds its stage without `health.yaml`; a record
 made before this field has none and its report is published as the overseer wrote it.
 The report's length guide counts the overseer's own lines, not the runner's.
 
 *(Added 2026-10-31, S-106.)* **Phase B's optional `notices.yaml`.** Phase B's
-stage also holds `projects.yaml` (`{projects: [{name, path, showing?}]}`: the paths of every
+stage also holds `projects.yaml` (`{projects: [{name, path, showing?, done?}]}`: the paths of every
 project bucket (`projects/<slug>/meta.yaml`) and registered host that exist, as real
 paths, each with `showing`, the words of the overseer notices still up there, when it has any, so a finding
-is not written again reworded; a secret-scan hit makes it `projects: []`), and phase B MAY write
+is not written again reworded, and `done`, the words of those a person marked done in the last 30 days (a notice for the same case is not shown again however worded; the runner drops it and says "already marked done"); a secret-scan hit makes it `projects: []`), and phase B MAY write
 `notices.yaml`, `{notices: [{project, text, case?}]}`. It is not a required output
 file: a run without it is complete. The runner keeps an entry whose `project` is one
 of those paths (and that the secret scan does not match: the run record is scanned whole and a hit would
@@ -1005,6 +1218,41 @@ repeat, up to five a run; every other entry is dropped and named by ordinal in
 written to the cache as project notices first thing when the run record is executed, before any sheet is
 applied and again, idempotently, on a resume (13 §7.5). A
 `notices.yaml` the secret scan matches is replaced in the stage by `notices: []`.
+
+*(Added 2026-10-31, S-112.)* **Phase B's optional `hosts.yaml`: plain
+registrations the overseer makes itself.** Each `projects.yaml` row also carries
+`registered`: `git` or `plain` (its project registration's mode), `removed` (a `host
+remove` took it out; that undo stands) or `no`. Phase B MAY
+write `hosts.yaml`, `{registrations: [{path, case, why}]}`, naming project directories
+to register as PLAIN canon hosts (decision 5; 13 §4 item 5). It is not a required
+output file. The runner keeps an entry whose `path` is absolute, whose `case` is a
+case id in the ledger, whose `why` is one non-empty line of at most 200 characters,
+with no secret-scan hit in either, that is not a repeat, up to five a run; an entry
+with `mode: git` (or any mode but `plain`) is dropped (registering a repository in git
+mode stays the user's); every other failure drops that entry, named by ordinal in
+"Refused / could not do". The kept entries are stored in the run record as
+`registrations` (`{path, case, why}` each). When the record is executed, after the
+notices and before any sheet, each is registered through
+`hosts.register_plain_project` unless `hosts.registration_problem` names why not (not
+an existing directory strictly inside the user's home; the ledger or self-learn's
+cache, inside either or above either; already registered in either registration;
+taken out of the registry by a `host remove` commit, whoever made it (nothing in self-learn removes a
+host on its own), the most recent one for that path in the ledger's history of `hosts.yaml`, which an unreadable
+history also refuses);
+the outcome is written into the row (`result: registered|refused`, `reason`), which
+the finalize commit owns, so a resume reports the same outcome without registering
+again (a row a resume finds already registered by this run's own commit, found by its
+`Overseer run <run id>` body line, reads `registered`). Each registration is a "Decided
+in the user's stead" line, `[host registered] <path> as a plain project (<case>:
+<why>)`, ending in the command that undoes it, `self-learn host remove <path>
+--project`, and what that command needs once lessons are routed there (each moved with
+`self-learn rehome <id> --to <target>`, or `--gate-only`); each refusal is a "Refused / could not do" line. A dry run registers nothing. A `hosts.yaml` the secret scan
+matches is replaced in the stage by `registrations: []`. The host policy's own
+switches since the last run (ledger commits `self-learn: host set-mode … (policy)`
+with `By: policy`, `hosts.policy_commits`) are listed under "Decided in the user's
+stead" too, as `[host mode set by the policy] <kind> <path> <old> → <new> (…; ledger
+commit <sha>); undo: …`, and kept in the run record as `policy_lines` so a resume
+reports the same.
 
 *(Added 2026-09-27.)* **Findings.** Phase B's staged `findings.yaml` is
 `{findings: [{case, kind: examined|dependency-moved, text, ref?}]}`. The runner
@@ -1167,7 +1415,14 @@ own subtree.*
 5. Attribution draws from one list, `{human, steward, overseer, analyst,
    agent}`: `actor` on a case, `recorded_by` on a statement, `updated_by` on
    the user model, and `by:` on every sheet item, permitted on every
-   resolution verb, not `route` alone (U3).
+   resolution verb, not `route` alone (U3). *S-109:* on a
+   `route` (and so a reroute), `replace` or `revise` line `by:` says who
+   chose, not who ran the sheet. A sheet run from an agent's shell (`self-learn
+   batch`, runner `agent`) must name it on every such line, `analyst`,
+   `human` or `agent`; otherwise the whole sheet is refused before item 1
+   (exit 64, preview and run alike, nothing written), because the runner's
+   actor is those verbs' default `by:` and would record the person's choice
+   as the agent's.
 6. The worker's rejected-proposal digest (`worker.py:1549-1618`, built from
    `git log --grep '^self-learn: reject '`) attributes every entry with its
    decider (`human | steward | overseer`) and the rejected reason; the
@@ -1320,6 +1575,19 @@ without it the case is refused by name. A skill-building pair is `outcome: route
 `decision.skill`, and a skill retirement is `outcome: retire` with `decision.skill`. The overseer's
 runner writes the skill before it applies a building pair's sheet (a refused write drops the pair),
 and retires the skill only after the retirement pair's sheet has moved its lessons out.
+*(Amended S-110.)* `decision.skill` may carry `renamed_from: <old name>`: a rename
+pair (`kind: maintenance`, `outcome: no-action`, an empty sheet, and no `skills/<new>/` folder: a
+rename pair writes no files, and the skill's text is changed in a later run under its new name) makes
+the runner rename the live owned skill `<old>` to the pair's name before the pair's case is recorded
+(`skill_writer.rename`, which carries the lessons and the skill's ledger bucket), reported as
+"[skill renamed] <new>: renamed from <old>" (under writing `off`, "would rename <old> to it"). One
+build may gather the lessons of several cases in a week: the first pair naming a skill being built
+builds it, and every later pair naming it only moves its lessons in after the build; a pair moving
+lessons into a skill whose build pair was dropped, or whose `skill write` was refused, is dropped
+with it (a `git` refusal makes both wait for the resume). A request
+the registry holds (a vetoed live name, a `retire_requested`) that a writing run did not carry out
+is named under "Refused / could not do". No pair, report line or question asks the user about a
+skill.
 
 **Section 4, Dependencies** — everything the decision rests on, each cited
 from the evidence table:
@@ -1444,6 +1712,10 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
 - `last_attempt_at` is written by that same increment and is what the
   scheduler's cooldown reads; a value that is unparseable or in the future
   reads as "attempted now", never as "due every tick" or "never due".
+  *(Amended 2026-10-31, S-115.)* An unfinished steward run is
+  retried two hours after the later of this stamp and the cache attempt
+  journal's newest attempt (`13-hosting-and-separation.md` §5, "The steward's
+  schedule and retry"), never after `steward.cooldown_secs`.
 - `progress_at` is the time of the last attempt that made progress, and is
   what a later run compares against to tell a retry apart from a loop.
 - `failure` is the kind, and it reuses the literals the runner already writes
@@ -1632,6 +1904,17 @@ user answered q-<slug> (ref: stmt-...)`, and the steward's reconsider input
 (§3a.8) counts that observation although its `ref` is not among the case's
 dependencies (a statement made afterwards cannot be). Cases that decided
 anything other than `defer` do not come back on an answer.
+*(Amended S-117, 2026-10-31.)* That rule holds for an ask
+written without a default (an index from before this amendment). Two more
+observation forms now count as reconsider inputs the same way: `ask
+defaulted q-<slug>; default applied: <default> (ref: overseer-run:<run>)`,
+recorded by the runner when it applies an ask's default, brings back a case
+whose outcome is `defer` only, like an answer; `user answered q-<slug> after
+its default was applied (ref: stmt-...)`, recorded by `overseer respond` for
+an ask that carried a default, on the case the cited case's line of
+successors ends at, brings that case back WHATEVER it decided, so the
+user's answer can overturn what the default decided. See "Asks carry a
+default" in the questions section above.
 
 *(Amended 2026-10-16, S-88.)* A staged `kind: reconsider` case is also
 checked for the predecessor apply time needs, for each lesson it names,
@@ -1666,7 +1949,11 @@ case that supersedes nothing and changes no placement (a lesson found false
 there gets a probe that records `contradicts-claim`, which makes it a
 `premise-moved` input the next night, or the case is parked; §3a.10.7). The
 runner refuses every line but that one `premises set` on the lesson in a
-`premise-extract` case (`steward._premise_extract_problem`). A `kind:
+`premise-extract` case (`steward._premise_extract_problem`). A
+`premise-review` input (S-114, §3a.10.4) is decided the same way
+as an extract, in a `kind: resolution` `no-action` case that supersedes
+nothing; on the lesson the runner allows only one `premises` line (`set` or
+`rebaseline`) and one `note` (`steward._premise_review_problem`). A `kind:
 resolution` case on a `premise-moved` input (and only there) may hold, for
 that routed lesson, the items a reconsider could: `replace` (narrowing
 included, the one place outside a reconsider where the steward may replace a
@@ -1916,6 +2203,29 @@ and `dry_run`) and `route --dry-run` for its `would_refuse` entries; the
 errors of the case, statement and user-model writers carry the hits their
 message was built from. A person running a verb by hand still sees the span.
 
+**Every ledger commit says who made it** *(S-109)*. A commit
+in the ledger (never in a host repository) ends in a trailer paragraph with
+`By: <actor>`: `human` or `agent` for a command line (the shell
+`settings.agent_caller` detects), `miner`, `worker`, `sweep` (the premise
+sweep), `steward` or `overseer` for a job (set by the job's entry point, so a
+worker auto-kicked from an agent's command line is `worker`), `policy` for the
+daily host policy (S-112, 13 §4 item 5), `serve` for the
+daemon outside a job. A body's own final `By:` block is kept only when it
+is provably the writer's: it names the current actor (or, for the worker
+and the miner, `analyst`, the trailer their routing verbs write), or,
+inside a job (never in a shell), it is a sheet runner's (`steward`,
+`overseer`) execution block below. Any other final block, whatever a note
+or a model's text ends in, is followed by the writer's own. A command-line
+`batch` runs as its shell (`human` or `agent`), so its lines record who ran
+them. An agent's shell running a person-only command under the user's
+standing grant (§3a.3a) writes `By: agent` and `Grant: <statement id>`,
+with its reason and the user's words (`Under the user's standing grant
+(<statement id>): "<words>"`) as body paragraphs; under a proved typed yes,
+`By: agent` and `Proof: <transcript line>`. A final block is kept under an
+authority only when it is `By: agent` (it gains the `Grant:`/`Proof:` line)
+or already names that very authority. Never `By: human` for an agent's
+act.
+
 For an opted-in ordinary ledger mutation, the item's own mutation commit has
 one canonical final trailer block: `By: <runner>`, `Case: <case-id>`,
 `Sheet: <sheet_sha>`, `Item: <original-n>`. The manifest's full digest binds
@@ -2145,6 +2455,42 @@ a new line naming the line it amends.
 A reading of a statement is a user-model entry (§3a.4) that cites the
 statement id, or a case dependency that cites it — the statement line
 itself never grows an "interpretation" field.
+
+### 3a.3a The user's standing grant *(S-109)*
+
+```
+<ledger>/grants.jsonl
+```
+
+Append-only JSON Lines, like the statement store:
+
+```json
+{"id": "grant-1a2b3c4d", "op": "grant", "statement": "stmt-a0adc9e2",
+ "verbatim": "<the user's words, copied from the statement>",
+ "message_ref": "transcript:<session>#L<n>", "at": "…",
+ "by": "human", "note": "<why it was recorded, or null>"}
+{"id": "grant-5e6f7a8b", "op": "revoke", "grant": "grant-1a2b3c4d",
+ "at": "…", "by": "agent", "note": "…"}
+```
+
+A grant is made only from a user-scoped statement of kind `proposition` or
+`instruction` (never a `question`) whose `message_ref` is a transcript line
+that still resolves, reads as the user's own typing (rule 10, as `statement
+add` reads it) and holds the statement's words. Unlike `statement add`, a
+transcript that cannot be found refuses. Which typed proposition grants
+anything is not something code can read, so any statement passing these
+checks qualifies; what keeps a wrong choice visible is that the words are
+copied verbatim into the grant row and the `grant add` commit, printed on
+every command an agent runs under it (`<command>: running under the user's
+standing grant stmt-…("<words>")`) and in its `--note` refusal, and written
+into every commit made under it; `grant revoke` ends it. The newest grant
+no later row revokes is in force. `self-learn grant add --statement <id>`
+records it (from an agent's shell only with `--note`, committed `By: agent`
+and `Grant: <statement>`); `grant revoke <id>` ends it (anyone may);
+`grant list` shows them. While a grant is in force, an agent's shell may run
+a person-only command (`host add|remove|rebind|set-mode`, a tier-C `config
+set|unset`, `skill write|rename|retire|veto`) with `--note <reason>`; without a
+grant in force, or without the note, the command refuses before any lock.
 
 ### 3a.4 The user model
 
@@ -2653,7 +2999,8 @@ contradicts; `suspected-violation` fires reached no consumer.
 
 **Inputs.** A run selects three kinds of input, each a row of the run
 record's `inputs` with a `kind` *(five since S-104, 2026-10-31:
-`premise-moved` and `premise-extract` are defined in §3a.10.7)*:
+`premise-moved` and `premise-extract` are defined in §3a.10.7; six since
+S-114: `premise-review`, §3a.10.4 and §3a.10.7)*:
 
 | `kind` | What | Identity (`version`) |
 |---|---|---|
@@ -2700,7 +3047,8 @@ handled events are dropped before the version is taken, so a new fire about
 the same record is a new input carrying only itself, and a run that decided
 an input's events (applied, parked, refused, abandoned) is never offered
 them again. A record is in at most one input per run (reconsider first, then lesson, then suspected violation;
-since S-104, then premise-moved, then premise-extract, §3a.10.7).
+since S-104, then premise-moved, then premise-extract, §3a.10.7; since
+S-114, then premise-review).
 
 **A lesson the overseer holds** *(2026-10-08, S-81)* is no input of any kind. A lesson is held while a parked
 case for the overseer that has not been superseded names it, whoever parked it: an intact one
@@ -2710,6 +3058,40 @@ reads the same three selections, so a held lesson never makes the steward due; t
 (its decision's commit, not older than the start of the newest run -- the moment a run selects its inputs;
 a resumed run selects none, so new work is never measured from a run's end). A case naming a held lesson is not proposed
 for reconsider, for any of its lessons.
+
+**When new work makes the steward due** *(2026-10-31, S-115)*. These
+selections are read by the scheduler once a night, in the steward's nightly
+slot after the mine (`13-hosting-and-separation.md` §5): new work is due when no
+run has started since the slot's mine target and the last start is at least
+`steward.cooldown_secs` ago. An eligible `lesson` input is new work when its
+record was committed, or the overseer released it, after the newest run's start
+(S-81), or when its `deferred_until` passed after that start: a due deferral's
+record is older than the last selection, so before this it waited for an
+unrelated input. A `reconsider`, `suspected-violation`, `premise-moved` or
+`premise-extract` input is new work by being there.
+
+**The positive invariant, and its census** *(2026-10-31, S-115)*.
+Selection is a negative set: a queued lesson is skipped when a committed run's
+disposition matches its version. So a new skip rule can strand a lesson for ever
+in silence -- live, `lrn-e92861b2` and `lrn-f55e9e47` sat 55 days because a
+pre-U3a deferral counted as a decision (cured by S-95, found by a person 7 days
+after their due date). The invariant: **every queued lesson (pending, its
+deferral not in the future, in any bucket) is selectable -- an eligible `lesson`
+input or a `reconsider` input -- or held by the overseer, or an input of an
+unfinished committed run.** `steward.stranded_lessons(home)` lists every queued
+lesson that is none of these, oldest first, each with its bucket and the reason:
+the committed row (run, case, state, input version, and whether that version is
+the record's or the legacy proposal's) that makes it terminal under the current
+rule or an earlier one, "identity unreadable", or "no committed run decided it".
+It is read-only and costs about one `_eligible_lessons` call. Every row is a
+defect in the selection code or a state the code never meant to leave (for
+example a `reject` applied at the lesson's version while the lesson stayed
+pending), never a judgment on the lesson, so it is delivered to the people who
+can fix the code: the `--selftest` row `steward-queue` (FAIL listing each
+stranded id and reason; PASS "every queued lesson is selectable or held";
+UNMEASURED when the census cannot be taken), the overseer's phase-B fact row
+`stranded-lessons` (§3a.10.8's neighbour in `health.yaml`), the cache file and
+the `health` notice of `13-hosting-and-separation.md` §5 and §7.5.
 
 While the steward acts (its run, or a batch whose runner actor is `steward`), the ledger refuses any change
 to a held lesson's record before anything is written, whichever verb or sheet key reaches it (a line's `id`,
@@ -3456,7 +3838,14 @@ Every probe obeys these rules, enforced by the runner, not by the writer:
 3. **Credential paths are refused** when the premise is written: a basename of
    `.env` or `token.env`, `.credentials.json`, `hosts.yml`, an `id_*` key, and
    anything under `~/.ssh`. A path is absolute or starts with `~/`; a path
-   with a `..` part is refused.
+   with a `..` part is refused. *(S-113:)* **No probe reads
+   the kept copies of model sessions** (`<cache>/sessions/`, the steward's
+   own read fence, `Containment.read_denied`): the runner refuses a path
+   whose resolved form lies there, a link into it included, as
+   `unavailable` ("the path lies in a directory this caller may not
+   read"), in the steward's `premise_probe` tool, the nightly sweep and
+   the `premises` verb's apply-time probes alike. Otherwise a `file-match`
+   would answer yes or no about another run's session.
 4. **`unavailable` is its own answer.** A probe that cannot read its target
    (file gone, unit unknown, `systemctl`/`pacman`/`git` missing, timeout,
    parse error) yields `unavailable`, which is never read as "unchanged" and
@@ -3464,13 +3853,43 @@ Every probe obeys these rules, enforced by the runner, not by the writer:
    whole target and the absence is what it observed: a `path` that is
    `missing`, a key not in a file that parsed, a package not installed, and
    a `which` name not on the PATH.
+   *(S-113:)* **`missing` is a value only when the path's
+   filesystem is mounted.** `lstat` cannot tell a deleted path from one on
+   a disk that is not there (this host mounts two disks `nofail`, so a
+   machine can run for days without one), and two daily sweeps would
+   confirm the second as a move. So when a target is not found, the runner
+   reads the mount table (`/proc/self/mountinfo`; the mount points
+   `/etc/fstab` and the `.mount`/`.automount` units in
+   `/etc/systemd/system` declare; three plain reads, once per sweep) and
+   takes the longest mount point covering the target that is declared or a
+   removable-media root (`/run/media/<user>/<label>`, `/media/<label>`;
+   `/` never counts). When that filesystem is not mounted, or only an
+   `autofs` trap sits there (an automount that did not mount), the answer
+   is `unavailable` with cause `mount-absent` ("the filesystem mounted at
+   M is not mounted"); when the mount table cannot be read, `unavailable`
+   with cause `mount-unknown`. Otherwise the answer is unchanged: with the
+   filesystem mounted, a gone path is still `missing` and moves as before,
+   so a real deletion is never hidden. The same test sets the reason and
+   cause of a content kind's "the file does not exist", of a `git-file`
+   repository that is not there, and of a `which` name not found while a
+   PATH directory lies on an absent mount (`unavailable`, not
+   `not-found`). The cause is kept on the sweep's observation row
+   (`cause`, `mount`, and `absent_since`, carried from row to row while
+   the same mount stays absent).
 5. Every stored value passes the secret scan or is stored as a hash only.
 
 The steward still has no Bash tool. It runs probes through a read-only MCP
 tool, `premise_probe`, on its session (`SessionSpec.mcp_toolset`, the way the
 miner's tools are given): the same catalog, the same runner, the same rules.
 It uses it to check a probe it is writing and to look at a premise while it
-decides.
+decides. *(S-113:)* A lesson's placement premises (`@reach`,
+`@writable`, `@intact`, 3a.10.3) are shown as the last daily sweep judged
+them, with its time; the tool never derives them itself (the derivation
+walks the whole ledger, 35 s on the live one, past the tool's bound). Each
+reading is `holds`, `moved` (confirmed, or first sight that the next sweep
+confirms) or `unavailable`; a lesson placed again after its last row reads
+`unavailable` until the next sweep, so an old placement's failure is never
+shown as current, and a reading older than 48 hours says it is stale.
 
 **Behaviour is written down, not probed.** "oo7-daemon can outlive a bus
 restart" cannot be checked without restarting the bus, which a probe must
@@ -3552,7 +3971,9 @@ lesson's own premises do not.
 
 #### 3a.10.4 What makes a lesson a `premise-moved` input
 
-Three kinds of event, and no clock:
+Three kinds of event, and no clock (the one clock, the rotation that
+re-reads every placed lesson as a `premise-review` input, is at the end of
+this section):
 
 1. **A premise moved.** A premise with a probe, judged by its `holds_if`
    against its baseline, fails on two sweeps in a row (for `changed`: the
@@ -3583,12 +4004,15 @@ Three kinds of event, and no clock:
    a follow-up closed again with other words is a new version. Until a case
    that counts dates after it, the closed follow-up rides along with any
    later `premise-moved` input on the lesson, so the steward sees it again.
-   A combined input (a closed follow-up and a moved premise together) that
-   the steward decides `no-action`, with a rebaseline for example, returns
-   once more as a follow-up-only input: a `no-action` case does not count as
-   a decision, the follow-up is still undecided, and its version, now a hash
-   of the follow-up alone, is new. That costs one more steward look and
-   writes nothing wrong (the 2026-10-31 integration accepted it, decision 10).
+   One decision of a combined input (a closed follow-up and a moved premise
+   together) settles both, whatever its outcome: the input row names the
+   follow-up's own version in `settles` (3a.10.7), and the run records that
+   version as decided too (`steward._terminal_versions`). A settled
+   follow-up therefore neither returns as a follow-up-only input after a
+   `no-action` decision (which does not count as a last decision) nor rides
+   along on a later premise move of the lesson
+   (`steward._premise_moved_unit_lists`). (S-114; it replaces the
+   one extra look the 2026-10-31 integration accepted as its decision 10.)
    This needs no premise and no sweep. It is a standing rule, so a follow-up
    closed before this landed is picked up on its first night (on 2026-10-30
    that is `lrn-9b4250f5` only: `lrn-25968266` was decided by a case after
@@ -3604,14 +4028,68 @@ churn. A premise that really depends on a version says so with a `package`
 probe and `holds_if: version`; otherwise the pin is shown as context the
 next time the lesson comes up, and that decision refreshes it.
 
-**Periodic re-reading** of lessons with nothing to probe is reserved, not
-built; the design had it off: `premises.rotation_days` (default 0; above 0, a lesson whose
-last decision is older than that many days is offered, at most 3 a night).
-It spends steward calls with no sign that anything changed, and would stay
-at 0 for at least the first month after landing; the person decides from how
-many real changes the sweep found. **No lane of the 2026-10-31 batch built
-it:** the setting is not registered and nothing offers such a lesson. The
-name is reserved for it.
+**Periodic re-reading: the rotation** *(S-114; the premises
+design's lane P1, on by default at 90 days by the orchestrator's decision of
+2026-10-31, under the user's "build the rotation setting")*. Every placed
+lesson, not only one with nothing to probe, is offered to the steward to be
+re-read whole as a `premise-review` input: a probe is written narrow and
+watches one line, a wrong probe holds for ever without saying so, some drift
+no probe sees (a corrected statement, a newer lesson saying the opposite, a
+tool that behaves differently), and the question was always "still accurate
+or relevant".
+
+- **The last look** (`steward_inputs.last_reviews`) is the newest of
+  `routing.routed_at` and the `opened_at` of ANY intact case whose `records`
+  name the lesson: any kind, any outcome, a parked or superseded one
+  included. It is broader than the last decision (event 2 above) on
+  purpose: a `no-action` extract or review case read every sentence, and a
+  parked case hands the lesson to the overseer, whose decision is the next
+  look. So the backfill's extract case is every lesson's first look, and
+  the rotation is idle for about the first three months after it.
+- **Due.** A live placed lesson is due once its last look is at least
+  `premises.rotation_days` old (3a.10.9). A lesson with a written probe
+  `unavailable` on three sweeps running (a broken probe, 3a.10.5 (3)) is due
+  now, whatever its age, so a broken probe is fixed without a person.
+- **Never offered:** a lesson the overseer holds (S-81); one an earlier input
+  of the run takes; one with an undecided `premise-moved` input, taken or
+  waiting; one that is still a `premise-extract` candidate (no `premises`
+  key and its extract version undecided, or its record not committed): the
+  extract is its look. A lesson whose extract version became terminal
+  without premises being written (a parked, refused or abandoned extract)
+  IS offered, and its review must write them.
+- **Order.** A broken probe first, then a lesson whose premises hold no
+  probe (none recorded, `[]`, or every entry `probe: null`), then the rest;
+  in each, the longest since its last look first.
+- **Identity.** `review:<last-look day>:<cycle>`, cycle =
+  floor((today - last look) / rotation_days), at least 1. A run that
+  commits any case on the lesson moves its last look (cycle 0: not due); a
+  refused or abandoned run commits none, so that version is decided and the
+  lesson returns one period later, never the next night; a changed period
+  changes the cycles. A broken-probe review is
+  `review:broken:<sorted premise ids>:<hash of their current questions>`:
+  decided once, it is not offered again while the same probes stay broken
+  (the lesson then waits for its age), and a rewritten probe that breaks
+  again is a new version. (The design named "the first unavailable
+  `observed_at`" here; the cache keeps three observations per probe, so
+  that time slides every night and would re-offer the lesson nightly.)
+- **Pace.** At most `premises.rotation_per_night` reviews a run (3a.10.9;
+  `auto` = ceil(live placed lessons / rotation_days) + 1, 3 at 149 lessons).
+  Reviews ride along: when anything else makes the steward due, its run
+  takes them into the same packets (about $0.5 a lesson instead of a
+  session's $1.5-2 start). By themselves they make the steward due only
+  when the oldest due review is `ROTATION_GRACE_DAYS` (7) days past due
+  (a broken-probe review counts from its last look), and that is asked only
+  after the cooldown and every cheaper reason (`serve._steward_is_due`).
+  Never while the quota is 0: that run would take no review and end
+  `idle`, which arms no cooldown, so it would start again every tick
+  (fix round 1 of the lane's gate).
+- **The brief** (`steward_inputs.render_premise_review`) has no transcript
+  pack: why now (the last look, by what, the period, or the broken probe),
+  every written premise with the daily check's latest verdict and the
+  placement premises' latest state from the cache, the "What would change
+  this decision" bullets of up to three covering cases, `env` pins, an open
+  follow-up, the recorded generality, the recurrences recorded since the
+  last look, and how to decide (3a.10.7).
 
 #### 3a.10.5 Holding churn down
 
@@ -3624,7 +4102,14 @@ name is reserved for it.
    for one written probe show as a broken probe in `doctor` and `--selftest`,
    and in that lesson's brief the next time it comes up, where the steward
    fixes or drops the probe. Placement premises do not count toward it
-   (3a.10.3).
+   (3a.10.3). *(S-113:)* A `mount-absent` row (3a.10.2 rule
+   4) is **waiting, not broken**, for 30 days (`MOUNT_WAIT_DAYS`) from the
+   first sweep that found that mount absent, measured to the newest row;
+   after that it counts again, so a disk removed for good whose fstab line
+   was kept becomes a question about the lesson. One predicate,
+   `premise_sweep.broken_tail`, decides "broken" for `doctor`, the
+   steward's briefs (`steward_inputs.broken_probes`) and the overseer's
+   facts alike.
 4. **`on_change: refresh`** premises (a version pin, the hash of a file where
    any edit is uninteresting) are re-baselined by code, with no model call:
    the sweep writes the new baseline under the commit lock with the subject
@@ -3650,7 +4135,8 @@ whole file's hash; never `host.<path>.head`, which moves on every commit.
   process, timer or unit. It is due once a day and runs before the steward's
   nightly slot, so a change it confirms is decided the same night.
   `serve._steward_is_due` counts selectable `premise-moved` and
-  `premise-extract` inputs like its other inputs.
+  `premise-extract` inputs like its other inputs; a `premise-review` input
+  only once it is 7 days past due (3a.10.4).
 - Observations go to the cache, `<cache>/premises/observations.jsonl`, the
   last three per probe and per placement premise (`NOT_REPO_TRUTH`). Losing
   the cache delays a trigger by a day; the baseline is on the record.
@@ -3664,18 +4150,32 @@ whole file's hash; never `host.<path>.head`, which moves on every commit.
   sweeps in a row (a WARN naming each), placement premises failing, how many
   placement premises are `unavailable` (a count, not a WARN, 3a.10.3), how many
   placed lessons have no `premises` field yet, and when the sweep last ran.
+  *(S-113:)* Probes waiting for an unmounted filesystem
+  (3a.10.5 (3)) are an INFO per mount point, `waiting-for-filesystem: <M>
+  not mounted (N probe(s), since <first>)`, never a WARN while they wait.
+  *(S-114)* And the rotation: `rotation: every N days, Q a night;
+  M due, oldest overdue D days; K reviewed in the last 30 days` (reviewed =
+  a committed run decided its `premise-review` input applied or parked; D =
+  days past the age at which the lesson would be offered anyway, for a
+  broken-probe review its days since the last look less the period, at
+  least 0: how long a probe has been broken is not kept), a
+  WARN when the oldest due review is overdue by more than the period itself
+  (the steward is not running, or a number set by hand is too low), INFO
+  `off` when the period is 0.
 
 #### 3a.10.7 The steward's part
 
-**Two input kinds** join the table in §3a.8:
+**Three input kinds** join the table in §3a.8:
 
 | `kind` | What | Identity (`version`) |
 |---|---|---|
-| `premise-moved` | a routed lesson with a moved premise, a closed follow-up, or a moved ledger premise (3a.10.4) | `premise:<12 hex>`, a hash of the moved premises -- a written premise as `(premise id, current value hash, baseline observed_at)`, so a value that comes back after two decisions is a new version; a placement premise as `(premise id, failing value hash, basis)`, 3a.10.3 -- and, while the follow-up rule holds (3a.10.4), the closed `follow_up_done` block (its action, gate, notes and `done_at`); `steward_inputs.premise_moved_version` |
+| `premise-moved` | a routed lesson with a moved premise, a closed follow-up, or a moved ledger premise (3a.10.4) | `premise:<12 hex>`, a hash of the moved premises -- a written premise as `(premise id, current value hash, baseline observed_at)`, so a value that comes back after two decisions is a new version; a placement premise as `(premise id, failing value hash, basis)`, 3a.10.3 -- and, while the follow-up rule holds (3a.10.4) and no run has settled it, the closed `follow_up_done` block (its action, gate, notes and `done_at`); `steward_inputs.premise_moved_version`. A row that carries both a follow-up and a moved premise also names, in `settles`, the follow-up-alone version, which its one decision settles (3a.10.4 (2)) |
 | `premise-extract` | a routed lesson with no `premises` field (the backfill) | `extract:<the record file's committed blob>` (the prefix keeps it apart from a `lesson` input's bare blob) |
+| `premise-review` | a live placed lesson whose last look is a whole rotation period old, or one with a broken probe (the rotation, 3a.10.4; S-114) | `review:<last-look day>:<cycle>`, or `review:broken:<premise ids>:<12 hex>` (3a.10.4) |
 
 A record is still in at most one input per run, taken in the order
-reconsider, lesson, suspected violation, premise-moved, premise-extract. An
+reconsider, lesson, suspected violation, premise-moved, premise-extract,
+premise-review. An
 `@intact` group (3a.10.3) is offered whole or not at all: when an earlier
 input takes one of its lessons, the group waits for the next run. A lesson
 the overseer holds (S-81) is no input of either kind, and an `@intact`
@@ -3695,7 +4195,12 @@ last decision and so ends the follow-up check.
 
 **The case.** For `premise-moved`: a `kind: reconsider` case superseding the
 newest case that covers the lesson, when that case is one a reconsider may
-supersede (S-88's test, §3a.2). Otherwise a `kind: resolution` case: S-88's
+supersede (S-88's test, §3a.2). *(S-114)* Among those, the newest
+whose outcome decided what the lesson says (`route`, `reject`, `retire`,
+`replaced`, `rehome`, `revise`) is preferred, and only when none did is the
+newest of any outcome taken: an extract or review case (`no-action`, no
+`supersedes`) is records-only, and superseding it would leave the routing
+case standing. Otherwise a `kind: resolution` case: S-88's
 rule for a deferred lesson no case covers, extended to a routed lesson on
 this input (46 of the 149 placed lessons had no covering case on
 2026-10-30). For `premise-extract`: a `kind: resolution` case with outcome
@@ -3712,7 +4217,22 @@ with the evidence, for the overseer. The `premise-moved` brief shows the `what_w
 lines of every case covering the lesson that is not superseded, so an
 extract case never hides the routing case's prediction. A lesson with a
 `premise-moved` input waiting under the nightly cap is not offered for
-`premise-extract`. No new `trigger` value. The outcomes of a
+`premise-extract`. For `premise-review` *(S-114)*: the extract's
+shape (`kind: resolution`, `no-action`, no `supersedes`), and on the lesson
+at most one `premises` line (`set` or `rebaseline`), REQUIRED as a `set` when
+the lesson has no `premises` key, and at most one `note`
+(`steward._premise_review_problem`, with a repair-turn message). A
+`replace` or a merge through `also`, `retire`, `route`, `reject`, a move or
+a `restore-region` is refused by name: the authority to change a placed
+lesson still comes only with a `premise-moved` input. A sentence found false
+goes through the extract's evidence path: a premise whose probe shows it
+(including a `package`/`which`/`path` premise for a tool that is gone, or a
+`ledger` premise on a corrected statement or a superseding lesson), recorded
+`contradicts-claim`, so the lesson is a `premise-moved` input the next
+night; when no probe can show it (behaviour, an overlap with another placed
+lesson, which is the overseer's merge), the case is parked
+(`authority-unclear`). A review's `no-action` is not a last decision. No
+new `trigger` value. The outcomes of a
 `premise-moved` case:
 
 - `no-action`: the lesson stands. The sheet must re-record every moved
@@ -3859,30 +4379,49 @@ steward finds already false is written with a premise whose probe shows it: the 
 
 Premise cases are cases, so they enter the weekly sample unchanged. Phase B's
 facts gain: placed lessons with no `premises` field; probes `unavailable`
-three sweeps running; failing placement premises; and the week's `premises
-refresh` commits (code-only changes, so they can be reviewed).
+three sweeps running; failing placement premises; the week's `premises
+refresh` commits (code-only changes, so they can be reviewed); and
+*(S-114)* the rotation (`rotation`: period, nightly quota, due,
+oldest overdue, reviewed in the last 30 days, or `off`).
 
 #### 3a.10.9 The switch and the limits
 
 - **`premises.enabled`** (tier C, default **true**) gates the sweep job and
   both input kinds. With the default, the sweep, the follow-up rule and the
   backfill run from the first night after landing, with no step by a person;
-  setting it false is the person's rollback. Agents never set it: it is tier
-  C, and S-92 refuses a tier-C `config set` or `config unset` from an agent's
-  shell. `premises check`, the `premises` sheet verb and a steward
+  setting it false is the rollback. It is tier C: S-92 refuses a tier-C
+  `config set` or `config unset` from an agent's shell unless the ledger holds
+  the user's standing grant (§3a.3a, S-109); under it an agent
+  sets it with `--note <reason>`, recorded `By: agent` and `Grant: <statement
+  id>`, and it stays the rollback switch. `premises check`, the `premises` sheet verb and a steward
   `--dry-run` work with it false.
 - **`premises.backfill_per_night`** (tier C, default 10; 0 pauses the
   backfill while the rest of the check runs): how many `premise-extract`
-  inputs a run is offered (3a.10.7). Agents never set it (S-92). It is a
+  inputs a run is offered (3a.10.7). Agents set it only under the user's
+  standing grant with `--note` (S-92 as amended by S-109). It is a
   setting rather than a constant by the user's 2026-09-20 rule that numbers
   which size a step are not hardcoded, and the shared steward test helpers
   pause it.
-- **`premises.rotation_days`**: reserved, not built (3a.10.4).
+- **`premises.rotation_days`** *(S-114)* (tier C, default **90**;
+  0 turns the rotation off): how many days after its last look a placed
+  lesson is offered to be re-read (3a.10.4). On by default: the backfill's
+  extract case counts as each lesson's first look, so nothing is reviewed
+  for about three months anyway, with no later step by a person.
+- **`premises.rotation_per_night`** *(S-114)* (tier C, str,
+  default `auto`, or a whole number written as text, so quoted in
+  `config.yaml`: an unquoted number is not text and reads as `auto`): how many
+  `premise-review` inputs a run takes. `auto` = ceil(live placed lessons /
+  rotation_days) + 1, so a backlog drains and the number grows with the
+  ledger without a person; a number overrides it; anything else reads as
+  `auto` (and `config set` refuses it). The `overseer.skill_writing`
+  precedent for a str setting with an `auto` value.
 - No money budget (the user's 2026-09-13 ruling for the steward and the
   overseer). The sweep makes no model call; model calls grow only with real
-  changes (10 a night at most) and with the backfill
+  changes (10 a night at most), with the backfill
   (`premises.backfill_per_night`, 10 a night by default, for about two
-  weeks), inside the steward's existing packets.
+  weeks), and with the rotation (about 1.7 lessons a night at 149 lessons
+  and 90 days, roughly $25 a month of subscription usage, riding in packets
+  the steward already runs), inside the steward's existing packets.
 
 **Not covered.** A premise about behaviour (`probe: null`) is never checked
 by code. The miner does not yet tell the sweep that a session touched a path,
@@ -3898,8 +4437,7 @@ steward packet (`index.related.MAX_GROUP`) is never offered whole and stays
 `edited`, as it would without this check. A skill or plugin a person
 switched off reads as `@reach` unreachable (`skill-override-off`,
 `plugin-disabled`); the method tells the steward to park rather than move
-the lesson out from under the person's switch. Periodic re-reading
-(`premises.rotation_days`) is not built.
+the lesson out from under the person's switch.
 
 ## 4. Managed sections (the compile targets' contract)
 

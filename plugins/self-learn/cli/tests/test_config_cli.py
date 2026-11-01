@@ -161,12 +161,19 @@ class TestConfigGet:
             # S-104: the premise backfill's nightly pace (0
             # pauses it) is the person's, like `premises.enabled`.
             "premises.backfill_per_night",
+            # S-114: the rotation's period and nightly quota are
+            # the person's, like the backfill's pace.
+            "premises.rotation_days",
+            "premises.rotation_per_night",
             # SK3 (S-107 part 6): whether the overseer deploys the
             # skills it writes is the user's switch.
             "overseer.skill_writing",
             # SK4 (S-107): whether the overseer looks for
             # skills (phase S) is the user's switch too.
             "overseer.skill_discovery",
+            # L6 (2026-10-31): registered so `doctor settings` stops
+            # warning; the overseer's hook route stays a rollback switch.
+            "overseer.hook_activation",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 

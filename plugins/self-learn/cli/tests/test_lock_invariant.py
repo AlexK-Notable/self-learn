@@ -244,6 +244,14 @@ NOT_REPO_TRUTH = {
     "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",
     "serve._log_job_crash": "XDG cache: cache_dir()/serve.journal.jsonl, one row per crashed job with no journal of its own (2026-09-27, fail-state audit finding 6)",
     "serve._write_holds": "XDG cache: cache_dir()/serve.holds.json (U1/A13 -- which job a failing due check is currently holding, and its cause, so the heartbeat and `doctor`'s serve row can name it and the notification fires once per cause; no ledger path, no commit)",
+    "serve._write_stranded": "XDG cache: cache_dir()/steward/stranded.json (S-115 -- the last stranded-lesson census, read by the session-start status; rebuildable by the next census, no ledger path, no commit)",
+    # L6 (2026-10-31): serve's re-exec rows (`reexec`, `reexec-refused`,
+    # `reexec-failed`) in the same serve.journal.jsonl `_log_job_crash`
+    # writes, and the daily maintenance recompile's last-run record. Both
+    # cache only; the maintenance job's ledger write is `verbs.recompile`,
+    # which takes its own locks.
+    "serve._append_serve_journal": "XDG cache: cache_dir()/serve.journal.jsonl, one row per re-exec on new code (L6); never ledger truth",
+    "maintenance._store_state": "XDG cache: <cache>/maintenance/recompile.json, the daily maintenance recompile's last-run record (L6); never ledger truth",
     "steward._journal": "XDG cache: steward/journal.jsonl, never ledger truth",
     # S-104: the premise sweep's two cache files, written by this ONE
     # function -- <cache>/premises/observations.jsonl (the last three
@@ -251,6 +259,10 @@ NOT_REPO_TRUTH = {
     # last ran). A cache that is lost costs a day, never a lesson; the sweep's
     # only ledger write (the `on_change: refresh` re-baseline) is
     # `premise_sweep._refresh_record`, which takes the commit lock itself.
+    # S-112: the daily host policy's attempt marker. The policy's
+    # ledger commits go through `hosts._host_set_mode`, which takes the
+    # commit lock itself.
+    "serve._write_hosts_policy_marker": "XDG cache: cache_dir()/hosts-policy.json, the daily host policy's last-attempt marker; never ledger truth",
     "premise_sweep._write_cache_file": "XDG cache: <cache>/premises/observations.jsonl and sweep.json, the premise sweep's history and last-run marker; never ledger truth",
     # S-106: project notices, one JSON file each under
     # <cache>/notices/ -- `_store` writes one (atomic), `_discard` deletes one
@@ -894,6 +906,8 @@ _ARGV_FOR = {
     # actual empty bucket to remove in the fixture.
     "_cmd_canary": None,  # writes canaries.json (cache-local), not the ledger
     "_cmd_case": [["case", "record", "{stage}", "--actor", "human"]],  # U2
+    # S-109: `revoke` reaches the lock before it reads the store.
+    "_cmd_grant": [["grant", "revoke", "grant-0000aaaa"]],
     "_cmd_statement": [
         ["statement", "add", "--verbatim", "held-lock statement",
          "--ref", "transcript:heldlock#L1", "--recorded-by", "human"],
