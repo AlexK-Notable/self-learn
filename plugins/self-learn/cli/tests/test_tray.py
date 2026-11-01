@@ -209,7 +209,7 @@ def test_1b_every_icon_loads_through_gdk_pixbuf():
     GdkPixbuf. Mutation: put a 300-character comment above `<svg` -> red."""
     icons = sorted(ICON_DIR.glob("self-learn-tray-*.svg"))
     assert [p.stem for p in icons] == sorted(f"self-learn-tray-{s}" for s in ("idle", "new", "needs-you", "broken"))
-    for icon in icons:
+    for icon in [*icons, ICON_DIR.parent / "self-learn-ui.svg"]:
         assert 0 <= icon.read_bytes().find(b"<svg") < 200, f"{icon.name}: <svg must open within the sniff window"
     res = subprocess.run([SYSTEM_PYTHON, "-I", "-c", _PIXBUF_LOAD, *map(str, icons)],
                          capture_output=True, text=True, timeout=60)
