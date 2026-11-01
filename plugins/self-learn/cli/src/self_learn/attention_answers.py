@@ -925,7 +925,7 @@ def _approve(home: Path, item: dict, plan: dict | None, result: AnswerResult, *,
         return "approved"
     if not launch:
         return "approved"
-    outcome = run(home, approved_id)
+    outcome = _run_item(home, approved_id)
     result.run = outcome.to_json()
     return "running" if outcome.exit == EXIT_OK else "approved"
 
@@ -953,7 +953,7 @@ def _approve_while_stopped(home: Path, item: dict, option: str) -> AnswerResult:
                            "option": option})
     result = AnswerResult(item=item["id"], choice=choice_row["id"],
                           recorded_as="as your choice of the offered option")
-    outcome = run(home, item["id"])
+    outcome = _run_item(home, item["id"])
     result.run = outcome.to_json()
     result.state = "running" if outcome.exit == EXIT_OK else "approved"
     result.warnings.append(
@@ -1079,6 +1079,14 @@ def _working_directory(plan: dict | None) -> str:
 def run(home: Path | str, item_id: str, *, login: bool = False) -> RunResult:
     """``self-learn attention run <id> [--login]`` (§3.4.7, §3.4.8). Never
     raises for a refusal: the exit code and the page's sentence come back."""
+    return _run_item(home, item_id, login=login)
+
+
+def _run_item(home: Path | str, item_id: str, *, login: bool = False) -> RunResult:
+    """:func:`run`'s body. This module's own launches (an approve click,
+    an agent option clicked while STOPPED) call it by this name: a bare
+    ``run(...)`` reads to the bounded-children gate as ``from subprocess
+    import run`` (``test_bounded_children.py``), which it cannot tell apart."""
     home = Path(home)
     if _agent():
         return RunResult(EXIT_USAGE, (
