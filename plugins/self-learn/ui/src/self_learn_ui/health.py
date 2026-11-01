@@ -39,6 +39,8 @@ DEFAULT_LIMIT = 25
 #: recorded (contract.md §2), never as nothing.
 KIND_WORDS: dict[str, str] = {
     "claude-md": "Instructions file",
+    "claude-md:local": "Local instructions file",
+    "claude-md:rules": "Rules file",
     "skill-md": "Skill",
     "hook": "Warning hook",
     "rules": "Rules file",
@@ -53,6 +55,26 @@ BASIS_WORDS: dict[str, str] = {
     "title-token-overlap": "A transcript used words close to the rule",
     "fire-violated": "A session broke the rule",
     "fire-suspected-violation": "A session may have broken the rule",
+}
+
+#: Why a sighting was dismissed (``verbs.DISMISS_REASONS``), in words.
+DISMISS_WORDS: dict[str, str] = {
+    "rule-followed": "The rule was followed",
+    "unrelated": "Not about this rule",
+    "duplicate": "Already counted",
+    "misattributed": "Matched to the wrong rule",
+    "other": "Another reason",
+}
+
+#: What a bucket's lesson counts are called (``report --json`` ``buckets[].counts``
+#: keys are lesson statuses). Unknown statuses show as recorded.
+STATUS_WORDS: dict[str, str] = {
+    "pending": "waiting for a decision",
+    "deferred": "put off",
+    "routed": "in use",
+    "superseded": "replaced by a better rule",
+    "graduated": "retired",
+    "rejected": "turned down",
 }
 
 NO_TEXT = "A rule with no recorded text"
@@ -91,6 +113,11 @@ def place_words(destination: Any, scope: Any, bucket_label: Any) -> tuple[str, s
     if dest == "claude-md" and scope == "user":
         return "Your instructions", ""
     kind = KIND_WORDS.get(dest, dest or "Placed")
+    if scope == "user":
+        # a user-level hook, skill or rule applies to all your work; the
+        # user bucket's label ("Your instructions") would misread as "the
+        # hook lives in the instructions file"
+        return kind, "For all your work"
     return kind, label
 
 
@@ -103,10 +130,15 @@ def _fmt_number(name: str, value: float) -> str:
     return f"{round(value, 2):g}"
 
 
+def _entries(n: int) -> str:
+    return "1 entry" if n == 1 else f"{n} entries"
+
+
 def _flatten(prefix: str, value: Any, out: list[tuple[str, str]], depth: int = 0) -> None:
     """Counters as ``(CLI name, value in words)``. Dicts open up (up to
-    three levels); a list becomes a count; booleans become yes/no."""
-    if isinstance(value, dict) and depth < 3:
+    four levels); a list becomes a count of entries; booleans become
+    yes/no."""
+    if isinstance(value, dict) and depth < 4:
         for key, inner in value.items():
             _flatten(f"{prefix}.{key}" if prefix else str(key), inner, out, depth + 1)
     elif isinstance(value, bool):
@@ -114,9 +146,9 @@ def _flatten(prefix: str, value: Any, out: list[tuple[str, str]], depth: int = 0
     elif isinstance(value, (int, float)):
         out.append((prefix, _fmt_number(prefix.rsplit(".", 1)[-1], value) if isinstance(value, float) else str(value)))
     elif isinstance(value, (list, tuple)):
-        out.append((prefix, f"{len(value)} entries"))
+        out.append((prefix, _entries(len(value))))
     elif isinstance(value, dict):
-        out.append((prefix, f"{len(value)} entries"))
+        out.append((prefix, _entries(len(value))))
     elif value is None:
         out.append((prefix, "none"))
     else:
@@ -124,13 +156,13 @@ def _flatten(prefix: str, value: Any, out: list[tuple[str, str]], depth: int = 0
 
 
 def _counters(report: dict, metrics: Any, supply_mix: Any) -> list[tuple[str, str]]:
+    """Every key of ``report --json`` (in its own order), then ``status
+    --json``'s ``metrics`` and ``supply_mix``, under their CLI names. A
+    list of rows (the rule tables, the per-rule reach rows) shows as its
+    entry count here; the readable versions sit in the sections above."""
     out: list[tuple[str, str]] = []
-    for name in ("routed_ever", "superseded_after_routing", "supersede_rate", "graduated", "rejected"):
-        if name in report:
-            _flatten(name, report[name], out)
-    for name in ("mined", "telemetry"):
-        if name in report:
-            _flatten(name, report[name], out)
+    for name, value in report.items():
+        _flatten(str(name), value, out)
     if isinstance(metrics, dict):
         _flatten("metrics", metrics, out)
     if isinstance(supply_mix, dict):
@@ -159,7 +191,9 @@ def _tiles(report: dict, metrics: Any, status_buckets: Any) -> list[dict]:
         waiting_note = f"the oldest has waited {days_in_words(oldest)}" if oldest else "the oldest arrived today"
 
     wait = metrics.get("time_to_triage_median_days")
-    if isinstance(wait, (int, float)) and not isinstance(wait, bool):
+    if not metrics:  # status could not be read: say so, never "no lesson decided yet"
+        wait_value, wait_note = NOT_KNOWN, ""
+    elif isinstance(wait, (int, float)) and not isinstance(wait, bool):
         if wait < 1:
             wait_value = "under a day"
         elif wait == int(wait):
@@ -200,7 +234,7 @@ def _rule_rows(report: dict) -> list[dict]:
     rows = []
     for r in _list(report.get("routed_live")):
         what, where = place_words(r.get("destination"), r.get("scope"), r.get("bucket_label") or r.get("bucket"))
-        seen = _int(r.get("recurrences")) or 0
+        seen = _int(r.get("recurrences"))  # None when the CLI sent none: "not known", never 0
         age = _int(r.get("routed_days_ago"))
         rows.append(
             {
@@ -211,9 +245,16 @@ def _rule_rows(report: dict) -> list[dict]:
                 "age": age,
                 "age_words": days_in_words(age),
                 "seen": seen,
+                "seen_words": NOT_KNOWN if seen is None else str(seen),
             }
         )
-    rows.sort(key=lambda x: (-x["seen"], -(x["age"] if x["age"] is not None else -1), x["title"]))
+    rows.sort(
+        key=lambda x: (
+            -(x["seen"] if x["seen"] is not None else -1),
+            -(x["age"] if x["age"] is not None else -1),
+            x["title"],
+        )
+    )
     return rows
 
 
@@ -258,6 +299,174 @@ def _followups(report: dict) -> list[dict]:
     ]
 
 
+def _place_names(report: dict) -> list[dict]:
+    return [b for b in _list(report.get("buckets"))]
+
+
+def _place_label(report: dict, bucket: str) -> str:
+    """A place's name in words. ``deferred`` and the context budget name a
+    place by its bucket name or by the short key its name ends in; look the
+    label up in ``buckets`` (an ambiguous or unknown name shows as sent)."""
+    if not bucket:
+        return ""
+    exact = [b for b in _place_names(report) if b.get("bucket") == bucket]
+    if len(exact) == 1:
+        return _text(exact[0].get("label")) or bucket
+    ends = [b for b in _place_names(report) if _text(b.get("bucket")).endswith(f"-{bucket}")]
+    if len(ends) == 1:
+        return _text(ends[0].get("label")) or bucket
+    return bucket
+
+
+def _destinations_line(report: dict) -> str:
+    d = report.get("destinations")
+    if not isinstance(d, dict):
+        return ""
+    pairs = [(str(k), _int(v)) for k, v in d.items()]
+    pairs = sorted(((k, n) for k, n in pairs if n is not None), key=lambda p: -p[1])
+    if not pairs:
+        return ""
+    return "By kind: " + ", ".join(f"{n} {KIND_WORDS.get(k, k).lower()}" for k, n in pairs) + "."
+
+
+def _due_words(overdue: Any) -> str:
+    n = _int(overdue)
+    if n is None:
+        return ""
+    if n > 0:
+        return f"{n} day overdue" if n == 1 else f"{n} days overdue"
+    if n == 0:
+        return "due today"
+    return "due tomorrow" if n == -1 else f"due in {-n} days"
+
+
+def _deferred_rows(report: dict) -> list[dict]:
+    rows = []
+    for r in _list(report.get("deferred")):
+        rows.append(
+            {
+                "id": _text(r.get("id")),
+                "where": _place_label(report, _text(r.get("bucket"))),
+                "until": r.get("until") or "",
+                "due": _due_words(r.get("overdue_days")),
+                "overdue": (_int(r.get("overdue_days")) or 0) > 0,
+            }
+        )
+    # most overdue first
+    rows.sort(key=lambda x: x["overdue"], reverse=True)
+    return rows
+
+
+def _dismissed_rows(report: dict) -> list[dict]:
+    titles = {_text(r.get("id")): _text(r.get("title")) for r in _list(report.get("routed_live"))}
+    rows = []
+    for r in _list(report.get("suspects_dismissed")):
+        rid = _text(r.get("id"))
+        basis = _text(r.get("basis"))
+        why = _text(r.get("why"))
+        rows.append(
+            {
+                "id": rid,
+                "title": titles.get(rid) or "A rule that is no longer in use",
+                "linked": bool(titles.get(rid)),
+                "on": r.get("dismissed_at") or "",
+                "why": DISMISS_WORDS.get(why, why),
+                "basis": BASIS_WORDS.get(basis, basis),
+            }
+        )
+    rows.sort(key=lambda x: str(x["on"]), reverse=True)
+    return rows
+
+
+def _reach(report: dict) -> dict | None:
+    """``surface_reach``: whether a placed rule lands where the assistant
+    reads it. The headline counts and the per-kind table; the per-rule rows
+    stay in the CLI (they show as an entry count in the counters fold)."""
+    sr = report.get("surface_reach")
+    if not isinstance(sr, dict):
+        return None
+    by = sr.get("by_destination")
+    by = by if isinstance(by, dict) else {}
+    kinds = []
+    for key, v in by.items():
+        if not isinstance(v, dict):
+            continue
+        kinds.append(
+            {
+                "what": KIND_WORDS.get(str(key), str(key)),
+                "reachable": _int(v.get("reachable")),
+                "unreachable": _int(v.get("unreachable")),
+                "unmeasurable": _int(v.get("unmeasurable")),
+            }
+        )
+    return {
+        "checked": _int(sr.get("checked")),
+        "reachable": _int(sr.get("reachable")),
+        "unreachable": _int(sr.get("unreachable")),
+        "unmeasurable": _int(sr.get("unmeasurable")),
+        "kinds": kinds,
+    }
+
+
+def _budget_rows(report: dict) -> list[dict]:
+    cb = report.get("context_budget")
+    budget = cb.get("budget") if isinstance(cb, dict) else None
+    surfaces = budget.get("surfaces") if isinstance(budget, dict) else None
+    rows = []
+    for sfc in _list(surfaces):
+        key = _text(sfc.get("key"))
+        kind = _text(sfc.get("surface"))
+        if kind == "user-claude-md":
+            name = "Your instructions"
+        else:
+            name = _place_label(report, key) or key
+        share = sfc.get("managed_share")
+        rows.append(
+            {
+                "name": name,
+                "state": _text(sfc.get("state")),
+                "words": _int(sfc.get("file_words")),
+                "written": _int(sfc.get("managed_words")),
+                "share": f"{round(share * 100)}%" if isinstance(share, (int, float)) and not isinstance(share, bool) else "",
+                "flagged": bool(sfc.get("flagged")),
+            }
+        )
+    return rows
+
+
+def _bucket_counts(report: dict) -> list[dict]:
+    rows = []
+    for b in _place_names(report):
+        counts = b.get("counts")
+        counts = counts if isinstance(counts, dict) else {}
+        pairs = [(str(k), _int(v)) for k, v in counts.items()]
+        pairs = [(k, n) for k, n in pairs if n]
+        if not pairs:
+            continue
+        rows.append(
+            {
+                "name": _text(b.get("label")) or _text(b.get("bucket")),
+                "path": _text(b.get("path")),
+                "total": sum(n for _k, n in pairs),
+                "words": ", ".join(f"{n} {STATUS_WORDS.get(k, k)}" for k, n in sorted(pairs, key=lambda p: -p[1])),
+            }
+        )
+    rows.sort(key=lambda r: -r["total"])
+    return rows
+
+
+def _reference_note(report: dict) -> str:
+    rs = report.get("reference_shelf")
+    if not isinstance(rs, dict):
+        return ""
+    total = _int(rs.get("targets_total"))
+    tracked = "" if total is None else f"{total} reference files are tracked. "
+    if rs.get("instrumented") is False:
+        state = _text(rs.get("instrument_state"))
+        return tracked + "Reads of them are not being counted yet" + (f" ({state})." if state else ".")
+    return tracked.strip()
+
+
 def build_health(
     report: Any,
     metrics: Any,
@@ -293,4 +502,13 @@ def build_health(
         "followups": _followups(report),
         "counters": _counters(report, metrics, supply_mix),
         "has_report": bool(report),
+        "limit": DEFAULT_LIMIT,
+        "generated": _text(report.get("generated")),
+        "destinations_line": _destinations_line(report),
+        "deferred": _deferred_rows(report),
+        "dismissed": _dismissed_rows(report),
+        "reach": _reach(report),
+        "budget": _budget_rows(report),
+        "bucket_counts": _bucket_counts(report),
+        "reference_note": _reference_note(report),
     }

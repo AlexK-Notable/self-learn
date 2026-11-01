@@ -2171,9 +2171,17 @@ removed the last competing workstream — the build gate is open.*
   (`routed_live[].title`) never by its id, with where it lives, how long
   it has been in use and how often it was seen again (most seen first;
   `?q=` filters on the server, `?all=1` lifts the row limit), the rules
-  seen again, the open follow-ups, and a closed fold "All counters, with
-  their names" for checking against the command line (rates as
-  percentages). **No raw JSON is shown.** A number the CLI did not send
+  seen again (sightings not yet decided; the rules table's "Confirmed
+  again" column counts the confirmed ones), the open follow-ups, the
+  lessons put off for later (with how overdue), and folds for the
+  dismissed sightings, whether the rules reach where the assistant reads
+  them, the size of the instruction files, and the lessons by place;
+  and a closed fold "All counters, with their names" for checking against
+  the command line (every key of `report --json`, `metrics` and
+  `supply_mix`; rates as percentages; a list of rows as its entry count).
+  The rules filter is an htmx `hx-get` (only the list is swapped and the
+  address is pushed): `app.js`'s submit guard cancels any form submit
+  htmx does not take. **No raw JSON is shown.** A number the CLI did not send
   reads "not known", never zero. A `null` day in the series is a gap in
   the line. The page's only counting is the length of a list the CLI
   sent. The same two Home charts ("Is it keeping up?", "What got

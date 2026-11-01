@@ -190,8 +190,10 @@ class TestDecidedChart:
         css = (Path(__file__).resolve().parents[1] / "static" / "style.css").read_text()
         for g in cli_series.OUTCOME_GROUPS:
             assert g in charts.GROUP_WORDS
-            assert f".chart-svg .cv-{g} " in css
-            assert f".chart-key-{g} " in css
+            # the real rule, with its colour: the forced-colors override also
+            # names `.cv-<g>`, so the bare selector would match it too
+            assert re.search(rf"\.chart-svg \.cv-{g} \{{ fill: var\(--chart-{g}\); \}}", css)
+            assert re.search(rf"\.chart-key-{g} \{{ background: var\(--chart-{g}\); \}}", css)
         legend = str(charts.decided_legend())
         for words in charts.GROUP_WORDS.values():
             assert words in legend
@@ -222,6 +224,12 @@ class TestSupplyChart:
         assert charts.supply_sentence(self.MIX) == (
             "Of 369 lessons so far, 243 came from your sessions, read overnight."
         )
+
+    def test_every_ledger_source_has_words(self) -> None:
+        from self_learn.records import SOURCES
+
+        for key in SOURCES:
+            assert key in charts.SUPPLY_WORDS, f"no words for the lesson source {key!r}"
 
     def test_an_unknown_key_shows_raw_never_dropped(self) -> None:
         html = str(charts.supply_chart({"session": 3, "brand-new": 2}))
@@ -348,7 +356,39 @@ REPORT = {
          "unblocks_on": "2026-08-01T00:00:00Z", "routed_at": "2026-07-01T00:00:00Z"},
     ],
     "series": _series([8, 7, 5, 2]),
+    "destinations": {"claude-md": 107, "skill-md": 42, "hook": 8},
+    "deferred": [{"id": "lrn-dddd0001", "bucket": "-home-me-repos-widget-8c7fedb5", "until": "2026-10-30", "overdue_days": 2}],
+    "suspects_dismissed": [
+        {"id": "lrn-aaaa0001", "ref": "r1", "ts": "2026-10-21T10:44:41Z", "dismissed_at": "2026-10-21",
+         "basis": "fire-suspected-violation", "why": "unrelated"},
+        {"id": "lrn-gone0001", "ref": "r2", "ts": "2026-09-13T10:44:25Z", "dismissed_at": "2026-09-28",
+         "basis": "fire-violated", "why": "rule-followed"},
+    ],
+    "context_budget": {
+        "tokens_per_word_est": 1.33,
+        "budget": {
+            "severity": "informational",
+            "window_days": 30,
+            "surfaces": [
+                {"surface": "user-claude-md", "key": "~/.claude/CLAUDE.md", "state": "ok", "file_words": 900,
+                 "managed_words": 90, "managed_share": 0.1, "flagged": False},
+                {"surface": "project-claude-md", "key": "8c7fedb5", "state": "ok", "file_words": 1735,
+                 "managed_words": 0, "managed_share": 0.0, "flagged": True},
+            ],
+        },
+    },
+    "reference_shelf": {"instrumented": False, "instrument_state": "script-missing", "targets_total": 13, "targets": [{}, {}]},
+    "surface_reach": {
+        "checked": 163, "reachable": 43, "unreachable": 56, "unmeasurable": 64,
+        "by_destination": {"hook": {"reachable": 0, "unreachable": 8, "unmeasurable": 0}},
+        "rows": [{"record_id": "lrn-aaaa0001"}],
+    },
 }
+REPORT["buckets"] = [
+    {"bucket": "-home-me-repos-widget-8c7fedb5", "scope": "project", "label": "widget", "path": "~/repos/widget",
+     "path_exists": True, "counts": {"routed": 3, "superseded": 1}},
+    {"bucket": "herdr", "scope": "skill", "label": "herdr", "path": None, "path_exists": None, "counts": {}},
+]
 STATUS = {
     "buckets": [{"bucket": "user", "scope": "user", "pending": 2, "oldest_days": 0}],
     "supply_mix": {"session": 243, "teach": 83, "rewrite": 11, "backlog": 32},
@@ -426,7 +466,7 @@ class TestHealthPage:
         text = client.get("/report").text
         sec = text.split('aria-label="rules seen again"', 1)[1].split("</section>", 1)[0]
         assert sec.count("<tr>") == 2  # header + ONE row for two sightings
-        assert re.search(r'<td class="num" data-label="Times">2</td>', sec)
+        assert re.search(r'<td class="num" data-label="Times seen">2</td>', sec)
         assert "A transcript matched the rule&#39;s text" in sec and "A session broke the rule" in sec
 
     def test_filter_is_server_side(self, client) -> None:
@@ -457,6 +497,71 @@ class TestHealthPage:
         assert "Rule number %d" % (health.DEFAULT_LIMIT + 6) in full
         assert "Rule number %d" % (health.DEFAULT_LIMIT + 6) not in text
 
+    def test_every_report_fact_reaches_the_page(self, client) -> None:
+        """Gate r1 M-2: nothing the old page printed may be dropped. Every
+        top-level key of `report --json` is a counter in the fold under its
+        CLI name (the lists of rows as an entry count), and the facts a
+        person would look for are also in readable sections."""
+        text = client.get("/report").text
+        fold = text.split("All counters, with their names", 1)[1]
+        names = re.findall(r"<code>([^<]+)</code>", fold)
+        assert names, "positive control: the counters fold rendered rows"
+        for key in REPORT:
+            assert any(n == key or n.startswith(key + ".") for n in names), f"report key {key!r} reaches no counter"
+        for key in STATUS["metrics"]:
+            assert f"metrics.{key}" in names
+        assert "<code>surface_reach.by_destination.hook.unreachable</code></td><td class=\"num\">8</td>" in fold
+        assert "<code>context_budget.budget.severity</code></td><td class=\"num\">informational</td>" in fold
+        assert "<code>deferred</code></td><td class=\"num\">1 entry</td>" in fold
+        assert "<code>reference_shelf.targets</code></td><td class=\"num\">2 entries</td>" in fold
+
+    def test_deferred_lessons_have_readable_rows(self, client) -> None:
+        text = client.get("/report").text
+        sec = text.split('aria-label="put off for later"', 1)[1].split("</section>", 1)[0]
+        assert "Put off for later (1)" in sec
+        assert "widget" in sec  # the place by its label, not the bucket slug
+        assert "-home-me-repos-widget" not in sec
+        assert "2 days overdue (overdue)" in sec and "2026-10-30" in sec
+        assert 'href="/record/lrn-dddd0001"' in sec
+
+    def test_dismissed_sightings_have_readable_rows(self, client) -> None:
+        text = client.get("/report").text
+        sec = text.split('aria-label="dismissed sightings"', 1)[1].split("</details>", 1)[0]
+        assert "(2)" in sec
+        assert "About to accept an empty result as proof a check passed" in sec  # the rule's words
+        assert "A rule that is no longer in use" in sec  # a rule not in use any more
+        assert "Not about this rule" in sec and "The rule was followed" in sec
+        assert "A session may have broken the rule" in sec
+        visible = re.sub(r'href="[^"]*"', "", sec)
+        assert "lrn-" not in visible
+
+    def test_reach_budget_places_and_destinations_in_words(self, client) -> None:
+        text = client.get("/report").text
+        reach = text.split('aria-label="reach"', 1)[1].split("</details>", 1)[0]
+        assert "Of 163 rules checked: 43 reach a place the assistant reads, 56 do not, and 64 could not be measured." in reach
+        assert "<td>Warning hook</td><td class=\"num\">0</td><td class=\"num\">8</td>" in reach
+        budget = text.split('aria-label="instruction file size"', 1)[1].split("</details>", 1)[0]
+        assert "<td>Your instructions</td><td class=\"num\">900</td>" in budget and "90 words (10%)" in budget
+        assert "<td>widget</td><td class=\"num\">1735</td>" in budget and "(flagged)" in budget
+        places = text.split('aria-label="lessons by place"', 1)[1].split("</details>", 1)[0]
+        assert "3 in use, 1 replaced by a better rule" in places and "herdr" not in places  # empty places are not listed
+        assert "By kind: 107 instructions file, 42 skill, 8 warning hook." in text
+        assert "13 reference files are tracked. Reads of them are not being counted yet (script-missing)." in text
+        assert "Counted on 2026-11-01." in text
+
+    def test_the_two_seen_again_numbers_say_what_each_counts(self, client) -> None:
+        text = client.get("/report").text
+        assert 'title="Times a sighting of this rule was confirmed">Confirmed again</th>' in text
+        sec = text.split('aria-label="rules seen again"', 1)[1]
+        assert "Rules seen again, not yet decided (1)" in sec
+        assert "Times seen</th>" in sec and "that nobody has judged yet" in sec
+
+    def test_a_user_level_hook_does_not_read_as_living_in_the_instructions(self, client) -> None:
+        text = client.get("/report").text
+        table = text.split('aria-label="rules in use"', 1)[1].split("</table>", 1)[0]
+        assert "Warning hook<span class=\"health-where\">herdr</span>" in table  # a skill's hook names its skill
+        assert "<td data-label=\"Where\"><div>Your instructions</div></td>" in table  # a user instructions rule
+
     def test_a_failed_cli_shows_its_error_and_no_page_model(self, tmp_path: Path, monkeypatch) -> None:
         sb = make_env(tmp_path)
         app = create_app(env=load_env(sb.env), token=TOKEN, runner=FakeRunner(), start_watcher=False)
@@ -485,3 +590,27 @@ class TestHealthModelUnits:
         tiles = {t["label"]: t["value"] for t in health.build_health({"routed_live": []}, {}, {}, [])["tiles"]}
         assert tiles["Waiting for a decision"] == "not known"
         assert tiles["Rules later corrected"] == "not known"
+
+    def test_status_failed_typical_wait_is_not_known_not_none_yet(self) -> None:
+        # gate r1 m-2: with `status` unreadable the page must not claim no
+        # lesson was ever decided
+        tiles = {t["label"]: t for t in health.build_health(REPORT, None, None, None)["tiles"]}
+        assert tiles["Typical wait"]["value"] == "not known"
+        assert "no lesson has been decided" not in tiles["Typical wait"]["note"]
+        # a readable status whose metric is None really means none yet
+        ok = {t["label"]: t for t in health.build_health(REPORT, {"pending_total": 0}, None, [])["tiles"]}
+        assert ok["Typical wait"]["value"] == "none yet"
+
+    def test_a_missing_recurrence_count_is_not_known_not_zero(self) -> None:
+        report = {"routed_live": [
+            {"id": "lrn-a", "title": "A", "scope": "skill", "bucket": "b", "bucket_label": "b", "destination": "hook", "routed_days_ago": 1},
+            {"id": "lrn-b", "title": "B", "scope": "skill", "bucket": "b", "bucket_label": "b", "destination": "hook", "routed_days_ago": 9, "recurrences": 0},
+        ]}
+        rows = {r["title"]: r for r in health.build_health(report, {}, {}, [])["rules"]}
+        assert rows["A"]["seen_words"] == "not known" and rows["B"]["seen_words"] == "0"
+        order = [r["title"] for r in health.build_health(report, {}, {}, [])["rules"]]
+        assert order == ["B", "A"]  # a known count sorts before an unknown one
+
+    def test_user_level_places_read_as_for_all_your_work(self) -> None:
+        assert health.place_words("hook", "user", "Your instructions") == ("Warning hook", "For all your work")
+        assert health.place_words("claude-md", "user", "Your instructions") == ("Your instructions", "")

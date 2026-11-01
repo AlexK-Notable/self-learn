@@ -93,12 +93,14 @@ SUPPLY_WORDS: dict[str, str] = {
     "teach": "Taught during a session",
     "backlog": "Imported from older notes",
     "rewrite": "Rewrites of earlier lessons",
+    "auto-memory": "Picked up from Claude's memory notes",
 }
 _SUPPLY_SENTENCE: dict[str, str] = {
     "session": "your sessions, read overnight",
     "teach": "being taught during a session",
     "backlog": "older notes that were imported",
     "rewrite": "rewrites of earlier lessons",
+    "auto-memory": "Claude's memory notes",
 }
 
 #: How many nights the decided chart draws (the series carries 28).
@@ -204,9 +206,9 @@ class _Frame:
 #: narrow below 460 px (a phone), wide to 820 px (a half-width card), xwide
 #: above (a full-width card on a desktop). Each is drawn so its text lands
 #: between about 11 and 15 px at the widths it is shown.
-_NARROW = _Frame("narrow", width=320, plot_h=150, left=26, right=44, top=12, bottom=26)
-_WIDE = _Frame("wide", width=560, plot_h=150, left=34, right=48, top=12, bottom=28)
-_XWIDE = _Frame("xwide", width=960, plot_h=170, left=38, right=56, top=12, bottom=28)
+_NARROW = _Frame("narrow", width=320, plot_h=150, left=26, right=44, top=12, bottom=30)
+_WIDE = _Frame("wide", width=560, plot_h=150, left=34, right=48, top=12, bottom=30)
+_XWIDE = _Frame("xwide", width=960, plot_h=170, left=38, right=56, top=12, bottom=30)
 _FRAMES = (_NARROW, _WIDE, _XWIDE)
 
 
