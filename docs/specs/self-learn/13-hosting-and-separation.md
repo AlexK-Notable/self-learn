@@ -424,8 +424,8 @@ revert). Doc 13 promotes that to the general rule:
    command that undoes it, and what that command needs once lessons are
    routed there (move each with `rehome`, or `--gate-only`). **The undo
    stands** (fix round 1): a path a `host remove` took out of the registry,
-   by anyone but the overseer itself, is never registered by self-learn
-   again (`hosts.registration_problem` reads the ledger's history of
+   whoever ran it, is never registered by self-learn again
+   (`hosts.registration_problem` reads the ledger's history of
    `hosts.yaml`; `projects.yaml` shows it `removed`). The policy's own
    switches since the last run are listed in the same section with their
    undo, and its commits (`By: policy`) are a job's, never a hand step. The S-103 typed-yes path stays for the user's own

@@ -1042,7 +1042,7 @@ applied and again, idempotently, on a resume (13 §7.5). A
 *(Added 2026-10-31, S-NEXT-hosts.)* **Phase B's optional `hosts.yaml`: plain
 registrations the overseer makes itself.** Each `projects.yaml` row also carries
 `registered`: `git` or `plain` (its project registration's mode), `removed` (a `host
-remove` that was not the overseer's took it out; that undo stands) or `no`. Phase B MAY
+remove` took it out; that undo stands) or `no`. Phase B MAY
 write `hosts.yaml`, `{registrations: [{path, case, why}]}`, naming project directories
 to register as PLAIN canon hosts (decision 5; 13 §4 item 5). It is not a required
 output file. The runner keeps an entry whose `path` is absolute, whose `case` is a
@@ -1056,8 +1056,8 @@ notices and before any sheet, each is registered through
 `hosts.register_plain_project` unless `hosts.registration_problem` names why not (not
 an existing directory strictly inside the user's home; the ledger or self-learn's
 cache, inside either or above either; already registered in either registration;
-taken out of the registry by a `host remove` commit not made `By: overseer`, the most
-recent one for that path in the ledger's history of `hosts.yaml`, which an unreadable
+taken out of the registry by a `host remove` commit, whoever made it (nothing in self-learn removes a
+host on its own), the most recent one for that path in the ledger's history of `hosts.yaml`, which an unreadable
 history also refuses);
 the outcome is written into the row (`result: registered|refused`, `reason`), which
 the finalize commit owns, so a resume reports the same outcome without registering
