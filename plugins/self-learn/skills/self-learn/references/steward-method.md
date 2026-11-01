@@ -172,10 +172,14 @@ decided with a `kind: resolution` case too (its `reject`, `defer` or `route`
 line takes a deferred lesson); its card says so. The runner refuses a
 reconsider case that names a pending lesson, or whose `supersedes` names no
 case that covers the lesson, and the repair turn tells you so.
-A reconsider case that finds the earlier decision still right for a rejected
-or deferred lesson has `outcome: no-action` and one `note` line on the
-lesson saying why; `confirm-held` says a placed (routed) rule was seen
-working, and the ledger refuses it on any other lesson.
+A reconsider case that finds a rejection still right has `outcome:
+no-action` and one `note` line on the lesson saying why; `confirm-held` says
+a placed (routed) rule was seen working, and the ledger refuses it on any
+other lesson. A deferred lesson whose date has passed and that should keep
+waiting takes a `defer` line with a new `until` after today, never a `note`
+alone: a `note` leaves the deferral due, so the lesson comes back to you
+every night, and the runner flags such a case in the repair turn. A `note`
+keeps a deferred lesson only while its date is still ahead.
 A placed lesson that comes to you because a premise moved, and that no case
 covers, is also decided with a `kind: resolution` case (§17). So is a
 placed lesson that comes to you only for its premises to be written,

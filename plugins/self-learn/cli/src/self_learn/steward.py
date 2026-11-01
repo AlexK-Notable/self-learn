@@ -26,6 +26,7 @@ from ruamel.yaml import YAML, YAMLError
 from . import (
     attribution,
     always_loaded,
+    domain,
     model_failures,
     batch,
     cases,
@@ -3672,6 +3673,65 @@ def _reconsider_status_problem(
     return refusal_text(refusal) if refusal is not None else None
 
 
+#: S-NEXT-steward (gate r1 F1): the sheet verbs that take a queued lesson
+#: out of the queue -- they decide it, or file it (`rehome`/`rescope`: it
+#: comes back once, in its new bucket, by design). A `defer` counts only
+#: when its date is after now (no `until` is +30 days, `ledger_ops.
+#: DEFAULT_DEFER_DAYS`); a `defer` to today leaves the lesson due.
+_DEQUEUING_VERBS = frozenset(
+    {"route", "reject", "defer", "retire", "supersede", "replace", "rehome", "rescope"}
+)
+
+
+def _names_record(item: dict, record_id: str) -> bool:
+    """A sheet item acts on *record_id*: its own `id`, or a `replace`'s `also`."""
+    if item.get("id") == record_id:
+        return True
+    also = item.get("also") if item.get("verb") == "replace" else None
+    return record_id == also or (isinstance(also, list) and record_id in also)
+
+
+def _left_queued_problem(home: Path, record_id: str, items: object) -> str | None:
+    """S-NEXT-steward (gate r1 F1): why a staged case would leave
+    *record_id*, a DEFERRED lesson whose date has passed, in the steward's
+    queue -- or `None`. Such a case applies (a `note`, a `revise`, an
+    `undefer` all land), rewrites the record, and so makes it a new version
+    that no run decided: the next night selects it again, and the next, a
+    model session and a case each time. Read against the record as it is
+    now and the queue's own clock and predicate (`domain.is_queued`), so a
+    lesson that left the queue since selection, or a deferral still ahead
+    (where a `note` is right), is never flagged.
+
+    Only a lapsed deferral: that is the shape the brief's "keep a decision"
+    sentence reaches (a reconsider of a due deferral). A PENDING lesson
+    left pending would come back the same way, but no instruction leads
+    there and the decision-shape fixtures use pending lessons as stand-ins
+    for kept decisions, so widening this is its own change."""
+    try:
+        record = ledger_ops.read_record_or_refuse(ledger_ops.find_record_path(home, record_id))
+    except ledger_ops.LedgerOpsError:
+        return None
+    now = ledger_ops._now(None)
+    if record.status != "deferred" or not domain.is_queued(record, now):
+        return None
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or not _names_record(item, record_id):
+            continue
+        if item.get("verb") not in _DEQUEUING_VERBS:
+            continue
+        if item.get("verb") == "defer":
+            until = chrono.to_dt(item.get("until"))
+            if until is not None and until <= now:
+                continue
+        return None
+    until = chrono.to_dt(record.deferred_until)
+    state = f"its deferral to {until.date().isoformat()} has come due" if until else "its deferral has no date"
+    return (
+        f"record {record_id}: this case leaves it deferred and due ({state}), so it comes back "
+        "to you every night"
+    )
+
+
 def _stage_claims(stage: Path, fill: dict[str, str], skip: frozenset[str] | set[str]) -> dict[str, str]:
     """S-88 gate fold (F1): which staged case each predecessor goes to, by
     stem -- the first case, in the order apply time records them (file-name
@@ -3907,6 +3967,12 @@ def _ledger_repair_message(
     rejection) to apply time, where the ledger refused them and both
     lessons were parked `ledger-refused` for the overseer.
 
+    S-NEXT-steward (gate r1 F1): a case that would leave a DEFERRED lesson
+    whose date has passed still deferred and due -- a `note`, `undefer` or
+    `revise` with no `defer` to a later date and no deciding line -- is
+    flagged too (:func:`_left_queued_problem`): it would apply, rewrite the
+    record, and bring the lesson back every night.
+
     2026-10-07: a staged `kind: reconsider` case is also held to the
     status `verbs.reconsider` needs of each lesson it names
     (:func:`_reconsider_status_problem`). Before, a reconsider case naming
@@ -3932,6 +3998,7 @@ def _ledger_repair_message(
     found: list[str] = []
     case_found: list[str] = []
     held_found: list[str] = []
+    queued_found: list[str] = []
     held = cases.held_lessons(home)
     fill = _predecessor_fill(home, stage, predecessors or {})
     claims = _stage_claims(stage, fill, skip)
@@ -3964,6 +4031,15 @@ def _ledger_repair_message(
                 )
             if problem is not None:
                 case_found.append(f"- cases/{case_path.name}: {problem}")
+        # S-NEXT-steward (gate r1 F1): a case that leaves a lesson queued
+        # brings it back every night. A held lesson is named above instead.
+        items = _sheet_items(sheet_path)
+        for record_id in dict.fromkeys(str(rid) for rid in case_data.get("records") or []):
+            if record_id in held:
+                continue
+            problem = _left_queued_problem(home, record_id, items)
+            if problem is not None:
+                queued_found.append(f"- cases/{case_path.name}: {problem}")
         held_lines = _held_lines(home, _sheet_items(sheet_path), held)
         found.extend(
             f"- sheets/{sheet_path.name}: item {line['n']} ({line['verb']} {line['id']}): "
@@ -4003,6 +4079,16 @@ def _ledger_repair_message(
             "The ledger would refuse these reconsider cases as written:",
             *case_found,
             *_RECONSIDER_REPAIR_ADVICE,
+        ]))
+    if queued_found:
+        sections.append("\n".join([
+            "These cases leave a lesson whose deferral came due still deferred and due, so it",
+            "would come back to you every night:",
+            *queued_found,
+            "Decide each one in its case: a deferral that should keep waiting takes a `defer` line",
+            "with a new `until` after today (a `note` alone leaves it due); otherwise `reject`,",
+            "`route`, `retire` or `replace` it, or park the case with the reason that names its",
+            "question.",
         ]))
     if held_found:
         sections.append("\n".join([

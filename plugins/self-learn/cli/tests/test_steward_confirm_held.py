@@ -23,6 +23,7 @@ ids and texts are synthetic.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -216,9 +217,11 @@ def test_a_rejection_kept_with_confirm_held_is_repaired_to_a_note_and_never_park
 
 def test_the_brief_says_confirm_held_needs_a_placed_rule_and_a_kept_rejection_takes_a_note():
     """The output contract's status table names `confirm-held` with the
-    status its own check reads (`ledger_ops.ROUTED_ONLY`), and says a
-    reconsider case that keeps a rejected or deferred lesson's decision
-    writes a `note`."""
+    status its own check reads (`ledger_ops.ROUTED_ONLY`); a kept REJECTION
+    takes a `note`; a due DEFERRAL that should keep waiting takes a `defer`
+    with a new date, never a `note` alone (gate r1 F1: the first wording
+    said "rejected or deferred ... a `note` line", which loops a due
+    deferral every night)."""
     text = steward_prompt._render_output_contract()
     table = text.split("WHAT EACH VERB NEEDS THE LESSON'S STATUS TO BE", 1)[1]
     flat = " ".join(table.split())
@@ -226,6 +229,167 @@ def test_the_brief_says_confirm_held_needs_a_placed_rule_and_a_kept_rejection_ta
     assert held in flat, flat[:600]
     assert "note: any status" in flat
     assert (
-        "A `kind: reconsider` case that keeps a rejected or deferred lesson's decision "
-        "(`outcome: no-action`) records why with a `note` line, never `confirm-held`"
+        "A `kind: reconsider` case that keeps a REJECTED lesson rejected (`outcome: no-action`) "
+        "records why with a `note` line, never `confirm-held`"
     ) in flat
+    assert (
+        "A DEFERRED lesson whose date has passed and that should keep waiting takes a `defer` "
+        "line with a new `until` after today, never a `note` alone"
+    ) in flat
+    assert "A `note` keeps a deferred lesson only while its date is still ahead." in flat
+    assert "rejected or deferred lesson's decision" not in flat, "the looping wording is gone"
+
+
+# ------------------------------------------- gate r1 F1: a due deferral kept with a note
+
+
+_LEFT_DUE = "These cases leave a lesson whose deferral came due still deferred and due"
+
+
+class DueDeferral:
+    """A lesson the steward deferred through a case, its date one day ahead;
+    *later* is a clock three days on, when the deferral has come due."""
+
+    def __init__(self, tmp_path: Path, rid: str):
+        self.home = make_env(tmp_path).ledger
+        self.rid = _seed(self.home, rid)
+        stage = tmp_path / "deferring-case.yaml"
+        _dump_yaml(stage, _case([self.rid], "defer", "defer"))
+        self.prior = cases.record(self.home, stage, actor="steward")
+        until = (datetime.now(timezone.utc) + timedelta(days=1)).date().isoformat()
+        sheet = tmp_path / "defer.yaml"
+        sheet.write_text(
+            f"version: 1\ncase: {self.prior}\nitems:\n"
+            f"  - id: {self.rid}\n    verb: defer\n    until: '{until}'\n",
+            encoding="utf-8",
+        )
+        result = batch.run(self.home, batch.load_sheet(sheet), no_push=True, actor="steward")
+        assert result.items[0].state == "applied"
+        _enable_steward(self.home)
+        self.later = datetime.now(timezone.utc) + timedelta(days=3)
+
+    def come_due(self, monkeypatch) -> None:
+        later = self.later
+        monkeypatch.setattr(ledger_ops, "_now", lambda now=None: now if now is not None else later)
+
+    def selected(self) -> bool:
+        return self.rid in {entry.record.id for entry, _row in steward._eligible_lessons(self.home)}
+
+
+def _wait_line(rid: str) -> dict:
+    until = (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat()
+    return {"id": rid, "verb": "defer", "until": until, "note": "still waiting for the release"}
+
+
+def _deferral_session(rid: str, prior: str, prompts: list[str], first: str, repair: str):
+    """Keeps the due deferral: a `note` line (the looping shape) or a
+    `defer` line with a new date, on the first turn and on the repair turn."""
+
+    def write(spec):
+        prompts.append(spec.prompt)
+        shape = repair if _REPAIR_HEADER in spec.prompt else first
+        stage = _stage_dir(spec)
+        case = _keep_case(rid, shape, prior)
+        case["question"] = "the deferral came due; does the lesson still wait?"
+        if shape == "defer":
+            case["outcome"] = "defer"
+        line = _wait_line(rid) if shape == "defer" else _keep_line(rid, "note")
+        _dump_yaml(stage / "cases" / f"{rid}.yaml", case)
+        _dump_yaml(stage / "sheets" / f"{rid}.yaml",
+                   {"version": 1, "case": "$CASE_ID", "items": [line]})
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    return write
+
+
+def test_a_due_deferral_kept_with_a_note_comes_back_the_next_night(tmp_path, monkeypatch):
+    """The gate's loop, reproduced as a ledger fact: a model that keeps a
+    due deferral with a `note` -- on the first turn AND after the repair
+    turn names it -- has its case applied, the lesson stays deferred and
+    due, and the very next selection offers it again. The runner's flag is
+    what the repair turn shows (second prompt); a model that ignores it is
+    not stopped, which is why the brief must not ask for a note here."""
+    due = DueDeferral(tmp_path, "lrn-c0de0004")
+    assert not due.selected(), "control: not due yet"
+    due.come_due(monkeypatch)
+    assert due.selected(), "due: selected"
+    _notifications(monkeypatch)
+    prompts: list[str] = []
+    monkeypatch.setattr(steward.invocation, "write_session",
+                        _deferral_session(due.rid, due.prior, prompts, "note", "note"))
+
+    result = steward.run(due.home)
+
+    disposition = _head_manifest(due.home, result.run_id)["packets"][0]["dispositions"][due.rid]
+    assert disposition["state"] == "applied", disposition
+    assert _status(due.home, due.rid) == "deferred"
+    assert len(prompts) == 2 and _LEFT_DUE in prompts[1].split(_REPAIR_HEADER, 1)[1]
+    assert due.selected(), "the loop: offered again the next night"
+
+
+def test_a_due_deferral_kept_with_a_note_is_repaired_to_a_new_date_and_does_not_loop(
+    tmp_path, monkeypatch
+):
+    """The fix: the repair turn names the case that leaves the deferral due
+    (its date and why it would come back), the repaired `defer` line with a
+    new `until` applies, and the next selection does not offer the lesson."""
+    due = DueDeferral(tmp_path, "lrn-c0de0005")
+    due.come_due(monkeypatch)
+    _notifications(monkeypatch)
+    prompts: list[str] = []
+    monkeypatch.setattr(steward.invocation, "write_session",
+                        _deferral_session(due.rid, due.prior, prompts, "note", "defer"))
+
+    result = steward.run(due.home)
+
+    assert len(prompts) == 2, "the repair turn is spent on the due deferral"
+    repair = prompts[1].split(_REPAIR_HEADER, 1)[1]
+    assert _LEFT_DUE in repair
+    assert f"record {due.rid}: this case leaves it deferred and due" in repair
+    disposition = _head_manifest(due.home, result.run_id)["packets"][0]["dispositions"][due.rid]
+    assert disposition["state"] == "applied", disposition
+    assert _status(due.home, due.rid) == "deferred"
+    assert not due.selected(), "the new date keeps it out of the next night's selection"
+
+
+def test_a_due_deferral_kept_with_a_new_date_spends_no_repair_turn(tmp_path, monkeypatch):
+    """The instruction's own path: a `defer` line with a new `until` on the
+    first turn is not flagged and does not loop."""
+    due = DueDeferral(tmp_path, "lrn-c0de0006")
+    due.come_due(monkeypatch)
+    _notifications(monkeypatch)
+    prompts: list[str] = []
+    monkeypatch.setattr(steward.invocation, "write_session",
+                        _deferral_session(due.rid, due.prior, prompts, "defer", "defer"))
+
+    steward.run(due.home)
+
+    assert len(prompts) == 1, "no repair turn"
+    assert not due.selected()
+
+
+def test_the_due_deferral_flag_reads_the_lesson_and_the_line(tmp_path, monkeypatch):
+    """Directly: flagged only for a deferred lesson whose date has passed
+    and whose case takes it out of the queue with no line -- a `note`, an
+    `undefer`, or a `defer` to a date that is not after now. Not flagged:
+    a `defer` to a later date, a `reject`, a deferral still ahead (where a
+    `note` is right), or a pending lesson (out of this check's scope)."""
+    due = DueDeferral(tmp_path / "due", "lrn-c0de0007")
+    home, rid = due.home, due.rid
+
+    def flagged(items: list[dict]) -> bool:
+        return steward._left_queued_problem(home, rid, items) is not None
+
+    note = [_keep_line(rid, "note")]
+    assert not flagged(note), "control: the date is still ahead, a note is right"
+    due.come_due(monkeypatch)
+    assert flagged(note)
+    assert flagged([{"id": rid, "verb": "undefer"}])
+    today = due.later.date().isoformat()
+    assert flagged([{"id": rid, "verb": "defer", "until": today}]), "a defer to now leaves it due"
+    assert not flagged([_wait_line(rid)])
+    assert not flagged([{"id": rid, "verb": "defer"}]), "no until: +30 days"
+    assert not flagged([{"id": rid, "verb": "reject"}])
+    assert flagged([{"id": "lrn-c0de00ff", "verb": "reject"}, *note]), "another lesson's line"
+    pending = _seed(home, "lrn-c0de0008")
+    assert steward._left_queued_problem(home, pending, [_keep_line(pending, "note")]) is None

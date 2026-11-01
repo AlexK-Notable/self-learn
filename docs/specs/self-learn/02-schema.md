@@ -2101,6 +2101,19 @@ fail the stage; apply time handles them by kind, as above. A repair turn
 already spent on a format error is not spent again. A dry run does the
 same, writing only to the cache.
 
+*(Amended 2026-11-01, S-NEXT-steward, gate r1 fold.)* The same turn also
+flags a staged case (not parked, not one the runner parks) that would leave
+a `deferred` lesson whose date has passed still deferred and due: no line
+on the lesson takes it out of the queue (`route`, `reject`, `retire`,
+`supersede`, `replace` including its `also`, `defer` to a date after now
+or with no date, or the filing moves `rehome`/`rescope`). Such a case
+would apply -- a `note`, `undefer` or `revise` lands -- and rewrite the
+record, a new version no run decided, so the lesson would come back every
+night. Read on the record as it is now with the queue's own predicate
+(`domain.is_queued`); a deferral still ahead is never flagged, and a
+pending lesson is outside this check. A model that keeps the case after
+the repair is not stopped.
+
 *(Amended S-96.)* A case whose outcome is `defer` and
 that the overseer asked the user about comes back to the steward when the
 user answers: `overseer respond` observes the cited case with `statement:
