@@ -495,6 +495,23 @@ def test_an_approve_from_an_agent_shell_needs_the_persons_typed_yes(tmp_path, mo
                        ref=f"transcript:{vague}#L3", note="relaying their yes")
     assert unproved.value.exit_code == 64 and _choices(home) == [] and _stmts(home) == []
 
+    # Gate r1 MINOR 5: the yes was given to a DIFFERENT option of the same
+    # item. The id is named, so only the label half of the proof refuses it.
+    # Mutation: the label check always true -> red.
+    other = "sess-other-option"
+    rows = [_typed("what is open"),
+            _said(f"{item['id']} asks whether to restart the daemon. Choose «No, leave it»? "
+                  "Type yes."),
+            _typed("yes")]
+    (tmp_path / "transcripts" / "project" / f"{other}.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", other)
+    with pytest.raises(answers.AnswerError) as wrong_label:
+        answers.answer(home, item["id"], option="opt-yes", text="yes",
+                       ref=f"transcript:{other}#L3", note="relaying their yes")
+    assert wrong_label.value.exit_code == 64 and "Yes, restart it" in str(wrong_label.value)
+    assert _choices(home) == [] and _stmts(home) == []
+
     # The same transcript root `_transcript` configured above.
     named = "sess-named"
     rows = [_typed("what is open"),
@@ -840,6 +857,254 @@ def test_the_stewards_input_lists_typed_questions_since_its_last_run_not_replies
     assert steward_prompt.WORKSPACE_QUESTIONS_TITLE in packet.per_packet
     assert f"workspace:{item}#T2" in packet.per_packet
     assert steward_prompt.WORKSPACE_QUESTIONS_TITLE not in packet.shared
+
+    # Gate r1 MINOR 4: one a statement already cites (an earlier run
+    # recorded it) is not shown again. Mutation: drop the cited filter -> red.
+    statements.add(home, verbatim="never restart my desktop", recorded_by="agent",
+                   source={"message_ref": f"workspace:{item}#T2", "surface": "inbox"})
+    assert steward._workspace_questions(home, "2026-06-01T00:00:00Z") == []
+
+
+def test_more_questions_than_fit_say_how_many_were_left_out(tmp_path):
+    """Gate r1 MINOR 4: the cap keeps the newest and the block says how many
+    older ones did not fit. Mutation: render without the count -> red."""
+    home = make_home(tmp_path)
+    item = "att-0123456789ab"
+    rows = [{"role": "user", "origin": "typed", "kind": "question", "text": f"question {n}",
+             "at": f"2026-07-01T00:{n // 60:02d}:{n % 60:02d}Z"}
+            for n in range(steward.WORKSPACE_QUESTIONS_MAX + 3)]
+    workspace.append(home, item, rows, header={"item_kind": "ask.sudo", "subject": "q-x",
+                                               "title": "Install the package?"})
+
+    kept, omitted = steward._workspace_questions_for_run(home)
+
+    assert (len(kept), omitted) == (steward.WORKSPACE_QUESTIONS_MAX, 3)
+    assert kept[0]["text"] == "question 3" and kept[-1]["text"] == f"question {len(rows) - 1}"
+    packet = steward_prompt.assemble(
+        home, tmp_path / "cache", steward_prompt.RunContext(
+            run_id="r", stage_dir=tmp_path / "stage", packet_index=1, packet_count=1,
+            last_run_at=None, verbs_the_runner_executes=()),
+        [], conditions_items=[], workspace_questions=kept, workspace_questions_omitted=omitted,
+    )
+    assert "3 older question(s) since your last run are not shown" in packet.per_packet
+
+
+def test_a_steward_run_hands_packet_1_the_questions_and_reads_them_once(tmp_path, monkeypatch):
+    """Gate r1 MINOR 4: the `_run` wiring, end to end through a fake
+    session. Mutations: drop `workspace_questions=` from `_run` -> red (the
+    prompt lacks the question); `_workspace_questions_since` returns None
+    -> red (the question shows again); floor on the run's `completed_at`
+    -> red (a question sealed while the run worked is lost)."""
+    from self_learn import worker
+    from test_steward import _enable_steward, _seed_fresh_proposals, _write_decision_stage
+
+    monkeypatch.setenv(worker.NO_PUSH_ENV, "1")
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    item = "att-0123456789ab"
+    header = {"item_kind": "ask.sudo", "subject": "q-x", "title": "Install the package?"}
+    workspace.append(home, item, [{"role": "user", "origin": "typed", "kind": "question",
+                                   "text": "never restart my desktop"}], header=header)
+    prompts: list[str] = []
+
+    def session(spec):
+        prompts.append(spec.prompt)
+        return _write_decision_stage(spec)
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+
+    assert steward.run(home, dry_run=False).status == "applied"
+
+    assert prompts and steward_prompt.WORKSPACE_QUESTIONS_TITLE in prompts[0]
+    assert f"workspace:{item}#T1" in prompts[0] and "never restart my desktop" in prompts[0]
+    assert steward._workspace_questions_for_run(home) == ([], 0)  # read once, not every night
+
+    # The floor is when packet 1 last started (its prompt was assembled
+    # then), not when the run completed: a question sealed in between was
+    # never shown, and must be next time. Stretch the run to make the gap.
+    (manifest,) = [m for m in steward.committed_manifests(home) if m.get("status") == "complete"]
+    started = manifest["packets"][0]["last_attempt_at"]
+    assert steward._workspace_questions_since(home) == started
+    rel = next(p for p in git(home, "ls-files", "cases/runs").stdout.split()
+               if manifest["run_id"] in p)
+    data = json.loads((home / rel).read_text(encoding="utf-8"))
+    data["completed_at"] = "2099-01-01T00:00:00Z"
+    (home / rel).write_text(json.dumps(data), encoding="utf-8")
+    git(home, "commit", "-q", "-am", "fixture: a long run")
+    during = (datetime.strptime(started[:19], "%Y-%m-%dT%H:%M:%S")
+              + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    workspace.append(home, item, [{"role": "user", "origin": "typed", "kind": "question",
+                                   "text": "asked while it worked", "at": during}])
+    kept, _omitted = steward._workspace_questions_for_run(home)
+    assert [r["text"] for r in kept] == ["asked while it worked"]
+
+
+# --------------------------------------------------------- fix round 1
+
+
+def test_an_approval_not_yet_carried_out_can_be_changed(tmp_path):
+    """Gate r1 MAJOR 1: "the answer stays changeable until it is carried
+    out" (§0 call 3, §1.3). Mutations: refuse every other option on
+    approved work again -> red; drop `approved` from
+    `attention._approval_track`'s change states -> red (the approved item
+    stays); the same in `conversation.approval_track` -> red."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    _index(home, [_system_ask("q-restart-daemon", [case_id])])
+    (tmp_path / "shim-bin" / "alacritty").unlink()  # no terminal: nothing launches
+    item = _item(home, "q-restart-daemon", "ask.system-change")
+    first = answers.answer(home, item["id"], option="opt-yes")
+    assert first.state == "approved" and first.run is not None and first.run["exit"] == 5
+    approved = _item(home, "q-restart-daemon", "approved.pending")
+
+    # A session that claimed it is carrying it out: refused, naming it.
+    answers.claim(home, approved["id"], "sess-busy")
+    with pytest.raises(answers.AnswerError) as busy:
+        answers.answer(home, approved["id"], option="opt-no")
+    assert busy.value.exit_code == 3 and "sess-busy" in str(busy.value)
+    assert "close that terminal" not in str(busy.value).lower()
+    assert len(_choices(home)) == 1
+    (attention.cache_dir(home) / "attention" / "claims" / f"{approved['id']}.json").unlink()
+
+    changed = answers.answer(home, approved["id"], option="opt-no")
+
+    assert changed.state == "answered" and _choices(home)[-1]["effect"] == "decline"
+    left = [i["kind"] for i in attention.read(home)["items"] if i["subject"] == "q-restart-daemon"]
+    assert left == []  # no approved item, nothing needing you
+    (row,) = [r for r in conversation._load_questions(home) if r["id"] == "q-restart-daemon"]
+    track = conversation.approval_track(row, _choices(home), conversation.outcome_rows(home))
+    assert track.state == "answered"
+    assert f"human statement: user answered q-restart-daemon (ref: {changed.choice})" in (
+        _observations(home, case_id))
+    with pytest.raises(answers.AnswerError) as late:
+        answers.claim(home, approved["id"], "sess-late")
+    assert "changed their answer" in str(late.value)
+    assert _calls(tmp_path, "systemd-run") == []
+
+
+def test_a_draft_or_a_pasted_reply_with_no_option_on_a_plan_decides_nothing(tmp_path):
+    """Gate r1 MINOR 2. Mutation: the plan guard back on `result.choice is
+    None` -> red (the case is told and the steward re-decides)."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    _index(home, [_system_ask("q-restart-daemon", [case_id])])
+    item = _item(home, "q-restart-daemon", "ask.system-change")
+    _seal_agent(home, item, DRAFT, draft="drf-1a2b3c4d")
+
+    sent = answers.answer(home, item["id"], draft_id="drf-1a2b3c4d")
+    pasted = answers.answer(home, item["id"], text=f"fine by me. {DRAFT}")
+
+    assert (sent.state, pasted.state) == ("open", "open")
+    assert [c["how"] for c in _choices(home)] == ["draft-accepted", "draft-edited"]  # recorded
+    assert "user answered" not in _observations(home, case_id)
+    assert steward._reconsider_proposals(home)[0] == []
+    assert _item(home, "q-restart-daemon", "ask.system-change")["state"] == "open"
+    assert _calls(tmp_path, "systemd-run") == []
+
+
+def test_words_on_finished_approved_work_are_an_overturn(tmp_path):
+    """Gate r1 MINOR 3: "After an approved item is done, a new answer is an
+    overturn" (§3.4.4). Mutation: keep the ask's row for a decided item
+    (answered as the question) -> red."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    settings.config_set(home, "attention.terminal", "alacritty -e")
+    _index(home, [_system_ask("q-restart-daemon", [case_id])])
+    answers.answer(home, _item(home, "q-restart-daemon")["id"], option="opt-yes")
+    approved = attention.item_id("approved.pending", "q-restart-daemon")
+    answers.claim(home, approved, "sess-a")
+    answers.done(home, approved, session="sess-a", note="restarted it")
+    finished = _item(home, "q-restart-daemon", "decided.approved-done")
+    assert steward._reconsider_proposals(home)[0] == []  # control
+
+    result = answers.answer(home, finished["id"], text="Actually undo that, it broke my desktop.")
+
+    stmt = next(s for s in _stmts(home) if s["id"] == result.statement)
+    assert stmt["answers"] == {"kind": "instruction", "ref": case_id, "text": finished["title"]}
+    line = f"human statement: user overturned {finished['id']} in the inbox (ref: {result.statement})"
+    assert line in _observations(home, case_id)
+    ((entry, _card),) = steward._reconsider_proposals(home)[0]
+    assert entry.predecessor == case_id
+    # NIT 7: "Run it now" on finished work is "not approved", not "unknown".
+    assert answers.run(home, approved).exit == 3
+    assert answers.run(home, _item(home, "q-restart-daemon", "decided.approved-done")["id"]).exit == 3
+
+
+def test_redo_of_a_skill_write_writes_it_again_from_its_draft(tmp_path, monkeypatch):
+    """Gate r1 MINOR 6: a grant use's redo is "the original verb with its
+    recorded args" (§3.4.6), `skill write` included. Mutation: drop the
+    `skill write` branch from `_run_argv` -> red (exit 3)."""
+    from self_learn import skill_writer
+
+    home = make_home(tmp_path)
+    draft = tmp_path / "draft"
+    draft.mkdir()
+    (draft / "SKILL.md").write_text("---\nname: diagrams\ndescription: d\n---\nbody\n", "utf-8")
+    use_id = grant_uses.append(home, {"verb": "skill write",
+                                      "args": ["diagrams", "--from", str(draft)],
+                                      "statement": None, "note": "the overseer asked", "prior": None})
+    written: list[tuple[str, list[str], str]] = []
+
+    class _Ok:
+        ok, problems = True, ()
+
+    def fake_write(h, name, files, *, case, by, no_push=False, **kw):
+        written.append((name, sorted(files), by))
+        return _Ok()
+
+    monkeypatch.setattr(skill_writer, "write", fake_write)
+    item = _item(home, use_id, "decided.grant-use")
+
+    did = answers.undo(home, item["id"], redo=True)
+
+    assert did == f"self-learn skill write diagrams --from {draft}"
+    assert written == [("diagrams", ["SKILL.md"], "human")]
+    shutil.rmtree(draft)
+    with pytest.raises(answers.AnswerError) as gone:
+        answers.undo(home, item["id"], redo=True)
+    assert gone.value.exit_code == 3 and "draft folder" in str(gone.value)
+    assert len(written) == 1
+
+
+def test_done_failed_on_a_stopped_ledger_gives_the_item_back(tmp_path):
+    """Gate r1 NIT 8: the session that looked and chose not to clear the
+    stopped write reports it with --failed; nothing can be committed, so the
+    held click and the claim are dropped and the item is the person's
+    again. Mutation: refuse `done --failed` while STOPPED -> red (exit 10)."""
+    from self_learn import intents
+    from test_recover_or_refuse import _plant_stop
+
+    home = make_home(tmp_path)
+    settings.config_set(home, "attention.terminal", "alacritty -e")
+    target = home / "user" / "stop-probe.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("seed\n", encoding="utf-8")
+    git(home, "add", "--", str(target))
+    git(home, "commit", "-q", "-m", "seed probe")
+    intent = _plant_stop(home, target)
+    with pytest.raises(intents.LedgerStoppedError):
+        with intents.ledger_write(home):
+            pass
+    path = home / ".intents" / f"{intent.id}.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["started"] = _iso(-timedelta(days=2))
+    path.write_text(json.dumps(data), encoding="utf-8")
+    item = _item(home, intent.id, "broken.stopped")
+    head = git(home, "rev-parse", "HEAD").stdout
+    answers.answer(home, item["id"], option="opt-agent")
+    answers.claim(home, item["id"], "sess-look")
+    with pytest.raises(answers.AnswerError) as plain_done:
+        answers.done(home, item["id"], session="sess-look", note="cleared it")
+    assert plain_done.value.exit_code == 10  # control: a done still needs the ledger
+
+    said = answers.done(home, item["id"], session="sess-look", failed=True,
+                        note="the intent names a file I cannot account for; left it")
+
+    assert "nothing committed" in said and git(home, "rev-parse", "HEAD").stdout == head
+    assert attention._claim(home, item["id"], datetime.now(timezone.utc)) is None
+    assert answers._held_approval(home, item["id"]) is None
+    assert _item(home, intent.id, "broken.stopped")["state"] == "open"
 
 
 # --------------------------------------------------------- 16. the lock invariant
