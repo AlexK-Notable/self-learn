@@ -217,8 +217,9 @@ def test_the_policys_commits_are_not_hand_steps(tmp_path):
 def test_the_overseers_report_lists_the_policys_switches_with_their_undo(tmp_path):
     """Gate r1 MINOR 1: the policy's switch is decided in the user's
     stead, so the weekly report lists it with its undo. Mutation: drop the
-    `By: policy` reading from `policy_commits` (or the subject match) ->
-    no line."""
+    subject match from `policy_commits` -> no line; drop its `By: policy`
+    reading -> the hand-made `(policy)` commit below is listed too (gate r2
+    NIT 2)."""
     env = _diverged(tmp_path)
     home = env.ledger
     assert overseer_run._policy_lines(home, None) == ([], [])  # control: nothing yet
@@ -230,10 +231,21 @@ def test_the_overseers_report_lists_the_policys_switches_with_their_undo(tmp_pat
     assert line.startswith(f"[host mode set by the policy] project {real} plain → git (one repo, one mode")
     assert f"undo: `self-learn host remove {real} --project`" in line
     assert f"`self-learn host set-mode {real} plain --skills-root`" in line
+    # gate r2 NIT 1: the first undo says what it needs once lessons are routed there
+    assert "`self-learn rehome <id> --to <target>`" in line and "`--gate-only`" in line
     # only since the last run
     assert overseer_run._policy_lines(home, "2999-01-01T00:00:00Z") == ([], [])
     # a person's own set-mode is never listed as the policy's
     host_set_mode(home, env.host, "plain", registration="project")
+    assert len(overseer_run._policy_lines(home, None)[0]) == 1
+    # nor is a commit whose subject reads like the policy's but which does
+    # not carry `By: policy` (a hand edit of hosts.yaml committed by a person)
+    hosts_yaml = home / "hosts.yaml"
+    hosts_yaml.write_text(hosts_yaml.read_text(encoding="utf-8") + "# a hand edit\n", encoding="utf-8")
+    git(home, "add", "hosts.yaml")
+    git(home, "commit", "-q", "-m",
+        f"self-learn: host set-mode project {real} git → plain (policy)\n\nBy: human")
+    assert _message(home).splitlines()[0].endswith("(policy)")  # control: the subject matches
     assert len(overseer_run._policy_lines(home, None)[0]) == 1
 
 
@@ -659,6 +671,65 @@ def test_a_host_a_person_removed_is_never_registered_again(tmp_path, inside_home
     assert note.startswith(f"host registration 1 ({real}): refused — ")
     assert "taken out of the registry (ledger commit " in note
     assert "never registers it again" in note
+
+    # Gate r2 MINOR 1: the verb's default, bare form `host remove <path>`
+    # (no registration word in the subject; most live removals) stands too.
+    # Mutation: make the registration word required in `_REMOVE_SUBJECT_RE`
+    # -> the bare removal is not read, `fresh` reads `no` and is registered
+    # again.
+    fresh_real = os.path.realpath(fresh)
+    hosts.host_remove(home, fresh)
+    assert not is_project_host(load_hosts(home), fresh)
+    assert git(home, "log", "-1", "--format=%s").stdout.strip() == (
+        f"self-learn: host remove {fresh_real}"
+    )  # control: the bare subject form is what this exercises
+    assert overseer_run._registered_labels(home, [fresh_real]) == {fresh_real: "removed"}
+    third = {"run_id": "run-00000000000c", "registrations": [
+        {"path": str(fresh), "case": "case-0000000b", "why": "w"},
+    ]}
+    notes = []
+    with attribution.job("overseer"):
+        assert overseer_run._register_hosts(home, third, notes) == []
+    assert [r["result"] for r in third["registrations"]] == ["refused"]
+    assert not is_project_host(load_hosts(home), fresh)
+    (note,) = notes
+    assert "taken out of the registry (ledger commit " in note
+
+
+def test_an_unreadable_ledger_history_refuses_and_reads_unknown(tmp_path, inside_home, monkeypatch):
+    """Gate r2 MINOR 2: the fail-closed half of the removal rule. When git
+    cannot read the ledger's history of hosts.yaml, `registration_problem`
+    refuses (never reads it as "nothing was removed") and projects.yaml's
+    `registered` reads `unknown` for an unregistered path, while a
+    registered one still reads its mode (positive control). Mutations: the
+    except branch in `registration_problem` sets `removed = {}` -> None;
+    the except branch in `_registered_labels` sets `removed = {}` -> `no`."""
+    from self_learn import gitops
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    proj = tmp_path / "repos" / "proj"
+    init_repo(proj)
+    real = os.path.realpath(proj)
+    registered = os.path.realpath(env.host)
+    assert registration_problem(home, str(proj)) is None  # control: readable history
+    assert overseer_run._registered_labels(home, [real]) == {real: "no"}
+
+    real_git = gitops._git  # noqa: SLF001
+
+    def failing_log(repo, *args, **kwargs):
+        if args and args[0] == "log" and "hosts.yaml" in args:
+            return subprocess.CompletedProcess(["git", *args], 128, "", "fatal: simulated unreadable history")
+        return real_git(repo, *args, **kwargs)
+
+    monkeypatch.setattr(gitops, "_git", failing_log)
+
+    problem = registration_problem(home, str(proj))
+    assert problem is not None
+    assert "the ledger's record of removed hosts could not be read" in problem
+    assert "simulated unreadable history" in problem
+    labels = overseer_run._registered_labels(home, [real, registered])
+    assert labels == {real: "unknown", registered: "git"}
 
 
 def test_the_undo_line_says_what_to_do_once_lessons_are_routed_there(tmp_path):

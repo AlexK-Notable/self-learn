@@ -86,6 +86,7 @@ __all__ = [
     "PolicyChange",
     "PolicyResult",
     "RegistrationRefused",
+    "UNDO_ROUTED_CLAUSE",
     "ancestors_of",
     "apply_policy",
     "canon_read_roots",
@@ -1226,6 +1227,16 @@ def policy_changes(hosts: Hosts) -> list[PolicyChange]:
     return out
 
 
+#: What ``host remove`` needs once lessons are routed into the registration
+#: it removes (it refuses, naming the routed records, :class:`HostsError`
+#: from :func:`host_remove`). Every printed undo that is a ``host remove``
+#: carries it (gate r2 NIT 1).
+UNDO_ROUTED_CLAUSE = (
+    "once lessons are routed there it refuses until each is moved "
+    "(`self-learn rehome <id> --to <target>`) or `--gate-only` is added"
+)
+
+
 def policy_undo(path: Path | str, old_mode: str) -> str:
     """The undo of one policy switch of *path*'s project registration away
     from *old_mode*, in the words the commit body and the overseer's report
@@ -1233,7 +1244,7 @@ def policy_undo(path: Path | str, old_mode: str) -> str:
     next day (the rule stands), so the undo changes what the rule reads."""
     return (
         f"`self-learn host remove {path} --project` (the skills root "
-        "registration stays), or set the skills root itself to "
+        f"registration stays; {UNDO_ROUTED_CLAUSE}), or set the skills root itself to "
         f"{old_mode} with `self-learn host set-mode {path} {old_mode} "
         "--skills-root`, which the project then follows"
     )
@@ -1421,9 +1432,10 @@ def registration_problem(home: Path | str, raw_path: object) -> str | None:
     directory (``$HOME`` itself is refused); not the ledger, inside it or
     above it; not inside self-learn's cache (or above it); not registered
     already, in either registration or either mode; never taken out of the
-    registry by a ``host remove`` that was not the overseer's own (gate r1
-    MAJOR 1: the removal is the user's undo, and it stands; an unreadable
-    ledger history refuses too)."""
+    registry by a ``host remove`` (gate r1 MAJOR 1: the removal is the
+    user's undo, and it stands; an unreadable ledger history refuses too).
+    Every removal counts, whoever made it: nothing in self-learn removes a
+    host on its own (gate r2 NIT 3)."""
     if not isinstance(raw_path, str) or not raw_path.strip():
         return "a registration needs a path"
     text = raw_path.strip()
@@ -1453,7 +1465,7 @@ def registration_problem(home: Path | str, raw_path: object) -> str | None:
     except HostsError as exc:
         return f"{real}: the ledger's record of removed hosts could not be read ({exc})"
     hit = removed.get(str(real))
-    if hit is not None and hit[1] != "overseer":
+    if hit is not None:
         sha, actor = hit
         return (
             f"{real} was taken out of the registry (ledger commit {sha}, By: "

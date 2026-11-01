@@ -1944,7 +1944,7 @@ def _registered_labels(home: Path, paths: Iterable[str]) -> dict[str, str]:
             out[path] = hosts.project_modes.get(real, "git")
         elif removed is None:
             out[path] = "unknown"
-        elif real in removed and removed[real][1] != "overseer":
+        elif real in removed:
             out[path] = "removed"
         else:
             out[path] = "no"
@@ -2054,8 +2054,7 @@ def _registration_run_line(run_id: str) -> str:
 #: What the undo needs once a lesson is routed into the new host (``host
 #: remove`` then refuses, naming the routed records), and that it stands.
 _REGISTRATION_UNDO_ROUTED = (
-    "once lessons are routed there it refuses until each is moved "
-    "(`self-learn rehome <id> --to <target>`) or `--gate-only` is added; "
+    f"{hosts_mod.UNDO_ROUTED_CLAUSE}; "
     "a removed host is never registered again by self-learn"
 )
 
