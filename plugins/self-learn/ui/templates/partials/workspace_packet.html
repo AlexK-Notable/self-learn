@@ -18,8 +18,8 @@
   <section class="ws-section" aria-labelledby="ws-decided-h">
     <h2 id="ws-decided-h">What was decided</h2>
     <p>{{ packet.decided.what }}</p>
-    {# `by` is steward | overseer | agent, and `code` for what self-learn noticed itself (attention-core's registration items; integration of 2026-10-31c). #}
-    <p class="ws-meta">By {{ {"steward": "the steward", "overseer": "the overseer", "agent": "an agent", "code": "self-learn itself (it noticed this; no model decided it)"}.get(packet.decided.by, packet.decided.by) }}{% if packet.decided.at %}, {{ packet.decided.at | humanize_ts }}{% endif %}.</p>
+    {# `by` is steward | overseer | agent, and `code` for what self-learn's own checks noticed (attention-core's registration items; integration of 2026-10-31c). Y-11: no `self-learn` followed by a word here, which the template check reads as a command. #}
+    <p class="ws-meta">By {{ {"steward": "the steward", "overseer": "the overseer", "agent": "an agent", "code": "self-learn (it noticed this itself; no model decided it)"}.get(packet.decided.by, packet.decided.by) }}{% if packet.decided.at %}, {{ packet.decided.at | humanize_ts }}{% endif %}.</p>
     {% if packet.decided.because %}<p><strong>Why:</strong> {{ packet.decided.because }}</p>{% endif %}
   </section>
   {% endif %}

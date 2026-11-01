@@ -891,5 +891,7 @@ def test_a_decision_self_learn_noticed_says_so_in_words(tmp_path, monkeypatch):
     noticed = {**HOOK_PACKET, "decided": {**HOOK_PACKET["decided"], "by": "code"}}
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(HOOK), {ID_HOOK: noticed}))
     page = client.get(f"/inbox/{ID_HOOK}").text
-    assert "By self-learn itself (it noticed this; no model decided it)" in page
+    # 2026-11-01: worded so no `self-learn <word>` sits in the template,
+    # which 09 §11 Y-11's template check reads as a terminal command.
+    assert "By self-learn (it noticed this itself; no model decided it)" in page
     assert "By the code" not in page
