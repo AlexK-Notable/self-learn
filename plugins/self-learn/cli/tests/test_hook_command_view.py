@@ -250,6 +250,19 @@ CORPUS: dict[str, tuple[str, str]] = {
     "r2 G1: count inside quoted arithmetic": ('x="$(( $(pgrep -f worker | wc -l) + 1 ))"', "warn"),
     "r2 G1: substitution in quoted arithmetic": ('echo "$(( $(pkill -f foo) ))"', "warn"),
     "r2 G1: backticks in quoted arithmetic": ('echo "$(( `pkill -f foo` ))"', "warn"),
+    # --- the gate r2 fold's own controls (mutation-driven)
+    "r2 fold: a comment after a subshell's )": ("(cd x)# don't\npkill -f foo 'y'", "warn"),
+    "r2 fold: a # after a substitution's ) is a word": ("echo $(date)#x 'pkill -f foo'", "silent"),
+    "r2 fold: the here-string flag ends with its word":
+        ("bash <<< 'a'; git commit -m 'pkill -f foo'", "silent"),
+    "r2 fold: an inner quote in $( ) in double quotes":
+        ('echo "$(echo "a" \'pkill -f foo\')"', "warn"),
+    "r2 fold: an inner quote in backticks in double quotes":
+        ('echo "`echo "a" \'pkill -f foo\'`"', "warn"),
+    "r2 fold: a heredoc delimiter holding $ keeps its body":
+        ("cat <<$X >f\npkill -f foo\n$X\nls", "warn"),
+    "r2 fold: a heredoc after closed arithmetic":
+        ("echo $((1<<2)); cat <<'E' >f\npkill -f foo\nE", "silent"),
 }
 
 

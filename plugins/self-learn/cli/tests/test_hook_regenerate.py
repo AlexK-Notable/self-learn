@@ -412,6 +412,31 @@ def test_g2_a_person_deletion_after_a_failed_write_is_left_and_reported(
     assert not script.exists()
 
 
+def test_g2_a_pending_entry_for_a_retired_lesson_is_forgotten(env, monkeypatch, cache_dir):
+    _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    blocker = _fail_host_commits(env)
+    maintenance.run(env.home, cache_dir, now=time.time())
+    assert RID in _pending(env)  # control: recorded
+    blocker.unlink()
+    _retire(env)
+    verbs.recompile(env.home, no_push=True)
+    assert _pending(env) == {}
+
+
+def test_g2_a_symlink_after_a_failed_write_is_left(env, monkeypatch, cache_dir, tmp_path):
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    blocker = _fail_host_commits(env)
+    maintenance.run(env.home, cache_dir, now=time.time())
+    assert RID in _pending(env)  # control: recorded
+    blocker.unlink()
+    elsewhere = tmp_path / "mine.sh"
+    elsewhere.write_bytes(script.read_bytes())  # the very bytes self-learn had placed
+    script.unlink()
+    script.symlink_to(elsewhere)
+    place, left = verbs.pending_warn_hook_placements(env.home)
+    assert place == [] and "became a symlink" in left[RID]
+
+
 def test_g2_a_file_missing_after_the_failed_write_is_placed(env, monkeypatch, cache_dir):
     """A person removes an outdated hook's file and runs recompile by hand,
     which regenerates it; its host write fails, leaving the file missing.
