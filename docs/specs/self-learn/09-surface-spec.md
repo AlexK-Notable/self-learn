@@ -553,8 +553,10 @@ section records what the surface is.
   reply after a reload or a switch to another item; the server decides
   the origin. Emptying the box, or selecting all of it and typing over
   it, drops the draft id (the words sent are then the person's own); a
-  paste over it keeps the id, and the id comes back when the draft's
-  text is whole in the box again. The box is disabled
+  paste over it keeps the id, and the id comes back only when a paste,
+  a drop or an undo leaves the box holding exactly the draft's text
+  (words the person types are theirs even when they contain or spell out
+  a short draft). The box is disabled
   with a plain sentence when the login is broken or asking would bill
   money; every other part of the page still works.
 - **Keys** (`INBOX_KEYMAP`, listed in the `?` overlay on inbox pages):
@@ -569,7 +571,9 @@ section records what the surface is.
   agent finishing, errors and item changes. An unsent reply or
   question is kept per item in `localStorage` (a convenience only).
   Only a recorded send of the answer form (an option, Send, Confirm)
-  empties it; an undo, redo, run, fix or login check re-renders the
+  empties it; a draft card's **Send as is** sends the card's text and
+  empties the box only when the box held that same text; an undo, redo,
+  run, fix or login check re-renders the
   answer bar without sending the box's text, and the bar's box is
   refilled from what was typed.
 - **Weekly report** (`/overseer-report[/<date>]`): a read-only render of

@@ -370,11 +370,17 @@
     storeDraftMeta(currentItem(), "", "");
   });
 
-  function reattachDraft(box) {
+  function reattachDraft(box, inputType) {
     var d = detachedDraft;
     if (!d || d.item !== currentItem()) return;
+    // Only the draft's own text, whole and alone, and put back by a paste,
+    // a drop or an undo, brings its id back (ui-workspace gate r3 finding
+    // 1, at integration). Words the person typed are their own even when
+    // they contain, or spell out, a short draft: they must never be sent
+    // as the agent's draft with the draft's option.
+    if (TYPED_INPUT[inputType]) return;
     var text = draftCardText(d.id);
-    if (!text || box.value.indexOf(text) === -1) return;
+    if (!text || box.value.trim() !== text) return;
     applyDraftMeta(d.id, d.option);
     storeDraftMeta(d.item, d.id, d.option);
     detachedDraft = null;
@@ -389,7 +395,7 @@
         applyDraftMeta("", "");
         storeDraftMeta(currentItem(), "", "");
       } else {
-        reattachDraft(t);
+        reattachDraft(t, e.inputType);
       }
     } else if (t.id === "ws-ask-text") {
       store("ask", currentItem(), t.value);
@@ -475,7 +481,15 @@
     // (gate r2 finding 1; "nothing typed is ever lost").
     var inAnswer = target.id === "ws-answer" || !!(target.closest && target.closest("#ws-answer"));
     var path = OWN_PATH_RE.exec(requestPath(e.detail).split("?")[0]);
-    var sentReply = !!path && path[2] === "answer";
+    // A draft card's "Send as is" also posts to .../answer, but it sends
+    // the card's text, not the box's (ui-workspace gate r3 NIT A, at
+    // integration): the box's own words are cleared only when they are
+    // what that card sent.
+    var elt = e.detail && e.detail.requestConfig ? e.detail.requestConfig.elt : null;
+    var card = elt && elt.closest ? elt.closest("[data-draft-card]") : null;
+    var sentReply = !!path && path[2] === "answer" && (
+      !card || recall("reply", currentItem()).trim() === draftCardText(card.getAttribute("data-draft-id"))
+    );
     var recorded = $("#ws-answer [data-recorded]");
     if (recorded && inAnswer) {
       if (sentReply) {

@@ -272,6 +272,20 @@ def _wait_for_value(page: "Page", selector: str, value: str) -> None:
         assert page.input_value(selector) == value
 
 
+def _paste_whole(page: "Page", selector: str, text: str) -> None:
+    """Replace a field's whole value as a paste does: the value changes and
+    an `input` event with `inputType: insertFromPaste` fires. Headless
+    Chromium has no clipboard to paste from without extra permissions."""
+    page.evaluate(
+        """([selector, text]) => {
+            const box = document.querySelector(selector);
+            box.value = text;
+            box.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertFromPaste", data: text}));
+        }""",
+        [selector, text],
+    )
+
+
 def _wait_for(predicate, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -425,8 +439,10 @@ def test_typing_over_a_whole_draft_sends_the_persons_own_words(page, server):
     assert page.get_attribute("#ws-answer-form", "data-draft-option") is None
     assert not page.is_visible("#ws-reply-draft-note")
     # The draft's own text pasted back over everything: the id returns.
+    # (A paste is `insertFromPaste`; typed input never re-attaches, see
+    # the next test. Set here as the browser's paste would set it.)
     page.keyboard.press("Control+A")
-    page.keyboard.insert_text("Only the first two.")
+    _paste_whole(page, "#ws-reply-text", "Only the first two.")
     assert page.input_value("#ws-reply-draft") == DRAFT_ID
     assert page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions"
     # Typed over again, then sent: the person's words, no draft, no option.
@@ -437,3 +453,50 @@ def test_typing_over_a_whole_draft_sends_the_persons_own_words(page, server):
     argv = _answer_calls(server)[-1]
     assert "--text-file" in argv
     assert "--draft" not in argv and "--option" not in argv
+
+
+# ------------------------------------------- gate r3 finding 1, NIT A (integration)
+
+
+def test_typed_words_that_contain_a_short_draft_are_never_sent_as_it(page, server):
+    """ui-workspace gate r3 finding 1 (C6): after typing over a draft, the
+    person goes on typing words that begin with the draft's own short text.
+    Those are their words: the answer carries neither `--draft` nor the
+    draft's approve option. Mutations: re-attach by `indexOf` (the lane's
+    rule) -> red; re-attach on typed input when the text is exactly the
+    draft -> red (the box passes through the draft's exact text while
+    typing); re-attach a paste that only contains the draft -> red."""
+    _open(page, server, ID_OO7)
+    page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] [data-use-draft]')
+    assert page.input_value("#ws-reply-draft") == DRAFT_ID  # control: the draft is wired
+    page.locator("#ws-reply-text").focus()
+    page.keyboard.press("Control+A")
+    page.keyboard.type("Only the first two. I wrote this myself, not the agent.")
+    assert page.input_value("#ws-reply-draft") == ""
+    assert page.get_attribute("#ws-answer-form", "data-draft-option") is None
+    # A paste that holds the draft and more is not the draft either.
+    _paste_whole(page, "#ws-reply-text", "Only the first two. Plus a condition of mine.")
+    assert page.input_value("#ws-reply-draft") == ""
+    page.click("[data-send-reply]")
+    _wait_for(lambda: bool(_answer_calls(server)))
+    argv = _answer_calls(server)[-1]
+    assert "--text-file" in argv
+    assert "--draft" not in argv and "--option" not in argv
+
+
+def test_send_as_is_on_a_draft_card_keeps_the_boxs_own_words(page, server):
+    """ui-workspace gate r3 NIT A: a draft card's "Send as is" sends the
+    card's text, so the reply box's unsent words stay (09 §2.5: only a
+    recorded send of the answer form empties it). Mutation: clear on every
+    POST .../answer whatever sent it (the lane's rule) -> red."""
+    words = "My own words, not sent yet."
+    _open(page, server, ID_OO7)
+    page.fill("#ws-reply-text", words)
+    page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] button[type="submit"]')
+    page.wait_for_selector("#ws-answer [data-recorded]", timeout=_WAIT_MS)
+    argv = _answer_calls(server)[-1]
+    assert argv[argv.index("--draft") + 1] == DRAFT_ID  # control: the card was sent
+    _wait_for_value(page, "#ws-reply-text", words)
+    page.reload(wait_until="load")
+    page.wait_for_selector(f'#ws[data-item-id="{ID_OO7}"]')
+    _wait_for_value(page, "#ws-reply-text", words)
