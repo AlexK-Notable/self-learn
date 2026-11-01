@@ -174,6 +174,18 @@ def test_typing_filters_the_rows_and_opens_the_group_that_holds_a_match(page):
     assert page.inner_text("[data-settings-status]").strip() == ""
 
 
+def test_a_word_hides_the_other_rows_of_a_group_that_still_has_a_match(page):
+    """The rows of a group that holds a match are filtered one by one, not only
+    hidden along with an empty group. "weekly" is in Weekly check's name and in
+    no other row of the same group. Mutation: `row.hidden = !hit` replaced by
+    `row.hidden = false` -> red (Read my sessions overnight stays)."""
+    assert "setting-row-miner-enabled" in _visible_rows(page)  # positive control
+    page.fill("#settings-q", "weekly")
+    assert _visible_rows(page) == ["setting-row-overseer-enabled"]
+    page.fill("#settings-q", "")
+    assert "setting-row-miner-enabled" in _visible_rows(page)
+
+
 def test_a_search_with_no_match_says_so(page):
     """Mutation: the empty-result line is never unhidden -> red."""
     page.fill("#settings-q", "zzzz")

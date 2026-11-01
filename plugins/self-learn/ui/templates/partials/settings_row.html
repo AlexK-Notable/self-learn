@@ -60,7 +60,7 @@
     {# data-verb-success: app.js holds a page reload while this is in the page
        (09 §3.5, leg (f)), so the refresh the save itself causes does not wipe
        the word "Saved." the moment it appears. #}
-    {% if saved and not row.error %}<p class="setting-saved" role="status" data-verb-success>Saved.</p>{% endif %}
+    {% if saved %}<p class="setting-saved" role="status" data-verb-success>Saved.</p>{% endif %}
     {% if row.error %}
     {# data-verb-error: app.js holds a page reload while this is in the page
        (Y-16 leg (a)), so a broadcast refresh does not wipe a refusal. #}
