@@ -180,6 +180,83 @@ def test_the_policy_recompiles_the_switched_registrations_lessons(tmp_path):
     assert git(repo, "status", "--porcelain").stdout == ""  # committed in git mode
 
 
+def test_the_policys_commits_are_not_hand_steps(tmp_path):
+    """Gate r1 MINOR 1. Mutation: `report._JOB_ACTORS` without `policy`
+    (the old fixed set) -> the policy's set-mode and recompile commits are
+    counted as hand steps."""
+    from self_learn import report
+
+    env = _double(tmp_path, root="git", project="git")
+    home = env.ledger
+    rid = _project_lesson(home, env.host, "lrn-8c000002")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    host_set_mode(home, env.host, "plain", registration="project")  # a person's step
+    claude_md = env.host / "CLAUDE.md"
+    claude_md.write_text(
+        "\n".join(line for line in claude_md.read_text(encoding="utf-8").splitlines() if rid not in line) + "\n",
+        encoding="utf-8",
+    )
+    commit_all(env.host, "a hand edit dropped the lesson's line")  # so the recompile has work
+    before = _head(home)
+    result = apply_policy(home)
+    assert result.changed and result.recompiled[str(env.host.resolve())] == (rid,)
+    policy_commits = _commits(home, before)
+    assert policy_commits  # the switch (and any recompile commit)
+    for sha in policy_commits:
+        assert _message(home, sha).rstrip().endswith("By: policy")
+
+    census = report.hand_steps(home)
+    subjects = [step["subject"] for step in census["steps"]]
+    # positive control: the person's own set-mode commits are hand steps
+    assert any(s.endswith("git → plain") for s in subjects), subjects
+    assert not any("(policy)" in s for s in subjects), subjects
+    short = {sha[:7] for sha in policy_commits}
+    assert not any(step["commit"][:7] in short for step in census["steps"])
+
+
+def test_the_overseers_report_lists_the_policys_switches_with_their_undo(tmp_path):
+    """Gate r1 MINOR 1: the policy's switch is decided in the user's
+    stead, so the weekly report lists it with its undo. Mutation: drop the
+    `By: policy` reading from `policy_commits` (or the subject match) ->
+    no line."""
+    env = _diverged(tmp_path)
+    home = env.ledger
+    assert overseer_run._policy_lines(home, None) == ([], [])  # control: nothing yet
+    apply_policy(home)
+    lines, notes = overseer_run._policy_lines(home, None)
+    real = env.host.resolve()
+    assert notes == []
+    (line,) = lines
+    assert line.startswith(f"[host mode set by the policy] project {real} plain → git (one repo, one mode")
+    assert f"undo: `self-learn host remove {real} --project`" in line
+    assert f"`self-learn host set-mode {real} plain --skills-root`" in line
+    # only since the last run
+    assert overseer_run._policy_lines(home, "2999-01-01T00:00:00Z") == ([], [])
+    # a person's own set-mode is never listed as the policy's
+    host_set_mode(home, env.host, "plain", registration="project")
+    assert len(overseer_run._policy_lines(home, None)[0]) == 1
+
+
+def test_an_info_exclude_failure_is_a_failed_line(tmp_path):
+    """Gate r1 MINOR 2: the switch to git stands when self-learn's
+    info/exclude block cannot be edited, and `failed` says so. Mutation:
+    drop the `unexclude_error` branch in `apply_policy` -> `failed` empty."""
+    from self_learn import gitops
+
+    env = _diverged(tmp_path)
+    exclude = env.host / ".git" / "info" / "exclude"
+    text = exclude.read_text(encoding="utf-8")
+    assert gitops.EXCLUDE_END in text  # control: the plain registration wrote the block
+    exclude.write_text(text + gitops.EXCLUDE_END + "\n", encoding="utf-8")  # two ends: malformed
+
+    result = apply_policy(env.ledger)
+
+    assert host_mode(env.ledger, env.host, registration="project") == "git"  # the switch stands
+    (line,) = result.failed
+    assert line.startswith(f"project {env.host.resolve()} plain → git: changed, but self-learn's info/exclude")
+    assert "malformed" in line
+
+
 def test_policy_changes_names_only_a_registration_the_policy_would_change(tmp_path):
     env = _diverged(tmp_path)
     (change,) = policy_changes(load_hosts(env.ledger))
@@ -298,6 +375,27 @@ def test_registration_problem_names_each_refusal(tmp_path, inside_home):
     assert "already registered (a plain project)" in registration_problem(env.ledger, str(ok))
 
 
+def test_the_directory_above_the_ledger_or_the_cache_is_refused_by_that_clause(tmp_path, monkeypatch):
+    """Gate r1 MINOR 2: with the user's home one level ABOVE *tmp_path*,
+    the ledger and the cache sit two levels below it, so the directory
+    above each is inside the home and is refused only by its own clause.
+    Mutations: drop the ledger clause -> *tmp_path* is answered by the cache
+    clause instead (no "the ledger"); drop the cache clause -> the cache's
+    parent is answered None."""
+    monkeypatch.setenv("HOME", str(tmp_path.parent))
+    env = make_env(tmp_path)
+    cache_parent = Path(os.environ["XDG_CACHE_HOME"])  # <tmp>/xdg-cache, above <tmp>/xdg-cache/self-learn
+    cache_parent.mkdir(parents=True, exist_ok=True)
+    elsewhere = tmp_path / "repos" / "proj"
+    elsewhere.mkdir(parents=True)
+    assert registration_problem(env.ledger, str(elsewhere)) is None  # positive control
+
+    above_ledger = registration_problem(env.ledger, str(env.ledger.parent))
+    assert above_ledger is not None and "the ledger, inside it or above it" in above_ledger
+    above_cache = registration_problem(env.ledger, str(cache_parent))
+    assert above_cache is not None and "self-learn's cache, inside it or above it" in above_cache
+
+
 def test_a_registration_from_an_agents_shell_is_the_overseers_act(tmp_path, inside_home, monkeypatch):
     """`register_plain_project` is self-learn's own act: it runs whatever
     shell started the run, and the commit says `By: overseer`. Mutation:
@@ -315,6 +413,34 @@ def test_a_registration_from_an_agents_shell_is_the_overseers_act(tmp_path, insi
     assert _message(env.ledger).rstrip().endswith("By: overseer")
 
 
+def _why(n: int) -> str:
+    """A one-line why of exactly *n* characters that reads as words (a run of
+    one letter would itself match the secret scan's long-token rule)."""
+    text = ("ab " * n)[:n]
+    return text[:-1] + "z"
+
+
+#: A GitHub-token shape the secret scan matches, built at run time so no
+#: credential-shaped literal sits in the tracked tree.
+_TOKEN_SHAPE = "gh" + "p_" + "A1b2C3d4" * 5
+
+
+def test_the_runner_keeps_at_most_the_per_run_limit_of_registrations(tmp_path):
+    """Gate r1 MINOR 2. Mutation: drop the per-run limit check -> the sixth
+    valid entry is kept."""
+    limit = hosts.MAX_REGISTRATIONS_PER_RUN
+    entries = [
+        {"path": f"/srv/p{i}", "case": "case-0000000b", "why": "w"} for i in range(limit + 1)
+    ]
+    kept, dropped = overseer_run._validate_registrations(
+        {"registrations": entries}, {"case-0000000b"},
+    )
+    assert [row["path"] for row in kept] == [f"/srv/p{i}" for i in range(limit)]
+    assert dropped == [
+        f"host registration {limit + 1}: dropped — more than {limit} registrations in one run"
+    ]
+
+
 def test_the_runner_refuses_git_mode_and_the_ledger_before_anything_is_written(tmp_path):
     """Mutation: accept `mode: git` in `_validate_registrations` -> kept."""
     kept, dropped = overseer_run._validate_registrations(
@@ -325,6 +451,8 @@ def test_the_runner_refuses_git_mode_and_the_ledger_before_anything_is_written(t
             {"path": "/srv/d", "case": "case-0000000c", "why": "w"},
             {"path": "/srv/e", "case": "case-0000000b", "why": ""},
             {"path": "/srv/b", "case": "case-0000000b", "why": "w"},
+            {"path": "/srv/f", "case": "case-0000000b", "why": _why(overseer_run.REGISTRATION_WHY_MAX + 1)},
+            {"path": "/srv/g", "case": "case-0000000b", "why": f"the key is {_TOKEN_SHAPE}"},
         ]},
         {"case-0000000b"},
     )
@@ -336,12 +464,21 @@ def test_the_runner_refuses_git_mode_and_the_ledger_before_anything_is_written(t
         "host registration 4: dropped — case is not a case in the ledger",
         "host registration 5: dropped — a registration needs a why",
         "host registration 6: dropped — the same path twice",
+        f"host registration 7: dropped — why is longer than {overseer_run.REGISTRATION_WHY_MAX} characters",
+        "host registration 8: dropped — the secret scan matched it",
     ]
+    # a why exactly at the limit is kept (the boundary of the row above)
+    at_limit, none_dropped = overseer_run._validate_registrations(
+        {"registrations": [{"path": "/srv/h", "case": "case-0000000b",
+                            "why": _why(overseer_run.REGISTRATION_WHY_MAX)}]},
+        {"case-0000000b"},
+    )
+    assert len(at_limit) == 1 and none_dropped == []
     _kept, whole = overseer_run._validate_registrations({"hosts": []}, set())
     assert whole == ["hosts.yaml: dropped — expected only a registrations list"]
 
 
-def _registration_run(tmp_path, monkeypatch, entries, *, dry_run=False, project=None):
+def _registration_run(tmp_path, monkeypatch, entries, *, dry_run=False, project=None, before=None):
     """One overseer run whose fake phase B writes hosts.yaml from
     ``entries(env, parked_case_id)``; the user's home is *tmp_path*. A
     *project* gets a lesson first, so the ledger knows it (a bucket) and
@@ -351,6 +488,8 @@ def _registration_run(tmp_path, monkeypatch, entries, *, dry_run=False, project=
     home = env.ledger
     if project is not None:
         _project_lesson(home, project, "lrn-8c0000aa")
+    if before is not None:
+        before(env)
     _enabled(monkeypatch)
     rid_a, parked_a, rid_b, parked_b = _two_parked(home, tmp_path)
     seen: dict[str, str] = {}
@@ -425,6 +564,25 @@ def test_a_run_registers_a_plain_project_and_lists_it_with_its_undo(tmp_path, mo
     assert [row.get("result") for row in manifest["registrations"]] == ["registered", "refused"]
 
 
+def test_a_run_lists_the_policys_switch_in_the_users_stead(tmp_path, monkeypatch):
+    """Gate r1 MINOR 1, end to end. Mutation: drop the record's
+    `policy_lines` from the report's decided lines -> not listed."""
+
+    def switch(env):
+        host_set_mode(env.ledger, env.host, "plain", registration="project")
+        apply_policy(env.ledger)
+
+    env, home, result, _seen = _registration_run(
+        tmp_path, monkeypatch, lambda env, parked: [], before=switch,
+    )
+    assert result.status == "applied", result
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    decided = report.split("## Decided in the user's stead", 1)[1].split("\n## ", 1)[0]
+    assert f"[host mode set by the policy] project {env.host.resolve()} plain → git" in decided
+    manifest = execution_evidence.read_manifest(home, result.run, at="HEAD")
+    assert len(manifest["policy_lines"]) == 1
+
+
 def test_a_resumed_run_reads_its_own_registration_as_registered(tmp_path, inside_home):
     """A resume after the registration committed and before the record did
     finds the path registered: its own commit says it made it. Control: a
@@ -451,6 +609,66 @@ def test_a_resumed_run_reads_its_own_registration_as_registered(tmp_path, inside
     assert lines == [overseer_run._host_line(row)]
     assert [r["result"] for r in manifest["registrations"]] == ["registered", "refused"]
     assert len(notes) == 1 and "already registered (a plain project)" in notes[0]
+
+
+def test_a_host_a_person_removed_is_never_registered_again(tmp_path, inside_home):
+    """Gate r1 MAJOR 1: the printed undo (`host remove … --project`) stands.
+    The overseer registers a project, the person removes it, and the same
+    entry in a later run is refused with the reason; projects.yaml reads
+    `removed`. Positive control: a path never removed still registers in the
+    same pass. Mutation: drop the removal check in `registration_problem`
+    -> the removed path is registered again."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    proj = tmp_path / "repos" / "proj"
+    init_repo(proj)
+    fresh = tmp_path / "repos" / "fresh"
+    init_repo(fresh)
+    real = os.path.realpath(proj)
+    first = {"run_id": "run-00000000000a", "registrations": [
+        {"path": str(proj), "case": "case-0000000b", "why": "w"},
+    ]}
+    with attribution.job("overseer"):
+        assert overseer_run._register_hosts(home, first, []) == [
+            overseer_run._host_line(first["registrations"][0])
+        ]
+    assert is_project_host(load_hosts(home), proj)
+    labels = overseer_run._registered_labels(home, [real])
+    assert labels == {real: "plain"}  # control: registered reads its mode
+    # the person's undo, exactly as the report prints it
+    assert "--project" in overseer_run._host_line(first["registrations"][0])
+    hosts.host_remove(home, proj, registration="project")
+    assert not is_project_host(load_hosts(home), proj)
+    assert overseer_run._registered_labels(home, [real, os.path.realpath(fresh)]) == {
+        real: "removed", os.path.realpath(fresh): "no",
+    }
+
+    later = {"run_id": "run-00000000000b", "registrations": [
+        {"path": str(proj), "case": "case-0000000b", "why": "w"},
+        {"path": str(fresh), "case": "case-0000000b", "why": "w"},
+    ]}
+    notes: list[str] = []
+    with attribution.job("overseer"):
+        lines = overseer_run._register_hosts(home, later, notes)
+
+    assert not is_project_host(load_hosts(home), proj)
+    assert [r["result"] for r in later["registrations"]] == ["refused", "registered"]
+    assert is_project_host(load_hosts(home), fresh)  # positive control
+    assert lines == [overseer_run._host_line(later["registrations"][1])]
+    (note,) = notes
+    assert note.startswith(f"host registration 1 ({real}): refused — ")
+    assert "taken out of the registry (ledger commit " in note
+    assert "never registers it again" in note
+
+
+def test_the_undo_line_says_what_to_do_once_lessons_are_routed_there(tmp_path):
+    """Gate r1 MAJOR 1, second half: `host remove` refuses while routed
+    records compile into the host, so the printed undo names the repair."""
+    line = overseer_run._host_line({"path": str(tmp_path), "case": "case-0000000b", "why": "w"})
+    assert f"`self-learn host remove {os.path.realpath(tmp_path)} --project`" in line
+    assert "`self-learn rehome <id> --to <target>`" in line and "`--gate-only`" in line
+    note = overseer_run._registration_note("run-x", {"case": "case-0000000b", "why": "w"}, "/p")
+    assert "Undo: self-learn host remove /p --project (once lessons are routed there" in note
 
 
 def test_a_dry_run_registers_nothing(tmp_path, monkeypatch):

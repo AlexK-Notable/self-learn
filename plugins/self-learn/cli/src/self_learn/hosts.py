@@ -56,8 +56,10 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -102,7 +104,10 @@ __all__ = [
     "is_repo_root",
     "load_hosts",
     "policy_changes",
+    "policy_commits",
     "policy_mode",
+    "policy_undo",
+    "removed_hosts",
     "register_plain_project",
     "registration_problem",
     "save_hosts",
@@ -1221,16 +1226,113 @@ def policy_changes(hosts: Hosts) -> list[PolicyChange]:
     return out
 
 
+def policy_undo(path: Path | str, old_mode: str) -> str:
+    """The undo of one policy switch of *path*'s project registration away
+    from *old_mode*, in the words the commit body and the overseer's report
+    both use. Setting the project back by hand would be switched again the
+    next day (the rule stands), so the undo changes what the rule reads."""
+    return (
+        f"`self-learn host remove {path} --project` (the skills root "
+        "registration stays), or set the skills root itself to "
+        f"{old_mode} with `self-learn host set-mode {path} {old_mode} "
+        "--skills-root`, which the project then follows"
+    )
+
+
 def _policy_note(change: PolicyChange) -> str:
     return (
         f"Applied by the host policy ({POLICY_RULE}): {change.path} is "
         f"registered as the skills root in {change.new_mode} mode and as a "
         f"project, so the project registration takes the skills root's mode. "
         f"The user's policy for skill repos ({POLICY_STATEMENT}): they are "
-        "written directly. Undo: register the skills root in the other mode, "
-        "or `self-learn host remove "
-        f"{change.path} --project`."
+        f"written directly. Undo: {policy_undo(change.path, change.old_mode)}."
     )
+
+
+_POLICY_SUBJECT_RE = re.compile(
+    r"^self-learn: host set-mode (project|skills-root) (/.*) (git|plain) → (git|plain) \(policy\)$"
+)
+
+
+def _ledger_log(home: Path, *args: str) -> list[tuple[str, str, str, dict[str, str]]]:
+    """``(short sha, author date, subject, final trailer block)`` for each
+    ledger commit touching hosts.yaml, newest first. Raises
+    :class:`HostsError` when git cannot read the history (a reader that
+    decides from it must never read an unreadable history as an empty one)."""
+    try:
+        proc = gitops._git(  # noqa: SLF001 -- same package
+            home, "log", "--no-merges", *args,
+            "--format=%x1e%h%x1f%aI%x1f%s%x1f%b", "--", "hosts.yaml",
+        )
+    except (gitops.GitOpsError, OSError, UnicodeDecodeError) as exc:
+        raise HostsError(f"the ledger's history could not be read: {exc}") from exc
+    if proc.returncode != 0:
+        detail = " ".join((proc.stderr or proc.stdout or "git log failed").split())[:200]
+        raise HostsError(f"the ledger's history could not be read: {detail}")
+    out: list[tuple[str, str, str, dict[str, str]]] = []
+    for chunk in proc.stdout.split("\x1e"):
+        if not chunk.strip():
+            continue
+        short, _, rest = chunk.partition("\x1f")
+        stamp, _, rest = rest.partition("\x1f")
+        subject, _, body = rest.partition("\x1f")
+        out.append((short.strip(), stamp.strip(), subject.strip(), attribution._final_block(body)[1]))  # noqa: SLF001
+    return out
+
+
+def policy_commits(home: Path | str, since: str | None = None) -> list[dict[str, str]]:
+    """The host policy's own ledger commits (subject ``… (policy)`` and
+    ``By: policy``), oldest first, made at or after *since* (an ISO time;
+    ``None`` is all of them). Each is ``{commit, at, kind, path, old, new,
+    undo}``. The overseer lists them in its report as decided in the user's
+    stead (S-NEXT-hosts, gate r1 MINOR 1). Raises :class:`HostsError` when
+    the history cannot be read."""
+    cut: datetime | None = None
+    if since:
+        try:
+            cut = datetime.fromisoformat(since.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except ValueError:
+            cut = None
+    out: list[dict[str, str]] = []
+    for short, stamp, subject, trailers in _ledger_log(Path(home)):
+        match = _POLICY_SUBJECT_RE.match(subject)
+        if match is None or trailers.get("By") != POLICY_ACTOR:
+            continue
+        if cut is not None:
+            try:
+                when = datetime.fromisoformat(stamp).astimezone(timezone.utc)
+            except ValueError:
+                continue
+            if when < cut:
+                continue
+        kind, path, old, new = match.groups()
+        out.append({
+            "commit": short, "at": stamp, "kind": kind, "path": path,
+            "old": old, "new": new, "undo": policy_undo(path, old),
+        })
+    out.reverse()
+    return out
+
+
+_REMOVE_SUBJECT_RE = re.compile(r"^self-learn: host remove (?:(?:skills-root|project) )?(/.*)$")
+
+
+def removed_hosts(home: Path | str) -> dict[str, tuple[str, str]]:
+    """Every path a ``host remove`` commit took out of the registry (either
+    registration), with the most recent such commit's short sha and its
+    ``By:`` actor (``""`` when the commit records none): real path ->
+    ``(sha, actor)``. Raises :class:`HostsError` when the history cannot be
+    read. A removal is the user's undo of a registration (S-NEXT-hosts, gate
+    r1 MAJOR 1); :func:`registration_problem` reads it so self-learn never
+    registers that path again on its own."""
+    out: dict[str, tuple[str, str]] = {}
+    for short, _stamp, subject, trailers in _ledger_log(Path(home)):
+        match = _REMOVE_SUBJECT_RE.match(subject)
+        if match is None:
+            continue
+        real = os.path.realpath(match.group(1))
+        out.setdefault(real, (short, trailers.get("By", "")))  # newest first: the first wins
+    return out
 
 
 def apply_policy(home: Path | str) -> PolicyResult:
@@ -1318,7 +1420,10 @@ def registration_problem(home: Path | str, raw_path: object) -> str | None:
     absolute path; an existing directory; strictly under the user's home
     directory (``$HOME`` itself is refused); not the ledger, inside it or
     above it; not inside self-learn's cache (or above it); not registered
-    already, in either registration or either mode."""
+    already, in either registration or either mode; never taken out of the
+    registry by a ``host remove`` that was not the overseer's own (gate r1
+    MAJOR 1: the removal is the user's undo, and it stands; an unreadable
+    ledger history refuses too)."""
     if not isinstance(raw_path, str) or not raw_path.strip():
         return "a registration needs a path"
     text = raw_path.strip()
@@ -1343,6 +1448,18 @@ def registration_problem(home: Path | str, raw_path: object) -> str | None:
     if is_project_host(hosts, real):
         mode = hosts.project_modes.get(str(real), "git")
         return f"{real} is already registered (a {mode} project)"
+    try:
+        removed = removed_hosts(home)
+    except HostsError as exc:
+        return f"{real}: the ledger's record of removed hosts could not be read ({exc})"
+    hit = removed.get(str(real))
+    if hit is not None and hit[1] != "overseer":
+        sha, actor = hit
+        return (
+            f"{real} was taken out of the registry (ledger commit {sha}, By: "
+            f"{actor or 'not recorded'}); a removal undoes a registration and "
+            "stands, so self-learn never registers it again on its own"
+        )
     return None
 
 

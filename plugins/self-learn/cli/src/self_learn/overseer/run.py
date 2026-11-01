@@ -847,13 +847,14 @@ Two kinds, each {{id, kind, cases}}:
   hands, credentials, or a command agents may not run), you may ask whether they will; say
   exactly what and why.
   An ask whose whole point is registering a repository as a canon host in git mode, or switching
-  a registered host's mode (a plain project you register yourself, in hosts.yaml) may add register: {{path: <absolute path>, mode: git or plain, kind: project or
+  a registered host's mode, may add register: {{path: <absolute path>, mode: git or plain, kind: project or
   skills-root, default project, action: add or set-mode, default add}}. The user's typed yes then
   registers it for them, or, with action: set-mode, switches that registered host to the mode. The text
   must name that path exactly and that mode as a phrase such as "in git mode" or "a plain skills
   root" (not just a word like "git repository"), and never name the other mode, because the user sees the text and a yes means
   exactly that registration; the question and its register must agree. A question that is not
-  about that registration never carries register.
+  about that registration never carries register. A plain project you register yourself instead,
+  in hosts.yaml (below), never through an ask.
 cases lists the case-… ids the question comes from, exactly as they appear in this stage; an
 ask needs at least one, because the user's answer is recorded against those cases.
 Order questions most consequential first. An empty list is a good answer when nothing clears
@@ -872,10 +873,11 @@ the notices still showing there: do not write one of them again, not even reword
 hosts.yaml is optional: {{registrations: [{{path, case, why}}]}}. It registers a project directory as a PLAIN
 canon host, which you may do on your own: a plain host gets only files git ignores and self-learn never
 commits or pushes there. List one only when a lesson's case shows it belongs in that project's own files and
-projects.yaml shows the project registered: no. path is the absolute path; case is the case-… id it comes
+projects.yaml shows the project registered: no (registered: removed is a person's or agent's undo, and it
+stands). path is the absolute path; case is the case-… id it comes
 from; why is one line of at most {REGISTRATION_WHY_MAX} characters. The runner refuses a path that is not an
-existing directory inside the user's home, is the ledger or self-learn's cache, or is registered already,
-and never registers git mode (that stays the user's). Each registration is listed in the report with the
+existing directory inside the user's home, is the ledger or self-learn's cache, is registered already or was
+removed, and never registers git mode (that stays the user's). Each registration is listed in the report with the
 command that undoes it; a lesson can be routed there from the next run on. At most
 {hosts_mod.MAX_REGISTRATIONS_PER_RUN} a run.
 user-model-delta.yaml is {{updates: [...]}}. Each update is either
@@ -1304,7 +1306,8 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
     ]
     # S-NEXT-hosts: whether each is a registered project host, and in which
     # mode, so phase B can list an unregistered one in hosts.yaml.
-    project_rows = [{**row, "registered": _registered_label(home, row["path"])} for row in project_rows]
+    labels = _registered_labels(home, [row["path"] for row in project_rows])
+    project_rows = [{**row, "registered": labels[row["path"]]} for row in project_rows]
     projects_text = _yaml_text({"projects": project_rows})
     if scan.scan(projects_text):
         projects_text = "projects: []\n"  # an input file's hit would refuse the run
@@ -1917,17 +1920,35 @@ def _write_project_notices(home: Path, manifest: dict[str, Any]) -> int:
     return offered
 
 
-def _registered_label(home: Path, path: str) -> str:
-    """projects.yaml's ``registered`` for one project (S-NEXT-hosts): its
-    project registration's mode (``git``/``plain``), or ``no``. Never
-    raises (an unreadable registry reads ``unknown``)."""
+def _registered_labels(home: Path, paths: Iterable[str]) -> dict[str, str]:
+    """projects.yaml's ``registered`` for each project (S-NEXT-hosts): its
+    project registration's mode (``git``/``plain``); ``removed`` when a
+    ``host remove`` took it out (the user's undo, which stands: the runner
+    refuses to register it again, gate r1 MAJOR 1); else ``no``. The
+    registry and the ledger's history are each read once. Never raises: an
+    unreadable registry reads ``unknown`` for every row, an unreadable
+    history ``unknown`` for each unregistered one."""
+    paths = list(paths)
     try:
         hosts = hosts_mod.load_hosts(home)
     except hosts_mod.HostsError:
-        return "unknown"
-    if not hosts_mod.is_project_host(hosts, path):
-        return "no"
-    return hosts.project_modes.get(os.path.realpath(path), "git")
+        return {path: "unknown" for path in paths}
+    try:
+        removed: dict[str, tuple[str, str]] | None = hosts_mod.removed_hosts(home)
+    except hosts_mod.HostsError:
+        removed = None
+    out: dict[str, str] = {}
+    for path in paths:
+        real = os.path.realpath(path)
+        if hosts_mod.is_project_host(hosts, path):
+            out[path] = hosts.project_modes.get(real, "git")
+        elif removed is None:
+            out[path] = "unknown"
+        elif real in removed and removed[real][1] != "overseer":
+            out[path] = "removed"
+        else:
+            out[path] = "no"
+    return out
 
 
 def _validate_registrations(
@@ -2030,13 +2051,22 @@ def _registration_run_line(run_id: str) -> str:
     return f"Overseer run {run_id}"
 
 
+#: What the undo needs once a lesson is routed into the new host (``host
+#: remove`` then refuses, naming the routed records), and that it stands.
+_REGISTRATION_UNDO_ROUTED = (
+    "once lessons are routed there it refuses until each is moved "
+    "(`self-learn rehome <id> --to <target>`) or `--gate-only` is added; "
+    "a removed host is never registered again by self-learn"
+)
+
+
 def _registration_note(run_id: str, row: dict[str, Any], real: str) -> str:
     return (
         "Registered in plain mode by the overseer, under decision 5: self-learn "
         "registers a project in plain mode on its own (it writes only files git "
         "ignores there and never commits or pushes).\n\n"
         f"{_registration_run_line(run_id)}, {row['case']}: {row['why']}\n\n"
-        f"Undo: self-learn host remove {real} --project"
+        f"Undo: self-learn host remove {real} --project ({_REGISTRATION_UNDO_ROUTED})."
     )
 
 
@@ -2044,8 +2074,25 @@ def _host_line(row: dict[str, Any]) -> str:
     real = os.path.realpath(str(row["path"]))
     return (
         f"[host registered] {real} as a plain project ({row['case']}: {row['why']}); "
-        f"undo: `self-learn host remove {real} --project`"
+        f"undo: `self-learn host remove {real} --project` ({_REGISTRATION_UNDO_ROUTED})"
     )
+
+
+def _policy_lines(home: Path, since: str | None) -> tuple[list[str], list[str]]:
+    """The host policy's switches since *since* as "Decided in the user's
+    stead" lines, each with its undo (S-NEXT-hosts, gate r1 MINOR 1: the
+    policy decides in the user's stead too), and a runner note when the
+    ledger's history cannot be read. Never raises."""
+    try:
+        commits = hosts_mod.policy_commits(home, since)
+    except hosts_mod.HostsError as exc:
+        return [], [f"the host policy's switches since the last run could not be listed: {exc}"]
+    return [
+        f"[host mode set by the policy] {row['kind']} {row['path']} {row['old']} → {row['new']} "
+        f"({hosts_mod.POLICY_RULE}, {hosts_mod.POLICY_STATEMENT}; ledger commit {row['commit']}); "
+        f"undo: {row['undo']}"
+        for row in commits
+    ], []
 
 
 def _register_hosts(home: Path, manifest: dict[str, Any], runner_notes: list[str]) -> list[str]:
@@ -3759,6 +3806,7 @@ def _prepare_manifest(
     skills_info: dict[str, Any] | None = None,
     project_notice_rows: list[dict[str, str]] | None = None,
     registration_rows: list[dict[str, str]] | None = None,
+    policy_lines: list[str] | None = None,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -3892,6 +3940,9 @@ def _prepare_manifest(
         # when the record executes and writes the outcome into its row
         # (`result`, `reason`), so a resume reports the same outcome.
         "registrations": [dict(row) for row in (registration_rows or [])],
+        # S-NEXT-hosts (gate r1 MINOR 1): the host policy's switches since the
+        # last run, as report lines with their undo, so a resume reports the same.
+        "policy_lines": list(policy_lines or []),
         "findings": findings,
         "case_order": order,
         "cases": recipes,
@@ -5267,6 +5318,7 @@ def _execute_manifest(
             decided=[
                 *decided_lines,
                 *host_lines,
+                *cast(list[str], manifest.get("policy_lines") or []),
                 *skills_mod.report_lines(manifest, trial_written=trial is not None),
                 # SK4: one line per disposition phase B recorded.
                 *discovery_mod.report_lines(manifest),
@@ -6115,6 +6167,10 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 {row["case"] for row in cases.list_cases(home, only_ok=True)},
             )
             finding_drops = [*finding_drops, *registration_drops]
+            # S-NEXT-hosts (gate r1 MINOR 1): the policy's switches since the
+            # last run are listed as decided in the user's stead.
+            policy_report_lines, policy_drops = _policy_lines(home, since)
+            finding_drops = [*finding_drops, *policy_drops]
             if examined_ids != selected:
                 # Coverage was advanced from phase A's selection before
                 # phase B ran; a selected case with no valid examined
@@ -6503,6 +6559,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 sessions=sessions,
                 project_notice_rows=notice_rows,
                 registration_rows=registration_rows,
+                policy_lines=policy_report_lines,
                 runner_notes=[
                     *phase_a_drops,
                     *report_notes, *question_drops, *finding_drops, *case_drops,

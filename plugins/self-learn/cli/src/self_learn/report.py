@@ -29,6 +29,7 @@ from pathlib import Path
 
 from ruamel.yaml.error import YAMLError
 
+from . import attribution
 from . import domain
 from . import gitops
 from . import scan
@@ -194,8 +195,11 @@ _JOB_SUBJECT_RE = re.compile(
     r"^self-learn: (?:steward manifest|telemetry flush|case |worker |mine |overseer"
     r"|capture |statement add|user-model |premises refresh )"
 )
-#: Actors whose ``By:`` trailer says a job, not a shell, made the commit.
-_JOB_ACTORS = frozenset({"steward", "overseer", "analyst"})
+#: Actors whose ``By:`` trailer says a job, not a shell, made the commit:
+#: every stamped actor but the two shells (S-NEXT-hosts gate r1 MINOR 1:
+#: read from the one actor set, so a new job such as the daily host
+#: ``policy`` is never counted as hand work).
+_JOB_ACTORS = attribution.ACTORS - attribution.SHELL_ACTORS
 _TRAILER_LINE_RE = re.compile(r"^[A-Za-z][A-Za-z-]*: \S")
 _NO_NOTE = "(no reason recorded)"
 
@@ -234,7 +238,8 @@ def hand_steps(
 
     A commit is a **hand step** when its subject is not a job's
     (:data:`_JOB_SUBJECT_RE`) and it carries no job's identity: no ``Case:``
-    trailer and no ``By: steward|overseer|analyst``. What is left was run
+    trailer and no job's ``By:`` (any actor but ``human``/``agent``,
+    :data:`_JOB_ACTORS`). What is left was run
     from a person's or an agent's shell. ``by`` says which when the commit
     says: ``human`` or ``agent`` from a ``By:`` trailer, ``none`` when there
     is no trailer (every hand verb before the agent shell stamped its own).
