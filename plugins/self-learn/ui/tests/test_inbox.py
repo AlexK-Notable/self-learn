@@ -252,7 +252,8 @@ def test_the_workspace_renders_everything_needed_to_decide(tmp_path, monkeypatch
     assert '<h1 id="ws-question">Bind oo7-daemon to the session bus so it survives a bus restart?</h1>' in page
     assert "Why you" in page and "outside self-learn" in page
     assert "Meanwhile" in page and "agents restart it by hand" in page
-    assert "Recommendation" in page and "(recommended)" in page
+    recommendation = page[page.index('id="ws-rec-h"'):page.index('id="ws-plan-h"')]
+    assert "Yes, add the binding" in recommendation and "(recommended)" in recommendation
     assert "A bus restart kills the daemon today." in page
     assert 'role="group" aria-label="Options"' in page
     for label in ("Yes, add the binding", "Yes, with conditions", "No, keep the manual note"):
