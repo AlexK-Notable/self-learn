@@ -364,6 +364,10 @@ def test_wrapper_runs_through_symlink(tmp_path):
         "worker_last_run": None,
         "steward_last_run_at": None,
         "steward_cases_since_overseer": 0,
+        # S-136: full status carries the steward's own verdicts
+        # (`steward.nudge_fields`); the nightly review is off by default,
+        # so only that.
+        "steward_enabled": False,
         # T19 blocks (zero-state: empty mix, null medians — never fake 0s)
         "supply_mix": {},
         "metrics": {
