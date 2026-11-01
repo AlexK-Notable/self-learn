@@ -1091,6 +1091,9 @@ questions:
   presentation line carries it. `overseer_open_questions` and the
   session-start count leave out an ask with a default: it is decided, not
   waiting. An ask without one (an index written before) still counts.
+  *(Amended S-120.)* The session-start line therefore reads "the
+  overseer has N older question(s) still waiting for you": the count is the
+  legacy asks only, no longer "interpretation questions".
 - An answer to an ask with a default is observed, not on the cited cases, but
   on the case each one's line of successors ends at, as `user answered <q-id>
   after its default was applied (ref: stmt-…)`. The steward brings that case

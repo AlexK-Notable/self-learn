@@ -94,8 +94,8 @@ rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
   options (route / reject / defer / discuss), bulk-acknowledge, session-end
   push. Routing doctrine: `references/routing-doctrine.md`.
 - `/self-learn:overseer` — open the overseer's latest report and its
-  interpretation questions, and record your replies. Never a review
-  session: nothing here approves a lesson.
+  questions (each new one with the default it already applied; older ones
+  still wait for your reply), and record your replies. Never a review session: nothing here approves a lesson.
 
 ## The G-3 surface — a richer review venue
 

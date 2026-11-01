@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta, timezone
 from operator import itemgetter
 from pathlib import Path
 from collections.abc import Iterable, Mapping, Sequence
-from typing import cast
+from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
 
@@ -4937,7 +4937,8 @@ def hold_notice_text(run_id: str, cause: str, *, now: float | None = None) -> st
     """The words of the environment-hold notification (S-115): the
     cause, when the next try comes (the scheduler retries a held run
     :data:`RETRY_SECS` after its last attempt, so "after" this minute is
-    true), and, for a login that no longer works, the user's fix."""
+    true), and the person's one step (`failure_class.hold_fix`) when the
+    cause has one."""
     moment = time.time() if now is None else now
     retry = datetime.fromtimestamp(moment + RETRY_SECS).astimezone()
     text = (
@@ -4945,9 +4946,29 @@ def hold_notice_text(run_id: str, cause: str, *, now: float | None = None) -> st
         f"It tries again after {retry.strftime('%Y-%m-%d %H:%M %Z').strip()} "
         f"(every {RETRY_SECS // 3600} h while the cause lasts)."
     )
-    if failure_class.is_login_failure(cause):
-        text += " The login has expired: run `claude` and `/login`."
+    fix = failure_class.hold_fix(cause)
+    if fix is not None:
+        text += f" {_hold_fix_lead(cause)}: {fix}."
     return text
+
+
+_LOGIN_EXPIRED_RE = re.compile(r"expired", re.I)
+_NOT_LOGGED_IN_RE = re.compile(r"not (?:logged|signed) in\b", re.I)
+
+
+def _hold_fix_lead(cause: str) -> str:
+    """The words before the fix in :func:`hold_notice_text`: true to the
+    cause (gate r1 NIT 4 of S-120). "The login has expired" only
+    for a login the cause says expired, "Claude Code is not logged in" for
+    one that never was, "The login no longer works" for any other login
+    failure, and "To fix it" for a cause that is not a login."""
+    if not failure_class.is_login_failure(cause):
+        return "To fix it"
+    if _LOGIN_EXPIRED_RE.search(cause):
+        return "The login has expired"
+    if _NOT_LOGGED_IN_RE.search(cause):
+        return "Claude Code is not logged in"
+    return "The login no longer works"
 
 
 def _notify_environment_hold(home: Path, run_id: str, cause: str) -> None:
@@ -6395,37 +6416,40 @@ def _hold_from_journal(resolved_cache_dir: Path) -> str | None:
     return None
 
 
-#: Environment-hold causes (the classifier's `_ENVIRONMENT` families) and
-#: the one step only the person can take. First match wins.
-_HOLD_FIXES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"authenticat|oauth|api[ -]?key|bearer|access token|(?:logged|signed) in|/login|\b40[13]\b", re.I),
-     "run `claude`, then `/login`"),
-    (re.compile(r"credit balance", re.I), "add credit to the Anthropic account"),
-    (re.compile(r"not[ _]found|\b404\b", re.I), "check the configured model name"),
-    (re.compile(r"update|upgrade|version|does not support|unsupported|not supported", re.I),
-     "update Claude Code (`claude update`)"),
-)
-
-
 def hold_fix(cause: str) -> str | None:
     """The next step for an environment-hold *cause*, or `None` when the
-    cause is not one the classifier knows."""
-    for pattern, fix in _HOLD_FIXES:
-        if pattern.search(cause):
-            return fix
-    return None
+    cause is not one the classifier knows. One map for every surface:
+    `failure_class.hold_fix` (also behind :func:`hold_notice_text`)."""
+    return failure_class.hold_fix(cause)
+
+
+#: S-115: where the last census of stranded queued lessons is kept,
+#: under ``<cache>/steward/`` (`NOT_REPO_TRUTH`): the session-start status
+#: reads its count without walking the ledger. `serve` writes it
+#: (`serve._write_stranded`) and takes its path and reader from here.
+STRANDED_FILENAME = "stranded.json"
+
+
+def stranded_path(cache_dir: Path) -> Path:
+    return cache_dir / "steward" / STRANDED_FILENAME
+
+
+def read_stranded(cache_dir: Path) -> dict[str, Any] | None:
+    """The last census as written (``{"at", "count", "lessons"}``), or
+    ``None`` when there is none or it cannot be read. Never raises."""
+    try:
+        data = json.loads(stranded_path(cache_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("count"), int) else None
 
 
 def _stranded_count(resolved_cache_dir: Path) -> int | None:
-    """The census count L2 caches at `<cache>/steward/stranded.json`
-    (`serve._write_stranded`: `{"at", "count", "lessons"}`); `None` when
-    the file is absent, unreadable or has no integer `count` -- unknown,
-    never zero."""
-    try:
-        data = json.loads((resolved_cache_dir / "steward" / "stranded.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    count = data.get("count") if isinstance(data, dict) else None
+    """The census count L2 caches (:func:`read_stranded`); `None` when the
+    file is absent, unreadable or has no non-negative integer `count` --
+    unknown, never zero."""
+    data = read_stranded(resolved_cache_dir)
+    count = data.get("count") if data is not None else None
     return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
 
 

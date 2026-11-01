@@ -452,7 +452,7 @@ def test_the_hold_notice_names_the_retry_time_and_the_login_fix():
     retry = datetime.fromtimestamp(NOW + steward.RETRY_SECS).astimezone()
     assert retry.strftime("%Y-%m-%d %H:%M") in text
     assert "every 2 h while the cause lasts" in text
-    assert "`claude` and `/login`" in text
+    assert "`claude`, then `/login`" in text
     assert cause in text
     # another environment cause keeps its cause line and no login advice
     other = steward.hold_notice_text("run-x", "model not found", now=NOW)

@@ -44,6 +44,9 @@ __all__ = [
     "outcome_class",
     "detail_tag",
     "is_login_failure",
+    "LOGIN_FIX",
+    "API_KEY_FIX",
+    "hold_fix",
 ]
 
 FAILURE_CLASSES = ("transient", "safeguard", "environment", "content", "unclassified")
@@ -112,6 +115,49 @@ def is_login_failure(detail: str | None) -> bool:
     revoked OAuth session, failed authentication, no login at all). The cure
     is the user's: run ``claude`` and ``/login``."""
     return bool(_LOGIN.search(detail or ""))
+
+
+#: The one step a person takes for a login that no longer works. Every
+#: surface that names a fix for an environment hold takes it from here.
+LOGIN_FIX = "run `claude`, then `/login`"
+
+#: A rejected API key (gate r1 MINOR 1 of S-120): the login
+#: step it had before the map was unified, and the other way it happens --
+#: an exported ANTHROPIC_API_KEY, which Claude Code prefers over the login.
+#: Checked before the login itself, because the API's own wording for it
+#: (`authentication_error ... invalid x-api-key`) is also a login failure.
+_API_KEY = re.compile(r"invalid (?:x-)?api[ -]?key", re.I)
+API_KEY_FIX = LOGIN_FIX + "; if ANTHROPIC_API_KEY is exported, it may be the wrong key"
+
+#: The other environment causes and their one step, after the key and
+#: the login. First match wins: a model-not-found cause that also says
+#: "update" is still a model-name problem.
+_OTHER_FIXES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # A 403 is not a login `_LOGIN` names, but its step is the same one it
+    # had before the map was unified (gate r1 MINOR 1): log in again.
+    (re.compile(r"api error:? *403\b", re.I), LOGIN_FIX),
+    (re.compile(r"credit balance", re.I), "add credit to the Anthropic account"),
+    (re.compile(r"not[ _]found|\b404\b", re.I), "check the configured model name"),
+    (re.compile(r"update|upgrade|version|too old|does not support|unsupported|not supported", re.I),
+     "update Claude Code (`claude update`)"),
+)
+
+
+def hold_fix(cause: str | None) -> str | None:
+    """The one step only the person can take for an environment *cause*
+    (the steward's hold, S-115): :data:`API_KEY_FIX` for a rejected API
+    key, :data:`LOGIN_FIX` for what :func:`is_login_failure` says, else
+    the first of ``_OTHER_FIXES`` that matches, else ``None`` for a cause the classifier has no step
+    for. The single cause-to-step map: the hold notification and the
+    session-start nudge both read it."""
+    if _API_KEY.search(cause or ""):
+        return API_KEY_FIX
+    if is_login_failure(cause):
+        return LOGIN_FIX
+    for pattern, fix in _OTHER_FIXES:
+        if pattern.search(cause or ""):
+            return fix
+    return None
 
 
 def classify(failure: str | None, detail: str | None, result_subtype: str | None = None) -> str | None:
