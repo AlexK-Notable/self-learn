@@ -157,9 +157,26 @@ def closed_sets() -> dict[str, Any]:
         "questions": {
             "kind": list(run.QUESTION_KINDS),
             "ask_keys": list(run.ASK_KEYS),
-            "default_required_unless": ["system: true", "register"],
+            "default_required_unless": ["system: true", "register", "needs: user"],
             "system_default": conversation.SYSTEM_DEFAULT,
             "register_default": conversation.REGISTER_DEFAULT,
+            # S-122 (attention design r2.1 §3.8, §4.5).
+            "needs": list(conversation.NEEDS_VALUES),
+            "because": list(conversation.BECAUSE_KEYS),
+            "needs_user_defaults": dict(conversation.NEEDS_USER_DEFAULTS),
+            "option_keys": list(run.OPTION_KEYS),
+            "option_effects": list(conversation.OPTION_EFFECTS),
+            "options_count": [run.OPTIONS_MIN, run.OPTIONS_MAX],
+            "recommend_keys": ["option", "reasoning"],
+            "plan_keys": list(run.PLAN_MODEL_KEYS),
+            "plan_required_for": sorted(conversation.PLAN_REQUIRED_BECAUSE),
+            "plan_check_keys": ["say", "command"],
+            "plan_step_keys": ["say", "command", "sudo"],
+            "plan_file_keys": ["path", "content"],
+            # Fix round 1 (gate r1 MAJOR 2): what every needs: user ask carries.
+            "needs_user_requires": ["because", "options", "recommend"],
+            "withdraw_keys": list(run.WITHDRAW_KEYS),
+            "withdrawn_backstop_days": run.WITHDRAWN_BACKSTOP_DAYS,
         },
         # S-106: the optional project notices.
         "notices": {
@@ -638,6 +655,24 @@ def _rules(phase: str) -> str:
             "and lists each registration in the report with the command that undoes it.",
             "See hosts.yaml here.",
             "",
+            "questions.yaml: every ask says needs: user or needs: stead (closed-sets.yaml,",
+            "questions); one with system: true or register and no needs is read as needs:",
+            "user (system-change, or foreign-history) and held to the same rules. Its text",
+            "names no lrn-, case- or stmt- ids. A needs: user ask names because, one key of",
+            "the closed list, and",
+            "writes no default: the runner writes what holds meanwhile. It must offer 2 to 4",
+            "options and recommend one with its reasoning (a register ask: at least one",
+            "register and one decline option). A system-change or money ask carries a",
+            "plan; an ask with a plan offers at least one approve and one decline option.",
+            "An approved item, or an open ask marked fixed, is kept or withdrawn, never",
+            "re-asked, and an id the user answered by choosing an option is never asked",
+            "again. checks are read-only",
+            "commands the carrying-out agent runs before it changes anything; every sudo",
+            "step comes before every other step; never write plan.sudo. A conflict ask",
+            "names two statements. A top-level withdraw: [{id, why}] stops asking an open",
+            "ask, or drops a stale approval, listed in open-asks.yaml; never ask a",
+            "withdrawn question again in other words. See questions.yaml here.",
+            "",
             "Moving a lesson that is ALREADY routed to a different destination",
             "(a path-scoped rule, a stronger surface, a hook): a successor with",
             "kind: reconsider whose sheet has a `route` item naming the new `dest`;",
@@ -763,7 +798,46 @@ def phase_b_examples() -> dict[str, str]:
             "id": "q-example-question", "kind": "ask", "cases": [EXAMPLE_CASE],
             "text": "Will you keep using this repository next month? Yes keeps the lesson; no retires it.",
             "why": "It decides whether the lesson stays loaded.",
+            "needs": "stead",
             "default": "I kept the lesson loaded this week; a no from you retires it.",
+        }, {
+            # S-122: an ask only the user can settle.
+            "id": "q-example-system-change", "kind": "ask", "cases": [EXAMPLE_CASE],
+            "text": (
+                "Bind the example daemon to the session bus so it restarts with it? Yes adds a "
+                "systemd drop-in; no keeps the lesson's manual restart note."
+            ),
+            "why": "It changes how your desktop starts a service, outside self-learn.",
+            "needs": "user", "because": "system-change",
+            "options": [
+                {"id": "opt-yes", "label": "Yes, add the binding", "effect": "approve"},
+                {"id": "opt-yes-conditions", "label": "Yes, with conditions", "effect": "approve",
+                 "note": "required"},
+                {"id": "opt-no", "label": "No, keep the manual note", "effect": "decline"},
+            ],
+            "recommend": {"option": "opt-yes", "reasoning": (
+                "The lesson recorded the same manual restart three times this month."
+            )},
+            "plan": {
+                "summary": "Add a systemd drop-in binding the example daemon to dbus-broker.",
+                "cwd": None,
+                "checks": [{
+                    "say": "No drop-in already binds it to the bus",
+                    "command": "systemctl --user show example.service --property=DropInPaths",
+                }],
+                "steps": [
+                    {"say": "Write the drop-in", "command": None, "sudo": False},
+                    {"say": "Reload user units", "command": "systemctl --user daemon-reload",
+                     "sudo": False},
+                ],
+                "files": [{
+                    "path": "~/.config/systemd/user/example.service.d/bind-dbus.conf",
+                    "content": "[Unit]\nBindsTo=dbus-broker.service\nAfter=dbus-broker.service\n",
+                }],
+            },
+        }], "withdraw": [{
+            "id": "q-example-moot-question",
+            "why": "the repository it asked about was archived, so the lesson no longer applies.",
         }]}),
         # Every free-text value double-quoted on one line, the form
         # `user_model_one_line_rule` asks for (2026-10-05).

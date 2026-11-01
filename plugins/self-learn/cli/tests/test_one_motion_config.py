@@ -166,9 +166,15 @@ class TestEnabledHook:
         assert script.read_text(encoding="utf-8") == result.diff.split(
             "\n--- ledger ---\n"
         )[0]
-        # manual activation reminder survives (settings.json stays manual)
+        # the activation reminder survives. 2026-11-01 (attention round, M4,
+        # design r2 §3.9, S-127): it names the one command that activates
+        # the guard -- `self-learn hook activate <id>` places the symlink,
+        # registers it in settings.json and verifies it -- and shows the
+        # settings.json registration for reference; no ./install.sh step.
         notes = "\n".join(result.post_notes)
-        assert "settings.json" in notes and "./install.sh" in notes
+        assert f"self-learn hook activate {record.id}" in notes and "INERT" in notes
+        assert "settings.json" in notes and name in notes
+        assert "./install.sh" not in notes
         # ledger truth: routed record carries the approved artifacts
         routed = Record.from_path(
             env.bucket / "resolved" / f"{record.id}.md"

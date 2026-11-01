@@ -54,6 +54,10 @@ _REQUIRED_REAL_BINS = (
     # every one of those calls "command not found"s instead of
     # exercising the fake systemctl/hyprctl this suite installs.
     "timeout",
+    # Attention round (design r2 §4.7): `--page` POSTs /navigate to an
+    # open window with curl. A test that shims curl passes its own fake,
+    # which replaces this link (`_write_fake` never writes through one).
+    "curl",
 )
 
 _EXEC_MODE = (
@@ -63,6 +67,10 @@ _EXEC_MODE = (
 
 def _write_fake(bindir: Path, name: str, body: str) -> Path:
     path = bindir / name
+    if path.is_symlink():
+        # A fake for a binary the harness also links in for real (curl):
+        # replace the link, never write through it into the real binary.
+        path.unlink()
     path.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
     path.chmod(_EXEC_MODE)
     return path

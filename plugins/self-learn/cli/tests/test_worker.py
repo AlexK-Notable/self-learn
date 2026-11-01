@@ -758,50 +758,24 @@ def test_render_brief_tolerates_a_non_mapping_registry_value(tmp_path, monkeypat
     assert keys == ["headline", "evidence"]
 
 
-# ------------------------------------------------- T14: template + escalation
+# ------------------------------------------------- T14: no popup (attention round)
 
 
-def test_notification_template_verbatim():
-    assert worker.render_notification(2, ["s", "project"], 7, 2) == (
-        "self-learn: 2 new proposals for s, project. "
-        "7 pending across 2 scopes — /self-learn:review"
-    )
-    assert worker.render_notification(1, ["s"], 1, 1) == (
-        "self-learn: 1 new proposal for s. 1 pending across 1 scope — "
-        "/self-learn:review"
-    )
-
-
-def test_notify_kill_switch_both_directions(
-    env, sdk_fake_worker, notify_shim, monkeypatch, tmp_path
+@pytest.mark.parametrize("steward_enabled", [True, False])
+def test_a_worker_run_that_writes_proposals_spawns_no_popup(
+    env, sdk_fake_worker, notify_shim, monkeypatch, tmp_path, steward_enabled
 ):
-    """Bug B (incident 2026-08-09), positive control in BOTH directions —
-    a check that passes when the feature is absent is worthless.
-    `_notify_with_ids`/`_notify` resolve their helper via PATH, which on
-    a dev machine finds the REAL deployed ~/.local/bin scripts regardless of
-    sandboxing, so an un-suppressed worker test notified the operator's
-    REAL desktop (measured: fixture proposal lrn-10000000 notified
-    repeatedly from an agent worktree).
+    """Attention round test 1 (design r2 §3.9, §5.7; answer 1): the worker's
+    popups P1 ("N new proposals ... /self-learn:review") and P2 ("backlog
+    needs attention") were removed outright, so a run that writes proposals,
+    over the old escalation thresholds (5 pending), spawns nothing -- with
+    the steward on or off and the kill switch cleared. Both transports are
+    shimmed: the `self-learn-notify` helper (P1's) and `notify-send` (P2's).
 
-    SAME landing shim, SAME `notify_shim`-shimmed helper on PATH, only
-    `SELF_LEARN_NO_NOTIFY` differs between the two runs:
-      - kill-switched (the suite's OWN default, "1", never overridden
-        here): zero invocations through EITHER shim — proves the switch
-        actually suppresses, not merely that nothing was ever wired up.
-      - live-shaped (explicitly cleared): exactly one invocation through
-        the notify_shim, pinned argv — proves the switch is not
-        permanently eating the feature; live mode still notifies.
-
-    gen2's record is deliberately dated 38 days old, which ALSO crosses
-    `_maybe_escalate`'s ESCALATE_OLDEST_DAYS threshold — a SEPARATE code
-    path (`_maybe_escalate` -> `_notify`, a raw `notify-send` call, never
-    the self-learn-notify helper). Gate MAJOR 2 (code gate 2026-08-09)
-    measured this test firing a REAL desktop notification through
-    EXACTLY that path — `notify_shim` only ever shimmed
-    `self-learn-notify`, never `notify-send` itself. `notify-send` is
-    now ALSO shimmed here, turning what was a live leak into a positive
-    control: the escalation call must land on the shim, never silently
-    vanish and never reach the real binary."""
+    Positive control first: the run did land a proposal and logged its
+    `proposals` event, so the place a popup used to follow was reached.
+    Mutation: restore `_notify_proposals` at the call site -> the helper
+    shim is spawned and this test fails."""
     notify_send_log = tmp_path / "notify-send.log"
     ns_shim = sdk_fake_worker["dir"] / "notify-send"
     ns_shim.write_text(
@@ -811,298 +785,31 @@ def test_notify_kill_switch_both_directions(
         encoding="utf-8",
     )
     ns_shim.chmod(ns_shim.stat().st_mode | stat.S_IEXEC)
-
-    assert os.environ.get("SELF_LEARN_NO_NOTIFY") == "1", (
-        "test assumes the suite-wide conftest default is active"
+    (env.home / "config.yaml").write_text(
+        f"steward:\n  enabled: {'true' if steward_enabled else 'false'}\n", encoding="utf-8"
     )
-    rid = seed_pending(env)
+    commit_all(env.home, "config")
+    rid = seed_pending(env, created_at="2026-07-02T00:00:00Z")  # old: P2's age threshold too
+    for i in range(4):
+        seed_pending(env, f"lrn-6000000{i}")
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
 
     result = worker.run(env.home)
-    assert result.status == "ok"
-    assert not notify_shim["log"].exists(), (
-        "kill-switched run: the notify shim must never be invoked"
-    )
-    assert not notify_send_log.exists(), (
-        "kill-switched run: no raw notify-send call (escalation incl.) either"
-    )
 
-    rid2 = seed_pending(env, "lrn-0000dddd", created_at="2026-07-02T00:00:00Z")
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid2))
-    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
-
-    result2 = worker.run(env.home)
-    assert result2.status == "ok"
-    assert result2.escalated is True, "test assumes gen2 crosses ESCALATE_OLDEST_DAYS"
-    _wait_for_file(notify_shim["log"])
-    argv = notify_shim["log"].read_text(encoding="utf-8").split("\0")[:-1]
-    assert argv == [
-        "--line",
-        # generation 1's record is still counted in total_pending — it
-        # landed a proposal but was never ROUTED (a separate action).
-        worker.render_notification(1, ["s"], 2, 1),
-        "--ids",
-        rid2,
-    ]
-    # the escalation call landed on the shim — never silent, never real.
-    _wait_for_file(notify_send_log)
-    ns_argv = notify_send_log.read_text(encoding="utf-8").split("\0")[:-1]
-    assert ns_argv[0] == "self-learn"
-    assert "self-learn: backlog needs attention — 2 pending" in ns_argv[1]
-
-
-def test_notify_uses_helper_with_pinned_argv_and_matching_ids(
-    env, sdk_fake_worker, notify_shim, monkeypatch
-):
-    """10 U8: the proposals notification's transport swaps to a detached
-    spawn of `self-learn-notify`, pinned argv (10 §1) — `--line` carries
-    the byte-unchanged `render_notification` template, `--ids` carries
-    the SAME ids `append_event` already logged, comma-joined.
-
-    Opts back out of the suite-wide SELF_LEARN_NO_NOTIFY=1 default
-    (2026-08-09, same convention as AUTOKICK) to exercise the SHIMMED
-    transport — never a real notify-send/self-learn-notify."""
-    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
-    rid = seed_pending(env)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
-    worker.run(env.home)
-
-    _wait_for_file(notify_shim["log"])
-    argv = notify_shim["log"].read_text(encoding="utf-8").split("\0")[:-1]
-    assert argv == [
-        "--line",
-        worker.render_notification(1, ["s"], 1, 1),
-        "--ids",
-        rid,
-    ]
-
+    # positive control: a proposal landed and its event was logged
+    assert result.status == "ok" and rid in result.proposed
     events = [
         json.loads(ln)
-        for ln in (worker.cache_dir() / "events.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
+        for ln in (worker.cache_dir() / "events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    line = events[-1]
-    assert line["event"] == "proposals"
-    assert line["record_ids"] == [rid]
-    # byte-for-byte: the helper's --ids is the events line's record_ids,
-    # comma-joined — never a second computation.
-    assert argv[3] == ",".join(line["record_ids"])
-
-
-def test_notify_helper_absent_falls_back_to_direct_notify_send(
-    env, sdk_fake_worker, monkeypatch, tmp_path
-):
-    """Graceful degradation (headless/partial-deploy safety, 09 §5):
-    `self-learn-notify` missing from PATH → the old M2 direct
-    notify-send path is taken, no crash, logged one line.
-
-    Opts back out of the suite-wide SELF_LEARN_NO_NOTIFY=1 default
-    (2026-08-09) to exercise the SHIMMED `notify-send` fallback."""
-    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
-    rid = seed_pending(env)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
-
-    notify_send_log = tmp_path / "notify-send.log"
-    shim = sdk_fake_worker["dir"] / "notify-send"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        f'printf \'%s\\0\' "$@" > "{notify_send_log}"\n'
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
-    # self-learn-notify deliberately NOT added to claude_shim["dir"];
-    # strip any other PATH entry that would resolve a real one too.
-    monkeypatch.setenv("PATH", _path_without_real_notify_helper(sdk_fake_worker["dir"]))
-
-    result = worker.run(env.home)
-    assert result.status == "ok"  # no crash
-
-    argv = notify_send_log.read_text(encoding="utf-8").split("\0")[:-1]
-    assert argv == ["self-learn", worker.render_notification(1, ["s"], 1, 1)]
-
-    log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
-    assert "self-learn-notify not on PATH" in log_text
-
-
-def test_notify_direct_fallback_kill_switch_both_directions(
-    env, sdk_fake_worker, monkeypatch, tmp_path
-):
-    """CORRECTED SCOPE (FOLD 1 redo, gate MAJOR 1, code gate 2026-08-09):
-    this test does NOT reach `_notify`'s own kill-switch check —
-    `_notify_with_ids` returns at ITS OWN suppression check (before ever
-    reaching its `_notify(message)` fallback line, present or absent
-    helper alike), so both legs below only re-exercise `_notify_with_
-    ids`'s check a second time. Kept (still real, non-vacuous coverage
-    of that check via the "helper absent" shape), but `_notify`'s own
-    check has exactly ONE independent entry point — `_maybe_escalate` —
-    covered by `test_notify_escalation_kill_switch_both_directions`
-    below; see ITS docstring for the gate's full finding (13/13 tests
-    green with the check pulled from `_notify` alone, PATH instrument
-    caught a real desktop notification through this exact gap in
-    `test_composer.py`).
-
-    Same both-directions shape as `test_notify_kill_switch_both_
-    directions`, but built on `test_notify_helper_absent_falls_back_to_
-    direct_notify_send`'s setup instead: self-learn-notify absent from
-    PATH, notify-send PATH-shimmed to a recording fake. Both records
-    stay fresh (no old `created_at`) so `_maybe_escalate` never fires —
-    this test is scoped to the ONE path under test, not a second."""
-    notify_send_log = tmp_path / "notify-send.log"
-    shim = sdk_fake_worker["dir"] / "notify-send"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        f'printf \'%s\\0\' "$@" >> "{notify_send_log}"\n'
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
-    # self-learn-notify deliberately NOT added to claude_shim["dir"];
-    # strip any other PATH entry that would resolve a real one too.
-    monkeypatch.setenv("PATH", _path_without_real_notify_helper(sdk_fake_worker["dir"]))
-
-    assert os.environ.get("SELF_LEARN_NO_NOTIFY") == "1", (
-        "test assumes the suite-wide conftest default is active"
-    )
-    rid = seed_pending(env)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
-
-    result = worker.run(env.home)
-    assert result.status == "ok"
-    assert not notify_send_log.exists(), (
-        "kill-switched run: _notify's own notify-send fallback must never fire"
-    )
-
-    rid2 = seed_pending(env, "lrn-0000ffff")  # fresh created_at: no escalation
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid2))
-    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
-
-    result2 = worker.run(env.home)
-    assert result2.status == "ok"
-    assert result2.escalated is False, "test assumes gen2 stays under threshold"
-    argv = notify_send_log.read_text(encoding="utf-8").split("\0")[:-1]
-    assert argv == ["self-learn", worker.render_notification(1, ["s"], 2, 1)]
-
-
-def test_notify_escalation_kill_switch_both_directions(
-    env, sdk_fake_worker, monkeypatch, tmp_path
-):
-    """FOLD 1 REDO (gate MAJOR 1, code gate 2026-08-09) — `_notify`'s
-    OWN kill-switch check has exactly ONE independent entry point:
-    `_maybe_escalate`. `_notify_with_ids`'s fallback to `_notify` is
-    unreachable when suppressed (it returns at its OWN check first — see
-    its docstring), so no OTHER path can ever exercise `_notify`'s check
-    in isolation. The gate's mutation instrument confirmed this
-    precisely: removing the check from `_notify` alone left the FULL
-    suite green (1532/5/0), and its PATH instrument caught
-    `test_composer.py::test_a24_containment_and_derivation_at_owned_
-    sites` firing a REAL desktop notification through exactly this gap
-    (that test never uses `claude_shim`, so the default inert
-    notify-send stub can't shadow it either).
-
-    NON-VACUITY (required — a check that passes when the feature is
-    absent, or when the precondition never held, is worthless twice
-    over): `_maybe_escalate` returns `True` (and `run()` copies that into
-    `result.escalated`) UNCONDITIONALLY once its own threshold/debounce
-    checks pass — regardless of whether the `_notify` call INSIDE it was
-    suppressed. `result.escalated is True` is therefore direct proof the
-    escalation predicate genuinely fired on this fixture, independent of
-    whatever the shim did or didn't record.
-
-    Kept STRICTLY isolated to the escalation path: 5 pending records (=
-    ESCALATE_PENDING), no landing shim at all, so `ids` stays empty and
-    `_notify_with_ids`'s own "proposals" leg never fires — only
-    `_maybe_escalate` -> `_notify` is exercised, in EITHER direction."""
-    notify_send_log = tmp_path / "notify-send.log"
-    shim = sdk_fake_worker["dir"] / "notify-send"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        f'printf \'%s\\0\' "$@" >> "{notify_send_log}"\n'
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
-
-    for i in range(5):  # = ESCALATE_PENDING; no CLAUDE_SHIM_SCRIPT anywhere
-        seed_pending(env, f"lrn-500000{i:02x}")
-
-    assert os.environ.get("SELF_LEARN_NO_NOTIFY") == "1", (
-        "test assumes the suite-wide conftest default is active"
-    )
-    result = worker.run(env.home)
-    assert result.status == "failed"  # nothing landed — no shim script
-    assert result.escalated is True, (
-        "non-vacuity: the escalation predicate must genuinely fire on "
-        "this fixture (5 pending == ESCALATE_PENDING) — otherwise the "
-        "zero-hits assertion below would pass vacuously"
-    )
-    assert not notify_send_log.exists(), (
-        "kill-switched: _maybe_escalate's own _notify call must be "
-        "suppressed before ever touching notify-send"
-    )
-
-    # LIVE direction, paired positive control (same fixture, same 5
-    # records — total_pending is unchanged since nothing ever landed):
-    # clear the debounce marker so escalation can fire a SECOND time,
-    # clear the kill switch, and the shim records exactly one call.
-    (worker.cache_dir() / "worker.last-escalated").unlink(missing_ok=True)
-    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
-
-    result2 = worker.run(env.home)
-    assert result2.escalated is True
-    ns_argv = notify_send_log.read_text(encoding="utf-8").split("\0")[:-1]
-    assert ns_argv[0] == "self-learn"
-    assert "self-learn: backlog needs attention — 5 pending" in ns_argv[1]
-
-
-def test_notify_never_blocks_worker_on_detached_helper(
-    env, sdk_fake_worker, notify_shim, monkeypatch
-):
-    """The helper is spawned DETACHED — the worker must never wait on
-    its exit (self-learn-notify itself blocks on `notify-send --wait`
-    until acted on or expired; that latency must never become the
-    worker's).
-
-    Opts back out of the suite-wide SELF_LEARN_NO_NOTIFY=1 default
-    (2026-08-09) to exercise the SHIMMED detached spawn."""
-    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
-    rid = seed_pending(env)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
-    monkeypatch.setenv("NOTIFY_SHIM_SCRIPT", "sleep 5")
-
-    start = time.monotonic()
-    result = worker.run(env.home)
-    elapsed = time.monotonic() - start
-
-    assert result.status == "ok"
-    assert elapsed < 2.0, f"worker.run blocked on the notify helper ({elapsed:.2f}s)"
-    # confirm the helper really was invoked (not silently skipped) —
-    # give the still-sleeping detached child time to have written argv.
-    _wait_for_file(notify_shim["log"])
-    assert notify_shim["log"].exists()
-
-
-def test_escalation_fires_and_debounces(env, sdk_fake_worker):
-    for i in range(5):
-        seed_pending(env, f"lrn-0000000{i}")
-    result = worker.run(env.home)  # 5 pending → threshold
-    assert result.escalated is True
-    events = [
-        json.loads(ln)
-        for ln in (worker.cache_dir() / "events.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
-    assert any(e["event"] == "escalation" and e["record_ids"] == [] for e in events)
-    # debounced: a second run within 24 h does not escalate again
-    assert worker.run(env.home).escalated is False
-
-
-def test_no_escalation_under_thresholds(env, sdk_fake_worker, monkeypatch):
-    rid = seed_pending(env)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
-    assert worker.run(env.home).escalated is False
+    assert any(e["event"] == "proposals" and e["record_ids"] == [rid] for e in events)
+    # no popup on either transport, even after a detached child had time to start
+    _wait_for_file(notify_shim["log"], timeout=1.5)
+    _wait_for_file(notify_send_log, timeout=0.5)
+    assert not notify_shim["log"].exists(), "the proposals popup (P1) was spawned"
+    assert not notify_send_log.exists(), "the backlog popup (P2) was spawned"
+    assert not any(e["event"] == "escalation" for e in events)
 
 
 # --------------------------------------------- 11 §2.2 recurrence suspects

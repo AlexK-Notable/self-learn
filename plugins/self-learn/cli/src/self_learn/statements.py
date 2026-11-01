@@ -43,8 +43,10 @@ __all__ = [
 ]
 
 #: 02-schema.md §3a.3: "whoever captured the words records them, the
-#: steward included" — the same 3-name universe as `cases.ACTORS`.
-RECORDED_BY_VALUES = frozenset({"human", "steward", "overseer"})
+#: steward included" — the same universe as `cases.ACTORS`, `agent`
+#: included (C7, attention round 2026-10-31c): an agent's shell records as
+#: `agent`, and the words stay the user's through the transcript ref.
+RECORDED_BY_VALUES = frozenset({"human", "steward", "overseer", "agent"})
 ANSWER_KINDS = frozenset({"proposition", "question", "instruction"})
 SCOPE_LEVELS = frozenset({"user", "project"})
 
@@ -54,7 +56,11 @@ STMT_ID_RE = re.compile(r"^stmt-[0-9a-f]{8}$")
 #: conversation (R-6a) where no transcript line exists yet. D-c: the
 #: `conversation:` form means exactly `conversation:obs-<8 hex>` — an
 #: observation id, not an arbitrary trailing string.
-_MESSAGE_REF_RE = re.compile(r"^(transcript:.+#L\d+|conversation:obs-[0-9a-f]{8})$")
+#: `workspace:att-<12 hex>#T<n>` (attention round, design r2 §3.4.2): a row
+#: the person typed into an inbox item's decision workspace.
+_MESSAGE_REF_RE = re.compile(
+    r"^(transcript:.+#L\d+|conversation:obs-[0-9a-f]{8}|workspace:att-[0-9a-f]{12}#T\d+)$"
+)
 
 
 class StatementError(Exception):
@@ -260,10 +266,45 @@ def _transcript_problem(error: Exception) -> StatementUsageError:
     return StatementUsageError(f"statement add: {cause}")
 
 
+def _check_workspace_evidence(home: Path, message_ref: str, verbatim: str) -> None:
+    """Rule 11 (02-schema §3a.6): a `workspace:` ref cites a row the person
+    typed in the inbox. The store is self-learn's own and is written before
+    any statement can cite it, so unlike a transcript a missing row REFUSES,
+    and so does a row still pending on this machine (it has no number yet).
+    The row must be ``role: user``, ``origin: typed``, of kind ``reply`` or
+    ``question``; the quoted words must equal its text or be a
+    whitespace-normalised part of it."""
+    from . import workspace  # lazy: workspace reaches serve for the cache path
+
+    row = workspace.resolve(home, message_ref)
+    if row is None:
+        raise StatementUsageError(
+            f"statement add: {message_ref} names no sealed workspace row (a missing row, "
+            "or one still kept on this machine while the ledger is STOPPED, cannot be cited)"
+        )
+    if row.get("role") != "user" or row.get("origin") != "typed" or row.get("kind") not in (
+        "reply", "question"
+    ):
+        raise StatementUsageError(
+            f"statement add: workspace row {message_ref} is not the person's typing "
+            f"(role {row.get('role')!r}, origin {row.get('origin')!r}, kind {row.get('kind')!r}); "
+            "only a typed reply or question is their words"
+        )
+    text = row.get("text")
+    quote = " ".join(verbatim.split())
+    if not isinstance(text, str) or not quote or quote not in " ".join(text.split()):
+        raise StatementUsageError(
+            f"statement add: the quoted words are not in workspace row {message_ref}"
+        )
+
+
 def _check_evidence(
     home: Path, message_ref: str, verbatim: str, *, sent: provenance.SentIndex | None = None,
 ) -> None:
     """Stateless transcript validation, outside the ledger commit lock."""
+    if message_ref.startswith("workspace:"):
+        _check_workspace_evidence(home, message_ref, verbatim)
+        return
     if not message_ref.startswith("transcript:"):
         return
     session, number = message_ref[len("transcript:"):].rsplit("#L", 1)
@@ -473,8 +514,8 @@ def add(
     message_ref = source["message_ref"]
     if not _MESSAGE_REF_RE.match(message_ref):
         raise StatementUsageError(
-            f"statement add: source.message_ref must be transcript:<session>#L<n> "
-            f"or conversation:<obs-id>, got {message_ref!r}"
+            f"statement add: source.message_ref must be transcript:<session>#L<n>, "
+            f"conversation:<obs-id> or workspace:<item-id>#T<n>, got {message_ref!r}"
         )
 
     answers = dict(answers) if answers else {"kind": "proposition", "ref": None, "text": None}

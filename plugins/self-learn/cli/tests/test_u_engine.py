@@ -1197,8 +1197,14 @@ def test_pol1_both_build_can_use_tool_bodies_are_byte_unchanged_since_a0c67be():
     # another DENY-only addition, in 7276fc2 (spec README revision log
     # 2026-09-28, follow-ups; 02-schema.md, the overseer's workspace). The
     # body is pinned from that commit on.
+    # 2026-11-01 (attention round, integration): step 3a also runs for a
+    # containment naming `read_denied_names` (the ask agent's secret file
+    # names, judged on a Read's target name and its resolved name) --
+    # another DENY-only addition, in ecd3296 (S-124; design r2 §3.3;
+    # 17-invocation-runbook.md §1c, the `Containment.read_denied_names`
+    # field). The body is pinned from that commit on.
     targets = [
-        (cli_charter_path, "build_can_use_tool", "7276fc2"),
+        (cli_charter_path, "build_can_use_tool", "ecd3296"),
         (cli_charter_path, "CharterPaths", "a0c67be"),
         (cli_charter_path, "CharterPatternUnsupported", "a0c67be"),
         (ui_charter_path, "build_can_use_tool", "a0c67be"),

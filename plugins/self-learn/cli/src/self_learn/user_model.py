@@ -81,26 +81,29 @@ _CONTAINER_TITLES = {
 #: §3a.4 table — who may ADD directly to each container. B is empty on
 #: purpose: "nobody writes here directly — an entry moves here when a
 #: presentation record names it" (only :func:`mark_seen` populates it).
+#: C7 (attention round 2026-10-31c): `agent` may do what `human` may, so an
+#: agent's shell records its own act as `agent` instead of as the person's.
 _WHO_MAY_ADD: dict[str, frozenset[str]] = {
-    "A": frozenset({"human", "steward", "overseer"}),
+    "A": frozenset({"human", "agent", "steward", "overseer"}),
     "B": frozenset(),
     "C": frozenset({"steward", "overseer"}),
     "D": frozenset({"overseer"}),
-    "E": frozenset({"human", "steward", "overseer"}),
+    "E": frozenset({"human", "agent", "steward", "overseer"}),
 }
 #: Who may mark an entry LAPSED, per container.
 _WHO_MAY_LAPSE: dict[str, frozenset[str]] = {
-    "A": frozenset({"human", "steward", "overseer"}),
-    "B": frozenset({"human", "steward", "overseer"}),
-    "C": frozenset({"human", "steward", "overseer"}),
-    "D": frozenset({"human", "overseer"}),
-    "E": frozenset({"human", "steward", "overseer"}),
+    "A": frozenset({"human", "agent", "steward", "overseer"}),
+    "B": frozenset({"human", "agent", "steward", "overseer"}),
+    "C": frozenset({"human", "agent", "steward", "overseer"}),
+    "D": frozenset({"human", "agent", "overseer"}),
+    "E": frozenset({"human", "agent", "steward", "overseer"}),
 }
-#: Same 3-name universe as `cases.ACTORS` / `statements.RECORDED_BY_VALUES`
+#: Same universe as `cases.ACTORS` / `statements.RECORDED_BY_VALUES` (`agent`
+#: joined in the attention round, C7: an agent records its own act as its own)
 #: — kept as this module's own constant so this module never imports
 #: `cases` (which imports THIS module, for `mark_seen`; a reverse import
 #: would cycle).
-ACTORS = frozenset({"human", "steward", "overseer"})
+ACTORS = frozenset({"human", "steward", "overseer", "agent"})
 SOURCES = frozenset({"own-words", "system-reading"})
 STATUSES = frozenset({"CURRENT", "LAPSED"})
 

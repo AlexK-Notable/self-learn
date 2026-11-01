@@ -15,6 +15,7 @@
 #   - ~/.local/bin/self-learn-ui            -> plugins/self-learn/scripts/self-learn-ui
 #   - ~/.local/bin/self-learn-ui-open       -> plugins/self-learn/scripts/self-learn-ui-open
 #   - ~/.local/bin/self-learn-notify        -> plugins/self-learn/scripts/self-learn-notify
+#   - ~/.local/bin/self-learn-tray          -> plugins/self-learn/scripts/self-learn-tray
 #   - ~/.config/systemd/user/self-learn-ui.service -> systemd/self-learn-ui.service
 #     (G-3 surface — 10 §1 "Service"/"Companion scripts" rows; explicit link
 #     lines mirroring the miner-units block below, no glob — 13 §7.3)
@@ -25,6 +26,8 @@
 #     (S-66 — the weekly overseer examination pass; always linked, never
 #     enabled; the primary path is the fourth job inside
 #     self-learn-host.service — this pair is for a timer-topology host)
+#   - ~/.config/systemd/user/self-learn-tray.service -> systemd/self-learn-tray.service
+#     (the tray icon, attention-design-r2 §3.10; linked, never enabled)
 #   - with --legacy-miner:
 #     ~/.config/systemd/user/self-learn-miner.{service,timer} -> systemd/…
 #     (opt-in now that self-learn-host.service schedules the nightly mine;
@@ -202,6 +205,7 @@ say "== G-3 surface scripts (~/.local/bin) =="
 link "$P/scripts/self-learn-ui" "$BIN_DIR/self-learn-ui"
 link "$P/scripts/self-learn-ui-open" "$BIN_DIR/self-learn-ui-open"
 link "$P/scripts/self-learn-notify" "$BIN_DIR/self-learn-notify"
+link "$P/scripts/self-learn-tray" "$BIN_DIR/self-learn-tray"
 
 say "== desktop launcher (G-3; feedback round 1 item 6) =="
 APPS_DIR="$HOME/.local/share/applications"
@@ -231,11 +235,13 @@ fi
 
 say "== SessionStart pending hook =="
 link "$P/hooks/self-learn-pending.sh" "$HOOKS_DIR/self-learn-pending.sh"
-say "  (register in ~/.claude/settings.json as a SessionStart hook — manual)"
+say "  (runs once registered in ~/.claude/settings.json as a SessionStart hook;"
+say "   this script never writes settings.json — the hook's header has the entry)"
 
 say "== PostToolUse reference-read hook (U-readref) =="
 link "$P/hooks/self-learn-refread.sh" "$HOOKS_DIR/self-learn-refread.sh"
-say "  (register in ~/.claude/settings.json as a PostToolUse/Read hook — manual)"
+say "  (runs once registered in ~/.claude/settings.json as a PostToolUse/Read hook;"
+say "   this script never writes settings.json — 'self-learn report' says when it is not)"
 
 say "== CLI (uv sync) =="
 if command -v uv >/dev/null 2>&1; then
@@ -300,5 +306,12 @@ say "  inside self-learn-host.service, once the human sets"
 say "  overseer.enabled: true in config.yaml and starts its maiden run"
 say "  by hand; the timer pair above is for a timer-topology host:"
 say "  systemctl --user enable --now self-learn-overseer.timer"
+
+say "== tray icon unit (attention-design-r2 §3.10; systemd --user) =="
+link "$REPO/systemd/self-learn-tray.service" "$UNIT_DIR/self-learn-tray.service"
+run "timeout 10 systemctl --user daemon-reload"
+say "  enable with: systemctl --user enable --now self-learn-tray.service"
+say "  (needs a StatusNotifierItem host such as Waybar's tray module; without"
+say "  one the tray waits on the session bus and shows nothing)"
 
 say "done."

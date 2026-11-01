@@ -22,6 +22,7 @@ from self_learn import intents, model_failures, steward
 from self_learn.invocation import failure_class
 from self_learn.invocation.contract import Outcome
 from self_learn.invocation_sdk import backend
+from self_learn.overseer import notify as overseer_notify
 from self_learn.overseer import run as overseer_run
 from self_learn.sdksession.events import EventLog
 from support import make_home
@@ -30,7 +31,6 @@ from test_failstate_steward import _stage, _states, _two
 from test_heading_evidence import KEPT_ITEM, _case
 from test_overseer_run import _enabled, _silence_notifications
 from test_steward import _head_manifest
-from test_steward_refusals import _notifications
 
 
 SAFEGUARD = (
@@ -49,6 +49,20 @@ OVERLOADED = 'API Error: 529 {"type":"error","error":{"type":"overloaded_error",
 def redirect(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
     monkeypatch.setattr(model_failures, "TRANSIENT_BACKOFF_SECS", 0.0)
+
+
+def _sends(monkeypatch) -> list:
+    """Every `overseer.notify.send` call, with the popup kind it asked for
+    (attention round, S-127: only a login hold is ``hold.credentials``; any
+    other hold is ``silent``, an inbox item that spawns nothing)."""
+    sent: list = []
+    monkeypatch.setattr(
+        overseer_notify, "send",
+        lambda home_, cue, summary, ids, *, kind="silent": sent.append(
+            (cue, summary, list(ids), kind)
+        ),
+    )
+    return sent
 
 
 def _failed(detail, failure="exit"):
@@ -117,7 +131,7 @@ def test_steward_a_transient_failure_is_retried_once_within_the_attempt(tmp_path
 
 def test_steward_an_environment_failure_is_a_hold_not_an_attempt(tmp_path, monkeypatch):
     home, a, b = _two(tmp_path, monkeypatch, "d2")
-    sent = _notifications(monkeypatch)
+    sent = _sends(monkeypatch)
     calls = []
 
     def session(spec):
@@ -133,6 +147,7 @@ def test_steward_an_environment_failure_is_a_hold_not_an_attempt(tmp_path, monke
     assert packet["failure_class"] == "environment"
     assert first.held and "does not support this model" in first.held
     assert len(sent) == 1 and "held" in sent[0][1]
+    assert sent[0][3] == "silent"  # an old Claude Code is no login: no popup (S-127)
 
     second = steward.run(home)
     packet = _head_manifest(home, second.run_id)["packets"][0]
@@ -194,7 +209,7 @@ def test_overseer_a_transient_phase_a_failure_is_retried_and_the_run_goes_on(tmp
 def test_overseer_an_environment_failure_in_phase_a_is_a_hold(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     _enabled(monkeypatch)
-    notices = _silence_notifications(monkeypatch)
+    notices = _sends(monkeypatch)
     monkeypatch.setattr(overseer_run.invocation, "write_session", lambda spec: _failed(VERSION))
 
     result = overseer_run.run(home, no_push=True)
@@ -202,6 +217,7 @@ def test_overseer_an_environment_failure_in_phase_a_is_a_hold(tmp_path, monkeypa
     assert overseer_run.week_attempts(home, _week(home)) == 0
     assert overseer_run._committed_failure_notes(home, _week(home)) == []
     assert len(notices) == 1 and "does not support this model" in notices[0][1]
+    assert notices[0][3] == "silent"  # no login step: no popup (S-127)
     overseer_run.run(home, no_push=True)
     assert len(notices) == 1  # told once per cause
 

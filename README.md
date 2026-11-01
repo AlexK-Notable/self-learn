@@ -44,10 +44,13 @@ plugins/self-learn/
   scripts/self-learn-ui        ~/.local/bin shim (readlink -f → uv run against ui/; `serve` = the systemd entry point)
   scripts/self-learn-ui-open   ~/.local/bin deep-link launcher / window-focuser (the only WM/browser-aware file)
   scripts/self-learn-notify    ~/.local/bin desktop notifier (swaync action → self-learn-ui-open)
+  scripts/self-learn-tray      ~/.local/bin tray icon (StatusNotifierItem; system python + Gio; opens the inbox)
+  assets/tray/                 the tray's four icons (idle, new, needs-you, broken)
 docs/specs/self-learn/  the ratified spec corpus (00–13 + fixtures + reviews)
 systemd/                self-learn-host.service (resident host process: nightly mine at
                         03:30 + worker + steward; weekly overseer)
                         self-learn-ui.service (G-3 surface, resident web server)
+                        self-learn-tray.service (the tray icon; needs only the session bus)
                         self-learn-miner.{service,timer} (legacy timer route, opt-in via --legacy-miner; superseded by the host service)
                         self-learn-overseer.{service,timer} (S-66 timer-topology pair; always
                         linked, never enabled — the primary path is the host service's fourth job)
@@ -71,10 +74,11 @@ The plugin install covers the skill and commands. It does **not** cover
 the parts that live outside a plugin's boundary:
 
 - the `~/.local/bin` shims — `self-learn`, `self-learn-ui`, `self-learn-ui-open`,
-  `self-learn-notify`
+  `self-learn-notify`, `self-learn-tray`
 - the `systemd --user` units: `self-learn-host.service` (the resident host
   process that schedules the nightly mine and the worker) and
-  `self-learn-ui.service` (the G-3 surface) — the legacy
+  `self-learn-ui.service` (the G-3 surface) and `self-learn-tray.service`
+  (the tray icon) — the legacy
   `self-learn-miner.{service,timer}` route is opt-in, see below
 - the desktop launcher + icon
 - the two hook symlinks into `~/.claude/hooks/` — the SessionStart
@@ -90,6 +94,7 @@ cd ~/repos/self-learn && ./install.sh
 # then (manual, load-bearing): register both hooks in ~/.claude/settings.json
 systemctl --user enable --now self-learn-host.service  # nightly mine + worker
 systemctl --user enable --now self-learn-ui.service    # G-3 surface, see below
+systemctl --user enable --now self-learn-tray.service  # tray icon (needs a tray host such as Waybar's)
 ```
 
 `--dry-run` prints every step `install.sh` would take — including the

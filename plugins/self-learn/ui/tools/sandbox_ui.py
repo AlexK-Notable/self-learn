@@ -562,12 +562,271 @@ def world_analysed(host: Path, ledger: Path) -> list[str]:
     ]
 
 
+#: The inbox world (attention round, design r2 §5.5 test 16 and the
+#: post-landing walk). Seeds the five §2.3 shapes into the scratch ledger:
+#: (a) a system-change ask with a plan and a file to excerpt, (b) a second
+#: one with a "Yes, with conditions" option, (c) a conflict between two
+#: stored statements, (d) a login hold, (e) a hook the overseer turned on.
+#: Everything is written through the product's own writers or its plain
+#: file formats; the UI then reads it through the real `attention --json`.
+ATTENTION_WORDS_OLDER = (
+    "unless sudo is involved, you should never have to tell me, 'X is waiting on you'"
+)
+ATTENTION_WORDS_NEWER = (
+    "if there are legit things that need my attention, that's fine. i just don't want to "
+    "deal with decisions that don't really need me."
+)
+LOGIN_CAUSE = "API Error: OAuth token has expired. Please run /login"
+
+
+def _seed_active_hook(ledger: Path) -> str:
+    """A real lesson routed to a hook and activated through the product's
+    own verbs, inside the sandbox (its hooks and settings.json land under
+    the redirected SELF_LEARN_CLAUDE_DIR), so "Turn it off" on the walk's
+    decided-for-you item runs the real `hook deactivate`. The proposal and
+    its decision trace come from the UI tests' own builder (`support`),
+    the one place that keeps a valid hook trace current."""
+    from self_learn.ledger_ops import create_record, stamp_proposal, write_proposal
+    from self_learn.records import Record
+
+    tests_dir = str(Path(__file__).resolve().parents[1] / "tests")
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from support import hook_proposal_fields, proposal_dict
+
+    record = Record.create(
+        scope="user", source="teach", created_at=days_ago(3), type="behavior",
+        kind="anti-pattern",
+        trigger="About to edit Home Assistant's .storage files while it runs.",
+        instruction="Stop the container first; a live write clobbers its state.",
+    )
+    create_record(ledger, record)
+    commit_all(ledger, "world attention: the hook lesson")
+    write_proposal(ledger, record.id, proposal_dict(
+        scope="user", destination="hook", alternates=["claude-md"], analyzed_at=days_ago(1),
+        model="sandbox-seed", **hook_proposal_fields()))
+    stamp_proposal(ledger, record.id)
+    commit_all(ledger, "world attention: the hook proposal")
+    for argv in (["route", record.id, "--dest", "hook"], ["hook", "activate", record.id]):
+        proc = subprocess.run(["self-learn", *argv], capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, env=os.environ.copy())
+        if proc.returncode != 0:
+            raise SystemExit(f"world attention: self-learn {' '.join(argv)} failed: "
+                             f"{proc.stderr.strip()[-600:]}")
+    return record.id
+
+
+def world_attention(host: Path, ledger: Path) -> list[str]:
+    import json as _json
+
+    import yaml as _yaml
+
+    from self_learn import attention, statements
+
+    sandbox_home = Path(os.environ["HOME"])
+    unit_dir = sandbox_home / ".config" / "systemd" / "user"
+    (unit_dir / "oo7-daemon.service.d").mkdir(parents=True, exist_ok=True)
+    (unit_dir / "oo7-daemon.service").write_text(
+        "[Unit]\nDescription=oo7 secret service (sandbox copy)\n\n"
+        "[Service]\nExecStart=/usr/bin/oo7-daemon\n", encoding="utf-8")
+    script_dir = sandbox_home / "bin" / "system"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    (script_dir / "safe-update").write_text(
+        "#!/usr/bin/env bash\n# safe-update (sandbox copy)\nset -euo pipefail\n\n"
+        "triage() {\n  case \"$1\" in\n    linux-firmware*) echo benign ;;\n"
+        "    *) echo review ;;\n  esac\n}\n", encoding="utf-8")
+
+    older = statements.add(ledger, verbatim=ATTENTION_WORDS_OLDER,
+                           source={"message_ref": "transcript:sandbox-older#L12"},
+                           recorded_by="human")
+    newer = statements.add(ledger, verbatim=ATTENTION_WORDS_NEWER,
+                           source={"message_ref": "transcript:sandbox-newer#L40"},
+                           recorded_by="human")
+    yes_no = [
+        {"id": "opt-yes", "label": "Yes, add the binding", "effect": "approve"},
+        {"id": "opt-yes-conditions", "label": "Yes, with conditions", "effect": "approve",
+         "note": "required"},
+        {"id": "opt-no", "label": "No, keep the manual note", "effect": "decline"},
+    ]
+    questions = [
+        {
+            "id": "q-oo7-daemon-bus-binding", "kind": "ask", "cases": [],
+            "text": "Bind oo7-daemon to the session bus so it survives a bus restart?",
+            "why": "It changes how your desktop starts a service, outside self-learn.",
+            "needs": "user", "because": "system-change", "asked_at": days_ago(34),
+            "default": "Nothing on your system was changed; agents keep restarting "
+                       "oo7-daemon by hand.",
+            "options": yes_no,
+            "recommend": {"option": "opt-yes", "reasoning": "A bus restart kills the daemon "
+                          "today and agents restart it by hand; a drop-in makes that automatic."},
+            "plan": {
+                "summary": "Add a systemd drop-in binding oo7-daemon to dbus-broker.",
+                "cwd": None,
+                "checks": [{"say": "No drop-in under oo7-daemon.service.d already binds it",
+                            "command": "systemctl --user show oo7-daemon.service "
+                                       "--property=DropInPaths"}],
+                "steps": [
+                    {"say": "Write the drop-in", "command": None, "sudo": False},
+                    {"say": "Reload user units", "command": "systemctl --user daemon-reload",
+                     "sudo": False},
+                    {"say": "Restart the daemon", "command": "systemctl --user restart "
+                     "oo7-daemon", "sudo": False},
+                ],
+                "files": [{"path": "~/.config/systemd/user/oo7-daemon.service.d/bind-dbus.conf",
+                           "content": "[Unit]\nBindsTo=dbus-broker.service\n"
+                                      "After=dbus-broker.service\n"}],
+            },
+            "look_at": [str(unit_dir)],
+        },
+        {
+            "id": "q-safe-update-triage-benign-list", "kind": "ask", "cases": [],
+            "text": "Add three package names to safe-update's list of updates it treats as "
+                    "harmless?",
+            "why": "It changes a script in your own bin directory, outside self-learn.",
+            "needs": "user", "because": "system-change", "asked_at": days_ago(9),
+            "default": "Nothing was changed; safe-update keeps asking about these updates.",
+            "options": [
+                {"id": "opt-yes", "label": "Yes, add these entries", "effect": "approve"},
+                {"id": "opt-yes-conditions", "label": "Yes, with conditions",
+                 "effect": "approve", "note": "required"},
+                {"id": "opt-no", "label": "No, keep asking", "effect": "decline"},
+            ],
+            "recommend": {"option": "opt-yes", "reasoning": "Each came up at least twice and "
+                          "was harmless every time."},
+            "plan": {
+                "summary": "Add linux-firmware-*, intel-ucode and amd-ucode to the triage "
+                           "block of safe-update.",
+                "cwd": None,
+                "checks": [{"say": "The triage block still exists", "command":
+                            "grep -n 'triage()' ~/bin/system/safe-update"}],
+                "steps": [{"say": "Add the three patterns to the benign case", "command": None,
+                           "sudo": False}],
+                "files": [],
+            },
+            "look_at": [str(script_dir / "safe-update")],
+        },
+        {
+            "id": "q-which-statement-holds", "kind": "ask", "cases": [],
+            "text": "Two things you said about being asked disagree. Which one holds?",
+            "why": "Both are your own recorded words.",
+            "needs": "user", "because": "conflict", "asked_at": days_ago(2),
+            "default": "The newer statement holds until you say otherwise.",
+            "statements": [older, newer],
+            "options": [
+                {"id": "opt-newer", "label": "The newer one is right", "effect": "other"},
+                {"id": "opt-older", "label": "The older one still holds", "effect": "other"},
+                {"id": "opt-both", "label": "Both — here is how they fit", "effect": "other",
+                 "note": "required"},
+            ],
+            "recommend": {"option": "opt-both", "reasoning": "They read as one rule: ask only "
+                          "about what really needs you."},
+        },
+    ]
+    overseer = ledger / "overseer"
+    overseer.mkdir(parents=True, exist_ok=True)
+    (overseer / "open-questions.yaml").write_text(
+        _yaml.safe_dump({"questions": questions}, sort_keys=False, allow_unicode=True),
+        encoding="utf-8")
+    hook_id = _seed_active_hook(ledger)
+    report_date = days_ago(1)[:10]
+    report = (
+        f"# Overseer report — week of {report_date}\n\n## Examined\n"
+        "- the oo7-daemon restart lesson and its case\n\n## Questions for you\n"
+        + "".join(f"- {q['id']}: {q['text']}\n" for q in questions)
+        + "\n## Hooks\n- turned on the guard that stops an edit to Home Assistant's "
+        f".storage files while it runs ({hook_id})\n\n"
+        "## Refused / could not do\n- none\n"
+    )
+    (overseer / "latest-report.md").write_text(report, encoding="utf-8")
+    (overseer / f"{report_date}-report.md").write_text(report, encoding="utf-8")
+
+    runs = ledger / "cases" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "run-5a5a5a5a5a5a.json").write_text(_json.dumps({
+        "version": 1, "actor": "overseer", "run_id": "run-5a5a5a5a5a5a", "ledger_effects": [],
+        "status": "complete", "last_attempt_at": days_ago(1), "week": report_date,
+        "attention_effects": [{
+            "lesson": hook_id, "verb": "route", "destination": "hook",
+            "always_loaded": False, "hook_activated": True, "at": days_ago(1),
+        }],
+    }), encoding="utf-8")
+    commit_all(ledger, "world attention: three asks, a report, a hook activation")
+
+    journal = attention.cache_dir(ledger) / "steward" / "journal.jsonl"
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    with journal.open("a", encoding="utf-8") as fh:
+        fh.write(_json.dumps({"ts": days_ago(0), "run_id": "run-sandbox", "status":
+                              "held-environment", "cause": LOGIN_CAUSE}) + "\n")
+    return [
+        "the inbox holds the five walk shapes: a login hold, two changes to your system "
+        "(one with conditions), a conflict between two statements, and a hook turned on",
+        "every ask answers from a scripted fake agent (SELF_LEARN_UI_FAKE_ASK=1): no model call",
+        "systemd-run and systemctl are shims: Run it now, Open a login terminal and Restart "
+        "self-learn launch nothing",
+    ]
+
+
+WORLD_HELP["attention"] = (
+    "the inbox: a login hold, two system-change asks with plans, a conflict between two "
+    "statements and a hook the overseer turned on; asks answer from a scripted fake, and "
+    "systemd-run/systemctl are shims"
+)
+
 WORLDS = {
     "clean": world_clean,
     "dirty-target": world_dirty_target,
     "missing-dest": world_missing_dest,
     "analysed": world_analysed,
+    "attention": world_attention,
 }
+
+
+#: The two binaries the inbox world replaces with logging shims, so a click
+#: on "Run it now", "Open a login terminal" or "Restart self-learn" launches
+#: no terminal, unit or Claude Code session (§5.5 walk rules).
+SHIMMED = ("systemd-run", "systemctl")
+_SHIM = """#!/bin/sh
+printf '%s' "${0##*/}" >> "$SELF_LEARN_SANDBOX_SHIM_LOG"
+for a in "$@"; do printf ' %s' "$a" >> "$SELF_LEARN_SANDBOX_SHIM_LOG"; done
+printf '\\n' >> "$SELF_LEARN_SANDBOX_SHIM_LOG"
+if [ "${0##*/}" = systemctl ] && [ "$2" = is-active ]; then echo inactive; exit 3; fi
+exit 0
+"""
+
+
+def shim_dir(state: Path) -> Path:
+    return live_dir(state) / "shims"
+
+
+def prepare_world_env(state: Path, names: list[str]) -> list[str]:
+    """Process environment a world needs, applied before seeding and before
+    the server starts (so the UI and every verb it spawns inherit it).
+
+    The inbox world (``attention``): the scripted ask fake
+    (``SELF_LEARN_UI_FAKE_ASK=1``, never a model call), every agent marker
+    removed (the walk plays the person, and the ledger is scratch), and
+    ``systemd-run``/``systemctl`` shimmed ahead of the real ones on PATH."""
+    if "attention" not in names:
+        return []
+    from self_learn.settings import AGENT_CALLER_MARKERS
+
+    removed = [m for m in AGENT_CALLER_MARKERS if m in os.environ]
+    for marker in (*AGENT_CALLER_MARKERS, "CLAUDE_CODE_SESSION_ID"):
+        os.environ.pop(marker, None)
+    folder = shim_dir(state)
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in SHIMMED:
+        path = folder / name
+        path.write_text(_SHIM, encoding="utf-8")
+        path.chmod(0o755)
+    os.environ["SELF_LEARN_SANDBOX_SHIM_LOG"] = str(live_dir(state) / "shims.log")
+    os.environ["PATH"] = f"{folder}{os.pathsep}{os.environ.get('PATH', '')}"
+    os.environ["SELF_LEARN_UI_FAKE_ASK"] = "1"
+    return [
+        f"agent markers removed for the UI process: {', '.join(removed) or 'none were set'}",
+        f"shimmed on PATH: {', '.join(SHIMMED)} (calls logged to {live_dir(state) / 'shims.log'})",
+        "SELF_LEARN_UI_FAKE_ASK=1: every ask answers from a scripted fake",
+    ]
 
 
 def apply_worlds(state: Path, host: Path, ledger: Path, names: list[str]) -> None:
@@ -816,6 +1075,9 @@ def cmd_up(args: argparse.Namespace) -> int:
     apply_redirects(state)
     checks = assert_isolated(state)
     report(checks)
+    worlds = args.world if needs_seed else current_world(state).split(",")
+    for line in prepare_world_env(state, worlds):
+        print(f"  {line}")
 
     if needs_seed:
         host = build_host(state)

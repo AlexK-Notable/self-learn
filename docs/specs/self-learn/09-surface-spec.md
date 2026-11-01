@@ -472,6 +472,160 @@ user-measured failure
 this repairs, their words: "there was no indication that anything
 was happening after i clicked the button.")*
 
+### 2.5 Inbox and decision workspace *(added 2026-10-31 — attention round, lane `ui-workspace`; S-125)*
+
+The user's answer 10 (`misc/build-2026-10-31c/your-calls.md`, decisions
+C4–C6): "i should have everything i need to make the decision that's
+being presented to me once i click on the icon." The design is
+`attention-design-r2.md` §2, §3.4.1, §3.4.7, §3.4.8, §3.6 and §3.7; this
+section records what the surface is.
+
+- **Inbox** (`GET /inbox`): one page holding the item list (left, a
+  `<nav aria-label="Inbox">`) and the selected item's workspace (right;
+  stacked at narrow widths, with the "Ask about this" panel in a third
+  column from 1,280 px). `/inbox` 303-redirects to the most pressing
+  item: needs-you items by key (`credentials`, `broken`, `money`,
+  `sudo`, `conflict`, `system-change`, `foreign-history`) oldest first,
+  then unseen flagged decided items, then other unseen decided items.
+  The list groups items as Needs you, Being carried out and Decided for
+  you; each chip carries words, never colour alone. With nothing at all,
+  the page says "Nothing needs you, and nothing new." and links the
+  weekly report. Clicking an item swaps only the workspace and pushes
+  the item's URL. **Mark all seen** runs `attention seen
+  --all-decided`. The front page (§2.1) gains an "Inbox (N)" link, N
+  being needs-you plus new, `?` when the read failed; it fills in after
+  the page loads (`GET /inbox/count`), so the front page never waits on
+  `attention --json`.
+- **Workspace** (`/inbox/<id>`): the question as the h1, then "Why you",
+  "Meanwhile", the recommendation with its reasoning and alternatives
+  (the recommended option says "(recommended)" in text), the options as
+  a `role="group"` of buttons, a reply box ("Or answer in your own
+  words"), the evidence assembled in place from the packet (lessons,
+  statements, the user's words, the case, the report excerpt, the plan's
+  checks, commands and files), and the "Ask about this" conversation.
+  The list data renders at once; when the packet takes longer than
+  1.5 s, the evidence region says "assembling…" and fills by a deferred
+  htmx request.
+- **Answers** go to `attention answer` with the option, the reply text as
+  a 0600 `--text-file` that is deleted after the run, `--draft` when the
+  text started as an agent draft, and `--confirm` on the second click of
+  an armed option. Three cases arm first and run nothing on the first
+  click: a `confirm` option and an option with a `register` effect (the
+  armed line repeats the packet's full question, never the list title
+  cut at 200 characters, since the question names the path and mode;
+  "This registers <path> in git mode. Confirm?"), and an approve option
+  on a plan with sudo steps (it lists the sudo commands). Each sent
+  answer shows how it was recorded ("as your words", "as your choice of
+  the offered option", "as the agent's draft, accepted by you"). Words
+  typed alone on an item with a plan get "To decide, pick an option."
+  and the item stays under Needs you. A failed answer shows the verb's
+  message and keeps the text. When the answer moves the item on (an
+  approval starts work), the bar says where it went and offers no
+  options; if that approval's launch found no terminal, **Run it now**
+  is offered for the item it moved to.
+- **Being carried out** shows "Running in a terminal (started <time>)"
+  and **Run it now** (`attention run`; the login variant passes
+  `--login`), the verb's reason when a launch is refused, and, when no
+  terminal can be opened, the command alone in a copy block (split from
+  the verb's sentence: `claude '<brief line>'`, or `claude` for a login)
+  with the brief's path beside it.
+  `awaiting-sudo` shows each sudo command with a copy button and **I ran
+  it**. Code kinds (§3.4.8 of the design) render their own options; the
+  `fix` ones run `attention fix`, the rest go through `attention answer`.
+  A login hold's options check the login (`attention check-login`,
+  through the ask runner) and open a terminal running `claude`
+  (`attention run --login`). A working login clears the item and says
+  when the held jobs run next, in the host's words from
+  `serve.heartbeat`; a stale heartbeat (older than one tick: the host
+  stopped) names no time, and the page says none is known.
+- **Decided items** show what was done and why, the item's undo and
+  redo buttons (`attention undo [--redo]`, labelled by the CLI), an overturn-in-words box, and
+  the feedback buttons ("Didn't need me", "Should have asked me"). After
+  an undo, redo is what is offered, on a reload too: from the item's
+  `undo.redo`, or from its transcript, whose last undo/redo row is the
+  last act. An undo that takes the item off the list (a reopened
+  withdrawn ask) says so and links to where it went.
+- **Ask about this**: starter chips fixed per kind, a text box, the live
+  answer streaming into a bubble (`aria-busy` while it streams), a tool
+  line ("reading case-…"), **Stop**, and any drafts as cards with **Use
+  this draft** and **Send as is**. A draft placed in the reply box keeps
+  its `draft_id` and option, also when the page restores the unsent
+  reply after a reload or a switch to another item; the server decides
+  the origin. Emptying the box, or selecting all of it and typing over
+  it, drops the draft id (the words sent are then the person's own); a
+  paste over it keeps the id, and the id comes back only when a paste,
+  a drop or an undo leaves the box holding exactly the draft's text
+  (words the person types are theirs even when they contain or spell out
+  a short draft). The box is disabled
+  with a plain sentence when the login is broken or asking would bill
+  money; every other part of the page still works.
+- **Keys** (`INBOX_KEYMAP`, listed in the `?` overlay on inbox pages):
+  `j`/`k`, `Enter`, `1`–`4`, `r`, `a`, `Ctrl+Enter`, `Esc`, `u`, `s`,
+  `?`. They are inert while a text field has focus except `Ctrl+Enter`
+  and `Esc`. `Enter` opens the selected item only when nothing has
+  focus; on a focused list link, button or `<summary>` it does what that
+  control does. The review keymap is inert on inbox pages, so the
+  inbox table may reuse its letters; global key uniqueness holds within
+  each table.
+- **One `role="status"` live region** announces recorded answers, the
+  agent finishing, errors and item changes. An unsent reply or
+  question is kept per item in `localStorage` (a convenience only).
+  Only a recorded send of the answer form (an option, Send, Confirm)
+  empties it; a draft card's **Send as is** sends the card's text and
+  empties the box only when the box held that same text; an undo, redo,
+  run, fix or login check re-renders the
+  answer bar without sending the box's text, and the bar's box is
+  refilled from what was typed.
+- **Weekly report** (`/overseer-report[/<date>]`): a read-only render of
+  the overseer's report, newest by default, with links to earlier ones.
+
+### 2.6 The tray icon *(added 2026-10-31, S-126; attention-design-r2 §3.5, §3.10)*
+
+A StatusNotifierItem in the desktop bar's tray (Waybar's `tray` module on the
+maintainer's host) is the one place self-learn shows that something is waiting.
+It is the door to the inbox, not a second inbox: it holds no items of its own.
+
+| state (from `self-learn attention --json`) | SNI `Status` | icon (`IconThemePath` = `plugins/self-learn/assets/tray/`) |
+|---|---|---|
+| `idle`: nothing needs the user, nothing flagged is unseen | `Passive` | `self-learn-tray-idle`, grey, always shown (answer 8) |
+| `new`: a flagged decided item is unseen | `Active` | `self-learn-tray-new`, the grey glyph with an accent dot |
+| `needs-you`: a needs-you item is open | `NeedsAttention` | `self-learn-tray-needs-you`, the glyph in colour |
+| `broken`: the reader failed, or a `broken.*` item is open | `NeedsAttention` | `self-learn-tray-broken`, struck through |
+
+- **The state is the reader's.** The tray never re-derives it from the items, so
+  "flagged" (§3.5 of the design: `decided.overseer-run`, `decided.hook-activated`,
+  `decided.always-loaded`, `decided.approved-done`) has one definition.
+- **Broken when the reader cannot answer.** A non-zero exit, a timeout (10 s) or
+  output that is not the contract's JSON shows `broken`. The tooltip title then
+  reads "self-learn: could not check what needs you" and its description gives
+  the reason in plain words, using the JSON's own `error` when the reader printed
+  one.
+- **Tooltip.** The reader's `tooltip` line as the SNI tooltip title (markup-escaped:
+  Waybar renders the title as markup); a broken poll adds the error as the
+  description.
+- **Left click** (`Activate`) runs `systemd-run --user --collect --quiet --
+  self-learn-ui-open --page /inbox`. The transient unit carries the user manager's
+  current display environment, so the tray needs none; when a UI window is already
+  open, the launcher moves it to the inbox (`/navigate`).
+- **Middle click** (`SecondaryActivate`) runs `self-learn attention seen
+  --all-decided` and polls again at once. Seen never clears a needs-you item.
+- **No right-click menu** (no dbusmenu); `ContextMenu` and `Scroll` do nothing.
+- **When it polls.** Every 120 s, and one second after a change in
+  `$SELF_LEARN_HOME` itself, `$SELF_LEARN_HOME/overseer/`,
+  `$SELF_LEARN_HOME/attention/` or `<cache_dir>/attention/` (`Gio.FileMonitor`;
+  directory monitors are not recursive). The ledger root is watched because a
+  reply typed in the workspace lands as a statement in `user-statements.jsonl`
+  there, and in `attention/workspace/`, which the `attention/` monitor does not
+  see; without it the icon could stay "needs you" for up to two minutes after the
+  answer. Writes inside `.git/` and the other subdirectories fire nothing at the
+  root. A change that lands while the
+  tray's own poll runs, or within a second after it, is not a reason to poll again
+  (the reader's cache write would otherwise loop); the 120 s poll catches it.
+- **Registration.** It owns `org.kde.StatusNotifierItem-<pid>-1`, serves
+  `/StatusNotifierItem`, and calls `RegisterStatusNotifierItem` whenever
+  `org.kde.StatusNotifierWatcher` appears or changes owner (a bar restart).
+- **Unit and deployment.** `13-hosting-and-separation.md` §7.7.
+
 ## 3. Process & data architecture
 
 **The files are the only truth; the server is a reader and a
@@ -698,6 +852,15 @@ permission surface of §4.3).
   §10). Worker code passes the same ids it already logs. swaync
   renders actions natively; without an action-capable daemon the
   helper degrades to informative-only, exactly M2's behavior.
+  *(Amended 2026-11-01, S-127, the user's answer 1 of the
+  attention round: the worker sends no notification any more. The one
+  popup left is a login hold: `overseer.notify.send(...,
+  kind="hold.credentials")`, called by the steward, the overseer and
+  `serve` for a `LOGIN_FIX` or `API_KEY_FIX` cause, runs
+  `self-learn-notify --line … --page /inbox`, whose click action runs
+  `self-learn-ui-open --page /inbox`; every other kind spawns nothing
+  and waits in the tray's inbox. The `--ids` form and its
+  `--record <id>` action remain in the helper with no caller.)*
 - **Server-owned state**: none in the repo. A log at
   `<cache>/ui.log` (size-capped like `worker.log`), the compiled
   `pane-doctrine.md` (§4.2), and the runtime token file. No config
@@ -708,8 +871,67 @@ permission surface of §4.3).
   Y-13: plus ONE in-memory transient, the pane proposal slot —
   §4.5's server-held pending proposal; never persisted, cleared per
   §4.5's exhaustive clear-set, gone on restart by construction.)*
+- **Inbox routes, envelopes and the ask runner** *(added 2026-10-31 —
+  lane `ui-workspace`, S-125; the frozen contract is
+  `attention-design-r2.md` §4.7 and §4.8)*. The inbox lives in its own
+  router (`ui/inbox_routes.py`): `GET /inbox`, `/inbox/list`,
+  `/inbox/<id>` and its `workspace`, `evidence` and `conversation`
+  partials, `/overseer-report[/<date>]`; `POST /inbox/seen-all`,
+  `/inbox/<id>/{seen,answer,undo,feedback,run,fix,check-login,ask,ask/stop}`
+  and `POST /navigate`. The middleware is unchanged: every POST needs the
+  cookie and `HX-Request`. Reads are `attention --json` and `attention
+  packet <id> --json` through `ui/ledger.py` (`attention --json` exiting 1
+  with JSON printed is a read, not a failure; `packet` exiting 2 is an
+  unknown item). Mutations are `attention answer|undo|feedback|seen|run|fix`
+  through the existing `VerbRunner`. The reply text never rides argv: it
+  is written 0600 under `<cache>/ui/reply-*.txt`, passed as
+  `--text-file` and deleted after the run.
+  - **Envelopes** on the existing `/events` stream: `{"type":"ask",
+    "item":…, <the CLI event>}` for every NDJSON line of an ask turn,
+    then `{"type":"ask","item":…,"ev":"end","exit":<code>}`;
+    `{"type":"attention","state":…,"counts":…,"ids":[…]}` after any
+    attention verb and every 30 s while a page is connected (an
+    in-process ticker that reads nothing while no client is connected);
+    `{"type":"navigate","path":…}` after `POST /navigate`. `app.js`
+    follows `navigate` with `location.assign` only for same-origin
+    paths under `/inbox` or `/overseer-report`; on inbox pages it hands
+    `ask` and `attention` envelopes and the refresh push to `inbox.js`
+    instead of reloading the page.
+  - **`POST /navigate`** (`path=`) returns 204 when at least one SSE
+    client received the envelope, 409 when none is connected, 400 for a
+    path outside `/inbox` and `/overseer-report`. The launcher's
+    `--page <path>` (validated against the same prefixes; anything else
+    exits 2) opens the tokened `http://127.0.0.1:<port><path>` in a
+    fresh window; when a window is already open it POSTs `/navigate`
+    with `curl --max-time 2`, the cookie passed on stdin
+    (`--header @-`, never argv), and focuses the window on 204, or
+    opens the URL on any other outcome.
+  - **The ask runner** (`ui/ask_runner.py`) sits beside the verb runner
+    and never waits behind its one-verb lock. `RealAskRunner` spawns
+    `self-learn ask <id> --message-file - --stream` in its own process
+    group and relays each line; at most one turn per item (a second
+    POST gets 409 and "Still answering your last question") and at most
+    two across the UI. A watchdog stops a turn at `ask.timeout_secs`
+    plus 30 s (SIGTERM to the group, SIGKILL after 5 s). **Stop** writes
+    the item's stop marker (`self_learn.ask.request_stop`) before the
+    SIGTERM, so the CLI seals "stopped by you". `attention check-login`
+    runs through the same runner. Shutdown stops every turn. An
+    in-flight turn is a sixth leg of the idle predicate above: the
+    server does not idle-exit while an agent is answering.
+    `SELF_LEARN_UI_FAKE_ASK=1` swaps in `FakeAskRunner`, which plays a
+    scripted reply and seals its rows through `workspace.append`, so no
+    model is called; only the walk world `attention` (§7) sets it, and
+    the app logs one line at start when it is on.
 
 ## 4. The adjudication pane
+
+*Note 2026-10-31 (attention round, lane `ask-agent`): the inbox's "ask about
+this" agent (`17-invocation-runbook.md` §1c) is a separate surface beside the
+Iterate pane, not a mode of it. It runs through the CLI's invocation seam on the
+`ask` surface, reads only (no write tool, no Bash, no Grep), is keyed to one
+inbox item rather than one record, and writes nothing but its draft rows into
+that item's workspace transcript. `ui/engine/sdk.py` and this section's charter
+are unchanged by it.*
 
 ### 4.1 Engine decision — SDK default, empirically re-grounded
 
@@ -1285,6 +1507,19 @@ notifications are absent.
 | swaync/action support absent | Notifications degrade to M2's informative-only behavior. |
 | Browser has no `--app` mode / Hyprland absent | Plain tab via `xdg-open`; everything works, minus the dedicated-window feel. |
 | Worker overdue / never ran | Status strip alarm (reuses the worker's own escalation thresholds); everything else functions — the surface is not the worker's supervisor. |
+| *Inbox rows below added 2026-10-31 (lane `ui-workspace`, S-125; `attention-design-r2.md` §3.7).* | |
+| `attention --json` fails (no JSON) | The inbox shows an error panel with the stderr text, "The inbox itself may be broken; the tray icon shows the same state.", and Retry. The front page's link reads "Inbox (?)". |
+| Inbox empty | "Nothing needs you, and nothing new." plus a link to the weekly report; no list items. With no needs-you items but some decided ones, the first unseen decided item is selected and the list header reads "Nothing needs you". |
+| Packet slow (> 1.5 s) | The item's list data renders at once; the evidence region shows "assembling…" and fills by htmx when the packet arrives. |
+| Packet failed | An error block naming the failure; the question, options and reply box from the list data still work. |
+| Item resolved or moved elsewhere (answered in a terminal, withdrawn, login fixed) | An `attention` envelope refreshes the list; an open item no longer listed shows "This item was resolved elsewhere (answered, withdrawn, or its condition cleared)." and offers the next one. An answer that moves the item on says where it went and offers no options. The page's own click is never reported as "elsewhere": not while its request is in flight (plus a 3 s grace), nor once its response said the item moved on or cleared. |
+| Answer verb exits non-zero | The verb's message (overflow-wrapped), with the typed text kept in the box. |
+| Ask: login broken / would spend money | The ask box is disabled with one plain sentence (the fix, or "Nothing was sent"); every other part of the page works. |
+| Ask: timeout, turn cap, interrupted, crashed | One line saying what happened, and that the user can ask again with the conversation intact. A watchdog in the UI stops a turn the CLI did not end by itself. |
+| Ask: a turn already in flight for the item, or two across the UI | 409 and "Still answering your last question." |
+| Ask: ledger STOPPED | The answer streams as usual, with the line "kept on this machine until self-learn's ledger is repaired". |
+| Launch refused or no terminal (`attention run`) | The verb's reason; for no terminal, the command alone in a copy block, the brief's path, and **Run it now** (for the approved item, also right after an approve click). |
+| `/navigate` with no page connected, or curl fails | The launcher opens the tokened URL in a new window, as for a cold start. |
 
 ## 6. Stack selection
 
@@ -1365,6 +1600,28 @@ unasserted, and colour, opacity, contrast, geometry, occlusion, and
 proper — "does it look good" — is unchanged and stays a human
 acceptance item (`10 §4`). Full reasoning and the rejected
 computed-style-digest alternative: `03-decisions.md` S-20.
+
+*Added 2026-10-31 (lane `ui-workspace`, S-125):* **the
+inbox's walk world.** The inbox (§2.5) is checked after landing by the
+user's walk instrument: a fresh, source-blind agent drives the page as
+the person would and records, per surface, what it expected, what it
+did and what it saw. That walk is not a pass/fail gate. It runs **only**
+in the sandbox world `attention` (`ui/tools/sandbox_ui.py up --world
+attention`), never against the live UI or ledger. The world seeds the
+five shapes of `attention-design-r2.md` §2.3 into a scratch ledger: a
+login hold (a steward journal row), a change to the system with a plan
+(`oo7-daemon`), a change with conditions (safe-update's list), a
+conflict between two statements, and a hook the overseer turned on (a
+real record, routed and activated through the CLI, so undo and redo
+run for real). It starts the UI with `SELF_LEARN_UI_FAKE_ASK=1` (every
+ask answers from `FakeAskRunner`, no model call), with every agent
+marker (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `AI_AGENT`) removed for
+the UI process only, because the walk plays the person and the ledger is
+scratch, and with `systemd-run` and `systemctl` shimmed on its `PATH`
+(calls logged to `shims.log`), so **Run it now**, **Open a login
+terminal** and a restart launch nothing. The CI side of the inbox stays
+at the httpx level (`test_inbox.py`, `test_ask_runner.py`,
+`test_navigate.py`, one test building the world in a child process).
 
 ## 8. What is deliberately absent
 

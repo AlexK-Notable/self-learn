@@ -7,8 +7,9 @@ regenerated on every run, and committed nowhere.
 
 Honesty pins carried from 11 §4.3/§5:
 
-- **Capture rate is bounded, never measured.** The declined-offer count
-  is model-emitted best-effort, so it is a LOWER bound on true declines —
+- **Capture rate is bounded, never measured.** Since silent capture
+  (2026-10-31) no offer is made and no decline is logged; the declined
+  count from before then is model-emitted best-effort, so it is a LOWER bound on true declines —
   which makes the computed capture rate an optimistic CEILING. Both
   labels are printed; neither number is presented as a measurement.
 - **No-observed-fires is a candidate list, not "dead weight"** — fire
@@ -42,6 +43,11 @@ from .reachability import reachability_rows
 from .records import Record, RecordError, is_retirement
 from .refread import resolve_ref_target
 from .telemetry import read_events
+
+#: Answer 9 (attention round, 2026-10-31): lesson capture became silent --
+#: an agent composes and captures with `self-learn teach`, no offer, no
+#: confirmation. The offer ledger says so from this date.
+SILENT_CAPTURE_SINCE = "2026-10-31"
 
 __all__ = [
     "COMPOSITION_CAUTION_ADVISORY",
@@ -2327,13 +2333,21 @@ def render_text(facts: dict) -> str:
 
     t = facts["telemetry"]
     lines.append("")
-    lines.append("Offer ledger (11 §4.3 — the declined count is a LOWER bound;")
-    lines.append("logging a decline is model discipline, so the capture rate")
-    lines.append("below is an optimistic CEILING, not a measurement):")
+    # Answer 9 (attention round, 11 §4.3): capture is silent, so no offer is
+    # made and no decline is logged any more; declines from before that date
+    # keep their honesty labels.
     lines.append(
-        f"  {t['captures']} captured · ≥{t['declined_logged']} declined (logged)"
-        f" · capture rate ≤ {_pct(t['capture_rate_ceiling'])}"
+        f"Offer ledger (11 §4.3): silent capture since {SILENT_CAPTURE_SINCE}; "
+        "offers are no longer made."
     )
+    lines.append(f"  {t['captures']} captured")
+    if t["declined_logged"]:
+        lines.append(
+            f"  before then: ≥{t['declined_logged']} declined (logged — a LOWER bound,"
+            " since logging a decline was model discipline) · capture rate"
+            f" ≤ {_pct(t['capture_rate_ceiling'])} (an optimistic CEILING, not a"
+            " measurement)"
+        )
     if t["decline_reasons"]:
         parts = ", ".join(
             f"{n}× {reason}" for reason, n in sorted(t["decline_reasons"].items())

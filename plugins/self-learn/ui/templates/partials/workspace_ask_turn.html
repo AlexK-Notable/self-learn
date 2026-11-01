@@ -1,0 +1,8 @@
+{# POST /inbox/<id>/ask: the person's question and the live answer bubble
+   that inbox.js fills from the `ask` SSE envelopes (§3.3, §4.8). #}
+<div class="bubble bubble-user"><p class="bubble-who">You asked</p><p>{{ message }}</p></div>
+<div class="bubble bubble-agent bubble-live" id="ws-live-bubble" data-live-item="{{ item_id }}" aria-busy="true">
+  <p class="bubble-who">The agent <span class="ws-live-tool" data-live-tool></span></p>
+  <div class="ws-live-text" data-live-text></div>
+  <div class="ws-live-drafts" data-live-drafts></div>
+</div>

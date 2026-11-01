@@ -1,7 +1,7 @@
 """idle.py — the Y-14 idle monitor (09 §3 "resident while in use";
 10 §3 U13).
 
-The server self-exits cleanly when a five-legged predicate holds — ALL
+The server self-exits cleanly when a six-legged predicate holds — ALL
 of (09 §3, as reworked at the Y-14 spec gate):
 
 1. zero SSE subscribers (both hubs);
@@ -13,7 +13,9 @@ of (09 §3, as reworked at the Y-14 spec gate):
    at awaiting-input does NOT block, it is torn down instead — Y-14
    decision 5);
 5. the request-COMPLETION clock aged past the window (stamps at
-   completion, never arrival — F2).
+   completion, never arrival — F2);
+6. no inbox "ask about this" turn in flight (attention round, design r2
+   §3.3: ``ask_busy``, the :class:`self_learn_ui.ask_runner.AskRunner`).
 
 **Teardown and exit never share a step** (delta R1): a sample that
 finds a parked session tears it down and DEFERS the exit decision to a
@@ -145,8 +147,14 @@ class IdleMonitor:
         window_seconds: float,
         exit_callback: Callable[[], None] | None = None,
         sample_seconds: float = SAMPLE_SECONDS,
+        ask_busy: Callable[[], bool] | None = None,
     ) -> None:
         self._tracker = tracker
+        # Leg 6 (attention round, design r2 §3.3): an "ask about this" turn
+        # in flight is work-in-flight exactly like a pane turn — the answer
+        # streams for minutes with no HTTP request open, so legs 1-5 can
+        # all read idle while the agent is still answering.
+        self._ask_busy = ask_busy if ask_busy is not None else (lambda: False)
         self._subscriber_count = subscriber_count
         self._runner_busy = runner_busy
         self._pane_manager = pane_manager
@@ -155,13 +163,14 @@ class IdleMonitor:
         self._sample = sample_seconds
 
     def predicate(self) -> bool:
-        """The five legs, all sync reads — callers rely on there being
+        """The six legs, all sync reads — callers rely on there being
         NO await between this returning True and the signal (09 §3)."""
         return (
             self._subscriber_count() == 0
             and self._tracker.in_flight == 0
             and not self._runner_busy()
             and not self._pane_manager.has_interruptible_session()
+            and not self._ask_busy()
             and self._tracker.quiet_seconds() >= self._window
         )
 

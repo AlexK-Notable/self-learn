@@ -24,7 +24,7 @@ Agent SDK unconditionally. There is nothing left to flip a surface
 BETWEEN — `backend` is no longer a real switch, it is a single-valued
 constant (its former refusal was removed on 2026-10-24).*
 
-Self-learn invokes a model on **seven surfaces**, all of them on the
+Self-learn invokes a model on **eight surfaces**, all of them on the
 Agent SDK. One switch remains live:
 
 | Switch | Scope | Values | Default |
@@ -62,6 +62,7 @@ credential checks remain active even when a retired backend key is present.
 | `steward` | the steward's decision run | `STEWARD` |
 | `overseer` | the overseer's examination run | `OVERSEER` |
 | `miner-session` | one transcript per call (§1a) | `MINER` |
+| `ask` | the inbox's "ask about this" agent, one question per call (§1c) | `ASK` |
 
 `steward` and `overseer` (added 2026-09-13) are `Containment` objects in the
 same sense `03-decisions.md` `S-34`/`S-50` already describe: on the `sdk`
@@ -248,6 +249,145 @@ MCP tool when its built-in tools are also on (§1a measured nothing here
 either) has not been observed on a real steward run: no model call was
 made to build this. The first live steward run after this lands is its
 measurement; a denied call shows in the run's `denials` and in the journal.
+
+### 1c. The eighth surface: `ask`, the inbox's read-only agent
+
+*Added 2026-10-31 (attention round, lane `ask-agent`;
+`misc/build-2026-10-31c/attention-design-r2.md` §3.3, §4.10; `03-decisions.md`
+row S-124).* On each item of the inbox the person can ask an agent
+about the decision in front of them (the user's answer 10, decision C5). One
+question is one seam session on the `ask` surface: `ask.py` builds the
+`SessionSpec` and calls `invocation.write_session`, so the ask agent gets the
+same model, binary, provider, turn and spend rules, pid sidecar, transcript copy
+and failure classes as the steward. Its settings: `models.ask` (env
+`SELF_LEARN_ASK_MODEL`, default `opus`, tier A), `provider.bedrock.models.ask`,
+`sdk.max_turns.ask` (40) and `ask.timeout_secs` (300 s, tier A). There is no
+`invocation.backend_ask`: the design named one, but the `invocation.backend`
+family was removed from the registry on 2026-10-24 (§1), so nothing generates
+it and the tier-C set has no backend entries.
+
+**Two `SessionSpec` fields, both keyword, defaulted and last.**
+`resume_session_id` makes the options carry `resume=<id>`, so a later question
+continues the item's earlier Claude Code session (kept per item in
+`<cache>/workspace/<item-id>/state.json`; the session's `cwd` is that folder, so
+Claude Code finds it again). `on_event` makes the options carry
+`include_partial_messages=True`, and the seam calls it with `{"ev": "delta",
+"text"}` for each text delta, `{"ev": "tool", "name", "target"}` for each tool
+use and `{"ev": "tool-result", "name", "is_error", "text"}` for each result of
+the session's own tools; a callback that raises is logged once and never ends
+the session. The text of a later block (after a tool use, or at a new text
+block) arrives with a paragraph break (`"\n\n"`) in front, so narration before
+a tool call is never glued to the text after it; the `done` text is the final
+message only, as before. A spec without them sends exactly the options it sent before (no
+`resume` key, `include_partial_messages=False`).
+
+**One `Containment` field, keyword, defaulted and last:** `read_denied_names`,
+basename globs (`fnmatch`, case-insensitive). The charter refuses a Read (or a
+NotebookRead or Grep naming a file) whose target's own name, or its resolved
+symlink target's name, matches one; Glob only lists names and is not checked.
+Every other surface's containment leaves it empty and is unchanged.
+
+**Read-only, four layers.** (1) `containment_for("ask", ...)` fixes
+`disallowed_tools` to `Bash,Grep,Write,Edit,NotebookEdit,Task,WebFetch,WebSearch`
+and has no write scope, so the write family always denies and the enforcement
+hatch stays shut; it takes `read_roots`, `read_denied` and `read_denied_names`
+from its caller (this surface only) and refuses an `allowed_tools` naming a
+refused tool. The ask session allows `Read`, `Glob` and its own tools. Its read
+roots are the ledger, self-learn's cache, the self-learn checkout, the
+registered projects' canon read roots, `~/.claude/CLAUDE.md`, `~/.claude/rules/`,
+`~/.claude/hooks/` and the packet's kept `look_at` paths; `~/.claude/settings.json`
+is never one. Its denied paths are `<cache>/sessions` and every
+`attention_packet.SECRET_DENY` path; its denied names are `SECRET_DENY.names`.
+Grep is refused because the charter judges a Grep by its root, never by the
+files it reads. (2) The charter, as above. (3) Its own tools (MCP server
+`selflearn_ask`, beside the built-ins as the steward's are, §1b) read, through
+the same fence: `record`, `case`, `statements`, `words_in_context`, `report`,
+`ledger_history` (a read-only `git log` of subjects and trailers), `status` (the
+data of `status --json --fast` from an in-process function, never the CLI),
+`item`, `search` (replaces Grep: secret files, denied folders and binary files
+are skipped, every line secret-scanned), `list_dir`, `probe` and
+`settings_hooks` (the `hooks` key only). `probe` runs one of five argv forms with
+no shell, a 5-second bound and a minimal environment: `systemctl --user show
+<unit> --property=...`, `systemctl --user is-active <unit>`, `systemctl --user
+status <unit> --no-pager --lines=0`, `journalctl --user -u <unit> -n 200
+--no-pager -o short-iso` and `pacman -Q <pkg>`; a target must start with a
+letter or digit, so it can never be read as a flag. `draft_reply` is the one tool
+that writes: it seals a draft row into the item's workspace transcript inside its
+handler, so a draft survives a timeout or a Stop. (4) `setting_sources=[]`,
+`strict_mcp_config` and auto-memory off, so no user hooks, settings, MCP servers
+or memory reach the session.
+
+**Subscription only.** `ask.billing_route(env)` returns why a session would
+bill money: a provider other than `anthropic`, an `ANTHROPIC_API_KEY` or
+`ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX`
+set. `ask` and `attention check-login` check the session's final environment
+(the seam policy's variables over the process's) before anything is spawned or
+recorded, and refuse with exit 4.
+
+**Sidecars.** The sidecar is keyed per item (`ask.sdk-child.<12 hex>.pid`;
+check-login's is `check-login`), and the session skips the surface-wide sweep:
+`lifecycle.sweep_orphan(surface, key, log)` (over
+`sdksession.children.sweep_orphan`) judges that one sidecar on the same three
+checks, so an ask never clears a running sibling's sidecar or a host job's.
+
+**The miner.** The first prompt opens `self-learn ask-about-this session for
+<item-id>.`, one of `miner.SELF_PROMPT_HEADERS`, so the nightly miner halts these
+sessions. A person's question still reaches the steward through the workspace
+transcript (answers lane).
+
+**One deadline per turn.** A turn may make up to three sessions: the resume, a
+fresh session when the resumed one is lost, and one retry of a transient failure
+after `model_failures.TRANSIENT_BACKOFF_SECS`. All of them share one deadline of
+`ask.timeout_secs`, counted from the verb's start: each later session gets only
+the time that is left, and a later session that would get less than 30 s (the
+retry: the backoff plus 30 s) is not started, so the turn ends inside its own
+bound and the UI's watchdog (the timeout plus 30 s) never fires on a turn that is
+still working. The person's Stop is the one SIGTERM that seals "stopped by
+you": the page calls `ask.request_stop(home, item_id)` (it writes
+`<cache>/workspace/<item-id>/stop-requested`) before it signals the verb's
+process group, and the verb seals "stopped by you" only when that marker is
+there, then removes it. A marker left from an earlier turn is removed when a
+turn starts and when it ends. Any other SIGTERM is not the person's act: after
+the deadline it is the watchdog and seals "stopped: the turn ran past its time
+limit"; before it, it is a UI service stop or restart (systemd signals every
+process of the unit's cgroup, so the verb gets it directly), a logout or a
+shutdown, and it seals "stopped before it answered". All three exit 7 with
+`code: "interrupted"`. Each later session
+emits its own `start` event, so the page starts the bubble again.
+
+**A session that cannot be continued.** A resumed session whose failure says no
+conversation or session was found, or that it could not or failed to resume, is
+replaced in the same turn by a fresh session given the record. A resumed session
+that fails before any turn with an `unclassified` failure (one the classifier
+has no class for) is dropped from `state.json` too, so the next question starts
+afresh instead of resuming it again; a timeout, a login or network failure, or a
+session that made a turn keeps it.
+
+**Secrets in what the agent says.** Every delta, the `done` text, a draft event
+and every own-tool reply pass `ask.redact`: the secret scan's hits are replaced
+inline, and a private key's PEM block is withheld whole, from its `BEGIN` line to
+its `END` line (or, while no `END` has come, to the end of the text when the
+header ends its line, as every real key's does, also before an escaped `\n`),
+because the scan's `private-key` rule matches the header only and a body's short
+last line passes every other rule. A header named inside a sentence is withheld
+alone and the words after it stay. `search` withholds a key's lines the same way. The sealed
+answer row keeps the redacted text and names the rule in `redacted`.
+
+**Who may ask.** The verb refuses from an agent's shell (exit 64, `code:
+"failed"`, a message beginning "refused: the ask box is the person's"): the
+question is sealed as the person's typing (`role: user, origin: typed`), so an
+agent's words would be recorded as theirs. A UI shows that message as it is;
+it is never a usage error the person made. `attention check-login` is allowed
+from an agent's shell, since it records nobody's words.
+
+**Unmeasured.** No model call was made to build this. The verb's tests run on
+`FakeBackend` (`Streams`, `ToolCall` and `SessionOutcome` were added to it for
+streamed turns); the seam's streaming relay, `--resume` and
+`--include-partial-messages` are tested through `SdkBackend` against a fake
+Claude Code binary (`tests/fixtures/fake_claude.py`'s `ask_stream` scenario,
+added through the armor's additive door) that prints real `stream_event` lines. Whether Claude Code honours `resume` for a session whose
+transcript copy was taken, and what it prints when the session is gone, are
+measured by the first real question.
 
 ## 2. The `[sdk]` extra is no longer optional
 

@@ -3,6 +3,13 @@
 # row; 09 §3 "Notifications"). Pinned argv, carried verbatim (P3-6):
 #
 #   self-learn-notify --line "<rendered human string>" --ids <csv-of-record-ids>
+#   self-learn-notify --line "<rendered human string>" --page <inbox path>
+#
+# Attention round (design r2 §3.9, answer 1): the only popup self-learn
+# still sends is a login hold, from `overseer.notify.send`, and it passes
+# `--page /inbox`; its "open" action runs `self-learn-ui-open --page
+# /inbox`, where the login item is selected first. `--ids` stays for the
+# record deep link. Exactly one of the two is required.
 #
 # notify-send -A open --wait. CORRECTED 2026-08-09 (incident): the
 # original design assumed a finite `--expire-time` alone bounds the
@@ -62,8 +69,9 @@
 #     informative-only behavior), ITSELF hard-bounded the same way ->
 #     exit 0 either way (best-effort; its own outcome is never fatal to
 #     this script).
-#   - exits 0 with stdout "open" -> the pinned deep-link rule: the FIRST
-#     id in the csv -> exec self-learn-ui-open --record <id>.
+#   - exits 0 with stdout "open" -> with --page, exec self-learn-ui-open
+#     --page <path>; otherwise the pinned deep-link rule: the FIRST id in
+#     the csv -> exec self-learn-ui-open --record <id>.
 #   - exits 0 with any other stdout, OR a timeout-induced non-zero exit
 #     (typically empty stdout either way: dismissed, expired, or
 #     killed) -> nothing more to do, exit 0.
@@ -83,6 +91,7 @@ TIMEOUT_ARGS=(--kill-after=5 40)
 
 LINE=""
 IDS=""
+PAGE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --line)
@@ -101,6 +110,14 @@ while [[ $# -gt 0 ]]; do
       IDS="$2"
       shift 2
       ;;
+    --page)
+      if [[ $# -lt 2 ]]; then
+        echo "self-learn-notify: --page requires a value" >&2
+        exit 2
+      fi
+      PAGE="$2"
+      shift 2
+      ;;
     *)
       echo "self-learn-notify: unknown argument: $1" >&2
       exit 2
@@ -108,8 +125,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$LINE" || -z "$IDS" ]]; then
-  echo "self-learn-notify: --line and --ids are both required" >&2
+if [[ -z "$LINE" ]] || [[ -z "$IDS" && -z "$PAGE" ]] || [[ -n "$IDS" && -n "$PAGE" ]]; then
+  echo "self-learn-notify: --line and exactly one of --ids or --page are required" >&2
   exit 2
 fi
 
@@ -140,6 +157,9 @@ if [[ $RC -ne 0 ]]; then
 fi
 
 if [[ "$ACTION" == "open" ]]; then
+  if [[ -n "$PAGE" ]]; then
+    exec "$UI_OPEN" --page "$PAGE"
+  fi
   exec "$UI_OPEN" --record "$FIRST_ID"
 fi
 

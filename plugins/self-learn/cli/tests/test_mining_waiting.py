@@ -141,7 +141,7 @@ def test_an_answer_is_saved_whole_before_anything_of_it_lands(home, root, backen
     assert s["doc"]["items"][0]["intent"] == {"output": "lesson", "record": None, "origin": f"transcript:{sid}#L3"}
     doc = s["doc"]
     assert doc["session"] == sid and doc["transcript"] == str(path) and doc["run_id"] == result.run_id
-    assert doc["method_version"] == "1" and doc["halted"] is False and doc["cursor"] == {"lines": 7,
+    assert doc["method_version"] == "2" and doc["halted"] is False and doc["cursor"] == {"lines": 7,
                                                                                          "size": path.stat().st_size,
                                                                                          "halt": False,
                                                                                          "line_format": "newline-v1"}

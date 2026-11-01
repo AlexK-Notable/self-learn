@@ -273,6 +273,9 @@ def census(root: Path) -> list[Site]:
 #: docstring names, not just a growth case.
 MEASURED_CENSUS_MODULES = frozenset(
     {
+        "ask.py",  # S-124: `ask._run_probe`, `ask._git_log`
+        "attention.py",  # S-121: `attention._systemctl_active`
+        "attention_answers.py",  # S-123: `_launch` (systemd-run), `fix` (systemctl)
         "gitops.py",
         "hosts.py",
         "ledger.py",
@@ -288,7 +291,18 @@ MEASURED_CENSUS_MODULES = frozenset(
 # O-6 (16): detached overseer companion notification. 2026-10-31 (18): two
 # bounded `subprocess.run` sites, `notices.condition_holds` (S-106) and
 # `skill_writer._head_file_text` (S-107), both with `timeout=`.
-MEASURED_CENSUS_SITE_COUNT = 18
+# 2026-11-01 (attention round, measured at the integration branch, 21):
+# five bounded `subprocess.run` sites, each with `timeout=` --
+# `ask._run_probe` (PROBE_TIMEOUT_SECS) and `ask._git_log` (10 s), the
+# ask agent's read-only probes (S-124; design r2 §3.3);
+# `attention._systemctl_active` (SYSTEMCTL_TIMEOUT_SECS), the inbox
+# reader's host check (S-121); `attention_answers._launch`
+# (LAUNCH_TIMEOUT_SECS, systemd-run) and `attention_answers.fix`
+# (FIX_TIMEOUT_SECS, systemctl --user reset-failed/restart), the inbox's
+# answers (S-123; design r2 §3.4.7). `attention_answers`' own `run(` is
+# no site: its in-module callers use `_run_item`, so the bare name never
+# reads as `from subprocess import run`.
+MEASURED_CENSUS_SITE_COUNT = 21
 
 
 def test_p3_gate_census_matches_the_measured_count():

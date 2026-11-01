@@ -119,13 +119,15 @@ def test_findings_example_validates(formats_dir):
 def test_questions_example_validates(formats_dir, tmp_path):
     path = formats_dir / "questions.yaml"
     index, dropped = overseer_run._questions(path, {}, {formats.EXAMPLE_CASE})
-    assert dropped == [] and len(index["questions"]) == 1
+    # S-122: a stead ask and a needs-user ask with a plan.
+    assert dropped == [] and len(index["questions"]) == 2
     broken = _load(path)
     broken["questions"][0]["id"] = "Not A Slug"
     bad = tmp_path / "questions.yaml"
     _dump(bad, broken)
     index, dropped = overseer_run._questions(bad, {}, {formats.EXAMPLE_CASE})
-    assert index["questions"] == [] and len(dropped) == 1
+    assert [row["id"] for row in index["questions"]] == ["q-example-system-change"]
+    assert len(dropped) == 1
 
 
 def test_user_model_delta_example_applies(formats_dir, tmp_path):

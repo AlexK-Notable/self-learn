@@ -2,7 +2,9 @@
 
 1. One cause-to-fix map for a steward hold (`failure_class.hold_fix`).
 2. The stranded.json path and reader spelled once (`steward`).
-3. The pending hook's overseer line no longer says "interpretation questions".
+3. The pending hook's overseer line no longer says "interpretation questions"
+   (2026-11-01: the attention round removed the line itself, design r2
+   §3.9 / S-127; the test now pins that no overseer line prints at all).
 4. The heartbeat's steward preview knows overdue premise reviews alone make
    the steward due, from a cached answer only (fix round 1, gate r1 MAJOR 1).
 
@@ -16,7 +18,7 @@ from pathlib import Path
 from self_learn import serve, steward
 from self_learn.invocation import failure_class
 
-from test_pending_hook import _base_payload, _run_hook
+from test_pending_hook import NOTICE_HEADER, _base_payload, _run_hook
 from test_serve_steward_cadence import (
     NOW,
     _completed_run_journal,
@@ -127,11 +129,19 @@ def test_a_census_written_by_serve_is_counted_by_the_steward(tmp_path: Path):
 
 
 def test_the_hook_does_not_call_legacy_asks_interpretation_questions(tmp_path: Path):
+    """S-120 reworded the overseer-questions line; the attention round
+    (design r2 §3.9, M8: "the line is removed, not reworded"; S-127) then
+    removed it: the overseer's asks are inbox items. With open questions in
+    the payload, the hook still runs and prints a project notice under its
+    header (the control), and says nothing about the overseer's questions,
+    in either wording."""
     payload = _base_payload()
     payload["overseer_open_questions"] = 3
+    payload["project_notices"] = [{"id": "ntc-1", "line": "self-learn: commit CLAUDE.md here"}]
     result = _run_hook(tmp_path, payload)
     assert result.returncode == 0, result.stderr
-    assert "overseer has 3 older question(s) still waiting" in result.stdout  # control
+    assert result.stdout.splitlines() == [NOTICE_HEADER, "self-learn: commit CLAUDE.md here"]  # control
+    assert "question" not in result.stdout
     assert "interpretation" not in result.stdout
 
 

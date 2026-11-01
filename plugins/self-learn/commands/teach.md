@@ -1,14 +1,21 @@
 ---
-description: Capture a durable lesson from this session into the self-learn ledger (human-confirmed, one record per lesson).
+description: Capture a durable lesson from this session into the self-learn ledger, silently (no offer, no confirmation; one record per lesson).
 argument-hint: [what to capture, e.g. "the .storage gotcha" | --skill <name> | --project | --user]
 ---
 
 Capture a lesson from the **current conversation** into the self-learn
 ledger. You watched the failure happen — you hold the transcript, the
 error, and the session id — so *you* compose the record; the CLI is only
-the substrate you call. You compose and confirm; the `self-learn` CLI
-scans, writes, and (only if explicitly asked) routes. Nothing here edits
-canon, records, or git directly.
+the substrate you call. You compose and capture; the `self-learn` CLI
+scans, writes, and (only if the user's words already named a destination)
+routes. Nothing here edits canon, records, or git directly.
+
+Capture is silent (the user, 2026-10-31: "capturing a lesson should happen
+quietly in the background"): compose and capture with `self-learn teach`;
+report the id in one line only if the user is mid-conversation about it.
+No offer before, no echo of the wording, no confirmation round after. The
+capture lands pending, and the steward decides its placement the same
+night; the user sees every decision in the inbox and can overturn it.
 
 $ARGUMENTS may name the lesson to capture, or a scope flag to pass
 through. If it is empty, find the lesson yourself in step 1.
@@ -52,9 +59,8 @@ to stop the container").
 - **Supersession** — if this lesson *corrects* an already-routed record
   you know of, add `--supersedes <lrn-id>`.
 - **Capture-time grounding (11 §3 — infer, don't interrogate).** You hold
-  the transcript, so INFER these from it and simply show them in the §3
-  echo for correction — never add extra question rounds (that would break
-  ambient capture, E-3):
+  the transcript, so INFER these from it and pass them — never ask the
+  user about them (that would break ambient capture, E-3):
   - `--verified [--verified-how "…"]` — was the lesson actually repro'd or
     tested in this session, and how?
   - `--incident-cost "…"` — what the incident cost, in human terms
@@ -78,11 +84,11 @@ to stop the container").
   cannot find in that session's transcript refuses the whole command
   before anything is written. It appends one line to the user-statement
   store after the lesson lands (the same line `statement add --verbatim …
-  --ref transcript:<session>#L<n>` writes, recorded as `recorded_by:
-  human` — you typed the command, so it is never attributed to an agent), completely
-  separate from the lesson record itself: a statement is the user's own
-  words on the record, not a
-  lesson to route. It is never inferred or paraphrased — capture it only
+  --ref transcript:<session>#L<n> --recorded-by agent` writes). It is
+  recorded `recorded_by: agent` from your shell, because you captured it;
+  the words are the user's because the CLI cites the line the user typed.
+  It is completely separate from the lesson record itself: a statement is
+  the user's own words on the record, not a lesson to route. It is never inferred or paraphrased — capture it only
   when you can quote it, and only the words actually said.
 
 <!-- lesson-writing:begin (a copy of skills/self-learn/references/lesson-writing.md) -->
@@ -117,24 +123,18 @@ When you rewrite an existing lesson, account for every idea in the old text: sti
 or a field, or dropped. A dropped idea needs a reason (wrong, out of date, or said by another lesson you name).
 <!-- lesson-writing:end -->
 
-## 3. Echo and confirm — never silently capture
+## 3. Capture without asking
 
-Show the user exactly what you are about to store — type, kind, scope,
-Trigger/Instruction (or Fact/Context), evidence quote — and ask for
-confirmation. Explicit, human-confirmed capture is a hard rule: if the
-user does not confirm (or corrects the composition), revise or drop it.
-Capture nothing they haven't seen.
-
-If the user declines the capture outright, log the decline before moving
-on — `self-learn telemetry note offer-declined --reason
-<not-durable|wrong|duplicate|private|later|other>` (S-15 clause, 11 §4.3:
-declined offers are the denominator the system cannot otherwise see;
-cache-only, no repo write, pick the enum value that best matches their
-words).
+Do not show the composition to the user first and do not ask whether to
+capture it: invocation is the approval, and the steward screens every
+capture the same night. If the user is mid-conversation about this lesson,
+report the record id in one line after the CLI prints it; otherwise say
+nothing. If, while composing, you find the lesson is not durable after all,
+drop it — that is your call, not a question for the user.
 
 ## 4. Call the CLI with structured flags
 
-One confirmed lesson = one call:
+One lesson = one call:
 
 ```bash
 self-learn teach --skill home-assistant \
@@ -148,10 +148,11 @@ self-learn teach --skill home-assistant \
 `--kind`. `--context "<background>"` goes with either type and is written
 as the record's `## Context`; it is never loaded.)
 
-The record lands in `pending/` for later review — that is the default and
-usually the right end state. **Offer `--route --dest <target>` in the same
-motion only when the destination is obvious** (e.g. the user explicitly
-said "add that to the skill" → `--route --dest skill-md`). `--route`
+The record lands in `pending/` and the steward decides it tonight — that
+is the default and usually the right end state. **Add `--route --dest
+<target>` in the same motion only when the destination is obvious** (e.g.
+the user explicitly said "add that to the skill" → `--route --dest
+skill-md`). `--route`
 applies and commits immediately with no confirmation prompt — the
 invocation *is* the approval, so only add it when the user's words already
 approved the destination. `--dest` takes `skill-md | claude-md |
@@ -162,19 +163,20 @@ reference[:<file>]`. When in doubt, let it land pending.
 The COMPLETE contract — every code `teach` can return. The distinction
 that matters in all of them: *was the record written, and is it safe?*
 
-- **0** — created (or routed) **and committed**. Report the record id line
-  the CLI printed. This is the only code that means "safe".
+- **0** — created (or routed) **and committed**. Report the record id in
+  one line only if the user is mid-conversation about it. This is the only
+  code that means "safe".
 - **64** — usage/validation error; nothing was written. Fix the flags
   and retry. (A22, fold r1, 2026-09-04 — was a private 2; unified with
   the rest of the CLI's own usage-error code.)
 - **3** — the secret scan refused: something in the composed text (usually
-  the quote) looks like a credential. Tell the user which span tripped it
-  (the CLI printed span + rule), then either **shorten/rephrase the quote**
-  and retry, or re-run with `--redact` to store it with the span replaced.
+  the quote) looks like a credential. Read the span the CLI printed (span +
+  rule), then either **shorten/rephrase the quote** and retry, or re-run
+  with `--redact` to store it with the span replaced.
   There is no bypass flag — that is deliberate.
 - **4** — (only with `--route` and no `--dest`) the one-shot analyst
   failed; the record was **safely captured to pending/ and committed** as a
-  normal teach. Nothing is lost — say so.
+  normal teach. Nothing is lost.
 - **5** — the ledger home is missing or is not a git repo. **Nothing was
   written.** The CLI names the home it tried; do not create it by hand and
   do not retry into a different one — show the user the message.
@@ -191,8 +193,8 @@ that matters in all of them: *was the record written, and is it safe?*
   This is NOT a success with a footnote: nothing else ever commits a
   capture (doc 13 H-5 — the ledger has no watcher and every other producer
   stages only its own paths), so a re-clone would destroy it. The CLI
-  prints the repair; the short form is `self-learn reconcile`. Show it to
-  the user and say the lesson is *on disk but unpublished*.
+  prints the repair; the short form is `self-learn reconcile`. Run it
+  yourself; the lesson is *on disk but unpublished* until it succeeds.
 
 Note **a failed PUSH is still 0/4** — the commit is kept, the CLI says so
 loudly, and `self-learn push` republishes it. Only an uncommitted record
@@ -201,9 +203,12 @@ is a failure.
 The distinction 6-vs-7 is the whole point: one integer per STATE, not per
 cause. 6 and 7 are both "git failed"; they are different codes because
 "nothing was written" and "the write landed, the commit did not" call for
-opposite actions from you (retry vs. repair). They agree with the same
-codes in `/self-learn:review` — one meaning per code, every surface.
+opposite actions from you (retry vs. repair). 6 and 7 mean the same in
+`/self-learn:review`; 3 and 4 do not (here a scan refusal and an analyst
+failure, there a failed push and a rebase conflict), so read each surface's
+own table.
 
 Do not go beyond the capture: no editing of SKILL.md/CLAUDE.md, no git
-commands, no routing decisions of your own. Routing belongs to
-`/self-learn:review` and the CLI verbs.
+commands, no routing decisions of your own. The steward decides the
+capture tonight; `/self-learn:review` and the CLI verbs are there for
+anyone who wants to step in sooner.

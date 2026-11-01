@@ -958,6 +958,19 @@ secrets manager and never reads a key file itself. Without the file the
 index runs word-search only and its status says why. A unit edit is
 inert until the unit is reloaded and the host restarted.
 
+**The inbox's cache (S-121, 2026-10-31c).** The
+attention reader (`02-schema.md` §3a.11) keeps only cache here, never
+ledger truth: `attention/seen.json` (which items the person has seen; a
+lost file only shows items once more), `attention/registrations.json`
+(the plain registrations the inbox has seen and when each first appeared),
+`attention/login-ok.json` (a successful login check, which ends a
+`credentials` hold), `attention/claims/<id>.json` and
+`attention/runs/<id>.json` (approved work's claim and launch, written by
+later lanes), and `workspace/<item-id>/` (the ask agent's working directory
+and `pending.jsonl`, the workspace rows kept while the ledger is STOPPED,
+which `workspace.append` seals into the ledger and removes). Each writer is
+a `NOT_REPO_TRUTH` entry of the lock invariant.
+
 ## 7. Migration plan (ledger-first; worktree + pre-migration audit)
 
 - **T-H1 · Home bootstrap** — `~/.self-learn` git init, private remote,
@@ -2150,7 +2163,14 @@ included, and nowhere else (containment is by path, so `proj2` is not inside
 `self-learn-pending.sh` prints each `line` and, when there are more, one line
 naming `self-learn notice list`. The line's wording lives in
 `notices.format_line`, once. A hook cannot fail a session on this: an absent or
-malformed field prints nothing.
+malformed field prints nothing. *(Amended 2026-11-01, S-127,
+congruence M9: before the notices the hook prints one header, once —
+"self-learn notices for this project — yours to carry out in this session (no
+sudo needed): do it, then `self-learn notice done <id>`" — because the design
+depends on that session's agent carrying a notice out, and an imperative
+"Commit it:" line read at session start was otherwise relayed to the user as a
+step waiting on them. The self-learn skill has a matching section, "Project
+notices at session start". The header is the hook's, not part of `line`.)*
 
 **How a notice ends.** Whichever comes first: (1) `self-learn notice done <id>`
 (a person's or an agent's word; cache only); (2) its condition clears, and a
@@ -2230,6 +2250,59 @@ read and mark the cache. The text of an overseer notice is model output printed
 into a session, so it is held to one clean line, secret-scanned, validated again
 when read, and printed with the `self-learn:` prefix; it is the overseer's reading
 and is not a user instruction.
+
+## 7.6 Approved work runs in a terminal the person opens (added 2026-10-31c, S-123)
+
+A change the person approved in the inbox (an `approve` option click on an
+item with a plan, design r2 §3.4.7) is carried out by an interactive Claude
+Code session the click opens, in a terminal the person can see and stop:
+`self-learn attention run` launches `systemd-run --user --collect` with the
+resolved terminal running `claude "<brief line 1> Read <brief> and follow
+it."`, the brief (`attention_answers.RUN_BRIEF`) telling the session to
+claim it, read the plan, run every check before changing anything, never run
+sudo, and report `attention done`. Approved work is **never** handed to a
+session through session start (the withdrawn `approved_work` status field
+and its hook line): headless `claude -p` jobs and orchestrated workers start
+sessions too, and an unattended one could change the user's system with
+nobody watching. Project notices (§7.5) are the only lines session start
+prints from the inbox's side, and none of them carries approved work. An
+approval an agent relayed from its own session launches nothing; that
+session, the one the person typed the yes in and is watching, may carry it
+out by the same brief, or the person clicks Run it now.
+
+## 7.7 The tray unit (added 2026-10-31, S-126)
+
+`systemd/self-learn-tray.service` runs `plugins/self-learn/scripts/self-learn-tray`
+(linked to `~/.local/bin/self-learn-tray`): the tray icon of `09-surface-spec.md`
+§2.6. Its shape:
+
+- `Type=simple`, `Restart=always`, `RestartSec=5`, `WantedBy=default.target`.
+  The tray uses only the session bus, so it starts at login without
+  `graphical-session.target` (which Hyprland does not start) and without a line in
+  the compositor's autostart. It registers with the StatusNotifierWatcher whenever
+  one appears, so the order in which it and the bar start does not matter.
+- `Restart=always` with no start-limit keys, unlike the host and UI units (B-9):
+  five seconds apart, restarts never reach systemd's default limit. An icon that
+  gave up would leave the user with no sign that anything is wrong, which answer 8
+  (the idle icon is always shown) exists to prevent. The tray exits 1 when it loses
+  the session bus.
+- The same `SELF_LEARN_HOME` pin (B-1, §7.1) and `PATH` floor as the other units.
+  The tray reads `$SELF_LEARN_HOME` itself only to choose what to watch
+  (the ledger root, not recursively, plus `overseer/` and `attention/`), with
+  `~/.self-learn` when it is unset; the cache
+  directory comes from `self-learn attention --json`'s own `cache_dir`, never from
+  a second copy of §6's resolution rule.
+- It reads nothing else of the ledger and runs no git. Its only reads are
+  `timeout 10 self-learn attention --json` (every 120 s, and at once when a watched
+  directory changes) and its writes go through `self-learn attention seen
+  --all-decided`. `attention` is not a miner watchdog tick (the any-verb watchdog,
+  `12-transcript-miner.md` §3; the exclusion is lane `attention-core`'s), so polling
+  never starts a mining run.
+- `install.sh` links the unit and the script and enables nothing, as for every
+  other unit; it prints the enable line. On a host where the standing grant is in
+  force, the orchestrator enables it after landing.
+- The interpreter is the system `python3 -I` (the uv venv carries no `gi`), with
+  Gio only: no Gtk, no display, no Qt.
 
 ## 8. Invariants
 

@@ -1,9 +1,9 @@
-<!-- method-version: 1 -->
+<!-- method-version: 2 -->
 # Session miner method
 
 Read one session. Judge only the lines marked new. Find durable lessons,
 sightings of known lessons, and rule checks for the flagged rules. Ignore
-the spine's two fixed opening lines. Candidates are for human review, not
+the spine's two fixed opening lines. Candidates are for the steward, not
 canon: err toward precision. When in doubt, do not emit.
 
 ## Units and tools

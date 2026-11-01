@@ -1318,7 +1318,8 @@ def _silence_notifications(monkeypatch):
     notices = []
     monkeypatch.setattr(
         overseer_run.notify, "send",
-        lambda home, cue, summary, ids: notices.append((cue, summary, list(ids))),
+        # 2026-11-01 (attention round, S-127): `send` takes `kind=`.
+        lambda home, cue, summary, ids, *, kind="silent": notices.append((cue, summary, list(ids))),
     )
     return notices
 
@@ -1469,7 +1470,14 @@ def test_a_permanent_failure_reaches_the_cap_and_closes_the_week(tmp_path, monke
     # A NEW run can start: nothing committed is unfinished any more, and the
     # next week is not done.
     assert overseer_run._unfinished_manifest(home) is None
-    next_boundary = overseer_run.week_boundary(time.time()) + 7 * 86400
+    # The next boundary through `week_boundary` itself, never `+ 7 * 86400`:
+    # across a DST change that sum is an hour off, and in the hour after
+    # the Sunday boundary that ends DST it lands before "now", so the run
+    # just made counted as that week's (found failing at the 2026-10-31c
+    # integration, 2026-11-01 03:50 PST; pre-existing, not from the round).
+    this_boundary = overseer_run.week_boundary(time.time())
+    next_boundary = overseer_run.week_boundary(this_boundary + 8 * 86400)
+    assert next_boundary > time.time()  # control: the next week has not begun
     assert not overseer_run.week_done(home, next_boundary)
 
 

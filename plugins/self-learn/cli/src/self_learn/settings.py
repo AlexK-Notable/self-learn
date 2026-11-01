@@ -748,6 +748,15 @@ def _default_overseer_model() -> str:
     return _DEFAULT_OVERSEER_MODEL
 
 
+#: 2026-10-31 (attention round, decision C5): the inbox's "ask about this"
+#: agent runs on `opus` unless the person picks another model (tier A).
+_DEFAULT_ASK_MODEL = "opus"
+
+
+def _default_ask_model() -> str:
+    return _DEFAULT_ASK_MODEL
+
+
 def _bedrock_active(provider_value: str) -> bool:
     return provider_value == "bedrock"
 
@@ -1421,6 +1430,15 @@ REGISTRY: tuple[Setting, ...] = (
         default=80,  # invocation_sdk.backend._DEFAULT_MAX_TURNS["OVERSEER"]
         description="max agentic turns for an overseer SDK session",
     ),
+    Setting(
+        name="sdk.max_turns.ask",
+        env_var="SELF_LEARN_SDK_MAX_TURNS_ASK",
+        config_section="sdk",
+        config_key="max_turns.ask",
+        kind="int",
+        default=40,  # invocation_sdk.backend._DEFAULT_MAX_TURNS["ASK"]; design r2 §3.3
+        description="max agentic turns for one turn of the inbox's ask-about-this agent",
+    ),
     # --------------------------------------------------------- serve
     Setting(
         name="serve.tick_secs",
@@ -1597,6 +1615,17 @@ REGISTRY: tuple[Setting, ...] = (
         enabled_when=_bedrock_active,
     ),
     Setting(
+        name="provider.bedrock.models.ask",
+        env_var=None,
+        config_section="provider",
+        config_key="bedrock.models.ask",
+        kind="str",
+        default=None,
+        description="Bedrock model id for the ask agent surface (overrides models.ask)",
+        direction="env-first",
+        enabled_when=_bedrock_active,
+    ),
+    Setting(
         name="provider.bedrock.models.small_fast",
         # MAJOR-4: never had an env var -- its value feeds the CHILD
         # session's own ANTHROPIC_DEFAULT_HAIKU_MODEL (`session_env`),
@@ -1724,7 +1753,114 @@ REGISTRY: tuple[Setting, ...] = (
         description="model id for the overseer surface, under either provider",
         direction="env-first",
     ),
+    # 2026-10-31 (attention round, design r2 §3.3, §4.11; decision C5):
+    # the inbox's "ask about this" agent. Tier A: the person picks the
+    # model and the time bound of one answer on /settings.
+    Setting(
+        name="models.ask",
+        env_var="SELF_LEARN_ASK_MODEL",
+        config_section="models",
+        config_key="ask",
+        kind="str",
+        default=_default_ask_model,
+        description="model id for the inbox's ask-about-this agent, under either provider",
+        direction="env-first",
+    ),
+    Setting(
+        name="ask.timeout_secs",
+        env_var="SELF_LEARN_ASK_TIMEOUT",
+        config_section="ask",
+        config_key="timeout_secs",
+        kind="float",
+        default=300.0,
+        validate=lambda v: v if cast(float, v) > 0 else None,
+        validate_hint="must be > 0",
+        description="the time limit of one answer from the inbox's ask-about-this agent (seconds)",
+    ),
 )
+
+#: Attention round (design r2 §4.2, §4.11; the user's answer 7): every
+#: code-classified inbox kind -- every kind but the overseer's own asks,
+#: whose class the overseer judges -- can be moved to another class by one
+#: "didn't need me" / "should have asked me" click, reversible on the
+#: settings page. ``<kind-key>`` is the kind with each ``.`` written as ``-``.
+#: `tests/test_attention.py` pins this tuple to ``attention.KINDS``.
+ATTENTION_CODE_KINDS: tuple[str, ...] = (
+    "hold.credentials", "hold.money", "broken.host", "broken.stopped", "broken.job",
+    "conflict.case-tampered", "approved.pending", "decided.overseer-run",
+    "decided.steward-run", "decided.always-loaded", "decided.hook-activated",
+    "decided.ask-default", "decided.reading", "decided.grant-use", "decided.registration",
+    "decided.skill", "decided.notice", "decided.withdrawn", "decided.approved-done",
+    "decided.ledger-paths",
+)
+#: What ``attention.class.<kind-key>`` accepts: a class, or ``table`` (the
+#: kind table's own class, the default).
+ATTENTION_CLASS_VALUES: tuple[str, ...] = ("needs-you", "decided", "silent", "table")
+
+
+def attention_kind_key(kind: str) -> str:
+    """``hold.credentials`` -> ``hold-credentials``: the setting's key part."""
+    return kind.replace(".", "-")
+
+
+def _terminal_value(value: SettingValue) -> SettingValue:
+    """``attention.terminal``: empty (resolve a terminal at launch), or an
+    argv prefix whose first word is on ``PATH``; ``None`` for anything else
+    (malformed: read as the default, refused by ``config set``)."""
+    import shutil
+
+    text = value if isinstance(value, str) else ""
+    if not text.strip():
+        return ""
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return None
+    return text if words and shutil.which(words[0]) else None
+
+
+def _attention_settings() -> tuple[Setting, ...]:
+    out = [
+        Setting(
+            name="attention.terminal",
+            env_var=None,
+            config_section="attention",
+            config_key="terminal",
+            kind="str",
+            default="",
+            # Like every `accepts` entry: `config set` refuses a bad value,
+            # and a hand-edited one folds in place to the default on read.
+            validate=lambda v: _terminal_value(v) or "",
+            accepts=lambda v: _terminal_value(v) is not None,
+            accepts_hint="empty, or a command whose first word is on PATH (e.g. 'alacritty -e')",
+            description=(
+                "the terminal an approved change or a login opens in, as an argv prefix "
+                "such as 'alacritty -e'; empty: $TERMINAL, else the first of alacritty, "
+                "ghostty, kitty, foot or wezterm found"
+            ),
+        ),
+    ]
+    for kind in ATTENTION_CODE_KINDS:
+        key = attention_kind_key(kind)
+        out.append(Setting(
+            name=f"attention.class.{key}",
+            env_var=None,
+            config_section="attention",
+            config_key=f"class.{key}",
+            kind="str",
+            default="table",
+            validate=lambda v: v if v in ATTENTION_CLASS_VALUES else "table",
+            accepts=lambda v: v in ATTENTION_CLASS_VALUES,
+            accepts_hint="needs-you, decided, silent or table",
+            description=(
+                f"the inbox class of a {kind} item: needs-you, decided, silent, or table "
+                "(the kind table's own class); set by a 'didn't need me' click"
+            ),
+        ))
+    return tuple(out)
+
+
+REGISTRY = REGISTRY + _attention_settings()
 
 #: Registration-time invariant: `name` is always `f"{config_section}.
 #: {config_key}"` (or bare, for a bootstrap var with no config rung) --

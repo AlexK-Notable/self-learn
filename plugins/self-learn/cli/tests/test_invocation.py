@@ -1372,7 +1372,9 @@ def test_wr7_seam_is_only_called_from_the_three_call_sites():
                 if name in seam_funcs:
                     rel = str(path.relative_to(src_dir))
                     sites.setdefault(rel, []).append((node.lineno, name))
-    assert set(sites) == {"worker.py", "miner.py", "analyst.py", "steward.py", "overseer/run.py"}, sites
+    # 2026-10-31 (attention round, design r2 §3.3): the inbox's ask agent
+    # (`ask.py`) is the sixth caller -- one question is one seam session.
+    assert set(sites) == {"worker.py", "miner.py", "analyst.py", "steward.py", "overseer/run.py", "ask.py"}, sites
 
     # O-a/D-24: the exclusion is EXPLICIT, by name -- every non-model
     # subprocess spawn site named in Sec 7.1's table, deliberately outside
@@ -1380,8 +1382,6 @@ def test_wr7_seam_is_only_called_from_the_three_call_sites():
     excluded_by_name = (
         "worker._spawn_window",
         "worker._digest",
-        "worker._notify",
-        "worker._notify_with_ids",
         "miner._spawn_run",
         "gitops.py",
         "hosts.py",
@@ -1389,7 +1389,10 @@ def test_wr7_seam_is_only_called_from_the_three_call_sites():
         "ledger_ops.py",
         "hook_compiler.py",
     )
-    assert len(excluded_by_name) == 10
+    # 2026-11-01 (attention round, lane `surfaces`, design r2 §3.9):
+    # `worker._notify` and `worker._notify_with_ids` left the list with the
+    # worker's popups, which were removed outright.
+    assert len(excluded_by_name) == 8
 
     # F3 (gate NOTE-6): the tuple above only fails if someone EDITS it --
     # it says nothing about whether the names it lists still exist. A

@@ -290,7 +290,13 @@ class TestReplay:
 #: advisory-hooks spec): a deny block with no `mode` must keep producing
 #: exactly these bytes, since placed guards are re-derived and
 #: byte-compared (verbs m-5).
-DENY_ORACLE_SHA256 = "c681a150581d1ab9caa2ccb030649b4402f542b9c29b3b1370cbb182799b8921"
+#: Re-pinned 2026-11-01 (attention round, lane `surfaces`, congruence n5;
+#: 03-decisions.md S-127): the oracle's message already begins with
+#: the record's own `self-learn lrn-0a1b2c3d: ` prefix, which the compiler now
+#: strips once before prefixing, so the bytes are exactly those of the same
+#: block with the unprefixed message (checked: equal), and no longer carry the
+#: doubled prefix. The old pin was c681a150...b8921.
+DENY_ORACLE_SHA256 = "540bc41142c528a4dd9bf76b334d82e17820f7317732ea71104f64c44a1651c1"
 DENY_ORACLE_ARGS = (
     "lrn-0a1b2c3d",
     "About to run pkill -f with a pattern",

@@ -91,15 +91,18 @@ def _head(home):
 
 
 class TestHookManualStepsText:
-    def test_a_human_route_still_prints_both_steps(self):
-        """Positive control for every absence assertion below: the text a
-        person gets after a plain hook route is unchanged."""
-        steps = verbs._hook_manual_steps(SNIPPET, "guard.sh")
+    def test_a_route_names_hook_activate(self):
+        """Positive control for every absence assertion below. Since the
+        attention round (congruence M4) a plain hook route names the one
+        verb that does all three steps, `self-learn hook activate <id>`,
+        instead of two manual steps (./install.sh, a settings.json edit)."""
+        steps = verbs._hook_manual_steps(SNIPPET, "guard.sh", record_id="lrn-0000abcd")
         text = "\n".join(steps)
         assert len(steps) == 3
-        assert "two manual steps remain" in text
-        assert "./install.sh" in text and "~/.claude/hooks/guard.sh" in text
+        assert "self-learn hook activate lrn-0000abcd" in text
+        assert "~/.claude/hooks/guard.sh" in text
         assert SNIPPET in text
+        assert "./install.sh" not in text and "manual step" not in text
 
     def test_activation_drops_exactly_the_routes_manual_lines(self):
         steps = verbs._hook_manual_steps(SNIPPET, "guard.sh")

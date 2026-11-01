@@ -1,0 +1,50 @@
+{#
+  The item's conversation, from the ledger transcript (design r2 §3.4.2):
+  sealed rows, then rows kept on this machine while the ledger is STOPPED,
+  then the in-flight turn's text so far (a page reopened mid-turn shows it
+  and continues). Drafts are cards: "Use this draft" fills the reply box;
+  "Send as is" sends it, recorded as the agent's draft accepted by you.
+#}
+{% set any_rows = rows or in_flight %}
+{% if not any_rows %}
+<p class="ws-meta" data-conversation-empty>No questions yet. The agent already has this whole page in front of it.</p>
+{% endif %}
+{% for row in rows %}
+  {% set pending = row.t is none %}
+  {% if row.redacted %}
+  <div class="bubble bubble-{{ row.role }}"><p class="ws-meta">[redacted: {{ row.redacted }}]</p></div>
+  {% elif row.kind == "draft" %}
+  <div class="draft-card" data-draft-card data-draft-id="{{ row.draft_id }}" data-draft-option="{{ row.option or '' }}">
+    <p class="bubble-who">A draft reply from the agent{% if row.option %} · Send as: {{ (options_by_id.get(row.option) or {}).get("label", row.option) }}{% endif %}</p>
+    <p class="draft-text" data-draft-text>{{ row.text }}</p>
+    <form class="draft-actions" hx-post="/inbox/{{ item.id }}/answer" hx-target="#ws-answer" hx-swap="outerHTML">
+      <input type="hidden" name="draft_id" value="{{ row.draft_id }}">
+      <input type="hidden" name="text" value="{{ row.text }}">
+      {% if row.option %}<input type="hidden" name="option" value="{{ row.option }}">{% endif %}
+      <button type="button" class="btn" data-use-draft>Use this draft</button>
+      <button type="submit" class="btn btn-primary">Send as is</button>
+    </form>
+  </div>
+  {% elif row.role == "user" %}
+  <div class="bubble bubble-user">
+    <p class="bubble-who">{% if row.kind == "question" %}You asked{% elif row.origin == "clicked" %}You clicked{% elif row.origin in ("draft-accepted", "draft-edited") %}You sent the agent's draft{% else %}You answered{% endif %}{% if row.at %} · {{ row.at | humanize_ts }}{% endif %}</p>
+    {% if row.text %}<p>{{ row.text }}</p>{% elif row.option %}<p>{{ (options_by_id.get(row.option) or {}).get("label", row.option) }}</p>{% elif row.kind %}<p>{{ row.kind }}</p>{% endif %}
+    {% if pending %}<p class="ws-meta">kept on this machine until the ledger is repaired</p>{% endif %}
+  </div>
+  {% elif row.role == "agent" %}
+  <div class="bubble bubble-agent">
+    <p class="bubble-who">The agent{% if row.at %} · {{ row.at | humanize_ts }}{% endif %}</p>
+    <div class="bubble-body">{{ (row.text or "") | markdown }}</div>
+    {% if pending %}<p class="ws-meta">kept on this machine until the ledger is repaired</p>{% endif %}
+  </div>
+  {% else %}
+  <p class="ws-meta bubble-note">{{ row.text }}{% if pending %} (kept on this machine until the ledger is repaired){% endif %}</p>
+  {% endif %}
+{% endfor %}
+{% if in_flight %}
+<div class="bubble bubble-agent bubble-live" id="ws-live-bubble" data-live-item="{{ item.id }}" aria-busy="true">
+  <p class="bubble-who">The agent <span class="ws-live-tool" data-live-tool>{{ in_flight.tool or "is answering…" }}</span></p>
+  <div class="ws-live-text" data-live-text>{{ in_flight.text }}</div>
+  <div class="ws-live-drafts" data-live-drafts></div>
+</div>
+{% endif %}

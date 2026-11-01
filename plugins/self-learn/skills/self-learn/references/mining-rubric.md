@@ -1,10 +1,11 @@
-<!-- rubric-version: 3 -->
+<!-- rubric-version: 4 -->
 # Mining rubric — what counts as a durable lesson in a transcript
 
 You are reading structural digests of real work sessions. Your output is
-*candidates for human review*, not canon: err toward precision. A missed
-lesson costs one review cycle; a flood of noise kills the review habit,
-which kills the whole system. **When in doubt, do not emit.**
+*candidates for the steward*, not canon: err toward precision. The steward
+decides every candidate each night; a missed lesson costs one more
+sighting, while a flood of noise buries the real lessons under ones the
+steward has to reject. **When in doubt, do not emit.**
 
 ## The four lesson shapes (emit these)
 

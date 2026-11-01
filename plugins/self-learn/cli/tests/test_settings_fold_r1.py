@@ -156,6 +156,7 @@ _LITERAL_ENV_FIRST_NAMES = frozenset(
         "provider.bedrock.models.analyst",
         "provider.bedrock.models.steward",  # U8 (17-invocation-runbook.md §1)
         "provider.bedrock.models.overseer",  # U8
+        "provider.bedrock.models.ask",  # attention round 2026-10-31c (design r2 §4.11), ask-agent lane
         "provider.bedrock.models.small_fast",
         "sdk.cli_path",
         "models.worker",
@@ -163,6 +164,7 @@ _LITERAL_ENV_FIRST_NAMES = frozenset(
         "models.analyst",
         "models.steward",  # U8
         "models.overseer",  # U8
+        "models.ask",  # attention round 2026-10-31c (design r2 §4.11), ask-agent lane
     ]
 )
 
@@ -209,6 +211,28 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "premises.backfill_per_night",  # S-104, tier C, default 10
         "premises.rotation_days",  # S-114, tier C, default 90
         "premises.rotation_per_night",  # S-114, tier C, default auto
+        "attention.terminal",  # attention round 2026-10-31c (design r2 §4.11)
+        "ask.timeout_secs",  # attention round 2026-10-31c (design r2 §4.11), ask-agent lane
+        "attention.class.hold-credentials",  # attention round: answer 7
+        "attention.class.hold-money",  # attention round: answer 7
+        "attention.class.broken-host",  # attention round: answer 7
+        "attention.class.broken-stopped",  # attention round: answer 7
+        "attention.class.broken-job",  # attention round: answer 7
+        "attention.class.conflict-case-tampered",  # attention round: answer 7
+        "attention.class.approved-pending",  # attention round: answer 7
+        "attention.class.decided-overseer-run",  # attention round: answer 7
+        "attention.class.decided-steward-run",  # attention round: answer 7
+        "attention.class.decided-always-loaded",  # attention round: answer 7
+        "attention.class.decided-hook-activated",  # attention round: answer 7
+        "attention.class.decided-ask-default",  # attention round: answer 7
+        "attention.class.decided-reading",  # attention round: answer 7
+        "attention.class.decided-grant-use",  # attention round: answer 7
+        "attention.class.decided-registration",  # attention round: answer 7
+        "attention.class.decided-skill",  # attention round: answer 7
+        "attention.class.decided-notice",  # attention round: answer 7
+        "attention.class.decided-withdrawn",  # attention round: answer 7
+        "attention.class.decided-approved-done",  # attention round: answer 7
+        "attention.class.decided-ledger-paths",  # attention round: answer 7
         "overseer.skill_writing",  # SK3 (S-107 part 6): on|off (auto reads as on), the rollback switch
         "overseer.skill_discovery",  # SK4 (S-107): phase S on or off, the user's switch
         "sdk.max_budget_usd",
@@ -221,6 +245,7 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "sdk.max_turns.analyst",
         "sdk.max_turns.steward",  # U8
         "sdk.max_turns.overseer",  # U8
+        "sdk.max_turns.ask",  # attention round 2026-10-31c (design r2 §4.11), ask-agent lane
         "serve.tick_secs",
         "serve.restart_on_new_code",  # L6 (2026-10-31)
         "ledger.actor",
@@ -237,6 +262,7 @@ _LITERAL_ENABLED_WHEN_NAMES = frozenset(
         "provider.bedrock.models.analyst",
         "provider.bedrock.models.steward",  # U8
         "provider.bedrock.models.overseer",  # U8
+        "provider.bedrock.models.ask",  # attention round 2026-10-31c, ask-agent lane
         "provider.bedrock.models.small_fast",
     ]
 )

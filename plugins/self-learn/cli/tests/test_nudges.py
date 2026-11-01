@@ -1,8 +1,7 @@
-"""L3 (S-116): person-facing nudges follow the queue's owner.
-
-While `steward.enabled` is on the queue is the steward's: no review popups,
-no "review session is due", and a session-start line only when the steward
-is not keeping up. With the steward off every line stays as pinned (08 §7.1).
+"""L3 (S-116), as amended by the attention round (design r2 §3.9): the
+queue's state reaches the person through the tray's inbox only. No review
+popups and no session-start queue lines, whoever owns the queue; the
+`status --fast` fields the hook used to print are still computed.
 """
 
 from __future__ import annotations
@@ -68,54 +67,26 @@ def _steward_payload(**extra) -> dict:
     return payload
 
 
-def test_hook_is_quiet_while_the_steward_keeps_up(tmp_path):
-    # positive control first: the same payload, stale, does print.
-    stale = _hook(tmp_path, "a", _steward_payload(steward_stale=True))
-    assert "the steward has not finished a run in over 48 hours" in stale
-    assert "19 lesson(s) queued" in stale
-
-    quiet = _hook(tmp_path, "b", _steward_payload(steward_stale=False))
-    assert quiet == ""
-
-
-def test_hook_prints_the_hold_and_the_stranded_count(tmp_path):
-    out = _hook(
-        tmp_path, "a", _steward_payload(steward_hold="OAuth session expired", stranded_count=2)
+@pytest.mark.parametrize("steward_enabled", [True, False, None])
+def test_the_hook_prints_no_queue_line_whoever_owns_the_queue(tmp_path, steward_enabled):
+    """Attention round (design r2 §3.9): the steward's stale, held and
+    stranded lines, the pending and backlog lines and the worker alarm all
+    left the session-start hook -- their content is in the tray's inbox --
+    with the steward on, off, or an older CLI that sends no steward field.
+    Positive control first: the same payload with a project notice prints
+    that notice, so the hook ran to its end."""
+    payload = _steward_payload(
+        steward_stale=True, steward_hold="OAuth session expired",
+        steward_hold_fix="run `claude`, then `/login`", stranded_count=2,
+        staleness_alarm=True, unanalyzed_total=1,
     )
-    assert "the steward is held — OAuth session expired\n" in out
-    fixed = _hook(
-        tmp_path, "c",
-        _steward_payload(steward_hold="OAuth session expired", steward_hold_fix="run `claude`, then `/login`"),
-    )
-    assert "held — OAuth session expired; run `claude`, then `/login`" in fixed
-    hours = _hook(tmp_path, "d", _steward_payload(steward_stale=True, steward_stale_hours=72))
-    assert "in over 72 hours" in hours
-    assert "2 queued lesson(s) the steward never selects" in out
-    assert "--selftest" in out
-    # a zero census is silent
-    assert _hook(tmp_path, "b", _steward_payload(stranded_count=0)) == ""
-
-
-def test_hook_with_the_steward_off_prints_todays_lines_byte_for_byte(tmp_path):
-    payload = _base_payload()
-    payload.update(total_pending=19, oldest_days=55, escalate=True, steward_enabled=False)
-    expected = (
-        "📥 self-learn: 19 pending, oldest 55d — /self-learn:review\n"
-        "🔺 self-learn: backlog over threshold (≥5 pending or oldest >7d) — a review session is due\n"
-    )
-    assert _hook(tmp_path, "a", payload) == expected
-    # an older CLI that sends no steward field behaves the same
-    del payload["steward_enabled"]
-    assert _hook(tmp_path, "b", payload) == expected
-
-
-def test_hook_keeps_the_worker_alarm_only_with_the_steward_off(tmp_path):
-    payload = _base_payload()
-    payload.update(total_pending=1, staleness_alarm=True, unanalyzed_total=1)
-    off = _hook(tmp_path, "a", payload)
-    assert "await analysis" in off
-    payload["steward_enabled"] = True
-    assert _hook(tmp_path, "b", payload) == ""
+    if steward_enabled is None:
+        del payload["steward_enabled"]
+    else:
+        payload["steward_enabled"] = steward_enabled
+    control = _hook(tmp_path, "control", {**payload, "project_notices": [{"line": "self-learn: n"}]})
+    assert control.endswith("self-learn: n\n"), control
+    assert _hook(tmp_path, "quiet", payload) == ""
 
 
 # ------------------------------------------------------------ nudge_fields
@@ -306,29 +277,12 @@ def ledger(tmp_path, monkeypatch):
     return home
 
 
-def test_escalation_is_silent_while_the_steward_owns_the_queue(ledger, monkeypatch):
-    sent: list[str] = []
-    monkeypatch.setattr(worker, "_notify", sent.append)
-    # control: steward off, over threshold -> escalates and touches the marker
-    assert worker._maybe_escalate(ledger, worker.ESCALATE_PENDING, []) is True
-    assert len(sent) == 1 and "backlog needs attention" in sent[0]
-    marker = worker._p("worker.last-escalated")
-    marker.unlink()
-    # steward on: no popup, no marker
-    _enable(ledger)
-    assert worker._maybe_escalate(ledger, worker.ESCALATE_PENDING, []) is False
-    assert len(sent) == 1
-    assert not marker.exists()
-
-
-def test_proposals_popup_follows_the_owner(ledger, monkeypatch):
-    sent: list[tuple[str, list[str]]] = []
-    monkeypatch.setattr(worker, "_notify_with_ids", lambda line, ids: sent.append((line, ids)))
-    worker._notify_proposals(ledger, "line", ["lrn-1"])  # control: steward off
-    assert sent == [("line", ["lrn-1"])]
-    _enable(ledger)
-    worker._notify_proposals(ledger, "line", ["lrn-2"])
-    assert sent == [("line", ["lrn-1"])]
+def test_the_worker_popups_are_gone():
+    """P1 and P2 were removed outright (attention round, answer 1), not only
+    gated on `steward.enabled`; `test_worker.py` drives a real run to show
+    no popup is spawned."""
+    for name in ("_notify_proposals", "_maybe_escalate", "_notify_with_ids", "render_notification"):
+        assert not hasattr(worker, name), name
 
 
 # ------------------------------------------------------------ parked wording

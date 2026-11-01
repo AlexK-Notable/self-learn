@@ -56,6 +56,7 @@ from . import (
     cases,
     config,
     gitops,
+    grant_uses,
     grants,
     intents,
     miner,
@@ -81,7 +82,7 @@ from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
 from .index import cli as index_cli
 from .overseer import cli as overseer_cli
-from . import skill_cli
+from . import ask, attention_cli, skill_cli
 from .overseer import conversation as overseer_conversation
 from .overseer import run as overseer_run
 from .ledger import (
@@ -256,6 +257,9 @@ def _add_case_parser(sub) -> None:
         help="rebuild from the case files on disk (the only mode today)",
     )
     cindex.add_argument("--json", action="store_true", dest="as_json")
+    from . import attention_answers_cli  # attention round, design r2 §3.4.8
+
+    attention_answers_cli.add_refreeze_parser(case_sub)
 
 
 def _add_statement_parser(sub) -> None:
@@ -1123,6 +1127,8 @@ def _build_parser() -> argparse.ArgumentParser:
     overseer_cli.add_parser(sub)
     index_cli.add_parser(sub)
     skill_cli.add_parser(sub)
+    attention_cli.add_parser(sub)
+    ask.add_parser(sub)
 
     steward_p = sub.add_parser(
         "steward", help="autonomous decision runner: run"
@@ -1691,44 +1697,41 @@ def _warn_intents_in_flight_report(status: intents.StatusClass) -> None:
         )
 
 
-def _cmd_status_fast() -> int:
-    """08 §7.1 SessionStart pin: guaranteed-cheap, pending/-only. The bash
-    hook consumes this — queue semantics live HERE, never in bash. Doc 12
-    R1 layer 3: the miner's staleness keys ride the same payload (two
-    stats, still cheap).
+def status_fast_data(home: Path) -> dict:
+    """The payload of ``self-learn status --json --fast`` for *home*, as a
+    dict, computed in process (attention round, design r2 §4.9): the ask
+    agent's ``status()`` tool reads it without running the CLI, which
+    would tick the miner watchdog. :func:`_cmd_status_fast` prints exactly
+    this."""
+    return _status_fast_parts(home)[0]
 
-    The hook jq-parses stdout, so stdout stays VALID JSON in every state
-    (audit 2026-07-16 BLOCKER 11) — the home's state rides the payload as
-    ``home_state`` and the hook prints the warning. A bad home also exits
-    non-zero and says so on stderr, for humans and for any caller that
-    checks."""
-    home = resolve_home()
+
+def _status_fast_parts(home: Path) -> tuple[dict, intents.StatusClass | None]:
+    """The fast-status payload and, for a usable home, the intent status
+    the CLI warns from after printing (computed once, so the payload and
+    the warning describe the same moment)."""
     state = home_state(home)
     if state != "ok":
-        # Valid-JSON stdout FIRST (the hook's contract), then the loud line.
-        print(
-            json.dumps(
-                {
-                    "home_state": state,
-                    "home": str(home),
-                    "total_pending": 0,
-                    "unanalyzed_total": 0,
-                    "oldest_days": 0,
-                    "staleness_alarm": False,
-                    "escalate": False,
-                    "miner_last_run": None,
-                    "miner_stale": False,
-                    "steward_last_run_at": steward.last_run_iso_from_cache(
-                        serve.cache_dir_readonly(home)
-                    ),
-                    "overseer_last_run": overseer_run.last_run_iso_from_cache(
-                        serve.cache_dir_readonly(home)
-                    ),
-                }
-            )
+        return (
+            {
+                "home_state": state,
+                "home": str(home),
+                "total_pending": 0,
+                "unanalyzed_total": 0,
+                "oldest_days": 0,
+                "staleness_alarm": False,
+                "escalate": False,
+                "miner_last_run": None,
+                "miner_stale": False,
+                "steward_last_run_at": steward.last_run_iso_from_cache(
+                    serve.cache_dir_readonly(home)
+                ),
+                "overseer_last_run": overseer_run.last_run_iso_from_cache(
+                    serve.cache_dir_readonly(home)
+                ),
+            },
+            None,
         )
-        print(f"self-learn: {home_state_message(state, home)}", file=sys.stderr)
-        return EXIT_OK if state == "uninitialized" else EXIT_NO_HOME
     queued_ids: list[str] = []
     data = worker.fast_status(home, queued_ids)
     data["home_state"] = state
@@ -1774,8 +1777,32 @@ def _cmd_status_fast() -> int:
     data["intents_probe"] = intent_status.probe
     data["intents_stopped"] = [i.id for i in intent_status.stopped]
     data["intents_stopped_count"] = len(intent_status.stopped)
+    return data, intent_status
+
+
+def _cmd_status_fast() -> int:
+    """08 §7.1 SessionStart pin: guaranteed-cheap, pending/-only. The bash
+    hook consumes this — queue semantics live HERE, never in bash. Doc 12
+    R1 layer 3: the miner's staleness keys ride the same payload (two
+    stats, still cheap).
+
+    The hook jq-parses stdout, so stdout stays VALID JSON in every state
+    (audit 2026-07-16 BLOCKER 11) — the home's state rides the payload as
+    ``home_state`` and the hook prints the warning. A bad home also exits
+    non-zero and says so on stderr, for humans and for any caller that
+    checks. The payload itself is :func:`status_fast_data` (attention
+    round, design r2 §4.9)."""
+    home = resolve_home()
+    data, intent_status = _status_fast_parts(home)
+    state = data["home_state"]
+    if state != "ok":
+        # Valid-JSON stdout FIRST (the hook's contract), then the loud line.
+        print(json.dumps(data))
+        print(f"self-learn: {home_state_message(state, home)}", file=sys.stderr)
+        return EXIT_OK if state == "uninitialized" else EXIT_NO_HOME
     print(json.dumps(data))
-    _warn_intents_in_flight_report(intent_status)
+    if intent_status is not None:
+        _warn_intents_in_flight_report(intent_status)
     return EXIT_OK
 
 
@@ -2471,6 +2498,29 @@ def _cmd_config_inner(args: argparse.Namespace, home: Path) -> int:
     return EXIT_USAGE
 
 
+def _config_prior(home: Path, name: str) -> str | None:
+    """The raw config.yaml value of setting *name* before a person-only
+    ``config set``/``unset`` changes it, in the form ``config set`` takes
+    (``1``/``0`` for a bool), or ``None`` when config.yaml has none: the
+    grant-use record's ``prior``, so the inbox's undo can restore it."""
+    try:
+        setting = settings.by_name(name)
+    except KeyError:
+        return None
+    if setting.config_section is None or setting.config_key is None:
+        return None
+    try:
+        found = config.settings_leaf(home, setting.config_section, setting.config_key)
+    except Exception:  # noqa: BLE001 -- a prior is a courtesy; the verb reports its own errors
+        return None
+    if found is None:
+        return None
+    value = found[1]
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return None if value is None else str(value)
+
+
 def _is_tier_c(name: str) -> bool:
     """Whether *name* is a tier-C (person-only) setting; an unknown name is
     not, and ``config set`` refuses it on its own terms."""
@@ -2518,9 +2568,20 @@ def _cmd_config(args: argparse.Namespace) -> int:
         except grants.GrantError as exc:
             print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
             return exc.exit_code
+    use = (
+        grant_uses.GrantUse(
+            home, f"config {args.config_command}",
+            [args.name, *([args.value] if args.config_command == "set" else [])],
+            prior=_config_prior(home, args.name),
+        )
+        if granted is not None else None
+    )
     try:
-        with attribution.acting(granted):
-            return _cmd_config_inner(args, home)
+        with attribution.acting(granted, use=use):
+            code = _cmd_config_inner(args, home)
+            if use is not None and code != EXIT_OK:
+                use.applies = False
+            return code
     except settings.UnknownSettingError as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -3397,9 +3458,18 @@ def _cmd_host(args: argparse.Namespace) -> int:
         except grants.GrantError as exc:
             print(f"self-learn host {args.host_command}: {exc}", file=sys.stderr)
             return exc.exit_code
+    use = (
+        grant_uses.GrantUse(
+            home, f"host {args.host_command}", _host_args(args), prior=_host_prior(home, args)
+        )
+        if granted is not None else None
+    )
     try:
-        with attribution.acting(granted):
-            return _cmd_host_inner(args, home)
+        with attribution.acting(granted, use=use):
+            code = _cmd_host_inner(args, home)
+            if use is not None and code != EXIT_OK:
+                use.applies = False
+            return code
     except gitops.HalfWrittenError as exc:
         return _report_half_written(f"host {args.host_command}", exc)
     except intents.LedgerStoppedError as exc:
@@ -3412,6 +3482,59 @@ def _cmd_host(args: argparse.Namespace) -> int:
     except gitops.GitOpsError as exc:  # lock timeout / wedged git: nothing written
         print(f"self-learn host {args.host_command}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
+
+
+def _host_args(args: argparse.Namespace) -> list[str]:
+    """The argv of a person-only ``host`` verb as its grant-use row keeps
+    it (attention round, design r2 §3.4.6): enough to run it again."""
+    command = args.host_command
+    if command == "add":
+        out = [str(args.path)]
+        if getattr(args, "skills_root", False):
+            out.append("--skills-root")
+        if getattr(args, "mode", None):
+            out += ["--mode", str(args.mode)]
+        return out
+    if command == "set-mode":
+        out = [str(args.path), str(args.mode)]
+        registration = getattr(args, "registration", None)
+        return out + ([f"--{registration}"] if registration else [])
+    if command == "remove":
+        out = [str(args.path)]
+        registration = getattr(args, "registration", None)
+        return out + ([f"--{registration}"] if registration else [])
+    return [str(getattr(args, "ref", "")), str(getattr(args, "new_path", ""))]
+
+
+def _host_prior(home: Path, args: argparse.Namespace) -> dict | None:
+    """The registration a person-only ``host`` verb is about to change, read
+    BEFORE it acts: ``{"kind", "path", "mode"}``, or ``None`` when the path
+    is not registered (the grant-use record's ``prior``, design r2
+    §3.4.6). Never raises: a prior is a courtesy for the inbox's undo."""
+    path = getattr(args, "path", None)
+    if path is None:
+        return None
+    try:
+        before = hosts_mod.load_hosts(home)
+        target = Path(path).expanduser().resolve()
+        wanted = getattr(args, "registration", None)
+        if args.host_command == "add":
+            wanted = "skills-root" if getattr(args, "skills_root", False) else "project"
+        kinds = [wanted] if wanted else ["project", "skills-root"]
+        for kind in kinds:
+            registered = (
+                hosts_mod.is_project_host(before, target) if kind == "project"
+                else before.skills_root is not None
+                and Path(before.skills_root).expanduser().resolve() == target
+            )
+            if registered:
+                return {
+                    "kind": kind, "path": str(target),
+                    "mode": hosts_mod.host_mode(home, target, registration=kind),
+                }
+    except Exception:  # noqa: BLE001 -- the verb reports its own errors
+        return None
+    return None
 
 
 def _report_half_written(surface: str, exc: gitops.HalfWrittenError) -> int:
@@ -4396,6 +4519,10 @@ def _cmd_case(args: argparse.Namespace) -> int:
     home = resolve_home()
     if (code := _home_gate(home)) is not None:
         return code
+    if args.case_command == "refreeze":
+        from . import attention_answers_cli
+
+        return attention_answers_cli.cmd_refreeze(home, args)
     try:
         if args.case_command == "record":
             case_id = cases.record(home, args.stage_file, actor=args.actor)
@@ -4492,6 +4619,20 @@ def _cmd_statement(args: argparse.Namespace) -> int:
         return code
     try:
         if args.statement_command == "add":
+            # C7 (attention round, design r2 §3.9): an agent's shell records
+            # as `agent`, never as the person. The words stay the user's
+            # through the transcript ref rule 10 checks. Only this CLI
+            # handler refuses: `teach` and `overseer respond` call the
+            # library `statements.add` and pick the recorder themselves.
+            if args.recorded_by == "human" and settings.agent_caller():
+                print(
+                    "self-learn statement add: an agent's shell records as agent; "
+                    "the words stay the user's through the transcript ref -- pass "
+                    "--recorded-by agent (agent shell detected: "
+                    f"{', '.join(settings.agent_caller_markers())})",
+                    file=sys.stderr,
+                )
+                return EXIT_USAGE
             answers = None
             if args.answers_kind or args.answers_ref or args.answers_text:
                 answers = {
@@ -5049,7 +5190,10 @@ def _main(argv: list[str] | None = None) -> int:
     # the home may not exist or may be unusable — ticking the miner
     # watchdog first spawned a detached run against a home `init` was
     # about to refuse.
-    if args.command not in ("mine", "init", "serve"):
+    # Attention round (design r2 §3.1, critique 15): `attention` (the tray
+    # polls it) and `ask` (the inbox's agent) never tick it either, so
+    # neither ever starts a mining run.
+    if args.command not in ("mine", "init", "serve", "attention", "ask"):
         try:
             # no_push is passed EXPLICITLY (BLOCKER D): this tick runs
             # before dispatch for every command, so `reject --no-push` used
@@ -5213,6 +5357,12 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "skill":
         return args._skill_dispatch(args)
+
+    if args.command == "attention":
+        return args._attention_dispatch(args)
+
+    if args.command == "ask":
+        return args._ask_dispatch(args)
 
     if args.command == "serve":
         return _cmd_serve(args)
