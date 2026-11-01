@@ -2322,6 +2322,27 @@ def _questions(
     return {"questions": clean}, dropped
 
 
+def _published_question_notes(
+    lines: list[Any], *, published: bool, dropped: set[str],
+) -> list[str]:
+    """Gate r1 F4 (follow-ups 2): a wording note says its ask was "kept,
+    and asked as written", so it is published only for an ask the index
+    really carries: none when the run did not complete (its asks are not
+    indexed), and none for an ask dropped at publish under the lock. Each
+    note begins ``question <id> (kept``, written by
+    :func:`_ids_in_text_note` for an ask that passed validation, so its id
+    is the second word."""
+    if not published:
+        return []
+    out: list[str] = []
+    for line in lines:
+        words = str(line).split(" ", 2)
+        if len(words) >= 2 and words[1] in dropped:
+            continue
+        out.append(str(line))
+    return out
+
+
 #: An id of the ledger's own records, which a question's wording never
 #: carries (§2.1 item 2: "one sentence, with no ids in it").
 _LEDGER_ID_RE = re.compile(r"\b(?:lrn|case|stmt|um)-[0-9a-f]{4,}\b")
@@ -7007,8 +7028,10 @@ def _execute_manifest(
                 user_model_lines=user_model_lines,
                 questions=questions,
                 notes=[*runner_notes, *carry_notes],
-                question_notes=[str(line) for line in cast(
-                    list[Any], manifest.get("question_notes") or [])],
+                question_notes=_published_question_notes(
+                    cast(list[Any], manifest.get("question_notes") or []),
+                    published=not halted, dropped=publish_dropped,
+                ),
                 decided=[
                     # S-117: each ask's default, applied by
                     # `_record_defaults` above (not on an attempt that did not

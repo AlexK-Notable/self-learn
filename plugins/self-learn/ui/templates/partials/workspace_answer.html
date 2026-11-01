@@ -113,7 +113,7 @@
     <p>Running in a terminal{% if item.run.at %} (started {{ item.run.at | humanize_ts }}){% endif %}.{% if item.run.claimed_by %} A session claimed it ({{ item.run.claimed_by }}).{% endif %}</p>
     {% if item.run.claimed_by %}
     <p data-claimed-words>While that session holds the work, a different answer cannot reach it, so your other options are off.
-    {% if can_stop %}<strong>Stop it</strong> closes that terminal: a step it is in the middle of stops there and is not undone, and anything it already changed stays changed. Then you can change your answer.{% else %}It runs in a terminal this page did not open, so the page cannot stop it: tell it in its own terminal.{% endif %}</p>
+    {% if can_stop %}<strong>Stop it</strong> closes that terminal: a step it is in the middle of stops there and is not undone, and anything it already changed stays changed. Then you can change your answer.{% else %}It is running in a session that self-learn's inbox did not open, so the page cannot stop it and leaves its hold on the work alone: tell it in its own terminal.{% endif %}</p>
     {% else %}
     {% if launch_unclaimed %}
     <p data-unclaimed-stale>No session has started on it since the terminal was opened. The terminal probably did not open, or was closed before it began.</p>

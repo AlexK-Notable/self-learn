@@ -88,7 +88,7 @@ PASTE_MATCH_CHARS = 40
 RAN_SUDO_OPTION = "opt-ran-sudo"
 RAN_SUDO_LABEL = "I ran it"
 #: The unit name prefix of a launched session (``self-learn-run-<12 hex>``).
-RUN_UNIT_PREFIX = "self-learn-run-"
+RUN_UNIT_PREFIX = attention.RUN_UNIT_PREFIX
 LAUNCH_TIMEOUT_SECS = 10
 FIX_TIMEOUT_SECS = 10
 STOP_TIMEOUT_SECS = 10
@@ -1368,8 +1368,11 @@ def fix(home: Path | str, item_id: str, option: str) -> str:
 # ------------------------------------------------------------------ stop
 
 
-#: A unit `attention run` launched (``RUN_UNIT_PREFIX`` + 12 hex).
-_RUN_UNIT_RE = re.compile(r"^self-learn-run-[0-9a-f]{12}$")
+#: A unit `attention run` launched, as a cgroup path segment
+#: (``RUN_UNIT_PREFIX`` + 12 hex + ``.service``).
+_RUN_UNIT_SEGMENT_RE = re.compile(r"^(self-learn-run-[0-9a-f]{12})\.service$")
+#: Where the claiming process's cgroup is read (a test points it elsewhere).
+_CGROUP_PATH = Path("/proc/self/cgroup")
 #: ``systemctl is-active`` answers that mean the unit still runs.
 _STILL_RUNNING = frozenset({"active", "activating", "deactivating", "reloading", "refreshing"})
 STOPPED_MESSAGE = (
@@ -1437,15 +1440,18 @@ def stop(home: Path | str, item_id: str) -> str:
             "changes nothing", EXIT_REFUSED,
         )
     record = attention._run_record(home, item["id"])  # noqa: SLF001
-    if not attention.stoppable(record, claim_row) or record is None:
+    # Gate r1 F1/F2: only a claim made from inside the unit the page
+    # launched for THIS approval (this item's own unit name) is stoppable.
+    # Any other claim is left exactly as it is: the page cannot stop that
+    # session, so it never releases its hold either.
+    if record is None or not attention.stoppable(
+        record, claim_row, item_id=item["id"], approved_at=item.get("_approved_at"),
+    ):
         raise AnswerError(
-            f"session {claim_row.get('session')} is carrying it out in a terminal this page did "
-            "not open, so the page cannot stop it; tell it in its own terminal", EXIT_REFUSED,
+            f"{attention.NOT_OURS_REASON} (session {claim_row.get('session')}); the page cannot "
+            "stop it, and its hold on the work stays", EXIT_REFUSED,
         )
-    unit = str(record.get("unit") or "")
-    if _RUN_UNIT_RE.fullmatch(unit) is None:
-        raise AnswerError(f"the launch record names no unit this page started ({unit!r})",
-                          EXIT_REFUSED)
+    unit = attention.run_unit(item["id"])
     binary = shutil.which("systemctl")
     if binary is None:
         raise AnswerError("systemctl is not on PATH", EXIT_REFUSED)
@@ -1479,12 +1485,38 @@ def _claim_path(home: Path, item_id: str) -> Path:
     return _cache(home) / "attention" / "claims" / f"{item_id}.json"
 
 
+def caller_unit() -> str | None:
+    """Gate r1 F1: the ``self-learn-run-<12 hex>`` unit this process runs
+    in, read from its cgroup (``/proc/self/cgroup``: a session ``attention
+    run`` launched, and every command it runs, live in that transient
+    unit's cgroup), or ``None`` when it runs anywhere else or the file
+    cannot be read. A claim records it, so "Stop it" can tell the terminal
+    the page opened from any other session."""
+    try:
+        # Gate r2 R2-1: a path that is not UTF-8 never fails the claim;
+        # a run unit name is ASCII, so a replaced byte cannot fake one.
+        text = _CGROUP_PATH.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        path = line.split(":", 2)[-1]
+        for segment in reversed(path.split("/")):
+            match = _RUN_UNIT_SEGMENT_RE.fullmatch(segment)
+            if match is not None:
+                return match.group(1)
+    return None
+
+
 def _write_claim(home: Path, item_id: str, session: str) -> None:
-    """``<cache>/attention/claims/<id>.json`` (cache only; 2-hour TTL)."""
+    """``<cache>/attention/claims/<id>.json`` (cache only; 2-hour TTL):
+    ``{session, at, unit}``, ``unit`` the caller's own run unit or null
+    (gate r1 F1)."""
     target = _claim_path(home, item_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     fsops.atomic_write(
-        target, json.dumps({"session": session, "at": chrono.now_iso()}) + "\n", fsync=False,
+        target,
+        json.dumps({"session": session, "at": chrono.now_iso(), "unit": caller_unit()}) + "\n",
+        fsync=False,
     )
 
 

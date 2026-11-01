@@ -1177,7 +1177,9 @@ questions:
   *(Follow-ups 2.)* The note reads "question <id> (kept, and asked as
   written): …" and is published under "Questions for you", after the
   model's own lines (the manifest's `question_notes`), never under
-  "Refused / could not do", since nothing was refused.
+  "Refused / could not do", since nothing was refused; and only for an
+  ask the index really carries: none on a run that did not complete, and
+  none for an ask dropped at publish.
 - **Options, recommendation, plan.** `options` are 2-4 `{id, label, effect:
   approve|decline|other|register, confirm?, note?: required}`, ids unique; a
   `register` effect only on an ask with `register`; `recommend.option` names
@@ -4965,20 +4967,29 @@ answered by `attention answer` like the first click
 is the relaunch). While a session holds a live claim they carry
 `disabled` with the reason in words, and `answer` still refuses (3), since
 a different answer cannot reach a session already carrying the work out.
-When the claim was made at or after the page's own launch (the run
-record, not stopped: `attention.stoppable`), the item also offers
-`opt-stop` "Stop it" (`via: stop`, `confirm`): `attention stop <id>`
-runs `systemctl --user is-active` on the run record's
-`self-learn-run-<12 hex>` unit and, when it still runs, `systemctl --user
-stop` and checks again (3 when it will not stop, the claim kept); then
-it writes `stopped_at` into the run record (the item reads `approved`,
-not running), removes the claim and seals a workspace row `kind: stop`,
-`origin: clicked`. It undoes nothing the session did and the approval
-stands until the person answers otherwise. A claim older than the launch,
-or with no launch, is a session the page did not open: no Stop it, and
-`stop` exits 3 ("tell it in its own terminal"); with no live claim it
-exits 3 (a different answer is taken already). Refused from an agent's
-shell (64). **`attention run --json`** prints `RunResult.to_json()`, `{exit,
+`attention claim` records, beside the session, the systemd unit the
+claiming process runs in (`attention_answers.caller_unit`: the
+`self-learn-run-<12 hex>.service` segment of `/proc/self/cgroup`, else
+null), so a claim says whether it came from a terminal the page
+launched. Only when the claim names exactly this item's own run unit
+(`attention.run_unit(id)`, `self-learn-run-` + the item id's 12 hex), the
+run record names that same unit, the launch belongs to the current
+approval (at or after its approval) and is not stopped, and the claim
+came at or after the launch (`attention.stoppable`, gate r1 F1, F2), does
+the item also offer `opt-stop` "Stop it" (`via: stop`, `confirm`):
+`attention stop <id>` runs `systemctl --user is-active` on that unit and,
+when it still runs, `systemctl --user stop` and checks again (3 when it
+will not stop, the claim kept); then it writes `stopped_at` into the run
+record (the item reads `approved`, not running), removes the claim and
+seals a workspace row `kind: stop`, `origin: clicked`. It undoes nothing
+the session did and the approval stands until the person answers
+otherwise. Any other claim (an agent in the person's own terminal, a
+claim with no unit, an older approval's launch, another item's unit) is
+a session self-learn did not open: no Stop it, the options' reason says
+"it is running in a session self-learn did not open; tell it in its own
+terminal", `stop` exits 3 without asking systemd about any unit, and the
+claim is never removed; with no live claim it exits 3 (a different
+answer is taken already). Refused from an agent's shell (64). **`attention run --json`** prints `RunResult.to_json()`, `{exit,
 message, command, brief}`, on stdout whatever the exit; `command` is the
 command alone a person runs when no terminal was found (exit 5: `claude
 '<brief line>'`, or `claude` for a login), else null, and the answer
