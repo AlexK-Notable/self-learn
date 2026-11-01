@@ -1,4 +1,4 @@
-"""S-NEXT-hookmatch, the orchestrator's decision: a placed WARNING hook
+"""S-133, the orchestrator's decision: a placed WARNING hook
 whose stored bytes the current compiler no longer produces is regenerated
 by self-learn itself -- by ``recompile`` and by the daily ``maintenance``
 job -- never a deny guard, never a file a person edited, and a second run
@@ -270,3 +270,179 @@ def test_the_maintenance_job_regenerates_as_the_maintenance_actor(
     again = maintenance.run(env.home, cache_dir, now=time.time())
     assert again.status == "idle" and again.hooks_regenerated == []
     assert _git(env.home, "rev-parse", "HEAD") == head
+
+
+# ------------------------------------------- gate r1 (2026-11-01) folds
+
+RID2 = "lrn-0000bbbb"
+
+
+def _route_id(env, monkeypatch, rid: str, *, old: bool) -> Path:
+    with monkeypatch.context() as m:
+        if old:
+            _older_compiler(m)
+        seed_hook(env, rid=rid, hook=BASH_WARN, examples=BASH_EXAMPLES)
+        verbs.route(env.home, rid)
+    return env.host / "plugins" / "s-plugin" / "hooks" / script_name(rid, TRIGGER)
+
+
+def _record_path(env, rid: str = RID) -> Path:
+    from self_learn import ledger_ops
+
+    return ledger_ops.find_record_path(env.home, rid)
+
+
+def _set_meta(env, rid: str = RID, **changes) -> None:
+    path = _record_path(env, rid)
+    record = Record.from_path(path)
+    routing = dict(record.routing)
+    routing["hook"] = {**routing["hook"], **changes}
+    record.set_routing(routing)
+    record.write(path)
+    _git(env.home, "commit", "-qam", "test: edit the stored hook block")
+
+
+def _retire(env, rid: str = RID) -> None:
+    path = _record_path(env, rid)
+    record = Record.from_path(path)
+    record._fm["superseded_by"] = "lrn-0000cccc"  # test-only: is_canon_live reads it
+    record.write(path)
+    _git(env.home, "commit", "-qam", "test: retire the lesson")
+
+
+def _fail_host_commits(env) -> Path:
+    hook = env.host / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    return hook
+
+
+def test_f2_a_failed_host_write_is_pending_and_the_next_maintenance_run_places_it(
+        env, monkeypatch, cache_dir):
+    """The gate's reproduction: the regeneration's ledger commit lands, the
+    host commit is refused (the file is put back); the job must not report
+    the hook regenerated, and the next run must place it, not go idle."""
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    old = _meta(env)["script"]
+    blocker = _fail_host_commits(env)
+    first = maintenance.run(env.home, cache_dir, now=time.time())
+    new = _current(env)
+    assert _meta(env)["script"] == new  # the ledger moved
+    assert script.read_bytes() == old.encode("utf-8")  # the host write did not land
+    assert first.hooks_regenerated == [] and RID in first.hooks_pending
+    state = maintenance.read_state(cache_dir)
+    assert RID in state["hooks_pending"] and "hooks_regenerated" not in state
+
+    blocker.unlink()
+    assert verbs.unplaced_warn_hooks(env.home) == ([RID], {})  # work, not idle
+    second = maintenance.run(env.home, cache_dir, now=time.time() + 2 * 86400)
+    assert second.status == "ran" and second.hooks_placed == [RID]
+    assert script.read_bytes() == new.encode("utf-8")
+    assert maintenance.read_state(cache_dir)["hooks_placed"] == [RID]
+    assert verbs.unplaced_warn_hooks(env.home) == ([], {})
+    assert maintenance.run(env.home, cache_dir, now=time.time() + 4 * 86400).status == "idle"
+
+
+def test_f2_recompile_reports_the_pending_write_and_a_later_recompile_places_it(env, monkeypatch):
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    blocker = _fail_host_commits(env)
+    first = verbs.recompile(env.home, no_push=True)
+    assert first.hooks_regenerated == [] and RID in first.hooks_pending
+    assert any(w.startswith(f"{RID}: warning hook regenerated in the ledger, host write pending")
+               for w in first.warnings)
+    blocker.unlink()
+    verbs.recompile(env.home, no_push=True)
+    assert script.read_bytes() == _current(env).encode("utf-8")
+
+
+def test_f2_a_person_edit_of_an_up_to_date_hook_is_not_placed_by_maintenance(
+        env, monkeypatch, cache_dir):
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=False)
+    edited = _meta(env)["script"] + "# mine\n"
+    script.write_text(edited, encoding="utf-8")
+    _git(env.host, "commit", "-qam", "hand edit")
+    place, left = verbs.unplaced_warn_hooks(env.home)
+    assert place == [] and left[RID].startswith("hand-edited")
+    job = maintenance.run(env.home, cache_dir, now=time.time())
+    assert job.status == "idle" and job.hooks_refused[RID].startswith("hand-edited")
+    assert script.read_text(encoding="utf-8") == edited
+
+
+def test_f5_the_planner_skips_a_retired_lesson(env, monkeypatch):
+    _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    assert verbs.stale_warn_hooks(env.home) == ([RID], {})  # control: outdated and live
+    _retire(env)
+    assert verbs.stale_warn_hooks(env.home) == ([], {})
+
+
+def test_f5_the_commit_rechecks_under_the_lock(env, monkeypatch):
+    """A lesson retired between the plan and the commit is left alone."""
+    _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    old = _meta(env)["script"]
+    real = verbs._plan_warn_hook_refresh
+
+    def plan_then_retire(home, only_records=None):
+        planned = real(home, only_records)
+        assert [r.id for _, r, _ in planned[0]] == [RID]  # control: planned
+        _retire(env)
+        return planned
+
+    monkeypatch.setattr(verbs, "_plan_warn_hook_refresh", plan_then_retire)
+    refresh = verbs.refresh_warn_hooks(env.home)
+    assert refresh.regenerated == [] and refresh.commit_subject is None
+    assert Record.from_path(_record_path(env)).routing["hook"]["script"] == old
+
+
+def test_f5_a_symlinked_hook_file_is_refused(env, monkeypatch, tmp_path):
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    copy = tmp_path / "elsewhere.sh"
+    copy.write_bytes(script.read_bytes())
+    script.unlink()
+    script.symlink_to(copy)
+    _git(env.host, "add", "-A")
+    _git(env.host, "commit", "-qm", "symlink")
+    todo, refused = verbs.stale_warn_hooks(env.home)
+    assert todo == [] and "is a symlink" in refused[RID]
+
+
+def test_f5_a_trigger_that_names_another_file_is_refused(env, monkeypatch):
+    _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    _set_meta(env, script_path="plugins/s-plugin/hooks/self-learn-0000aaaa-other-name.sh")
+    todo, refused = verbs.stale_warn_hooks(env.home)
+    assert todo == [] and "now names the file" in refused[RID]
+
+
+def test_f5_a_secret_scan_hit_is_refused(env, monkeypatch):
+    _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    assert verbs.stale_warn_hooks(env.home) == ([RID], {})  # control
+    monkeypatch.setattr(verbs, "secret_scan", lambda text: ["a hit"])
+    todo, refused = verbs.stale_warn_hooks(env.home)
+    assert todo == [] and "secret scan" in refused[RID]
+
+
+def test_f5_a_hook_with_no_warn_examples_is_refused(env, monkeypatch):
+    _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    _set_meta(env, examples={"allow": BASH_EXAMPLES["allow"], "warn": []})
+    todo, refused = verbs.stale_warn_hooks(env.home)
+    assert todo == [] and "no warn examples" in refused[RID]
+
+
+def test_f5_a_run_that_did_work_still_records_what_it_left(env, monkeypatch, cache_dir):
+    _route_id(env, monkeypatch, RID, old=True)
+    other = _route_id(env, monkeypatch, RID2, old=True)
+    other.write_text(other.read_text(encoding="utf-8") + "# mine\n", encoding="utf-8")
+    _git(env.host, "commit", "-qam", "hand edit")
+    job = maintenance.run(env.home, cache_dir, now=time.time())
+    assert job.status == "ran" and job.hooks_regenerated == [RID]
+    state = maintenance.read_state(cache_dir)
+    assert state["status"] == "ran" and state["hooks_refused"][RID2].startswith("hand-edited")
+
+
+def test_f8_a_crlf_only_edit_is_a_hand_edit(env, monkeypatch):
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    old = _meta(env)["script"]
+    assert verbs.stale_warn_hooks(env.home) == ([RID], {})  # control
+    script.write_bytes(old.replace("\n", "\r\n").encode("utf-8"))
+    _git(env.host, "commit", "-qam", "crlf")
+    todo, refused = verbs.stale_warn_hooks(env.home)
+    assert todo == [] and refused[RID].startswith("hand-edited")

@@ -3872,7 +3872,7 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
     if result.adopt_only:
         return _report_adopt_only(result)
     if result.hooks_regenerated:
-        # S-NEXT-hookmatch: the compiler changed; the stored bytes followed.
+        # S-133: the compiler changed; the stored bytes followed.
         print(
             "recompile: regenerated warning hook(s) from the current compiler: "
             + ", ".join(result.hooks_regenerated)

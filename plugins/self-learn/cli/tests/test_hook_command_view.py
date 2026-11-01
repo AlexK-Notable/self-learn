@@ -1,4 +1,4 @@
-"""S-NEXT-hookmatch: a warning hook on Bash matches the command's words, not the text
+"""S-133: a warning hook on Bash matches the command's words, not the text
 inside quotes, comments or heredoc bodies.
 
 The live defect (notice ntc-71c2eb83, lesson lrn-042c8179): the heredoc
@@ -100,7 +100,7 @@ def _view(command: str, awk: tuple[str, ...] = ("awk",)) -> subprocess.Completed
 # ------------------------------------------------- the reproduction (red first)
 
 #: Text that only MENTIONS the shape: none of these runs a heredoc into an
-#: interpreter with stdin from /dev/null. Before S-NEXT-hookmatch every one warned.
+#: interpreter with stdin from /dev/null. Before S-133 every one warned.
 SILENT = {
     "double-quoted commit message": f'git commit -m "docs: {BAD}"',
     "single-quoted argument": f"echo '{BAD}'",
@@ -172,6 +172,52 @@ def test_a_word_anchored_regex_sees_command_words_and_not_quoted_text(tmp_path):
     assert _warns(guard, "eval $'pkill -f x'")
     assert not _warns(guard, 'git commit -m "never pkill -f a pattern"')
     assert not _warns(guard, "cat <<'EOF' > NOTES.md\npgrep -f x matches itself\nEOF")
+
+
+#: Gate r1 (2026-11-01), the exact inputs it listed: each hid a real
+#: invocation from the view (F1 arithmetic `<<` read as a heredoc, F3 a `#`
+#: after `)` read as a comment, F4 payloads not followed). Each must warn.
+GATE_WARNS = {
+    "F1 arithmetic shift": "x=$((1 << 2))\npkill -f foo",
+    "F1 dd block size": "dd if=/dev/zero of=f bs=$((1<<20)) count=1\npkill -f foo",
+    "F1 arithmetic in double quotes": 'echo "$((1<<2))"\npkill -f foo',
+    "F1 arithmetic command": "(( n <<= 1 ))\npkill -f foo",
+    "F1 a $(( that is a subshell": "x=$((cd /; pkill -f foo) | wc -l)",
+    "F3 # after $( )": "echo $(date)#tag; pkill -f foo",
+    "F3 # after <( )": "diff <(ls)#x <(ls); pkill -f foo",
+    "F4 here-string to bash, double": 'bash <<< "pkill -f foo"',
+    "F4 here-string to bash, single": "bash <<< 'pkill -f foo'",
+    "F4 here-string to bash, ANSI-C": "bash <<< $'pkill -f foo'",
+    "F4 -c then --": "bash -c -- 'pkill -f foo'",
+    "F4 trap": "trap 'pkill -f foo' EXIT",
+}
+GATE_SILENT = {
+    "a here-string fed to a non-shell": 'cat <<< "pkill -f foo"',
+    "a here-string to a shell, then other quoted text": "bash <<< x; echo 'pkill -f foo'",
+    "a trap's signal list is not code": "trap 'echo hi' 'pkill -f foo'",
+    "a real comment after a subshell": "(echo a) # pkill -f foo",
+    "arithmetic leaves later quotes alone": 'x=$((1<<2)); echo "pkill -f foo"',
+}
+
+
+@pytest.mark.parametrize("name", sorted(GATE_WARNS))
+def test_the_gate_r1_inputs_warn(tmp_path, name):
+    guard = _guard(tmp_path, PGREP_REGEX)
+    assert not _warns(guard, "ls")  # negative control
+    assert _warns(guard, GATE_WARNS[name]), GATE_WARNS[name]
+
+
+@pytest.mark.parametrize("name", sorted(GATE_SILENT))
+def test_the_gate_r1_controls_stay_silent(tmp_path, name):
+    guard = _guard(tmp_path, PGREP_REGEX)
+    assert _warns(guard, "pkill -f foo")  # positive control
+    assert not _warns(guard, GATE_SILENT[name]), GATE_SILENT[name]
+
+
+def test_arithmetic_is_kept_verbatim_in_the_view():
+    proc = _view("x=$((1 << 2)) && (( n <<= 1 ))\nls")
+    assert proc.returncode == 0
+    assert proc.stdout.rstrip("\n") == "x=$((1 << 2)) && (( n <<= 1 ))\nls"
 
 
 # ----------------------------------------------------- what stays the same
@@ -254,7 +300,7 @@ def test_a_failing_awk_falls_back_to_the_raw_text_and_never_blocks(tmp_path, bod
 
 def test_an_unbalanced_quote_falls_back_to_the_raw_text(tmp_path):
     """bash itself refuses an unbalanced quote, so nothing runs; the hook
-    matches the raw text, as it did before S-NEXT-hookmatch."""
+    matches the raw text, as it did before S-133."""
     guard = _guard(tmp_path)
     for command in (f'echo "{BAD}', f"echo '{BAD}", f"echo $'{BAD}",
                     f'echo "$(true {BAD}"', f"cat <<'E\n{BAD}"):
@@ -303,7 +349,7 @@ def test_random_shell_text_never_breaks_the_hook(tmp_path):
 @pytest.mark.skipif(shutil.which("gawk") is None, reason="gawk not installed")
 def test_the_view_program_is_posix_awk():
     """No gawk extension: the program runs the same under ``gawk --posix``."""
-    for command in [*SILENT.values(), *WARNS.values()]:
+    for command in [*SILENT.values(), *WARNS.values(), *GATE_WARNS.values(), *GATE_SILENT.values()]:
         plain = _view(command)
         posix = _view(command, ("gawk", "--posix"))
         assert (posix.returncode, posix.stdout, posix.stderr) == (
