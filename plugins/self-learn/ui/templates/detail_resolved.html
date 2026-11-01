@@ -7,12 +7,16 @@
 {% block page_kind %}resolved{% endblock %}
 {% block body_attrs %} data-bucket="{{ model.bucket }}"{% endblock %}
 
-{% block status_strip %}
-<div class="status-strip">
-  <span class="brand">self-learn</span>
-  <a data-key-action="up" href="/bucket/{{ model.scope }}/{{ model.bucket }}" title="Back to this record's bucket (Esc or h)">&larr; {{ model.bucket }}</a>
-  <span class="status-item" title="This lesson's record id in the ledger">{{ model.id }}</span>
-</div>
+{# Humane lane 1 (proposal §2): the shared header (base.html) names the
+   places; this line says where in them the page sits, and its middle link
+   carries the `up` key action (Esc goes back to the place). The record's
+   id is kept off the running text, on hover only. #}
+{% block crumbs %}
+<nav class="crumbs" aria-label="Where you are">
+  <a href="/">Home</a><span class="crumb-sep" aria-hidden="true">&rsaquo;</span>
+  <a data-key-action="up" href="/bucket/{{ model.scope }}/{{ model.bucket }}" title="Back to this place (Esc)">{{ place.label if place is defined and place else model.bucket }}</a><span class="crumb-sep" aria-hidden="true">&rsaquo;</span>
+  <span class="crumb-here" title="Its id in the ledger: {{ model.id }}">A rule already decided</span>
+</nav>
 {% endblock %}
 
 {% block content %}
@@ -32,10 +36,13 @@
     {# Criterion 13: the heading is the record's OWN Trigger/Fact text
        (raw read, §5) — never the fossil "(untitled)" default M16
        restores. #}
-    <h2>{{ model.finding.title }}</h2>
+    {# Humane lane 1 (proposal §10): the heading is the rule in sentence
+       case (an h1, not the uppercase section label), and the body below
+       no longer repeats it as its own Trigger/Fact section. #}
+    <h1 class="resolved-title">{{ model.finding.title }}</h1>
     <p class="badge badge-{{ model.status }}">{{ model.status }}</p>
     <p class="provenance">{{ model.finding.provenance_text }}{% if model.finding.created_at %} &middot; created {{ model.finding.created_at | humanize_ts }}{% endif %}</p>
-    <div class="record-body">{{ model.finding.body | markdown }}</div>
+    <div class="record-body">{{ (model.body_rest if model.body_rest is not none else model.finding.body) | markdown }}</div>
     {% if model.finding.evidence %}
     <ul class="evidence">
       {% for e in model.finding.evidence %}

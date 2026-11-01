@@ -156,6 +156,71 @@ ignoring costs nothing. This section pins the mechanics.
 
 ### 2.1 Front page — the bucket walk
 
+*Amended 2026-11-01 (S-NEXT-humane-l1, humane lane 1; proposal
+`misc/build-2026-11-01/humane/proposal.md` §2, §3, §10). The page is
+now called **Home**, and every page shares one header:*
+
+- **One header for every page** (`base.html`): the places, in this
+  order, *Home · Inbox · Weekly report · Health · Settings*, with the
+  current one marked (`aria-current`); and on the right **one line
+  about the jobs**: "All jobs ran on time · last overnight read <age>",
+  or, when a job is late or failed, that job named in words ("The
+  overnight read has not run for 3 days", "Drafting suggestions is
+  behind", "The last overnight read failed", "The weekly check is
+  overdue"), amber with a "!" mark, never colour alone (Y-10). Late
+  means the CLI's own verdict: the miner's `stale`, the worker's own
+  escalation threshold, a failed last run, or a weekly check a full day
+  past its own `overseer_next`. Home renders the line inline; every
+  other page fetches it after load (`GET /header/jobs`, cached for 30
+  seconds per server), so no page waits on `status --json` for it. A
+  page no longer draws its own strip; a page one level below a place
+  (a record) adds a "where you are" line (*Home › <place> › this
+  lesson*), the record's id on hover only. The `up` key (Esc) keeps
+  its targets: the Home link on a bucket page and on Health, the place
+  link on a record's page, none on Home.
+- **Home, top to bottom:** four **tiles** (Needs your answer, from the
+  inbox reader's `counts.needs_you` fetched after load, `GET
+  /home/needs-you`; Lessons to decide; Rules seen again; Follow-ups),
+  each a keyboard row that jumps to its section, greyed at zero; the
+  **charts** (S-NEXT-humane lane 2, a partial reading `report --json`'s
+  `series`); **Lessons to decide**, each titled by its own trigger or
+  fact, with its place, where it came from and whether a suggestion
+  exists; **Rules seen again** (was "Is it holding?", Y-4), each titled
+  by the rule's own words (`report --json` suspect/routed `title`),
+  with where it is placed, how long ago, and why it was seen again, its
+  four choices (t/c/g/k), note, reason and "covered by" folded behind
+  one **Decide…** button; a key acting inside a closed fold opens it
+  first, so an armed bar is always on screen; **Follow-ups** (Y-6);
+  **Where lessons live** (below); **Jobs**: the overnight read, drafting
+  suggestions, the nightly review and the weekly check, each with its
+  last run and result in a sentence, a **Run now** button for the two
+  that have one (the miner's and the worker's former Force-run), the
+  miner's run list (one date style, "Sat 31 Oct") and near-misses
+  (Y-24) under the overnight read, and the sentinel state in words.
+- **Where lessons live** replaces the all-buckets table: only places
+  with something waiting or left for later are rows (and keyboard
+  rows), named by the CLI's `label` with their `path`, sorted
+  oldest-waiting first, columns Waiting / Left for later / No suggestion
+  yet / In use (`report --json` bucket `counts.routed`) / Oldest
+  waiting, still sortable by header. Every other place folds under "N
+  more places with nothing waiting", and inside that, places whose
+  folder no longer exists (`path_exists: false`) fold apart. A gone
+  folder that still holds waiting work is never folded. Folded rows
+  carry no `data-row`, like the bucket page's archive.
+- Bucket and record pages *(§10 of the proposal)*: a bucket page is
+  headed by its place's name and says "Nothing is waiting here." when
+  it is empty; a record with no suggestion yet says "No suggestion yet.
+  Press `i` to ask for one now." once (the key drawn as a key cap), its
+  Approve stays available but is not the primary button, its Iterate
+  button reads "Ask for a suggestion (i)", and its destination reads
+  "not suggested yet"; a decided record's heading is its rule in
+  sentence case, not repeated as a Trigger/Fact section below it;
+  sighting counts read "1 sighting" / "2 sightings".
+
+*The bullets below are the original 2026-07 text; where they describe
+the bucket table's columns or the status strip, the amendment above
+governs.*
+
 - A table of buckets with pending learnings: bucket name, scope
   (skill/project/user), pending count, oldest pending age, unanalyzed
   count (records with no *usable* analysis — the worker's own

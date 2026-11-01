@@ -6,12 +6,16 @@
    pushes a refresh even on FAILED verbs, 15 §7 gotcha). #}
 {% block body_attrs %} data-bucket="{{ bucket }}"{% endblock %}
 
-{% block status_strip %}
-<div class="status-strip">
-  <span class="brand">self-learn</span>
-  <a data-key-action="up" href="/bucket/{{ scope }}/{{ bucket }}" title="Back to this record's bucket (Esc or h)">&larr; {{ bucket }}</a>
-  <span class="status-item" title="This lesson's record id in the ledger">{{ salvage.record_id }}</span>
-</div>
+{# Humane lane 1 (proposal §2): the shared header (base.html) names the
+   places; this line says where in them the page sits, and its middle link
+   carries the `up` key action (Esc goes back to the place). The record's
+   id is kept off the running text, on hover only. #}
+{% block crumbs %}
+<nav class="crumbs" aria-label="Where you are">
+  <a href="/">Home</a><span class="crumb-sep" aria-hidden="true">&rsaquo;</span>
+  <a data-key-action="up" href="/bucket/{{ scope }}/{{ bucket }}" title="Back to this place (Esc)">{{ place.label if place is defined and place else bucket }}</a><span class="crumb-sep" aria-hidden="true">&rsaquo;</span>
+  <span class="crumb-here" title="Its id in the ledger: {{ salvage.record_id }}">A lesson that could not be read in full</span>
+</nav>
 {% endblock %}
 
 {% block content %}

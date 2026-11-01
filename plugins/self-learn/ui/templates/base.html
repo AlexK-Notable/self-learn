@@ -1,10 +1,9 @@
 <!--
   self-learn-ui — base template skeleton (10 §1 task U1; 09 §1/§2).
 
-  Scaffold only: no routes render this yet (U3 constructs the Jinja
-  environment, wires the app, and fills these blocks/partials). Structure
-  only — header/status-strip slot, one content block, keymap footer
-  partial slot, per the task brief.
+  The shared page shell: one header for every page (humane lane 1,
+  proposal §2: the places, and one line about the jobs), one content
+  block, the keymap footer partial and the help overlay.
 
   AUTOESCAPE MARKER (09 §3 render-path pin, W-1): the Jinja Environment
   that loads this template MUST be constructed with autoescape=True and
@@ -68,13 +67,41 @@
       <span id="self-learn-ui-applying-text"></span>
     </div>
 
-    <header>
+    {# Humane lane 1 (proposal §2, S-NEXT-humane-l1): ONE header for every
+       page. The page names itself through `page_kind` (the same value the
+       keymap footer filter reads); the header highlights the matching
+       place and, on the two pages whose level above is Home (a bucket,
+       Health), gives the Home link the `up` key action, so Esc still goes
+       up a level. A page with a deeper parent (a record's detail) adds its
+       own `crumbs` line with its own `up` link. Pages still carrying an old
+       `status_strip` block render nothing from it: base.html no longer
+       calls that block. #}
+    <header class="site-header">
       {% block header %}
-      {# Status strip slot (09 §2.1): worker last-run age, staleness
-         alarm, total pending, sentinel state, miner last-run age +
-         staleness + open-follow-ups count (Y-5/Y-6). Populated from
-         status --json / mine status --json at U3 via ledger.py (U2). #}
-      {% block status_strip %}{% endblock %}
+      {% set _kind = self.page_kind() | trim %}
+      {% set _here = {"front": "home", "bucket": "home", "detail": "home", "resolved": "home",
+                      "inbox": "inbox", "overseer-report": "weekly", "report": "health",
+                      "settings": "settings"}.get(_kind, "") %}
+      <div class="site-bar">
+        <span class="site-brand">self-learn</span>
+        <nav class="site-nav" aria-label="Pages">
+          <a href="/"{% if _here == "home" %} aria-current="page"{% endif %}{% if _kind in ("bucket", "report") %} data-key-action="up" title="Home (Esc goes back here)"{% endif %}>Home</a>
+          {% if _here == "inbox" %}
+          <a href="/inbox" aria-current="page">Inbox</a>
+          {% else %}
+          {% include "partials/workspace_inbox_link.html" %}
+          {% endif %}
+          <a href="/overseer-report"{% if _here == "weekly" %} aria-current="page"{% endif %}>Weekly report</a>
+          <a href="/report"{% if _here == "health" %} aria-current="page"{% endif %}>Health</a>
+          <a href="/settings"{% if _here == "settings" %} aria-current="page"{% endif %}>Settings</a>
+        </nav>
+        {% if jobs_line is defined and jobs_line %}
+        {% include "partials/jobs_line.html" %}
+        {% else %}
+        <a class="jobs-line jobs-line-loading" href="/#jobs" hx-get="/header/jobs" hx-trigger="load" hx-swap="outerHTML">Checking the jobs&hellip;</a>
+        {% endif %}
+      </div>
+      {% block crumbs %}{% endblock %}
       {% endblock %}
     </header>
 

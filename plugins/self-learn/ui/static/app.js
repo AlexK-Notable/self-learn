@@ -488,6 +488,7 @@
         );
         return;
       }
+      revealFold(live);
       live.click();
       live.scrollIntoView({ block: "nearest" });
     }
@@ -598,6 +599,21 @@
     overlay.hidden = !overlay.hidden;
   }
 
+  /**
+   * Humane lane 1 (proposal §3): Home folds each rule's four choices
+   * behind a "Decide…" button (`<details class="decide-fold">`). A key
+   * that acts on something inside a CLOSED fold opens that fold first:
+   * otherwise `t`/`c`/`g`/`k` would arm a bar the person cannot see, and
+   * `n` could not focus a note field at all (a browser will not focus
+   * an element inside a closed <details>). Only this one fold class is
+   * opened -- the episode brief's own <summary> toggle (`b`) must keep
+   * toggling, never be forced open first.
+   */
+  function revealFold(el) {
+    const fold = el && el.closest ? el.closest("details.decide-fold") : null;
+    if (fold && !fold.open) fold.open = true;
+  }
+
   function focusNote() {
     // The note input lives in the unarmed bar only — there is nothing to
     // focus while a confirm strip is up, which is why the armed branch
@@ -620,6 +636,7 @@
     //      name the visible one (`F1b`).
     const resolved = resolveScoped('.action-bar input[type="text"][name="note"]');
     if (resolved.status === "one") {
+      revealFold(resolved.el);
       resolved.el.focus();
       return;
     }
