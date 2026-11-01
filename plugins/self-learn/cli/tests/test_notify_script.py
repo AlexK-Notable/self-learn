@@ -240,3 +240,33 @@ def test_missing_daemon_exits_silently(tmp_path):
     )
     assert result.returncode == 0, (result.stdout, result.stderr)
     assert not log.exists()
+
+
+@pytest.mark.skipif(not REAL_SCRIPT.is_file(), reason="script not found")
+def test_open_action_with_page_opens_that_inbox_page(tmp_path):
+    """Attention round (design r2 §3.9, answer 1): the one popup left, a
+    login hold, passes `--page /inbox`; its "open" action execs the sibling
+    `self-learn-ui-open --page /inbox`, never a record deep link."""
+    copy = _make_copy(tmp_path)
+    log = tmp_path / "ui-open.log"
+    _make_fake_ui_open(copy.parent, log)
+    shims = _shim_dir_with_notify_send(
+        tmp_path, "#!/usr/bin/env bash\n" 'echo "open"\n' "exit 0\n",
+    )
+    result = subprocess.run(
+        [str(copy), "--line", "log in again", "--page", "/inbox"],
+        env={**os.environ, "PATH": f"{shims}:{os.environ['PATH']}"},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    argv = log.read_text(encoding="utf-8").split("\0")[:-1]
+    assert argv == ["--page", "/inbox"]
+
+
+@pytest.mark.skipif(not REAL_SCRIPT.is_file(), reason="script not found")
+@pytest.mark.parametrize("args", [["--line", "x"], ["--line", "x", "--ids", "lrn-1", "--page", "/inbox"]])
+def test_exactly_one_of_ids_or_page_is_required(tmp_path, args):
+    copy = _make_copy(tmp_path)
+    result = subprocess.run([str(copy), *args], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 2
+    assert "exactly one of --ids or --page" in result.stderr

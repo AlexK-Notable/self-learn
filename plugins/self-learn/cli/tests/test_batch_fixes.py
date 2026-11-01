@@ -160,19 +160,27 @@ class TestHookHomeWarning:
         assert "uninitialized" in proc.stdout
         assert "ledger home" in proc.stdout
 
-    def test_healthy_home_still_prints_pending_and_exits_zero(self, tmp_path):
-        """The fix must not cost the hook its normal job."""
+    def test_healthy_home_prints_nothing_and_exits_zero(self, tmp_path):
+        """Attention round (design r2 §3.9): a healthy home with a pending
+        lesson prints nothing at session start -- the pending count is the
+        inbox's, not a line in every session. Positive control first: the
+        same shim's `status --fast` does report the pending lesson, so the
+        hook had it and chose not to print it."""
         env = make_env(tmp_path)
         home = env.ledger
         create_record(home, make_behavior(record_id="lrn-aaaabbbb"))
         commit_all(home, "record")
 
+        shim_env = self._shim(tmp_path, home)
+        status = subprocess.run(
+            ["self-learn", "status", "--fast"], capture_output=True, text=True,
+            env=shim_env, timeout=60,
+        )
+        assert json.loads(status.stdout)["total_pending"] == 1, status.stderr
+
         proc = self._run(tmp_path, home)
         assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-        assert "📥 self-learn: 1 pending" in proc.stdout
-        assert "/self-learn:review" in proc.stdout
-        # …and the home warning must NOT fire for a good home.
-        assert "NOT an empty ledger" not in proc.stdout
+        assert proc.stdout == ""
 
     def test_a_stopped_intent_names_its_own_id_not_a_literal_placeholder(self, tmp_path):
         """Gate r1 MINOR-2: this line used to read `--clear-intent <id>`
@@ -395,23 +403,29 @@ class TestHookDependencyDegradation:
         assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
         assert "self-learn is not on PATH" in proc.stdout
 
-    def test_total_pending_absent_prints_degraded_line(self, tmp_path):
-        """B-6 secondary shape: a `status --fast` JSON missing
-        `total_pending` entirely must not collapse to a silent,
-        healthy-looking "0 pending" (the pre-fix `// 0` behavior) —
-        `jq -e` (no fallback) now catches the absent key and reports it."""
+    def test_total_pending_is_no_longer_read(self, tmp_path):
+        """Attention round (design r2 §3.9): the hook no longer prints a
+        pending count, so it no longer reads `total_pending` and its
+        absence is not a degraded shape. Positive control first: the same
+        harness with an unreadable count does print, so the hook ran to its
+        end on this payload shape."""
+        control = self._bin_dir(
+            tmp_path, "nototal-control",
+            status_json=json.dumps({"home_state": "ok", "total_unreadable": 2}),
+        )
+        shown = self._run(tmp_path, control)
+        assert "2 unreadable record(s)" in shown.stdout, shown.stdout
         bindir = self._bin_dir(
             tmp_path, "nototal", status_json=json.dumps({"home_state": "ok"})
         )
         proc = self._run(tmp_path, bindir)
         assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-        assert "no total_pending" in proc.stdout
-        assert "📥" not in proc.stdout
+        assert proc.stdout == ""
 
-    def test_unreadable_count_appended_when_present(self, tmp_path):
-        """B-7 consumer half: the hook now reads `total_unreadable` when
-        the JSON carries it and appends "(N unreadable)" to the pending
-        line — the exact literal format the brief pins."""
+    def test_unreadable_count_printed_when_present(self, tmp_path):
+        """B-7 consumer half: the hook reads `total_unreadable` when the
+        JSON carries it and prints its own line (attention round: the
+        pending line it used to ride on is gone)."""
         bindir = self._bin_dir(
             tmp_path,
             "unread",
@@ -430,9 +444,9 @@ class TestHookDependencyDegradation:
         )
         proc = self._run(tmp_path, bindir)
         assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-        assert (
-            "📥 self-learn: 5 pending, oldest 3d — /self-learn:review (2 unreadable)"
-            in proc.stdout
+        assert proc.stdout == (
+            "⚠️  self-learn: 2 unreadable record(s) in the queue — "
+            "`self-learn status` names them\n"
         )
 
     def test_unreadable_count_absent_no_annotation(self, tmp_path):
@@ -460,9 +474,14 @@ class TestHookDependencyDegradation:
         create_record(env.ledger, make_behavior(record_id="lrn-cccc1111"))
         commit_all(env.ledger, "record")
         bindir = self._bin_dir(tmp_path, "noann", home=env.ledger)
+        # positive control: the real `--fast` sees the readable record
+        status = subprocess.run(
+            [str(bindir / "self-learn"), "status", "--fast"], capture_output=True,
+            text=True, timeout=60,
+        )
+        assert json.loads(status.stdout)["total_pending"] == 1, status.stderr
         proc = self._run(tmp_path, bindir)
         assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-        assert "📥 self-learn: 1 pending" in proc.stdout
         assert "unreadable" not in proc.stdout
 
     def test_zero_pending_with_unreadable_still_reports(self, tmp_path):
@@ -490,10 +509,7 @@ class TestHookDependencyDegradation:
         )
         proc = self._run(tmp_path, bindir)
         assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-        assert (
-            "📥 self-learn: 0 pending, oldest 0d — /self-learn:review (3 unreadable)"
-            in proc.stdout
-        )
+        assert "⚠️  self-learn: 3 unreadable record(s) in the queue" in proc.stdout
 
     def test_stopped_intent_prints_the_stop_warning(self, tmp_path):
         """S-62 (§7.2a.7): the named pre-existing defect — this hook ran
@@ -599,13 +615,15 @@ class TestHookDependencyDegradation:
                     "escalate": False,
                     "unanalyzed_total": 0,
                     "miner_stale": False,
+                    "project_notices": [{"line": "self-learn: a probe notice"}],
                 }
             ),
         )
         proc = self._run(tmp_path, bindir)
         assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
         assert "🛑" not in proc.stdout
-        assert "📥 self-learn: 3 pending" in proc.stdout
+        # positive control: the hook ran past the intent block to its end
+        assert "self-learn: a probe notice" in proc.stdout
 
     def test_intents_probe_error_prints_a_hidden_stop_warning(self, tmp_path):
         """§7.2a.7: "never as free" -- when the probe itself failed,

@@ -9,10 +9,19 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import cases, statements, user_model
+from self_learn import cases, settings, statements, user_model
 from self_learn.overseer import conversation
 from self_learn.overseer import cli as overseer_cli
 from support import commit_all, make_home
+
+
+@pytest.fixture(autouse=True)
+def _a_persons_terminal(monkeypatch):
+    """Attention round (design r2 §3.4.1): `respond` records `agent` from an
+    agent's shell, so this module's `recorded_by: human` pins model a
+    person's terminal explicitly, wherever the suite runs."""
+    for marker in settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
 
 
 def _yaml(path: Path, data: dict) -> None:

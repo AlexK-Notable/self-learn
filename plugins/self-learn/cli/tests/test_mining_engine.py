@@ -279,7 +279,7 @@ def test_e1_the_shared_instructions_are_method_passage_and_schema_byte_identical
     assert lesson_writing.extract(text) == lesson_writing.text()
     tail = text.split(f"=== OUTPUT SCHEMA ({contract.MODEL_CONTRACT}) ===\n", 1)[1]
     assert json.loads(tail) == contract.model_output_json_schema()
-    assert engine.shared_instructions() == (text, "1")
+    assert engine.shared_instructions() == (text, "2")
 
 
 # ===================================================================== E2
