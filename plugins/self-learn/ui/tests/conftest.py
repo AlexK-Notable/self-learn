@@ -41,6 +41,32 @@ def _pin_self_learn_cli_bin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SELF_LEARN_UI_CLI_BIN", str(_VENV_SELF_LEARN_BIN))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _no_real_sdk_spawn_tripwire():
+    """Same session-wide block as ``cli/tests/conftest.py``: the SDK's
+    ``_find_cli()`` is the one path that resolves ``cli_path=None`` to a
+    REAL, credentialed Claude Code binary. No UI test may reach it."""
+    try:
+        import claude_agent_sdk._internal.transport.subprocess_cli as _cli
+    except ImportError:
+        yield
+        return
+
+    def _tripped(self):
+        raise AssertionError(
+            "claude_agent_sdk._find_cli() was called during the UI test "
+            "suite: it would spawn a real Claude Code session. Set "
+            "SELF_LEARN_SDK_CLI_PATH to a fake before the session runs."
+        )
+
+    original = _cli.SubprocessCLITransport._find_cli
+    _cli.SubprocessCLITransport._find_cli = _tripped
+    try:
+        yield
+    finally:
+        _cli.SubprocessCLITransport._find_cli = original
+
+
 @pytest.fixture(autouse=True)
 def _redirect_env_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -86,6 +112,9 @@ def _redirect_env_defaults(
     # miner-side autokick knob the CLI fixture doesn't need to touch).
     monkeypatch.setenv("SELF_LEARN_WORKER_AUTOKICK", "0")
     monkeypatch.setenv("SELF_LEARN_MINER_AUTOKICK", "0")
+    # Never notify the operator's real desktop (cli/tests/conftest.py
+    # incident 2026-08-09: the notify helper resolves via PATH).
+    monkeypatch.setenv("SELF_LEARN_NO_NOTIFY", "1")
 
 
 @pytest.fixture
@@ -371,6 +400,7 @@ def _env_floor_session(tmp_path_factory: pytest.TempPathFactory):
     mp.setenv("SELF_LEARN_TRANSCRIPTS_DIR", str(base / "transcripts"))
     mp.setenv("SELF_LEARN_WORKER_AUTOKICK", "0")
     mp.setenv("SELF_LEARN_MINER_AUTOKICK", "0")
+    mp.setenv("SELF_LEARN_NO_NOTIFY", "1")
     _track_home(floor_home)
     yield
     mp.undo()

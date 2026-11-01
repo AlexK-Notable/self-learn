@@ -872,6 +872,28 @@ class Record:
         _validate_follow_up(fu)
         routing["follow_up"] = fu
 
+    def set_hook_script(self, script: str) -> None:
+        """S-133: replace the stored warning-hook bytes
+        (``routing.hook.script``) of a lesson ALREADY routed to a hook --
+        ``verbs.refresh_warn_hooks``' one change. Like
+        :meth:`set_follow_up`, a sibling of :meth:`set_routing` that
+        rewrites one field of the routing block that is already there
+        (status, destination and every other field unchanged): it never
+        ROUTES the record, so it is not a route site (criterion 20,
+        ``tests/test_route_observability.py``)."""
+        routing = self._fm.get("routing")
+        if routing is None or routing.get("destination") != "hook":
+            raise MutationError(
+                f"record {self.id} is not routed to a hook — there is no stored "
+                "hook script to replace"
+            )
+        hook = routing.get("hook")
+        if not isinstance(hook, dict):
+            raise MutationError(f"record {self.id} has no hook block in its routing")
+        if not isinstance(script, str) or not script:
+            raise ValidationError("a hook script must be non-empty text")
+        hook["script"] = script
+
     def complete_follow_up(
         self, *, done_at: str | None = None, done_note: str | None = None
     ) -> None:

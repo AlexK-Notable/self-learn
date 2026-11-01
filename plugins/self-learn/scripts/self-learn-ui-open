@@ -74,7 +74,9 @@
 #      absent -> launch. hyprctl absent entirely -> skip detection,
 #      launch (degrade gracefully).
 #   4. Launch: browser resolved in order $SELF_LEARN_UI_BROWSER ->
-#      chromium -> google-chrome-stable, as a dedicated app window
+#      chromium -> google-chrome-stable, the first one on PATH whose
+#      `--version` succeeds (one that cannot start is skipped), as a
+#      dedicated app window
 #      (`--app=<tokened-url> --class=self-learn-ui`); final fallback is
 #      a plain `xdg-open <url>` tab when no chromium-family browser is
 #      found.
@@ -480,7 +482,13 @@ _resolve_browser() {
   local candidate
   for candidate in "${SELF_LEARN_UI_BROWSER:-}" chromium google-chrome-stable; do
     [[ -z "$candidate" ]] && continue
-    if command -v "$candidate" >/dev/null 2>&1; then
+    # A browser on PATH can still be unable to start (2026-11-01: an
+    # ungoogled-chromium-bin update left `chromium` missing a shared
+    # library, so every launch died at once and the next candidate was
+    # never tried). `--version` runs the real binary; a failure or
+    # `timeout 4` moves on to the next candidate.
+    if command -v "$candidate" >/dev/null 2>&1 \
+      && "${_TO[@]}" "$candidate" --version >/dev/null 2>&1 </dev/null; then
       printf '%s' "$candidate"
       return 0
     fi

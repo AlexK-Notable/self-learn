@@ -270,12 +270,14 @@ def test_2_timeout_and_nonzero_exit_map_to_broken(env):
 
 def test_3_activate_runs_exactly_the_inbox_launcher(env):
     """§3.10: a left click runs exactly
-    `systemd-run --user --collect --quiet -- self-learn-ui-open --page /inbox`
-    (the fake `systemd-run` logs its argv). Mutation: any other argv -> red."""
+    `systemd-run --user --scope --collect --quiet -- self-learn-ui-open --page /inbox`
+    (the fake `systemd-run` logs its argv). `--scope`: a transient service
+    kills the browser the launcher leaves behind when the launcher exits.
+    Mutation: any other argv -> red."""
     out = env.pure("activate")
     assert out["rc"] == 0
     argv = (env.tmp / "calls.log.systemd-run").read_text(encoding="utf-8").splitlines()
-    assert argv == ["--user", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
+    assert argv == ["--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
     assert env.calls() == [], "a click runs no `self-learn` itself"
 
 
@@ -470,7 +472,7 @@ def test_4_registers_with_the_watcher_and_again_after_its_owner_changes(env):
     # Waybar renders the title as markup: the reader's text is escaped once
     assert props["ToolTip"][2] == "self-learn: 0 need you &amp; &lt;none&gt; new", props["ToolTip"]
 
-    assert res["activated"] == ["--user", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
+    assert res["activated"] == ["--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
     assert res["secondary"], (res["secondary_calls"], tray_log)
     for key in ("ledger_root", "ledger_attention", "ledger_overseer", "cache_attention"):
         assert res["poll_on_" + key], (key, res, tray_log)
