@@ -83,6 +83,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from . import attribution
 from .primitives import fsops
 
 __all__ = [
@@ -104,6 +105,7 @@ __all__ = [
     "commit_lock",
     "commit_lock_path",
     "dirty_paths",
+    "drop_excluded",
     "ensure_excluded",
     "exclude_pattern",
     "git_path",
@@ -651,6 +653,12 @@ def commit(
     """Commit with the pinned subject; ``body`` (the resolution note)
     becomes the commit body. Returns the new commit's sha.
 
+    A LEDGER commit's body says who made it: every call that commits the
+    ledger home passes ``body=attribution.stamp(...)`` (S-NEXT-attribution;
+    ``tests/test_attribution.py`` checks each call site), and
+    :func:`stage_and_commit`, which only ever commits the ledger, always
+    does. Host-repo commits are never stamped.
+
     ``paths`` scopes the commit to its OWN files via ``git commit --
     <paths>`` (audit 2026-07-16 BLOCKER 4, layer b): with two background
     committers now sharing the ledger, a bare index-wide ``git commit``
@@ -733,7 +741,8 @@ def stage_and_commit(
         stage(root, touched)
         if allow_empty and not staged_diff(root, touched):
             return None
-        return commit(root, subject, body=body, paths=touched)
+        # S-NEXT-attribution: every commit made here is a ledger commit.
+        return commit(root, subject, body=attribution.stamp(body), paths=touched)
     except HalfWrittenError:
         raise
     except GitOpsError as exc:
@@ -1000,6 +1009,67 @@ def ensure_excluded(repo: Path, patterns: Iterable[str]) -> bool:
             exclude, new_text, preserve_mode=True, fsync=True, follow_symlinks=True
         )
         return True
+
+
+def drop_excluded(
+    repo: Path, prefix: str, keep_names: Iterable[str], keep_prefixes: Iterable[str] = ()
+) -> list[str]:
+    """Take out of *repo*'s self-learn ``info/exclude`` block every line
+    under *prefix* (an anchored ``/<rel>/`` the lines start with, ``/`` for
+    the whole repo) whose file name is not in *keep_names*; return the
+    lines removed (S-NEXT-attribution, cures CU-1 part B: a host switched
+    to git mode commits the files it writes, and git refuses to stage a
+    file its ignore rules match). Lines outside the block, the block's own
+    marker lines, and a malformed block are never touched (the last raises,
+    like :func:`ensure_excluded`). A line under any of *keep_prefixes* (the
+    anchored ``/<rel>/`` of another registration nested under *prefix* that
+    is still plain, gate r1 finding 5) is kept: those files stay private.
+    Takes *repo*'s :func:`commit_lock`."""
+    keep = set(keep_names)
+    others = tuple(keep_prefixes)
+    with commit_lock(repo):
+        exclude = git_path(repo, "info/exclude")
+        try:
+            text = exclude.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        except UnicodeDecodeError as exc:
+            raise GitOpsError(
+                f"{exclude} is not UTF-8 text ({exc.reason} at byte {exc.start}) -- "
+                "self-learn will not rewrite it; fix its encoding by hand"
+            ) from exc
+        lines = text.splitlines(keepends=True)
+        begins = [i for i, line in enumerate(lines) if _is_exclude_begin(line)]
+        ends = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == EXCLUDE_END]
+        if not begins and not ends:
+            return []
+        if len(begins) != 1 or len(ends) != 1 or ends[0] < begins[0]:
+            raise GitOpsError(
+                f"{exclude}: the self-learn block is malformed (one '{_EXCLUDE_BEGIN_PREFIX}' "
+                f"line and one '{EXCLUDE_END}' line after it are expected) -- fix it by hand"
+            )
+        begin, end = begins[0], ends[0]
+        kept: list[str] = []
+        removed: list[str] = []
+        for line in lines[begin + 1 : end]:
+            bare = line.rstrip("\r\n")
+            name = bare.rstrip("/").rsplit("/", 1)[-1]
+            if (
+                bare.startswith(prefix)
+                and bare.strip()
+                and name not in keep
+                and not any(bare.startswith(other) for other in others)
+            ):
+                removed.append(bare)
+            else:
+                kept.append(line)
+        if not removed:
+            return []
+        fsops.atomic_write(
+            exclude, "".join([*lines[: begin + 1], *kept, *lines[end:]]),
+            preserve_mode=True, fsync=True, follow_symlinks=True,
+        )
+        return removed
 
 
 @dataclass(frozen=True)

@@ -54,7 +54,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple, cast
 
-from . import gitops, intents, invocation, provenance, provider, refs, sentinel, settings, steward_prompt, telemetry, worker
+from . import attribution, gitops, intents, invocation, provenance, provider, refs, sentinel, settings, steward_prompt, telemetry, worker
 from .primitives import chrono, fsops
 from . import transcript_lines
 from . import reconcile as reconcile_mod
@@ -3340,6 +3340,7 @@ def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
 # ------------------------------------------------------------------ run
 
 
+@attribution.as_job("miner")
 def run(
     home: Path | str,
     *,
@@ -4442,7 +4443,7 @@ def _commit_landing(
         subject = f"self-learn: mine {len(result.landed)} candidate(s), {len(result.folded)} fold(s) ({run_id})"
     try:
         gitops.stage(home, touched)
-        gitops.commit(home, subject, paths=touched)
+        gitops.commit(home, subject, body=attribution.stamp(None), paths=touched)
     except gitops.GitOpsError as exc:
         result.landing_uncommitted = True
         log(

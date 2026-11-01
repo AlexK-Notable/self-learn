@@ -360,6 +360,26 @@ def test_a_merge_of_three_with_a_refused_middle_step_then_a_retry(env, tmp_path,
     assert _head(env.home) == head
 
 
+def test_every_leg_of_an_agent_shell_merge_carries_the_runner_s_trailer(env):
+    """S-NEXT-attribution (cures CU-2 item 3): `replace --also` writes the
+    main commit and one `supersede` commit per merged lesson; each carries
+    the runner (`stamp_by`), never the chooser (`by`). Mutation: pass
+    `by=by` to the also-leg's `supersede` again -> the leg says `By: human`."""
+    a, b = _seed(env.home, "lrn-e1000031"), _seed(env.home, "lrn-e1000032")
+    for rid in (a, b):
+        _place(env.home, rid, "skill-md")
+    head = _head(env.home)
+    verbs.replace_lesson(env.home, a, also=[b], trigger=NEW_TRIGGER, instruction=NEW_INSTRUCTION,
+                         because="merged", by="human", stamp_by="agent", no_push=True)
+    shas = git(env.home, "rev-list", f"{head}..HEAD").stdout.split()
+    subjects = [git(env.home, "log", "-1", "--format=%s", sha).stdout.strip() for sha in shas]
+    assert any("supersede" in s for s in subjects) and any("replace" in s for s in subjects)  # control
+    for sha in shas:
+        body = git(env.home, "log", "-1", "--format=%B", sha).stdout
+        assert body.rstrip().endswith("By: agent"), (sha, body)
+        assert "By: human" not in body
+
+
 def test_the_merge_carries_every_lesson_s_evidence(env):
     a = _seed(env.home, "lrn-e1000011", evidence=[{"session": "s-a", "quote": "qa"}])
     b = _seed(env.home, "lrn-e1000012", evidence=[{"session": "s-b", "quote": "qb"}])
@@ -617,6 +637,45 @@ def test_a_lesson_a_person_s_case_covers_keeps_its_placement(env, tmp_path):
     assert applied.items[0].state == "applied", applied.items[0].detail
     new = _rec(env.home, old).superseded_by
     assert (_rec(env.home, new).routing or {}).get("destination") == "skill-md"
+
+
+@pytest.mark.usefixtures("agents_may_replace")
+def test_an_agent_shell_batch_may_move_a_lesson_a_person_s_case_covers(
+    env, tmp_path, monkeypatch, capsys
+):
+    """S-NEXT-attribution (gate r2 finding 2): a command-line `batch` from
+    an agent's shell runs as `agent`, which acts in the person's session, so
+    S-76's placement rule lets it move a lesson a person's case covers, as
+    it did when that batch ran as `human`. Control first: the same line run
+    by the steward is refused, needs-person. Mutation: `actor == "human"`
+    in `verbs._refuse_moving_a_person_s_lesson` -> the agent's line is
+    refused too."""
+    from self_learn import settings
+
+    old = _seed(env.home, "lrn-e1000063")
+    _place(env.home, old, "skill-md")
+    _human_case(env.home, tmp_path, old)
+    moving = {"id": old, "verb": "replace", "trigger": NEW_TRIGGER, "by": "human",
+              "instruction": NEW_INSTRUCTION, "to": str(env.host), "dest": "claude-md",
+              "because": "the user moved it to this project"}
+    steward = batch.run(env.home, _sheet(tmp_path, [moving], name="steward"), no_push=True,
+                        actor="steward")
+    assert (steward.items[0].state, steward.items[0].kind) == ("refused", "needs-person"), (
+        steward.items[0].detail
+    )
+    assert _rec(env.home, old).status == "routed"  # nothing written
+
+    _sheet(tmp_path, [moving], name="agent")
+    for marker in settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert settings.agent_caller()  # positive control: an agent's shell
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
+    code = cli.main(["batch", str(tmp_path / "agent.yaml"), "--no-push"])
+    assert code == 0, capsys.readouterr().err
+    new = _rec(env.home, old).superseded_by
+    assert new and f"*({new})*" in env.claude_md.read_text(encoding="utf-8")
+    assert (_rec(env.home, new).routing or {}).get("destination") == "claude-md"
 
 
 def test_a_person_may_move_a_lesson_their_own_case_covers(env, tmp_path):

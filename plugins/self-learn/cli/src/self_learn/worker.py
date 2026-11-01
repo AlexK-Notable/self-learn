@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from . import cache_gc, domain, intents, invocation, sentinel, settings, telemetry
+from . import attribution, cache_gc, domain, intents, invocation, sentinel, settings, telemetry
 from .primitives import chrono, fsops, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
@@ -2658,6 +2658,7 @@ def _commit_locked(home: Path, result: RunResult) -> bool:
             result.commit_sha = gitops.commit(
                 home,
                 f"self-learn: worker {n} proposal{'s' if n != 1 else ''}",
+                body=attribution.stamp(None),
                 paths=stage,
             )
     except intents.LedgerStoppedError as exc:
@@ -3935,6 +3936,7 @@ def _invoke_claude(
         evidence.observe(outcome)
 
 
+@attribution.as_job("worker")
 def run(
     home: Path | str, *, coalesce: bool = False, no_push: bool | None = None
 ) -> RunResult:

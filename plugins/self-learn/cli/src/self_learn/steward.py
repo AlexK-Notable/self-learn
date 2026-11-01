@@ -24,6 +24,7 @@ from typing import cast
 from ruamel.yaml import YAML, YAMLError
 
 from . import (
+    attribution,
     always_loaded,
     model_failures,
     batch,
@@ -5673,6 +5674,7 @@ def cases_since_overseer(home: Path | str) -> int:
     return count
 
 
+@attribution.as_job("steward")
 def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
     """One steward run, then one push of what it committed (doc 13 §5,
     H-5). Every write inside the run is ``no_push=True``, so before this

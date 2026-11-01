@@ -92,13 +92,17 @@ limit; free-text "Other" is always there beyond them):
   gains. Honesty note on the card: the compiler regenerates from the
   record at apply time, so what lands may differ in detail from the
   preview. On choice:
-  `self-learn route <id>` (proposal's destination) or
-  `self-learn route <id> --dest <target>` if the user overrides; add
-  `--note "…"` if they give a why. **You run these verbs from an agent
-  shell, so every one of them needs `--note "<why>"`** (the CLI refuses
-  without it, before writing anything) and is recorded `By: agent` in the
-  ledger commit; the user's own terminal is unchanged. Put the user's
-  decision and reason in the note, in their words where you can.
+  `self-learn route <id> --by analyst` (proposal's destination, the user
+  accepted it as shown) or `self-learn route <id> --dest <target> --by
+  human` if the user chose another; `--by agent` when you decided an easy
+  item yourself. **You run these verbs from an agent shell, so every one
+  of them needs `--note "<why>"`** (the CLI refuses without it, before
+  writing anything) and is recorded `By: agent` in the ledger commit; and
+  `route`, `reroute`, `replace`, `revise` and `reconsider` also need
+  `--by analyst|human|agent` saying who chose (refused without it; never
+  `steward` or `overseer`, which are the sheet runners'). The user's own
+  terminal is unchanged. Put the user's decision and reason in the note,
+  in their words where you can.
   **Hook proposals are the one exception to regenerate-at-apply
   (M3-2):** the preview must show the proposal's `script` field IN FULL
   — the exact executable bytes the route will commit verbatim (P9: eyes
@@ -108,7 +112,8 @@ limit; free-text "Other" is always there beyond them):
   relay them verbatim — the guard is inert until both are done. Inside a
   *human* review session the two manual steps stay exactly as printed —
   with one shortcut: `self-learn hook activate <id>` performs both by
-  hand (and `hook deactivate <id>` reverses it), no setting required.
+  hand (and `hook deactivate <id>` reverses it), no setting required;
+  run from your shell, both need `--note "<why>"` like every ledger verb.
   Separately, when the user's delegation switch
   (`overseer.hook_activation`) is on, the overseer — and, since S-72
   (2026-09-28), the steward — places and activates a hook route it
@@ -146,7 +151,13 @@ limit; free-text "Other" is always there beyond them):
 (U-verbs S-54, R3).** Each bullet above names the verb call ONE decision
 resolves to; you record it as one line in this session's decision sheet
 (`{id, verb, ...that verb's own fields — note/until/to/dest/…}`) rather
-than firing it immediately. Apply the whole sheet in **one locked run**
+than firing it immediately. Every `route`, `replace` and `revise` line
+carries `by:` saying who chose, with the same three meanings as `--by`
+above: `by: analyst` (the user accepted the proposal as shown), `by:
+human` (the user chose it), `by: agent` (you decided an easy item
+yourself). From your agent shell `batch` refuses the whole sheet without
+it (exit 64, nothing written, the preview too): the sheet runs as you, and
+who ran it is not who chose. Apply the whole sheet in **one locked run**
 at Session end (or at any natural pause — mid-batch is fine): `self-learn
 batch <sheet.yaml>`, previewed first with `self-learn batch <sheet.yaml>
 --dry-run` when you want to see every item's outcome before committing
@@ -182,7 +193,8 @@ every other write:
   the lesson is right and its sentence is wrong.
 
 `reconsider` is not a sheet verb — it is a command,
-`self-learn reconsider <lrn-…> --case case-…`, run by the steward's
+`self-learn reconsider <lrn-…> --case case-… --by <who decided> --note "<why>"`
+(from an agent shell both are required), run by the steward's
 runner or by hand against a successor case (`kind: reconsider`, naming
 the record's original case in `supersedes`). The sheet that then carries
 the corrected verb names that same case with the top-level `case:` key;
@@ -244,10 +256,12 @@ also keeps its existing use for a rejected record, unchanged; it is
 refused for a replaced record, which has a live successor.
 
 `by:` names the actor that made the decision and is permitted on every
-resolution verb (this build widens it from today's `route`-only key);
-inside a human review session it is implicit (`by: human`) and you never
-need to set it. The value set now includes `steward` and `overseer`
-alongside `human`, `analyst`, and `agent` — those two are written only by
+resolution verb. On a `route`, `replace` or `revise` line it says who
+chose, and from your agent shell you always set it (`analyst`, `human` or
+`agent`, as above; the sheet is refused without it). On the other
+resolution verbs leave it out: who rejected, deferred or retired is who
+ran the sheet, recorded from the shell (`By: agent` from yours). The value
+set also includes `steward` and `overseer` — those two are written only by
 the steward's and the overseer's own runners, never by a hand-written
 sheet.
 

@@ -54,7 +54,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import cache_gc, cases, gitops, intents, miner, overseer, premise_sweep, settings, steward, worker
+from . import attribution, cache_gc, cases, gitops, intents, miner, overseer, premise_sweep, settings, steward, worker
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
 from .primitives import chrono, fsops
@@ -1028,6 +1028,18 @@ def _log_job_crash(home: Path | None, cache_dir: Path, job: str, exc: BaseExcept
         pass
 
 
+#: S-NEXT-attribution: the actor each scheduled job's ledger commits carry
+#: (``By:``). The entry points stamp themselves too; this keeps a job that
+#: reaches the ledger some other way attributed.
+_JOB_ACTORS = {
+    "mine": "miner",
+    "worker": "worker",
+    "premises": "sweep",
+    "steward": "steward",
+    "overseer": "overseer",
+}
+
+
 def run_one_job(
     cache_dir: Path, job: Job, *, pid: int | None = None, tick_secs: float | None = None,
     home: Path | None = None,
@@ -1040,7 +1052,10 @@ def run_one_job(
     the same code path in both places."""
     started = time.time()
     beat_pid = pid if pid is not None else os.getpid()
-    with _RunningHeartbeat(cache_dir, pid=beat_pid, job=job.name, tick_secs=tick_secs):
+    actor = _JOB_ACTORS.get(job.name)
+    with _RunningHeartbeat(cache_dir, pid=beat_pid, job=job.name, tick_secs=tick_secs), (
+        attribution.job(actor) if actor is not None else contextlib.nullcontext()
+    ):
         try:
             result = job.run()
             record = JobRecord(job.name, job.surface, True, started, time.time(), result=result)
@@ -1350,6 +1365,10 @@ def run_forever(
 
     prev_term = signal.signal(signal.SIGTERM, _handler)
     prev_int = signal.signal(signal.SIGINT, _handler)
+    # S-NEXT-attribution: outside a job the daemon is `serve`, never the
+    # `human` its command line would otherwise stamp.
+    actor = attribution.process("serve")
+    actor.__enter__()
     try:
         ticks = 0
         next_sweep = 0.0
@@ -1378,6 +1397,7 @@ def run_forever(
                 break
             stop.wait(secs)
     finally:
+        actor.__exit__(None, None, None)
         signal.signal(signal.SIGTERM, prev_term)
         signal.signal(signal.SIGINT, prev_int)
     return 0

@@ -35,7 +35,13 @@ routing:                  # written on routing; null before
                           #   proposals — verbs.py's `ROUTING_BY_VALUES`;
                           #   `steward` and `overseer` widen the same list,
                           #   2026-09-13, S-65 — every sheet item and case
-                          #   `actor` field draws from it)
+                          #   `actor` field draws from it). *S-NEXT-
+                          #   attribution:* who chose, never who ran the
+                          #   verb (that is the commit's `By:` trailer); from
+                          #   an agent's shell the verb must be told (`--by
+                          #   analyst|human|agent`), and so must a `batch`
+                          #   sheet's route/replace/revise line (`by:`,
+                          #   §3a.1 item 5)
   reference_file: null    # 2026-07-16 (doc 13 audit): `reference`
                           #   destination ONLY — WHICH references file got
                           #   the entry (`--dest reference:<file>`); absent
@@ -67,6 +73,13 @@ supersedes: null
 superseded_by: null
 resolution_note: null     # optional; the human's why, written once at
                           #   resolution (route/reject/graduate) — see §2
+resolution_by: steward    # *S-NEXT-attribution*, a `rejected` record only:
+                          #   who made the current rejection — human |
+                          #   agent (a shell) | steward | overseer (a sheet
+                          #   runner, never the line's `by`). Absent when
+                          #   unknown (a record rejected before the field
+                          #   existed); a reopen displaces it into the
+                          #   `resolution` history entry as `by`
 ---
 
 ## Trigger
@@ -347,7 +360,9 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   or the same truthful "already absent"/"left untouched" string when
   nothing changed. `reconsidered` is the
   successor-case pointer a dependency-moved observation queues
-  (`02-schema.md` §3a.2) — a decision, made once, here.
+  (`02-schema.md` §3a.2) — a decision, made once, here. *(S-NEXT-
+  attribution.)* A `reconsidered` entry also carries `by`, who decided the
+  reconsideration (`--by`); the commit's `By:` trailer says who ran the verb.
 - **`history`'s closed set widens to six kinds** *(2026-10-06, L8,
   `03-decisions.md` S-78)*: `moved` joins the five above.
   `ledger_ops.move_record` appends one per `rehome` or `rescope`, for every
@@ -902,6 +917,8 @@ questions:
       path: /abs/path       # the repository a plain yes registers as a canon host
       mode: plain           # git | plain
       kind: project         # project (default) | skills-root
+      action: add           # add (default) | set-mode (S-NEXT-attribution: a yes
+                            #   switches that registered host to `mode`)
 ```
 
 An index row written before this date is `{id, cases}` and reads as
@@ -925,7 +942,15 @@ because the user sees the text and a yes means exactly
 that registration. A reading never carries `register`. The index keeps the
 field as `{kind, path, mode}`; `overseer open` prints "a plain yes registers:
 …" under the ask, and the one-line text recorded on each cited case's
-presentation carries the same words.
+presentation carries the same words. *(S-NEXT-attribution.)* `action:
+set-mode` (kept in the index only when given) makes the yes switch a host
+already registered as `kind` to `mode` (`host set-mode`); `overseer open`
+prints "a plain yes does: switch … to … mode". From an agent's shell the yes
+is proved only when the assistant's own visible message between the person's
+previous typed row and the yes names the ask's id, the path and the mode, and
+no other open ask with a `register` (13 §4 item 5); the registration commit
+carries `Answers: <id>` in its body and `By: agent` / `Proof: <transcript
+line>` as its trailer.
 
 *(Added 2026-10-30, S-101.)* **Lesson records and the preview.**
 Phase B's stage also holds `lessons/<id>.md`, every lesson record in the ledger
@@ -1167,7 +1192,14 @@ own subtree.*
 5. Attribution draws from one list, `{human, steward, overseer, analyst,
    agent}`: `actor` on a case, `recorded_by` on a statement, `updated_by` on
    the user model, and `by:` on every sheet item, permitted on every
-   resolution verb, not `route` alone (U3).
+   resolution verb, not `route` alone (U3). *S-NEXT-attribution:* on a
+   `route` (and so a reroute), `replace` or `revise` line `by:` says who
+   chose, not who ran the sheet. A sheet run from an agent's shell (`self-learn
+   batch`, runner `agent`) must name it on every such line, `analyst`,
+   `human` or `agent`; otherwise the whole sheet is refused before item 1
+   (exit 64, preview and run alike, nothing written), because the runner's
+   actor is those verbs' default `by:` and would record the person's choice
+   as the agent's.
 6. The worker's rejected-proposal digest (`worker.py:1549-1618`, built from
    `git log --grep '^self-learn: reject '`) attributes every entry with its
    decider (`human | steward | overseer`) and the rejected reason; the
@@ -1916,6 +1948,28 @@ and `dry_run`) and `route --dry-run` for its `would_refuse` entries; the
 errors of the case, statement and user-model writers carry the hits their
 message was built from. A person running a verb by hand still sees the span.
 
+**Every ledger commit says who made it** *(S-NEXT-attribution)*. A commit
+in the ledger (never in a host repository) ends in a trailer paragraph with
+`By: <actor>`: `human` or `agent` for a command line (the shell
+`settings.agent_caller` detects), `miner`, `worker`, `sweep` (the premise
+sweep), `steward` or `overseer` for a job (set by the job's entry point, so a
+worker auto-kicked from an agent's command line is `worker`), `serve` for the
+daemon outside a job. A body's own final `By:` block is kept only when it
+is provably the writer's: it names the current actor (or, for the worker
+and the miner, `analyst`, the trailer their routing verbs write), or,
+inside a job (never in a shell), it is a sheet runner's (`steward`,
+`overseer`) execution block below. Any other final block, whatever a note
+or a model's text ends in, is followed by the writer's own. A command-line
+`batch` runs as its shell (`human` or `agent`), so its lines record who ran
+them. An agent's shell running a person-only command under the user's
+standing grant (§3a.3a) writes `By: agent` and `Grant: <statement id>`,
+with its reason and the user's words (`Under the user's standing grant
+(<statement id>): "<words>"`) as body paragraphs; under a proved typed yes,
+`By: agent` and `Proof: <transcript line>`. A final block is kept under an
+authority only when it is `By: agent` (it gains the `Grant:`/`Proof:` line)
+or already names that very authority. Never `By: human` for an agent's
+act.
+
 For an opted-in ordinary ledger mutation, the item's own mutation commit has
 one canonical final trailer block: `By: <runner>`, `Case: <case-id>`,
 `Sheet: <sheet_sha>`, `Item: <original-n>`. The manifest's full digest binds
@@ -2145,6 +2199,42 @@ a new line naming the line it amends.
 A reading of a statement is a user-model entry (§3a.4) that cites the
 statement id, or a case dependency that cites it — the statement line
 itself never grows an "interpretation" field.
+
+### 3a.3a The user's standing grant *(S-NEXT-attribution)*
+
+```
+<ledger>/grants.jsonl
+```
+
+Append-only JSON Lines, like the statement store:
+
+```json
+{"id": "grant-1a2b3c4d", "op": "grant", "statement": "stmt-a0adc9e2",
+ "verbatim": "<the user's words, copied from the statement>",
+ "message_ref": "transcript:<session>#L<n>", "at": "…",
+ "by": "human", "note": "<why it was recorded, or null>"}
+{"id": "grant-5e6f7a8b", "op": "revoke", "grant": "grant-1a2b3c4d",
+ "at": "…", "by": "agent", "note": "…"}
+```
+
+A grant is made only from a user-scoped statement of kind `proposition` or
+`instruction` (never a `question`) whose `message_ref` is a transcript line
+that still resolves, reads as the user's own typing (rule 10, as `statement
+add` reads it) and holds the statement's words. Unlike `statement add`, a
+transcript that cannot be found refuses. Which typed proposition grants
+anything is not something code can read, so any statement passing these
+checks qualifies; what keeps a wrong choice visible is that the words are
+copied verbatim into the grant row and the `grant add` commit, printed on
+every command an agent runs under it (`<command>: running under the user's
+standing grant stmt-…("<words>")`) and in its `--note` refusal, and written
+into every commit made under it; `grant revoke` ends it. The newest grant
+no later row revokes is in force. `self-learn grant add --statement <id>`
+records it (from an agent's shell only with `--note`, committed `By: agent`
+and `Grant: <statement>`); `grant revoke <id>` ends it (anyone may);
+`grant list` shows them. While a grant is in force, an agent's shell may run
+a person-only command (`host add|remove|rebind|set-mode`, a tier-C `config
+set|unset`, `skill write|rename|retire`) with `--note <reason>`; without a
+grant in force, or without the note, the command refuses before any lock.
 
 ### 3a.4 The user model
 
@@ -3867,13 +3957,16 @@ refresh` commits (code-only changes, so they can be reviewed).
 - **`premises.enabled`** (tier C, default **true**) gates the sweep job and
   both input kinds. With the default, the sweep, the follow-up rule and the
   backfill run from the first night after landing, with no step by a person;
-  setting it false is the person's rollback. Agents never set it: it is tier
-  C, and S-92 refuses a tier-C `config set` or `config unset` from an agent's
-  shell. `premises check`, the `premises` sheet verb and a steward
+  setting it false is the rollback. It is tier C: S-92 refuses a tier-C
+  `config set` or `config unset` from an agent's shell unless the ledger holds
+  the user's standing grant (§3a.3a, S-NEXT-attribution); under it an agent
+  sets it with `--note <reason>`, recorded `By: agent` and `Grant: <statement
+  id>`, and it stays the rollback switch. `premises check`, the `premises` sheet verb and a steward
   `--dry-run` work with it false.
 - **`premises.backfill_per_night`** (tier C, default 10; 0 pauses the
   backfill while the rest of the check runs): how many `premise-extract`
-  inputs a run is offered (3a.10.7). Agents never set it (S-92). It is a
+  inputs a run is offered (3a.10.7). Agents set it only under the user's
+  standing grant with `--note` (S-92 as amended by S-NEXT-attribution). It is a
   setting rather than a constant by the user's 2026-09-20 rule that numbers
   which size a step are not hardcoded, and the shared steward test helpers
   pause it.

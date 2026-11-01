@@ -2641,6 +2641,7 @@ def resolve_record(
     rules_paths_from: str | None = None,
     verb: str | None = None,
     extra_allowed_source: frozenset[str] | None = None,
+    resolution_by: str | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -2660,7 +2661,13 @@ def resolve_record(
     own caller has already validated a ``kind: reconsider`` case naming
     this record (``verbs.reject``/``verbs.defer``, never a raw call).
     ``None`` (every pre-U5 caller) leaves the closed-set gate exactly as
-    it was — no widening by default."""
+    it was — no widening by default.
+
+    ``resolution_by`` (S-NEXT-attribution, cures CU-5): who made a
+    rejection (the sheet runner's actor, or the shell's: ``human`` /
+    ``agent``), written to the record's ``resolution_by`` for ``rejected``
+    only; ``None`` (unknown) leaves the field absent, and any other status
+    clears it, so it always describes the current rejection or nothing."""
     if new_status not in RESOLUTION_STATUSES:
         raise LedgerOpsError(
             f"resolution status must be one of {sorted(RESOLUTION_STATUSES)}, "
@@ -2778,6 +2785,7 @@ def resolve_record(
     ):
         _displace_resolution_note(record)
     record.set_status(new_status)
+    record.set_resolution_by(resolution_by if new_status == "rejected" else None)
     if note is not None:
         record.set_resolution_note(note)
 
@@ -2915,10 +2923,13 @@ def _displace_resolution_note(record: Record) -> None:
     (:meth:`Record.clear_resolution_note` is idempotent when there is
     nothing to clear, and refuses unless the note it would clear is
     already the one just appended — never a silent second writer)."""
-    record.append_history(
-        "resolution", {"status": record.status, "note": record.resolution_note}
-    )
+    payload: dict = {"status": record.status, "note": record.resolution_note}
+    if record.resolution_by is not None:
+        # S-NEXT-attribution: who made the displaced rejection goes with it.
+        payload["by"] = record.resolution_by
+    record.append_history("resolution", payload)
     record.clear_resolution_note()
+    record.set_resolution_by(None)
 
 
 def reopen_record(home: Path, record_id: str) -> tuple[list[Path], list[Path]]:

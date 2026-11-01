@@ -33,7 +33,9 @@ def test_each_tier_c_refused_before_lock(setting, operation, tmp_path, monkeypat
         pytest.fail("agent refusal must happen before requesting the ledger lock")
 
     monkeypatch.setattr(intents, "ledger_write", locked)
-    with pytest.raises(settings.AgentSettingRefusal, match="human's switch"):
+    # S-NEXT-attribution: with no authority in force (the CLI puts the
+    # user's standing grant there, grants.authorize) the library refuses.
+    with pytest.raises(settings.AgentSettingRefusal, match="person-only"):
         if operation == "set":
             settings.config_set(home, setting.name, raw)
         else:
@@ -63,13 +65,17 @@ def test_each_marker_cli_refuses(markers, marker_value, operation, tmp_path, mon
     capsys.readouterr()
     for marker in markers:
         monkeypatch.setenv(marker, marker_value)
-    assert cli.main(args) == 1
+    # S-NEXT-attribution: an agent's shell sets a tier-C switch only under the
+    # user's standing grant and with --note; without the note it is a usage
+    # refusal (64), before the lock.
+    assert cli.main(args) == 64
     captured = capsys.readouterr()
     assert captured.out == ""
     detected = ", ".join(marker for marker in MARKERS if marker in markers)
     assert captured.err == (
-        f"self-learn config {operation}: miner.engine is the human's switch; "
-        "run the same command in your own terminal (not through an agent) "
+        f"self-learn config {operation}: config {operation} miner.engine is a person-only "
+        "command; from an agent's shell it runs under the user's standing grant and needs "
+        "--note TEXT saying why (the ledger records By: agent, the grant and the reason) "
         f"(agent shell detected: {detected})\n"
     )
     assert (home / "config.yaml").read_bytes() == original

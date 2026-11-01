@@ -71,6 +71,9 @@ KINDS = frozenset({"anti-pattern", "surface-rule", "reasoning-pattern"})
 #: the old one. The actor stays in ``routing.by`` and the case.
 SOURCES = frozenset({"teach", "auto-memory", "backlog", "session", "rewrite"})
 STATUSES = frozenset({"pending", "routed", "rejected", "deferred", "superseded"})
+#: Who may be recorded as having rejected a lesson (``resolution_by``,
+#: S-NEXT-attribution): the two shells and the two sheet runners.
+RESOLUTION_BY_VALUES = frozenset({"human", "agent", "steward", "overseer"})
 
 #: 11 §3: capture-time grounding classes. The strongest known predictor of
 #: behavioral value (six dead fixture candidates were all general practice).
@@ -707,6 +710,23 @@ class Record:
                 f"covered_by:<kind>:<name>, got {value!r}"
             )
         self._fm["superseded_by"] = value
+
+    @property
+    def resolution_by(self) -> str | None:
+        """Who made the current rejection (S-NEXT-attribution, cures CU-5):
+        ``human``/``agent`` (a shell), ``steward``/``overseer`` (a sheet
+        runner). Absent on a record rejected before the field existed."""
+        return self._fm.get("resolution_by")
+
+    def set_resolution_by(self, actor: str | None) -> None:
+        if actor is None:
+            self._fm.pop("resolution_by", None)
+            return
+        if actor not in RESOLUTION_BY_VALUES:
+            raise ValidationError(
+                f"resolution_by must be one of {sorted(RESOLUTION_BY_VALUES)}, got {actor!r}"
+            )
+        self._fm["resolution_by"] = actor
 
     def set_resolution_note(self, note: str) -> None:
         """Write-once: the human's *why*, part of the resolution event."""

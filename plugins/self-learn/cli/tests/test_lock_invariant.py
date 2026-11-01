@@ -894,6 +894,8 @@ _ARGV_FOR = {
     # actual empty bucket to remove in the fixture.
     "_cmd_canary": None,  # writes canaries.json (cache-local), not the ledger
     "_cmd_case": [["case", "record", "{stage}", "--actor", "human"]],  # U2
+    # S-NEXT-attribution: `revoke` reaches the lock before it reads the store.
+    "_cmd_grant": [["grant", "revoke", "grant-0000aaaa"]],
     "_cmd_statement": [
         ["statement", "add", "--verbatim", "held-lock statement",
          "--ref", "transcript:heldlock#L1", "--recorded-by", "human"],
