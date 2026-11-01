@@ -176,12 +176,13 @@ if [ "$miner_stale" = "true" ]; then
   echo "⚠️  self-learn: transcript miner hasn't completed a run in >36h — check \`self-learn mine status\` / miner.log"
 fi
 
-# S-66: the overseer's report may carry interpretation questions for the
-# user (never lesson approvals). An absent field means the overseer has
-# not run yet, or had nothing to ask — either way, no line.
+# S-66: the overseer's report may carry questions for the user (never
+# lesson approvals). Since S-117 the count covers only legacy asks still
+# waiting for an answer. An absent field means the overseer has not run
+# yet, or had nothing to ask — either way, no line.
 overseer_open_questions="$(jq -r '.overseer_open_questions // 0' <<<"$out" 2>/dev/null)" || exit 0
 if [ "$overseer_open_questions" -gt 0 ] 2>/dev/null; then
-  echo "self-learn: the overseer has ${overseer_open_questions} interpretation questions — /self-learn:overseer"
+  echo "self-learn: the overseer has ${overseer_open_questions} older question(s) still waiting for you — /self-learn:overseer"
 fi
 
 # S-106: project notices. `self-learn status --fast` carries

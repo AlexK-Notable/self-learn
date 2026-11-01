@@ -62,7 +62,7 @@ def test_hook_prints_exact_question_line_when_field_is_present(tmp_path: Path) -
     result = _run_hook(tmp_path, payload)
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "self-learn: the overseer has 1 interpretation questions — "
+        "self-learn: the overseer has 1 older question(s) still waiting for you — "
         "/self-learn:overseer\n"
     )
 

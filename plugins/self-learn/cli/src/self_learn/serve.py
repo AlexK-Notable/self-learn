@@ -927,6 +927,12 @@ def _steward_next(home: Path, cache_dir: Path, now: float) -> tuple[float, str]:
         # `_steward_recently_attempted` holds every run for RETRY_SECS after
         # the newest attempt row (a completed run's push row included).
         when = max(when, attempt + steward.RETRY_SECS)
+    # Overdue premise reviews alone make the steward due
+    # (`_steward_is_due`'s rotation clause), so the preview says so; it
+    # asks only when the rotation is on, and only here, after every
+    # cache-only reason (it reads every placed lesson).
+    if _rotation_on(home) and steward._premise_review_overdue(home):
+        return when, "after the night's mine, for its overdue premise reviews"
     return when, "after the night's mine, when there is work"
 
 
@@ -1498,26 +1504,14 @@ def _run_overseer_job(home: Path) -> "overseer_run.RunResult":
 
 # ------------------------------------------- the stranded-lesson census
 
-#: S-115: where the last census of stranded queued lessons is kept,
-#: under ``<cache>/steward/`` (`NOT_REPO_TRUTH`): the session-start status
-#: reads its count without walking the ledger.
-STRANDED_FILENAME = "stranded.json"
+#: Where the last census is kept and how it is read are spelled ONCE, in
+#: `steward` (the steward's status reads the count and cannot import this
+#: module); the writer below is the only code that writes the file.
+STRANDED_FILENAME = steward.STRANDED_FILENAME
+stranded_path = steward.stranded_path
+read_stranded = steward.read_stranded
 #: The key of the census's `health` notice (one per checkout).
 STRANDED_NOTICE_KEY = "steward-stranded-lessons"
-
-
-def stranded_path(cache_dir: Path) -> Path:
-    return cache_dir / "steward" / STRANDED_FILENAME
-
-
-def read_stranded(cache_dir: Path) -> dict[str, Any] | None:
-    """The last census as written (``{"at", "count", "lessons"}``), or
-    ``None`` when there is none or it cannot be read. Never raises."""
-    try:
-        data = json.loads(stranded_path(cache_dir).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) and isinstance(data.get("count"), int) else None
 
 
 def _write_stranded(cache_dir: Path, rows: list["steward.Stranded"], at: str) -> None:
