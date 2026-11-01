@@ -1833,6 +1833,13 @@ body[data-page="inbox"] .keymap-footer-entry[data-context="inbox"] {
   color: var(--slu-warning);
 }
 
+.ws-answer .error-strip,
+.ws-run .error-strip,
+.ws-ask-note {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .ws-undo,
 .ws-feedback {
   margin: 0.6rem 0 0;

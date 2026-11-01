@@ -30,7 +30,11 @@
       {% set run_item = item %}
       {% include "partials/workspace_run_body.html" %}
     {% endif %}
+    {% if r.closed %}
+    <p data-answer-closed>It is no longer waiting on you.{% if r.successor %} It is now under {{ r.successor.chip }}: <a href="/inbox/{{ r.successor.id }}" hx-get="/inbox/{{ r.successor.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML" hx-push-url="/inbox/{{ r.successor.id }}">open it</a>.{% endif %}</p>
+    {% else %}
     <p class="ws-meta">You can change your answer until it is carried out.</p>
+    {% endif %}
   </div>
   {% elif r and r.state == "error" %}
   <div class="error-strip" role="alert" data-answer-error><p>{{ r.message }}</p><p class="ws-meta">Your text is kept in the box.</p></div>
@@ -94,7 +98,7 @@
       <button type="button" class="btn" hx-get="/inbox/{{ item.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML">Cancel</button>
     </form>
   </div>
-  {% elif item.state != "awaiting-sudo" %}
+  {% elif item.state != "awaiting-sudo" and not (r and r.closed) %}
   <form id="ws-answer-form" class="ws-answer-form" hx-post="/inbox/{{ item.id }}/answer" hx-target="#ws-answer" hx-swap="outerHTML">
     {% if options %}
     <div class="ws-options" role="group" aria-label="Options">

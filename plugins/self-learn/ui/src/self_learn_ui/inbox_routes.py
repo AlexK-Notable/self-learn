@@ -520,14 +520,24 @@ async def inbox_answer(
         return fail(_verb_message(result))
     evidence = result.evidence or {}
     state = evidence.get("state")
-    words_alone = option is None and draft_id is None and text is not None
+    # No option chosen (typed words, or an agent draft sent without one):
+    # on an item with a plan that decides nothing (§1.3), and the page says so.
+    no_option = option is None
     list_read = await _doc(request)
-    fresh = _find(list_read, item_id) or item
-    return _answer_partial(request, fresh, packet_read, {
+    fresh = _find(list_read, item_id)
+    # The answer can move the item on: an approval becomes a "Being carried
+    # out" item with its own id, an answered ask leaves the list. Its old
+    # options are then not offered again on this page.
+    successor = None if fresh is not None else next(
+        (_view_item(i) for i in _items(list_read)
+         if i.get("subject") == item.get("subject") and i.get("id") != item_id), None)
+    return _answer_partial(request, fresh or item, packet_read, {
         "state": "recorded",
         "recorded_as": evidence.get("recorded_as") or "",
         "item_state": state,
-        "words_alone_on_plan": words_alone and state == "open" and (
+        "closed": fresh is None,
+        "successor": successor,
+        "words_alone_on_plan": no_option and state == "open" and (
             any(o.get("effect") == "approve" for o in item.get("options") or [])
         ),
         "run": evidence.get("run"),

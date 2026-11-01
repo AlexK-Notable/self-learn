@@ -579,6 +579,43 @@ ATTENTION_WORDS_NEWER = (
 LOGIN_CAUSE = "API Error: OAuth token has expired. Please run /login"
 
 
+def _seed_active_hook(ledger: Path) -> str:
+    """A real lesson routed to a hook and activated through the product's
+    own verbs, inside the sandbox (its hooks and settings.json land under
+    the redirected SELF_LEARN_CLAUDE_DIR), so "Turn it off" on the walk's
+    decided-for-you item runs the real `hook deactivate`. The proposal and
+    its decision trace come from the UI tests' own builder (`support`),
+    the one place that keeps a valid hook trace current."""
+    from self_learn.ledger_ops import create_record, stamp_proposal, write_proposal
+    from self_learn.records import Record
+
+    tests_dir = str(Path(__file__).resolve().parents[1] / "tests")
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from support import hook_proposal_fields, proposal_dict
+
+    record = Record.create(
+        scope="user", source="teach", created_at=days_ago(3), type="behavior",
+        kind="anti-pattern",
+        trigger="About to edit Home Assistant's .storage files while it runs.",
+        instruction="Stop the container first; a live write clobbers its state.",
+    )
+    create_record(ledger, record)
+    commit_all(ledger, "world attention: the hook lesson")
+    write_proposal(ledger, record.id, proposal_dict(
+        scope="user", destination="hook", alternates=["claude-md"], analyzed_at=days_ago(1),
+        model="sandbox-seed", **hook_proposal_fields()))
+    stamp_proposal(ledger, record.id)
+    commit_all(ledger, "world attention: the hook proposal")
+    for argv in (["route", record.id, "--dest", "hook"], ["hook", "activate", record.id]):
+        proc = subprocess.run(["self-learn", *argv], capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, env=os.environ.copy())
+        if proc.returncode != 0:
+            raise SystemExit(f"world attention: self-learn {' '.join(argv)} failed: "
+                             f"{proc.stderr.strip()[-600:]}")
+    return record.id
+
+
 def world_attention(host: Path, ledger: Path) -> list[str]:
     import json as _json
 
@@ -690,13 +727,14 @@ def world_attention(host: Path, ledger: Path) -> list[str]:
     (overseer / "open-questions.yaml").write_text(
         _yaml.safe_dump({"questions": questions}, sort_keys=False, allow_unicode=True),
         encoding="utf-8")
+    hook_id = _seed_active_hook(ledger)
     report_date = days_ago(1)[:10]
     report = (
         f"# Overseer report — week of {report_date}\n\n## Examined\n"
         "- the oo7-daemon restart lesson and its case\n\n## Questions for you\n"
         + "".join(f"- {q['id']}: {q['text']}\n" for q in questions)
-        + "\n## Hooks\n- turned on the guard against a bare "
-        "`systemctl --user import-environment` (lrn-9b4bb8f0)\n\n"
+        + "\n## Hooks\n- turned on the guard that stops an edit to Home Assistant's "
+        f".storage files while it runs ({hook_id})\n\n"
         "## Refused / could not do\n- none\n"
     )
     (overseer / "latest-report.md").write_text(report, encoding="utf-8")
@@ -708,7 +746,7 @@ def world_attention(host: Path, ledger: Path) -> list[str]:
         "version": 1, "actor": "overseer", "run_id": "run-5a5a5a5a5a5a", "ledger_effects": [],
         "status": "complete", "last_attempt_at": days_ago(1), "week": report_date,
         "attention_effects": [{
-            "lesson": "lrn-9b4bb8f0", "verb": "route", "destination": "hook",
+            "lesson": hook_id, "verb": "route", "destination": "hook",
             "always_loaded": False, "hook_activated": True, "at": days_ago(1),
         }],
     }), encoding="utf-8")

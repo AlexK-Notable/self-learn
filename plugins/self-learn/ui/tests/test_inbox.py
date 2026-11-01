@@ -630,3 +630,28 @@ def test_the_weekly_report_renders_read_only(tmp_path, monkeypatch):
     assert "Overseer report" in page and "/overseer-report/2026-10-25" in page
     assert "hx-post" not in page.split('id="self-learn-ui-content"')[1].split("<footer")[0]
     assert client.get("/overseer-report/not-a-date").status_code == 404
+
+
+def test_an_approval_that_moves_the_item_on_links_to_it_and_offers_no_old_options(tmp_path, monkeypatch):
+    """After an approve click the ask leaves "Needs you" and an approved
+    item with its own id takes its place: the page links to it and does
+    not offer the old options again. Mutation: render the options form on
+    a closed item -> red."""
+    approved = {**APPROVED, "subject": OO7["subject"], "title": OO7["title"], "state": "running",
+                "run": {"unit": "self-learn-run-x", "at": "2026-11-01T10:00:00Z", "claimed_by": None}}
+    reads = Reads(_doc(OO7), {ID_OO7: OO7_PACKET})
+
+    class Moves(FakeRunner):
+        async def run(self, argv):
+            reads.doc = _doc(approved)
+            return await super().run(argv)
+
+    runner = Moves(RunResult(0, stdout='{"state": "running", "recorded_as": "as your choice of the offered option", '
+                                       '"run": {"exit": 0, "message": "Launched in a terminal."}}'))
+    client, *_ = make_client(tmp_path, monkeypatch, reads, runner=runner)
+    resp = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX)
+    assert "data-recorded" in resp.text and "Launched in a terminal." in resp.text  # control
+    assert "data-answer-closed" in resp.text and f'href="/inbox/{ID_APPROVED}"' in resp.text
+    answer_bar = resp.text[: resp.text.index('id="inbox-list"')]
+    assert 'aria-label="Options"' not in answer_bar
+    assert 'id="ws-answer-form"' not in answer_bar
