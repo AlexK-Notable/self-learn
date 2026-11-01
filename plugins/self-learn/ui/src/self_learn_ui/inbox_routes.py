@@ -576,7 +576,7 @@ def _time_group(item: dict, now: datetime) -> str:
     local_now, local = now.astimezone(), when.astimezone()
     if local.date() == local_now.date():
         return "today"
-    if (local_now - local).days < 7:
+    if chrono.age_days(when, now) < 7:
         return "week"
     return "older"
 
