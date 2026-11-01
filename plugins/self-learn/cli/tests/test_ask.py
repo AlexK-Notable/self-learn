@@ -296,6 +296,17 @@ def test_a_draft_is_sealed_inside_its_tool_call_and_survives_a_timeout(monkeypat
         ToolCall("draft_reply", {"text": "Yes", "option": "opt-invented"}),), then=Text("ok"))])
     assert backend.tool_replies[0].is_error is True
     assert len([r for r in _rows(home, item) if r.get("kind") == "draft"]) == 1
+    # ask-agent gate r1 NIT 6 (the last leg, added at integration once the
+    # answers lane merged): the sealed draft is what `attention answer
+    # --draft` accepts, recorded as the agent's draft the person sent.
+    from self_learn import attention_answers
+
+    sent = attention_answers.answer(home, item, draft_id=draft_event["draft_id"])
+    assert sent.statement is None and sent.choice is not None
+    (choice,) = [json.loads(line) for line in
+                 (home / "attention" / "choices.jsonl").read_text("utf-8").splitlines()]
+    assert (choice["how"], choice["draft_id"], choice["text"], choice["offered_by"]) == (
+        "draft-accepted", draft_event["draft_id"], "Not now; keep the jobs held.", "agent")
 
 
 # ------------------------------------------------------------------- 9
