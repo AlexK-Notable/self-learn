@@ -111,13 +111,15 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
   (`$SELF_LEARN_HOME/cases/**`, `$SELF_LEARN_HOME/overseer/**`) and never
   appears in this repository, exactly like every other lesson.
 - Agents set `overseer.skill_writing` or `overseer.skill_discovery`
-  (skill writing, S-107), `premises.enabled` or
-  `premises.backfill_per_night` (the premise check) only under the user's
-  standing grant, with a reason, and report it. All four are tier C
+  (skill writing, S-107), `premises.enabled`,
+  `premises.backfill_per_night`, `premises.rotation_days` or
+  `premises.rotation_per_night` (the premise check) only under the user's
+  standing grant, with a reason, and report it. All six are tier C
   and ship working: `skill_writing` as `on` (writing from the first
   overseer run; `auto`, the old default, reads as on; `off` is the
   rollback, drafts only), `skill_discovery` and `premises.enabled` on,
-  `backfill_per_night` at 10.
+  `backfill_per_night` at 10, `rotation_days` at 90 (0 turns the rotation
+  off) and `rotation_per_night` at `auto`.
 - The miner's session engine (S-91) is switched by `miner.engine`; agents
   set it only under the user's standing grant, with a reason, and never run
   `mine run --preview` outside the test suite: a preview makes real model

@@ -1297,6 +1297,8 @@ _JOB_ACTORS = {
     "premises": "sweep",
     "steward": "steward",
     "overseer": "overseer",
+    # S-NEXT-self-maint: the daily maintenance recompile.
+    "maintenance": "maintenance",
 }
 
 

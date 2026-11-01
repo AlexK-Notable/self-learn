@@ -100,7 +100,7 @@ _INDEX_KEYS = frozenset({"id", "kind", "cases", "text", "why", "register", "defa
 #: register a host take no default of their own; theirs is always one of
 #: these change-nothing sentences.
 SYSTEM_DEFAULT = "Nothing on your system was changed; answer if you want it done."
-REGISTER_DEFAULT = "Nothing was registered; a plain yes registers it."
+REGISTER_DEFAULT = "Nothing was registered or switched; a plain yes does it."
 
 #: The observation the runner records, at publish, on each case an ask
 #: cites (or the case that has since superseded it): the ask was put and

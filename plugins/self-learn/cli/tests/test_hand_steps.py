@@ -179,3 +179,27 @@ def test_a_note_that_only_looks_like_a_trailer_stays_the_note(repo):
     _commit(repo, "self-learn: note lrn-0000a001", note="Reason: the host moved")
     step = _census(repo)["steps"][0]
     assert step["note"] == "Reason: the host moved" and step["by"] == "none"
+
+
+def test_a_maintenance_recompile_is_not_a_hand_step(repo):
+    """w31b integration: the self-maint lane's daily recompile commits
+    `By: maintenance`; the census lane derives its job actors from
+    `attribution.ACTORS`, so `maintenance` must be one. Mutation: drop
+    `maintenance` from `attribution.ACTORS` -> the recompile is listed as a
+    hand step. Positive control first: a person's commit beside it is listed."""
+    _commit(repo, "self-learn: retire lrn-0000a001", note="covered by a hook", trailer="By: human")
+    _commit(repo, "self-learn: recompile 2 record(s)", note="daily maintenance", trailer="By: maintenance")
+    subjects = _subjects(_census(repo))
+    assert "self-learn: retire lrn-0000a001" in subjects
+    assert "self-learn: recompile 2 record(s)" not in subjects
+
+
+def test_every_actor_serve_stamps_on_a_job_is_a_job_actor_for_the_census():
+    """w31b integration: each scheduled job's `By:` actor (`serve._JOB_ACTORS`)
+    is one the census counts as a job, so no new job's commits read as hand
+    steps. Mutation: map a job to an actor outside `attribution.ACTORS`."""
+    from self_learn import serve
+
+    assert serve._JOB_ACTORS  # control: the map is not empty
+    assert set(serve._JOB_ACTORS.values()) <= report._JOB_ACTORS
+    assert "maintenance" in serve._JOB_ACTORS

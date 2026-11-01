@@ -1052,7 +1052,8 @@ questions:
   one it writes is dropped, and the runner indexes the fixed change-nothing
   sentence (`conversation.SYSTEM_DEFAULT`, "Nothing on your system was
   changed; answer if you want it done.", or `REGISTER_DEFAULT`, "Nothing was
-  registered; a plain yes registers it."). The runner cannot tell a system ask
+  registered or switched; a plain yes does it.", one sentence for both a
+  register ask's `action: add` and its `action: set-mode`). The runner cannot tell a system ask
   the model failed to flag; the prompt says which asks are.
 - The index row keeps `default` (and `system: true` when set). At publish,
   for each ask, the runner observes on each cited case -- or on the case its
@@ -1113,7 +1114,7 @@ not recorded.
 
 *(Added 2026-10-31, S-105.)* **Phase B's premise-check facts and the hand-step
 census.** Phase B's `health.yaml` `catalogue_health` list (`overseer/health.py`
-`gather`) gains three rows, all measured by code from the ledger and its git history,
+`gather`) gains four rows (the fourth, `stranded-lessons`, is S-NEXT-cadence's, §3a.8), all measured by code from the ledger and its git history,
 neither calling a model nor writing anything. **`premise-check`** (premise design
 D11, `§3a.10.8`): `placed_lessons` and `without_premises` (a lesson whose `premises`
 field is absent; `[]`, a decision that nothing is checkable, counts as having
