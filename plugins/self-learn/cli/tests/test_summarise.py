@@ -282,9 +282,16 @@ def test_a_pending_summary_moves_into_the_ledger_with_the_next_save(home):
     assert git(home, "status", "--porcelain").stdout.strip() == ""
 
 
-def _steward_run(home, n_cases=3, decided=2):
+def _steward_run(home, n_cases=3, decided=2, outcomes=None):
     runs = home / "cases" / "runs"
     runs.mkdir(parents=True, exist_ok=True)
+    # Minimal case files (frontmatter `outcome`), as the packet reads them.
+    for n, outcome in enumerate(outcomes or []):
+        folder = home / "cases" / "2026-10"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"case-0000{n:04x}.md").write_text(
+            f"---\nid: case-0000{n:04x}\noutcome: {outcome}\nrecords: []\n---\n\n## Decision\n"
+            f"- verb: {outcome}\n", encoding="utf-8")
     (runs / "run-a.json").write_text(json.dumps({
         "actor": "steward", "run_id": "run-a", "started_at": "2026-10-31T03:00:00Z",
         "completed_at": "2026-10-31T03:10:00Z",
@@ -444,8 +451,9 @@ def test_the_counted_total_is_the_titles_count_with_a_parked_case(tmp_path, monk
 
     h = _mk(tmp_path)
     monkeypatch.setenv("SELF_LEARN_HOME", str(h))
-    item = _steward_run(h, n_cases=3, decided=2)
+    item = _steward_run(h, n_cases=3, decided=2, outcomes=["route", "reject", "parked"])
     packet = attention_packet.build(h, item["id"])
+    assert packet["run"]["counts"]["later"] == 1  # control: the parked case is read
     title_n = int(_re.search(r": (\d+) decision", item["title"]).group(1))
     box_n = int(_re.match(r"(\d+) decision", packet["run"]["in_short"]).group(1))
     assert title_n == box_n == 3
