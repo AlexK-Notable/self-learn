@@ -110,8 +110,10 @@ class Authority:
     def paragraphs(self) -> list[str]:
         """The body paragraphs a commit made under this authority carries
         before its trailer: the reason, and for a grant the user's words.
-        Neither can read as a trailer block (each holds spaces before any
-        colon), so the trailer stays the one final block."""
+        Either may be trailer-shaped (a typed yes's reason is ``Answers:
+        q-…``), which is harmless: :func:`stamp` always writes them before
+        its own ``By: agent`` block, so that block stays the final one, the
+        only block a reader of who made the commit takes."""
         out = [self.reason.strip()]
         if self.words.strip():
             words = " ".join(self.words.split())
