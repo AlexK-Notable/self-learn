@@ -57,14 +57,22 @@
       {% if row.unit %}<span class="setting-unit">{{ row.unit }}</span>{% endif %}
       <button type="submit" data-setting-save>Save</button>
     </form>
-    {# data-verb-success: app.js holds a page reload while this is in the page
-       (09 §3.5, leg (f)), so the refresh the save itself causes does not wipe
-       the word "Saved." the moment it appears. #}
-    {% if saved %}<p class="setting-saved" role="status" data-verb-success>Saved.</p>{% endif %}
+    {# The save's own message. data-verb-success / data-verb-error: app.js holds
+       a page reload while either is in the page (Y-16 legs f and a), so the
+       refresh the save itself causes does not wipe it. Each has a Dismiss
+       button (static/settings.js removes the message and releases the held
+       reload), and editing the row's field retires it too. #}
+    {% if saved %}
+    <div class="setting-message" data-setting-message>
+      <p class="setting-saved" role="status" data-verb-success>Saved.</p>
+      <button type="button" class="setting-dismiss" data-setting-dismiss>Dismiss</button>
+    </div>
+    {% endif %}
     {% if row.error %}
-    {# data-verb-error: app.js holds a page reload while this is in the page
-       (Y-16 leg (a)), so a broadcast refresh does not wipe a refusal. #}
-    <p class="error-strip settings-row-error" role="alert" data-setting-error data-verb-error="true">{{ row.error }}</p>
+    <div class="setting-message" data-setting-message>
+      <p class="error-strip settings-row-error" role="alert" data-setting-error data-verb-error="true">{{ row.error }}</p>
+      <button type="button" class="setting-dismiss" data-setting-dismiss>Dismiss</button>
+    </div>
     {% endif %}
     {% else %}
     <p class="settings-value-readonly">{{ row.value_words }}</p>

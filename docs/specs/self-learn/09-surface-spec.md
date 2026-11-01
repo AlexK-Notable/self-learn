@@ -1026,8 +1026,26 @@ returns, row for row; it computes no value and keeps no copy of the registry.
   says how many settings match, or that none does. A row of chips jumps to a
   group and opens it if it is folded.
 - **No new key.** The settings page binds no key (the dispatch pin stands).
-- **A malformed `config.yaml` or an unreadable read** shows the CLI's error in an
-  error strip and no groups; the page is never a 500.
+- **A message after a save holds the page's refresh, and can be dismissed.** A
+  saved row says "Saved." (`data-verb-success`) and a refused one shows the verb's
+  refusal (`data-verb-error`); each has a Dismiss button. Y-16 legs (f) and (a)
+  make `app.js` hold a broadcast refresh while either is in the page, so the
+  refresh the save itself causes does not wipe the message. Dismissing removes
+  it and the held refresh fires. Editing the row's field retires its message
+  at once; a field whose value differs from the stored one marks its form
+  `data-setting-dirty`, the new Y-16 leg (g), which holds the refresh so
+  nothing half-typed is thrown away; taking the edit back releases it. So the
+  settings tab is stale only while a message, or an unsaved edit, is on it.
+- **Reading the CLI.** If the CLI read fails, the page shows the CLI's error in
+  an error strip and no groups, never a 500. A malformed `config.yaml` that the
+  CLI can still read past (it warns and falls back to defaults) shows every row
+  it resolved; a save then shows the CLI's one-line refusal in that row.
+- **Search matches the CLI's own words.** The searchable text holds the full
+  `label` as the CLI wrote it (an inbox kind's `Inbox: ` prefix is dropped only
+  for display). A group's count reads "1 of 10" while a search narrows it, and
+  "Show all" appears only while the box holds a search. A few read-only enum
+  values show in words (`session` as "Each session on its own", `digest`,
+  `auto` as "Automatic"); any other value shows as the CLI sent it.
 
 ## 3. Process & data architecture
 
@@ -2622,6 +2640,17 @@ removed the last competing workstream — the build gate is open.*
   while rendered), and the empirical wipe-pin must rule EXPLICITLY
   on the SSE-frame-vs-swap ordering (the F4 pre-render race)
   before the defense is accepted.
+  *(Amended 2026-11-01, S-NEXT-humane-l4 gate r1: two more producers and one
+  more leg. The settings page's "Saved." line carries `[data-verb-success]`
+  (leg f) and a refused save's strip `[data-verb-error]` (leg a), each with a
+  Dismiss button that removes the message and releases the held reload — so
+  the settings holds have a user-reachable release, not navigation only. A
+  **(g)** leg: any `[data-setting-dirty]` form, a setting field whose value
+  differs from the stored one, defers the reload, because a reload would throw
+  away what is being typed (the leg (c) hazard); taking the edit back, or
+  saving it, releases it. `app.js` listens for `self-learn:release-reload`
+  to re-check the predicate when a message is dismissed or an edit is taken
+  back, where no htmx swap settles.)*
   **(2) Plain words (Y-9) — the NARROW dated §5 exception.** The
   failed-registration leg leads with a human sentence; required
   content: **registration did not complete** (exact copy the

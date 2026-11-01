@@ -1114,6 +1114,15 @@
    *       at the exact file being extended. Release is navigation-only
    *       (§3.5: "persistent, no auto-dismiss") — same shape as leg (d),
    *       never an explicit dismiss like (a)/(e).
+   *   (g) a [data-setting-dirty] form is in the document (humane lane 4,
+   *       the settings page): a setting field whose value differs from the
+   *       stored one. A reload would throw away what the person is typing —
+   *       the (c) hazard. static/settings.js sets and clears the marker.
+   *   The settings page also produces (a) and (f): a save's "Saved." line
+   *   carries [data-verb-success], a refused save's strip [data-verb-error],
+   *   each with a Dismiss button. static/settings.js dispatches the
+   *   `self-learn:release-reload` event when a message is dismissed, or the
+   *   last edit is taken back; the listener below re-checks the predicate.
    * Deferred-not-dropped: the pending reload fires when no leg holds
    * (dismiss removes (a), completion/error/abort clears (b),
    * disarm-or-resolve removes (c), navigating away is (d)'s only
@@ -1543,6 +1552,7 @@
     if (document.querySelector("[data-contradicts-offer]")) return true; // leg (d)
     // leg (e) retired — see the docblock above.
     if (document.querySelector("[data-verb-success]")) return true; // leg (f)
+    if (document.querySelector("[data-setting-dirty]")) return true; // leg (g)
     return false;
   }
 
@@ -1567,6 +1577,9 @@
       reload(); // re-checks the predicate; re-defers if a leg still holds
     }
   }
+  // The settings page releases its own holds (a dismissed message, a taken-
+  // back edit) without an htmx swap to settle; see leg (g)'s note above.
+  document.addEventListener("self-learn:release-reload", releaseReload);
 
   /** Leg (b)'s flag: a verb-confirm POST (any .../confirm route) in
    * flight. Set at htmx's request start; cleared unconditionally on

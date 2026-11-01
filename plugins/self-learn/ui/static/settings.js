@@ -18,6 +18,7 @@
   var input = document.querySelector("[data-settings-find]");
   var status = document.querySelector("[data-settings-status]");
   var none = document.querySelector("[data-settings-none]");
+  var clear = document.querySelector("[data-settings-clear]");
   var groups = Array.prototype.slice.call(document.querySelectorAll("[data-settings-group]"));
   // Folded groups' open state before a search opened them, to restore on clear.
   var wasOpen = new Map();
@@ -40,6 +41,11 @@
         row.hidden = !hit;
         if (hit) inGroup += 1;
       });
+      var count = group.querySelector("[data-settings-count]");
+      if (count) {
+        var total = parseInt(count.getAttribute("data-total"), 10);
+        count.textContent = "(" + (wanted.length && inGroup < total ? inGroup + " of " : "") + total + ")";
+      }
       var classes = group.querySelector("[data-settings-classes]");
       if (classes) {
         classes.hidden = classes.querySelectorAll("li.setting:not([hidden])").length === 0;
@@ -64,6 +70,7 @@
         : "";
     }
     if (none) none.hidden = !(wanted.length && shown === 0);
+    if (clear) clear.hidden = !wanted.length;
   }
 
   if (input) {
@@ -87,14 +94,21 @@
   }
 
   // ---- Save shows only once a value changed -------------------------------
+  // A changed field also marks its form [data-setting-dirty], which holds the
+  // page's reload (app.js leg g) so a refresh never throws away what is being
+  // typed; taking the edit back releases it.
+  function release() {
+    document.dispatchEvent(new CustomEvent("self-learn:release-reload"));
+  }
+
   function watchForm(form) {
     if (form.getAttribute("data-watched")) return;
     form.setAttribute("data-watched", "1");
     var save = form.querySelector("[data-setting-save]");
     if (!save) return;
     var li = form.closest("li.setting");
-    // A refused save keeps its button: the value it shows is the stored one.
-    if (li && li.querySelector("[data-setting-error]")) return;
+    // After a refused save the field shows the stored value and Save stays.
+    var refused = !!(li && li.querySelector("[data-setting-error]"));
     var field = form.querySelector("[name=value]");
     if (!field) return;
     function original() {
@@ -108,11 +122,34 @@
       return field.defaultValue;
     }
     var start = original();
-    save.hidden = true;
-    function update() { save.hidden = field.value === start; }
+    if (!refused) save.hidden = true;
+    function update() {
+      var changed = field.value !== start;
+      save.hidden = !changed;
+      if (changed) {
+        // The row's last message described the previous save; it is stale now.
+        var msg = li && li.querySelector("[data-setting-message]");
+        if (msg) msg.remove();
+        form.setAttribute("data-setting-dirty", "");
+      } else if (form.hasAttribute("data-setting-dirty")) {
+        form.removeAttribute("data-setting-dirty");
+        release();
+      }
+    }
     field.addEventListener("input", update);
     field.addEventListener("change", update);
   }
+
+  // Dismiss: remove the message (its marker was the hold) and let a held
+  // reload fire.
+  document.addEventListener("click", function (ev) {
+    var t = ev.target;
+    var btn = t && t.closest ? t.closest("[data-setting-dismiss]") : null;
+    if (!btn) return;
+    var msg = btn.closest("[data-setting-message]");
+    if (msg) msg.remove();
+    release();
+  });
 
   function watchAll(root) {
     root.querySelectorAll("form[data-setting-form]").forEach(watchForm);
