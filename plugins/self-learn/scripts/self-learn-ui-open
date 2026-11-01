@@ -4,7 +4,17 @@
 # WM/browser-aware file in the surface (10 §1) — everything else in the
 # surface is browser/WM-agnostic by design.
 #
-# Usage: self-learn-ui-open [--record <id>] [--print-paths]
+# Usage: self-learn-ui-open [--record <id> | --page <path>] [--print-paths]
+#
+# --page <path> (attention round, design r2 §4.7; critique 10): open an
+# inbox page, e.g. `--page /inbox` (the tray's left click) or
+# `--page /inbox/att-…`. Only /inbox… and /overseer-report… paths. When a
+# UI window is ALREADY open, focusing it alone would leave it on whatever
+# page it showed, so the script also POSTs /navigate (curl, the cookie and
+# the HX-Request header the server's middleware requires, the token on
+# stdin, never on argv); the open page follows the server's `navigate`
+# envelope. On 409 (no page is connected), any other answer, or no curl,
+# it opens the tokened URL exactly as for a fresh window.
 #
 # Sequence (pinned; re-ordered 2026-07-18 — Y-14, 09 §3 "Deep-link +
 # launcher": token path now resolves FIRST because the service-up step
@@ -120,6 +130,7 @@ command -v timeout >/dev/null 2>&1 && _TO=(timeout 4)
 
 WINDOW_CLASS="self-learn-ui"
 RECORD_ID=""
+PAGE=""
 PRINT_PATHS=0
 
 while [[ $# -gt 0 ]]; do
@@ -130,6 +141,19 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       RECORD_ID="$2"
+      shift 2
+      ;;
+    --page)
+      if [[ $# -lt 2 ]]; then
+        echo "self-learn-ui-open: --page requires a value" >&2
+        exit 2
+      fi
+      PAGE="$2"
+      [[ "$PAGE" == /* ]] || PAGE="/$PAGE"
+      if [[ ! "$PAGE" =~ ^/(inbox|overseer-report)(/[A-Za-z0-9._~-]*)*/?$ || "$PAGE" == *..* ]]; then
+        echo "self-learn-ui-open: --page takes an /inbox or /overseer-report path, got: $2" >&2
+        exit 2
+      fi
       shift 2
       ;;
     --print-paths)
@@ -328,7 +352,9 @@ if [[ -r "$TOKEN_PATH" ]]; then
 fi
 
 # --- URL shape (10 §1 "Companion scripts" row) --------------------------
-if [[ -n "$RECORD_ID" ]]; then
+if [[ -n "$PAGE" ]]; then
+  URL="http://127.0.0.1:${PORT}${PAGE}"
+elif [[ -n "$RECORD_ID" ]]; then
   URL="http://127.0.0.1:${PORT}/record/${RECORD_ID}"
 else
   URL="http://127.0.0.1:${PORT}/"
@@ -473,9 +499,26 @@ _launch() {
   fi
 }
 
+# --page with a window already open: ask the open page to go there
+# (POST /navigate). Prints the HTTP status, or nothing when it could not
+# ask at all (no curl, no token, connection refused, timed out).
+_navigate_open_window() {
+  [[ -n "$PAGE" && -n "$TOKEN" ]] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  printf 'Cookie: %s=%s\n' "slu_token" "$TOKEN" \
+    | curl --silent --max-time 2 --output /dev/null --write-out '%{http_code}' \
+        --request POST --header 'HX-Request: true' --header @- \
+        --data-urlencode "path=${PAGE}" "http://127.0.0.1:${PORT}/navigate" 2>/dev/null || true
+}
+
 if command -v hyprctl >/dev/null 2>&1; then
   _ui_addr="$(_ui_window_address)"
-  if [[ -n "$_ui_addr" ]]; then
+  if [[ -n "$_ui_addr" && -n "$PAGE" && "$(_navigate_open_window)" != "204" ]]; then
+    # 409 (no page connected), another answer, or no way to ask: open
+    # the tokened URL as for a fresh window (design r2 §4.7).
+    _launch
+    _place_fresh_window
+  elif [[ -n "$_ui_addr" ]]; then
     # Focus the matched window by ADDRESS (works whether the class is the
     # pinned one or the URL-derived chromium-Wayland form — T-D fix).
     # C22: bounded — a wedged compositor must not hang the launcher.

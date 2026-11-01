@@ -1,0 +1,23 @@
+{#
+  What a launch or a fix did (design r2 §3.4.7, §3.4.8; §3.7 "Being
+  carried out" rows). Exit 5 = no terminal was found: the command is shown
+  with a copy button, and Run it now stays offered. Expects run_exit,
+  run_message, run_item (and run_login / run_fix for those two clicks).
+#}
+<div class="ws-run" data-run-exit="{{ run_exit }}">
+  {% if run_exit == 0 %}
+  <p class="ws-run-ok">{{ run_message }}</p>
+  {% if run_login %}<p>Type <code>/login</code> in that terminal; then press Check now.</p>{% endif %}
+  {% elif run_exit == 5 %}
+  <p role="alert">No terminal was found to open, so nothing was started. Run this in a terminal of your own:</p>
+  <div class="ws-copyable"><pre class="ws-pre ws-cmd" id="ws-run-cmd">{{ run_message }}</pre>
+    <button type="button" class="btn btn-quiet" data-copy="#ws-run-cmd">Copy</button></div>
+  {% elif run_exit == 4 %}
+  <p role="alert">Not started: {{ run_message }}</p>
+  {% else %}
+  <p class="error-strip" role="alert">{{ run_message }}</p>
+  {% endif %}
+  {% if run_exit != 0 and not run_fix and not run_login and run_item and run_item.class == "approved" %}
+  <button type="button" class="btn btn-primary" hx-post="/inbox/{{ run_item.id }}/run" hx-target="#ws-run-result" hx-swap="innerHTML" data-run-now>Run it now</button>
+  {% endif %}
+</div>

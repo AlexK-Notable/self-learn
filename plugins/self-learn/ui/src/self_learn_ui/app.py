@@ -21,6 +21,8 @@ from starlette.staticfiles import StaticFiles
 from self_learn import verbs
 
 from . import ledger, models, pane, rendering
+from . import inbox_routes
+from .ask_runner import AskRunner, build_ask_runner
 from .env import EnvConfig
 from .idle import ActivityTracker, IdleMonitor
 from .middleware import SecurityMiddleware
@@ -88,6 +90,7 @@ def create_app(
     start_watcher: bool = True,
     idle_exit_seconds: float = 0,
     idle_exit_callback=None,
+    ask_runner: AskRunner | None = None,
 ) -> FastAPI:
     """Construct one server instance. ``token`` is minted by the caller
     (production: :mod:`self_learn_ui.cli`'s ``serve`` at process start,
@@ -117,6 +120,10 @@ def create_app(
     )
     stop_event = asyncio.Event()
     tracker = ActivityTracker()
+    # Attention round (design r2 §4.7): the inbox's ask turns and login
+    # check run beside the verb runner, never behind it.
+    ask_runner = ask_runner if ask_runner is not None else build_ask_runner(
+        home=env.self_learn_home, publish=app_hub.publish_nowait)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -137,12 +144,16 @@ def create_app(
                 pane_manager=app.state.pane_manager,
                 window_seconds=idle_exit_seconds,
                 exit_callback=idle_exit_callback,
+                ask_busy=lambda: ask_runner.busy,
             )
             idle_task = asyncio.ensure_future(monitor.run())
             app.state.idle_task = idle_task
+        ticker = asyncio.ensure_future(inbox_routes.attention_ticker(app))
         try:
             yield
         finally:
+            ticker.cancel()
+            await ask_runner.shutdown()
             stop_event.set()
             if watch_task is not None:
                 watch_task.cancel()
@@ -162,6 +173,7 @@ def create_app(
     app.state.runner = runner
     app.state.refresh_hub = refresh_hub
     app.state.app_hub = app_hub
+    app.state.ask_runner = ask_runner
     app.state.templates = _build_templates()
     app.state.watch_stop_event = stop_event
     app.state.activity_tracker = tracker
@@ -176,6 +188,7 @@ def create_app(
 
     app.add_middleware(SecurityMiddleware, port=env.ui_port, token=token, tracker=tracker)
     app.include_router(router)
+    app.include_router(inbox_routes.router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     return app

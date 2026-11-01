@@ -1,0 +1,13 @@
+{# POST /inbox/<id>/check-login (design r2 §2.3 d, §3.3): one tiny model
+   call through the ask runner, never the verb runner. #}
+<div class="ws-run" data-login-exit="{{ exit }}">
+  {% if ok %}
+  <p class="ws-run-ok"><strong>The login works.</strong> This item clears now, and each held job runs again on its next schedule.</p>
+  {% elif exit == 3 %}
+  <p role="alert"><strong>The login is still broken.</strong> {{ message }}</p>
+  {% elif exit == 4 %}
+  <p role="alert">Not checked: {{ message }}</p>
+  {% else %}
+  <p class="error-strip" role="alert">{{ message }}</p>
+  {% endif %}
+</div>

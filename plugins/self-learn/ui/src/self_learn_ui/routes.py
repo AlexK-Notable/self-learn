@@ -579,8 +579,20 @@ def front(request: Request, notice: str | None = None) -> HTMLResponse:
     return _render(
         request,
         "index.html",
-        {"model": model, "notice": notice},
+        {"model": model, "notice": notice, "inbox": _inbox_link(ledger.attention(home))},
     )
+
+
+def _inbox_link(read: "ledger.CliRead") -> dict[str, Any]:
+    """The front page's "Inbox (N)" (attention round, design r2 §4.7): N is
+    the items that need you plus the new decisions made for you; "?" when
+    the inbox could not be read (the page then says why)."""
+    data = read.data if isinstance(read.data, dict) else None
+    if data is None or data.get("error"):
+        return {"count": 0, "label": "?"}
+    counts = data.get("counts") or {}
+    count = int(counts.get("needs_you") or 0) + int(counts.get("new") or 0)
+    return {"count": count, "label": str(count)}
 
 
 # -------------------------------------------------------------------- Bucket

@@ -1,0 +1,143 @@
+{#
+  The packet's parts of the workspace (design r2 §2.1 items 5, 6, 9; §3.7
+  "packet slow" and "packet failed"). Evidence is readable in place: the
+  person never copies an id or opens a file elsewhere.
+#}
+<div id="ws-packet" class="ws-packet">
+{% if deferred %}
+  <div hx-get="/inbox/{{ item.id }}/evidence" hx-trigger="load" hx-target="#ws-packet" hx-swap="outerHTML">
+    <p class="ws-assembling" aria-busy="true">Evidence: assembling…</p>
+  </div>
+{% elif packet_error %}
+  <div class="error-strip ws-packet-error" role="alert" data-packet-error>
+    <p>The full context for this item could not be assembled: {{ packet_error }}</p>
+    <p>The question, the options and the reply box below still work.</p>
+  </div>
+{% elif packet %}
+  {% if packet.decided %}
+  <section class="ws-section" aria-labelledby="ws-decided-h">
+    <h2 id="ws-decided-h">What was decided</h2>
+    <p>{{ packet.decided.what }}</p>
+    <p class="ws-meta">By the {{ packet.decided.by }}{% if packet.decided.at %}, {{ packet.decided.at | humanize_ts }}{% endif %}.</p>
+    {% if packet.decided.because %}<p><strong>Why:</strong> {{ packet.decided.because }}</p>{% endif %}
+  </section>
+  {% endif %}
+
+  {% if packet.recommendation %}
+  <section class="ws-section ws-recommendation" aria-labelledby="ws-rec-h">
+    <h2 id="ws-rec-h">Recommendation</h2>
+    <p class="ws-rec-choice">{{ packet.recommendation.text or option_labels.get(packet.recommendation.option, "") }} <span class="ws-rec-mark">(recommended)</span></p>
+    {% set rec_does = (packet.options or []) | selectattr("id", "equalto", packet.recommendation.option) | map(attribute="does") | select | first %}
+    {% if rec_does %}<p><strong>If you choose it:</strong> {{ rec_does }}</p>{% endif %}
+    {% if packet.recommendation.reasoning %}<p><strong>Why:</strong> {{ packet.recommendation.reasoning }}</p>{% endif %}
+    {% if packet.alternatives %}
+    <p class="ws-meta">Other choices:</p>
+    <ul class="ws-alternatives">
+      {% for alt in packet.alternatives %}
+      <li><strong>{{ option_labels.get(alt.option, alt.option) }}</strong>{% if alt.does %}: {{ alt.does }}{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if packet.plan %}
+  {% set plan = packet.plan %}
+  <section class="ws-section ws-plan" aria-labelledby="ws-plan-h">
+    <h2 id="ws-plan-h">What would be done</h2>
+    {% if plan.summary %}<p>{{ plan.summary }}</p>{% endif %}
+    <p class="ws-meta">
+      {% if plan.sudo %}Some steps need sudo: you run those yourself.{% else %}No sudo.{% endif %}
+      {% if plan.money %} It spends money.{% else %} No money.{% endif %}
+      {% if plan.by == "code" %} The plan is written by self-learn's code, not a model.{% endif %}
+    </p>
+    {% if plan.conditions %}<p><strong>Your conditions:</strong> {{ plan.conditions }}</p>{% endif %}
+    {% if plan.checks %}
+    <h3>Checked first (nothing changes if a check fails)</h3>
+    <ol class="ws-steps">
+      {% for check in plan.checks %}
+      <li>{{ check.say }}{% if check.command %}<pre class="ws-pre ws-cmd">{{ check.command }}</pre>{% endif %}</li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+    {% if plan.steps %}
+    <h3>Steps</h3>
+    <ol class="ws-steps">
+      {% for step in plan.steps %}
+      <li>{% if step.sudo %}<span class="chip chip-needs-you">you run this (sudo)</span> {% endif %}{{ step.say }}{% if step.command %}<pre class="ws-pre ws-cmd">{{ step.command }}</pre>{% endif %}</li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+    {% for file in plan.files or [] %}
+    <h3>The file it would write: <code>{{ file.path }}</code></h3>
+    <pre class="ws-pre">{{ file.content }}</pre>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <section class="ws-section ws-evidence" aria-labelledby="ws-evidence-h">
+    <h2 id="ws-evidence-h">Evidence</h2>
+    {% if not packet.evidence %}
+    <p class="ws-meta">No evidence was attached to this item beyond what is shown above. The agent below can look further.</p>
+    {% endif %}
+    {% for ev in packet.evidence or [] %}
+    <details class="ws-ev ws-ev-{{ ev.kind }}" data-evidence-kind="{{ ev.kind }}"{% if loop.index <= 2 %} open{% endif %}>
+      {% if ev.kind == "lesson" %}
+      <summary>The lesson <code>{{ ev.id }}</code>{% if ev.title %}: {{ ev.title }}{% endif %}</summary>
+      <p class="ws-meta">{{ ev.status }}{% if ev.placement %} · {{ ev.placement }}{% endif %}</p>
+      <div class="ws-quote">{{ ev.text | markdown }}</div>
+      {% elif ev.kind == "statement" %}
+      <summary>Your words, <code>{{ ev.id }}</code>{% if ev.at %}, {{ ev.at | humanize_ts }}{% endif %}</summary>
+      <blockquote class="ws-quote">“{{ ev.verbatim }}”</blockquote>
+      {% if ev.answers and ev.answers.ref %}<p class="ws-meta">Answering {{ ev.answers.kind }} {{ ev.answers.ref }}</p>{% endif %}
+      {% if ev.context %}<p class="ws-meta">Around it:</p><pre class="ws-pre">{{ ev.context }}</pre>
+      {% elif ev.context_note %}<p class="ws-meta">The conversation around it was {{ ev.context_note }}.</p>{% endif %}
+      {% elif ev.kind == "case" %}
+      <summary>The case <code>{{ ev.id }}</code></summary>
+      {% if ev.question %}<p><strong>Question:</strong> {{ ev.question }}</p>{% endif %}
+      {% if ev.decision %}<p><strong>Decision:</strong> {{ ev.decision }}</p>{% endif %}
+      {% if ev.because %}<p><strong>Because:</strong> {{ ev.because }}</p>{% endif %}
+      {% if ev.excerpt %}<pre class="ws-pre">{{ ev.excerpt }}</pre>{% endif %}
+      {% elif ev.kind == "report" %}
+      <summary>The weekly report, {{ ev.date }}{% if ev.section %} ({{ ev.section }}){% endif %}</summary>
+      <div class="ws-quote">{{ ev.excerpt | markdown }}</div>
+      <p><a href="/overseer-report/{{ ev.date }}">Open the whole report</a></p>
+      {% elif ev.kind == "file" %}
+      <summary>The file <code>{{ ev.path }}</code></summary>
+      <pre class="ws-pre">{{ ev.excerpt }}</pre>
+      {% if ev.truncated %}<p class="ws-meta">Only the start of the file is shown.</p>{% endif %}
+      {% elif ev.kind == "hook" %}
+      <summary>The hook from <code>{{ ev.record }}</code></summary>
+      {% if ev.script_excerpt %}<pre class="ws-pre">{{ ev.script_excerpt }}</pre>{% endif %}
+      {% if ev.registration %}<p class="ws-meta">Registered as:</p><pre class="ws-pre">{{ ev.registration }}</pre>{% endif %}
+      {% elif ev.kind == "hold" %}
+      <summary>What is held{% if ev.since %}, since {{ ev.since | humanize_ts }}{% endif %}</summary>
+      <p><strong>The error:</strong></p><pre class="ws-pre">{{ ev.cause }}</pre>
+      {% if ev.held %}<p><strong>Waiting:</strong> {{ ev.held }}</p>{% endif %}
+      {% if ev.fix %}
+      <p><strong>The step only you can take:</strong></p>
+      <div class="ws-copyable"><pre class="ws-pre" id="ws-fix-{{ loop.index }}">{{ ev.fix }}</pre>
+        <button type="button" class="btn btn-quiet" data-copy="#ws-fix-{{ loop.index }}">Copy</button></div>
+      {% endif %}
+      {% elif ev.kind == "grant" %}
+      <summary>Your standing grant <code>{{ ev.id }}</code></summary>
+      {% if ev.verbatim %}<blockquote class="ws-quote">“{{ ev.verbatim }}”</blockquote>{% endif %}
+      <p class="ws-meta">{% if ev.statement %}<code>{{ ev.statement }}</code>{% endif %}{% if ev.verb %} · used for {{ ev.verb }}{% endif %}</p>
+      {% elif ev.kind == "fact" %}
+      <summary>{{ ev.label }}</summary>
+      <p>{{ ev.value }}</p>
+      {% else %}
+      <summary>{{ ev.kind }}{% if ev.id %} <code>{{ ev.id }}</code>{% endif %}</summary>
+      <pre class="ws-pre">{{ ev | tojson(indent=1) }}</pre>
+      {% endif %}
+    </details>
+    {% endfor %}
+    {% if packet.more %}
+    <p class="ws-meta">More the agent can open for you: {% for m in packet.more %}{{ m.kind }} <code>{{ m.id }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+    {% endif %}
+    {% if packet.limits and packet.limits.truncated %}
+    <p class="ws-meta">Shortened to fit: {{ packet.limits.truncated | join(", ") }}.</p>
+    {% endif %}
+  </section>
+{% endif %}
+</div>

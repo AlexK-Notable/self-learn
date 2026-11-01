@@ -1,0 +1,50 @@
+{#
+  One item's decision workspace (design r2 §2.1 checklist, §2.2 layout).
+  The parts that need only the list JSON render at once; the packet's
+  parts (recommendation, plan, decided, evidence) render here too when the
+  packet arrived inside 1.5 s, or fill in by htmx (#ws-packet) when it is
+  slow. The answer bar and the ask panel never wait for the packet.
+#}
+<article id="ws" class="ws" data-item-id="{{ item.id }}" data-item-class="{{ item.class }}"
+         data-item-state="{{ item.state }}" data-item-title="{{ item.title }}"
+         aria-labelledby="ws-question">
+  <div class="ws-main">
+    <header class="ws-head">
+      <p class="ws-chips">
+        <span class="chip chip-{{ item.class }}">{{ item.chip }}</span>
+        {% if item.class == "needs-you" and item.age %}<span class="ws-age">open {{ item.age }}</span>{% endif %}
+        {% if item.class == "decided" and item.flagged and not item.seen %}<span class="dot-new">new</span>{% endif %}
+      </p>
+      <h1 id="ws-question">{{ (packet.question if packet and packet.question else item.title) }}</h1>
+    </header>
+
+    {% if item.class != "decided" %}
+    <section class="ws-section" aria-labelledby="ws-why-h">
+      <h2 id="ws-why-h">Why you</h2>
+      {% if packet and packet.why_you %}<p>{{ packet.why_you }}</p>
+      {% elif item.class == "approved" %}<p>You approved it. It is carried out in a terminal you can see.</p>
+      {% elif item.chip %}<p>{{ item.chip }}.</p>{% endif %}
+    </section>
+    {% endif %}
+
+    <section class="ws-section" aria-labelledby="ws-meanwhile-h">
+      <h2 id="ws-meanwhile-h">{% if item.class == "decided" %}What it changes now{% else %}Meanwhile{% endif %}</h2>
+      {% set meanwhile = (packet.meanwhile if packet else None) or item.meanwhile %}
+      {% if item.class == "decided" and packet and packet.decided and packet.decided.changes_now %}
+      <p>{{ packet.decided.changes_now }}</p>
+      {% elif meanwhile %}<p>{{ meanwhile }}</p>
+      {% else %}<p>Nothing is done until you answer.</p>{% endif %}
+    </section>
+
+    {% include "partials/workspace_packet.html" %}
+
+    {% include "partials/workspace_answer.html" %}
+
+    {% if not item.seen %}
+    {# §3.5: opening an item marks it seen once it has been shown for 1 s. #}
+    <div hidden hx-post="/inbox/{{ item.id }}/seen" hx-trigger="load delay:1s" hx-swap="none"></div>
+    {% endif %}
+  </div>
+
+  {% include "partials/workspace_ask.html" %}
+</article>

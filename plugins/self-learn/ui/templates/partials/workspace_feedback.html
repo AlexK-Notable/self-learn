@@ -1,0 +1,3 @@
+{# POST /inbox/<id>/feedback (answer 7): the person's click only. #}
+{% if ok %}<p class="ws-meta" data-feedback-ok>Noted. {{ message }} You can change this on the settings page.</p>
+{% else %}<p class="error-strip" role="alert">{{ message }}</p>{% endif %}

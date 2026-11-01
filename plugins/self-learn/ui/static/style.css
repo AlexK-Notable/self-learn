@@ -1471,3 +1471,468 @@ dd {
 .htmx-request.htmx-indicator {
   opacity: 1;
 }
+
+/* ------------------------------------------------------------ inbox --- */
+/* Attention round (design r2 §2.2, §3.6): the inbox list beside the
+   decision workspace; at 1,280 px and wider the "Ask about this" panel is
+   a third column, so the evidence and the conversation read side by side.
+   Narrow widths stack. Chips carry words as well as colour; buttons are at
+   least 32 px tall with the shared visible focus ring. */
+main#self-learn-ui-content:has(.inbox),
+main#self-learn-ui-content:has(.overseer-report) {
+  max-width: 110rem;
+}
+
+body[data-page="inbox"] .keymap-footer-entry[data-context="inbox"] {
+  display: inline;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.inbox {
+  display: grid;
+  grid-template-columns: minmax(14rem, 19rem) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .inbox {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.inbox-nav {
+  position: sticky;
+  top: 4rem;
+}
+
+.inbox-group-h {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--slu-fg-muted);
+  margin: 1rem 0 0.35rem;
+}
+
+.inbox-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.inbox-item a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--slu-radius-sm);
+  border: 1px solid transparent;
+  color: var(--slu-fg);
+  text-decoration: none;
+}
+
+.inbox-item a:hover {
+  border-color: var(--slu-border-strong);
+}
+
+.inbox-item.selected a {
+  background: var(--slu-accent-bg);
+  border-color: color-mix(in srgb, var(--slu-accent) 45%, transparent);
+}
+
+.inbox-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+}
+
+.inbox-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.chip {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.1em 0.55em;
+  border-radius: 999px;
+  border: 1px solid var(--slu-border-strong);
+  background: var(--slu-bg-elevated);
+  color: var(--slu-fg);
+}
+
+.chip-needs-you {
+  background: var(--slu-warning-bg);
+  color: var(--slu-warning);
+  border-color: color-mix(in srgb, var(--slu-warning) 40%, transparent);
+}
+
+.chip-approved {
+  background: var(--slu-accent-bg);
+  color: var(--slu-accent);
+  border-color: color-mix(in srgb, var(--slu-accent) 40%, transparent);
+}
+
+.chip-decided {
+  background: var(--slu-success-bg);
+  color: var(--slu-success);
+  border-color: color-mix(in srgb, var(--slu-success) 40%, transparent);
+}
+
+.dot-new {
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: var(--slu-accent);
+}
+
+.dot-new::before {
+  content: "● ";
+}
+
+.ws {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.5rem;
+}
+
+@media (min-width: 1280px) {
+  .ws {
+    grid-template-columns: minmax(0, 1fr) minmax(22rem, 30rem);
+  }
+  .ws-ask {
+    position: sticky;
+    top: 4rem;
+    max-height: calc(100vh - 6rem);
+    overflow-y: auto;
+  }
+}
+
+.ws-head h1 {
+  font-size: 1.35rem;
+  line-height: 1.3;
+  margin: 0.3rem 0 0;
+}
+
+.ws-chips {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0;
+}
+
+.ws-age,
+.ws-meta {
+  color: var(--slu-fg-muted);
+  font-size: 0.83rem;
+}
+
+.ws-section h2,
+.ws-ask h2 {
+  font-size: 0.95rem;
+  margin: 0 0 0.35rem;
+}
+
+.ws-section h3 {
+  font-size: 0.85rem;
+  margin: 0.8rem 0 0.3rem;
+}
+
+.ws-section {
+  margin: 0 0 1.1rem;
+}
+
+.ws-recommendation {
+  border: 1px solid var(--slu-border);
+  border-left: 3px solid var(--slu-accent);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.6rem 0.85rem;
+  background: var(--slu-bg-raised);
+}
+
+.ws-rec-choice {
+  font-weight: 650;
+}
+
+.ws-rec-mark {
+  color: var(--slu-accent);
+  font-weight: 600;
+}
+
+.ws-pre {
+  font-family: var(--slu-font-mono);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--slu-bg-inset);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.45rem 0.6rem;
+  margin: 0.3rem 0;
+}
+
+.ws-steps {
+  padding-left: 1.3rem;
+}
+
+.ws-ev {
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.35rem 0.7rem;
+  margin: 0 0 0.5rem;
+  background: var(--slu-bg-raised);
+}
+
+.ws-ev > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.88rem;
+  min-height: 2rem;
+  display: list-item;
+}
+
+.ws-quote {
+  margin: 0.4rem 0;
+  padding-left: 0.7rem;
+  border-left: 3px solid var(--slu-border-strong);
+}
+
+.ws-copyable {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.ws-copyable .ws-pre {
+  flex: 1 1 18rem;
+}
+
+.ws-answer {
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius);
+  padding: 0.8rem 1rem;
+  background: var(--slu-bg-raised);
+}
+
+.ws-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+}
+
+.ws-options button,
+.ws-answer button,
+.ws-ask button,
+.inbox-list-actions .btn,
+.btn {
+  min-height: 2rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  font: inherit;
+  font-size: 0.83rem;
+  font-weight: 550;
+  text-decoration: none;
+  color: var(--slu-fg);
+  background: var(--slu-bg-elevated);
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.32em 0.85em;
+}
+
+.btn-primary {
+  background: var(--slu-accent-solid);
+  border-color: var(--slu-accent-solid);
+  color: var(--slu-accent-fg);
+}
+
+.btn-primary:hover {
+  color: var(--slu-accent-fg);
+  filter: brightness(1.08);
+}
+
+.btn-quiet {
+  background: transparent;
+}
+
+.btn-chip {
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+.ws-option-does {
+  margin: 0 0 0.7rem;
+  padding-left: 1.2rem;
+  font-size: 0.83rem;
+  color: var(--slu-fg-muted);
+}
+
+.ws-answer-form textarea,
+.ws-ask-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--slu-fg);
+  background: var(--slu-bg-inset);
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.45rem 0.6rem;
+  resize: vertical;
+}
+
+.ws-reply-label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin: 0.4rem 0 0.25rem;
+}
+
+.ws-reply-foot,
+.ws-ask-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.35rem;
+}
+
+.ws-recorded {
+  border-left: 3px solid var(--slu-success);
+  padding: 0.3rem 0.7rem;
+  margin: 0 0 0.7rem;
+  background: var(--slu-success-bg);
+  border-radius: var(--slu-radius-sm);
+}
+
+.ws-armed {
+  border: 1px solid var(--slu-warning);
+  background: var(--slu-warning-bg);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.6rem 0.8rem;
+  margin: 0 0 0.7rem;
+}
+
+.ws-warning {
+  color: var(--slu-warning);
+}
+
+.ws-undo,
+.ws-feedback {
+  margin: 0.6rem 0 0;
+}
+
+.ws-ask {
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  padding: 0.8rem 1rem;
+  background: var(--slu-bg-raised);
+}
+
+.ws-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.6rem 0;
+}
+
+.ws-ask-off,
+.ws-ask-note {
+  font-size: 0.85rem;
+  color: var(--slu-warning);
+}
+
+.bubble {
+  border-radius: var(--slu-radius);
+  padding: 0.45rem 0.75rem;
+  margin: 0 0 0.55rem;
+  border: 1px solid var(--slu-border);
+}
+
+.bubble-user {
+  background: var(--slu-accent-bg);
+  margin-left: 1.5rem;
+}
+
+.bubble-agent {
+  background: var(--slu-bg-inset);
+  margin-right: 1.5rem;
+}
+
+.bubble-who {
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--slu-fg-muted);
+  margin: 0 0 0.2rem;
+}
+
+.bubble-note {
+  text-align: center;
+}
+
+.ws-live-text {
+  white-space: pre-wrap;
+}
+
+.bubble-live[aria-busy="true"] .ws-live-text::after {
+  content: "▍";
+  animation: slu-caret 1s steps(2) infinite;
+}
+
+@keyframes slu-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble-live[aria-busy="true"] .ws-live-text::after {
+    animation: none;
+  }
+}
+
+.draft-card {
+  border: 1px dashed var(--slu-accent);
+  border-radius: var(--slu-radius);
+  padding: 0.5rem 0.75rem;
+  margin: 0 0 0.6rem;
+}
+
+.draft-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.ws-empty {
+  padding: 1rem 0;
+}
+
+.inbox-link-active {
+  font-weight: 650;
+  color: var(--slu-accent);
+}
+
+.report-dates ul {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}

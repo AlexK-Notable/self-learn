@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,6 +58,12 @@ from .runner import SELF_LEARN_BIN_ENV
 
 __all__ = [
     "DEBOUNCE_MS",
+    "PacketRead",
+    "attention",
+    "attention_packet",
+    "overseer_report",
+    "overseer_report_dates",
+    "workspace_rows",
     "POLL_FALLBACK_SECONDS",
     "RecordLocation",
     "RefreshEvent",
@@ -225,6 +232,119 @@ def commit_drift_dry_run(
         args += ["--dest", dest]
     args += ["--dry-run", "--json"]
     return _invoke_json(args, home=home, env=env)
+
+
+# ------------------------------------------------- the inbox (attention r2)
+
+
+#: The inbox's reads are bounded tighter than the list/report reads: the
+#: tray and the page both poll them, and `attention --json` is specified to
+#: finish in under a second (design r2 §3.1).
+_ATTENTION_TIMEOUT_SECS = 15
+
+
+@dataclass(frozen=True)
+class PacketRead:
+    """``attention packet <id> --json``: ``data`` on success; otherwise
+    ``unknown`` (exit 2: the id names no item, or one that expired) or
+    ``error`` (exit 1 or a spawn failure; the page then renders from the
+    list JSON alone, design r2 §3.2 "Failure")."""
+
+    data: dict | None
+    error: str | None = None
+    unknown: bool = False
+
+
+def _run_cli(args: list[str], *, home: Path, env: dict[str, str] | None,
+             timeout: float) -> tuple[int | None, str, str]:
+    full_env = dict(env if env is not None else os.environ)
+    full_env["SELF_LEARN_HOME"] = str(home)
+    label = "self-learn " + " ".join(args)
+    try:
+        proc = subprocess.run(
+            [_self_learn_bin(), *args], capture_output=True, text=True, env=full_env,
+            timeout=timeout, stdin=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return None, "", f"{label} failed to start: {exc}"
+    except subprocess.TimeoutExpired:
+        return None, "", f"{label} timed out after {timeout:.0f}s"
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def attention(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
+    """``self-learn attention --json`` (contract §4.1). Exit 1 still prints
+    the document (``state: broken``, ``error`` set): that is DATA here, not
+    a failed read, so the page can show the reader's own error text. Only a
+    spawn failure, a timeout or unparsable output is a ``CliRead`` error."""
+    code, out, err = _run_cli(["attention", "--json"], home=home, env=env,
+                              timeout=_ATTENTION_TIMEOUT_SECS)
+    if code is None:
+        return CliRead(data=None, error=err)
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return CliRead(data=None, error=err.strip() or f"self-learn attention exited {code}")
+    if not isinstance(data, dict):
+        return CliRead(data=None, error="self-learn attention --json printed no object")
+    return CliRead(data=data, error=None)
+
+
+def attention_packet(home: Path, item_id: str, *, env: dict[str, str] | None = None) -> PacketRead:
+    """``self-learn attention packet <id> --json`` (contract §4.3)."""
+    code, out, err = _run_cli(["attention", "packet", item_id, "--json"], home=home, env=env,
+                              timeout=_ATTENTION_TIMEOUT_SECS)
+    if code == 2:
+        return PacketRead(data=None, unknown=True, error=err.strip() or "unknown item")
+    if code != 0:
+        return PacketRead(data=None, error=err.strip() or f"the packet could not be built (exit {code})")
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError as exc:
+        return PacketRead(data=None, error=f"the packet was not valid JSON: {exc}")
+    return PacketRead(data=data if isinstance(data, dict) else None,
+                      error=None if isinstance(data, dict) else "the packet was not an object")
+
+
+def workspace_rows(home: Path, item_id: str) -> list[dict]:
+    """The item's workspace transcript rows (sealed, then pending ones kept
+    while the ledger is STOPPED, ``t: null``): a raw read through the CLI's
+    own reader, never re-parsed here. A malformed id or an unreadable file
+    is an empty conversation, never an error page."""
+    from self_learn import workspace as sl_workspace
+
+    try:
+        return list(sl_workspace.rows(home, item_id))
+    except (ValueError, OSError):
+        return []
+
+
+_REPORT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def overseer_report(home: Path, date: str | None = None) -> tuple[str | None, str | None]:
+    """The overseer's weekly report as markdown: ``latest-report.md``, or
+    ``<date>-report.md`` for a ``YYYY-MM-DD`` date (anything else reads as
+    absent, never as a path). Returns ``(text, error)``."""
+    if date is not None and not _REPORT_DATE_RE.match(date):
+        return None, "no such report"
+    path = Path(home) / "overseer" / (f"{date}-report.md" if date else "latest-report.md")
+    try:
+        return path.read_text(encoding="utf-8"), None
+    except FileNotFoundError:
+        return None, "no weekly report has been written yet" if date is None else "no such report"
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, f"the report could not be read: {exc}"
+
+
+def overseer_report_dates(home: Path) -> list[str]:
+    """The dated reports present, newest first."""
+    folder = Path(home) / "overseer"
+    try:
+        names = [p.name[: -len("-report.md")] for p in folder.glob("*-report.md")]
+    except OSError:
+        return []
+    return sorted((n for n in names if _REPORT_DATE_RE.match(n)), reverse=True)
 
 
 # ------------------------------------------------------------ raw reads

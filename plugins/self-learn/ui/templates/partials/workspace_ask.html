@@ -1,0 +1,32 @@
+{#
+  "Ask about this" (design r2 §2.1 item 8, §2.2, §3.3, §3.7 "Ask" rows):
+  a conversation with an agent that starts with the whole item in its
+  context and can read further, read-only. It can draft a reply; it never
+  sends one. At 1,280 px and wider this panel is the third column.
+#}
+<section id="ws-ask" class="ws-ask" aria-labelledby="ws-ask-h" data-ask-panel data-item="{{ item.id }}">
+  <h2 id="ws-ask-h">Ask about this</h2>
+  <div id="ws-conversation" class="ws-conversation">
+    {% include "partials/workspace_conversation.html" %}
+  </div>
+  {% if ask.unavailable == "login" %}
+  <p class="ws-ask-off" role="note" data-ask-off="login">The agent can't answer while the Claude login is broken. Log in (the "Log in to Claude" item under Needs you shows how). Everything else on this page works.</p>
+  {% elif ask.unavailable == "money" %}
+  <p class="ws-ask-off" role="note" data-ask-off="money">Asking would bill an API key (or Bedrock) here, so it is off. Nothing was sent.</p>
+  {% endif %}
+  <div class="ws-chips-row" role="group" aria-label="Starter questions">
+    {% for chip in chips %}
+    <button type="button" class="btn btn-chip" data-ask-chip{% if ask.unavailable %} disabled{% endif %}>{{ chip }}</button>
+    {% endfor %}
+  </div>
+  <form id="ws-ask-form" class="ws-ask-form" hx-post="/inbox/{{ item.id }}/ask" hx-target="#ws-ask-live" hx-swap="innerHTML">
+    <label class="visually-hidden" for="ws-ask-text">Ask anything about this</label>
+    <textarea id="ws-ask-text" name="message" rows="2" placeholder="Ask anything about this…" data-ask-box data-item="{{ item.id }}"{% if ask.unavailable or in_flight %} disabled{% endif %}></textarea>
+    <div class="ws-ask-foot">
+      <button type="submit" class="btn btn-primary" data-ask-send{% if ask.unavailable or in_flight %} disabled{% endif %}>Ask</button>
+      <button type="button" class="btn" hx-post="/inbox/{{ item.id }}/ask/stop" hx-target="#ws-ask-status" hx-swap="innerHTML" data-ask-stop{% if not in_flight %} hidden{% endif %}>Stop</button>
+    </div>
+  </form>
+  <div id="ws-ask-status" aria-live="polite"></div>
+  <div id="ws-ask-live" class="ws-ask-live"></div>
+</section>
