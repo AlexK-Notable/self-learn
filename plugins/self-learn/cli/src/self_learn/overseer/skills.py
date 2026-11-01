@@ -76,6 +76,11 @@ from .. import config, scan, settings, skill_registry, skill_writer
 from ..hosts import HostsError, load_hosts
 from ..skill_registry import STATUS_LIVE, SkillRegistryError
 
+# Called by its bare name, never as ``skill_writer.rename(...)``: the lock
+# invariant's walker reads every ``<x>.rename(...)`` call as ``Path.rename``
+# and would stop there instead of following the call into the writer.
+from ..skill_writer import rename as rename_skill
+
 __all__ = [
     "DIFF_FILE",
     "FILES_DIR",
@@ -1040,7 +1045,7 @@ def apply_rename(home: Path | str, case_id: str, step: SkillStep, *, case_name: 
     ``no_push``). Idempotent: a resumed run finishes an interrupted rename,
     and a finished one changes nothing."""
     assert step.renamed_from is not None
-    result = skill_writer.rename(
+    result = rename_skill(
         Path(home), step.renamed_from, step.name, case=case_id, by="overseer",
         expect_sha=step.expect_sha, no_push=True,
     )
