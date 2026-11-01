@@ -385,6 +385,57 @@ revert). Doc 13 promotes that to the general rule:
    no proof). A "yes" that is not a plain yes is still recorded
    and the overseer reads it.
 
+   **The host policy: one repo, one mode, applied by code (S-NEXT-hosts,
+   2026-10-31).** The user typed the policy (stmt-7364bdbe, stmt-526d9b44:
+   projects plain; stmt-60e41e67: "we straight up write in the skill repos"),
+   and applying a rule the user typed is not a new consent, so two things no
+   longer wait on a person. (1) **A project registration of the skills
+   root's path takes the skills root's mode** (`hosts.policy_mode`; today
+   claude-skills' project registration, plain, follows its git skills root).
+   Self-learn already writes that repository as the skills root, so the
+   project registration following it adds no repository, no remote and no
+   kind of write. Nothing else is changed automatically: the skills root's
+   own mode never is, and no other project is touched. `hosts.apply_policy`
+   makes each change through the set-mode core without the agent-shell
+   check (it runs in code; `host set-mode` typed in an agent's shell is still
+   refused without the grant): one ledger commit per change, subject
+   `self-learn: host set-mode project <path> <old> → <new> (policy)`, body
+   citing stmt-60e41e67 and "one repo, one mode" and naming the undo,
+   trailer `By: policy`; under the ledger lock exactly as `host set-mode`
+   (a switch to git takes self-learn's own `info/exclude` lines, above).
+   It then recompiles the records routed into that registration, so its
+   targets are rendered and committed in the new mode (the drift row's
+   repair, done by code). `serve` evaluates it every tick before the premise
+   sweep and runs it only when a registration does not follow the policy,
+   at most once a day (attempt marker `<cache>/hosts-policy.json`); a change
+   it cannot make is a line on serve's stderr and the doctor's `hosts` row
+   names a change still owed. (2) **Self-learn registers a project in plain
+   mode on its own** (decision 5, interventions D1): the overseer may list
+   project directories in phase B's optional `hosts.yaml` (02 §
+   overseer, "Phase B's optional `hosts.yaml`"), and the runner registers
+   each as a PLAIN project host through `hosts.register_plain_project`,
+   committed `By: overseer` whatever shell started the run, with the case,
+   the reason and the undo command in the body. It refuses, writing nothing,
+   a path that is not an existing directory strictly inside the user's home,
+   that is the ledger or self-learn's cache (inside either or above either),
+   or that is registered already; it never registers git mode, which stays a
+   person's act (or the agent's under the grant): git mode is the one case
+   where self-learn would write into another repository's history and
+   remote. A plain registration writes only files git ignores (the marker
+   and its private `info/exclude` line now, compiled lines later) and never
+   commits or pushes there, which is the deployment the user described.
+   Each registration is listed in the weekly report under "Decided in the
+   user's stead" with `self-learn host remove <path> --project`, the
+   command that undoes it, and what that command needs once lessons are
+   routed there (move each with `rehome`, or `--gate-only`). **The undo
+   stands** (fix round 1): a path a `host remove` took out of the registry,
+   whoever ran it, is never registered by self-learn again
+   (`hosts.registration_problem` reads the ledger's history of
+   `hosts.yaml`; `projects.yaml` shows it `removed`). The policy's own
+   switches since the last run are listed in the same section with their
+   undo, and its commits (`By: policy`) are a job's, never a hand step. The S-103 typed-yes path stays for the user's own
+   answers (a git-mode registration, a mode switch).
+
    **What replaces git for a plain host, and what does not.** Item 2's
    drift check is unaffected: it was never a git check — it compares the
    ledger's routed records against `(lrn-…)` entry markers in the target,

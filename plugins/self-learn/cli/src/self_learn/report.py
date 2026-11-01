@@ -396,8 +396,8 @@ def hand_steps(
     this order: a subject that is new knowledge or protocol bookkeeping
     (:data:`_INPUT_SUBJECT_RE`) never is; a ``By:`` trailer names the
     maker (CU-4: every ledger commit carries one), a job actor
-    (``miner``, ``worker``, ``sweep``, ``steward``, ``overseer``, ``serve``,
-    ``analyst``) is not a hand step, ``human`` and ``agent`` are; a commit with
+    (any actor in :data:`_JOB_ACTORS`: ``miner``, ``worker``, ``sweep``,
+    ``steward``, ``overseer``, ``serve``, ``policy``, ``analyst``) is not a hand step, ``human`` and ``agent`` are; a commit with
     NO trailer (history from before the stamp) falls back to its subject
     (:data:`_JOB_SUBJECT_RE`): a job's subject is not a hand step, any other is,
     with ``by`` ``none`` because the commit cannot say which shell.

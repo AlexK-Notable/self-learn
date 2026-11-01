@@ -132,7 +132,7 @@ def _dump(data: Any) -> str:
 def closed_sets() -> dict[str, Any]:
     """Every closed set the runner and the case writer enforce, read from
     the modules that enforce them."""
-    from .. import batch, cases, user_model, verbs
+    from .. import batch, cases, hosts, user_model, verbs
     from .. import notices as project_notices
     from . import discovery, population, run
 
@@ -159,6 +159,13 @@ def closed_sets() -> dict[str, Any]:
             "max_text_chars": project_notices.MAX_TEXT,
             "max_per_run": project_notices.MAX_PER_RUN,
             "ends_after_days": project_notices.NOTICE_DAYS,
+        },
+        # S-NEXT-hosts: the optional plain project registrations.
+        "registrations": {
+            "entry_keys": [key for key in run.REGISTRATION_KEYS if key != "mode"],
+            "mode": ["plain"],
+            "max_why_chars": run.REGISTRATION_WHY_MAX,
+            "max_per_run": hosts.MAX_REGISTRATIONS_PER_RUN,
         },
         "case": {
             "kind": sorted(cases.KINDS - {"parked"}),
@@ -594,7 +601,8 @@ def _rules(phase: str) -> str:
             "hand-steps-this-week row (the runner adds any step you leave out).",
             "",
             "Phase B files: report.md, findings.yaml, questions.yaml,",
-            "user-model-delta.yaml, notices.yaml (optional), case-example.yaml +",
+            "user-model-delta.yaml, notices.yaml (optional), hosts.yaml (optional),",
+            "case-example.yaml +",
             "sheet-example.yaml (a",
             "successor), case.yaml + sheet.yaml shapes in maintenance-case.yaml and",
             "maintenance-sheet.yaml.",
@@ -610,6 +618,15 @@ def _rules(phase: str) -> str:
             "5 a run. Write one only when a session in that project would act",
             "differently for knowing it.",
             "See notices.yaml here.",
+            "",
+            "hosts.yaml (optional): projects you register as PLAIN canon hosts yourself.",
+            "Each entry is {path, case, why}: path an absolute directory that",
+            "projects.yaml shows registered: no, case the case it comes from, why one",
+            "line. Plain only (git mode stays the user's); the runner refuses a path",
+            "outside the user's home, the ledger, the cache, one already registered, or",
+            "one a person or agent removed (projects.yaml: registered: removed),",
+            "and lists each registration in the report with the command that undoes it.",
+            "See hosts.yaml here.",
             "",
             "Moving a lesson that is ALREADY routed to a different destination",
             "(a path-scoped rule, a stronger surface, a hook): a successor with",
@@ -727,6 +744,10 @@ def phase_b_examples() -> dict[str, str]:
                 "Its shutdown watchdog is not wired to the daemon it guards, so a stuck "
                 "shutdown is not caught until the next manual restart."
             ),
+        }]}),
+        "hosts.yaml": _dump({"registrations": [{
+            "path": EXAMPLE_PROJECT, "case": EXAMPLE_CASE,
+            "why": "Two lessons this week are about this project's own build and have nowhere to go.",
         }]}),
         "questions.yaml": _dump({"questions": [{
             "id": "q-example-question", "kind": "ask", "cases": [EXAMPLE_CASE],

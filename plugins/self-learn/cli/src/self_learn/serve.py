@@ -50,11 +50,12 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass, replace as _dataclass_replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, cast
 
 from . import attribution, cache_gc, cases, gitops, intents, miner, overseer, premise_sweep, settings, steward, worker
+from . import hosts as hosts_mod
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
 from .primitives import chrono, fsops
@@ -546,7 +547,7 @@ def _holds_text(cache_dir: Path, now: float) -> str:
     job currently held by a failing due check."""
     held = [
         f"{job} ({_held_cause(cache_dir, job, now)})"
-        for job in ("mine", "premises", "steward", "overseer")
+        for job in ("mine", "hosts", "premises", "steward", "overseer")
         if _held_cause(cache_dir, job, now) is not None
     ]
     return f"; holding: {', '.join(held)}" if held else ""
@@ -1034,6 +1035,7 @@ def _log_job_crash(home: Path | None, cache_dir: Path, job: str, exc: BaseExcept
 _JOB_ACTORS = {
     "mine": "miner",
     "worker": "worker",
+    "hosts": hosts_mod.POLICY_ACTOR,
     "premises": "sweep",
     "steward": "steward",
     "overseer": "overseer",
@@ -1132,6 +1134,64 @@ def _run_worker_job(home: Path) -> "worker.RunResult":
     return worker.run(home, coalesce=True, no_push=False)
 
 
+#: S-NEXT-hosts: the host policy's attempt marker in the cache, and how
+#: often the policy is applied (once a day, like the premise sweep).
+HOSTS_POLICY_FILENAME = "hosts-policy.json"
+HOSTS_POLICY_INTERVAL_SECS = 24 * 3600
+
+
+def _hosts_policy_is_due(home: Path, cache_dir: Path, now: float) -> bool:
+    """The host policy (S-NEXT-hosts) is due when the registry has a
+    registration the policy would change (:func:`hosts.policy_changes`, a
+    read of ``hosts.yaml``) and its attempt marker is absent, unreadable,
+    future-dated or at least a day old: checked every tick, acted on at
+    most once a day. It needs no switch: it applies a rule the user typed.
+    A registry that cannot be read is not due (the doctor's ``hosts`` row
+    FAILs on it); a registry that follows the policy costs no job at all."""
+    try:
+        if not hosts_mod.policy_changes(hosts_mod.load_hosts(home)):
+            return False
+    except hosts_mod.HostsError:
+        return False
+    try:
+        data = json.loads((cache_dir / HOSTS_POLICY_FILENAME).read_text(encoding="utf-8"))
+        stamp = data["attempted_at"]
+        last = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return True  # a marker that cannot be read is rewritten by the next attempt
+    if last > now:
+        return True
+    return now - last >= HOSTS_POLICY_INTERVAL_SECS
+
+
+def _write_hosts_policy_marker(cache_dir: Path, now: float) -> None:
+    """The host policy's attempt marker: cache only, never ledger truth."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    fsops.atomic_write(
+        cache_dir / HOSTS_POLICY_FILENAME,
+        json.dumps({"attempted_at": chrono.now_iso(datetime.fromtimestamp(now, timezone.utc))}) + "\n",
+        fsync=False,
+    )
+
+
+def _run_hosts_policy_job(home: Path, cache_dir: Path, now: float) -> "hosts_mod.PolicyResult":
+    """Apply the host policy (:func:`hosts.apply_policy`): a project
+    registration of the skills root's path takes the skills root's mode.
+    The attempt marker is written FIRST, so a pass that crashes waits a day
+    instead of running every tick. Each change, and each change it could
+    not make, is one line on serve's stderr (the journal the operator
+    reads); the doctor's ``hosts`` row names a change still owed."""
+    _write_hosts_policy_marker(cache_dir, now)
+    result = hosts_mod.apply_policy(home)
+    for change in result.changed:
+        print(f"serve: host policy: {change.text()} ({hosts_mod.POLICY_RULE})", file=sys.stderr)
+    for line in result.failed:
+        print(f"serve: host policy: {line}", file=sys.stderr)
+    return result
+
+
 def _premises_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     """S-104 (premise-check design D5): the daily premise sweep is
     due when ``premises.enabled`` is on, it was last attempted at least a day
@@ -1222,6 +1282,20 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 )
                 ran.append(worker_record)
                 _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
+        # S-NEXT-hosts: the host policy, at most once a day and only when
+        # a registration does not follow it, before the premise sweep, so a
+        # registration it changes is probed in its new mode the same night.
+        # Code only; no switch (it applies a rule the user typed).
+        if _due_or_hold("hosts", home, cache_dir, now, lambda: _hosts_policy_is_due(home, cache_dir, now)):
+            ran.append(
+                run_one_job(
+                    cache_dir,
+                    Job("hosts", "hosts", lambda: _run_hosts_policy_job(home, cache_dir, now)),
+                    pid=pid,
+                    tick_secs=tick_secs,
+                    home=home,
+                )
+            )
         # S-104: the premise sweep runs BEFORE the steward, so a
         # change it confirms is decided the same night (design D5). It is a
         # job like the others (serial, one at a time) and calls no model.
