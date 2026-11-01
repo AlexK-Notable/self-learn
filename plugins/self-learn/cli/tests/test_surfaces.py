@@ -315,6 +315,19 @@ def test_overseer_command_points_to_the_inbox():
     assert "self-learn attention answer <att-id> --option" in text
     assert "decided **only by choosing one of its options**" in text
     assert "Nothing in either place is waiting on them" not in text
+    # Surfaces gate r2 NIT 1 (added at integration): the session route
+    # names --confirm for a confirm or register option, which `attention
+    # answer` refuses without it. Mutation: drop the sentence -> red.
+    assert "every `register` option, also needs `--confirm`" in text
+    # Surfaces gate r2 NIT 2: SKILL.md and the routing doctrine carry the
+    # same correction, so neither can drift back to "does not wait".
+    # Mutations: restore either round-1 wording -> red.
+    skill = _flat(PLUGIN / "skills" / "self-learn" / "SKILL.md")
+    assert "ask waits for the user, and one with a plan is decided only by choosing" in skill
+    doctrine = _flat(PLUGIN / "skills" / "self-learn" / "references" / "routing-doctrine.md")
+    assert "a needs-you question (a change to their system" in doctrine
+    assert "does wait, states what holds meanwhile" in doctrine
+    assert "is decided only by choosing one of its options" in doctrine
 
 
 def test_review_never_hands_by_to_a_verb_that_refuses_it():

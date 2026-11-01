@@ -170,9 +170,12 @@ leave it open. So when the user answers such an ask:
   session's transcript: ask in one plain chat message (not a clickable
   choice) that names the item's `att-…` id and the option's label, for
   example "Approve «Yes, add the binding» on att-3f9a1c0b2d4e? Type yes to
-  do it.", and answer straight after they type a plain yes. Without that
-  proof the command records nothing (exit 64) and says what was missing;
-  the inbox click is then the route.
+  do it.", and answer straight after they type a plain yes. An option
+  marked `confirm`, and every `register` option, also needs `--confirm`
+  (their typed yes is that confirmation); without it the command asks
+  once more and records nothing (exit 3). Without the typed-yes proof the
+  command records nothing (exit 64) and says what was missing; the inbox
+  click is then the route.
 - If they answered in words only and you record them with `overseer
   respond`, the words are kept and the overseer reads them, but an ask
   with a plan **stays open**: tell them so, and point them to the inbox
