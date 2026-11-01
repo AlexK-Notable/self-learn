@@ -134,7 +134,7 @@ def closed_sets() -> dict[str, Any]:
     the modules that enforce them."""
     from .. import batch, cases, hosts, user_model, verbs
     from .. import notices as project_notices
-    from . import discovery, population, run
+    from . import conversation, discovery, population, run
 
     overseer_containers = sorted(
         name for name, who in user_model._WHO_MAY_ADD.items() if "overseer" in who
@@ -152,7 +152,15 @@ def closed_sets() -> dict[str, Any]:
             "entry_keys": list(run.FINDING_KEYS),
             "kind": list(run.FINDING_KINDS),
         },
-        "questions": {"kind": list(run.QUESTION_KINDS)},
+        # S-NEXT-overseer-asks: an ask is the only kind, and every ask
+        # states its default (a system or register ask takes the runner's).
+        "questions": {
+            "kind": list(run.QUESTION_KINDS),
+            "ask_keys": list(run.ASK_KEYS),
+            "default_required_unless": ["system: true", "register"],
+            "system_default": conversation.SYSTEM_DEFAULT,
+            "register_default": conversation.REGISTER_DEFAULT,
+        },
         # S-106: the optional project notices.
         "notices": {
             "entry_keys": list(run.NOTICE_KEYS),
@@ -753,6 +761,7 @@ def phase_b_examples() -> dict[str, str]:
             "id": "q-example-question", "kind": "ask", "cases": [EXAMPLE_CASE],
             "text": "Will you keep using this repository next month? Yes keeps the lesson; no retires it.",
             "why": "It decides whether the lesson stays loaded.",
+            "default": "I kept the lesson loaded this week; a no from you retires it.",
         }]}),
         # Every free-text value double-quoted on one line, the form
         # `user_model_one_line_rule` asks for (2026-10-05).

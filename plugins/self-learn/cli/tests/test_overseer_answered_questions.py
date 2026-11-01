@@ -109,7 +109,7 @@ def test_the_answer_stays_in_the_store_for_the_next_weekly_run(tmp_path):
     conversation.open_questions(home, out=io.StringIO())
     result = conversation.respond(home, proposition="q-diagram-skill", scope="user", text="Yes.")
 
-    kept = [row for row in overseer_run._question_answers(home) if row["ref"] == "q-diagram-skill"]
+    kept = [row for row in overseer_run._question_answers(home, since=None) if row["ref"] == "q-diagram-skill"]
     assert [row["id"] for row in kept] == [result.statement_id]
     assert kept[0]["verbatim"] == "Yes."
     assert any(row["id"] == result.statement_id for row in statements.list_statements(home))

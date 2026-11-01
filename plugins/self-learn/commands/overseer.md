@@ -4,11 +4,18 @@ argument-hint: (no arguments — always opens the latest report)
 ---
 
 Open the **overseer's** latest weekly report and talk through the
-questions it puts to the user. There are two kinds: a **reading** asks the
-user to confirm or correct one of the overseer's readings of them (its id
-is a user-model proposition, `um-<4 hex>@r<revision>`), and an **ask** puts
-a decision or fact only the user has (its id is `q-<slug>`, and it comes
-with its own text and a line saying what the answer changes). You are a
+questions it puts to the user. Every question is an **ask**: a decision
+or fact only the user has (its id is `q-<slug>`, and it comes with its own
+text, a line saying what the answer changes, and the **default** the
+overseer already applied). The overseer never waits on the user: it acted
+on that default in the run that asked, so an ask is not waiting for an
+answer, and the user's answer, whenever it comes, can overturn what the
+default decided. An ask that would change the user's system outside
+self-learn, or register a host, always has the default of changing
+nothing. The overseer no longer asks the user to confirm its **readings**
+of them; a reading question can appear only from an index written before
+that change (its id is a user-model proposition, `um-<4 hex>@r<revision>`).
+You are a
 **thin caller**: every write is a `self-learn` CLI verb (`overseer open`,
 `overseer respond`) — you never edit the ledger, a case, the skills
 registry, or the user model yourself, and you never paraphrase what the
@@ -68,7 +75,9 @@ Run `self-learn overseer open`. It prints the report's `Questions for
 you` section with EVERY indexed question — there is no count limit — and,
 when the committed machine index contains a proposition the prose omitted,
 a fallback line naming that proposition and its cases. An ask is printed
-from the index as `- <q-id>: <text>` followed by `  why: <why>`.
+from the index as `- <q-id>: <text>` followed by `  why: <why>` and,
+for an ask with a default, `  done in your stead without waiting (your
+answer can change it): <default>`.
 Relay the output to the user verbatim, and nothing else from the report
 unless they ask. That display is what this step records as a
 **presentation** — its `covering` value says whether the decision, its
@@ -100,10 +109,13 @@ stop whenever they like, and whatever was not discussed stays shown and
 unanswered — nothing more.
 
 **For an ask**, relay its text as the question, say in one sentence what
-the answer changes (its `why`), and name the cases it came from. Do not
-restate it as a reading of the user or ask for approval of anything; it
-is a decision or fact only the user has. If they answer, record it with
-step 4's command using the ask's `q-` id.
+the answer changes (its `why`), say what the overseer already did in their
+stead (its default), and name the cases it came from. Make it plain that
+nothing is waiting on them: the default stands unless they answer
+otherwise. Do not restate it as a reading of the user or ask for approval
+of anything; it is a decision or fact only the user has. If they answer,
+record it with step 4's command using the ask's `q-` id; the steward then
+re-decides the lessons the default decided, against their words.
 
 **When the user objects to a skill** (unprompted: nothing here asks), do
 what they said with `self-learn skill veto <name> [--rename-to <new>]`
@@ -140,7 +152,17 @@ theirs. Then answer again (what is already done is left as it is). A yes
 that carries a condition ("yes, but git mode") is not a plain yes: record it
 in their words and let the overseer read it.
 
-**For a reading**, cover these parts, in your own words but never skipping
+**Correcting a reading the user brings up themselves.** The report's User
+model section lists the overseer's readings of the user and is not a
+question. When the user says one of them is wrong, record their words as a
+statement answering that reading, anchored to the line they typed:
+`self-learn statement add --verbatim "<their words>" --ref
+transcript:<session>#L<line> --recorded-by human --answers-kind
+proposition --answers-ref <um-id>@r<revision>`. The next overseer run reads
+it and acts on it.
+
+**For a reading** (only from an index written before readings stopped being
+asked), cover these parts, in your own words but never skipping
 one:
 
 1. **What this reading actually is, and its real presentation history.**

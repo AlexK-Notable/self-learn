@@ -783,6 +783,7 @@ def test_an_ask_with_no_register_is_unchanged(tmp_path):
     plain = {
         "id": "q-plain-ask", "kind": "ask", "cases": [case_id],
         "text": "Will you keep using this repository next month?", "why": "decides retention",
+        "default": "I kept its lessons loaded this week.",
     }
     path = tmp_path / "questions.yaml"
     _dump(path, {"questions": [plain]})
@@ -803,7 +804,7 @@ def test_a_reading_in_the_index_cannot_carry_a_register(tmp_path):
 
 def test_the_phase_b_prompt_tells_the_overseer_about_register(tmp_path):
     flat = " ".join(overseer_run._phase_b_prompt(tmp_path, (), ()).split())
-    assert "kind: ask is a decision or fact only the user has" in flat  # control: the ask rules are there
+    assert "Every question is {id, kind: ask, cases, text, why, default}" in flat  # control: the ask rules are there
     assert "register: {path: <absolute path>, mode: git or plain" in flat
     assert "must name that path exactly and that mode" in flat
 

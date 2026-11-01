@@ -11,6 +11,17 @@ proposition), and an `ask` puts a decision or fact only the user has (its id
 is `q-<slug>`, and the index carries its `text` and `why`). There is no
 limit on how many are shown.
 
+S-NEXT-overseer-asks (decision 4 of the 2026-10-31b round: the overseer
+never waits on the user): the runner indexes asks only, each with the
+`default` it applied in the run that asked (a fixed change-nothing sentence
+for an ask about the user's system or a host registration). Such an ask is
+shown with its default and is not counted as waiting
+(:func:`waits_on_the_user`); an answer to it is observed on the case each
+cited case's line of successors ends at, in a form the steward takes back
+whatever that case decided, so the answer can overturn the default. A
+reading, or an ask without a default, can still be read from an index
+written before, and behaves as it did.
+
 Skills are not shown here and never asked about (S-NEXT-skills-chain,
 the user's words of 2026-10-31: *"skills should be created unattended. i
 don't want to be asked about them."*). The weekly report lists what the
@@ -80,7 +91,56 @@ _OBS_LINE_RE = re.compile(
 )
 
 
-_INDEX_KEYS = frozenset({"id", "kind", "cases", "text", "why", "register"})
+_INDEX_KEYS = frozenset({"id", "kind", "cases", "text", "why", "register", "default", "system"})
+
+#: S-NEXT-overseer-asks (decision 4 of the 2026-10-31b round: "The overseer
+#: never waits on the user"). Every ask the runner indexes carries `default`:
+#: what the overseer did that run in the user's stead. An ask about the
+#: user's system outside self-learn (`system: true`) and an ask that would
+#: register a host take no default of their own; theirs is always one of
+#: these change-nothing sentences.
+SYSTEM_DEFAULT = "Nothing on your system was changed; answer if you want it done."
+REGISTER_DEFAULT = "Nothing was registered; a plain yes registers it."
+
+#: The observation the runner records, at publish, on each case an ask
+#: cites (or the case that has since superseded it): the ask was put and
+#: its default applied without waiting. The steward's match is
+#: `steward._ASK_DEFAULTED_OBSERVATION_RE`; a deferred case comes back on it
+#: with the default as its context, as on an answer (S-96).
+ASK_DEFAULTED_PREFIX = "ask defaulted "
+ASK_DEFAULTED_SEPARATOR = "; default applied: "
+#: The observation `respond` records when the user answers an ask whose
+#: default was applied: on the case each cited case's line of successors
+#: ends at, whatever it decided (`steward._ASK_OVERTURN_OBSERVATION_RE`), so
+#: an answer can still overturn what the default decided.
+ASK_OVERTURN_SUFFIX = " after its default was applied"
+
+
+def ask_defaulted_text(question_id: str, default: str) -> str:
+    """The text of the observation that records a default applied."""
+    return f"{ASK_DEFAULTED_PREFIX}{question_id}{ASK_DEFAULTED_SEPARATOR}{' '.join(default.split())}"
+
+
+def current_case(home: Path, case_id: str, superseded_by: dict[str, str] | None = None) -> str:
+    """The case at the end of *case_id*'s line of successors (itself when
+    nothing superseded it). *superseded_by* maps a case to its successor;
+    read from the case index when not given. A cycle stops where it closes."""
+    links = superseded_by if superseded_by is not None else superseded_links(home)
+    seen = {case_id}
+    current = case_id
+    while (following := links.get(current)) is not None and following not in seen:
+        seen.add(following)
+        current = following
+    return current
+
+
+def superseded_links(home: Path) -> dict[str, str]:
+    """Every intact case that was superseded, mapped to its successor."""
+    return {
+        str(row["case"]): str(row["superseded_by"])
+        for row in cases.list_cases(home, only_ok=True)
+        if isinstance(row.get("case"), str) and isinstance(row.get("superseded_by"), str)
+    }
 
 _REGISTER_KEYS = frozenset({"path", "mode", "kind", "action"})
 #: What a yes does with the register (S-NEXT-attribution): ``add`` registers
@@ -178,6 +238,22 @@ def _load_questions(home: Path) -> list[dict]:
                         f"overseer open: indexed question {row['id']} has a bad register: {problem}"
                     )
                 ask_row["register"] = register
+            # S-NEXT-overseer-asks: the default the overseer applied. An
+            # index written before it carries none, and its asks still wait.
+            if "default" in row:
+                if not isinstance(row["default"], str) or not row["default"].strip():
+                    raise ConversationError(
+                        f"overseer open: indexed question {row['id']} has an empty default"
+                    )
+                ask_row["default"] = row["default"]
+            if "system" in row:
+                if not isinstance(row["system"], bool):
+                    raise ConversationError(
+                        f"overseer open: indexed question {row['id']} has a system flag "
+                        "that is not true or false"
+                    )
+                if row["system"]:
+                    ask_row["system"] = True
             rows.append(ask_row)
         else:
             raise ConversationError(
@@ -234,13 +310,25 @@ def _unanswered(home: Path, rows: list[dict]) -> tuple[list[dict], set[str]]:
     return [row for row in rows if row["id"] not in answered], answered
 
 
+def waits_on_the_user(row: dict) -> bool:
+    """S-NEXT-overseer-asks: whether an indexed question is still waiting
+    for the user. An ask with a default does not: the overseer applied it in
+    the run that asked, and an answer only overturns it. A reading, or an
+    ask from an index written before defaults, still waits."""
+    return not (row.get("kind") == "ask" and row.get("default"))
+
+
 def open_question_count(home: Path | str) -> int | None:
     """Cheap status fact: absent index -> absent field; otherwise the number
-    of indexed questions not yet answered."""
+    of indexed questions not yet answered that still wait on the user (an
+    ask whose default was applied is decided, :func:`waits_on_the_user`)."""
     resolved = Path(home)
     if not (resolved / "overseer" / "open-questions.yaml").is_file():
         return None
-    return len(_unanswered(resolved, _load_questions(resolved))[0])
+    return sum(
+        1 for row in _unanswered(resolved, _load_questions(resolved))[0]
+        if waits_on_the_user(row)
+    )
 
 
 def _question_block(report: str) -> str:
@@ -262,10 +350,16 @@ def _yes_does(register: dict[str, str]) -> str:
     return "a plain yes does" if register.get("action") == "set-mode" else "a plain yes registers"
 
 
+#: How `overseer open` labels an ask's applied default.
+DEFAULT_LABEL = "done in your stead without waiting (your answer can change it)"
+
+
 def _ask_display(row: dict) -> list[str]:
     lines = [f"- {row['id']}: {row['text']}", f"  why: {row['why']}"]
     if row.get("register"):
         lines.append(f"  {_yes_does(row['register'])}: {_register_phrase(row['register'])}")
+    if row.get("default"):
+        lines.append(f"  {DEFAULT_LABEL}: {row['default']}")
     return lines
 
 
@@ -274,6 +368,8 @@ def _ask_recorded_text(row: dict) -> str:
     shown = f"- {row['id']}: {row['text']} (why: {row['why']})"
     if row.get("register"):
         shown += f" ({_yes_does(row['register'])}: {_register_phrase(row['register'])})"
+    if row.get("default"):
+        shown += f" ({DEFAULT_LABEL}: {row['default']})"
     return " ".join(shown.split())
 
 
@@ -773,6 +869,30 @@ def respond(
         # anything the user was shown, so the presentation's outcome stays
         # `noted`; the answer itself is the statement. Each case the ask
         # cited is observed as `statement`, pointing at it.
+        if row.get("default"):
+            # S-NEXT-overseer-asks: the overseer did not wait, so the cited
+            # cases may already be decided again (a deferral the default
+            # released, a parked case the overseer decided): the answer goes
+            # to the case each cited case's line of successors ends at, in a
+            # form the steward takes back whatever that case decided.
+            links = superseded_links(resolved)
+            observed: list[str] = []
+            for case_id in row["cases"]:
+                current = current_case(resolved, case_id, links)
+                if current not in observed:
+                    observed.append(current)
+            for case_id in observed:
+                cases.observe(
+                    resolved,
+                    case_id,
+                    "statement",
+                    text=f"user answered {proposition}{ASK_OVERTURN_SUFFIX}",
+                    by="overseer",
+                    ref=statement_id,
+                )
+            return ResponseResult(
+                statement_id, tuple(observed), registration=registration, registered=registered
+            )
         for case_id in row["cases"]:
             cases.observe(
                 resolved,
