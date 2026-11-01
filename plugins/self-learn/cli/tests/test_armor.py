@@ -300,6 +300,13 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_invocation.py": Behaviour(
         nodes=72, dump_sha="c3866dd19651b97d7eba9c126d36b3a51290b8028376e3a8a4759c6699e8314b",
+        edited={
+            "func:test_wr7_seam_is_only_called_from_the_three_call_sites": (
+                "2026-10-31, attention round design r2 §5.4 (03-decisions.md, the ask "
+                "agent's row, S-NEXT-ask-agent): ask.py joins the seam's callers -- the "
+                "inbox's read-only ask agent is the eighth surface, one question one session"
+            ),
+        },
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
@@ -958,9 +965,13 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=1,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-31 attention round, lane ask-agent (design r2 §5.4): 0 -> 1; "
+            "test_invocation.py `func:test_wr7_seam_is_only_called_from_the_three_call_sites` "
+            "gains an `edited` door (ask.py joins the seam's callers). Counted by reading; the "
+            "landing remeasure confirms. Previous entry: "
             "2026-10-31, transcribed at ANCHOR 5596021 from this module's own "
             "STALE refusal (2026-10-31 batch landing): 3 -> 0; the 2026-10-30 fix wave's test edits "
             "are anchor-side now. Previous entry: "
