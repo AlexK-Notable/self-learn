@@ -391,5 +391,9 @@ def test_the_due_deferral_flag_reads_the_lesson_and_the_line(tmp_path, monkeypat
     assert not flagged([{"id": rid, "verb": "defer"}]), "no until: +30 days"
     assert not flagged([{"id": rid, "verb": "reject"}])
     assert flagged([{"id": "lrn-c0de00ff", "verb": "reject"}, *note]), "another lesson's line"
+    # a `replace` takes over every lesson in its `also` (a list or one id)
+    assert not flagged([{"id": "lrn-c0de00ff", "verb": "replace", "also": [rid]}])
+    assert not flagged([{"id": "lrn-c0de00ff", "verb": "replace", "also": rid}])
+    assert flagged([{"id": "lrn-c0de00ff", "verb": "revise", "also": [rid]}]), "only replace's"
     pending = _seed(home, "lrn-c0de0008")
     assert steward._left_queued_problem(home, pending, [_keep_line(pending, "note")]) is None
