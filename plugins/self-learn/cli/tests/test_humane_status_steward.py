@@ -1,4 +1,4 @@
-"""S-NEXT-humane-l1 (gate r1 MINOR-3): `status --json` carries the
+"""S-136 (gate r1 MINOR-3): `status --json` carries the
 steward's own verdicts, the same `steward.nudge_fields` `status --fast`
 carries, so the UI's header can name a nightly review that is held or
 behind. Additive: the keys lane 0 and earlier pinned are untouched."""

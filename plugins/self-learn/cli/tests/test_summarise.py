@@ -1,4 +1,4 @@
-"""Humane UI lane 5 (S-NEXT-humane-l5, proposal §7): report summaries.
+"""Humane UI lane 5 (S-140, proposal §7): report summaries.
 
 - `self-learn summarise` (the on-demand "Summarise this"): one model call on
   a miss, none on a summary saved for the exact text, a new call for a

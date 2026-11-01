@@ -3673,7 +3673,7 @@ def status_infos(home: Path, *, now: datetime | None = None) -> list[dict]:
             {
                 "bucket": bucket.name,
                 "scope": bucket.scope,
-                # S-NEXT-humane (w33-humane lane 0): a name a person reads,
+                # S-135 (w33-humane lane 0): a name a person reads,
                 # the compiled-into path from `~`, and whether it exists.
                 **places[(bucket.scope, bucket.name)],
                 "pending": len(entries),

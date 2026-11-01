@@ -2044,7 +2044,7 @@ header.ws-head {
 }
 
 /* === humane lane 1: shared header, Home, bucket and detail fixes === */
-/* Proposal §2/§3/§10 (S-NEXT-humane-l1). Only new classes are styled
+/* Proposal §2/§3/§10 (S-136). Only new classes are styled
    here, plus three narrow overrides named below: the inbox link's
    `.status-item[title]` dotted underline inside the nav, the primary
    colour on an Approve with no suggestion yet, and the resolved page's

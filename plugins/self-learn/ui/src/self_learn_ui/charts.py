@@ -1,4 +1,4 @@
-"""charts.py -- server-side inline-SVG charts (humane lane 2, S-NEXT-humane-l2).
+"""charts.py -- server-side inline-SVG charts (humane lane 2, S-137).
 
 Three charts, all of COUNTS the CLI already computed (``report --json``'s
 ``series`` block and ``status --json``'s ``supply_mix``):

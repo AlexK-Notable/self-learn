@@ -77,7 +77,7 @@ _REPORT_SECTIONS_WITH_HAND_STEPS = (
     HAND_STEPS_SECTION,
     *_REPORT_SECTIONS[_REPORT_SECTIONS.index(_HAND_STEPS_AFTER) + 1 :],
 )
-#: Humane UI lane 5 (S-NEXT-humane-l5, proposal §7a): an OPTIONAL first
+#: Humane UI lane 5 (S-140, proposal §7a): an OPTIONAL first
 #: heading, three to five plain sentences written in the same phase B call
 #: (no extra model call). A report without it is still valid, exactly like
 #: the hand-steps heading, so a model that forgets it costs nothing and

@@ -1,4 +1,4 @@
-"""health.py -- the Health page's view model (humane lane 2, S-NEXT-humane-l2).
+"""health.py -- the Health page's view model (humane lane 2, S-137).
 
 ``/report`` used to print ``report --json`` field by field and then the raw
 JSON. The Health page shows the same facts in a person's words. This module

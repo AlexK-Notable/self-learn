@@ -1,4 +1,4 @@
-"""Plain names for ledger buckets (w33-humane lane 0, S-NEXT-humane).
+"""Plain names for ledger buckets (w33-humane lane 0, S-135).
 
 A bucket's directory name is a slug ("-home-user-repos-project-8c7fedb5")
 that no person reads easily. :func:`bucket_places` gives every bucket a

@@ -70,7 +70,7 @@ class TestConfigGet:
             # M-S (S-58, r5-m1(c)): `note` -- the fold detail, `None`
             # here since nothing folded anything for this entry.
             "name", "value", "source", "kind", "default", "description", "tier", "warn", "note",
-            # S-NEXT-humane (w33-humane lane 0): the settings page's group
+            # S-135 (w33-humane lane 0): the settings page's group
             # and plain words, from `settings_plain`.
             "group", "label", "plain",
         }

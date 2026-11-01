@@ -2513,7 +2513,7 @@ def setting_row(home: Path | str, setting: Setting) -> dict[str, object]:
         "kind": setting.kind,
         "default": _default_value(setting),
         "description": setting.description,
-        # S-NEXT-humane (w33-humane lane 0): the settings page's grouping
+        # S-135 (w33-humane lane 0): the settings page's grouping
         # and plain words, from `settings_plain` (one source, checked
         # against this registry at import).
         "group": plain.group,

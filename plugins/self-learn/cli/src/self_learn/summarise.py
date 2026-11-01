@@ -113,7 +113,7 @@ BY_PERSON = "on request"
 BY_AGENT = "an agent's request"
 #: The longest summary kept.
 TEXT_MAX_CHARS = 4_000
-#: The heading of the overseer's own scheduled summary (S-NEXT-humane-l5).
+#: The heading of the overseer's own scheduled summary (S-140).
 IN_SHORT_HEADING = "In short"
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")

@@ -2671,7 +2671,7 @@ def _cmd_status(as_json: bool) -> int:
             "supply_mix": report_mod.supply_mix(home),
             "metrics": report_mod.ledger_metrics(home),
         }
-        # S-NEXT-humane-l1 (gate r1 MINOR-3): the steward's own verdicts,
+        # S-136 (gate r1 MINOR-3): the steward's own verdicts,
         # the SAME `nudge_fields` `status --fast` carries (`steward_enabled`,
         # `steward_stale`, `steward_stale_hours`, `steward_hold`, ...), so the
         # UI's header can name a nightly review that is held or behind.

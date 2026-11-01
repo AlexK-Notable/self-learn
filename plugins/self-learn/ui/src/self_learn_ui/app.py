@@ -81,7 +81,7 @@ def _build_templates() -> Jinja2Templates:
     # partial through different call sites; a global is the one place
     # this cannot drift from the CLI's own enum).
     env.globals["dismiss_reasons"] = verbs.DISMISS_REASONS
-    # Humane lane 2 (S-NEXT-humane-l2): the server-side SVG charts (charts.py)
+    # Humane lane 2 (S-137): the server-side SVG charts (charts.py)
     # -- home_charts.html and report.html call these by name.
     env.globals.update(charts.TEMPLATE_GLOBALS)
     return Jinja2Templates(env=env)

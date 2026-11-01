@@ -630,7 +630,7 @@ def recurrence_suspects(
                 "nonce": nonce,
                 "seen_at": event.get("ts"),
                 "basis": event.get("basis"),
-                # S-NEXT-humane (w33-humane lane 0): the rule's own words
+                # S-135 (w33-humane lane 0): the rule's own words
                 # and where it lives -- the front page's "rules seen
                 # again" rows were titled by dates alone.
                 "title": record_title_safe(record),
@@ -2196,7 +2196,7 @@ def gather(
                         {
                             "id": record.id,
                             "bucket": bucket.name,
-                            # S-NEXT-humane (w33-humane lane 0): what the
+                            # S-135 (w33-humane lane 0): what the
                             # rule is about, in its own words, and where
                             # it lives, so a page never shows a bare id.
                             "scope": bucket.scope,
@@ -2302,7 +2302,7 @@ def gather(
         "reference_shelf": _reference_shelf(home, today, flush_state=flush_state),
         "context_budget": context_budget(home, today, flush_state=flush_state),
         "surface_reach": _surface_reach(home, claude_dir),
-        # S-NEXT-humane (w33-humane lane 0): per-day counts for the UI's
+        # S-135 (w33-humane lane 0): per-day counts for the UI's
         # charts, counted from the ledger (never modelled).
         "series": series_mod.day_series(home, today=series_today, events=events),
     }

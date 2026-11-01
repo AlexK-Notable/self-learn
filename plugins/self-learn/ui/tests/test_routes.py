@@ -3238,7 +3238,7 @@ class TestKeymapSingleSource:
 
 class TestReportPage:
     def test_renders_counted_fields_in_words(self, tmp_path: Path) -> None:
-        """Humane lane 2 (S-NEXT-humane-l2): the page that printed
+        """Humane lane 2 (S-137): the page that printed
         `report --json` field by field (and the raw JSON) is the Health page
         now. Same behaviour pinned: the CLI's counted fields reach the page,
         verbatim in value, under their CLI names in the counters fold; the

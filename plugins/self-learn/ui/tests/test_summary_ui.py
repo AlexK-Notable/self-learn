@@ -1,4 +1,4 @@
-"""Humane UI lane 5 (proposal §7, S-NEXT-humane-l5): the "In short" box.
+"""Humane UI lane 5 (proposal §7, S-140): the "In short" box.
 
 The box shows the overseer's own scheduled summary, a nightly review's
 counted summary, or a summary written on request ("Summarise this"),

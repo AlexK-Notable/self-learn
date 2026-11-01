@@ -156,7 +156,7 @@ ignoring costs nothing. This section pins the mechanics.
 
 ### 2.1 Front page — the bucket walk
 
-*Amended 2026-11-01 (S-NEXT-humane-l1, humane lane 1; proposal
+*Amended 2026-11-01 (S-136, humane lane 1; proposal
 `misc/build-2026-11-01/humane/proposal.md` §2, §3, §10). The page is
 now called **Home**, and every page shares one header:*
 
@@ -193,7 +193,7 @@ now called **Home**, and every page shares one header:*
   inbox reader's `counts.needs_you` fetched after load, `GET
   /home/needs-you`; Lessons to decide; Rules seen again; Follow-ups),
   each a keyboard row that jumps to its section, greyed at zero; the
-  **charts** (S-NEXT-humane lane 2, a partial reading `report --json`'s
+  **charts** (S-137, a partial reading `report --json`'s
   `series`); **Lessons to decide**, each titled by its own trigger or
   fact, with its place, where it came from and whether a suggestion
   exists; **Rules seen again** (was "Is it holding?", Y-4), each titled
@@ -575,7 +575,7 @@ section records what the surface is.
   pressing then *(S-130, item 8)*. The order: needs-you items by key (`credentials`, `broken`, `money`,
   `sudo`, `conflict`, `system-change`, `foreign-history`) oldest first,
   then unseen flagged decided items, then other unseen decided items.
-  *(Amended 2026-11-01, S-NEXT-humane-l3, proposal §4.)* The list
+  *(Amended 2026-11-01, S-138, proposal §4.)* The list
   groups items as **Needs you** (always shown: with nothing in it, the
   line "Nothing needs you right now."), **Being carried out**, then the
   decided items by time: **Today**, **Earlier this week** (the last seven
@@ -631,7 +631,7 @@ section records what the surface is.
   trigger and rule and folds its script and registration; a lesson is
   titled by its trigger (or fact) and lists when it was seen (its
   sightings, with their quotes); a folder is said to be one, with its
-  whole path written from `~`. *(Amended 2026-11-01, S-NEXT-humane-l3,
+  whole path written from `~`. *(Amended 2026-11-01, S-138,
   proposal §4.)* A case is told once: Question, Decision (the verb in
   words, "Turned down (held firmly)", from the packet's `verb` and
   `confidence`; the Decision section's list is never printed as one
@@ -671,7 +671,7 @@ section records what the surface is.
   list, "to keep what the agent is given within its size limit"); the
   page counts nothing. Its evidence folds under "The case
   files and lessons, in full". A nightly review and a weekly run item
-  carry the "In short" box (*S-NEXT-humane-l5*, "Summaries" below): a
+  carry the "In short" box (*S-140*, "Summaries" below): a
   nightly review shows its counts in words, and a weekly run item the
   box of its weekly report.
 - **Answers** go to `attention answer` with the option, the reply text as
@@ -948,12 +948,12 @@ section records what the surface is.
   together, with the same word in both (S-130, item 8).
 - **Weekly report** (`/overseer-report[/<date>]`): a read-only render of
   the overseer's report, newest by default, with links to earlier ones.
-  *(Amended 2026-11-01, S-NEXT-humane-l3, proposal §5.)* The report file
+  *(Amended 2026-11-01, S-138, proposal §5.)* The report file
   is never changed, only how it is drawn (`report_view.py`). Its first
   line becomes a title in words ("Weekly report · Sunday 1 November",
   with "finished at 15:21" under it) and its run id, actor and model move
   to an "About this run" fold; "Earlier reports" is a small menu beside
-  the title. Then the "In short" box (*S-NEXT-humane-l5*, "Summaries"
+  the title. Then the "In short" box (*S-140*, "Summaries"
   below);
   then the "Questions for you" section lifted to the top, never folded:
   "Nothing needs you this week." when it says none; otherwise each
@@ -964,7 +964,7 @@ section records what the surface is.
   asked". The tile says "Questions it asked". Counts sit in tiles, from the run's own
   record (`weekly_facts.run_facts`: past decisions re-checked of those it
   could have, decided in the person's stead, questions), never from the
-  prose; a report with no record has no tiles. *(S-NEXT-humane-l5.)* Two
+  prose; a report with no record has no tiles. *(S-140.)* Two
   more tiles come from the record's `review` block (02 §3a.13a): "Re-checked
   and agreed with" (the re-checked decisions the overseer said still hold,
   with how many it said do not and how many it gave no verdict on) and
@@ -979,7 +979,7 @@ section records what the surface is.
   "Refused / could not do" folds by default with its count. The weekly
   report page is read-only apart from the "In short" box's one control,
   which writes a summary, never the report.
-- **Summaries** *(added 2026-11-01, S-NEXT-humane-l5; humane proposal §7;
+- **Summaries** *(added 2026-11-01, S-140; humane proposal §7;
   the user's words: "let's give me a way to get summaries on demaand")*.
   A weekly report, and an inbox item for a nightly review or a weekly
   run, open with an "In short" box (`partials/in_short.html`, built by
@@ -1075,7 +1075,7 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   `org.kde.StatusNotifierWatcher` appears or changes owner (a bar restart).
 - **Unit and deployment.** `13-hosting-and-separation.md` §7.7.
 
-### 2.7 Settings *(added 2026-11-01, S-NEXT-humane-l4; humane proposal §9)*
+### 2.7 Settings *(added 2026-11-01, S-139; humane proposal §9)*
 
 `GET /settings` is the page where a person reads and changes the operator
 settings (`self-learn config get|set`). Before this subsection 09 said nothing
@@ -1403,7 +1403,7 @@ permission surface of §4.3).
   router (`ui/inbox_routes.py`): `GET /inbox`, `/inbox/list`,
   `/inbox/<id>` and its `workspace`, `evidence` and `conversation`
   partials, `/inbox/case/<case id>` (a nightly review's "Why?", read-only;
-  S-NEXT-humane-l3), `/overseer-report[/<date>]`; `POST /inbox/seen-all`,
+  S-138), `/overseer-report[/<date>]`; `POST /inbox/seen-all`,
   `/inbox/<id>/{seen,answer,undo,feedback,run,fix,check-login,ask,ask/stop}`
   and `POST /navigate`. The middleware is unchanged: every POST needs the
   cookie and `HX-Request`. Reads are `attention --json` and `attention
@@ -2036,7 +2036,7 @@ notifications are absent.
 | Worker overdue / never ran | Status strip alarm (reuses the worker's own escalation thresholds); everything else functions — the surface is not the worker's supervisor. |
 | *Inbox rows below added 2026-10-31 (lane `ui-workspace`, S-125; `attention-design-r2.md` §3.7).* | |
 | `attention --json` fails (no JSON) | The inbox shows an error panel with the stderr text, "The inbox itself may be broken; the tray icon shows the same state.", and Retry. The front page's link reads "Inbox (?)". |
-| Inbox empty | "Nothing needs you, and nothing new." plus a link to the weekly report; no list items. With no needs-you items but some decided ones, the first unseen decided item is selected and the list's "Needs you" heading stands over the line "Nothing needs you right now." (S-NEXT-humane-l3). |
+| Inbox empty | "Nothing needs you, and nothing new." plus a link to the weekly report; no list items. With no needs-you items but some decided ones, the first unseen decided item is selected and the list's "Needs you" heading stands over the line "Nothing needs you right now." (S-138). |
 | Packet slow (> 1.5 s) | The item's list data renders at once; the evidence region shows "assembling…" and fills by htmx when the packet arrives. |
 | Packet failed | An error block naming the failure; the question, options and reply box from the list data still work. |
 | Item resolved or moved elsewhere (answered in a terminal, withdrawn, login fixed) | An `attention` envelope refreshes the list; an open item no longer listed shows "This item was resolved elsewhere (answered, withdrawn, or its condition cleared)." and offers the next one. An answer that moves the item on says where it went and offers no options. The page's own click is never reported as "elsewhere": not while its request is in flight (plus a 3 s grace), nor once its response said the item moved on or cleared. |
@@ -2162,7 +2162,7 @@ at the httpx level (`test_inbox.py`, `test_ask_runner.py`,
 - **No dashboards/scores** — the status strip and the `/report`
   screen (§11 Y-12) render counted facts with 04's honesty labels
   only; nothing modeled (counted-not-modeled, 04). *Amended 2026-11-01
-  (S-NEXT-humane-l2): "no charts in v1" is now "no modelled numbers".
+  (S-137): "no charts in v1" is now "no modelled numbers".
   A chart is allowed when every mark draws a count the CLI computed;
   there is never a target, a score, a forecast or a fitted line; each
   chart has a "Show as a table" view holding every value and a
@@ -2470,7 +2470,7 @@ removed the last competing workstream — the build gate is open.*
   recurrence counts, telemetry counters. Reached by a Front link
   (no dedicated key). No charts, no scores, no derived numbers the
   CLI didn't compute (04 counted-not-modeled; §8 amended in place).
-  **Amended 2026-11-01 (S-NEXT-humane-l2): the screen is the Health
+  **Amended 2026-11-01 (S-137): the screen is the Health
   page.** Reached by the "Health" link in the shared header. Top to
   bottom: four tiles (rules in use and in how many places; lessons
   waiting for a decision and how long the oldest has waited; the typical
@@ -2746,7 +2746,7 @@ removed the last competing workstream — the build gate is open.*
   while rendered), and the empirical wipe-pin must rule EXPLICITLY
   on the SSE-frame-vs-swap ordering (the F4 pre-render race)
   before the defense is accepted.
-  *(Amended 2026-11-01, S-NEXT-humane-l4 gate r1: two more producers and one
+  *(Amended 2026-11-01, S-139 gate r1: two more producers and one
   more leg. The settings page's "Saved." line carries `[data-verb-success]`
   (leg f) and a refused save's strip `[data-verb-error]` (leg a), each with a
   Dismiss button that removes the message and releases the held reload — so

@@ -1,4 +1,4 @@
-"""The settings page's view model (w33-humane lane 4, S-NEXT-humane-l4).
+"""The settings page's view model (w33-humane lane 4, S-139).
 
 ``self-learn config get --json`` already says, per row, which ``group`` a
 setting is in, its plain ``label`` and its one-sentence ``plain`` words

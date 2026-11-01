@@ -152,7 +152,7 @@ class TestReportRecurrenceSuspects:
         facts = gather(env.ledger)
         assert facts["recurrence_suspects"] == [
             {"id": rid, "nonce": nonce, "seen_at": ts, "basis": "origin-match",
-                # S-NEXT-humane: the rule's words and where it lives.
+                # S-135: the rule's words and where it lives.
                 "title": "About to edit .storage while HA is running.",
                 "scope": "skill", "bucket": "s", "bucket_label": "s"}
         ]
@@ -208,7 +208,7 @@ class TestReportRecurrenceSuspects:
         payload = json.loads(capsys.readouterr().out)
         assert payload["recurrence_suspects"] == [
             {"id": rid, "nonce": nonce, "seen_at": ts, "basis": "origin-match",
-                # S-NEXT-humane: the rule's words and where it lives.
+                # S-135: the rule's words and where it lives.
                 "title": "About to edit .storage while HA is running.",
                 "scope": "skill", "bucket": "s", "bucket_label": "s"}
         ]

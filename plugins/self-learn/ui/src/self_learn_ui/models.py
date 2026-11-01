@@ -1238,7 +1238,7 @@ def build_front_model(
 
 # ------------------------------------------------- Home (humane lane 1)
 #
-# Proposal §3 (misc/build-2026-11-01/humane/proposal.md, S-NEXT-humane-l1):
+# Proposal §3 (misc/build-2026-11-01/humane/proposal.md, S-136):
 # the front page reorganised around "what is waiting for me". Everything
 # here formats numbers the CLI already counted (status/report/list/mine
 # --json, plus lane 0's place words and rule titles); nothing is

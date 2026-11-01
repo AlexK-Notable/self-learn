@@ -1,4 +1,4 @@
-"""Per-day counts for the UI's charts (w33-humane lane 0, S-NEXT-humane).
+"""Per-day counts for the UI's charts (w33-humane lane 0, S-135).
 
 ``report --json`` carries the result as ``series``. Every number is a
 count read from the ledger, never a model or an estimate (04's "counted,

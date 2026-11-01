@@ -1,4 +1,4 @@
-"""Humane lane 2 (S-NEXT-humane-l2): charts.py, partials/home_charts.html and
+"""Humane lane 2 (S-137): charts.py, partials/home_charts.html and
 the Health page. Every chart here draws COUNTS the CLI wrote; these tests
 pin the three promises that make that honest and readable:
 

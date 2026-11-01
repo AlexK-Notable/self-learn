@@ -1,4 +1,4 @@
-"""Plain words for the settings registry (w33-humane lane 0, S-NEXT-humane).
+"""Plain words for the settings registry (w33-humane lane 0, S-135).
 
 The settings page groups settings by what a person is trying to do, and
 says what each one does in plain words. Those words live here, beside the

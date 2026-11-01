@@ -1,5 +1,5 @@
 """summary_routes.py — the "In short" box on reports (humane UI lane 5,
-proposal §7; S-NEXT-humane-l5).
+proposal §7; S-140).
 
 Three kinds of summary fill the box, in this order of preference:
 

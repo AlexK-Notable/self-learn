@@ -5155,7 +5155,7 @@ undo` (0; 2; 3; 10), `attention run [--login] [--json]` (0; 2; 3; 4; 5; 64),
 `attention fix` (0; 2; 3; 64), `attention stop` (0; 2; 3; 64), `attention claim` (0; 2; 3), `attention done`
 (0; 2; 3; 10; 64), `case refreeze` (§3a.2).
 
-### 3a.13 Report summaries *(S-NEXT-humane-l5)*
+### 3a.13 Report summaries *(S-140)*
 
 The on-demand summary of a report (`self-learn summarise`, 09 §2.5
 "Summaries"). One file per report TEXT:
@@ -5204,7 +5204,7 @@ and removes it. Each model call, saved or not, adds one row to
 `outcome`, `cost_usd`, `duration_secs`); the cache files are never ledger
 truth (`NOT_REPO_TRUTH`: `summarise._write_cache`, `summarise._drop_cache`).
 
-### 3a.13a The weekly run's review counts *(S-NEXT-humane-l5)*
+### 3a.13a The weekly run's review counts *(S-140)*
 
 The overseer's run record (`cases/runs/<run id>.json`, `actor: overseer`)
 gains `review`, counted by the runner from `findings.yaml` (never from the

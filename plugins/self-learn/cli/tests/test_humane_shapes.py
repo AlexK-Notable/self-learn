@@ -1,4 +1,4 @@
-"""S-NEXT-humane (w33-humane lane 0): the CLI shapes the humane UI reads.
+"""S-135 (w33-humane lane 0): the CLI shapes the humane UI reads.
 
 - ``config get --json`` rows carry ``group``/``label``/``plain`` from
   ``settings_plain``, and every registry entry has them;

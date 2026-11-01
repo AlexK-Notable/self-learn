@@ -1,4 +1,4 @@
-"""Humane lane 1 (S-NEXT-humane-l1; proposal §2, §3, §10 in
+"""Humane lane 1 (S-136; proposal §2, §3, §10 in
 misc/build-2026-11-01/humane/proposal.md): the shared header, the Home
 page, and the bucket/detail fixes.
 
