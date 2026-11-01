@@ -954,3 +954,175 @@ def test_choices_left_out_of_phase_b_for_a_secret_are_named(tmp_path, monkeypatc
     assert "answers.yaml: the user's option choices and feedback clicks were left out" in (
         _refused_block(home)
     )
+
+
+# ------------------------------------------------- fix round 2 (gate r2)
+
+
+def _withdraw_by_hand(home: Path, row: dict, case_id: str, *, because: str) -> None:
+    """*row* withdrawn two days ago, as the finalize writes it."""
+    _hand_index(home, [])
+    (home / "overseer" / "withdrawn.yaml").write_text(
+        overseer_run._yaml_text({"withdrawn": [{
+            "id": row["id"], "text": row["text"], "because": because, "cases": [case_id],
+            "asked_at": row["asked_at"], "withdrawn_at": _iso(NOW - timedelta(days=2)),
+            "run": "abcd1234", "why": "moot", "row": row,
+        }]}),
+        encoding="utf-8",
+    )
+    commit_all(home, "fixture withdrawn")
+
+
+def test_a_reopened_approval_is_never_re_asked_with_a_new_plan(tmp_path, monkeypatch):
+    """Gate r2 BLOCKER 1: after "Ask me anyway" on a withdrawn approval, the
+    inbox (which counts every click on the id) still shows the old approve
+    click, so the same id re-asked with a new plan would put that click
+    behind the new plan. Mutation checked: removing the unfloored
+    `approval_track` check in `_reask_problems` (the reopened ask goes to
+    `still_open` again) fails this test: the new plan is indexed."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    row = _system_ask("q-appr", [case_id], default=conversation.SYSTEM_DEFAULT,
+                      asked_at=_iso(NOW - timedelta(days=20)), system=True)
+    row["plan"]["sudo"] = False
+    _withdraw_by_hand(home, row, case_id, because="system-change")
+    _write_jsonl(home, "choices.jsonl", [
+        _choice("q-appr", "opt-yes", "approve", NOW - timedelta(days=10), label="Yes, add it"),
+    ])
+    back = conversation.reopen(home, "q-appr")
+    # Control: the reopen made it a question again on this lane's walk.
+    assert conversation._answered_ids(home, {"q-appr"}) == set()
+    state = _phases(monkeypatch)
+    state["questions"] = [_system_ask(
+        "q-appr", [case_id], plan={**_plan(), "summary": "DELETE the user's dotfiles instead."},
+    )]
+
+    _run(home, first=True)
+
+    kept = _row(home, "q-appr")
+    assert kept is not None and kept["plan"]["summary"] == _plan()["summary"]
+    assert kept["reopened_at"] == back["reopened_at"]
+    assert f"question q-appr: dropped — {overseer_run.REASK_REOPENED}" in _refused_block(home)
+    # Phase B was told the ask is fixed, with why.
+    staged = YAML(typ="safe").load(state["b_stage"]["open-asks.yaml"])
+    entry = next(entry for entry in staged["asks"] if entry["id"] == "q-appr")
+    assert (entry["kind"], entry["fixed"]) == ("ask", overseer_run.REASK_REOPENED)
+
+
+def test_a_system_or_register_ask_without_needs_is_held_to_the_needs_user_rules(tmp_path):
+    """Gate r2 MAJOR 2 (answer 10): an ask the model wrote with `system:
+    true` or `register` but no `needs` is read as `needs: user` (§3.8) and
+    validated as one, so it never reaches the user as a page with nothing
+    to click. Mutation checked: restoring the legacy fall-through (the
+    inference block in `_questions` removed) fails this test: the bare
+    asks are indexed with no options."""
+    case_id = "case-12345678"
+    host = str(tmp_path / "newhost")
+    register_text = (
+        f"Register {host} as a canon host in git mode? Yes registers it; no leaves it unregistered."
+    )
+    bare_system = {
+        "id": "q-bare-system", "kind": "ask", "cases": [case_id], "system": True,
+        "text": "Bind the daemon to the bus? Yes adds a drop-in; no keeps the note.",
+        "why": "it changes your desktop",
+    }
+    bare_register = {
+        "id": "q-bare-register", "kind": "ask", "cases": [case_id], "text": register_text,
+        "why": "decides whether its lessons can be routed there",
+        "register": {"path": host, "mode": "git"},
+    }
+    full_system = {
+        **bare_system, "id": "q-full-system", "options": [dict(o) for o in OPTIONS],
+        "recommend": {"option": "opt-no", "reasoning": "the note works"}, "plan": _plan(),
+    }
+    index, dropped = _validate(tmp_path, [bare_system, bare_register, full_system], {case_id})
+
+    assert _ids(index) == ["q-full-system"]  # control: a complete one is kept
+    row = index["questions"][0]
+    assert (row["needs"], row["because"], row["system"]) == ("user", "system-change", True)
+    assert row["default"] == conversation.SYSTEM_DEFAULT and row["options"] and row["plan"]
+    assert "question q-bare-system: dropped — a system-change ask needs a plan" in dropped
+    assert any(
+        line.startswith("question q-bare-register: dropped — a needs: user ask offers 2 to 4 options")
+        for line in dropped
+    ), dropped
+
+
+def test_a_re_emitted_reopened_ask_keeps_its_reopen_floor(tmp_path, monkeypatch):
+    """Gate r2 MINOR 3. An ask without a plan, answered by a choice before it
+    was withdrawn, is reopened and then asked again in new words: the
+    re-emitted row keeps `reopened_at`, so the old choice still does not
+    answer it. Mutation checked: not carrying `reopened_at` onto the
+    re-emitted row in `_carry_forward` fails this test."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    asked = _iso(NOW - timedelta(days=20))
+    row = _user_ask("q-word", [case_id], default=conversation.NEEDS_USER_DEFAULTS["sudo"],
+                    asked_at=asked)
+    _withdraw_by_hand(home, row, case_id, because="sudo")
+    _write_jsonl(home, "choices.jsonl", [
+        _choice("q-word", "opt-ran", "approve", NOW - timedelta(days=10), label="I'll run it"),
+    ])
+    back = conversation.reopen(home, "q-word")
+    assert conversation._answered_ids(home, {"q-word"}) == set()  # control
+    state = _phases(monkeypatch)
+    new_text = "Will you run the udev step this week? Yes runs it; no leaves it."
+    state["questions"] = [_user_ask("q-word", [case_id], text=new_text)]
+
+    _run(home, first=True)
+
+    indexed = _row(home, "q-word")
+    assert indexed is not None and indexed["text"] == new_text
+    assert (indexed["asked_at"], indexed["reopened_at"]) == (asked, back["reopened_at"])
+    assert conversation._answered_ids(home, {"q-word"}) == set()
+    assert conversation.open_question_count(home) == 1
+
+
+def test_a_re_ask_dropped_at_publish_is_not_reported_as_needing_the_user(tmp_path, monkeypatch):
+    """Gate r2 NIT 4. Mutation checked: `_default_lines` ignoring
+    `dropped` fails this test (the dropped re-ask keeps its line)."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    state = _phases(monkeypatch)
+    state["questions"] = [_system_ask("q-net", [case_id])]
+    _run(home, first=True)
+    line = f"- q-net would change your system: {conversation.SYSTEM_DEFAULT}"
+    assert line in _decided_block(home).splitlines()  # control: the first run lists it
+    state["questions"] = [
+        _system_ask("q-net", [case_id], plan={**_plan(), "summary": "A different plan."}),
+    ]
+    real = overseer_run._record_defaults
+    clicked: list[str] = []
+
+    def approve_mid_run(given_home, manifest):
+        if not clicked:
+            _write_jsonl(given_home, "choices.jsonl", [
+                _choice("q-net", "opt-yes", "approve", datetime.now(timezone.utc),
+                        label="Yes, add it"),
+            ])
+            clicked.append("q-net")
+        return real(given_home, manifest)
+
+    monkeypatch.setattr(overseer_run, "_record_defaults", approve_mid_run)
+    _run(home)
+
+    assert "question q-net: dropped at publish" in _refused_block(home)  # control
+    assert line not in _decided_block(home).splitlines()
+
+
+def test_a_question_naming_ledger_ids_is_kept_and_named(tmp_path):
+    """Gate r2 NIT 5 (§2.1 item 2: "one sentence, with no ids in it").
+    Mutation checked: `_ids_in_text_note` answering nothing fails this
+    test."""
+    case_id = "case-12345678"
+    index, dropped = _validate(tmp_path, [
+        _user_ask("q-clean", [case_id]),
+        _user_ask("q-ids", [case_id], text="Should lrn-1a2b3c4d move per case-12345678? Yes moves it."),
+    ], {case_id})
+
+    assert _ids(index) == ["q-clean", "q-ids"]  # both kept
+    assert dropped == [
+        "question q-ids: its question names case-12345678, lrn-1a2b3c4d -- a question is one "
+        "plain sentence; the ids belong in its cases and statements, which the inbox shows "
+        "beside it"
+    ]
