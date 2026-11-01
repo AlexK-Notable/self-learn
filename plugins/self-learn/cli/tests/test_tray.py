@@ -472,7 +472,7 @@ def test_4_registers_with_the_watcher_and_again_after_its_owner_changes(env):
     # Waybar renders the title as markup: the reader's text is escaped once
     assert props["ToolTip"][2] == "self-learn: 0 need you &amp; &lt;none&gt; new", props["ToolTip"]
 
-    assert res["activated"] == ["--user", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
+    assert res["activated"] == ["--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
     assert res["secondary"], (res["secondary_calls"], tray_log)
     for key in ("ledger_root", "ledger_attention", "ledger_overseer", "cache_attention"):
         assert res["poll_on_" + key], (key, res, tray_log)

@@ -26,6 +26,7 @@ from ruamel.yaml import YAML, YAMLError
 from . import (
     attribution,
     always_loaded,
+    domain,
     model_failures,
     batch,
     cases,
@@ -3672,6 +3673,84 @@ def _reconsider_status_problem(
     return refusal_text(refusal) if refusal is not None else None
 
 
+#: S-131 (gate r1 F1): the sheet verbs that decide a queued lesson, or
+#: file it (`rehome`/`rescope`: it comes back once, in its new bucket, by
+#: design). A `defer` counts only when it changes the date to one after
+#: now: a `defer` to today or earlier leaves the lesson due, and so does a
+#: line the batch would skip as already applied (gate r2 G1: a `defer`
+#: with no `until` on the day the deferral comes due, `batch.classify`).
+_DEQUEUING_VERBS = frozenset(
+    {"route", "reject", "defer", "retire", "supersede", "replace", "rehome", "rescope"}
+)
+
+
+def _names_record(item: dict, record_id: str) -> bool:
+    """A sheet item acts on *record_id*: its own `id`, or a `replace`'s `also`."""
+    if item.get("id") == record_id:
+        return True
+    also = item.get("also") if item.get("verb") == "replace" else None
+    return record_id == also or (isinstance(also, list) and record_id in also)
+
+
+def _defer_already_applied(home: Path, record_id: str, item: dict) -> bool:
+    """S-131 (gate r2 G1): True when the batch would skip this `defer`
+    line as already applied -- it writes nothing, so the deferral stays
+    due. Asked of `batch.classify` itself, never restated: a `defer` with
+    no `until` of a lesson already deferred to today or later is "already
+    applied" there, and today is exactly the day the steward first selects
+    a lapsed deferral (`domain.is_queued` counts a date equal to now as
+    due). An unreadable record is left to the other checks."""
+    fields = {key: value for key, value in item.items() if key not in ("id", "verb", "n")}
+    sheet_item = batch.SheetItem(n=0, id=record_id, verb="defer", fields=fields)
+    try:
+        return batch.classify(home, sheet_item, actor="steward")
+    except (ledger_ops.LedgerOpsError, RecordError, OSError, ValueError):
+        return False
+
+
+def _left_queued_problem(home: Path, record_id: str, items: object) -> str | None:
+    """S-131 (gate r1 F1): why a staged case would leave
+    *record_id*, a DEFERRED lesson whose date has passed, in the steward's
+    queue -- or `None`. Such a case applies (a `note`, a `revise`, an
+    `undefer` all land), rewrites the record, and so makes it a new version
+    that no run decided: the next night selects it again, and the next, a
+    model session and a case each time. Read against the record as it is
+    now and the queue's own clock and predicate (`domain.is_queued`), so a
+    lesson that left the queue since selection, or a deferral still ahead
+    (where a `note` is right), is never flagged.
+
+    Only a lapsed deferral: that is the shape the brief's "keep a decision"
+    sentence reaches (a reconsider of a due deferral). A PENDING lesson
+    left pending would come back the same way, but no instruction leads
+    there and the decision-shape fixtures use pending lessons as stand-ins
+    for kept decisions, so widening this is its own change."""
+    try:
+        record = ledger_ops.read_record_or_refuse(ledger_ops.find_record_path(home, record_id))
+    except ledger_ops.LedgerOpsError:
+        return None
+    now = ledger_ops._now(None)
+    if record.status != "deferred" or not domain.is_queued(record, now):
+        return None
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or not _names_record(item, record_id):
+            continue
+        if item.get("verb") not in _DEQUEUING_VERBS:
+            continue
+        if item.get("verb") == "defer":
+            until = chrono.to_dt(item.get("until"))
+            if until is not None and until <= now:
+                continue
+            if _defer_already_applied(home, record_id, item):
+                continue
+        return None
+    until = chrono.to_dt(record.deferred_until)
+    state = f"its deferral to {until.date().isoformat()} has come due" if until else "its deferral has no date"
+    return (
+        f"record {record_id}: this case leaves it deferred and due ({state}), so it comes back "
+        "to you every night"
+    )
+
+
 def _stage_claims(stage: Path, fill: dict[str, str], skip: frozenset[str] | set[str]) -> dict[str, str]:
     """S-88 gate fold (F1): which staged case each predecessor goes to, by
     stem -- the first case, in the order apply time records them (file-name
@@ -3888,16 +3967,30 @@ def _ledger_repair_message(
     its lines is applied.
     Each other sheet is previewed exactly as apply time will (the same
     `[reopen, verb]` sequence rule). A `status` refusal is collected only
-    when the lesson's status is unchanged since selection, and never for a
-    lesson a staged `kind: reconsider` case of the same pair covers. The
-    preview runs without that case (it is not in the ledger yet), but
-    since S-73 item 6 it passes the covered ids to `batch.dry_run`
-    (`reconsidered=`), which widens those lines as the real case will at
-    apply time: every check after the status gate runs -- a
-    re-decision's hook shape, its replay, its destination -- so a bad
+    when the lesson's status is unchanged since selection. The preview
+    runs without a staged `kind: reconsider` case (it is not in the
+    ledger yet), but since S-73 item 6 it passes the ids that case covers
+    to `batch.dry_run` (`reconsidered=`), which widens those lines as the
+    real case will at apply time: every check after the status gate runs
+    -- a re-decision's hook shape, its replay, its destination -- so a bad
     example is found while the repair turn can still fix it. A pair in
     *skip* (its stem) failed the runner's own per-pair check and is left
     out (2026-09-27).
+
+    S-131 (2026-11-01): a `status` refusal of a lesson such a
+    case covers is collected too. It used to be dropped (S-71), from when
+    this preview could not widen a covered line; since S-73 item 6 it does,
+    so a status refusal left in the widened preview is one apply time
+    gives as well. Dropping it sent run-14405f3da1fe's two `confirm-held`
+    lines on REJECTED lessons (a no-action reconsider keeping each
+    rejection) to apply time, where the ledger refused them and both
+    lessons were parked `ledger-refused` for the overseer.
+
+    S-131 (gate r1 F1): a case that would leave a DEFERRED lesson
+    whose date has passed still deferred and due -- a `note`, `undefer` or
+    `revise` with no `defer` to a later date and no deciding line -- is
+    flagged too (:func:`_left_queued_problem`): it would apply, rewrite the
+    record, and bring the lesson back every night.
 
     2026-10-07: a staged `kind: reconsider` case is also held to the
     status `verbs.reconsider` needs of each lesson it names
@@ -3924,6 +4017,7 @@ def _ledger_repair_message(
     found: list[str] = []
     case_found: list[str] = []
     held_found: list[str] = []
+    queued_found: list[str] = []
     held = cases.held_lessons(home)
     fill = _predecessor_fill(home, stage, predecessors or {})
     claims = _stage_claims(stage, fill, skip)
@@ -3956,6 +4050,15 @@ def _ledger_repair_message(
                 )
             if problem is not None:
                 case_found.append(f"- cases/{case_path.name}: {problem}")
+        # S-131 (gate r1 F1): a case that leaves a lesson queued
+        # brings it back every night. A held lesson is named above instead.
+        items = _sheet_items(sheet_path)
+        for record_id in dict.fromkeys(str(rid) for rid in case_data.get("records") or []):
+            if record_id in held:
+                continue
+            problem = _left_queued_problem(home, record_id, items)
+            if problem is not None:
+                queued_found.append(f"- cases/{case_path.name}: {problem}")
         held_lines = _held_lines(home, _sheet_items(sheet_path), held)
         found.extend(
             f"- sheets/{sheet_path.name}: item {line['n']} ({line['verb']} {line['id']}): "
@@ -3974,8 +4077,6 @@ def _ledger_repair_message(
             kind = line.get("kind")
             record_id = str(line.get("id"))
             if kind == "status":
-                if record_id in reconsidered:
-                    continue
                 if not _status_unchanged(home, record_id, selected.get(record_id)):
                     continue
             elif kind not in _REPAIRABLE_KINDS:
@@ -3997,6 +4098,16 @@ def _ledger_repair_message(
             "The ledger would refuse these reconsider cases as written:",
             *case_found,
             *_RECONSIDER_REPAIR_ADVICE,
+        ]))
+    if queued_found:
+        sections.append("\n".join([
+            "These cases leave a lesson whose deferral came due still deferred and due, so it",
+            "would come back to you every night:",
+            *queued_found,
+            "Decide each one in its case: a deferral that should keep waiting takes a `defer` line",
+            "with a new `until` after today (a `note` alone leaves it due); otherwise `reject`,",
+            "`route`, `retire` or `replace` it, or park the case with the reason that names its",
+            "question.",
         ]))
     if held_found:
         sections.append("\n".join([

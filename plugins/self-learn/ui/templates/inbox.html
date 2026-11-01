@@ -23,7 +23,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="inbox" data-inbox data-selected="{{ item.id if item else '' }}">
+<div class="inbox" data-inbox data-selected="{{ item.id if item else '' }}" data-armed-how="{{ armed_how }}">
   <nav aria-label="Inbox" class="inbox-nav">
     {% include "partials/workspace_list.html" %}
   </nav>

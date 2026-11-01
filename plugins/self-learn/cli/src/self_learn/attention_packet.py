@@ -819,6 +819,9 @@ def _plan(item: dict, limits: _Limits) -> dict | None:
         "money": item.get("because") == "money" or bool(plan.get("money")),
         "conditions": limits.clip(conditions, "plan.conditions", 2000)
         if isinstance(conditions, str) else conditions,
+        # Walk 2 (D5): whose words the conditions are (the approval's
+        # record: typed, relayed, draft-accepted, draft-edited, unknown).
+        "conditions_how": item.get("_conditions_how") if isinstance(conditions, str) else None,
         "written_at": plan.get("written_at") or item.get("since"),
         "by": plan.get("by") or ("overseer" if item["source"]["by"] == "overseer" else "code"),
     }

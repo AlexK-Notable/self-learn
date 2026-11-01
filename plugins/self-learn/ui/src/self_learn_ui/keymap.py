@@ -171,24 +171,47 @@ def keymap_json() -> str:
 #: answer, or leave the field) — the one chord the review pages forbid is
 #: allowed here because it only acts INSIDE a text field, where the browser
 #: gives it no meaning of its own.
+#: Walk 2 (D2, D4): how every armed panel on the inbox goes ahead or backs
+#: out. ONE string, printed under each armed panel and in the ``?``
+#: overlay's intro, and the footer's key labels say the same steps, so none
+#: of them can disagree with what the panel does: focus lands on Cancel (a
+#: stray Enter or Space backs out; the page never moves focus onto an
+#: approve or register option, S-130), Cancel comes first so Tab reaches
+#: Confirm, and Escape cancels.
+ARMED_HOW = ("Nothing is sent until you confirm: press Tab to reach Confirm, then Enter (or click "
+             "Confirm). Escape or Cancel goes back.")
+
+#: Walk 2 (D2): the ``?`` overlay's intro on inbox pages (the review pages
+#: keep their own arm-then-Enter intro).
+INBOX_HELP_INTRO = (
+    "A key never settles anything here. A number key, u or s only arms its action: a panel "
+    "says in words what will happen, with Cancel focused. " + ARMED_HOW + " Holding a key down "
+    "does nothing more. With the mouse, an ordinary answer is one click; approving, "
+    "registering, withdrawing or stopping work, and an undo that turns something off or "
+    "reverses a change, ask once more in the same kind of panel."
+)
+
 INBOX_KEYMAP: tuple[KeymapEntry, ...] = (
     KeymapEntry(("j",), "inbox_next", "Next item", "inbox"),
     KeymapEntry(("k",), "inbox_prev", "Previous item", "inbox"),
     KeymapEntry(("Enter",), "inbox_open", "Open the selected item", "inbox"),
     KeymapEntry(
         ("1", "2", "3", "4"), "inbox_option",
-        "That option; a key never approves or registers: on such an option it asks you to "
-        "confirm first, and only the Confirm button confirms", "inbox",
+        "Arm that option (a key never answers): Tab to Confirm, then Enter", "inbox",
     ),
     KeymapEntry(("r",), "inbox_reply", "Write your own answer", "inbox"),
     KeymapEntry(("a",), "inbox_ask", "Ask about this", "inbox"),
-    KeymapEntry(("Ctrl+Enter",), "inbox_send", "Send the box you are typing in (a reply "
-                "that approves or registers asks you to confirm first)", "inbox"),
+    KeymapEntry(("Ctrl+Enter",), "inbox_send", "Send the box you are typing in (words that "
+                "settle the item, or go with an option, are armed first: Tab to Confirm, then "
+                "Enter)", "inbox"),
     KeymapEntry(
-        ("Escape",), "inbox_escape", "Stop the agent's answer, or leave the field", "inbox",
+        ("Escape",), "inbox_escape",
+        "Cancel an armed panel; stop the agent's answer; or leave the field", "inbox",
     ),
-    KeymapEntry(("u",), "inbox_undo", "Undo (decided items)", "inbox"),
-    KeymapEntry(("s",), "inbox_seen_all", "Mark all seen", "inbox"),
+    KeymapEntry(("u",), "inbox_undo", "Arm undo (decided items): Tab to Confirm, then Enter",
+                "inbox"),
+    KeymapEntry(("s",), "inbox_seen_all", "Arm Mark all seen: Tab to Confirm, then Enter",
+                "inbox"),
     KeymapEntry(("?",), "help", "Help overlay", "inbox"),
 )
 

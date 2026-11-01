@@ -12,6 +12,7 @@ from ruamel.yaml import YAML
 from self_learn import cases, settings, statements, user_model
 from self_learn.overseer import conversation
 from self_learn.overseer import cli as overseer_cli
+from self_learn.overseer import run as overseer_run
 from support import commit_all, make_home
 
 
@@ -31,7 +32,10 @@ def _yaml(path: Path, data: dict) -> None:
         yaml.dump(data, fh)
 
 
-def _case(home: Path, tmp_path: Path, suffix: str, dependencies: dict) -> str:
+def _case(
+    home: Path, tmp_path: Path, suffix: str, dependencies: dict,
+    because: str = "the proposition is decision-relevant",
+) -> str:
     stage = tmp_path / f"case-{suffix}.yaml"
     _yaml(
         stage,
@@ -45,7 +49,7 @@ def _case(home: Path, tmp_path: Path, suffix: str, dependencies: dict) -> str:
             "evidence": [{"ref": "transcript:conversation#L1", "quote": "the user's words"}],
             "decision": {
                 "verb": "no-action",
-                "because": "the proposition is decision-relevant",
+                "because": because,
                 "confidence": "settled",
             },
             "dependencies": {
@@ -220,11 +224,18 @@ def test_open_records_nothing_when_the_print_does_not_complete(tmp_path):
     assert cases.show(home, case_id, evidence_only=False).frontmatter["presented"] == []
 
 
-def test_respond_preserves_words_scope_question_version_and_only_observes_dependencies(tmp_path):
+def test_respond_preserves_words_scope_question_version_and_observes_no_case(tmp_path):
     home = make_home(tmp_path)
     entry = _reading(home, 1)
     proposition = f"{entry}@r1"
-    direct = _case(home, tmp_path, "1", {"user_model": [proposition]})
+    # S-132 (the orchestrator's decision, 2026-11-01): a reply to a
+    # reading tells no case -- not one that lists the reading, not one that
+    # lists a statement the reading rests on, not even one whose `because`
+    # cites the reading.
+    direct = _case(
+        home, tmp_path, "1", {"user_model": [proposition]},
+        because=f"the reading {proposition} decides this",
+    )
     by_statement = _case(home, tmp_path, "2", {"statements": ["stmt-00000001"]})
     unrelated = _case(home, tmp_path, "3", {"user_model": ["um-dead@r1"]})
     displayed = f"- {proposition}: Does this apply to every repository?"
@@ -234,6 +245,11 @@ def test_respond_preserves_words_scope_question_version_and_only_observes_depend
         cid: cases.show(home, cid, evidence_only=False)
         for cid in (direct, by_statement, unrelated)
     }
+    # Positive control: the reading and its statement are dependencies the
+    # old rule observed through.
+    rows = {row["case"]: row for row in cases.list_cases(home, only_ok=True)}
+    assert proposition in rows[direct]["dependency_refs"]
+    assert "stmt-00000001" in rows[by_statement]["dependency_refs"]
 
     result = conversation.respond(
         home,
@@ -255,15 +271,19 @@ def test_respond_preserves_words_scope_question_version_and_only_observes_depend
     assert stored["source"]["message_ref"].startswith("conversation:obs-")
 
     after = {cid: cases.show(home, cid, evidence_only=False) for cid in before}
-    assert set(result.observed_cases) == {direct, by_statement}
-    assert f"(ref: {proposition})" in after[direct].sections["Later observations"]
-    assert "(ref: stmt-00000001)" in after[by_statement].sections["Later observations"]
-    assert " statement:" not in after[unrelated].sections["Later observations"]
+    assert result.observed_cases == ()
     for cid in before:
+        assert " statement:" not in after[cid].sections["Later observations"], cid
         assert after[cid].frontmatter["decided_sha256"] == before[cid].frontmatter["decided_sha256"]
         for section in ("Identity and scope", "Evidence", "Decision", "Dependencies"):
             assert after[cid].sections[section] == before[cid].sections[section]
+    # The presentation still records how the user answered it.
     assert after[direct].frontmatter["presented"][-1]["outcome"] == "corrected"
+    # The overseer's next run is handed the reply as a correction of the reading.
+    offered = [row for row in overseer_run._question_answers(home, since=None)
+               if row["id"] == result.statement_id]
+    assert offered and offered[0]["kind"] == "proposition" and offered[0]["ref"] == proposition
+    assert offered[0]["verbatim"] == "Only this repository, while its deployment stays manual."
 
 
 @pytest.mark.parametrize("scope", ["", "project:"])
@@ -330,4 +350,8 @@ def test_cli_exposes_open_respond_and_decline(tmp_path, monkeypatch, capsys):
         ]
     )
     assert overseer_cli.dispatch(answered) == 0
-    assert "recorded" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "recorded" in out
+    # S-132: the case lists the reading among its dependencies, and the reply
+    # still sends it nowhere.
+    assert "reconsidered=0" in out

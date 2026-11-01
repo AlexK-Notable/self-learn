@@ -58,6 +58,8 @@ __all__ = [
     "TOOL_FIELDS",
     "WARN_MESSAGE_MAX",
     "WARN_OUTPUT_CAP",
+    "COMMAND_VIEW_AWK",
+    "COMMAND_VIEW_MAX_BYTES",
     "hook_event",
     "hook_message",
     "hook_mode",
@@ -111,6 +113,274 @@ WARN_MESSAGE_MAX = 2000
 #: cap on hook output (the hand-written precedent, git-stage-status.sh,
 #: keeps the same 7,500).
 WARN_OUTPUT_CAP = 7500
+
+#: S-133: a Bash command longer than this many characters is matched raw, as
+#: before S-133 -- the view below is linear, but a hook runs on every call.
+COMMAND_VIEW_MAX_BYTES = 262144
+
+#: S-133: the command view a WARNING hook on Bash matches instead of the
+#: raw command, so a commit message or a file written through a heredoc
+#: that only mentions a pattern no longer fires the warning. POSIX awk, run
+#: under ``LC_ALL=C``, reading the command on stdin, one linear pass.
+#:
+#: Gate r3's rule, the orchestrator's: an EXACT-SHAPE ALLOWLIST. The view
+#: hides only:
+#:
+#: - A1, a message argument: the word after ``-m``, ``-am`` or ``--message``
+#:   of ``git commit``, or after ``-t``, ``-b``, ``--title`` or ``--body`` of
+#:   ``gh pr|issue create|comment``, when that command's words are the
+#:   first words of a segment (no prefix: ``env``, ``sudo``, ``bash -c``,
+#:   an assignment) and the argument is exactly one of: a single-quoted
+#:   string; a double-quoted string with no ``$``, backtick or backslash; or
+#:   the commit idiom ``"$(cat <<'D'`` (or ``<<"D"``, ``<<\D``, ``<<-``), a
+#:   newline, the body, a line that is exactly ``D`` (leading tabs only for
+#:   ``<<-``), ``)"``. The segment must not pipe on (``|``, ``|&``).
+#: - A2, a heredoc written to a file: a segment that is exactly
+#:   ``cat > FILE <<'D'``, ``cat >> FILE <<'D'``, ``tee FILE <<'D'`` or
+#:   ``tee -a FILE <<'D'`` (a quoted delimiter; FILE one plain word or one
+#:   quoted string; nothing after the delimiter word on that line), whose
+#:   terminator line is found, and whose FILE's base name appears nowhere
+#:   else in the command, before or after (a file written, then run, or
+#:   read by a reader started earlier); the rest of the command holds no
+#:   glob (``*``, ``?``, ``[``) and no ``$``; and FILE is not one that runs
+#:   without being named (a git hook, a ``hooks/`` or ``profile.d/``
+#:   directory, a shell startup file such as ``.bashrc`` or ``.profile``).
+#:
+#: To find those shapes the scan tokenizes a small, exact subset of the
+#: shell: words, single quotes, double quotes holding no ``$(``, ``${`` or
+#: backtick, backslash escapes, comments, ``; & && | || ( )`` and plain
+#: redirections. Anything else anywhere in the command -- a substitution,
+#: backticks, ``$'...'``, arithmetic, any other heredoc, a here-string, a
+#: process substitution, a ``git``, ``gh``, ``cat`` or ``tee`` redefined
+#: in the command (a function, ``alias git=``, ``function gh``), an unterminated
+#: quote -- ends the scan, and the view is the RAW
+#: command: the behaviour before S-133. No single quote appears in the
+#: program, so the generator embeds it as one bash single-quoted word.
+COMMAND_VIEW_AWK = r"""
+function bail() {
+    BAIL = 1
+    I = N + 1
+}
+function newseg() {
+    endword()
+    WN = 0; CMD = 0; OK = 0; NEXTMSG = 0; HIDSEG = 0
+}
+function startword() {
+    if (INW) return
+    INW = 1; WS = I; WPL = 1
+}
+function endword(    t) {
+    if (!INW) return
+    INW = 0; WN++; NEXTMSG = 0
+    t = substr(S, WS, I - WS)
+    if (!WPL) {
+        if (!OK) CMD = 0
+        return
+    }
+    if (WN == 1) {
+        CMD = (t == "git") ? 1 : ((t == "gh") ? 2 : 0)
+    } else if (WN == 2 && !OK) {
+        if (CMD == 1 && t == "commit") OK = 1
+        else if (!(CMD == 2 && (t == "pr" || t == "issue"))) CMD = 0
+    } else if (WN == 3 && !OK) {
+        if (CMD == 2 && (t == "create" || t == "comment")) OK = 1
+        else CMD = 0
+    } else if (OK) {
+        if (CMD == 1 && (t == "-m" || t == "-am" || t == "--message")) NEXTMSG = 1
+        if (CMD == 2 && (t == "-t" || t == "-b" || t == "--title" || t == "--body")) NEXTMSG = 1
+    }
+}
+function term(e) {
+    return e > N || index(" \t\n;&|)<>", substr(S, e, 1)) > 0
+}
+function catdoc(    j, q, d, strip, k, line, cmp) {
+    if (substr(S, I + 1, 5) != "$(cat") return 0
+    j = I + 6
+    while (j <= N && index(" \t", substr(S, j, 1)) > 0) j++
+    if (substr(S, j, 2) != "<<") return 0
+    j += 2; strip = 0
+    if (substr(S, j, 1) == "-") { strip = 1; j++ }
+    while (j <= N && index(" \t", substr(S, j, 1)) > 0) j++
+    q = substr(S, j, 1)
+    if (q == "\047" || q == "\"") j++
+    else if (q == "\\") { j++; q = "" }
+    else return 0
+    k = j
+    while (k <= N && substr(S, k, 1) ~ /[A-Za-z0-9_]/) k++
+    if (k == j) return 0
+    d = substr(S, j, k - j)
+    if (q != "") { if (substr(S, k, 1) != q) return 0; k++ }
+    if (substr(S, k, 1) != "\n") return 0
+    CDBS = k + 1; j = CDBS
+    while (j <= N) {
+        k = j
+        while (k <= N && substr(S, k, 1) != "\n") k++
+        line = substr(S, j, k - j); cmp = line
+        if (strip) sub(/^\t+/, "", cmp)
+        if (cmp == d) break
+        j = k + 1
+    }
+    if (substr(S, k, 3) != "\n)\"") return 0
+    CDLINE = line
+    return k + 3
+}
+function trymsg(    c, k, e, plain) {
+    c = substr(S, I, 1)
+    if (c == "\047") {
+        k = I + 1
+        while (k <= N && substr(S, k, 1) != "\047") k++
+        if (k > N || !term(k + 1)) return 0
+        OUT = OUT "\047\047"; e = k + 1
+    } else {
+        e = catdoc()
+        if (e) {
+            if (!term(e)) return 0
+            OUT = OUT substr(S, I, CDBS - I) CDLINE "\n)\""
+        } else {
+            k = I + 1; plain = 1
+            while (k <= N && substr(S, k, 1) != "\"") {
+                if (index("$`\\", substr(S, k, 1)) > 0) plain = 0
+                k++
+            }
+            if (k > N || !plain || !term(k + 1)) return 0
+            OUT = OUT "\"\""; e = k + 1
+        }
+    }
+    I = e; WN++; NEXTMSG = 0; HIDSEG = 1
+    return 1
+}
+function lineinfo(    k, line) {
+    LS = I
+    while (LS > 1 && substr(S, LS - 1, 1) != "\n") LS--
+    k = I
+    while (k <= N && substr(S, k, 1) != "\n") k++
+    LE = k
+    line = substr(S, LS, LE - LS)
+    A2AT = match(line, A2RE) ? LS + RSTART - 1 : 0
+}
+function a2(    t, d, base, j, k, line, rest) {
+    if (I > LE) lineinfo()
+    if (I != A2AT) return 0
+    t = substr(S, I, LE - I)
+    d = t; sub(/.*<</, "", d); gsub(/[ \t\047"\\]/, "", d)
+    sub(A2CMD, "", t); sub(/[ \t]+<<.*$/, "", t); gsub(/[\047"]/, "", t)
+    base = t; sub(/.*\//, "", base)
+    if (base == "") return 0
+    j = LE + 1
+    while (j <= N) {
+        k = j
+        while (k <= N && substr(S, k, 1) != "\n") k++
+        line = substr(S, j, k - j)
+        if (line == d) break
+        j = k + 1
+    }
+    if (j > N) return 0
+    rest = substr(S, 1, I - 1) substr(S, k)
+    if (index(rest, base) > 0 || rest ~ /[*?$]/ || index(rest, "[") > 0) return 0
+    if (t ~ /(^|\/)(\.git|\.husky|hooks|profile\.d|\.config\/(fish|bash|zsh))\//) return 0
+    if (base ~ /^\.[A-Za-z0-9_.-]*(rc|profile|env|login|logout)$/ || base ~ /\.fish$/) return 0
+    OUT = OUT substr(S, I, LE - I) "\n" line
+    I = k
+    return 1
+}
+function lex(    c, d, k) {
+    while (I <= N) {
+        c = substr(S, I, 1); d = substr(S, I + 1, 1)
+        if (c == " " || c == "\t") { endword(); OUT = OUT c; I++; continue }
+        if (c == "\n" || c == ";" || c == ")") { newseg(); OUT = OUT c; I++; continue }
+        if (c == "&") {
+            if (d == ">") {
+                endword(); OUT = OUT "&>"; I += 2
+                if (substr(S, I, 1) == ">") { OUT = OUT ">"; I++ }
+                continue
+            }
+            newseg(); OUT = OUT c; I++; continue
+        }
+        if (c == "|") {
+            if (d != "|" && HIDSEG) { bail(); return }
+            newseg(); OUT = OUT c; I++; continue
+        }
+        if (c == "(") {
+            if (d == "(") { bail(); return }
+            newseg(); OUT = OUT c; I++; continue
+        }
+        if (c == "<" || c == ">") {
+            endword()
+            if (c == "<" && d == "<") { bail(); return }
+            OUT = OUT c; I++
+            if (d != "" && index((c == ">") ? ">&|" : "&>", d) > 0) { OUT = OUT d; I++ }
+            if (substr(S, I, 1) == "(") { bail(); return }
+            continue
+        }
+        if (c == "`") { bail(); return }
+        if (c == "#" && !INW) {
+            k = I
+            while (k <= N && substr(S, k, 1) != "\n") k++
+            OUT = OUT substr(S, I, k - I); I = k
+            continue
+        }
+        if (c == "\\" && d == "\n") {
+            OUT = OUT c d; I += 2
+            if (INW) WPL = 0
+            continue
+        }
+        if (!INW) {
+            if (NEXTMSG && (c == "\047" || c == "\"") && trymsg()) continue
+            if (WN == 0 && (c == "c" || c == "t") && a2()) continue
+        }
+        startword()
+        if (c == "\047") {
+            k = I + 1
+            while (k <= N && substr(S, k, 1) != "\047") k++
+            if (k > N) { bail(); return }
+            WPL = 0; OUT = OUT substr(S, I, k - I + 1); I = k + 1
+            continue
+        }
+        if (c == "\"") {
+            k = I + 1
+            while (k <= N) {
+                c = substr(S, k, 1)
+                if (c == "\"") break
+                if (c == "`") { bail(); return }
+                if (c == "$" && (substr(S, k + 1, 1) == "(" || substr(S, k + 1, 1) == "{")) { bail(); return }
+                if (c == "\\") k++
+                k++
+            }
+            if (k > N) { bail(); return }
+            WPL = 0; OUT = OUT substr(S, I, k - I + 1); I = k + 1
+            continue
+        }
+        if (c == "$") {
+            if (d != "" && index("({\047\"", d) > 0) { bail(); return }
+            WPL = 0; OUT = OUT c; I++
+            continue
+        }
+        if (c == "\\") {
+            WPL = 0; OUT = OUT c d; I += 2
+            continue
+        }
+        OUT = OUT c; I++
+    }
+}
+BEGIN {
+    RS = "\001"
+    FILEW = "([^ \t\n\047\"\\\\$`<>|;&()#]+|\047[^\047\n]*\047|\"[^\"$`\\\\\n]*\")"
+    DELIMQ = "(\047[A-Za-z0-9_]+\047|\"[A-Za-z0-9_]+\"|\\\\[A-Za-z0-9_]+)"
+    A2CMD = "^(cat[ \t]+>>?[ \t]*|tee([ \t]+-a)?[ \t]+)"
+    REDEF = "(^|[^A-Za-z0-9_.-])(git|gh|cat|tee)[ \t]*[(]|(git|gh|cat|tee)=|function[ \t]+(git|gh|cat|tee)([^A-Za-z0-9_.-]|$)"
+    A2RE = "(cat[ \t]+>>?[ \t]*|tee([ \t]+-a)?[ \t]+)" FILEW "[ \t]+<<[ \t]*" DELIMQ "[ \t]*$"
+}
+{ BUF = (NR == 1) ? $0 : BUF RS $0 }
+END {
+    S = BUF; N = length(S); I = 1; OUT = ""; BAIL = 0; LE = 0
+    INW = 0; WN = 0; CMD = 0; OK = 0; NEXTMSG = 0; HIDSEG = 0
+    if (S ~ REDEF) BAIL = 1
+    else lex()
+    endword()
+    if (BAIL) printf "%s\n", S
+    else printf "%s\n", OUT
+}
+"""
 
 
 def hook_mode(hook: dict) -> str:
@@ -484,7 +754,16 @@ def _warn_script(
 
     The JSON line is built here, at generation, and embedded as one
     single-quoted literal (the deny guard's quoting), so the script needs
-    no jq to print it and its bytes stay deterministic."""
+    no jq to print it and its bytes stay deterministic.
+
+    S-133: when ``tools`` names Bash, the command is matched through
+    :data:`COMMAND_VIEW_AWK`, which hides only the exact allowlisted shapes
+    (a commit or gh message argument, a heredoc written to a file) and
+    leaves every other command raw; any trouble there matches the raw
+    text, as before.
+    A deny guard never gets the view: quoting must not get a command past
+    a guard, so a deny guard keeps matching the raw command, false
+    positives included."""
     output = warn_output(event, record_id, message)
     if len(output.encode("utf-8")) > WARN_OUTPUT_CAP:
         raise HookCompileError(
@@ -506,6 +785,20 @@ def _warn_script(
     case_arms = "\n".join(arms)
     regex_sq = _sq(path_regex)
     output_sq = _sq(output)
+    # S-133: a Bash command is matched through the command view, never a
+    # file path; a hook guarding only Edit/Write keeps its old bytes.
+    view_block = ""
+    if "Bash" in tools:
+        view_block = f"""
+# S-133: hide only a commit or gh message argument and a heredoc written
+# to a file, in their exact shapes (COMMAND_VIEW_AWK); any other command is
+# matched raw. No awk, a command over {COMMAND_VIEW_MAX_BYTES} characters or any awk
+# failure: match the raw text instead.
+if [[ "$TOOL" == Bash ]] && (( ${{#VALUE}} <= {COMMAND_VIEW_MAX_BYTES} )) && command -v awk &>/dev/null; then
+    VIEW=$(LC_ALL=C awk {_sq(COMMAND_VIEW_AWK)} <<<"$VALUE" 2>/dev/null) || VIEW=$VALUE
+    VALUE=$VIEW
+fi
+"""
 
     return f"""#!/usr/bin/env bash
 # {name} — {event} warning hook, generated by self-learn from {record_id}.
@@ -534,7 +827,7 @@ case "$TOOL" in
 esac
 
 [[ -n "$VALUE" ]] || exit 0
-
+{view_block}
 # grep -E: 0 = match, 1 = no match, >= 2 = a broken regex -- only a match warns.
 MATCH_RC=0
 grep -qE -- {regex_sq} <<<"$VALUE" 2>/dev/null || MATCH_RC=$?

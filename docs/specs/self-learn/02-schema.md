@@ -2084,18 +2084,39 @@ staged sheet the way apply time will — skipping a case the model parked and
 a case the runner will park — and collects the lines the ledger would
 refuse that are the model's to fix: kind `bad-line`, kind
 `destination-unavailable`, and kind `status` when the lesson's status is
-still the one the run selected it with. One exception: this preview runs
-without the staged case, which is not in the ledger yet, so a `reject`,
-`defer` or `revise` of a routed lesson under a staged `kind: reconsider`
-case previews as a `status` refusal that the case itself widens at apply
-time; such a refusal is not collected for a lesson that a reconsider case
-of the same staged case/sheet pair covers. If any line is collected, the
+still the one the run selected it with. This preview runs without the
+staged case, which is not in the ledger yet, but it widens each line a
+staged `kind: reconsider` case covers as that case will at apply time
+(S-73 item 6), so a `status` refusal left in it is one apply time gives
+too, and it is collected like any other *(amended 2026-11-01,
+S-131: until then such a refusal was never collected for a lesson
+a reconsider case of the same staged pair covered, a rule from before the
+preview could widen a line; run `run-14405f3da1fe`'s `confirm-held` lines
+on two rejected lessons reached apply time that way and were parked
+`ledger-refused`)*. If any line is collected, the
 repair turn is spent on those lines exactly as on a format failure (the
 spent allowance committed first), with a message naming each sheet, item,
 verb, lesson and the ledger's words. Refusals left after the repair never
 fail the stage; apply time handles them by kind, as above. A repair turn
 already spent on a format error is not spent again. A dry run does the
 same, writing only to the cache.
+
+*(Amended 2026-11-01, S-131, gate r1 fold.)* The same turn also
+flags a staged case (not parked, not one the runner parks) that would leave
+a `deferred` lesson whose date has passed still deferred and due: no line
+on the lesson decides it or files it. Deciding lines are `route`,
+`reject`, `retire`, `supersede`, `replace` (including its `also`) and a
+`defer` that moves the date after now -- not a `defer` to today or
+earlier, and not one the batch would skip as already applied (a `defer`
+with no `until` on the day the deferral comes due, `batch.classify`;
+gate r2 fold). The filing moves `rehome`/`rescope` leave the deferral
+due: the lesson comes back once, in its new bucket, by design. Such a case
+would apply -- a `note`, `undefer` or `revise` lands -- and rewrite the
+record, a new version no run decided, so the lesson would come back every
+night. Read on the record as it is now with the queue's own predicate
+(`domain.is_queued`); a deferral still ahead is never flagged, and a
+pending lesson is outside this check. A model that keeps the case after
+the repair is not stopped.
 
 *(Amended S-96.)* A case whose outcome is `defer` and
 that the overseer asked the user about comes back to the steward when the
@@ -2486,6 +2507,7 @@ dependency-moved | reconsider-queued | abandoned`. A `statement` or
 section-4 dependencies makes the CLI enqueue the case for the steward's next
 nightly run (a `kind: reconsider, trigger: reconsider` case, run through
 `reconsider`); the queue itself is cache, rebuildable from the observations.
+*(Amended 2026-11-01, S-132, the orchestrator's decision.)* A user's reply to a reading (`overseer respond` on an indexed reading) tells no case. It is recorded as the person's words (a statement answering `um-…@rN` as a proposition), exactly as the inbox and `statement add --answers-kind proposition` record a correction. Reopening is the overseer's phase-B judgement: the run that sees the correction in `answers.yaml` is also handed every current decision whose dependencies list that reading, at any revision and older than its selection included (`citing/<case>.md`), judges which rested on it, writes a `kind: reconsider` successor for each that did (a case selected this run may instead be sent back by a `dependency-moved` finding), and names in its report the decisions it reconsidered and why. Before, `respond` observed every case that listed the reading, or one of the statements it rests on, among its section-4 dependencies, and the steward reopened each; the overseer's 2026-11-01 run (notice `ntc-bf6e631b`) found decisions reopened that the reply could not change, and a check of the decision's `because` cannot tell a decision that mentions the reading from one that rests on it.
 
 **Two views.** `case show --evidence-only` is **blind by default** (no
 separate `--blind` flag): frontmatter reduced to exactly `case`, `opened_at`,
@@ -4822,6 +4844,14 @@ exception's class name. An undone decided item (its transcript's last
 undo/redo row is an undo) has `meanwhile` and `decided.changes_now` from
 `attention.UNDONE_NOW`; a hook or always-loaded item is titled by its
 lesson's trigger, its id only when the lesson cannot be read.
+*(S-134, D5; C6.)* An approved item's `plan.conditions` (the
+approval's note) comes with `plan.conditions_how`, whose words they are,
+read from the approving choice row by `attention.conditions_provenance`:
+`typed` (a click citing the person's statement: words typed with the
+option, or `--words-from`), `relayed`, `draft-accepted`, `draft-edited`,
+or `unknown`; null when there are no conditions. The page labels the
+conditions by it and never calls the agent's draft "your conditions"
+(walk 2 of 2026-11-01, #019).
 
 **The workspace transcript** (`<ledger>/attention/workspace/<item-id>.jsonl`;
 the ref kind `workspace:<item-id>#T<n>`, rule 11 of §3a.6): row 0 a header,
@@ -4899,7 +4929,8 @@ refused, a secret or an unknown draft); the page shows it before sending,
 so it can never say more than the record does (C6). *(Item 3.)*
 `--words-from T` sends an option with the words of the person's own
 earlier reply `T<n>` on this item (`role: user`, `origin: typed`, `kind:
-reply`, no option; anything else 64), with no `--text-file` or `--draft`
+reply`; with or without an option since S-134 gate r1 F4; anything else
+64), with no `--text-file` or `--draft`
 and never from an agent's shell (64): the workspace row is `origin:
 clicked` with the words and `words_from`, the choice's `text` is the
 words and its `statement` the one that already records them, and no new
@@ -4922,7 +4953,35 @@ draft sent with no option, or a reply that pastes the agent's text, is a
 choice that decides nothing on an item with a plan, exactly like words
 alone (no case is told). A later answer appends (latest wins) until it is
 carried out; an ask already answered stays answerable until the overseer's
-next run rewrites the index. An approved change stays changeable until a
+next run rewrites the index. *(S-134, D3.)*
+`attention_answers.answered_item(home, *, item_id=None, subject=None)`
+finds such an answered ask, read-only, by its item id or by the ask id an
+approved item shares as its subject (after an approval was withdrawn), with
+its public fields and options only (never the `_` ones); by subject it is
+`None` while the ask is still open. The page's "Change my answer" reads it,
+and the answer route answers that item through `attention answer` as
+usual. `attention_answers.conflict_side(option)` is the verb's own rule
+for which statement a conflict option keeps, so the page's receipt names
+the side the record took. *(D5.)* "Send the draft as is" with no option is
+recorded as the agent's draft (`origin: draft-accepted`, a choice `how:
+draft-accepted`, no statement), on an item with a plan as on any other:
+walk 2's "Recorded as your words" (#015) was the page's receipt, never the
+record. *(S-134, gate r1 F1.)* An answer sent to an answered ask whose
+subject has moved on to a listed item (an old tab, an old link) is that
+item's answer: the verb answers it as the approved item (`approved.pending`:
+its live-claim refusal applies, and an approve option sent again is
+refused, 3, `ALREADY_APPROVED`, "is already approved … nothing was
+started again"); when the work was carried out (`decided.approved-done`)
+every answer is refused (3, `ALREADY_CARRIED_OUT`: a new answer would
+start it over; overturn it in words on that item); any other listed item
+refuses it (3), naming it. `answered_item` gives nothing for an ask while
+any item with its subject is listed, and
+`attention_answers.ask_successor(home, item_id)` names that item (public
+fields) so the page answers by its rules. *(Gate r1 F4, the
+orchestrator's ruling.)* `--words-from T` also takes the person's own
+typed reply that went with an option (their statement, cited again, never
+a second one), so after "Change my answer" the note they typed is not
+typed twice; agent and relayed rows stay refused (64). *(Gate r2 R2-F1.)* On a redirected answer `--words-from` and `--draft` are refused (3, `MOVED_WORDS`) before the redirect: their row numbers and draft ids are the ask's, and the item that took it over numbers its own rows from 1. An approved change stays changeable until a
 session claims it: another option on the approved item is recorded, both
 readers (`attention._approval_track`, `conversation.approval_track`) then
 read the item as answered, and a later `claim` is refused (2, "change
