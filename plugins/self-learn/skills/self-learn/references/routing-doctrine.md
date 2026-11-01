@@ -583,6 +583,16 @@ Rules for the hook block:
   override; choose `deny` when the call is always wrong — a warning
   carries no over-block, so its `rationale` names what it warns on and
   what it stays quiet for.
+- **A warning hook on Bash ignores a commit message and a file written by
+  a heredoc (S-133).** Before its regex runs, exactly two shapes are
+  blanked: the message of `git commit -m|-am|--message` or of `gh
+  pr|issue create|comment -t|-b|--title|--body` (single-quoted, plain
+  double-quoted, or `"$(cat <<'EOF'` … `EOF` … `)"`), and the body of
+  `cat > FILE <<'EOF'`, `cat >> FILE <<'EOF'` or `tee [-a] FILE <<'EOF'`.
+  Everything else, including every other quoted string and heredoc, is
+  matched as written, so write the regex against the command and expect
+  it to fire on quoted mentions elsewhere. A deny guard matches the raw
+  command: quoting must never get a call past a guard.
 
 ```yaml
 hook:

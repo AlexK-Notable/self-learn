@@ -21,6 +21,21 @@ host's file git tracks (S-80), a hand edit, a host whose two registrations
 disagree (S-82) -- is left alone and logged once (the job runs once a day),
 for the host policy or the steward's ``@writable`` input to settle.
 
+Outdated warning hooks (S-133, the orchestrator's decision). A
+placed warning hook whose stored script the current hook compiler no longer
+produces (:func:`verbs.stale_warn_hooks`) joins the same narrowed recompile,
+which regenerates it (:func:`verbs.refresh_warn_hooks`: one ledger commit
+stamped ``By: maintenance``, then the host write). Never a deny guard; an
+outdated hook whose file a person edited is left and named in the log and
+the cache file (``hooks_refused``); the hooks that moved are named too
+(``hooks_regenerated``). A hook regenerated in the ledger whose host write
+failed is named ``hooks_pending`` and RECORDED pending (:mod:`hook_pending`,
+gate r2); the next run places exactly the recorded hooks whose placed file
+is still as the failed write left it (:func:`verbs.pending_warn_hook_placements`)
+-- that is work, never idle (``hooks_placed``) -- and leaves and names one a
+person changed or deleted since. Nothing is placed because of a file's
+state alone.
+
 What it writes. The ledger only through ``recompile`` (which takes its own
 locks), and one cache file, ``<cache>/maintenance/recompile.json``: when the
 last attempt began, the targets it found, the ones it recorded and the ones
@@ -85,6 +100,16 @@ class MaintenanceResult:
     #: Never set: this job takes no intent of its own. Present so `serve`'s
     #: `_log_stopped_refusal` reads it like the other jobs' results.
     stopped: list[str] = field(default_factory=list)
+    #: S-133: the placed warning hooks this run regenerated (record
+    #: ids), and the outdated ones it left, with why (a hand edit, a replay
+    #: that fails, a Trigger that now names another file).
+    hooks_regenerated: list[str] = field(default_factory=list)
+    hooks_refused: dict[str, str] = field(default_factory=dict)
+    #: Gate r1 F2 / r2 G2: regenerated in the ledger but not placed this run
+    #: (id -> why, recorded pending), and the recorded pending ones this run
+    #: placed.
+    hooks_pending: dict[str, str] = field(default_factory=dict)
+    hooks_placed: list[str] = field(default_factory=list)
 
 
 def state_path(cache_dir: Path) -> Path:
@@ -148,13 +173,38 @@ def run(home: Path | str, cache_dir: Path, *, now: float | None = None) -> Maint
     _store_state(cache_dir, {"last_attempt_at": stamp, "status": "started"})
     found = selfcheck.unrecorded_targets(home)
     targets = [str(t) for t in found]
-    if not found:
-        _store_state(cache_dir, {
+    # S-133: placed warning hooks the current compiler would
+    # write differently ride the same recompile, which regenerates them
+    # (never a deny guard; an outdated hook a person edited is left).
+    # Gate r2 G2: so do the hooks an earlier failed host write RECORDED
+    # pending, while their placed file is as that write left it; placing
+    # them is work, never idle. One a person changed since is left.
+    try:
+        stale, hooks_left = verbs.stale_warn_hooks(home)
+        unplaced, unplaced_left = verbs.pending_warn_hook_placements(home)
+    except Exception as exc:  # noqa: BLE001 -- the managed-target repair still runs
+        stale, hooks_left, unplaced, unplaced_left = [], {}, [], {}
+        print(f"serve: maintenance could not check warning hooks — {_clip(str(exc))}",
+              file=sys.stderr)
+    hooks_left = {rid: _clip(why) for rid, why in {**hooks_left, **unplaced_left}.items()}
+    if hooks_left:
+        print(
+            f"serve: maintenance left {len(hooks_left)} warning hook(s) — "
+            + "; ".join(f"{rid}: {why}" for rid, why in sorted(hooks_left.items())),
+            file=sys.stderr,
+        )
+    if not found and not stale and not unplaced:
+        state: dict[str, Any] = {
             "last_attempt_at": stamp, "status": "idle", "targets": [],
             "recorded": [], "refused": {},
-        })
-        return MaintenanceResult("idle")
-    ids = list(dict.fromkeys(rid for rids in found.values() for rid in rids))
+        }
+        if hooks_left:
+            state["hooks_refused"] = hooks_left
+        _store_state(cache_dir, state)
+        return MaintenanceResult("idle", hooks_refused=hooks_left)
+    ids = list(dict.fromkeys(
+        [*(rid for rids in found.values() for rid in rids), *stale, *unplaced]
+    ))
     head_before = verbs.ledger_head(home)
     try:
         result = verbs.recompile(
@@ -186,10 +236,39 @@ def run(home: Path | str, cache_dir: Path, *, now: float | None = None) -> Maint
             named = [w for w in result.warnings if str(w).startswith(f"{target}:")]
             reason = _clip(named[0][len(target) + 1:]) if named else "not recorded (no reason given)"
         refused[target] = reason
-    _store_state(cache_dir, {
+    state = {
         "last_attempt_at": stamp, "status": "ran", "targets": targets,
         "recorded": recorded, "refused": refused,
-    })
+    }
+    regenerated = list(result.hooks_regenerated)
+    if regenerated:
+        state["hooks_regenerated"] = regenerated
+        # S-133: which placed warning hooks moved, once a day.
+        print(
+            f"serve: maintenance regenerated {len(regenerated)} warning hook(s) "
+            "from the current compiler — " + ", ".join(regenerated),
+            file=sys.stderr,
+        )
+    pending = {rid: _clip(why) for rid, why in result.hooks_pending.items()}
+    if pending:
+        state["hooks_pending"] = pending
+        print(
+            f"serve: maintenance regenerated {len(pending)} warning hook(s) in the ledger "
+            "but could not place them — "
+            + "; ".join(f"{rid}: {why}" for rid, why in sorted(pending.items())),
+            file=sys.stderr,
+        )
+    placed = list(result.hooks_placed)
+    if placed:
+        state["hooks_placed"] = placed
+        print(
+            f"serve: maintenance placed {len(placed)} warning hook(s) an earlier failed "
+            "write left pending — " + ", ".join(placed),
+            file=sys.stderr,
+        )
+    if hooks_left:
+        state["hooks_refused"] = hooks_left
+    _store_state(cache_dir, state)
     if refused:
         # Once a day, because the job runs once a day: left for the host
         # policy (L5) or the steward's `@writable` input, never retried here.
@@ -200,7 +279,9 @@ def run(home: Path | str, cache_dir: Path, *, now: float | None = None) -> Maint
             file=sys.stderr,
         )
     return MaintenanceResult(
-        "ran", targets=targets, recorded=recorded, refused=refused, recompile=result
+        "ran", targets=targets, recorded=recorded, refused=refused, recompile=result,
+        hooks_regenerated=regenerated, hooks_refused=hooks_left,
+        hooks_pending=pending, hooks_placed=placed,
     )
 
 
