@@ -950,6 +950,50 @@ def test_a_steward_run_hands_packet_1_the_questions_and_reads_them_once(tmp_path
     assert [r["text"] for r in kept] == ["kept while stopped", "never restart my desktop"]
 
 
+def test_a_packet_1_that_fails_to_the_cap_reads_no_question(tmp_path, monkeypatch):
+    """answers gate r3 MINOR A (added at integration): the questions count
+    as read only in the commit that prepares a session's recipe, never when
+    the prompt is assembled. Here every packet-1 session fails until
+    `runs.attempt_cap`; the packet is closed out as abandoned and the run
+    completes, yet no session's output was applied, so the question must
+    still be listed and the manifest must carry no read set.
+
+    Mutation (the gate's M6): record the read right after
+    `steward_prompt.assemble` instead of at the prepared recipe -> red."""
+    from self_learn import worker
+    from test_steward import _enable_steward, _head_manifest, _seed_fresh_proposals, _transport_failure
+
+    monkeypatch.setenv(worker.NO_PUSH_ENV, "1")
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    item = "att-0123456789ab"
+    header = {"item_kind": "ask.sudo", "subject": "q-x", "title": "Install the package?"}
+    workspace.append(home, item, [{"role": "user", "origin": "typed", "kind": "question",
+                                   "text": "never restart my desktop"}], header=header)
+    prompts: list[str] = []
+
+    def failing(spec):
+        prompts.append(spec.prompt)
+        return _transport_failure(spec)
+
+    monkeypatch.setattr(steward.invocation, "write_session", failing)
+    cap, _source = settings.resolve_setting(home, settings.by_name("runs.attempt_cap"))
+    runs = [steward.run(home, dry_run=False) for _night in range(int(cap))]
+
+    # Controls: every attempt's prompt listed the question, and the run
+    # reached a terminal state, so its manifest is one the read set counts.
+    assert len(prompts) == int(cap) and all(f"workspace:{item}#T1" in p for p in prompts)
+    (run_id,) = {run.run_id for run in runs}
+    manifest = _head_manifest(home, run_id)
+    assert manifest["packets"][0]["phase"] == "abandoned"
+    assert manifest.get("status") == "complete"
+
+    assert "workspace_questions_read" not in manifest["packets"][0]
+    kept, _omitted, _read = steward._workspace_questions_for_run(home)
+    assert [r["text"] for r in kept] == ["never restart my desktop"]
+
+
 # --------------------------------------------------------- fix round 1
 
 
