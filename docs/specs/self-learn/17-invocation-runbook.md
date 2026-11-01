@@ -393,8 +393,9 @@ measured by the first real question.
 
 **The report summary rides this surface** *(added 2026-11-01, humane UI lane 5,
 S-NEXT-humane-l5)*. `self-learn summarise <kind>:<ref> [--again] [--stream]
-[--json] [--show]` (exit 0 printed, 2 unknown report, 3 login, 4 would bill
-money, 5 timeout, 7 stopped, 1 other, 64 usage) makes at most one `ask`-surface
+[--json] [--show]` (exit 0 printed, 2 unknown report or an inbox item that is
+not a report, 3 login, 4 would bill money, 5 timeout, 6 turn limit, 7 stopped,
+1 other, 64 usage) makes at most one `ask`-surface
 session: no tools (an empty allow-list, reads fenced to an empty work folder
 `<cache>/summaries/work/`), one turn, `ask.timeout_secs`, the auto-memory switch
 off, its own sidecar key `summary-<sha256[:16]>`, and the money check

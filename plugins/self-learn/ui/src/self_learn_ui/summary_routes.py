@@ -119,16 +119,21 @@ def _box(request: Request, kind: str, ref: str, *, state: dict | None,
         if not record or record.get("source_sha256") in (None, (state or {}).get("sha256")):
             summary = _summary_view({**record, "text": record.get("text") or result.get("text")})
     failed = None
+    stopped = False
     if isinstance(result, dict) and result.get("ev") == "error" and summary is None:
-        failed = {"code": result.get("code"),
-                  "message": MONEY_LINE if result.get("code") == "money"
-                  else str(result.get("message") or "the summary could not be written")}
+        if result.get("code") == "interrupted":
+            # Gate r1 NIT 4: a Stop is said plainly, never as a failure.
+            stopped = True
+        else:
+            failed = {"code": result.get("code"),
+                      "message": MONEY_LINE if result.get("code") == "money"
+                      else str(result.get("message") or "the summary could not be written")}
     stale = _summary_view((state or {}).get("stale")) if summary is None else None
     error = (state or {}).get("error")
     return {
         "kind": kind, "ref": ref, "url": f"/summary/{kind}/{ref}",
         "scheduled": scheduled, "counted": counted, "summary": summary, "stale": stale,
-        "running": running, "failed": failed, "error": error,
+        "running": running, "failed": failed, "stopped": stopped, "error": error,
         # The button: a report with no summary of any kind yet, or a
         # nightly review that has only its counts ("in words").
         "offer": (running is None and summary is None and scheduled is None
@@ -197,12 +202,21 @@ async def _full_box(request: Request, kind: str, ref: str) -> dict | None:
             if latest is not None and summarise.report_date(latest) == ref:
                 text = latest
         return box_for_report(request, text, None if ref == "latest" else ref)
+    item = await _listed_item(home, ref)
+    packet_read = await asyncio.to_thread(ledger.attention_packet, home, ref)
+    packet = packet_read.data
+    if item is None and isinstance(packet, dict) and isinstance(packet.get("item"), dict):
+        item = packet["item"]  # an older item, out of the list's window
+    if item is None:
+        return None
+    return box_for_item(request, item, packet)
+
+
+async def _listed_item(home: Path, ref: str) -> dict | None:
     read = await asyncio.to_thread(ledger.attention, home)
     data = read.data if isinstance(read.data, dict) else {}
-    item = next((i for i in data.get("items") or [] if isinstance(i, dict) and i.get("id") == ref),
-                None) or {"id": ref, "kind": "decided.steward-run"}
-    packet_read = await asyncio.to_thread(ledger.attention_packet, home, ref)
-    return box_for_item(request, item, packet_read.data)
+    return next((i for i in data.get("items") or [] if isinstance(i, dict) and i.get("id") == ref),
+                None)
 
 
 @router.get("/summary/{kind}/{ref}", response_class=HTMLResponse)
@@ -213,7 +227,11 @@ async def summary_box(request: Request, kind: str, ref: str) -> HTMLResponse:
     view = _runner(request).summary_view(summary_key(kind, ref))
     if view is not None and view.get("running"):
         return _render(request, _box(request, kind, ref, state=None))
-    return _render(request, await _full_box(request, kind, ref))
+    box = await _full_box(request, kind, ref)
+    if box is None:
+        # Gate r1 NIT 5: no report, or an inbox item that is not one.
+        return HTMLResponse("no report here", status_code=404)
+    return _render(request, box)
 
 
 @router.post("/summary/{kind}/{ref}", response_class=HTMLResponse)
@@ -223,6 +241,12 @@ async def summary_start(request: Request, kind: str, ref: str,
     A second click while one runs gets the running one (409)."""
     if not _valid(kind, ref):
         return HTMLResponse("unknown report", status_code=404)
+    if kind == "inbox-item":
+        # Gate r1 NIT 5: only a report item has a summary (an item out of
+        # the list's window is left to the verb, which refuses with no call).
+        listed = await _listed_item(_home(request), ref)
+        if listed is not None and listed.get("kind") not in REPORT_ITEM_KINDS:
+            return HTMLResponse("this item is not a report", status_code=404)
     runner = _runner(request)
     refused = await runner.start_summary(kind, ref, again=again == "1")
     box = _box(request, kind, ref, state=None)

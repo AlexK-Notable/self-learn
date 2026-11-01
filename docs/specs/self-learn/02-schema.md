@@ -5187,7 +5187,16 @@ another: a changed report has a new hash and no summary until a new
 request (the page may show the newest older one for the same `ref`,
 marked as written for an earlier version). `--again` replaces the file
 for the same hash (git keeps the earlier one). The commit subject is
-`self-learn: summary <kind>:<ref> <sha256[:12]>`. While the ledger is
+`self-learn: summary <kind>:<ref> <sha256[:12]>`. The write is one recorded
+transaction (an intent, op `summary`). A commit the ledger refuses is undone
+at once: each file back as it was, nothing staged, no intent left, so no page
+shows the summary as saved and the person can try again *(gate r1 fold)*. A
+process killed between the write and the commit leaves the intent, which the
+next ledger write rolls forward; op `summary` is in
+`intents.NO_HOST_PHASE_OPS`, so that roll-forward says only "its commit
+landed", never "run 'self-learn recompile'". `inbox-item` takes only a report
+item (`decided.steward-run`, `decided.overseer-run`); any other is refused
+with exit 2 before any call. While the ledger is
 STOPPED the file waits at `<cache>/summaries/pending/<kind>/<sha256>.json`;
 reads see it, and the next save moves every waiting one in under the lock
 and removes it. Each model call, saved or not, adds one row to

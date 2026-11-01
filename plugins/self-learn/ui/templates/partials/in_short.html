@@ -27,7 +27,7 @@
   </div>
   {%- elif b.summary %}
   <p class="in-short-text" data-in-short-summary>{{ b.summary.text }}</p>
-  <p class="in-short-prov">Summary written on request{% if b.summary.when %} {{ b.summary.when }}{% endif %}{% if b.summary.model %} by {{ b.summary.model }}{% endif %}, from this exact report.</p>
+  <p class="in-short-prov">Summary written {% if b.summary.by == "an agent's request" %}on an agent's request{% else %}on request{% endif %}{% if b.summary.when %} {{ b.summary.when }}{% endif %}{% if b.summary.model %} by {{ b.summary.model }}{% endif %}, from this exact report.</p>
   <details class="in-short-how">
     <summary>How it was made</summary>
     <p>One model call with no tools, given this report's text and nothing else{% if b.summary.cost_words %} ({{ b.summary.cost_words }}){% endif %}. It is saved in your ledger against this exact text, so opening the page again never asks again. If the report changes, the summary waits for a new click.</p>
@@ -40,6 +40,9 @@
   {%- if b.stale %}
   <p class="in-short-text in-short-stale" data-in-short-stale>{{ b.stale.text }}</p>
   <p class="in-short-prov">This summary was written for an earlier version of this report.</p>
+  {%- endif %}
+  {%- if b.stopped %}
+  <p class="in-short-note" data-in-short-stopped>Stopped before the summary was written. Nothing was saved.</p>
   {%- endif %}
   {%- if b.failed %}
   <p class="in-short-failed" role="alert" data-in-short-failed>{{ b.failed.message }}</p>

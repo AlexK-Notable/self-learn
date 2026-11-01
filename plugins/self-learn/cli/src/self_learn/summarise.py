@@ -6,8 +6,9 @@ demaand").
     self-learn summarise <kind>:<ref> --show
         0 a summary printed (one saved earlier for this exact text, or one
         written now) | 2 unknown report | 3 agent unavailable (login) | 4
-        would spend money | 5 timeout | 7 stopped (SIGTERM) | 1 other failure
-        (busy, an empty answer, a secret in the answer) | 64 usage
+        would spend money | 5 timeout | 6 turn limit | 7 stopped (SIGTERM) | 1
+        other failure (busy, an empty answer, a secret in the answer, a commit
+        the ledger refused) | 64 usage
 
 Two kinds of report:
 
@@ -101,6 +102,8 @@ KINDS = ("overseer-report", "inbox-item")
 #: and a period. `miner.SELF_PROMPT_HEADERS` carries this text, so the
 #: nightly miner never reads these sessions.
 SESSION_OPENING = "self-learn summary session for "
+#: The inbox items that are reports: a nightly review and a weekly run.
+REPORT_ITEM_KINDS = ("decided.steward-run", "decided.overseer-run")
 #: The stored summary's schema (02-schema §3a.13).
 SCHEMA = 1
 #: The most of a report the model is given; the hash is always over the whole.
@@ -220,6 +223,10 @@ def source(home: Path | str, kind: str, ref: str) -> Source:
             packet = attention_packet.build(home, ref, decided_reader=cases.decided_text)
         except attention_packet.UnknownItem:
             raise UnknownReport(f"no inbox item {ref}") from None
+        item_kind = (packet.get("item") or {}).get("kind")
+        if item_kind not in REPORT_ITEM_KINDS:
+            # Gate r1 NIT 5: only a report item has a summary.
+            raise UnknownReport(f"inbox item {ref} is not a report ({item_kind})")
         return source_from_packet(ref, packet)
     raise UnknownReport(f"no report kind {kind}")
 
@@ -365,13 +372,23 @@ def _drop_cache(path: Path) -> None:
 
 
 def _journal(home: Path | str, row: dict) -> None:
-    """One row per model call, in ``<cache>/summaries/journal.jsonl``."""
+    """One row per model call, in ``<cache>/summaries/journal.jsonl``. The
+    read and the rewrite happen under ``journal.lock`` (gate r1 NIT 2), so
+    two summaries ending together cannot lose a row."""
     path = journal_path(home)
+    fd: int | None = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path.parent / "journal.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
         prior = path.read_text(encoding="utf-8") if path.exists() else ""
         _write_cache(path, prior + json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
     except OSError:
         pass
+    finally:
+        if fd is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
 
 def _record_text(record: dict) -> str:
@@ -399,6 +416,7 @@ def save(home: Path | str, record: dict) -> str:
                 waiting_rows.append(
                     (waiting, summary_path(home, waiting.parent.name, waiting.stem), old))
             paths = [target, *(dest for _w, dest, _o in waiting_rows)]
+            before = {path: (path.read_bytes() if path.is_file() else None) for path in paths}
             # One recorded transaction (intents): a commit that fails after
             # the files landed is rolled forward by the next ledger write,
             # never left as a stray staged file.
@@ -410,7 +428,16 @@ def save(home: Path | str, record: dict) -> str:
             target.parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(target, _record_text(record), fsync=True)
             intents.complete(intent)
-            gitops.stage_and_commit(home, paths, intent.commit_subject, None)
+            try:
+                gitops.stage_and_commit(home, paths, intent.commit_subject, None)
+            except gitops.GitOpsError:
+                # Gate r1 MINOR 3: a commit the ledger refused is undone at
+                # once -- each file back as it was, nothing staged, no intent
+                # left to roll forward -- so no page shows the summary as
+                # saved; the person can simply try again.
+                _undo(home, before)
+                intents.finish(intent)
+                raise
             intents.finish(intent)
             for waiting, _dest, _old in waiting_rows:
                 _drop_cache(waiting)
@@ -419,6 +446,17 @@ def save(home: Path | str, record: dict) -> str:
     except intents.LedgerStoppedError:
         _write_cache(pending_path(home, kind, sha), _record_text(record))
         return "cache"
+
+
+def _undo(home: Path, before: dict[Path, bytes | None]) -> None:
+    """Put each of a refused save's files back as it was (removed when it
+    did not exist) and unstage them. Called under the ledger lock."""
+    for path, content in before.items():
+        if content is None:
+            path.unlink(missing_ok=True)
+        else:
+            fsops.atomic_write(path, content, fsync=True)
+    gitops.unstage(home, list(before))
 
 
 class _HashLock:
@@ -509,6 +547,16 @@ def run_summarise(home: Path, target: str, *, again: bool = False, stream: bool 
                 emitter=emitter), emitter
 
 
+def _failure_words(code: str, text: str, timeout: float) -> str:
+    """The ask agent's failure words (``ask._failure``), said of a summary
+    (gate r1 NIT 3): no "ask again, or ask something narrower"."""
+    if code == "timeout":
+        return f"the summary was not written within {timeout:g} s; try again later"
+    if code == "turn-cap":
+        return "the model stopped at its one-turn limit before writing the summary; try again"
+    return text.replace("the agent could not answer", "the summary could not be written")
+
+
 def _done(emitter: Any, out: TextIO, record: dict, *, stream: bool, written: bool) -> int:
     emitter.event({"ev": "done", "text": record["text"], "written": written,
                    "summary": record})
@@ -593,7 +641,7 @@ def _run(home: Path, target: str, *, again: bool, stream: bool, out: TextIO, err
                "model": model, "cost_usd": cost, "duration_secs": duration}
         if not getattr(outcome, "ok", False):
             code, exit_code, text, fix = ask._failure(outcome, home)  # noqa: SLF001
-            text = text.replace("the agent could not answer", "the summary could not be written")
+            text = _failure_words(code, text, timeout)
             _journal(home, {**row, "outcome": code})
             return _fail(emitter, err, code, text, exit_code, fix=fix)
         emitter.finish_text()
@@ -620,7 +668,8 @@ def _run(home: Path, target: str, *, again: bool, stream: bool, out: TextIO, err
         except gitops.GitOpsError as exc:
             _journal(home, {**row, "outcome": "not-saved"})
             return _fail(emitter, err, "failed",
-                         f"the summary was written but could not be saved ({exc})", EXIT_FAILED)
+                         f"the summary was written but the ledger refused to save it ({exc}); "
+                         "nothing was kept, so you can try again", EXIT_FAILED)
         _journal(home, {**row, "outcome": "saved", "where": where})
         return _done(emitter, out, record, stream=stream, written=True)
     finally:

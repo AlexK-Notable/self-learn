@@ -99,6 +99,8 @@ def test_a_report_with_no_summary_offers_the_button_and_starts_nothing(tmp_path,
     assert "This report has no summary yet." in box
     assert 'hx-post="/summary/overseer-report/2026-11-01"' in box and "data-in-short-start" in box
     assert "Summarise this report" in box and "no API charge" in box
+    # Gate r1 MINOR 1: a plain view never polls (only a run in flight does).
+    assert "hx-trigger" not in box and "hx-get" not in box and "aria-busy" not in box
     client.get("/overseer-report/2026-11-01")
     client.get("/summary/overseer-report/2026-11-01")
     assert ask.summary_calls == []
@@ -114,6 +116,7 @@ def test_the_overseers_own_in_short_is_shown_and_lifted_out_of_the_body(tmp_path
     assert IN_SHORT in box and "data-in-short-scheduled" in box
     assert "with no extra model call" in box
     assert "data-in-short-start" not in box
+    assert "hx-trigger" not in box and "hx-get" not in box
     body = page[page.index("rv-body"):]
     assert "<h2>Examined</h2>" in body  # control: the body rendered
     assert "<h2>In short</h2>" not in body and IN_SHORT not in body
@@ -130,6 +133,7 @@ def test_a_summary_saved_for_the_exact_text_is_shown_with_no_call(tmp_path, monk
     assert "Summary written on request" in box and "by sonnet" in box
     assert "$0.04 notional" in box and "Write it again" in box
     assert "data-in-short-start" not in box
+    assert "hx-trigger" not in box and "hx-get" not in box
     assert ask.summary_calls == []
 
 
@@ -145,6 +149,7 @@ def test_a_changed_report_shows_the_old_summary_greyed_and_waits_for_a_click(tmp
     assert "written for an earlier version of this report" in box
     assert "Summarise again" in box
     assert "data-in-short-summary" not in box
+    assert "hx-trigger" not in box and "hx-get" not in box
     assert ask.summary_calls == []
 
 
@@ -157,6 +162,7 @@ def test_a_nightly_review_shows_its_counts_and_offers_words(tmp_path, monkeypatc
     assert COUNTED in box and "Counted from the run's own record. No model call." in box
     assert "Summarise this in words" in box
     assert f'hx-post="/summary/inbox-item/{RUN_ID}"' in box
+    assert "hx-trigger" not in box and "hx-get" not in box
     hook = client.get(f"/inbox/{ID_HOOK}").text
     assert 'id="ws-question"' in hook  # control
     assert 'id="in-short-box"' not in hook
@@ -283,3 +289,40 @@ def test_a_run_that_cannot_save_ends_and_says_so(tmp_path, monkeypatch):
     box = _box(client.get("/overseer-report").text)
     assert "data-in-short-failed" in box and "could not be saved" in box
     assert 'aria-busy="true"' not in box and "data-in-short-start" in box
+
+
+# --------------------------------------------------------- gate r1 fold
+
+
+def test_a_summary_an_agent_asked_for_says_so(tmp_path, monkeypatch):
+    """Gate r1 NIT 1. Mutation: always "on request" -> red."""
+    client, _ask, home = _client(tmp_path, monkeypatch)
+    _save(home, "overseer-report", "2026-11-01", "Agent words.", by="an agent's request")
+    box = _box(client.get("/overseer-report").text)
+    assert "Agent words." in box  # control
+    assert "Summary written on an agent's request" in box
+
+
+def test_a_persons_stop_is_a_plain_note_not_a_failure(tmp_path, monkeypatch):
+    """Gate r1 NIT 4. Mutation: show "interrupted" as a failure -> red."""
+    from self_learn_ui.ask_runner import FakeAskRunner
+
+    client, ask, _home = _client(tmp_path, monkeypatch, enter=True,
+                                 ask=lambda hub: FakeAskRunner(publish=hub.publish_nowait, hold=True))
+    client.post("/summary/overseer-report/2026-11-01", headers=HX)
+    client.post("/summary/overseer-report/2026-11-01/stop", headers=HX)
+    client.portal.call(ask.wait, "summary:overseer-report:2026-11-01")
+    box = _box(client.get("/overseer-report").text)
+    assert "Stopped before the summary was written. Nothing was saved." in box
+    assert "data-in-short-failed" not in box and 'role="alert"' not in box
+    assert "data-in-short-start" in box  # it can be tried again
+
+
+def test_an_inbox_item_that_is_not_a_report_has_no_summary_route(tmp_path, monkeypatch):
+    """Gate r1 NIT 5. Mutations: drop the POST's kind check -> red (a start);
+    the GET falls back to a nightly review -> red."""
+    client, ask, _home = _client(tmp_path, monkeypatch)
+    assert client.get(f"/summary/inbox-item/{RUN_ID}").status_code == 200  # control
+    assert client.post(f"/summary/inbox-item/{ID_HOOK}", headers=HX).status_code == 404
+    assert client.get(f"/summary/inbox-item/{ID_HOOK}").status_code == 404
+    assert ask.summary_calls == []

@@ -282,24 +282,52 @@ def test_a_pending_summary_moves_into_the_ledger_with_the_next_save(home):
     assert git(home, "status", "--porcelain").stdout.strip() == ""
 
 
+def _steward_run(home, n_cases=3, decided=2):
+    runs = home / "cases" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "run-a.json").write_text(json.dumps({
+        "actor": "steward", "run_id": "run-a", "started_at": "2026-10-31T03:00:00Z",
+        "completed_at": "2026-10-31T03:10:00Z",
+        "decided": [f"lrn-0000000{n}" for n in range(decided)],
+        "cases": {f"case-0000{n:04x}": {"phase": "applied"} for n in range(n_cases)}}),
+        encoding="utf-8")
+    items = [i for i in attention.collect(home, all_items=True)
+             if i["kind"] == "decided.steward-run"]
+    assert len(items) == 1
+    return items[0]
+
+
 def test_an_inbox_items_source_is_the_same_from_the_pages_packet(monkeypatch, home):
     """The page hashes the packet it already has (`attention packet --json`);
     the verb hashes the packet it builds. They must agree, or a saved
     summary is never found again."""
-    at = "2026-10-31T03:00:00Z"
-    journal = attention.cache_dir(home) / "steward" / "journal.jsonl"
-    journal.parent.mkdir(parents=True, exist_ok=True)
-    journal.write_text(json.dumps({"ts": at, "status": "held-environment",
-                                   "cause": "Failed to authenticate"}) + "\n", encoding="utf-8")
-    item_id = attention.item_id("hold.credentials", f"credentials@{at}")
     from self_learn import cases
 
+    item_id = _steward_run(home)["id"]
     packet = json.loads(json.dumps(attention_packet.build(home, item_id,
                                                           decided_reader=cases.decided_text)))
     assert (summarise.source_from_packet(item_id, packet).sha256
             == summarise.source(home, "inbox-item", item_id).sha256)
     view = summarise.state(home, "inbox-item", item_id, packet=packet)
     assert view["summary"] is None and view["sha256"]
+
+
+def test_an_inbox_item_that_is_not_a_report_is_refused_without_a_call(monkeypatch, home):
+    """Gate r1 NIT 5. Mutation: drop the report-kind check -> red (a call
+    is made for a login hold)."""
+    at = "2026-10-31T03:00:00Z"
+    journal = attention.cache_dir(home) / "steward" / "journal.jsonl"
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    journal.write_text(json.dumps({"ts": at, "status": "held-environment",
+                                   "cause": "Failed to authenticate"}) + "\n", encoding="utf-8")
+    item_id = attention.item_id("hold.credentials", f"credentials@{at}")
+    assert attention.find(home, item_id) is not None  # control: the item exists
+    code, events, backend, _ = _run(monkeypatch, home, f"inbox-item:{item_id}", [Text(ANSWER)])
+    assert code == 2 and backend.specs == []
+    assert "not a report" in events[-1]["message"]
+    code, _events, backend, _ = _run(monkeypatch, home,
+                                     f"inbox-item:{_steward_run(home)['id']}", [Text(ANSWER)])
+    assert code == 0 and len(backend.specs) == 1  # control: a report item is summarised
 
 
 def test_show_reads_files_only(monkeypatch, home, capsys):
@@ -408,25 +436,17 @@ def test_a_nightly_reviews_in_short_is_counted_in_words():
 def test_the_counted_total_is_the_titles_count_with_a_parked_case(tmp_path, monkeypatch):
     """Gate r1 MINOR 4, live: a run with 14 decided lessons and 15 cases
     (one parked) read "14 lessons decided" over a box totalling 15. The
-    title and the box now count the same cases."""
-    from self_learn.attention import plural  # noqa: F401 -- the title's own helper
+    title and the box now count the same cases. Mutation: total the box
+    from `decided` -> red."""
     import re as _re
 
     from support import make_home as _mk
 
     h = _mk(tmp_path)
     monkeypatch.setenv("SELF_LEARN_HOME", str(h))
-    runs = h / "cases" / "runs"
-    runs.mkdir(parents=True, exist_ok=True)
-    cases_ids = [f"case-0000{n:04x}" for n in range(3)]
-    (runs / "run-a.json").write_text(json.dumps({
-        "actor": "steward", "run_id": "run-a", "started_at": "2026-10-31T03:00:00Z",
-        "completed_at": "2026-10-31T03:10:00Z", "decided": ["lrn-00000001", "lrn-00000002"],
-        "cases": {c: {"phase": "applied"} for c in cases_ids}}), encoding="utf-8")
-    items = [i for i in attention.collect(h, all_items=True) if i["kind"] == "decided.steward-run"]
-    assert len(items) == 1
-    packet = attention_packet.build(h, items[0]["id"])
-    title_n = int(_re.search(r": (\d+) decision", items[0]["title"]).group(1))
+    item = _steward_run(h, n_cases=3, decided=2)
+    packet = attention_packet.build(h, item["id"])
+    title_n = int(_re.search(r": (\d+) decision", item["title"]).group(1))
     box_n = int(_re.match(r"(\d+) decision", packet["run"]["in_short"]).group(1))
     assert title_n == box_n == 3
 
@@ -488,31 +508,55 @@ def test_weekly_facts_leave_the_review_counts_out_for_an_older_record(tmp_path):
     assert (facts["agreed"], facts["disagreed"], facts["findings_dropped"]) == (33, 2, 5)
 
 
-def test_a_commit_that_fails_leaves_no_stray_file_and_the_next_write_rolls_it_forward(
+def test_a_commit_the_ledger_refuses_is_undone_at_once_and_shows_as_not_saved(
         monkeypatch, home):
-    """Seen live in the scratch walk: a ledger with no git identity refused
-    the commit and left the summary staged. Now the save is one recorded
-    transaction. Mutation: write the file outside an intent -> red (the
-    next ledger write finds nothing to roll forward; the tree stays dirty)."""
+    """Gate r1 MINOR 3 (seen live: a ledger with no git identity refused the
+    commit, the summary stayed staged and the page showed it as saved).
+    Mutation: drop the undo -> red (file left, staged, shown as saved)."""
+    from self_learn import gitops
+
+    def refuse(*args, **kwargs):
+        raise gitops.GitOpsError("commit refused (test)")
+
+    monkeypatch.setattr(gitops, "stage_and_commit", refuse)
+    code, events, backend, _ = _run(monkeypatch, home, "overseer-report:2026-10-25",
+                                    [Text(ANSWER)])
+    assert code == 1 and len(backend.specs) == 1  # control: the model was called
+    assert events[-1]["ev"] == "error" and "nothing was kept" in events[-1]["message"]
+    assert git(home, "status", "--porcelain").stdout.strip() == ""
+    assert not list(intents.intents_dir(home).glob("*.json"))
+    view = summarise.state(home, "overseer-report", "2026-10-25")
+    assert view["sha256"] and view["summary"] is None  # not shown as saved
+    rows = [json.loads(line) for line in
+            summarise.journal_path(home).read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["outcome"] == "not-saved"
+
+
+def test_a_summary_rolled_forward_after_a_crash_does_not_ask_for_a_recompile(
+        monkeypatch, home, capsys):
+    """Gate r1 MINOR 3: a summary has no host phase. Mutation: drop the op
+    from `NO_HOST_PHASE_OPS` -> red."""
     from self_learn import gitops
 
     real = gitops.stage_and_commit
-    calls = {"n": 0}
 
-    def flaky(*args, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise gitops.GitOpsError("commit refused (test)")
-        return real(*args, **kwargs)
+    class Crash(BaseException):
+        """The process dies between the write and the commit."""
 
-    monkeypatch.setattr(gitops, "stage_and_commit", flaky)
-    code, events, backend, _ = _run(monkeypatch, home, "overseer-report:2026-10-25",
-                                    [Text(ANSWER)])
-    assert code == 1 and events[-1]["ev"] == "error"
-    assert "could not be saved" in events[-1]["message"]
+    def crash(*args, **kwargs):
+        raise Crash()
+
+    record = {"schema": 1, "kind": "overseer-report", "ref": "2026-10-25",
+              "source_sha256": "c" * 64, "text": "written before the crash", "created_at": "x"}
+    monkeypatch.setattr(gitops, "stage_and_commit", crash)
+    with pytest.raises(Crash):
+        summarise.save(home, record)
+    monkeypatch.setattr(gitops, "stage_and_commit", real)
+    assert list(intents.intents_dir(home).glob("*.json"))  # control: the intent is left
+    capsys.readouterr()
     with intents.ledger_write(home) as recovered:
         intents.announce_recovered(recovered)
-    sha = summarise.source(home, "overseer-report", "2026-10-25").sha256
-    path = summarise.summary_path(home, "overseer-report", sha)
-    assert git(home, "ls-files", "--", str(path.relative_to(home))).stdout.strip()
+    err = capsys.readouterr().err
+    assert "rolled forward: its commit landed" in err
+    assert "recompile" not in err
     assert git(home, "status", "--porcelain").stdout.strip() == ""
