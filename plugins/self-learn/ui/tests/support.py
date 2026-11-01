@@ -109,6 +109,14 @@ def make_env(tmp_path: Path, *, skills: tuple[str, ...] = ("s",)) -> SandboxEnv:
     env["XDG_CACHE_HOME"] = str(cache_home)
     env["XDG_RUNTIME_DIR"] = str(runtime_dir)
     env["SELF_LEARN_HOME"] = str(ledger)
+    # Spawn block, pinned in the mapping itself so a caller that built it
+    # outside the autouse fixture (a module-scoped fixture, a probe from
+    # this venv) still cannot kick a real miner or worker, notify the
+    # desktop, or read real transcripts (mirrors cli/tests/conftest.py).
+    env["SELF_LEARN_WORKER_AUTOKICK"] = "0"
+    env["SELF_LEARN_MINER_AUTOKICK"] = "0"
+    env["SELF_LEARN_NO_NOTIFY"] = "1"
+    env["SELF_LEARN_TRANSCRIPTS_DIR"] = str(tmp_path / "_no_transcripts")
 
     return SandboxEnv(
         ledger=ledger,
