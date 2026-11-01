@@ -1361,7 +1361,10 @@ def respond(
         resolved,
         verbatim=text,
         source={"message_ref": f"conversation:{observation_id}", "surface": "conversation"},
-        recorded_by="human",
+        # C7 (attention round): whoever captured the words records them --
+        # `agent` from an agent's shell, `human` from a person's terminal.
+        # The words stay the user's through the conversation ref.
+        recorded_by="agent" if settings.agent_caller() else "human",
         answers={
             "kind": "question" if row["kind"] == "ask" else "proposition",
             "ref": proposition,

@@ -1,4 +1,5 @@
-"""Code-owned notification cue selection for overseer runs (O-6)."""
+"""Code-owned notification cue selection for overseer runs (O-6), and the
+one popup self-learn still shows: a login hold (attention round, answer 1)."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .. import worker
+from ..invocation import failure_class
 
 _REMOVAL_VERBS = frozenset({"reject", "retire", "replace", "supersede"})
 
@@ -45,8 +47,38 @@ def _line(cue: str, summary: str, ids: list[str]) -> str:
     return summary
 
 
-def send(home: Path, cue: str, summary: str, ids: list[str]) -> None:
-    """Detach one bounded companion-script notification, best effort."""
+#: The one kind of event that may still interrupt the user with a popup
+#: (answer 1, attention design r2 §3.9): self-learn cannot work at all until
+#: the user signs in again. Everything else waits in the tray's inbox.
+POPUP_KIND = "hold.credentials"
+
+#: Where the popup's "Open" action lands: the inbox, where the login item is
+#: selected first (`self-learn-ui-open --page`, design r2 §4.7).
+POPUP_PAGE = "/inbox"
+
+
+def hold_kind(cause: str | None) -> str:
+    """The notification kind for an environment-hold *cause*: ``POPUP_KIND``
+    when the one step left is a login (`failure_class.hold_fix` gives
+    ``LOGIN_FIX`` or ``API_KEY_FIX``), else ``"silent"``. The steward, the
+    overseer and `serve` each send their hold once per distinct cause and
+    pass this kind, so only a login hold can pop up."""
+    fix = failure_class.hold_fix(cause)
+    if fix in (failure_class.LOGIN_FIX, failure_class.API_KEY_FIX):
+        return POPUP_KIND
+    return "silent"
+
+
+def send(
+    home: Path, cue: str, summary: str, ids: list[str], *, kind: str = "silent"
+) -> None:
+    """Detach one bounded companion-script popup, best effort, and only for
+    ``kind == POPUP_KIND`` (answer 1). Every other kind spawns nothing: what
+    it would have said is an item in the inbox the tray icon opens.
+
+    The popup's action opens ``self-learn-ui-open --page /inbox``."""
+    if kind != POPUP_KIND:
+        return
     if worker._notifications_suppressed(home):
         return
     helper = shutil.which("self-learn-notify")
@@ -58,7 +90,7 @@ def send(home: Path, cue: str, summary: str, ids: list[str]) -> None:
     # both wrapped by ``timeout --kill-after=5 40`` and branch on action output.
     try:
         subprocess.Popen(
-            [helper, "--line", line, "--ids", ",".join(ids)],
+            [helper, "--line", line, "--page", POPUP_PAGE],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

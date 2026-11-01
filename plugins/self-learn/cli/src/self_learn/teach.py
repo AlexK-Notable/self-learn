@@ -24,8 +24,10 @@ Flag surface (01 §3.2 + 08 §1 pins):
     statement  ``--statement <words>`` (needs ``--session``) — also appends
                the user's own words to the user-statement store (S-65):
                the transcript row the user typed that holds them is found
-               by the CLI and cited, ``recorded_by: human``; separate from
-               the lesson record, written after it lands
+               by the CLI and cited; ``recorded_by`` is whoever captured
+               them (``agent`` from an agent's shell, ``human`` from a
+               person's terminal); separate from the lesson record,
+               written after it lands
     links      ``--supersedes <lrn-id>`` — capture half only: records the
                link on the NEW record; the old record is untouched until
                the replacement routes (T7/T8; 08 §1 gate-check F5)
@@ -191,7 +193,8 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
         help="also record the user's own words, verbatim, in the user-"
         "statement store (S-65; needs --session): the row the user typed "
         "that holds these words is found in that session's transcript and "
-        "cited as transcript:<session>#L<n>; recorded_by human; separate "
+        "cited as transcript:<session>#L<n>; recorded_by agent from an "
+        "agent's shell, human from a person's terminal; separate "
         "from the lesson record",
     )
     p.add_argument(
@@ -506,21 +509,34 @@ def _statement_retry_hint(statement: str, message_ref: str) -> str:
         "  Do not run teach again (the lesson is already written). To record "
         "the statement alone:\n"
         f"    self-learn statement add --verbatim {shlex.quote(statement)} "
-        f"--ref {message_ref} --recorded-by human"
+        f"--ref {message_ref} --recorded-by {_recorder()}"
     )
+
+
+def _recorder() -> str:
+    """Who captured the words (02 §3a.3 ``recorded_by``): ``agent`` from an
+    agent's shell, ``human`` from a person's own terminal (C7, attention
+    round). Since capture became silent (answer 9) teach runs from agents'
+    shells all the time; the words stay the user's through the transcript
+    line ``--quote``/``--session`` cites, which rule 10 checks."""
+    from . import settings  # lazy: settings imports ledger, which imports hosts
+
+    return "agent" if settings.agent_caller() else "human"
 
 
 def _record_statement(statement: str, message_ref: str) -> int:
     """The ``--statement`` leg, after the lesson landed: one line in the
-    user-statement store, ``recorded_by: human`` (the person typed these
-    words and ran this command, so it is never attributed to an agent)."""
+    user-statement store, recorded by whoever captured the words
+    (:func:`_recorder`: ``agent`` from an agent's shell, ``human`` from a
+    person's terminal). The words are the user's either way: the ref cites
+    the transcript line they typed."""
     home = resolve_home()
     try:
         stmt_id = statements.add(
             home,
             verbatim=statement,
             source={"message_ref": message_ref, "surface": "conversation"},
-            recorded_by="human",
+            recorded_by=_recorder(),
         )
     except statements.StatementError as exc:
         print(

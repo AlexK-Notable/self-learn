@@ -493,6 +493,8 @@ def _notify_due_hold(home: Path, job: str, cause: str) -> None:
             f"self-learn serve: the {job} job is not running — its due check "
             f"failed: {cause}",
             [],
+            # Answer 1 (attention round): only a login cause pops up.
+            kind=overseer_notify.hold_kind(cause),
         )
     except Exception:  # noqa: BLE001 — a notification must never widen the failure
         pass
