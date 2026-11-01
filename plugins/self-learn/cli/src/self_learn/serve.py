@@ -57,6 +57,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import signal
 import sys
 import threading
@@ -928,10 +929,12 @@ def _steward_next(home: Path, cache_dir: Path, now: float) -> tuple[float, str]:
         # the newest attempt row (a completed run's push row included).
         when = max(when, attempt + steward.RETRY_SECS)
     # Overdue premise reviews alone make the steward due
-    # (`_steward_is_due`'s rotation clause), so the preview says so; it
-    # asks only when the rotation is on, and only here, after every
-    # cache-only reason (it reads every placed lesson).
-    if _rotation_on(home) and steward._premise_review_overdue(home):
+    # (`_steward_is_due`'s rotation clause), so the preview says so. It
+    # never asks the question itself (that reads every placed lesson and
+    # walks the committed manifests, gate r1 MAJOR 1 of S-NEXT-followups):
+    # it reads the answer the due check or the daily premise sweep last
+    # cached, and a missing or stale answer reads as "not overdue".
+    if _rotation_on(home) and _cached_review_overdue(home, cache_dir, now):
         return when, "after the night's mine, for its overdue premise reviews"
     return when, "after the night's mine, when there is work"
 
@@ -992,16 +995,108 @@ def _rotation_on(home: Path) -> bool:
     return steward_inputs.premises_enabled(home) and steward_inputs.premise_rotation_days(home) > 0
 
 
-def _premise_review_overdue(home: Path, manifests: list[dict]) -> bool:
+def _premise_review_overdue(
+    home: Path, manifests: list[dict], cache_dir: Path, now: float,
+) -> bool:
     """S-114 (premises design P1): reviews ride along with a run
     something else starts, sharing its packet; by themselves they make the
     steward due only once the oldest due one is
     `steward_inputs.ROTATION_GRACE_DAYS` days past due
     (:func:`steward._premise_review_overdue`, one case-index read for every
-    lesson)."""
+    lesson). The answer is cached (:func:`_store_review_overdue`) for the
+    heartbeat preview, which must not ask it itself."""
     if not _rotation_on(home):
         return False
-    return steward._premise_review_overdue(home, manifests=manifests)
+    overdue = steward._premise_review_overdue(home, manifests=manifests)
+    _store_review_overdue(home, cache_dir, overdue, now)
+    return overdue
+
+
+# ------------------------------------- the cached "review overdue" answer
+
+#: S-NEXT-followups (gate r1 MAJOR 1): the last answer to "is a premise
+#: review overdue enough to make the steward due by itself", under
+#: ``<cache>/steward/`` (`NOT_REPO_TRUTH`), written where the question is
+#: asked anyway -- the due check's rotation clause and the daily premise
+#: sweep -- so the heartbeat preview, which runs every tick, reads one small
+#: file instead of every placed lesson and every committed manifest.
+REVIEW_OVERDUE_FILENAME = "review-overdue.json"
+
+_SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def _review_overdue_path(cache_dir: Path) -> Path:
+    return cache_dir / "steward" / REVIEW_OVERDUE_FILENAME
+
+
+def _utc_day(now: float) -> str:
+    return datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+
+
+def _ledger_head(home: Path) -> str | None:
+    """The ledger's HEAD sha read from its git files, never by a git
+    process (the preview is cache-only and must not wedge on git): `HEAD`,
+    then the loose ref or `packed-refs`. ``None`` whenever it cannot be read
+    plainly (a linked `.git` file, an unborn branch, anything odd), which
+    makes a cached answer stale."""
+    git = home / ".git"
+    try:
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref: "):
+            return head if _SHA_RE.fullmatch(head) else None
+        ref = head[len("ref: "):].strip()
+        loose = git / ref
+        if loose.is_file():
+            sha = loose.read_text(encoding="utf-8").strip()
+            return sha if _SHA_RE.fullmatch(sha) else None
+        for line in (git / "packed-refs").read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == ref and _SHA_RE.fullmatch(parts[0]):
+                return parts[0]
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def _store_review_overdue(home: Path, cache_dir: Path, overdue: bool, now: float) -> None:
+    """THE writer of the cached answer (`NOT_REPO_TRUTH`: one cache file,
+    atomic), keyed with the ledger HEAD and the UTC day it was computed
+    for. Never raises: a cache that cannot be written leaves the preview
+    on its generic wording."""
+    head = _ledger_head(home)
+    if head is None:
+        return
+    path = _review_overdue_path(cache_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(
+            path,
+            json.dumps(
+                {"at": chrono.now_iso(datetime.fromtimestamp(now, timezone.utc)),
+                 "date": _utc_day(now), "head": head, "overdue": bool(overdue)},
+                sort_keys=True,
+            ) + "\n",
+            fsync=False,
+            preserve_mode=False,
+        )
+    except OSError:
+        return
+
+
+def _cached_review_overdue(home: Path, cache_dir: Path, now: float) -> bool:
+    """The cached answer, only when it was computed today (UTC) at the
+    ledger's current HEAD; a missing, unreadable or stale file is "not
+    overdue". Reads that file and the ledger's HEAD file, nothing else."""
+    try:
+        data = json.loads(_review_overdue_path(cache_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict) or data.get("overdue") is not True:
+        return False
+    if data.get("date") != _utc_day(now):
+        return False
+    head = _ledger_head(home)
+    return head is not None and data.get("head") == head
 
 
 def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
@@ -1084,7 +1179,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
         if last_iso is None:
             # never run: the first run takes the queue now (S-114:
             # with only reviews waiting, when one is overdue)
-            return _premise_review_overdue(home, manifests) if only_review else True
+            return _premise_review_overdue(home, manifests, cache_dir, now) if only_review else True
         selected_epoch = _attempt_epoch(last_iso, now)
     cooldown_value, _source = settings.resolve_setting(
         home, settings.by_name("steward.cooldown_secs")
@@ -1103,7 +1198,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     if not input_paths:
         # S-114: nothing else is waiting; only an overdue review
         # can make the steward due now.
-        return _premise_review_overdue(home, manifests)
+        return _premise_review_overdue(home, manifests, cache_dir, now)
     # S-81 (gate S1d R2): an input is new work when no run has SELECTED
     # inputs since its record -- or the overseer's release of it -- was
     # committed. A run selects its inputs when it starts (`started_at`); a
@@ -1127,7 +1222,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
         return True
     # S-114: asked last, and only now -- after the cooldown and
     # every cheaper reason -- because it reads every placed lesson.
-    return _premise_review_overdue(home, manifests)
+    return _premise_review_overdue(home, manifests, cache_dir, now)
 
 def _release_epochs(home: Path, lessons: set[str]) -> dict[str, float]:
     """S-81 (gate S1c R3): lesson id -> when the overseer last let it go --
@@ -1477,8 +1572,21 @@ def _run_premises_job(home: Path, cache_dir: Path, now: float) -> "premise_sweep
     (``<cache>/premises/``) and, for a premise marked ``on_change: refresh``,
     one ledger commit under the commit lock. The cache directory and the clock
     are the ones the due check read, so the attempt marker it leaves is the one
-    that stops the job being due again the same day."""
-    return premise_sweep.run(home, cache_dir, now=now)
+    that stops the job being due again the same day.
+
+    S-NEXT-followups: after the sweep, while the rotation is on, it also
+    answers "is a premise review overdue" once and caches the answer for the
+    heartbeat preview (:func:`_store_review_overdue`); that answer can never
+    fail the sweep."""
+    result = premise_sweep.run(home, cache_dir, now=now)
+    try:
+        if _rotation_on(home):
+            _store_review_overdue(
+                home, cache_dir, steward._premise_review_overdue(home), now,
+            )
+    except Exception as exc:  # noqa: BLE001 -- a preview hint never fails the sweep
+        print(f"serve: premises: review-overdue answer not cached: {_short_cause(exc)}", file=sys.stderr)
+    return result
 
 
 def _maintenance_is_due(home: Path, cache_dir: Path, now: float) -> bool:

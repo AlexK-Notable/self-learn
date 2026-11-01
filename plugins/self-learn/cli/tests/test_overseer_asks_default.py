@@ -608,3 +608,123 @@ def test_a_real_run_offers_a_correction_once_and_the_next_run_does_not(tmp_path,
 
     assert second.status == "applied", second
     assert _staged_refs(seen) == ["um-3c4d@r1"]
+
+
+# ----------------------- S-NEXT-followups: legacy questions settle by default
+
+
+def _hook_line(tmp_path: Path, home: Path, label: str) -> str:
+    """The session-start hook's output for this ledger's status field (the
+    count `self-learn status --fast` puts in `overseer_open_questions`)."""
+    from test_pending_hook import _base_payload, _run_hook
+
+    payload = _base_payload()
+    count = conversation.open_question_count(home)
+    if count is not None:
+        payload["overseer_open_questions"] = count
+    where = tmp_path / f"hook-{label}"
+    where.mkdir()
+    result = _run_hook(where, payload)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_a_legacy_ask_is_settled_by_default_on_the_next_run(tmp_path, monkeypatch):
+    """Decision 4 and the user's 15:13 words: nothing but sudo may be left
+    waiting on the user. An ask written before S-117 (no default) is settled
+    by the next run with the change-nothing default, by the overseer, its
+    deferred lesson goes back to the steward, the report lists it, the new
+    index carries it with its default (still answerable), and the hook line
+    is gone. Positive control first: before the run the hook names it.
+    Mutation checked: skipping the legacy settle (`_legacy_defaults`
+    answering []) fails this test."""
+    home = make_home(tmp_path)
+    rid, case_id = _deferred_case(home, tmp_path)
+    legacy = _ask("q-legacy-ask", [case_id])
+    del legacy["default"]  # an index written before defaults
+    _report_and_index(home, [legacy], ["- q-legacy-ask: an older ask"])
+
+    assert conversation.open_question_count(home) == 1  # control: it waits
+    assert "older question(s) still waiting for you" in _hook_line(tmp_path, home, "before")
+    assert steward._reconsider_proposals(home)[0] == []  # control: the lesson is still held
+
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    _wrap_phases(monkeypatch, questions=[])
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code) == ("applied", 0), result
+    observed = _observations(home, case_id)
+    assert (
+        f"overseer statement: ask defaulted q-legacy-ask; default applied: "
+        f"{conversation.SYSTEM_DEFAULT} (ref: overseer-run:{result.run})"
+    ) in observed, observed
+    assert statements.list_statements(home) == []  # not recorded as the user's answer
+
+    decided = _decided_block(home)
+    assert (
+        "- q-legacy-ask, a question asked before defaults, was still waiting; settled with "
+        f"the change-nothing default: {conversation.SYSTEM_DEFAULT}"
+    ) in decided, decided
+
+    carried = {**legacy, "default": conversation.SYSTEM_DEFAULT}
+    assert _index(home) == [carried]  # still answerable, now decided
+    assert conversation.open_question_count(home) == 0
+    assert "overseer has" not in _hook_line(tmp_path, home, "after")
+
+    ((entry, card),) = steward._reconsider_proposals(home)[0]
+    assert (entry.record.id, entry.predecessor) == (rid, case_id)
+    assert conversation.SYSTEM_DEFAULT in card["card"]["unresolved"]
+
+
+def test_a_legacy_reading_is_settled_and_not_carried(tmp_path, monkeypatch):
+    """A reading still waiting is settled the same way, and its lesson goes
+    back to the steward (the steward's match takes a proposition id), but it
+    is not carried: readings are not asked. Mutation checked: leaving
+    `um-…` out of `steward._ASK_DEFAULTED_OBSERVATION_RE` fails the
+    reconsider assertion."""
+    home = make_home(tmp_path)
+    rid, case_id = _deferred_case(home, tmp_path)
+    _report_and_index(
+        home, [{"id": "um-1a2b@r1", "kind": "reading", "cases": [case_id]}],
+        ["- um-1a2b@r1: an older reading"],
+    )
+    assert conversation.open_question_count(home) == 1  # control
+
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    _wrap_phases(monkeypatch, questions=[])
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert result.status == "applied", result
+    assert "ask defaulted um-1a2b@r1; default applied:" in _observations(home, case_id)
+    assert "- um-1a2b@r1, a reading asked before defaults, was still waiting" in _decided_block(home)
+    assert _index(home) == []
+    assert conversation.open_question_count(home) == 0
+    ((entry, _card),) = steward._reconsider_proposals(home)[0]
+    assert entry.record.id == rid
+
+
+def test_a_legacy_question_already_answered_or_asked_again_is_not_settled(tmp_path):
+    """Only what still waits is settled: an answered legacy ask is left to its
+    answer, and one this run asks again under the same id keeps that ask's
+    own default."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    answered = _ask("q-answered", [case_id])
+    del answered["default"]
+    again = _ask("q-again", [case_id])
+    del again["default"]
+    waiting = _ask("q-waiting", [case_id])
+    del waiting["default"]
+    _report_and_index(home, [answered, again, waiting], ["- q-answered: a", "- q-again: b", "- q-waiting: c"])
+    conversation.open_questions(home, out=io.StringIO())
+    conversation.respond(home, proposition="q-answered", scope="user", text="Yes.")
+    manifest = {"run_id": "abcd1234", "questions": {"questions": [_ask("q-again", [case_id])]}}
+
+    legacy = overseer_run._legacy_defaults(home, manifest)
+
+    assert [row["id"] for row in legacy] == ["q-waiting"]  # control: one is settled
+    assert legacy[0]["default"] == conversation.SYSTEM_DEFAULT

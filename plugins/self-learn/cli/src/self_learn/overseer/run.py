@@ -4536,7 +4536,52 @@ def _defaulted_asks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _record_defaults(home: Path, manifest: dict[str, Any]) -> list[str]:
+def _legacy_defaults(home: Path, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """S-NEXT-followups (item 5; decision 4 of the 2026-10-31b round and
+    the user's words of 15:13, "unless sudo is involved, you should never
+    have to tell me, 'X is waiting on you'"): the questions in the index
+    this run is about to replace that still wait on the user -- a reading,
+    or an ask written before S-117 and so carrying no default
+    (`conversation.waiting_questions`) -- each given S-117's fixed
+    change-nothing default (`conversation.REGISTER_DEFAULT` for an ask that
+    carries `register`, else `conversation.SYSTEM_DEFAULT`).
+
+    The run settles them exactly as it settles its own asks
+    (:func:`_record_defaults`, :func:`_default_lines`), by the overseer and
+    never as the user's answer, so their waiting lessons go back to the
+    steward. A question this run asks again under the same id is left to
+    that ask's own default. An index that cannot be read settles nothing.
+    Each row keeps only index keys, so a legacy ask can be carried into the
+    new index with its default (:func:`_carried_asks`)."""
+    try:
+        waiting = conversation.waiting_questions(home)
+    except conversation.ConversationError:
+        return []
+    own = {row["id"] for row in _defaulted_asks(manifest)}
+    settled: list[dict[str, Any]] = []
+    for row in waiting:
+        if row["id"] in own:
+            continue
+        item: dict[str, Any] = {key: value for key, value in row.items() if key != "default"}
+        item["default"] = (
+            conversation.REGISTER_DEFAULT if row.get("register") else conversation.SYSTEM_DEFAULT
+        )
+        settled.append(item)
+    return settled
+
+
+def _carried_asks(legacy: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The legacy asks the new index keeps, now with their default: shown by
+    `overseer open` as decided in the user's stead, not counted as waiting,
+    and answerable, so a reply can still overturn the default (S-117's
+    overturn path). A reading is not carried: readings are not asked
+    (S-117); the report says how to correct one."""
+    return [row for row in legacy if row.get("kind") == "ask"]
+
+
+def _record_defaults(
+    home: Path, manifest: dict[str, Any], legacy: list[dict[str, Any]] | None = None,
+) -> list[str]:
     """S-117 (decision 4 of the 2026-10-31b round: "every
     question carries a stated default and the overseer acts on it in the same
     run, reports it as a decision, and releases the waiting lessons").
@@ -4555,9 +4600,12 @@ def _record_defaults(home: Path, manifest: dict[str, Any]) -> list[str]:
     after this run's apply (no successor of this run superseded it) is NOT
     observed: the default decided none of its lessons, and
     `cases.held_lessons` keeps holding them. :func:`_parked_cited` names such
-    cases, and the report says the default did not reach them."""
+    cases, and the report says the default did not reach them.
+
+    S-NEXT-followups: *legacy* (:func:`_legacy_defaults`) is settled the same
+    way, in the same pass, with the same observation."""
     run_id = cast(str, manifest["run_id"])
-    asks = _defaulted_asks(manifest)
+    asks = [*_defaulted_asks(manifest), *(legacy or [])]
     if not asks:
         return []  # no case index read for a run that asked nothing
     links = conversation.superseded_links(home)
@@ -4593,7 +4641,9 @@ def _awaiting_ids(home: Path) -> set[str]:
     }
 
 
-def _parked_cited(home: Path, manifest: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
+def _parked_cited(
+    home: Path, manifest: dict[str, Any], legacy: list[dict[str, Any]] | None = None,
+) -> dict[str, dict[str, list[str]]]:
     """Fix round 1 (gate r1 MAJOR 1): for each ask with a default, the cases
     it cites whose line of successors still ends at a case parked for the
     overseer once this run's apply is done. The model was told to decide
@@ -4601,8 +4651,9 @@ def _parked_cited(home: Path, manifest: dict[str, Any]) -> dict[str, dict[str, l
     the successor was refused, the default reached none of that case's
     lessons and `cases.held_lessons` still holds them. Answers, per such
     ask, ``{"held": [...], "reached": [...]}``: the parked cases, and the
-    cases the default did reach. Asks citing no parked case are left out."""
-    asks = _defaulted_asks(manifest)
+    cases the default did reach. Asks citing no parked case are left out.
+    *legacy* rows (:func:`_legacy_defaults`) are looked at too."""
+    asks = [*_defaulted_asks(manifest), *(legacy or [])]
     if not asks:
         return {}  # no case index read for a run that asked nothing
     links = conversation.superseded_links(home)
@@ -4625,6 +4676,7 @@ def _parked_cited(home: Path, manifest: dict[str, Any]) -> dict[str, dict[str, l
 
 def _default_lines(
     manifest: dict[str, Any], parked: dict[str, dict[str, list[str]]] | None = None,
+    legacy: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """The report's "Decided in the user's stead" lines for the run's asks:
     each default applied, and, listed apart, the asks that would change the
@@ -4644,17 +4696,29 @@ def _default_lines(
             applied.append(
                 f"{row['id']} asked and not waited for; applied its default: {row['default']}"
             )
-    return [*applied, *unchanged]
+    # S-NEXT-followups: each older question still waiting, settled by
+    # default this run (:func:`_legacy_defaults`).
+    settled: list[str] = []
+    for row in legacy or []:
+        if row["id"] in parked:
+            continue
+        what = "a reading" if row.get("kind") == "reading" else "a question"
+        settled.append(
+            f"{row['id']}, {what} asked before defaults, was still waiting; settled with the "
+            f"change-nothing default: {row['default']}"
+        )
+    return [*applied, *unchanged, *settled]
 
 
 def _default_refusals(
     manifest: dict[str, Any], parked: dict[str, dict[str, list[str]]],
+    legacy: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Fix round 1 (gate r1 MAJOR 1): one "Refused / could not do" line per
     ask whose default did not reach a cited case still parked for the
     overseer, naming the cases it did reach, if any."""
     lines: list[str] = []
-    for row in _defaulted_asks(manifest):
+    for row in [*_defaulted_asks(manifest), *(legacy or [])]:
         entry = parked.get(row["id"])
         if not entry:
             continue
@@ -4714,6 +4778,7 @@ def _write_manifest_truth(
     closed: bool = False,
     week: str | None = None,
     closed_text: str | None = None,
+    carried_questions: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], Path, Path]:
     path = execution_evidence.manifest_path(home, manifest["run_id"])
     record = _finalized_record(
@@ -4768,9 +4833,12 @@ def _write_manifest_truth(
             # A14: only a COMPLETED run publishes questions. No failure path
             # reaches this write, so a failed attempt can never blank last
             # week's open questions.
-            fsops.atomic_write(
-                questions_path, _yaml_text(record["questions"]), fsync=True
-            )
+            # S-NEXT-followups: the legacy asks this run settled by default
+            # ride along, after the run's own (:func:`_carried_asks`).
+            index = record["questions"]
+            if carried_questions:
+                index = {**index, "questions": [*index.get("questions", []), *carried_questions]}
+            fsops.atomic_write(questions_path, _yaml_text(index), fsync=True)
         intents.complete(intent)
         gitops.stage_and_commit(home, paths, intent.commit_subject, None)
         intents.finish(intent)
@@ -5692,6 +5760,7 @@ def _execute_manifest(
             refusals.extend(line for line in user_model_lines if "refused" in line)
 
     default_parked: dict[str, dict[str, list[str]]] | None = None
+    legacy_defaults: list[dict[str, Any]] = []
     if not halted:
         try:
             for index, finding in enumerate(cast(list[dict[str, Any]], manifest["findings"]), start=1):
@@ -5708,9 +5777,12 @@ def _execute_manifest(
                 # released on a default the user was never shown; the resume
                 # that completes records them (each id is reserved, so the
                 # observation is written once whatever happens later).
-                _record_defaults(home, manifest)
-                default_parked = _parked_cited(home, manifest)
-                refusals.extend(_default_refusals(manifest, default_parked))
+                # S-NEXT-followups: and the older questions still
+                # waiting in the index this run replaces, settled by default.
+                legacy_defaults = _legacy_defaults(home, manifest)
+                _record_defaults(home, manifest, legacy_defaults)
+                default_parked = _parked_cited(home, manifest, legacy_defaults)
+                refusals.extend(_default_refusals(manifest, default_parked, legacy_defaults))
         except Exception as exc:
             halted = True
             halt_reason = f"run ended early: {exc}"
@@ -5867,7 +5939,7 @@ def _execute_manifest(
                 # record them; fix round 1, gate r1 MINOR 2).
                 *(
                     [] if halted or default_parked is None
-                    else _default_lines(manifest, default_parked)
+                    else _default_lines(manifest, default_parked, legacy_defaults)
                 ),
                 *decided_lines,
                 *host_lines,
@@ -5881,6 +5953,7 @@ def _execute_manifest(
         manifest, report_path, latest = _write_manifest_truth(
             home, manifest, report_text=text, complete=not halted, closed=closed,
             week=week, closed_text=closed_text,
+            carried_questions=None if halted else _carried_asks(legacy_defaults),
         )
         if closed:
             _notify_week_closed(home, week, attempts, _failure_kind_text(manifest), [run_id])

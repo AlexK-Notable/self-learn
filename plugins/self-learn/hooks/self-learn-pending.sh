@@ -177,9 +177,10 @@ if [ "$miner_stale" = "true" ]; then
 fi
 
 # S-66: the overseer's report may carry questions for the user (never
-# lesson approvals). Since S-117 the count covers only legacy asks still
-# waiting for an answer. An absent field means the overseer has not run
-# yet, or had nothing to ask — either way, no line.
+# lesson approvals). Since S-117 the count covers only legacy questions
+# (written before defaults) still waiting for an answer, and the next
+# overseer run settles each by default (S-NEXT-followups), so the line shows
+# only until that run. An absent field or a zero count means no line.
 overseer_open_questions="$(jq -r '.overseer_open_questions // 0' <<<"$out" 2>/dev/null)" || exit 0
 if [ "$overseer_open_questions" -gt 0 ] 2>/dev/null; then
   echo "self-learn: the overseer has ${overseer_open_questions} older question(s) still waiting for you — /self-learn:overseer"

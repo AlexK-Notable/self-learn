@@ -37,7 +37,7 @@ plugins/self-learn/
   skills/self-learn/    SKILL.md + references (routing doctrine, card registry, steward method)
   commands/             /self-learn:review, /self-learn:teach, /self-learn:overseer
   hooks/                self-learn-pending.sh (SessionStart pending-count line;
-                        also names the overseer's open interpretation questions and
+                        also names any older overseer questions still waiting, and
                         the project notices for the directory the session is in)
                         self-learn-refread.sh (PostToolUse reference-read observer)
   scripts/self-learn    ~/.local/bin shim (readlink -f → uv run against cli/)

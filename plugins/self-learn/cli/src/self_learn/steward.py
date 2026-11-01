@@ -120,10 +120,12 @@ _ASK_ANSWER_OBSERVATION_RE = re.compile(
 #: (`overseer.run._record_defaults`, text from
 #: `overseer.conversation.ask_defaulted_text`). Like an answer (S-96) it
 #: brings back a case that DEFERRED its lessons, with the default as the
-#: card's context, so no lesson waits on the user.
+#: card's context, so no lesson waits on the user. S-NEXT-followups: the
+#: runner also settles a legacy READING still waiting this way, so the
+#: question may be a proposition id (`um-<4 hex>@r<n>`) too.
 _ASK_DEFAULTED_OBSERVATION_RE = re.compile(
     r"^- obs-[0-9a-f]{8} \S+ overseer statement: ask defaulted "
-    r"(?P<question>q-[a-z0-9][a-z0-9-]{1,62}); default applied: (?P<default>.+) "
+    r"(?P<question>q-[a-z0-9][a-z0-9-]{1,62}|um-[0-9a-f]{4}@r?\d+); default applied: (?P<default>.+) "
     r"\(ref: overseer-run:[0-9a-f]+\)$"
 )
 #: S-117: the user's answer to an ask whose default was
@@ -4937,7 +4939,8 @@ def hold_notice_text(run_id: str, cause: str, *, now: float | None = None) -> st
     """The words of the environment-hold notification (S-115): the
     cause, when the next try comes (the scheduler retries a held run
     :data:`RETRY_SECS` after its last attempt, so "after" this minute is
-    true), and, for a login that no longer works, the user's fix."""
+    true), and the person's one step (`failure_class.hold_fix`) when the
+    cause has one."""
     moment = time.time() if now is None else now
     retry = datetime.fromtimestamp(moment + RETRY_SECS).astimezone()
     text = (
@@ -4947,9 +4950,27 @@ def hold_notice_text(run_id: str, cause: str, *, now: float | None = None) -> st
     )
     fix = failure_class.hold_fix(cause)
     if fix is not None:
-        lead = "The login has expired" if failure_class.is_login_failure(cause) else "To fix it"
-        text += f" {lead}: {fix}."
+        text += f" {_hold_fix_lead(cause)}: {fix}."
     return text
+
+
+_LOGIN_EXPIRED_RE = re.compile(r"expired", re.I)
+_NOT_LOGGED_IN_RE = re.compile(r"not (?:logged|signed) in\b", re.I)
+
+
+def _hold_fix_lead(cause: str) -> str:
+    """The words before the fix in :func:`hold_notice_text`: true to the
+    cause (gate r1 NIT 4 of S-NEXT-followups). "The login has expired" only
+    for a login the cause says expired, "Claude Code is not logged in" for
+    one that never was, "The login no longer works" for any other login
+    failure, and "To fix it" for a cause that is not a login."""
+    if not failure_class.is_login_failure(cause):
+        return "To fix it"
+    if _LOGIN_EXPIRED_RE.search(cause):
+        return "The login has expired"
+    if _NOT_LOGGED_IN_RE.search(cause):
+        return "Claude Code is not logged in"
+    return "The login no longer works"
 
 
 def _notify_environment_hold(home: Path, run_id: str, cause: str) -> None:

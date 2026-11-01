@@ -811,16 +811,28 @@ would read almost every completed run as unfinished *(gate r1 of
 S-115)*. The environment-hold notification says when the run tries again
 ("after <date> <time> (every 2 h while the cause lasts)") and the one step the
 person takes. *(Amended S-NEXT-followups.)* That step comes from ONE map,
-`failure_class.hold_fix`: for an expired or missing login
-(`failure_class.is_login_failure`) "The login has expired: run `claude`, then
-`/login`"; for credit, a model name or an old Claude Code, its own step ("To fix
-it: …"); a cause with no known step keeps only its cause line. The session-start
-status's `steward_hold_fix` (`steward.hold_fix`) reads the same map, so the
-notification and the hook never name different fixes for one cause. The preview
-also knows the rotation: when the rotation is on and a premise review is
-overdue enough to make the steward due by itself (`steward._premise_review_overdue`,
-the same test as `_steward_is_due`'s last clause) the preview's reason reads "for
-its overdue premise reviews" instead of "when there is work"; the instant is
+`failure_class.hold_fix`: for a login that no longer works
+(`failure_class.is_login_failure`) "run `claude`, then `/login`", led by words
+true to the cause ("The login has expired" only when the cause says expired,
+"Claude Code is not logged in" when it says so, else "The login no longer
+works"); for a rejected API key (`invalid x-api-key`) the same step plus "if
+ANTHROPIC_API_KEY is exported, it may be the wrong key", and for `API Error:
+403` the login step, as the hook named before the map was unified *(gate r1
+MINOR 1)*; for credit, a model name or an old Claude Code (including the
+classifier's own "is too old"), its own step ("To fix it: …"); a cause with no
+known step keeps only its cause line. The session-start status's
+`steward_hold_fix` (`steward.hold_fix`) reads the same map, so the notification
+and the hook never name different fixes for one cause. The preview also knows
+the rotation, and stays cache-only *(gate r1 MAJOR 1)*: the due check's rotation
+clause and the daily premise sweep, which ask "is a premise review overdue
+enough to make the steward due by itself" (`steward._premise_review_overdue`)
+anyway, keep their last answer in `<cache>/steward/review-overdue.json`
+(`{at, date, head, overdue}`, `NOT_REPO_TRUTH`), keyed with the ledger HEAD (read
+from the ledger's git files, not by a git process) and the UTC day. When the
+rotation is on and that file says overdue for today at the current HEAD, the
+preview's reason reads "for its overdue premise reviews" instead of "when there
+is work"; a missing or stale file reads as not overdue. The preview never asks
+the question itself and never reads a committed manifest. The instant is
 unchanged, because the same cooldown and slot gates decide it.
 
 **The stranded-lesson census** *(Added 2026-10-31, S-115)*. After

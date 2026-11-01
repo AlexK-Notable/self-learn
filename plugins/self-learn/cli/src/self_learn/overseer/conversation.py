@@ -20,7 +20,10 @@ shown with its default and is not counted as waiting
 cited case's line of successors ends at, in a form the steward takes back
 whatever that case decided, so the answer can overturn the default. A
 reading, or an ask without a default, can still be read from an index
-written before, and behaves as it did.
+written before; it waits only until the next overseer run, which settles it
+with the change-nothing default by itself and reports it (S-NEXT-followups,
+`run._legacy_defaults`), and carries a legacy ask into its own index with that
+default, so an answer can still overturn it.
 
 Skills are not shown here and never asked about (S-110,
 the user's words of 2026-10-31: *"skills should be created unattended. i
@@ -318,6 +321,20 @@ def waits_on_the_user(row: dict) -> bool:
     return not (row.get("kind") == "ask" and row.get("default"))
 
 
+def waiting_questions(home: Path | str) -> list[dict]:
+    """The indexed questions not yet answered that still wait on the user
+    (:func:`waits_on_the_user`): since S-117 only legacy ones, a reading or
+    an ask written before defaults. The next overseer run settles each with
+    the change-nothing default (S-NEXT-followups,
+    `overseer.run._legacy_defaults`). Raises :class:`ConversationError` when
+    the index cannot be read; an absent index waits on nothing."""
+    resolved = Path(home)
+    return [
+        row for row in _unanswered(resolved, _load_questions(resolved))[0]
+        if waits_on_the_user(row)
+    ]
+
+
 def open_question_count(home: Path | str) -> int | None:
     """Cheap status fact: absent index -> absent field; otherwise the number
     of indexed questions not yet answered that still wait on the user (an
@@ -325,10 +342,7 @@ def open_question_count(home: Path | str) -> int | None:
     resolved = Path(home)
     if not (resolved / "overseer" / "open-questions.yaml").is_file():
         return None
-    return sum(
-        1 for row in _unanswered(resolved, _load_questions(resolved))[0]
-        if waits_on_the_user(row)
-    )
+    return len(waiting_questions(resolved))
 
 
 def _question_block(report: str) -> str:

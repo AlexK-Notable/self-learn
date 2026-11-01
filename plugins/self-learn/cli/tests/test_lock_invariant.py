@@ -245,6 +245,7 @@ NOT_REPO_TRUTH = {
     "serve._log_job_crash": "XDG cache: cache_dir()/serve.journal.jsonl, one row per crashed job with no journal of its own (2026-09-27, fail-state audit finding 6)",
     "serve._write_holds": "XDG cache: cache_dir()/serve.holds.json (U1/A13 -- which job a failing due check is currently holding, and its cause, so the heartbeat and `doctor`'s serve row can name it and the notification fires once per cause; no ledger path, no commit)",
     "serve._write_stranded": "XDG cache: cache_dir()/steward/stranded.json (S-115 -- the last stranded-lesson census, read by the session-start status; rebuildable by the next census, no ledger path, no commit)",
+    "serve._store_review_overdue": "XDG cache: cache_dir()/steward/review-overdue.json (S-NEXT-followups -- the last answer to 'is a premise review overdue', keyed with the ledger HEAD and UTC day, read by the heartbeat preview so it never walks the ledger; rebuildable by the next due check or premise sweep, no ledger path, no commit)",
     # L6 (2026-10-31): serve's re-exec rows (`reexec`, `reexec-refused`,
     # `reexec-failed`) in the same serve.journal.jsonl `_log_job_crash`
     # writes, and the daily maintenance recompile's last-run record. Both
