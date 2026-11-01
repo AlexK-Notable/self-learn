@@ -1,0 +1,59 @@
+{#- Humane UI lane 5 (proposal §7): the "In short" box on a report.
+    `in_short` comes from summary_routes (box_for_report / box_for_item).
+    Nothing here starts a model call: the only control that does is the
+    form's POST button. While a run is in flight the box re-reads itself
+    every second (GET, read only) and stops once the run ends. -#}
+{%- set b = in_short if in_short is defined else none -%}
+{%- if b and b.lazy -%}
+<section class="in-short in-short-loading" id="in-short-box" aria-label="In short" hx-get="{{ b.url }}" hx-trigger="load" hx-swap="outerHTML" data-in-short="lazy"><h2 class="in-short-h">In short</h2><p class="in-short-note">Reading this report's summary…</p></section>
+{%- elif b -%}
+<section class="in-short{% if b.running %} in-short-working{% endif %}" id="in-short-box" aria-label="In short" data-in-short="{{ b.kind }}"
+  {%- if b.running %} aria-busy="true" hx-get="{{ b.url }}" hx-trigger="every 1s" hx-swap="outerHTML"{% endif %}>
+  <h2 class="in-short-h">In short</h2>
+  {%- if b.scheduled %}
+  <div class="in-short-text" data-in-short-scheduled>{{ b.scheduled | markdown }}</div>
+  <p class="in-short-prov">Written by the overseer in its weekly run, with no extra model call.</p>
+  {%- endif %}
+  {%- if b.counted %}
+  <p class="in-short-text" data-in-short-counted>{{ b.counted }}</p>
+  <p class="in-short-prov">Counted from the run's own record. No model call.</p>
+  {%- endif %}
+  {%- if b.running %}
+  <p class="in-short-note" role="status"><span class="in-short-spinner" aria-hidden="true"></span>Writing a summary of this report… {{ b.running.seconds or 0 }} seconds so far.</p>
+  {%- if b.running.text %}<p class="in-short-text in-short-streaming" data-in-short-streaming>{{ b.running.text }}</p>{% endif %}
+  <div class="in-short-actions">
+    <button type="button" class="btn" hx-post="{{ b.url }}/stop" hx-target="#in-short-box" hx-swap="outerHTML" data-in-short-stop>Stop</button>
+    <span class="in-short-note">You can leave this page; the summary is saved here when it is done.</span>
+  </div>
+  {%- elif b.summary %}
+  <p class="in-short-text" data-in-short-summary>{{ b.summary.text }}</p>
+  <p class="in-short-prov">Summary written {% if b.summary.by == "an agent's request" %}on an agent's request{% else %}on request{% endif %}{% if b.summary.when %} {{ b.summary.when }}{% endif %}{% if b.summary.model %} by {{ b.summary.model }}{% endif %}, from this exact report.</p>
+  <details class="in-short-how">
+    <summary>How it was made</summary>
+    <p>One model call with no tools, given this report's text and nothing else{% if b.summary.cost_words %} ({{ b.summary.cost_words }}){% endif %}. It is saved in your ledger against this exact text, so opening the page again never asks again. If the report changes, the summary waits for a new click.</p>
+    <form hx-post="{{ b.url }}" hx-target="#in-short-box" hx-swap="outerHTML" class="in-short-again">
+      <input type="hidden" name="again" value="1">
+      <button type="submit" class="btn-link" data-in-short-again>Write it again</button>
+    </form>
+  </details>
+  {%- else %}
+  {%- if b.stale %}
+  <p class="in-short-text in-short-stale" data-in-short-stale>{{ b.stale.text }}</p>
+  <p class="in-short-prov">This summary was written for an earlier version of this report.</p>
+  {%- endif %}
+  {%- if b.stopped %}
+  <p class="in-short-note" data-in-short-stopped>Stopped before the summary was written. Nothing was saved.</p>
+  {%- endif %}
+  {%- if b.failed %}
+  <p class="in-short-failed" role="alert" data-in-short-failed>{{ b.failed.message }}</p>
+  {%- endif %}
+  {%- if b.offer %}
+  {%- if not b.stale and not b.counted %}<p class="in-short-note">This report has no summary yet.</p>{% endif %}
+  <form hx-post="{{ b.url }}" hx-target="#in-short-box" hx-swap="outerHTML" class="in-short-actions">
+    <button type="submit" class="btn{% if not b.counted %} btn-primary{% endif %}" data-in-short-start>{% if b.stale %}Summarise again{% elif b.counted %}Summarise this in words{% else %}Summarise this report{% endif %}</button>
+    <span class="in-short-note">{{ b.cost_line }}</span>
+  </form>
+  {%- endif %}
+  {%- endif %}
+</section>
+{%- endif -%}

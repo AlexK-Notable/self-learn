@@ -757,6 +757,16 @@ def _default_ask_model() -> str:
     return _DEFAULT_ASK_MODEL
 
 
+#: 2026-11-01 (humane UI lane 5, proposal §7b): "Summarise this" runs on
+#: `sonnet` unless the person picks another model (tier A). A summary needs
+#: no reasoning over tools, so it does not share the ask agent's `opus`.
+_DEFAULT_SUMMARY_MODEL = "sonnet"
+
+
+def _default_summary_model() -> str:
+    return _DEFAULT_SUMMARY_MODEL
+
+
 def _bedrock_active(provider_value: str) -> bool:
     return provider_value == "bedrock"
 
@@ -1776,6 +1786,19 @@ REGISTRY: tuple[Setting, ...] = (
         validate=lambda v: v if cast(float, v) > 0 else None,
         validate_hint="must be > 0",
         description="the time limit of one answer from the inbox's ask-about-this agent (seconds)",
+    ),
+    # 2026-11-01 (humane UI lane 5, proposal §7b): the model of the
+    # on-demand "Summarise this" (`self-learn summarise`). Tier A; no
+    # Bedrock twin, because a summary refuses any setup that bills money.
+    Setting(
+        name="models.summary",
+        env_var="SELF_LEARN_SUMMARY_MODEL",
+        config_section="models",
+        config_key="summary",
+        kind="str",
+        default=_default_summary_model,
+        description="model id for the on-demand report summary (self-learn summarise)",
+        direction="env-first",
     ),
 )
 

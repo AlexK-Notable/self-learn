@@ -574,8 +574,11 @@ section records what the surface is.
   while a needs-you or carried-out row keeps its chip, which carries
   words, never colour alone. "new" and "unseen" are one dot whose word is
   its accessible name, the word the page header shows. Run titles are in
-  words ("Nightly review, 31 October: 27 lessons decided", "Weekly
-  report, 1 November"; never "lesson(s)"). Below 760 px the list folds
+  words ("Nightly review, 31 October: 27 decisions", "Weekly report, 1
+  November"; never "lesson(s)"). A nightly review counts its decisions,
+  the run's cases, the same unit its page's split and lines count, so the
+  two never disagree; a run recorded without cases says "N lessons
+  decided". "Being carried out" carries its count, as "Needs you" does. Below 760 px the list folds
   behind an "All items (N)" button above the open item, so the item is
   the first thing on screen; `j`/`k` show the list, and opening an item
   hides it again. With nothing at all,
@@ -621,14 +624,35 @@ section records what the surface is.
   decided", the split of its decisions by outcome group
   (`series.OUTCOME_GROUPS`: Put to use, Turned down, Left for later,
   Looked at, kept as is) as a thin bar of counts with the counts in words
-  beside it and a "Show as a table" view, then one line per decision:
-  the lesson, the outcome in words and the opening of its reason, with
-  "Why?" opening the question and the reason; six lines show, the rest
-  fold under "Show all". The counts and lines are the CLI's (the
-  packet's `run` block, read from the run's record and its committed
-  cases); the page counts nothing. Its evidence folds under "The case
+  beside it and a "Show as a table" view (its column is "Decisions"), then
+  one line per decision: the lesson, the outcome in words and the opening
+  of its reason with its ids and transcript line references taken out;
+  "Why?" fetches the case itself when opened (`GET /inbox/case/<id>`,
+  read-only, `cases.show`'s full view, told once, the id matched whole):
+  its Decision is worded as its line words it (the case's `outcome`
+  first), its Because reads without ids or line references, everything it
+  shows passes the same redaction as every packet path (`redact_text`),
+  and an error is said as "The case could not be opened." with the raw
+  text folded for an agent; the line's own ids fold stays on the line,
+  outside the part the panel replaces. Six lines show, the rest fold
+  under "Show all". A decision whose apply the run record says did not
+  happen (`phase` refused, unfinished, failed or stopped, or a result that
+  applied nothing and refused, stopped or never attempted something) is counted under "Not carried out, nothing
+  changed", never under the group of its intended outcome; its line says
+  why ("Refused by the ledger", "Not finished yet, it will be tried
+  again", "Stopped before it was applied", "Never attempted"), with what
+  it was to be, and "Why?" says the same. These lines come first. The
+  counts and lines are the CLI's (the packet's `run` block, read from the
+  run's record and its committed cases, at most 12 KiB so the packet
+  keeps its 64 KiB cap and its evidence: lines are shortened first; a run
+  too large even then drops lines from its largest group, never a group's
+  last line, and says how many of each kind its counts cover beyond the
+  list, "to keep what the agent is given within its size limit"); the
+  page counts nothing. Its evidence folds under "The case
   files and lessons, in full". A nightly review and a weekly run item
-  carry an empty, marked slot for the "In short" box (lane 5).
+  carry the "In short" box (*S-NEXT-humane-l5*, "Summaries" below): a
+  nightly review shows its counts in words, and a weekly run item the
+  box of its weekly report.
 - **Answers** go to `attention answer` with the option, the reply text as
   a 0600 `--text-file` that is deleted after the run, `--draft` when the
   text started as an agent draft, and `--confirm` on the second click of
@@ -908,20 +932,76 @@ section records what the surface is.
   line becomes a title in words ("Weekly report · Sunday 1 November",
   with "finished at 15:21" under it) and its run id, actor and model move
   to an "About this run" fold; "Earlier reports" is a small menu beside
-  the title. Then an empty, marked slot for the "In short" box (lane 5);
-  then the "Questions for you" section lifted to the top: "Nothing needs
-  you this week." when it says none, otherwise its questions and a link
-  to the inbox, never folded. Counts sit in tiles, from the run's own
+  the title. Then the "In short" box (*S-NEXT-humane-l5*, "Summaries"
+  below);
+  then the "Questions for you" section lifted to the top, never folded:
+  "Nothing needs you this week." when it says none; otherwise each
+  question with where it stands now (`weekly_facts.question_states`):
+  still open, answered (the person's own words and when), or no longer
+  asked. Only when one is still open does the box read "Questions for
+  you" with a link to the inbox; otherwise it reads "The questions it
+  asked". The tile says "Questions it asked". Counts sit in tiles, from the run's own
   record (`weekly_facts.run_facts`: past decisions re-checked of those it
   could have, decided in the person's stead, questions), never from the
-  prose; a report with no record has no tiles. The overseer's sections
+  prose; a report with no record has no tiles. *(S-NEXT-humane-l5.)* Two
+  more tiles come from the record's `review` block (02 §3a.13a): "Re-checked
+  and agreed with" (the re-checked decisions the overseer said still hold,
+  with how many it said do not and how many it gave no verdict on) and
+  "Its own findings dropped" (its findings of the week the runner dropped);
+  a record made before that block draws neither. The overseer's sections
   follow in its own words at a reading width of about 75 characters.
   Inside a bullet, machine text reads as a short placeholder with the
   original in its tooltip ("the 35 cases", "a path" written from `~`,
   "a hash", "a settings entry"), and the bullet ends with one fold
   holding it as written; a run of fewer than three ids, text in `code`
   (a command to copy) and text in a paragraph stay as written.
-  "Refused / could not do" folds by default with its count.
+  "Refused / could not do" folds by default with its count. The weekly
+  report page is read-only apart from the "In short" box's one control,
+  which writes a summary, never the report.
+- **Summaries** *(added 2026-11-01, S-NEXT-humane-l5; humane proposal §7;
+  the user's words: "let's give me a way to get summaries on demaand")*.
+  A weekly report, and an inbox item for a nightly review or a weekly
+  run, open with an "In short" box (`partials/in_short.html`, built by
+  `summary_routes.py`). It holds, in this order of preference:
+  - **the overseer's own summary**: a weekly report's optional first
+    section `## In short`, three to five plain sentences written in the
+    same weekly call (no extra model call), lifted out of the body and
+    labelled "Written by the overseer in its weekly run, with no extra
+    model call.";
+  - **a nightly review's counts**: the packet's `run.in_short`, words the
+    CLI counts from the run's record in the bar's own groups and unit,
+    decisions, so its total is the title's ("27 decisions: 9 put to use,
+    4 turned down, 3 left for later and 11 looked at and kept as they
+    are. 2 were not carried out, so nothing changed for them."), plus the
+    warnings it turned on and the always-loaded lines it changed,
+    labelled "Counted from the run's own record. No model call.";
+  - **a summary written on request**: "Summarise this report" (on a
+    nightly review, "Summarise this in words") runs `self-learn
+    summarise <kind>:<ref>` (17 §1c; 02 §3a.13) once. Under the button: "One
+    model call on your Claude plan (no API charge), usually 10 to 30
+    seconds. The summary is saved, so it is only written once for this
+    report." While it runs the box says "Writing a summary of this
+    report… N seconds so far." with **Stop** and `aria-busy`, and reads
+    itself again every second (a GET) so the words arrive as they are
+    written; then it shows the summary with "Summary written on request
+    <when> by <model>, from this exact report.", a "How it was made" fold
+    (one call, no tools, this text only; its notional cost and seconds)
+    and "Write it again" (`--again`, the only way to spend a second call
+    on the same text). A report whose text changed shows the older
+    summary greyed, "This summary was written for an earlier version of
+    this report.", and "Summarise again"; it never re-summarises by
+    itself. A setup that would bill money says "Summaries are off: this
+    setup would bill money." and offers no button.
+
+  **Nothing calls a model on a page view.** Every page and `GET
+  /summary/<kind>/<ref>` only read: the summary saved for the report's
+  current text (`summarise.state`, files only) and the runner's view of a
+  run in flight. Only `POST /summary/<kind>/<ref>` starts the verb,
+  through the inbox's ask runner (the same cap of two model turns in
+  flight across questions and summaries, the same watchdog and Stop,
+  `POST /summary/<kind>/<ref>/stop`). A second click while one runs gets
+  409 and the running box. A saved summary is found by the report's
+  SHA-256, so a reload, a second click or another viewer costs nothing.
 
 ### 2.6 The tray icon *(added 2026-10-31, S-126; attention-design-r2 §3.5, §3.10)*
 
@@ -1297,7 +1377,8 @@ permission surface of §4.3).
   `attention-design-r2.md` §4.7 and §4.8)*. The inbox lives in its own
   router (`ui/inbox_routes.py`): `GET /inbox`, `/inbox/list`,
   `/inbox/<id>` and its `workspace`, `evidence` and `conversation`
-  partials, `/overseer-report[/<date>]`; `POST /inbox/seen-all`,
+  partials, `/inbox/case/<case id>` (a nightly review's "Why?", read-only;
+  S-NEXT-humane-l3), `/overseer-report[/<date>]`; `POST /inbox/seen-all`,
   `/inbox/<id>/{seen,answer,undo,feedback,run,fix,check-login,ask,ask/stop}`
   and `POST /navigate`. The middleware is unchanged: every POST needs the
   cookie and `HX-Request`. Reads are `attention --json` and `attention

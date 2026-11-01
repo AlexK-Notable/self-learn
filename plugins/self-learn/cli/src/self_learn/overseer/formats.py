@@ -240,6 +240,8 @@ def closed_sets() -> dict[str, Any]:
         "report_headings_in_order": list(run._REPORT_SECTIONS),
         # S-105: one more heading, optional, right after Catalogue health.
         "report_hand_steps_heading": run.HAND_STEPS_SECTION,
+        # Humane UI lane 5: one more heading, optional, FIRST when written.
+        "report_in_short_heading": run.IN_SHORT_SECTION,
         "hook": _hook_closed_sets(),
         "skill_template": _skill_template_sets(),
         # SK4 (S-107): the discovery phase's candidates, as

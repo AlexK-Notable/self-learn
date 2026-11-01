@@ -139,6 +139,7 @@ _TABLE: dict[str, Plain] = {
     "models.steward": _p("models", "Nightly review", "The model that decides lessons each night."),
     "models.overseer": _p("models", "Weekly check", "The model that re-checks decisions and writes the weekly report."),
     "models.ask": _p("models", "Ask about this", "The model that answers your questions in the inbox."),
+    "models.summary": _p("models", "Summaries", "The model that writes a summary when you click Summarise this."),
     # ----------------------------------------------------------- attention
     "worker.no_notify": _p("attention", "Quiet drafting's notifications",
         "On: drafting sends no desktop notifications."),

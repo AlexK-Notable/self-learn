@@ -5155,6 +5155,79 @@ undo` (0; 2; 3; 10), `attention run [--login] [--json]` (0; 2; 3; 4; 5; 64),
 `attention fix` (0; 2; 3; 64), `attention stop` (0; 2; 3; 64), `attention claim` (0; 2; 3), `attention done`
 (0; 2; 3; 10; 64), `case refreeze` (§3a.2).
 
+### 3a.13 Report summaries *(S-NEXT-humane-l5)*
+
+The on-demand summary of a report (`self-learn summarise`, 09 §2.5
+"Summaries"). One file per report TEXT:
+
+    summaries/<kind>/<sha256>.json      committed, under the ledger lock
+
+`kind` is `overseer-report` (the weekly report, `overseer/<date>-report.md`,
+as its exact bytes) or `inbox-item` (an inbox item, as its packet's
+markdown, `attention_packet.render_md`). `sha256` is the SHA-256 of that
+text. The file:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `schema` | int | `1` |
+| `kind` | str | as above |
+| `ref` | str | the report's date (`YYYY-MM-DD`), or the item id (`att-…`) |
+| `source_sha256` | str | the hash the file is named by |
+| `source_chars` | int | the length of the text summarised |
+| `text` | str | the summary, at most 4,000 characters, never a secret-scan hit |
+| `model` | str | `models.summary` at the time (default `sonnet`) |
+| `created_at` | str | UTC, `Z` |
+| `by` | str | `on request` (the person's click), or `an agent's request` (an agent's shell) |
+| `cost_usd` | float or null | the call's cost as Claude Code reported it (notional on a subscription) |
+| `duration_secs` | float | the call's wall time |
+| `session` | str or null | the Claude Code session id |
+
+Rules. A summary saved for a hash is reused for that hash and never for
+another: a changed report has a new hash and no summary until a new
+request (the page may show the newest older one for the same `ref`,
+marked as written for an earlier version). `--again` replaces the file
+for the same hash (git keeps the earlier one). The commit subject is
+`self-learn: summary <kind>:<ref> <sha256[:12]>`. The write is one recorded
+transaction (an intent, op `summary`). A commit the ledger refuses is undone
+at once: each file back as it was, nothing staged, no intent left, so no page
+shows the summary as saved and the person can try again *(gate r1 fold)*. A
+process killed between the write and the commit leaves the intent, which the
+next ledger write rolls forward; op `summary` is in
+`intents.NO_HOST_PHASE_OPS`, so that roll-forward says only "its commit
+landed", never "run 'self-learn recompile'". `inbox-item` takes only a report
+item (`decided.steward-run`, `decided.overseer-run`); any other is refused
+with exit 2 before any call. While the ledger is
+STOPPED the file waits at `<cache>/summaries/pending/<kind>/<sha256>.json`;
+reads see it, and the next save moves every waiting one in under the lock
+and removes it. Each model call, saved or not, adds one row to
+`<cache>/summaries/journal.jsonl` (`at`, `kind`, `ref`, `sha256`, `model`,
+`outcome`, `cost_usd`, `duration_secs`); the cache files are never ledger
+truth (`NOT_REPO_TRUTH`: `summarise._write_cache`, `summarise._drop_cache`).
+
+### 3a.13a The weekly run's review counts *(S-NEXT-humane-l5)*
+
+The overseer's run record (`cases/runs/<run id>.json`, `actor: overseer`)
+gains `review`, counted by the runner from `findings.yaml` (never from the
+report's prose):
+
+| Field | Meaning |
+|---|---|
+| `examined` | the `examined` findings the runner kept |
+| `agreed` | of those, the ones with `holds: true`: the steward's decision stands as decided |
+| `disagreed` | of those, `holds: false` |
+| `no_verdict` | of those, no `holds` |
+| `findings_dropped` | the findings the overseer wrote this week that the runner dropped (malformed, naming a case not selected, a `holds` that is not true or false); `null` when `findings.yaml` did not parse or the secret scan withheld it, so its entries cannot be counted |
+
+A finding (§3a.2's overseer findings) gains the optional key `holds`
+(bool), given on an `examined` finding. A record made before this block
+has no `review`, and the weekly report draws no tile for it.
+
+The weekly report's own optional first section `## In short` (three to
+five plain sentences, no ids) is accepted, not required: the runner's
+heading check takes the seven headings, with or without "Hand steps this
+week", each with or without "In short" first; an "In short" written
+elsewhere is moved first, like any misordered heading.
+
 ## 4. Managed sections (the compile targets' contract)
 
 Compilers own exactly the region between their markers, and nothing else:

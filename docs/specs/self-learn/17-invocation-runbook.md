@@ -391,6 +391,24 @@ added through the armor's additive door) that prints real `stream_event` lines. 
 transcript copy was taken, and what it prints when the session is gone, are
 measured by the first real question.
 
+**The report summary rides this surface** *(added 2026-11-01, humane UI lane 5,
+S-NEXT-humane-l5)*. `self-learn summarise <kind>:<ref> [--again] [--stream]
+[--json] [--show]` (exit 0 printed, 2 unknown report or an inbox item that is
+not a report, 3 login, 4 would bill money, 5 timeout, 6 turn limit, 7 stopped,
+1 other, 64 usage) makes at most one `ask`-surface
+session: no tools (an empty allow-list, reads fenced to an empty work folder
+`<cache>/summaries/work/`), one turn, `ask.timeout_secs`, the auto-memory switch
+off, its own sidecar key `summary-<sha256[:16]>`, and the money check
+(`ask.spec_billing`) before any spawn. Its model is `models.summary` (env
+`SELF_LEARN_SUMMARY_MODEL`, default `sonnet`, tier A, no Bedrock twin), carried
+by a new `SessionSpec.model` field: keyword, defaulted to `None` (every other
+producer, which keeps `provider.model_for(surface)`), placed before
+`resume_session_id` so the two last fields stay where the ask lane pinned them.
+The seam call itself is `ask.summary_session`, so the seam keeps its six caller
+files. Its prompt opens `self-learn summary session for <kind>:<ref>.`, a
+`miner.SELF_PROMPT_HEADERS` entry. With a summary saved for the report's exact
+text (02 §3a.13) and no `--again`, it makes no session at all.
+
 ## 2. The `[sdk]` extra is no longer optional
 
 *Rewritten 2026-08-25 (U-cleanup, `S-49`, which amends `S-43`).

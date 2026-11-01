@@ -1343,16 +1343,6 @@ def _src_runs(home: Path, ctx: "_Ctx") -> list[dict]:
         day = str(done_at)[:10]
         raw_decided = manifest.get("decided")
         decided: list[Any] = raw_decided if isinstance(raw_decided, list) else []
-        # Humane UI lane 3 (proposal §4, §10): titles in words -- "Nightly
-        # review, 1 November: 27 lessons decided", "Weekly report, 1
-        # November" -- never "lesson(s)" or a bare ISO date.
-        if actor == "steward":
-            title = (f"Nightly review, {day_words(_local_day(done_at) or day)}: "
-                     f"{plural(len(decided), 'lesson')} decided")
-            kind = "decided.steward-run"
-        else:
-            title = f"Weekly report, {day_words(str(manifest.get('week') or day))}"
-            kind = "decided.overseer-run"
         # Gate r1 MAJOR 1: the run's cases hold the reasoning ("why was this
         # decided?"), so they lead; the packet expands each case into its
         # lessons and statements, and the decided lessons follow, deduped.
@@ -1361,6 +1351,20 @@ def _src_runs(home: Path, ctx: "_Ctx") -> list[dict]:
             str(c) for c in (recipes if isinstance(recipes, dict) else {})
             if isinstance(c, str) and c.startswith("case-")
         ]
+        # Humane UI lane 3 (proposal §4, §10; gate r1 MAJOR 2): titles in
+        # words, never "lesson(s)" or a bare ISO date. A nightly review
+        # counts its decisions -- the run's cases, one per decision line on
+        # the page, so the title and the page's split always agree; a run
+        # recorded without cases counts its decided lessons.
+        if actor == "steward":
+            day_text = day_words(_local_day(done_at) or day)
+            title = (f"Nightly review, {day_text}: {plural(len(run_cases), 'decision')}"
+                     if run_cases else
+                     f"Nightly review, {day_text}: {plural(len(decided), 'lesson')} decided")
+            kind = "decided.steward-run"
+        else:
+            title = f"Weekly report, {day_words(str(manifest.get('week') or day))}"
+            kind = "decided.overseer-run"
         refs = list(dict.fromkeys([*run_cases, *(str(d) for d in decided)]))
         out.append(_new_item(
             kind, run_id, title=title, since=manifest.get("started_at") or manifest.get("started"),

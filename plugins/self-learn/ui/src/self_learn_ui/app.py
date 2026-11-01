@@ -21,7 +21,7 @@ from starlette.staticfiles import StaticFiles
 from self_learn import verbs
 
 from . import charts, ledger, models, pane, rendering
-from . import inbox_routes
+from . import inbox_routes, summary_routes
 from .ask_runner import AskRunner, build_ask_runner
 from .env import EnvConfig
 from .idle import ActivityTracker, IdleMonitor
@@ -196,6 +196,7 @@ def create_app(
     app.add_middleware(SecurityMiddleware, port=env.ui_port, token=token, tracker=tracker)
     app.include_router(router)
     app.include_router(inbox_routes.router)
+    app.include_router(summary_routes.router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     return app

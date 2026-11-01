@@ -302,6 +302,9 @@ NOT_REPO_TRUTH = {
     "attention._write_registration_snapshot": "XDG cache: <cache>/attention/registrations.json, the plain registrations the inbox has seen and when each first appeared; rebuildable, never ledger truth",
     "ask._write_cache": "XDG cache: <cache>/workspace/<item-id>/{packet.json,packet.md,state.json,stop-requested}, the ask agent's working copy of an item's packet, its session id and the person's Stop marker, and <cache>/attention/login-ok.json, the last check-login success; rebuildable, never ledger truth (the conversation's record is the ledger's workspace transcript)",
     "ask._drop_cache": "XDG cache: unlinks <cache>/workspace/<item-id>/stop-requested, the person's Stop marker, once a turn has read it or before a turn starts; never ledger truth",
+    # Humane UI lane 5 (S-NEXT-humane-l5): the summary verb's cache files.
+    "summarise._write_cache": "XDG cache: <cache>/summaries/pending/<kind>/<sha256>.json, a summary written while the ledger is STOPPED (summarise.save moves it into the ledger under the lock and removes it), and <cache>/summaries/journal.jsonl, one row per model call with its cost; never ledger truth (the saved summary is the ledger's summaries/<kind>/<sha256>.json)",
+    "summarise._drop_cache": "XDG cache: unlinks <cache>/summaries/pending/<kind>/<sha256>.json once summarise.save has committed it into the ledger; never ledger truth",
     "workspace._keep_pending": "XDG cache: <cache>/workspace/<item-id>/pending.jsonl, workspace rows kept while the ledger is STOPPED; workspace.append seals them into the ledger under the lock and removes the file",
     # Attention round, answers lane (design r2 §3.4.7, §4.4): approved
     # work's cache files. The approval and its outcome are ledger rows

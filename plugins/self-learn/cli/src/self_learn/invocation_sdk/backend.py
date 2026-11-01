@@ -372,7 +372,10 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         # `IN3`/`Int-1`, corrected 2026-09-19 (U4b): the home is
         # `spec.settings_home`, not `spec.cwd`. See the `cli_path` note
         # below for what reading `cwd` here cost.
-        "model": provider.model_for(spec.surface, home=spec.settings_home),
+        # 2026-11-01 (humane UI lane 5): a producer that names its own
+        # model (`SessionSpec.model`, the summary verb's `models.summary`)
+        # runs on it; every other producer resolves the surface's as before.
+        "model": spec.model or provider.model_for(spec.surface, home=spec.settings_home),
         "disallowed_tools": disallowed,
         "can_use_tool": can_use_tool,
         "permission_mode": "default",  # `O-2` -- unconditionally

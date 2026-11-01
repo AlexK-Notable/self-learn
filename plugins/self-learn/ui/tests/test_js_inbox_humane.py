@@ -40,6 +40,19 @@ def _runs() -> list[dict]:
     return out
 
 
+AFTER_ID = "att-0000000003b1"
+
+
+def _after() -> dict:
+    """A seen decided item older than the reviews: its row stands after
+    their fold in the Older group."""
+    return {**OO7, "id": AFTER_ID, "class": "decided", "kind": "decided.hook-activated",
+            "because": None, "title": "A warning turned on", "state": "done", "options": [],
+            "seen": True, "flagged": False, "since": "2026-09-01T10:00:00Z",
+            "updated_at": "2026-09-01T10:00:00Z",
+            "source": {"by": "steward", "run": None, "report": None}}
+
+
 def _focused(page) -> str:
     return page.evaluate(
         "() => { const a = document.activeElement; if (!a) return '';"
@@ -50,14 +63,18 @@ def _focused(page) -> str:
 def test_j_stops_on_a_closed_fold_once_and_walks_into_it_when_open(page, server):
     """Mutation: listStops() returns every link, as listLinks() did (rows
     inside a closed fold count as stops) -> red: `j` lands on a hidden row."""
-    server.state.doc = _doc(OO7, *_runs())
+    server.state.doc = _doc(OO7, *_runs(), _after())
     _open(page, server, ID_OO7)
     page.wait_for_selector("[data-inbox-fold] details:not([open])")
     page.evaluate("() => document.activeElement && document.activeElement.blur()")
     page.keyboard.press("j")  # from the selected row, the next stop: the fold
     assert _focused(page) == "summary"
     page.keyboard.press("j")
-    assert _focused(page) == "summary"  # the hidden rows are not stops
+    # Gate r1 MINOR 5 (M1): the hidden rows are not stops, so `j` passes the
+    # closed fold and reaches the row after it.
+    assert _focused(page) == AFTER_ID
+    page.keyboard.press("k")
+    assert _focused(page) == "summary"
     page.keyboard.press("k")
     assert _focused(page) == ID_OO7
     page.keyboard.press("j")
@@ -86,3 +103,28 @@ def test_on_a_narrow_window_the_item_comes_first_and_the_list_is_one_click_away(
     page.wait_for_selector(f'#ws[data-item-id="{RUN_IDS[1]}"]')
     _wait_for(lambda: not page.locator("#inbox-list").is_visible())
     assert page.locator("[data-show-list]").get_attribute("aria-expanded") == "false"
+
+
+def test_j_from_an_item_inside_a_closed_fold_goes_past_the_fold(page, server):
+    """Gate r1 MINOR 5 (M2): the open item sits in a fold the person has
+    closed; `j` moves on from the fold, not from the top of the list.
+    Mutation: drop the selected-in-closed-fold mapping -> red."""
+    server.state.doc = _doc(OO7, *_runs(), _after())
+    _open(page, server, RUN_IDS[1])
+    page.wait_for_selector("[data-inbox-fold] details[open]")  # control: drawn open
+    page.evaluate("() => { document.querySelector('[data-inbox-fold] details').open = false;"
+                  " if (document.activeElement) document.activeElement.blur(); }")
+    page.keyboard.press("j")
+    assert _focused(page) == AFTER_ID
+
+
+def test_on_a_narrow_window_j_shows_the_list(page, server):
+    """09 §2.5: `j`/`k` show the list. Gate r1 MINOR 5 (M4). Mutation: drop
+    showList(true) from moveInList -> red."""
+    server.state.doc = _doc(OO7, *_runs())
+    page.set_viewport_size({"width": 390, "height": 844})
+    _open(page, server, ID_OO7)
+    assert not page.locator("#inbox-list").is_visible()  # control: hidden at first
+    page.evaluate("() => document.activeElement && document.activeElement.blur()")
+    page.keyboard.press("j")
+    _wait_for(lambda: page.locator("#inbox-list").is_visible())
