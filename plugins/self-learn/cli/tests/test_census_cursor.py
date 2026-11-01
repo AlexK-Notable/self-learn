@@ -111,6 +111,10 @@ def test_the_cursor_file_reads_back_and_a_bad_one_reads_as_none(repo):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(report.census_cursor_text(head="abc1234", run="run-1", at="2026-10-31T01:00:00Z"))
     assert report.read_census_cursor(repo) == {"head": "abc1234", "run": "run-1", "at": "2026-10-31T01:00:00Z"}
+    # A run id in YAML's exponent form (digits, e, digits) read back as the
+    # float inf while the cursor wrote it bare (seen in a full suite run).
+    path.write_text(report.census_cursor_text(head="abc1234", run="3984e899", at="2026-10-31T01:00:00Z"))
+    assert report.read_census_cursor(repo)["run"] == "3984e899"
     path.write_text("head: not a sha!\n")
     assert report.read_census_cursor(repo) is None
     path.write_text("- a list\n")

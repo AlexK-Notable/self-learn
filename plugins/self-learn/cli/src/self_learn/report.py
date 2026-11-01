@@ -269,8 +269,10 @@ def read_census_cursor(home: Path | str) -> dict[str, str] | None:
 
 
 def census_cursor_text(*, head: str, run: str, at: str) -> str:
-    """The text of ``overseer/census.yaml`` for a census that reached *head*."""
-    return f"head: '{head}'\nrun: {run}\nat: '{at}'\n"
+    """The text of ``overseer/census.yaml`` for a census that reached *head*.
+    Every value is quoted: a run id such as ``3984e899`` reads back as a
+    float (``inf``) when it is not (YAML's exponent form)."""
+    return f"head: '{head}'\nrun: '{run}'\nat: '{at}'\n"
 
 
 def ledger_head(home: Path | str) -> str | None:
