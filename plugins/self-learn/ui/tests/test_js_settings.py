@@ -62,14 +62,30 @@ ROWS = [
          kind="str", value="sonnet"),
     _row("worker.coalesce_secs", "time", "Wait before drafting", "Seconds drafting waits.",
          kind="float", value=600.0, description="seconds the worker sleeps to coalesce a run"),
+    _row("worker.repair_timeout_secs", "time", "Repair time limit", "Seconds one repair round may run.",
+         kind="float", value=600.0, description="seconds one repair round may run"),
     _row("provider.bedrock.region", "bedrock", "Bedrock region", "The region.", kind="str", value=None),
 ]
 
 
 class Server:
-    def __init__(self, base_url: str, app) -> None:
+    def __init__(self, base_url: str, app, loop) -> None:
         self.base_url = base_url
         self.app = app
+        self.loop = loop
+
+    def push_refresh(self) -> None:
+        """A broadcast refresh, as the ledger watcher or a verb's post-run push
+        sends it: app.js answers it with a full page reload unless a hold applies."""
+        self.loop.call_soon_threadsafe(self.app.state.refresh_hub.force_refresh, "front")
+
+    def wait_for_subscriber(self, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.app.state.refresh_hub.subscriber_count >= 1:
+                return
+            time.sleep(0.02)
+        raise AssertionError("the page never opened its event stream")
 
     @property
     def runner(self) -> FakeRunner:
@@ -110,7 +126,7 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
             raise AssertionError("in-process uvicorn never started")
         time.sleep(0.02)
     try:
-        yield Server(f"http://127.0.0.1:{port}", app)
+        yield Server(f"http://127.0.0.1:{port}", app, loop)
     finally:
         uv_server.should_exit = True
         thread.join(timeout=10.0)
@@ -130,6 +146,7 @@ def page(browser: "Browser", server: Server) -> Iterator["Page"]:
     pg.goto(f"{server.base_url}/?token={TOKEN}", wait_until="load")
     pg.goto(f"{server.base_url}/settings", wait_until="load")
     pg.wait_for_selector("#setting-row-miner-enabled")
+    server.wait_for_subscriber()
     try:
         yield pg
     finally:
@@ -236,3 +253,102 @@ def test_a_saved_row_comes_back_with_its_save_button_hidden_and_says_saved(page,
     # the same swapped row keeps working: a new edit shows Save again
     page.fill("#setting-row-miner-max_run_usd input[name=value]", "10")
     assert page.is_visible("#setting-row-miner-max_run_usd [data-setting-save]")
+
+
+# ---- the holds a save puts the page under, and their release (gate r1 MINOR-1) ----
+
+ROW = "#setting-row-miner-max_run_usd"
+
+
+def _save(page, server, *, value="9", result=None):
+    saved = _row("miner.max_run_usd", "limits", "Most one overnight read may use", "p",
+                 kind="float", value=float(value), source="config:miner.max_run_usd")
+    server.runner.queue_result(result or RunResult(0, stdout=json.dumps(saved)))
+    page.fill(f"{ROW} input[name=value]", value)
+    page.click(f"{ROW} [data-setting-save]")
+    page.wait_for_selector(f"{ROW} [data-setting-message]")
+
+
+def _mark(page) -> None:
+    page.evaluate("window.__mark = 1")
+
+
+def _reloaded(page, timeout: float = 5.0) -> bool:
+    """The page navigated: its marker is gone, or the read raced the navigation."""
+    def gone() -> bool:
+        try:
+            return page.evaluate("window.__mark") is None
+        except sync_api.Error:  # "Execution context was destroyed": it is navigating
+            return True
+
+    return _poll(gone, timeout)
+
+
+def _held(page) -> bool:
+    """A refresh was pushed and the page did NOT reload for a while."""
+    time.sleep(1.2)
+    return page.evaluate("window.__mark") == 1
+
+
+def test_dismissing_saved_releases_the_refresh_it_held(page, server):
+    """After a save the page holds a broadcast refresh (leg f) so "Saved." is
+    not wiped; Dismiss removes the message and the held refresh fires. The
+    positive control is that the refresh was held at all (the page had not
+    reloaded 1.2 s after it was pushed). Mutations: the dismiss handler removed
+    -> red (no Dismiss reaches the page); `release()` not dispatched after the
+    removal -> red (the page never reloads)."""
+    _save(page, server)
+    assert page.locator(f"{ROW} .setting-saved[data-verb-success]").count() == 1
+    _mark(page)
+    server.push_refresh()
+    assert _held(page)
+    page.click(f"{ROW} [data-setting-dismiss]")
+    assert page.locator(f"{ROW} [data-setting-message]").count() == 0
+    assert _reloaded(page)
+
+
+def test_dismissing_a_refusal_releases_the_refresh_it_held(page, server):
+    """The same for a refused save's strip (leg a). Mutation: the strip loses
+    its Dismiss button -> red."""
+    _save(page, server, result=RunResult(1, stderr="self-learn config set: miner.max_run_usd='x' is not a float"))
+    assert page.locator(f"{ROW} [data-setting-error][data-verb-error]").count() == 1
+    _mark(page)
+    server.push_refresh()
+    assert _held(page)
+    page.click(f"{ROW} [data-setting-dismiss]")
+    assert _reloaded(page)
+
+
+def test_editing_retires_the_message_and_holds_until_the_edit_is_taken_back(page, server):
+    """The next edit retires the stale "Saved." but the page stays held while a
+    value is half-typed (leg g: a reload would throw the edit away); taking the
+    edit back releases the held refresh. Mutations: the edit does not remove
+    the message -> red; the dirty marker not set -> red (the refresh reloads
+    under the typing); the release after taking the edit back removed -> red."""
+    _save(page, server)
+    _mark(page)
+    server.push_refresh()
+    assert _held(page)
+    page.fill(f"{ROW} input[name=value]", "11")
+    assert page.locator(f"{ROW} [data-setting-message]").count() == 0
+    assert page.locator(f"{ROW} form[data-setting-dirty]").count() == 1
+    assert _held(page)  # the typed value is still there
+    assert page.input_value(f"{ROW} input[name=value]") == "11"
+    page.fill(f"{ROW} input[name=value]", "9.0")
+    assert _reloaded(page)
+
+
+def test_a_search_the_server_filtered_clears_in_the_page(page, server):
+    """A page opened as `?q=sleeps` is already narrowed by the server; clearing
+    the box brings every row back, the group's count follows the search ("1 of
+    2", then "2"), and "Show all" goes once the box is empty. Mutations: the
+    count update removed -> red; `clear.hidden` removed -> red (Show all
+    outlives the search)."""
+    page.goto(f"{server.base_url}/settings?q=sleeps", wait_until="load")
+    assert page.is_visible("[data-settings-clear]")
+    assert page.inner_text("#group-time [data-settings-count]") == "(1 of 2)"
+    assert "setting-row-miner-enabled" not in _visible_rows(page)  # positive control: narrowed
+    page.fill("#settings-q", "")
+    assert "setting-row-miner-enabled" in _visible_rows(page)
+    assert page.is_hidden("[data-settings-clear]")
+    assert page.inner_text("#group-time [data-settings-count]") == "(2)"

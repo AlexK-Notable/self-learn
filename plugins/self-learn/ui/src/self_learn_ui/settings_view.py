@@ -66,9 +66,20 @@ def source_words(source: str) -> str:
     }.get(kind, source)
 
 
+#: Words for the few enum values a read-only row would otherwise show as
+#: machine words, keyed by (setting, value). Any other value shows as is.
+_VALUE_WORDS = {
+    ("miner.engine", "session"): "Each session on its own",
+    ("miner.engine", "digest"): "All sessions as short digests",
+    ("premises.rotation_per_night", "auto"): "Automatic",
+}
+
+
 def value_words(row: dict[str, Any]) -> str:
     """A read-only value as a person reads it."""
     value = row.get("value")
+    if (row.get("name"), value) in _VALUE_WORDS:
+        return _VALUE_WORDS[(str(row.get("name")), str(value))]
     if row.get("kind") == "bool":
         return "On" if value else "Off"
     if value is None or value == "":
@@ -95,7 +106,8 @@ def decorate(row: dict[str, Any]) -> dict[str, Any]:
     out = dict(row)
     name = str(row.get("name", ""))
     source = str(row.get("source") or "default")
-    label = str(row.get("label") or name)
+    cli_label = str(row.get("label") or name)
+    label = cli_label
     plain = str(row.get("plain") or "")
     is_class = name.startswith(CLASS_PREFIX)
     if is_class and label.startswith("Inbox: "):
@@ -119,7 +131,7 @@ def decorate(row: dict[str, Any]) -> dict[str, Any]:
     # sentence, the technical note and the group's heading. Lower-cased once
     # here; the page's script and the server filter below read the same string.
     out["find"] = " ".join(
-        [name, label, plain, str(row.get("description") or ""), out["group_title"]]
+        [name, cli_label, label, plain, str(row.get("description") or ""), out["group_title"]]
     ).lower()
     return out
 

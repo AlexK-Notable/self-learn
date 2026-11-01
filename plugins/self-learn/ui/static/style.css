@@ -2341,3 +2341,21 @@ header.ws-head {
     padding-right: 1rem;
   }
 }
+
+/* === humane lane 4 (gate r1 fold): a message's Dismiss button === */
+.setting-message {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.6rem;
+  margin: 0.3rem 0 0;
+}
+
+.setting-message p {
+  margin: 0;
+}
+
+.setting-dismiss {
+  padding: 0.1rem 0.5rem;
+  font-size: 0.8rem;
+}

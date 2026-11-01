@@ -35,7 +35,7 @@ current value comes from.</p>
   <input id="settings-q" type="search" name="q" value="{{ query }}" autocomplete="off"
          placeholder="Try “model” or “night”" data-settings-find>
   <button type="submit">Find</button>
-  {% if query %}<a class="settings-find-clear" href="/settings">Show all</a>{% endif %}
+  {% if query %}<a class="settings-find-clear" href="/settings" data-settings-clear>Show all</a>{% endif %}
 </form>
 <p class="settings-find-status" role="status" aria-live="polite" data-settings-status>
   {%- if query -%}
@@ -53,7 +53,7 @@ current value comes from.</p>
 {% for group in groups %}
 {% if group.folded %}
 <details class="settings-group settings-group-folded" id="group-{{ group.id }}" data-settings-group {% if group.open %}open{% endif %}{% if group.hidden %} hidden{% endif %}>
-  <summary><h2>{{ group.title }}</h2> <span class="settings-group-count">({{ group.count }})</span></summary>
+  <summary><h2>{{ group.title }}</h2> <span class="settings-group-count" data-settings-count data-total="{{ group.count }}">({% if query and group.shown < group.count %}{{ group.shown }} of {% endif %}{{ group.count }})</span></summary>
 {% else %}
 <section class="settings-group" id="group-{{ group.id }}" aria-labelledby="group-{{ group.id }}-h" data-settings-group{% if group.hidden %} hidden{% endif %}>
   <h2 id="group-{{ group.id }}-h">{{ group.title }}</h2>

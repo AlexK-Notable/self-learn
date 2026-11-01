@@ -197,6 +197,11 @@ class TestSettingsPageRender:
         assert 'hx-post="/settings/set"' in row_html
         # the twenty rows share one sentence, said once above them
         assert row_html.count("setting-plain") == 0
+        # the choice posts the stored value, never its words (the verb refuses words)
+        for val in ("needs-you", "decided", "silent", "table"):
+            assert f'<option value="{val}"' in row_html, val
+        assert '<option value="table" selected>' in row_html  # the default is the one chosen
+        assert 'value="Waits for you"' not in row_html and 'value="Stays silent"' not in row_html
 
     def test_tier_c_rows_have_no_editor(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
@@ -261,6 +266,56 @@ def _is_hidden(text: str, row_id: str) -> bool:
     return " hidden" in _opening_tag(text, row_id)
 
 
+class TestRowsTheCliSendsOddly:
+    """A partial or newer CLI read must never lose a row, and read-only enum
+    values read in words."""
+
+    def _page(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edit) -> str:
+        from self_learn_ui import ledger as ledger_mod  # noqa: PLC0415
+
+        real = ledger_mod.settings
+
+        def patched(home, **kw):
+            read = real(home, **kw)
+            assert read.ok and read.data  # positive control: the real read worked
+            for row in read.data:
+                edit(row)
+            return read
+
+        monkeypatch.setattr(ledger_mod, "settings", patched)
+        sb = make_env(tmp_path)
+        c, _runner = make_client(sb)
+        return c.get("/settings").text
+
+    def test_a_row_with_an_unknown_or_missing_group_lands_in_the_last_group(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def edit(row):
+            if row["name"] == "miner.enabled":
+                row["group"] = "nope"
+            if row["name"] == "models.miner":
+                del row["group"]
+
+        text = self._page(tmp_path, monkeypatch, edit)
+        advanced = text.index('id="group-advanced"')
+        assert text.index('id="group-runs"') < text.index('id="setting-row-worker-repair"') < advanced  # control
+        assert advanced < text.index('id="setting-row-miner-enabled"')
+        assert advanced < text.index('id="setting-row-models-miner"')
+
+    def test_read_only_enum_values_read_in_words(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def edit(row):
+            if row["name"] == "miner.engine":
+                row["value"] = "session"
+            if row["name"] == "premises.rotation_per_night":
+                row["value"] = "auto"
+
+        text = self._page(tmp_path, monkeypatch, edit)
+        assert "Each session on its own" in _row_html(text, "setting-row-miner-engine")
+        assert "Automatic" in _row_html(text, "setting-row-premises-rotation_per_night")
+
+
 class TestSettingsFind:
     """"Find a setting": the server applies the same filter the page script
     does (`?q=`), so the box works without script. A row that does not
@@ -322,6 +377,21 @@ class TestSettingsFind:
         start = text.index('id="group-bedrock"')
         assert " hidden" in text[text.rindex("<", 0, start) : text.index(">", start)]
 
+    def test_the_clis_full_label_matches_for_an_inbox_kind(self, tmp_path: Path) -> None:
+        text = self._get(tmp_path, "Inbox: Login problems")
+        assert not _is_hidden(text, "setting-row-attention-class-hold-credentials")
+        assert _is_hidden(text, "setting-row-attention-class-hold-money")
+
+    def test_a_folded_groups_count_follows_the_search(self, tmp_path: Path) -> None:
+        text = self._get(tmp_path, "sleeps")
+        assert "(1 of 10)" in text
+        text = self._get(tmp_path, "")
+        assert "(1 of 10)" not in text and "(10)" in text
+
+    def test_show_all_only_when_a_search_is_on_the_page(self, tmp_path: Path) -> None:
+        assert "data-settings-clear" in self._get(tmp_path, "sleeps")
+        assert "data-settings-clear" not in self._get(tmp_path, "")
+
     def test_the_status_line_counts_the_matches(self, tmp_path: Path) -> None:
         text = self._get(tmp_path, "sleeps")
         assert "1 setting matches" in text
@@ -361,6 +431,7 @@ class TestSettingsSetRoute:
         assert "badge-source-config" in r.text
         assert "Set in config.yaml" in r.text
         assert "Saved." in r.text
+        assert "data-setting-dismiss" in r.text  # a message the person can dismiss
         # a row from a CLI without the plain words still reads: its key is the name
         assert '<p class="setting-label">worker.no_notify</p>' in r.text
 
@@ -410,6 +481,7 @@ class TestSettingsSetRoute:
         assert "Saved." not in r.text  # a refused write is never reported as saved
         # the refusal holds off the broadcast page reload that would wipe it (Y-16 leg a)
         assert 'data-setting-error data-verb-error="true"' in r.text
+        assert "data-setting-dismiss" in r.text
 
     def test_refuses_a_tier_c_name_before_touching_the_runner(
         self, tmp_path: Path
