@@ -263,6 +263,8 @@ CORPUS: dict[str, tuple[str, str]] = {
         ("cat <<$X >f\npkill -f foo\n$X\nls", "warn"),
     "r2 fold: a heredoc after closed arithmetic":
         ("echo $((1<<2)); cat <<'E' >f\npkill -f foo\nE", "silent"),
+    "r2 fold: a shift in (( )), then a line equal to its operand":
+        ("(( x = 1 << 2 ))\npkill -f foo\n2", "warn"),
 }
 
 
