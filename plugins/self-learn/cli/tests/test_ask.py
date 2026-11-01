@@ -916,3 +916,22 @@ def test_a_key_header_named_in_a_sentence_keeps_the_rest_of_the_answer(monkeypat
     for sep in ("\n", "\\n"):
         text = "cfg: " + header + sep + PEM_LINES[0] + sep + PEM_LINES[2]
         assert ask.redact(text) == "cfg: [redacted: private-key]"
+
+
+def test_request_stop_ignores_an_id_that_is_not_an_item(tmp_path, monkeypatch):
+    """ask-agent gate r3 NIT 2 (added at integration): `request_stop`
+    builds a path from the id, so an id such as `../x` writes nothing.
+    Mutation: drop the id check -> red (a marker lands beside the
+    workspace folder, in the cache)."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    home = tmp_path / "ledger"
+    home.mkdir()
+    good = "att-0123456789ab"
+    ask.request_stop(home, good)
+    marker = ask.stop_marker(home, good)
+    assert marker.exists()  # control: a real id is marked
+    watched = marker.parent.parent.parent  # <cache>, above workspace/<id>/
+    assert str(watched).startswith(str(tmp_path / "cache"))
+    before = set(watched.rglob("*"))
+    ask.request_stop(home, "../escaped")
+    assert set(watched.rglob("*")) == before

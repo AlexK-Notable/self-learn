@@ -1008,7 +1008,10 @@ def request_stop(home: Path, item_id: str) -> None:
     calls this before it sends SIGTERM to the verb's process group; only
     then does the verb seal :data:`STOPPED_NOTE`. A SIGTERM without it is
     not theirs (a restart, a logout, a shutdown) and seals
-    :data:`INTERRUPTED_NOTE`."""
+    :data:`INTERRUPTED_NOTE`. An id that is not an inbox item id is ignored
+    (ask-agent gate r3 NIT 2, at integration): the path is built from it."""
+    if workspace.ITEM_ID_RE.fullmatch(item_id or "") is None:
+        return
     path = stop_marker(home, item_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_cache(path, chrono.now_iso() + "\n")
