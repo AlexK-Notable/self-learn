@@ -283,8 +283,8 @@ def _case_entry(case_id: str, sections: dict[str, str], body: str, limits: _Limi
 def _case(home: Path, case_id: str, limits: _Limits, where: str) -> tuple[dict | None, list[str]]:
     """The case's entry (its full, freeze-checked view) and the lessons and
     statements it names. A missing case, or one whose freeze hash fails,
-    is no entry here: see :func:`_edited_case` for the one item that shows
-    a tampered case's text."""
+    is no entry here: :func:`_evidence` then reads a tampered case's text
+    through :func:`_edited_case`."""
     from . import cases
 
     try:
@@ -296,13 +296,18 @@ def _case(home: Path, case_id: str, limits: _Limits, where: str) -> tuple[dict |
     return _case_entry(case_id, sections, body, limits, where), _case_links(view.frontmatter, sections)
 
 
-def _edited_case(home: Path, case_id: str, limits: _Limits, where: str) -> tuple[list[dict], list[str]]:
+def _edited_case(home: Path, case_id: str, limits: _Limits, where: str, fact_where: str, *,
+                 own_item: str | None, on_own_page: bool) -> tuple[list[dict], list[str]]:
     """A case whose freeze hash fails, read as the file is now (gate r1
     MAJOR 2): ``cases.show`` refuses it, yet that edit is exactly what a
-    ``conflict.case-tampered`` page asks the person about. A plain file
-    read (no git), size-capped and secret-scanned like every excerpt; the
-    excerpt is sections 1-4, the frozen span the hash covers. Returns the
-    case entry and a fact naming the mismatch, and the case's links."""
+    ``conflict.case-tampered`` page asks the person about, and an ask that
+    cites the case must not lose the case and the lesson behind it (gate
+    r2 MINOR 1). A plain file read (no git), size-capped and
+    secret-scanned like every excerpt; the excerpt is sections 1-4, the
+    frozen span the hash covers. Returns the case entry and a fact naming
+    the mismatch, and the case's links. On any page but the case's own
+    ``conflict.case-tampered`` item (*own_item*, its id when the inbox has
+    one), the fact says that item is where the edit is asked about."""
     from . import cases
 
     try:
@@ -334,9 +339,14 @@ def _edited_case(home: Path, case_id: str, limits: _Limits, where: str) -> tuple
     else:
         value = (f"sections 1-4 of {path} no longer match the hash taken when the case was "
                  f"decided (decided {decided[:12] or 'missing'}, now {now[:12]}); the case entry "
-                 "shows them as they are now, and the ledger's history holds the decided version")
+                 "shows them as they are now, not as they were decided")
+    if not on_own_page:
+        value += ("; what it says may not be what was decided" + (
+            f". Its own inbox item ({own_item}, \"A parked case file was edited by hand after it "
+            "was decided\") asks you whether to keep the edit or restore the decided version"
+            if own_item else ""))
     fact = {"kind": "fact", "label": "the case file was edited after it was decided",
-            "value": limits.clip(value, f"{where}.fact", 1200)}
+            "value": limits.clip(value, f"{fact_where}.value", 1200)}
     return [entry, fact], _case_links(frontmatter, sections)
 
 
@@ -424,8 +434,10 @@ def _hook(home: Path, lesson_id: str, limits: _Limits, where: str) -> dict | Non
     }
 
 
-def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str]) -> list[dict]:
-    """Every evidence entry for *item*, before the count cap."""
+def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str],
+              tampered: dict[str, str] | None = None) -> list[dict]:
+    """Every evidence entry for *item*, before the count cap. *tampered*
+    maps a case id to its ``conflict.case-tampered`` item's id."""
     from . import statements as statements_mod
 
     deadline = time.monotonic() + CONTEXT_BUDGET_SECS
@@ -484,8 +496,14 @@ def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str]) -> li
         elif ref.startswith("case-"):
             entry, linked = _case(home, ref, limits, where)
             entries = [entry]
-            if entry is None and item["kind"] == "conflict.case-tampered":
-                edited, linked = _edited_case(home, ref, limits, where)
+            if entry is None:
+                # Gate r2 MINOR 1: on every page, not only the case's own,
+                # a case that fails its freeze check is shown as edited, so
+                # an ask citing it keeps the case and the lesson behind it.
+                own = (tampered or {}).get(ref)
+                edited, linked = _edited_case(
+                    home, ref, limits, where, f"evidence[{len(out) + 1}]", own_item=own,
+                    on_own_page=item["kind"] == "conflict.case-tampered" and own == item["id"])
                 entries = [*edited]
         else:
             entries = []
@@ -623,7 +641,9 @@ def build(home: Path | str, item_id: str) -> dict:
     limits = _Limits()
     look_at, dropped = filter_look_at(home, list(item.get("_look_at") or []))
     limits.truncated.extend(f"look_at: {d}" for d in dropped)
-    evidence = _evidence(home, item, limits, look_at)
+    tampered = {str(i.get("subject")): str(i["id"]) for i in items
+                if i.get("kind") == "conflict.case-tampered"}
+    evidence = _evidence(home, item, limits, look_at, tampered)
     more: list[dict] = []
     if len(evidence) > MAX_EVIDENCE:
         more = [_evidence_ref(e) for e in evidence[MAX_EVIDENCE:]]
@@ -698,10 +718,13 @@ def _pointers(home: Path, item: dict) -> list[dict]:
             path = None
         if path is not None:
             rel = path.relative_to(home) if path.is_relative_to(home) else path
+            # Gate r2 MINOR 2: `ledger_history` gives the commits' subjects
+            # and trailers, never file text or a diff (design §3.3), so the
+            # label promises only that.
             out.append({
-                "label": f"what changed in the case since it was decided: the ledger history of "
-                         f"{rel} (the version committed when it was decided, and every change "
-                         "since; an uncommitted edit shows against the last commit)",
+                "label": f"the commits that touched {rel}: who changed it and when (subjects "
+                         "and trailers only, not the text; an edit not yet committed shows in "
+                         "no commit)",
                 "tool": "ledger_history", "path": str(path),
             })
     return out

@@ -280,12 +280,43 @@ def test_a_tampered_cases_packet_shows_the_file_as_edited(tmp_path, monkeypatch)
     assert TOKEN not in json.dumps(packet) and "[redacted:" in case["excerpt"]
     fact = packet["evidence"][1]
     assert "no longer match the hash" in fact["value"]
-    assert any(p.get("tool") == "ledger_history" and p.get("path") == str(path)
-               for p in packet["pointers"])
-    # Any other item citing the tampered case still shows no entry for it.
-    item["kind"] = "ask.system-change"
-    other = attention_packet.build(ledger, item["id"])
-    assert ("case", case_id) not in [(e["kind"], e.get("id")) for e in other["evidence"]]
+    assert "inbox item" not in fact["value"]  # on its own page it names no other item
+    # Gate r2 MINOR 2: the pointer promises what `ledger_history` returns
+    # (commit subjects and trailers), never the decided text or a diff.
+    pointer = next(p for p in packet["pointers"]
+                   if p.get("tool") == "ledger_history" and p.get("path") == str(path))
+    assert "subjects and trailers only, not the text" in pointer["label"]
+    assert "the version committed when it was decided" not in pointer["label"]
+
+
+def test_an_ask_citing_a_tampered_case_keeps_the_case_and_its_lesson(tmp_path, monkeypatch):
+    """Gate r2 MINOR 1. An overseer ask reaches its lesson only through its
+    case; when the case file was edited by hand the ask's page still shows
+    the case as edited, a fact pointing at the case's own inbox item, and
+    the lesson and statement the case names. Mutation: restore the
+    `conflict.case-tampered`-only condition on the `_edited_case` fallback
+    -> no case, no lesson, red."""
+    ledger, case_id, stmt = _case_with_links(tmp_path, monkeypatch)
+    path = next((ledger / "cases").glob(f"*/{case_id}.md"))
+    text = path.read_text(encoding="utf-8")
+    edited = text.replace("it changes the user's desktop", "I changed my mind about this")
+    assert edited != text  # positive control: the edit landed
+    path.write_text(edited, encoding="utf-8")
+    ask = attention._new_item(  # noqa: SLF001
+        "ask.system-change", "q-tampered-ask", title="May I add the drop-in?",
+        since=_now(), refs=["q-tampered-ask", case_id],
+    )
+    conflict = attention._new_item(  # noqa: SLF001
+        "conflict.case-tampered", case_id, title="A parked case file was edited",
+        since=_now(), refs=[case_id, LESSON],
+    )
+    monkeypatch.setattr(attention, "collect", lambda _home, **_k: [ask, conflict])
+    packet = attention_packet.build(ledger, ask["id"])
+    kinds = [(e["kind"], e.get("id")) for e in packet["evidence"]]
+    assert kinds[:4] == [("case", case_id), ("fact", None), ("lesson", LESSON), ("statement", stmt)]
+    assert "I changed my mind" in packet["evidence"][0]["excerpt"]
+    fact = packet["evidence"][1]["value"]
+    assert "may not be what was decided" in fact and conflict["id"] in fact
 
 
 _DROP_IN = "".join(f"# line {n} of the drop-in, a plain sentence\n" for n in range(250))
