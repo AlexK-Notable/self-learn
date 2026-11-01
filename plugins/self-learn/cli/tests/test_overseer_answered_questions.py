@@ -172,6 +172,46 @@ def test_an_answer_does_not_bring_back_a_case_that_did_not_defer(tmp_path):
     assert steward._reconsider_proposals(home)[0] == []
 
 
+def test_a_reply_to_a_reading_reopens_only_the_decisions_that_rest_on_it(tmp_path):
+    """S-NEXT-reopen (overseer notice ntc-bf6e631b): the live shape. Two
+    rejected lessons whose cases both list the reading um-…@r1 among their
+    dependencies; only the first case's `because` cites it. The user's reply
+    to the reading, recorded as a correction, brings back the first lesson
+    for the steward to reconsider and leaves the second decided."""
+    home = make_home(tmp_path)
+    proposition = f"{_reading(home, 1)}@r1"
+    decided: dict[str, str] = {}
+    for rid, because in (
+        ("lrn-d0a00011", f"the user prefers action with a veto ({proposition}), so I reject now"),
+        ("lrn-d0a00012", "the guard's own denial text contradicts the lesson's claim"),
+    ):
+        _seed(home, rid)
+        case = _steward_case([rid], "reject", "reject", scope="user")
+        case["decision"]["because"] = because
+        case["dependencies"]["user_model"] = [proposition]
+        stage = tmp_path / f"{rid}-case.yaml"
+        _dump_yaml(stage, case)
+        decided[rid] = cases.record(home, stage, actor="overseer")
+        verbs.reject(home, rid, by="steward", no_push=True)
+    # Control: nothing has moved yet, so nothing comes back.
+    assert steward._reconsider_proposals(home)[0] == []
+
+    _report_and_index(
+        home, [{"id": proposition, "kind": "reading", "cases": list(decided.values())}],
+        [f"- {proposition}: confirm you prefer act-and-report with a veto"],
+    )
+    conversation.open_questions(home, out=io.StringIO())
+    conversation.respond(
+        home, proposition=proposition, scope="user",
+        text="yes, register variety variations. i don't read ci.",
+    )
+
+    proposals = steward._reconsider_proposals(home)[0]
+    assert [(entry.record.id, entry.predecessor) for entry, _card in proposals] == [
+        ("lrn-d0a00011", decided["lrn-d0a00011"])
+    ]
+
+
 # ---- 3. the user model's list fields
 
 

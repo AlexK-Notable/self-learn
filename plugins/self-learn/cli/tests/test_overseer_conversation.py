@@ -31,7 +31,10 @@ def _yaml(path: Path, data: dict) -> None:
         yaml.dump(data, fh)
 
 
-def _case(home: Path, tmp_path: Path, suffix: str, dependencies: dict) -> str:
+def _case(
+    home: Path, tmp_path: Path, suffix: str, dependencies: dict,
+    because: str = "the proposition is decision-relevant",
+) -> str:
     stage = tmp_path / f"case-{suffix}.yaml"
     _yaml(
         stage,
@@ -45,7 +48,7 @@ def _case(home: Path, tmp_path: Path, suffix: str, dependencies: dict) -> str:
             "evidence": [{"ref": "transcript:conversation#L1", "quote": "the user's words"}],
             "decision": {
                 "verb": "no-action",
-                "because": "the proposition is decision-relevant",
+                "because": because,
                 "confidence": "settled",
             },
             "dependencies": {
@@ -224,8 +227,16 @@ def test_respond_preserves_words_scope_question_version_and_only_observes_depend
     home = make_home(tmp_path)
     entry = _reading(home, 1)
     proposition = f"{entry}@r1"
-    direct = _case(home, tmp_path, "1", {"user_model": [proposition]})
-    by_statement = _case(home, tmp_path, "2", {"statements": ["stmt-00000001"]})
+    # S-NEXT-reopen: each observed case's decision rests on the reading, and
+    # its `because` says so by citing it.
+    direct = _case(
+        home, tmp_path, "1", {"user_model": [proposition]},
+        because=f"the reading {proposition} decides this",
+    )
+    by_statement = _case(
+        home, tmp_path, "2", {"statements": ["stmt-00000001"]},
+        because=f"stmt-00000001, read as {entry}, decides this",
+    )
     unrelated = _case(home, tmp_path, "3", {"user_model": ["um-dead@r1"]})
     displayed = f"- {proposition}: Does this apply to every repository?"
     _report_and_index(home, [{"id": proposition, "cases": [direct]}], [displayed])
@@ -264,6 +275,103 @@ def test_respond_preserves_words_scope_question_version_and_only_observes_depend
         for section in ("Identity and scope", "Evidence", "Decision", "Dependencies"):
             assert after[cid].sections[section] == before[cid].sections[section]
     assert after[direct].frontmatter["presented"][-1]["outcome"] == "corrected"
+
+
+def test_a_reply_to_a_reading_reaches_only_the_cases_whose_because_cites_it(tmp_path):
+    """S-NEXT-reopen (overseer notice ntc-bf6e631b, run 92d6fec6): the user's
+    2026-10-29 reply to um-cea0@r1 was logged as a correction and observed
+    on every case listing the reading among its dependencies, or one of the
+    statements the reading rests on, and the steward then reopened them
+    (live: case-ce3b2130 and case-7f71d792, whose decisions cite neither the
+    reading nor anything the reply changed). A case is told only when its
+    decision's `because` cites the reading; any other stays as decided."""
+    home = make_home(tmp_path)
+    entry = _reading(home, 1)
+    proposition = f"{entry}@r1"
+    cites_versioned = _case(
+        home, tmp_path, "1", {"user_model": [proposition]},
+        because=f"the user prefers action with a veto ({proposition}), so I decide now",
+    )
+    cites_bare = _case(
+        home, tmp_path, "2", {"user_model": [proposition]},
+        because=f"my reading {entry} is why this is not deferred",
+    )
+    lists_only = _case(
+        home, tmp_path, "3", {"user_model": [proposition]},
+        because="the guard's own denial text contradicts the lesson's claim",
+    )
+    statement_only = _case(
+        home, tmp_path, "4", {"statements": ["stmt-00000001"]},
+        because="the placement rests on stmt-00000001 and the skill file",
+    )
+    # A longer id that starts with the reading's own is not a citation of it.
+    lookalike = _case(
+        home, tmp_path, "5", {"user_model": [proposition]},
+        because=f"see {entry}0 and {entry}-old, which are other things",
+    )
+    every = (cites_versioned, cites_bare, lists_only, statement_only, lookalike)
+    _report_and_index(
+        home, [{"id": proposition, "kind": "reading", "cases": list(every)}],
+        [f"- {proposition}: confirm you prefer act-and-report with a veto"],
+    )
+    conversation.open_questions(home, out=io.StringIO())
+    # Positive control: every case listed the reading (or its statement) as a
+    # dependency, so the old rule would have told all five.
+    rows = {row["case"]: row for row in cases.list_cases(home, only_ok=True)}
+    for case_id in every:
+        assert {proposition, "stmt-00000001"} & set(rows[case_id]["dependency_refs"]), case_id
+
+    result = conversation.respond(
+        home, proposition=proposition, scope="user",
+        text="yes, register variety variations. i don't read ci.",
+    )
+
+    assert set(result.observed_cases) == {cites_versioned, cites_bare}
+    for case_id in every:
+        observations = cases.show(home, case_id, evidence_only=False).sections["Later observations"]
+        replied = f"overseer statement: user replied to {proposition}" in observations
+        assert replied is (case_id in {cites_versioned, cites_bare}), case_id
+    # The reply itself is recorded whoever was told.
+    stored = next(row for row in statements.list_statements(home) if row["id"] == result.statement_id)
+    assert stored["answers"]["ref"] == proposition
+
+
+def test_a_case_whose_decision_cannot_be_read_is_told_as_before(tmp_path, monkeypatch):
+    """S-NEXT-reopen: when a dependent case's decision cannot be read, the
+    reply cannot be checked against its `because`, so the case is told as it
+    was before the narrowing (a re-examination costs less than a stale
+    decision nobody looks at again)."""
+    home = make_home(tmp_path)
+    entry = _reading(home, 1)
+    proposition = f"{entry}@r1"
+    unreadable = _case(
+        home, tmp_path, "1", {"user_model": [proposition]}, because="nothing about the reading",
+    )
+    readable = _case(
+        home, tmp_path, "2", {"user_model": [proposition]}, because="nothing about the reading",
+    )
+    # The reading was shown on the readable case only, so the presentation
+    # lookup never reads the unreadable one.
+    _report_and_index(
+        home, [{"id": proposition, "kind": "reading", "cases": [readable]}],
+        [f"- {proposition}: Apply everywhere?"],
+    )
+    conversation.open_questions(home, out=io.StringIO())
+    real_show = cases.show
+    asked: list[str] = []
+
+    def show(home_arg, case_id, *, evidence_only=True):
+        asked.append(case_id)
+        if case_id == unreadable:
+            raise cases.CaseError(f"case show: {case_id} failed its freeze-hash check")
+        return real_show(home_arg, case_id, evidence_only=evidence_only)
+
+    monkeypatch.setattr(cases, "show", show)
+
+    result = conversation.respond(home, proposition=proposition, scope="user", text="No.")
+
+    assert unreadable in asked  # control: its decision was looked for
+    assert result.observed_cases == (unreadable,)
 
 
 @pytest.mark.parametrize("scope", ["", "project:"])
