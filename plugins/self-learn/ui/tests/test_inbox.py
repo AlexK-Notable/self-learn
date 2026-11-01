@@ -530,15 +530,22 @@ def test_the_reader_failing_shows_the_error_panel_with_retry(tmp_path, monkeypat
 
 def test_run_and_fix_run_their_verbs_and_a_missing_terminal_shows_the_command(tmp_path, monkeypatch):
     runner = FakeRunner()
-    runner.queue_result(RunResult(5, stderr="no terminal found: open one yourself, run: "
-                                            "claude 'self-learn: read the brief'"))
+    # attention_answers.run's own exit-5 sentence, word for word.
+    runner.queue_result(RunResult(5, stderr=(
+        "no terminal found. The brief is at /c/attention/runs/x/brief.md; open a terminal and "
+        "run: claude 'self-learn: read the brief'")))
     runner.queue_result(RunResult(0, stdout="self-learn-host.service restarted"))
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(APPROVED, HOST)), runner=runner)
     resp = client.post(f"/inbox/{ID_APPROVED}/run", headers=HX)
     assert runner.calls[0] == ["attention", "run", ID_APPROVED]
     assert "No terminal was found" in resp.text
-    assert 'data-copy="#ws-run-cmd"' in resp.text and "claude &#39;self-learn: read the brief&#39;" in resp.text
-    assert "Run it now" in resp.text
+    assert 'data-copy="#ws-run-cmd"' in resp.text
+    # Gate r1 finding 3: the copy block holds the command alone, which runs
+    # when pasted; the verb's sentence around it is prose outside the block.
+    copied = resp.text.split('id="ws-run-cmd" data-run-command>')[1].split("</pre>")[0]
+    assert copied == "claude &#39;self-learn: read the brief&#39;"
+    assert "/c/attention/runs/x/brief.md" in resp.text
+    assert "Run it now" in resp.text and 'hx-target="closest .ws-run"' in resp.text
     fix = client.post(f"/inbox/{ID_HOST}/fix", data={"option": "opt-restart"}, headers=HX)
     assert runner.calls[1] == ["attention", "fix", ID_HOST, "--option", "opt-restart"]
     assert "restarted" in fix.text
@@ -607,17 +614,30 @@ def test_awaiting_sudo_renders_copy_buttons_and_i_ran_it(tmp_path, monkeypatch):
 
 
 def test_the_front_page_links_the_inbox_with_its_count(tmp_path, monkeypatch):
+    """§4.7 "Inbox (N)". Gate r1 NIT 2: the front page itself never waits
+    on `attention --json`; the link fills its count in after load."""
     sb = support.make_env(tmp_path)
     from self_learn_ui import models as ui_models  # noqa: F401 -- the front model is real
 
-    monkeypatch.setattr(ledger, "attention", lambda home, env=None: CliRead(data=_doc(LOGIN, HOOK)))
+    reads: list[str] = []
+
+    def attention(home, env=None):
+        reads.append("attention")
+        return CliRead(data=_doc(LOGIN, HOOK))
+
+    monkeypatch.setattr(ledger, "attention", attention)
     from self_learn_ui.env import load_env
 
     app = create_app(env=load_env(sb.env), token=TOKEN, runner=FakeRunner(), start_watcher=False)
     client = TestClient(app, base_url="http://127.0.0.1:7357")
     client.cookies.set("slu_token", TOKEN)
     page = client.get("/").text
-    assert 'href="/inbox"' in page and "Inbox (2)" in page
+    assert 'href="/inbox"' in page and 'hx-get="/inbox/count"' in page
+    assert reads == []
+    link = client.get("/inbox/count", headers=HX).text
+    assert 'href="/inbox"' in link and "Inbox (2)" in link and reads == ["attention"]
+    monkeypatch.setattr(ledger, "attention", lambda home, env=None: CliRead(data=None, error="boom"))
+    assert "Inbox (?)" in client.get("/inbox/count", headers=HX).text
 
 
 def test_the_weekly_report_renders_read_only(tmp_path, monkeypatch):
@@ -655,3 +675,164 @@ def test_an_approval_that_moves_the_item_on_links_to_it_and_offers_no_old_option
     answer_bar = resp.text[: resp.text.index('id="inbox-list"')]
     assert 'aria-label="Options"' not in answer_bar
     assert 'id="ws-answer-form"' not in answer_bar
+
+
+# ----------------------------------------------------------------- fix round 1 (gate r1)
+
+
+def test_a_login_no_terminal_offers_claude_alone_to_copy(tmp_path, monkeypatch):
+    """Gate r1 finding 3, the login variant: the copy block holds `claude`,
+    not the verb's sentence."""
+    runner = FakeRunner(RunResult(5, stderr="no terminal found: open one yourself, run `claude`, "
+                                             "then type /login"))
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(LOGIN)), runner=runner)
+    resp = client.post(f"/inbox/{ID_LOGIN}/run", data={"login": "1"}, headers=HX)
+    assert "No terminal was found" in resp.text  # control: the no-terminal branch rendered
+    copied = resp.text.split('id="ws-run-cmd" data-run-command>')[1].split("</pre>")[0]
+    assert copied == "claude"
+    assert "type /login" in resp.text
+
+
+def test_an_approval_whose_launch_found_no_terminal_offers_run_it_now_for_the_successor(
+        tmp_path, monkeypatch):
+    """Gate r1 finding 3, the approve path: the approval moved the item on
+    (its approved successor has its own id), the launch found no terminal,
+    and the page offers Run it now for the successor plus the command alone.
+    Mutation: Run it now for the old needs-you item (run_item = item) -> red."""
+    approved = {**APPROVED, "subject": OO7["subject"], "title": OO7["title"], "state": "approved"}
+    reads = Reads(_doc(OO7), {ID_OO7: OO7_PACKET})
+
+    class Moves(FakeRunner):
+        async def run(self, argv):
+            reads.doc = _doc(approved)
+            return await super().run(argv)
+
+    run = {"exit": 5, "message": ("no terminal found. The brief is at /c/b.md; open a terminal "
+                                  "and run: claude 'go'")}
+    import json as _json
+
+    runner = Moves(RunResult(0, stdout=_json.dumps({
+        "state": "approved", "recorded_as": "as your choice of the offered option", "run": run})))
+    client, *_ = make_client(tmp_path, monkeypatch, reads, runner=runner)
+    resp = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX)
+    assert "data-answer-closed" in resp.text and "No terminal was found" in resp.text  # control
+    assert f'hx-post="/inbox/{ID_APPROVED}/run"' in resp.text and "data-run-now" in resp.text
+    assert f'hx-post="/inbox/{ID_OO7}/run"' not in resp.text
+    copied = resp.text.split('id="ws-run-cmd" data-run-command>')[1].split("</pre>")[0]
+    assert copied == "claude &#39;go&#39;"
+
+
+@pytest.mark.parametrize("item, rows", [
+    ({**HOOK, "undo": {**HOOK["undo"], "redo": True}}, []),
+    (HOOK, [{"t": 0, "kind": "header"},
+            {"t": 1, "role": "user", "origin": "clicked", "kind": "undo", "text": None, "option": None}]),
+])
+def test_after_a_reload_an_undone_item_offers_redo_not_the_undo_again(tmp_path, monkeypatch, item, rows):
+    """Gate r1 finding 4: redo survives a reload, from `undo.redo` or from
+    the item's transcript (its last undo/redo row is an undo). Mutation:
+    ignore `redo_next` (always offer the undo) -> red."""
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(item), {ID_HOOK: HOOK_PACKET},
+                                                          rows={ID_HOOK: rows}))
+    page = client.get(f"/inbox/{ID_HOOK}").text
+    bar = page[page.index('class="ws-undo"'):]
+    bar = bar[: bar.index("</div>")]
+    assert "data-undo" in bar  # positive control: the undo region rendered its button
+    assert "Turn it back on" in bar and '"redo": "1"' in bar
+    assert "Turn it off" not in bar
+
+
+def test_a_redone_item_offers_the_undo_again(tmp_path, monkeypatch):
+    """The other half: after undo then redo the next act is the undo."""
+    rows = [{"t": 1, "role": "user", "origin": "clicked", "kind": "undo"},
+            {"t": 2, "role": "user", "origin": "clicked", "kind": "redo"}]
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(HOOK), {ID_HOOK: HOOK_PACKET},
+                                                          rows={ID_HOOK: rows}))
+    page = client.get(f"/inbox/{ID_HOOK}").text
+    bar = page[page.index('class="ws-undo"'):]
+    bar = bar[: bar.index("</div>")]
+    assert "Turn it off" in bar and "Turn it back on" not in bar
+
+
+def test_an_undo_that_moves_the_item_on_says_so(tmp_path, monkeypatch):
+    """Gate r1 finding 2's undo side: reopening a withdrawn ask removes the
+    decided item from the list; the page says the click did it
+    (data-answer-closed), which keeps inbox.js from calling it "resolved
+    elsewhere", and offers neither redo nor the undo again."""
+    withdrawn = _item("att-0000000000aa", "decided.withdrawn", "decided", None,
+                      "The overseer withdrew a question", undo={"label": "Ask me anyway",
+                                                                 "redo_label": None, "redo": False})
+    reopened = _item("att-0000000000bb", "ask.system-change", "needs-you", "system-change",
+                     "Bind oo7-daemon?", options=OO7_OPTIONS)
+    reopened["subject"] = withdrawn["subject"]
+    reads = Reads(_doc(withdrawn))
+
+    class Moves(FakeRunner):
+        async def run(self, argv):
+            reads.doc = _doc(reopened)
+            return await super().run(argv)
+
+    client, runner, *_ = make_client(tmp_path, monkeypatch, reads, runner=Moves(RunResult(0, stdout="reopened")))
+    resp = client.post(f"/inbox/{withdrawn['id']}/undo", headers=HX)
+    assert runner.calls[0] == ["attention", "undo", withdrawn["id"]]
+    assert "Undone." in resp.text  # control
+    assert "data-answer-closed" in resp.text and 'href="/inbox/att-0000000000bb"' in resp.text
+    bar = resp.text[: resp.text.index('id="inbox-list"')]
+    assert "Ask me anyway" not in bar and 'id="ws-answer-form"' not in bar
+
+
+def test_the_register_confirm_names_the_question(tmp_path, monkeypatch):
+    """Gate r1 NIT 1 (§3.7 "This registers <path> in git mode. Confirm?"):
+    the armed line repeats the question, which names the path and mode."""
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(REGISTER)), runner=FakeRunner())
+    resp = client.post(f"/inbox/{ID_REGISTER}/answer", data={"option": "opt-register"}, headers=HX)
+    assert "data-armed-answer" in resp.text
+    assert "Register ~/repos/x as a git-mode host?" in resp.text.split("data-armed-answer")[1]
+
+
+def test_a_working_login_says_when_the_held_jobs_run_again(tmp_path, monkeypatch):
+    """Gate r1 NIT 3 (§2.3 d): the page says when held jobs retry, in the
+    host's own words from serve.heartbeat. Mutation: drop the line -> red."""
+    monkeypatch.setattr(ledger, "scheduler_next", lambda home: "mine at 2026-11-02T03:31:00")
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(LOGIN)))
+    resp = client.post(f"/inbox/{ID_LOGIN}/check-login", headers=HX)
+    assert "The login works." in resp.text and "data-item-resolved" in resp.text
+    assert "Next scheduled: mine at 2026-11-02T03:31:00" in resp.text
+
+
+def test_the_apps_idle_monitor_waits_for_an_ask_turn(tmp_path, monkeypatch):
+    """Gate r1 finding 6: `create_app` itself hands the idle monitor the
+    ask runner's busy flag (test 7 builds its monitor by hand). Mutation:
+    delete `ask_busy=` from app.py's IdleMonitor call -> red."""
+    from self_learn_ui import app as app_module
+    from self_learn_ui.idle import IdleMonitor
+
+    built: list[dict] = []
+
+    class Recording(IdleMonitor):
+        def __init__(self, **kwargs):
+            built.append(kwargs)
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(app_module, "IdleMonitor", Recording)
+    monkeypatch.setattr(ledger, "attention", lambda home, env=None: CliRead(data=_doc(OO7)))
+    monkeypatch.setattr(ledger, "workspace_rows", lambda home, item_id: [])
+    hub = AppEventHub()
+    ask = FakeAskRunner(publish=hub.publish_nowait, hold=True,
+                        script=[{"ev": "start"}, {"ev": "done", "text": "x"}])
+    home = tmp_path / "home"
+    home.mkdir()
+    env = EnvConfig(self_learn_home=home, ui_port=7357, ui_browser=None, pane_model="m",
+                    pane_budget_usd=1.0, pane_max_turns=5, pane_engine="sdk")
+    app = create_app(env=env, token=TOKEN, runner=FakeRunner(), app_hub=hub, start_watcher=False,
+                     ask_runner=ask, idle_exit_seconds=600, idle_exit_callback=lambda: None)
+    with TestClient(app, base_url="http://127.0.0.1:7357") as client:
+        client.cookies.set("slu_token", TOKEN)
+        assert len(built) == 1  # control: the app built its monitor
+        ask_leg = built[0].get("ask_busy")
+        assert callable(ask_leg) and ask_leg() is False
+        resp = client.post(f"/inbox/{ID_OO7}/ask", data={"message": "still there?"}, headers=HX)
+        assert resp.status_code == 200 and ask.busy
+        assert ask_leg() is True
+        ask.release(ID_OO7)
+        client.portal.call(ask.wait, ID_OO7)
+        assert ask_leg() is False
