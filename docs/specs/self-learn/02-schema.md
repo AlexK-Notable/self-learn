@@ -1639,6 +1639,21 @@ YAML frontmatter plus six fixed Markdown sections, in this order:
 sections 1–4 exactly as committed; a later append re-hashes them and refuses
 if they differ. A change of mind is a successor case, never an edit.
 
+*(S-NEXT-answers, attention round 2026-10-31c, design r2 §3.4.8.)* A parked
+case edited by hand after it was decided fails the check and holds its
+lessons (`conflict.case-tampered`, a needs-you item). Only the person who
+edited it knows whether the edit was meant, so only the person answers:
+`self-learn case refreeze <case-id> --keep|--restore [--note TEXT]` (the
+inbox's two options; refused from an agent's shell, 64). `--keep` writes the
+hash of the edited sections 1-4 into `decided_sha256`, so the edit becomes
+the case's account. `--restore` puts back sections 1-4 from the newest
+commit of the file whose own frozen part matched its own `decided_sha256`
+(a read of the ledger's history), keeping sections 5 and 6 as they are now,
+and that hash. Both run under the ledger lock and commit once (a restore
+that puts back exactly what HEAD holds writes the file and commits
+nothing). Exit 0; 2 an unknown case, or one that passes its check; 3 no
+commit matches; 10 held.
+
 ```yaml
 ---
 case: case-3f9a1c2e            # id; file name matches
@@ -4790,6 +4805,178 @@ packet <id> --json` (0, 1 build failed, 2 unknown id), `attention feedback
 <id> --wanted needs-you|decided|silent [--note TEXT]` (0, 2 unknown id, 64
 from an agent's shell). Neither `attention` nor `ask` ticks the miner
 watchdog.
+
+### 3a.12 Answers in the inbox: choices, approved work, outcomes *(S-NEXT-answers)*
+
+*(Added by the attention round's `answers` lane, 2026-10-31c; design
+`misc/build-2026-10-31c/attention-design-r2.md` §1.3, §3.4.1, §3.4.3-§3.4.8,
+§4.4, §4.6; code `attention_answers.py`, `attention_answers_cli.py`,
+`overseer/conversation.py` (`_register_core`, `record_choice`),
+`cases.refreeze`, `steward.py`.)*
+
+**Forms of reply** (`self-learn attention answer <id>`; the page posts the
+same). Each is recorded as what it is (C6), and the page says how:
+
+| The person… | Recorded as | Rows |
+|---|---|---|
+| types in the reply box | their words | workspace row `role: user, origin: typed, kind: reply`; a statement citing `workspace:<id>#T<n>`, `recorded_by: human` |
+| clicks an option | their choice of an offered option | workspace row `origin: clicked`; a choice `how: clicked`, `offered_by: overseer` (an ask) or `system` (a code kind) |
+| clicks an option and types a note | both | one workspace row (`origin: typed`, `option` set); one statement and one choice, both citing it |
+| sends an agent draft unedited / edited | the agent's draft, accepted / edited and sent by them | workspace row `origin: draft-accepted\|draft-edited`; a choice with the final text and, edited, the draft's; **no statement** |
+| replies with a whitespace-normalised run of 40 or more characters that also appears in one of the item's agent rows (answer or draft) | the agent's draft, edited and sent by them | as an edited draft, `draft_id: null`, `draft_text` the matched agent row; **no statement** |
+| tells an agent in its own session, which relays it | their words, relayed by the agent | workspace row `origin: relayed` with the transcript ref; a statement citing that `transcript:` line (rule 10), `recorded_by: agent`; with an option, a choice `how: relayed`, `recorded_by: agent`, citing the statement |
+| clicks "I ran it" on an `awaiting-sudo` item (option `opt-ran-sudo`) | their act | workspace row `kind: ran-sudo`; a choice `how: ran-sudo` |
+
+A draft is named by `--draft <drf-…>` (the page's hidden field); a draft id
+no sealed draft row of this item carries is refused (64). A draft carrying
+an option is sent as that option. Free text is secret-scanned before
+anything is written (64).
+
+**What decides.** Only an option whose `effect` is `approve` approves a
+plan; words alone on an item with a plan are recorded (a statement,
+`answers.kind: question`), the item stays open and counted, and nothing is
+launched. An option marked `note: required` refuses to send without words
+(3); an option marked `confirm`, and every `register` option, needs
+`--confirm` (3). An item without a plan (a stead ask, a sudo ask, a
+conflict, a registration) is decided by an option or by words; an agent
+draft sent with no option, or a reply that pastes the agent's text, is a
+choice that decides nothing on an item with a plan, exactly like words
+alone (no case is told). A later answer appends (latest wins) until it is
+carried out; an ask already answered stays answerable until the overseer's
+next run rewrites the index. An approved change stays changeable until a
+session claims it: another option on the approved item is recorded, both
+readers (`attention._approval_track`, `conversation.approval_track`) then
+read the item as answered, and a later `claim` is refused (2, "change
+nothing"). While a live claim holds it the answer is refused (3), naming
+the claiming session. Neither check holds a lock across its write, so each
+side reads the other again after writing: `claim` reads the items after
+writing its claim and takes the claim back (2) when the answer changed
+meanwhile, and `answer` reads the claim after its commit and adds a warning
+naming a session that claimed meanwhile; one of the two always sees the
+other. Once the work is done, a new answer is an overturn (below). A redo of
+a `skill write` grant use whose `--from` was recorded relative is refused
+(3): the folder is relative to a shell the inbox cannot know.
+
+**Downstream** (§3.4.4). The `answers` of a statement or choice: an ask's
+question id (`kind: question`), a conflict's `conflict:<a>+<b>` (a
+statement's `kind: instruction`, a choice's `kind: conflict`), a reading's
+`um-…@r<n>` (`proposition`), a decided item's first case id else its
+subject (`instruction`). Case observations are made by the **process
+actor** (`human`, or `agent` from an agent's shell), on each cited case's
+current successor, citing the choice when there is one, else the statement:
+a stead ask: `user answered <q> after its default was applied (ref:
+chc-…|stmt-…)`; a needs-you ask without a plan: `user answered <q> (ref:
+…)`; a conflict: `user ruled on conflict:<a>+<b> in the inbox (ref: …)` on
+every case whose dependencies cite the statement ruled against (the newer
+one when "the older one still holds", the older when "the newer is right",
+both for "both" or words; the side is read from the option's id and label,
+which the overseer writes as "Keep the newer one: …" / "Keep the older one:
+…"); an answer on any other decided item, `decided.approved-done`
+included (its subject still names the ask, but it is answered as the
+decision, never as the question): a statement `answers: {kind:
+instruction, ref: <first case id, else subject>}` and `user overturned
+<item-id> in the inbox (ref: stmt-…|chc-…)` on each case it cites. A `register` option acts first through
+`conversation._register_core` (the text-free half of S-103's registration;
+the consent is the click, or an agent's proved yes), so a refused
+registration records nothing. A `conflict.case-tampered` option runs
+`case refreeze` first.
+
+**Agent shells** (§3.4.1 Trust). Every form needs `--ref
+transcript:<session>#L<n>`, `--text-file` and `--note` (64); `--draft` is
+refused (64); an `approve` or `register` option also needs the person's
+typed yes, proved by `consent.prove_typed_yes` in the agent's own session
+(the last row they typed is a plain yes, and the assistant's visible text
+just before it names the item id and the option's label), else 64; the
+choice then carries `proof` and its commit `By: agent`, `Proof: <line>`. A
+relayed approval launches nothing: the brief is written to the cache and
+the relaying session may carry it out, or the person clicks Run it now.
+`attention run`, `attention fix` and `case refreeze` are refused (64);
+`claim` and `done` are the carrying-out session's own verbs; `undo` needs
+`--note` and is stamped `By: agent`.
+
+**Approved work** (§3.4.7). An approve click on a plan with no sudo step
+runs `attention run` in-process: refused when `ask.billing_route` (or the
+same rules, where that module is absent) says a session would bill money
+(4), when the item is not approved or a live claim holds it (3); writes
+`<cache>/attention/runs/<id>/brief.md` (`attention_answers.RUN_BRIEF`,
+frozen, never saying an agent may run sudo); resolves a terminal
+(`attention.terminal`, else `$TERMINAL -e`, else the first of `alacritty -e`,
+`ghostty -e`, `kitty`, `foot`, `wezterm start --` on PATH; none: 5, with the
+brief's path and the command); launches `systemd-run --user --collect
+--quiet --unit=self-learn-run-<12 hex> --working-directory=<plan.cwd, else
+$HOME> -- <terminal argv> claude "<brief line 1> Read <brief> and follow
+it."`; and records `<cache>/attention/runs/<id>.json` and a workspace row
+`kind: run`. A plan with sudo steps becomes `awaiting-sudo` (needs-you, key
+`sudo`) and launches nothing until "I ran it"; then it launches the rest,
+or, with no non-sudo step left, is done (an outcome `by: human`, "you ran
+the sudo steps"). `run --login` on an open `hold.credentials` item opens a
+terminal running `claude` (no brief, no billing check). `claim` writes
+`<cache>/attention/claims/<id>.json` (2-hour TTL; another session's live
+claim refuses, 3, naming it). `done --note --session [--failed]` needs the
+live claim's session (3 otherwise, naming the claimant), appends an
+outcome (`by` the process actor) and removes the claim; `--failed` returns
+the item to the person, the reason first among its evidence, and the
+approval no longer stands. `run` on work already done is 3 (not
+approved), whichever of the three ids names it. **While the ledger is
+STOPPED** nothing can be
+committed and every answer is refused (10), except the person's *Have an
+agent look at it* on the `broken.stopped` item that says so: its choice is
+held in `<cache>/attention/held-approvals/<id>.json`, the workspace row is
+kept pending, and the session is launched on the item itself; its `done`
+commits the held choice, then the outcome, once the session cleared the
+intent. A session that looked and left the intent alone reports `done
+--failed`: nothing is committed, the held choice and the claim are dropped
+(the item is the person's again at once), and its note is kept as a
+pending workspace row.
+
+**Code kinds** (§3.4.8): `attention fix <id> --option opt-restart` on a
+`broken.host` item runs `systemctl --user reset-failed` and then `restart`
+of `self-learn-host.service` only, each bounded to 10 s (3 on a failure);
+the item ends when the heartbeat is fresh. `opt-login` and `opt-check` are
+`attention run --login` and `attention check-login`; *Have an agent look at
+it* is an approve option over the kind's code-written plan.
+
+**Undo and redo** (`attention undo <id> [--redo] [--note]`, §3.4.6):
+`decided.hook-activated` → `hook deactivate` / `hook activate`;
+`decided.registration` → `host remove` / `host add --mode plain`;
+`decided.skill` → `skill retire` (written) or `skill rename` back (renamed),
+redo in words only; `decided.grant-use` → the inverse from the row's `prior`
+(`config set <prior>`, or `config unset` when it is null; `host remove`;
+`host set-mode <prior mode>`; `skill retire`), redo the recorded verb with
+its `args` (`skill write` from its recorded `--from` folder, refused, 3,
+when that folder is gone; `skill veto` too); `decided.withdrawn` → `overseer.conversation.reopen`. Every
+other kind has none (3). Person-only inverses run under
+`grants.authorize` from an agent's shell. Each undo or redo seals a
+workspace row `kind: undo|redo`; `redo_offered` reads the last one.
+
+**The steward re-decides** (§3.4.5). `_ASK_ANSWER_OBSERVATION_RE` and
+`_ASK_OVERTURN_OBSERVATION_RE` accept the observers `overseer|human|agent`
+and refs `stmt-|chc-`; the overturn regex also matches `user overturned
+att-<12 hex> in the inbox`, and `_CONFLICT_RULING_OBSERVATION_RE` matches
+the conflict ruling; both bring a case back whatever it decided. The card
+(`_ask_context`) quotes a statement as the user's words and a choice never:
+"They chose the offered option «label» (not their words)", "They accepted
+the agent's draft «text» (not their words)", "Relayed by an agent from
+their session: «words»" (quoting the statement it cites). **Questions to
+the ask agent reach the steward**: the first packet of each run lists every
+`role: user, origin: typed, kind: question` workspace row that no completed
+run has read, with its `workspace:` ref and item title
+(`workspace_questions`), as statement candidates. What was read is recorded,
+never a time: packet 1 writes the refs its prompt listed, and the older ones
+the cap left out, as `workspace_questions_read` in the commit that prepares
+that session's recipe, and only completed runs count. An attempt that
+assembles no prompt (a run resumed past its model phase, a packet whose
+inputs were all held) reads nothing, and a row kept while the ledger was
+STOPPED and sealed later with its earlier `at` is still listed. A row a
+statement already cites is left out; at most the newest 40 are listed, and
+the block says how many older ones did not fit (they count as read). Replies
+are not listed (the inbox records a typed reply as a statement itself).
+
+**Verbs** (exit codes as contract §4.6): `attention answer` (0 recorded; 2
+unknown or closed; 3 refused downstream; 10 held; 64 usage), `attention
+undo` (0; 2; 3; 10), `attention run [--login]` (0; 2; 3; 4; 5; 64),
+`attention fix` (0; 2; 3; 64), `attention claim` (0; 2; 3), `attention done`
+(0; 2; 3; 10; 64), `case refreeze` (§3a.2).
 
 ## 4. Managed sections (the compile targets' contract)
 

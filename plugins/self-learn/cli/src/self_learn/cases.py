@@ -2214,3 +2214,110 @@ def observe(
     finally:
         hold.release()
     return obs_id
+
+
+# ------------------------------------------------------------- refreeze
+
+
+class RefreezeError(CaseError):
+    """``case refreeze`` refused (attention round, design r2 §3.4.8):
+    ``exit_code`` 2 for an unknown case or one that is not tampered, 3 when
+    no commit holds a frozen part that matches."""
+
+    def __init__(self, message: str, exit_code: int) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+def _frozen_history(home: Path, path: Path) -> list[str]:
+    """The case file's committed texts, newest first (``git log`` of its
+    path, then ``git show`` of each): a read of the ledger's history."""
+    rel = path.resolve().relative_to(home.resolve()).as_posix()
+    shas = gitops._git(  # noqa: SLF001 -- committed case history, read-only
+        home, "log", "--format=%H", "--", rel
+    ).stdout.split()
+    out: list[str] = []
+    for sha in shas:
+        shown = gitops._git(home, "show", f"{sha}:{rel}")  # noqa: SLF001
+        if shown.returncode == 0:
+            out.append(shown.stdout)
+    return out
+
+
+def refreeze(home: Path | str, case_id: str, *, keep: bool, note: str | None = None) -> str:
+    """``self-learn case refreeze <case-id> --keep|--restore`` (design r2
+    §3.4.8): the person's answer to a ``conflict.case-tampered`` item, a
+    parked case whose frozen part (sections 1-4) was edited by hand after it
+    was decided, so its freeze check (``_hash_frozen(frozen) ==
+    decided_sha256``) fails and its lessons are held.
+
+    ``keep`` ("I edited it on purpose") writes the hash of the edited frozen
+    part into ``decided_sha256``, so the edit becomes the case's account.
+    ``restore`` ("I didn't") puts back the frozen part from the newest commit
+    whose own frozen part matched its own ``decided_sha256`` -- the
+    application and later observations of the file as it is now are kept --
+    and keeps that commit's hash. Both run under ``ledger_write`` and commit
+    once. Returns the new ``decided_sha256``."""
+    home = Path(home)
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        with intents.ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            try:
+                path = _case_path_for_id(home, case_id)
+            except CaseUsageError as exc:
+                raise RefreezeError(str(exc), 2) from exc
+            content = path.read_text(encoding="utf-8")
+            fm, body = _split_frontmatter(content)
+            frozen_text, rest = _split_frozen(body)
+            if _hash_frozen(frozen_text) == fm.get("decided_sha256"):
+                raise RefreezeError(
+                    f"case refreeze: {case_id} passes its freeze check; there is nothing to "
+                    "keep or restore", 2,
+                )
+            fm = dict(fm)
+            if keep:
+                new_body = body
+                fm["decided_sha256"] = _hash_frozen(frozen_text)
+                action = "keep"
+            else:
+                restored: str | None = None
+                restored_hash: str | None = None
+                for text in _frozen_history(home, path):
+                    try:
+                        old_fm, old_body = _split_frontmatter(text)
+                        old_frozen, _old_rest = _split_frozen(old_body)
+                    except (CaseError, ValueError, IndexError):
+                        continue
+                    digest = _hash_frozen(old_frozen)
+                    if digest == old_fm.get("decided_sha256"):
+                        restored, restored_hash = old_frozen, digest
+                        break
+                if restored is None or restored_hash is None:
+                    raise RefreezeError(
+                        f"case refreeze: no commit of {case_id} holds a frozen part that "
+                        "matches its own hash; nothing was changed", 3,
+                    )
+                new_body = restored + rest
+                fm["decided_sha256"] = restored_hash
+                action = "restore"
+            message = f"self-learn: case refreeze {case_id} ({action})"
+            rendered = _render_frontmatter(fm) + new_body
+            committed = _committed_case_for_id(home, case_id)
+            if committed is not None and committed[1] == rendered:
+                # The edit was never committed and the restore puts back
+                # exactly what HEAD holds: the file is repaired, and there
+                # is nothing to commit.
+                fsops.atomic_write(path, rendered, fsync=True)
+                _update_index(home, case_id)
+                return str(fm["decided_sha256"])
+            intent = intents.begin(home, "case-refreeze", [path], message)
+            fsops.atomic_write(path, rendered, fsync=True)
+            intents.complete(intent)
+            gitops.stage_and_commit(home, [path], message, note)
+            intents.finish(intent)
+            _update_index(home, case_id)
+            return str(fm["decided_sha256"])
+    finally:
+        hold.release()

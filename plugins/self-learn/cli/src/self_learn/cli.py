@@ -257,6 +257,9 @@ def _add_case_parser(sub) -> None:
         help="rebuild from the case files on disk (the only mode today)",
     )
     cindex.add_argument("--json", action="store_true", dest="as_json")
+    from . import attention_answers_cli  # attention round, design r2 §3.4.8
+
+    attention_answers_cli.add_refreeze_parser(case_sub)
 
 
 def _add_statement_parser(sub) -> None:
@@ -4494,6 +4497,10 @@ def _cmd_case(args: argparse.Namespace) -> int:
     home = resolve_home()
     if (code := _home_gate(home)) is not None:
         return code
+    if args.case_command == "refreeze":
+        from . import attention_answers_cli
+
+        return attention_answers_cli.cmd_refreeze(home, args)
     try:
         if args.case_command == "record":
             case_id = cases.record(home, args.stage_file, actor=args.actor)
