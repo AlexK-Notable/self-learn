@@ -562,3 +562,47 @@ def test_agent_joins_every_value_set_and_case_observe_records_it(tmp_path, monke
     assert re.search(r"obs-[0-9a-f]{8} \S+ agent statement: the user said so", text)
     body = git(env.ledger, "log", "-1", "--format=%B").stdout.strip()
     assert body.rpartition("\n\n")[2].splitlines()[0] == "By: agent"
+
+
+# ------------------------------------------------- fix round 1 (gate r1)
+
+
+def test_an_answer_an_agent_relayed_reads_as_relayed():
+    """Gate r1 MINOR 4. Mutation: `how` always "typed" -> red."""
+    said = {"id": "stmt-0000abcd", "at": _iso(), "verbatim": "yes, bind it",
+            "recorded_by": "agent", "source": {"message_ref": "transcript:s#L4"}}
+    assert attention._answer_of(said, None)["how"] == "relayed"  # noqa: SLF001
+    typed = {**said, "recorded_by": "human", "source": {"message_ref": "workspace:att-0#T1"}}
+    assert attention._answer_of(typed, None)["how"] == "typed"  # noqa: SLF001
+
+
+def test_a_plain_registration_names_no_actor(tmp_path, monkeypatch, capsys):
+    """Gate r1 MINOR 5: a registration no grant-use row explains is the
+    code's notice, never "the overseer decided it for you" (it may be the
+    person's own `host add`). Mutation: `by="overseer"` again -> red."""
+    from support import init_repo
+
+    env = make_env(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+    attention.read(env.ledger)  # the first read only learns what is there
+    project = tmp_path / "plain-project"
+    init_repo(project)
+    (project / "README.md").write_text("seed\n", encoding="utf-8")
+    commit_all(project, "seed")
+    assert cli.main(["host", "add", str(project), "--mode", "plain"]) == 0, capsys.readouterr().err
+    (item,) = [i for i in attention.read(env.ledger)["items"] if i["kind"] == "decided.registration"]
+    assert item["source"]["by"] == "code"
+    assert "overseer" not in item["title"] and "registered as a plain project host" in item["title"]
+    found = attention.find(env.ledger, item["id"])
+    assert found is not None and found["_decided"]["by"] == "code"
+    assert "may have been you" in found["_decided"]["because"]
+
+
+def test_the_steward_prompt_offers_the_workspace_ref():
+    """Gate r1 NIT 1 (`steward_prompt.py:1289`). Mutation: drop the
+    `workspace:` line from the grammar text -> red."""
+    from self_learn import steward_prompt
+
+    text = steward_prompt._render_output_contract()  # noqa: SLF001
+    assert "`workspace:att-<12 hex>#T<n>`" in text
+    assert "`conversation:obs-<8 hex>`" in text  # control: the grammar block rendered

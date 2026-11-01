@@ -241,25 +241,103 @@ def _statement(home: Path, row: dict, limits: _Limits, where: str, deadline: flo
     }
 
 
-def _case(home: Path, case_id: str, limits: _Limits, where: str) -> dict | None:
+#: The most of a case file read directly (a tampered case, below).
+MAX_CASE_FILE_BYTES = 256 * 1024
+
+
+def _line_value(text: str | None, key: str) -> str | None:
+    """The value of the first ``- <key>: value`` line in *text*."""
+    prefix = f"- {key}:"
+    for line in (text or "").splitlines():
+        if line.strip().startswith(prefix):
+            return line.strip()[len(prefix):].strip() or None
+    return None
+
+
+def _case_links(frontmatter: dict, sections: dict[str, str]) -> list[str]:
+    """The lessons (frontmatter ``records``) and statements (section 4,
+    ``- statements: [...]``) a case names, in that order."""
+    from . import cases
+
+    out = [str(r) for r in frontmatter.get("records") or [] if isinstance(r, str)]
+    for line in (sections.get("Dependencies") or "").splitlines():
+        if line.strip().startswith("- statements:"):
+            out += [s for s in cases._parse_bracket_list(line.strip())  # noqa: SLF001
+                    if s.startswith("stmt-")]
+    return list(dict.fromkeys(out))
+
+
+def _case_entry(case_id: str, sections: dict[str, str], body: str, limits: _Limits,
+                where: str) -> dict:
+    decision = sections.get("Decision")
+    return {
+        "kind": "case", "id": case_id,
+        "question": limits.clip(
+            _line_value(sections.get("Identity and scope"), "question"), f"{where}.question", 600),
+        "decision": limits.clip(decision, f"{where}.decision", 1200),
+        "because": limits.clip(_line_value(decision, "because"), f"{where}.because", 1200),
+        "excerpt": limits.clip(body, f"{where}.excerpt"),
+    }
+
+
+def _case(home: Path, case_id: str, limits: _Limits, where: str) -> tuple[dict | None, list[str]]:
+    """The case's entry (its full, freeze-checked view) and the lessons and
+    statements it names. A missing case, or one whose freeze hash fails,
+    is no entry here: see :func:`_edited_case` for the one item that shows
+    a tampered case's text."""
     from . import cases
 
     try:
         view = cases.show(home, case_id, evidence_only=False)
     except Exception:  # noqa: BLE001 -- a missing or tampered case is no entry
-        return None
+        return None, []
     sections = view.sections
-    decision = next((v for k, v in sections.items() if "decision" in k.lower()), None)
-    because = next((v for k, v in sections.items() if "reason" in k.lower() or "why" in k.lower()), None)
-    question = next(iter(sections.values()), None)
     body = "\n\n".join(f"## {k}\n{v}" for k, v in sections.items())
-    return {
-        "kind": "case", "id": case_id,
-        "question": limits.clip(question, f"{where}.question", 600),
-        "decision": limits.clip(decision, f"{where}.decision", 1200),
-        "because": limits.clip(because, f"{where}.because", 1200),
-        "excerpt": limits.clip(body, f"{where}.excerpt"),
-    }
+    return _case_entry(case_id, sections, body, limits, where), _case_links(view.frontmatter, sections)
+
+
+def _edited_case(home: Path, case_id: str, limits: _Limits, where: str) -> tuple[list[dict], list[str]]:
+    """A case whose freeze hash fails, read as the file is now (gate r1
+    MAJOR 2): ``cases.show`` refuses it, yet that edit is exactly what a
+    ``conflict.case-tampered`` page asks the person about. A plain file
+    read (no git), size-capped and secret-scanned like every excerpt; the
+    excerpt is sections 1-4, the frozen span the hash covers. Returns the
+    case entry and a fact naming the mismatch, and the case's links."""
+    from . import cases
+
+    try:
+        path = cases._case_path_for_id(home, case_id)  # noqa: SLF001
+        with path.open("rb") as fh:
+            raw = fh.read(MAX_CASE_FILE_BYTES)
+    except Exception:  # noqa: BLE001 -- a missing case is no entry
+        return [], []
+    text = raw.decode("utf-8", errors="replace")
+    frontmatter: dict = {}
+    sections: dict[str, str] = {}
+    frozen: str | None = None
+    try:
+        frontmatter, body = cases._split_frontmatter(text)  # noqa: SLF001
+    except Exception:  # noqa: BLE001 -- the frontmatter itself may be what was edited
+        body = text
+    try:
+        frozen, _rest = cases._split_frozen(body)  # noqa: SLF001
+        sections = cases._parse_sections(body)  # noqa: SLF001
+    except Exception:  # noqa: BLE001 -- the headings may be what was edited
+        frozen = None
+    entry = _case_entry(case_id, sections, frozen if frozen is not None else body, limits, where)
+    decided = str(frontmatter.get("decided_sha256") or "")
+    now = cases._hash_frozen(frozen) if frozen is not None else None  # noqa: SLF001
+    if now is None:
+        value = (f"the case file {path} no longer has the shape self-learn wrote (its section "
+                 "headings or frontmatter were changed), so its freeze hash cannot be checked; "
+                 "the case entry shows the file as it is now")
+    else:
+        value = (f"sections 1-4 of {path} no longer match the hash taken when the case was "
+                 f"decided (decided {decided[:12] or 'missing'}, now {now[:12]}); the case entry "
+                 "shows them as they are now, and the ledger's history holds the decided version")
+    fact = {"kind": "fact", "label": "the case file was edited after it was decided",
+            "value": limits.clip(value, f"{where}.fact", 1200)}
+    return [entry, fact], _case_links(frontmatter, sections)
 
 
 def _report(home: Path, date: str | None, limits: _Limits, where: str) -> dict | None:
@@ -382,21 +460,45 @@ def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str]) -> li
         })
     refs_ = [r for r in item.get("refs") or [] if isinstance(r, str)]
     answering = {r for r in refs_ if r.startswith("q-") or r.startswith("conflict:")}
-    for ref in refs_:
+    # Gate r1 MAJOR 1: a case ref is expanded in place into the lessons and
+    # statements the case names (its frontmatter `records`, its section-4
+    # `statements`), right after it, so an ask shows the lesson it is about
+    # and the user's earlier words, not the case alone. Each ref is shown
+    # once; the 12-entry cap and `more[]` bound the size.
+    queue = list(dict.fromkeys(refs_))
+    done: set[str] = set()
+    position = 0
+    while position < len(queue):
+        ref = queue[position]
+        position += 1
+        if ref in done:
+            continue
+        done.add(ref)
         where = f"evidence[{len(out)}]"
+        linked: list[str] = []
+        entries: list[dict | None]
         if ref.startswith("lrn-"):
-            entry = _lesson(home, ref, limits, where)
+            entries = [_lesson(home, ref, limits, where)]
         elif ref.startswith("stmt-") and ref in stmt_rows:
-            entry = _statement(home, stmt_rows[ref], limits, where, deadline)
+            entries = [_statement(home, stmt_rows[ref], limits, where, deadline)]
         elif ref.startswith("case-"):
-            entry = _case(home, ref, limits, where)
+            entry, linked = _case(home, ref, limits, where)
+            entries = [entry]
+            if entry is None and item["kind"] == "conflict.case-tampered":
+                edited, linked = _edited_case(home, ref, limits, where)
+                entries = [*edited]
         else:
-            entry = None
-        if entry is not None:
-            out.append(entry)
+            entries = []
+        out.extend(e for e in entries if e is not None)
+        # The case's own links follow it directly; one queued later moves up.
+        fresh = [r for r in linked if r not in done]
+        queue[position:] = [*fresh, *(r for r in queue[position:] if r not in fresh)]
     for row in stmt_rows.values():
         answers = row.get("answers")
+        if row.get("id") in done:
+            continue
         if isinstance(answers, dict) and answers.get("ref") in answering:
+            done.add(str(row.get("id")))
             out.append(_statement(home, row, limits, f"evidence[{len(out)}]", deadline))
     if item["kind"] == "decided.hook-activated" and isinstance(item.get("_lesson"), str):
         hook = _hook(home, item["_lesson"], limits, f"evidence[{len(out)}]")
@@ -445,18 +547,44 @@ def _does(option: dict) -> str:
     return _EFFECT_DOES.get(str(option.get("effect")), _EFFECT_DOES["other"])
 
 
-def _plan(item: dict) -> dict | None:
+def _clip_fields(rows: object, keys: tuple[str, ...], limits: _Limits, where: str) -> list[dict]:
+    """Copies of the dict *rows* with each string under *keys* clipped
+    (secret-scanned, at most :data:`MAX_TEXT_CHARS`, each cut named)."""
+    out: list[dict] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        index = len(out)
+        out.append({
+            k: (limits.clip(v, f"{where}[{index}].{k}") if k in keys and isinstance(v, str) else v)
+            for k, v in row.items()
+        })
+    return out
+
+
+def _plan(item: dict, limits: _Limits) -> dict | None:
+    """The plan an agent would carry out. Every text in it (summary, each
+    check's and step's ``say`` and ``command``, each file's ``content``,
+    the conditions) is secret-scanned and capped like an excerpt (gate r1
+    MINOR 3): the overseer wrote it, and a file's content may hold a
+    secret or be large."""
     plan = item.get("_plan")
     if not isinstance(plan, dict):
         return None
-    steps = [dict(s) for s in plan.get("steps") or [] if isinstance(s, dict)]
+    raw_steps = [s for s in plan.get("steps") or [] if isinstance(s, dict)]
+    steps = _clip_fields(raw_steps, ("say", "command"), limits, "plan.steps")
+    conditions = item.get("_conditions") or plan.get("conditions")
     return {
-        "summary": plan.get("summary"), "cwd": plan.get("cwd"),
-        "checks": [dict(c) for c in plan.get("checks") or [] if isinstance(c, dict)],
-        "steps": steps, "files": [dict(f) for f in plan.get("files") or [] if isinstance(f, dict)],
-        "sudo": any(s.get("sudo") is True for s in steps),
+        "summary": limits.clip(plan.get("summary"), "plan.summary", 2000)
+        if isinstance(plan.get("summary"), str) else plan.get("summary"),
+        "cwd": plan.get("cwd"),
+        "checks": _clip_fields(plan.get("checks"), ("say", "command"), limits, "plan.checks"),
+        "steps": steps,
+        "files": _clip_fields(plan.get("files"), ("content",), limits, "plan.files"),
+        "sudo": any(s.get("sudo") is True for s in raw_steps),
         "money": item.get("because") == "money" or bool(plan.get("money")),
-        "conditions": item.get("_conditions") or plan.get("conditions"),
+        "conditions": limits.clip(conditions, "plan.conditions", 2000)
+        if isinstance(conditions, str) else conditions,
         "written_at": plan.get("written_at") or item.get("since"),
         "by": plan.get("by") or ("overseer" if item["source"]["by"] == "overseer" else "code"),
     }
@@ -532,7 +660,7 @@ def build(home: Path | str, item_id: str) -> dict:
         "recommendation": recommendation,
         "options": options,
         "alternatives": alternatives,
-        "plan": _plan(item),
+        "plan": _plan(item, limits),
         "decided": (
             {k: (limits.clip(v, f"decided.{k}", 2000) if isinstance(v, str) else v)
              for k, v in decided.items()} if isinstance(decided, dict) else None
@@ -561,6 +689,21 @@ def _pointers(home: Path, item: dict) -> list[dict]:
         ]
     if item["kind"] == "decided.overseer-run":
         out.append({"label": "the weekly report", "path": str(home / "overseer" / "latest-report.md")})
+    if item["kind"] == "conflict.case-tampered":
+        from . import cases
+
+        try:
+            path = cases._case_path_for_id(home, str(item.get("subject")))  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            path = None
+        if path is not None:
+            rel = path.relative_to(home) if path.is_relative_to(home) else path
+            out.append({
+                "label": f"what changed in the case since it was decided: the ledger history of "
+                         f"{rel} (the version committed when it was decided, and every change "
+                         "since; an uncommitted edit shows against the last commit)",
+                "tool": "ledger_history", "path": str(path),
+            })
     return out
 
 
@@ -568,20 +711,36 @@ def _size(packet: dict) -> int:
     return len(json.dumps(packet, ensure_ascii=False).encode("utf-8"))
 
 
-def _fit(packet: dict) -> dict:
-    """Cut the largest evidence texts until the whole JSON is at most
-    :data:`MAX_BYTES`, naming each cut; then fill ``limits.bytes``."""
-    truncated: list[str] = packet["limits"]["truncated"]
+def _cut_candidates(packet: dict) -> list[tuple[dict, str, str]]:
+    """Every text :func:`_fit` may halve: ``(container, key, where)`` for the
+    evidence texts and the plan's step, check and file texts."""
     fields = ("text", "excerpt", "context", "verbatim", "script_excerpt")
+    out: list[tuple[dict, str, str]] = [
+        (entry, name, f"evidence[{index}].{name}")
+        for index, entry in enumerate(packet["evidence"]) for name in fields
+    ]
+    plan = packet.get("plan")
+    if isinstance(plan, dict):
+        for group, keys in (("files", ("content",)), ("steps", ("command", "say")),
+                            ("checks", ("command", "say"))):
+            for index, row in enumerate(plan.get(group) or []):
+                if isinstance(row, dict):
+                    out += [(row, key, f"plan.{group}[{index}].{key}") for key in keys]
+    return out
+
+
+def _fit(packet: dict) -> dict:
+    """Cut the largest evidence and plan texts until the whole JSON is at
+    most :data:`MAX_BYTES`, naming each cut; then fill ``limits.bytes``."""
+    truncated: list[str] = packet["limits"]["truncated"]
     guard = 0
-    while _size(packet) > MAX_BYTES and guard < 200:
+    while _size(packet) > MAX_BYTES and guard < 400:
         guard += 1
-        best: tuple[int, int, str] | None = None
-        for index, entry in enumerate(packet["evidence"]):
-            for name in fields:
-                value = entry.get(name)
-                if isinstance(value, str) and (best is None or len(value) > best[0]):
-                    best = (len(value), index, name)
+        best: tuple[int, dict, str, str] | None = None
+        for container, name, where in _cut_candidates(packet):
+            value = container.get(name)
+            if isinstance(value, str) and (best is None or len(value) > best[0]):
+                best = (len(value), container, name, where)
         if best is None or best[0] <= 200:
             if packet["evidence"]:
                 dropped = packet["evidence"].pop()
@@ -589,10 +748,8 @@ def _fit(packet: dict) -> dict:
                 truncated.append(f"evidence[{len(packet['evidence'])}] moved to more[] (size)")
                 continue
             break
-        length, index, name = best
-        entry = packet["evidence"][index]
-        entry[name] = entry[name][: max(200, length // 2)].rstrip() + "…"
-        where = f"evidence[{index}].{name}"
+        length, container, name, where = best
+        container[name] = container[name][: max(200, length // 2)].rstrip() + "…"
         if where not in truncated:
             truncated.append(where)
     # Twice: the count's own digits change the size it counts.

@@ -107,3 +107,71 @@ def test_a_host_add_under_the_grant_records_the_prior_registration(env, tmp_path
     assert found is not None and found["_undo_verb"][:2] == ["host", "remove"]
     # An agent's own act never shows as a separate "registered" item too.
     assert not [i for i in attention.read(env.ledger)["items"] if i["kind"] == "decided.registration"]
+
+
+# ------------------------------------------------- fix round 1 (gate r1)
+
+
+def test_a_registration_under_a_proved_yes_records_its_proof(tmp_path, monkeypatch):
+    """Gate r1 MINOR 2 (the `overseer/conversation.py` call site). Mutation:
+    drop `use=use` from that `attribution.acting` call -> no row, red."""
+    from self_learn.hosts import is_project_host, load_hosts
+    from self_learn.overseer import conversation
+    from test_consent_proof import _agent, _naming, _seed
+    from test_cures_b import _transcript, _typed
+
+    home, ask, new = _seed(tmp_path)
+    session = _transcript(home, tmp_path, [
+        _typed("what is waiting"), _naming(ask["id"], new), _typed("yes"),
+    ])
+    _agent(monkeypatch, session)
+    result = conversation.respond(home, proposition=ask["id"], scope="user", text="yes")
+    assert result.registered is True and is_project_host(load_hosts(home), new)  # control
+    (row,) = grant_uses.read(home)
+    assert row["verb"] == "host add" and row["args"][0] == str(new)
+    assert row["proof"] == f"transcript:{session}#L3" and row["statement"] is None
+    assert row["prior"] is None
+    log = git(home, "log", "--format=%B%x00").stdout.split("\x00")
+    (body,) = [e.strip() for e in log if e.strip().startswith(f"self-learn: grant use {row['id']}")]
+    assert body.splitlines()[-2:] == ["By: agent", f"Proof: transcript:{session}#L3"]
+
+
+def test_a_skill_retire_under_the_grant_records_a_row(tmp_path, monkeypatch, capsys):
+    """Gate r1 MINOR 2 (the `skill_cli.dispatch` call site). Mutation: drop
+    `use=use` there -> no row, red."""
+    from test_grants import _stmt
+    from test_skill_write import CASE2, NAME, Env
+
+    skills = Env(tmp_path, monkeypatch)
+    assert skills.write().ok
+    stmt = _stmt(skills.home, tmp_path)
+    assert grants.add(skills.home, statement=stmt)[1] is True
+    monkeypatch.setenv("CLAUDECODE", "1")
+    capsys.readouterr()
+    code = cli.main(["skill", "retire", NAME, "--case", CASE2, "--no-push",
+                     "--note", "the user asked to retire it"])
+    assert code == 0, capsys.readouterr().err
+    assert not skills.plugin_dir().exists()  # control: it was retired
+    (row,) = grant_uses.read(skills.home)
+    assert row["verb"] == "skill retire" and row["args"] == [NAME]
+    assert row["statement"] == stmt and row["note"] == "the user asked to retire it"
+    assert git(skills.home, "status", "--porcelain").stdout == ""
+
+
+def test_the_wrapped_verb_runs_outside_the_ledger_lock(env, tmp_path):
+    """Gate r1 MINOR 1: the verb inside `acting(use=)` does not run under an
+    outer ledger lock (the skill verbs push; a lock never covers a push),
+    and its row is still appended afterwards. Mutation: wrap the span in
+    `intents.ledger_write` again -> the lock is held inside, red."""
+    from self_learn import attribution, gitops
+
+    key = str(gitops.commit_lock_path(env.ledger))
+    held: list[bool] = []
+    authority = attribution.Authority("grant", "stmt-0000abcd", "a reason")
+    use = grant_uses.GrantUse(env.ledger, "config set", ["worker.autokick", "0"])
+    with attribution.acting(authority, use=use):
+        held.append(key in gitops._held_locks)  # noqa: SLF001
+    assert held == [False]
+    (row,) = grant_uses.read(env.ledger)  # control: the row still lands
+    assert row["verb"] == "config set" and row["statement"] == "stmt-0000abcd"
+    assert key not in gitops._held_locks  # noqa: SLF001

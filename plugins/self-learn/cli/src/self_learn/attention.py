@@ -554,8 +554,12 @@ def _answer_of(statement: dict | None, choice: dict | None) -> dict | None:
             "statement": choice.get("statement"), "choice": choice.get("id"),
         }
     assert statement is not None
+    # Gate r1 MINOR 4: a statement an agent recorded (with a `transcript:`
+    # ref, design r2 §3.4.1) is the person's words relayed by the agent,
+    # never "typed" here.
     return {
-        "at": statement.get("at"), "how": "typed",
+        "at": statement.get("at"),
+        "how": "relayed" if statement.get("recorded_by") == "agent" else "typed",
         "summary": _first_line(statement.get("verbatim"), 200),
         "statement": statement.get("id"), "choice": None,
     }
@@ -1150,11 +1154,20 @@ def _src_runs(home: Path, ctx: "_Ctx") -> list[dict]:
         else:
             title = f"The overseer's weekly run, {manifest.get('week') or day}"
             kind = "decided.overseer-run"
+        # Gate r1 MAJOR 1: the run's cases hold the reasoning ("why was this
+        # decided?"), so they lead; the packet expands each case into its
+        # lessons and statements, and the decided lessons follow, deduped.
+        recipes = manifest.get("cases")
+        run_cases = [
+            str(c) for c in (recipes if isinstance(recipes, dict) else {})
+            if isinstance(c, str) and c.startswith("case-")
+        ]
+        refs = list(dict.fromkeys([*run_cases, *(str(d) for d in decided)]))
         out.append(_new_item(
             kind, run_id, title=title, since=manifest.get("started_at") or manifest.get("started"),
             updated_at=str(done_at), by=str(actor), run=run_id,
             report=str(manifest.get("date") or manifest.get("week") or "") or None,
-            refs=[str(d) for d in decided][:50],
+            refs=refs[:50],
             decided={"what": title, "by": actor, "at": done_at,
                      "because": None, "changes_now": None},
             manifest_path=str(path),
@@ -1288,7 +1301,10 @@ def _src_registrations(home: Path, ctx: "_Ctx") -> list[dict]:
         if key not in known:
             known[key] = None if first_read else now
             changed = True
-    if changed:
+    # Fix round 1: the first read records that it has looked even when it
+    # found no plain registration, or the first one made after it would be
+    # "learned" by the next read instead of shown.
+    if changed or first_read:
         try:
             _write_registration_snapshot(home, known)
         except OSError:
@@ -1303,12 +1319,20 @@ def _src_registrations(home: Path, ctx: "_Ctx") -> list[dict]:
             continue
         if not ctx.all_items and not _within(at, DECIDED_WINDOW_DAYS, ctx.now):
             continue
+        # Gate r1 MINOR 5: who made the registration is unknown here (no
+        # grant-use row names it; hosts.yaml keeps no actor and the reader
+        # runs no git), and it may well be the person's own `host add` in
+        # their terminal. So the item names no actor: the source is the
+        # code that noticed it, never "the overseer decided it for you".
         out.append(_new_item(
             "decided.registration", f"{path}@{at}",
-            title=f"{path} was registered as a plain {kind} host", since=at, by="overseer",
+            title=f"{path} is now registered as a plain {kind} host", since=at, by="code",
             meanwhile="self-learn writes its lines there uncommitted and never commits or pushes.",
-            decided={"what": f"registered {path} (plain, {kind})", "by": "self-learn", "at": at,
-                     "because": None, "changes_now": "lessons can compile into it"},
+            decided={"what": f"{path} became a plain {kind} host", "by": "code", "at": at,
+                     "because": ("self-learn noticed the new registration; no record says who "
+                                 "made it (an agent's registration under your grant shows as "
+                                 "its own item), so it may have been you, in your own terminal"),
+                     "changes_now": "lessons can compile into it"},
             registration={"kind": kind, "path": path},
         ))
     return out

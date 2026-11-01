@@ -172,3 +172,145 @@ def test_a_hook_activation_shows_the_hook_script_and_its_registration(tmp_path, 
     assert len(hooks) == 1 and hooks[0]["record"] == "lrn-0000aaaa"
     assert "# guard" in hooks[0]["script_excerpt"] and TOKEN not in hooks[0]["script_excerpt"]
     assert '"matcher": "Bash"' in hooks[0]["registration"]
+
+
+# ------------------------------------------------- fix round 1 (gate r1)
+
+
+LESSON = "lrn-0000aaaa"
+
+
+def _case_with_links(tmp_path: Path, monkeypatch) -> tuple[Path, str, str]:
+    """A ledger holding a lesson, a statement the user typed, and a case
+    (actor overseer) whose frontmatter names the lesson and whose section 4
+    names the statement. Returns ``(ledger, case id, statement id)``."""
+    from ruamel.yaml import YAML
+
+    from self_learn import cases
+    from self_learn.ledger_ops import create_record
+    from support import commit_all, make_behavior, make_env
+    from test_grants import _stmt
+
+    env = make_env(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+    create_record(env.ledger, make_behavior(scope="user", record_id=LESSON,
+                                            instruction="Restart oo7-daemon by hand."))
+    commit_all(env.ledger, "seed the lesson")
+    stmt = _stmt(env.ledger, tmp_path)
+    stage = tmp_path / "case-stage.yaml"
+    with stage.open("w", encoding="utf-8") as fh:
+        YAML().dump({
+            "kind": "parked", "trigger": "weekly", "outcome": "parked",
+            "parked_for": "overseer", "parked_reason": "authority-unclear",
+            "records": [LESSON], "scope": "user",
+            "question": "Should oo7-daemon be bound to the session bus?",
+            "evidence": [{"ref": "transcript:conversation#L1", "quote": "the user's words"}],
+            "decision": {"verb": "park", "because": "it changes the user's desktop",
+                         "confidence": "settled"},
+            "dependencies": {"statements": [stmt], "user_model": [], "conditions": [],
+                             "capabilities": []},
+        }, fh)
+    case_id = cases.record(env.ledger, stage, actor="overseer")
+    return env.ledger, case_id, stmt
+
+
+def test_an_asks_packet_shows_the_lesson_and_statements_its_case_names(tmp_path, monkeypatch):
+    """Gate r1 MAJOR 1. Mutation: drop the case expansion in `_evidence`
+    (`linked` left empty) -> only the case entry, red."""
+    ledger, case_id, stmt = _case_with_links(tmp_path, monkeypatch)
+    item = attention._new_item(  # noqa: SLF001
+        "ask.system-change", "q-oo7-binding", title="Bind it?", since=_now(), by="overseer",
+        refs=["q-oo7-binding", case_id], question="Bind oo7-daemon to the session bus?",
+    )
+    monkeypatch.setattr(attention, "collect", lambda _home, **_k: [item])
+    packet = attention_packet.build(ledger, item["id"])
+    kinds = [(e["kind"], e.get("id")) for e in packet["evidence"]]
+    assert kinds == [("case", case_id), ("lesson", LESSON), ("statement", stmt)]
+    case = packet["evidence"][0]
+    assert case["question"] == "Should oo7-daemon be bound to the session bus?"
+    assert case["because"] == "it changes the user's desktop"
+    assert "Restart oo7-daemon by hand." in packet["evidence"][1]["text"]
+    assert packet["evidence"][2]["verbatim"] and packet["evidence"][2]["context"]
+    # A ref named both by the item and by its case is shown once.
+    item["refs"] = ["q-oo7-binding", case_id, LESSON, stmt]
+    again = attention_packet.build(ledger, item["id"])
+    assert [(e["kind"], e.get("id")) for e in again["evidence"]] == kinds
+
+
+def test_a_run_digest_packet_shows_the_cases_behind_its_decisions(tmp_path, monkeypatch):
+    """Gate r1 MAJOR 1 (run digests). Mutation: leave the manifest's `cases`
+    keys out of the digest's refs -> no case entry, red."""
+    ledger, case_id, stmt = _case_with_links(tmp_path, monkeypatch)
+    runs = ledger / "cases" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "run-bbbbbbbbbbbb.json").write_text(json.dumps({
+        "actor": "steward", "run_id": "run-bbbbbbbbbbbb", "completed_at": _now(),
+        "decided": [LESSON], "cases": {case_id: {"phase": "applied"}},
+    }), encoding="utf-8")
+    item_id = attention.item_id("decided.steward-run", "run-bbbbbbbbbbbb")
+    packet = attention_packet.build(ledger, item_id)
+    kinds = [(e["kind"], e.get("id")) for e in packet["evidence"]]
+    assert kinds == [("case", case_id), ("lesson", LESSON), ("statement", stmt)]
+
+
+def test_a_tampered_cases_packet_shows_the_file_as_edited(tmp_path, monkeypatch):
+    """Gate r1 MAJOR 2. Mutation: drop the `_edited_case` fallback (the
+    case goes through `cases.show` alone) -> no case entry, red."""
+    from self_learn import cases
+
+    ledger, case_id, stmt = _case_with_links(tmp_path, monkeypatch)
+    path = next((ledger / "cases").glob(f"*/{case_id}.md"))
+    text = path.read_text(encoding="utf-8")
+    edited = text.replace("it changes the user's desktop",
+                          f"I decided this myself; the token is {TOKEN}")
+    assert edited != text  # positive control: the edit landed
+    path.write_text(edited, encoding="utf-8")
+    with pytest.raises(cases.CaseError):
+        cases.show(ledger, case_id, evidence_only=False)  # control: show refuses it
+    item = attention._new_item(  # noqa: SLF001
+        "conflict.case-tampered", case_id, title="A parked case file was edited",
+        since=_now(), refs=[case_id, LESSON],
+    )
+    monkeypatch.setattr(attention, "collect", lambda _home, **_k: [item])
+    packet = attention_packet.build(ledger, item["id"])
+    kinds = [(e["kind"], e.get("id")) for e in packet["evidence"]]
+    assert kinds[:4] == [("case", case_id), ("fact", None), ("lesson", LESSON), ("statement", stmt)]
+    case = packet["evidence"][0]
+    assert "I decided this myself" in case["excerpt"] and case["because"].startswith("I decided")
+    assert TOKEN not in json.dumps(packet) and "[redacted:" in case["excerpt"]
+    fact = packet["evidence"][1]
+    assert "no longer match the hash" in fact["value"]
+    assert any(p.get("tool") == "ledger_history" and p.get("path") == str(path)
+               for p in packet["pointers"])
+    # Any other item citing the tampered case still shows no entry for it.
+    item["kind"] = "ask.system-change"
+    other = attention_packet.build(ledger, item["id"])
+    assert ("case", case_id) not in [(e["kind"], e.get("id")) for e in other["evidence"]]
+
+
+_DROP_IN = "".join(f"# line {n} of the drop-in, a plain sentence\n" for n in range(250))
+
+
+def test_the_plan_is_secret_scanned_and_bounded(tmp_path, monkeypatch):
+    """Gate r1 MINOR 3. Mutations: copy the plan verbatim again -> the token
+    shows, red; leave plan texts out of `_fit` -> over 64 KiB, red."""
+    home = make_home(tmp_path)
+    plan = {
+        "summary": "add the drop-in", "checks": [{"say": "look", "command": f"cat x # {TOKEN}"}],
+        "steps": [{"say": f"export T={TOKEN}", "command": "systemctl --user daemon-reload",
+                   "sudo": False}],
+        "files": [{"path": f"/tmp/f{n}.conf", "content": f"{TOKEN}\n" + _DROP_IN}
+                  for n in range(30)],
+    }
+    item = _synthetic([], [])
+    item["_plan"] = plan
+    monkeypatch.setattr(attention, "collect", lambda _home, **_k: [item])
+    packet = attention_packet.build(home, item["id"])
+    raw = json.dumps(packet, ensure_ascii=False)
+    assert TOKEN not in raw
+    assert "[redacted:" in packet["plan"]["steps"][0]["say"]
+    assert "[redacted:" in packet["plan"]["checks"][0]["command"]
+    assert len(raw.encode("utf-8")) <= attention_packet.MAX_BYTES
+    assert len(packet["plan"]["files"]) == 30
+    assert all(len(f["content"]) <= attention_packet.MAX_TEXT_CHARS for f in packet["plan"]["files"])
+    assert "plan.files[0].content" in packet["limits"]["truncated"]

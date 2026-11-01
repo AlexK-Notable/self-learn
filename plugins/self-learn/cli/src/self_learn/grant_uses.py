@@ -10,8 +10,10 @@ not read (it runs no git). The inbox shows each row as a
 Append-only JSON Lines, committed. The one writer is :func:`append`, which
 takes :func:`intents.ledger_write` itself and commits the row as its own
 commit. :func:`attribution.acting` calls it on a normal exit of the verb it
-wraps, inside the same ``ledger_write`` span, so the commit carries the same
-``By: agent`` and ``Grant:``/``Proof:`` trailers as the verb's own.
+wraps, right after the verb and while the authority is still in force, so
+the commit carries the same ``By: agent`` and ``Grant:``/``Proof:``
+trailers as the verb's own. The verb does not run under an outer lock span
+(gate r1 MINOR 1: the skill verbs push, and a lock must never cover a push).
 
     {"id": "gu-1a2b3c4d", "at": "...", "verb": "config set",
      "args": ["attention.terminal", "alacritty -e"],
