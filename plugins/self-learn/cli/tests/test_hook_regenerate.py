@@ -310,6 +310,12 @@ def _retire(env, rid: str = RID) -> None:
     _git(env.home, "commit", "-qam", "test: retire the lesson")
 
 
+def compiled_sha(text: str) -> str:
+    from self_learn import compiled
+
+    return compiled.sha256_hex(text.encode("utf-8"))
+
+
 def _fail_host_commits(env) -> Path:
     hook = env.host / ".git" / "hooks" / "pre-commit"
     hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
@@ -317,11 +323,23 @@ def _fail_host_commits(env) -> Path:
     return hook
 
 
-def test_f2_a_failed_host_write_is_pending_and_the_next_maintenance_run_places_it(
+def _pending(env) -> dict:
+    from self_learn import hook_pending
+
+    return hook_pending.read(env.home)
+
+
+def _commit_host(env, message: str) -> None:
+    _git(env.host, "add", "-A")
+    _git(env.host, "commit", "-qm", message)
+
+
+def test_f2_a_failed_host_write_is_recorded_pending_and_the_next_maintenance_run_places_it(
         env, monkeypatch, cache_dir):
-    """The gate's reproduction: the regeneration's ledger commit lands, the
-    host commit is refused (the file is put back); the job must not report
-    the hook regenerated, and the next run must place it, not go idle."""
+    """The gate's r1 reproduction, under r2's rule: the regeneration's
+    ledger commit lands, the host commit is refused (the file is put back);
+    the job reports the hook pending and RECORDS it, and the next run places
+    exactly that record, then forgets it."""
     script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
     old = _meta(env)["script"]
     blocker = _fail_host_commits(env)
@@ -332,27 +350,124 @@ def test_f2_a_failed_host_write_is_pending_and_the_next_maintenance_run_places_i
     assert first.hooks_regenerated == [] and RID in first.hooks_pending
     state = maintenance.read_state(cache_dir)
     assert RID in state["hooks_pending"] and "hooks_regenerated" not in state
+    entry = _pending(env)[RID]
+    assert entry["placed_sha256"] == compiled_sha(old) and entry["missing"] is False
 
     blocker.unlink()
-    assert verbs.unplaced_warn_hooks(env.home) == ([RID], {})  # work, not idle
+    assert verbs.pending_warn_hook_placements(env.home) == ([RID], {})  # work, not idle
     second = maintenance.run(env.home, cache_dir, now=time.time() + 2 * 86400)
     assert second.status == "ran" and second.hooks_placed == [RID]
     assert script.read_bytes() == new.encode("utf-8")
     assert maintenance.read_state(cache_dir)["hooks_placed"] == [RID]
-    assert verbs.unplaced_warn_hooks(env.home) == ([], {})
+    assert _pending(env) == {}  # placed, so forgotten
     assert maintenance.run(env.home, cache_dir, now=time.time() + 4 * 86400).status == "idle"
 
 
-def test_f2_recompile_reports_the_pending_write_and_a_later_recompile_places_it(env, monkeypatch):
+def test_f2_recompile_records_the_pending_write_and_a_later_recompile_places_it(env, monkeypatch):
     script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
     blocker = _fail_host_commits(env)
     first = verbs.recompile(env.home, no_push=True)
     assert first.hooks_regenerated == [] and RID in first.hooks_pending
     assert any(w.startswith(f"{RID}: warning hook regenerated in the ledger, host write pending")
                for w in first.warnings)
+    assert RID in _pending(env)
     blocker.unlink()
-    verbs.recompile(env.home, no_push=True)
+    second = verbs.recompile(env.home, no_push=True)
+    assert second.hooks_placed == [RID] and second.hooks_pending == {}
     assert script.read_bytes() == _current(env).encode("utf-8")
+    assert _pending(env) == {}
+
+
+def test_g2_a_person_edit_after_a_failed_write_is_left_and_reported(env, monkeypatch, cache_dir):
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    blocker = _fail_host_commits(env)
+    maintenance.run(env.home, cache_dir, now=time.time())
+    assert RID in _pending(env)  # control: recorded
+    blocker.unlink()
+    edited = script.read_text(encoding="utf-8") + "# mine\n"
+    script.write_text(edited, encoding="utf-8")
+    _commit_host(env, "hand edit")
+    place, left = verbs.pending_warn_hook_placements(env.home)
+    assert place == [] and "was changed after" in left[RID]
+    job = maintenance.run(env.home, cache_dir, now=time.time() + 2 * 86400)
+    assert job.status == "idle" and "was changed after" in job.hooks_refused[RID]
+    assert script.read_text(encoding="utf-8") == edited
+    # a recompile by hand leaves it too, and says so
+    by_hand = verbs.recompile(env.home, no_push=True)
+    assert any(w.startswith(f"{RID}: pending warning hook not placed") for w in by_hand.warnings)
+    assert script.read_text(encoding="utf-8") == edited
+
+
+def test_g2_a_person_deletion_after_a_failed_write_is_left_and_reported(
+        env, monkeypatch, cache_dir):
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    blocker = _fail_host_commits(env)
+    maintenance.run(env.home, cache_dir, now=time.time())
+    assert _pending(env)[RID]["missing"] is False  # control: the file was put back
+    blocker.unlink()
+    script.unlink()
+    _commit_host(env, "hand delete")
+    job = maintenance.run(env.home, cache_dir, now=time.time() + 2 * 86400)
+    assert job.status == "idle" and "was deleted after" in job.hooks_refused[RID]
+    assert not script.exists()
+
+
+def test_g2_a_file_missing_after_the_failed_write_is_placed(env, monkeypatch, cache_dir):
+    """A person removes an outdated hook's file and runs recompile by hand,
+    which regenerates it; its host write fails, leaving the file missing.
+    That is recorded (``missing``), and the next run places it."""
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    script.unlink()
+    _commit_host(env, "remove it so recompile writes the regenerated hook")
+    blocker = _fail_host_commits(env)
+    first = verbs.recompile(env.home, no_push=True)
+    assert RID in first.hooks_pending and not script.exists()
+    assert _pending(env)[RID]["missing"] is True
+    blocker.unlink()
+    job = maintenance.run(env.home, cache_dir, now=time.time())
+    assert job.status == "ran" and job.hooks_placed == [RID]
+    assert script.read_bytes() == _current(env).encode("utf-8")
+
+
+def test_g2_a_restored_edit_after_a_hand_recompile_is_left(env, monkeypatch, cache_dir):
+    """The gate's P1: a person edits an up-to-date hook, a hand recompile
+    re-applies the stored bytes, and the person puts their edit back. With
+    nothing recorded pending, the daily job leaves it."""
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=False)
+    stored = _meta(env)["script"]
+    edited = stored + "# mine\n"
+    script.write_text(edited, encoding="utf-8")
+    _commit_host(env, "hand edit")
+    verbs.recompile(env.home, no_push=True)
+    assert script.read_text(encoding="utf-8") == stored  # control: re-applied
+    script.write_text(edited, encoding="utf-8")
+    _commit_host(env, "put my edit back")
+    assert verbs.pending_warn_hook_placements(env.home) == ([], {})
+    job = maintenance.run(env.home, cache_dir, now=time.time())
+    assert job.status == "idle" and job.hooks_refused == {}
+    assert script.read_text(encoding="utf-8") == edited
+
+
+def test_g4_a_deleted_up_to_date_hook_is_not_recreated(env, monkeypatch, cache_dir):
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=False)
+    assert script.exists()  # control
+    script.unlink()
+    _commit_host(env, "hand delete")
+    job = maintenance.run(env.home, cache_dir, now=time.time())
+    assert job.status == "idle" and job.hooks_placed == []
+    assert not script.exists()
+
+
+def test_g4_a_deleted_outdated_hook_is_left_by_maintenance(env, monkeypatch, cache_dir):
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    old = _meta(env)["script"]
+    script.unlink()
+    _commit_host(env, "hand delete")
+    stale, left = verbs.stale_warn_hooks(env.home)
+    assert stale == [] and "is missing" in left[RID]
+    job = maintenance.run(env.home, cache_dir, now=time.time())
+    assert job.status == "idle" and "is missing" in job.hooks_refused[RID]
+    assert not script.exists() and _meta(env)["script"] == old  # nothing moved
 
 
 def test_f2_a_person_edit_of_an_up_to_date_hook_is_not_placed_by_maintenance(
@@ -361,10 +476,9 @@ def test_f2_a_person_edit_of_an_up_to_date_hook_is_not_placed_by_maintenance(
     edited = _meta(env)["script"] + "# mine\n"
     script.write_text(edited, encoding="utf-8")
     _git(env.host, "commit", "-qam", "hand edit")
-    place, left = verbs.unplaced_warn_hooks(env.home)
-    assert place == [] and left[RID].startswith("hand-edited")
+    assert verbs.pending_warn_hook_placements(env.home) == ([], {})
     job = maintenance.run(env.home, cache_dir, now=time.time())
-    assert job.status == "idle" and job.hooks_refused[RID].startswith("hand-edited")
+    assert job.status == "idle"
     assert script.read_text(encoding="utf-8") == edited
 
 

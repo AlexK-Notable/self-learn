@@ -12410,6 +12410,8 @@ class RecompileResult:
     #: S-133 gate r1 F2: hooks regenerated in the ledger whose host write did
     #: not land this run (record id -> why); the next run places them.
     hooks_pending: dict[str, str] = field(default_factory=dict)
+    #: Gate r2 G2: recorded pending hooks this run placed (record ids).
+    hooks_placed: list[str] = field(default_factory=list)
 
     @property
     def committed(self) -> int:
@@ -12782,6 +12784,9 @@ class HookRefreshResult:
     regenerated: list[str] = field(default_factory=list)
     refused: dict[str, str] = field(default_factory=dict)
     commit_subject: str | None = None
+    #: Gate r2 G2: record id -> sha256 of the stored bytes it replaced, i.e.
+    #: the bytes self-learn had placed before this regeneration.
+    previous: dict[str, str] = field(default_factory=dict)
 
 
 def _warn_refresh_refusal(
@@ -12847,66 +12852,104 @@ def _warn_refresh_refusal(
     return None
 
 
-def _warn_hook_unplaced(home: Path, record: Record, meta: dict) -> tuple[bool, str | None]:
-    """S-133 gate r1 F2, read only: an up-to-date warning hook whose placed
-    file does not hold its stored bytes. ``(True, None)``: work -- the file is
-    missing, or still holds the bytes self-learn last placed (the compile
-    record's ``script`` entry reads ``clean``/``stale``), which is an
-    unfinished re-apply (a regeneration whose host write failed), not a
-    person's edit. ``(False, why)``: a person's edit, left. ``(False, None)``:
-    placed, or nothing this check can say (recompile names it)."""
-    stored = str(meta.get("script") or "").encode("utf-8")
-    try:
-        where = _hook_script_location(home, record, [])
-    except VerbError:
-        return False, None
-    if where is None:
-        return False, None
-    host_repo, script_abs = where[0], where[1]
-    if script_abs.is_symlink():
-        return False, f"{WARN_HOOK_HAND_EDITED}: {script_abs} is a symlink, not the placed script"
-    if not script_abs.exists():
-        return True, None
-    try:
-        on_disk = script_abs.read_bytes()
-    except OSError:
-        return False, None
-    if on_disk == stored:
-        return False, None
-    try:
-        slug = host_slug(home, host_repo, scope_kind=_hook_scope_kind(record))
-        entry = compiled.entry_for(
-            compiled.load_record(home, slug),
-            compiled.region_key(host_repo, script_abs, "script"),
-            region="script",
-        )
-    except (compiled.CompiledRecordError, HostsError, OSError, ValueError):
-        entry = None
-    if compiled.verdict_for(entry, compiled.sha256_hex(on_disk)) in ("clean", "stale"):
-        return True, None
-    return False, (
-        f"{WARN_HOOK_HAND_EDITED}: {script_abs} holds neither its stored bytes nor "
-        "the last bytes self-learn placed — left as it is"
-    )
+def _pending_verdicts(
+    home: Path, only_records: Iterable[str] | None = None
+) -> tuple[list[str], dict[str, str], list[str]]:
+    """S-133 gate r2 (G2, G4), read only: what the recorded pending
+    placements (:mod:`hook_pending`) mean now. Returns ``(place, left,
+    done)``:
+
+    - ``place``: the recorded hooks whose placed file is still as the
+      failed write left it -- holding the bytes self-learn had placed
+      (``placed_sha256``), or missing when the failed write left it
+      missing. Recompile places them.
+    - ``left``: record id -> why. The file holds anything else, or was
+      deleted afterwards: a person's change, left alone and reported.
+    - ``done``: entries to forget -- the file already holds the stored
+      bytes, or the lesson is no longer a live warning hook.
+
+    A hook not recorded pending is never placed by this rule."""
+    from . import hook_pending
+
+    wanted = set(only_records) if only_records is not None else None
+    place: list[str] = []
+    left: dict[str, str] = {}
+    done: list[str] = []
+    for rid, entry in sorted(hook_pending.read(home).items()):
+        if wanted is not None and rid not in wanted:
+            continue
+        try:
+            record = Record.from_path(ledger_ops.find_record_path(home, rid))
+        except (LedgerOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS):
+            done.append(rid)
+            continue
+        meta = (record.routing or {}).get("hook") or {}
+        stored = meta.get("script")
+        if (
+            (record.routing or {}).get("destination") != "hook"
+            or not domain.is_canon_live(record)
+            or hook_mode(meta) != "warn"
+            or not isinstance(stored, str)
+        ):
+            done.append(rid)
+            continue
+        try:
+            where = _hook_script_location(home, record, [])
+        except VerbError:
+            where = None
+        if where is None:
+            continue  # cannot be located now: kept, recompile names it
+        script_abs = where[1]
+        if script_abs.is_symlink():
+            left[rid] = f"{script_abs} became a symlink after self-learn's write failed"
+            continue
+        if not script_abs.exists():
+            if entry.get("missing"):
+                place.append(rid)
+            else:
+                left[rid] = (
+                    f"{script_abs} was deleted after self-learn's write failed — left as it is"
+                )
+            continue
+        try:
+            on_disk = script_abs.read_bytes()
+        except OSError:
+            continue
+        if on_disk == stored.encode("utf-8"):
+            done.append(rid)
+        elif compiled.sha256_hex(on_disk) == entry.get("placed_sha256"):
+            place.append(rid)
+        else:
+            left[rid] = (
+                f"{script_abs} was changed after self-learn's write failed — left as it "
+                "is; self-learn places it only if the file is put back as it was"
+            )
+    return place, left, done
+
+
+def pending_warn_hook_placements(
+    home: Path | str, only_records: Iterable[str] | None = None
+) -> tuple[list[str], dict[str, str]]:
+    """S-133 gate r2, read only: the recorded pending hooks a recompile
+    would place now, and the ones it leaves (a person changed or deleted
+    the file after the failed write), with why. The daily maintenance job
+    adds the first to its recompile and reports the second."""
+    place, left, _done = _pending_verdicts(Path(home), only_records)
+    return place, left
 
 
 def _plan_warn_hook_refresh(
     home: Path, only_records: Iterable[str] | None = None
-) -> tuple[list[tuple[Path, Record, str]], dict[str, str], list[str], dict[str, str]]:
+) -> tuple[list[tuple[Path, Record, str]], dict[str, str]]:
     """S-133, read only: every live warning-hook lesson whose
     stored ``routing.hook.script`` is not what the current compiler makes
     from the same stored hook block. Returns ``(todo, refused)``: ``todo``
     holds ``(record path, record, new script)`` for the hooks that may be
     regenerated, ``refused`` the ones :func:`_warn_refresh_refusal` stops.
-    The last two are gate r1 F2's: ``place``, the up-to-date hooks whose
-    placed file :func:`_warn_hook_unplaced` finds unfinished, and
-    ``place_left``, the ones it finds a person edited. A deny guard
-    (``hook_mode`` not ``warn``) is never looked at."""
+    A deny guard (``hook_mode`` not ``warn``) is never looked at."""
     wanted = set(only_records) if only_records is not None else None
     todo: list[tuple[Path, Record, str]] = []
     refused: dict[str, str] = {}
-    place: list[str] = []
-    place_left: dict[str, str] = {}
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
@@ -12933,18 +12976,13 @@ def _plan_warn_hook_refresh(
                 refused[record.id] = f"the compiler refuses its stored hook block ({exc})"
                 continue
             if new == stored:
-                unplaced, why = _warn_hook_unplaced(home, record, meta)
-                if unplaced:
-                    place.append(record.id)
-                elif why is not None:
-                    place_left[record.id] = why
                 continue
             reason = _warn_refresh_refusal(home, record, meta, stored, new)
             if reason is not None:
                 refused[record.id] = reason
             else:
                 todo.append((path, record, new))
-    return todo, refused, place, place_left
+    return todo, refused
 
 
 def stale_warn_hooks(
@@ -12953,20 +12991,27 @@ def stale_warn_hooks(
     """S-133, read only: the ids of the warning hooks a
     :func:`refresh_warn_hooks` run would regenerate, and the outdated ones
     it would leave, with why. The daily maintenance job reads it to know
-    which lessons its recompile must cover."""
-    todo, refused, _place, _left = _plan_warn_hook_refresh(Path(home), only_records)
-    return [record.id for _, record, _ in todo], refused
+    which lessons its recompile must cover.
 
-
-def unplaced_warn_hooks(
-    home: Path | str, only_records: Iterable[str] | None = None
-) -> tuple[list[str], dict[str, str]]:
-    """S-133 gate r1 F2, read only: the up-to-date warning hooks whose placed
-    file is missing or still holds the last bytes self-learn placed (a
-    regeneration whose host write failed), which a recompile places; and the
-    ones whose file a person edited, left, with why."""
-    _todo, _refused, place, left = _plan_warn_hook_refresh(Path(home), only_records)
-    return place, left
+    Gate r2 G4: an outdated hook whose placed file is MISSING is left here
+    (a person's deletion; the unattended job never recreates it), although
+    a recompile run by hand still regenerates and places it."""
+    home = Path(home)
+    todo, refused = _plan_warn_hook_refresh(home, only_records)
+    ids: list[str] = []
+    for _, record, _ in todo:
+        try:
+            where = _hook_script_location(home, record, [])
+        except VerbError:
+            where = None
+        if where is not None and not where[1].exists() and not where[1].is_symlink():
+            refused[record.id] = (
+                f"{where[1]} is missing (a person's deletion) — left as it is; "
+                "a recompile run by hand writes the regenerated hook"
+            )
+            continue
+        ids.append(record.id)
+    return ids, refused
 
 
 def refresh_warn_hooks(
@@ -12994,7 +13039,7 @@ def refresh_warn_hooks(
     commit."""
     home = Path(home)
     result = HookRefreshResult()
-    todo, result.refused, _place, _left = _plan_warn_hook_refresh(home, only_records)
+    todo, result.refused = _plan_warn_hook_refresh(home, only_records)
     if not todo:
         return result
     hold = sentinel.hold()  # the autosync pause every mutating verb takes
@@ -13033,6 +13078,9 @@ def _refresh_commit(
                 or script_for_hook(current.id, record_title(current), meta) != new
             ):
                 continue
+            result.previous[current.id] = compiled.sha256_hex(
+                str(meta.get("script") or "").encode("utf-8")
+            )
             meta["script"] = new
             routing["hook"] = meta
             current.set_routing(routing)
@@ -13143,6 +13191,8 @@ def recompile(
     # deny guard); the hook re-apply below writes the new bytes to the host.
     # An outdated one a person edited is left: out of the re-apply too.
     hand_edited_hooks: set[str] = set()
+    regenerated_from: dict[str, str] = {}
+    pending_place: list[str] = []
     if not _adopt_list(adopt):
         refresh = refresh_warn_hooks(
             home,
@@ -13153,10 +13203,20 @@ def recompile(
         if refresh.commit_subject is not None:
             span_commits.append(refresh.commit_subject)
         result.hooks_regenerated = list(refresh.regenerated)
+        regenerated_from = dict(refresh.previous)
         for rid, why in sorted(refresh.refused.items()):
             result.warnings.append(f"{rid}: warning hook not regenerated — {why}")
             if why.startswith(WARN_HOOK_HAND_EDITED):
                 hand_edited_hooks.add(rid)
+        # Gate r2: hooks recorded pending by an earlier failed write.
+        pending_place, pending_left, pending_done = _pending_verdicts(home, only_records)
+        for rid, why in sorted(pending_left.items()):
+            result.warnings.append(f"{rid}: pending warning hook not placed — {why}")
+            hand_edited_hooks.add(rid)
+        if pending_done:
+            from . import hook_pending
+
+            hook_pending.drop(home, pending_done)
 
     # Enumerate targets off ALL resolved records that ever landed in canon
     # (the ledger is the source of truth — targets are derived, never
@@ -14358,46 +14418,68 @@ def recompile(
                 gitops.push_if_remote(host_repo)
     finally:
         hold.release()
-    _confirm_regenerated(home, result)
+    _confirm_regenerated(home, result, regenerated_from, pending_place)
     return result
 
 
-def _confirm_regenerated(home: Path, result: RecompileResult) -> None:
-    """S-133 gate r1 F2: keep in ``hooks_regenerated`` only the hooks whose
-    placed file now holds the regenerated (stored) bytes. One whose host
-    write did not land -- a refused host commit, the dirty gate, a plain-host
-    exclude error -- moves to ``hooks_pending`` with why and a warning; the
-    next maintenance run (or recompile) places it (:func:`unplaced_warn_hooks`)."""
+def _confirm_regenerated(
+    home: Path, result: RecompileResult, previous: dict[str, str], pending_place: list[str]
+) -> None:
+    """S-133 gate r1 F2 / r2 G2: keep in ``hooks_regenerated`` only the
+    hooks whose placed file now holds the regenerated (stored) bytes. One
+    whose host write did not land -- a refused host commit, the dirty gate,
+    a plain-host exclude error -- moves to ``hooks_pending`` with why and a
+    warning, and is RECORDED pending (:mod:`hook_pending`: the bytes
+    self-learn had placed before, and whether the file is missing), so the
+    next maintenance run or recompile places exactly it. The recorded
+    hooks this run set out to place (*pending_place*) are forgotten once
+    placed (``hooks_placed``), and stay recorded otherwise."""
+    from . import hook_pending
+
     confirmed: list[str] = []
-    for rid in result.hooks_regenerated:
+    placed: list[str] = []
+    for rid in [*result.hooks_regenerated, *pending_place]:
         why = "the host file was not written"
+        where = None
+        stored = ""
         try:
             record = Record.from_path(ledger_ops.find_record_path(home, rid))
             stored = str(((record.routing or {}).get("hook") or {}).get("script") or "")
             where = _hook_script_location(home, record, [])
         except (LedgerOpsError, VerbError, *ledger_ops.UNREADABLE_RECORD_ERRORS) as exc:
-            where, stored, why = None, "", f"its placed file could not be read ({exc})"
+            why = f"its placed file could not be read ({exc})"
+        ok = False
         if where is not None:
             script_abs = where[1]
             try:
-                placed = (
+                ok = (
                     not script_abs.is_symlink()
                     and script_abs.read_bytes() == stored.encode("utf-8")
                 )
             except OSError:
-                placed = False
-            if placed:
-                confirmed.append(rid)
-                continue
-            skipped = [e.skipped for e in result.entries if e.target == script_abs and e.skipped]
-            if skipped:
-                why = " ".join(str(skipped[0]).split())
+                ok = False
+            if not ok:
+                skipped = [
+                    e.skipped for e in result.entries if e.target == script_abs and e.skipped
+                ]
+                if skipped:
+                    why = " ".join(str(skipped[0]).split())
+        if ok:
+            (placed if rid in pending_place else confirmed).append(rid)
+            continue
         result.hooks_pending[rid] = why
         result.warnings.append(
             f"{rid}: warning hook regenerated in the ledger, host write pending — {why}; "
             "the next maintenance run (or recompile) places it"
         )
+        if rid in previous and where is not None:
+            hook_pending.record(
+                home, rid, placed_sha256=previous[rid], missing=not where[1].exists(),
+                script_path=str(where[2]), why=why,
+            )
     result.hooks_regenerated = confirmed
+    result.hooks_placed = placed
+    hook_pending.drop(home, placed)
 
 
 @dataclass(frozen=True)

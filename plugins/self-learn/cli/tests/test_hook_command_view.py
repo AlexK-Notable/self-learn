@@ -1,11 +1,19 @@
 """S-133: a warning hook on Bash matches the command's words, not the text
-inside quotes, comments or heredoc bodies.
+inside the quotes and heredoc bodies it fully understands.
 
 The live defect (notice ntc-71c2eb83, lesson lrn-042c8179): the heredoc
 warning hook of lrn-c71f0a40 grepped the raw command, so a commit message
 or a heredoc that only MENTIONED ``python3 - <<EOF </dev/null`` fired the
-warning. Every test here runs the GENERATED script (or its embedded awk
-program) against sample commands -- the suite's mock-free convention.
+warning. Gate r2's rule (the orchestrator's): the view hides only spans it
+fully understands -- a single-quoted string, a double-quoted string with no
+``$``, backtick or escaped quote, a heredoc body whose terminator line is
+found (an unquoted one only without ``$(`` or a backtick) -- and shows
+everything else as written. The worst case is an extra warning, never a
+missed one.
+
+Every test runs the GENERATED script (or its embedded awk program) against
+sample commands -- the suite's mock-free convention. The corpus below is
+the builder's own cases plus every input gate r1 and gate r2 probed with.
 """
 
 from __future__ import annotations
@@ -58,8 +66,12 @@ HEREDOC_EXAMPLES = {
                        "print(sys.version)\nPY"}},
     ],
 }
-#: A second live shape (lrn-19f82fc5's family): a word-anchored regex.
+#: lrn-19f82fc5's live regex: anchored on a word boundary.
 PGREP_REGEX = r"(^|[;&|(`[:space:]])p(kill|grep)([[:space:]]+-[^[:space:]]+)*[[:space:]]+(-[a-zA-Z]*f[a-zA-Z]*|--full)([[:space:]]|$)"
+#: The gate's word probe: matches after a quote mark too.
+WORD_REGEX = r"(^|[^[:alnum:]_-])(pkill|danger)([^[:alnum:]_-]|$)"
+#: One hook carrying all three, so a corpus case is one run.
+CORPUS_REGEX = "|".join(f"({r})" for r in (HEREDOC_REGEX, PGREP_REGEX, WORD_REGEX))
 
 BAD = "python3 - <<EOF </dev/null"  # the shape the heredoc hook warns on
 
@@ -77,7 +89,7 @@ def _guard(tmp_path: Path, regex: str = HEREDOC_REGEX, *, mode: str = "warn",
 def _run(script: Path, command: str, env: dict | None = None) -> subprocess.CompletedProcess:
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
     return subprocess.run([str(script)], input=payload, capture_output=True, text=True,
-                          env=env, timeout=30)
+                          env=env, timeout=60)
 
 
 def _warns(script: Path, command: str, env: dict | None = None) -> bool:
@@ -94,59 +106,184 @@ def _warns(script: Path, command: str, env: dict | None = None) -> bool:
 def _view(command: str, awk: tuple[str, ...] = ("awk",)) -> subprocess.CompletedProcess:
     return subprocess.run([*awk, COMMAND_VIEW_AWK], input=command + "\n",
                           capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"},
-                          timeout=30)
+                          timeout=60)
 
 
-# ------------------------------------------------- the reproduction (red first)
+# ------------------------------------------------------------- the corpus
 
-#: Text that only MENTIONS the shape: none of these runs a heredoc into an
-#: interpreter with stdin from /dev/null. Before S-133 every one warned.
-SILENT = {
-    "double-quoted commit message": f'git commit -m "docs: {BAD}"',
-    "single-quoted argument": f"echo '{BAD}'",
-    "heredoc body (quoted delimiter)": f"cat > notes.md <<'MD'\nnever run {BAD}\nMD",
-    "heredoc body (bare delimiter)": f"cat > notes.md <<MD\nnever run {BAD}\nMD",
-    "heredoc body with an apostrophe": f"cat <<EOF\ndon't {BAD}\nEOF",
-    "the Claude Code commit idiom": f"git commit -m \"$(cat <<'EOF'\nfix: {BAD}\nEOF\n)\"",
-    "escaped quotes inside double quotes": f'echo "he said \\"{BAD}\\" twice"',
-    "ANSI-C quoting with an escaped quote": f"printf $'it\\'s {BAD}'",
-    "a comment": f"ls  # {BAD}",
-    "two heredocs on one line": f"cat <<A <<B\nx\nA\n{BAD}\nB",
-    "tab-stripped heredoc": f"cat <<-EOF\n\t{BAD}\n\tEOF",
-    "unterminated heredoc": f"cat <<EOF\n{BAD}",
-    "data nested in a shell payload": f"bash -c \"echo '{BAD}'\"",
-    "python -c is not a shell payload": f"python3 -c \"print('{BAD}')\"",
+#: name -> (command, expectation). ``warn``: a plain invocation (or text the
+#: conservative rule shows) must warn. ``silent``: a mention inside a span
+#: the rule fully understands must not warn, and the raw matcher must (the
+#: control). ``none``: nothing to warn on, raw or viewed. ``syntax``: bash
+#: rejects the input, so nothing runs; no claim.
+CORPUS: dict[str, tuple[str, str]] = {
+    # --- the builder's own: understood mentions
+    "own: double-quoted commit message": (f'git commit -m "docs: {BAD}"', "silent"),
+    "own: single-quoted argument": (f"echo '{BAD}'", "silent"),
+    "own: heredoc body, quoted delimiter": (f"cat > notes.md <<'MD'\nnever run {BAD}\nMD", "silent"),
+    "own: heredoc body, bare delimiter": (f"cat > notes.md <<MD\nnever run {BAD}\nMD", "silent"),
+    "own: heredoc body with an apostrophe": (f"cat <<EOF\ndon't {BAD}\nEOF", "silent"),
+    "own: two heredocs on one line": (f"cat <<A <<B\nx\nA\n{BAD}\nB", "silent"),
+    "own: tab-stripped heredoc": (f"cat <<-EOF\n\t{BAD}\n\tEOF", "silent"),
+    "own: python -c double-quoted, no $": (f"python3 -c \"print('{BAD}')\"", "silent"),
+    "own: pkill in a commit message": ('git commit -m "never pkill -f a pattern"', "silent"),
+    "own: pgrep in a quoted heredoc": ("cat <<'EOF' > NOTES.md\npgrep -f x matches itself\nEOF", "silent"),
+    "own: $( ) in a quoted heredoc body": ("cat <<'EOF'\nrun $(pkill -f foo) danger\nEOF", "silent"),
+    "own: quoted heredoc inside $( )": ("x=$(cat <<'EOF'\npkill -f foo\nEOF\n)", "silent"),
+    # --- the builder's own: real invocations
+    "own: the lesson's own example": ("python3 - <<'EOF' </dev/null\nprint(1)\nEOF", "warn"),
+    "own: after an escaped quote outside quotes": (f'echo \\"x\\"; {BAD}\nEOF', "warn"),
+    "own: between escaped apostrophes": (f"echo \\' {BAD} \\'\nEOF", "warn"),
+    "own: bash -c single-quoted payload": (f"bash -c '{BAD}\nprint(1)\nEOF'", "warn"),
+    "own: sh -c double-quoted payload": ("sh -c \"uv run python - <<PY 2>&1 </dev/null\nPY\"", "warn"),
+    "own: bash -lc after other options": (f"sudo bash -o pipefail -lc '{BAD}\nEOF'", "warn"),
+    "own: eval payload": (f'eval "{BAD}"', "warn"),
+    "own: ssh remote command": (f"ssh host '{BAD}\nEOF'", "warn"),
+    "own: a heredoc fed to a shell": (f"bash <<'SH'\n{BAD}\nprint(1)\nEOF\nSH", "warn"),
+    "own: a here-string": ("python3 <<<'print(1)' </dev/null", "warn"),
+    "own: a real line after a tab-stripped heredoc": (f"cat <<-EOF\n\tx\n\tEOF\n{BAD}\nEOF", "warn"),
+    "own: after a heredoc whose body has quotes": (f"cat <<EOF\nit's \"x\nEOF\n{BAD}\nEOF", "warn"),
+    "own: quoted argument, real command": ("pkill -f 'node server'", "warn"),
+    "own: $( ) in double quotes": ('echo "pids: $(pgrep -f worker)"', "warn"),
+    "own: backticks": ("echo `pgrep -f worker`", "warn"),
+    "own: backticks in double quotes": ('echo "`pgrep -f worker`"', "warn"),
+    "own: bash -c, word-anchored": ("bash -c 'pkill -f node'", "warn"),
+    "own: sudo sh -c": ('sudo sh -c "pgrep -f worker"', "warn"),
+    "own: eval ANSI-C": ("eval $'pkill -f x'", "warn"),
+    # --- shown by the conservative rule (not understood, so visible)
+    "rule: the commit idiom ($( ) in double quotes)": (f"git commit -m \"$(cat <<'EOF'\nfix: {BAD}\nEOF\n)\"", "warn"),
+    "rule: escaped quotes in double quotes": (f'echo "he said \\"{BAD}\\" twice"', "warn"),
+    "rule: ANSI-C quoting": (f"printf $'it\\'s {BAD}'", "warn"),
+    "rule: a comment": (f"ls  # {BAD}", "warn"),
+    "rule: a heredoc with no terminator line": (f"cat <<EOF\n{BAD}", "warn"),
+    "rule: a double-quoted payload's single quotes": (f"bash -c \"echo '{BAD}'\"", "warn"),
+    "rule: an unquoted heredoc body holding $( )": ("cat <<EOF\n$(date) danger\nEOF", "warn"),
+    "rule: a here-string to any command": ('cat <<< "pkill -f foo"', "warn"),
+    "rule: a here-string holding $( )": ("bash <<< \"$(echo 'x')\"; echo 'pkill -f foo'", "warn"),
+    "rule: a comment after a subshell": ("(echo a) # pkill -f foo", "warn"),
+    "rule: a double-quoted string holding $": ('echo "$HOME danger"', "warn"),
+    # --- gate r1, cases1 (the gate's inputs, verbatim)
+    "r1: plain": ("pkill -f foo", "warn"),
+    "r1: commitmsg": ('git commit -m "pkill -f foo danger"', "silent"),
+    "r1: bashc": ("bash -c 'pkill -f foo; danger'", "warn"),
+    "r1: arith-shift": ("x=$((1 << 2))\npkill -f foo\ndanger", "warn"),
+    "r1: arith-shift2": ("echo $((a<<b)); danger", "warn"),
+    "r1: ssh-heredoc": ("ssh host <<'EOF'\npkill -f foo\nEOF", "warn"),
+    "r1: pipe-to-bash": ("cat <<'EOF' | bash\npkill -f foo\nEOF", "warn"),
+    "r1: subst-hash": ("echo $(date)#tag; pkill -f foo", "warn"),
+    "r1: paren-hash": ("(echo a)#x; danger", "warn"),
+    "r1: watch": ("watch -n1 'pkill -f foo'", "warn"),
+    "r1: bash-c--": ("bash -c -- 'pkill -f foo'", "warn"),
+    "r1: quoted-cmd": ('"pkill" -f foo', "warn"),
+    "r1: quoted-arg": ('rm -rf "$HOME/.self-learn" danger', "warn"),
+    "r1: python-c": ('python3 -c \'import os; os.system("pkill -f foo")\'', "silent"),
+    "r1: heredoc-commit": ("git commit -m \"$(cat <<'EOF'\nfix: pkill -f foo danger\nEOF\n)\"", "warn"),
+    "r1: heredoc-sh": ("bash <<EOF\npkill -f foo\nEOF", "warn"),
+    "r1: bash-s-arg": ("bash -s -- arg <<EOF\npkill -f foo\nEOF", "warn"),
+    "r1: xargs": ("echo x | xargs -I{} sh -c 'pkill -f {}'", "warn"),
+    "r1: eval": ('eval "pkill -f foo"', "warn"),
+    "r1: dq-subst": ('echo "$(pkill -f foo)"', "warn"),
+    "r1: bt": ('echo "`pkill -f foo`"', "warn"),
+    "r1: herestring": ("bash <<< 'pkill -f foo'", "warn"),
+    "r1: unbalanced": ("echo 'oops; pkill -f foo", "syntax"),
+    "r1: crlf": ("cat <<EOF\r\nbody\r\nEOF\r\npkill -f foo\r\n", "warn"),
+    "r1: multi-heredoc": ("cat <<A <<B\na pkill -f x\nA\nb danger\nB\npkill -f foo", "warn"),
+    "r1: tab-heredoc": ("cat <<-EOF\n\tdanger\n\tEOF\npkill -f foo", "warn"),
+    "r1: comment": ("ls # pkill -f foo\ndanger", "warn"),
+    "r1: subshell-case": ('echo "$(case x in a) echo;; esac)"; pkill -f foo', "warn"),
+    "r1: ansi": ("echo $'it\\'s'; pkill -f foo", "warn"),
+    "r1: trap": ("trap 'pkill -f foo' EXIT", "warn"),
+    "r1: sudo-bash": ('sudo bash -c "pkill -f foo"', "warn"),
+    "r1: dollar-paren-unq": ("x=$(pkill -f foo)", "warn"),
+    "r1: backslash-cont": ("pkill \\\n -f foo", "warn"),
+    "r1: in-dq-nested": ('echo "$(echo "$(pkill -f foo)")"', "warn"),
+    "r1: fn": ("f() { pkill -f foo; }; f", "warn"),
+    "r1: heredoc-then-same-line": ("cat <<EOF; pkill -f foo\nbody\nEOF", "warn"),
+    "r1: lt-lt-noword": ("cat <<\npkill -f foo", "syntax"),
+    "r1: git-c": ("git -c 'core.sshCommand=ssh' push", "none"),
+    # --- gate r1, cases2
+    "r1: dq-arith": ('echo "$((1<<2))"\npkill -f foo', "warn"),
+    "r1: arith-cmd": ("(( n <<= 1 ))\npkill -f foo", "warn"),
+    "r1: dd-bs": ("dd if=/dev/zero of=f bs=$((1<<20)) count=1\npkill -f foo", "warn"),
+    "r1: procsub-hash": ("diff <(ls)#x <(ls); pkill -f foo", "warn"),
+    "r1: herestring-bash": ('bash <<< "pkill -f foo"', "warn"),
+    "r1: dq-nested-param": ('echo "${x:-"a b"}"; pkill -f foo', "warn"),
+    "r1: two-line-ok": ("true\npkill -f foo", "warn"),
+    "r1: sq-in-comment": ("ls # don't\npkill -f foo", "warn"),
+    "r1: apostrophe-heredoc-delim-line": ("cat <<EOF\nit's\nEOF\npkill -f foo", "warn"),
+    "r1: heredoc-in-subst-unquoted": ("x=$(cat <<EOF\nbody\nEOF\n)\npkill -f foo", "warn"),
+    "r1: heredoc-quoted-word-nl-in-dq": ('cat <<EOF; echo "a\nb"\nbody\nEOF\npkill -f foo', "warn"),
+    # --- gate r1, the fold's own GATE inputs
+    "r1 fold: F1 a $(( that is a subshell": ("x=$((cd /; pkill -f foo) | wc -l)", "warn"),
+    "r1 fold: F4 here-string, ANSI-C": ("bash <<< $'pkill -f foo'", "warn"),
+    "r1 fold: here-string to a shell, then quoted text": ("bash <<< x; echo 'pkill -f foo'", "silent"),
+    "r1 fold: quoted here-string, then quoted text": ("bash <<< 'true'; echo 'pkill -f foo'", "silent"),
+    "r1 fold: a trap's signal list": ("trap 'echo hi' 'pkill -f foo'", "silent"),
+    "r1 fold: arithmetic leaves later quotes alone": ('x=$((1<<2)); echo "pkill -f foo"', "silent"),
+    # --- gate r2, cases3
+    "r2: arith-then-cmd": ("(( x )) && pkill -f foo", "warn"),
+    "r2: arith-subst": ("echo $(( $(pkill -f foo) ))", "warn"),
+    "r2: dq-arith-subst": ('echo "$(( $(pkill -f foo) ))"', "warn"),
+    "r2: dq-arith-bt": ('echo "$(( `pkill -f foo` ))"', "warn"),
+    "r2: cmd-arith-subst": ("(( $(pkill -f foo) ))", "warn"),
+    "r2: unterminated-arith": ("(( x <<= 1\npkill -f foo", "warn"),
+    "r2: unterminated-darith": ("echo $(( 1 << 2\npkill -f foo", "warn"),
+    "r2: arith-with-quote-inside": ("(( x == $(echo ')') )); pkill -f foo", "warn"),
+    "r2: arith-span-swallows-quote": ('(( a )) ; echo "x" ; (( b + \'1\' )) ; pkill -f foo', "warn"),
+    "r2: arith-unbal-paren-in-str": ("echo $(( $(echo '(') )) ; pkill -f foo ; echo ')) '", "warn"),
+    "r2: nested-subshell-not-arith": ("((cd /tmp; ls) && pkill -f foo)", "warn"),
+    "r2: arith-heredoc-inside": ("(( $(cat <<EOF\n1\nEOF\n) ))\npkill -f foo", "warn"),
+    "r2: herestring-sh-unquoted-then-quote": ("bash <<< x 'pkill -f foo'", "silent"),
+    "r2: herestring-forced-leak": ('bash <<< "$x"; git commit -m "pkill -f foo"', "silent"),
+    "r2: herestring-sh-then-squote-later": ("sh <<< 'true' && echo 'pkill -f foo'", "silent"),
+    "r2: herestring-sudo-bash": ("sudo bash <<< 'pkill -f foo'", "warn"),
+    "r2: herestring-python": ('python3 <<< \'import os; os.system("pkill -f foo")\'', "warn"),
+    "r2: trap-dash": ("trap -- 'pkill -f foo' EXIT", "warn"),
+    "r2: trap-p": ("trap -p 'pkill -f foo'", "silent"),
+    "r2: commit-msg-trap-word": ('git commit -m "trap" -m "pkill -f foo"', "silent"),
+    "r2: echo-trap (G5, an extra warning)": ("echo trap 'pkill -f foo'", "warn"),
+    "r2: paren-hash-fp": ("(echo a)#x; pkill -f foo", "warn"),
+    "r2: arith-dollar-paren-paren-cmdsub": ("x=$((echo a); pkill -f foo)", "warn"),
+    "r2: arith-in-heredoc-body": ("cat <<EOF\n$((1<<2))\nEOF\npkill -f foo", "warn"),
+    "r2: force-across-newline": ("bash <<<\n'pkill -f foo'", "syntax"),
+    # --- gate r2, G1 (quoted arithmetic around a substitution)
+    "r2 G1: count inside quoted arithmetic": ('x="$(( $(pgrep -f worker | wc -l) + 1 ))"', "warn"),
+    "r2 G1: substitution in quoted arithmetic": ('echo "$(( $(pkill -f foo) ))"', "warn"),
+    "r2 G1: backticks in quoted arithmetic": ('echo "$(( `pkill -f foo` ))"', "warn"),
 }
 
-#: Real invocations: each still warns (the positive controls).
-WARNS = {
-    "the lesson's own example": "python3 - <<'EOF' </dev/null\nprint(1)\nEOF",
-    "after an escaped quote outside quotes": f'echo \\"x\\"; {BAD}\nEOF',
-    "between escaped apostrophes": f"echo \\' {BAD} \\'\nEOF",
-    "bash -c single-quoted payload": f"bash -c '{BAD}\nprint(1)\nEOF'",
-    "sh -c double-quoted payload": "sh -c \"uv run python - <<PY 2>&1 </dev/null\nPY\"",
-    "bash -lc after other options": f"sudo bash -o pipefail -lc '{BAD}\nEOF'",
-    "eval payload": f'eval "{BAD}"',
-    "ssh remote command": f"ssh host '{BAD}\nEOF'",
-    "a heredoc fed to a shell": f"bash <<'SH'\n{BAD}\nprint(1)\nEOF\nSH",
-    "a here-string keeps its quote marks": "python3 <<<'print(1)' </dev/null",
-    "a real line after a tab-stripped heredoc": f"cat <<-EOF\n\tx\n\tEOF\n{BAD}\nEOF",
-    "after a heredoc whose body has quotes": f"cat <<EOF\nit's \"x\nEOF\n{BAD}\nEOF",
-}
+
+@pytest.fixture(scope="module")
+def corpus_hooks(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("corpus")
+    return _guard(tmp, CORPUS_REGEX), _guard(tmp, CORPUS_REGEX, mode="deny")
 
 
-@pytest.mark.parametrize("name", sorted(SILENT))
-def test_text_that_only_mentions_the_shape_does_not_warn(tmp_path, name):
-    guard = _guard(tmp_path)
-    assert _warns(guard, BAD + "\nEOF")  # positive control: the hook fires at all
-    assert not _warns(guard, SILENT[name]), SILENT[name]
+@pytest.mark.parametrize("name", sorted(CORPUS))
+def test_the_corpus(corpus_hooks, name):
+    """Every plain invocation warns; every mention inside a span the rule
+    understands does not; and the view never hides what the raw matcher
+    sees unless the case is such a mention."""
+    warn_hook, raw_hook = corpus_hooks
+    command, expected = CORPUS[name]
+    raw = _run(raw_hook, command).returncode == 2  # the deny twin matches the raw text
+    viewed = _warns(warn_hook, command)
+    if expected == "warn":
+        assert viewed, command
+    elif expected == "silent":
+        assert raw, f"control: the raw matcher must see {command!r}"
+        assert not viewed, command
+    elif expected == "none":
+        assert not raw and not viewed, command
+    if expected != "silent" and expected != "syntax":
+        assert viewed or not raw, f"the view hid what the raw text shows: {command!r}"
 
 
-@pytest.mark.parametrize("name", sorted(WARNS))
-def test_a_real_invocation_still_warns(tmp_path, name):
-    guard = _guard(tmp_path)
-    assert not _warns(guard, "ls -la")  # negative control
-    assert _warns(guard, WARNS[name]), WARNS[name]
+def test_the_corpus_controls(corpus_hooks):
+    warn_hook, raw_hook = corpus_hooks
+    assert _warns(warn_hook, "pkill -f foo") and not _warns(warn_hook, "ls -la")
+    assert _run(raw_hook, "pkill -f foo").returncode == 2
+    assert _run(raw_hook, "ls -la").returncode == 0
 
 
 def test_the_lessons_own_examples_still_replay_clean(tmp_path):
@@ -159,69 +296,46 @@ def test_the_lessons_own_examples_still_replay_clean(tmp_path):
     assert len(replay_examples(path, broken, HEREDOC_BLOCK, RID)) == 1
 
 
-def test_a_word_anchored_regex_sees_command_words_and_not_quoted_text(tmp_path):
-    guard = _guard(tmp_path, PGREP_REGEX)
-    assert _warns(guard, "pkill -f 'node server'")  # the argument may be quoted
-    assert _warns(guard, 'echo "pids: $(pgrep -f worker)"')  # $( ) inside "..." runs
-    assert _warns(guard, "echo `pgrep -f worker`")
-    assert _warns(guard, 'echo "`pgrep -f worker`"')
-    # a shell payload is written without its quote marks, so the word
-    # boundary the regex anchors on is there (the raw text has a quote)
-    assert _warns(guard, "bash -c 'pkill -f node'")
-    assert _warns(guard, 'sudo sh -c "pgrep -f worker"')
-    assert _warns(guard, "eval $'pkill -f x'")
-    assert not _warns(guard, 'git commit -m "never pkill -f a pattern"')
-    assert not _warns(guard, "cat <<'EOF' > NOTES.md\npgrep -f x matches itself\nEOF")
+# ------------------------------------------------- what the view writes
 
 
-#: Gate r1 (2026-11-01), the exact inputs it listed: each hid a real
-#: invocation from the view (F1 arithmetic `<<` read as a heredoc, F3 a `#`
-#: after `)` read as a comment, F4 payloads not followed). Each must warn.
-GATE_WARNS = {
-    "F1 arithmetic shift": "x=$((1 << 2))\npkill -f foo",
-    "F1 dd block size": "dd if=/dev/zero of=f bs=$((1<<20)) count=1\npkill -f foo",
-    "F1 arithmetic in double quotes": 'echo "$((1<<2))"\npkill -f foo',
-    "F1 arithmetic command": "(( n <<= 1 ))\npkill -f foo",
-    "F1 a $(( that is a subshell": "x=$((cd /; pkill -f foo) | wc -l)",
-    "F3 # after $( )": "echo $(date)#tag; pkill -f foo",
-    "F3 # after <( )": "diff <(ls)#x <(ls); pkill -f foo",
-    "F4 here-string to bash, double": 'bash <<< "pkill -f foo"',
-    "F4 here-string to bash, single": "bash <<< 'pkill -f foo'",
-    "F4 here-string to bash, ANSI-C": "bash <<< $'pkill -f foo'",
-    "F4 -c then --": "bash -c -- 'pkill -f foo'",
-    "F4 trap": "trap 'pkill -f foo' EXIT",
-}
-GATE_SILENT = {
-    "a here-string fed to a non-shell": 'cat <<< "pkill -f foo"',
-    "a here-string to a shell, then other quoted text": "bash <<< x; echo 'pkill -f foo'",
-    "a quoted here-string to a shell, then other quoted text":
-        "bash <<< 'true'; echo 'pkill -f foo'",
-    "a quoted here-string to a shell, then a double-quoted payload's data":
-        "bash <<< \"$(echo 'x')\"; echo 'pkill -f foo'",
-    "a trap's signal list is not code": "trap 'echo hi' 'pkill -f foo'",
-    "a real comment after a subshell": "(echo a) # pkill -f foo",
-    "arithmetic leaves later quotes alone": 'x=$((1<<2)); echo "pkill -f foo"',
-}
+def _viewed(command: str) -> str:
+    proc = _view(command)
+    assert proc.returncode == 0 and proc.stderr == "", proc.stderr
+    return proc.stdout.rstrip("\n")
 
 
-@pytest.mark.parametrize("name", sorted(GATE_WARNS))
-def test_the_gate_r1_inputs_warn(tmp_path, name):
-    guard = _guard(tmp_path, PGREP_REGEX)
-    assert not _warns(guard, "ls")  # negative control
-    assert _warns(guard, GATE_WARNS[name]), GATE_WARNS[name]
-
-
-@pytest.mark.parametrize("name", sorted(GATE_SILENT))
-def test_the_gate_r1_controls_stay_silent(tmp_path, name):
-    guard = _guard(tmp_path, PGREP_REGEX)
-    assert _warns(guard, "pkill -f foo")  # positive control
-    assert not _warns(guard, GATE_SILENT[name]), GATE_SILENT[name]
-
-
-def test_arithmetic_is_kept_verbatim_in_the_view():
-    proc = _view("x=$((1 << 2)) && (( n <<= 1 ))\nls")
-    assert proc.returncode == 0
-    assert proc.stdout.rstrip("\n") == "x=$((1 << 2)) && (( n <<= 1 ))\nls"
+@pytest.mark.parametrize("command,view", [
+    ('git commit -m "x y" && ls', 'git commit -m "" && ls'),
+    ("echo 'a' \"c\"", "echo '' \"\""),
+    ("cat <<'EOF'\nbody\nEOF\nls", "cat <<'EOF'\nEOF\nls"),
+    ("cat <<EOF\nbody\nEOF\nls", "cat <<EOF\nEOF\nls"),
+    ("cat <<-EOF\n\tbody\n\tEOF\nls", "cat <<-EOF\n\tEOF\nls"),
+    ("python3 -c 'x'", "python3 -c ''"),
+    # shown as written
+    ("echo $'b'", "echo $'b'"),
+    ('echo "$HOME" "a\\"b"', 'echo "$HOME" "a\\"b"'),
+    ("ls # a 'comment'", "ls # a 'comment'"),
+    ("echo a#b 'c'", "echo a#b ''"),
+    ("echo \\'x 'y'", "echo \\'x ''"),
+    ("x=$((1 << 2)) && (( n <<= 1 ))\nls", "x=$((1 << 2)) && (( n <<= 1 ))\nls"),
+    ("cat <<EOF\n$(date)\nEOF", "cat <<EOF\n$(date)\nEOF"),
+    ("cat <<EOF\nnever closed 'x'", "cat <<EOF\nnever closed 'x'"),
+    # payloads, without their quote marks
+    ("bash -c 'echo \"hi\"; ls'", 'bash -c echo "hi"; ls'),
+    ('sh -c "echo hi; ls"', "sh -c echo hi; ls"),
+    ("eval 'a' \"b\"", "eval a b"),
+    ("'pkill' -f x", "pkill -f x"),
+    ("sudo 'pkill' -f x", "sudo pkill -f x"),
+    ("cat <<< 'a b'", "cat <<< a b"),
+    ("trap 'a' EXIT", "trap a EXIT"),
+    # the rest, as written, from the first construct the scan cannot follow
+    ('echo "a $(ls "x") b" \'y\'', 'echo "a $(ls "x") b" \'y\''),
+    ('echo "${x:-"a"}" \'y\'', 'echo "${x:-"a"}" \'y\''),
+    ("echo 'unclosed \"x\"", "echo 'unclosed \"x\""),
+])
+def test_the_view_hides_only_what_it_understands(command, view):
+    assert _viewed(command) == view
 
 
 # ----------------------------------------------------- what stays the same
@@ -261,6 +375,8 @@ def test_the_warn_script_carries_its_regex_once_and_is_deterministic():
 
 # ------------------------------------------------------- it fails open
 
+QUOTED = f'git commit -m "docs: {BAD}"'  # silent through the view, loud raw
+
 
 def _bin_dir(tmp_path: Path, name: str, *, omit: tuple[str, ...] = (),
              fake_awk: str | None = None) -> dict:
@@ -286,10 +402,10 @@ def _bin_dir(tmp_path: Path, name: str, *, omit: tuple[str, ...] = (),
 def test_without_awk_the_hook_matches_the_raw_text(tmp_path):
     guard = _guard(tmp_path)
     full = _bin_dir(tmp_path, "full")
-    assert not _warns(guard, SILENT["double-quoted commit message"], full)  # control
+    assert not _warns(guard, QUOTED, full)  # control
     env = _bin_dir(tmp_path, "no-awk", omit=("awk",))
-    assert _warns(guard, SILENT["double-quoted commit message"], env)
-    assert _warns(guard, WARNS["the lesson's own example"], env)
+    assert _warns(guard, QUOTED, env)
+    assert _warns(guard, "python3 - <<'EOF' </dev/null\nprint(1)\nEOF", env)
     assert not _warns(guard, "ls", env)
 
 
@@ -298,17 +414,17 @@ def test_without_awk_the_hook_matches_the_raw_text(tmp_path):
 def test_a_failing_awk_falls_back_to_the_raw_text_and_never_blocks(tmp_path, body):
     guard = _guard(tmp_path)
     env = _bin_dir(tmp_path, "broken-awk", fake_awk=body)
-    assert _warns(guard, SILENT["double-quoted commit message"], env)
+    assert _warns(guard, QUOTED, env)
     assert not _warns(guard, "ls", env)
 
 
-def test_an_unbalanced_quote_falls_back_to_the_raw_text(tmp_path):
-    """bash itself refuses an unbalanced quote, so nothing runs; the hook
-    matches the raw text, as it did before S-133."""
+def test_an_unbalanced_quote_shows_the_rest_as_written(tmp_path):
+    """bash itself refuses an unbalanced quote, so nothing runs; the view
+    shows everything from the quote on, so the hook warns as before S-133."""
     guard = _guard(tmp_path)
     for command in (f'echo "{BAD}', f"echo '{BAD}", f"echo $'{BAD}",
                     f'echo "$(true {BAD}"', f"cat <<'E\n{BAD}"):
-        assert _view(command).returncode == 3, command
+        assert _viewed(command) == command, command  # shown as written
         assert _warns(guard, command), command
     assert not _warns(guard, f'echo "{BAD}"')  # control: balanced, silent
 
@@ -323,57 +439,67 @@ def test_a_command_over_the_size_bound_is_matched_raw(tmp_path):
     assert _warns(guard, big)
 
 
-def test_a_large_heredoc_is_viewed_quickly(tmp_path):
-    guard = _guard(tmp_path)
-    body = "".join(f"line {i} with 'quotes' and \"more\" {BAD}\n" for i in range(2000))
-    command = f"cat > big.md <<'EOF'\n{body}EOF\necho ok"
-    assert len(command.encode()) < COMMAND_VIEW_MAX_BYTES
+def _at_cap(unit: str, prefix: str = "") -> str:
+    return prefix + unit * ((COMMAND_VIEW_MAX_BYTES - len(prefix) - 8) // len(unit))
+
+
+#: Gate r2 G3 and r1 F9: inputs that made the old view quadratic (46 s and
+#: >120 s at the cap). The view is one linear pass: each stays well inside
+#: the bound below, at the size cap.
+AT_CAP = {
+    "unclosed $((": _at_cap("$(( ", "echo "),
+    "unclosed ((": _at_cap("(("),
+    "quoted words": _at_cap("'a' "),
+    "double-quoted words": _at_cap('"a" '),
+    "eval arguments": _at_cap("'a' ", "eval "),
+    "bash -c payloads": _at_cap("bash -c 'a'; "),
+    "heredoc operators on one line": _at_cap("<<A "),
+    "heredocs": _at_cap("cat <<A\nx\nA\n"),
+    "here-strings": _at_cap("bash <<< 'a'; "),
+    "comments with apostrophes": _at_cap("# don't\n"),
+    "open parentheses": _at_cap("("),
+}
+
+
+@pytest.mark.parametrize("name", sorted(AT_CAP))
+def test_the_view_is_linear_at_the_size_cap(name):
+    command = AT_CAP[name]
+    assert len(command) <= COMMAND_VIEW_MAX_BYTES
     start = time.monotonic()
-    assert not _warns(guard, command)
-    assert time.monotonic() - start < 5.0
+    proc = _view(command)
+    took = time.monotonic() - start
+    assert proc.returncode == 0 and proc.stderr == ""
+    assert took < 5.0, f"{name}: {took:.1f}s"
+
+
+def test_a_hook_run_at_the_cap_is_bounded(tmp_path):
+    guard = _guard(tmp_path, PGREP_REGEX)
+    start = time.monotonic()
+    _warns(guard, AT_CAP["unclosed $(("])
+    assert time.monotonic() - start < 10.0
 
 
 def test_random_shell_text_never_breaks_the_hook(tmp_path):
     """Fuzz: arbitrary mixes of quotes, escapes, heredoc operators and
     separators either warn with the exact line or stay silent -- never
-    another exit code, never stderr -- and the awk view always ends (exit 0
-    or 3)."""
+    another exit code, never stderr -- and the awk view always ends."""
     guard = _guard(tmp_path)
-    atoms = ["'", '"', "\\", "$'", "$(", ")", "`", "<<", "<<-", "<<<", "EOF", "\n", "\t",
-             " ", "#", ";", "&", "|", "bash -c ", "eval ", BAD, "x", "</dev/null"]
-    rng = random.Random(131)
+    atoms = ["'", '"', "\\", "$'", "$(", "$((", "((", ")", "`", "<<", "<<-", "<<<", "EOF",
+             "\n", "\t", " ", "#", ";", "&", "|", "bash -c ", "eval ", "trap ", BAD, "x",
+             "</dev/null"]
+    rng = random.Random(133)
     for _ in range(60):
         command = "".join(rng.choice(atoms) for _ in range(rng.randint(1, 30)))
         view = _view(command)
-        assert view.returncode in (0, 3), (command, view.stderr)
-        assert view.stderr == ""
+        assert view.returncode == 0 and view.stderr == "", (command, view.stderr)
         _warns(guard, command)  # asserts exit 0, no stderr, exact line or nothing
 
 
 @pytest.mark.skipif(shutil.which("gawk") is None, reason="gawk not installed")
 def test_the_view_program_is_posix_awk():
     """No gawk extension: the program runs the same under ``gawk --posix``."""
-    for command in [*SILENT.values(), *WARNS.values(), *GATE_WARNS.values(), *GATE_SILENT.values()]:
+    for command, _ in CORPUS.values():
         plain = _view(command)
         posix = _view(command, ("gawk", "--posix"))
         assert (posix.returncode, posix.stdout, posix.stderr) == (
             plain.returncode, plain.stdout, ""), command
-
-
-def test_the_view_keeps_command_words_and_blanks_the_rest():
-    def view(command: str) -> str:
-        proc = _view(command)
-        assert proc.returncode == 0, proc.stderr
-        return proc.stdout.rstrip("\n")
-
-    assert view('git commit -m "x y" && ls') == 'git commit -m "" && ls'
-    assert view("echo 'a' $'b' \"c\"") == "echo '' $'' \"\""
-    assert view("cat <<'EOF'\nbody\nEOF\nls") == "cat <<'EOF'\nEOF\nls"
-    assert view("bash -c 'echo \"hi\"; ls'") == "bash -c echo \"\"; ls"
-    assert view('sh -c "echo \\"hi\\"; ls"') == 'sh -c echo ""; ls'
-    assert view("eval 'a' \"b\"") == "eval a b"
-    assert view("python3 -c 'x'") == "python3 -c ''"
-    assert view('echo "a $(ls "x") b"') == 'echo "$(ls "")"'
-    assert view("ls # a 'comment'") == "ls "
-    assert view("echo a#b") == "echo a#b"
-    assert view("echo \\'x") == "echo \\'x"
