@@ -548,3 +548,41 @@ def test_a_turn_completes_while_the_ledger_is_stopped(monkeypatch, home, item):
         ("user", "question"), ("agent", "draft"), ("agent", "answer")]
     assert all(r["t"] is None for r in pending)
     assert events[-1]["ev"] == "done" and events[-1]["sealed"] == []
+
+
+# ----------------------------------------------- the ledger tools, read
+
+
+def test_the_ledger_tools_answer_from_the_record(tmp_path, monkeypatch):
+    """Each read tool answers from a real ledger: a lesson, its case and the
+    statement the case names. Mutation: `record` reads the wrong field
+    (`record.status` for the text) -> red."""
+    from test_attention_packet import LESSON, _case_with_links
+
+    ledger, case_id, stmt = _case_with_links(tmp_path, monkeypatch)
+    item = {"id": "att-0123456789ab", "kind": "ask.system-change", "options": []}
+    folder = ask.workspace_dir(ledger, item["id"])
+    folder.mkdir(parents=True)
+    tools = ask.AskTools(ledger, item, roots=ask.read_roots(ledger),
+                         denied=ask.read_denied(ledger), cwd=folder)
+
+    lesson = json.loads(tools.record({"id": LESSON}))
+    assert lesson["id"] == LESSON and "Restart oo7-daemon by hand." in lesson["text"]
+    with pytest.raises(ask._Refused):
+        tools.record({"id": "lrn-ffffffff"})
+    case_text = tools.case({"id": case_id})
+    assert "Should oo7-daemon be bound to the session bus?" in case_text
+    assert f"Line of successors: {case_id}" in case_text
+    rows = json.loads(tools.statements({"ids": [stmt]}))
+    assert [r["id"] for r in rows] == [stmt] and rows[0]["verbatim"]
+    assert json.loads(tools.statements({"query": "no such words anywhere"})) == []
+    context = tools.words_in_context({"statement_id": stmt})
+    assert context.startswith(f"{stmt} (")
+    history = tools.ledger_history({"path_or_id": case_id})
+    assert history != "(no commits)" and "self-learn" in history
+    (ledger / "overseer").mkdir(exist_ok=True)
+    (ledger / "overseer" / "latest-report.md").write_text("# Week\n\n## Hooks\nnone\n",
+                                                          encoding="utf-8")
+    assert tools.report({}).startswith("# Week")
+    with pytest.raises(ask._Refused):
+        tools.report({"date": "last week"})

@@ -130,7 +130,12 @@ class FakeBackend:
                         if toolset is not None else None
                     if tool is None:
                         raise LookupError(f"FakeBackend: the session has no tool {entry.name!r}")
-                    self.tool_replies.append(asyncio.run(tool.handler(dict(entry.args))))
+                    handler = tool.handler
+
+                    async def _call(args: dict[str, Any] = dict(entry.args)) -> Any:
+                        return await handler(args)
+
+                    self.tool_replies.append(asyncio.run(_call()))
                 elif spec.on_event is not None:
                     spec.on_event(dict(entry))
             outcome = self._perform(spec, step.then)

@@ -1110,7 +1110,15 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
     if not lock.acquire():
         return _fail(emitter, err, "busy", "a question about this item is already being "
                      "answered", EXIT_FAILED), emitter
-    previous_handler = None
+    # SIGTERM (the page's Stop) interrupts the model call only; the handler
+    # is put back before anything is sealed after it.
+    handler_box: list[Any] = []
+
+    def _restore_term() -> None:
+        while handler_box:
+            previous = handler_box.pop()
+            signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
+
     try:
         from . import gitops
 
@@ -1149,7 +1157,7 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
             raise _Interrupted()
 
         if threading.current_thread() is threading.main_thread():
-            previous_handler = signal.signal(signal.SIGTERM, _on_term)
+            handler_box.append(signal.signal(signal.SIGTERM, _on_term))
         try:
             from .invocation_sdk import lifecycle
 
@@ -1169,11 +1177,13 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
                 emitter.reset_text()
                 outcome = invocation.write_session(spec, backend=_backend)
         except _Interrupted:
+            _restore_term()
             sealed += tools.sealed
             sealed += _seal(home, item, [{"role": "system", "origin": "system", "kind": "note",
                                           "text": "stopped by you"}])
             _save_state(folder, state, session_id, digest)
             return _fail(emitter, err, "interrupted", "stopped by you", EXIT_INTERRUPTED), emitter
+        _restore_term()
         sealed += tools.sealed
         new_session = getattr(outcome, "session_id", None)
         if isinstance(new_session, str) and new_session:
@@ -1201,8 +1211,7 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
         _save_state(folder, state, session_id, digest)
         return _fail(emitter, err, code, text, exit_code, fix=fix), emitter
     finally:
-        if previous_handler is not None:
-            signal.signal(signal.SIGTERM, previous_handler)
+        _restore_term()
         lock.release()
 
 
