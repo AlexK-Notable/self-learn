@@ -51,6 +51,7 @@ _FAKE_SELF_LEARN = textwrap.dedent(
     #!/usr/bin/env bash
     printf '%s\\n' "$*" >> "$FAKE_LOG"
     if [ "$1 $2" = "attention --json" ]; then
+      [ -n "${FAKE_KILL:-}" ] && kill -KILL $$
       [ -n "${FAKE_SLEEP:-}" ] && sleep "$FAKE_SLEEP"
       cat "$FAKE_JSON"
       exit "${FAKE_RC:-0}"
@@ -102,6 +103,10 @@ class Env:
             real = shutil.which(name)
             assert real, f"{name} must exist on this host to build the harness"
             (bin_dir / name).symlink_to(real)
+        # Run the tray through a symlink, as the unit runs `~/.local/bin/self-learn-tray`:
+        # only a resolved `__file__` finds `assets/tray` beside the real script.
+        self.tray = bin_dir / "self-learn-tray"
+        self.tray.symlink_to(TRAY)
         self.vars = {
             "PATH": str(bin_dir), "HOME": str(tmp_path / "home"), "SELF_LEARN_HOME": str(self.home),
             "FAKE_LOG": str(self.log), "FAKE_JSON": str(self.json),
@@ -115,7 +120,7 @@ class Env:
         return {**self.vars, **extra}
 
     def pure(self, step: str, *args: str, **extra) -> dict:
-        res = subprocess.run([SYSTEM_PYTHON, "-I", str(TRAY), "--pure", step, *args], env=self.env(**extra),
+        res = subprocess.run([SYSTEM_PYTHON, "-I", str(self.tray), "--pure", step, *args], env=self.env(**extra),
                              capture_output=True, text=True, timeout=60)
         assert res.returncode == 0, (res.stdout, res.stderr)
         return json.loads(res.stdout)
@@ -143,7 +148,9 @@ def test_1_four_states_map_to_status_icon_and_tooltip(env):
     shows it. The fixtures are real §4.1 payloads: `new` carries a flagged unseen
     item, and the idle one carries an unseen steward digest (never flagged), which
     must not light anything. The tray maps `state`; it never re-derives it.
-    Mutation: hide idle (idle's Status or icon changed) -> red."""
+    Mutation: hide idle (idle's Status or icon changed) -> red. Mutation (gate r1
+    MINOR 2): `ICON_DIR` from `os.path.abspath(__file__)` instead of `realpath`
+    -> red, because the tray runs through a symlink here as it does deployed."""
     digest = _item()  # unseen, not flagged
     flagged = _item(id="att-000000000002", kind="decided.overseer-run", flagged=True, subject="2026-10-25",
                     source={"by": "overseer", "run": "run-2", "report": "2026-10-25"})
@@ -167,7 +174,9 @@ def test_1_four_states_map_to_status_icon_and_tooltip(env):
         assert _face(out) == want, (state, out)
         assert out["view"]["state"] == state
         assert out["error"] is None
-        # the named icon ships beside the script (published through IconThemePath)
+        # the named icon ships beside the script (published through IconThemePath),
+        # found through the deployed symlink (`env.tray`), not beside the link
+        assert out["icon_dir"] == str(ICON_DIR.resolve()), out["icon_dir"]
         assert (ICON_DIR / f"{want[1]}.svg").is_file(), want[1]
 
     # "idle grey": every colour in the idle icon is a grey (r == g == b)
@@ -227,14 +236,20 @@ def test_2_timeout_and_nonzero_exit_map_to_broken(env):
     assert _face(ok)[0:2] == ("Passive", "self-learn-tray-idle"), "positive control: the same payload reads idle"
 
     slow = env.pure("poll", "--timeout-secs", "1", FAKE_SLEEP="20")
-    assert _face(slow)[0:2] == ("NeedsAttention", "self-learn-tray-broken"), slow
+    assert _face(slow) == ("NeedsAttention", "self-learn-tray-broken", "self-learn: could not check what needs you"), slow
     assert "did not answer within 1 s" in slow["view"]["tooltip_description"]
+
+    # killed outright (timeout(1) reports 137): stopped, not "failed with 137"
+    # (gate r1 NIT 2; mutation: drop the SIGKILL branch -> red)
+    killed = env.pure("poll", FAKE_KILL="1")
+    assert _face(killed)[0:2] == ("NeedsAttention", "self-learn-tray-broken"), killed
+    assert "stopped before it answered" in killed["error"], killed
 
     # exit 1 with the contract's broken JSON: its own error reaches the tooltip
     env.write(_attention("broken", "self-learn: broken", [], env.cache, error="cannot read open-questions.yaml"))
     failed = env.pure("poll", FAKE_RC="1")
     assert _face(failed)[0:2] == ("NeedsAttention", "self-learn-tray-broken"), failed
-    assert "exit 1" in failed["error"] and "cannot read open-questions.yaml" in failed["error"]
+    assert failed["view"]["tooltip_description"] == "cannot read open-questions.yaml (exit 1)", failed
 
     # a non-zero exit is broken even when the JSON it printed says idle
     env.write(_attention("idle", "self-learn: nothing needs you", [], env.cache))
@@ -244,7 +259,7 @@ def test_2_timeout_and_nonzero_exit_map_to_broken(env):
     env.write("{not json")
     garbled = env.pure("poll")
     assert _face(garbled)[0:2] == ("NeedsAttention", "self-learn-tray-broken"), garbled
-    assert "unreadable output" in garbled["error"]
+    assert garbled["error"].startswith("its output was not readable: not JSON"), garbled
 
     # every poll ran the contract's command, nothing else
     assert set(env.calls()) == {"attention --json"}, env.calls()
@@ -330,11 +345,22 @@ def wait(cond, secs):
     return bool(cond())
 
 
-def polls():
+def calls():
     try:
-        return open(os.environ["FAKE_LOG"]).read().splitlines().count("attention --json")
+        return open(os.environ["FAKE_LOG"]).read().splitlines()
     except FileNotFoundError:
-        return 0
+        return []
+
+
+def polls():
+    return calls().count("attention --json")
+
+
+def seen_then_polled(start):
+    tail = calls()[start:]
+    if "attention seen --all-decided" not in tail:
+        return False
+    return "attention --json" in tail[tail.index("attention seen --all-decided") + 1:]
 
 
 w1 = Watcher(1)
@@ -362,14 +388,24 @@ try:
     sr = os.environ["FAKE_LOG"] + ".systemd-run"
     result["activated"] = wait(lambda: os.path.exists(sr), 10) and open(sr).read().splitlines()
 
-    # File monitors: a change in each watched directory polls at once.
-    for key, d in (("ledger_attention", os.path.join(ledger, "attention")),
+    # A middle click over the bus marks every decided item seen, then polls.
+    start = len(calls())
+    client.call_sync(service, "/StatusNotifierItem", "org.kde.StatusNotifierItem", "SecondaryActivate",
+                     GLib.Variant("(ii)", (0, 0)), None, Gio.DBusCallFlags.NONE, 5000, None)
+    result["secondary"] = wait(lambda: seen_then_polled(start), 10)
+    result["secondary_calls"] = calls()[start:]
+
+    # File monitors: a change in each watched directory polls at once. The ledger
+    # root is watched by itself (not recursively): a typed reply's statement.
+    for key, d in (("ledger_root", ledger),
+                   ("ledger_attention", os.path.join(ledger, "attention")),
                    ("ledger_overseer", os.path.join(ledger, "overseer")),
                    ("cache_attention", os.path.join(cache, "attention"))):
         wait(lambda: False, 1.5)  # past the quiet window after the last poll
         before = polls()
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "touched-" + key), "w") as f:
+        name = "user-statements.jsonl" if key == "ledger_root" else "touched-" + key
+        with open(os.path.join(d, name), "a") as f:
             f.write("x")
         result["poll_on_" + key] = wait(lambda: polls() > before, 10)
 
@@ -397,18 +433,26 @@ def test_4_registers_with_the_watcher_and_again_after_its_owner_changes(env):
     D-Bus face (Id, Category, Status, IconName, IconThemePath), that Activate
     over the bus runs the launcher, that a change in each watched directory polls
     at once (test 6's live half), and that a state change emits NewStatus.
-    Mutation: drop the re-register on watcher appearance -> `registered_2` red."""
+    Mutation: drop the re-register on watcher appearance -> `registered_2` red.
+    Gate r1 additions, each mutation-verified: SecondaryActivate over the bus
+    (mutation: `on_call` ignores it -> `secondary` red); the tray runs through a
+    symlink as deployed (mutation: `abspath` for `realpath` -> IconThemePath red);
+    the title is markup-escaped (mutation: drop the escape -> ToolTip red); the
+    ledger root is watched (mutation: drop it -> `poll_on_ledger_root` red)."""
     if shutil.which("dbus-run-session") is None or shutil.which("dbus-daemon") is None:
         pytest.skip("dbus-run-session/dbus-daemon is not installed: cannot run a private session bus for the tray")
     driver = env.tmp / "driver.py"
     driver.write_text(_DRIVER, encoding="utf-8")
     out = env.tmp / "driver.json"
-    env.home.mkdir()
-    env.write(_attention("idle", "self-learn: nothing needs you", [], env.cache))
+    # The two ledger subdirectories exist before the tray starts, so a write inside
+    # one is seen only by that directory's own monitor, never as a CREATED in the root.
+    (env.home / "attention").mkdir(parents=True)
+    (env.home / "overseer").mkdir()
+    env.write(_attention("idle", "self-learn: 0 need you & <none> new", [], env.cache))
     nxt = _attention("needs-you", "self-learn: 1 needs you", [_item(**{"class": "needs-you"})], env.cache)
     run = subprocess.run(
-        [shutil.which("dbus-run-session"), f"--dbus-daemon={shutil.which('dbus-daemon')}", "--", SYSTEM_PYTHON, "-I", str(driver), str(TRAY), str(out),
-         str(env.home), str(env.cache)],
+        [shutil.which("dbus-run-session"), f"--dbus-daemon={shutil.which('dbus-daemon')}", "--", SYSTEM_PYTHON, "-I",
+         str(driver), str(env.tray), str(out), str(env.home), str(env.cache)],
         env=env.env(NEXT_JSON=json.dumps(nxt)), capture_output=True, text=True, timeout=180,
     )
     assert out.exists(), (run.returncode, run.stdout, run.stderr)
@@ -423,14 +467,17 @@ def test_4_registers_with_the_watcher_and_again_after_its_owner_changes(env):
     assert props["Id"] == "self-learn" and props["Category"] == "ApplicationStatus"
     assert props["Status"] == "Passive" and props["IconName"] == "self-learn-tray-idle"
     assert Path(props["IconThemePath"]).resolve() == ICON_DIR.resolve()
-    assert props["ToolTip"][2] == "self-learn: nothing needs you"
+    # Waybar renders the title as markup: the reader's text is escaped once
+    assert props["ToolTip"][2] == "self-learn: 0 need you &amp; &lt;none&gt; new", props["ToolTip"]
 
     assert res["activated"] == ["--user", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
-    for key in ("ledger_attention", "ledger_overseer", "cache_attention"):
+    assert res["secondary"], (res["secondary_calls"], tray_log)
+    for key in ("ledger_root", "ledger_attention", "ledger_overseer", "cache_attention"):
         assert res["poll_on_" + key], (key, res, tray_log)
     assert ["NeedsAttention"] in res["new_status"], (res, tray_log)
     assert "NewIcon" in res["signals"] and "NewToolTip" in res["signals"]
-    assert res["tray_rc"] == 0, tray_log
+    assert res["tray_rc"] == 0, tray_log  # SIGTERM reaches the handler (a clean stop)
+    assert "PyGIDeprecationWarning" not in tray_log, tray_log  # gate r1 NIT 1
 
 
 # ------------------------------------------------------------------ 5
@@ -502,12 +549,14 @@ def test_6_watches_the_fixture_ledger_and_the_cache_dir_named_by_the_json(env):
     """§3.10 / critique 30: the monitors watch `$SELF_LEARN_HOME/overseer/` and
     `$SELF_LEARN_HOME/attention/` for a fixture SELF_LEARN_HOME, and
     `<cache_dir>/attention/` with `cache_dir` taken from the JSON. With
-    SELF_LEARN_HOME unset it falls back to `~/.self-learn` under HOME.
+    SELF_LEARN_HOME unset it falls back to `~/.self-learn` under HOME. Gate r1
+    MINOR 3: `$SELF_LEARN_HOME` itself too (not recursively), where a typed
+    reply's statement lands (`user-statements.jsonl`).
     The live half (a change in each directory polls at once) is in test 4.
     Mutation: hard-code `~/.self-learn` -> red."""
     out = env.pure("poll")
     assert out["home"] == str(env.home)
-    assert out["watch"] == sorted([str(env.home / "overseer"), str(env.home / "attention"),
+    assert out["watch"] == sorted([str(env.home), str(env.home / "overseer"), str(env.home / "attention"),
                                    str(env.cache / "attention")])
 
     other = env.tmp / "elsewhere"
@@ -515,7 +564,7 @@ def test_6_watches_the_fixture_ledger_and_the_cache_dir_named_by_the_json(env):
     assert str(other / "attention") in env.pure("poll")["watch"], "cache_dir comes from the JSON"
 
     vars_without_home = {k: v for k, v in env.vars.items() if k != "SELF_LEARN_HOME"}
-    res = subprocess.run([SYSTEM_PYTHON, "-I", str(TRAY), "--pure", "poll"], env=vars_without_home,
+    res = subprocess.run([SYSTEM_PYTHON, "-I", str(env.tray), "--pure", "poll"], env=vars_without_home,
                          capture_output=True, text=True, timeout=60)
     assert res.returncode == 0, res.stderr
     assert json.loads(res.stdout)["home"] == str(env.tmp / "home" / ".self-learn")

@@ -6,8 +6,10 @@ It shows what `self-learn attention --json` says (attention-design-r2 §3.5,
 not seen), needs-you, or broken. A left click opens the inbox; a middle click
 marks every decided item seen. It never reads the ledger itself and never runs
 git: it runs `timeout 10 self-learn attention --json` every 120 s, and at once
-when `$SELF_LEARN_HOME/overseer/`, `$SELF_LEARN_HOME/attention/` or
-`<cache_dir>/attention/` changes (`cache_dir` comes from the JSON).
+when `$SELF_LEARN_HOME` itself (not recursively: a typed reply's statement
+lands in `user-statements.jsonl` there), `$SELF_LEARN_HOME/overseer/`,
+`$SELF_LEARN_HOME/attention/` or `<cache_dir>/attention/` changes (`cache_dir`
+comes from the JSON).
 
 The system python (`-I`) because the uv venv has no `gi`; Gio only (no Gtk, so
 no display is needed). Deployed by install.sh, run by self-learn-tray.service.
@@ -35,6 +37,7 @@ STATES = ("idle", "new", "needs-you", "broken")
 STATUS = {"idle": "Passive", "new": "Active", "needs-you": "NeedsAttention", "broken": "NeedsAttention"}
 ACTIVATE_ARGV = ["systemd-run", "--user", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
 SECONDARY_ARGV = ["self-learn", "attention", "seen", "--all-decided"]
+BROKEN_TITLE = "self-learn: could not check what needs you"
 WATCH_EVENTS = {
     Gio.FileMonitorEvent.CHANGES_DONE_HINT, Gio.FileMonitorEvent.CREATED, Gio.FileMonitorEvent.DELETED,
     Gio.FileMonitorEvent.MOVED_IN, Gio.FileMonitorEvent.MOVED_OUT, Gio.FileMonitorEvent.RENAMED,
@@ -64,26 +67,28 @@ def interpret(rc, stdout, stderr, timeout_secs=TIMEOUT_SECS):
     try:
         data = json.loads(stdout or "")
         if not isinstance(data, dict):
-            data, problem = None, "the output is not a JSON object"
+            data, problem = None, "not a JSON object"
     except ValueError as exc:
-        problem = f"unreadable output ({exc})"
+        problem = f"not JSON ({exc})"
     cache_dir = data.get("cache_dir") if data else None
     cache_dir = cache_dir if isinstance(cache_dir, str) and cache_dir else None
     last = (stderr or "").strip().splitlines()[-1:] or [""]
-    if rc == TIMED_OUT or rc == -signal.SIGKILL or rc == 128 + signal.SIGKILL:
-        error = f"`self-learn attention` did not answer within {timeout_secs} s"
+    # The tooltip title says what failed (BROKEN_TITLE); this is the reason, in plain words.
+    if rc == TIMED_OUT:
+        error = f"it did not answer within {timeout_secs} s"
+    elif rc == -signal.SIGKILL or rc == 128 + signal.SIGKILL:
+        error = f"it was stopped before it answered (it ran past {timeout_secs} s, or the system killed it)"
     elif rc != 0:
         reason = (data or {}).get("error") or last[0] or problem or "no message"
-        error = f"`self-learn attention` failed (exit {rc}): {reason}"
+        error = f"{reason} (exit {rc})"
     elif data is None:
-        error = f"`self-learn attention` gave {problem}"
+        error = f"its output was not readable: {problem}"
     elif data.get("state") not in STATES:
-        error = f"`self-learn attention` gave an unknown state {data.get('state')!r}"
+        error = f"it reported a state the tray does not know: {data.get('state')!r}"
     else:
         tooltip = data.get("tooltip") if isinstance(data.get("tooltip"), str) else ""
         return {"state": data["state"], "tooltip": tooltip or "self-learn", "error": None, "cache_dir": cache_dir}
-    return {"state": "broken", "tooltip": "self-learn: the tray cannot read its state", "error": error,
-            "cache_dir": cache_dir}
+    return {"state": "broken", "tooltip": BROKEN_TITLE, "error": error, "cache_dir": cache_dir}
 
 
 def sni_view(result):
@@ -95,7 +100,11 @@ def sni_view(result):
 
 
 def watch_dirs(home, cache_dir):
-    dirs = [os.path.join(home, "overseer"), os.path.join(home, "attention")]
+    # A directory monitor is not recursive. The ledger root itself is watched so
+    # that a reply typed in the workspace (a statement appended to
+    # `user-statements.jsonl` there, design r2 §3.4.1) polls at once; changes
+    # inside `.git/`, `cases/` and the other subdirectories fire nothing here.
+    dirs = [home, os.path.join(home, "overseer"), os.path.join(home, "attention")]
     if cache_dir:
         dirs.append(os.path.join(cache_dir, "attention"))
     return dirs
@@ -181,7 +190,7 @@ class Tray:
         try:
             proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
         except GLib.Error as exc:
-            self.finish({"state": "broken", "tooltip": "self-learn: the tray cannot read its state",
+            self.finish({"state": "broken", "tooltip": BROKEN_TITLE,
                          "error": f"could not run {argv[0]}: {exc.message}", "cache_dir": None}, done)
             return
 
@@ -199,7 +208,7 @@ class Tray:
         self.polling = False
         self.quiet_until = GLib.get_monotonic_time() + 1_000_000
         if result["error"]:
-            log(result["error"])
+            log(f"self-learn attention --json: {result['error']}")
         if result["cache_dir"] and result["cache_dir"] != self.cache_dir:
             self.cache_dir = result["cache_dir"]
             self.rewatch()
@@ -348,7 +357,7 @@ def pure(step, timeout_secs):
 
     def polled():
         out.update(view=sni_view(tray.result), error=tray.result["error"],
-                   watch=sorted(tray.monitors), home=tray.home)
+                   watch=sorted(tray.monitors), home=tray.home, icon_dir=ICON_DIR)
         GLib.idle_add(loop.quit)
 
     def ran(rc):
@@ -369,6 +378,17 @@ def pure(step, timeout_secs):
     return 0
 
 
+def unix_signal_add(sig, handler):
+    """`GLibUnix.signal_add` where this PyGObject has it (newer ones warn on
+    `GLib.unix_signal_add`, into the journal at every start), else the old name."""
+    try:
+        gi.require_version("GLibUnix", "2.0")
+        from gi.repository import GLibUnix
+        return GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, sig, handler)
+    except (ImportError, ValueError, AttributeError):
+        return GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, handler)
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="self-learn-tray", description=__doc__.splitlines()[0])
     ap.add_argument("--pure", choices=("poll", "activate", "secondary"),
@@ -379,7 +399,7 @@ def main(argv):
         return pure(args.pure, args.timeout_secs)
     loop = GLib.MainLoop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, lambda: (loop.quit(), False)[1])
+        unix_signal_add(sig, lambda: (loop.quit(), False)[1])
     item = SniItem(loop)
     loop.run()
     return item.exit_code

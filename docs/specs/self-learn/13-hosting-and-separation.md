@@ -2249,7 +2249,8 @@ and is not a user instruction.
   the session bus.
 - The same `SELF_LEARN_HOME` pin (B-1, §7.1) and `PATH` floor as the other units.
   The tray reads `$SELF_LEARN_HOME` itself only to choose what to watch
-  (`overseer/` and `attention/`), with `~/.self-learn` when it is unset; the cache
+  (the ledger root, not recursively, plus `overseer/` and `attention/`), with
+  `~/.self-learn` when it is unset; the cache
   directory comes from `self-learn attention --json`'s own `cache_dir`, never from
   a second copy of §6's resolution rule.
 - It reads nothing else of the ledger and runs no git. Its only reads are

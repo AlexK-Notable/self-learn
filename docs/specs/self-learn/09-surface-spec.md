@@ -489,8 +489,10 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   "flagged" (§3.5 of the design: `decided.overseer-run`, `decided.hook-activated`,
   `decided.always-loaded`, `decided.approved-done`) has one definition.
 - **Broken when the reader cannot answer.** A non-zero exit, a timeout (10 s) or
-  output that is not the contract's JSON shows `broken`; the tooltip says what
-  failed, using the JSON's own `error` when the reader printed one.
+  output that is not the contract's JSON shows `broken`. The tooltip title then
+  reads "self-learn: could not check what needs you" and its description gives
+  the reason in plain words, using the JSON's own `error` when the reader printed
+  one.
 - **Tooltip.** The reader's `tooltip` line as the SNI tooltip title (markup-escaped:
   Waybar renders the title as markup); a broken poll adds the error as the
   description.
@@ -502,8 +504,14 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   --all-decided` and polls again at once. Seen never clears a needs-you item.
 - **No right-click menu** (no dbusmenu); `ContextMenu` and `Scroll` do nothing.
 - **When it polls.** Every 120 s, and one second after a change in
-  `$SELF_LEARN_HOME/overseer/`, `$SELF_LEARN_HOME/attention/` or
-  `<cache_dir>/attention/` (`Gio.FileMonitor`). A change that lands while the
+  `$SELF_LEARN_HOME` itself, `$SELF_LEARN_HOME/overseer/`,
+  `$SELF_LEARN_HOME/attention/` or `<cache_dir>/attention/` (`Gio.FileMonitor`;
+  directory monitors are not recursive). The ledger root is watched because a
+  reply typed in the workspace lands as a statement in `user-statements.jsonl`
+  there, and in `attention/workspace/`, which the `attention/` monitor does not
+  see; without it the icon could stay "needs you" for up to two minutes after the
+  answer. Writes inside `.git/` and the other subdirectories fire nothing at the
+  root. A change that lands while the
   tray's own poll runs, or within a second after it, is not a reason to poll again
   (the reader's cache write would otherwise loop); the 120 s poll catches it.
 - **Registration.** It owns `org.kde.StatusNotifierItem-<pid>-1`, serves
