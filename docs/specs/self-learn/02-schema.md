@@ -1822,7 +1822,11 @@ case that supersedes nothing and changes no placement (a lesson found false
 there gets a probe that records `contradicts-claim`, which makes it a
 `premise-moved` input the next night, or the case is parked; §3a.10.7). The
 runner refuses every line but that one `premises set` on the lesson in a
-`premise-extract` case (`steward._premise_extract_problem`). A `kind:
+`premise-extract` case (`steward._premise_extract_problem`). A
+`premise-review` input (S-NEXT-rotation, §3a.10.4) is decided the same way
+as an extract, in a `kind: resolution` `no-action` case that supersedes
+nothing; on the lesson the runner allows only one `premises` line (`set` or
+`rebaseline`) and one `note` (`steward._premise_review_problem`). A `kind:
 resolution` case on a `premise-moved` input (and only there) may hold, for
 that routed lesson, the items a reconsider could: `replace` (narrowing
 included, the one place outside a reconsider where the steward may replace a
@@ -2868,7 +2872,8 @@ contradicts; `suspected-violation` fires reached no consumer.
 
 **Inputs.** A run selects three kinds of input, each a row of the run
 record's `inputs` with a `kind` *(five since S-104, 2026-10-31:
-`premise-moved` and `premise-extract` are defined in §3a.10.7)*:
+`premise-moved` and `premise-extract` are defined in §3a.10.7; six since
+S-NEXT-rotation: `premise-review`, §3a.10.4 and §3a.10.7)*:
 
 | `kind` | What | Identity (`version`) |
 |---|---|---|
@@ -2915,7 +2920,8 @@ handled events are dropped before the version is taken, so a new fire about
 the same record is a new input carrying only itself, and a run that decided
 an input's events (applied, parked, refused, abandoned) is never offered
 them again. A record is in at most one input per run (reconsider first, then lesson, then suspected violation;
-since S-104, then premise-moved, then premise-extract, §3a.10.7).
+since S-104, then premise-moved, then premise-extract, §3a.10.7; since
+S-NEXT-rotation, then premise-review).
 
 **A lesson the overseer holds** *(2026-10-08, S-81)* is no input of any kind. A lesson is held while a parked
 case for the overseer that has not been superseded names it, whoever parked it: an intact one
@@ -3804,7 +3810,9 @@ lesson's own premises do not.
 
 #### 3a.10.4 What makes a lesson a `premise-moved` input
 
-Three kinds of event, and no clock:
+Three kinds of event, and no clock (the one clock, the rotation that
+re-reads every placed lesson as a `premise-review` input, is at the end of
+this section):
 
 1. **A premise moved.** A premise with a probe, judged by its `holds_if`
    against its baseline, fails on two sweeps in a row (for `changed`: the
@@ -3835,12 +3843,15 @@ Three kinds of event, and no clock:
    a follow-up closed again with other words is a new version. Until a case
    that counts dates after it, the closed follow-up rides along with any
    later `premise-moved` input on the lesson, so the steward sees it again.
-   A combined input (a closed follow-up and a moved premise together) that
-   the steward decides `no-action`, with a rebaseline for example, returns
-   once more as a follow-up-only input: a `no-action` case does not count as
-   a decision, the follow-up is still undecided, and its version, now a hash
-   of the follow-up alone, is new. That costs one more steward look and
-   writes nothing wrong (the 2026-10-31 integration accepted it, decision 10).
+   One decision of a combined input (a closed follow-up and a moved premise
+   together) settles both, whatever its outcome: the input row names the
+   follow-up's own version in `settles` (3a.10.7), and the run records that
+   version as decided too (`steward._terminal_versions`). A settled
+   follow-up therefore neither returns as a follow-up-only input after a
+   `no-action` decision (which does not count as a last decision) nor rides
+   along on a later premise move of the lesson
+   (`steward._premise_moved_unit_lists`). (S-NEXT-rotation; it replaces the
+   one extra look the 2026-10-31 integration accepted as its decision 10.)
    This needs no premise and no sweep. It is a standing rule, so a follow-up
    closed before this landed is picked up on its first night (on 2026-10-30
    that is `lrn-9b4250f5` only: `lrn-25968266` was decided by a case after
@@ -3856,14 +3867,68 @@ churn. A premise that really depends on a version says so with a `package`
 probe and `holds_if: version`; otherwise the pin is shown as context the
 next time the lesson comes up, and that decision refreshes it.
 
-**Periodic re-reading** of lessons with nothing to probe is reserved, not
-built; the design had it off: `premises.rotation_days` (default 0; above 0, a lesson whose
-last decision is older than that many days is offered, at most 3 a night).
-It spends steward calls with no sign that anything changed, and would stay
-at 0 for at least the first month after landing; the person decides from how
-many real changes the sweep found. **No lane of the 2026-10-31 batch built
-it:** the setting is not registered and nothing offers such a lesson. The
-name is reserved for it.
+**Periodic re-reading: the rotation** *(S-NEXT-rotation; the premises
+design's lane P1, on by default at 90 days by the orchestrator's decision of
+2026-10-31, under the user's "build the rotation setting")*. Every placed
+lesson, not only one with nothing to probe, is offered to the steward to be
+re-read whole as a `premise-review` input: a probe is written narrow and
+watches one line, a wrong probe holds for ever without saying so, some drift
+no probe sees (a corrected statement, a newer lesson saying the opposite, a
+tool that behaves differently), and the question was always "still accurate
+or relevant".
+
+- **The last look** (`steward_inputs.last_reviews`) is the newest of
+  `routing.routed_at` and the `opened_at` of ANY intact case whose `records`
+  name the lesson: any kind, any outcome, a parked or superseded one
+  included. It is broader than the last decision (event 2 above) on
+  purpose: a `no-action` extract or review case read every sentence, and a
+  parked case hands the lesson to the overseer, whose decision is the next
+  look. So the backfill's extract case is every lesson's first look, and
+  the rotation is idle for about the first three months after it.
+- **Due.** A live placed lesson is due once its last look is at least
+  `premises.rotation_days` old (3a.10.9). A lesson with a written probe
+  `unavailable` on three sweeps running (a broken probe, 3a.10.5 (3)) is due
+  now, whatever its age, so a broken probe is fixed without a person.
+- **Never offered:** a lesson the overseer holds (S-81); one an earlier input
+  of the run takes; one with an undecided `premise-moved` input, taken or
+  waiting; one that is still a `premise-extract` candidate (no `premises`
+  key and its extract version undecided, or its record not committed): the
+  extract is its look. A lesson whose extract version became terminal
+  without premises being written (a parked, refused or abandoned extract)
+  IS offered, and its review must write them.
+- **Order.** A broken probe first, then a lesson whose premises hold no
+  probe (none recorded, `[]`, or every entry `probe: null`), then the rest;
+  in each, the longest since its last look first.
+- **Identity.** `review:<last-look day>:<cycle>`, cycle =
+  floor((today - last look) / rotation_days), at least 1. A run that
+  commits any case on the lesson moves its last look (cycle 0: not due); a
+  refused or abandoned run commits none, so that version is decided and the
+  lesson returns one period later, never the next night; a changed period
+  changes the cycles. A broken-probe review is
+  `review:broken:<sorted premise ids>:<hash of their current questions>`:
+  decided once, it is not offered again while the same probes stay broken
+  (the lesson then waits for its age), and a rewritten probe that breaks
+  again is a new version. (The design named "the first unavailable
+  `observed_at`" here; the cache keeps three observations per probe, so
+  that time slides every night and would re-offer the lesson nightly.)
+- **Pace.** At most `premises.rotation_per_night` reviews a run (3a.10.9;
+  `auto` = ceil(live placed lessons / rotation_days) + 1, 3 at 149 lessons).
+  Reviews ride along: when anything else makes the steward due, its run
+  takes them into the same packets (about $0.5 a lesson instead of a
+  session's $1.5-2 start). By themselves they make the steward due only
+  when the oldest due review is `ROTATION_GRACE_DAYS` (7) days past due
+  (a broken-probe review counts from its last look), and that is asked only
+  after the cooldown and every cheaper reason (`serve._steward_is_due`).
+  Never while the quota is 0: that run would take no review and end
+  `idle`, which arms no cooldown, so it would start again every tick
+  (fix round 1 of the lane's gate).
+- **The brief** (`steward_inputs.render_premise_review`) has no transcript
+  pack: why now (the last look, by what, the period, or the broken probe),
+  every written premise with the daily check's latest verdict and the
+  placement premises' latest state from the cache, the "What would change
+  this decision" bullets of up to three covering cases, `env` pins, an open
+  follow-up, the recorded generality, the recurrences recorded since the
+  last look, and how to decide (3a.10.7).
 
 #### 3a.10.5 Holding churn down
 
@@ -3909,7 +3974,8 @@ whole file's hash; never `host.<path>.head`, which moves on every commit.
   process, timer or unit. It is due once a day and runs before the steward's
   nightly slot, so a change it confirms is decided the same night.
   `serve._steward_is_due` counts selectable `premise-moved` and
-  `premise-extract` inputs like its other inputs.
+  `premise-extract` inputs like its other inputs; a `premise-review` input
+  only once it is 7 days past due (3a.10.4).
 - Observations go to the cache, `<cache>/premises/observations.jsonl`, the
   last three per probe and per placement premise (`NOT_REPO_TRUTH`). Losing
   the cache delays a trigger by a day; the baseline is on the record.
@@ -3926,18 +3992,29 @@ whole file's hash; never `host.<path>.head`, which moves on every commit.
   *(S-NEXT-probes-chain:)* Probes waiting for an unmounted filesystem
   (3a.10.5 (3)) are an INFO per mount point, `waiting-for-filesystem: <M>
   not mounted (N probe(s), since <first>)`, never a WARN while they wait.
+  *(S-NEXT-rotation)* And the rotation: `rotation: every N days, Q a night;
+  M due, oldest overdue D days; K reviewed in the last 30 days` (reviewed =
+  a committed run decided its `premise-review` input applied or parked; D =
+  days past the age at which the lesson would be offered anyway, for a
+  broken-probe review its days since the last look less the period, at
+  least 0: how long a probe has been broken is not kept), a
+  WARN when the oldest due review is overdue by more than the period itself
+  (the steward is not running, or a number set by hand is too low), INFO
+  `off` when the period is 0.
 
 #### 3a.10.7 The steward's part
 
-**Two input kinds** join the table in §3a.8:
+**Three input kinds** join the table in §3a.8:
 
 | `kind` | What | Identity (`version`) |
 |---|---|---|
-| `premise-moved` | a routed lesson with a moved premise, a closed follow-up, or a moved ledger premise (3a.10.4) | `premise:<12 hex>`, a hash of the moved premises -- a written premise as `(premise id, current value hash, baseline observed_at)`, so a value that comes back after two decisions is a new version; a placement premise as `(premise id, failing value hash, basis)`, 3a.10.3 -- and, while the follow-up rule holds (3a.10.4), the closed `follow_up_done` block (its action, gate, notes and `done_at`); `steward_inputs.premise_moved_version` |
+| `premise-moved` | a routed lesson with a moved premise, a closed follow-up, or a moved ledger premise (3a.10.4) | `premise:<12 hex>`, a hash of the moved premises -- a written premise as `(premise id, current value hash, baseline observed_at)`, so a value that comes back after two decisions is a new version; a placement premise as `(premise id, failing value hash, basis)`, 3a.10.3 -- and, while the follow-up rule holds (3a.10.4) and no run has settled it, the closed `follow_up_done` block (its action, gate, notes and `done_at`); `steward_inputs.premise_moved_version`. A row that carries both a follow-up and a moved premise also names, in `settles`, the follow-up-alone version, which its one decision settles (3a.10.4 (2)) |
 | `premise-extract` | a routed lesson with no `premises` field (the backfill) | `extract:<the record file's committed blob>` (the prefix keeps it apart from a `lesson` input's bare blob) |
+| `premise-review` | a live placed lesson whose last look is a whole rotation period old, or one with a broken probe (the rotation, 3a.10.4; S-NEXT-rotation) | `review:<last-look day>:<cycle>`, or `review:broken:<premise ids>:<12 hex>` (3a.10.4) |
 
 A record is still in at most one input per run, taken in the order
-reconsider, lesson, suspected violation, premise-moved, premise-extract. An
+reconsider, lesson, suspected violation, premise-moved, premise-extract,
+premise-review. An
 `@intact` group (3a.10.3) is offered whole or not at all: when an earlier
 input takes one of its lessons, the group waits for the next run. A lesson
 the overseer holds (S-81) is no input of either kind, and an `@intact`
@@ -3957,7 +4034,12 @@ last decision and so ends the follow-up check.
 
 **The case.** For `premise-moved`: a `kind: reconsider` case superseding the
 newest case that covers the lesson, when that case is one a reconsider may
-supersede (S-88's test, §3a.2). Otherwise a `kind: resolution` case: S-88's
+supersede (S-88's test, §3a.2). *(S-NEXT-rotation)* Among those, the newest
+whose outcome decided what the lesson says (`route`, `reject`, `retire`,
+`replaced`, `rehome`, `revise`) is preferred, and only when none did is the
+newest of any outcome taken: an extract or review case (`no-action`, no
+`supersedes`) is records-only, and superseding it would leave the routing
+case standing. Otherwise a `kind: resolution` case: S-88's
 rule for a deferred lesson no case covers, extended to a routed lesson on
 this input (46 of the 149 placed lessons had no covering case on
 2026-10-30). For `premise-extract`: a `kind: resolution` case with outcome
@@ -3974,7 +4056,22 @@ with the evidence, for the overseer. The `premise-moved` brief shows the `what_w
 lines of every case covering the lesson that is not superseded, so an
 extract case never hides the routing case's prediction. A lesson with a
 `premise-moved` input waiting under the nightly cap is not offered for
-`premise-extract`. No new `trigger` value. The outcomes of a
+`premise-extract`. For `premise-review` *(S-NEXT-rotation)*: the extract's
+shape (`kind: resolution`, `no-action`, no `supersedes`), and on the lesson
+at most one `premises` line (`set` or `rebaseline`), REQUIRED as a `set` when
+the lesson has no `premises` key, and at most one `note`
+(`steward._premise_review_problem`, with a repair-turn message). A
+`replace` or a merge through `also`, `retire`, `route`, `reject`, a move or
+a `restore-region` is refused by name: the authority to change a placed
+lesson still comes only with a `premise-moved` input. A sentence found false
+goes through the extract's evidence path: a premise whose probe shows it
+(including a `package`/`which`/`path` premise for a tool that is gone, or a
+`ledger` premise on a corrected statement or a superseding lesson), recorded
+`contradicts-claim`, so the lesson is a `premise-moved` input the next
+night; when no probe can show it (behaviour, an overlap with another placed
+lesson, which is the overseer's merge), the case is parked
+(`authority-unclear`). A review's `no-action` is not a last decision. No
+new `trigger` value. The outcomes of a
 `premise-moved` case:
 
 - `no-action`: the lesson stands. The sheet must re-record every moved
@@ -4121,8 +4218,10 @@ steward finds already false is written with a premise whose probe shows it: the 
 
 Premise cases are cases, so they enter the weekly sample unchanged. Phase B's
 facts gain: placed lessons with no `premises` field; probes `unavailable`
-three sweeps running; failing placement premises; and the week's `premises
-refresh` commits (code-only changes, so they can be reviewed).
+three sweeps running; failing placement premises; the week's `premises
+refresh` commits (code-only changes, so they can be reviewed); and
+*(S-NEXT-rotation)* the rotation (`rotation`: period, nightly quota, due,
+oldest overdue, reviewed in the last 30 days, or `off`).
 
 #### 3a.10.9 The switch and the limits
 
@@ -4142,12 +4241,26 @@ refresh` commits (code-only changes, so they can be reviewed).
   setting rather than a constant by the user's 2026-09-20 rule that numbers
   which size a step are not hardcoded, and the shared steward test helpers
   pause it.
-- **`premises.rotation_days`**: reserved, not built (3a.10.4).
+- **`premises.rotation_days`** *(S-NEXT-rotation)* (tier C, default **90**;
+  0 turns the rotation off): how many days after its last look a placed
+  lesson is offered to be re-read (3a.10.4). On by default: the backfill's
+  extract case counts as each lesson's first look, so nothing is reviewed
+  for about three months anyway, with no later step by a person.
+- **`premises.rotation_per_night`** *(S-NEXT-rotation)* (tier C, str,
+  default `auto`, or a whole number written as text, so quoted in
+  `config.yaml`: an unquoted number is not text and reads as `auto`): how many
+  `premise-review` inputs a run takes. `auto` = ceil(live placed lessons /
+  rotation_days) + 1, so a backlog drains and the number grows with the
+  ledger without a person; a number overrides it; anything else reads as
+  `auto` (and `config set` refuses it). The `overseer.skill_writing`
+  precedent for a str setting with an `auto` value.
 - No money budget (the user's 2026-09-13 ruling for the steward and the
   overseer). The sweep makes no model call; model calls grow only with real
-  changes (10 a night at most) and with the backfill
+  changes (10 a night at most), with the backfill
   (`premises.backfill_per_night`, 10 a night by default, for about two
-  weeks), inside the steward's existing packets.
+  weeks), and with the rotation (about 1.7 lessons a night at 149 lessons
+  and 90 days, roughly $25 a month of subscription usage, riding in packets
+  the steward already runs), inside the steward's existing packets.
 
 **Not covered.** A premise about behaviour (`probe: null`) is never checked
 by code. The miner does not yet tell the sweep that a session touched a path,
@@ -4163,8 +4276,7 @@ steward packet (`index.related.MAX_GROUP`) is never offered whole and stays
 `edited`, as it would without this check. A skill or plugin a person
 switched off reads as `@reach` unreachable (`skill-override-off`,
 `plugin-disabled`); the method tells the steward to park rather than move
-the lesson out from under the person's switch. Periodic re-reading
-(`premises.rotation_days`) is not built.
+the lesson out from under the person's switch.
 
 ## 4. Managed sections (the compile targets' contract)
 

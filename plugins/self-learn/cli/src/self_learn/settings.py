@@ -191,6 +191,17 @@ SKILL_WRITING_MODES: tuple[str, ...] = ("on", "off")
 SKILL_WRITING_LEGACY_ON = "auto"
 
 
+def _rotation_per_night_value(value: object) -> str | None:
+    """`premises.rotation_per_night` as stored: ``"auto"`` or a whole
+    number >= 0 written as text, stripped; ``None`` for anything else (the
+    setting's clamp then reads it as ``auto``, and `config set` refuses
+    it). S-NEXT-rotation."""
+    text = str(value).strip() if isinstance(value, str) else ""
+    if text == "auto" or (text.isascii() and text.isdigit()):
+        return text
+    return None
+
+
 def _warn(message: str) -> None:
     print(f"self-learn: settings — {message}", file=sys.stderr)
 
@@ -1123,6 +1134,57 @@ REGISTRY: tuple[Setting, ...] = (
         description=(
             "how many placed lessons with no premises the steward is offered each "
             "night to write them (the backfill); 0 pauses it"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
+    # S-NEXT-rotation (premises design P1; decisions 2026-10-31b item 3):
+    # every placed lesson is re-read by the steward about once per this
+    # many days (`premise-review` inputs), so slow drift that no probe sees
+    # is caught without a person. On at 90 by default: the backfill's
+    # extract case counts as each lesson's first look, so rotation is idle
+    # for about the first three months with no later step by anyone. 0
+    # turns it off (the rollback). Tier C like the other premise settings,
+    # with no process-override rung.
+    Setting(
+        name="premises.rotation_days",
+        env_var=None,
+        config_section="premises",
+        config_key="rotation_days",
+        kind="int",
+        default=90,
+        validate=lambda v: max(cast(int, v), 0),
+        validate_hint="must be >= 0",
+        description=(
+            "how many days after its last look a placed lesson is offered to the steward "
+            "to be re-read (premise-review); 0 turns the rotation off"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
+    # S-NEXT-rotation: how many `premise-review` inputs one run may take.
+    # `auto` (the default) is ceil(live placed lessons / rotation_days) + 1,
+    # which grows with the ledger, so the backlog always drains and the
+    # number never needs a person; a non-negative integer (as text, the
+    # `config set` form) overrides it. The `overseer.skill_writing`
+    # precedent for a str setting with an `auto` value; the 2026-09-20 rule
+    # that numbers sizing a step are not hardcoded. A malformed value in
+    # config.yaml folds to `auto` in place (like every `accepts` entry's
+    # clamp); `config set` refuses it.
+    Setting(
+        name="premises.rotation_per_night",
+        env_var=None,
+        config_section="premises",
+        config_key="rotation_per_night",
+        kind="str",
+        default="auto",
+        validate=lambda v: _rotation_per_night_value(v) or "auto",
+        accepts=lambda v: _rotation_per_night_value(v) is not None,
+        accepts_hint="auto, or a whole number >= 0",
+        description=(
+            "how many placed lessons the steward re-reads a night: auto (enough to read "
+            "every lesson once per rotation_days, plus one) or a number written in quotes "
+            "in config.yaml ('5'; an unquoted 5 is not text and reads as auto)"
         ),
         tier="C",
         override_channel=False,

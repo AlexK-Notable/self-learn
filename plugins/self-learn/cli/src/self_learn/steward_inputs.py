@@ -27,7 +27,10 @@ This module builds, for one run:
    with no ``premises`` field at all, offered so its premises get written
    (:func:`routed_without_premises`, :func:`extract_rank`): the backfill of
    the lessons placed before premises existed, and the safety net for a
-   route that wrote none.
+   route that wrote none. The sixth, ``premise-review`` (S-NEXT-rotation,
+   the premises design's lane P1), is a placed lesson whose last look is
+   ``premises.rotation_days`` old, or one with a broken probe, offered to be
+   re-read whole (:func:`last_reviews`, :func:`render_premise_review`).
 2. **The batches.** U2's :func:`index.related.group_for_steward` over the
    run's input ids: at most 10 per packet, at most 5 unrelated
    (:func:`plan_packets`). The lesson index is brought up to date
@@ -113,6 +116,19 @@ __all__ = [
     "placement_moves",
     "quotable_line",
     "scan_hit",
+    # S-NEXT-rotation
+    "INPUT_PREMISE_REVIEW",
+    "ROTATION_GRACE_DAYS",
+    "last_review",
+    "last_reviews",
+    "premise_rotation_days",
+    "premise_rotation_per_night",
+    "render_premise_review",
+    "review_broken_version",
+    "review_cycle",
+    "review_rank",
+    "review_version",
+    "rotation_quota",
 ]
 
 INPUT_LESSON = "lesson"
@@ -125,9 +141,13 @@ INPUT_PREMISE_MOVED = "premise-moved"
 #: S-104 (premise-check design D10): a routed lesson with no
 #: ``premises`` field, offered for its premises to be written (the backfill).
 INPUT_PREMISE_EXTRACT = "premise-extract"
+#: S-NEXT-rotation (premises design P1): a placed lesson offered to be
+#: re-read whole, about once every ``premises.rotation_days`` days, or now
+#: when one of its probes is broken. Offered last.
+INPUT_PREMISE_REVIEW = "premise-review"
 INPUT_KINDS = (
     INPUT_LESSON, INPUT_RECONSIDER, INPUT_SUSPECTED_VIOLATION, INPUT_PREMISE_MOVED,
-    INPUT_PREMISE_EXTRACT,
+    INPUT_PREMISE_EXTRACT, INPUT_PREMISE_REVIEW,
 )
 
 #: Design D7.5: at most this many ``premise-moved`` inputs in one run, oldest
@@ -1860,6 +1880,360 @@ def render_premise_extract(
     return "\n".join(lines), stats
 
 
+# ------------------------- premise-review: the rotation (S-NEXT-rotation)
+#
+# The premises design's lane P1 (misc/build-2026-10-31b/premises.md §1;
+# decisions 2026-10-31b item 3: on at 90 days, `auto` a night): every
+# placed lesson is re-read by the steward about once every
+# `premises.rotation_days` days, because a narrow probe watches one line,
+# a wrong probe holds for ever without saying so, and some drift no probe
+# sees (a corrected statement, a newer lesson saying the opposite, a tool
+# that behaves differently). A lesson with a broken probe is offered now,
+# whatever its age, so a broken probe heals without a person. The look a
+# lesson last had (:func:`last_review`) is broader than its last DECISION
+# (:func:`last_decision`): any case that names it read it -- a `no-action`
+# extract or review case, a parked case (the overseer's decision is the next
+# look) -- so the backfill's extract case is every lesson's first look, and
+# rotation is idle for about three months after it. The case a review gets
+# changes nothing but the lesson's premises and a note
+# (`steward._premise_review_problem`): a sentence found false goes through
+# the extract's evidence path (a premise whose probe shows it, so the lesson
+# is a `premise-moved` input the next night), or the case is parked.
+
+#: A due review makes the steward due BY ITSELF only once it is this many
+#: days past due; until then it rides along with a run something else
+#: started, sharing its packet (about $0.5 a lesson instead of a session's
+#: $1.5-2 start). Beside :data:`PROBE_REDECIDE_DAYS`.
+ROTATION_GRACE_DAYS = 7
+#: The default of ``premises.rotation_days`` (duplicated in settings.py,
+#: pinned by the registry's default test).
+ROTATION_DAYS_DEFAULT = 90
+
+#: The rotation's three ranks, offered in this order: how little else
+#: watches the lesson.
+REVIEW_RANK_BROKEN = 0
+REVIEW_RANK_NO_PROBE = 1
+REVIEW_RANK_PROBED = 2
+REVIEW_RANK_NAMES = {
+    REVIEW_RANK_BROKEN: "broken-probe",
+    REVIEW_RANK_NO_PROBE: "no-probe",
+    REVIEW_RANK_PROBED: "probed",
+}
+
+
+def premise_rotation_days(home: Path) -> int:
+    """``premises.rotation_days`` (tier C, default 90; 0 turns the
+    rotation off)."""
+    from . import settings  # late: settings is a registry module, not an input
+
+    try:
+        setting = settings.by_name("premises.rotation_days")
+    except KeyError:
+        return ROTATION_DAYS_DEFAULT
+    value, _source = settings.resolve_setting(home, setting)
+    try:
+        return max(int(cast(int | str, value)), 0)
+    except (TypeError, ValueError):
+        return ROTATION_DAYS_DEFAULT
+
+
+def rotation_quota(value: object, placed: int, days: int) -> int:
+    """How many reviews one run takes: ``auto`` is ``ceil(placed / days) +
+    1`` -- enough to read every placed lesson once a period, plus one, so a
+    backlog drains and the number grows with the ledger -- and a whole
+    number given as text overrides it. 0 when the rotation is off (*days*
+    0). Anything else reads as ``auto``."""
+    if days <= 0:
+        return 0
+    text = str(value).strip() if value is not None else "auto"
+    if text.isascii() and text.isdigit():
+        return int(text)
+    return -(-max(placed, 0) // days) + 1
+
+
+def premise_rotation_per_night(home: Path, placed: int, days: int) -> int:
+    """``premises.rotation_per_night`` for a ledger of *placed* live placed
+    lessons and a period of *days* (:func:`rotation_quota`)."""
+    from . import settings  # late
+
+    try:
+        value, _source = settings.resolve_setting(
+            home, settings.by_name("premises.rotation_per_night")
+        )
+    except KeyError:
+        value = "auto"
+    return rotation_quota(value, placed, days)
+
+
+def last_reviews(
+    home: Path, records: Iterable[Record]
+) -> dict[str, tuple[datetime | None, str]]:
+    """``record id -> (time, label)``: when each lesson was last LOOKED at,
+    from ONE read of the case index. The newest of its ``routing.routed_at``
+    and the ``opened_at`` of ANY intact case whose ``records`` name it --
+    any kind, any outcome, a parked case and a superseded one included:
+    each of them read the lesson. Deliberately broader than
+    :func:`last_decision`. Falls back to the record's ``created_at``
+    (label ``created_at``) when neither is dated, and to ``(None, "")``
+    when nothing is. An index that cannot be read counts no case, which
+    errs toward offering the lesson."""
+    from . import cases  # late: cases pulls the cache and the worker
+
+    wanted = {record.id: record for record in records}
+    try:
+        rows = cases.list_cases(home, only_ok=True)
+    except (cases.CaseError, OSError, ValueError):
+        rows = []
+    newest: dict[str, tuple[datetime, str]] = {}
+    for row in rows:
+        when = chrono.to_dt(row.get("opened_at"))
+        if when is None:
+            continue
+        for rid in row.get("records") or []:
+            rid = str(rid)
+            if rid in wanted and (rid not in newest or when > newest[rid][0]):
+                newest[rid] = (when, f"case:{row.get('case')}")
+    out: dict[str, tuple[datetime | None, str]] = {}
+    for rid, record in wanted.items():
+        found: list[tuple[datetime, str]] = []
+        routing = record.routing if isinstance(record.routing, dict) else {}
+        routed = chrono.to_dt(routing.get("routed_at"))
+        if routed is not None:
+            found.append((routed, "routed_at"))
+        if rid in newest:
+            found.append(newest[rid])
+        if not found:
+            created = chrono.to_dt(record.created_at)
+            out[rid] = (created, "created_at") if created is not None else (None, "")
+            continue
+        out[rid] = max(found, key=lambda item: item[0])
+    return out
+
+
+def last_review(home: Path, record: Record) -> tuple[datetime | None, str]:
+    """When *record* was last looked at (:func:`last_reviews`)."""
+    return last_reviews(home, [record])[record.id]
+
+
+def review_rank(record: Record, broken: bool) -> int:
+    """Where a due lesson falls in tonight's order: a broken probe first,
+    then a lesson whose premises hold no probe (none recorded, ``[]``, or
+    every entry ``probe: null``), then the rest."""
+    if broken:
+        return REVIEW_RANK_BROKEN
+    if not any(p.get("probe") is not None for p in record.premises or []):
+        return REVIEW_RANK_NO_PROBE
+    return REVIEW_RANK_PROBED
+
+
+def review_cycle(last: date, today: date, days: int) -> int:
+    """How many whole rotation periods have passed since *last* (0 when
+    *days* is 0). A lesson is due when this is at least 1."""
+    if days <= 0:
+        return 0
+    return max(_calendar_days(last, today), 0) // days
+
+
+def review_version(last: date, cycle: int) -> str:
+    """The identity of an age-due ``premise-review`` input:
+    ``review:<last-look day>:<cycle>``. A run that commits any case on the
+    lesson moves its last look (a new day, cycle 0: not due); a refused or
+    abandoned run commits none, so this version is decided and the lesson
+    returns one period later (cycle + 1), never the next night; a changed
+    ``rotation_days`` changes the cycle, so lessons are re-offered under
+    the new period."""
+    return f"review:{last.isoformat()}:{cycle}"
+
+
+def review_broken_version(record: Record, premise_ids: Iterable[str]) -> str:
+    """The identity of a ``premise-review`` input brought by broken probes:
+    ``review:broken:<sorted premise ids>:<12 hex>``, the hash over each
+    broken premise's current question (`premise_sweep._premise_sig`). A
+    decided one is not offered again while the same probes stay broken (the
+    lesson then waits for its age); a rewritten probe that breaks again is a
+    new version. The sweep cache keeps only the last three observations per
+    probe, so the time the probe first failed cannot be known and is not in
+    the identity (it would slide each night)."""
+    from . import premise_sweep
+
+    ids = sorted({str(pid) for pid in premise_ids})
+    by_id = {str(p.get("id")): p for p in record.premises or []}
+    sigs = [premise_sweep._premise_sig(by_id[pid]) if pid in by_id else "" for pid in ids]
+    digest = hashlib.sha256(json.dumps([ids, sigs]).encode("utf-8")).hexdigest()[:12]
+    return f"review:broken:{','.join(ids)}:{digest}"
+
+
+def _review_premise_lines(home: Path, record: Record) -> list[str]:
+    """Each written premise with the daily check's latest verdict, and each
+    placement premise's latest state, from the sweep's cache (never a probe
+    run here)."""
+    from . import premise_sweep, premises
+
+    try:
+        history = premise_sweep.read_history(premise_sweep.default_cache_dir(home))
+    except Exception:  # noqa: BLE001 -- a brief degrades, never breaks
+        history = {}
+    lines: list[str] = []
+    if record.premises is None:
+        lines.append(
+            "[premises] none recorded, and its premise-writing look ended without them: "
+            "this case must write them (`premises` with `action: set`, `[]` when it rests "
+            "on no fact about the machine)"
+        )
+    elif record.premises == []:
+        lines.append(
+            "[premises] `[]` (decided: it rests on no fact about the machine); check that "
+            "this is still so"
+        )
+    else:
+        lines.append("[premises as the daily check last judged them]")
+        for premise in record.premises:
+            pid = str(premise.get("id"))
+            if premise.get("probe") is None:
+                lines.append(f"  {pid}: no probe (a behaviour): only your reading checks it")
+                continue
+            judged = premise_sweep.judge_probe(premise, history.get((record.id, pid), []))
+            seen = (judged.row or {}).get("observed_at") if judged.row else None
+            words = {
+                "holds": "holds",
+                "moved": "moved" + (" (confirmed)" if judged.confirmed else " (first sight)"),
+                "unavailable": "could not be observed",
+                "no-history": "not checked since its baseline",
+            }.get(judged.verdict, judged.verdict)
+            shown = (judged.row or {}).get("shown")
+            lines.append(
+                f"  {pid}: {words}" + (f", value {_clip(shown, 200)!r}" if shown else "")
+                + (f" (seen {seen})" if seen else "")
+            )
+    placement: list[str] = []
+    for pid in premises.PLACEMENT_PREMISE_IDS:
+        rows = history.get((record.id, pid), [])
+        if not rows:
+            continue
+        judged = premise_sweep.judge_placement(rows)
+        word = {"holds": "holds", "unavailable": "could not be measured"}.get(
+            judged.verdict, "failing" + (" (confirmed)" if judged.confirmed else " (first sight)")
+        )
+        seen = (judged.row or {}).get("observed_at")
+        detail = (judged.row or {}).get("detail")
+        placement.append(
+            f"  {pid}: {word}" + (f" -- {_clip(detail, 200)}" if detail and word != "holds" else "")
+            + (f" (seen {seen})" if seen else "")
+        )
+    if placement:
+        lines.append("[where it sits, as the daily check last saw it]")
+        lines += placement
+    return lines
+
+
+def _review_decide_lines(has_premises: bool) -> list[str]:
+    """The review brief's [how to decide it] block."""
+    required = (
+        "; this lesson records no premises, so a `premises` line with `action: set` is "
+        "REQUIRED"
+        if not has_premises else ""
+    )
+    return [
+        "[how to decide it] one `kind: resolution` case with `outcome: no-action` and no "
+        "`supersedes` (nothing observed has changed; this case records that you re-read it), "
+        "whose sheet holds, for this lesson, at most one `premises` line (`action: set` or "
+        f"`rebaseline`) and at most one `note`{required}:",
+        "  - every sentence still true as a session would meet it now: one `note` saying "
+        "which sentences you checked against what; add a `premises` line when a premise is "
+        "missing, wrong or too narrow to notice the next change;",
+        "  - a broken or wrong probe: fix or drop it with `premises` `action: set` (the whole "
+        "list);",
+        "  - a sentence you find false that a probe can show (a tool gone: a `which`, "
+        "`package` or `path` premise; a corrected statement or a superseding lesson: a "
+        "`ledger` premise): write that premise with the probe that shows it. The runner "
+        "records its first value as contradicting the claim, and the lesson comes back the "
+        "next night as a `premise-moved` input, where correcting, narrowing, moving or "
+        "retiring it is yours;",
+        "  - false in a way no probe can show (behaviour; an overlap with another placed "
+        "lesson, which is the overseer's merge), or you cannot tell: park the case "
+        "(`authority-unclear`) with what you found.",
+        "  No `replace`, `retire`, `route`, `reject` or `restore-region` line on this lesson "
+        "here: the runner refuses them on this input (method section 17).",
+    ]
+
+
+def render_premise_review(
+    home: Path, record: Record, row: Mapping[str, Any], *, path: str | None, head: str | None
+) -> tuple[str, dict]:
+    """The part of a ``premise-review`` brief that is not the lesson itself
+    (S-NEXT-rotation): why now (when it was last looked at and by what, the
+    rotation period, or the broken probe that brought it), every premise
+    with the daily check's latest verdict and the placement premises'
+    latest state (from the sweep's cache), the "What would change this
+    decision" bullets of up to three covering cases, its `env` pins, an
+    open follow-up, its recorded generality, the recurrences recorded since
+    the last look, then how to decide. No transcript evidence pack: the
+    question is whether the lesson is true NOW, not what it was taught
+    from. The broken probes themselves are in the lesson block
+    (:func:`render_record`), as on every brief."""
+    review = row.get("review") if isinstance(row.get("review"), Mapping) else {}
+    assert isinstance(review, Mapping)
+    last = str(review.get("last_look") or "")
+    by = str(review.get("looked_by") or "")
+    period = review.get("period")
+    age = review.get("age_days")
+    looked = (
+        f"it was last looked at on {last[:10]} ({by.replace('case:', 'case ') or 'unknown'}), "
+        f"{age} day(s) ago" if last else "no look at it is dated"
+    )
+    if review.get("rank") == REVIEW_RANK_NAMES[REVIEW_RANK_BROKEN]:
+        lines = [
+            "[why now] a probe of this lesson could not observe anything on its last three "
+            "daily checks (listed with the lesson): fix or drop it, and re-read the whole "
+            f"lesson while you are here. {looked[0].upper() + looked[1:]}; every placed lesson "
+            f"is re-read about once every {period} days."
+        ]
+    else:
+        lines = [
+            "[why now] nothing was observed to change: every placed lesson is re-read about "
+            f"once every {period} days, and {looked}. Read every sentence as a session would "
+            "meet it now, not only the ones a premise watches."
+        ]
+    lines += _review_premise_lines(home, record)
+    case_ids = covering_cases(home, [record.id]).get(record.id, [])
+    shown = _would_change_by_case(home, case_ids)
+    for case_id, bullets in shown:
+        lines.append(f"[what the case that covers it ({case_id}) said would change it]")
+        lines += [f"  [{n}] {_clip(bullet, 600)}" for n, bullet in enumerate(bullets, start=1)]
+    if not case_ids:
+        lines.append("[covering case] none: no standing case names this lesson")
+    if record.env:
+        pins = ", ".join(f"{key} {value}" for key, value in sorted(record.env.items()))
+        lines.append(
+            f"[tool versions when it was taught] {_clip(pins, 600)} (context only: a changed "
+            "version is not itself a reason to change the lesson)"
+        )
+    follow = record.follow_up
+    if follow:
+        lines.append("  its follow-up is still open:")
+        for key, label in _OPEN_FOLLOWUP_LABELS:
+            if follow.get(key):
+                lines.append(f"    {label}: {_clip(follow[key])}")
+    if record.generality:
+        lines.append(f"  generality as recorded: {record.generality}")
+    since = chrono.to_dt(last) if last else None
+    recurred = [
+        entry for entry in record.recurrences
+        if since is None or ((chrono.to_dt(entry.get("ts")) or since) > since)
+    ]
+    lines.append(
+        f"  recurrences recorded since that look: {len(recurred)}"
+        + (" (the rule was broken again in a session: is it worded so a session meets it?)"
+           if recurred else "")
+    )
+    lines += _review_decide_lines(bool(review.get("has_premises", record.premises is not None)))
+    stats = {
+        "items": 0, "excerpted": 0, "excerpt_chars": 0, "verdicts": {},
+        "would_change_cases": len(shown), "review_rank": review.get("rank"),
+    }
+    return "\n".join(lines), stats
+
+
 # -------------------------------------------------------------- the record
 
 
@@ -2394,9 +2768,9 @@ def build_briefs(
         # deferral came due, and the card says how it is decided.
         if kind in (INPUT_RECONSIDER, INPUT_LESSON, INPUT_PREMISE_MOVED) and row.get("reason"):
             parts.append(f"[why it is back] {_one_line(row['reason'])}")
-        elif kind == INPUT_PREMISE_EXTRACT and row.get("reason"):
+        elif kind in (INPUT_PREMISE_EXTRACT, INPUT_PREMISE_REVIEW) and row.get("reason"):
             # S-104: nothing brought it BACK; it is here to be
-            # completed.
+            # completed (extract) or re-read (review, S-NEXT-rotation).
             parts.append(f"[why it is here] {_one_line(row['reason'])}")
         parts.append(render_record(
             record, path=rel, head=head, bucket=_bucket_of(home, path),
@@ -2416,6 +2790,11 @@ def build_briefs(
             # S-104: what the lesson rests on is in its words and
             # its cases, not in the session it was taught from.
             text, pack_stats = render_premise_extract(home, record, row, path=rel, head=head)
+            parts.append(text)
+        elif kind == INPUT_PREMISE_REVIEW:
+            # S-NEXT-rotation: is it true NOW -- its premises, its cases'
+            # predictions and what recurred since, not its teaching session.
+            text, pack_stats = render_premise_review(home, record, row, path=rel, head=head)
             parts.append(text)
         else:
             items, pack_stats = evidence_pack(record, roots=resolved_roots, budget=share)

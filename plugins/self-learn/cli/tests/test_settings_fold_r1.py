@@ -206,6 +206,8 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "overseer.broad_removal_threshold",  # O-6
         "premises.enabled",  # S-104, tier C switch, default true
         "premises.backfill_per_night",  # S-104, tier C, default 10
+        "premises.rotation_days",  # S-NEXT-rotation, tier C, default 90
+        "premises.rotation_per_night",  # S-NEXT-rotation, tier C, default auto
         "overseer.skill_writing",  # SK3 (S-107 part 6): on|off (auto reads as on), the rollback switch
         "overseer.skill_discovery",  # SK4 (S-107): phase S on or off, the user's switch
         "sdk.max_budget_usd",
