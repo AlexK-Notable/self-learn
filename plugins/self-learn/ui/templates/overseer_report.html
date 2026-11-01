@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{# The overseer's weekly report, read-only (design r2 §4.7 GET
+   /overseer-report[/<date>]): the inbox links here; nothing on this page
+   writes anything. #}
+{% block title %}self-learn — Weekly report{% if date %} {{ date }}{% endif %}{% endblock %}
+{% block page_kind %}overseer-report{% endblock %}
+
+{% block status_strip %}
+<div class="status-strip">
+  <span class="brand">self-learn</span>
+  <a href="/inbox" title="Back to the inbox">&larr; Inbox</a>
+  <span class="status-item">weekly report{% if date %} · {{ date }}{% endif %}</span>
+</div>
+{% endblock %}
+
+{% block content %}
+<section class="overseer-report" aria-label="weekly report">
+  {% if report_text %}
+  <div class="report-body">{{ report_text | markdown }}</div>
+  {% else %}
+  <h1>Weekly report</h1>
+  <p>{{ report_error }}</p>
+  {% endif %}
+  {% if dates %}
+  <nav aria-label="Earlier reports" class="report-dates">
+    <h2>Earlier reports</h2>
+    <ul>
+      <li><a href="/overseer-report"{% if not date %} aria-current="page"{% endif %}>The latest</a></li>
+      {% for d in dates %}<li><a href="/overseer-report/{{ d }}"{% if d == date %} aria-current="page"{% endif %}>{{ d }}</a></li>{% endfor %}
+    </ul>
+  </nav>
+  {% endif %}
+</section>
+{% endblock %}

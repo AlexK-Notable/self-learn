@@ -1,0 +1,41 @@
+{#
+  The inbox list (design r2 §2.2, §3.6): links with aria-current on the
+  selected one, grouped Needs you / Being carried out / Decided for you.
+  Rendered whole on the page, by GET /inbox/list, by POST /inbox/seen-all,
+  and out of band after an answer (oob_list), so an answered item leaves
+  "Needs you" without a reload.
+#}
+<div id="inbox-list" class="inbox-list" data-ids="{{ ids | join(' ') }}"{% if oob_list %} hx-swap-oob="true"{% endif %}>
+  {% if reader_error and not ids %}
+  <p class="inbox-list-error" role="alert">The inbox could not be read.</p>
+  {% endif %}
+  {% set needs = groups.get("needs-you", []) %}
+  {% set approved = groups.get("approved", []) %}
+  {% set decided = groups.get("decided", []) %}
+  <h2 class="inbox-group-h" id="inbox-needs-h">{% if needs %}Needs you ({{ needs | length }}){% else %}Nothing needs you{% endif %}</h2>
+  {% if needs %}
+  <ul class="inbox-items" aria-labelledby="inbox-needs-h" data-group="needs-you">
+    {% for it in needs %}{% include "partials/workspace_list_item.html" %}{% endfor %}
+  </ul>
+  {% endif %}
+  {% if approved %}
+  <h2 class="inbox-group-h" id="inbox-approved-h">Being carried out ({{ approved | length }})</h2>
+  <ul class="inbox-items" aria-labelledby="inbox-approved-h" data-group="approved">
+    {% for it in approved %}{% include "partials/workspace_list_item.html" %}{% endfor %}
+  </ul>
+  {% endif %}
+  {% if decided %}
+  <h2 class="inbox-group-h" id="inbox-decided-h">Decided for you</h2>
+  <ul class="inbox-items" aria-labelledby="inbox-decided-h" data-group="decided">
+    {% for it in decided %}{% include "partials/workspace_list_item.html" %}{% endfor %}
+  </ul>
+  {% endif %}
+  <div class="inbox-list-actions">
+    {% if decided %}
+    <button type="button" class="btn btn-quiet" data-inbox-action="seen_all"
+            hx-post="/inbox/seen-all" hx-vals='{"selected": "{{ selected_id or '' }}"}'
+            hx-target="#inbox-list" hx-swap="outerHTML">Mark all seen</button>
+    {% endif %}
+    <a class="btn btn-quiet" href="/overseer-report">Weekly report</a>
+  </div>
+</div>

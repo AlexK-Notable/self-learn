@@ -576,6 +576,8 @@ def front(request: Request, notice: str | None = None) -> HTMLResponse:
         mine_read,
         sentinel_mtime=ledger.sentinel_mtime(),
     )
+    # The "Inbox (N)" link fills itself in after load (GET /inbox/count,
+    # inbox_routes.py), so the front page never waits on `attention --json`.
     return _render(
         request,
         "index.html",

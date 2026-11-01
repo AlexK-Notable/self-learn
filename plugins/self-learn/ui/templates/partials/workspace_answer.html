@@ -1,0 +1,152 @@
+{#
+  The answer bar (design r2 §2.1 items 7, 9, 10, 11; §3.4.1; §3.4.7;
+  §3.4.8; §3.7 "Answer" rows). One-click options (each posts to the route
+  its `via` names), a reply box that can go with an option ("click an
+  option, add a note, send"), and an honest line saying how each answer
+  was recorded. The server decides nothing the answer verb decides.
+#}
+{% set r = answer_result %}
+{% set how_words = {
+  "typed": "as your words",
+  "clicked": "as your choice of the offered option",
+  "draft-accepted": "as the agent's draft, accepted by you",
+  "draft-edited": "as the agent's draft, edited and sent by you",
+  "relayed": "as your words, relayed by an agent from your session",
+  "ran-sudo": "as your click: I ran it",
+  "undo": "as your click: undo", "redo": "as your click: redo", "reopen": "as your click: ask me anyway",
+} %}
+<section id="ws-answer" class="ws-section ws-answer" aria-labelledby="ws-answer-h" data-answer-bar>
+  <h2 id="ws-answer-h">{% if item.class == "decided" %}Undo or overturn{% elif item.class == "approved" %}Being carried out{% else %}Answer{% endif %}</h2>
+
+  {% if r and r.state == "recorded" %}
+  <div class="ws-recorded" data-recorded>
+    <p><strong>Recorded {{ r.recorded_as }}.</strong>{% if r.item_state and r.item_state not in ("open",) %} The item is now {{ r.item_state }}.{% endif %}</p>
+    {% if r.words_alone_on_plan %}<p data-pick-an-option>{{ "Recorded as your words. The overseer reads them on its next run. To decide, pick an option." }}</p>{% endif %}
+    {% if r.registration %}<p>{{ r.registration }}</p>{% endif %}
+    {% for w in r.warnings %}<p class="ws-warning">{{ w }}</p>{% endfor %}
+    {% if r.run %}
+      {% set run_exit = r.run.exit %}
+      {% set run_message = r.run.message %}
+      {% set run_command = r.run.command %}
+      {% set run_lead = r.run.lead %}
+      {# An approval moves the item on: Run it now is the successor's. #}
+      {% set run_item = r.successor or item %}
+      {% include "partials/workspace_run_body.html" %}
+    {% endif %}
+    {% if r.closed %}
+    <p data-answer-closed>It is no longer waiting on you.{% if r.successor %} It is now under {{ r.successor.chip }}: <a href="/inbox/{{ r.successor.id }}" hx-get="/inbox/{{ r.successor.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML" hx-push-url="/inbox/{{ r.successor.id }}">open it</a>.{% endif %}</p>
+    {% else %}
+    <p class="ws-meta">You can change your answer until it is carried out.</p>
+    {% endif %}
+  </div>
+  {% elif r and r.state == "error" %}
+  <div class="error-strip" role="alert" data-answer-error><p>{{ r.message }}</p><p class="ws-meta">Your text is kept in the box.</p></div>
+  {% elif r and r.state == "undone" %}
+  <div class="ws-recorded" data-recorded><p><strong>{% if r.redo %}Done again.{% else %}Undone.{% endif %}</strong> {{ r.message }}</p>
+    {% if r.closed %}<p data-answer-closed>This item has left the list.{% if r.successor %} It is now under {{ r.successor.chip }}: <a href="/inbox/{{ r.successor.id }}" hx-get="/inbox/{{ r.successor.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML" hx-push-url="/inbox/{{ r.successor.id }}">open it</a>.{% endif %}</p>{% endif %}
+  </div>
+  {% elif item.answer %}
+  <p class="ws-last-answer">Your last answer{% if item.answer.at %}, {{ item.answer.at | humanize_ts }}{% endif %}: {{ item.answer.summary }} <span class="ws-meta">(recorded {{ how_words.get(item.answer.how, item.answer.how) }})</span></p>
+  {% endif %}
+
+  {% if item.class == "needs-you" and item.state == "awaiting-sudo" %}
+  <div class="ws-sudo" data-awaiting-sudo>
+    <p>You approved it. These steps need sudo, so only you can run them. Run them in your own terminal, then click <strong>I ran it</strong>; an agent does the rest in a terminal you can see.</p>
+    {% for step in sudo_steps %}
+    <div class="ws-copyable"><p>{{ step.say }}</p><pre class="ws-pre ws-cmd" id="ws-sudo-{{ loop.index }}">{{ step.command }}</pre>
+      <button type="button" class="btn btn-quiet" data-copy="#ws-sudo-{{ loop.index }}">Copy</button></div>
+    {% else %}
+    <p class="ws-meta">The sudo commands are in the plan above.</p>
+    {% endfor %}
+    <form hx-post="/inbox/{{ item.id }}/answer" hx-target="#ws-answer" hx-swap="outerHTML">
+      <button type="submit" name="option" value="opt-ran-sudo" class="btn btn-primary" data-option-index="1">I ran it</button>
+    </form>
+  </div>
+  {% endif %}
+
+  {% if item.class == "approved" %}
+  <div class="ws-running" data-approved>
+    {% if item.state == "running" and item.run %}
+    <p>Running in a terminal{% if item.run.at %} (started {{ item.run.at | humanize_ts }}){% endif %}.{% if item.run.claimed_by %} A session claimed it ({{ item.run.claimed_by }}).{% endif %}</p>
+    {% else %}
+    <p>Approved, not running: no terminal session has it.</p>
+    {% endif %}
+    {% if not (item.run and item.run.claimed_by) %}
+    <button type="button" class="btn btn-primary" hx-post="/inbox/{{ item.id }}/run" hx-target="#ws-run-result" hx-swap="innerHTML" data-run-now data-option-index="1">Run it now</button>
+    {% endif %}
+    <div id="ws-run-result" aria-live="polite"></div>
+  </div>
+  {% endif %}
+
+  {% if item.class == "decided" and item.undo and not (r and r.closed) %}
+  {# Redo is what comes next after an undo: in the same response, or on a
+     later load, from the item's own record (`undo.redo`, or the
+     transcript's last undo/redo row; gate r1 finding 4). #}
+  {% if r and r.state == "undone" %}{% set offer_redo = not r.redo %}{% else %}{% set offer_redo = redo_next %}{% endif %}
+  <div class="ws-undo" data-undo-next="{{ 'redo' if offer_redo else 'undo' }}">
+    {% if offer_redo and item.undo.redo_label %}
+    <button type="button" class="btn" hx-post="/inbox/{{ item.id }}/undo" hx-vals='{"redo": "1"}' hx-target="#ws-answer" hx-swap="outerHTML" data-undo>{{ item.undo.redo_label }}</button>
+    {% elif offer_redo %}
+    <p class="ws-meta" data-redo-words>It is undone. To have it done again, say so in the box below.</p>
+    {% else %}
+    <button type="button" class="btn" hx-post="/inbox/{{ item.id }}/undo" hx-target="#ws-answer" hx-swap="outerHTML" data-undo>{{ item.undo.label }}</button>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if r and r.state == "armed" %}
+  <div class="ws-armed" role="alert" data-armed-answer>
+    <p>{{ r.message }}</p>
+    {% for step in r.sudo or [] %}
+    <div class="ws-copyable"><p>{{ step.say }}</p><pre class="ws-pre ws-cmd" id="ws-armed-sudo-{{ loop.index }}">{{ step.command }}</pre>
+      <button type="button" class="btn btn-quiet" data-copy="#ws-armed-sudo-{{ loop.index }}">Copy</button></div>
+    {% endfor %}
+    <form hx-post="/inbox/{{ item.id }}/answer" hx-target="#ws-answer" hx-swap="outerHTML">
+      <input type="hidden" name="confirm" value="1">
+      <input type="hidden" name="text" value="{{ r.text or '' }}">
+      <input type="hidden" name="draft_id" value="{{ r.draft_id or '' }}">
+      <button type="submit" name="option" value="{{ r.option.id }}" class="btn btn-primary" data-confirm-armed>Confirm: {{ r.option.label }}</button>
+      <button type="button" class="btn" hx-get="/inbox/{{ item.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML">Cancel</button>
+    </form>
+  </div>
+  {% elif item.state != "awaiting-sudo" and not (r and r.closed) %}
+  <form id="ws-answer-form" class="ws-answer-form" hx-post="/inbox/{{ item.id }}/answer" hx-target="#ws-answer" hx-swap="outerHTML">
+    {% if options %}
+    <div class="ws-options" role="group" aria-label="Options">
+      {% for o in options %}
+      {% set cls = "btn" ~ (" btn-primary" if o.recommended else "") %}
+      {% set label = o.label ~ (" (recommended)" if o.recommended else "") ~ (" — add your note first" if o.note == "required" else "") %}
+      {% if o.via in ("run --login",) %}
+      <button type="button" class="{{ cls }}" data-option-index="{{ loop.index }}" hx-post="/inbox/{{ item.id }}/run" hx-vals='{"login": "1"}' hx-target="#ws-run-result" hx-swap="innerHTML">{{ label }}</button>
+      {% elif o.via == "check-login" %}
+      <button type="button" class="{{ cls }}" data-option-index="{{ loop.index }}" hx-post="/inbox/{{ item.id }}/check-login" hx-target="#ws-run-result" hx-swap="innerHTML"{% if o.disabled %} disabled title="{{ o.disabled }}"{% endif %}>{{ label }}</button>
+      {% elif o.via == "fix" %}
+      <button type="button" class="{{ cls }}" data-option-index="{{ loop.index }}" hx-post="/inbox/{{ item.id }}/fix" hx-vals='{"option": "{{ o.id }}"}' hx-target="#ws-run-result" hx-swap="innerHTML">{{ label }}</button>
+      {% else %}
+      <button type="submit" name="option" value="{{ o.id }}" class="{{ cls }}" data-option-index="{{ loop.index }}"{% if o.note == "required" %} data-note-required{% endif %}{% if o.disabled %} disabled title="{{ o.disabled }}"{% endif %}>{{ label }}</button>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% for o in options if o.disabled %}<p class="ws-meta">{{ o.label }} is off: {{ o.disabled }}</p>{% endfor %}
+    {% endif %}
+    {% if item.class != "approved" %}<div id="ws-run-result" aria-live="polite"></div>{% endif %}
+    <label class="ws-reply-label" for="ws-reply-text">{% if item.class == "decided" %}Tell it something (overturn it in your own words){% elif item.class == "approved" %}Tell it something (your words are recorded; the overseer reads them){% elif options %}Or answer in your own words{% else %}Your answer{% endif %}</label>
+    <textarea id="ws-reply-text" name="text" rows="3" data-reply-box data-item="{{ item.id }}">{{ r.text if r and r.text else "" }}</textarea>
+    <input type="hidden" id="ws-reply-draft" name="draft_id" value="{{ r.draft_id if r and r.draft_id else '' }}">
+    <div class="ws-reply-foot">
+      <span class="ws-meta" id="ws-reply-line">{% if has_plan and item.class == "needs-you" %}{{ plan_line }}{% else %}Recorded as your words.{% endif %}</span>
+      <span class="ws-meta" id="ws-reply-draft-note" hidden>Using the agent's draft: it is recorded as the agent's draft, not as your words.</span>
+      <button type="submit" class="btn" data-send-reply>Send</button>
+    </div>
+  </form>
+  {% endif %}
+
+  <div id="ws-feedback" class="ws-feedback">
+    {% if item.class == "needs-you" %}
+    <button type="button" class="btn btn-quiet" hx-post="/inbox/{{ item.id }}/feedback" hx-vals='{"wanted": "decided"}' hx-target="#ws-feedback" hx-swap="innerHTML">Didn't need me</button>
+    {% elif item.class == "decided" %}
+    <button type="button" class="btn btn-quiet" hx-post="/inbox/{{ item.id }}/feedback" hx-vals='{"wanted": "needs-you"}' hx-target="#ws-feedback" hx-swap="innerHTML">Should have asked me</button>
+    {% endif %}
+  </div>
+</section>
+{% if oob_list %}{% include "partials/workspace_list.html" %}{% endif %}

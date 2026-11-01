@@ -743,7 +743,19 @@
     return !!overlay && !overlay.hidden;
   }
 
+  /**
+   * Attention round (design r2 §3.6): the inbox pages carry their OWN key
+   * table (keymap.py's INBOX_KEYMAP, rendered into the same blob) and
+   * their own dispatcher, static/inbox.js. This handler stays inert there,
+   * so a key is never dispatched twice and a review-page binding never
+   * fires on an inbox page.
+   */
+  function isInboxPage() {
+    return !!(document.body && document.body.dataset && document.body.dataset.page === "inbox");
+  }
+
   function onKeyDown(event) {
+    if (isInboxPage()) return;
     if (focusIsTextInput()) {
       // UI-walk defect: `?` was silently swallowed here like every other
       // key while focus is in a text input (that rule is correct and
@@ -1518,6 +1530,13 @@
   }
 
   function reload() {
+    // Attention round: the inbox never reloads under the person's hands
+    // (a half-typed reply, a streaming answer). It is told instead, and
+    // static/inbox.js refreshes its list in place.
+    if (isInboxPage()) {
+      document.dispatchEvent(new CustomEvent("self-learn:refresh"));
+      return;
+    }
     if (reloadDeferred()) {
       reloadPending = true; // deferred, never dropped
       return;
@@ -2181,6 +2200,17 @@
           }
           renderInflight();
           break;
+        case "navigate":
+          // Attention round (design r2 §4.7, §4.8; critique 10): the tray
+          // or a popup asked an OPEN window to show an inbox page.
+          followNavigate(envelope.path);
+          break;
+        case "ask":
+        case "attention":
+          // The inbox's own envelopes (§4.8): relayed to static/inbox.js
+          // as a DOM event; a page without the inbox ignores them.
+          document.dispatchEvent(new CustomEvent("self-learn:sse", { detail: envelope }));
+          break;
         default:
           // Unknown types (and anything future) are ignored client-side
           // (10 §1) — never a throw.
@@ -2321,6 +2351,19 @@
       typeof envelope.bucket === "string" &&
       scopes.indexOf("bucket:" + envelope.bucket) !== -1;
     if (recordMatch || bucketMatch) reload();
+  }
+
+  /**
+   * The navigate follower (design r2 §4.7): same-origin paths under
+   * /inbox or /overseer-report only — anything else is ignored, so an
+   * envelope can never send a window off the app or to a write route.
+   */
+  const NAVIGATE_PATH = /^\/(inbox|overseer-report)(\/[A-Za-z0-9._~-]*)*\/?$/;
+
+  function followNavigate(path) {
+    if (typeof path !== "string" || path.indexOf("//") !== -1 || path.indexOf("..") !== -1) return;
+    if (!NAVIGATE_PATH.test(path)) return;
+    window.location.assign(path);
   }
 
   function showBanner(text) {
