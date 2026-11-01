@@ -255,6 +255,26 @@ def test_b_a_carried_lesson_decided_before_is_not_offered_again_and_an_edited_on
     assert offered() == {RID_B}
 
 
+def test_b_the_compile_record_entry_follows_the_skill_md(env):
+    """The skills root's compile record keys the SKILL.md's managed region
+    by its path; the rename re-keys it, entry unchanged."""
+    from self_learn import compiled
+    from self_learn.hosts import host_slug
+
+    assert env.write().ok
+    _skill_md_route(env, RID_A)
+    slug = host_slug(env.home, env.root, scope_kind="skill")
+    old_key = f"plugins/{NAME}/skills/{NAME}/SKILL.md"
+    before = compiled.load_record(env.home, slug)["targets"]
+    assert old_key in before  # control: the route wrote the entry
+
+    assert _rename(env).ok
+
+    after = compiled.load_record(env.home, slug)["targets"]
+    new_key = f"plugins/{NEW}/skills/{NEW}/SKILL.md"
+    assert old_key not in after and dict(after[new_key]) == dict(before[old_key])
+
+
 def test_b_control_a_skill_whose_bucket_is_empty_is_renamed(env):
     assert env.write().ok
     (env.home / "skills" / NAME / "pending").mkdir(parents=True)
