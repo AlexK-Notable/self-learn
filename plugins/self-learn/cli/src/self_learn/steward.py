@@ -112,9 +112,13 @@ _RECONSIDER_OBSERVATION_RE = re.compile(
 #: dependency match in `_reconsider_proposals` could never bring the case
 #: back; this line is the case's own link to the answer (used for a case
 #: whose outcome is `defer` only).
+#: Attention round (design r2 §3.4.5): the inbox records the same answer
+#: by the process actor (`human` from the page or a person's shell,
+#: `agent` from an agent's), and an option click cites its choice row
+#: (`chc-…`) instead of a statement.
 _ASK_ANSWER_OBSERVATION_RE = re.compile(
-    r"^- obs-[0-9a-f]{8} \S+ overseer statement: user answered "
-    r"q-[a-z0-9][a-z0-9-]{1,62} \(ref: stmt-[0-9a-f]+\)$"
+    r"^- obs-[0-9a-f]{8} \S+ (?:overseer|human|agent) statement: user answered "
+    r"q-[a-z0-9][a-z0-9-]{1,62} \(ref: (?:stmt|chc)-[0-9a-f]+\)$"
 )
 #: S-117: the observation the overseer's runner records on a
 #: case its ask cites when it applies the ask's default in the same run
@@ -131,10 +135,24 @@ _ASK_DEFAULTED_OBSERVATION_RE = re.compile(
 #: applied (`overseer.conversation.respond`), recorded on the case each cited
 #: case's line of successors ends at. It brings that case back WHATEVER it
 #: decided: the default already decided it, and the answer may overturn that.
+#: Attention round (design r2 §3.4.5): any of the three observers, a
+#: `chc-` ref (an option click), and the inbox's own overturn of a decided
+#: item (`user overturned att-<12 hex> in the inbox`), which brings the
+#: case back whatever it decided, like an answer to a defaulted ask.
 _ASK_OVERTURN_OBSERVATION_RE = re.compile(
-    r"^- obs-[0-9a-f]{8} \S+ overseer statement: user answered "
-    r"(?P<question>q-[a-z0-9][a-z0-9-]{1,62}) after its default was applied "
-    r"\(ref: (?P<statement>stmt-[0-9a-f]+)\)$"
+    r"^- obs-[0-9a-f]{8} \S+ (?:overseer|human|agent) statement: user "
+    r"(?:answered (?P<question>q-[a-z0-9][a-z0-9-]{1,62}) after its default was applied"
+    r"|overturned (?P<item>att-[0-9a-f]{12}) in the inbox) "
+    r"\(ref: (?P<statement>(?:stmt|chc)-[0-9a-f]+)\)$"
+)
+#: Attention round (design r2 §3.4.4-§3.4.5): the person ruled on a
+#: conflict between two of their statements in the inbox; recorded on each
+#: case of the losing side. Like an overturn it brings the case back
+#: whatever it decided, the same night.
+_CONFLICT_RULING_OBSERVATION_RE = re.compile(
+    r"^- obs-[0-9a-f]{8} \S+ (?:human|agent) statement: user ruled on "
+    r"(?P<conflict>conflict:stmt-[0-9a-f]+\+stmt-[0-9a-f]+) in the inbox "
+    r"\(ref: (?P<statement>(?:stmt|chc)-[0-9a-f]+)\)$"
 )
 
 
@@ -764,6 +782,76 @@ def _completed_manifest_time(home: Path) -> str | None:
         if row.get("status") == "complete" and row.get("completed_at")
     ]
     return max(values) if values else None
+
+
+#: Attention round (design r2 §3.4.2): how many of the person's questions
+#: to the inbox's ask agent one steward run reads, and how much of each.
+WORKSPACE_QUESTIONS_MAX = 40
+WORKSPACE_QUESTION_CHARS = 2000
+
+
+def _workspace_questions_since(home: Path) -> str | None:
+    """When the steward last read the person's questions to the ask agent:
+    the latest completed run that sent at least one packet to the model
+    (only a packet's session reads them; a night with no lessons sends
+    none, so its questions wait for the next run that does)."""
+    values = [
+        str(row.get("completed_at"))
+        for row in committed_manifests(home)
+        if row.get("status") == "complete" and row.get("completed_at")
+        and any(isinstance(p, dict) for p in row.get("packets") or [])
+    ]
+    return max(values) if values else None
+
+
+def _workspace_questions(home: Path, since: str | None) -> list[dict]:
+    """Design r2 §3.4.2 (critique 22): every question the person typed to
+    the inbox's "ask about this" agent (a sealed workspace row with ``role:
+    user, origin: typed, kind: question``) since *since*, oldest first, each
+    with its ``workspace:`` ref and its item's title. The nightly miner skips
+    ask sessions, so this is the only way a correction typed there ("never
+    do X") reaches a statement. Replies are not here: the inbox records a
+    typed reply as a statement itself. A redacted row is left out."""
+    folder = home / "attention" / "workspace"
+    try:
+        paths = sorted(folder.glob("att-*.jsonl"))
+    except OSError:
+        return []
+    floor = chrono.to_dt(since) if since else None
+    out: list[dict] = []
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        title = None
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if row.get("kind") == "header":
+                title = row.get("title")
+                continue
+            if not (row.get("role") == "user" and row.get("origin") == "typed"
+                    and row.get("kind") == "question"):
+                continue
+            if not isinstance(row.get("t"), int) or not isinstance(row.get("text"), str):
+                continue
+            at = chrono.to_dt(row.get("at"))
+            if floor is not None and (at is None or at <= floor):
+                continue
+            text = row["text"]
+            if len(text) > WORKSPACE_QUESTION_CHARS:
+                text = text[: WORKSPACE_QUESTION_CHARS - 1] + "…"
+            out.append({
+                "ref": f"workspace:{path.stem}#T{row['t']}", "item": path.stem,
+                "title": title, "at": row.get("at"), "text": text,
+            })
+    out.sort(key=lambda r: str(r.get("at") or ""))
+    return out[-WORKSPACE_QUESTIONS_MAX:]
 
 
 def _committed_blob(home: Path, path: Path) -> tuple[str, str]:
@@ -2051,7 +2139,10 @@ def _reconsider_unresolved(home: Path, record: Record) -> str:
 def _ask_context(home: Path, line: str) -> str | None:
     """S-117: the card sentence for a reconsider input that an
     overseer ask brought back -- its default applied without waiting, or the
-    user's later answer to it -- else `None`."""
+    user's later answer to it -- else `None`. Attention round (design r2
+    §3.4.5): also the inbox's overturn of a decided item and its ruling on a
+    conflict; and a `chc-` ref (a choice) is never quoted as the user's
+    words (:func:`_answer_words`)."""
     defaulted = _ASK_DEFAULTED_OBSERVATION_RE.match(line)
     if defaulted is not None:
         return (
@@ -2061,13 +2152,91 @@ def _ask_context(home: Path, line: str) -> str | None:
         )
     overturn = _ASK_OVERTURN_OBSERVATION_RE.match(line)
     if overturn is not None:
-        words = _statement_words(home, overturn.group("statement"))
-        said = f" Their words: \"{words}\"" if words else ""
+        said = _answer_words(home, overturn.group("statement"))
+        if overturn.group("item") is not None:
+            return (
+                f"The user overturned the inbox item {overturn.group('item')}, which reported "
+                f"this decision ({overturn.group('statement')}): re-decide this lesson against "
+                f"what they said, keeping the decision only if it agrees.{said}"
+            )
         return (
             f"The user has now answered {overturn.group('question')}, whose default the "
             f"overseer had applied ({overturn.group('statement')}): re-decide this lesson "
             f"against their answer, keeping the decision if the answer agrees.{said}"
         )
+    ruling = _CONFLICT_RULING_OBSERVATION_RE.match(line)
+    if ruling is not None:
+        said = _answer_words(home, ruling.group("statement"))
+        return (
+            f"The user ruled on {ruling.group('conflict')} in the inbox "
+            f"({ruling.group('statement')}), and this case sits on the side they ruled "
+            f"against: re-decide this lesson against their ruling.{said}"
+        )
+    answered = _ASK_ANSWER_OBSERVATION_RE.match(line)
+    if answered is not None:
+        ref = line.rsplit("(ref: ", 1)[1].rstrip(")")
+        if ref.startswith("chc-"):
+            return f"The user answered the question that deferred this lesson.{_answer_words(home, ref)}"
+    return None
+
+
+def _answer_words(home: Path, ref: str) -> str:
+    """How a reconsider card quotes the user's answer *ref* (with a leading
+    space), or ``""``. A statement is their words, quoted. A choice (``chc-``,
+    design r2 §3.4.5) is never their words: "They chose the offered option
+    «label» (not their words)", "They accepted the agent's draft «text» (not
+    their words)", or, for a choice an agent relayed from their session,
+    "Relayed by an agent from their session: «words»" quoting the statement
+    the choice cites. Words they added to a click are quoted after it."""
+    if ref.startswith("stmt-"):
+        words = _statement_words(home, ref)
+        return f" Their words: \"{words}\"" if words else ""
+    choice = _choice_row(home, ref)
+    if choice is None:
+        return f" They answered with a choice ({ref}) that could not be read."
+    how = choice.get("how")
+    label = choice.get("label") or choice.get("option") or "an option"
+    if how == "relayed":
+        words = _statement_words(home, str(choice.get("statement") or ""))
+        chose = f" (choosing «{label}»)" if choice.get("option") else ""
+        return f" Relayed by an agent from their session{chose}: «{words or '(words not readable)'}»"
+    if how in ("draft-accepted", "draft-edited"):
+        text = _clip_quote(choice.get("text"))
+        verb = "accepted the agent's draft" if how == "draft-accepted" else (
+            "sent the agent's draft, edited by them,"
+        )
+        chose = f", choosing «{label}»" if choice.get("option") else ""
+        return f" They {verb} «{text}» (not their words){chose}."
+    if how == "ran-sudo":
+        return " They said they ran the sudo steps themselves (a click, not their words)."
+    out = f" They chose the offered option «{label}» (not their words)."
+    words = _statement_words(home, str(choice.get("statement") or "")) if choice.get(
+        "statement") else None
+    if words:
+        out += f" With it they wrote: \"{words}\""
+    return out
+
+
+def _clip_quote(value: object) -> str:
+    words = " ".join(str(value or "").split())
+    if len(words) > _ANSWER_QUOTE_MAX:
+        words = words[: _ANSWER_QUOTE_MAX - 1] + "…"
+    return words
+
+
+def _choice_row(home: Path, choice_id: str) -> dict | None:
+    """One row of `attention/choices.jsonl`, or `None`."""
+    try:
+        text = (home / "attention" / "choices.jsonl").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("id") == choice_id:
+            return row
     return None
 
 
@@ -2145,6 +2314,7 @@ def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]
                     )
                 )
                 or _ASK_OVERTURN_OBSERVATION_RE.match(match.group(0)) is not None
+                or _CONFLICT_RULING_OBSERVATION_RE.match(match.group(0)) is not None
             )
         ]
         if not matches:
@@ -6923,6 +7093,10 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 prompt = steward_prompt.assemble(
                     home, cache_dir(home), context, inputs, conditions_items=feed_items,
                     returned=_returned_for(home, open_inputs), briefs=briefs,
+                    workspace_questions=(
+                        _workspace_questions(home, _workspace_questions_since(home))
+                        if packet_index == 1 else None
+                    ),
                 )
                 # 2026-09-26: two files. `brief-shared.md` is the part every
                 # packet of the run shares, appended to the system prompt;

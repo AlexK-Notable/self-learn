@@ -1588,6 +1588,31 @@ def _render_sent_back(returned: dict[str, dict]) -> str:
     return "\n".join(lines)
 
 
+#: Attention round (design r2 §3.4.2): the title of the block listing the
+#: person's questions to the inbox's ask agent, and what to do with them.
+WORKSPACE_QUESTIONS_TITLE = "WORDS THE PERSON TYPED TO THE INBOX'S ASK AGENT"
+WORKSPACE_QUESTIONS_INSTRUCTION = (
+    "Since your last run the person typed these to the \"ask about this\" agent in their "
+    "inbox; the nightly miner never reads them. When one states a standing preference or "
+    "rule (\"never do X\", \"always Y\"), not a question about the item, record it in "
+    "statements.yaml: `verbatim` is their exact words (all of the row's text, or an exact "
+    "part of it), `source: {message_ref: <the workspace: ref shown>}`. Otherwise ignore it. "
+    "Never record your own summary of it."
+)
+
+
+def _render_workspace_questions(rows: list[dict]) -> str:
+    """The person's questions to the ask agent, one per line with its
+    `workspace:` ref, the item's title and the time; the text quoted."""
+    lines = [WORKSPACE_QUESTIONS_TITLE, WORKSPACE_QUESTIONS_INSTRUCTION, ""]
+    for row in rows:
+        title = " ".join(str(row.get("title") or "an inbox item").split())
+        text = str(row.get("text") or "").replace("\n", "\n    ")
+        lines.append(f"- {row.get('ref')} (about \"{title}\", {row.get('at')}):")
+        lines.append(f"    {text}")
+    return "\n".join(lines)
+
+
 def assemble(
     home: Path | str,
     cache_dir: Path | str,
@@ -1597,6 +1622,7 @@ def assemble(
     conditions_items: list[Item] | None = None,
     returned: dict[str, dict] | None = None,
     briefs: dict[str, steward_inputs.LessonBrief] | None = None,
+    workspace_questions: list[dict] | None = None,
 ) -> Packet:
     """Interface §4.1: the seven blocks, in two parts (2026-09-26):
     ``shared`` for the appended system prompt and ``per_packet`` for the
@@ -1612,7 +1638,12 @@ def assemble(
     ``returned`` (S-71 §4.6) maps a lesson of this packet the ledger sent
     back to ``{"case": <the case that decided it>, "lines": [<the ledger's
     words>]}``; when it names any, a `sent_back` block titled
-    :data:`SENT_BACK_TITLE` goes in just before the open-cases block."""
+    :data:`SENT_BACK_TITLE` goes in just before the open-cases block.
+
+    ``workspace_questions`` (attention round, design r2 §3.4.2): the
+    person's questions to the inbox's ask agent since the steward last read
+    them (``steward._workspace_questions``); when any, a block titled
+    :data:`WORKSPACE_QUESTIONS_TITLE` goes in just before the open cases."""
     home = Path(home)
     cache_dir = Path(cache_dir)
     items = (
@@ -1627,6 +1658,19 @@ def assemble(
             len(blocks),
         )
         blocks = (*blocks[:at], ("sent_back", _render_sent_back(returned)), *blocks[at:])
+    if workspace_questions:
+        # Attention round (design r2 §3.4.2): the person's questions to the
+        # inbox's ask agent, statement candidates, in the per-packet part
+        # just before the open cases.
+        at = next(
+            (index for index, (name, _body) in enumerate(blocks) if name == "open_cases"),
+            len(blocks),
+        )
+        blocks = (
+            *blocks[:at],
+            ("workspace_questions", _render_workspace_questions(workspace_questions)),
+            *blocks[at:],
+        )
     def joined(rows) -> str:
         return "\n\n".join(f"=== {name} ===\n{body}" for name, body in rows)
 

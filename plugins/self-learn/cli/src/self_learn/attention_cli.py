@@ -69,6 +69,9 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     feedback_p.add_argument("--note", default=None)
 
     # --- answers lane ---
+    from . import attention_answers_cli
+
+    attention_answers_cli.add_parsers(commands)
 
     # --- ask-agent lane ---
 
@@ -88,6 +91,10 @@ def dispatch(args) -> int:
     if command == "feedback":
         return _feedback(home, args)
     # --- answers lane ---
+    from . import attention_answers_cli
+
+    if command in attention_answers_cli.COMMANDS:
+        return attention_answers_cli.dispatch(home, args)
 
     # --- ask-agent lane ---
     print(f"self-learn attention: unknown command {command!r}", file=sys.stderr)

@@ -57,7 +57,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TextIO
+from typing import Callable, TextIO
 
 from ruamel.yaml import YAML
 
@@ -1180,6 +1180,52 @@ def _carry_out_registration(
             f"nothing {'done' if set_mode else 'registered'}: the answer was not a plain "
             f"yes ({phrase})"
         ), False
+
+    def prove() -> attribution.Authority:
+        problem, proof_ref = _agent_shell_proof(home, session, phrase, register, row["id"])
+        if problem is not None:
+            raise ConversationError(
+                f"overseer respond: NOT {'done' if set_mode else 'registered'}, {problem}. "
+                "Nothing was recorded and "
+                "the question stays open. Have the person type a plain yes in this "
+                "session to your message naming the question, and answer again straight "
+                "away, have them answer in their own terminal, or run "
+                f"{_hand_command(register)} with --note under the user's standing grant "
+                "and answer again: what is already done is left as it is"
+            )
+        if proof_ref is None:  # survives `python -O`, unlike an assert (gate r1 NIT)
+            raise ConversationError(
+                "overseer respond: NOT done: the proof named no transcript line. "
+                "Nothing was recorded and the question stays open"
+            )
+        return attribution.Authority("typed-yes", proof_ref, f"Answers: {row['id']}")
+
+    return _register_core(home, row, consent=prove)
+
+
+def _register_core(
+    home: Path,
+    row: dict,
+    *,
+    consent: "attribution.Authority | Callable[[], attribution.Authority] | None",
+) -> tuple[str, bool]:
+    """The text-free part of :func:`_carry_out_registration` (attention
+    round, design r2 §3.4.4): carry out the registration *row*'s
+    ``register`` names. Returns ``(sentence, registered)``; raises
+    :class:`ConversationError` when the registration is refused, so the
+    caller records nothing and the question stays open.
+
+    *consent* is who allowed it: ``None`` in a person's own terminal or
+    from the inbox (the person's click is the consent); from an agent's
+    shell an :class:`attribution.Authority` (a proved typed yes), or a
+    callable that proves one, called only when something is still to be
+    done (what is already so needs no proof). Split out so the inbox's
+    option click (which has no text) registers through the same code as a
+    typed bare yes; before the split a click registered nothing while the
+    page said "recorded" (critique 9)."""
+    register = row["register"]
+    phrase = _register_phrase(register)
+    set_mode = register.get("action") == "set-mode"
     proof_ref: str | None = None
     switched: hosts.HostSetModeResult | None = None
     try:
@@ -1210,23 +1256,14 @@ def _carry_out_registration(
         if not already and settings.agent_caller():
             # What is already so needs no proof (nothing is being done); what
             # is still to be done does.
-            problem, proof_ref = _agent_shell_proof(home, session, phrase, register, row["id"])
-            if problem is not None:
+            granted = consent() if callable(consent) else consent
+            if granted is None:
                 raise ConversationError(
-                    f"overseer respond: NOT {'done' if set_mode else 'registered'}, {problem}. "
-                    "Nothing was recorded and "
-                    "the question stays open. Have the person type a plain yes in this "
-                    "session to your message naming the question, and answer again straight "
-                    "away, have them answer in their own terminal, or run "
-                    f"{_hand_command(register)} with --note under the user's standing grant "
-                    "and answer again: what is already done is left as it is"
-                )
-            if proof_ref is None:  # survives `python -O`, unlike an assert (gate r1 NIT)
-                raise ConversationError(
-                    "overseer respond: NOT done: the proof named no transcript line. "
+                    f"overseer respond: NOT {'done' if set_mode else 'registered'}: from an "
+                    f"agent's shell a registration needs the person's proved yes ({phrase}). "
                     "Nothing was recorded and the question stays open"
                 )
-            granted = attribution.Authority("typed-yes", proof_ref, f"Answers: {row['id']}")
+            proof_ref = granted.ref if granted.kind == "typed-yes" else None
         # A person's terminal still runs `host add` for a registration already
         # in place (it restores a plain host's missing marker, as before); an
         # agent's shell has nothing to do then, and no authority to do it with.
@@ -1390,3 +1427,69 @@ def decline(home: Path | str, *, proposition: str) -> ResponseResult:
     presentations = _presentations(resolved, row)
     _set_presentation_outcome(resolved, presentations, "declined")
     return ResponseResult(None)
+
+
+#: `attention/choices.jsonl` (design r2.1 §4.4): how a choice row was made.
+CHOICE_HOWS = ("clicked", "draft-accepted", "draft-edited", "relayed", "ran-sudo")
+_CHOICE_ID_RE = re.compile(r"^chc-[0-9a-f]{8}$")
+
+
+def choices_path(home: Path | str) -> Path:
+    return Path(home) / "attention" / "choices.jsonl"
+
+
+def record_choice(home: Path | str, row: dict) -> str:
+    """Append one choice row to `attention/choices.jsonl` and commit it
+    (design r2.1 §3.4.3; the attention round's `answers` lane): the
+    person's click on an offered option, an agent draft they sent, a choice
+    an agent relayed from their session, or their "I ran it" on a sudo step.
+    Never their words: the statement store keeps those, and a choice that
+    came with words cites the statement (`statement`).
+
+    The id (`chc-` + 8 hex) is allocated under the ledger lock when the row
+    has none; the row is secret-scanned first (its free texts are the
+    person's note or an agent's draft) and refused on a hit. Returns the
+    id."""
+    from ..scan import scan as scan_secrets  # lazy: only the inbox writes choices
+
+    resolved = Path(home)
+    if row.get("how") not in CHOICE_HOWS:
+        raise ConversationUsageError(
+            f"record_choice: how must be one of {', '.join(CHOICE_HOWS)}, got {row.get('how')!r}"
+        )
+    if row.get("recorded_by") not in ("human", "agent"):
+        raise ConversationUsageError(
+            f"record_choice: recorded_by must be human or agent, got {row.get('recorded_by')!r}"
+        )
+    for field in ("text", "draft_text", "note"):
+        value = row.get(field)
+        if isinstance(value, str) and value:
+            hits = scan_secrets(value)
+            if hits:
+                raise ConversationUsageError(
+                    f"record_choice: the {field} matched the secret scan ({hits[0].rule}); "
+                    "nothing was recorded"
+                )
+    target = choices_path(resolved)
+    with intents.ledger_write(resolved) as recovered:
+        intents.announce_recovered(recovered)
+        existing = {r.get("id") for r in choice_rows(resolved)}
+        choice_id = row.get("id")
+        if choice_id is not None and (
+            not isinstance(choice_id, str) or _CHOICE_ID_RE.fullmatch(choice_id) is None
+        ):
+            raise ConversationUsageError(f"record_choice: malformed id {choice_id!r}")
+        while choice_id is None or choice_id in existing:
+            choice_id = "chc-" + os.urandom(4).hex()
+        full = {"id": choice_id, "at": chrono.now_iso(), **{k: v for k, v in row.items() if k != "id"}}
+        prior = target.read_text(encoding="utf-8") if target.exists() else ""
+        if prior and not prior.endswith("\n"):
+            prior += "\n"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(target, prior + json.dumps(full, sort_keys=True) + "\n", fsync=True)
+        gitops.stage_and_commit(
+            resolved, [target],
+            f"self-learn: attention choice {choice_id} ({full['how']} on {full.get('item')})",
+            None,
+        )
+    return choice_id
