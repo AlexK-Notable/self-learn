@@ -1,0 +1,409 @@
+#!/usr/bin/python3 -I
+"""self-learn-tray: the self-learn tray icon (StatusNotifierItem, Gio only).
+
+It shows what `self-learn attention --json` says (attention-design-r2 §3.5,
+§3.10, §4.1): idle (grey, always shown), new (a flagged decided item you have
+not seen), needs-you, or broken. A left click opens the inbox; a middle click
+marks every decided item seen. It never reads the ledger itself and never runs
+git: it runs `timeout 10 self-learn attention --json` every 120 s, and at once
+when `$SELF_LEARN_HOME` itself (not recursively: a typed reply's statement
+lands in `user-statements.jsonl` there), `$SELF_LEARN_HOME/overseer/`,
+`$SELF_LEARN_HOME/attention/` or `<cache_dir>/attention/` changes (`cache_dir`
+comes from the JSON).
+
+The system python (`-I`) because the uv venv has no `gi`; Gio only (no Gtk, so
+no display is needed). Deployed by install.sh, run by self-learn-tray.service.
+
+`--pure poll|activate|secondary` runs one step without the session bus and
+prints JSON; the tests use it (`tests/test_tray.py`).
+"""
+
+import argparse
+import json
+import os
+import signal
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+POLL_SECS = 120
+TIMEOUT_SECS = 10
+TIMED_OUT = 124  # timeout(1)'s exit status when the command ran out of time
+ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "assets", "tray")
+STATES = ("idle", "new", "needs-you", "broken")
+STATUS = {"idle": "Passive", "new": "Active", "needs-you": "NeedsAttention", "broken": "NeedsAttention"}
+ACTIVATE_ARGV = ["systemd-run", "--user", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
+SECONDARY_ARGV = ["self-learn", "attention", "seen", "--all-decided"]
+BROKEN_TITLE = "self-learn: could not check what needs you"
+WATCH_EVENTS = {
+    Gio.FileMonitorEvent.CHANGES_DONE_HINT, Gio.FileMonitorEvent.CREATED, Gio.FileMonitorEvent.DELETED,
+    Gio.FileMonitorEvent.MOVED_IN, Gio.FileMonitorEvent.MOVED_OUT, Gio.FileMonitorEvent.RENAMED,
+}
+
+
+def log(msg):
+    print(f"self-learn-tray: {msg}", file=sys.stderr, flush=True)
+
+
+def ledger_home():
+    """As the unit pins it; `~/.self-learn` when unset (critique 30)."""
+    return os.path.expanduser(os.environ.get("SELF_LEARN_HOME") or "~/.self-learn")
+
+
+def poll_argv(timeout_secs=TIMEOUT_SECS):
+    return ["timeout", "--kill-after=5", str(timeout_secs), "self-learn", "attention", "--json"]
+
+
+def interpret(rc, stdout, stderr, timeout_secs=TIMEOUT_SECS):
+    """One `attention --json` result -> {state, tooltip, error, cache_dir}.
+
+    A timeout, a non-zero exit or output that is not the contract's JSON is
+    `broken`, with the error in the tooltip. The tray never re-derives the
+    state from the items: `state` is the reader's (one copy of the rule)."""
+    data, problem = None, None
+    try:
+        data = json.loads(stdout or "")
+        if not isinstance(data, dict):
+            data, problem = None, "not a JSON object"
+    except ValueError as exc:
+        problem = f"not JSON ({exc})"
+    cache_dir = data.get("cache_dir") if data else None
+    cache_dir = cache_dir if isinstance(cache_dir, str) and cache_dir else None
+    last = (stderr or "").strip().splitlines()[-1:] or [""]
+    # The tooltip title says what failed (BROKEN_TITLE); this is the reason, in plain words.
+    if rc == TIMED_OUT:
+        error = f"it did not answer within {timeout_secs} s"
+    elif rc == -signal.SIGKILL or rc == 128 + signal.SIGKILL:
+        error = f"it was stopped before it answered (it ran past {timeout_secs} s, or the system killed it)"
+    elif rc != 0:
+        reason = (data or {}).get("error") or last[0] or problem or "no message"
+        error = f"{reason} (exit {rc})"
+    elif data is None:
+        error = f"its output was not readable: {problem}"
+    elif data.get("state") not in STATES:
+        error = f"it reported a state the tray does not know: {data.get('state')!r}"
+    else:
+        tooltip = data.get("tooltip") if isinstance(data.get("tooltip"), str) else ""
+        return {"state": data["state"], "tooltip": tooltip or "self-learn", "error": None, "cache_dir": cache_dir}
+    return {"state": "broken", "tooltip": BROKEN_TITLE, "error": error, "cache_dir": cache_dir}
+
+
+def sni_view(result):
+    """The SNI face of one result: Status, IconName, ToolTip (title, description)."""
+    state = result["state"]
+    icon = f"self-learn-tray-{state}"
+    return {"state": state, "status": STATUS[state], "icon_name": icon, "attention_icon_name": icon,
+            "tooltip_title": result["tooltip"], "tooltip_description": result["error"] or ""}
+
+
+def watch_dirs(home, cache_dir):
+    # A directory monitor is not recursive. The ledger root itself is watched so
+    # that a reply typed in the workspace (a statement appended to
+    # `user-statements.jsonl` there, design r2 §3.4.1) polls at once; changes
+    # inside `.git/`, `cases/` and the other subdirectories fire nothing here.
+    dirs = [home, os.path.join(home, "overseer"), os.path.join(home, "attention")]
+    if cache_dir:
+        dirs.append(os.path.join(cache_dir, "attention"))
+    return dirs
+
+
+def spawn(argv, done=None):
+    """Start argv without blocking the main loop; `done(rc)` when it exits."""
+    try:
+        proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE)
+    except GLib.Error as exc:
+        log(f"could not start {argv[0]}: {exc.message}")
+        if done:
+            done(127)
+        return
+
+    def finished(p, res):
+        try:
+            p.wait_finish(res)
+            rc = p.get_exit_status() if p.get_if_exited() else -p.get_term_sig()
+        except GLib.Error as exc:
+            log(f"{argv[0]}: {exc.message}")
+            rc = 1
+        if rc != 0:
+            log(f"{' '.join(argv)} exited {rc}")
+        if done:
+            done(rc)
+
+    proc.wait_async(None, finished)
+
+
+class Tray:
+    """State, polling and file monitors. The D-Bus face is `SniItem`."""
+
+    def __init__(self, on_change=None, timeout_secs=TIMEOUT_SECS):
+        self.home = ledger_home()
+        self.timeout_secs = timeout_secs
+        self.on_change = on_change
+        self.result = {"state": "idle", "tooltip": "self-learn: checking…", "error": None, "cache_dir": None}
+        self.cache_dir = None
+        self.monitors = {}
+        self.polling = False
+        self.again = False
+        self.quiet_until = 0
+        self.pending = 0
+        self.rewatch()
+
+    def rewatch(self):
+        wanted = watch_dirs(self.home, self.cache_dir)
+        for path in list(self.monitors):
+            if path not in wanted:
+                self.monitors.pop(path).cancel()
+        for path in wanted:
+            if path in self.monitors:
+                continue
+            try:
+                mon = Gio.File.new_for_path(path).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
+            except GLib.Error as exc:
+                log(f"cannot watch {path}: {exc.message}")
+                continue
+            mon.connect("changed", self.on_file_event)
+            self.monitors[path] = mon
+
+    def on_file_event(self, _mon, _file, _other, event):
+        # A change made while our own poll runs (the reader's cache write) or
+        # just after it is not a reason to poll again; the 120 s poll is the
+        # backstop for a change that lands in that window.
+        if event not in WATCH_EVENTS or self.polling or GLib.get_monotonic_time() < self.quiet_until:
+            return
+        if not self.pending:
+            self.pending = GLib.timeout_add(1000, self.poll_from_timer)
+
+    def poll_from_timer(self):
+        self.pending = 0
+        self.poll()
+        return False
+
+    def poll(self, done=None):
+        if self.polling:
+            self.again = True
+            return
+        self.polling = True
+        argv = poll_argv(self.timeout_secs)
+        try:
+            proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+        except GLib.Error as exc:
+            self.finish({"state": "broken", "tooltip": BROKEN_TITLE,
+                         "error": f"could not run {argv[0]}: {exc.message}", "cache_dir": None}, done)
+            return
+
+        def answered(p, res):
+            try:
+                _ok, out, err = p.communicate_utf8_finish(res)
+                rc = p.get_exit_status() if p.get_if_exited() else -p.get_term_sig()
+            except GLib.Error as exc:
+                out, err, rc = "", exc.message, 1
+            self.finish(interpret(rc, out, err, self.timeout_secs), done)
+
+        proc.communicate_utf8_async(None, None, answered)
+
+    def finish(self, result, done):
+        self.polling = False
+        self.quiet_until = GLib.get_monotonic_time() + 1_000_000
+        if result["error"]:
+            log(f"self-learn attention --json: {result['error']}")
+        if result["cache_dir"] and result["cache_dir"] != self.cache_dir:
+            self.cache_dir = result["cache_dir"]
+            self.rewatch()
+        changed = result != self.result
+        self.result = result
+        if changed and self.on_change:
+            self.on_change()
+        if done:
+            done()
+        if self.again:
+            self.again = False
+            self.poll()
+
+    def activate(self, done=None):
+        spawn(ACTIVATE_ARGV, done)
+
+    def secondary(self, done=None):
+        """Mark every decided item seen, then poll so the icon drops `new` at once."""
+        spawn(SECONDARY_ARGV, lambda rc: self.poll(done=(lambda: done(rc)) if done else None))
+
+
+SNI_XML = """<node><interface name="org.kde.StatusNotifierItem">
+<property name="Category" type="s" access="read"/><property name="Id" type="s" access="read"/>
+<property name="Title" type="s" access="read"/><property name="Status" type="s" access="read"/>
+<property name="WindowId" type="i" access="read"/><property name="IconThemePath" type="s" access="read"/>
+<property name="IconName" type="s" access="read"/><property name="IconPixmap" type="a(iiay)" access="read"/>
+<property name="OverlayIconName" type="s" access="read"/>
+<property name="AttentionIconName" type="s" access="read"/>
+<property name="AttentionIconPixmap" type="a(iiay)" access="read"/>
+<property name="ToolTip" type="(sa(iiay)ss)" access="read"/>
+<property name="ItemIsMenu" type="b" access="read"/>
+<method name="Activate"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
+<method name="SecondaryActivate"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
+<method name="ContextMenu"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
+<method name="Scroll"><arg name="delta" type="i" direction="in"/><arg name="orientation" type="s" direction="in"/></method>
+<signal name="NewTitle"/><signal name="NewIcon"/><signal name="NewAttentionIcon"/><signal name="NewToolTip"/>
+<signal name="NewStatus"><arg name="status" type="s"/></signal>
+</interface></node>"""
+SNI_IFACE = "org.kde.StatusNotifierItem"
+SNI_PATH = "/StatusNotifierItem"
+WATCHER = "org.kde.StatusNotifierWatcher"
+
+
+class SniItem:
+    """The StatusNotifierItem on the session bus; registers again whenever the
+    watcher (Waybar) appears or changes owner."""
+
+    def __init__(self, loop):
+        self.loop = loop
+        self.exit_code = 0
+        self.name = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
+        self.conn = None
+        self.owned = False
+        self.watcher = None
+        self.shown = None
+        self.iface = Gio.DBusNodeInfo.new_for_xml(SNI_XML).interfaces[0]
+        self.tray = Tray(on_change=self.publish)
+        Gio.bus_own_name(Gio.BusType.SESSION, self.name, Gio.BusNameOwnerFlags.NONE,
+                         self.on_bus, self.on_name, self.on_name_lost)
+        Gio.bus_watch_name(Gio.BusType.SESSION, WATCHER, Gio.BusNameWatcherFlags.NONE,
+                           self.on_watcher, self.on_watcher_gone)
+
+    def on_bus(self, conn, _name):
+        self.conn = conn
+        conn.register_object(SNI_PATH, self.iface, self.on_call, self.on_get, None)
+
+    def on_name(self, _conn, _name):
+        self.owned = True
+        self.register()
+        self.tray.poll()
+        GLib.timeout_add_seconds(POLL_SECS, self.tick)
+
+    def tick(self):
+        self.tray.poll()
+        return True
+
+    def on_name_lost(self, _conn, _name):
+        log(f"lost the bus name {self.name} (no session bus?); exiting so systemd restarts the tray")
+        self.exit_code = 1
+        self.loop.quit()
+
+    def on_watcher(self, _conn, _name, owner):
+        self.watcher = owner
+        self.register()
+
+    def on_watcher_gone(self, _conn, _name):
+        self.watcher = None
+
+    def register(self):
+        if not (self.owned and self.watcher and self.conn):
+            return
+
+        def done(conn, res):
+            try:
+                conn.call_finish(res)
+                log(f"registered with {WATCHER} ({self.watcher})")
+            except GLib.Error as exc:
+                log(f"RegisterStatusNotifierItem failed: {exc.message}")
+
+        self.conn.call(WATCHER, "/StatusNotifierWatcher", WATCHER, "RegisterStatusNotifierItem",
+                       GLib.Variant("(s)", (self.name,)), None, Gio.DBusCallFlags.NONE, 5000, None, done)
+
+    def view(self):
+        return sni_view(self.tray.result)
+
+    def on_get(self, _conn, _sender, _path, _iface, prop):
+        v = self.view()
+        values = {
+            "Category": ("s", "ApplicationStatus"), "Id": ("s", "self-learn"), "Title": ("s", "self-learn"),
+            "Status": ("s", v["status"]), "WindowId": ("i", 0), "IconThemePath": ("s", ICON_DIR),
+            "IconName": ("s", v["icon_name"]), "IconPixmap": ("a(iiay)", []), "OverlayIconName": ("s", ""),
+            "AttentionIconName": ("s", v["attention_icon_name"]), "AttentionIconPixmap": ("a(iiay)", []),
+            # Waybar renders the title as markup and escapes the description itself.
+            "ToolTip": ("(sa(iiay)ss)", (v["icon_name"], [], GLib.markup_escape_text(v["tooltip_title"]),
+                                          v["tooltip_description"])),
+            "ItemIsMenu": ("b", False),
+        }
+        sig, value = values[prop]
+        return GLib.Variant(sig, value)
+
+    def on_call(self, _conn, _sender, _path, _iface, method, _params, invocation):
+        if method == "Activate":
+            self.tray.activate()
+        elif method == "SecondaryActivate":
+            self.tray.secondary()
+        invocation.return_value(None)
+
+    def publish(self):
+        v = self.view()
+        if self.conn is None or v == self.shown:
+            return
+        old, self.shown = self.shown or {}, v
+        if v["status"] != old.get("status"):
+            self.conn.emit_signal(None, SNI_PATH, SNI_IFACE, "NewStatus", GLib.Variant("(s)", (v["status"],)))
+        if v["icon_name"] != old.get("icon_name"):
+            self.conn.emit_signal(None, SNI_PATH, SNI_IFACE, "NewIcon", None)
+            self.conn.emit_signal(None, SNI_PATH, SNI_IFACE, "NewAttentionIcon", None)
+        self.conn.emit_signal(None, SNI_PATH, SNI_IFACE, "NewToolTip", None)
+
+
+def pure(step, timeout_secs):
+    """One step without the session bus; prints what happened as JSON."""
+    loop = GLib.MainLoop()
+    out = {}
+    tray = Tray(timeout_secs=timeout_secs)
+
+    def polled():
+        out.update(view=sni_view(tray.result), error=tray.result["error"],
+                   watch=sorted(tray.monitors), home=tray.home, icon_dir=ICON_DIR)
+        GLib.idle_add(loop.quit)
+
+    def ran(rc):
+        out.update(rc=rc)
+        if step == "secondary":
+            polled()  # `secondary` calls back after its re-poll
+        GLib.idle_add(loop.quit)
+
+    if step == "poll":
+        tray.poll(done=polled)
+    elif step == "activate":
+        tray.activate(done=ran)
+    else:
+        tray.secondary(done=ran)
+    GLib.timeout_add_seconds(timeout_secs + 15, loop.quit)
+    loop.run()
+    print(json.dumps(out, sort_keys=True))
+    return 0
+
+
+def unix_signal_add(sig, handler):
+    """`GLibUnix.signal_add` where this PyGObject has it (newer ones warn on
+    `GLib.unix_signal_add`, into the journal at every start), else the old name."""
+    try:
+        gi.require_version("GLibUnix", "2.0")
+        from gi.repository import GLibUnix
+        return GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, sig, handler)
+    except (ImportError, ValueError, AttributeError):
+        return GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, handler)
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="self-learn-tray", description=__doc__.splitlines()[0])
+    ap.add_argument("--pure", choices=("poll", "activate", "secondary"),
+                    help="run one step without the session bus and print JSON (tests)")
+    ap.add_argument("--timeout-secs", type=int, default=TIMEOUT_SECS, help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+    if args.pure:
+        return pure(args.pure, args.timeout_secs)
+    loop = GLib.MainLoop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        unix_signal_add(sig, lambda: (loop.quit(), False)[1])
+    item = SniItem(loop)
+    loop.run()
+    return item.exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

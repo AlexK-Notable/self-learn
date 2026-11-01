@@ -575,6 +575,53 @@ section records what the surface is.
 - **Weekly report** (`/overseer-report[/<date>]`): a read-only render of
   the overseer's report, newest by default, with links to earlier ones.
 
+### 2.5 The tray icon *(added 2026-10-31, S-NEXT-tray; attention-design-r2 §3.5, §3.10)*
+
+A StatusNotifierItem in the desktop bar's tray (Waybar's `tray` module on the
+maintainer's host) is the one place self-learn shows that something is waiting.
+It is the door to the inbox, not a second inbox: it holds no items of its own.
+
+| state (from `self-learn attention --json`) | SNI `Status` | icon (`IconThemePath` = `plugins/self-learn/assets/tray/`) |
+|---|---|---|
+| `idle`: nothing needs the user, nothing flagged is unseen | `Passive` | `self-learn-tray-idle`, grey, always shown (answer 8) |
+| `new`: a flagged decided item is unseen | `Active` | `self-learn-tray-new`, the grey glyph with an accent dot |
+| `needs-you`: a needs-you item is open | `NeedsAttention` | `self-learn-tray-needs-you`, the glyph in colour |
+| `broken`: the reader failed, or a `broken.*` item is open | `NeedsAttention` | `self-learn-tray-broken`, struck through |
+
+- **The state is the reader's.** The tray never re-derives it from the items, so
+  "flagged" (§3.5 of the design: `decided.overseer-run`, `decided.hook-activated`,
+  `decided.always-loaded`, `decided.approved-done`) has one definition.
+- **Broken when the reader cannot answer.** A non-zero exit, a timeout (10 s) or
+  output that is not the contract's JSON shows `broken`. The tooltip title then
+  reads "self-learn: could not check what needs you" and its description gives
+  the reason in plain words, using the JSON's own `error` when the reader printed
+  one.
+- **Tooltip.** The reader's `tooltip` line as the SNI tooltip title (markup-escaped:
+  Waybar renders the title as markup); a broken poll adds the error as the
+  description.
+- **Left click** (`Activate`) runs `systemd-run --user --collect --quiet --
+  self-learn-ui-open --page /inbox`. The transient unit carries the user manager's
+  current display environment, so the tray needs none; when a UI window is already
+  open, the launcher moves it to the inbox (`/navigate`).
+- **Middle click** (`SecondaryActivate`) runs `self-learn attention seen
+  --all-decided` and polls again at once. Seen never clears a needs-you item.
+- **No right-click menu** (no dbusmenu); `ContextMenu` and `Scroll` do nothing.
+- **When it polls.** Every 120 s, and one second after a change in
+  `$SELF_LEARN_HOME` itself, `$SELF_LEARN_HOME/overseer/`,
+  `$SELF_LEARN_HOME/attention/` or `<cache_dir>/attention/` (`Gio.FileMonitor`;
+  directory monitors are not recursive). The ledger root is watched because a
+  reply typed in the workspace lands as a statement in `user-statements.jsonl`
+  there, and in `attention/workspace/`, which the `attention/` monitor does not
+  see; without it the icon could stay "needs you" for up to two minutes after the
+  answer. Writes inside `.git/` and the other subdirectories fire nothing at the
+  root. A change that lands while the
+  tray's own poll runs, or within a second after it, is not a reason to poll again
+  (the reader's cache write would otherwise loop); the 120 s poll catches it.
+- **Registration.** It owns `org.kde.StatusNotifierItem-<pid>-1`, serves
+  `/StatusNotifierItem`, and calls `RegisterStatusNotifierItem` whenever
+  `org.kde.StatusNotifierWatcher` appears or changes owner (a bar restart).
+- **Unit and deployment.** `13-hosting-and-separation.md` §7.6.
+
 ## 3. Process & data architecture
 
 **The files are the only truth; the server is a reader and a

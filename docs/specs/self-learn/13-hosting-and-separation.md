@@ -2263,6 +2263,40 @@ approval an agent relayed from its own session launches nothing; that
 session, the one the person typed the yes in and is watching, may carry it
 out by the same brief, or the person clicks Run it now.
 
+## 7.6 The tray unit (added 2026-10-31, S-NEXT-tray)
+
+`systemd/self-learn-tray.service` runs `plugins/self-learn/scripts/self-learn-tray`
+(linked to `~/.local/bin/self-learn-tray`): the tray icon of `09-surface-spec.md`
+§2.5. Its shape:
+
+- `Type=simple`, `Restart=always`, `RestartSec=5`, `WantedBy=default.target`.
+  The tray uses only the session bus, so it starts at login without
+  `graphical-session.target` (which Hyprland does not start) and without a line in
+  the compositor's autostart. It registers with the StatusNotifierWatcher whenever
+  one appears, so the order in which it and the bar start does not matter.
+- `Restart=always` with no start-limit keys, unlike the host and UI units (B-9):
+  five seconds apart, restarts never reach systemd's default limit. An icon that
+  gave up would leave the user with no sign that anything is wrong, which answer 8
+  (the idle icon is always shown) exists to prevent. The tray exits 1 when it loses
+  the session bus.
+- The same `SELF_LEARN_HOME` pin (B-1, §7.1) and `PATH` floor as the other units.
+  The tray reads `$SELF_LEARN_HOME` itself only to choose what to watch
+  (the ledger root, not recursively, plus `overseer/` and `attention/`), with
+  `~/.self-learn` when it is unset; the cache
+  directory comes from `self-learn attention --json`'s own `cache_dir`, never from
+  a second copy of §6's resolution rule.
+- It reads nothing else of the ledger and runs no git. Its only reads are
+  `timeout 10 self-learn attention --json` (every 120 s, and at once when a watched
+  directory changes) and its writes go through `self-learn attention seen
+  --all-decided`. `attention` is not a miner watchdog tick (the any-verb watchdog,
+  `12-transcript-miner.md` §3; the exclusion is lane `attention-core`'s), so polling
+  never starts a mining run.
+- `install.sh` links the unit and the script and enables nothing, as for every
+  other unit; it prints the enable line. On a host where the standing grant is in
+  force, the orchestrator enables it after landing.
+- The interpreter is the system `python3 -I` (the uv venv carries no `gi`), with
+  Gio only: no Gtk, no display, no Qt.
+
 ## 8. Invariants
 
 - **H-1** · One ledger home per machine, explicit (`~/.self-learn` or

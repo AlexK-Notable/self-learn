@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <!-- self-learn tray, new: a flagged decision made for you that you have not
+       seen (attention-design-r2 §3.5). The idle glyph plus an accent dot. -->
+  <path d="M 13.9 5.3 A 6.5 6.5 0 1 1 8.1 5.3" fill="none" stroke="#9a9ca3" stroke-width="2" stroke-linecap="round"/>
+  <polygon points="9.6,4.3 8.7,6.6 7.2,4.1" fill="#9a9ca3"/>
+  <circle cx="11" cy="11" r="2" fill="#9a9ca3"/>
+  <circle cx="17.5" cy="4.5" r="3.5" fill="#82abf5"/>
+</svg>
