@@ -1161,7 +1161,16 @@ questions:
   `needs: user, because: foreign-history`. An ask with no `needs` (an index
   written before) reads as needing the user when it has `system: true`
   (`system-change`) or `register` (`foreign-history`), as stead when it has a
-  default, and as waiting when it has neither, as before.
+  default, and as waiting when it has neither, as before. *(Fix round 2.)* The
+  runner reads a new `questions.yaml` the same way: an ask the model wrote
+  with `system: true` or `register` and no `needs` is validated as `needs:
+  user` with that `because` (and, as in S-117, writes no default of its own),
+  so one without options, a recommendation or, for a system change, a plan is
+  dropped and named, never indexed as a needs-you page with nothing to click
+  (answer 10). An ask with neither and a default stays S-117's stead ask.
+  A question whose `text` names ledger ids (`lrn-`, `case-`, `stmt-`, `um-`)
+  is kept and named in "Refused / could not do": its ids belong in `cases`
+  and `statements`, which the inbox shows beside it.
 - **Options, recommendation, plan.** `options` are 2-4 `{id, label, effect:
   approve|decline|other|register, confirm?, note?: required}`, ids unique; a
   `register` effect only on an ask with `register`; `recommend.option` names
@@ -1206,7 +1215,13 @@ questions:
   `answers.ref`) when that ask is not still open: the user answered it by a
   click. Words never block a re-ask (both the runner and the inbox floor
   statements). The check runs when the run validates `questions.yaml` and
-  again in the finalize, under the lock (`dropped at publish -- …`).
+  again in the finalize, under the lock (`dropped at publish -- …`), and an
+  ask dropped at publish gets no "needs you" line in the report. *(Fix round
+  2.)* Nor is a plan ask re-asked that the user approved at any time before,
+  even when its own floor no longer counts that click (a reopened approval:
+  the inbox's walk has no floor and would show the old click behind the new
+  plan). `open-asks.yaml` marks such an open ask `fixed: <why>`; the
+  overseer keeps or withdraws it and asks a new plan under a new id.
 - **Relevance re-judgement and withdrawal.** Phase B's stage holds
   `open-asks.yaml`: `asks` lists each carried ask (`kind: ask`, with its
   weeks open, its cases and the case each one's line of successors ends at
