@@ -789,6 +789,49 @@ def test_the_register_confirm_names_the_question(tmp_path, monkeypatch):
     assert "Register ~/repos/x as a git-mode host?" in resp.text.split("data-armed-answer")[1]
 
 
+def test_the_register_confirm_quotes_the_full_question_not_the_cut_title(tmp_path, monkeypatch):
+    """Gate r2 NIT A: the list title is cut at 200 characters, and the
+    register path can sit past the cut; the armed line quotes the packet's
+    full question. Mutation: quote item.title again -> red."""
+    long_q = ("After the overseer read three weeks of your sessions in that repository, "
+              "it found a history of hand-made commits that self-learn did not make, "
+              "and it asks whether to take it over: Register ~/repos/far/away/x as a git-mode host?")
+    cut = long_q[:199].rstrip() + "…"
+    item = {**REGISTER, "title": cut}
+    packet = {**OO7_PACKET, "item": item, "question": long_q}
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(item), packets={ID_REGISTER: packet}),
+                             runner=FakeRunner())
+    resp = client.post(f"/inbox/{ID_REGISTER}/answer", data={"option": "opt-register"}, headers=HX)
+    armed = resp.text.split("data-armed-answer")[1]
+    assert "Confirm: Yes, register it" in armed  # control: the armed line rendered
+    assert "Register ~/repos/far/away/x as a git-mode host?" in armed
+
+
+def test_a_stale_heartbeat_names_no_next_run(tmp_path, monkeypatch):
+    """Gate r2 NIT B: a host that stopped leaves its heartbeat file; its
+    next_job is no longer a promise. Mutation: drop the freshness check in
+    ledger.scheduler_next -> red."""
+    import json as _json
+    import time as _time
+
+    from self_learn import attention as sl_attention
+    from self_learn import serve as sl_serve
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(sl_attention, "cache_dir", lambda home: cache)
+
+    def beat(age: float) -> None:
+        sl_serve.heartbeat_path(cache).write_text(_json.dumps(
+            {"ts": _time.time() - age, "tick_secs": 60, "next_job": "mine at 2026-11-02T03:31:00"}),
+            encoding="utf-8")
+
+    beat(5)
+    assert ledger.scheduler_next(tmp_path) == "mine at 2026-11-02T03:31:00"  # control: fresh
+    beat(3600)
+    assert ledger.scheduler_next(tmp_path) is None
+
+
 def test_a_working_login_says_when_the_held_jobs_run_again(tmp_path, monkeypatch):
     """Gate r1 NIT 3 (§2.3 d): the page says when held jobs retry, in the
     host's own words from serve.heartbeat. Mutation: drop the line -> red."""

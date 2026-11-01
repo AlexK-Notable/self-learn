@@ -1,5 +1,5 @@
 """static/inbox.js in a real browser (attention round, ui-workspace fix
-round 1; gate r1 findings 1, 2 and 5).
+rounds 1 and 2; gate r1 findings 1, 2 and 5, gate r2 finding 1 and NIT C).
 
 These three are orderings and page memory — what a reload restores, which
 envelope arrives before which response, where focus is when Enter is
@@ -59,6 +59,7 @@ pytestmark = pytest.mark.js
 TOKEN = "js-inbox-token"
 ID_OO7 = "att-0000000000b2"
 ID_HOST = "att-0000000000d4"
+ID_HOOK = "att-0000000000e5"
 DRAFT_ID = "drf-1a2b3c4d"
 _WAIT_MS = 10000
 
@@ -88,6 +89,11 @@ OO7 = _item(ID_OO7, "ask.system-change", "system-change",
             ))
 HOST = _item(ID_HOST, "broken.host", "broken", "The host service has stopped",
              (_opt("opt-restart", "Restart self-learn", via="fix", recommended=True),))
+#: A decided item with an undo: its answer bar holds both the undo button
+#: and the "overturn it in your own words" box (gate r2 finding 1).
+HOOK = {**_item(ID_HOOK, "decided.hook-on", "decided-hooks", "Turned on the hook from lrn-9b4bb8f0", ()),
+        "class": "decided", "state": "done",
+        "undo": {"label": "Turn it off", "redo_label": "Turn it back on"}}
 
 OO7_PACKET = {
     "packet_version": 1, "generated_at": "2026-11-01T11:30:12Z", "item": OO7,
@@ -130,7 +136,7 @@ class State:
         self.reset()
 
     def reset(self) -> None:
-        self.doc = _doc(OO7, HOST)
+        self.doc = _doc(OO7, HOST, HOOK)
         self.remove_on_answer: str | None = None
 
 
@@ -345,3 +351,80 @@ def test_enter_on_a_focused_control_does_not_reload_the_workspace(page, server):
     assert not any(workspace in u for u in seen), seen
     # The control did its own thing: the evidence entry toggled, and stayed so.
     assert page.evaluate("document.querySelector('#ws-packet details').open") is (not was_open)
+
+
+# ------------------------------------------------------- gate r2 finding 1
+
+
+def test_words_typed_on_a_decided_item_survive_undo(page, server):
+    """"Nothing typed is ever lost": the person types an overturn on a
+    decided item, then clicks Undo. The undo never carried the text, so
+    the re-rendered box gets it back, and a reload still has it.
+    Mutation: clear the stored reply on every swap that carries
+    data-recorded (the round-1 code) -> red."""
+    words = "Keep it off until I have looked at the script."
+    _open(page, server, ID_HOOK)
+    page.fill("#ws-reply-text", words)
+    # Positive control: the box holds the words and the undo is offered.
+    assert page.input_value("#ws-reply-text") == words
+    page.click("#ws-answer [data-undo]")
+    page.wait_for_selector("#ws-answer [data-recorded]", timeout=_WAIT_MS)
+    assert ["attention", "undo", ID_HOOK] in server.runner.calls
+    assert not _answer_calls(server)  # the undo sent no words
+    page.wait_for_function(f"document.getElementById('ws-reply-text').value === {json.dumps(words)}",
+                           timeout=_WAIT_MS)
+    page.reload(wait_until="load")
+    page.wait_for_selector(f'#ws[data-item-id="{ID_HOOK}"]')
+    page.wait_for_function(f"document.getElementById('ws-reply-text').value === {json.dumps(words)}",
+                           timeout=_WAIT_MS)
+
+
+def test_a_sent_reply_is_still_cleared_from_the_page_memory(page, server):
+    """The other side of the same rule: a recorded send of the reply form
+    empties the stored reply, so a reload does not offer to send it again.
+    Mutation: never clear the stored reply -> red."""
+    words = "Neither; leave it as it is."
+    _open(page, server, ID_OO7)
+    page.fill("#ws-reply-text", words)
+    page.click("[data-send-reply]")
+    page.wait_for_selector("#ws-answer [data-recorded]", timeout=_WAIT_MS)
+    argv = _answer_calls(server)[-1]
+    assert "--text-file" in argv and "--draft" not in argv  # control: it was sent
+    page.reload(wait_until="load")
+    page.wait_for_selector(f'#ws[data-item-id="{ID_OO7}"]')
+    time.sleep(0.5)
+    assert page.input_value("#ws-reply-text") == ""
+
+
+# ---------------------------------------------------------- gate r2 NIT C
+
+
+def test_typing_over_a_whole_draft_sends_the_persons_own_words(page, server):
+    """Select all and type over the agent's draft: that is the person's
+    own words, sent without --draft (and without the draft's option). If
+    the draft's text comes back whole, its id comes back with it.
+    Mutations: drop the beforeinput detach -> red (--draft still sent);
+    drop reattachDraft -> red (the id stays off for the draft's own text)."""
+    _open(page, server, ID_OO7)
+    page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] [data-use-draft]')
+    assert page.input_value("#ws-reply-draft") == DRAFT_ID  # control
+    box = page.locator("#ws-reply-text")
+    box.focus()
+    page.keyboard.press("Control+A")
+    page.keyboard.type("Not yet.")
+    assert page.input_value("#ws-reply-draft") == ""
+    assert page.get_attribute("#ws-answer-form", "data-draft-option") is None
+    assert not page.is_visible("#ws-reply-draft-note")
+    # The draft's own text pasted back over everything: the id returns.
+    page.keyboard.press("Control+A")
+    page.keyboard.insert_text("Only the first two.")
+    assert page.input_value("#ws-reply-draft") == DRAFT_ID
+    assert page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions"
+    # Typed over again, then sent: the person's words, no draft, no option.
+    page.keyboard.press("Control+A")
+    page.keyboard.type("Not yet; I want to read the unit file first.")
+    page.click("[data-send-reply]")
+    _wait_for(lambda: bool(_answer_calls(server)))
+    argv = _answer_calls(server)[-1]
+    assert "--text-file" in argv
+    assert "--draft" not in argv and "--option" not in argv

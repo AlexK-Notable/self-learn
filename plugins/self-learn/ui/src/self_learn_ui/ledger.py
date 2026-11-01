@@ -350,13 +350,18 @@ def overseer_report_dates(home: Path) -> list[str]:
 def scheduler_next(home: Path) -> str | None:
     """The host's own words for when its jobs next run: ``serve.heartbeat``'s
     ``next_job`` (design r2 §2.3 d, "the page says when each held job
-    retries"). ``None`` when there is no heartbeat (the host is not running)
-    or it names nothing. A cache read only; never raises."""
+    retries"). ``None`` when there is no heartbeat, when it is stale (older
+    than one tick, ``serve.heartbeat_is_fresh``: a host that stopped leaves
+    its last file behind, and its ``next_job`` is no longer a promise; gate
+    r2 NIT B), or when it names nothing. A cache read only; never raises."""
     try:
         from self_learn import attention as sl_attention
         from self_learn import serve as sl_serve
 
-        beat = sl_serve.read_heartbeat(sl_attention.cache_dir(home))
+        cache = sl_attention.cache_dir(home)
+        if not sl_serve.heartbeat_is_fresh(cache):
+            return None
+        beat = sl_serve.read_heartbeat(cache)
     except Exception:  # noqa: BLE001 - a missing line, never a failed page
         return None
     value = (beat or {}).get("next_job")

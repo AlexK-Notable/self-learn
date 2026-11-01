@@ -335,6 +335,51 @@
     }
   });
 
+  // Typing over the whole of a draft (select all, then type) is the same
+  // act as emptying the box first: what is sent is the person's own words,
+  // so the draft id goes (gate r2 NIT C). Only typing counts: a paste or a
+  // drop over everything keeps the id, since what lands may be the draft
+  // itself. If the draft's text comes back whole (Ctrl+Z, a paste of it),
+  // the id comes back with it, so the agent's words are never sent as
+  // the person's.
+  var TYPED_INPUT = { insertText: 1, insertCompositionText: 1, insertLineBreak: 1, insertParagraph: 1 };
+  var detachedDraft = null;
+
+  function draftCardText(id) {
+    var cards = $all("[data-draft-card]");
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].getAttribute("data-draft-id") !== id) continue;
+      var el = cards[i].querySelector("[data-draft-text]");
+      return el ? el.textContent.trim() : "";
+    }
+    return "";
+  }
+
+  document.addEventListener("beforeinput", function (e) {
+    var t = e.target;
+    if (!(t instanceof HTMLTextAreaElement) || t.id !== "ws-reply-text") return;
+    var hidden = $("#ws-reply-draft");
+    var form = $("#ws-answer-form");
+    if (!hidden || !hidden.value || !TYPED_INPUT[e.inputType]) return;
+    if (!t.value || t.selectionStart !== 0 || t.selectionEnd !== t.value.length) return;
+    detachedDraft = {
+      item: currentItem(), id: hidden.value,
+      option: form ? form.getAttribute("data-draft-option") || "" : "",
+    };
+    applyDraftMeta("", "");
+    storeDraftMeta(currentItem(), "", "");
+  });
+
+  function reattachDraft(box) {
+    var d = detachedDraft;
+    if (!d || d.item !== currentItem()) return;
+    var text = draftCardText(d.id);
+    if (!text || box.value.indexOf(text) === -1) return;
+    applyDraftMeta(d.id, d.option);
+    storeDraftMeta(d.item, d.id, d.option);
+    detachedDraft = null;
+  }
+
   document.addEventListener("input", function (e) {
     var t = e.target;
     if (!(t instanceof Element)) return;
@@ -343,6 +388,8 @@
       if (!t.value) {
         applyDraftMeta("", "");
         storeDraftMeta(currentItem(), "", "");
+      } else {
+        reattachDraft(t);
       }
     } else if (t.id === "ws-ask-text") {
       store("ask", currentItem(), t.value);
@@ -414,17 +461,31 @@
     var target = e.detail.target;
     if (!target) return;
     if (target.id === "inbox-workspace") {
+      detachedDraft = null;
       markSelected(currentItem());
       restoreUnsent();
       var title = $("#ws");
       if (title) document.title = "self-learn — Inbox · " + (title.getAttribute("data-item-title") || "");
     }
+    // Only a recorded send of the reply form itself (an option, Send, or
+    // the armed Confirm, all POST .../answer, carrying the box's text)
+    // empties the stored reply. Undo, redo, Run it now, a fix or a login
+    // check never carried the text: the answer bar they re-render comes
+    // back with an empty box, so it is refilled from what was typed
+    // (gate r2 finding 1; "nothing typed is ever lost").
+    var inAnswer = target.id === "ws-answer" || !!(target.closest && target.closest("#ws-answer"));
+    var path = OWN_PATH_RE.exec(requestPath(e.detail).split("?")[0]);
+    var sentReply = !!path && path[2] === "answer";
     var recorded = $("#ws-answer [data-recorded]");
-    if (recorded && (target.id === "ws-answer" || target.closest && target.closest("#ws-answer"))) {
-      store("reply", currentItem(), "");
-      storeDraftMeta(currentItem(), "", "");
+    if (recorded && inAnswer) {
+      if (sentReply) {
+        store("reply", currentItem(), "");
+        storeDraftMeta(currentItem(), "", "");
+        detachedDraft = null;
+      }
       announce(recorded.textContent.replace(/\s+/g, " ").trim());
     }
+    if (target.id === "ws-answer" && !(recorded && sentReply)) restoreUnsent();
     var err = $("#ws-answer [data-answer-error]");
     if (err && target.id === "ws-answer") announce(err.textContent.replace(/\s+/g, " ").trim());
     if (target.id === "ws-ask-live") {

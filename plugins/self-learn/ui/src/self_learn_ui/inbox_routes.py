@@ -556,15 +556,20 @@ async def inbox_answer(
     armed = confirm == "1"
     if chosen is not None and not armed:
         if chosen.get("confirm") or chosen.get("effect") == "register":
+            # §3.7 "This registers <path> in git mode. Confirm?": the path
+            # and mode are in the question itself (the overseer's validator
+            # refuses an ask whose text does not name the register path
+            # exactly and its mode), so the armed line repeats the question
+            # rather than a path field §4.1/§4.3 do not carry. The packet's
+            # full question, not the list title: the title is cut at 200
+            # characters and the path can sit past the cut (gate r2 NIT A).
+            packet_read = await _packet(request, item_id)
+            packet_q = (packet_read.data or {}).get("question") if isinstance(
+                packet_read.data, dict) else None
+            question = packet_q if isinstance(packet_q, str) and packet_q.strip() else item.get("title")
             return _answer_partial(request, item, packet_read, {
                 "state": "armed", "option": chosen, "text": text, "draft_id": draft_id,
-                # §3.7 "This registers <path> in git mode. Confirm?": the
-                # path and mode are in the question itself (the overseer's
-                # validator refuses an ask whose text does not name the
-                # register path exactly and its mode), so the armed line
-                # repeats the question rather than a path field §4.1/§4.3
-                # do not carry.
-                "message": f"“{chosen.get('label')}” answers “{item.get('title')}”, and it acts "
+                "message": f"“{chosen.get('label')}” answers “{question}”, and it acts "
                            "outside self-learn once you confirm it. Confirm?",
             })
         if chosen.get("effect") == "approve":
