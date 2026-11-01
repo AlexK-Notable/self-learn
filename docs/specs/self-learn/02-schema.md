@@ -1398,12 +1398,15 @@ without it the case is refused by name. A skill-building pair is `outcome: route
 runner writes the skill before it applies a building pair's sheet (a refused write drops the pair),
 and retires the skill only after the retirement pair's sheet has moved its lessons out.
 *(Amended S-NEXT-skills-chain.)* `decision.skill` may carry `renamed_from: <old name>`: a rename
-pair (`kind: maintenance`, `outcome: no-action`, an empty sheet, `skills/<new>/` holding the skill's
-files) makes the runner rename the live owned skill `<old>` to the pair's name after any write
+pair (`kind: maintenance`, `outcome: no-action`, an empty sheet, and no `skills/<new>/` folder: a
+rename pair writes no files, and the skill's text is changed in a later run under its new name) makes
+the runner rename the live owned skill `<old>` to the pair's name before the pair's case is recorded
 (`skill_writer.rename`, which carries the lessons and the skill's ledger bucket), reported as
 "[skill renamed] <new>: renamed from <old>" (under writing `off`, "would rename <old> to it"). One
 build may gather the lessons of several cases in a week: the first pair naming a skill being built
-builds it, and every later pair naming it only moves its lessons in after the build. A request
+builds it, and every later pair naming it only moves its lessons in after the build; a pair moving
+lessons into a skill whose build pair was dropped, or whose `skill write` was refused, is dropped
+with it (a `git` refusal makes both wait for the resume). A request
 the registry holds (a vetoed live name, a `retire_requested`) that a writing run did not carry out
 is named under "Refused / could not do". No pair, report line or question asks the user about a
 skill.
