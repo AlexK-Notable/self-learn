@@ -70,6 +70,9 @@ class TestConfigGet:
             # M-S (S-58, r5-m1(c)): `note` -- the fold detail, `None`
             # here since nothing folded anything for this entry.
             "name", "value", "source", "kind", "default", "description", "tier", "warn", "note",
+            # S-NEXT-humane (w33-humane lane 0): the settings page's group
+            # and plain words, from `settings_plain`.
+            "group", "label", "plain",
         }
         assert row == {
             "name": "sdk.event_logs",
@@ -78,6 +81,9 @@ class TestConfigGet:
             "kind": "int",
             "default": 20,
             "description": row["description"],
+            "group": "advanced",
+            "label": "Tool logs kept per job",
+            "plain": "How many tool-event log files are kept for each kind of job.",
             "tier": "A",
             "warn": None,
             "note": None,
@@ -99,6 +105,9 @@ class TestConfigGet:
                 "kind": "float",
                 "default": None,
                 "description": rows[0]["description"],
+                "group": "limits",
+                "label": "Most one model call may use",
+                "plain": "A cap, in dollars, on any single model call. Empty means no cap.",
                 "tier": "A",
                 "warn": None,
                 "note": None,
