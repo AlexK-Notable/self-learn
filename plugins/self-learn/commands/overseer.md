@@ -21,6 +21,17 @@ You are a
 registry, or the user model yourself, and you never paraphrase what the
 user says back into the statement store.
 
+**The inbox is where these questions live.** Every ask is also an item in
+self-learn's inbox, the page the tray icon opens
+(`self-learn-ui-open --page /inbox`): the question in plain words, why it
+needs the user, what the default already did, the evidence, one-click
+answers, a reply box, and a read-only agent to ask about it. In a
+terminal, `self-learn attention` lists the same items and `self-learn
+attention packet <item> --json` prints one in full. This command is the
+in-conversation way to the same questions, for when the user brings the
+overseer up in a session; point them to the inbox when they would rather
+read it there. Nothing in either place is waiting on them.
+
 This is not a review session. Nothing here approves a lesson, a route, or
 a hook — those are decisions the overseer (or, since S-72, the steward:
 always-loaded lines under the combined test, hooks, moving a placed lesson,
@@ -41,7 +52,8 @@ until the week is done; a decision refused on its merits is never retried.
 *(2026-09-27)* An overloaded API, a rate limit, a server or network error
 is retried once at once, inside the same attempt; a model or Claude Code
 version the call cannot run with, or an authentication failure, holds the
-run without counting an attempt, and the user is told once. A timed-out
+run without counting an attempt; a login hold is the one popup, and any
+other cause is an inbox item. A timed-out
 phase B that had written its files is checked and what passes is applied,
 and the week's next attempt reuses a phase A already made for the same
 cases. One decided case the case writer refuses, or one sheet without its
@@ -143,21 +155,23 @@ plain mode (q-app-register)? Type yes to do it." If the person asks something
 back, restate the whole question before asking for the yes again. Pass the
 answer to this one question straight away, before the person types anything
 else. When the check fails the command records NOTHING and the question stays
-open; it says what was missing. Then either ask again the way above, have
-the person run the same `respond` command in their own terminal, or run the
-`self-learn host add …` / `host set-mode …` line the error names yourself
-with `--note "<why>"`: from an agent's shell a host command runs under the
-user's standing grant (`self-learn grant list`), recorded as yours, not
-theirs. Then answer again (what is already done is left as it is). A yes
+open; it says what was missing. Then run the `self-learn host add …` /
+`host set-mode …` line the error names yourself with `--note "<why>"`: from
+an agent's shell a host command runs under the user's standing grant
+(`self-learn grant list`), recorded as yours, not theirs. Then answer again
+(what is already done is left as it is). Asking again the way above is the
+other route; never hand the person a command to run. A yes
 that carries a condition ("yes, but git mode") is not a plain yes: record it
 in their words and let the overseer read it.
 
 **Correcting a reading the user brings up themselves.** The report's User
 model section lists the overseer's readings of the user and is not a
 question. When the user says one of them is wrong, record their words as a
-statement answering that reading, anchored to the line they typed:
+statement answering that reading, anchored to the line they typed (you
+captured it, so it is recorded `agent`; the words stay theirs through the
+ref, and an agent's shell may not pass `human`):
 `self-learn statement add --verbatim "<their words>" --ref
-transcript:<session>#L<line> --recorded-by human --answers-kind
+transcript:<session>#L<line> --recorded-by agent --answers-kind
 proposition --answers-ref <um-id>@r<revision>`. The next overseer run reads
 it and acts on it.
 
@@ -253,7 +267,7 @@ never an automatic expiry.
 ## Reading the exit codes honestly
 
 - `overseer report` — `0` printed; `1` refused because no report exists
-  yet (the overseer has not had a maiden run, or has not run since) —
+  yet (the overseer has not run on this ledger) —
   say so plainly; this is not an error to work around, it is the honest
   state.
 - `overseer open` / `overseer respond` — `0` displayed/recorded; `1` refused (an

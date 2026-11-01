@@ -1,9 +1,11 @@
 # self-learn — plugin README
 
-Git-backed lesson ledger: capture durable session lessons, triage them in
-bounded review sessions, route them into canon by explicit human verbs.
+Git-backed lesson ledger: capture durable session lessons silently; the
+steward decides the queue nightly and the overseer weekly, routing lessons
+into canon with attributed CLI verbs; a person steps in by choice, and the
+few things that really need them wait in the inbox the tray icon opens.
 The loaded surface is `skills/self-learn/SKILL.md` (kept tight — E-6);
-this README holds install detail, the offer-line setup, environment, and
+this README holds install detail, the capture-line setup, environment, and
 troubleshooting. Design corpus: `docs/specs/self-learn/`.
 
 ## Install
@@ -43,10 +45,12 @@ half-applied. Verify the install with:
 self-learn --selftest
 ```
 
-## The offer line (S-15) — a documented install step
+## The capture line (S-15) — a documented install step
 
-The capture loop starts with Claude *offering* to record a lesson. That
-behavior comes from one paragraph in `~/.claude/CLAUDE.md` — a **plain
+The capture loop starts with Claude capturing a lesson quietly, with no
+offer and no confirmation (the user, 2026-10-31: "capturing a lesson should
+happen quietly in the background"). That behavior comes from one paragraph
+in `~/.claude/CLAUDE.md` — a **plain
 host**: edit the file directly, there is no separate managed source to
 run through first, and self-learn itself never commits it.
 
@@ -58,24 +62,30 @@ Paste this text exactly (load-bearing spec — 08 §1; revocable by deleting
 the paragraph):
 
 ```
-When I correct a mistake you made, or state a rule/preference that should change how you work beyond this task, offer once and briefly to capture it (`self-learn teach`); if declined, log it: `self-learn telemetry note offer-declined [--reason <enum>]`. Offer only for durable lessons — corrections of wrong behavior, standing preferences, gotchas that will recur — never for one-off task instructions. Several serious corrections in one session each deserve an offer.
+When I correct a mistake you made, or state a rule or preference that should change how you work beyond this task, compose and capture with `self-learn teach`; report the id in one line only if I am mid-conversation about it. No offer, no confirmation: the capture lands pending and the steward decides its placement. Capture only durable lessons — corrections of wrong behavior, standing preferences, gotchas that will recur — never one-off task instructions. Several serious corrections in one session each deserve a capture.
 ```
 
-## SessionStart hook (M2) — manual registration required
+## SessionStart hook (M2) — a settings.json entry
 
-`hooks/self-learn-pending.sh` prints the pending line, the worker
-staleness alarm, and the escalation line into session context. It only
-formats `self-learn status --fast` output (queue semantics live in the
-CLI, never in bash) and never calls notify-send. The status call is
-bounded (`timeout 4`); when `self-learn`, `jq`, or `timeout` is missing,
-or the call times out, the hook prints one visible
-`⚠️  self-learn: pending-count check skipped — <reason>` line instead of
-silently printing nothing, and a nonzero unreadable-record count is
-reported next to the pending count rather than folded into it.
+`hooks/self-learn-pending.sh` prints only what the session's agent must
+know or act on: a ledger home that is missing or broken, a lock probe that
+failed, a STOPPED transaction intent (with the command that clears it),
+unreadable records, and this project's notices under one header that says
+they are the session's to carry out. Nothing waits on the user there: the
+pending count, the backlog, the worker and miner alarms, the steward's
+state and the overseer's questions are all in the inbox the tray icon
+opens (attention round, design r2 §3.9). It only formats `self-learn
+status --fast` output (queue semantics live in the CLI, never in bash)
+and never calls notify-send. The status call is bounded (`timeout 4`);
+when `self-learn`, `jq`, or `timeout` is missing, or the call times out,
+the hook prints one visible `⚠️  self-learn: pending-count check skipped —
+<reason>` line instead of silently printing nothing.
 
-install.sh symlinks the script into `~/.claude/hooks/`; registration in
-`~/.claude/settings.json` is **manual** (settings.json is load-bearing —
-per the repo's per-plugin-hooks convention). Add under `"hooks"`:
+install.sh symlinks the script into `~/.claude/hooks/`; the hook runs once
+this entry is in `~/.claude/settings.json`. install.sh never writes
+settings.json (it is load-bearing — the repo's per-plugin-hooks
+convention); whoever installs adds the entry, an agent included. Add under
+`"hooks"`:
 
 ```json
 "SessionStart": [
@@ -85,10 +95,7 @@ per the repo's per-plugin-hooks convention). Add under `"hooks"`:
 ]
 ```
 
-Staleness fires iff ≥1 pending record lacks a valid proposal AND
-`worker.last-run` is >3 days old or missing. Quiet queues never alarm.
-
-## PostToolUse reference-read hook (U-readref) — manual registration required
+## PostToolUse reference-read hook (U-readref) — a settings.json entry
 
 `hooks/self-learn-refread.sh` observes "a `references/*.md` file was
 actually opened" — the on-demand tier's effectiveness was otherwise
@@ -99,11 +106,13 @@ id, and whether the read came from a subagent, then spools a code-emitted
 to a REGISTERED references target. It never fails the Read it rides on and
 never writes to stdout, on every path including every error path.
 
-install.sh symlinks the script into `~/.claude/hooks/`; registration in
-`~/.claude/settings.json` is **manual** (settings.json is load-bearing —
-per the repo's per-plugin-hooks convention; U-readref §4.4 ruled against
-migrating to a plugin-provided hook: a hand-edit that breaks the file is
-detectable here and would not be, there). Add under `"hooks"`:
+install.sh symlinks the script into `~/.claude/hooks/`; the hook runs once
+this entry is in `~/.claude/settings.json`, which install.sh never writes
+(settings.json is load-bearing — the repo's per-plugin-hooks convention;
+U-readref §4.4 ruled against migrating to a plugin-provided hook: a
+hand-edit that breaks the file is detectable here and would not be,
+there). Whoever installs adds the entry, an agent included. Add under
+`"hooks"`:
 
 ```json
 "PostToolUse": [
@@ -179,8 +188,9 @@ never runs that command itself. Without systemd, run `self-learn serve`
 in the foreground.
 
 Layers 2–3 need no registration: any `self-learn` verb spawns a catch-up
-run when the last one is >24 h old, and the SessionStart hook prints a
-staleness line at >36 h. Force a run any time with `self-learn mine run`
+run when the last one is >24 h old, `self-learn mine status` reports a
+run older than 36 h as stale, and a mine job with no completed run in
+72 h and failures since is an item in the inbox (`self-learn attention`). Force a run any time with `self-learn mine run`
 (`--since YYYY-MM-DD` for a deliberate historical sweep); inspect runs
 with `self-learn mine status` (the run journal answers what was caught,
 skipped, folded, and clipped — the same data the future web UI reads).
@@ -193,7 +203,9 @@ skipped, folded, and clipped — the same data the future web UI reads).
   deliberately **no bypass flag** in v1.
 - **`PUSH FAILED — commit kept`** (exit 3): the resolution committed
   locally; run `self-learn push` (rebase-retry built in). A rebase
-  conflict (exit 4) stops loudly — resolve by hand, never auto-resolved.
+  conflict (exit 4) stops loudly and is never auto-resolved: retry once
+  the other writer finishes; a conflict that persists is a product gap to
+  capture, not a step to hand anyone.
 - **Stale sentinel** (`~/.cache/self-learn/autosync-pause` older than
   2 h): ignorable. Liveness rides the file's mtime, so observers ignore a
   stale one. Taking the sentinel is one decision under

@@ -18,9 +18,10 @@
 #     breaks, because nothing downstream knows section names.
 #
 # `required` values: always | routing (routing proposals only, i.e.
-# already_canon false) | optional. In M1 the validator checks only the
-# card map's SHAPE (strings, non-empty); required-section enforcement is
-# analyst discipline until the T13 worker lands (see 02 §1).
+# already_canon false) | optional. The validator checks only the card
+# map's SHAPE (strings, non-empty); required-section enforcement is the
+# analyst's discipline, the worker's included -- no code enforces it
+# (see 02 §1).
 
 headline:
   label: "What this is about"

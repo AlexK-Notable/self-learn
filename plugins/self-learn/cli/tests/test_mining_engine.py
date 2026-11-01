@@ -564,7 +564,7 @@ def test_e8_the_journal_row_keeps_every_old_key_and_adds_the_new(home, root, bac
     run(home)
     row = journal_last()
     assert OLD_JOURNAL_KEYS <= set(row)
-    assert row["engine"] == "session" and row["sessions_called"] == 1 and row["method_version"] == "1"
+    assert row["engine"] == "session" and row["sessions_called"] == 1 and row["method_version"] == "2"
     assert row["drops"] == {"quote-not-found": 1, "no-evidence": 1}
     assert {"origin": f"transcript:{sid}", "outcome": "dropped-check", "reason": "quote-not-found",
             "item": "L1.evidence[0]"} in row["outcomes"]

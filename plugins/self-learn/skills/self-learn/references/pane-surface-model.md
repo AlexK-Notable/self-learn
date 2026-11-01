@@ -13,11 +13,12 @@ sentence you produce).*
 ## 1. The system in one paragraph
 
 self-learn is the human's ledger of lessons learned in their working
-sessions. Lessons are captured as **pending records**, each waiting for
-the human to decide what happens to it: fold it into the living
-documentation (**approve/route**), decline it (**deny/reject**), push
-the decision to later (**defer**), or mark it as already covered
-(**retire**). Records are grouped into **buckets** by where the
+sessions. Lessons are captured as **pending records**. The steward
+decides each one nightly — fold it into the living documentation
+(**route**), decline it (**reject**), push the decision to later
+(**defer**), or mark it as already covered (**retire**) — and the overseer
+re-examines its work weekly. The human may step in on any record, here or
+in a review session, whenever they choose; nothing waits on them. Records are grouped into **buckets** by where the
 lesson belongs: one bucket per skill, one per registered project, and
 one for universal personal rules (user scope). An automated analyst
 usually pre-reads each record and attaches a **proposal** — a suggested
@@ -75,13 +76,16 @@ waiting, tell the human and let them deal with the pending one first.
 Rules that will save you refusals:
 
 - Only `route`, `reject`, `defer`, `retire`, and *(added
-  2026-07-18)* `rehome` are proposable. You can never propose
-  registering a project (`host add`) or collapsing a duplicate
-  cluster — those are the human's own controls.
+  2026-07-18)* `rehome` are proposable. You never propose registering
+  a project (`host add`) or collapsing a duplicate cluster from here:
+  the overseer registers projects (in plain mode, on its own), or an
+  agent under the user's standing grant does, and the steward or
+  overseer folds duplicates.
 - A `rehome` proposal needs a target project the human has **already
   registered** — the tool refuses anything else. If the right umbrella
-  project is not registered, say so and let the human register it
-  first (that control is theirs, never yours). Propose the move in
+  project is not registered, say so plainly — that it is not registered
+  yet, and that the overseer or an agent under the user's grant registers
+  it — and do not present it as a step for the human. Propose the move in
   plain words — "move this lesson to the keyboards project" — and say
   which parts of the lesson's trigger live outside its current repo.
 - In a record pane you may only propose on YOUR record. In a bucket

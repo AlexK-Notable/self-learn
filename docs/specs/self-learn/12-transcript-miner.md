@@ -1085,8 +1085,9 @@ Empty or whitespace-only stretches are excluded before embedding and ranking;
 remaining stretches retain their original turn and line positions. An all-empty
 set makes no embedding call and yields no flags, without degrading index mode.
 
-`miner-method.md` starts with `<!-- method-version: 1 -->` and is byte-pinned
-in tests. It carries the four lesson shapes, exclusions, composition,
+`miner-method.md` starts with `<!-- method-version: 2 -->` and is byte-pinned
+in tests (version 2, 2026-11-01: candidates are for the steward, not for
+human review; congruence m19). It carries the four lesson shapes, exclusions, composition,
 pointer discipline, look-alike reconciliation, suspicion-only rule checks,
 subagent causes and output instructions. Only the person's typed turns
 are their words. Trigger, Instruction and Fact are each one line;

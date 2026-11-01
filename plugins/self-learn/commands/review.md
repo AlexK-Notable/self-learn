@@ -1,5 +1,5 @@
 ---
-description: Triage pending self-learn records in a bounded review batch — analyze, card, resolve via CLI verbs.
+description: Optionally triage pending self-learn records in a bounded review batch — analyze, decide what an agent can, resolve via CLI verbs.
 argument-hint: [--skill <name> to scope the batch]
 ---
 
@@ -36,9 +36,10 @@ home, its own git repo, independent of any code repo (doc 13).
    an expired deferral resurfaces with `status: deferred` — never filter
    on `status` yourself), **oldest first**, at most **10 cards this
    session** (respect a `--skill <name>` scope from
-   $ARGUMENTS). Bounded batches are the point: a session that tries to
-   drain everything is the session that kills the habit. Say up front how
-   many are pending and how many this batch covers.
+   $ARGUMENTS). The queue is the steward's: it decides every pending
+   lesson nightly, so this session is optional — someone stepping in by
+   choice, never a backlog to drain. Keep the batch bounded. Say up front
+   how many are pending and how many this batch covers.
 
 ## Per record: analyze BEFORE presenting
 
@@ -84,7 +85,14 @@ all-clear is decision information, not filler, and the registry's
 instructions say which section gives the reader their foothold for the
 Discuss option.
 
-One AskUserQuestion per record — **four options** (the tool's hard
+**Decide what you can yourself.** Most records need no person: an
+outdated, already-covered or plainly-placed lesson is yours to decide —
+apply the verb with `--by agent --note "<why>"` and report it in the
+session summary. Put a record to the person only for a needs-you reason:
+a login, sudo, spending money, a change to their system outside
+self-learn, writing into another repo's git history, a conflict between
+two things they said, or self-learn broken past its own repair. For such a
+record, ask with one AskUserQuestion — **four options** (the tool's hard
 limit; free-text "Other" is always there beyond them):
 
 - **Apply** — the option's description names the destination; the
@@ -107,13 +115,12 @@ limit; free-text "Other" is always there beyond them):
   (M3-2):** the preview must show the proposal's `script` field IN FULL
   — the exact executable bytes the route will commit verbatim (P9: eyes
   on the exact diff, never a summary) — plus the analyst's stated
-  over-block from the rationale. After a hook Apply, the CLI prints two
-  required manual steps (./install.sh + the settings.json snippet):
-  relay them verbatim — the guard is inert until both are done. Inside a
-  *human* review session the two manual steps stay exactly as printed —
-  with one shortcut: `self-learn hook activate <id>` performs both by
-  hand (and `hook deactivate <id>` reverses it), no setting required;
-  run from your shell, both need `--note "<why>"` like every ledger verb.
+  over-block from the rationale. After a hook Apply the guard is inert
+  until activated: run `self-learn hook activate <id> --note "<why>"`
+  yourself — it places the symlink, registers it in
+  `~/.claude/settings.json` and verifies it — and report the outcome
+  (`hook deactivate <id> --note "<why>"` reverses it). Nothing is left
+  for the person to do by hand.
   Separately, when the user's delegation switch
   (`overseer.hook_activation`) is on, the overseer — and, since S-72
   (2026-09-28), the steward — places and activates a hook route it
@@ -137,12 +144,11 @@ limit; free-text "Other" is always there beyond them):
   rephrases (edit again, re-validate). Exit 1 = schema-invalid proposal:
   fix and re-validate before proceeding. When the discussion lands on a
   decision, re-present the card (or invoke the verb the user named).
-- **Reject** — ask one line: *why?* The note is the analyst's fuel (`_digest`
-  reads it, though as of U7 that function has no caller in the analyst
-  prompt path — prior decisions arrive there as cited cases instead) —
-  encourage it, never gate on it. Then `self-learn reject <id> --note "…"`
-  (from your agent shell the `--note` is required, so if they decline to
-  say why, write that in it: `--note "user gave no reason"`).
+- **Reject** — no follow-up question: `self-learn reject <id> --note "…"`
+  with the reason as you understand it (from your agent shell the `--note`
+  is required; when the person chose reject without a reason, write that
+  in it: `--note "user gave no reason"`). Prior decisions reach the
+  analyst as cited cases (U7).
 - **Defer** — `self-learn defer <id> --note "<why>"` (default +30 days) or
   `self-learn defer <id> --until YYYY-MM-DD --note "<why>"` if they name a
   date.
@@ -265,14 +271,15 @@ set also includes `steward` and `overseer` — those two are written only by
 the steward's and the overseer's own runners, never by a hand-written
 sheet.
 
-**Scope mismatch** — not a card option, but tell the user when you see it:
-if a pending record's firing range clearly belongs to a different scope
-than the bucket it's filed in (captured at user scope but really only
-fires inside one skill, or vice versa), `self-learn rescope <id> --to
-<scope> --note "<why>"` (`user` or `skill:<name>`) is the repair. Say plainly that using
-it **discards the current proposal and re-analyzes the record in the new
-bucket** — the analyst's judgment is bucket-relative, so a carried
-proposal would render a stale card reasoning from the wrong scope.
+**Scope mismatch** — not a card option and not a question: when a pending
+record's firing range clearly belongs to a different scope than the bucket
+it's filed in (captured at user scope but really only fires inside one
+skill or one project, or vice versa), move it yourself: `self-learn rescope
+<id> --to <scope> --note "<why>"` (`user`, `skill:<name>` or
+`project:<path-or-slug>`). Say in the summary that the move **discarded
+the current proposal and re-analyzes the record in the new bucket** — the
+analyst's judgment is bucket-relative, so a carried proposal would render
+a stale card reasoning from the wrong scope.
 
 **Retire** — when the proposal sets `already_canon: true` on a single
 card, the right resolution is retirement, not routing: replace Apply with
@@ -306,13 +313,14 @@ Offers, in this order, and only for signals that are actually flagged:
   scores.** Do **not** offer `route --collapse`: those records are
   routed, and the collapse path refuses anything not still pending
   (`verbs.py:2559-2564`), so the offer would be an action that cannot
-  run. Describe the consolidation path in prose instead: capture one
-  rewritten record covering both lessons, linked to one predecessor with
-  `self-learn teach … --supersedes <lrn-id>` (**one id — the flag is
-  single-valued and the field is scalar; never repeat it**), route it,
-  then retire each remaining member individually with
-  `self-learn retire <id> --covered-by <surface>`. The human runs these;
-  the card runs nothing.
+  run. Say who folds them instead: merging placed duplicates is the
+  overseer's, on its weekly run (`replace` with `also`, S-85). If they
+  should be folded sooner, stage a `kind: reconsider` case with one
+  `replace` line naming the survivor and the rest in `also` (§ Cases) and
+  apply it; nobody folds them by hand. When the fold is a fresh capture
+  instead, it links one predecessor with `self-learn teach …
+  --supersedes <lrn-id>` (**one id — the flag is single-valued and the
+  field is scalar; never repeat it**).
 - **`composition` flagged** → offer **Retire**
   (`self-learn retire <id> --covered-by <surface>`) for the named oldest
   entries, showing `managed_share`, `managed_share_growth_30d_pp`, and
@@ -353,18 +361,22 @@ all mechanics (evidence merge, sightings, losers superseded, proposal
 sweep) live in the verb. A cluster with any resolved member is
 invalidated — never show its card; the worker sweeps the file.
 
-**Contradiction edges.** If a proposal carries `contradicts:`, say so on
-the card in plain words ("this conflicts with <target>"). After a route
-the user approves, apply each edge they accept with
-`self-learn link contradicts <id> <target> --note "<why>"` — proposed by the analyst,
-written only by the verb (11 §2.4).
+**Contradiction edges.** If a proposal carries `contradicts:`, judge each
+edge yourself: apply the ones you judge real with
+`self-learn link contradicts <id> <target> --note "<why>"` (recorded `By:
+agent`) and report them in the summary — proposed by the analyst, written
+only by the verb (11 §2.4). A conflict between two things the user said is
+the one kind that needs them: it is an inbox item, not a card.
 
-**"Not holding" cards (11 §2.2).** After the queue cards, read
-`self-learn report --json`: any ROUTED record with unconfirmed
-recurrence-suspect telemetry (suspects exist beyond the record's own
-`recurrences` list — match on the event `nonce` vs recorded `ref`s) gets
-one card: *"Routed <date>. Sighted <N> times since. Revise, escalate,
-tolerate, or retire?"* The resolutions map to verbs:
+**"Not holding" — information, not a question (11 §2.2).** After the
+queue cards, read `self-learn report --json`: any ROUTED record with
+unconfirmed recurrence-suspect telemetry (suspects exist beyond the
+record's own `recurrences` list — match on the event `nonce` vs recorded
+`ref`s) is the steward's to re-decide (`steward-method.md` §10), so show it
+as information only: *"Routed <date>. Sighted <N> times since; the steward
+will re-decide it."* Never ask the person whether a stale rule should
+change. Where you can judge it yourself, decide it with `--by agent` and
+`--note "<why>"`; the resolutions map to verbs:
 - **Revise** → capture the better wording (`self-learn teach
   --supersedes <id> …`) and route it — supersession does the retirement.
 - **Escalate** → same, routed toward the stronger surface (`--dest`).
@@ -373,8 +385,8 @@ tolerate, or retire?"* The resolutions map to verbs:
 - **Retire** → discuss; retirement without a successor is
   `self-learn retire <id> --covered-by <surface> --note "<why>"` (something already
   loaded covers it) — or, if a rewritten successor exists, `supersede`
-  (which displays as **replaced**, `replaced by lrn-…`) — the user
-  chooses, you never guess.
+  (which displays as **replaced**, `replaced by lrn-…`). When you cannot
+  tell which, leave it to the steward.
 - **Dismiss** → `self-learn dismiss-suspect <id> --event <nonce> --why
   <reason> --note "<why it's false>"` — the sighting was a matcher
   false-positive, not a recurrence at all; the telemetry event is
@@ -406,7 +418,10 @@ which:
 - **3** — committed, but the **push failed**. The resolution is safe
   locally; `self-learn push` retries it (see Session end).
 - **4** — committed, but the push hit a **rebase conflict**. The rebase was
-  aborted and the commit kept; this one needs a human `git pull --rebase`.
+  aborted and the commit kept. Run `self-learn push` once more after the
+  other writer finishes; if it still conflicts, that is a product gap —
+  capture it with `self-learn teach` and say so in the summary. Never
+  hand the person a git command.
 - **5** — the ledger home is missing / not a git repo. Nothing was written
   and nothing can be: stop the batch and tell the user.
 - **6** — a git operation failed or timed out **before the verb wrote
@@ -497,9 +512,10 @@ what an unattended run decided, and how you correct it:
   which its runner writes for it; the runner also writes `scope-conflict`
   for a case that would move a lesson the steward already moved, or one a
   person or the overseer moved last).
-- `self-learn case observe <id> --kind
+- `self-learn case observe <id> --by agent --kind
   examined|presented|statement|corrected|dependency-moved --text …
-  [--ref …] [--presented-outcome agreed|corrected|noted]` — appends a Later
+  [--ref …] [--presented-outcome agreed|corrected|noted]` (`--by` is
+  required; from your shell it is `agent`) — appends a Later
   observations entry with its own `obs-<8hex>` id; never edits the
   frozen account. `--presented-outcome` applies to a `presented` observation only.
   A `statement` or `dependency-moved` observation whose reference is one
@@ -507,15 +523,19 @@ what an unattended run decided, and how you correct it:
   nightly run automatically — you do not additionally ask for a
   reconsideration.
 - `self-learn statement add --verbatim … --ref
-  transcript:<session>#L<n>|conversation:<obs-id> [--answers …]
-  [--scope …]` — records something the user actually said, verbatim,
+  transcript:<session>#L<n>|conversation:<obs-id> --recorded-by agent
+  [--answers …] [--scope …]` — records something the user actually said,
+  verbatim (from your shell `--recorded-by human` is refused: you captured
+  the words, and they stay the user's through the ref),
   with what it answers and its stated scope. `conversation:<obs-id>` is
   the reference to use for words typed into the overseer's own
   conversation, where no transcript line exists.
-- `self-learn user-model add --statements stmt-…[,stmt-…]
-  [--basis um-…@r…,…] …` / `user-model lapse um-…
+- `self-learn user-model add --container <A-E> --title … --because …
+  --source own-words|system-reading --by agent --statements
+  stmt-…[,stmt-…] …` / `user-model lapse um-… --by agent
   --changed-condition <key>|--contrary <ref>|--consolidated-into um-…
-  --at <date>` — the human path into the model of the user. A system
+  --at <date>` — the hand path into the model of the user (`--by` is
+  required; from your shell it is `agent`). A system
   reading in containers B or C needs at least one statement id behind it
   — the CLI refuses one that names none. An entry is marked seen only
   through `case observe --kind presented`, never by any other write, and
@@ -538,7 +558,8 @@ back once. Such a case asks the overseer to decide the lesson itself,
 with the recorded failure reason — for `ledger-refused`, the ledger's own
 words — as its evidence (`03-decisions.md` S-68, S-71). Deciding a parked item
 yourself in a human session still needs the successor case: write the
-stage file, `self-learn case record <stage-file>` to get its id (naming
+stage file, `self-learn case record <stage-file> --actor agent` (from
+your shell; `--actor` is required) to get its id (naming
 `supersedes: <parked case>`), put that id in the sheet's top-level
 `case:` key, then apply the sheet the usual way — the receipts thread
 back to the case automatically. Skipping the case leaves the parked case
@@ -566,20 +587,19 @@ remains how a person makes a new skill.
 ## Steward run
 
 `self-learn steward run [--dry-run] [--json]` runs the same decision the
-nightly `serve` job runs, on demand. It is the manual path for the
-maiden run and for a human who wants a run right now rather than waiting
-for the schedule; it never has a smaller authority than the automatic
-run — it applies its own decisions immediately, the same as the nightly
-job does, unless `--dry-run` is given. A normal run first resumes every
+nightly `serve` job runs, on demand, for anyone who wants a run right
+now rather than waiting for the schedule; it never has a smaller
+authority than the automatic run — it applies its own decisions
+immediately, the same as the nightly job does, unless `--dry-run` is
+given. A normal run first resumes every
 obligation discoverable from a committed `cases/runs/<run_id>.json`
 manifest; cache `run.json`, result JSON, the journal, and the last-run
 marker are projections and never recovery authority.
 
 - `--dry-run` writes its stage files and no ledger commit or completed-run
   watermark — a fixture and
-  inspection flag, never a rollout step. Use it to see what the steward
-  would do before trusting it unattended, the same way you would inspect
-  a batch sheet with `--dry-run` first.
+  inspection flag, never a rollout step: it shows what a run would do,
+  the same way `batch --dry-run` previews a sheet.
 - Every routed or resolved record from a steward run carries `by:
   steward` — filter `case list` or the record's own history to see which
   decisions were the steward's.
@@ -648,7 +668,7 @@ marker are projections and never recovery authority.
   `returned` for the next run to decide again, once per input version, and
   anything only a person can fix (`needs-person`, `unclassified`, or a
   second refusal of a lesson already sent back) is parked for the overseer
-  at once with `parked_reason: ledger-refused`, and you are notified. A
+  at once with `parked_reason: ledger-refused`, and it shows in the inbox. A
   secret-scan hit in the lesson's own record is `refused` and never parked,
   and a `returned` lesson counts in the run's refused count, so a run that
   sent a lesson back never reports plain success.
@@ -659,8 +679,9 @@ marker are projections and never recovery authority.
   `self-learn recompile`. It is journaled (`recompile`, or
   `recompile-failed` if it raised — it never fails the run); a target it
   still cannot write is printed as `steward run: recompile skipped …` and
-  is not retried in the run. Run `self-learn recompile` yourself once the
-  cause (usually the hook's finding) is dealt with.
+  is not retried in the run. The daily `maintenance` job retries it
+  (S-119); run `self-learn recompile` yourself only as part of curing the
+  cause (usually the hook's finding), never as routine upkeep.
 - A failure that is not a judgment on the merits — the model call failed,
   timed out, hit the turn bound, staged output that would not validate, or
   a git write failed or half-landed, or the ledger refused an item for git
@@ -670,7 +691,7 @@ marker are projections and never recovery authority.
   a rate limit, a server or network error is retried once at once, inside
   the same attempt; a model or Claude Code version the call cannot run with,
   or an authentication failure, holds the run without counting an attempt
-  and you are told once; and one bad case/sheet pair or one stray file in
+  and it shows in the inbox once (a login hold is the one popup); and one bad case/sheet pair or one stray file in
   the stage costs only that pair (its lessons are asked about again on a
   later attempt), while a stray file elsewhere in the ledger is noted to you
   and never committed. A decision
@@ -679,7 +700,7 @@ marker are projections and never recovery authority.
   (default 3) failed attempts the run is CLOSED so a new run can start:
   every record it could not decide gets a parked case for the overseer
   carrying the real failure reason, that record's disposition records
-  `abandoned` with the successor case's id, and you are notified
+  `abandoned` with the successor case's id, and it shows in the inbox
   (`03-decisions.md` S-68). An attempt that runs and changes nothing counts
   toward the cap exactly like one that failed, so nothing can spin
   unnoticed.

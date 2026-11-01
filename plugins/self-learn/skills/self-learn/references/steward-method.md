@@ -723,8 +723,8 @@ sits:
   from under it; park the case and say what you found.
 - **`@writable`: it sits in a file self-learn may not write** (a file git
   tracks in a host registered as `plain`). Move it, usually to
-  `claude-md:local`; its old lines leave the tracked file as a change a
-  person commits.
+  `claude-md:local`; its old lines leave the tracked file as a change the
+  next agent working in that repo commits (a project notice tells it).
 - **`@intact`: a person edited the managed block by hand.** The brief shows
   the block as it is on disk, the block the ledger would write, and the
   difference. A hand edit is usually a correction. When the edit is
