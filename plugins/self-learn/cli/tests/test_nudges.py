@@ -251,11 +251,43 @@ def test_held_lessons_that_are_not_queued_do_not_hide_a_stale_steward(led, tmp_p
     assert fields["steward_stale"] is True
 
 
+def _seed_queued(home: Path, rid: str) -> None:
+    from self_learn.ledger_ops import create_record
+    from support import make_behavior
+
+    create_record(home, make_behavior(scope="skill:s", record_id=rid))
+
+
 def test_fast_status_reports_queued_ids_without_changing_the_payload(ledger):
+    _seed_queued(ledger, "lrn-0000f001")
     ids: list[str] = []
     with_ids = worker.fast_status(ledger, ids)
+    assert with_ids["total_pending"] == 1  # positive control: the seeded record is queued
     assert with_ids == worker.fast_status(ledger)
-    assert len(ids) == with_ids["total_pending"]
+    assert ids == ["lrn-0000f001"]
+    # mutation: `queued_ids.append(str(fm["id"]))` -> `pass` leaves ids empty
+
+
+def test_status_fast_cli_hands_the_queued_ids_to_the_stale_check(ledger, tmp_path, monkeypatch, capsys):
+    """Mutation: drop `queued_ids=queued_ids` from the `status --fast` call ->
+    the held lesson is not recognised and `steward_stale` stays true."""
+    from self_learn import cli, serve
+
+    _enable(ledger)
+    _seed_queued(ledger, "lrn-0000f002")
+    marker = serve.cache_dir_readonly(ledger) / "steward" / "steward.last-run"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(_iso(time.time() - 72 * HOUR) + "\n", encoding="utf-8")
+
+    def fast() -> dict:
+        assert cli.main(["status", "--json", "--fast"]) == 0
+        return json.loads(capsys.readouterr().out)
+
+    # control first: nothing held, an old marker, one queued lesson -> stale
+    payload = fast()
+    assert payload["total_pending"] == 1 and payload["steward_stale"] is True
+    monkeypatch.setattr(steward.cases, "held_lessons", lambda home: {"lrn-0000f002": []})
+    assert fast()["steward_stale"] is False
 
 
 def test_hold_fix_prefers_model_not_found_over_a_trailing_update_hint():

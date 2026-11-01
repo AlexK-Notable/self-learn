@@ -644,6 +644,42 @@ class TestWhoChoseInAnAgentShell:
         assert body.strip(), "control: the route commit is found"
         assert body.strip().rpartition("\n\n")[2].splitlines() == ["By: agent"]
 
+    @pytest.mark.parametrize("verb", ["replace", "revise"])
+    def test_an_agent_shell_batch_replace_or_revise_line_must_say_who_chose(
+        self, env2, tmp_path, monkeypatch, capsys, verb
+    ):
+        """Gate r3 finding 1: `replace` and `revise` are chooser verbs too. A
+        by-less line from an agent's shell is refused before item 1, its
+        preview too, with the ledger untouched. Mutation:
+        `CHOOSER_VERBS = frozenset({"route"})` -> exit 0 and a commit."""
+
+        def sheet(rid, name, **extra):
+            if verb == "revise":
+                body = {"section": "Trigger", "text": "Reworded once.", "because": "b"}
+            else:
+                body = {"trigger": "when X", "instruction": "do Y", "because": "b"}
+            path = tmp_path / f"{name}.yaml"
+            item = {"id": rid, "verb": verb, **body, **extra}
+            path.write_text(json.dumps({"version": 1, "items": [item]}), encoding="utf-8")
+            return str(path)
+
+        _as_agent(monkeypatch)
+        # positive control: the same line, saying who chose, applies
+        ok_rid = _seed_pending_behavior(env2, rid="lrn-0000c0e1")
+        before_ok = _head(env2.home)
+        assert cli.main(["batch", sheet(ok_rid, "named", by="human"), "--no-push"]) == 0, capsys.readouterr().err
+        assert _head(env2.home) != before_ok, "control: the by-named line committed"
+        capsys.readouterr()
+
+        rid = _seed_pending_behavior(env2, rid="lrn-0000c0e2")
+        head = _head(env2.home)
+        byless = sheet(rid, "byless")
+        assert cli.main(["batch", byless, "--dry-run"]) == cli.EXIT_USAGE
+        assert "says who chose" in capsys.readouterr().err
+        assert cli.main(["batch", byless, "--no-push"]) == cli.EXIT_USAGE
+        assert "says who chose" in capsys.readouterr().err
+        assert _head(env2.home) == head
+
     def test_an_agent_shell_sheet_cannot_claim_a_sheet_runner_as_chooser(
         self, env2, tmp_path, monkeypatch, capsys
     ):

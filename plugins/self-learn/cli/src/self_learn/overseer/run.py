@@ -1831,9 +1831,14 @@ def _put_hand_steps_section(lines: list[str], census: dict[str, Any] | None) -> 
                 f"- {total - len(steps)} more hand step(s) this week were not in the packet "
                 f"(it carries the newest {len(steps)})"
             )
-        if total == 0 and not [line for line in lines[body_at:end] if line.strip()]:
-            added.append("- none")
+        if total == 0:
+            # 02 3a.10.8: an empty week reads `- none`, after the window
+            # line. The model's own bare `- none` is re-appended below the
+            # runner's lines; one is added only when the body had none.
             keep_none = True
+            _drop_bare_none(lines, body_at)
+            end = next((i for i in range(body_at, len(lines)) if lines[i].startswith("## ")), len(lines))
+            added.append("- none")
     if added:
         lines[end:end] = added
         if not keep_none:

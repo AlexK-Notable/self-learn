@@ -321,6 +321,18 @@ def test_an_empty_week_reads_none_and_an_unreadable_one_says_it_could_not_be_rea
     assert "- none" not in unreadable  # an unread week is never an empty one
 
 
+def test_a_labelled_empty_week_reads_the_window_line_then_none(tmp_path):
+    """02 3a.10.8: the model's own bare `- none` stays, after the runner's
+    window line. Mutation: restore the unconditional `_drop_bare_none` -> the
+    section has no `- none`."""
+    path = tmp_path / "report.md"
+    _model_report(path, hand_steps_body=["- none"])
+    census = {**_census(), "label": "2026-10-24 to 2026-10-31"}
+    body = _section(_finalize(path, hand_steps=census)).strip().splitlines()
+    assert body[0] == "- window: 2026-10-24 to 2026-10-31"  # positive control: the label is written
+    assert body == ["- window: 2026-10-24 to 2026-10-31", "- none"]
+
+
 def test_steps_beyond_the_packet_are_counted_in_a_line(tmp_path):
     path = tmp_path / "report.md"
     _model_report(path)
