@@ -2794,7 +2794,12 @@ is the original wording when exactly one distinct `basis` string among the
 ledger's run manifests (`cases/runs/*.json`, read only, no git) matches the
 characters once whitespace, commas and brackets are removed from both;
 otherwise it is a plain-words placeholder naming the entry's id and the
-2026-10-11 storage bug, never the joined characters.
+2026-10-11 storage bug, never the joined characters. A `basis` already saved
+as that join (one item of 40 or more characters with no whitespace) is looked
+up the same way and replaced when exactly one original matches; otherwise it
+is left as it is, since a long token may be a real reference. A manifest that
+cannot be read or parsed is skipped, and a candidate holding a line break or
+a heading-shaped line is never used.
 
 `um-<4hex>` ids are stable for the life of the entry; every write that changes
 the claim bumps its `r<n>` (a presentation flipping `provisional` is not a

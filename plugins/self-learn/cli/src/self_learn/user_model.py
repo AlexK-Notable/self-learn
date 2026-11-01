@@ -346,8 +346,15 @@ def _heal_char_list(
     bare joined characters: a 40+ letter run with no spaces reads as
     garbage and trips the secret scan's high-entropy rule, which refused
     the overseer's 2026-11-01 stage (run 5b769e3a). The next write of the
-    document stores the healed item. Anything else is returned unchanged.
-    Pure: *resolve* does any reading."""
+    document stores the healed item.
+
+    The S-96 heal (2026-10-30) read such a list as its characters joined,
+    and a write before this fix saved that join: ONE item of
+    :data:`_JOINED_MIN` or more characters with no whitespace. That item is
+    looked up the same way and replaced when exactly one original matches;
+    otherwise it is returned unchanged, because a long token may be a real
+    reference. Anything else is returned unchanged. Pure: *resolve* does
+    any reading."""
     if (
         isinstance(value, list)
         and len(value) >= 2
@@ -355,7 +362,22 @@ def _heal_char_list(
     ):
         original = resolve(_basis_key("".join(value))) if resolve else None
         return [original] if original else [_lost_basis_text(entry_id)]
+    if (
+        resolve is not None
+        and isinstance(value, list)
+        and len(value) == 1
+        and isinstance(value[0], str)
+        and len(value[0]) >= _JOINED_MIN
+        and not any(ch.isspace() for ch in value[0])
+    ):
+        original = resolve(_basis_key(value[0]))
+        return [original] if original else value
     return value
+
+
+#: The shortest stored join the heal looks up: the secret scan's
+#: high-entropy-base64 rule fires on a run of this many characters.
+_JOINED_MIN = 40
 
 
 def _manifest_basis_strings(data: Any) -> list[str]:
@@ -394,7 +416,8 @@ def _basis_resolver(home: Path) -> Callable[[str], str | None]:
             for path in sorted((home / "cases" / "runs").glob("*.json")):
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError, ValueError):
+                except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+                    # One unreadable manifest never stops a user-model read.
                     continue
                 for text in _manifest_basis_strings(data):
                     if text.strip() and not _STRUCTURAL_RE.search(text):

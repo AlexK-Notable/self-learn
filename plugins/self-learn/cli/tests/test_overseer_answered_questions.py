@@ -359,3 +359,59 @@ def test_the_overseer_stage_user_model_yaml_passes_the_secret_scan(tmp_path):
     assert bases[lost] == [user_model._lost_basis_text(lost)]  # noqa: SLF001
     assert scan_text(staged) == []
     assert "user-model.yaml" not in overseer_run._secret_files(stage)  # noqa: SLF001
+
+
+def _plant_line(home: Path, entry_id: str, line: str) -> None:
+    path = home / "user-model.md"
+    text = path.read_text(encoding="utf-8")
+    block_end = text.index("- provisional", text.index(f"### {entry_id}"))
+    path.write_text(text[:block_end] + line + "\n" + text[block_end:], encoding="utf-8")
+    commit_all(home, "plant a basis line")
+
+
+def test_a_stored_spaceless_join_heals_to_its_original_and_an_unmatched_token_is_kept(tmp_path):
+    """The S-96 heal's join, saved by a write before this fix: one item of
+    40+ characters with no whitespace. It is replaced when one original
+    matches; a long token no manifest explains is left as it is."""
+    home = make_home(tmp_path)
+    joined_entry = _add(home)
+    token_entry = _add(home)
+    joined = "".join(c for c in _ORIGINAL if c not in " ,")
+    token = "transcript:c10dea22-5d41-4849-b598-b4176a20dd59#L1410"
+    assert len(joined) >= 40 and len(token) >= 40
+    _plant_line(home, joined_entry, f"- basis: [{joined}]")
+    _plant_line(home, token_entry, f"- basis: [{token}]")
+    _seed_manifest(home, "854639e4", _ORIGINAL)
+    # Positive control: the stored join is what tripped the scan.
+    assert scan_text(joined)
+
+    assert _entry(home, joined_entry)["basis"] == [_ORIGINAL]
+    assert _entry(home, token_entry)["basis"] == [token]
+
+
+def test_unreadable_or_malformed_manifests_never_stop_the_recovery(tmp_path):
+    home = make_home(tmp_path)
+    broken = _add(home)
+    _plant_spelled(home, broken, _ORIGINAL)
+    runs = home / "cases" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "aa-malformed.json").write_text("{not json", encoding="utf-8")
+    (runs / "ab-not-utf8.json").write_bytes(b'{"basis": "\xff\xfe"}')
+    (runs / "ac-a-directory.json").mkdir()
+    (runs / "ad-deep.json").write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    (runs / "ae-scalar.json").write_text('"just a string"', encoding="utf-8")
+    (runs / "af-non-string.json").write_text('{"basis": ["a", 1]}', encoding="utf-8")
+    _seed_manifest(home, "zz-real", _ORIGINAL)
+
+    assert _entry(home, broken)["basis"] == [_ORIGINAL]
+
+
+def test_a_candidate_holding_a_line_break_is_never_used(tmp_path):
+    """Its words match once whitespace is removed, but rendered into the
+    document it would be structure, so the entry reads as the placeholder."""
+    home = make_home(tmp_path)
+    broken = _add(home)
+    _plant_spelled(home, broken, _ORIGINAL)
+    _seed_manifest(home, "854639e4", _ORIGINAL.replace("bar: decide", "bar:\n### um-ffff decide"))
+
+    assert _entry(home, broken)["basis"] == [user_model._lost_basis_text(broken)]  # noqa: SLF001
