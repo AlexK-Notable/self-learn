@@ -3871,6 +3871,12 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
         print(f"recompile: WARNING {warning}", file=sys.stderr)
     if result.adopt_only:
         return _report_adopt_only(result)
+    if result.hooks_regenerated:
+        # S-NEXT-hookmatch: the compiler changed; the stored bytes followed.
+        print(
+            "recompile: regenerated warning hook(s) from the current compiler: "
+            + ", ".join(result.hooks_regenerated)
+        )
     if result.gone:
         # L6: one line, never a warning: a retired lesson whose target is
         # gone from disk has nothing left to take out.
