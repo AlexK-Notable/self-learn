@@ -346,7 +346,10 @@ def test_an_own_mistake_is_sent_back_once_then_parked_ledger_refused(
     cue, summary, ids = sent[0]
     assert cue == "routine" and ids == [rid]
     assert "1 lesson(s) parked for the overseer" in summary
-    assert "the ledger refused a line a person must fix (status)" in summary
+    # L3: `status` is not a `needs-person` refusal -- the overseer decides it,
+    # so the notice does not tell a person to fix anything.
+    assert "it decides them on its next run (status)" in summary
+    assert "a person must fix" not in summary
     # the steward's own case names its successor, and says why
     own = cases.show(home, again["case"], evidence_only=False)
     later = own.sections.get("Later observations", "")

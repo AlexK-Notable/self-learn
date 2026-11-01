@@ -5757,10 +5757,18 @@ def _notify_parked_now(home: Path, run_id: str, parked: list[tuple[str, str]]) -
     once, through the shipped helper; a failure is journaled, never raised."""
     ids = list(dict.fromkeys(record_id for record_id, _kind in parked))
     kinds = sorted({kind for _record_id, kind in parked})
-    summary = (
-        f"self-learn steward: {len(ids)} lesson(s) parked for the overseer — "
-        f"the ledger refused a line a person must fix ({', '.join(kinds)})"
-    )
+    if "needs-person" in kinds:
+        summary = (
+            f"self-learn steward: {len(ids)} lesson(s) parked for the overseer — "
+            f"the ledger refused a line a person must fix ({', '.join(kinds)})"
+        )
+    else:
+        # L3: only a `needs-person` refusal waits on a person; the rest the
+        # overseer decides itself.
+        summary = (
+            f"self-learn steward: {len(ids)} lesson(s) parked for the overseer — "
+            f"it decides them on its next run ({', '.join(kinds)})"
+        )
     try:
         overseer_notify.send(home, "routine", summary, ids)
     except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
@@ -6264,6 +6272,148 @@ def last_run_iso_from_cache(resolved_cache_dir: Path) -> str | None:
         return marker.read_text(encoding="utf-8").strip() or None
     except OSError:
         return None
+
+
+#: L3 (S-NEXT-nudges): a person is nudged about the steward only when it
+#: is not keeping up -- no completed run for this long while lessons wait.
+STALE_AFTER_SECS = 48 * 60 * 60
+
+#: How much of the journal's tail the read-only hold probe reads.
+_HOLD_TAIL_BYTES = 65536
+
+
+#: A steward run's closing journal statuses (`RunResult.status` at the
+#: end of `_run`); a mid-run `refused` row has no `decided` field.
+_CLOSING_STATUSES = frozenset({"applied", "partial", "refused", "stopped"})
+
+
+def _hold_from_journal(resolved_cache_dir: Path) -> str | None:
+    """The cause of the steward's newest run when it ended held by its
+    environment, else `None`. Reads the journal's tail only, creates
+    nothing, skips dry-run rows (a rehearsal is not the steward's state),
+    and judges the NEWEST row that is positively a run outcome -- a
+    `held-environment` row or a closing row (a closing status carrying
+    `decided`); every other row (`push`, `recompile`, `model-log`,
+    `abandoned`, `notify-failed`, ...) is skipped, because the steward
+    journals some of them AFTER the closing row. A later run that did not
+    hold clears the hold. A held run writes `held-environment`, then its
+    closing row carries `held` (a string cause)."""
+    path = resolved_cache_dir / "steward" / "journal.jsonl"
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - _HOLD_TAIL_BYTES))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("dry_run"):
+            continue
+        status = row.get("status")
+        if status == model_failures.HELD_ENVIRONMENT:
+            cause = row.get("cause")
+            return str(cause) if cause else "the environment"
+        if status in _CLOSING_STATUSES and "decided" in row:
+            held = row.get("held")
+            return held if isinstance(held, str) and held else None
+    return None
+
+
+#: Environment-hold causes (the classifier's `_ENVIRONMENT` families) and
+#: the one step only the person can take. First match wins.
+_HOLD_FIXES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"authenticat|oauth|api[ -]?key|bearer|access token|(?:logged|signed) in|/login|\b40[13]\b", re.I),
+     "run `claude`, then `/login`"),
+    (re.compile(r"credit balance", re.I), "add credit to the Anthropic account"),
+    (re.compile(r"not[ _]found|\b404\b", re.I), "check the configured model name"),
+    (re.compile(r"update|upgrade|version|does not support|unsupported|not supported", re.I),
+     "update Claude Code (`claude update`)"),
+)
+
+
+def hold_fix(cause: str) -> str | None:
+    """The next step for an environment-hold *cause*, or `None` when the
+    cause is not one the classifier knows."""
+    for pattern, fix in _HOLD_FIXES:
+        if pattern.search(cause):
+            return fix
+    return None
+
+
+def _stranded_count(resolved_cache_dir: Path) -> int | None:
+    """The census count L2 caches at `<cache>/steward/stranded.json`
+    (`serve._write_stranded`: `{"at", "count", "lessons"}`); `None` when
+    the file is absent, unreadable or has no integer `count` -- unknown,
+    never zero."""
+    try:
+        data = json.loads((resolved_cache_dir / "steward" / "stranded.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    count = data.get("count") if isinstance(data, dict) else None
+    return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
+
+
+def _steward_takeable(home: Path | str, total_pending: int, queued_ids: Iterable[str] | None) -> int:
+    """Queued lessons the steward may take: the queue less the QUEUED
+    lessons the overseer holds (they wait for the overseer, not for the
+    steward). `cases.held_lessons` also names placed (resolved) lessons,
+    which are not in the queue, so only held ids that are queued count.
+    Without the queued ids, or on a failed read, the queue stays whole."""
+    if queued_ids is None:
+        return total_pending
+    try:
+        held = set(cases.held_lessons(home))
+    except Exception:  # noqa: BLE001 -- a hint must not break the status probe
+        return total_pending
+    ids = set(queued_ids)
+    return max(0, total_pending - len(ids & held))
+
+
+def nudge_fields(
+    home: Path | str,
+    resolved_cache_dir: Path,
+    total_pending: int,
+    *,
+    queued_ids: Iterable[str] | None = None,
+    now: float | None = None,
+) -> dict:
+    """`status --fast`'s steward facts (L3): whether the steward owns the
+    queue, and whether it is not keeping up. One settings read and cache
+    reads; no git, nothing written. `steward_stale` means no COMPLETED
+    run (the `steward.last-run` marker, not an attempt) for more than
+    `STALE_AFTER_SECS` while a lesson the steward may take is queued."""
+    enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
+    out: dict = {"steward_enabled": bool(enabled)}
+    if not enabled:
+        return out
+    stale = False
+    if total_pending > 0:
+        last_dt = chrono.to_dt(last_run_iso_from_cache(resolved_cache_dir))
+        if last_dt is not None and last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        behind = (
+            last_dt is None  # never completed (or unreadable): infinitely old
+            or (now if now is not None else time.time()) - last_dt.timestamp() > STALE_AFTER_SECS
+        )
+        # the held-lesson read opens the case files: only when it can matter
+        stale = behind and _steward_takeable(home, total_pending, queued_ids) > 0
+    out["steward_stale"] = stale
+    out["steward_stale_hours"] = STALE_AFTER_SECS // 3600
+    hold = _hold_from_journal(resolved_cache_dir)
+    if hold is not None:
+        out["steward_hold"] = hold
+        fix = hold_fix(hold)
+        if fix is not None:
+            out["steward_hold_fix"] = fix
+    stranded = _stranded_count(resolved_cache_dir)
+    if stranded is not None:
+        out["stranded_count"] = stranded
+    return out
 
 
 def last_run_iso(home: Path | str | None = None) -> str | None:

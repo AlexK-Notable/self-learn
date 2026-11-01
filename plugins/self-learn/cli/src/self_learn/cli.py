@@ -1729,7 +1729,8 @@ def _cmd_status_fast() -> int:
         )
         print(f"self-learn: {home_state_message(state, home)}", file=sys.stderr)
         return EXIT_OK if state == "uninitialized" else EXIT_NO_HOME
-    data = worker.fast_status(home)
+    queued_ids: list[str] = []
+    data = worker.fast_status(home, queued_ids)
     data["home_state"] = state
     data["miner_last_run"] = miner.last_run_iso()
     data["miner_stale"] = miner.stale()
@@ -1741,6 +1742,15 @@ def _cmd_status_fast() -> int:
         data["overseer_open_questions"] = overseer_open_questions
     data["overseer_last_run"] = overseer_run.last_run_iso_from_cache(
         serve.cache_dir_readonly(home)
+    )
+    # L3: whose queue it is, and whether the steward is keeping up.
+    data.update(
+        steward.nudge_fields(
+            home,
+            serve.cache_dir_readonly(home),
+            int(data.get("total_pending") or 0),
+            queued_ids=queued_ids,
+        )
     )
     # S-106: project notices -- ABSENT unless this directory is inside
     # a project a live notice names (absence is the normal case, like
