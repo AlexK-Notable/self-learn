@@ -1540,14 +1540,14 @@ def _open_asks(
         q_id = row["id"]
         floor = conversation._floor(row, index_floor)  # noqa: SLF001
         asked = row.get("asked_at") or (
-            floor.strftime("%Y-%m-%dT%H:%M:%SZ") if floor is not None else None
+            chrono.now_iso(floor) if floor is not None else None
         )
         base = {
             "id": q_id, "text": row.get("text"), "why": row.get("why"),
             "because": row.get("because") or ("system-change" if row.get("system") else
                                               "foreign-history" if row.get("register") else None),
             "asked_at": asked,
-            "weeks_open": max(0, (now_dt - floor).days // 7) if floor is not None else None,
+            "weeks_open": chrono.age_days(floor, now_dt) // 7 if floor is not None else None,
             "cases": _case_states(home, list(row.get("cases") or []), case_index, links),
         }
         refs = {q_id, conversation.conflict_ref(row)} - {None}
@@ -1564,12 +1564,12 @@ def _open_asks(
             )
             approved_at = conversation._utc(track.approved_at)  # noqa: SLF001
             if track.state in ("approved", "awaiting-sudo") and approved_at is not None:
-                if (now_dt - approved_at).days >= STALE_APPROVAL_DAYS:
+                if chrono.age_days(approved_at, now_dt) >= STALE_APPROVAL_DAYS:
                     item = attention.item_id("approved.pending", q_id)
                     entries.append({
                         **base, "kind": "approved", "item": item, "state": track.state,
                         "approved_at": track.approved_at,
-                        "days_since_approved": (now_dt - approved_at).days,
+                        "days_since_approved": chrono.age_days(approved_at, now_dt),
                         "plan": {"summary": row["plan"].get("summary"),
                                  "checks": row["plan"].get("checks") or []},
                         "replies": replies, "feedback": feedback.get(q_id, []),
@@ -2119,7 +2119,7 @@ def _backstop_problem(
         return None
     for gone in withdrawn:
         at = conversation._utc(gone.get("withdrawn_at"))  # noqa: SLF001
-        if at is None or (now_dt - at).days > WITHDRAWN_BACKSTOP_DAYS:
+        if at is None or chrono.age_days(at, now_dt) > WITHDRAWN_BACKSTOP_DAYS:
             continue
         if gone.get("because") == row.get("because") and set(gone.get("cases") or []) == set(
             row["cases"]
@@ -5728,7 +5728,7 @@ def _still_open(
             return True
         done = conversation._utc(track.done_at)  # noqa: SLF001
         return track.state == "done" and done is not None and (
-            (now_dt - done).days < DONE_APPROVAL_KEEP_DAYS
+            chrono.age_days(done, now_dt) < DONE_APPROVAL_KEEP_DAYS
         )
     return row["id"] not in answered
 
@@ -5809,7 +5809,7 @@ def _carry_forward(
     def first_asked(row: dict[str, Any]) -> str | None:
         floor = conversation._floor(row, index_floor)  # noqa: SLF001
         return row.get("asked_at") or (
-            floor.strftime("%Y-%m-%dT%H:%M:%SZ") if floor is not None else None
+            chrono.now_iso(floor) if floor is not None else None
         )
 
     for row in new_rows:

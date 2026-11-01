@@ -274,7 +274,7 @@ def _r2_fields(row: dict) -> dict:
                 raise bad(stamp)
             out[stamp] = (
                 row[stamp] if isinstance(row[stamp], str)
-                else when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                else chrono.now_iso(when.astimezone(timezone.utc))
             )
     if "options" in row and row["options"] is not None:
         options = row["options"]

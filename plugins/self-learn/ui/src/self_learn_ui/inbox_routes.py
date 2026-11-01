@@ -38,6 +38,8 @@ from typing import Any
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+import self_learn.primitives.chrono as chrono
+
 from . import ledger, uilog
 from .ask_runner import AskRunner, build_ask_runner
 from .keymap import inbox_keymap_as_dicts, inbox_keymap_json
@@ -133,7 +135,7 @@ def _age_words(since: object, now: datetime | None = None) -> str:
     when = _parse(since)
     if when is None:
         return ""
-    days = ((now or datetime.now(timezone.utc)) - when).days
+    days = chrono.age_days(when, now or datetime.now(timezone.utc))
     if days < 1:
         return "today"
     if days < 14:
