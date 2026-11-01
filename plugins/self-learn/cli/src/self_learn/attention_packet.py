@@ -314,15 +314,25 @@ def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str]) -> li
 
     deadline = time.monotonic() + CONTEXT_BUDGET_SECS
     out: list[dict] = []
-    seeded = item.get("_evidence") or []
-    out.extend(e for e in seeded if isinstance(e, dict))
+    for entry in item.get("_evidence") or []:
+        if not isinstance(entry, dict):
+            continue
+        where = f"evidence[{len(out)}]"
+        out.append({
+            key: (limits.clip(value, f"{where}.{key}", MAX_CONTEXT_CHARS if key == "context"
+                              else MAX_TEXT_CHARS) if isinstance(value, str) else value)
+            for key, value in entry.items()
+        })
     failed = item.get("_failed")
     if isinstance(failed, dict):
         out.append({"kind": "fact", "label": "the carrying-out agent found",
                     "value": limits.clip(failed.get("note"), "evidence.failed")})
     hold = item.get("_hold")
     if isinstance(hold, dict):
-        out.append({"kind": "hold", **hold})
+        out.append({"kind": "hold", **{
+            k: limits.clip(v, f"evidence.hold.{k}", 1000) if isinstance(v, str) else v
+            for k, v in hold.items()
+        }})
     grant_use = item.get("_grant_use")
     stmt_rows = {row.get("id"): row for row in statements_mod.list_statements(home)}
     if isinstance(grant_use, dict):

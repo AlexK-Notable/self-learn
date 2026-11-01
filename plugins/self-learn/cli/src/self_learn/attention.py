@@ -754,7 +754,9 @@ def _src_asks(home: Path, ctx: "_Ctx") -> list[dict]:
                 **common,
             )
             item["answer"] = _answer_of(latest_said, latest_chose)
-            item["updated_at"] = (item["answer"] or {}).get("at") or asked_at
+            # An ask in the current index is current: with no date of its
+            # own it is as new as this read.
+            item["updated_at"] = (item["answer"] or {}).get("at") or asked_at or _iso(ctx.now)
             out.append(item)
             continue
         default = row.get("default")
