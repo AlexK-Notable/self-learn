@@ -1850,7 +1850,13 @@ at the httpx level (`test_inbox.py`, `test_ask_runner.py`,
   scale is 06's staged path, not a v1 latch.
 - **No dashboards/scores** — the status strip and the `/report`
   screen (§11 Y-12) render counted facts with 04's honesty labels
-  only; nothing modeled, no charts in v1 (counted-not-modeled, 04).
+  only; nothing modeled (counted-not-modeled, 04). *Amended 2026-11-01
+  (S-NEXT-humane-l2): "no charts in v1" is now "no modelled numbers".
+  A chart is allowed when every mark draws a count the CLI computed;
+  there is never a target, a score, a forecast or a fitted line; each
+  chart has a "Show as a table" view holding every value and a
+  narrow variant that reads at a 390 px width. Charts are drawn on the
+  server as inline SVG (`charts.py`): no chart library, no script.*
 - **No in-surface capture** (`teach` lives where the lesson happens;
   this is the adjudication surface, not a fifth producer).
 - **No notification ownership** — the server never sends
@@ -2153,6 +2159,26 @@ removed the last competing workstream — the build gate is open.*
   recurrence counts, telemetry counters. Reached by a Front link
   (no dedicated key). No charts, no scores, no derived numbers the
   CLI didn't compute (04 counted-not-modeled; §8 amended in place).
+  **Amended 2026-11-01 (S-NEXT-humane-l2): the screen is the Health
+  page.** Reached by the "Health" link in the shared header. Top to
+  bottom: four tiles (rules in use and in how many places; lessons
+  waiting for a decision and how long the oldest has waited; the typical
+  wait; rules later corrected, of those put to use), three charts ("Is
+  it keeping up?" — lessons waiting at each day's end, 28 days; "Where
+  do lessons come from?" — ranked bars from `supply_mix`; "What got
+  decided, night by night" — stacked columns by outcome group, 21
+  nights), a table of the rules in use, each listed by its own words
+  (`routed_live[].title`) never by its id, with where it lives, how long
+  it has been in use and how often it was seen again (most seen first;
+  `?q=` filters on the server, `?all=1` lifts the row limit), the rules
+  seen again, the open follow-ups, and a closed fold "All counters, with
+  their names" for checking against the command line (rates as
+  percentages). **No raw JSON is shown.** A number the CLI did not send
+  reads "not known", never zero. A `null` day in the series is a gap in
+  the line. The page's only counting is the length of a list the CLI
+  sent. The same two Home charts ("Is it keeping up?", "What got
+  decided") come from `partials/home_charts.html`, fed the same
+  `series`.
 
 - **Y-13 · Agentic chat panes with verb proposals (feedback round 1
   item 7 — G-3's second act; design brief

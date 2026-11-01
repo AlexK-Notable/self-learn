@@ -34,7 +34,7 @@ from self_learn.records import Record
 from self_learn.settings import REGISTRY as SETTINGS_REGISTRY
 from self_learn.verbs import GITOPS_DIRTY_MARKER, NO_PROPOSAL_MARKER
 
-from . import ledger, models, pane, proposals, rendering, runner
+from . import health, ledger, models, pane, proposals, rendering, runner
 from .keymap import keymap_as_dicts, keymap_json
 from .prefetch import DetailPrefetchCache
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
@@ -1297,19 +1297,32 @@ async def mine_near_miss_promote(
 
 @router.get("/report", response_class=HTMLResponse)
 def report_page(request: Request) -> HTMLResponse:
+    """The Health page (humane lane 2, 09 §2.7): `report --json` and
+    `status --json`'s counted facts, arranged in a person's words by
+    :func:`health.build_health` -- tiles, three charts, a table of the
+    rules in use by their own text. `?q=` filters that table on the
+    server (no script), `?all=1` lifts its row limit."""
     home = _home(request)
     report_read = ledger.report(home)
     status_read = ledger.status(home)
-    metrics = (status_read.data or {}).get("metrics") if status_read.ok else None
-    supply_mix = (status_read.data or {}).get("supply_mix") if status_read.ok else None
+    status_data = status_read.data if status_read.ok and isinstance(status_read.data, dict) else {}
+    metrics = status_data.get("metrics")
+    supply_mix = status_data.get("supply_mix")
+    model = health.build_health(
+        report_read.data,
+        metrics,
+        supply_mix,
+        status_data.get("buckets"),
+        query=request.query_params.get("q", ""),
+        show_all=request.query_params.get("all", "") not in ("", "0"),
+    )
     return _render(
         request,
         "report.html",
         {
             "report": report_read.data,
             "report_error": report_read.error,
-            "metrics": metrics,
-            "supply_mix": supply_mix,
+            "health": model,
             "status_error": status_read.error,
         },
     )

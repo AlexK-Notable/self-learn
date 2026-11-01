@@ -2042,3 +2042,390 @@ header.ws-head {
   flex-wrap: wrap;
   gap: 0.6rem;
 }
+
+/* === humane lane 2: charts (charts.py) and the Health page === */
+
+/* Chart colours. Light and dark are each their own validated steps, not a
+   flip (dataviz validate_palette.js: light on #ffffff, dark on #1a1c21).
+   use / no / later are slots 1-3 of the categorical order; "kept" is a
+   quiet neutral on purpose: it is the background case. The light aqua is
+   below 3:1, which the legend plus the "Show as a table" fold relieve. */
+:root {
+  --chart-use: #2a78d6;
+  --chart-no: #eb6834;
+  --chart-later: #1baf7a;
+  --chart-kept: #a9adb8;
+  --chart-grid: #e6e7ec;
+  --chart-axis: #b4b8c2;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --chart-use: #3987e5;
+    --chart-no: #d95926;
+    --chart-later: #199e70;
+    --chart-kept: #565a66;
+    --chart-grid: #2b2d35;
+    --chart-axis: #3d404a;
+  }
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+  gap: 0.75rem;
+  margin: 0 0 0.75rem;
+}
+
+.chart-card {
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  padding: 0.85rem 1rem 0.6rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.chart-card-full {
+  margin: 0 0 1.9rem;
+}
+
+h2.chart-q {
+  font-size: 0.98rem;
+  font-weight: 650;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--slu-fg);
+  margin: 0;
+}
+
+.chart-a {
+  color: var(--slu-fg-muted);
+  font-size: 0.9rem;
+  margin: 0.15rem 0 0.5rem;
+}
+
+.chart-empty {
+  color: var(--slu-fg-muted);
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1rem;
+  list-style: none;
+  padding: 0;
+  margin: 0.2rem 0 0.4rem;
+  font-size: 0.84rem;
+  color: var(--slu-fg-muted);
+}
+
+.chart-key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 0.4rem;
+  vertical-align: -1px;
+}
+
+.chart-key-use { background: var(--chart-use); }
+.chart-key-no { background: var(--chart-no); }
+.chart-key-later { background: var(--chart-later); }
+.chart-key-kept { background: var(--chart-kept); }
+
+/* Two SVGs per chart; the chart's own width picks one (a container query,
+   so a half-width card on a laptop and a full-width card on a phone both
+   get text they can read). */
+.chart-fig {
+  margin: 0;
+  container-type: inline-size;
+  container-name: chartfig;
+}
+
+.chart-v-narrow,
+.chart-v-xwide {
+  display: none;
+}
+
+@container chartfig (max-width: 459px) {
+  .chart-v-wide { display: none; }
+  .chart-v-narrow { display: block; }
+}
+
+@container chartfig (min-width: 820px) {
+  .chart-v-wide { display: none; }
+  .chart-v-xwide { display: block; }
+}
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-v-narrow .chart-svg {
+  max-width: 440px;
+}
+
+.chart-v-wide .chart-svg {
+  max-width: 640px;
+}
+
+.chart-svg text {
+  font-family: var(--slu-font);
+  font-size: 12px;
+  fill: var(--slu-fg-muted);
+}
+
+.chart-v-wide .chart-svg text {
+  font-size: 14px;
+}
+
+.chart-v-xwide .chart-svg text {
+  font-size: 13px;
+}
+
+.chart-svg text.cv-lbl {
+  fill: var(--slu-fg);
+}
+
+.chart-svg .cv-grid { stroke: var(--chart-grid); stroke-width: 1; }
+.chart-svg .cv-base { stroke: var(--chart-axis); stroke-width: 1; }
+.chart-svg .cv-line {
+  fill: none;
+  stroke: var(--chart-use);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.chart-svg .cv-area { fill: var(--chart-use); opacity: 0.12; }
+.chart-svg .cv-dot { fill: var(--chart-use); }
+.chart-svg .cv-end { fill: var(--chart-use); stroke: var(--slu-bg-raised); stroke-width: 2; }
+.chart-svg .cv-use { fill: var(--chart-use); }
+.chart-svg .cv-no { fill: var(--chart-no); }
+.chart-svg .cv-later { fill: var(--chart-later); }
+.chart-svg .cv-kept { fill: var(--chart-kept); }
+
+@media (forced-colors: active) {
+  .chart-svg .cv-line { stroke: CanvasText; }
+  .chart-svg .cv-area,
+  .chart-svg .cv-dot,
+  .chart-svg .cv-end,
+  .chart-svg .cv-use,
+  .chart-svg .cv-no,
+  .chart-svg .cv-later,
+  .chart-svg .cv-kept { fill: CanvasText; }
+  .chart-key { background: CanvasText; forced-color-adjust: none; }
+}
+
+.chart-table {
+  margin: 0.4rem 0 0.2rem;
+}
+
+.chart-table-scroll {
+  max-height: 18rem;
+  overflow: auto;
+}
+
+table.chart-data {
+  font-size: 0.85rem;
+}
+
+table.chart-data th,
+table.chart-data td {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--slu-fg);
+}
+
+table.chart-data thead th {
+  color: var(--slu-fg-muted);
+  font-size: 0.78rem;
+  position: sticky;
+  top: 0;
+  background: var(--slu-bg-raised);
+}
+
+table.chart-data th.num,
+table.chart-data td.num,
+table.health-table th.num,
+table.health-table td.num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+table.chart-data th[scope="row"] {
+  white-space: nowrap;
+  text-align: left;
+}
+
+table.chart-data caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Health page. */
+.health-sub {
+  color: var(--slu-fg-muted);
+  margin: -0.4rem 0 1rem;
+}
+
+.health-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.65rem;
+  margin: 0 0 0.9rem;
+}
+
+.health-tile {
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  padding: 0.7rem 0.9rem;
+  min-width: 0;
+}
+
+.health-tile-label {
+  font-size: 0.84rem;
+  color: var(--slu-fg-muted);
+}
+
+.health-tile-value {
+  font-size: 1.7rem;
+  font-weight: 600;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.health-tile-note {
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+.health-section {
+  margin: 0 0 1.9rem;
+}
+
+.health-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+}
+
+.health-filter input[type="search"] {
+  flex: 1 1 14rem;
+  max-width: 24rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--slu-fg);
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.35rem 0.6rem;
+}
+
+.health-filter input[type="search"]:focus {
+  outline: 2px solid var(--slu-focus-ring);
+  outline-offset: 1px;
+}
+
+.health-table-wrap {
+  overflow-x: auto;
+}
+
+table.health-table td {
+  vertical-align: top;
+  font-size: 0.9rem;
+}
+
+table.health-table td.health-rule {
+  min-width: 14rem;
+  overflow-wrap: anywhere;
+}
+
+.health-where {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+.health-more {
+  color: var(--slu-fg-muted);
+  font-size: 0.86rem;
+  margin: 0.4rem 0;
+}
+
+.health-fold {
+  margin: 0 0 1.5rem;
+}
+
+/* On a phone the three lists become stacked rows: the rule's words first,
+   then each figure beside its name (data-label). The header row stays for
+   screen readers. */
+@media (max-width: 640px) {
+  table.health-stack thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  table.health-stack,
+  table.health-stack tbody {
+    display: block;
+  }
+
+  table.health-stack tr {
+    display: block;
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--slu-border);
+  }
+
+  table.health-stack td {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border: 0;
+    padding: 0.1rem 0.25rem;
+    text-align: right;
+    font-size: 0.86rem;
+  }
+
+  table.health-stack td::before {
+    content: attr(data-label);
+    color: var(--slu-fg-muted);
+    text-align: left;
+    flex: none;
+  }
+
+  table.health-stack td.health-rule {
+    display: block;
+    text-align: left;
+    min-width: 0;
+    font-size: 0.92rem;
+    padding-bottom: 0.25rem;
+  }
+
+  table.health-stack td.health-rule::before {
+    content: none;
+  }
+
+  table.health-stack .health-where {
+    display: inline;
+    margin-left: 0.4rem;
+  }
+}
