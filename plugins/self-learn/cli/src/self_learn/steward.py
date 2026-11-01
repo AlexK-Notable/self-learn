@@ -3673,11 +3673,12 @@ def _reconsider_status_problem(
     return refusal_text(refusal) if refusal is not None else None
 
 
-#: S-NEXT-steward (gate r1 F1): the sheet verbs that take a queued lesson
-#: out of the queue -- they decide it, or file it (`rehome`/`rescope`: it
-#: comes back once, in its new bucket, by design). A `defer` counts only
-#: when its date is after now (no `until` is +30 days, `ledger_ops.
-#: DEFAULT_DEFER_DAYS`); a `defer` to today leaves the lesson due.
+#: S-131 (gate r1 F1): the sheet verbs that decide a queued lesson, or
+#: file it (`rehome`/`rescope`: it comes back once, in its new bucket, by
+#: design). A `defer` counts only when it changes the date to one after
+#: now: a `defer` to today or earlier leaves the lesson due, and so does a
+#: line the batch would skip as already applied (gate r2 G1: a `defer`
+#: with no `until` on the day the deferral comes due, `batch.classify`).
 _DEQUEUING_VERBS = frozenset(
     {"route", "reject", "defer", "retire", "supersede", "replace", "rehome", "rescope"}
 )
@@ -3691,8 +3692,24 @@ def _names_record(item: dict, record_id: str) -> bool:
     return record_id == also or (isinstance(also, list) and record_id in also)
 
 
+def _defer_already_applied(home: Path, record_id: str, item: dict) -> bool:
+    """S-131 (gate r2 G1): True when the batch would skip this `defer`
+    line as already applied -- it writes nothing, so the deferral stays
+    due. Asked of `batch.classify` itself, never restated: a `defer` with
+    no `until` of a lesson already deferred to today or later is "already
+    applied" there, and today is exactly the day the steward first selects
+    a lapsed deferral (`domain.is_queued` counts a date equal to now as
+    due). An unreadable record is left to the other checks."""
+    fields = {key: value for key, value in item.items() if key not in ("id", "verb", "n")}
+    sheet_item = batch.SheetItem(n=0, id=record_id, verb="defer", fields=fields)
+    try:
+        return batch.classify(home, sheet_item, actor="steward")
+    except (ledger_ops.LedgerOpsError, RecordError, OSError, ValueError):
+        return False
+
+
 def _left_queued_problem(home: Path, record_id: str, items: object) -> str | None:
-    """S-NEXT-steward (gate r1 F1): why a staged case would leave
+    """S-131 (gate r1 F1): why a staged case would leave
     *record_id*, a DEFERRED lesson whose date has passed, in the steward's
     queue -- or `None`. Such a case applies (a `note`, a `revise`, an
     `undefer` all land), rewrites the record, and so makes it a new version
@@ -3722,6 +3739,8 @@ def _left_queued_problem(home: Path, record_id: str, items: object) -> str | Non
         if item.get("verb") == "defer":
             until = chrono.to_dt(item.get("until"))
             if until is not None and until <= now:
+                continue
+            if _defer_already_applied(home, record_id, item):
                 continue
         return None
     until = chrono.to_dt(record.deferred_until)
@@ -3958,7 +3977,7 @@ def _ledger_repair_message(
     *skip* (its stem) failed the runner's own per-pair check and is left
     out (2026-09-27).
 
-    S-NEXT-steward (2026-11-01): a `status` refusal of a lesson such a
+    S-131 (2026-11-01): a `status` refusal of a lesson such a
     case covers is collected too. It used to be dropped (S-71), from when
     this preview could not widen a covered line; since S-73 item 6 it does,
     so a status refusal left in the widened preview is one apply time
@@ -3967,7 +3986,7 @@ def _ledger_repair_message(
     rejection) to apply time, where the ledger refused them and both
     lessons were parked `ledger-refused` for the overseer.
 
-    S-NEXT-steward (gate r1 F1): a case that would leave a DEFERRED lesson
+    S-131 (gate r1 F1): a case that would leave a DEFERRED lesson
     whose date has passed still deferred and due -- a `note`, `undefer` or
     `revise` with no `defer` to a later date and no deciding line -- is
     flagged too (:func:`_left_queued_problem`): it would apply, rewrite the
@@ -4031,7 +4050,7 @@ def _ledger_repair_message(
                 )
             if problem is not None:
                 case_found.append(f"- cases/{case_path.name}: {problem}")
-        # S-NEXT-steward (gate r1 F1): a case that leaves a lesson queued
+        # S-131 (gate r1 F1): a case that leaves a lesson queued
         # brings it back every night. A held lesson is named above instead.
         items = _sheet_items(sheet_path)
         for record_id in dict.fromkeys(str(rid) for rid in case_data.get("records") or []):

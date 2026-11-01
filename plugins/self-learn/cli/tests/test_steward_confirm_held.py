@@ -1,4 +1,4 @@
-"""S-NEXT-steward (2026-11-01): the steward's one repair turn catches a
+"""S-131 (2026-11-01): the steward's one repair turn catches a
 `confirm-held` line on a lesson that is not a placed (routed) rule, and its
 brief says which status `confirm-held` needs.
 
@@ -388,7 +388,9 @@ def test_the_due_deferral_flag_reads_the_lesson_and_the_line(tmp_path, monkeypat
     today = due.later.date().isoformat()
     assert flagged([{"id": rid, "verb": "defer", "until": today}]), "a defer to now leaves it due"
     assert not flagged([_wait_line(rid)])
-    assert not flagged([{"id": rid, "verb": "defer"}]), "no until: +30 days"
+    # a `defer` with no `until`: `test_a_dateless_defer_on_the_day_it_came_due_is_flagged`
+    # (gate r2 G1 reversed the old pin "no until: +30 days"; it runs on the real
+    # clock, the one `batch.classify` reads)
     assert not flagged([{"id": rid, "verb": "reject"}])
     assert flagged([{"id": "lrn-c0de00ff", "verb": "reject"}, *note]), "another lesson's line"
     # a `replace` takes over every lesson in its `also` (a list or one id)
@@ -397,3 +399,93 @@ def test_the_due_deferral_flag_reads_the_lesson_and_the_line(tmp_path, monkeypat
     assert flagged([{"id": "lrn-c0de00ff", "verb": "revise", "also": [rid]}]), "only replace's"
     pending = _seed(home, "lrn-c0de0008")
     assert steward._left_queued_problem(home, pending, [_keep_line(pending, "note")]) is None
+
+
+# ------------------------------------------- gate r2 G1: a defer with no date, on the real clock
+
+
+class DueToday:
+    """A lesson the steward deferred through a case to TODAY (the real
+    clock, the one `batch.classify` reads): due now, the day the steward
+    first selects a lapsed deferral."""
+
+    def __init__(self, tmp_path: Path, rid: str):
+        self.home = make_env(tmp_path).ledger
+        self.rid = _seed(self.home, rid)
+        stage = tmp_path / "deferring-case.yaml"
+        _dump_yaml(stage, _case([self.rid], "defer", "defer"))
+        self.prior = cases.record(self.home, stage, actor="steward")
+        today = datetime.now(timezone.utc).date().isoformat()
+        sheet = tmp_path / "defer.yaml"
+        sheet.write_text(
+            f"version: 1\ncase: {self.prior}\nitems:\n"
+            f"  - id: {self.rid}\n    verb: defer\n    until: '{today}'\n",
+            encoding="utf-8",
+        )
+        result = batch.run(self.home, batch.load_sheet(sheet), no_push=True, actor="steward")
+        assert result.items[0].state == "applied"
+        _enable_steward(self.home)
+
+    def selected(self) -> bool:
+        return self.rid in {entry.record.id for entry, _row in steward._eligible_lessons(self.home)}
+
+    def back_date(self) -> None:
+        """Rewrite the record's date to yesterday (a deferral that lapsed
+        a day ago), on disk only: what the flag reads."""
+        path = ledger_ops.find_record_path(self.home, self.rid)
+        today = datetime.now(timezone.utc).date()
+        yesterday = (today - timedelta(days=1)).isoformat()
+        text = path.read_text(encoding="utf-8")
+        assert f"deferred_until: '{today.isoformat()}'" in text, text
+        path.write_text(
+            text.replace(f"deferred_until: '{today.isoformat()}'", f"deferred_until: '{yesterday}'"),
+            encoding="utf-8",
+        )
+
+
+def test_a_dateless_defer_on_the_day_it_came_due_is_flagged(tmp_path):
+    """Gate r2 G1: `batch.classify` calls a `defer` with no `until` of a
+    lesson already deferred to today "already applied" and writes nothing,
+    so on the day the deferral comes due that line leaves it due. Flagged,
+    by the batch's own rule. Control: a day after the date, the same line
+    applies (+30 days) and is not flagged."""
+    due = DueToday(tmp_path, "lrn-c0de0009")
+    assert due.selected(), "control: due today"
+    dateless = [{"id": due.rid, "verb": "defer"}]
+    assert steward._left_queued_problem(due.home, due.rid, dateless) is not None
+    assert steward._left_queued_problem(due.home, due.rid, [_wait_line(due.rid)]) is None
+    due.back_date()
+    assert steward._left_queued_problem(due.home, due.rid, dateless) is None
+
+
+def test_a_dateless_defer_on_the_day_it_came_due_is_repaired_and_does_not_loop(
+    tmp_path, monkeypatch
+):
+    """End to end on the real clock: the first session keeps today's due
+    deferral with a `defer` line and no `until`; the repair turn names it;
+    the repaired line with a new `until` applies and the lesson is not
+    selected again. (Before the fold: one prompt, the line skipped as
+    already applied, the lesson selected again.)"""
+    due = DueToday(tmp_path, "lrn-c0de000a")
+    _notifications(monkeypatch)
+    prompts: list[str] = []
+
+    def write(spec):
+        prompts.append(spec.prompt)
+        stage = _stage_dir(spec)
+        case = _keep_case(due.rid, "defer", due.prior)
+        case["outcome"] = "defer"
+        line = _wait_line(due.rid) if _REPAIR_HEADER in spec.prompt else {"id": due.rid, "verb": "defer"}
+        _dump_yaml(stage / "cases" / f"{due.rid}.yaml", case)
+        _dump_yaml(stage / "sheets" / f"{due.rid}.yaml",
+                   {"version": 1, "case": "$CASE_ID", "items": [line]})
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    monkeypatch.setattr(steward.invocation, "write_session", write)
+    result = steward.run(due.home)
+
+    assert len(prompts) == 2, "the repair turn is spent on the dateless defer"
+    assert f"record {due.rid}: this case leaves it deferred and due" in prompts[1]
+    disposition = _head_manifest(due.home, result.run_id)["packets"][0]["dispositions"][due.rid]
+    assert disposition["state"] == "applied", disposition
+    assert not due.selected()

@@ -318,7 +318,7 @@ def test_a_staged_reconsider_case_keeps_its_status_refusal_out_of_the_repair_tur
     the staged case (it is not in the ledger yet), and a `reject` of a
     ROUTED lesson under a staged `kind: reconsider` case is a line the case
     widens at apply time. Not collected: since S-73 item 6 the preview
-    widens it itself (`reconsidered=`), and since S-NEXT-steward that,
+    widens it itself (`reconsidered=`), and since S-131 that,
     not a blanket skip of covered lines, is what keeps it out
     (`test_steward_confirm_held.py` holds the status refusal a covered
     line keeps). The same `reject` under a case that is NOT a reconsider

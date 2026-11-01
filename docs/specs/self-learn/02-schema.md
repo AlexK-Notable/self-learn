@@ -2089,7 +2089,7 @@ staged case, which is not in the ledger yet, but it widens each line a
 staged `kind: reconsider` case covers as that case will at apply time
 (S-73 item 6), so a `status` refusal left in it is one apply time gives
 too, and it is collected like any other *(amended 2026-11-01,
-S-NEXT-steward: until then such a refusal was never collected for a lesson
+S-131: until then such a refusal was never collected for a lesson
 a reconsider case of the same staged pair covered, a rule from before the
 preview could widen a line; run `run-14405f3da1fe`'s `confirm-held` lines
 on two rejected lessons reached apply time that way and were parked
@@ -2101,12 +2101,16 @@ fail the stage; apply time handles them by kind, as above. A repair turn
 already spent on a format error is not spent again. A dry run does the
 same, writing only to the cache.
 
-*(Amended 2026-11-01, S-NEXT-steward, gate r1 fold.)* The same turn also
+*(Amended 2026-11-01, S-131, gate r1 fold.)* The same turn also
 flags a staged case (not parked, not one the runner parks) that would leave
 a `deferred` lesson whose date has passed still deferred and due: no line
-on the lesson takes it out of the queue (`route`, `reject`, `retire`,
-`supersede`, `replace` including its `also`, `defer` to a date after now
-or with no date, or the filing moves `rehome`/`rescope`). Such a case
+on the lesson decides it or files it. Deciding lines are `route`,
+`reject`, `retire`, `supersede`, `replace` (including its `also`) and a
+`defer` that moves the date after now -- not a `defer` to today or
+earlier, and not one the batch would skip as already applied (a `defer`
+with no `until` on the day the deferral comes due, `batch.classify`;
+gate r2 fold). The filing moves `rehome`/`rescope` leave the deferral
+due: the lesson comes back once, in its new bucket, by design. Such a case
 would apply -- a `note`, `undefer` or `revise` lands -- and rewrite the
 record, a new version no run decided, so the lesson would come back every
 night. Read on the record as it is now with the queue's own predicate

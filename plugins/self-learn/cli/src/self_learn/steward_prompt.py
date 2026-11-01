@@ -1262,7 +1262,7 @@ def _render_output_contract(owned_skills: Sequence[str] | None = ()) -> str:
         f"    replace (the line's id and each id in also):  {_words(ledger_ops.RESOLVABLE_STATUSES)}",
         f"    undefer:  {_words(ledger_ops.DEFERRED_ONLY)}      reopen:  {_words(verbs.REOPEN_ADMITTED_STATUSES)}",
         "    confirm-recurrence, dismiss-suspect:  routed",
-        # S-NEXT-steward (2026-11-01): run-14405f3da1fe kept two
+        # S-131 (2026-11-01): run-14405f3da1fe kept two
         # rejections with `confirm-held`, which only a placed rule takes
         # (`verbs._preflight_confirm_held`); the ledger refused both.
         f"    confirm-held:  {_words(ledger_ops.ROUTED_ONLY)}      note:  any status",
