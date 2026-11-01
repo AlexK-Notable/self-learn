@@ -375,6 +375,26 @@ def test_the_overseer_is_told_the_reconsider_rule_in_the_codes_terms(tmp_path, n
     assert "examined" not in sentence, sentence
 
 
+def test_phase_b_is_told_it_reconsiders_what_rested_on_a_corrected_reading(tmp_path):
+    """S-132 (the orchestrator's decision, 2026-11-01): a reply to a reading
+    tells no case, so the phase-B prompt hands the overseer the judgement:
+    read the decisions that list a corrected reading (`citing/`, older cases
+    included), reconsider by successor each that rested on it, and say in
+    the report which and why."""
+    text = " ".join(overseer_run._phase_b_prompt(tmp_path, (), ()).split())
+    assert "kind: reconsider successor" in text  # control: the S-76 rule rendered
+    for words in (
+        "A reply to a reading sends no case back by itself: you do.",
+        "When answers.yaml holds a correction of a reading (kind: proposition, ref um-…@rN), "
+        f"{overseer_run.CITING_DIR}/*.md holds every current decision whose dependencies list "
+        "that reading, older cases included.",
+        "judge whether the decision rested on the reading (a decision that only mentions it did not)",
+        "For each that did, write a kind: reconsider successor that supersedes it, by the rule above",
+        "in report.md name the decisions you reconsidered and why, and say the others stand.",
+    ):
+        assert words in text, words
+
+
 def test_the_dry_run_preview_counts_a_reconsider_reroute_as_would_apply(
     tmp_path, monkeypatch, claude_dir
 ):

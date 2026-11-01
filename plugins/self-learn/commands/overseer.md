@@ -250,12 +250,15 @@ one:
 2. **The evidence**: the dated statements it rests on, quoted verbatim
    with their scope, and the cases it has affected (ids and a one-line
    outcome each).
-3. **What a "yes, look again" actually does**: name the cases that would
-   be sent for *reconsideration* — never "undone" or "reversed".
-   Reconsideration means the steward or overseer checks the case again
-   against the corrected reading; it is not a promise that the outcome
-   will change, and staging a reconsideration is not itself proof that
-   anything changed — only that case's own later outcome shows that.
+3. **What a reply actually does**: it is recorded in the user's own
+   words as a correction of the reading, and nothing is sent back when
+   they reply (`overseer respond` reports `reconsidered=0`). The
+   overseer reads the correction at its next run, looks at the
+   decisions that list the reading, and may reconsider any that rested
+   on it; name those cases as the ones it will look at, and promise no
+   reconsideration — never "undone" or "reversed". A reconsideration is
+   not a promise that the outcome will change; only that case's own
+   later outcome shows that.
 4. **The prompt, verbatim**: "Reply in your own words if you'd like to
    say something about this; say how far it applies (this host, this
    repo, everywhere, until `<date>`)." Do not promise that leaving it
