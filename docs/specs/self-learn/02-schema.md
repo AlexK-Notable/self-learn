@@ -4538,9 +4538,13 @@ success on any surface, and ends at the next success or a newer
 a STOPPED intent 24 hours old; a job with no completed run for 72 hours and
 failures since, with no hold cause), the case index for tampered parked
 cases, `cases/runs/*.json` for run digests and their `attention_effects`
-(whichever runner wrote them: answer 5), `grant-uses.jsonl`, `hosts.yaml`
+(whichever runner wrote them: answer 5; a digest's refs lead with the
+run's case ids, then its decided lessons), `grant-uses.jsonl`, `hosts.yaml`
 (a plain registration that appeared since the inbox last looked; the first
-read only learns, `<cache>/attention/registrations.json`), the skill
+read only learns, `<cache>/attention/registrations.json`, and records that
+it looked even when it found none; no record names who registered it, so
+the item's source is `code`, never an actor, and an agent's registration
+under an authority shows as its `decided.grant-use` item instead), the skill
 registry (writes, retirements and renames by the overseer or an agent), live
 project notices, the steward's latest unexplained-ledger-paths refusal, and
 `overseer/withdrawn.yaml`. Each source has a 0.5 s budget; a slower one
@@ -4561,7 +4565,17 @@ was decided and its undo, the evidence (lessons, statements with their
 transcript or workspace context, cases, the report excerpt, `look_at`
 files, holds, grants, facts), `more[]` pointers past the first 12 entries,
 where to look further, the conversation's state, the latest answer, and
-`limits`. Bounds: the whole JSON at most 64 KiB; each text at most 4,000
+`limits`. A case in the evidence is followed directly by the lessons its
+frontmatter `records` names and the statements its section 4 names, each
+shown once, so an ask shows the lesson it is about and the user's earlier
+words, not the case alone. A case whose freeze hash fails is no entry,
+except on its own `conflict.case-tampered` page: there it is read as the
+file is now (a plain size-capped file read, no git; the excerpt is sections
+1-4, the span the hash covers), with a `fact` naming the mismatch and a
+pointer to `ledger_history` for the version decided. The plan's texts (its
+summary and conditions, each check's and step's `say` and `command`, each
+file's `content`) are clipped and secret-scanned like every excerpt, and
+the size fit trims them too. Bounds: the whole JSON at most 64 KiB; each text at most 4,000
 characters; each statement context at most 1,200; transcript context reads
 share a 1.5 s budget; every cut is named in `limits.truncated`. Every text
 is secret-scanned and a hit becomes `[redacted: <rule>]`. One deny list,
@@ -4596,7 +4610,10 @@ refused from an agent's shell, exit 64), `attention/outcomes.jsonl`
 (`{id: out-…, at, item, subject, result: done|failed, note, session, by}`),
 and `grant-uses.jsonl` (`{id: gu-…, at, verb, args, statement | proof,
 note, prior}`): `attribution.acting(granted, use=…)` appends one row as its
-own commit, inside the verb's `ledger_write` span, on a normal exit of a
+own commit, right after the verb and while the authority is still in force
+(the verb itself runs under no outer lock span: the skill verbs push, and a
+lock never covers a push; each verb's own `ledger_write` keeps announcing
+its recovery), on a normal exit of a
 person-only verb run under an authority (`config set|unset` of a tier-C
 setting, `host add|set-mode|remove|rebind`, `skill write|retire|rename|veto`,
 and a registration under a proved yes, which cites its `proof`). `prior`,
