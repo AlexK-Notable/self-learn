@@ -500,3 +500,25 @@ def test_send_as_is_on_a_draft_card_keeps_the_boxs_own_words(page, server):
     page.reload(wait_until="load")
     page.wait_for_selector(f'#ws[data-item-id="{ID_OO7}"]')
     _wait_for_value(page, "#ws-reply-text", words)
+
+
+def test_a_failed_answer_keeps_the_drafts_note_and_option(page, server):
+    """ui-workspace gate r3 NIT B: when the answer verb fails, the bar
+    re-renders with the hidden draft id; the page must still say the text
+    is the agent's draft and keep its option, so the retry it sends
+    (`--draft`, `--option`) matches what the page says. Mutation: drop the
+    afterSwap re-apply -> red (the note is hidden, the option gone)."""
+    _open(page, server, ID_OO7)
+    page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] [data-use-draft]')
+    assert page.is_visible("#ws-reply-draft-note")  # control: the draft is wired
+    server.runner.queue_result(RunResult(3, stderr="refused for this test"))
+    page.click("[data-send-reply]")
+    page.wait_for_selector("#ws-answer [data-answer-error]", timeout=_WAIT_MS)
+    assert page.input_value("#ws-reply-draft") == DRAFT_ID
+    assert page.is_visible("#ws-reply-draft-note")
+    assert page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions"
+    page.click("[data-send-reply]")
+    _wait_for(lambda: len(_answer_calls(server)) >= 2)
+    argv = _answer_calls(server)[-1]
+    assert argv[argv.index("--draft") + 1] == DRAFT_ID
+    assert argv[argv.index("--option") + 1] == "opt-yes-conditions"

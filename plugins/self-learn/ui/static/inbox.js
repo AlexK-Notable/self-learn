@@ -500,6 +500,15 @@
       announce(recorded.textContent.replace(/\s+/g, " ").trim());
     }
     if (target.id === "ws-answer" && !(recorded && sentReply)) restoreUnsent();
+    // A failed answer re-renders the bar keeping the hidden draft id but
+    // not its note or option (ui-workspace gate r3 NIT B, at integration):
+    // the page would say "Recorded as your words." while a retry sends
+    // --draft. Put the draft's note and option back with its id.
+    var keptDraft = $("#ws-reply-draft");
+    if (target.id === "ws-answer" && keptDraft && keptDraft.value) {
+      var keptMeta = recallDraftMeta(currentItem());
+      applyDraftMeta(keptDraft.value, keptMeta && keptMeta.id === keptDraft.value ? keptMeta.option : "");
+    }
     var err = $("#ws-answer [data-answer-error]");
     if (err && target.id === "ws-answer") announce(err.textContent.replace(/\s+/g, " ").trim());
     if (target.id === "ws-ask-live") {
