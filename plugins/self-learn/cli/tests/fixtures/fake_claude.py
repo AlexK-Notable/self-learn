@@ -690,6 +690,41 @@ def _scenario_unknown_message_type() -> None:
     emit(result_message(is_error=False, subtype="success", uuid="u2", result="after the stream event"))
 
 
+def _scenario_ask_stream() -> None:
+    """2026-10-31 (attention round, lane `ask-agent`, gate r1 MAJOR 1):
+    what a streaming Claude Code turn of the ask surface puts on stdout
+    under `--include-partial-messages` -- two `text_delta` stream events
+    around one `input_json_delta` that is not text, a tool use of the ask
+    agent's own `record` tool and its result, a built-in Read and its
+    result, then the final assistant message and the result."""
+    own_tool = "mcp__selflearn_ask__record"
+    answer = "Looking at the record. It says no."
+    deltas = (
+        {"type": "text_delta", "text": "Looking at "},
+        {"type": "input_json_delta", "partial_json": "{\"id\": "},
+        {"type": "text_delta", "text": "the record."},
+    )
+    for n, delta in enumerate(deltas, 1):
+        emit({
+            "type": "stream_event",
+            "uuid": f"u-se{n}",
+            "session_id": SESSION_ID,
+            "parent_tool_use_id": None,
+            "event": {"type": "content_block_delta", "index": 0, "delta": delta},
+        })
+    emit(assistant_message("", "u1", content=[
+        {"type": "tool_use", "id": "tu-own", "name": own_tool, "input": {"id": "lrn-0123abcd"}},
+    ]))
+    emit(user_tool_result("tu-own", "u2", content="lrn-0123abcd: pending", is_error=False))
+    emit(assistant_message("", "u3", content=[
+        {"type": "tool_use", "id": "tu-read", "name": "Read",
+         "input": {"file_path": "/ledger/user/canon.md"}},
+    ]))
+    emit(user_tool_result("tu-read", "u4", content="the canon text", is_error=False))
+    emit(assistant_message(answer, "u5"))
+    emit(result_message(is_error=False, subtype="success", uuid="u6", result=answer))
+
+
 def _fake_claude_out_text() -> str:
     """`FK-c` -- `FAKE_CLAUDE_OUT` is the sdk leg's `CLAUDE_SHIM_OUT`."""
     out_path = os.environ.get("FAKE_CLAUDE_OUT", "")
@@ -728,6 +763,7 @@ SCENARIOS = {
     "analyst_result": _scenario_analyst_result,
     "analyst_blocks": _scenario_analyst_blocks,
     "shim_script": _scenario_shim_script,
+    "ask_stream": _scenario_ask_stream,
 }
 
 

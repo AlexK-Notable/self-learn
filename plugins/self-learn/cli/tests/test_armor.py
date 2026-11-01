@@ -281,6 +281,11 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
                 "as a value rather than a blanket pass.",
             ),
         },
+        # 2026-10-31 (attention round, lane `ask-agent`, gate r1 MAJOR 1;
+        # 17-invocation-runbook.md §1c): the ask surface's streaming
+        # relay, driven through `SdkBackend` by real `stream_event` lines.
+        new_funcs=frozenset({"_scenario_ask_stream"}),
+        new_scenario_keys=frozenset({"ask_stream"}),
     ),
     # --- BEHAVIOUR: every top-level node (section 4.5) -----------------
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): this row's two `edited` doors (WR7's fourth and

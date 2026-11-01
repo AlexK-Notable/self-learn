@@ -63,6 +63,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
@@ -123,6 +124,35 @@ PROBE_TIMEOUT_SECS = 5.0
 STATEMENTS_MAX = 40
 CONTEXT_MAX_CHARS = 2_000
 HISTORY_MAX = 20
+#: The least time a later attempt of one turn is started with (gate r1
+#: MINOR 3): every attempt of a turn shares one deadline of
+#: ``ask.timeout_secs``, so the UI's watchdog (that timeout plus 30 s)
+#: never fires on a turn that is still within its own bound.
+MIN_ATTEMPT_SECS = 30.0
+#: The note a SIGTERM leaves when it arrives after the turn's own deadline:
+#: then it is the UI's watchdog, not the person's Stop.
+OVERRAN_NOTE = "stopped: the turn ran past its time limit"
+
+#: The clock of a turn's deadline; a test replaces it.
+_clock = time.monotonic
+
+#: A private key's PEM block (gate r1 MINOR 4). The secret scan's
+#: ``private-key`` rule matches the header line only, and a body's short
+#: last line passes every other rule, so the whole block -- to its END
+#: line, or to the end of the text while no END has come -- is withheld
+#: as one span.
+_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+_PEM_BLOCK = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S)
+_PEM_WITHHELD = "[redacted: private-key]"
+
+
+def redact(text: str) -> str:
+    """*text* with every secret-scan hit replaced by ``[redacted: <rule>]``
+    and every private-key block withheld whole. What this module shows or
+    seals goes through here, never through ``redact_text`` alone."""
+    return attention_packet.redact_text(_PEM_BLOCK.sub(_PEM_WITHHELD, text))
 
 ASK_DOCTRINE = """\
 You are the "ask about this" agent in self-learn's inbox. One person, the owner of this machine,
@@ -332,7 +362,7 @@ class _Emitter:
     def delta(self, text: str) -> None:
         with self._lock:
             self._raw += text
-            redacted = attention_packet.redact_text(self._raw)
+            redacted = redact(self._raw)
             if self._diverged or not redacted.startswith(self._shown):
                 self._diverged = True
                 return
@@ -346,7 +376,7 @@ class _Emitter:
     def finish_text(self) -> None:
         """Relay what the hold-back kept, at the end of the turn."""
         with self._lock:
-            redacted = attention_packet.redact_text(self._raw)
+            redacted = redact(self._raw)
             if self._diverged or not redacted.startswith(self._shown):
                 return
             new = redacted[len(self._shown):]
@@ -365,7 +395,7 @@ class _Emitter:
             target = event.get("target")
             self.event({
                 "ev": "tool", "name": str(event.get("name") or ""),
-                "target": attention_packet.redact_text(target) if isinstance(target, str) else None,
+                "target": redact(target) if isinstance(target, str) else None,
             })
 
 
@@ -439,7 +469,7 @@ def _git_log(home: Path, argv_tail: list[str]) -> str:
 
 
 def _json(value: object) -> str:
-    return attention_packet.redact_text(json.dumps(value, ensure_ascii=False, indent=1, default=str))
+    return redact(json.dumps(value, ensure_ascii=False, indent=1, default=str))
 
 
 def _schema(properties: dict[str, dict], required: tuple[str, ...] = ()) -> dict:
@@ -516,7 +546,7 @@ class AskTools:
         text += "\n\nLine of successors: " + " -> ".join(line)
         if predecessor:
             text += f"\nSupersedes: {predecessor}"
-        return attention_packet.redact_text(text)
+        return redact(text)
 
     def statements(self, args: dict) -> str:
         from . import statements as statements_mod
@@ -568,7 +598,7 @@ class AskTools:
             raise _Refused(f"words_in_context: {statement_id} has no transcript or workspace ref")
         if text is None:
             raise _Refused(f"words_in_context: {ref} did not resolve")
-        text = attention_packet.redact_text(text)
+        text = redact(text)
         if len(text) > CONTEXT_MAX_CHARS:
             text = text[: CONTEXT_MAX_CHARS - 1] + "…"
         return f"{statement_id} ({ref}):\n{text}"
@@ -586,7 +616,7 @@ class AskTools:
             text = path.read_text(encoding="utf-8")
         except OSError:
             raise _Refused(f"report: no report at {path}") from None
-        return attention_packet.redact_text(text[:40_000])
+        return redact(text[:40_000])
 
     def ledger_history(self, args: dict) -> str:
         from .ledger_ops import LedgerOpsError, find_record_path
@@ -619,7 +649,7 @@ class AskTools:
             out = _git_log(self.home, [*fmt, "--fixed-strings", f"--grep={target}"])
         else:
             raise _Refused("ledger_history: name a ledger path or an id")
-        return attention_packet.redact_text(out.strip() or "(no commits)")
+        return redact(out.strip() or "(no commits)")
 
     def status(self, args: dict) -> str:
         del args
@@ -675,9 +705,17 @@ class AskTools:
                 return False
             if b"\0" in data[:8192]:
                 return False
+            in_key = False
             for number, line in enumerate(data.decode("utf-8", errors="replace").splitlines(), 1):
+                # A private key's lines, BEGIN to END, are withheld whole:
+                # the scan alone catches the header and the long body lines,
+                # never a short last one.
+                key_line = in_key or _PEM_BEGIN.search(line) is not None
+                if key_line:
+                    in_key = _PEM_END.search(line) is None
                 if regex.search(line):
-                    hits.append(f"{path}:{number}: {attention_packet.redact_text(line[:400])}")
+                    shown = _PEM_WITHHELD if key_line else redact(line[:400])
+                    hits.append(f"{path}:{number}: {shown}")
                     if len(hits) >= SEARCH_MAX_LINES:
                         return True
             return False
@@ -750,7 +788,7 @@ class AskTools:
         out = _run_probe(argv)
         if len(out) > PROBE_MAX_CHARS:
             out = out[:PROBE_MAX_CHARS] + "\n… (cut at 8,000 characters)"
-        return attention_packet.redact_text(f"$ {' '.join(argv)}\n{out}")
+        return redact(f"$ {' '.join(argv)}\n{out}")
 
     def settings_hooks(self, args: dict) -> str:
         del args
@@ -783,7 +821,7 @@ class AskTools:
         sealed = workspace.append(self.home, str(self.item["id"]), [row],
                                   header=_header(self.item))
         self.sealed += sealed
-        shown = attention_packet.redact_text(text)
+        shown = redact(text)
         self.drafts.append({"draft_id": draft_id, "option": option, "text": shown})
         if self.emitter is not None:
             self.emitter.event({"ev": "draft", "draft_id": draft_id, "option": option,
@@ -976,13 +1014,30 @@ def _first_prompt(item_id: str, packet_md: str, message: str, earlier: list[dict
 
 _RESUME_GONE = re.compile(
     r"no conversation found|conversation[^\n]{0,40}not found|session[^\n]{0,40}not found"
-    r"|could not resume|cannot resume|unable to resume", re.I)
+    r"|could not resume|cannot resume|unable to resume|failed to resume", re.I)
 
 
 def _resume_failed(outcome: object) -> bool:
     if getattr(outcome, "ok", False):
         return False
     return bool(_RESUME_GONE.search(str(getattr(outcome, "detail", "") or "")))
+
+
+def _resume_dead(outcome: object) -> bool:
+    """A resumed attempt that failed with no turn made and an
+    ``unclassified`` failure: the session it named cannot be continued
+    (gone, pruned, unloadable), whatever Claude Code's words for it. A
+    timeout, a login or network failure, or a turn that ran keeps it."""
+    if getattr(outcome, "ok", False) or getattr(outcome, "failure", None) == "timeout":
+        return False
+    if getattr(outcome, "turns", None):
+        return False
+    return failure_class.outcome_class(outcome) == "unclassified"
+
+
+def _bounded(spec: invocation.SessionSpec, deadline: float) -> invocation.SessionSpec:
+    """*spec* with only the time left before the turn's *deadline*."""
+    return dataclasses.replace(spec, timeout=max(deadline - _clock(), 1.0))
 
 
 def _resolve_timeout(home: Path) -> float:
@@ -1047,6 +1102,9 @@ def run_ask(home: Path, item_id: str, message: str, *, stream: bool = False,
 
 def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextIO,
              err: TextIO) -> tuple[int, _Emitter]:
+    # One deadline for the whole turn, every attempt included, counted from
+    # the verb's start as the UI's watchdog counts from its spawn.
+    started = _clock()
     emitter = _Emitter(out, stream=stream)
     if settings.agent_caller():
         return _fail(
@@ -1092,9 +1150,11 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
     containment = ask_containment(home, toolset, list(packet.get("look_at") or []))
     sidecar_key = item_id[len("att-"):]
     model = _model(home)
+    timeout_secs = _resolve_timeout(home)
+    deadline = started + timeout_secs
     log_lines: list[str] = []
     base_spec = invocation.SessionSpec(
-        surface="ask", prompt="", cwd=folder, timeout=_resolve_timeout(home),
+        surface="ask", prompt="", cwd=folder, timeout=timeout_secs,
         containment=containment, log=log_lines.append, label="", doctrine=ASK_DOCTRINE,
         ledger_home=home, extra_env=invocation.NO_AUTO_MEMORY_ENV, transcript_group=item_id,
         mcp_toolset=toolset, sidecar_key=sidecar_key, skip_orphan_sweep=True,
@@ -1162,8 +1222,9 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
             from .invocation_sdk import lifecycle
 
             lifecycle.sweep_orphan("ask", sidecar_key, log_lines.append)
-            outcome = invocation.write_session(spec, backend=_backend)
-            if resumed and _resume_failed(outcome):
+            outcome = invocation.write_session(_bounded(spec, deadline), backend=_backend)
+            if (resumed and _resume_failed(outcome)
+                    and deadline - _clock() >= MIN_ATTEMPT_SECS):
                 emitter.reset_text()
                 spec = dataclasses.replace(
                     base_spec, prompt=_first_prompt(item_id, packet_md, message, earlier),
@@ -1171,27 +1232,42 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
                 resumed, reinjected, session_id = False, True, None
                 emitter.event({"ev": "start", "item": item_id, "turn": turn, "session": None,
                                "resumed": False, "reinjected": True, "model": model})
-                outcome = invocation.write_session(spec, backend=_backend)
-            if model_failures.should_retry(outcome):
+                outcome = invocation.write_session(_bounded(spec, deadline), backend=_backend)
+            if (model_failures.should_retry(outcome)
+                    and deadline - _clock()
+                    >= model_failures.TRANSIENT_BACKOFF_SECS + MIN_ATTEMPT_SECS):
                 model_failures.backoff()
                 emitter.reset_text()
-                outcome = invocation.write_session(spec, backend=_backend)
+                # The page starts the bubble again (gate r1 NIT 7).
+                emitter.event({"ev": "start", "item": item_id, "turn": turn,
+                               "session": session_id if resumed else None,
+                               "resumed": resumed, "reinjected": reinjected, "model": model})
+                outcome = invocation.write_session(_bounded(spec, deadline), backend=_backend)
         except _Interrupted:
             _restore_term()
+            # Past the turn's own deadline a SIGTERM is the UI's watchdog;
+            # before it, the person's Stop. Only the latter is theirs.
+            overran = _clock() >= deadline
+            note = OVERRAN_NOTE if overran else "stopped by you"
             sealed += tools.sealed
             sealed += _seal(home, item, [{"role": "system", "origin": "system", "kind": "note",
-                                          "text": "stopped by you"}])
+                                          "text": note}])
             _save_state(folder, state, session_id, digest)
-            return _fail(emitter, err, "interrupted", "stopped by you", EXIT_INTERRUPTED), emitter
+            return _fail(emitter, err, "interrupted", note, EXIT_INTERRUPTED), emitter
         _restore_term()
         sealed += tools.sealed
         new_session = getattr(outcome, "session_id", None)
-        if isinstance(new_session, str) and new_session:
+        if resumed and _resume_dead(outcome):
+            # The resumed session failed before any turn for no reason the
+            # classifier knows (gate r1 MINOR 2): never resume it again; the
+            # next question starts afresh from the record.
+            session_id = None
+        elif isinstance(new_session, str) and new_session:
             session_id = new_session
         if outcome.ok:
             emitter.finish_text()
             raw = outcome.stdout or ""
-            shown = attention_packet.redact_text(raw)
+            shown = redact(raw)
             row: dict[str, Any] = {"role": "agent", "origin": "agent", "kind": "answer",
                                    "text": shown, "model": model, "session": session_id,
                                    "status": "ok"}
@@ -1235,7 +1311,7 @@ def _failure(outcome: object, home: Path) -> tuple[str, int, str, str | None]:
                 "the agent stopped at its turn limit before answering; ask something narrower",
                 None)
     klass = failure_class.outcome_class(outcome)
-    cause = attention_packet.redact_text(detail.strip()[:300]) or "the model call failed"
+    cause = redact(detail.strip()[:300]) or "the model call failed"
     if klass == "environment":
         fix = failure_class.hold_fix(detail)
         code = "login" if fix in (failure_class.LOGIN_FIX, failure_class.API_KEY_FIX) else "failed"

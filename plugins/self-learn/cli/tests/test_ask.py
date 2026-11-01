@@ -17,7 +17,9 @@ import time
 
 import pytest
 
-from self_learn import ask, attention, cli as cli_mod, intents, miner, settings, workspace
+from self_learn import (
+    ask, attention, cli as cli_mod, intents, miner, model_failures, settings, workspace,
+)
 from self_learn.invocation import failure_class
 from self_learn.invocation.fake import (
     Exits, Fails, FakeBackend, Streams, Text, TimesOut, ToolCall,
@@ -607,3 +609,178 @@ def test_an_unexpected_failure_puts_the_stop_handler_back_and_frees_the_item(mon
     code, events, _backend, _ = _turn(monkeypatch, home, item, [Text("now it works")],
                                       message="Second?")
     assert code == 0 and events[-1]["ev"] == "done"
+
+
+# ------------------------------------------------ gate r1, fix round 1
+
+
+def _state(home, item_id):
+    return json.loads((ask.workspace_dir(home, item_id) / "state.json").read_text())
+
+
+def test_a_resumed_session_that_cannot_be_continued_is_never_resumed_again(
+        monkeypatch, home, item):
+    """Gate r1 MINOR 2. Mutations, each red: drop `failed to resume` from
+    `_RESUME_GONE` (leg 1); keep the dead session's id (leg 3)."""
+    _turn(monkeypatch, home, item, [Streams(events=(), then=Text("first"), session_id="sess-A")])
+
+    # Leg 1: Claude Code's other words for a lost session start afresh.
+    code, _events, backend, _ = _turn(monkeypatch, home, item, [
+        Exits(1, "Failed to resume session"),
+        Streams(events=(), then=Text("rebuilt"), session_id="sess-B")], message="Again?")
+    assert code == 0
+    assert [s.resume_session_id for s in backend.specs] == ["sess-A", None]
+    assert "Earlier in this conversation (from the record):" in backend.prompts[1]
+    assert _state(home, item)["session_id"] == "sess-B"
+
+    # Leg 2 (positive control): a resumed turn that fails on the login
+    # keeps its session; the session is fine, the login is not.
+    code, _events, backend, _ = _turn(monkeypatch, home, item, [Fails(OSError(HOLD_CAUSE))],
+                                      message="Login?")
+    assert code == 3 and backend.specs[0].resume_session_id == "sess-B"
+    assert _state(home, item)["session_id"] == "sess-B"
+
+    # Leg 3: a resume that fails before any turn for a reason nothing
+    # names is dropped, so the next question is not stuck on it.
+    code, _events, backend, _ = _turn(monkeypatch, home, item, [
+        Exits(1, "the session file could not be parsed")], message="Hello?")
+    assert code == 1 and backend.specs[0].resume_session_id == "sess-B"
+    assert _state(home, item)["session_id"] is None
+    code, events, backend, _ = _turn(monkeypatch, home, item, [Text("fresh")], message="Now?")
+    assert code == 0 and backend.specs[0].resume_session_id is None
+    assert (events[0]["resumed"], events[0]["reinjected"]) == (False, True)
+    assert backend.prompts[0].startswith(f"{ask.SESSION_OPENING}{item}.")
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+class _Slow(FakeBackend):
+    """Each session costs the time given for it on the test's clock."""
+
+    def __init__(self, clock, steps, costs):
+        super().__init__(steps)
+        self.clock, self.costs, self.timeouts = clock, list(costs), []
+
+    def write_session(self, spec):
+        self.timeouts.append(spec.timeout)
+        self.clock.t += self.costs.pop(0)
+        return super().write_session(spec)
+
+
+def test_every_attempt_of_a_turn_shares_one_deadline(monkeypatch, home, item):
+    """Gate r1 MINOR 3 and NIT 7. Mutations, each red: give the retry the
+    whole timeout (leg 1); retry whatever time is left (leg 2)."""
+    clock = _Clock()
+    monkeypatch.setattr(ask, "_clock", clock)
+    monkeypatch.setattr(model_failures, "_sleep", lambda s: setattr(clock, "t", clock.t + s))
+
+    # Leg 1: an overloaded first attempt took 200 s; the retry waits 30 s
+    # and gets the 70 s that are left, and the page restarts its bubble.
+    backend = _Slow(clock, [Exits(1, "API Error: 529 overloaded"), Text("second try")],
+                    [200, 10])
+    monkeypatch.setattr(ask, "_backend", backend)
+    out = io.StringIO()
+    code, _ = ask.run_ask(home, item, "Why?", stream=True, out=out, err=io.StringIO())
+    assert code == 0
+    assert backend.timeouts == [300.0, 70.0]
+    events = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [e["ev"] for e in events if e["ev"] in ("start", "done")] == ["start", "start", "done"]
+
+    # Leg 2: with 50 s left there is no room for the wait and a real
+    # attempt, so the turn reports the failure inside its own bound.
+    backend = _Slow(clock, [Exits(1, "API Error: 529 overloaded"), Text("never")], [250])
+    monkeypatch.setattr(ask, "_backend", backend)
+    code, _ = ask.run_ask(home, item, "Why again?", stream=True, out=io.StringIO(),
+                          err=io.StringIO())
+    assert code == 1 and len(backend.timeouts) == 1
+
+
+def test_a_sigterm_after_the_turn_s_deadline_is_not_recorded_as_the_person_s_stop(
+        monkeypatch, home, item):
+    """Gate r1 MINOR 3: past the deadline a SIGTERM is the UI's watchdog.
+    The person's Stop (test 7) is the positive control. Mutation: seal
+    "stopped by you" whatever the clock says -> red."""
+    clock = _Clock()
+    monkeypatch.setattr(ask, "_clock", clock)
+
+    class _Overran:
+        def write_session(self, spec):
+            clock.t += spec.timeout + 31
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(5)
+            raise AssertionError("SIGTERM did not interrupt the turn")
+
+        text_session = write_session
+
+    monkeypatch.setattr(ask, "_backend", _Overran())
+    out = io.StringIO()
+    code, _ = ask.run_ask(home, item, "Slow one", stream=True, out=out, err=io.StringIO())
+    assert code == 7
+    assert _rows(home, item)[-1]["text"] == ask.OVERRAN_NOTE
+    assert "stopped by you" not in workspace.transcript_path(home, item).read_text("utf-8")
+    assert json.loads(out.getvalue().splitlines()[-1])["message"] == ask.OVERRAN_NOTE
+
+
+def _pem(edge: str) -> str:
+    """A PEM armour line, built at run time so no key-shaped literal sits in
+    the source (the repository's secret scanners would flag it)."""
+    return "-----" + edge + " PRIVATE" + " KEY-----"
+
+
+PEM_LINES = [
+    "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun",
+    "VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTKEn5u+qKhbwKfBstIs+bMY2Zkp18gnTxK",
+    "Xy7Kq0vD==",
+]
+
+
+def test_a_private_key_in_the_answer_is_withheld_whole(monkeypatch, home, item):
+    """Gate r1 MINOR 4: the scan matches a PEM header only and a short
+    last body line passes every rule, so the block goes as one, in every
+    delta, in `done` and in the sealed row. Mutation: redact through
+    `redact_text` alone -> the last line leaks -> red."""
+    assert workspace.secret_rule(PEM_LINES[-1]) is None  # it passes the scan on its own
+    header = _pem("BEGIN RSA")
+    head = "I found a key in the config:\n" + header[:19]
+    body = (header[19:] + "\n" + PEM_LINES[0] + "\n" + PEM_LINES[1][:30])
+    rest = (PEM_LINES[1][30:] + "\n" + PEM_LINES[2] + "\n" + _pem("END RSA") + "\n"
+            + "After the key, the rest of the answer. " * 10)
+    answer = head + body + rest
+    code, events, _backend, _ = _turn(monkeypatch, home, item, [Streams(events=(
+        {"ev": "delta", "text": head}, {"ev": "delta", "text": body},
+        {"ev": "delta", "text": rest}), then=Text(answer))])
+    assert code == 0
+    deltas = "".join(e["text"] for e in events if e["ev"] == "delta")
+    done = events[-1]["text"]
+    for shown in (deltas, done):
+        assert "After the key, the rest of the answer. " * 10 in shown  # positive control
+        assert "I found a key in the config:" in shown
+        assert "[redacted: private-key]" in shown
+        for line in PEM_LINES:
+            assert line[:12] not in shown and line[-8:] not in shown
+    answer_row = [r for r in _rows(home, item) if r.get("kind") == "answer"][-1]
+    assert answer_row["redacted"] == "private-key"
+    sealed = workspace.transcript_path(home, item).read_text(encoding="utf-8")
+    assert "After the key" in sealed
+    for line in PEM_LINES:
+        assert line[-8:] not in sealed
+
+
+def test_search_withholds_a_private_key_s_lines_whole(monkeypatch, home, item):
+    """Gate r1 MINOR 4, the search tool. Mutation: show each line through
+    the scan alone -> the short last line is shown -> red."""
+    tools = _tools(home, item)
+    (home / "notes").mkdir()
+    (home / "notes" / "deploy.conf").write_text(
+        "host = example\n" + _pem("BEGIN OPENSSH") + "\n" + "\n".join(PEM_LINES)
+        + "\n" + _pem("END OPENSSH") + "\nport = Xy7Kq0 22\n", encoding="utf-8")
+    found = tools.search({"pattern": "Xy7Kq0", "path": str(home / "notes")})
+    assert "deploy.conf:7: port = Xy7Kq0 22" in found  # positive control, after END
+    assert "deploy.conf:5: [redacted: private-key]" in found
+    assert PEM_LINES[-1] not in found

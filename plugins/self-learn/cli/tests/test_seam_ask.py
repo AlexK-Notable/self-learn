@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from pathlib import Path
 
 import pytest
 
@@ -17,7 +18,7 @@ from self_learn import ask, attention, attention_packet, invocation, provider, s
 from self_learn.invocation import contract
 from self_learn.invocation_sdk import backend as backend_mod
 from self_learn.invocation_sdk import charter as charter_mod
-from support import make_home
+from support import days_ago, make_home
 
 
 @pytest.fixture(autouse=True)
@@ -210,3 +211,94 @@ def test_sweep_orphan_judges_only_its_own_key(tmp_path, monkeypatch):
     lifecycle.sweep_orphan("ask", "0123456789ab", lines.append)
     assert not own.exists() and sibling.exists()
     assert lines and "no live process" in lines[0]
+
+
+# ------------------------------------------------- the real seam's relay
+
+
+FAKE_ASK_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
+_OWN_RECORD = "mcp__selflearn_ask__record"
+
+
+@pytest.fixture()
+def fake_ask_cli(tmp_path, monkeypatch):
+    """Every session here runs against the fake CLI, never a real one
+    (`tests/conftest.py` blocks `_find_cli`). Its argv is captured."""
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_ASK_CLI))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    argv_log = tmp_path / "fake-argv"
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_LOG", str(argv_log))
+    return argv_log
+
+
+def test_the_sdk_seam_streams_deltas_tool_uses_and_own_tool_results_in_order(
+        tmp_path, monkeypatch, fake_ask_cli):
+    """Gate r1 MAJOR 1: the relay a real ask turn takes, through
+    `SdkBackend` and a fake CLI that prints real `stream_event` lines.
+    Mutations, each red: drop the `StreamEvent` branch of the drain; drop
+    `relay.tool_use`; relay every tool result, own or not; never send
+    `resume`."""
+    from self_learn.invocation_sdk.backend import SdkBackend
+
+    home, folder, toolset, containment = _ask_fixture(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    events: list[dict] = []
+    spec = invocation.SessionSpec(
+        surface="ask", prompt="ask_stream", cwd=folder, timeout=30, containment=containment,
+        log=lambda m: None, doctrine=ask.ASK_DOCTRINE, ledger_home=home, mcp_toolset=toolset,
+        sidecar_key="0" * 12, skip_orphan_sweep=True, resume_session_id="sess-old",
+        on_event=events.append,
+    )
+    outcome = SdkBackend().write_session(spec)
+    assert outcome.ok, outcome.detail
+    assert outcome.stdout == "Looking at the record. It says no."
+    assert events == [
+        {"ev": "delta", "text": "Looking at "},
+        {"ev": "delta", "text": "the record."},
+        {"ev": "tool", "name": _OWN_RECORD, "target": "lrn-0123abcd"},
+        {"ev": "tool-result", "name": _OWN_RECORD, "is_error": False,
+         "text": "lrn-0123abcd: pending"},
+        {"ev": "tool", "name": "Read", "target": "/ledger/user/canon.md"},
+    ]
+    argv = fake_ask_cli.read_text(encoding="utf-8").split("\0")
+    assert "--resume=sess-old" in argv and "--include-partial-messages" in argv
+
+
+def test_an_ask_turn_through_the_sdk_seam_reaches_stdout_and_resumes_its_session(
+        tmp_path, monkeypatch, fake_ask_cli):
+    """The verb end to end on the real seam (`ask._backend` is `None`): its
+    NDJSON carries the streamed text and the tool use, and the next
+    question on the item continues the session the first one named."""
+    import io
+    import json
+
+    home = make_home(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ask_stream")
+    monkeypatch.setattr(attention, "_systemctl_active", lambda unit: True)
+    journal = attention.cache_dir(home) / "steward" / "journal.jsonl"
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    at = days_ago(1)
+    journal.write_text(json.dumps({"ts": at, "status": "held-environment",
+                                   "cause": "Failed to authenticate"}) + "\n", encoding="utf-8")
+    item_id = attention.item_id("hold.credentials", f"credentials@{at}")
+    assert attention.find(home, item_id) is not None
+    assert ask._backend is None
+
+    out = io.StringIO()
+    code, _ = ask.run_ask(home, item_id, "What is this?", stream=True, out=out,
+                          err=io.StringIO())
+    assert code == 0
+    events = [json.loads(line) for line in out.getvalue().splitlines()]
+    kinds = [e["ev"] for e in events]
+    assert kinds[0] == "start" and kinds[-1] == "done"
+    assert "".join(e["text"] for e in events if e["ev"] == "delta") == "Looking at the record."
+    assert {"ev": "tool", "name": _OWN_RECORD, "target": "lrn-0123abcd"} in events
+    assert events[-1]["text"] == "Looking at the record. It says no."
+    assert events[-1]["session"] == "fake-session-1"
+    assert "--resume=fake-session-1" not in fake_ask_cli.read_text(encoding="utf-8").split("\0")
+
+    code, _ = ask.run_ask(home, item_id, "And then?", stream=True, out=io.StringIO(),
+                          err=io.StringIO())
+    assert code == 0
+    assert "--resume=fake-session-1" in fake_ask_cli.read_text(encoding="utf-8").split("\0")
