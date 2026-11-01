@@ -1,0 +1,46 @@
+# self-learn tray icon (attention-design-r2 §3.10; 13 §7.6; 09 §2.5) -- a
+# StatusNotifierItem on the session bus that shows what
+# `self-learn attention --json` says: idle (grey, always shown), new,
+# needs you, or broken. A left click opens the inbox page of the web UI,
+# a middle click marks every decided item seen.
+#
+# It uses only the session bus (Gio, no Gtk, no display), so it starts at
+# login from default.target: Hyprland on this kind of host never starts
+# graphical-session.target, and the tray needs no line in the
+# compositor's autostart. It registers with the StatusNotifierWatcher
+# (Waybar) whenever one appears, so it does not matter which starts
+# first, and it registers again when Waybar restarts. The click runs
+# `systemd-run --user`, so the inbox window gets the user manager's
+# current environment (WAYLAND_DISPLAY and the rest) and this unit needs
+# none of it.
+#
+# Installed by install.sh (which links this unit into
+# ~/.config/systemd/user/ -- or $XDG_CONFIG_HOME/systemd/user/ if set --
+# and runs `systemctl --user daemon-reload`); install.sh never enables it:
+#   systemctl --user enable --now self-learn-tray.service
+[Unit]
+Description=self-learn tray icon (StatusNotifierItem)
+
+[Service]
+Type=simple
+# B-1 (doc 13 §7.1), as in the host and UI units: the systemd user manager
+# does not inherit the shell's env. The tray watches
+# $SELF_LEARN_HOME/overseer/ and $SELF_LEARN_HOME/attention/, and the
+# `self-learn attention` it runs reads the same ledger, so pin it here.
+Environment=SELF_LEARN_HOME=%h/.self-learn
+# U-uvpath (2026-08-29), the same PATH floor as the other units: the tray
+# runs `self-learn` and `self-learn-ui-open` (both linked into
+# %h/.local/bin by install.sh) and `timeout`/`systemd-run` from /usr/bin.
+Environment=PATH=%h/bin/agents:%h/bin/backup:%h/bin/desktop:%h/bin/gpu:%h/bin/input:%h/bin/media:%h/bin/printing:%h/bin/system:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/self-learn-tray
+# Always: an absent icon must mean "not running" for as short a time as
+# possible, never "nothing to see" (answer 8). The tray exits 1 when it
+# loses the session bus and comes back once the bus is back. Five seconds
+# apart, restarts never reach systemd's default start limit (5 in 10 s),
+# deliberately: unlike the host unit (B-9), giving up here would leave the
+# user with no icon and no other sign that anything is wrong.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

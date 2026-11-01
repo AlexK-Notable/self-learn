@@ -445,11 +445,12 @@ def test_g_every_external_command_is_timeout_wrapped(tmp_path):
     `update-desktop-database`, and (unconditionally, per M-U fold r1)
     `systemctl --user is-enabled`.
 
-    M-U fold r1 (Major 1): `daemon-reload` has FOUR call sites (miner
-    block, UI block, host block, and the overseer unit-pair block added
-    2026-09-13 under S-66) and the string occurs four times in a
-    --legacy-miner run -- a bare substring-presence check leaves 3 of
-    the 4 sites undefended (any one of them could drop its `timeout`
+    M-U fold r1 (Major 1): `daemon-reload` has FIVE call sites (miner
+    block, UI block, host block, the overseer unit-pair block added
+    2026-09-13 under S-66, and the tray unit block added under
+    S-NEXT-tray) and the string occurs five times in a
+    --legacy-miner run -- a bare substring-presence check leaves 4 of
+    the 5 sites undefended (any one of them could drop its `timeout`
     wrapper and the substring would still match). Checked here by COUNT,
     so dropping `timeout` from any single site reddens this test. The
     other three commands each have exactly one call site, so presence
@@ -465,11 +466,11 @@ def test_g_every_external_command_is_timeout_wrapped(tmp_path):
     # which is really "3 real executions x 3 trace echoes" in disguise.
     # Counting only the EXECUTION line (`++ <cmd>`, one `+` deeper than the
     # `eval` that ran it) isolates the thing that actually matters: one
-    # real execution per site, four sites.
+    # real execution per site, five sites.
     daemon_reload_execs = re.findall(
         r"^\+\+ timeout 10 systemctl --user daemon-reload$", trace, re.MULTILINE
     )
-    assert len(daemon_reload_execs) == 4, trace
+    assert len(daemon_reload_execs) == 5, trace
     assert "timeout 10 update-desktop-database" in trace, trace
     assert "timeout 5 systemctl --user is-enabled self-learn-miner.timer" in trace, trace
 
