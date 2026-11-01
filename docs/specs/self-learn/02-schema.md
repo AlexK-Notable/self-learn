@@ -1037,6 +1037,31 @@ written to the cache as project notices first thing when the run record is execu
 applied and again, idempotently, on a resume (13 §7.5). A
 `notices.yaml` the secret scan matches is replaced in the stage by `notices: []`.
 
+*(Added 2026-10-31, S-NEXT-hosts.)* **Phase B's optional `hosts.yaml`: plain
+registrations the overseer makes itself.** Each `projects.yaml` row also carries
+`registered`: `git` or `plain` (its project registration's mode) or `no`. Phase B MAY
+write `hosts.yaml`, `{registrations: [{path, case, why}]}`, naming project directories
+to register as PLAIN canon hosts (decision 5; 13 §4 item 5). It is not a required
+output file. The runner keeps an entry whose `path` is absolute, whose `case` is a
+case id in the ledger, whose `why` is one non-empty line of at most 200 characters,
+with no secret-scan hit in either, that is not a repeat, up to five a run; an entry
+with `mode: git` (or any mode but `plain`) is dropped (registering a repository in git
+mode stays the user's); every other failure drops that entry, named by ordinal in
+"Refused / could not do". The kept entries are stored in the run record as
+`registrations` (`{path, case, why}` each). When the record is executed, after the
+notices and before any sheet, each is registered through
+`hosts.register_plain_project` unless `hosts.registration_problem` names why not (not
+an existing directory strictly inside the user's home; the ledger or self-learn's
+cache, inside either or above either; already registered in either registration);
+the outcome is written into the row (`result: registered|refused`, `reason`), which
+the finalize commit owns, so a resume reports the same outcome without registering
+again (a row a resume finds already registered by this run's own commit, found by its
+`Overseer run <run id>` body line, reads `registered`). Each registration is a "Decided
+in the user's stead" line, `[host registered] <path> as a plain project (<case>:
+<why>)`, ending in the command that undoes it, `self-learn host remove <path>
+--project`; each refusal is a "Refused / could not do" line. A dry run registers nothing. A `hosts.yaml` the secret scan
+matches is replaced in the stage by `registrations: []`.
+
 *(Added 2026-09-27.)* **Findings.** Phase B's staged `findings.yaml` is
 `{findings: [{case, kind: examined|dependency-moved, text, ref?}]}`. The runner
 validates each finding on its own and DROPS one that fails (unknown keys, a case
@@ -1959,7 +1984,8 @@ in the ledger (never in a host repository) ends in a trailer paragraph with
 `By: <actor>`: `human` or `agent` for a command line (the shell
 `settings.agent_caller` detects), `miner`, `worker`, `sweep` (the premise
 sweep), `steward` or `overseer` for a job (set by the job's entry point, so a
-worker auto-kicked from an agent's command line is `worker`), `serve` for the
+worker auto-kicked from an agent's command line is `worker`), `policy` for the
+daily host policy (S-NEXT-hosts, 13 §4 item 5), `serve` for the
 daemon outside a job. A body's own final `By:` block is kept only when it
 is provably the writer's: it names the current actor (or, for the worker
 and the miner, `analyst`, the trailer their routing verbs write), or,
