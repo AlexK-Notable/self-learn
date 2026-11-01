@@ -775,6 +775,11 @@ class _EventRelay:
             frozenset(spec.mcp_toolset.qualified_names) if spec.mcp_toolset is not None else frozenset()
         )
         self._names: dict[str, str] = {}
+        # Gate r2 NIT 4: the text of a later block (after a tool call, or a
+        # new message) is relayed after a paragraph break, never glued to
+        # the earlier block's last word.
+        self._text_relayed = False
+        self._break_pending = False
 
     def _emit(self, event: dict[str, Any]) -> None:
         callback = self._spec.on_event
@@ -788,14 +793,24 @@ class _EventRelay:
 
     def stream(self, message: StreamEvent) -> None:
         event = message.event if isinstance(message.event, dict) else {}
+        if event.get("type") == "content_block_start":
+            block = event.get("content_block")
+            if isinstance(block, dict) and block.get("type") == "text":
+                self._break_pending = True
+            return
         delta = event.get("delta") if event.get("type") == "content_block_delta" else None
         if isinstance(delta, dict) and delta.get("type") == "text_delta":
             text = delta.get("text")
             if isinstance(text, str) and text:
+                if self._break_pending and self._text_relayed:
+                    text = "\n\n" + text
+                self._break_pending = False
+                self._text_relayed = True
                 self._emit({"ev": "delta", "text": text})
 
     def tool_use(self, tool_use_id: str, name: str, tool_input: object) -> None:
         self._names[tool_use_id] = name
+        self._break_pending = True
         self._emit({"ev": "tool", "name": name, "target": _event_target(tool_input)})
 
     def tool_result(self, tool_use_id: str, is_error: bool, content: object) -> None:

@@ -132,6 +132,17 @@ MIN_ATTEMPT_SECS = 30.0
 #: The note a SIGTERM leaves when it arrives after the turn's own deadline:
 #: then it is the UI's watchdog, not the person's Stop.
 OVERRAN_NOTE = "stopped: the turn ran past its time limit"
+#: The note of the person's own Stop: sealed only when the page wrote the
+#: item's :func:`stop_marker` during this turn before it signalled.
+STOPPED_NOTE = "stopped by you"
+#: The note of any other SIGTERM before the deadline (gate r2 MINOR 1): a
+#: UI service stop or restart, a logout, a shutdown. systemd signals every
+#: process of the UI's cgroup, so it reaches the verb directly; nothing
+#: the person did is recorded.
+INTERRUPTED_NOTE = "stopped before it answered"
+#: The file the page's Stop writes in the item's agent workspace before it
+#: signals the verb's process group (:func:`request_stop`).
+STOP_MARKER = "stop-requested"
 
 #: The clock of a turn's deadline; a test replaces it.
 _clock = time.monotonic
@@ -140,11 +151,15 @@ _clock = time.monotonic
 #: ``private-key`` rule matches the header line only, and a body's short
 #: last line passes every other rule, so the whole block -- to its END
 #: line, or to the end of the text while no END has come -- is withheld
-#: as one span.
+#: as one span. With no END, only a header that ends its line (as every
+#: real key's does, also inside a string's escaped ``\n``) opens a block:
+#: a header named inside a sentence keeps the words after it (gate r2
+#: NIT 3), and the scan still withholds the header itself.
 _PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
 _PEM_BLOCK = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S)
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"(?:.*?-----END [A-Z ]*PRIVATE KEY-----|(?=[ \t]*(?:\r?\n|(?:\\r)?\\n|\Z)).*\Z)", re.S)
 _PEM_WITHHELD = "[redacted: private-key]"
 
 
@@ -917,7 +932,8 @@ def ask_containment(
 
 
 class _Interrupted(BaseException):
-    """SIGTERM during a turn (the page's Stop). A BaseException, so no
+    """SIGTERM during a turn (the page's Stop, the watchdog, or a service
+    stop; the note tells them apart). A BaseException, so no
     `except Exception` on the way up mistakes it for a failure; the seam's
     `finally` still runs its kill ladder and clears the sidecar."""
 
@@ -972,6 +988,37 @@ def _write_cache(path: Path, text: str) -> None:
 
 def _write_json(path: Path, data: dict) -> None:
     _write_cache(path, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+
+
+def _drop_cache(path: Path) -> None:
+    """The one remover of this module's cache files: the item's
+    :data:`STOP_MARKER`. Never ledger truth."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def stop_marker(home: Path, item_id: str) -> Path:
+    return workspace_dir(home, item_id) / STOP_MARKER
+
+
+def request_stop(home: Path, item_id: str) -> None:
+    """The person pressed Stop on *item_id*'s turn. The page (``AskRunner``)
+    calls this before it sends SIGTERM to the verb's process group; only
+    then does the verb seal :data:`STOPPED_NOTE`. A SIGTERM without it is
+    not theirs (a restart, a logout, a shutdown) and seals
+    :data:`INTERRUPTED_NOTE`."""
+    path = stop_marker(home, item_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_cache(path, chrono.now_iso() + "\n")
+
+
+def _take_stop(path: Path) -> bool:
+    """Whether the person's Stop marker is present; it is removed."""
+    present = path.exists()
+    _drop_cache(path)
+    return present
 
 
 def _fallback_packet(home: Path, item_id: str, why: str) -> dict | None:
@@ -1170,6 +1217,10 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
     if not lock.acquire():
         return _fail(emitter, err, "busy", "a question about this item is already being "
                      "answered", EXIT_FAILED), emitter
+    # A Stop marker left from an earlier turn (one that ended as the page
+    # wrote it) is not this turn's.
+    marker = stop_marker(home, item_id)
+    _drop_cache(marker)
     # SIGTERM (the page's Stop) interrupts the model call only; the handler
     # is put back before anything is sealed after it.
     handler_box: list[Any] = []
@@ -1245,10 +1296,16 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
                 outcome = invocation.write_session(_bounded(spec, deadline), backend=_backend)
         except _Interrupted:
             _restore_term()
-            # Past the turn's own deadline a SIGTERM is the UI's watchdog;
-            # before it, the person's Stop. Only the latter is theirs.
-            overran = _clock() >= deadline
-            note = OVERRAN_NOTE if overran else "stopped by you"
+            # The person's Stop leaves its marker before the signal (gate r2
+            # MINOR 1); past the turn's own deadline an unmarked SIGTERM is
+            # the UI's watchdog; before it, a service stop or restart, a
+            # logout or a shutdown. Only the first is the person's act.
+            if _take_stop(marker):
+                note = STOPPED_NOTE
+            elif _clock() >= deadline:
+                note = OVERRAN_NOTE
+            else:
+                note = INTERRUPTED_NOTE
             sealed += tools.sealed
             sealed += _seal(home, item, [{"role": "system", "origin": "system", "kind": "note",
                                           "text": note}])
@@ -1288,6 +1345,7 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
         return _fail(emitter, err, code, text, exit_code, fix=fix), emitter
     finally:
         _restore_term()
+        _drop_cache(marker)
         lock.release()
 
 

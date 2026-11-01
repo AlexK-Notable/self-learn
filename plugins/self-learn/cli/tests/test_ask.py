@@ -234,8 +234,9 @@ def test_billing_route_names_each_route_and_passes_a_subscription():
 
 
 def test_sigterm_mid_turn_is_exit_7_and_clears_only_this_item_s_sidecar(monkeypatch, home, item):
-    """Mutation: sweep with `sweep_orphans("ask")` instead of this item's
-    one key -> the sibling's sidecar is cleared -> red."""
+    """Mutations, each red: sweep with `sweep_orphans("ask")` instead of
+    this item's one key -> the sibling's sidecar is cleared; ignore the
+    person's Stop marker (gate r2 MINOR 1) -> not "stopped by you"."""
     cache = lifecycle.worker.cache_dir()
     sibling = cache / "ask.sdk-child.ffffffffffff.pid"
     sibling.write_text(json.dumps({"pid": 2 ** 22 + 12345, "started_at": 0, "cli": "claude"}),
@@ -246,6 +247,7 @@ def test_sigterm_mid_turn_is_exit_7_and_clears_only_this_item_s_sidecar(monkeypa
         def write_session(self, spec):
             lifecycle.write_sidecar("ask", os.getpid(), "claude", session_key=spec.sidecar_key)
             try:
+                ask.request_stop(home, item)  # the page's Stop, before its signal
                 os.kill(os.getpid(), signal.SIGTERM)
                 time.sleep(5)
             finally:
@@ -266,7 +268,8 @@ def test_sigterm_mid_turn_is_exit_7_and_clears_only_this_item_s_sidecar(monkeypa
     assert signal.getsignal(signal.SIGTERM) is before
     events = [json.loads(line) for line in out.getvalue().splitlines()]
     assert events[-1]["code"] == "interrupted"
-    assert _rows(home, item)[-1]["text"] == "stopped by you"
+    assert _rows(home, item)[-1]["text"] == "stopped by you" == ask.STOPPED_NOTE
+    assert not ask.stop_marker(home, item).exists()
 
 
 # ------------------------------------------------------------------- 8
@@ -784,3 +787,132 @@ def test_search_withholds_a_private_key_s_lines_whole(monkeypatch, home, item):
     assert "deploy.conf:7: port = Xy7Kq0 22" in found  # positive control, after END
     assert "deploy.conf:5: [redacted: private-key]" in found
     assert PEM_LINES[-1] not in found
+
+
+# ------------------------------------------------ gate r2, fix round 2
+
+
+class _Terminated:
+    """A session the verb's process gets SIGTERM in, before the deadline,
+    from whoever *stop* says."""
+
+    def __init__(self, stop=None):
+        self.stop = stop
+
+    def write_session(self, spec):
+        if self.stop is not None:
+            self.stop()
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(5)
+        raise AssertionError("SIGTERM did not interrupt the turn")
+
+    text_session = write_session
+
+
+def test_a_sigterm_the_person_did_not_send_is_never_recorded_as_their_stop(
+        monkeypatch, home, item):
+    """Gate r2 MINOR 1: the UI service's stop or restart, a logout or a
+    shutdown signals the verb directly (systemd's control-group kill),
+    before the deadline. Test 7 (the page's Stop, marker written) is the
+    positive control. Mutations, each red: seal "stopped by you" for any
+    SIGTERM before the deadline (leg 1); keep a marker left from before
+    the turn (leg 2)."""
+    # Leg 1: no marker -> a neutral note, nothing said about the person.
+    monkeypatch.setattr(ask, "_backend", _Terminated())
+    out = io.StringIO()
+    code, _ = ask.run_ask(home, item, "Restart me", stream=True, out=out, err=io.StringIO())
+    assert code == 7
+    assert _rows(home, item)[-1]["text"] == ask.INTERRUPTED_NOTE
+    last = json.loads(out.getvalue().splitlines()[-1])
+    assert (last["code"], last["message"]) == ("interrupted", ask.INTERRUPTED_NOTE)
+    assert "stopped by you" not in workspace.transcript_path(home, item).read_text("utf-8")
+
+    # Leg 2: a marker the page wrote as an earlier turn was ending is not
+    # this turn's Stop.
+    ask.request_stop(home, item)
+    assert ask.stop_marker(home, item).exists()
+    code, _ = ask.run_ask(home, item, "Restart me again", stream=True, out=io.StringIO(),
+                          err=io.StringIO())
+    assert code == 7
+    assert _rows(home, item)[-1]["text"] == ask.INTERRUPTED_NOTE
+    assert "stopped by you" not in workspace.transcript_path(home, item).read_text("utf-8")
+    assert not ask.stop_marker(home, item).exists()
+
+    # Leg 3 (positive control in this test): the person's Stop during the
+    # turn is theirs.
+    monkeypatch.setattr(ask, "_backend", _Terminated(lambda: ask.request_stop(home, item)))
+    code, _ = ask.run_ask(home, item, "Stop me", stream=True, out=io.StringIO(),
+                          err=io.StringIO())
+    assert code == 7 and _rows(home, item)[-1]["text"] == ask.STOPPED_NOTE
+
+
+class _Turned(FakeBackend):
+    """Every outcome carries *turns*, as the SDK seam's does when the
+    session ran turns before it failed."""
+
+    def __init__(self, steps, turns):
+        super().__init__(steps)
+        self.turns = turns
+
+    def write_session(self, spec):
+        outcome = super().write_session(spec)
+        return backend_mod.SdkOutcome(
+            ok=outcome.ok, rc=outcome.rc, stdout=outcome.stdout, detail=outcome.detail,
+            failure=outcome.failure, exc=outcome.exc, turns=self.turns)
+
+
+def test_a_resumed_session_that_timed_out_or_made_turns_is_kept(monkeypatch, home, item):
+    """Gate r2 MINOR 2: only a resumed session that failed before any turn,
+    for no reason the classifier knows, is dropped. A slow turn and one
+    that worked before failing keep the agent's context. Mutations, each
+    red: drop `_resume_dead`'s timeout clause (leg 1); drop its `turns`
+    clause (leg 2)."""
+    _turn(monkeypatch, home, item, [Streams(events=(), then=Text("first"), session_id="sess-A")])
+
+    # Leg 1: a resumed turn runs out of time (the seam's timeout carries no
+    # result message, so no turns) and the session is kept.
+    code, _events, backend, _ = _turn(monkeypatch, home, item, [TimesOut()], message="Slow?")
+    assert code == 5 and backend.specs[0].resume_session_id == "sess-A"
+    assert failure_class.outcome_class(  # what keeps it is the timeout clause alone
+        backend_mod.SdkOutcome(ok=False, rc=None, stdout="", detail="", failure="timeout")
+    ) == "unclassified"
+    assert _state(home, item)["session_id"] == "sess-A"
+
+    # Leg 2: a resumed session that made turns, then failed for a reason
+    # nothing names, is kept too.
+    backend = _Turned([Exits(1, "the session file could not be parsed")], turns=3)
+    monkeypatch.setattr(ask, "_backend", backend)
+    code, _ = ask.run_ask(home, item, "Worked a bit?", stream=True, out=io.StringIO(),
+                          err=io.StringIO())
+    assert code == 1 and backend.specs[0].resume_session_id == "sess-A"
+    assert _state(home, item)["session_id"] == "sess-A"
+
+    # Positive control: the same failure with no turns made drops it.
+    backend = _Turned([Exits(1, "the session file could not be parsed")], turns=None)
+    monkeypatch.setattr(ask, "_backend", backend)
+    code, _ = ask.run_ask(home, item, "And now?", stream=True, out=io.StringIO(),
+                          err=io.StringIO())
+    assert code == 1 and _state(home, item)["session_id"] is None
+
+
+def test_a_key_header_named_in_a_sentence_keeps_the_rest_of_the_answer(monkeypatch, home, item):
+    """Gate r2 NIT 3: with no END line, only a header that ends its line
+    opens a withheld block. Mutation: let any header open a block to the
+    end of the text -> the words after it are lost -> red."""
+    header = _pem("BEGIN OPENSSH")
+    prose = (f"An OpenSSH key file starts with `{header}` on its first line. "
+             + "The rest of the answer stays. " * 12)
+    code, events, _backend, _ = _turn(monkeypatch, home, item, [Streams(events=(
+        {"ev": "delta", "text": prose[:60]}, {"ev": "delta", "text": prose[60:]}),
+        then=Text(prose))])
+    assert code == 0
+    deltas = "".join(e["text"] for e in events if e["ev"] == "delta")
+    for shown in (deltas, events[-1]["text"]):
+        assert "[redacted: private-key]" in shown  # the header itself is still withheld
+        assert header not in shown
+        assert "The rest of the answer stays. " * 12 in shown
+    # A header that ends its line, with no END yet, still opens a block,
+    # also inside a string's escaped newline.
+    for sep in ("\n", "\\n"):
+        text = "cfg: " + header + sep + PEM_LINES[0] + sep + PEM_LINES[2]
+        assert ask.redact(text) == "cfg: [redacted: private-key]"

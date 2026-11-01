@@ -302,3 +302,40 @@ def test_an_ask_turn_through_the_sdk_seam_reaches_stdout_and_resumes_its_session
                           err=io.StringIO())
     assert code == 0
     assert "--resume=fake-session-1" in fake_ask_cli.read_text(encoding="utf-8").split("\0")
+
+
+def test_the_relay_starts_a_later_text_block_on_a_new_paragraph(tmp_path):
+    """Gate r2 NIT 4: narration before a tool call and the text after it,
+    or a later message's text, are relayed with a paragraph break between
+    them, never glued ("…case.The case says…"). The first block gets
+    none. Mutation: never prefix the break -> red."""
+    from claude_agent_sdk.types import StreamEvent
+
+    home, folder, toolset, containment = _ask_fixture(tmp_path)
+    events: list[dict] = []
+    spec = invocation.SessionSpec(
+        surface="ask", prompt="", cwd=folder, timeout=30, containment=containment,
+        log=lambda m: None, ledger_home=home, mcp_toolset=toolset, on_event=events.append)
+    relay = backend_mod._EventRelay(spec)
+
+    def _se(event):
+        return StreamEvent(uuid="u", session_id="s", event=event)
+
+    def _text_start():
+        relay.stream(_se({"type": "content_block_start", "index": 0,
+                          "content_block": {"type": "text", "text": ""}}))
+
+    def _text(t):
+        relay.stream(_se({"type": "content_block_delta", "index": 0,
+                          "delta": {"type": "text_delta", "text": t}}))
+
+    _text_start()
+    _text("Let me check ")
+    _text("the case.")
+    relay.tool_use("tu-1", _OWN_RECORD, {"id": "lrn-0123abcd"})
+    _text("The case says no.")          # after a tool call, no block start seen
+    _text_start()
+    _text("A later message.")           # a new text block
+    texts = [e["text"] for e in events if e["ev"] == "delta"]
+    assert texts == ["Let me check ", "the case.", "\n\nThe case says no.",
+                     "\n\nA later message."]
