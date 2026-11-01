@@ -728,9 +728,11 @@ def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str],
 def _mark_conflict_sides(item: dict, out: list[dict]) -> None:
     """Walk fixes, item 6: on a conflict between two statements, each
     quote says whether it is the newer or the older one (the words the
-    options use), by when it was said: the same comparison the answer verb
-    makes when it observes the losing side (``attention_answers.
-    _conflict_losers``). Equal or unknown times mark neither."""
+    options use), by when it was said: the same ``at`` field and ordering
+    the answer verb uses when it observes the losing side
+    (``attention_answers._conflict_losers``). On equal or unknown times the
+    page marks neither, where the verb counts the second-named one as the
+    newer (gate r1 F7): the page never claims an order it does not know."""
     raw = item.get("_ask")
     ask: dict = raw if isinstance(raw, dict) else {}
     named = ask.get("statements") if ask.get("because") == "conflict" else None

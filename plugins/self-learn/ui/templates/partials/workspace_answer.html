@@ -104,8 +104,9 @@
      terminal) is the way to change course.
      Walk fixes, item 7: "Run it now" is never offered while it runs; a
      new terminal is offered when nothing runs (never started, stopped,
-     refused) or when a launch went unclaimed for two minutes (the
-     terminal did not open, or closed before it started). #}
+     refused) or when a launch went unclaimed for two minutes (its
+     terminal may be waiting for the person, or may never have opened:
+     the words say both; gate r1 F4). #}
   {% set can_stop = options | selectattr("via", "equalto", "stop") | list %}
   {% set can_change = options | rejectattr("via", "equalto", "stop") | list %}
   <div class="ws-running" data-approved>
@@ -116,7 +117,7 @@
     {% if can_stop %}<strong>Stop it</strong> closes that terminal: a step it is in the middle of stops there and is not undone, and anything it already changed stays changed. Then you can change your answer.{% else %}It is running in a session that self-learn's inbox did not open, so the page cannot stop it and leaves its hold on the work alone: tell it in its own terminal.{% endif %}</p>
     {% else %}
     {% if launch_unclaimed %}
-    <p data-unclaimed-stale>No session has started on it since the terminal was opened. The terminal probably did not open, or was closed before it began.</p>
+    <p data-unclaimed-stale>No session has started on the work in the two minutes since its terminal was opened. If that terminal is open and waiting for you (a question, or a permission to allow), answer it there and the work starts. If no terminal for it is open any more, open a new one.</p>
     <button type="button" class="btn btn-primary" hx-post="/inbox/{{ item.id }}/run" hx-target="#ws-run-result" hx-swap="innerHTML" data-run-now>Open a new terminal to carry it out</button>
     {% endif %}
     {% if can_change %}
@@ -168,8 +169,9 @@
       {% if r.words_from is not none %}<input type="hidden" name="words_from" value="{{ r.words_from }}">{% endif %}
       {% if sent_t is not none %}<input type="hidden" name="sent_t" value="{{ sent_t }}">{% endif %}
       <button type="submit" name="option" value="{{ r.option.id }}" class="btn btn-primary" data-confirm-armed>Confirm: {{ r.option.label }}</button>
-      <button type="button" class="btn" hx-get="/inbox/{{ item.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML">Cancel</button>
+      <button type="button" class="btn" hx-get="/inbox/{{ item.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML" data-armed-cancel>Cancel</button>
     </form>
+    <p class="ws-meta" data-armed-how>Only the Confirm button goes ahead: click it, or Tab to it and press Enter. Number keys do nothing here; Cancel goes back.</p>
     {% if r.text %}<p class="ws-meta" data-armed-provenance>{{ provenance.line }}</p>{% endif %}
   </div>
   {% elif item.state != "awaiting-sudo" and not (r and r.closed) %}

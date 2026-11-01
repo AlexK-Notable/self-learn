@@ -168,12 +168,19 @@ class RunResult:
     #: their own when none was found (exit 5), alone, so a page copies it
     #: without parsing :attr:`message`; ``None`` otherwise.
     command: str | None = None
+    #: Walk fixes gate r1 F4: the terminal launched for this approval is
+    #: still open (its unit is active), so no second one was opened.
+    already_open: bool = False
 
     def to_json(self) -> dict[str, Any]:
         """``attention run --json`` and the answer verb's ``run``:
-        ``{exit, message, command, brief}``."""
-        return {"exit": self.exit, "message": self.message, "command": self.command,
-                "brief": self.brief}
+        ``{exit, message, command, brief}``, plus ``already_open: true``
+        only when this approval's terminal is still open (gate r1 F4)."""
+        out: dict[str, Any] = {"exit": self.exit, "message": self.message,
+                               "command": self.command, "brief": self.brief}
+        if self.already_open:
+            out["already_open"] = True
+        return out
 
 
 # ------------------------------------------------------------------ helpers
@@ -1285,7 +1292,13 @@ def _run_item(home: Path | str, item_id: str, *, login: bool = False) -> RunResu
         return RunResult(EXIT_NO_TERMINAL, (
             f"no terminal found. The brief is at {brief}; open a terminal and run: {command}"
         ), brief=str(brief), command=command)
-    unit = RUN_UNIT_PREFIX + item["id"][len("att-"):]
+    unit = attention.run_unit(item["id"])
+    # Walk fixes gate r1 F4: a terminal launched for this approval before
+    # (a run record exists) may still be open and waiting for the person;
+    # then no second one is opened and the person is told so in words.
+    if attention._run_record(home, item["id"]) is not None and _unit_still_open(unit):  # noqa: SLF001
+        return RunResult(EXIT_REFUSED, ALREADY_OPEN_MESSAGE, unit=unit, brief=str(brief),
+                         already_open=True)
     plan = item.get("_plan") if isinstance(item.get("_plan"), dict) else None
     argv = ["--user", "--collect", "--quiet", f"--unit={unit}",
             f"--working-directory={_working_directory(plan)}", "--", *terminal, "claude", message]
@@ -1387,6 +1400,30 @@ ALREADY_CLOSED_MESSAGE = (
     "stays changed. Your approval still stands but nothing is carrying it out: choose a "
     "different answer, or Run it now to start again."
 )
+
+
+#: Walk fixes gate r1 F4: what `attention run` says when this approval's
+#: terminal (its unit) is still open: it may be waiting for the person.
+ALREADY_OPEN_MESSAGE = (
+    "A terminal for this is already open: the one opened for it earlier is still running, and "
+    "no session in it has started the work yet. It may be waiting for you to answer a question "
+    "or allow a permission there: answer it in that terminal and the work starts. If you would "
+    "rather start again, close that terminal first, then open a new one here."
+)
+
+
+def _unit_still_open(unit: str) -> bool:
+    """Whether *unit* (this approval's own run unit, `attention.run_unit`)
+    still runs: one bounded ``systemctl --user is-active``. ``False`` when
+    systemctl is missing or cannot answer: the launch then goes ahead and
+    systemd itself refuses a second unit of the same name."""
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return False
+    try:
+        return _unit_state(binary, unit) in _STILL_RUNNING
+    except AnswerError:
+        return False
 
 
 def _unit_state(binary: str, unit: str) -> str:

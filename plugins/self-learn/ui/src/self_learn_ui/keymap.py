@@ -178,11 +178,12 @@ INBOX_KEYMAP: tuple[KeymapEntry, ...] = (
     KeymapEntry(
         ("1", "2", "3", "4"), "inbox_option",
         "That option; a key never approves or registers: on such an option it asks you to "
-        "confirm first", "inbox",
+        "confirm first, and only the Confirm button confirms", "inbox",
     ),
     KeymapEntry(("r",), "inbox_reply", "Write your own answer", "inbox"),
     KeymapEntry(("a",), "inbox_ask", "Ask about this", "inbox"),
-    KeymapEntry(("Ctrl+Enter",), "inbox_send", "Send the box you are typing in", "inbox"),
+    KeymapEntry(("Ctrl+Enter",), "inbox_send", "Send the box you are typing in (a reply "
+                "that approves or registers asks you to confirm first)", "inbox"),
     KeymapEntry(
         ("Escape",), "inbox_escape", "Stop the agent's answer, or leave the field", "inbox",
     ),

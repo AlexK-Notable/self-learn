@@ -531,9 +531,22 @@ section records what the surface is.
   on a plan with sudo steps (it lists the sudo commands), and *(S-NEXT-walkfix,
   item 1)* an approve option chosen by its number key (`keyed=1`: a key
   never approves on its own; a mouse click on the same button still
-  sends at once, design r2 §0 call 3). Under the options a key hint gives
+  sends at once, design r2 §0 call 3), and *(gate r1 F2)* an approve
+  option carried by the agent's draft rather than by a click on that
+  option's own button (`from_draft=1`: Send, `Ctrl+Enter`, or a draft
+  card's "Send the draft as is"; the armed line says that sending the
+  draft approves). Under the options a key hint gives
   each number key and what it does, "approve: …" or "register: …" in
-  words for such options. *(S-NEXT-walkfix, item 2; C6.)* One line under
+  words for such options. *(Gate r1 F1.)* On an armed bar only its own
+  Confirm button goes ahead (a click, or `Enter`/`Space` with it
+  focused); no number key confirms or does anything there, a held key's
+  auto-repeat never acts, and the armed bar says so. *(Gate r1 F3, the
+  orchestrator's ruling, not the user's.)* `Enter` or `Space` on a
+  focused approve or register button stays a click, the normal
+  activation for keyboard and screen-reader users; so the page itself
+  never moves focus onto such a button: "Use this draft" focuses the
+  reply box, an armed bar focuses its Cancel, and nothing focuses an
+  option or Confirm on load or after an answer. *(S-NEXT-walkfix, item 2; C6.)* One line under
   the reply box says how its text would be recorded, before anything is
   sent: the page asks `POST /inbox/<id>/provenance`, which runs the
   answer verb's own rule (`attention_answers.preview`: the draft id, then
@@ -563,8 +576,19 @@ section records what the surface is.
   is offered as "Start it in a new terminal" when nothing runs (never
   launched, refused, or stopped), as "Try again: open a new terminal"
   after a failed launch, and as "Open a new terminal to carry it out"
-  when no session has claimed a launch for two minutes (the terminal did
-  not open, or closed before it began). Words told to running work say
+  when no session has claimed a launch for two minutes. *(Gate r1 F4.)*
+  That line never says the terminal did not open: it may be open and
+  waiting for the person (a question or a permission), so it says to
+  answer it there if so, and to open a new one if not. When this
+  approval's own run unit (`attention.run_unit`) is still active,
+  `attention run` opens no second terminal (one bounded `systemctl
+  --user is-active`, asked only once a launch record exists) and answers
+  exit 3 with `already_open: true` and a plain sentence saying a
+  terminal for it is already open; the page shows that sentence as a
+  status with no retry, never systemd's own error. *(Gate r1 F5.)* The
+  provenance line is asked again when an ask turn ends and on an
+  attention event while the box holds text, since the agent texts the
+  rule reads change under it. Words told to running work say
   to tell the session in its terminal, never "you can change your answer
   until it is carried out". A request inside the bar that does not redraw
   it (a launch, a fix, a login check, feedback) leaves no button busy and
@@ -642,7 +666,9 @@ section records what the surface is.
   `j`/`k`, `Enter`, `1`–`4`, `r`, `a`, `Ctrl+Enter`, `Esc`, `u`, `s`,
   `?`. They are inert while a text field has focus except `Ctrl+Enter`
   and `Esc`. `1`–`4` arm an option that approves or registers instead of
-  sending it (S-NEXT-walkfix, item 1). `Enter` opens the selected item only when nothing has
+  sending it (S-NEXT-walkfix, item 1); on an armed bar they do nothing,
+  their auto-repeat never acts, and `Ctrl+Enter` on a reply carrying such
+  an option arms it too (gate r1 F1, F2). `Enter` opens the selected item only when nothing has
   focus; on a focused list link, button or `<summary>` it does what that
   control does. The review keymap is inert on inbox pages, so the
   inbox table may reuse its letters; global key uniqueness holds within

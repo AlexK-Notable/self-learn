@@ -8,6 +8,8 @@
 
   Walk fixes, item 7: its retry button says what it does ("Try again:
   open a new terminal"); the verb's sentence has its times humanized.
+  Gate r1 F4: when this approval's terminal is still open (already_open),
+  the verb's plain sentence says so, and no retry is offered.
 
   The retry replaces this block (closest .ws-run), so it works wherever
   the block sits: in #ws-run-result, or under an answer that moved the
@@ -24,12 +26,14 @@
     <button type="button" class="btn btn-quiet" data-copy="#ws-run-cmd">Copy</button></div>
   {% endif %}
   {% if run_lead %}<p class="ws-meta">{{ run_lead }}</p>{% endif %}
+  {% elif run_already_open %}
+  <p role="status" data-already-open>{{ run_message }}</p>
   {% elif run_exit == 4 %}
   <p role="alert">Not started: {{ run_message | plain_times }}</p>
   {% else %}
   <p class="error-strip" role="alert">{{ run_message | plain_times }}</p>
   {% endif %}
-  {% if run_exit != 0 and not run_fix and not run_login and run_item and run_item.class == "approved" %}
+  {% if run_exit != 0 and not run_already_open and not run_fix and not run_login and run_item and run_item.class == "approved" %}
   <button type="button" class="btn btn-primary" hx-post="/inbox/{{ run_item.id }}/run" hx-target="closest .ws-run" hx-swap="outerHTML" data-run-now>Try again: open a new terminal</button>
   {% endif %}
 </div>

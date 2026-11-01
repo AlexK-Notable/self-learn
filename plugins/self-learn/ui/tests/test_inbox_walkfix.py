@@ -447,3 +447,81 @@ def test_the_ask_off_note_is_a_notice_at_the_top_of_the_panel(tmp_path, monkeypa
     assert 'data-ask-off="login"' in panel  # control
     assert panel.index('data-ask-off="login"') < panel.index('id="ws-conversation"')
     assert 'placeholder="Off until the Claude login works again"' in panel
+
+
+# ------------------------------------------------------------ gate r1
+
+
+def test_an_approve_option_carried_by_a_draft_arms_whatever_sent_it(tmp_path, monkeypatch):
+    """Gate r1 F2: an approve option that rides with the agent's draft
+    (`from_draft=1`: inbox.js sets it when the option comes from the used
+    draft, the draft card carries it) arms with words that say sending the
+    draft approves, and runs no verb; Ctrl+Enter (`keyed=1` as well) arms
+    the same way; the option's own button, clicked, still sends at once.
+    The armed bar says only Confirm goes ahead and carries a Cancel the
+    page can focus. Mutation: ignore `from_draft` -> red."""
+    runner = FakeRunner(_OK)
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7), {ID_OO7: OO7_PACKET}),
+                             runner=runner)
+    sent = {"option": "opt-yes", "text": "Only the first two.", "draft_id": "drf-1a2b3c4d"}
+    by_draft = client.post(f"/inbox/{ID_OO7}/answer", data={**sent, "from_draft": "1"}, headers=HX)
+    words = markupsafe.Markup(by_draft.text).unescape()
+    assert "data-armed-answer" in words
+    assert "The agent's draft is sent as “" in words and "”, and that approves this change" in words
+    assert "data-armed-how" in words and "Number keys do nothing here" in words
+    assert "data-armed-cancel" in words
+    keyed = client.post(f"/inbox/{ID_OO7}/answer", data={**sent, "from_draft": "1", "keyed": "1"},
+                        headers=HX)
+    assert "data-armed-answer" in keyed.text and "a key never approves on its own" in keyed.text
+    assert _answers(runner) == []
+
+    client.post(f"/inbox/{ID_OO7}/answer", data=sent, headers=HX)
+    assert _answers(runner)[-1][:5] == ["attention", "answer", ID_OO7, "--option", "opt-yes"]
+
+
+def test_the_draft_card_marks_its_option_as_carried_by_the_draft(tmp_path, monkeypatch):
+    """Gate r1 F2: "Send the draft as is" on a card with an option posts
+    `from_draft=1`, so an approve option arms. Mutation: drop the hidden
+    field -> red."""
+    reads = Reads(_doc(OO7), {ID_OO7: OO7_PACKET}, rows={ID_OO7: [
+        {"t": 1, "role": "agent", "origin": "agent", "kind": "draft", "draft_id": "drf-1a2b3c4d",
+         "option": "opt-yes-conditions", "text": "Only the first two."}]})
+    client, *_ = make_client(tmp_path, monkeypatch, reads)
+    page = client.get(f"/inbox/{ID_OO7}").text
+    card = page[page.index("data-draft-card"):].split("</form>")[0]
+    assert 'name="option" value="opt-yes-conditions"' in card  # control
+    assert '<input type="hidden" name="from_draft" value="1">' in card
+
+
+def test_a_launch_waiting_two_minutes_is_described_as_maybe_waiting(tmp_path, monkeypatch):
+    """Gate r1 F4: after two minutes unclaimed the page never says the
+    terminal "probably did not open" (it may be open at a prompt); it says
+    what to do either way. Mutation: the old sentence -> red."""
+    stale = _bar(make_client(tmp_path, monkeypatch, Reads(_doc(_running(5))))[0].get(
+        f"/inbox/{ID_APPROVED}").text)
+    assert "data-unclaimed-stale" in stale  # control
+    assert "probably did not open" not in stale
+    assert "If that terminal is open and waiting for you" in stale
+    assert "answer it there" in stale and "open a new one" in stale
+
+
+def test_a_terminal_already_open_is_said_in_words_with_no_retry(tmp_path, monkeypatch):
+    """Gate r1 F4: `attention run` answering `already_open` (this
+    approval's unit is still active) renders its plain sentence as a
+    status, with no "Try again: open a new terminal" under it. Mutation:
+    drop the already_open branch -> red (error strip and a retry)."""
+    message = ("A terminal for this is already open: the one opened for it earlier is still "
+               "running, and no session in it has started the work yet.")
+    approved = {**APPROVED, "state": "approved", "options": []}
+    runner = FakeRunner(RunResult(3, stdout='{"exit": 3, "message": "' + message + '", '
+                                            '"command": null, "brief": "/b", "already_open": true}'))
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(approved)), runner=runner)
+    resp = client.post(f"/inbox/{ID_APPROVED}/run", headers=HX)
+    assert "data-already-open" in resp.text and message in resp.text
+    assert "error-strip" not in resp.text and "data-run-now" not in resp.text
+
+    failed = FakeRunner(RunResult(3, stdout='{"exit": 3, "message": "the terminal did not open", '
+                                            '"command": null, "brief": "/b"}'))
+    other, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(approved)), runner=failed)
+    plain = other.post(f"/inbox/{ID_APPROVED}/run", headers=HX)
+    assert "data-run-now" in plain.text and "data-already-open" not in plain.text  # control

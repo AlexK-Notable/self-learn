@@ -35,6 +35,7 @@ from support import make_env, make_home
 from test_attention_answers import (  # noqa: F401 -- person/shims are autouse fixtures
     DRAFT,
     _agent,
+    _calls,
     _choices,
     _index,
     _item,
@@ -150,10 +151,11 @@ def test_words_sent_before_become_the_options_note_without_a_second_statement(tm
 
 def test_words_from_names_only_the_persons_own_reply(tmp_path, monkeypatch):
     """A row that is not a typed reply without an option (an agent's
-    answer, a clicked row), a missing option, extra text, and an agent's
-    shell are refused, and nothing is recorded. Mutations: drop the
-    origin check in `_reused_words` -> red; drop the agent-shell refusal ->
-    red."""
+    answer, a pasted reply, a typed note that already went with a choice),
+    a missing option, extra text, and an agent's shell are refused, and
+    nothing is recorded. Mutations: drop the origin check in
+    `_reused_words` -> red; drop its option check -> red (gate r1 F6, C6c);
+    drop the agent-shell refusal -> red."""
     home, item = _plan_item(tmp_path)
     _seal_agent(home, item, DRAFT)
     agent_t = max(r["t"] for r in workspace.rows(home, item["id"]))
@@ -162,12 +164,21 @@ def test_words_from_names_only_the_persons_own_reply(tmp_path, monkeypatch):
     pasted = answers.answer(home, item["id"], text=f"Fine. {DRAFT[:45]}")
     assert workspace.resolve(home, f"workspace:{item['id']}#T{pasted.transcript_row}")[
         "origin"] == "draft-edited"  # control
+    # The person's typed words that already went with a choice, as its
+    # note: they are that choice's, never offered again as a reply.
+    workspace.append(home, item["id"], [{"role": "user", "origin": "typed", "kind": "reply",
+                                         "text": "Only on weekdays.", "option": "opt-no"}],
+                     header={"item_kind": item["kind"], "subject": item["subject"],
+                             "title": item["title"]})
+    noted_t = max(r["t"] for r in workspace.rows(home, item["id"]))
+    assert workspace.resolve(home, f"workspace:{item['id']}#T{noted_t}")["option"] == "opt-no"
     words = answers.answer(home, item["id"], text="My own words.")
     before = (len(_stmts(home)), len(_choices(home)))
 
     for kwargs in (
         {"option": "opt-yes-conditions", "words_from": agent_t},
         {"option": "opt-yes-conditions", "words_from": pasted.transcript_row},
+        {"option": "opt-yes-conditions", "words_from": noted_t},
         {"option": "opt-yes-conditions", "words_from": 999},
         {"words_from": words.transcript_row},
         {"option": "opt-yes-conditions", "words_from": words.transcript_row, "text": "x"},
@@ -313,11 +324,20 @@ def test_a_conflicts_quotes_say_which_one_is_newer(tmp_path):
     """Walk item 6: each quote carries `side` by when it was said (whatever
     order the ask names them in), with the words the options use; equal
     times mark neither. Mutations: mark by the ask's order instead of
-    time -> red; drop `_mark_conflict_sides` -> red."""
+    time, either way round -> red (the second case names the newer one
+    first; gate r1 F6, C13b); drop `_mark_conflict_sides` -> red."""
     home, item, older, newer = _conflict(tmp_path, "2026-10-30T15:13:00Z", "2026-10-30T19:58:00Z")
     packet = attention_packet.build(home, item["id"])
     sides = {e["id"]: e.get("side") for e in packet["evidence"] if e["kind"] == "statement"}
     assert sides == {older: "older", newer: "newer"}
+
+    # The ask names the NEWER statement first: its first-named quote is
+    # the one said later, so only the times can tell.
+    flip_home, flip_item, first, second = _conflict(tmp_path / "flip", "2026-10-30T19:58:00Z",
+                                                    "2026-10-30T15:13:00Z")
+    flipped = attention_packet.build(flip_home, flip_item["id"])
+    assert {e["id"]: e.get("side") for e in flipped["evidence"] if e["kind"] == "statement"} == {
+        first: "newer", second: "older"}
 
     same_home, same_item, a, b = _conflict(tmp_path / "same", "2026-10-30T15:13:00Z",
                                            "2026-10-30T15:13:00Z")
@@ -357,3 +377,38 @@ def test_a_folder_in_the_evidence_is_said_to_be_one_with_its_path_from_home(tmp_
     assert entry["is_dir"] is True and entry["display"] == "~/.config/systemd/user"
     assert entry["excerpt"].splitlines() == ["oo7-daemon.service", "oo7-daemon.service.d/"]
     assert plain["is_dir"] is False and plain["display"] == "~/.config/systemd/user/oo7-daemon.service"
+
+
+# ------------------------------------------------------------ gate r1 F4
+
+
+def test_a_new_terminal_while_this_approvals_terminal_is_open_says_so_in_words(tmp_path, monkeypatch):
+    """Gate r1 F4: "Open a new terminal" two minutes after a launch, while
+    the terminal launched for this approval is still open (it may be
+    waiting at a prompt): one bounded `systemctl --user is-active` on this
+    approval's own unit, no second `systemd-run`, and a plain sentence
+    saying a terminal for it is already open, never systemd's own error.
+    Once that unit is gone, a new terminal opens. Mutations: skip the
+    is-active check -> red; check it before any launch (no run record) ->
+    red (the approval's first launch is refused)."""
+    from test_followups2 import _launched
+
+    home = make_home(tmp_path)
+    _approved, approved_id = _launched(home, tmp_path, monkeypatch, state="active")
+    launches = len(_calls(tmp_path, "systemd-run"))
+    assert launches == 1  # control: the approval opened one terminal
+
+    result = answers.run(home, approved_id)
+
+    assert result.exit == 3 and result.already_open is True
+    assert result.message == answers.ALREADY_OPEN_MESSAGE
+    assert "already open" in result.message and "systemd" not in result.message
+    assert result.to_json()["already_open"] is True
+    assert len(_calls(tmp_path, "systemd-run")) == launches
+    assert ["systemctl", "--user", "is-active", attention.run_unit(approved_id)] in _calls(
+        tmp_path, "systemctl")
+
+    (tmp_path / "unit-state").write_text("inactive\n", encoding="utf-8")
+    again = answers.run(home, approved_id)
+    assert again.exit == 0 and again.already_open is False
+    assert len(_calls(tmp_path, "systemd-run")) == launches + 1

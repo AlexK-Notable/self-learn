@@ -16,6 +16,7 @@ import pytest
 
 import test_js_inbox as base
 from test_js_inbox import (  # noqa: F401 -- fixtures: server, browser, page
+    DRAFT_ID,
     ID_OO7,
     _answer_calls,
     _doc,
@@ -44,27 +45,151 @@ def _calls(server, verb: str) -> list[list[str]]:
 # ------------------------------------------------------------ item 1
 
 
+def _armed_and_wired(page) -> None:
+    """The armed bar is in and htmx wired its form (app.js blocks a native
+    submit in the swap/settle gap, so a person's next act lands after)."""
+    page.wait_for_selector("#ws-answer [data-armed-answer]", timeout=_WAIT_MS)
+    page.wait_for_function(
+        "() => !!document.querySelector('[data-confirm-armed]').closest('form')['htmx-internal-data']",
+        timeout=_WAIT_MS)
+
+
+def _nothing_sent_for(server, seconds: float = 1.5) -> bool:
+    try:
+        _wait_for(lambda: bool(_answer_calls(server)), timeout=seconds)
+    except AssertionError:
+        return True
+    return False
+
+
 def test_a_number_key_arms_an_approve_option_and_never_sends_it(page, server):
-    """Walk item 1: pressing 1 on "Yes, add the binding" arms it (the
-    once-more confirmation) and sends nothing; pressing 1 again confirms.
-    Mutation: drop the `keyed` parameter in inbox.js -> red (the key
-    sends the approval at once)."""
+    """Walk item 1, gate r1 F1: pressing 1 on "Yes, add the binding" arms
+    it and sends nothing; pressing 1 again does nothing (no number key
+    confirms); only the Confirm button does, here by Enter with it
+    focused. Mutations: drop the `keyed` parameter in inbox.js -> red (the
+    key sends the approval at once); let key 1 click the armed Confirm
+    (the old rule) -> red."""
     _open(page, server, ID_OO7)
     assert page.get_attribute('#ws-answer [data-option-index="1"]', "data-effect") == "approve"
     page.click("h1")
     page.keyboard.press("1")
-    page.wait_for_selector("#ws-answer [data-armed-answer]", timeout=_WAIT_MS)
+    _armed_and_wired(page)
     assert "approves this change" in page.inner_text("[data-armed-answer]")
+    assert "Number keys do nothing here" in page.inner_text("[data-armed-answer]")
     assert _answer_calls(server) == []
-    # As a person would: the confirm is pressed after htmx wired the swapped
-    # form (app.js blocks a native submit in the swap/settle gap).
-    page.wait_for_function(
-        "() => !!document.querySelector('[data-confirm-armed]').closest('form')['htmx-internal-data']",
-        timeout=_WAIT_MS)
     page.keyboard.press("1")
+    assert _nothing_sent_for(server)
+    page.locator("[data-confirm-armed]").focus()
+    page.keyboard.press("Enter")
     _wait_for(lambda: bool(_answer_calls(server)))
     argv = _answer_calls(server)[-1]
     assert argv[argv.index("--option") + 1] == "opt-yes"
+
+
+def test_key_2_then_key_1_approves_nothing(page, server):
+    """Gate r1 F1 (the gate's probe): with two approve options, 2 arms the
+    second; then 1, which the hints say means the first, approves neither.
+    Mutation: let key 1 click the armed Confirm (the old rule) -> red (the
+    second option is approved)."""
+    two = _item("att-0000000000c3", "ask.system-change", "system-change", "Pick one", (
+        _opt("opt-a", "Yes, the small change", "approve", recommended=True),
+        _opt("opt-b", "Yes, the big change", "approve")))
+    server.state.doc = _doc(two)
+    _open(page, server, "att-0000000000c3")
+    page.click("h1")
+    page.keyboard.press("2")
+    _armed_and_wired(page)
+    assert "Yes, the big change" in page.inner_text("[data-armed-answer]")  # control
+    page.keyboard.press("1")
+    assert _nothing_sent_for(server)
+    assert page.locator("#ws-answer [data-armed-answer]").count() == 1
+
+
+def test_a_held_keys_auto_repeat_never_acts(page, server):
+    """Gate r1 F1 (the gate's probe): one press held down. Its auto-repeat
+    keydowns (`event.repeat`) never act: not on the armed bar, and not on
+    an option that would send at once. Mutations: let key 1 confirm the
+    armed bar -> red; drop the `event.repeat` check -> red (the repeat of
+    3 sends the decline)."""
+    _open(page, server, ID_OO7)
+    page.click("h1")
+    repeat = "(k) => document.dispatchEvent(new KeyboardEvent('keydown', {key: k, bubbles: true, repeat: true}))"
+    page.evaluate(repeat, "3")
+    assert _nothing_sent_for(server)
+    page.keyboard.press("1")
+    _armed_and_wired(page)
+    page.evaluate(repeat, "1")
+    assert _nothing_sent_for(server)
+    page.locator("#ws-answer [data-armed-cancel]").click()
+    page.wait_for_selector('#ws-answer [data-option-index="3"]', timeout=_WAIT_MS)
+    page.click("h1")
+    page.keyboard.press("3")  # control: a real press of 3 sends the decline
+    _wait_for(lambda: bool(_answer_calls(server)))
+    argv = _answer_calls(server)[-1]
+    assert argv[argv.index("--option") + 1] == "opt-no"
+
+
+def test_ctrl_enter_on_a_draft_carrying_an_approve_option_arms_it(page, server):
+    """Gate r1 F2 (the gate's probe): "Use this draft" on a draft whose
+    option approves, then Ctrl+Enter in the box: the page arms it and asks
+    once more; nothing is sent until Confirm. A mouse click on Send arms
+    the same way (the person never clicked a button naming the approval).
+    Mutations: drop `from_draft` in inbox.js -> red (sent at once)."""
+    _open(page, server, ID_OO7)
+    page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] [data-use-draft]')
+    _wait_for(lambda: page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions")
+    page.locator("#ws-reply-text").focus()
+    page.keyboard.press("Control+Enter")
+    _armed_and_wired(page)
+    assert "Yes, with conditions" in page.inner_text("[data-armed-answer]")
+    assert _nothing_sent_for(server)
+    page.locator("[data-confirm-armed]").click()
+    _wait_for(lambda: bool(_answer_calls(server)))
+    argv = _answer_calls(server)[-1]
+    assert argv[argv.index("--option") + 1] == "opt-yes-conditions"
+    assert argv[argv.index("--draft") + 1] == DRAFT_ID
+
+
+_BAD_FOCUS = """
+window.__badFocus = [];
+document.addEventListener('focusin', function (e) {
+  var t = e.target;
+  if (t && t.matches && t.matches('[data-effect="approve"], [data-effect="register"], [data-confirm-armed]'))
+    window.__badFocus.push(t.outerHTML.slice(0, 120));
+}, true);
+"""
+
+
+def test_the_page_never_moves_focus_onto_an_approve_button(page, server):
+    """Gate r1 F3 (the orchestrator's ruling): Enter or Space on a focused
+    approve button stays a click, so the page itself never puts focus on
+    one: not on load, not after "Use this draft" (the box), not after
+    arming (Cancel), not after an answer. No key presses Tab here, so any
+    focus on such a button is the page's own. Mutation: focus the armed
+    Confirm instead of Cancel -> red."""
+    page.add_init_script(_BAD_FOCUS)
+    _open(page, server, ID_OO7)
+    page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] [data-use-draft]')
+    assert page.evaluate("() => document.activeElement.id") == "ws-reply-text"
+    page.keyboard.press("Control+Enter")
+    _armed_and_wired(page)
+    _wait_for(lambda: page.evaluate(
+        "() => document.activeElement.hasAttribute('data-armed-cancel')"))
+    page.keyboard.press("Enter")  # on Cancel: backs out, approves nothing
+    page.wait_for_selector('#ws-answer [data-option-index="1"]', timeout=_WAIT_MS)
+    page.click("h1")
+    page.keyboard.press("1")
+    _armed_and_wired(page)
+    _wait_for(lambda: page.evaluate(
+        "() => document.activeElement.hasAttribute('data-armed-cancel')"))
+    page.keyboard.press("Space")
+    page.wait_for_selector('#ws-answer [data-option-index="3"]', timeout=_WAIT_MS)
+    page.click("h1")
+    page.keyboard.press("3")
+    page.wait_for_selector("#ws-answer [data-recorded]", timeout=_WAIT_MS)
+    assert _answer_calls(server)[-1][4] == "opt-no"  # control: only the decline was sent
+    assert len(_answer_calls(server)) == 1
+    assert page.evaluate("() => window.__badFocus") == []
 
 
 def test_a_number_key_on_a_decline_option_sends_it(page, server):
@@ -108,6 +233,39 @@ def test_the_provenance_line_follows_the_box_by_the_verbs_rule(page, server, mon
     assert page.locator("#ws-reply-draft-note").count() == 0
 
 
+def _paste_agent_words_before_the_turn_is_sealed(page, server):
+    _open(page, server, ID_OO7)
+    page.locator("#ws-reply-text").focus()
+    page.keyboard.type("Fine by me. " + AGENT_ANSWER[:50])
+    _wait_line(page, "Sending this records it as your words.")  # control: not sealed yet
+
+
+def test_the_provenance_line_is_asked_again_when_an_ask_turn_ends(page, server, monkeypatch):
+    """Gate r1 F5: words copied from the agent's answer while it streams
+    read "as your words" (the turn is not sealed); once the turn ends and
+    is sealed the line is asked again and says the agent's draft, as the
+    recorder will. Mutation: drop the re-check in the ask `end` handler ->
+    red."""
+    _paste_agent_words_before_the_turn_is_sealed(page, server)
+    monkeypatch.setattr(base, "OO7_ROWS", [*base.OO7_ROWS, {
+        "t": 3, "role": "agent", "origin": "agent", "kind": "answer", "text": AGENT_ANSWER}])
+    page.evaluate("(id) => document.dispatchEvent(new CustomEvent('self-learn:sse', "
+                  "{detail: {type: 'ask', ev: 'end', item: id, exit: 0}}))", ID_OO7)
+    _wait_line(page, "as the agent's draft, edited and sent by you, not as your words")
+
+
+def test_the_provenance_line_is_asked_again_when_the_item_changes(page, server, monkeypatch):
+    """Gate r1 F5: an attention event (the agent texts the rule reads may
+    have changed) asks the line again while the box holds text. Mutation:
+    drop the re-check on attention events -> red."""
+    _paste_agent_words_before_the_turn_is_sealed(page, server)
+    monkeypatch.setattr(base, "OO7_ROWS", [*base.OO7_ROWS, {
+        "t": 3, "role": "agent", "origin": "agent", "kind": "answer", "text": AGENT_ANSWER}])
+    page.evaluate("(id) => document.dispatchEvent(new CustomEvent('self-learn:sse', "
+                  "{detail: {type: 'attention', ids: []}}))", ID_OO7)
+    _wait_line(page, "as the agent's draft, edited and sent by you, not as your words")
+
+
 # ------------------------------------------------------------ item 7
 
 
@@ -116,8 +274,9 @@ def test_send_records_after_a_request_that_did_not_redraw_the_bar(page, server):
     only fills its own result box) the bar must not stay busy: the Send
     click records. Before the fix every button stayed aria-disabled and
     "Recording..." stayed under the box, and the walker's Send click
-    recorded nothing. Mutation: mark the bar busy for every request inside
-    it (the old rule) -> red."""
+    recorded nothing. Mutation: the pre-fix code (busy for every
+    request inside the bar AND no cleanup after a request) -> red. Each
+    half alone is pinned by the two tests below (gate r1 F6: J4a, J4b)."""
     approved = {**_item(ID_RUN, "approved.pending", None, "Add the safe-update list",
                         (_opt("opt-no", "No, keep asking", "decline"),)),
                 "class": "approved", "state": "approved"}
@@ -132,6 +291,46 @@ def test_send_records_after_a_request_that_did_not_redraw_the_bar(page, server):
     page.click("[data-send-reply]", timeout=_WAIT_MS)
     _wait_for(lambda: bool(_answer_calls(server)))
     assert "--text-file" in _answer_calls(server)[-1]
+
+
+def _approved_run_item(server) -> None:
+    approved = {**_item(ID_RUN, "approved.pending", None, "Add the safe-update list",
+                        (_opt("opt-no", "No, keep asking", "decline"),)),
+                "class": "approved", "state": "approved"}
+    server.state.doc = _doc(approved)
+
+
+def test_a_request_that_does_not_redraw_the_bar_never_marks_it_busy(page, server):
+    """Gate r1 F6 (J4a): while "Start it in a new terminal" is in flight,
+    no button in the bar is aria-disabled and the line never says
+    "Recording...". Mutation: mark the bar busy for every request inside
+    it -> red."""
+    _approved_run_item(server)
+    _open(page, server, ID_RUN)
+    held = []
+    page.route("**/run", lambda route: held.append(route))
+    page.click("[data-run-now]")
+    _wait_for(lambda: bool(held))
+    try:
+        assert page.locator("#ws-answer [data-send-reply]").count() == 1  # control
+        assert page.locator("#ws-answer [aria-disabled]").count() == 0
+        assert "Recording" not in (page.text_content("#ws-reply-line") or "")
+    finally:
+        held[0].continue_()
+
+
+def test_a_bar_request_that_fails_without_a_redraw_leaves_it_live(page, server):
+    """Gate r1 F6 (J4b): a Send whose answer never comes back as a bar (a
+    server error htmx does not swap) leaves no aria-disabled button and no
+    "Recording..." behind. Mutation: drop the afterRequest cleanup -> red."""
+    _open(page, server, ID_OO7)
+    page.route("**/answer", lambda route: route.fulfill(status=500, body="boom"))
+    page.fill("#ws-reply-text", "My own words.")
+    with page.expect_response("**/answer"):
+        page.click("[data-send-reply]")
+    _wait_for(lambda: page.locator("#ws-answer [aria-disabled]").count() == 0)
+    assert page.locator("#ws-answer [data-send-reply]").count() == 1  # control
+    assert "Recording" not in (page.text_content("#ws-reply-line") or "")
 
 
 # ------------------------------------------------------------ item 8

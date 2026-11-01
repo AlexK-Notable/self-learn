@@ -4810,9 +4810,11 @@ heading's name, and carries `trigger`, `instruction`, `fact`,
 ten: `{at, session, origin, quote}`); a `hook` entry carries the lesson's
 `trigger` and `instruction` and comes first, the lesson itself not
 repeated after it; on an ask whose `because` is `conflict`, its two
-`statement` entries carry `side: newer|older` by their `at` (neither on
-equal or unknown times; the comparison `attention answer` uses for the
-losing side); a `file` entry carries `is_dir` and `display` (the whole
+`statement` entries carry `side: newer|older` by their `at`, the same
+field and ordering `attention answer` uses for the losing side (on equal
+or unknown times the page marks neither, where the verb counts the
+second-named one as the newer: the page never claims an order it does
+not know; gate r1 F7); a `file` entry carries `is_dir` and `display` (the whole
 path, the home folder written `~`); a statement whose context cannot be
 read says why in words (`context_note`: "not found on this machine: the
 conversation file it came from was moved or deleted…"), never an

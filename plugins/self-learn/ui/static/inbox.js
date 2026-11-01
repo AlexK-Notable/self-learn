@@ -240,6 +240,11 @@
           { target: "#ws-conversation", swap: "innerHTML" }).then(function () {
           var live = $("#ws-ask-live");
           if (live) live.innerHTML = "";
+          // Walk fixes gate r1 F5: the turn is sealed now, so the agent's
+          // words the paste rule matches against changed; the line under
+          // the reply box is asked again, never left more generous than
+          // the record.
+          recheckProvenance();
           var box = $("#ws-ask-text");
           if (box && !box.disabled) box.focus();
         });
@@ -251,7 +256,7 @@
   document.addEventListener("self-learn:sse", function (e) {
     var env = e.detail || {};
     if (env.type === "ask") onAsk(env);
-    else if (env.type === "attention") { refreshList(); noteResolved(env.ids); }
+    else if (env.type === "attention") { refreshList(); noteResolved(env.ids); recheckProvenance(); }
   });
   document.addEventListener("self-learn:refresh", refreshList);
 
@@ -328,6 +333,13 @@
     };
     if (now) send();
     else provenanceTimer = window.setTimeout(send, 300);
+  }
+
+  // The agent texts the rule matches against can change under a box that
+  // did not (an ask turn sealed, a new draft): ask again when it holds text.
+  function recheckProvenance() {
+    var reply = $("#ws-reply-text");
+    if (reply && reply.value) askProvenance(true);
   }
 
   function storeDraftMeta(item, id, option) {
@@ -479,7 +491,13 @@
     if (!form) return;
     var params = e.detail.parameters;
     var draftOption = form.getAttribute("data-draft-option");
-    if (draftOption && !params.option) params.option = draftOption;
+    if (draftOption && !params.option) {
+      // Walk fixes gate r1 F2: the option rides with the agent's draft, not
+      // with a click on that option's own button; the route arms it when it
+      // approves or registers (Send, Ctrl+Enter alike).
+      params.option = draftOption;
+      params.from_draft = "1";
+    }
   });
 
   document.addEventListener("htmx:beforeRequest", function (e) {
@@ -588,8 +606,15 @@
     // what that card sent.
     var elt = e.detail && e.detail.requestConfig ? e.detail.requestConfig.elt : null;
     var card = elt && elt.closest ? elt.closest("[data-draft-card]") : null;
+    // Gate r1 F2: a card's approve option now arms first, so its send can
+    // arrive from the armed bar's Confirm: that form carries the text it
+    // sends, and the box's words are cleared only when they are that text.
+    var armedForm = !card && elt && elt.closest ? elt.closest("[data-armed-answer]") : null;
+    var armedText = armedForm ? armedForm.querySelector("input[name=\"text\"]") : null;
     var sentReply = !!path && path[2] === "answer" && (
-      !card || recall("reply", currentItem()).trim() === draftCardText(card.getAttribute("data-draft-id"))
+      card ? recall("reply", currentItem()).trim() === draftCardText(card.getAttribute("data-draft-id"))
+        : armedForm ? recall("reply", currentItem()).trim() === (armedText ? armedText.value : "").trim()
+          : true
     );
     var recorded = $("#ws-answer [data-recorded]");
     if (recorded && inAnswer) {
@@ -612,6 +637,11 @@
     }
     var err = $("#ws-answer [data-answer-error]");
     if (err && target.id === "ws-answer") announce(err.textContent.replace(/\s+/g, " ").trim());
+    // Walk fixes gate r1 F3 (the orchestrator's ruling): the page never
+    // moves focus onto an approve or register button by itself. An armed
+    // bar puts it on Cancel, so a stray Enter or Space backs out.
+    var cancel = target.id === "ws-answer" ? $("#ws-answer [data-armed-cancel]") : null;
+    if (cancel) cancel.focus();
     if (target.id === "ws-answer" || target.id === "inbox-workspace") {
       var kept = $("#ws-reply-text");
       if (kept && kept.value) askProvenance(true);
@@ -635,7 +665,10 @@
   function sendFocusedBox() {
     var el = document.activeElement;
     if (!el) return false;
-    if (el.id === "ws-reply-text") return clickIfPresent("[data-send-reply]");
+    if (el.id === "ws-reply-text") {
+      keyedClick = true;
+      try { return clickIfPresent("[data-send-reply]"); } finally { keyedClick = false; }
+    }
     if (el.id === "ws-ask-text") return clickIfPresent("[data-ask-send]");
     return false;
   }
@@ -694,8 +727,12 @@
         break;
       }
       case "inbox_option": {
-        var armed = $("[data-confirm-armed]");
-        if (armed && event.key === "1") { armed.click(); break; }
+        // Walk fixes gate r1 F1: a held key's auto-repeat never acts, and
+        // while something is armed no number key does anything: only the
+        // armed bar's own Confirm button confirms (a click, or Enter/Space
+        // with it focused), so a digit can never approve.
+        if (event.repeat) break;
+        if ($("#ws-answer [data-armed-answer], #ws-answer [data-armed-stop]")) break;
         pressOption(event.key);
         break;
       }

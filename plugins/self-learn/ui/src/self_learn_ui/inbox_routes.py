@@ -695,6 +695,12 @@ def _sent_words(request: Request, item_id: str, t: int | None) -> str | None:
 KEYED_APPROVE_LINE = ("“{label}” approves this change: an agent then carries it out in a terminal "
                       "you can see. You pressed a key, and a key never approves on its own. "
                       "Confirm?")
+#: Walk fixes gate r1 F2: an approve option that rides with the agent's
+#: draft (Send, Ctrl+Enter, or the card's "Send the draft as is"), not with
+#: a click on that option's own button.
+DRAFT_APPROVE_LINE = ("The agent's draft is sent as “{label}”, and that approves this change: an "
+                      "agent then carries it out in a terminal you can see. Sending a draft never "
+                      "approves on its own. Confirm?")
 
 
 @router.post("/inbox/{item_id}/answer", response_class=HTMLResponse)
@@ -706,6 +712,7 @@ async def inbox_answer(
     draft_id: str | None = Form(None),
     confirm: str | None = Form(None),
     keyed: str | None = Form(None),
+    from_draft: str | None = Form(None),
     words_from: str | None = Form(None),
     sent_t: str | None = Form(None),
 ) -> HTMLResponse:
@@ -756,6 +763,7 @@ async def inbox_answer(
                     if offer is not None else None)
     armed = confirm == "1"
     by_key = keyed == "1"
+    by_draft = from_draft == "1"
     if chosen is not None and not armed:
         if chosen.get("confirm") or chosen.get("effect") == "register":
             # §3.7 "This registers <path> in git mode. Confirm?": the path
@@ -785,14 +793,17 @@ async def inbox_answer(
                     "message": "You run these yourself; the agent does the rest after you click "
                                "I ran it.",
                 })
-            if by_key:
+            if by_key or by_draft:
                 # Walk fixes, item 1 (design r2 §0 call 3 for a click): a
                 # number key never approves on its own; it arms, exactly as
-                # a confirm option's first click does.
+                # a confirm option's first click does. Gate r1 F2: neither
+                # does an option carried by the agent's draft (the person
+                # never clicked a button naming it), whatever sent it.
+                line = DRAFT_APPROVE_LINE if by_draft and not by_key else KEYED_APPROVE_LINE
                 return _answer_partial(request, item, packet_read, {
                     "state": "armed", "option": chosen, "text": text, "draft_id": draft_id,
                     "words_from": reuse_t, "sent_t": last_sent,
-                    "message": KEYED_APPROVE_LINE.format(label=chosen.get("label")),
+                    "message": line.format(label=chosen.get("label")),
                 })
     argv = ["attention", "answer", item_id]
     if option is not None:
@@ -932,7 +943,7 @@ async def inbox_run(request: Request, item_id: str, login: str | None = Form(Non
              if result.exit_code == 5 else {"command": None, "lead": None})
     return _render(request, "partials/workspace_run.html", {
         "item": _view_item(item), "exit": result.exit_code, "login": login == "1",
-        "message": message, **split,
+        "message": message, "already_open": bool((data or {}).get("already_open")), **split,
     })
 
 

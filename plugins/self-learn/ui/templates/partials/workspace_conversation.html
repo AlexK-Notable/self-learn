@@ -22,7 +22,7 @@
     <form class="draft-actions" hx-post="/inbox/{{ item.id }}/answer" hx-target="#ws-answer" hx-swap="outerHTML">
       <input type="hidden" name="draft_id" value="{{ row.draft_id }}">
       <input type="hidden" name="text" value="{{ row.text }}">
-      {% if row.option %}<input type="hidden" name="option" value="{{ row.option }}">{% endif %}
+      {% if row.option %}<input type="hidden" name="option" value="{{ row.option }}"><input type="hidden" name="from_draft" value="1">{% endif %}
       <button type="button" class="btn" data-use-draft>Use this draft</button>
       <button type="submit" class="btn btn-primary" data-send-draft>Send the draft as is</button>
     </form>

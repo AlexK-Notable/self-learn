@@ -301,6 +301,17 @@ def _wait_line(page: "Page", words: str) -> None:
         assert words in (page.text_content("#ws-reply-line") or "")
 
 
+def _confirm_armed(page: "Page") -> None:
+    """Walk fixes gate r1 F2: an approve option carried by the agent's
+    draft arms first; confirm it as a person would, once htmx wired the
+    armed form (app.js blocks a native submit in the swap/settle gap)."""
+    page.wait_for_selector("#ws-answer [data-armed-answer]", timeout=_WAIT_MS)
+    page.wait_for_function(
+        "() => !!document.querySelector('[data-confirm-armed]').closest('form')['htmx-internal-data']",
+        timeout=_WAIT_MS)
+    page.click("[data-confirm-armed]")
+
+
 def _wait_for(predicate, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -330,6 +341,7 @@ def test_a_restored_draft_is_still_sent_as_the_agents_draft_with_its_option(page
     assert page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions"
     _wait_line(page, "as the agent's draft, accepted by you")
     page.click("[data-send-reply]")
+    _confirm_armed(page)  # the draft's option approves (walk fixes gate r1 F2)
     _wait_for(lambda: bool(_answer_calls(server)))
     argv = _answer_calls(server)[-1]
     assert argv[argv.index("--draft") + 1] == DRAFT_ID
@@ -508,6 +520,7 @@ def test_send_as_is_on_a_draft_card_keeps_the_boxs_own_words(page, server):
     _open(page, server, ID_OO7)
     page.fill("#ws-reply-text", words)
     page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] button[type="submit"]')
+    _confirm_armed(page)  # the card's option approves (walk fixes gate r1 F2)
     page.wait_for_selector("#ws-answer [data-recorded]", timeout=_WAIT_MS)
     argv = _answer_calls(server)[-1]
     assert argv[argv.index("--draft") + 1] == DRAFT_ID  # control: the card was sent
@@ -528,11 +541,13 @@ def test_a_failed_answer_keeps_the_drafts_note_and_option(page, server):
     _wait_line(page, "as the agent's draft")  # control: the draft is wired
     server.runner.queue_result(RunResult(3, stderr="refused for this test"))
     page.click("[data-send-reply]")
+    _confirm_armed(page)  # the draft's option approves (walk fixes gate r1 F2)
     page.wait_for_selector("#ws-answer [data-answer-error]", timeout=_WAIT_MS)
     assert page.input_value("#ws-reply-draft") == DRAFT_ID
     _wait_line(page, "as the agent's draft")
     assert page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions"
     page.click("[data-send-reply]")
+    _confirm_armed(page)
     _wait_for(lambda: len(_answer_calls(server)) >= 2)
     argv = _answer_calls(server)[-1]
     assert argv[argv.index("--draft") + 1] == DRAFT_ID
