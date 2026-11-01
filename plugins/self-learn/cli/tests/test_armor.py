@@ -291,11 +291,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
                 "as a value rather than a blanket pass.",
             ),
         },
-        # 2026-10-31 (attention round, lane `ask-agent`, gate r1 MAJOR 1;
-        # 17-invocation-runbook.md §1c): the ask surface's streaming
-        # relay, driven through `SdkBackend` by real `stream_event` lines.
-        new_funcs=frozenset({"_scenario_ask_stream"}),
-        new_scenario_keys=frozenset({"ask_stream"}),
+        # 2026-11-01, ANCHOR 208289b (um-basis landing): the attention
+        # round's `new_funcs` (_scenario_ask_stream) and `new_scenario_keys`
+        # (ask_stream) doors were dropped as VACUOUS by this landing's own
+        # refusal; they are anchor-side now (section 4.7 FW-140).
     ),
     # --- BEHAVIOUR: every top-level node (section 4.5) -----------------
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): this row's two `edited` doors (WR7's fourth and
@@ -313,18 +312,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # step's --remeasure does that (the lane never runs it).
     # 2026-10-31, ANCHOR 5596021 (2026-10-31 batch landing): this row's 3 `missing` doors (the 2026-10-30 fix wave's test edits)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
+    # 2026-11-01, ANCHOR 208289b (um-basis landing): this row's 1 `edited` door (the attention round's
+    # ask.py seam caller, S-124/S-127) was dropped as VACUOUS by this landing's own refusal; it is anchor-side now.
     "test_invocation.py": Behaviour(
         nodes=72, dump_sha="c3866dd19651b97d7eba9c126d36b3a51290b8028376e3a8a4759c6699e8314b",
-        edited={
-            "func:test_wr7_seam_is_only_called_from_the_three_call_sites": (
-                "2026-10-31, attention round design r2 §5.4 (03-decisions.md, the ask "
-                "agent's row, S-124): ask.py joins the seam's callers -- the "
-                "inbox's read-only ask agent is the eighth surface, one question one session. "
-                "2026-11-01, attention round design r2 §3.9 (S-127): the same node "
-                "also drops `worker._notify` and `worker._notify_with_ids` from its excluded "
-                "spawn sites, removed with the worker's popups"
-            ),
-        },
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
@@ -356,19 +347,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # transports, kill switch and escalation debounce (nine `missing` doors).
     # `test_a_worker_run_that_writes_proposals_spawns_no_popup` (added) guards
     # the removal.
+    # 2026-11-01, ANCHOR 208289b (um-basis landing): this row's 9 `missing` doors (the attention round's
+    # removal of the worker popups, S-127) were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46",
-        missing={
-            "func:test_notification_template_verbatim": _NO_WORKER_POPUPS_REASON,
-            "func:test_notify_kill_switch_both_directions": _NO_WORKER_POPUPS_REASON,
-            "func:test_notify_uses_helper_with_pinned_argv_and_matching_ids": _NO_WORKER_POPUPS_REASON,
-            "func:test_notify_helper_absent_falls_back_to_direct_notify_send": _NO_WORKER_POPUPS_REASON,
-            "func:test_notify_direct_fallback_kill_switch_both_directions": _NO_WORKER_POPUPS_REASON,
-            "func:test_notify_escalation_kill_switch_both_directions": _NO_WORKER_POPUPS_REASON,
-            "func:test_notify_never_blocks_worker_on_detached_helper": _NO_WORKER_POPUPS_REASON,
-            "func:test_escalation_fires_and_debounces": _NO_WORKER_POPUPS_REASON,
-            "func:test_no_escalation_under_thresholds": _NO_WORKER_POPUPS_REASON,
-        },
     ),
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): H1's `edited` door (FW-85's EXIT_HELD) was dropped
     # as VACUOUS by this landing's own refusal; FW-85 is behind the anchor.
@@ -857,9 +839,12 @@ class Measured:
 
 MEASURED: dict[str, Measured] = {
     "BEH7.node_counts": Measured(
-        value=(72, 139, 83, 84, 61, 59, 63, 26),
+        value=(72, 139, 75, 84, 61, 59, 63, 26),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-11-01, transcribed at ANCHOR 208289b from this module's own "
+            "STALE refusal (um-basis): (72, 139, 83, 84, 61, 59, 63, 26) -> (72, 139, 75, 84, 61, 59, 63, 26); the attention round's test edits and deletions "
+            "are anchor-side now. Previous entry: "
             "2026-10-31, transcribed at ANCHOR 5596021 from this module's own "
             "STALE refusal (2026-10-31 batch landing): (75, 139, 83, 84, 61, 59, 63, 26) -> (72, 139, 83, 84, 61, 59, 63, 26); the 2026-10-30 fix wave's test edits "
             "are anchor-side now. Previous entry: "
@@ -887,9 +872,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_node_counts,
     ),
     "BEH7.dump_prefixes": Measured(
-        value=('c3866dd19651', '972fd5320007', '0d4ac5f2300d', '1a6ef0d78003', 'd9bd2a6a44e5', '64de0b46f124', '95bbfe93d6c0', '3002f84a40b7'),
+        value=('20bb2a73b4de', '972fd5320007', '1439a4394580', '1a6ef0d78003', 'd9bd2a6a44e5', '64de0b46f124', '95bbfe93d6c0', '3002f84a40b7'),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-11-01, transcribed at ANCHOR 208289b from this module's own "
+            "STALE refusal (um-basis): (c3866dd19651, 972fd5320007, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7) -> (20bb2a73b4de, 972fd5320007, 1439a4394580, 1a6ef0d78003, d9bd2a6a44e5, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7); the attention round's test edits and deletions "
+            "are anchor-side now. Previous entry: "
             "2026-10-31, transcribed at ANCHOR 5596021 from this module's own "
             "STALE refusal (2026-10-31 batch landing): (37437e97c303, b1ee64cd9f95, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, 0558051df890, 95bbfe93d6c0, 3002f84a40b7) -> (c3866dd19651, 972fd5320007, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7); the 2026-10-30 fix wave's test edits "
             "are anchor-side now. Previous entry: "
@@ -922,9 +910,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_dump_prefixes,
     ),
     "BEH7.node_total": Measured(
-        value=587,
+        value=579,
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-11-01, transcribed at ANCHOR 208289b from this module's own "
+            "STALE refusal (um-basis): 587 -> 579; the attention round's test edits and deletions "
+            "are anchor-side now. Previous entry: "
             "2026-10-31, transcribed at ANCHOR 5596021 from this module's own "
             "STALE refusal (2026-10-31 batch landing): 590 -> 587; the 2026-10-30 fix wave's test edits "
             "are anchor-side now. Previous entry: "
@@ -973,9 +964,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=9,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-11-01, transcribed at ANCHOR 208289b from this module's own "
+            "STALE refusal (um-basis): 9 -> 0; the attention round's test edits and deletions "
+            "are anchor-side now. Previous entry: "
             "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-127): 0 -> 9, "
             "the nine `missing` doors on test_worker.py (the worker popups' tests, removed with "
             "P1 and P2). Counted by this module's own run at the unchanged ANCHOR; the landing "
@@ -1004,9 +998,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=1,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-11-01, transcribed at ANCHOR 208289b from this module's own "
+            "STALE refusal (um-basis): 1 -> 0; the attention round's test edits and deletions "
+            "are anchor-side now. Previous entry: "
             "2026-10-31 attention round, lane ask-agent (design r2 §5.4): 0 -> 1; "
             "test_invocation.py `func:test_wr7_seam_is_only_called_from_the_three_call_sites` "
             "gains an `edited` door (ask.py joins the seam's callers). Counted by reading; the "
