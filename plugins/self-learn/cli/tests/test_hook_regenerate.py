@@ -236,7 +236,7 @@ def test_a_hook_whose_examples_fail_against_the_new_bytes_is_left(env, monkeypat
     hook = dict(routing["hook"])
     # a warn example only the raw matcher warns on: the view keeps it quiet
     hook["examples"] = {**hook["examples"], "warn": [
-        {"tool_name": "Bash", "tool_input": {"command": f'echo "{BAD}"'}}]}
+        {"tool_name": "Bash", "tool_input": {"command": f'git commit -m "{BAD}"'}}]}
     routing["hook"] = hook
     record.set_routing(routing)
     record.write(env.resolved())
@@ -410,6 +410,44 @@ def test_g2_a_person_deletion_after_a_failed_write_is_left_and_reported(
     job = maintenance.run(env.home, cache_dir, now=time.time() + 2 * 86400)
     assert job.status == "idle" and "was deleted after" in job.hooks_refused[RID]
     assert not script.exists()
+
+
+def test_h6_the_pending_cache_is_written_under_the_commit_lock(env, monkeypatch):
+    """Gate r3 H6 (V20): every write of the pending-placement cache, by
+    ``record`` and by ``drop``, happens while the ledger's commit lock is
+    held (``test_lock_invariant`` exempts the writer as NOT_REPO_TRUTH, so
+    nothing else pins this)."""
+    from contextlib import contextmanager
+
+    from self_learn import gitops, hook_pending
+
+    depth = [0]
+    real_lock = gitops.commit_lock
+
+    @contextmanager
+    def spy(repo, **kwargs):
+        with real_lock(repo, **kwargs):
+            depth[0] += 1
+            try:
+                yield
+            finally:
+                depth[0] -= 1
+
+    writes: list[bool] = []
+    real_store = hook_pending._store
+
+    def store(home, data):
+        writes.append(depth[0] > 0)
+        real_store(home, data)
+
+    monkeypatch.setattr(gitops, "commit_lock", spy)
+    monkeypatch.setattr(hook_pending, "_store", store)
+    hook_pending.record(env.home, RID, placed_sha256="0" * 64, missing=False,
+                        script_path="x.sh", why="test")
+    assert RID in hook_pending.read(env.home)  # control: it was written
+    hook_pending.drop(env.home, [RID])
+    assert hook_pending.read(env.home) == {}
+    assert writes == [True, True]
 
 
 def test_g2_a_pending_entry_for_a_retired_lesson_is_forgotten(env, monkeypatch, cache_dir):

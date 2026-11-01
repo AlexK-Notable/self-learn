@@ -1520,9 +1520,9 @@ def _hook_lines() -> list[str]:
         f"                tools from {', '.join(hook_compiler.GUARDABLE_TOOLS)};",
         "                path_regex an extended regular expression matched against the file path",
         "                (Edit, Write) or the command (Bash); a warning hook matches a Bash command's",
-        "                words (plain quoted text and the body of a heredoc written to a file are",
-        "                blanked; a `bash -c`, `eval`, `ssh` or `trap` payload counts as words), a",
-        "                deny hook the raw command;",
+        "                raw text with only a commit or gh message and the body of a heredoc",
+        "                written to a file (cat > FILE, tee FILE) blanked, a deny hook the raw",
+        "                command;",
         "                deny_message one line; warn_message",
         f"                up to {hook_compiler.WARN_MESSAGE_MAX} characters, newlines allowed",
         f"    examples    {verdicts['deny']} for deny, {verdicts['warn']} for warn,"

@@ -1,19 +1,20 @@
-"""S-133: a warning hook on Bash matches the command's words, not the text
-inside the quotes and heredoc bodies it fully understands.
+"""S-133: a warning hook on Bash hides only a commit or gh message and a
+heredoc written to a file, in their exact shapes; every other command is
+matched on its raw text, as before S-133.
 
 The live defect (notice ntc-71c2eb83, lesson lrn-042c8179): the heredoc
 warning hook of lrn-c71f0a40 grepped the raw command, so a commit message
 or a heredoc that only MENTIONED ``python3 - <<EOF </dev/null`` fired the
-warning. Gate r2's rule (the orchestrator's): the view hides only spans it
-fully understands -- a single-quoted string, a double-quoted string with no
-``$``, backtick or escaped quote, a heredoc body whose terminator line is
-found (an unquoted one only without ``$(`` or a backtick) -- and shows
-everything else as written. The worst case is an extra warning, never a
-missed one.
+warning. Gate r3's rule (the orchestrator's): an exact-shape allowlist.
+A1, the message argument of ``git commit -m|-am|--message`` or of ``gh
+pr|issue create|comment -t|-b|--title|--body`` given as a single-quoted
+string, a plain double-quoted string or the commit idiom; A2, the body of
+``cat >|>> FILE <<'D'`` or ``tee [-a] FILE <<'D'``. Anything else -- and
+any construct the scan does not tokenize exactly -- is the raw command.
 
 Every test runs the GENERATED script (or its embedded awk program) against
 sample commands -- the suite's mock-free convention. The corpus below is
-the builder's own cases plus every input gate r1 and gate r2 probed with.
+the builder's own cases plus every input gates r1, r2 and r3 probed with.
 """
 
 from __future__ import annotations
@@ -111,25 +112,25 @@ def _view(command: str, awk: tuple[str, ...] = ("awk",)) -> subprocess.Completed
 
 # ------------------------------------------------------------- the corpus
 
-#: name -> (command, expectation). ``warn``: a plain invocation (or text the
-#: conservative rule shows) must warn. ``silent``: a mention inside a span
-#: the rule fully understands must not warn, and the raw matcher must (the
-#: control). ``none``: nothing to warn on, raw or viewed. ``syntax``: bash
-#: rejects the input, so nothing runs; no claim.
+#: name -> (command, expectation). ``warn``: matched as the raw text is --
+#: everything outside an A1/A2 hidden span. ``silent``: the pattern appears
+#: only inside an A1 message or an A2 body, so the view does not warn while
+#: the raw matcher does (the control). ``none``: nothing to warn on, raw or
+#: viewed. ``syntax``: bash rejects the input, so nothing runs; no claim.
 CORPUS: dict[str, tuple[str, str]] = {
     # --- the builder's own: understood mentions
     "own: double-quoted commit message": (f'git commit -m "docs: {BAD}"', "silent"),
-    "own: single-quoted argument": (f"echo '{BAD}'", "silent"),
+    "own: single-quoted argument": (f"echo '{BAD}'", "warn"),
     "own: heredoc body, quoted delimiter": (f"cat > notes.md <<'MD'\nnever run {BAD}\nMD", "silent"),
-    "own: heredoc body, bare delimiter": (f"cat > notes.md <<MD\nnever run {BAD}\nMD", "silent"),
-    "own: heredoc body with an apostrophe": (f"cat <<EOF\ndon't {BAD}\nEOF", "silent"),
-    "own: two heredocs on one line": (f"cat <<A <<B\nx\nA\n{BAD}\nB", "silent"),
-    "own: tab-stripped heredoc": (f"cat <<-EOF\n\t{BAD}\n\tEOF", "silent"),
-    "own: python -c double-quoted, no $": (f"python3 -c \"print('{BAD}')\"", "silent"),
+    "own: heredoc body, bare delimiter": (f"cat > notes.md <<MD\nnever run {BAD}\nMD", "warn"),
+    "own: heredoc body with an apostrophe": (f"cat <<EOF\ndon't {BAD}\nEOF", "warn"),
+    "own: two heredocs on one line": (f"cat <<A <<B\nx\nA\n{BAD}\nB", "warn"),
+    "own: tab-stripped heredoc": (f"cat <<-EOF\n\t{BAD}\n\tEOF", "warn"),
+    "own: python -c double-quoted, no $": (f"python3 -c \"print('{BAD}')\"", "warn"),
     "own: pkill in a commit message": ('git commit -m "never pkill -f a pattern"', "silent"),
-    "own: pgrep in a quoted heredoc": ("cat <<'EOF' > NOTES.md\npgrep -f x matches itself\nEOF", "silent"),
-    "own: $( ) in a quoted heredoc body": ("cat <<'EOF'\nrun $(pkill -f foo) danger\nEOF", "silent"),
-    "own: quoted heredoc inside $( )": ("x=$(cat <<'EOF'\npkill -f foo\nEOF\n)", "silent"),
+    "own: pgrep in a quoted heredoc": ("cat <<'EOF' > NOTES.md\npgrep -f x matches itself\nEOF", "warn"),
+    "own: $( ) in a quoted heredoc body": ("cat <<'EOF'\nrun $(pkill -f foo) danger\nEOF", "warn"),
+    "own: quoted heredoc inside $( )": ("x=$(cat <<'EOF'\npkill -f foo\nEOF\n)", "warn"),
     # --- the builder's own: real invocations
     "own: the lesson's own example": ("python3 - <<'EOF' </dev/null\nprint(1)\nEOF", "warn"),
     "own: after an escaped quote outside quotes": (f'echo \\"x\\"; {BAD}\nEOF', "warn"),
@@ -148,7 +149,7 @@ CORPUS: dict[str, tuple[str, str]] = {
     "own: backticks": ("echo `pgrep -f worker`", "warn"),
     "own: backticks in double quotes": ('echo "`pgrep -f worker`"', "warn"),
     "own: bash -c, word-anchored": ("bash -c 'pkill -f node'", "warn"),
-    "own: sudo sh -c": ('sudo sh -c "pgrep -f worker"', "warn"),
+    "own: sudo sh -c": ('sudo sh -c "pgrep -f worker"', "none"),  # raw misses it too (a quote before pgrep), as on master
     "own: eval ANSI-C": ("eval $'pkill -f x'", "warn"),
     # --- shown by the conservative rule (not understood, so visible)
     "rule: the commit idiom ($( ) in double quotes)": (f"git commit -m \"$(cat <<'EOF'\nfix: {BAD}\nEOF\n)\"", "silent"),
@@ -176,7 +177,7 @@ CORPUS: dict[str, tuple[str, str]] = {
     "r1: bash-c--": ("bash -c -- 'pkill -f foo'", "warn"),
     "r1: quoted-cmd": ('"pkill" -f foo', "warn"),
     "r1: quoted-arg": ('rm -rf "$HOME/.self-learn" danger', "warn"),
-    "r1: python-c": ('python3 -c \'import os; os.system("pkill -f foo")\'', "silent"),
+    "r1: python-c": ('python3 -c \'import os; os.system("pkill -f foo")\'', "warn"),
     "r1: heredoc-commit": ("git commit -m \"$(cat <<'EOF'\nfix: pkill -f foo danger\nEOF\n)\"", "silent"),
     "r1: heredoc-sh": ("bash <<EOF\npkill -f foo\nEOF", "warn"),
     "r1: bash-s-arg": ("bash -s -- arg <<EOF\npkill -f foo\nEOF", "warn"),
@@ -216,10 +217,10 @@ CORPUS: dict[str, tuple[str, str]] = {
     # --- gate r1, the fold's own GATE inputs
     "r1 fold: F1 a $(( that is a subshell": ("x=$((cd /; pkill -f foo) | wc -l)", "warn"),
     "r1 fold: F4 here-string, ANSI-C": ("bash <<< $'pkill -f foo'", "warn"),
-    "r1 fold: here-string to a shell, then quoted text": ("bash <<< x; echo 'pkill -f foo'", "silent"),
-    "r1 fold: quoted here-string, then quoted text": ("bash <<< 'true'; echo 'pkill -f foo'", "silent"),
-    "r1 fold: a trap's signal list": ("trap 'echo hi' 'pkill -f foo'", "silent"),
-    "r1 fold: arithmetic leaves later quotes alone": ('x=$((1<<2)); echo "pkill -f foo"', "silent"),
+    "r1 fold: here-string to a shell, then quoted text": ("bash <<< x; echo 'pkill -f foo'", "warn"),
+    "r1 fold: quoted here-string, then quoted text": ("bash <<< 'true'; echo 'pkill -f foo'", "warn"),
+    "r1 fold: a trap's signal list": ("trap 'echo hi' 'pkill -f foo'", "warn"),
+    "r1 fold: arithmetic leaves later quotes alone": ('x=$((1<<2)); echo "pkill -f foo"', "warn"),
     # --- gate r2, cases3
     "r2: arith-then-cmd": ("(( x )) && pkill -f foo", "warn"),
     "r2: arith-subst": ("echo $(( $(pkill -f foo) ))", "warn"),
@@ -233,13 +234,13 @@ CORPUS: dict[str, tuple[str, str]] = {
     "r2: arith-unbal-paren-in-str": ("echo $(( $(echo '(') )) ; pkill -f foo ; echo ')) '", "warn"),
     "r2: nested-subshell-not-arith": ("((cd /tmp; ls) && pkill -f foo)", "warn"),
     "r2: arith-heredoc-inside": ("(( $(cat <<EOF\n1\nEOF\n) ))\npkill -f foo", "warn"),
-    "r2: herestring-sh-unquoted-then-quote": ("bash <<< x 'pkill -f foo'", "silent"),
-    "r2: herestring-forced-leak": ('bash <<< "$x"; git commit -m "pkill -f foo"', "silent"),
-    "r2: herestring-sh-then-squote-later": ("sh <<< 'true' && echo 'pkill -f foo'", "silent"),
+    "r2: herestring-sh-unquoted-then-quote": ("bash <<< x 'pkill -f foo'", "warn"),
+    "r2: herestring-forced-leak": ('bash <<< "$x"; git commit -m "pkill -f foo"', "warn"),
+    "r2: herestring-sh-then-squote-later": ("sh <<< 'true' && echo 'pkill -f foo'", "warn"),
     "r2: herestring-sudo-bash": ("sudo bash <<< 'pkill -f foo'", "warn"),
     "r2: herestring-python": ('python3 <<< \'import os; os.system("pkill -f foo")\'', "warn"),
     "r2: trap-dash": ("trap -- 'pkill -f foo' EXIT", "warn"),
-    "r2: trap-p": ("trap -p 'pkill -f foo'", "silent"),
+    "r2: trap-p": ("trap -p 'pkill -f foo'", "warn"),
     "r2: commit-msg-trap-word": ('git commit -m "trap" -m "pkill -f foo"', "silent"),
     "r2: echo-trap (G5, an extra warning)": ("echo trap 'pkill -f foo'", "warn"),
     "r2: paren-hash-fp": ("(echo a)#x; pkill -f foo", "warn"),
@@ -252,9 +253,9 @@ CORPUS: dict[str, tuple[str, str]] = {
     "r2 G1: backticks in quoted arithmetic": ('echo "$(( `pkill -f foo` ))"', "warn"),
     # --- the gate r2 fold's own controls (mutation-driven)
     "r2 fold: a comment after a subshell's )": ("(cd x)# don't\npkill -f foo 'y'", "warn"),
-    "r2 fold: a # after a substitution's ) is a word": ("echo $(date)#x 'pkill -f foo'", "silent"),
+    "r2 fold: a # after a substitution's ) is a word": ("echo $(date)#x 'pkill -f foo'", "warn"),
     "r2 fold: the here-string flag ends with its word":
-        ("bash <<< 'a'; git commit -m 'pkill -f foo'", "silent"),
+        ("bash <<< 'a'; git commit -m 'pkill -f foo'", "warn"),
     "r2 fold: an inner quote in $( ) in double quotes":
         ('echo "$(echo "a" \'pkill -f foo\')"', "warn"),
     "r2 fold: an inner quote in backticks in double quotes":
@@ -262,7 +263,7 @@ CORPUS: dict[str, tuple[str, str]] = {
     "r2 fold: a heredoc delimiter holding $ keeps its body":
         ("cat <<$X >f\npkill -f foo\n$X\nls", "warn"),
     "r2 fold: a heredoc after closed arithmetic":
-        ("echo $((1<<2)); cat <<'E' >f\npkill -f foo\nE", "silent"),
+        ("echo $((1<<2)); cat <<'E' >f\npkill -f foo\nE", "warn"),
     "r2 fold: a shift in (( )), then a line equal to its operand":
         ("(( x = 1 << 2 ))\npkill -f foo\n2", "warn"),
     # --- the commit idiom, recognised exactly (coordinator, before gate r3)
@@ -290,6 +291,136 @@ CORPUS: dict[str, tuple[str, str]] = {
     "idiom near-miss: the command word itself": ("\"$(cat <<'E'\npkill -f foo\nE\n)\"", "warn"),
     "idiom near-miss: printed into a shell": ("echo \"$(cat <<'E'\npkill -f foo\nE\n)\" | bash", "warn"),
     "idiom near-miss: a heredoc already pending": ("cat <<A >f; x=\"$(cat <<'E'\npkill -f foo\nE\n)\"\nA", "warn"),
+    # --- gate r3, cases4 (the gate's inputs, verbatim; H1-H5)
+    'r3: bash-2>&1-heredoc': ("bash 2>&1 <<'EOF'\npkill -f foo\nEOF", 'warn'),
+    'r3: bash-&>-heredoc': ("bash &>/dev/null <<'EOF'\npkill -f foo\nEOF", 'warn'),
+    'r3: pipe-continued-line': ("cat <<'EOF' |\npkill -f foo\nEOF\nbash", 'warn'),
+    'r3: source-stdin': ("source /dev/stdin <<'EOF'\npkill -f foo\nEOF", 'warn'),
+    'r3: dot-stdin': (". /dev/stdin <<'EOF'\npkill -f foo\nEOF", 'warn'),
+    'r3: bash-procsub-heredoc': ("bash <(cat <<'EOF'\npkill -f foo\nEOF\n)", 'warn'),
+    'r3: source-procsub-heredoc': ("source <(cat <<'EOF'\npkill -f foo\nEOF\n)", 'warn'),
+    'r3: idiom-assign-eval': ('x="$(cat <<\'EOF\'\npkill -f foo\nEOF\n)"; eval "$x"', 'warn'),
+    'r3: idiom-assign-bashc': ('x="$(cat <<\'EOF\'\npkill -f foo\nEOF\n)"\nbash -c "$x"', 'warn'),
+    'r3: idiom-assign-unquoted-run': ('cmd="$(cat <<\'EOF\'\npkill -f foo\nEOF\n)"\n$cmd', 'warn'),
+    'r3: idiom-then-pkill': ('git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)"; pkill -f foo', 'warn'),
+    'r3: idiom-then-andbash': ('git commit -m "$(cat <<\'EOF\'\npkill -f foo\nEOF\n)" && bash', 'silent'),
+    'r3: idiom-pipe-bash': ('echo "$(cat <<\'EOF\'\npkill -f foo\nEOF\n)" | bash', 'warn'),
+    'r3: idiom-pipe-sudo-sh': ('printf \'%s\' "$(cat <<\'EOF\'\npkill -f foo\nEOF\n)" | sudo sh', 'warn'),
+    'r3: idiom-delim-in-body-then-cmd': ('git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\npkill -f foo\n)"', 'warn'),
+    'r3: idiom-paren-quote-in-body': ('git commit -m "$(cat <<\'EOF\'\nfoo)"\nEOF\n)"; pkill -f foo', 'warn'),
+    'r3: idiom-crlf': ('git commit -m "$(cat <<\'EOF\'\r\nmsg\r\nEOF\r\n)"\r\npkill -f foo', 'warn'),
+    'r3: idiom-second-heredoc-same-line': ('cat <<A; git commit -m "$(cat <<\'EOF\'\nx\nEOF\n)"\npkill -f foo\nA', 'warn'),
+    'r3: two-idioms': ('git commit -m "$(cat <<\'A\'\nx\nA\n)" -m "$(cat <<\'B\'\ny\nB\n)"; pkill -f foo', 'warn'),
+    'r3: idiom-nested': ('git commit -m "$(cat <<\'EOF\'\n$(cat <<\'F\'\nx\nF\n)\nEOF\n)"; pkill -f foo', 'warn'),
+    'r3: idiom-dash-tabs': ('git commit -m "$(cat <<-\'EOF\'\n\tmsg\n\tEOF\n)"; pkill -f foo', 'warn'),
+    'r3: idiom-bashc': ('bash -c "$(cat <<\'EOF\'\npkill -f foo\nEOF\n)"', 'warn'),
+    'r3: idiom-cmdpos': ('"$(cat <<\'EOF\'\npkill\nEOF\n)" -f foo', 'warn'),
+    'r3: idiom-env-cmd': ('env "$(cat <<\'EOF\'\npkill\nEOF\n)" -f foo', 'warn'),
+    'r3: idiom-ssh': ('ssh h "$(cat <<\'EOF\'\npkill -f foo\nEOF\n)"', 'warn'),
+    'r3: idiom-tmux': ('tmux send-keys "$(cat <<\'EOF\'\npkill -f foo\nEOF\n)" Enter', 'warn'),
+    'r3: idiom-redirect-run': ('echo "$(cat <<\'EOF\'\npkill -f foo\nEOF\n)" > /tmp/s.sh && bash /tmp/s.sh', 'warn'),
+    'r3: heredoc-file-then-run': ("cat > /tmp/s.sh <<'EOF'\npkill -f foo\nEOF\nbash /tmp/s.sh", 'warn'),
+    'r3: python-c': ('python3 -c \'import os; os.system("pkill -f foo")\'', 'warn'),
+    'r3: flock-c': ("flock /tmp/l -c 'pkill -f foo'", 'warn'),
+    'r3: fish-c': ("fish -c 'pkill -f foo'", 'warn'),
+    'r3: tcsh-c': ("tcsh -c 'pkill -f foo'", 'warn'),
+    'r3: ash-c': ("busybox ash -c 'pkill -f foo'", 'warn'),
+    'r3: parallel': ("parallel 'pkill -f {}' ::: foo", 'warn'),
+    'r3: tmux-sendkeys': ("tmux send-keys -t x 'pkill -f foo' Enter", 'warn'),
+    'r3: sudo-i': ("sudo -i 'pkill -f foo'", 'warn'),
+    'r3: sudo-u-quoted-cmd': ("sudo -u root 'pkill' -f foo", 'warn'),
+    'r3: env-quoted-cmd': ("env 'pkill' -f foo", 'warn'),
+    'r3: brace-quoted-cmd': ("{ 'pkill' -f foo; }", 'warn'),
+    'r3: then-quoted-cmd': ("if true; then 'pkill' -f foo; fi", 'warn'),
+    'r3: xargs-quoted': ("echo foo | xargs 'pkill' -f", 'warn'),
+    'r3: nohup-quoted': ("nohup 'pkill' -f foo &", 'warn'),
+    'r3: let-shift-term': ("let 'x<<=1'\npkill -f foo", 'warn'),
+    'r3: oldarith': ('echo $[1<<2]\npkill -f foo\n2]', 'warn'),
+    'r3: arith-unclosed-heredoc': ('(( x\ncat <<EOF\npkill -f foo\nEOF', 'warn'),
+    'r3: dq-dollar-var-plain': ('echo "$HOME pkill -f foo"', 'warn'),
+    'r3: sq-in-code-eval-concat': ("eval 'pk''ill -f foo'", 'none'),  # split word: raw misses it too, as on master
+    'r3: heredoc-bad-delim': ('cat <<$X\npkill -f foo\n$X', 'warn'),
+    'r3: herestring-python': ('python3 <<< \'import os; os.system("pkill -f foo")\'', 'warn'),
+    'r3: ssh-heredoc': ("ssh host <<'EOF'\npkill -f foo\nEOF", 'warn'),
+    'r3: bash-s-arg-heredoc': ("bash -s -- arg <<'EOF'\npkill -f foo\nEOF", 'warn'),
+    'r3: sudo-tee-sh': ("cat <<'EOF' | sudo tee /x | sh\npkill -f foo\nEOF", 'warn'),
+    'r3: dq-escaped-dollar': ('bash -c "\\$(pkill -f foo)"', 'warn'),
+    'r3: comment-sq': ("ls # it's\npkill -f foo", 'warn'),
+    'r3: paren-hash': ('echo $(date)#x; pkill -f foo', 'warn'),
+    'r3: sq-then-dq-code': ('sh -c \'x\'"; pkill -f foo"', 'warn'),
+    'r3: bash-c-concat': ('bash -c \'pk\'"ill -f foo"', 'none'),  # split word: raw misses it too, as on master
+    'r3: bash-c-x-c': ("bash -x -c 'pkill -f foo'", 'warn'),
+    'r3: exec-bash-heredoc': ("exec bash <<'EOF'\npkill -f foo\nEOF", 'warn'),
+    'r3: heredoc-in-dollarparen-unquoted': ('x=$(cat <<\'EOF\'\npkill -f foo\nEOF\n); eval "$x"', 'warn'),
+    'r3: heredoc-in-dollarparen-bash': ("x=$(bash <<'EOF'\npkill -f foo\nEOF\n)", 'warn'),
+    'r3: subshell-bash-heredoc': ("(bash <<'EOF'\npkill -f foo\nEOF\n)", 'warn'),
+    'r3: semi-bash-heredoc': ("true; bash <<'EOF'\npkill -f foo\nEOF", 'warn'),
+    'r3: ssh-t-heredoc': ("ssh -t h 'bash -s' <<'EOF'\npkill -f foo\nEOF", 'warn'),
+    # --- gate r3's allowlist: A1, the message argument (silent)
+    'A1: -am': ("git commit -am 'pkill -f foo'", 'silent'),
+    'A1: --message, double-quoted': ('git add x && git commit --message "pkill -f foo"', 'silent'),
+    'A1: in a subshell': ("(git commit -m 'pkill -f foo')", 'silent'),
+    'A1: a redirect after it': ("cd r; git commit -m 'pkill -f foo' 2>&1", 'silent'),
+    'A1: then git push': ("git commit -m 'pkill -f foo' && git push", 'silent'),
+    'A1: then || true': ("git commit -m 'pkill -f foo' || true", 'silent'),
+    'A1: on a continued line': ("git commit -q \\\n  -m 'pkill -f foo'", 'silent'),
+    'A1: gh pr create, title and idiom body': ('gh pr create --title \'pkill -f foo\' --body "$(cat <<\'EOF\'\npkill -f foo\nEOF\n)"', 'silent'),
+    'A1: gh issue comment -b': ("gh issue comment 5 -b 'pkill -f foo'", 'silent'),
+    'A1: gh pr comment --body': ('gh pr comment 12 --body "pkill -f foo"', 'silent'),
+    'A1: gh issue create -t': ("gh issue create -t 'pkill -f foo' -b 'x'", 'silent'),
+    # --- A1 near-misses (warn: raw)
+    'A1 near-miss: sudo prefix': ("sudo git commit -m 'pkill -f foo'", 'warn'),
+    'A1 near-miss: env prefix': ("env X=1 git commit -m 'pkill -f foo'", 'warn'),
+    'A1 near-miss: an assignment prefix': ("A=1 git commit -m 'pkill -f foo'", 'warn'),
+    'A1 near-miss: inside bash -c': ('bash -c "git commit -m \'pkill -f foo\'"', 'warn'),
+    'A1 near-miss: git -C': ("git -C repo commit -m 'pkill -f foo'", 'warn'),
+    'A1 near-miss: a backslashed git': ("\\git commit -m 'pkill -f foo'", 'warn'),
+    'A1 near-miss: git log, not commit': ("git log -m 'pkill -f foo'", 'warn'),
+    'A1 near-miss: $ in the double quote': ('git commit -m "$x pkill -f foo"', 'warn'),
+    'A1 near-miss: a backslash in the double quote': ('git commit -m "a\\"b pkill -f foo"', 'warn'),
+    'A1 near-miss: glued pieces': ("git commit -m 'a''pkill -f foo'", 'warn'),
+    'A1 near-miss: glued -m': ("git commit -m'pkill -f foo'", 'warn'),
+    'A1 near-miss: --message=': ("git commit --message='pkill -f foo'", 'warn'),
+    'A1 near-miss: piped on': ("git commit -m 'pkill -f foo' | bash", 'warn'),
+    'A1 near-miss: |& piped on': ("git commit -m 'pkill -f foo' |& cat", 'warn'),
+    'A1 near-miss: -F - from a heredoc': ("git commit -F - <<'E'\npkill -f foo\nE", 'warn'),
+    'A1 near-miss: a word glued after the idiom': ('git commit -m "$(cat <<\'E\'\npkill -f foo\nE\n)"x', 'warn'),
+    'A1 near-miss: gh pr view': ("gh pr view --body 'pkill -f foo'", 'warn'),
+    'A1 near-miss: gh --label': ("gh pr create --label 'pkill -f foo'", 'warn'),
+    'A1 near-miss: gh repo': ("gh repo create -t 'pkill -f foo'", 'warn'),
+    'A1 near-miss: git redefined as a function': ('git() { bash -c "$4"; }; git commit -m \'pkill -f foo\'', 'warn'),
+    'A1 near-miss: git redefined, spaced': ('git () { eval "$4"; }; git commit -m \'pkill -f foo\'', 'warn'),
+    'A1 near-miss: an alias for git': ("alias git='bash -c'\ngit commit -m 'pkill -f foo'", 'warn'),
+    'A1 near-miss: function gh': ('function gh { eval "$5"; }; gh pr create -t \'pkill -f foo\'', 'warn'),
+    'A1 near-miss: a substitution elsewhere': ("git commit -m 'x' $(echo y); pkill -f foo", 'warn'),
+    'A1 near-miss: a real command after it': ("git commit -m 'x' && pkill -f foo", 'warn'),
+    'A1 near-miss: the message is the flag value of another flag': ("git commit -C 'pkill -f foo'", 'warn'),
+    # --- A2, a heredoc written to a file (silent)
+    'A2: cat >': ("cat > notes.md <<'E'\npkill -f foo\nE", 'silent'),
+    'A2: cat >> with a double-quoted delimiter': ('cat >> notes.md <<"E"\npkill -f foo\nE', 'silent'),
+    'A2: tee with a backslash delimiter': ('tee notes.md <<\\E\npkill -f foo\nE', 'silent'),
+    'A2: tee -a to a quoted name': ("tee -a 'my notes.md' <<'E'\npkill -f foo\nE", 'silent'),
+    'A2: cat > a double-quoted name': ('cat >"notes.md" <<\'E\'\npkill -f foo\nE', 'silent'),
+    'A2: then another command': ("cd x && cat > a.md <<'E'\npkill -f foo\nE\ngit add b.md", 'silent'),
+    # --- A2 near-misses (warn: raw)
+    'A2 near-miss: unquoted delimiter': ('cat > f.md <<E\npkill -f foo\nE', 'warn'),
+    'A2 near-miss: the redirect after the heredoc': ("cat <<'E' > f.md\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: piped into sh': ("cat > f.md <<'E' | sh\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: tee piped into bash': ("tee f.md <<'E' | bash\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: ; after the delimiter': ("cat > f.md <<'E'; true\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: two files': ("tee -a f.md g.md <<'E'\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: no terminator': ("cat > f.md <<'E'\npkill -f foo\n", 'warn'),
+    'A2 near-miss: a trailing space on the terminator': ("cat > f.md <<'E'\npkill -f foo\nE ", 'warn'),
+    'A2 near-miss: <<-': ("cat > f.md <<-'E'\n\tpkill -f foo\n\tE", 'warn'),
+    'A2 near-miss: sudo cat': ("sudo cat > f.md <<'E'\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: $ in the file name': ("cat > $f <<'E'\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: cat>f, no blank': ("cat>f.md <<'E'\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: a comment after the delimiter': ("cat > f.md <<'E' # x\npkill -f foo\nE", 'warn'),
+    'A2 near-miss: the file is run after': ("cat > /tmp/s.sh <<'E'\npkill -f foo\nE\nbash /tmp/s.sh", 'warn'),
+    'A2 near-miss: the file is run by base name': ("cat > /tmp/s.sh <<'E'\npkill -f foo\nE\ncd /tmp && sh s.sh", 'warn'),
+    'A2 near-miss: the file is sourced': ('cat > f.sh <<\'E\'\ngit() { bash -c "$4"; }\nE\nsource f.sh; git commit -m \'pkill -f foo\'', 'warn'),
+    'A2 near-miss: inside bash -c': ('bash -c "cat > f <<\'E\'\npkill -f foo\nE"', 'warn'),
+    'A2: a real command after the body': ("cat > f.md <<'E'\nx\nE\npkill -f foo", 'warn'),
 }
 
 
@@ -301,14 +432,15 @@ def corpus_hooks(tmp_path_factory):
 
 @pytest.mark.parametrize("name", sorted(CORPUS))
 def test_the_corpus(corpus_hooks, name):
-    """Every plain invocation warns; every mention inside a span the rule
-    understands does not; and the view never hides what the raw matcher
-    sees unless the case is such a mention."""
+    """Everything outside an A1/A2 hidden span is matched as the raw text;
+    a mention only inside one is silent; the view never hides what the raw
+    matcher sees unless the case is such a mention."""
     warn_hook, raw_hook = corpus_hooks
     command, expected = CORPUS[name]
     raw = _run(raw_hook, command).returncode == 2  # the deny twin matches the raw text
     viewed = _warns(warn_hook, command)
     if expected == "warn":
+        assert raw, f"control: the raw matcher must see {command!r}"
         assert viewed, command
     elif expected == "silent":
         assert raw, f"control: the raw matcher must see {command!r}"
@@ -346,33 +478,30 @@ def _viewed(command: str) -> str:
 
 
 @pytest.mark.parametrize("command,view", [
+    # A1: the message argument
     ('git commit -m "x y" && ls', 'git commit -m "" && ls'),
-    ("echo 'a' \"c\"", "echo '' \"\""),
-    ("cat <<'EOF'\nbody\nEOF\nls", "cat <<'EOF'\nEOF\nls"),
-    ("cat <<EOF\nbody\nEOF\nls", "cat <<EOF\nEOF\nls"),
-    ("cat <<-EOF\n\tbody\n\tEOF\nls", "cat <<-EOF\n\tEOF\nls"),
-    ("python3 -c 'x'", "python3 -c ''"),
-    # shown as written
-    ("echo $'b'", "echo $'b'"),
-    ('echo "$HOME" "a\\"b"', 'echo "$HOME" "a\\"b"'),
+    ("git commit -am 'x' -m \"y\"", "git commit -am '' -m \"\""),
+    ("gh pr create --title 'a' --body 'b' --label c", "gh pr create --title '' --body '' --label c"),
+    ("git commit -m \"$(cat <<'EOF'\nbody\nEOF\n)\"; ls", "git commit -m \"$(cat <<'EOF'\nEOF\n)\"; ls"),
+    # A2: the body
+    ("cat > f.md <<'EOF'\nbody\nEOF\nls", "cat > f.md <<'EOF'\nEOF\nls"),
+    ("tee -a 'a b' <<\\E\nbody\nE", "tee -a 'a b' <<\\E\nE"),
+    # everything else, raw
+    ("echo 'a' \"c\"", "echo 'a' \"c\""),
+    ("python3 -c 'x'", "python3 -c 'x'"),
+    ("cat <<'EOF'\nbody\nEOF\nls", "cat <<'EOF'\nbody\nEOF\nls"),
     ("ls # a 'comment'", "ls # a 'comment'"),
-    ("echo a#b 'c'", "echo a#b ''"),
-    ("echo \\'x 'y'", "echo \\'x ''"),
-    ("x=$((1 << 2)) && (( n <<= 1 ))\nls", "x=$((1 << 2)) && (( n <<= 1 ))\nls"),
-    ("cat <<EOF\n$(date)\nEOF", "cat <<EOF\n$(date)\nEOF"),
-    ("cat <<EOF\nnever closed 'x'", "cat <<EOF\nnever closed 'x'"),
-    # payloads, without their quote marks
-    ("bash -c 'echo \"hi\"; ls'", 'bash -c echo "hi"; ls'),
-    ('sh -c "echo hi; ls"', "sh -c echo hi; ls"),
-    ("eval 'a' \"b\"", "eval a b"),
-    ("'pkill' -f x", "pkill -f x"),
-    ("sudo 'pkill' -f x", "sudo pkill -f x"),
-    ("cat <<< 'a b'", "cat <<< a b"),
-    ("trap 'a' EXIT", "trap a EXIT"),
-    # the rest, as written, from the first construct the scan cannot follow
-    ('echo "a $(ls "x") b" \'y\'', 'echo "a $(ls "x") b" \'y\''),
-    ('echo "${x:-"a"}" \'y\'', 'echo "${x:-"a"}" \'y\''),
-    ("echo 'unclosed \"x\"", "echo 'unclosed \"x\""),
+    ("git commit -m 'x' $(ls)", "git commit -m 'x' $(ls)"),
+    ("git commit -m 'x'; echo `ls`", "git commit -m 'x'; echo `ls`"),
+    ("git commit -m 'x'; echo $'y'", "git commit -m 'x'; echo $'y'"),
+    ("git commit -m 'x'; (( n++ ))", "git commit -m 'x'; (( n++ ))"),
+    ("git commit -m 'x'; cat <<< y", "git commit -m 'x'; cat <<< y"),
+    ("git commit -m 'x'; diff <(ls) f", "git commit -m 'x'; diff <(ls) f"),
+    ("git commit -m 'x'; echo 'unclosed", "git commit -m 'x'; echo 'unclosed"),
+    ("git commit -m 'x'; echo \"${y}\"", "git commit -m 'x'; echo \"${y}\""),
+    # parts the scan follows, kept as written around a hidden span
+    ("git commit -m 'x' 2>&1 >/dev/null &>log", "git commit -m '' 2>&1 >/dev/null &>log"),
+    ("echo \"$HOME\" a\\ b # c 'd'\ngit commit -m 'x'", "echo \"$HOME\" a\\ b # c 'd'\ngit commit -m ''"),
 ])
 def test_the_view_hides_only_what_it_understands(command, view):
     assert _viewed(command) == view
@@ -404,7 +533,8 @@ def test_a_file_path_hook_never_runs_the_view(tmp_path):
     mixed = _guard(tmp_path, r"'x'", tools=("Bash", "Edit"))
     assert subprocess.run([str(mixed)], input=edit, capture_output=True,
                           text=True).stdout != ""
-    assert not _warns(mixed, "echo 'x'")
+    assert not _warns(mixed, "git commit -m 'x'")
+    assert _warns(mixed, "echo 'x'")  # outside the allowlist: raw
 
 
 def test_the_warn_script_carries_its_regex_once_and_is_deterministic():
@@ -460,21 +590,21 @@ def test_a_failing_awk_falls_back_to_the_raw_text_and_never_blocks(tmp_path, bod
 
 def test_an_unbalanced_quote_shows_the_rest_as_written(tmp_path):
     """bash itself refuses an unbalanced quote, so nothing runs; the view
-    shows everything from the quote on, so the hook warns as before S-133."""
+    is the raw command, so the hook warns as before S-133."""
     guard = _guard(tmp_path)
-    for command in (f'echo "{BAD}', f"echo '{BAD}", f"echo $'{BAD}",
-                    f'echo "$(true {BAD}"', f"cat <<'E\n{BAD}"):
+    for command in (f'git commit -m "{BAD}', f"git commit -m '{BAD}", f"echo $'{BAD}",
+                    f'git commit -m "$(true {BAD}"', f"cat > f <<'E\n{BAD}"):
         assert _viewed(command) == command, command  # shown as written
         assert _warns(guard, command), command
-    assert not _warns(guard, f'echo "{BAD}"')  # control: balanced, silent
+    assert not _warns(guard, f'git commit -m "{BAD}"')  # control: balanced, silent
 
 
 def test_a_command_over_the_size_bound_is_matched_raw(tmp_path):
     guard = _guard(tmp_path)
     filler = "x" * 80 + "\n"
-    small = f"cat <<'EOF' > f\n{BAD}\n" + filler * 10 + "EOF"
+    small = f"cat > f <<'EOF'\n{BAD}\n" + filler * 10 + "EOF"
     assert not _warns(guard, small)  # control: under the bound, the view runs
-    big = f"cat <<'EOF' > f\n{BAD}\n" + filler * (COMMAND_VIEW_MAX_BYTES // len(filler) + 1) + "EOF"
+    big = f"cat > f <<'EOF'\n{BAD}\n" + filler * (COMMAND_VIEW_MAX_BYTES // len(filler) + 1) + "EOF"
     assert len(big.encode()) > COMMAND_VIEW_MAX_BYTES
     assert _warns(guard, big)
 
@@ -483,25 +613,27 @@ def _at_cap(unit: str, prefix: str = "") -> str:
     return prefix + unit * ((COMMAND_VIEW_MAX_BYTES - len(prefix) - 8) // len(unit))
 
 
-#: Gate r2 G3 and r1 F9: inputs that made the old view quadratic (46 s and
-#: >120 s at the cap). The view is one linear pass: each stays well inside
-#: the bound below, at the size cap.
+#: Gate r2 G3 and r1 F9 (inputs that made earlier views quadratic) and the
+#: allowlist's own repeated shapes. The view is one linear pass: each stays
+#: well inside the bound below, at the size cap.
 AT_CAP = {
     "unclosed $((": _at_cap("$(( ", "echo "),
     "unclosed ((": _at_cap("(("),
     "quoted words": _at_cap("'a' "),
     "double-quoted words": _at_cap('"a" '),
-    "eval arguments": _at_cap("'a' ", "eval "),
-    "bash -c payloads": _at_cap("bash -c 'a'; "),
+    "commit messages": _at_cap("git commit -m 'a'; "),
+    "commit messages on one segment": _at_cap("-m 'a' ", "git commit "),
+    "commit idioms": _at_cap("git commit -m \"$(cat <<'E'\ny\nE\n)\"; "),
+    "an idiom that never ends": _at_cap("y\n", "git commit -m \"$(cat <<'E'\n"),
+    "idiom openers": _at_cap("git commit -m \"$(cat <<'E'\n"),
+    "A2 bodies": _at_cap("cat > f <<'E'\nx\nE\n"),
+    "A2 openers on one line": _at_cap("cat > f ", "x; "),
+    "A2 openers, a delimiter at the end": _at_cap("cat > f ", "x; ")[:-20] + " <<'E'",
+    "segments starting with c": _at_cap("c;"),
+    "tee words": _at_cap("tee "),
     "heredoc operators on one line": _at_cap("<<A "),
-    "heredocs": _at_cap("cat <<A\nx\nA\n"),
-    "here-strings": _at_cap("bash <<< 'a'; "),
     "comments with apostrophes": _at_cap("# don't\n"),
     "open parentheses": _at_cap("("),
-    "commit idioms": _at_cap("x \"$(cat <<'E'\ny\nE\n)\" "),
-    "commit idioms on one line each": _at_cap("x \"$(cat <<'E'\ny\nE\n)\"\n"),
-    "an idiom that never ends": _at_cap("y\n", "x \"$(cat <<'E'\n"),
-    "idiom openers": _at_cap("x \"$(cat <<'E'\n"),
 }
 
 
@@ -519,7 +651,7 @@ def test_the_view_is_linear_at_the_size_cap(name):
 def test_a_hook_run_at_the_cap_is_bounded(tmp_path):
     guard = _guard(tmp_path, PGREP_REGEX)
     start = time.monotonic()
-    _warns(guard, AT_CAP["unclosed $(("])
+    _warns(guard, AT_CAP["commit messages"])
     assert time.monotonic() - start < 10.0
 
 
@@ -530,7 +662,8 @@ def test_random_shell_text_never_breaks_the_hook(tmp_path):
     guard = _guard(tmp_path)
     atoms = ["'", '"', "\\", "$'", "$(", "$((", "((", ")", "`", "<<", "<<-", "<<<", "EOF",
              "\n", "\t", " ", "#", ";", "&", "|", "bash -c ", "eval ", "trap ", BAD, "x",
-             "</dev/null"]
+             "</dev/null", "git commit -m ", "gh pr create -t ", "cat > f ", "tee f ",
+             "<<'EOF'", "\"$(cat <<'EOF'\n", ")\"", "2>&1"]
     rng = random.Random(133)
     for _ in range(60):
         command = "".join(rng.choice(atoms) for _ in range(rng.randint(1, 30)))
