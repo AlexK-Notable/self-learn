@@ -39,7 +39,9 @@ routing:                  # written on routing; null before
                           #   attribution:* who chose, never who ran the
                           #   verb (that is the commit's `By:` trailer); from
                           #   an agent's shell the verb must be told (`--by
-                          #   analyst|human|agent`)
+                          #   analyst|human|agent`), and so must a `batch`
+                          #   sheet's route/replace/revise line (`by:`,
+                          #   §3a.1 item 5)
   reference_file: null    # 2026-07-16 (doc 13 audit): `reference`
                           #   destination ONLY — WHICH references file got
                           #   the entry (`--dest reference:<file>`); absent
@@ -1196,7 +1198,14 @@ own subtree.*
 5. Attribution draws from one list, `{human, steward, overseer, analyst,
    agent}`: `actor` on a case, `recorded_by` on a statement, `updated_by` on
    the user model, and `by:` on every sheet item, permitted on every
-   resolution verb, not `route` alone (U3).
+   resolution verb, not `route` alone (U3). *S-NEXT-attribution:* on a
+   `route` (and so a reroute), `replace` or `revise` line `by:` says who
+   chose, not who ran the sheet. A sheet run from an agent's shell (`self-learn
+   batch`, runner `agent`) must name it on every such line, `analyst`,
+   `human` or `agent`; otherwise the whole sheet is refused before item 1
+   (exit 64, preview and run alike, nothing written), because the runner's
+   actor is those verbs' default `by:` and would record the person's choice
+   as the agent's.
 6. The worker's rejected-proposal digest (`worker.py:1549-1618`, built from
    `git log --grep '^self-learn: reject '`) attributes every entry with its
    decider (`human | steward | overseer`) and the rejected reason; the

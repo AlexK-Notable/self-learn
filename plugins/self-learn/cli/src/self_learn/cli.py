@@ -3059,7 +3059,8 @@ _BY_REQUIRED_SURFACES = frozenset({"route", "reroute", "replace", "revise", "rec
 #: What an agent's shell may say chose: the person accepting the proposal as
 #: shown (``analyst``), the person choosing (``human``), or the agent itself
 #: (``agent``). ``steward``/``overseer`` are the sheet runners' identities.
-_AGENT_BY_VALUES = ("agent", "analyst", "human")
+#: One set with an agent's sheet lines (``batch.agent_chooser_problem``).
+_AGENT_BY_VALUES = batch.AGENT_CHOOSER_VALUES
 
 
 def _agent_chooser(args: argparse.Namespace, surface: str) -> int | None:
@@ -4619,9 +4620,22 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     except batch.BatchError as exc:
         print(f"self-learn batch: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    # S-NEXT-attribution (gate r1 finding 1, gate r2 finding 1): the runner
+    # of a command-line batch is the shell it was typed into, `agent` from an
+    # agent's shell, so a reject line records `resolution_by: agent` and the
+    # commits say `By: agent`, never the `human` default. The runner is also
+    # the default `by` of the who-chose lines (route, replace, revise), and
+    # who RAN a sheet is not who CHOSE its placements: from an agent's shell
+    # each of those lines must say who chose (`batch.agent_chooser_problem`),
+    # refused here for the whole sheet, preview or run, before anything is
+    # read under the lock or written.
+    runner = "agent" if settings.agent_caller() else "human"
+    if (problem := batch.agent_chooser_problem(items, runner)) is not None:
+        print(f"self-learn batch: {problem}", file=sys.stderr)
+        return EXIT_USAGE
 
     if args.dry_run:
-        dr = batch.dry_run(home, items)
+        dr = batch.dry_run(home, items, actor=runner)
         if args.as_json:
             print(json.dumps(dr.to_json()))
         else:
@@ -4640,13 +4654,11 @@ def _cmd_batch(args: argparse.Namespace) -> int:
         return EXIT_OK if dr.ok else 1
 
     sentinel.heartbeat()  # mutating invocation class (08 §1)
-    # S-NEXT-attribution (gate r1 finding 1): the runner of a command-line
-    # batch is the shell it was typed into, `agent` from an agent's shell, so
-    # a reject line records `resolution_by: agent` and the commits say `By:
-    # agent`, never the `human` default. No actor-gated set (hook routing,
-    # region writes, references, new-skill ownership, reopening a person's
-    # rejection) holds `human` or `agent`, so nothing else changes.
-    runner = "agent" if settings.agent_caller() else "human"
+    # No actor-gated set (hook routing, region writes, references, new-skill
+    # ownership, reopening a person's rejection) holds `human` or `agent`,
+    # and `verbs._refuse_moving_a_person_s_lesson` lets both through, so what
+    # an agent's sheet may do is what a person's may; only the record of who
+    # ran it, and (above) who chose, differ.
     result = batch.run(home, items, no_push=args.no_push, actor=runner)
     for item in result.items:
         for warning in item.warnings:

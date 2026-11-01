@@ -639,6 +639,45 @@ def test_a_lesson_a_person_s_case_covers_keeps_its_placement(env, tmp_path):
     assert (_rec(env.home, new).routing or {}).get("destination") == "skill-md"
 
 
+@pytest.mark.usefixtures("agents_may_replace")
+def test_an_agent_shell_batch_may_move_a_lesson_a_person_s_case_covers(
+    env, tmp_path, monkeypatch, capsys
+):
+    """S-NEXT-attribution (gate r2 finding 2): a command-line `batch` from
+    an agent's shell runs as `agent`, which acts in the person's session, so
+    S-76's placement rule lets it move a lesson a person's case covers, as
+    it did when that batch ran as `human`. Control first: the same line run
+    by the steward is refused, needs-person. Mutation: `actor == "human"`
+    in `verbs._refuse_moving_a_person_s_lesson` -> the agent's line is
+    refused too."""
+    from self_learn import settings
+
+    old = _seed(env.home, "lrn-e1000063")
+    _place(env.home, old, "skill-md")
+    _human_case(env.home, tmp_path, old)
+    moving = {"id": old, "verb": "replace", "trigger": NEW_TRIGGER, "by": "human",
+              "instruction": NEW_INSTRUCTION, "to": str(env.host), "dest": "claude-md",
+              "because": "the user moved it to this project"}
+    steward = batch.run(env.home, _sheet(tmp_path, [moving], name="steward"), no_push=True,
+                        actor="steward")
+    assert (steward.items[0].state, steward.items[0].kind) == ("refused", "needs-person"), (
+        steward.items[0].detail
+    )
+    assert _rec(env.home, old).status == "routed"  # nothing written
+
+    _sheet(tmp_path, [moving], name="agent")
+    for marker in settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert settings.agent_caller()  # positive control: an agent's shell
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
+    code = cli.main(["batch", str(tmp_path / "agent.yaml"), "--no-push"])
+    assert code == 0, capsys.readouterr().err
+    new = _rec(env.home, old).superseded_by
+    assert new and f"*({new})*" in env.claude_md.read_text(encoding="utf-8")
+    assert (_rec(env.home, new).routing or {}).get("destination") == "claude-md"
+
+
 def test_a_person_may_move_a_lesson_their_own_case_covers(env, tmp_path):
     old = _seed(env.home, "lrn-e1000062")
     _place(env.home, old, "skill-md")

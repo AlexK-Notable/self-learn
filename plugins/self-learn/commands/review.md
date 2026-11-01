@@ -151,7 +151,13 @@ limit; free-text "Other" is always there beyond them):
 (U-verbs S-54, R3).** Each bullet above names the verb call ONE decision
 resolves to; you record it as one line in this session's decision sheet
 (`{id, verb, ...that verb's own fields — note/until/to/dest/…}`) rather
-than firing it immediately. Apply the whole sheet in **one locked run**
+than firing it immediately. Every `route`, `replace` and `revise` line
+carries `by:` saying who chose, with the same three meanings as `--by`
+above: `by: analyst` (the user accepted the proposal as shown), `by:
+human` (the user chose it), `by: agent` (you decided an easy item
+yourself). From your agent shell `batch` refuses the whole sheet without
+it (exit 64, nothing written, the preview too): the sheet runs as you, and
+who ran it is not who chose. Apply the whole sheet in **one locked run**
 at Session end (or at any natural pause — mid-batch is fine): `self-learn
 batch <sheet.yaml>`, previewed first with `self-learn batch <sheet.yaml>
 --dry-run` when you want to see every item's outcome before committing
@@ -250,10 +256,12 @@ also keeps its existing use for a rejected record, unchanged; it is
 refused for a replaced record, which has a live successor.
 
 `by:` names the actor that made the decision and is permitted on every
-resolution verb (this build widens it from today's `route`-only key);
-inside a human review session it is implicit (`by: human`) and you never
-need to set it. The value set now includes `steward` and `overseer`
-alongside `human`, `analyst`, and `agent` — those two are written only by
+resolution verb. On a `route`, `replace` or `revise` line it says who
+chose, and from your agent shell you always set it (`analyst`, `human` or
+`agent`, as above; the sheet is refused without it). On the other
+resolution verbs leave it out: who rejected, deferred or retired is who
+ran the sheet, recorded from the shell (`By: agent` from yours). The value
+set also includes `steward` and `overseer` — those two are written only by
 the steward's and the overseer's own runners, never by a hand-written
 sheet.
 

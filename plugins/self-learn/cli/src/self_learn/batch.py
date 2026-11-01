@@ -299,6 +299,46 @@ RESTATE_REFUSED_ACTORS: frozenset[str] = frozenset({"steward"})
 #: this ONE set, as for the shelf.
 NEW_SKILL_OWNED_ONLY_ACTORS = frozenset({"overseer", "steward"})
 
+#: S-NEXT-attribution (cures CU-2; gate r2 finding 1): the sheet verbs whose
+#: line ``by:`` says who CHOSE (``routing.by`` for a route, and a reroute,
+#: which is a ``route`` line under a reconsider case; the chooser a
+#: ``replace`` or a ``revise`` records), never who ran the sheet (that is the
+#: commit's ``By:`` trailer, the runner's actor).
+CHOOSER_VERBS = frozenset({"route", "replace", "revise"})
+#: What an agent's shell may say chose, on a sheet line as with the command
+#: line's ``--by``: the person accepted the proposal as shown (``analyst``),
+#: the person chose it (``human``), or the agent chose it (``agent``).
+#: ``steward`` and ``overseer`` are the sheet runners' own identities.
+AGENT_CHOOSER_VALUES = frozenset({"agent", "analyst", "human"})
+
+
+def agent_chooser_problem(items: list["SheetItem"], actor: str) -> str | None:
+    """Why a sheet run from an agent's shell (*actor* ``agent``) cannot run
+    as written, or ``None``. Every :data:`CHOOSER_VERBS` line must name who
+    chose with a ``by:`` from :data:`AGENT_CHOOSER_VALUES`: without it the
+    runner's actor would be recorded as the chooser, so a placement the
+    person accepted in a review session would read as the agent's own
+    choice. Checked for the whole sheet before item 1 (``self-learn batch``
+    refuses it, exit 64, with nothing written), the same rule the command
+    line's ``--by`` follows. Any other actor: ``None`` (a person's sheet
+    keeps the verb's own default; a sheet runner is the chooser)."""
+    if actor != "agent":
+        return None
+    for item in items:
+        if item.verb not in CHOOSER_VERBS:
+            continue
+        by = item.fields.get("by")
+        if by in AGENT_CHOOSER_VALUES:
+            continue
+        return (
+            f"item {item.n} ({item.verb} {item.id}): from an agent shell every "
+            f"{'/'.join(sorted(CHOOSER_VERBS))} line says who chose: `by: analyst` "
+            "(the person accepted the proposal as shown), `by: human` (the person "
+            "chose it), `by: agent` (you chose it)"
+            + (f"; {by!r} is a sheet runner's identity, not yours" if by else "")
+        )
+    return None
+
 
 def _refuse_agent_new_skill(
     home: Path, record_id: str, resolved: tuple[str, str | None] | None, actor: str

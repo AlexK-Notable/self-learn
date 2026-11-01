@@ -610,6 +610,63 @@ class TestWhoChoseInAnAgentShell:
         assert (entry["event"], entry["by"]) == ("reconsidered", "human")
         assert git(env2.home, "log", "-1", "--format=%B").stdout.rstrip().endswith("By: agent")
 
+    @staticmethod
+    def _route_sheet(tmp_path, rid, name, **extra):
+        path = tmp_path / f"{name}.yaml"
+        line = {"id": rid, "verb": "route", "dest": "skill-md", "note": "n", **extra}
+        path.write_text(json.dumps({"version": 1, "items": [line]}), encoding="utf-8")
+        return str(path)
+
+    def test_an_agent_shell_batch_route_line_must_say_who_chose(
+        self, env2, tmp_path, monkeypatch, capsys
+    ):
+        """Gate r2 finding 1: a command-line `batch` runs as its shell, and
+        the runner is a route line's default `by`, so from an agent's shell a
+        by-less route line would record the person's choice as `agent`. The
+        whole sheet is refused before item 1, its preview too. Mutation:
+        `batch.agent_chooser_problem` returns None -> exit 0 and
+        `routing.by == "agent"`."""
+        rid = _pending_routable(env2)
+        _as_agent(monkeypatch)
+        head = _head(env2.home)
+        sheet = self._route_sheet(tmp_path, rid, "byless")
+        assert cli.main(["batch", sheet, "--dry-run"]) == cli.EXIT_USAGE
+        assert "says who chose" in capsys.readouterr().err
+        assert cli.main(["batch", sheet, "--no-push"]) == cli.EXIT_USAGE
+        assert "says who chose" in capsys.readouterr().err
+        assert _head(env2.home) == head
+        assert not list(env2.home.glob(f"skills/a/resolved/{rid}.md"))  # still pending
+
+        named = self._route_sheet(tmp_path, rid, "named", by="analyst")
+        assert cli.main(["batch", named, "--no-push"]) == 0, capsys.readouterr().err
+        assert _routed_record(env2, rid).routing["by"] == "analyst"
+        body = git(env2.home, "log", "-1", f"--grep=self-learn: route {rid}", "--format=%B").stdout
+        assert body.strip(), "control: the route commit is found"
+        assert body.strip().rpartition("\n\n")[2].splitlines() == ["By: agent"]
+
+    def test_an_agent_shell_sheet_cannot_claim_a_sheet_runner_as_chooser(
+        self, env2, tmp_path, monkeypatch, capsys
+    ):
+        """The narrowed set, as on the command line. Mutation: accept the
+        full `ROUTING_BY_VALUES` -> exit 0."""
+        rid = _pending_routable(env2)
+        _as_agent(monkeypatch)
+        head = _head(env2.home)
+        for who in ("steward", "overseer"):
+            sheet = self._route_sheet(tmp_path, rid, f"as-{who}", by=who)
+            assert cli.main(["batch", sheet, "--no-push"]) == cli.EXIT_USAGE
+            assert "sheet runner" in capsys.readouterr().err
+        assert _head(env2.home) == head
+
+    def test_a_persons_batch_route_line_keeps_the_verbs_default(self, env2, tmp_path, capsys):
+        """The control for the refusal: in a person's terminal a by-less
+        route line runs and the verb's own heuristic decides (`human`)."""
+        rid = _pending_routable(env2)
+        assert not settings.agent_caller()
+        sheet = self._route_sheet(tmp_path, rid, "person")
+        assert cli.main(["batch", sheet, "--no-push"]) == 0, capsys.readouterr().err
+        assert _routed_record(env2, rid).routing["by"] == "human"
+
     def test_hook_activate_from_an_agent_shell_needs_a_note(self, env2, monkeypatch, capsys):
         """Mutation: keep the old `runner = "agent" if ...` line (no reason
         asked) -> the refusal never comes."""
