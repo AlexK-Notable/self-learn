@@ -3877,6 +3877,18 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
             "recompile: regenerated warning hook(s) from the current compiler: "
             + ", ".join(result.hooks_regenerated)
         )
+    if result.hooks_placed:
+        print(
+            "recompile: placed warning hook(s) an earlier failed write left pending: "
+            + ", ".join(result.hooks_placed)
+        )
+    if result.hooks_reapplied:
+        # Suite-fix gate r1 MINOR-3: a hook file put back to the stored bytes
+        # is said by name, not only as a changed target below.
+        print(
+            "recompile: re-applied the stored bytes of hook(s) whose placed file "
+            "differed: " + ", ".join(result.hooks_reapplied)
+        )
     if result.gone:
         # L6: one line, never a warning: a retired lesson whose target is
         # gone from disk has nothing left to take out.

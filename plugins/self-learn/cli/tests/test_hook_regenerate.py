@@ -623,3 +623,209 @@ def test_f8_a_crlf_only_edit_is_a_hand_edit(env, monkeypatch):
     _git(env.host, "commit", "-qam", "crlf")
     todo, refused = verbs.stale_warn_hooks(env.home)
     assert todo == [] and refused[RID].startswith("hand-edited")
+
+
+# ------------------------------------------- suite-fix gate r1 (MINOR-1..3)
+#
+# `hook_pending` takes the ledger's lock through `intents.ledger_write`
+# (H-8's census), so an outermost take there recovers or refuses like every
+# other ledger lock site. A STOP is planted the way `test_recover_or_refuse`
+# plants one (an unresolvable-anywhere intent on an unrelated probe file),
+# right before the take under test.
+
+#: Made at run time, never a literal (the repo's credential scan reads added
+#: lines): AKIA + 16 upper/digit, the shape P2-7's scan names.
+_AWS_SHAPE = "AKIA" + "QZ7XQZ7XQZ7XQZ7X"
+_REGEN_SUBJECT = "self-learn: regenerate warning hook(s) (1)"
+
+
+def _stop_before(monkeypatch, name: str, *, only_with_rids: bool = False) -> list:
+    """Wrap ``hook_pending.<name>`` so its FIRST call (with rids, for
+    ``drop``) plants a STOP and then runs the real function with the
+    arguments recompile passed -- ``earlier_commits`` included."""
+    from self_learn import hook_pending
+    from test_recover_or_refuse import _plant_stop, _probe_file
+
+    real = getattr(hook_pending, name)
+    planted: list = []
+
+    def wrapper(home, *args, **kwargs):
+        if not planted and (not only_with_rids or (args and args[0])):
+            planted.append(_plant_stop(Path(home), _probe_file(Path(home), "stop-probe.txt")))
+        return real(home, *args, **kwargs)
+
+    monkeypatch.setattr(hook_pending, name, wrapper)
+    return planted
+
+
+def _assert_refusal_names_the_regeneration(excinfo, planted) -> None:
+    message = str(excinfo.value)
+    assert planted, "control: the STOP was planted, at the take under test"
+    assert "no further requested writes; earlier commits:" in message, message
+    assert _REGEN_SUBJECT in message, message
+    assert excinfo.value.earlier_commits == [_REGEN_SUBJECT]
+
+
+def test_r1_minor1_a_stop_at_the_pending_record_names_the_regeneration_commit(
+        env, monkeypatch, claude_dir):
+    """`_confirm_regenerated`'s `hook_pending.record` (host write failed)."""
+    from self_learn import intents
+
+    _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    _fail_host_commits(env)
+    planted = _stop_before(monkeypatch, "record")
+    with pytest.raises(intents.LedgerStoppedError) as excinfo:
+        verbs.recompile(env.home, no_push=True)
+    _assert_refusal_names_the_regeneration(excinfo, planted)
+
+
+def test_r1_minor1_a_stop_at_dropping_done_entries_names_the_regeneration_commit(
+        env, monkeypatch, claude_dir):
+    """recompile's `hook_pending.drop(pending_done)`, after the
+    regeneration: an entry for a lesson that no longer exists is done."""
+    from self_learn import hook_pending, intents
+
+    _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    hook_pending.record(env.home, "lrn-0000dead", placed_sha256=None, missing=True,
+                        script_path="x.sh", why="test")
+    planted = _stop_before(monkeypatch, "drop", only_with_rids=True)
+    with pytest.raises(intents.LedgerStoppedError) as excinfo:
+        verbs.recompile(env.home, no_push=True)
+    _assert_refusal_names_the_regeneration(excinfo, planted)
+
+
+def test_r1_minor1_a_stop_at_dropping_placed_entries_names_the_regeneration_commit(
+        env, monkeypatch, claude_dir):
+    """`_confirm_regenerated`'s `hook_pending.drop(placed)`: a recorded
+    pending hook placed in the same run that regenerated it."""
+    from self_learn import hook_pending, intents
+
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    hook_pending.record(env.home, RID, placed_sha256=compiled_sha(script.read_text("utf-8")),
+                        missing=False, script_path="x.sh", why="test")
+    planted = _stop_before(monkeypatch, "drop", only_with_rids=True)
+    with pytest.raises(intents.LedgerStoppedError) as excinfo:
+        verbs.recompile(env.home, no_push=True)
+    assert script.read_bytes() == _current(env).encode("utf-8")  # control: it was placed
+    _assert_refusal_names_the_regeneration(excinfo, planted)
+
+
+def test_r1_minor1_the_pending_take_announces_what_it_recovered(
+        env, monkeypatch, claude_dir, capsys):
+    """An intent another process left finishable is recovered at
+    `hook_pending`'s own take, and said ("finish and tell", §7.2a.5(3));
+    the entry is still recorded."""
+    from self_learn import hook_pending
+    from test_recover_or_refuse import _plant_restorable, _probe_file
+
+    _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    _fail_host_commits(env)
+    real = hook_pending.record
+    planted: list = []
+
+    def wrapper(home, *args, **kwargs):
+        planted.append(_plant_restorable(Path(home), _probe_file(Path(home), "crash.txt")))
+        return real(home, *args, **kwargs)
+
+    monkeypatch.setattr(hook_pending, "record", wrapper)
+    capsys.readouterr()
+    verbs.recompile(env.home, no_push=True)
+    assert len(planted) == 1  # control: planted right before the take under test
+    assert f"recovered {planted[0].id}" in capsys.readouterr().err
+    assert RID in _pending(env)
+
+
+def _plant_secret(env) -> None:
+    path = _record_path(env)
+    path.write_text(path.read_text(encoding="utf-8") + f"\nkey {_AWS_SHAPE}\n", encoding="utf-8")
+    _git(env.home, "commit", "-qam", "test: a record file the secret scan refuses")
+
+
+def test_r1_minor2_a_record_refused_at_the_commit_is_named_by_the_maintenance_job(
+        env, monkeypatch, cache_dir, claude_dir):
+    """The record file trips the scan only after the job's plan (a
+    concurrent write): `_refresh_commit`'s `_scan_or_refuse` refuses it, the
+    record and the placed file are unchanged, and the job names it in
+    `hooks_refused` and its cache file instead of reporting a silent run."""
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    old = _meta(env)["script"]
+    real_plan = verbs._plan_warn_hook_refresh
+    calls: list[int] = []
+
+    def plan(home, only_records=None):
+        out = real_plan(home, only_records)
+        calls.append(len(out[0]))
+        if len(calls) == 2:  # the plan inside the job's recompile: after it, the write lands
+            _plant_secret(env)
+        return out
+
+    monkeypatch.setattr(verbs, "_plan_warn_hook_refresh", plan)
+    job = maintenance.run(env.home, cache_dir, now=time.time())
+    assert calls[:2] == [1, 1]  # control: both plans offered it as work
+    assert job.status == "ran", job
+    assert job.hooks_refused[RID] == verbs.WARN_HOOK_RECORD_SECRET
+    assert maintenance.read_state(cache_dir)["hooks_refused"][RID] == verbs.WARN_HOOK_RECORD_SECRET
+    assert any(f"{RID}: warning hook not regenerated — {verbs.WARN_HOOK_RECORD_SECRET}" == w
+               for w in job.recompile.warnings)
+    assert _meta(env)["script"] == old and script.read_text(encoding="utf-8") == old
+    assert _AWS_SHAPE not in json.dumps(maintenance.read_state(cache_dir))
+
+
+def test_r1_minor2_a_record_the_scan_refuses_is_never_offered_as_work(
+        env, monkeypatch, cache_dir, claude_dir):
+    """Already in the file at plan time: the plan leaves it, so the daily job
+    stays idle and names it, instead of retrying it every day."""
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    old = _meta(env)["script"]
+    assert verbs.stale_warn_hooks(env.home) == ([RID], {})  # control: outdated work
+    _plant_secret(env)
+    assert verbs.stale_warn_hooks(env.home) == ([], {RID: verbs.WARN_HOOK_RECORD_SECRET})
+    job = maintenance.run(env.home, cache_dir, now=time.time())
+    assert job.status == "idle" and job.hooks_refused == {RID: verbs.WARN_HOOK_RECORD_SECRET}
+    by_hand = verbs.recompile(env.home, no_push=True)
+    assert by_hand.hooks_refused == {RID: verbs.WARN_HOOK_RECORD_SECRET}
+    assert _meta(env)["script"] == old and script.read_text(encoding="utf-8") == old
+
+
+def test_r1_minor3_a_placement_after_a_lost_pending_entry_is_reported(
+        env, monkeypatch, claude_dir, capsys):
+    """The remaining race (S-133 row): a STOP at the pending-cache write
+    refuses it after the regeneration commit, so the entry is lost. Once the
+    STOP is cleared, a recompile by hand puts the stored bytes in place and
+    SAYS so (`hooks_reapplied`, and the CLI line)."""
+    from self_learn import cli, intents
+
+    script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+    old = _meta(env)["script"]
+    blocker = _fail_host_commits(env)
+    planted = _stop_before(monkeypatch, "record")
+    with pytest.raises(intents.LedgerStoppedError):
+        verbs.recompile(env.home, no_push=True)
+    new = _current(env)
+    assert _meta(env)["script"] == new and script.read_text(encoding="utf-8") == old
+    assert _pending(env) == {}  # the entry was lost
+    assert intents.clear_stopped(env.home, planted[0].id) == "cleared"
+    _git(env.home, "add", "-A")
+    _git(env.home, "commit", "-qm", "test: settle the probe file")
+    blocker.unlink()
+
+    real_recompile = verbs.recompile
+    results: list = []
+
+    def spy(*args, **kwargs):
+        results.append(real_recompile(*args, **kwargs))
+        return results[-1]
+
+    monkeypatch.setattr(verbs, "recompile", spy)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
+    capsys.readouterr()
+    try:
+        rc = cli.main(["recompile", "--no-push"])
+    except SystemExit as exc:
+        rc = exc.code
+    out = capsys.readouterr().out
+    assert rc == 0 and len(results) == 1
+    assert script.read_text(encoding="utf-8") == new
+    assert results[0].hooks_reapplied == [RID]
+    assert results[0].hooks_regenerated == [] and results[0].hooks_placed == []
+    assert f"re-applied the stored bytes of hook(s) whose placed file differed: {RID}" in out

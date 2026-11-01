@@ -249,6 +249,19 @@ def run(home: Path | str, cache_dir: Path, *, now: float | None = None) -> Maint
             "from the current compiler — " + ", ".join(regenerated),
             file=sys.stderr,
         )
+    # Gate r1 MINOR-2: a hook the recompile left at its commit (a record
+    # file the secret scan refuses, read after this job's plan) is named
+    # like one the plan left, never offered again silently.
+    late_left = {
+        rid: _clip(why) for rid, why in result.hooks_refused.items() if rid not in hooks_left
+    }
+    if late_left:
+        hooks_left = {**hooks_left, **late_left}
+        print(
+            f"serve: maintenance left {len(late_left)} warning hook(s) at its recompile — "
+            + "; ".join(f"{rid}: {why}" for rid, why in sorted(late_left.items())),
+            file=sys.stderr,
+        )
     pending = {rid: _clip(why) for rid, why in result.hooks_pending.items()}
     if pending:
         state["hooks_pending"] = pending

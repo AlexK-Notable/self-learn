@@ -12412,6 +12412,16 @@ class RecompileResult:
     hooks_pending: dict[str, str] = field(default_factory=dict)
     #: Gate r2 G2: recorded pending hooks this run placed (record ids).
     hooks_placed: list[str] = field(default_factory=list)
+    #: Suite-fix gate r1 MINOR-2: the outdated warning hooks this run left,
+    #: record id -> why (every refusal of :func:`refresh_warn_hooks`, at plan
+    #: or at commit), so the maintenance job names each one.
+    hooks_refused: dict[str, str] = field(default_factory=dict)
+    #: Suite-fix gate r1 MINOR-3: hook-routed lessons whose placed file did
+    #: not hold the stored bytes and which this run's hook re-apply wrote
+    #: (H-2's repair), other than the ones in ``hooks_regenerated`` and
+    #: ``hooks_placed``: a missing or changed file, or a regeneration whose
+    #: pending entry a STOP kept from being recorded.
+    hooks_reapplied: list[str] = field(default_factory=list)
 
     @property
     def committed(self) -> int:
@@ -12772,6 +12782,10 @@ def _drop_rules_entry(home: Path, spec: TargetSpec, *, by: str) -> Path | None:
 #: file a person changed. ``recompile`` keys on this prefix to leave the
 #: file alone too (it is kept out of the hook re-apply).
 WARN_HOOK_HAND_EDITED = "hand-edited"
+#: S-133 suite-fix gate r1 MINOR-2: why a warning hook whose record file
+#: trips P2-7's secret scan is left -- never the matched span, because this
+#: text reaches recompile's warnings and the maintenance cache file.
+WARN_HOOK_RECORD_SECRET = "its record file trips the secret scan (P2-7)"
 
 
 @dataclass
@@ -12977,6 +12991,16 @@ def _plan_warn_hook_refresh(
                 continue
             if new == stored:
                 continue
+            # Gate r1 MINOR-2: the record file passes P2-7's scan here as it
+            # must at the commit (`_refresh_commit`'s `_scan_or_refuse`), so
+            # a record that would be refused there is never offered as work.
+            try:
+                record_text = path.read_text(encoding="utf-8")
+            except OSError:
+                record_text = ""
+            if secret_scan(record_text):
+                refused[record.id] = WARN_HOOK_RECORD_SECRET
+                continue
             reason = _warn_refresh_refusal(home, record, meta, stored, new)
             if reason is not None:
                 refused[record.id] = reason
@@ -13091,7 +13115,7 @@ def _refresh_commit(
             except SecretRefusal:
                 # Never the matched span: this text reaches recompile's
                 # warnings and the maintenance cache file.
-                result.refused[current.id] = "its record file trips the secret scan (P2-7)"
+                result.refused[current.id] = WARN_HOOK_RECORD_SECRET
                 continue
             except SheetLineError as exc:  # S-81: the overseer holds it
                 result.refused[current.id] = " ".join(str(exc).split())
@@ -13219,6 +13243,7 @@ def recompile(
         if refresh.commit_subject is not None:
             span_commits.append(refresh.commit_subject)
         result.hooks_regenerated = list(refresh.regenerated)
+        result.hooks_refused = dict(refresh.refused)
         regenerated_from = dict(refresh.previous)
         for rid, why in sorted(refresh.refused.items()):
             result.warnings.append(f"{rid}: warning hook not regenerated — {why}")
@@ -14311,6 +14336,7 @@ def recompile(
                         )
                         result.warnings.append(f"{script_abs}: {reason}")
                         continue
+            result.hooks_reapplied.append(record.id)
             # D-3 completion: resync the record to the APPROVED bytes
             # this leg just (re-)applied — a standalone ledger commit,
             # same subject convention M-10/D-2/D-3 established, never
@@ -14499,6 +14525,10 @@ def _confirm_regenerated(
             )
     result.hooks_regenerated = confirmed
     result.hooks_placed = placed
+    result.hooks_reapplied = [
+        rid for rid in dict.fromkeys(result.hooks_reapplied)
+        if rid not in confirmed and rid not in placed
+    ]
     hook_pending.drop(home, placed, earlier_commits=span_commits)
 
 
