@@ -493,7 +493,9 @@ section records what the surface is.
   weekly report. Clicking an item swaps only the workspace and pushes
   the item's URL. **Mark all seen** runs `attention seen
   --all-decided`. The front page (§2.1) gains an "Inbox (N)" link, N
-  being needs-you plus new, `?` when the read failed.
+  being needs-you plus new, `?` when the read failed; it fills in after
+  the page loads (`GET /inbox/count`), so the front page never waits on
+  `attention --json`.
 - **Workspace** (`/inbox/<id>`): the question as the h1, then "Why you",
   "Meanwhile", the recommendation with its reasoning and alternatives
   (the recommended option says "(recommended)" in text), the options as
@@ -508,8 +510,9 @@ section records what the surface is.
   a 0600 `--text-file` that is deleted after the run, `--draft` when the
   text started as an agent draft, and `--confirm` on the second click of
   an armed option. Three cases arm first and run nothing on the first
-  click: a `confirm` option ("This registers <path> in git mode.
-  Confirm?"), an option with a `register` effect, and an approve option
+  click: a `confirm` option and an option with a `register` effect (the
+  armed line repeats the question, which names the path and mode; "This
+  registers <path> in git mode. Confirm?"), and an approve option
   on a plan with sudo steps (it lists the sudo commands). Each sent
   answer shows how it was recorded ("as your words", "as your choice of
   the offered option", "as the agent's draft, accepted by you"). Words
@@ -517,31 +520,44 @@ section records what the surface is.
   and the item stays under Needs you. A failed answer shows the verb's
   message and keeps the text. When the answer moves the item on (an
   approval starts work), the bar says where it went and offers no
-  options.
+  options; if that approval's launch found no terminal, **Run it now**
+  is offered for the item it moved to.
 - **Being carried out** shows "Running in a terminal (started <time>)"
   and **Run it now** (`attention run`; the login variant passes
-  `--login`), the verb's reason when a launch is refused, and the one
-  command with a copy button when no terminal can be opened.
+  `--login`), the verb's reason when a launch is refused, and, when no
+  terminal can be opened, the command alone in a copy block (split from
+  the verb's sentence: `claude '<brief line>'`, or `claude` for a login)
+  with the brief's path beside it.
   `awaiting-sudo` shows each sudo command with a copy button and **I ran
   it**. Code kinds (§3.4.8 of the design) render their own options; the
   `fix` ones run `attention fix`, the rest go through `attention answer`.
   A login hold's options check the login (`attention check-login`,
   through the ask runner) and open a terminal running `claude`
-  (`attention run --login`).
+  (`attention run --login`). A working login clears the item and says
+  when the held jobs run next, in the host's words from
+  `serve.heartbeat`.
 - **Decided items** show what was done and why, the item's undo and
   redo buttons (`attention undo [--redo]`, labelled by the CLI), an overturn-in-words box, and
-  the feedback buttons ("Didn't need me", "Should have asked me").
+  the feedback buttons ("Didn't need me", "Should have asked me"). After
+  an undo, redo is what is offered, on a reload too: from the item's
+  `undo.redo`, or from its transcript, whose last undo/redo row is the
+  last act. An undo that takes the item off the list (a reopened
+  withdrawn ask) says so and links to where it went.
 - **Ask about this**: starter chips fixed per kind, a text box, the live
   answer streaming into a bubble (`aria-busy` while it streams), a tool
   line ("reading case-…"), **Stop**, and any drafts as cards with **Use
   this draft** and **Send as is**. A draft placed in the reply box keeps
-  its `draft_id`; the server decides the origin. The box is disabled
+  its `draft_id` and option, also when the page restores the unsent
+  reply after a reload or a switch to another item; the server decides
+  the origin. The box is disabled
   with a plain sentence when the login is broken or asking would bill
   money; every other part of the page still works.
 - **Keys** (`INBOX_KEYMAP`, listed in the `?` overlay on inbox pages):
   `j`/`k`, `Enter`, `1`–`4`, `r`, `a`, `Ctrl+Enter`, `Esc`, `u`, `s`,
   `?`. They are inert while a text field has focus except `Ctrl+Enter`
-  and `Esc`. The review keymap is inert on inbox pages, so the
+  and `Esc`. `Enter` opens the selected item only when nothing has
+  focus; on a focused list link, button or `<summary>` it does what that
+  control does. The review keymap is inert on inbox pages, so the
   inbox table may reuse its letters; global key uniqueness holds within
   each table.
 - **One `role="status"` live region** announces recorded answers, the
@@ -1427,13 +1443,13 @@ notifications are absent.
 | Inbox empty | "Nothing needs you, and nothing new." plus a link to the weekly report; no list items. With no needs-you items but some decided ones, the first unseen decided item is selected and the list header reads "Nothing needs you". |
 | Packet slow (> 1.5 s) | The item's list data renders at once; the evidence region shows "assembling…" and fills by htmx when the packet arrives. |
 | Packet failed | An error block naming the failure; the question, options and reply box from the list data still work. |
-| Item resolved or moved elsewhere (answered in a terminal, withdrawn, login fixed) | An `attention` envelope refreshes the list; an open item no longer listed shows "This item was resolved elsewhere (answered, withdrawn, or its condition cleared)." and offers the next one. An answer that moves the item on says where it went and offers no options. |
+| Item resolved or moved elsewhere (answered in a terminal, withdrawn, login fixed) | An `attention` envelope refreshes the list; an open item no longer listed shows "This item was resolved elsewhere (answered, withdrawn, or its condition cleared)." and offers the next one. An answer that moves the item on says where it went and offers no options. The page's own click is never reported as "elsewhere": not while its request is in flight (plus a 3 s grace), nor once its response said the item moved on or cleared. |
 | Answer verb exits non-zero | The verb's message (overflow-wrapped), with the typed text kept in the box. |
 | Ask: login broken / would spend money | The ask box is disabled with one plain sentence (the fix, or "Nothing was sent"); every other part of the page works. |
 | Ask: timeout, turn cap, interrupted, crashed | One line saying what happened, and that the user can ask again with the conversation intact. A watchdog in the UI stops a turn the CLI did not end by itself. |
 | Ask: a turn already in flight for the item, or two across the UI | 409 and "Still answering your last question." |
 | Ask: ledger STOPPED | The answer streams as usual, with the line "kept on this machine until self-learn's ledger is repaired". |
-| Launch refused or no terminal (`attention run`) | The verb's reason; for no terminal, the one-line command with a copy button and **Run it now**. |
+| Launch refused or no terminal (`attention run`) | The verb's reason; for no terminal, the command alone in a copy block, the brief's path, and **Run it now** (for the approved item, also right after an approve click). |
 | `/navigate` with no page connected, or curl fails | The launcher opens the tokened URL in a new window, as for a cold start. |
 
 ## 6. Stack selection
