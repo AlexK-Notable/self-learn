@@ -173,7 +173,7 @@ def test_an_answer_does_not_bring_back_a_case_that_did_not_defer(tmp_path):
 
 
 def test_a_reply_to_a_reading_brings_no_lesson_back_to_the_steward(tmp_path):
-    """S-NEXT-reopen (the orchestrator's decision on overseer notice
+    """S-132 (the orchestrator's decision on overseer notice
     ntc-bf6e631b): the live shape. Two rejected lessons whose cases both list
     the reading um-…@r1 among their dependencies, the first case's `because`
     citing it. The user's reply to the reading (the 2026-10-29 wording,
@@ -222,6 +222,72 @@ def test_a_reply_to_a_reading_brings_no_lesson_back_to_the_steward(tmp_path):
     assert [(entry.record.id, entry.predecessor) for entry, _card in proposals] == [
         ("lrn-d0a00011", decided["lrn-d0a00011"])
     ]
+
+
+def _successor(home: Path, tmp_path: Path, prior: str, records: list[str], dependencies: dict) -> str:
+    stage = tmp_path / f"successor-of-{prior}.yaml"
+    _dump_yaml(stage, {
+        "kind": "maintenance", "trigger": "nightly", "outcome": "no-action",
+        "records": records, "scope": "user", "supersedes": prior,
+        "question": "does the earlier decision still hold?",
+        "evidence": [{"ref": "transcript:conversation#L1", "quote": "the user's words"}],
+        "decision": {"verb": "note", "because": "it holds", "confidence": "settled"},
+        "dependencies": {"statements": [], "conditions": [], "capabilities": [], **dependencies},
+    })
+    return cases.record(home, stage, actor="overseer")
+
+
+def test_a_corrected_reading_stages_the_decisions_that_list_it_for_phase_b(tmp_path, monkeypatch):
+    """S-132 (the orchestrator's decision): a reply to a reading tells no
+    case, so phase B is handed every current decision that lists the
+    corrected reading -- older than the week's selection included -- as
+    `citing/<case>.md`, to judge which rested on it. Not staged: a case
+    another case superseded, a case that lists only another reading or only
+    one of the corrected reading's statements, and a case whose decision
+    cannot be read."""
+    home = make_home(tmp_path)
+    corrected = f"{_reading(home, 1)}@r1"
+    other = f"{_reading(home, 2)}@r1"
+    current = _case(home, tmp_path, "1", {"user_model": [corrected]},
+                    because=f"rests on {corrected}")
+    replaced = _case(home, tmp_path, "2", {"user_model": [corrected]})
+    successor = _successor(home, tmp_path, replaced, ["lrn-00000002"], {"user_model": [corrected]})
+    elsewhere = _case(home, tmp_path, "3", {"user_model": [other]})
+    by_statement = _case(home, tmp_path, "4", {"statements": ["stmt-00000001"]})
+    unreadable = _case(home, tmp_path, "5", {"user_model": [corrected]})
+    real_show = cases.show
+
+    def show(home_arg, case_id, *, evidence_only=True):
+        if case_id == unreadable:
+            raise cases.CaseError(f"case show: {case_id} failed its freeze-hash check")
+        return real_show(home_arg, case_id, evidence_only=evidence_only)
+
+    monkeypatch.setattr(cases, "show", show)
+
+    before = tmp_path / "stage-before"
+    before.mkdir()
+    overseer_run._full_inputs(home, before, (), [], answers_since=None)  # noqa: SLF001
+    # Control: with no correction recorded, nothing is staged.
+    assert not (before / overseer_run.CITING_DIR).exists()
+
+    statements.add(
+        home, verbatim="only in this repository", recorded_by="human",
+        source={"message_ref": "conversation:obs-0000aaaa", "surface": "conversation"},
+        answers={"kind": "proposition", "ref": corrected, "text": "apply everywhere?"},
+        scope={"level": "user", "host": None},
+    )
+    after = tmp_path / "stage-after"
+    after.mkdir()
+    overseer_run._full_inputs(home, after, (), [], answers_since=None)  # noqa: SLF001
+
+    citing = after / overseer_run.CITING_DIR
+    assert sorted(path.stem for path in citing.glob("*.md")) == sorted([current, successor])
+    staged = (citing / f"{current}.md").read_text(encoding="utf-8")
+    assert f"rests on {corrected}" in staged  # the decision in full, its because included
+    for left_out in (replaced, elsewhere, by_statement, unreadable):
+        assert not (citing / f"{left_out}.md").exists(), left_out
+    # The reply is in answers.yaml beside the folder that names its cases.
+    assert corrected in (after / "answers.yaml").read_text(encoding="utf-8")
 
 
 # ---- 3. the user model's list fields

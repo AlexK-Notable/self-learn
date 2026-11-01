@@ -228,7 +228,7 @@ def test_respond_preserves_words_scope_question_version_and_observes_no_case(tmp
     home = make_home(tmp_path)
     entry = _reading(home, 1)
     proposition = f"{entry}@r1"
-    # S-NEXT-reopen (the orchestrator's decision, 2026-11-01): a reply to a
+    # S-132 (the orchestrator's decision, 2026-11-01): a reply to a
     # reading tells no case -- not one that lists the reading, not one that
     # lists a statement the reading rests on, not even one whose `because`
     # cites the reading.
@@ -350,4 +350,8 @@ def test_cli_exposes_open_respond_and_decline(tmp_path, monkeypatch, capsys):
         ]
     )
     assert overseer_cli.dispatch(answered) == 0
-    assert "recorded" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "recorded" in out
+    # S-132: the case lists the reading among its dependencies, and the reply
+    # still sends it nowhere.
+    assert "reconsidered=0" in out

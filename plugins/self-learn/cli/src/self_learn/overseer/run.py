@@ -944,6 +944,13 @@ case you decide. To correct a case that is not parked (for example a decision wh
 ledger refused), write a kind: reconsider successor that supersedes it, provided that case covers
 every record the reconsider names, has not been superseded, passes its freeze hash, and was
 recorded by the steward or the overseer, never by a person (formats/case-correct-example.yaml).
+A reply to a reading sends no case back by itself: you do. When answers.yaml holds a correction of a
+reading (kind: proposition, ref um-…@rN), {CITING_DIR}/*.md holds every current decision whose
+dependencies list that reading, older cases included. Read each and judge whether the decision rested
+on the reading (a decision that only mentions it did not). For each that did, write a kind: reconsider
+successor that supersedes it, by the rule above (for a case selected this run, a dependency-moved
+finding also sends it back); in report.md name the decisions you reconsidered and why, and say the
+others stand.
 A catalogue change that decides no parked case (a shortening, a merge, a correction no case
 covers) is a kind: maintenance case in its own case-<name>.yaml/sheet-<name>.yaml pair, as many
 as you need; a `replace` line rewrites a lesson's words (formats/README.md says how).
@@ -1676,6 +1683,45 @@ def _stage_lessons(home: Path, stage: Path) -> int:
     return len(staged)
 
 
+#: S-132: phase B's folder of the current decisions whose dependencies list
+#: a reading the user corrected since the last run (`_stage_citing`).
+CITING_DIR = "citing"
+
+
+def _stage_citing(home: Path, stage: Path, answers: list[dict[str, Any]]) -> int:
+    """S-132 (the orchestrator's decision, 2026-11-01): a reply to a
+    reading tells no case (`conversation.respond`), so phase B judges which
+    decisions rested on it. For every reading a `proposition` row of
+    *answers* corrects, stage the full text of each current (not superseded)
+    case whose section-4 dependencies list that reading, at any revision,
+    as `citing/<case>.md`; the workspace is the only place phase B can read,
+    and a decision older than this week's selection is not in `full/`.
+    A case that fails its freeze hash is left out (it cannot be superseded).
+    Returns how many were staged."""
+    corrected = {
+        str(row["ref"]).split("@", 1)[0]
+        for row in answers
+        if row.get("kind") == "proposition" and isinstance(row.get("ref"), str)
+    }
+    if not corrected:
+        return 0
+    staged = 0
+    for row in cases.list_cases(home, only_ok=True):
+        case_id = row.get("case")
+        if not isinstance(case_id, str) or row.get("superseded_by"):
+            continue
+        refs = [ref for ref in row.get("dependency_refs") or [] if isinstance(ref, str)]
+        if not any(ref.split("@", 1)[0] in corrected for ref in refs):
+            continue
+        try:
+            text = cases.show(home, case_id, evidence_only=False).to_text()
+        except cases.CaseError:
+            continue
+        _write_stage(stage, stage / CITING_DIR / f"{case_id}.md", text + "\n")
+        staged += 1
+    return staged
+
+
 def _full_inputs(
     home: Path, stage: Path, selected: tuple[str, ...], parked_rows: list[dict[str, Any]],
     *, answers_since: str | None, notes: list[str] | None = None,
@@ -1703,15 +1749,16 @@ def _full_inputs(
         row for row in _safe_questions(home) if row.get("kind") == "ask"
     ]
     clicked = _ask_feedback(asks_now, conversation.feedback_rows(home))
+    answers = _question_answers(home, since=answers_since)
     answers_text = _yaml_text({
-        "answers": _question_answers(home, since=answers_since),
+        "answers": answers,
         "choices": _choice_answers(home),
         "feedback": [
             {"ask": q_id, **row} for q_id, rows in clicked.items() for row in rows
         ],
     })
     if scan.scan(answers_text):
-        answers_text = _yaml_text({"answers": _question_answers(home, since=answers_since)})
+        answers_text = _yaml_text({"answers": answers})
         # Fix round 1 (gate r1 NIT 8): said, never dropped silently.
         if notes is not None:
             notes.append(
@@ -1719,6 +1766,7 @@ def _full_inputs(
                 "of phase B's inputs -- the secret scan matched them"
             )
     _write_stage(stage, stage / "answers.yaml", answers_text)
+    _stage_citing(home, stage, answers)
     _stage_open_asks(home, stage)
     # S-106: the projects a notice may name (names and real paths only).
     # Each project also carries `showing`: the overseer notices still up there, so

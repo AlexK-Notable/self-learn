@@ -1395,7 +1395,7 @@ def respond(
         return ResponseResult(
             statement_id, tuple(row["cases"]), registration=registration, registered=registered
         )
-    # S-NEXT-reopen (the orchestrator's decision, 2026-11-01, on the
+    # S-132 (the orchestrator's decision, 2026-11-01, on the
     # overseer's notice ntc-bf6e631b): a reply to a reading tells no case,
     # the same as a correction from the inbox or `statement add
     # --answers-kind proposition`. The statement above is the record; the
