@@ -876,9 +876,10 @@ def test_more_questions_than_fit_say_how_many_were_left_out(tmp_path):
     workspace.append(home, item, rows, header={"item_kind": "ask.sudo", "subject": "q-x",
                                                "title": "Install the package?"})
 
-    kept, omitted = steward._workspace_questions_for_run(home)
+    kept, omitted, read = steward._workspace_questions_for_run(home)
 
     assert (len(kept), omitted) == (steward.WORKSPACE_QUESTIONS_MAX, 3)
+    assert len(read) == len(rows)  # the left-out ones are read too: not shown again
     assert kept[0]["text"] == "question 3" and kept[-1]["text"] == f"question {len(rows) - 1}"
     packet = steward_prompt.assemble(
         home, tmp_path / "cache", steward_prompt.RunContext(
@@ -890,11 +891,12 @@ def test_more_questions_than_fit_say_how_many_were_left_out(tmp_path):
 
 
 def test_a_steward_run_hands_packet_1_the_questions_and_reads_them_once(tmp_path, monkeypatch):
-    """Gate r1 MINOR 4: the `_run` wiring, end to end through a fake
-    session. Mutations: drop `workspace_questions=` from `_run` -> red (the
-    prompt lacks the question); `_workspace_questions_since` returns None
-    -> red (the question shows again); floor on the run's `completed_at`
-    -> red (a question sealed while the run worked is lost)."""
+    """Gate r1 MINOR 4, gate r2 finding 1: the `_run` wiring, end to end
+    through a fake session. Mutations: drop `workspace_questions=` from
+    `_run` -> red (the prompt lacks the question); `_workspace_questions_read`
+    returns nothing -> red (the question shows again); the time floor back
+    (packet 1's `last_attempt_at`) -> red (a question no prompt listed is
+    lost)."""
     from self_learn import worker
     from test_steward import _enable_steward, _seed_fresh_proposals, _write_decision_stage
 
@@ -918,26 +920,34 @@ def test_a_steward_run_hands_packet_1_the_questions_and_reads_them_once(tmp_path
 
     assert prompts and steward_prompt.WORKSPACE_QUESTIONS_TITLE in prompts[0]
     assert f"workspace:{item}#T1" in prompts[0] and "never restart my desktop" in prompts[0]
-    assert steward._workspace_questions_for_run(home) == ([], 0)  # read once, not every night
-
-    # The floor is when packet 1 last started (its prompt was assembled
-    # then), not when the run completed: a question sealed in between was
-    # never shown, and must be next time. Stretch the run to make the gap.
+    assert steward._workspace_questions_for_run(home) == ([], 0, [])  # read once, not every night
     (manifest,) = [m for m in steward.committed_manifests(home) if m.get("status") == "complete"]
-    started = manifest["packets"][0]["last_attempt_at"]
-    assert steward._workspace_questions_since(home) == started
+    assert manifest["packets"][0]["workspace_questions_read"] == [f"workspace:{item}#T1"]
+
+    # Gate r2 finding 1: what was read is recorded, not a time. A question
+    # no prompt listed is listed next time however its time compares with
+    # packet 1's attempts: here one sealed before the run started (a row
+    # kept while the ledger was STOPPED keeps its earlier `at`), with packet
+    # 1 stamped by a later attempt that assembled no prompt (a run resumed
+    # past its model phase).
     rel = next(p for p in git(home, "ls-files", "cases/runs").stdout.split()
                if manifest["run_id"] in p)
     data = json.loads((home / rel).read_text(encoding="utf-8"))
-    data["completed_at"] = "2099-01-01T00:00:00Z"
+    data["packets"][0]["last_attempt_at"] = "2099-01-01T00:00:00Z"
     (home / rel).write_text(json.dumps(data), encoding="utf-8")
-    git(home, "commit", "-q", "-am", "fixture: a long run")
-    during = (datetime.strptime(started[:19], "%Y-%m-%dT%H:%M:%S")
-              + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    git(home, "commit", "-q", "-am", "fixture: packet 1 attempted again without a prompt")
     workspace.append(home, item, [{"role": "user", "origin": "typed", "kind": "question",
-                                   "text": "asked while it worked", "at": during}])
-    kept, _omitted = steward._workspace_questions_for_run(home)
-    assert [r["text"] for r in kept] == ["asked while it worked"]
+                                   "text": "kept while stopped", "at": "2020-01-01T00:00:00Z"}])
+    kept, _omitted, _read = steward._workspace_questions_for_run(home)
+    assert [r["text"] for r in kept] == ["kept while stopped"]
+
+    # A completed run whose packet 1 never prepared a recipe from a prompt
+    # (every input held, say) read nothing: the first question is back.
+    data["packets"][0].pop("workspace_questions_read")
+    (home / rel).write_text(json.dumps(data), encoding="utf-8")
+    git(home, "commit", "-q", "-am", "fixture: packet 1 read nothing")
+    kept, _omitted, _read = steward._workspace_questions_for_run(home)
+    assert [r["text"] for r in kept] == ["kept while stopped", "never restart my desktop"]
 
 
 # --------------------------------------------------------- fix round 1
@@ -981,6 +991,58 @@ def test_an_approval_not_yet_carried_out_can_be_changed(tmp_path):
         answers.claim(home, approved["id"], "sess-late")
     assert "changed their answer" in str(late.value)
     assert _calls(tmp_path, "systemd-run") == []
+
+
+def _approved_restart(home: Path, tmp_path: Path) -> tuple[str, dict]:
+    _rid, case_id = _deferred_case(home, tmp_path)
+    _index(home, [_system_ask("q-restart-daemon", [case_id])])
+    (tmp_path / "shim-bin" / "alacritty").unlink()  # no terminal: nothing launches
+    answers.answer(home, _item(home, "q-restart-daemon", "ask.system-change")["id"], option="opt-yes")
+    return case_id, _item(home, "q-restart-daemon", "approved.pending")
+
+
+def test_a_claim_written_while_the_answer_changed_is_taken_back(tmp_path, monkeypatch):
+    """Gate r2 NIT 2, the claim's side: the person's decline commits after
+    `claim` read the items and before it wrote its claim. Mutation: drop
+    the re-read after `_write_claim` -> red (the claim stands)."""
+    home = make_home(tmp_path)
+    _case_id, approved = _approved_restart(home, tmp_path)
+    real_write = answers._write_claim
+
+    def decline_first(h, item_id, session):
+        changed = answers.answer(home, approved["id"], option="opt-no")  # sees no claim yet
+        assert changed.warnings == [] and changed.state == "answered"
+        real_write(h, item_id, session)
+
+    monkeypatch.setattr(answers, "_write_claim", decline_first)
+
+    with pytest.raises(answers.AnswerError) as late:
+        answers.claim(home, approved["id"], "sess-race")
+
+    assert "changed their answer" in str(late.value)
+    assert not (attention.cache_dir(home) / "attention" / "claims" / f"{approved['id']}.json").exists()
+    assert _choices(home)[-1]["effect"] == "decline"
+
+
+def test_an_answer_that_crossed_a_claim_names_the_session(tmp_path, monkeypatch):
+    """Gate r2 NIT 2, the answer's side: a session claims between the
+    answer's claim check and its commit. Mutation: drop the re-read after
+    `record_choice` -> red (no warning)."""
+    home = make_home(tmp_path)
+    _case_id, approved = _approved_restart(home, tmp_path)
+    real_record = conversation.record_choice
+
+    def claimed_meanwhile(h, row):
+        out = real_record(h, row)
+        answers._write_claim(home, approved["id"], "sess-crossed")  # the claim lands in between
+        return out
+
+    monkeypatch.setattr(conversation, "record_choice", claimed_meanwhile)
+
+    changed = answers.answer(home, approved["id"], option="opt-no")
+
+    assert _choices(home)[-1]["effect"] == "decline"
+    assert len(changed.warnings) == 1 and "sess-crossed" in changed.warnings[0]
 
 
 def test_a_draft_or_a_pasted_reply_with_no_option_on_a_plan_decides_nothing(tmp_path):
@@ -1064,6 +1126,24 @@ def test_redo_of_a_skill_write_writes_it_again_from_its_draft(tmp_path, monkeypa
     with pytest.raises(answers.AnswerError) as gone:
         answers.undo(home, item["id"], redo=True)
     assert gone.value.exit_code == 3 and "draft folder" in str(gone.value)
+    assert len(written) == 1
+
+    # Gate r2 NIT 4: `--from` recorded relative would resolve against this
+    # process's directory, not the shell the write ran in. Positive control:
+    # a folder of that name IS readable from here, so only the guard stops
+    # it. Mutation: drop the guard -> red (it is written from this folder).
+    here = tmp_path / "elsewhere"
+    (here / "draft").mkdir(parents=True)
+    (here / "draft" / "SKILL.md").write_text("---\nname: diagrams\ndescription: d\n---\nx\n", "utf-8")
+    monkeypatch.chdir(here)
+    assert skill_writer.read_draft_dir("draft")  # control: readable relative to here
+    relative_id = grant_uses.append(home, {"verb": "skill write",
+                                           "args": ["diagrams", "--from", "draft"],
+                                           "statement": None, "note": "typed relative",
+                                           "prior": None})
+    with pytest.raises(answers.AnswerError) as relative:
+        answers.undo(home, _item(home, relative_id, "decided.grant-use")["id"], redo=True)
+    assert relative.value.exit_code == 3 and "relative to a shell" in str(relative.value)
     assert len(written) == 1
 
 

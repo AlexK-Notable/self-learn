@@ -790,31 +790,32 @@ WORKSPACE_QUESTIONS_MAX = 40
 WORKSPACE_QUESTION_CHARS = 2000
 
 
-def _workspace_questions_since(home: Path) -> str | None:
-    """When the steward last read the person's questions to the ask agent:
-    the time packet 1 of the latest completed run that sent packets last
-    started an attempt (only packet 1's session reads them, and its prompt
-    is assembled at the start of each attempt; a night with no lessons
-    sends no packet, so its questions wait for the next run that does).
+def _workspace_questions_read(home: Path) -> set[str]:
+    """The ``workspace:`` refs of the person's questions to the ask agent
+    that the steward has already read: packet 1's
+    ``workspace_questions_read`` in every completed run. A run records the
+    refs its packet-1 prompt listed (and the older ones the cap left out)
+    in the same commit that prepares that session's recipe, so only a
+    prompt a model session read and whose output went on to be applied
+    counts; a night with no lessons sends no packet, so its questions wait
+    for the next run that does.
 
-    Gate r1 MINOR 4: not the run's ``completed_at``, which is after the
-    prompt was assembled, so a question sealed while that run was working
-    was never shown and every later run skipped it. A question sealed
-    between the attempt's start and its assembly is shown twice instead;
-    :func:`_workspace_question_rows` leaves out any the steward already
-    recorded as a statement. A manifest without the stamp falls back to the
-    run's ``started_at``, which is earlier still."""
-    values: list[str] = []
+    Gate r2 finding 1: a time floor (packet 1's ``last_attempt_at``, or the
+    run's ``started_at``) moved past questions no prompt ever listed -- a
+    resumed run whose packet 1 was past its model phase stamps a new
+    attempt without assembling a prompt, and a packet 1 whose inputs were
+    all held stamps none, so the floor fell back to the run's start. A row
+    kept while the ledger was STOPPED is sealed later with its earlier
+    ``at``, below any time floor. Recording what was read has none of
+    these gaps."""
+    read: set[str] = set()
     for row in committed_manifests(home):
-        if row.get("status") != "complete" or not row.get("completed_at"):
+        if row.get("status") != "complete":
             continue
         packets = [p for p in row.get("packets") or [] if isinstance(p, dict)]
-        if not packets:
-            continue
-        stamp = packets[0].get("last_attempt_at") or row.get("started_at")
-        if stamp:
-            values.append(str(stamp))
-    return max(values) if values else None
+        if packets:
+            read.update(str(ref) for ref in packets[0].get("workspace_questions_read") or [])
+    return read
 
 
 def _workspace_questions(home: Path, since: str | None) -> list[dict]:
@@ -823,17 +824,22 @@ def _workspace_questions(home: Path, since: str | None) -> list[dict]:
     return _workspace_question_rows(home, since)[-WORKSPACE_QUESTIONS_MAX:]
 
 
-def _workspace_questions_for_run(home: Path) -> tuple[list[dict], int]:
-    """What packet 1 of a steward run reads (gate r1 MINOR 4): the
-    questions since :func:`_workspace_questions_since`, at most
-    :data:`WORKSPACE_QUESTIONS_MAX`, newest kept, and how many older ones
-    were left out (the block says so; they are not shown again)."""
-    rows = _workspace_question_rows(home, _workspace_questions_since(home))
+def _workspace_questions_for_run(home: Path) -> tuple[list[dict], int, list[str]]:
+    """What packet 1 of a steward run reads (gate r1 MINOR 4, gate r2
+    finding 1): every question no completed run has read
+    (:func:`_workspace_questions_read`), at most
+    :data:`WORKSPACE_QUESTIONS_MAX`, newest kept; how many older ones were
+    left out (the block says so; they are not shown again); and the refs of
+    all of them, which the run records as read once the session's recipe
+    is prepared."""
+    rows = _workspace_question_rows(home, None, read=_workspace_questions_read(home))
     kept = rows[-WORKSPACE_QUESTIONS_MAX:]
-    return kept, len(rows) - len(kept)
+    return kept, len(rows) - len(kept), [str(row["ref"]) for row in rows]
 
 
-def _workspace_question_rows(home: Path, since: str | None) -> list[dict]:
+def _workspace_question_rows(
+    home: Path, since: str | None, *, read: set[str] | frozenset[str] = frozenset()
+) -> list[dict]:
     """Design r2 §3.4.2 (critique 22): every question the person typed to
     the inbox's "ask about this" agent (a sealed workspace row with ``role:
     user, origin: typed, kind: question``) since *since*, oldest first, each
@@ -841,7 +847,8 @@ def _workspace_question_rows(home: Path, since: str | None) -> list[dict]:
     ask sessions, so this is the only way a correction typed there ("never
     do X") reaches a statement. Replies are not here: the inbox records a
     typed reply as a statement itself. A redacted row is left out, and so
-    is one a statement already cites (recorded by an earlier run)."""
+    is one a statement already cites (recorded by an earlier run) or one
+    whose ref is in *read*."""
     folder = home / "attention" / "workspace"
     try:
         paths = sorted(folder.glob("att-*.jsonl"))
@@ -882,7 +889,7 @@ def _workspace_question_rows(home: Path, since: str | None) -> list[dict]:
             if floor is not None and (at is None or at <= floor):
                 continue
             ref = f"workspace:{path.stem}#T{row['t']}"
-            if ref in cited:
+            if ref in cited or ref in read:
                 continue
             text = row["text"]
             if len(text) > WORKSPACE_QUESTION_CHARS:
@@ -7132,8 +7139,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 )
                 # Attention round (design r2 §3.4.2): only packet 1 reads the
                 # person's questions to the inbox's ask agent.
-                questions_now, questions_omitted = (
-                    _workspace_questions_for_run(home) if packet_index == 1 else (None, 0)
+                questions_now, questions_omitted, questions_read = (
+                    _workspace_questions_for_run(home) if packet_index == 1 else (None, 0, None)
                 )
                 prompt = steward_prompt.assemble(
                     home, cache_dir(home), context, inputs, conditions_items=feed_items,
@@ -7472,6 +7479,14 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     duration_secs=packet_record.get("duration_secs"),
                 )
                 manifest_packet.setdefault("dispositions", {}).update(uncovered_rows)
+                if questions_read is not None:
+                    # Gate r2 finding 1: the questions this prompt listed are
+                    # read once the session's recipe is prepared, never at
+                    # an attempt that assembled no prompt.
+                    manifest_packet["workspace_questions_read"] = sorted(
+                        set(manifest_packet.get("workspace_questions_read") or [])
+                        | set(questions_read)
+                    )
                 # A secret-scan hit refuses only the case or operation it is
                 # in (`_prepared_recipe`); the rest of the packet proceeds.
                 _prepared_recipe(home, stage, manifest, manifest_packet)

@@ -803,6 +803,18 @@ def answer(
 
         with attribution.acting(authority):
             result.choice = conversation.record_choice(home, choice_row)
+        if item["kind"] == "approved.pending" and effect != "approve":
+            # Gate r2 NIT 2: the claim was read before this commit, and a
+            # launched session may have claimed in between. `claim` reads
+            # the items again after writing its claim, so at least one side
+            # sees the other: if this one does, say so and name the session.
+            late = attention._claim(home, item["id"], _now())  # noqa: SLF001
+            if late is not None:
+                result.warnings.append(
+                    f"session {late.get('session')} claimed this change at {late.get('at')}, "
+                    "just as your answer was recorded, and may carry out the earlier "
+                    "approval; tell that session in its terminal"
+                )
 
     # -- what it does downstream (§3.4.4)
     decided_by = result.choice or result.statement
@@ -1257,6 +1269,15 @@ def claim(home: Path | str, item_id: str, session: str) -> dict:
             f"{current.get('at')}); one session carries it out", EXIT_REFUSED,
         )
     _write_claim(home, item["id"], session)
+    # Gate r2 NIT 2: the person may have changed their answer between the
+    # read above and the write. `answer` reads the claim again after its
+    # commit; reading the items again here means one side always sees the
+    # other. Changed: the claim goes, and the session changes nothing.
+    try:
+        _approved_or_refuse(home, item["id"])
+    except AnswerError:
+        _clear_claim(home, item["id"])
+        raise
     return item
 
 
@@ -1385,6 +1406,16 @@ def _run_argv(home: Path, argv: list[str], *, note: str, no_push: bool) -> str:
     by = "agent" if granted else "human"
     files: Any = None
     if verb == "skill write":
+        if not Path(args[2]).is_absolute():
+            # Gate r2 NIT 4: `skill_cli._use_args` keeps `--from` as typed;
+            # a relative folder would resolve against this process's working
+            # directory, not the one the write ran in, and could name a
+            # different folder of the same name.
+            raise AnswerError(
+                f"the skill cannot be written again: its draft folder was recorded as "
+                f"{args[2]}, relative to a shell this page cannot know; nothing was run. Say "
+                "in your own words what you want instead", EXIT_REFUSED,
+            )
         try:
             files = skill_writer.read_draft_dir(args[2])
         except (ValueError, OSError) as exc:
