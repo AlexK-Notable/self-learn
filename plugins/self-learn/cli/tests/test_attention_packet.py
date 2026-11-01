@@ -137,3 +137,38 @@ def test_the_packet_verb_exit_codes(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(attention_packet, "_evidence", lambda *a, **k: 1 / 0)
     assert cli.main(["attention", "packet", item_id, "--json"]) == 1
     assert "could not be built" in capsys.readouterr().err
+
+
+def test_a_hook_activation_shows_the_hook_script_and_its_registration(tmp_path, monkeypatch):
+    """Mutation: drop the hook entry from `_evidence` -> red."""
+    from self_learn import ledger_ops, records
+    from support import make_env
+
+    env = make_env(tmp_path)
+    script = env.host / "hooks" / "self-learn" / "lrn-0000aaaa-guard.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text(f"#!/bin/sh\n# guard\nexport T={TOKEN}\nexit 2\n", encoding="utf-8")
+
+    class _Fake:
+        body = "# Never import-environment bare\n\nThe guard blocks it.\n"
+        status = "resolved"
+        routing = {"destination": "hook", "hook": {
+            "script_path": "hooks/self-learn/lrn-0000aaaa-guard.sh", "event": "PreToolUse",
+            "matcher": "Bash"}}
+
+    monkeypatch.setattr(ledger_ops, "find_record_path", lambda home, rid: tmp_path / f"{rid}.md")
+    monkeypatch.setattr(records.Record, "from_path", classmethod(lambda cls, path: _Fake()))
+    runs = env.ledger / "cases" / "runs"
+    runs.mkdir(parents=True)
+    at = _now()
+    (runs / "run-aaaaaaaaaaaa.json").write_text(json.dumps({
+        "actor": "steward", "run_id": "run-aaaaaaaaaaaa", "completed_at": at, "decided": [],
+        "attention_effects": [{"lesson": "lrn-0000aaaa", "verb": "route", "destination": "hook",
+                               "always_loaded": False, "hook_activated": True, "at": at}],
+    }), encoding="utf-8")
+    item_id = attention.item_id("decided.hook-activated", f"lrn-0000aaaa@{at}")
+    packet = attention_packet.build(env.ledger, item_id)
+    hooks = [e for e in packet["evidence"] if e["kind"] == "hook"]
+    assert len(hooks) == 1 and hooks[0]["record"] == "lrn-0000aaaa"
+    assert "# guard" in hooks[0]["script_excerpt"] and TOKEN not in hooks[0]["script_excerpt"]
+    assert '"matcher": "Bash"' in hooks[0]["registration"]

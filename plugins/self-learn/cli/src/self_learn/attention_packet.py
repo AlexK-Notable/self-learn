@@ -308,6 +308,44 @@ def _file(path: str, limits: _Limits, where: str) -> dict:
             "truncated": bool(truncated or (excerpt or "").endswith("…"))}
 
 
+def _hook(home: Path, lesson_id: str, limits: _Limits, where: str) -> dict | None:
+    """The hook a lesson compiled to: its script (an excerpt, read from the
+    skills root where ``routing.hook.script_path`` points) and its
+    registration (the rest of ``routing.hook``)."""
+    from . import hosts
+    from .ledger_ops import LedgerOpsError, find_record_path
+    from .records import Record
+
+    try:
+        record = Record.from_path(find_record_path(home, lesson_id))
+    except (LedgerOpsError, OSError, ValueError):
+        return None
+    meta = (record.routing or {}).get("hook") if isinstance(record.routing, dict) else None
+    if not isinstance(meta, dict):
+        return None
+    script: str | None = None
+    rel = meta.get("script_path")
+    try:
+        root = hosts.load_hosts(home).skills_root
+    except Exception:  # noqa: BLE001
+        root = None
+    if isinstance(rel, str) and root is not None:
+        path = Path(root).expanduser() / rel
+        if path.is_file() and not denied_name(path.name):
+            try:
+                script = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                script = None
+    registration = {k: v for k, v in meta.items() if k not in ("script", "script_path")}
+    return {
+        "kind": "hook", "record": lesson_id,
+        "script_excerpt": limits.clip(script if script is not None else meta.get("script"),
+                                      f"{where}.script_excerpt"),
+        "registration": limits.clip(json.dumps(registration, sort_keys=True, default=str),
+                                    f"{where}.registration", 1200),
+    }
+
+
 def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str]) -> list[dict]:
     """Every evidence entry for *item*, before the count cap."""
     from . import statements as statements_mod
@@ -360,6 +398,10 @@ def _evidence(home: Path, item: dict, limits: _Limits, look_at: list[str]) -> li
         answers = row.get("answers")
         if isinstance(answers, dict) and answers.get("ref") in answering:
             out.append(_statement(home, row, limits, f"evidence[{len(out)}]", deadline))
+    if item["kind"] == "decided.hook-activated" and isinstance(item.get("_lesson"), str):
+        hook = _hook(home, item["_lesson"], limits, f"evidence[{len(out)}]")
+        if hook is not None:
+            out.insert(0, hook)
     if item["kind"] == "decided.overseer-run":
         report = _report(home, (item.get("source") or {}).get("report"), limits, f"evidence[{len(out)}]")
         if report is not None:
