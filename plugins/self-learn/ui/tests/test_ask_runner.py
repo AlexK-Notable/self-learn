@@ -68,7 +68,8 @@ if mode == "crash":
     sys.exit(1)
 if mode == "deaf":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-while True:
+deadline = time.time() + 30  # never outlive a test run, even unkillable
+while time.time() < deadline:
     time.sleep(0.05)
 '''
 
