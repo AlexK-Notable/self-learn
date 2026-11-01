@@ -332,13 +332,49 @@ checks, so an ask never clears a running sibling's sidecar or a host job's.
 sessions. A person's question still reaches the steward through the workspace
 transcript (answers lane).
 
-**Unmeasured.** No model call was made to build this; every test runs on
+**One deadline per turn.** A turn may make up to three sessions: the resume, a
+fresh session when the resumed one is lost, and one retry of a transient failure
+after `model_failures.TRANSIENT_BACKOFF_SECS`. All of them share one deadline of
+`ask.timeout_secs`, counted from the verb's start: each later session gets only
+the time that is left, and a later session that would get less than 30 s (the
+retry: the backoff plus 30 s) is not started, so the turn ends inside its own
+bound and the UI's watchdog (the timeout plus 30 s) never fires on a turn that is
+still working. A SIGTERM before the deadline is the person's Stop and seals
+"stopped by you"; one after it is the watchdog and seals "stopped: the turn ran
+past its time limit". Both exit 7 with `code: "interrupted"`. Each later session
+emits its own `start` event, so the page starts the bubble again.
+
+**A session that cannot be continued.** A resumed session whose failure says no
+conversation or session was found, or that it could not or failed to resume, is
+replaced in the same turn by a fresh session given the record. A resumed session
+that fails before any turn with an `unclassified` failure (one the classifier
+has no class for) is dropped from `state.json` too, so the next question starts
+afresh instead of resuming it again; a timeout, a login or network failure, or a
+session that made a turn keeps it.
+
+**Secrets in what the agent says.** Every delta, the `done` text, a draft event
+and every own-tool reply pass `ask.redact`: the secret scan's hits are replaced
+inline, and a private key's PEM block is withheld whole, from its `BEGIN` line to
+its `END` line (or to the end of the text while no `END` has come), because the
+scan's `private-key` rule matches the header only and a body's short last line
+passes every other rule. `search` withholds a key's lines the same way. The sealed
+answer row keeps the redacted text and names the rule in `redacted`.
+
+**Who may ask.** The verb refuses from an agent's shell (exit 64, `code:
+"failed"`, a message beginning "refused: the ask box is the person's"): the
+question is sealed as the person's typing (`role: user, origin: typed`), so an
+agent's words would be recorded as theirs. A UI shows that message as it is;
+it is never a usage error the person made. `attention check-login` is allowed
+from an agent's shell, since it records nobody's words.
+
+**Unmeasured.** No model call was made to build this. The verb's tests run on
 `FakeBackend` (`Streams`, `ToolCall` and `SessionOutcome` were added to it for
-streamed turns). Whether Claude Code honours `resume` for a session whose
+streamed turns); the seam's streaming relay, `--resume` and
+`--include-partial-messages` are tested through `SdkBackend` against a fake
+Claude Code binary (`tests/fixtures/fake_claude.py`'s `ask_stream` scenario,
+added through the armor's additive door) that prints real `stream_event` lines. Whether Claude Code honours `resume` for a session whose
 transcript copy was taken, and what it prints when the session is gone, are
-measured by the first real question; the verb treats a failure whose detail says
-no conversation or session was found as a lost session and starts afresh from
-the record.
+measured by the first real question.
 
 ## 2. The `[sdk]` extra is no longer optional
 
