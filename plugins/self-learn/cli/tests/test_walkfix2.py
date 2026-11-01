@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from self_learn import attention, attention_answers as answers, attention_packet, workspace
 from support import make_home
 from test_attention_answers import (  # noqa: F401 -- person/shims are autouse fixtures
@@ -152,3 +154,84 @@ def test_the_conflict_side_the_page_names_is_the_verbs(tmp_path):
     assert answers.conflict_side({"id": "opt-older", "label": "Keep the older one"}) == "older"
     assert answers.conflict_side({"id": "opt-both", "label": "Both"}) == "both"
     assert answers.conflict_side(None) == "both"
+
+
+# ------------------------------------------------------------ gate r1 F1, F4
+
+
+def _calls_of(tmp_path: Path, name: str) -> list[list[str]]:
+    from test_attention_answers import _calls
+
+    return _calls(tmp_path, name)
+
+
+def test_a_stale_ask_id_answers_by_the_approved_items_rules(tmp_path):
+    """Gate r1 F1: an old tab still showing the open question sends its
+    answer to the ask's id after the person approved it elsewhere. The
+    verb answers it as the approved item: a live claim refuses a
+    withdrawal (nothing recorded), an approval is not sent twice, and once
+    the work was carried out nothing starts it over. `answered_item` gives
+    nothing for that ask, and `ask_successor` names the item that took it
+    over. Mutations: drop the redirect to the approved item -> red (the
+    claimed work is declined); drop the carried-out refusal -> red (a new
+    terminal); drop `answered_item`'s listed-subject check -> red."""
+    home, item = _plan_item(tmp_path)
+    answers.answer(home, item["id"], option="opt-yes", launch=False)
+    approved = _item(home, "q-restart-daemon", "approved.pending")
+    answers.claim(home, approved["id"], "sess-busy")
+    before = len(_choices(home))
+
+    assert answers.answered_item(home, item_id=item["id"]) is None
+    assert answers.ask_successor(home, item["id"])["id"] == approved["id"]
+    with pytest.raises(answers.AnswerError) as claimed:
+        answers.answer(home, item["id"], option="opt-no")
+    assert claimed.value.exit_code == 3 and "sess-busy" in str(claimed.value)
+    with pytest.raises(answers.AnswerError) as again:
+        answers.answer(home, item["id"], option="opt-yes")
+    assert again.value.exit_code == 3 and "is already approved" in str(again.value)
+    assert len(_choices(home)) == before  # nothing recorded
+    assert [i["kind"] for i in attention.collect(home, all_items=True)
+            if i["subject"] == "q-restart-daemon"] == ["approved.pending"]  # control: still there
+
+    answers.done(home, approved["id"], session="sess-busy", note="did it")
+    launches = len(_calls_of(tmp_path, "systemd-run"))
+    for option in ("opt-yes", "opt-no"):
+        with pytest.raises(answers.AnswerError) as finished:
+            answers.answer(home, item["id"], option=option)
+        assert finished.value.exit_code == 3
+        assert "already carried out" in str(finished.value)
+    assert len(_calls_of(tmp_path, "systemd-run")) == launches  # no new terminal
+    assert [i["kind"] for i in attention.collect(home, all_items=True)
+            if i["subject"] == "q-restart-daemon"] == ["decided.approved-done"]
+    assert answers.answered_item(home, item_id=item["id"]) is None
+
+
+def test_a_stale_ask_id_withdraws_unclaimed_work_as_the_approved_item(tmp_path):
+    """Gate r1 F1: unclaimed, the old tab's No is the approved item's own
+    change of mind (recorded on that item, the approval withdrawn), never
+    a second answer beside it. Mutation: drop the redirect -> red (the
+    choice lands on the ask's id)."""
+    home, item = _plan_item(tmp_path)
+    answers.answer(home, item["id"], option="opt-yes", launch=False)
+    approved = _item(home, "q-restart-daemon", "approved.pending")
+    result = answers.answer(home, item["id"], option="opt-no")
+    assert result.item == approved["id"] and result.state == "answered"
+    assert _choices(home)[-1]["item"] == approved["id"]
+    assert not [i for i in attention.collect(home, all_items=True)
+                if i["subject"] == "q-restart-daemon"]
+
+
+def test_words_typed_with_an_option_are_reusable_without_a_second_statement(tmp_path):
+    """Gate r1 F4 (the orchestrator's ruling): after "Change my answer",
+    the note typed with the first option is the person's own words and may
+    be the next option's note by reference: one statement, cited by both
+    choices. Mutation: refuse a typed row that carries an option -> red."""
+    home, item = _plan_item(tmp_path)
+    first = answers.answer(home, item["id"], option="opt-no", text="Not while I am at work.")
+    assert first.statement is not None and len(_stmts(home)) == 1  # control
+    result = answers.answer(home, item["id"], option="opt-yes-conditions",
+                            words_from=first.transcript_row, launch=False)
+    assert [s["id"] for s in _stmts(home)] == [first.statement]
+    assert _choices(home)[-1]["statement"] == first.statement
+    assert _choices(home)[-1]["text"] == "Not while I am at work."
+    assert result.recorded_as == "as your choice of the offered option, with the words you sent before"

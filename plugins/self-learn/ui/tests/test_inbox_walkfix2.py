@@ -304,7 +304,7 @@ def test_words_on_running_work_are_echoed_in_the_receipt(tmp_path, monkeypatch):
                               data={"text": "Please leave the .d folder alone."}, headers=HX).text)
     assert "data-recorded" in text  # control
     assert "“Please leave the .d folder alone.”" in text.split("data-sent-words")[1]
-    assert "they are kept for the overseer and do not reach the session carrying it out" in text
+    assert "your words are kept for the overseer and do not reach the session carrying it out" in text
 
 
 def test_a_working_login_check_redraws_the_chip_at_the_top(tmp_path, monkeypatch):
@@ -420,10 +420,12 @@ def test_words_sent_by_any_path_are_offered_as_the_note(tmp_path, monkeypatch):
     Ctrl+Enter alike), the item's newest answer row is offered when it is
     words with no option: the person's typed words by reference
     (`words_from`), the agent's draft they sent again with its draft id
-    (never as their words). A reply that went with an option is not
-    offered. Mutations: offer only `sent_t` (the S-130 path) -> red; offer
-    a draft row by `words_from` -> red; offer a row that went with an
-    option -> red."""
+    (never as their words). Gate r1 F4 (the orchestrator's ruling): words
+    typed WITH an option are offered too (after "Change my answer"); the
+    agent's draft sent with an option only with its draft id. Mutations:
+    offer only `sent_t` (the S-130 path) -> red; offer a draft row by
+    `words_from` -> red; refuse a typed row that went with an option ->
+    red; offer an option-carrying draft with no draft id -> red."""
     rows = {ID_OO7: [
         {"t": 0, "kind": "header"},
         {"t": 2, "role": "user", "origin": "typed", "kind": "reply", "option": None,
@@ -450,9 +452,22 @@ def test_words_sent_by_any_path_are_offered_as_the_note(tmp_path, monkeypatch):
 
     rows[ID_OO7].append({"t": 4, "role": "user", "origin": "typed", "kind": "reply",
                          "option": "opt-no", "text": "No, on reflection."})
-    went = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes-conditions"},
-                       headers=HX).text
-    assert "needs a note" in went and "data-reuse-offer" not in went
+    went = _words(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes-conditions"},
+                              headers=HX).text)
+    offer = went.split("data-reuse-offer")[1].split("</div>")[0]
+    assert "“No, on reflection.”" in offer and 'name="words_from" value="4"' in offer
+
+    rows[ID_OO7].append({"t": 5, "role": "user", "origin": "draft-edited", "kind": "reply",
+                         "option": "opt-no", "draft_id": None, "text": "Pasted from the agent."})
+    pasted = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes-conditions"},
+                         headers=HX).text
+    assert "needs a note" in pasted and "data-reuse-offer" not in pasted
+    rows[ID_OO7].append({"t": 6, "role": "user", "origin": "draft-accepted", "kind": "reply",
+                         "option": "opt-no", "draft_id": "drf-1a2b3c4d", "text": "The agent's no."})
+    drafted = _words(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes-conditions"},
+                                 headers=HX).text)
+    offer = drafted.split("data-reuse-offer")[1].split("</div>")[0]
+    assert 'name="draft_id" value="drf-1a2b3c4d"' in offer and "words_from" not in offer
     assert runner.calls == []
 
 
@@ -466,3 +481,132 @@ def test_the_empty_box_is_not_said_to_be_kept(tmp_path, monkeypatch):
     held = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-x", "text": "mine"},
                        headers=HX).text
     assert "Your text is kept in the box." in held  # a refusal with text keeps saying it
+
+
+# ------------------------------------------------------------ gate r1
+
+
+_CLAIMED = {**_UNCLAIMED, "subject": OO7["subject"],
+            "run": {**_UNCLAIMED["run"], "claimed_by": "sess-busy"},
+            "options": [{**_opt("opt-no", "No, keep the manual note", "decline"),
+                         "disabled": "a session (sess-busy) is carrying it out now"}]}
+_DONE = _item("att-0000000001d0", "decided.approved-done", "decided", None,
+              "Done by an agent: bound oo7-daemon")
+
+
+def _moved(monkeypatch, successor):
+    monkeypatch.setattr(ledger, "answered_item", lambda home, *, item_id=None, subject=None: None)
+    monkeypatch.setattr(ledger, "ask_successor",
+                        lambda home, item_id: successor if item_id == ID_OO7 else None)
+
+
+def test_a_stale_tab_answers_the_approved_item_by_its_own_rules(tmp_path, monkeypatch):
+    """Gate r1 F1: the old tab still shows the open question; the work is
+    approved and claimed in the list. Its No is the approved item's change
+    of mind: off while claimed (nothing sent), armed while not (D1, its
+    Confirm posts to the approved item), and its Yes is never sent again.
+    "Change my answer" on the ask id shows the approved item's own
+    options, never the ask's. Mutations: drop the route's successor lookup
+    -> red (404, or the ask's options); drop the moved-approve refusal ->
+    red."""
+    claimed = {**_CLAIMED, "subject": OO7["subject"]}
+    _moved(monkeypatch, claimed)
+    runner = FakeRunner(_ok("answered", "as your choice of the offered option"))
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(claimed)), runner=runner)
+
+    off = _words(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-no"}, headers=HX).text)
+    assert "data-answer-error" in off and "is off: a session (sess-busy)" in off
+    yes = _words(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX).text)
+    assert "you approved it, and it is being carried out, so nothing was recorded" in yes
+    change = _words(client.get(f"/inbox/{ID_OO7}/change", headers=HX).text)
+    assert "This question has moved on" in change  # control: the successor's bar
+    assert 'value="opt-no"' in change and "disabled" in change.split('value="opt-no"')[1][:200]
+    assert 'value="opt-yes"' not in change
+    assert runner.calls == []
+
+    unclaimed = {**_UNCLAIMED, "subject": OO7["subject"]}
+    _moved(monkeypatch, unclaimed)
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(unclaimed)), runner=runner)
+    armed = _words(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-no"}, headers=HX).text)
+    assert "data-armed-answer" in armed and "withdraws your approval" in armed
+    assert f'hx-post="/inbox/{ID_APPROVED}/answer"' in armed
+    client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-no", "confirm": "1"}, headers=HX)
+    assert _answers(runner) == [["attention", "answer", ID_APPROVED, "--option", "opt-no", "--json"]]
+
+
+def test_a_stale_tab_never_starts_carried_out_work_again(tmp_path, monkeypatch):
+    """Gate r1 F1: once the work was carried out, the old tab's Yes (or any
+    answer) is refused in plain words and runs no verb. Mutation: drop the
+    carried-out refusal -> red."""
+    done = {**_DONE, "subject": OO7["subject"]}
+    _moved(monkeypatch, done)
+    runner = FakeRunner()
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(done)), runner=runner)
+    for option in ("opt-yes", "opt-no"):
+        resp = _words(client.post(f"/inbox/{ID_OO7}/answer", data={"option": option, "confirm": "1"},
+                                  headers=HX).text)
+        assert "data-answer-error" in resp  # control: refused, rendered
+        assert "already carried out by an agent, so nothing was recorded" in resp
+    view = _words(client.get(f"/inbox/{ID_OO7}/change", headers=HX).text)
+    assert "already carried out by an agent" in view and 'name="option"' not in view
+    assert runner.calls == []
+
+
+def test_ctrl_enter_on_a_draft_whose_option_the_page_lost_still_arms(tmp_path, monkeypatch):
+    """Gate r1 F2: a keyed send of the agent's draft with no option (the
+    page lost it: blocked storage, or a crafted request) is armed by the
+    option the server reads from the draft, a plain No included, in words
+    that say it is the agent's draft; a mouse send of the same is one
+    click. Mutation: arm only consequential draft options (the old rule)
+    -> red."""
+    _no_answered(monkeypatch)
+    rows = {ID_OO7: [{"t": 0, "kind": "header"},
+                     {"t": 1, "role": "agent", "origin": "agent", "kind": "draft",
+                      "draft_id": "drf-0a1b2c3d", "option": "opt-no", "text": "No, leave it."}]}
+    runner = FakeRunner(_ok("answered", "as the agent's draft, accepted by you"))
+    client, *_ = make_client(tmp_path, monkeypatch,
+                             Reads(_doc(OO7), {ID_OO7: OO7_PACKET}, rows=rows), runner=runner)
+    keyed = _words(client.post(f"/inbox/{ID_OO7}/answer",
+                               data={"draft_id": "drf-0a1b2c3d", "text": "No, leave it.", "keyed": "1"},
+                               headers=HX).text)
+    assert "data-armed-answer" in keyed
+    assert "The agent's draft is sent as “No, keep the manual note”: nothing will be changed" in keyed
+    assert 'name="option" value="opt-no"' in keyed and _answers(runner) == []
+    clicked = client.post(f"/inbox/{ID_OO7}/answer",
+                          data={"draft_id": "drf-0a1b2c3d", "text": "No, leave it."}, headers=HX)
+    assert "data-recorded" in clicked.text and len(_answers(runner)) == 1
+
+
+def test_the_agents_draft_is_called_the_agents_in_receipts_and_panels(tmp_path, monkeypatch):
+    """Gate r1 F3: every sentence about words sent says whose they are by
+    provenance: the agent's draft sent as is reads "the overseer reads the
+    agent's draft", never "your words"; Ctrl+Enter on the draft (no plan)
+    asks "Send the agent's draft?"; typed words still read "your words".
+    Mutations: the old fixed "your words" in NEXT_WORDS_PLAN -> red; the
+    old "Send your words?" for a draft -> red."""
+    _no_answered(monkeypatch)
+    runner = FakeRunner(_ok("open", "as the agent's draft, accepted by you", transcript_row=6))
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7, CONFLICT), {ID_OO7: OO7_PACKET}),
+                             runner=runner)
+    text = _words(client.post(f"/inbox/{ID_OO7}/answer",
+                              data={"draft_id": "drf-1a2b3c4d", "text": "Only on weekdays."},
+                              headers=HX).text)
+    receipt = text.split("data-receipt>")[1].split("</p>")[0]
+    assert ("You sent the agent's draft: nothing is decided yet, and the overseer reads the "
+            "agent's draft on its next run. To decide, pick an option.") in receipt
+    assert "your words" not in receipt
+
+    panel = _words(client.post(f"/inbox/{ID_CONFLICT}/answer",
+                               data={"draft_id": "drf-1a2b3c4d", "text": "Both hold.", "keyed": "1"},
+                               headers=HX).text)
+    line = panel.split("data-armed-answer>")[1].split("</p>")[0]
+    assert line.strip().startswith("<p>Send the agent's draft? This settles it")
+    assert "with the agent's draft" in line and "your words" not in line
+
+    typed_runner = FakeRunner(_ok("open", "as your words", transcript_row=7))
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7), {ID_OO7: OO7_PACKET}),
+                             runner=typed_runner)
+    mine = _words(client.post(f"/inbox/{ID_OO7}/answer", data={"text": "Only on weekdays."},
+                              headers=HX).text)
+    assert ("You answered in your own words: nothing is decided yet, and the overseer reads your "
+            "words on its next run.") in mine.split("data-receipt>")[1].split("</p>")[0]

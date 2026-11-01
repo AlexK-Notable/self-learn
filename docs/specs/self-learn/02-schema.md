@@ -4822,7 +4822,7 @@ exception's class name. An undone decided item (its transcript's last
 undo/redo row is an undo) has `meanwhile` and `decided.changes_now` from
 `attention.UNDONE_NOW`; a hook or always-loaded item is titled by its
 lesson's trigger, its id only when the lesson cannot be read.
-*(S-NEXT-walkfix2, D5; C6.)* An approved item's `plan.conditions` (the
+*(S-134, D5; C6.)* An approved item's `plan.conditions` (the
 approval's note) comes with `plan.conditions_how`, whose words they are,
 read from the approving choice row by `attention.conditions_provenance`:
 `typed` (a click citing the person's statement: words typed with the
@@ -4907,7 +4907,8 @@ refused, a secret or an unknown draft); the page shows it before sending,
 so it can never say more than the record does (C6). *(Item 3.)*
 `--words-from T` sends an option with the words of the person's own
 earlier reply `T<n>` on this item (`role: user`, `origin: typed`, `kind:
-reply`, no option; anything else 64), with no `--text-file` or `--draft`
+reply`; with or without an option since S-134 gate r1 F4; anything else
+64), with no `--text-file` or `--draft`
 and never from an agent's shell (64): the workspace row is `origin:
 clicked` with the words and `words_from`, the choice's `text` is the
 words and its `statement` the one that already records them, and no new
@@ -4930,7 +4931,7 @@ draft sent with no option, or a reply that pastes the agent's text, is a
 choice that decides nothing on an item with a plan, exactly like words
 alone (no case is told). A later answer appends (latest wins) until it is
 carried out; an ask already answered stays answerable until the overseer's
-next run rewrites the index. *(S-NEXT-walkfix2, D3.)*
+next run rewrites the index. *(S-134, D3.)*
 `attention_answers.answered_item(home, *, item_id=None, subject=None)`
 finds such an answered ask, read-only, by its item id or by the ask id an
 approved item shares as its subject (after an approval was withdrawn), with
@@ -4943,7 +4944,22 @@ the side the record took. *(D5.)* "Send the draft as is" with no option is
 recorded as the agent's draft (`origin: draft-accepted`, a choice `how:
 draft-accepted`, no statement), on an item with a plan as on any other:
 walk 2's "Recorded as your words" (#015) was the page's receipt, never the
-record. An approved change stays changeable until a
+record. *(S-134, gate r1 F1.)* An answer sent to an answered ask whose
+subject has moved on to a listed item (an old tab, an old link) is that
+item's answer: the verb answers it as the approved item (`approved.pending`:
+its live-claim refusal applies, and an approve option sent again is
+refused, 3, `ALREADY_APPROVED`, "is already approved … nothing was
+started again"); when the work was carried out (`decided.approved-done`)
+every answer is refused (3, `ALREADY_CARRIED_OUT`: a new answer would
+start it over; overturn it in words on that item); any other listed item
+refuses it (3), naming it. `answered_item` gives nothing for an ask while
+any item with its subject is listed, and
+`attention_answers.ask_successor(home, item_id)` names that item (public
+fields) so the page answers by its rules. *(Gate r1 F4, the
+orchestrator's ruling.)* `--words-from T` also takes the person's own
+typed reply that went with an option (their statement, cited again, never
+a second one), so after "Change my answer" the note they typed is not
+typed twice; agent and relayed rows stay refused (64). An approved change stays changeable until a
 session claims it: another option on the approved item is recorded, both
 readers (`attention._approval_track`, `conversation.approval_track`) then
 read the item as answered, and a later `claim` is refused (2, "change

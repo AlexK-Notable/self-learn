@@ -350,9 +350,50 @@ def answered_item(home: Path | str, *, item_id: str | None = None,
             found = _answered_ask_item(home, attention.item_id(kind, row["id"]))
     if found is None:
         return None
-    if item_id is None and any(i["id"] == found["id"] for i in _items(home)):
-        return None  # still open: nothing to change back to
+    # Still open, or (walk 2 gate r1 F1) moved on to an item that is listed
+    # under the same subject (approved, being carried out, or carried out):
+    # that item's own rules answer it, never the answered ask's options.
+    if any(i.get("subject") == found.get("subject") for i in _items(home)):
+        return None
     return {k: v for k, v in found.items() if not k.startswith("_")}
+
+
+def ask_successor(home: Path | str, item_id: str) -> dict | None:
+    """Walk 2 gate r1 F1: the listed item that took over an answered ask
+    *item_id* (its approved item, the work being carried out, or what was
+    carried out), public fields only; ``None`` when the id is no answered
+    ask or nothing under its subject is listed. A stale page names it
+    instead of answering the ask's old options."""
+    home = Path(home)
+    if _answered_ask_item(home, item_id) is None:
+        return None
+    items = _items(home)
+    if any(i["id"] == item_id for i in items):
+        return None
+    found = _successor_of(_answered_ask_item(home, item_id), items)
+    return {k: v for k, v in found.items() if not k.startswith("_")} if found else None
+
+
+def _successor_of(asked: dict | None, items: list[dict]) -> dict | None:
+    """The listed item under an answered ask's subject (gate r1 F1)."""
+    if asked is None:
+        return None
+    return next((i for i in items if i.get("subject") == asked.get("subject")
+                 and i["id"] != asked.get("id")), None)
+
+
+#: Walk 2 gate r1 F1: an answer sent to an ask whose approval was already
+#: carried out (an old tab, an old link): it would start the work again.
+ALREADY_CARRIED_OUT = (
+    "this change was already carried out by an agent (it is under Decided for you as {done}); a "
+    "new answer here would start it over, so nothing was recorded. To overturn it, say so in your "
+    "own words on that item"
+)
+#: ... and an approval sent again to an ask whose approval stands.
+ALREADY_APPROVED = (
+    "«{label}» is already approved: it is being carried out as {approved}, so nothing was "
+    "recorded and nothing was started again"
+)
 
 
 def conflict_side(option: dict | None) -> str:
@@ -589,8 +630,12 @@ def _reused_words(home: Path, item_id: str, t: int) -> tuple[str, str | None]:
     note without the person typing them again and without a second
     statement of the same words."""
     row = next((r for r in workspace.rows(home, item_id, pending=False) if r.get("t") == t), None)
+    # Walk 2 gate r1 F4 (the orchestrator's ruling): words the person typed
+    # WITH an option are theirs too (that answer recorded them as their
+    # statement), so after "Change my answer" they are reusable as well;
+    # only the person's own typed rows ever are.
     if (row is None or row.get("role") != "user" or row.get("origin") != "typed"
-            or row.get("kind") != "reply" or row.get("option")
+            or row.get("kind") != "reply"
             or not isinstance(row.get("text"), str) or not row["text"].strip()):
         raise AnswerError(f"--words-from T{t} names no reply you typed and sent on {item_id}",
                           EXIT_USAGE)
@@ -815,6 +860,26 @@ def answer(
     item = _find(home, item_id, items)
     if item is None:
         raise AnswerError(f"unknown or closed item {item_id}", EXIT_UNKNOWN)
+    if not any(i["id"] == item["id"] for i in items):
+        # Walk 2 gate r1 F1: an answer to an answered ask (an old tab, an old
+        # link, "Change my answer") whose subject has moved on to a listed
+        # item is that item's answer: approved work keeps its own rules (a
+        # live claim refuses a different answer; an approval is not sent
+        # twice), and work already carried out is never started over.
+        successor = _successor_of(item, items)
+        if successor is not None and successor["kind"] == "decided.approved-done":
+            raise AnswerError(ALREADY_CARRIED_OUT.format(done=successor["id"]), EXIT_REFUSED)
+        if successor is not None and successor["kind"] == "approved.pending":
+            asked = next((o for o in item.get("options") or [] if o.get("id") == option), None)
+            if asked is not None and asked.get("effect") == "approve":
+                raise AnswerError(ALREADY_APPROVED.format(label=asked.get("label"),
+                                                          approved=successor["id"]), EXIT_REFUSED)
+            item = successor
+        elif successor is not None:
+            raise AnswerError(
+                f"{item_id} has moved on: it is now {successor['id']}; answer it there. Nothing "
+                "was recorded", EXIT_REFUSED,
+            )
     if stopped:
         # Nothing can be committed while a ledger write is STOPPED. The one
         # answer that must still work then is the person's "Have an agent

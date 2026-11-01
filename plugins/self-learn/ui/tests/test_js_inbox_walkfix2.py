@@ -183,3 +183,41 @@ def test_the_receipt_is_brought_into_view_at_1440x900(page, server, monkeypatch)
     _wait_for(lambda: 0 <= page.evaluate(
         "() => document.querySelector('#ws-answer [data-recorded]').getBoundingClientRect().top")
         < 900, timeout=3.0)
+
+
+def test_ctrl_enter_on_a_plain_draft_after_storage_lost_its_option_arms(page, server, monkeypatch):
+    """Gate r1 F2: site storage throws, and the agent's draft carries a
+    plain No. Use this draft, then Send (one click; the verb refuses it
+    here): the bar comes back with the draft id but without its option.
+    Ctrl+Enter must still arm, by the server's read of the draft, in words
+    that say it is the agent's draft, and nothing more is sent. Mutation:
+    arm only consequential draft options (the old rule) -> red
+    (Ctrl+Enter sends)."""
+    from test_js_inbox import DRAFT_ID, RunResult
+
+    monkeypatch.setattr(base, "OO7_ROWS", [
+        {"t": 0, "kind": "header"},
+        {"t": 1, "role": "user", "origin": "typed", "kind": "question", "text": "draft it"},
+        {"t": 2, "role": "agent", "origin": "agent", "kind": "draft", "draft_id": DRAFT_ID,
+         "option": "opt-no", "text": "No, leave it."}])
+    page.add_init_script(
+        "Object.defineProperty(window, 'localStorage', {get() { throw new Error('blocked'); }});")
+    _open(page, server, ID_OO7)
+    page.click(f'[data-draft-card][data-draft-id="{DRAFT_ID}"] [data-use-draft]')
+    _wait_for(lambda: page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-no")
+    server.runner.queue_result(RunResult(3, stderr="refused for this test"))
+    page.click("[data-send-reply]")
+    page.wait_for_selector("#ws-answer [data-answer-error]", timeout=_WAIT_MS)
+    assert len(_answer_calls(server)) == 1  # control: the first send went
+    assert page.get_attribute("#ws-answer-form", "data-draft-option") is None  # the option is lost
+    page.wait_for_function("() => !!document.querySelector('#ws-answer-form')['htmx-internal-data']",
+                           timeout=_WAIT_MS)
+    page.focus("#ws-reply-text")
+    page.keyboard.press("Control+Enter")
+    page.wait_for_selector("#ws-answer [data-armed-answer]", timeout=_WAIT_MS)
+    assert "The agent's draft is sent as" in page.inner_text("[data-armed-answer]")
+    try:
+        _wait_for(lambda: len(_answer_calls(server)) > 1, timeout=1.0)
+    except AssertionError:
+        pass
+    assert len(_answer_calls(server)) == 1

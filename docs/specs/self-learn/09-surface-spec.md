@@ -545,7 +545,7 @@ section records what the surface is.
   tell the option, it says so in words ("click that option's own button
   to choose it, then confirm"), never the verb's flag. Under the options a key hint gives
   each number key and what it does, "approve: …" or "register: …" in
-  words for such options. *(S-NEXT-walkfix2, the orchestrator's
+  words for such options. *(S-134, the orchestrator's
   decisions D1-D7, not the user's; evidence: the two source-blind walks,
   `misc/build-2026-10-31c/walk-attention.md` and
   `misc/build-2026-11-01/walk2-attention.md`. They revise design r2 §0
@@ -614,7 +614,7 @@ section records what the surface is.
   options; if that approval's launch found no terminal, a retry is
   offered for the item it moved to. Verb sentences show their times in
   words ("started just now"), the exact instant on hover.
-  *(S-NEXT-walkfix2, D3.)* The receipt names the decision and what
+  *(S-134, D3.)* The receipt names the decision and what
   happens next ("You answered “No, keep the manual note”: nothing will be
   changed; the overseer reads this on its next run."; a conflict's says
   which statement now holds; an approval's what the work is doing now),
@@ -633,7 +633,7 @@ section records what the surface is.
   required` option clicked with an empty box offers the words last sent
   alone on the item, whatever sent them (Send, `Ctrl+Enter`, a draft
   card, a visit before a reload): `sent_t` when the bar carries it, else
-  the item's newest answer row when it is words with no option; the
+  the item's newest answer row when it holds words (with an option too: gate r1 F4 below); the
   person's typed words by reference (`--words-from`), the agent's draft
   they sent again with its draft id, so it stays the agent's. "Your text
   is kept in the box" is said only when the box held text. *(D7.)* The
@@ -644,6 +644,26 @@ section records what the surface is.
   `plan.conditions_how` ("Your conditions, in your words:", "Conditions,
   the agent's draft, accepted by you:", "Conditions sent with the
   approval:" when unknown), never the old "Your conditions:".
+  *(S-134, gate r1 fold.)* **F1.** A page showing a question that has
+  moved on (an old tab, an old link, "Change my answer") answers the item
+  that took it over, by its rules: the route looks the answered ask up
+  (`ledger.answered_item`, nothing while its subject is listed) and else
+  its successor (`ledger.ask_successor`); work being carried out takes
+  the answer (its claim turns its options off; a withdrawal arms and its
+  Confirm posts to that item), an approval is never sent again, and work
+  already carried out is never started over ("This change was already
+  carried out by an agent, so nothing was recorded …"); the answer verb
+  enforces the same (02 §3a.12). **F2.** A keyed send of the agent's
+  draft with no option (the page lost it: blocked storage, or a crafted
+  request) is armed by the option the server reads from the draft,
+  whatever its effect. **F3.** Every sentence about words sent names whose
+  they are by the recorded or previewed provenance: "the overseer reads
+  the agent's draft", "Send the agent's draft?", "The agent's draft is
+  sent as “X”", never "your words" for the agent's draft. **F4 (the
+  orchestrator's ruling).** Words the person typed with an option are
+  offered again for a note-required option (by reference, citing their
+  statement); the agent's draft sent with an option only with its draft
+  id.
 - **Being carried out** shows "Running in a terminal (started <time>)",
   never with a relaunch while it runs *(S-130, item 7)*: a new
   terminal (`attention run --json`; the login variant passes `--login`)
@@ -742,7 +762,7 @@ section records what the surface is.
   `j`/`k`, `Enter`, `1`–`4`, `r`, `a`, `Ctrl+Enter`, `Esc`, `u`, `s`,
   `?`. They are inert while a text field has focus except `Ctrl+Enter`
   and `Esc`. `1`–`4`, `u` and `s` only arm their action, whatever it is
-  (S-NEXT-walkfix2, D2; S-130 item 1 armed only approve and register);
+  (S-134, D2; S-130 item 1 armed only approve and register);
   `Esc` cancels an armed panel first (D4); on an armed bar they do nothing,
   their auto-repeat never acts, and `Ctrl+Enter` on a reply carrying such
   an option arms it too (gate r1 F1, F2). `Enter` opens the selected item only when nothing has

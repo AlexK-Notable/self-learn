@@ -345,27 +345,30 @@ def undo_arm_line(kind: object, *, redo: bool, label: object, keyed: bool) -> st
 
 #: Walk 2 (D3): the receipt's and the armed line's "what happens next",
 #: by what the answer is. Lower-case, to follow "You answered “X”: ".
+#: Walk 2 gate r1 F3: a sentence about the words sent names whose they are
+#: (`{words}`: "your words", or "the agent's draft" by the recorded or
+#: previewed provenance), never "your words" for the agent's draft.
 NEXT_APPROVE = "it approves this change, and an agent then carries it out in a terminal you can see"
 NEXT_WITHDRAW = ("your approval is withdrawn, so nothing will be carried out, and a session that "
                  "tries to claim the work is refused")
 NEXT_DECLINE = "nothing will be changed; the overseer reads this on its next run"
 NEXT_OTHER = "the overseer reads this on its next run"
-NEXT_WORDS_PLAN = ("nothing is decided yet, and the overseer reads your words on its next run. To "
+NEXT_WORDS_PLAN = ("nothing is decided yet, and the overseer reads {words} on its next run. To "
                    "decide, pick an option")
-NEXT_WORDS_RUNNING = ("they are kept for the overseer and do not reach the session carrying it "
+NEXT_WORDS_RUNNING = ("{words} {are} kept for the overseer and {do} not reach the session carrying it "
                       "out")
 NEXT_WORDS_DECIDED = ("the cases behind this decision are told, so the steward decides it again "
-                      "with your words")
-NEXT_WORDS_ANSWER = "this answers it, and the overseer reads your answer on its next run"
+                      "with {words}")
+NEXT_WORDS_ANSWER = "this answers it, and the overseer reads the answer on its next run"
 NEXT_WORDS_CONFLICT = ("this settles it, and the cases that relied on either statement are decided "
-                       "again with your words")
+                       "again with {words}")
 NEXT_RAN_SUDO = "an agent then does the rest in a terminal you can see"
 NEXT_CONFLICT = {
     "newer": ("the newer of your two statements holds, and the cases that relied on the older one "
               "are decided again"),
     "older": ("the older of your two statements holds, and the cases that relied on the newer one "
               "are decided again"),
-    "both": ("both statements hold as your note says, and the cases that relied on either are "
+    "both": ("both statements hold as the note says, and the cases that relied on either are "
              "decided again"),
 }
 #: Walk 2 (D3): what approved work is doing once the approval is recorded.
@@ -376,6 +379,28 @@ APPROVED_NOW = {
                       "I ran it"),
     "done": "it is done",
 }
+#: Walk 2 gate r1 F3: whose words, by provenance.
+YOUR_WORDS = "your words"
+AGENT_DRAFT = "the agent's draft"
+
+
+def whose_words(provenance: object) -> str:
+    """Walk 2 gate r1 F3: "the agent's draft" when the recorded (or
+    previewed) provenance is the agent's draft (`recorded_as` "as the
+    agent's draft …", or an origin `draft-accepted`/`draft-edited`),
+    else "your words"."""
+    text = str(provenance or "")
+    return AGENT_DRAFT if (text.startswith("as the agent's draft")
+                           or text.startswith("draft-")) else YOUR_WORDS
+
+
+def _words_in(sentence: str, words: str) -> str:
+    agent = words == AGENT_DRAFT
+    return sentence.format(words=words, are="is" if agent else "are", do="does" if agent else "do")
+
+
+def _cap(text: str) -> str:
+    return text[:1].upper() + text[1:]
 
 
 def _conflict_side(option: dict | None) -> str:
@@ -384,22 +409,25 @@ def _conflict_side(option: dict | None) -> str:
     return sl_answers.conflict_side(option)
 
 
-def answer_next(item: dict, chosen: dict | None, *, has_plan: bool) -> str:
+def answer_next(item: dict, chosen: dict | None, *, has_plan: bool,
+                words: str = YOUR_WORDS) -> str:
     """Walk 2 (D1, D3): what an answer does next, in plain words, from the
     item and the option it carries (``None``: words alone or a draft with
     no option). The same sentence is the armed panel's (before) and the
-    receipt's (after), so the page says one thing about an answer."""
+    receipt's (after), so the page says one thing about an answer.
+    *words* names whose words were sent (gate r1 F3)."""
     klass = item.get("class")
     if chosen is not None and chosen.get("id") == RAN_SUDO_OPTION:
         return NEXT_RAN_SUDO
     if chosen is None:
         if klass == "approved":
-            return NEXT_WORDS_RUNNING
+            return _words_in(NEXT_WORDS_RUNNING, words)
         if klass == "decided":
-            return NEXT_WORDS_DECIDED
+            return _words_in(NEXT_WORDS_DECIDED, words)
         if has_plan:
-            return NEXT_WORDS_PLAN
-        return NEXT_WORDS_CONFLICT if item.get("because") == "conflict" else NEXT_WORDS_ANSWER
+            return _words_in(NEXT_WORDS_PLAN, words)
+        return (_words_in(NEXT_WORDS_CONFLICT, words) if item.get("because") == "conflict"
+                else NEXT_WORDS_ANSWER)
     effect = chosen.get("effect")
     if effect == "approve":
         return NEXT_APPROVE
@@ -415,7 +443,7 @@ def answer_next(item: dict, chosen: dict | None, *, has_plan: bool) -> str:
     if item.get("because") == "conflict":
         return NEXT_CONFLICT[_conflict_side(chosen)]
     if klass == "decided":
-        return NEXT_WORDS_DECIDED.replace("with your words", "with your answer")
+        return _words_in(NEXT_WORDS_DECIDED, "the answer")
     if effect == "decline":
         return NEXT_DECLINE
     return NEXT_OTHER
@@ -425,46 +453,55 @@ def answer_receipt(item: dict, chosen: dict | None, *, has_plan: bool, state: ob
                    recorded_as: str) -> str:
     """Walk 2 (D3): the receipt names the decision and what happens next,
     in plain words ("You answered “No, keep the manual note”: nothing will
-    be changed; the overseer reads this on its next run.")."""
+    be changed; the overseer reads this on its next run."). Gate r1 F3:
+    the agent's draft is said to be the agent's, by `recorded_as`."""
     effect = (chosen or {}).get("effect")
     label = (chosen or {}).get("label")
+    words = whose_words(recorded_as)
+    drafted = words == AGENT_DRAFT
     if chosen is None:
-        lead = ("You sent the agent's draft" if recorded_as.startswith("as the agent's draft")
-                else "You answered in your own words")
+        lead = "You sent the agent's draft" if drafted else "You answered in your own words"
     elif chosen.get("id") == RAN_SUDO_OPTION:
         lead = "You said you ran the sudo steps"
     elif effect == "approve":
-        lead = f"You approved “{label}”"
+        lead = (f"You approved “{label}”, with the agent's draft" if drafted
+                else f"You approved “{label}”")
     elif item.get("class") == "approved":
         lead = f"You withdrew your approval and answered “{label}”"
     else:
-        lead = f"You answered “{label}”"
+        lead = (f"You sent the agent's draft as “{label}”" if drafted
+                else f"You answered “{label}”")
     if effect == "approve" or (chosen or {}).get("id") == RAN_SUDO_OPTION:
         then = APPROVED_NOW.get(str(state), NEXT_APPROVE)
     else:
-        then = answer_next(item, chosen, has_plan=has_plan)
+        then = answer_next(item, chosen, has_plan=has_plan, words=words)
     return f"{lead}: {then}."
 
 
 def arm_line(item: dict, chosen: dict | None, *, has_plan: bool, by_key: bool, by_draft: bool,
-             note: str | None = None) -> str:
+             note: str | None = None, words: str = YOUR_WORDS) -> str:
     """Walk 2 (D1, D2): the armed panel's words: what will happen, plainly,
-    with the note that goes with it quoted back (walk 2 #036)."""
+    with the note that goes with it quoted back (walk 2 #036). Gate r1 F3:
+    *words* is whose words the box holds, by the answer verb's preview."""
     label = (chosen or {}).get("label")
     effect = (chosen or {}).get("effect")
+    drafted = words == AGENT_DRAFT
     if effect == "approve":
         line = (DRAFT_APPROVE_LINE if by_draft and not by_key else APPROVE_LINE).format(label=label)
     elif chosen is not None and item.get("class") == "approved":
         line = WITHDRAW_LINE.format(label=label)
     elif chosen is None:
-        then = answer_next(item, None, has_plan=has_plan)
-        line = f"Send your words? {then[:1].upper()}{then[1:]}."
+        then = answer_next(item, None, has_plan=has_plan, words=words)
+        line = (f"Send the agent's draft? {_cap(then)}." if drafted
+                else f"Send your words? {_cap(then)}.")
     else:
-        then = answer_next(item, chosen, has_plan=has_plan)
-        line = f"“{label}”: {then}."
+        then = answer_next(item, chosen, has_plan=has_plan, words=words)
+        line = (f"The agent's draft is sent as “{label}”: {then}." if drafted
+                else f"“{label}”: {then}.")
     if note and chosen is not None:
         shown = note if len(note) <= 300 else note[:299].rstrip() + "…"
-        line += f" Your note goes with it: “{shown}”."
+        line += (f" The agent's draft goes with it as its note: “{shown}”." if drafted
+                 else f" Your note goes with it: “{shown}”.")
     if by_key:
         line += (" You pressed a key, and a key never approves on its own." if effect == "approve"
                  else " You pressed a key, and a key never answers on its own.")
@@ -869,16 +906,22 @@ _REUSABLE_ORIGINS = ("typed", "draft-accepted", "draft-edited")
 
 
 def _reusable(row: dict | None) -> dict | None:
+    """Walk 2 gate r1 F4 (the orchestrator's ruling): words sent WITH an
+    option are offered too (after "Change my answer"): the person's typed
+    words by reference (their statement), the agent's draft only with its
+    draft id, so it stays the agent's."""
     if (row is None or row.get("role") != "user" or row.get("kind") != "reply"
-            or row.get("option") or row.get("origin") not in _REUSABLE_ORIGINS
+            or row.get("origin") not in _REUSABLE_ORIGINS
             or not isinstance(row.get("t"), int)):
         return None
     words = row.get("text")
     if not isinstance(words, str) or not words.strip():
         return None
     draft = row.get("draft_id") if isinstance(row.get("draft_id"), str) else None
-    return {"t": row["t"], "text": words, "origin": row.get("origin"),
-            "draft_id": draft if draft and _DRAFT_ID_RE.match(draft) else None}
+    draft = draft if draft and _DRAFT_ID_RE.match(draft) else None
+    if row.get("option") and row.get("origin") != "typed" and draft is None:
+        return None
+    return {"t": row["t"], "text": words, "origin": row.get("origin"), "draft_id": draft}
 
 
 def _sent_words(request: Request, item_id: str, t: int | None) -> str | None:
@@ -889,7 +932,7 @@ def _sent_words(request: Request, item_id: str, t: int | None) -> str | None:
         return None
     row = next((r for r in ledger.workspace_rows(_home(request), item_id) if r.get("t") == t), None)
     if (row is None or row.get("role") != "user" or row.get("origin") != "typed"
-            or row.get("kind") != "reply" or row.get("option")):
+            or row.get("kind") != "reply"):
         return None
     words = row.get("text")
     return words if isinstance(words, str) and words.strip() else None
@@ -898,9 +941,9 @@ def _sent_words(request: Request, item_id: str, t: int | None) -> str | None:
 def _last_sent(request: Request, item_id: str, t: int | None) -> dict | None:
     """Walk 2 (D6): the words last sent alone on this item, whatever sent
     them (Send, Ctrl+Enter, a draft card, a visit before a reload): row *t*
-    when the bar carried it, else the item's newest answer row, when it is
-    words with no option (a reply that went with an option already has its
-    choice). ``{t, text, origin, draft_id}`` or ``None``."""
+    when the bar carried it, else the item's newest answer row when it
+    holds words (gate r1 F4: with an option too, e.g. before "Change my
+    answer"). ``{t, text, origin, draft_id}`` or ``None``."""
     rows = ledger.workspace_rows(_home(request), item_id)
     if t is not None:
         hit = _reusable(next((r for r in rows if r.get("t") == t), None))
@@ -983,13 +1026,36 @@ def _has_plan(item: dict) -> bool:
     return any(o.get("effect") == "approve" for o in item.get("options") or [])
 
 
+#: Walk 2 gate r1 F1: what a stale page (an old tab, an old link) is told
+#: when the question it shows has moved on; nothing is recorded.
+MOVED_APPROVED = ("This question has moved on: you approved it, and it is being carried out, so "
+                  "nothing was recorded and nothing was started again. Its own options are "
+                  "below; while a session holds the work they are off.")
+MOVED_DONE = ("This change was already carried out by an agent, so nothing was recorded: a new "
+              "answer here would start it over. To overturn it, say so in your own words below.")
+#: ... and what "Change my answer" (a read, nothing sent) shows for it.
+MOVED_APPROVED_VIEW = ("This question has moved on: you approved it, and it is being carried out. "
+                       "Its own options are below; while a session holds the work they are off.")
+MOVED_DONE_VIEW = ("This change was already carried out by an agent. A new answer here would start "
+                   "it over; to overturn it, say so in your own words below.")
+
+
 async def _item_or_answered(request: Request, read: ledger.CliRead, item_id: str) -> dict | None:
     """The listed item, or (walk 2, D3, "Change my answer") the answered
-    ask whose answer can still change, read through the CLI's own rule."""
+    ask whose answer can still change, read through the CLI's own rule.
+    Walk 2 gate r1 F1: an answered ask whose subject moved on to a listed
+    item (approved, being carried out, carried out) is that item, marked
+    `moved_from`, so its own rules answer: never the ask's old options."""
     found = _find(read, item_id)
     if found is not None or not _ITEM_ID_RE.match(item_id):
         return found
-    return await asyncio.to_thread(ledger.answered_item, _home(request), item_id=item_id)
+    answered = await asyncio.to_thread(ledger.answered_item, _home(request), item_id=item_id)
+    if answered is not None:
+        return answered
+    moved = await asyncio.to_thread(ledger.ask_successor, _home(request), item_id)
+    if moved is None:
+        return None
+    return {**(_find(read, str(moved.get("id"))) or moved), "moved_from": item_id}
 
 
 @router.post("/inbox/{item_id}/answer", response_class=HTMLResponse)
@@ -1025,6 +1091,14 @@ async def inbox_answer(
                                 "draft_id": draft_id, "sent_t": last_sent, **extra},
                                status_code=status)
 
+    if item.get("moved_from"):
+        # Walk 2 gate r1 F1: the page showed a question that has moved on;
+        # the answer belongs to the item that took it over, by its rules.
+        item_id = str(item["id"])
+        if item.get("class") == "decided":
+            return fail(MOVED_DONE)
+        if option is not None and not any(o.get("id") == option for o in item.get("options") or []):
+            return fail(MOVED_APPROVED)
     if option is not None and not _OPTION_ID_RE.match(option):
         return fail("That option is not one this item offers.", 400)
     if draft_id is not None and not _DRAFT_ID_RE.match(draft_id):
@@ -1034,13 +1108,15 @@ async def inbox_answer(
     chosen = next((o for o in item.get("options") or [] if o.get("id") == option), None)
     if option is not None and chosen is None and option != RAN_SUDO_OPTION:
         return fail("That option is not one this item offers.", 400)
-    if option is None and draft_id is not None:
-        # Gate r2 N1: the draft's own option, from the server's transcript:
-        # an approval or register it carries arms like any other (walk 2,
-        # D1: so does any option that withdraws approved work).
-        carried = _draft_option(request, item, draft_id)
-        if carried is not None and consequential(item, carried):
-            chosen = carried
+    # Walk 2 gate r1 F2: the option the agent's draft carries, read from
+    # the server's transcript whatever its effect, so a keyed send whose
+    # page lost the draft's option is still armed by what it would settle.
+    carried = _draft_option(request, item, draft_id) if option is None else None
+    if carried is not None and consequential(item, carried):
+        # Gate r2 N1: an approval or register the draft carries arms like
+        # any other (walk 2, D1: so does any option that withdraws
+        # approved work).
+        chosen = carried
     if chosen is not None and chosen.get("disabled"):
         # Follow-ups 2 (gap 2): a change of mind is off while a session
         # holds the work; the reason says what to do instead.
@@ -1065,6 +1141,10 @@ async def inbox_answer(
     # answer verb refuses it without --confirm anyway.
     by_draft = from_draft == "1" or draft_id is not None
     shown_option = chosen if chosen is not None else (_RAN_SUDO if option == RAN_SUDO_OPTION else None)
+    if shown_option is None and by_key and carried is not None:
+        # Walk 2 gate r1 F2: a key sent the agent's draft and the page lost
+        # its option; the server's read of the draft names what it settles.
+        shown_option = carried
 
     def arm(message: str, **extra: Any) -> HTMLResponse:
         return _answer_partial(request, item, packet_read, {
@@ -1103,8 +1183,17 @@ async def inbox_answer(
             # item, are armed; only the panel's Confirm sends. Gate r1 F2: an
             # approval carried by the agent's draft says so.
             note = text if text is not None else reused
+            # Gate r1 F3: whose words the box holds, by the verb's own rule.
+            if draft_id is not None:
+                words = AGENT_DRAFT
+            elif text is not None:
+                words = whose_words(ledger.answer_preview(
+                    _home(request), item_id, text=text, draft_id=None).get("origin"))
+            else:
+                words = YOUR_WORDS
             return arm(arm_line(item, chosen if chosen is not None else shown_option,
-                                has_plan=has_plan, by_key=by_key, by_draft=by_draft, note=note))
+                                has_plan=has_plan, by_key=by_key, by_draft=by_draft, note=note,
+                                words=words))
     argv = ["attention", "answer", item_id]
     if option is not None:
         argv += ["--option", option]
@@ -1205,6 +1294,12 @@ async def inbox_change(request: Request, item_id: str) -> HTMLResponse:
     item = await _item_or_answered(request, read, item_id)
     if item is None:
         return _render(request, "partials/workspace_gone.html", {"gone": item_id}, status_code=404)
+    if item.get("moved_from"):
+        # Walk 2 gate r1 F1: never the answered ask's old options once its
+        # subject moved on; the item that took it over, by its own rules.
+        return _answer_partial(request, item, None, {
+            "state": "error",
+            "message": MOVED_DONE_VIEW if item.get("class") == "decided" else MOVED_APPROVED_VIEW})
     return _answer_partial(request, item, None, {"state": "changing"})
 
 

@@ -351,6 +351,20 @@ def answered_item(home: Path, *, item_id: str | None = None,
     return dict(found) if isinstance(found, dict) else None
 
 
+def ask_successor(home: Path, item_id: str) -> dict | None:
+    """Walk 2 gate r1 F1: the listed item that took over the answered ask
+    *item_id* (its approved item, the work being carried out, or what was
+    carried out; the CLI's ``attention_answers.ask_successor``), or
+    ``None``. Read-only."""
+    from self_learn import attention_answers as sl_answers
+
+    try:
+        found = sl_answers.ask_successor(home, item_id)
+    except Exception:  # noqa: BLE001 - an unreadable index names nothing
+        return None
+    return dict(found) if isinstance(found, dict) else None
+
+
 _REPORT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
