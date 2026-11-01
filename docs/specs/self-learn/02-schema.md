@@ -4848,8 +4848,14 @@ session claims it: another option on the approved item is recorded, both
 readers (`attention._approval_track`, `conversation.approval_track`) then
 read the item as answered, and a later `claim` is refused (2, "change
 nothing"). While a live claim holds it the answer is refused (3), naming
-the claiming session. Once the work is done, a new answer is an overturn
-(below).
+the claiming session. Neither check holds a lock across its write, so each
+side reads the other again after writing: `claim` reads the items after
+writing its claim and takes the claim back (2) when the answer changed
+meanwhile, and `answer` reads the claim after its commit and adds a warning
+naming a session that claimed meanwhile; one of the two always sees the
+other. Once the work is done, a new answer is an overturn (below). A redo of
+a `skill write` grant use whose `--from` was recorded relative is refused
+(3): the folder is relative to a shell the inbox cannot know.
 
 **Downstream** (§3.4.4). The `answers` of a statement or choice: an ask's
 question id (`kind: question`), a conflict's `conflict:<a>+<b>` (a
@@ -4953,15 +4959,18 @@ the conflict ruling; both bring a case back whatever it decided. The card
 the agent's draft «text» (not their words)", "Relayed by an agent from
 their session: «words»" (quoting the statement it cites). **Questions to
 the ask agent reach the steward**: the first packet of each run lists every
-`role: user, origin: typed, kind: question` workspace row sealed since
-packet 1 of the last completed run that sent packets last started an
-attempt (its `last_attempt_at`, when that prompt was assembled; never the
-run's `completed_at`, which would lose a question sealed while it worked),
-with its `workspace:` ref and item title (`workspace_questions`), as
-statement candidates. A row a statement already cites is left out; at most
-the newest 40 are listed, and the block says how many older ones did not
-fit. Replies are not listed (the inbox records a typed reply as a
-statement itself).
+`role: user, origin: typed, kind: question` workspace row that no completed
+run has read, with its `workspace:` ref and item title
+(`workspace_questions`), as statement candidates. What was read is recorded,
+never a time: packet 1 writes the refs its prompt listed, and the older ones
+the cap left out, as `workspace_questions_read` in the commit that prepares
+that session's recipe, and only completed runs count. An attempt that
+assembles no prompt (a run resumed past its model phase, a packet whose
+inputs were all held) reads nothing, and a row kept while the ledger was
+STOPPED and sealed later with its earlier `at` is still listed. A row a
+statement already cites is left out; at most the newest 40 are listed, and
+the block says how many older ones did not fit (they count as read). Replies
+are not listed (the inbox records a typed reply as a statement itself).
 
 **Verbs** (exit codes as contract §4.6): `attention answer` (0 recorded; 2
 unknown or closed; 3 refused downstream; 10 held; 64 usage), `attention
