@@ -2303,8 +2303,17 @@ def refreeze(home: Path | str, case_id: str, *, keep: bool, note: str | None = N
                 fm["decided_sha256"] = restored_hash
                 action = "restore"
             message = f"self-learn: case refreeze {case_id} ({action})"
+            rendered = _render_frontmatter(fm) + new_body
+            committed = _committed_case_for_id(home, case_id)
+            if committed is not None and committed[1] == rendered:
+                # The edit was never committed and the restore puts back
+                # exactly what HEAD holds: the file is repaired, and there
+                # is nothing to commit.
+                fsops.atomic_write(path, rendered, fsync=True)
+                _update_index(home, case_id)
+                return str(fm["decided_sha256"])
             intent = intents.begin(home, "case-refreeze", [path], message)
-            fsops.atomic_write(path, _render_frontmatter(fm) + new_body, fsync=True)
+            fsops.atomic_write(path, rendered, fsync=True)
             intents.complete(intent)
             gitops.stage_and_commit(home, [path], message, note)
             intents.finish(intent)
