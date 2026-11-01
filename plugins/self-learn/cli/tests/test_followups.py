@@ -1,4 +1,4 @@
-"""S-NEXT-followups: four loose ends of the 2026-10-31b integration.
+"""S-120: four loose ends of the 2026-10-31b integration.
 
 1. One cause-to-fix map for a steward hold (`failure_class.hold_fix`).
 2. The stranded.json path and reader spelled once (`steward`).

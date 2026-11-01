@@ -4958,7 +4958,7 @@ _NOT_LOGGED_IN_RE = re.compile(r"not (?:logged|signed) in\b", re.I)
 
 def _hold_fix_lead(cause: str) -> str:
     """The words before the fix in :func:`hold_notice_text`: true to the
-    cause (gate r1 NIT 4 of S-NEXT-followups). "The login has expired" only
+    cause (gate r1 NIT 4 of S-120). "The login has expired" only
     for a login the cause says expired, "Claude Code is not logged in" for
     one that never was, "The login no longer works" for any other login
     failure, and "To fix it" for a cause that is not a login."""

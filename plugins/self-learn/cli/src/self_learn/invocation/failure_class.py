@@ -121,7 +121,7 @@ def is_login_failure(detail: str | None) -> bool:
 #: surface that names a fix for an environment hold takes it from here.
 LOGIN_FIX = "run `claude`, then `/login`"
 
-#: A rejected API key (gate r1 MINOR 1 of S-NEXT-followups): the login
+#: A rejected API key (gate r1 MINOR 1 of S-120): the login
 #: step it had before the map was unified, and the other way it happens --
 #: an exported ANTHROPIC_API_KEY, which Claude Code prefers over the login.
 #: Checked before the login itself, because the API's own wording for it

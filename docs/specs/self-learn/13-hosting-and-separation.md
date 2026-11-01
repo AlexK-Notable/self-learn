@@ -810,7 +810,7 @@ and its `recompile` and `push` rows come seconds later, so that comparison
 would read almost every completed run as unfinished *(gate r1 of
 S-115)*. The environment-hold notification says when the run tries again
 ("after <date> <time> (every 2 h while the cause lasts)") and the one step the
-person takes. *(Amended S-NEXT-followups.)* That step comes from ONE map,
+person takes. *(Amended S-120.)* That step comes from ONE map,
 `failure_class.hold_fix`: for a login that no longer works
 (`failure_class.is_login_failure`) "run `claude`, then `/login`", led by words
 true to the cause ("The login has expired" only when the cause says expired,
@@ -840,7 +840,7 @@ every steward job, and once a day after the premises job, `serve` takes the
 census of `02-schema.md` §3a.8's positive invariant (`steward.stranded_lessons`)
 and keeps it in `<cache>/steward/stranded.json` (`{at, count, lessons}`,
 `NOT_REPO_TRUTH`), where the session-start status can read
-its count without walking the ledger. *(Amended S-NEXT-followups.)* The path and
+its count without walking the ledger. *(Amended S-120.)* The path and
 the reader (`steward.stranded_path`, `steward.read_stranded`) are spelled once, in
 `steward`, which the status reads and `serve` imports; `serve` is the only
 writer. A census that could not be taken leaves

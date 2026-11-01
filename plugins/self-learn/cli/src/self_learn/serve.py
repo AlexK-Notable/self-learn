@@ -931,7 +931,7 @@ def _steward_next(home: Path, cache_dir: Path, now: float) -> tuple[float, str]:
     # Overdue premise reviews alone make the steward due
     # (`_steward_is_due`'s rotation clause), so the preview says so. It
     # never asks the question itself (that reads every placed lesson and
-    # walks the committed manifests, gate r1 MAJOR 1 of S-NEXT-followups):
+    # walks the committed manifests, gate r1 MAJOR 1 of S-120):
     # it reads the answer the due check or the daily premise sweep last
     # cached, and a missing or stale answer reads as "not overdue".
     if _rotation_on(home) and _cached_review_overdue(home, cache_dir, now):
@@ -1014,7 +1014,7 @@ def _premise_review_overdue(
 
 # ------------------------------------- the cached "review overdue" answer
 
-#: S-NEXT-followups (gate r1 MAJOR 1): the last answer to "is a premise
+#: S-120 (gate r1 MAJOR 1): the last answer to "is a premise
 #: review overdue enough to make the steward due by itself", under
 #: ``<cache>/steward/`` (`NOT_REPO_TRUTH`), written where the question is
 #: asked anyway -- the due check's rotation clause and the daily premise
@@ -1574,7 +1574,7 @@ def _run_premises_job(home: Path, cache_dir: Path, now: float) -> "premise_sweep
     are the ones the due check read, so the attempt marker it leaves is the one
     that stops the job being due again the same day.
 
-    S-NEXT-followups: after the sweep, while the rotation is on, it also
+    S-120: after the sweep, while the rotation is on, it also
     answers "is a premise review overdue" once and caches the answer for the
     heartbeat preview (:func:`_store_review_overdue`); that answer can never
     fail the sweep."""
