@@ -196,10 +196,16 @@ _JOB_SUBJECT_RE = re.compile(
     r"^self-learn: (?:steward manifest|telemetry flush|case |worker |mine |overseer"
     r"|capture |statement add|user-model |premises refresh )"
 )
-#: Subjects that record NEW KNOWLEDGE (a captured lesson, a stated input, a
-#: user-model entry), not upkeep: never a hand step, whoever's shell ran them
-#: and whatever ``By:`` they carry.
-_INPUT_SUBJECT_RE = re.compile(r"^self-learn: (?:capture |statement add|user-model )")
+#: Subjects that are never a hand step, whoever's shell ran them and whatever
+#: ``By:`` they carry: NEW KNOWLEDGE (a captured lesson, a stated input, a
+#: user-model entry) and protocol bookkeeping a shell writes as a side effect
+#: of ordinary work (the telemetry flush after a verb, a presented-case
+#: observation, the overseer presentation response). These carry a shell's
+#: actor since the attribution lane, so the trailer cannot tell them from upkeep.
+_INPUT_SUBJECT_RE = re.compile(
+    r"^self-learn: (?:capture |statement add|user-model |telemetry flush "
+    r"|case observe |overseer presentation response)"
+)
 #: Actors whose ``By:`` trailer says a job, not a shell, made the commit
 #: (CU-4: every ledger commit carries one, so the trailer is read first and
 #: the subject list above only judges the commits made before it existed).
@@ -258,7 +264,17 @@ def read_census_cursor(home: Path | str) -> dict[str, str] | None:
 
 def census_cursor_text(*, head: str, run: str, at: str) -> str:
     """The text of ``overseer/census.yaml`` for a census that reached *head*."""
-    return f"head: {head}\nrun: {run}\nat: '{at}'\n"
+    return f"head: '{head}'\nrun: {run}\nat: '{at}'\n"
+
+
+def ledger_head(home: Path | str) -> str | None:
+    """The ledger's HEAD sha, or ``None`` when git cannot be read (the walks
+    that take it then read HEAD themselves and report ``unavailable``)."""
+    try:
+        proc = gitops._git(Path(home), "rev-parse", "HEAD")  # noqa: SLF001 -- same module family
+    except (gitops.GitOpsError, OSError, UnicodeDecodeError):
+        return None
+    return proc.stdout.strip() or None if proc.returncode == 0 else None
 
 
 def ledger_log(
@@ -269,6 +285,7 @@ def ledger_log(
     now: datetime | None = None,
     cursor_run: str | None = None,
     grep: str | None = None,
+    head: str | None = None,
 ) -> dict:
     """The ledger's non-merge commits a census covers (CU-3), read-only.
 
@@ -283,7 +300,9 @@ def ledger_log(
     Answers ``{"state", "reason", "head", "cursor_used", "label",
     "cursor_at", "commits": [(short, author_iso, subject, body)]}``. ``head``
     is read once, so the walk is stable while jobs commit. ``state`` is
-    ``unavailable`` when git cannot be read, never an empty list."""
+    ``unavailable`` when git cannot be read, never an empty list. A caller that
+    walks twice passes the *head* it read once, so both walks end at the same
+    commit and no commit falls between them."""
     home = Path(home)
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     out: dict = {
@@ -296,10 +315,15 @@ def ledger_log(
         return out
 
     try:
-        head_proc = gitops._git(home, "rev-parse", "HEAD")  # noqa: SLF001 -- same module family
-        if head_proc.returncode != 0:
-            return _fail(head_proc.stderr or head_proc.stdout or "git rev-parse HEAD failed")
-        head = head_proc.stdout.strip()
+        tip: str
+        if head is None:
+            head_proc = gitops._git(home, "rev-parse", "HEAD")  # noqa: SLF001 -- same module family
+            if head_proc.returncode != 0:
+                return _fail(head_proc.stderr or head_proc.stdout or "git rev-parse HEAD failed")
+            tip = head_proc.stdout.strip()
+        else:
+            tip = head
+        head = tip
         out["head"] = head
         used: str | None = None
         label = ""
@@ -358,6 +382,7 @@ def hand_steps(
     limit: int = HAND_STEP_LIMIT,
     cursor: str | None = None,
     cursor_run: str | None = None,
+    head: str | None = None,
 ) -> dict:
     """The hand steps since the last published census: every ledger commit
     in that window that no job made (S-105; CU-3, CU-4).
@@ -368,13 +393,13 @@ def hand_steps(
     :func:`ledger_log`; a date cut would drop a commit made on a skewed clock).
 
     A commit is a **hand step** when it carries no job's identity. Read in
-    this order: a ``Case:`` trailer is a job's; a ``By:`` trailer names the
+    this order: a subject that is new knowledge or protocol bookkeeping
+    (:data:`_INPUT_SUBJECT_RE`) never is; a ``By:`` trailer names the
     maker (CU-4: every ledger commit carries one), a job actor
     (``miner``, ``worker``, ``sweep``, ``steward``, ``overseer``, ``serve``,
     ``analyst``) is not a hand step, ``human`` and ``agent`` are; a commit with
     NO trailer (history from before the stamp) falls back to its subject
     (:data:`_JOB_SUBJECT_RE`): a job's subject is not a hand step, any other is,
-    and a capture, statement or user-model subject never is (new knowledge),
     with ``by`` ``none`` because the commit cannot say which shell.
 
     Answers ``{"window_days", "since", "head", "label", "state", "reason",
@@ -399,7 +424,9 @@ def hand_steps(
         "total": 0,
         "steps": [],
     }
-    walk = ledger_log(home, cursor=cursor, fallback_days=days, now=now, cursor_run=cursor_run)
+    walk = ledger_log(
+        home, cursor=cursor, fallback_days=days, now=now, cursor_run=cursor_run, head=head,
+    )
     result["head"] = walk["head"]
     result["label"] = walk["label"]
     if walk["state"] != "ok":
@@ -422,7 +449,7 @@ def hand_steps(
         subject = subject.strip()
         note, trailers = _split_trailers(body)
         by = trailers.get("By")
-        if "Case" in trailers or _INPUT_SUBJECT_RE.match(subject):
+        if _INPUT_SUBJECT_RE.match(subject):
             continue
         if by is not None:
             if by in _JOB_ACTORS:

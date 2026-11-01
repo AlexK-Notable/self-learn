@@ -998,15 +998,21 @@ keeps the commits whose author date is within seven days, and the row's `label` 
 which case (`since the census of <run> (<sha>)`, `no earlier census; the last 7 days`,
 or `the earlier census point is not in this history; the last 7 days`); `since` is the
 cursor commit's author date, or the fallback cut; `head` is the HEAD read once before the
-walk, the next cursor. A commit is a job's when it carries a `Case:` trailer, or a `By:`
+walk, the next cursor (one HEAD read serves the premise-refresh walk and this one, so a
+commit landing between them is listed by the next run, never skipped by both). A commit is a
+job's when it carries a `By:`
 trailer naming a job (`miner|worker|sweep|steward|overseer|serve|analyst`; every ledger
 commit carries one since S-102 as extended, so the trailer is read FIRST); `By: human`
-or `By: agent` is a hand step whatever its subject. Only a commit with NO `By:` trailer
+or `By: agent` is a hand step whatever its subject, except the never-a-hand-step subjects
+below. Only a commit with NO `By:` trailer
 (history from before the stamp) falls back to its subject: one beginning
 `self-learn: steward manifest|telemetry flush|case |worker |mine |overseer` or
 `premises refresh ` is a job's, and any other is a hand step, including a subject no list
 anticipated. A subject beginning `capture |statement add|user-model ` records new
-knowledge, not upkeep, and is never a hand step. Each step is `{commit, at,
+knowledge, and one beginning `telemetry flush |case observe |overseer presentation response`
+is protocol bookkeeping a shell writes as a side effect of ordinary work (it carries the
+shell's actor since S-102, so the trailer cannot tell it from upkeep); neither is ever a
+hand step, whatever `By:` they carry. Each step is `{commit, at,
 subject, by, note}`: `by` is `human` or `agent` from a `By:` trailer, `none` when the
 commit has no trailer (the commit cannot say whether a person or an agent ran it); the
 note is the commit body without its trailer paragraph, one line, at most 240

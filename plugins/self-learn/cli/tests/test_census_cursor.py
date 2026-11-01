@@ -172,6 +172,54 @@ def test_the_by_trailer_decides_before_the_subject_list(repo):
     }
 
 
+def test_protocol_bookkeeping_a_shell_writes_is_never_a_hand_step(repo):
+    _commit(repo, "self-learn: telemetry flush 1 event", trailer="By: agent")
+    _commit(repo, "self-learn: case observe case-0123abcd (presented)", trailer="By: agent")
+    _commit(repo, "self-learn: overseer presentation response run-x", trailer="By: human")
+    _commit(repo, "self-learn: defer lrn-0000a005", trailer="By: agent")  # control: upkeep
+    assert [s["subject"] for s in report.hand_steps(repo, now=NOW)["steps"]] == [
+        "self-learn: defer lrn-0000a005"
+    ]
+
+
+def test_a_telemetry_flush_made_by_a_real_cli_process_is_not_a_hand_step(tmp_path, monkeypatch):
+    from self_learn import cli, settings, telemetry
+    from support import make_env
+
+    for marker in settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    env = make_env(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+    monkeypatch.setenv("CLAUDECODE", "1")
+    telemetry.spool_event("offer-made", reason=None)
+    assert cli.main(["telemetry", "flush"]) == 0
+    last = subprocess.run(
+        ["git", "-C", str(env.ledger), "log", "-1", "--format=%s%n%b"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    # Positive control: the flush committed, carrying a shell's actor.
+    assert last.startswith("self-learn: telemetry flush") and "By: agent" in last, last
+    subjects = [s["subject"] for s in report.hand_steps(env.ledger)["steps"]]
+    assert not any(sub.startswith("self-learn: telemetry flush") for sub in subjects), subjects
+
+
+def test_a_case_trailer_does_not_hide_a_shell_s_commit(repo):
+    _commit(repo, "self-learn: defer lrn-0000a005", note="Case: x", trailer="By: agent")
+    assert [s["subject"] for s in report.hand_steps(repo, now=NOW)["steps"]] == [
+        "self-learn: defer lrn-0000a005"
+    ]
+
+
+def test_the_cursor_head_is_written_quoted_so_a_numeric_sha_survives(tmp_path):
+    home = make_home(tmp_path)
+    sha = "1234567890123456789012345678901234567890"
+    path = report.census_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report.census_cursor_text(head=sha, run="r", at="2026-10-31T00:00:00Z"))
+    assert report.read_census_cursor(home)["head"] == sha
+
+
 def test_new_knowledge_subjects_are_never_hand_steps_whoever_made_them(repo):
     _commit(repo, "self-learn: capture lrn-0000a009 (user)", trailer="By: human")
     _commit(repo, "self-learn: statement add stmt-0123abcd", trailer="By: agent")
@@ -292,6 +340,61 @@ def test_a_refused_phase_b_publishes_the_census_and_moves_the_cursor(tmp_path, m
     assert "lrn-0000a001" in body and "the overseer did not name the gap" in body
     assert "was not taken" not in body
     assert report.read_census_cursor(home) is not None
+
+
+def test_both_census_walks_end_at_the_one_head_gather_read(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _commit(home, "self-learn: reject lrn-0000a001", days_ago=0.5)
+    pinned = _head(home)
+    seen: list[str | None] = []
+    real = report.ledger_log
+
+    def spy(*a, **kw):
+        seen.append(kw.get("head"))
+        out = real(*a, **kw)
+        # A premises refresh landing between the two walks.
+        _commit(home, "self-learn: reject lrn-0000a099", days_ago=0.1)
+        return out
+
+    monkeypatch.setattr(report, "ledger_log", spy)
+    health.gather(home)
+    assert len(seen) >= 2 and set(seen) == {pinned}, seen
+
+
+def test_a_schema_failure_below_the_cap_stages_a_census_but_leaves_the_cursor(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    real = overseer_run.invocation.write_session
+    seen = {"staged": 0}
+
+    def duplicate_a_heading(spec):
+        out = real(spec)
+        if spec.label == "phase-b":
+            rep = spec.cwd / "report.md"
+            rep.write_text(
+                rep.read_text(encoding="utf-8").replace("## Hooks\n", "## Hooks\n- one\n## Hooks\n"),
+                encoding="utf-8",
+            )
+        if (spec.cwd / "hand-steps.yaml").exists() or any(spec.cwd.glob("*hand*")):
+            seen["staged"] += 1
+        return out
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", duplicate_a_heading)
+    _hand_commit(home, "self-learn: reject lrn-0000a001")
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code) == ("refused", 1), result
+    # Positive control: the failed attempt really was committed (its note), and
+    # the census was staged for it (the manifest of the run records it).
+    week = overseer_run.week_key(overseer_run.week_boundary(__import__("time").time()))
+    assert len(overseer_run._committed_failure_notes(home, week)) == 1
+    assert not report.census_path(home).exists(), "nothing was published: the cursor stays"
+    # The next census still lists the step the failed run had counted.
+    row = health.hand_steps_row(home)
+    assert "self-learn: reject lrn-0000a001" in [s["subject"] for s in row["steps"]]
 
 
 def test_a_runner_built_report_without_a_census_says_it_was_not_taken():

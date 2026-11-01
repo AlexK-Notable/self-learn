@@ -101,8 +101,6 @@ def test_a_commit_with_a_case_trailer_or_a_job_actor_is_not_a_hand_step(repo):
     _commit(repo, "self-learn: revise lrn-0000a001", note="receipt", trailer=runner_block)
     _commit(repo, "self-learn: route lrn-0000a002 → claude-md", trailer="By: overseer")
     _commit(repo, "self-learn: route lrn-0000a003 → claude-md", trailer="By: analyst")
-    # A Case trailer alone is a job's identity, whoever the By line names.
-    _commit(repo, "self-learn: note lrn-0000a004", trailer="By: human\nCase: case-0123abcd\nSheet: 0123abcd\nItem: 2")
     _commit(repo, "self-learn: defer lrn-0000a005", note="hand", trailer="By: human")
     assert _subjects(_census(repo)) == ["self-learn: defer lrn-0000a005"]
 

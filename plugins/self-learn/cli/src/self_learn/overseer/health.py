@@ -296,6 +296,7 @@ def _one_line(text: str, limit: int) -> str:
 def premise_refreshes(
     home: Path | str, *, now: datetime | None = None, days: int = _REFRESH_WINDOW_DAYS,
     limit: int = _REFRESH_LIMIT, cursor: str | None = None, cursor_run: str | None = None,
+    head: str | None = None,
 ) -> dict[str, Any]:
     """The week's ``self-learn: premises refresh`` commits: baselines the
     premise sweep re-recorded by CODE, with no model call and no decision, so
@@ -306,7 +307,7 @@ def premise_refreshes(
     out: dict[str, Any] = {"state": "ok", "window_days": days, "total": 0, "commits": []}
     walk = report.ledger_log(
         home, cursor=cursor, fallback_days=days, now=now, cursor_run=cursor_run,
-        grep="^self-learn: premises refresh ",
+        grep="^self-learn: premises refresh ", head=head,
     )
     out["label"] = walk["label"]
     if walk["state"] != "ok":
@@ -344,6 +345,7 @@ def premise_refreshes(
 
 def premise_facts(
     home: Path | str, *, cache_dir: Path | None = None, now: datetime | None = None,
+    head: str | None = None,
 ) -> dict[str, Any]:
     """The overseer's phase-B facts about the premise check (design D11,
     ``02-schema.md`` §3a.10.8): how many placed lessons record no premises,
@@ -418,7 +420,7 @@ def premise_facts(
     row["refreshed_this_week"] = premise_refreshes(
         home, now=now,
         cursor=cursor["head"] if cursor else None,
-        cursor_run=(cursor or {}).get("run") or None,
+        cursor_run=(cursor or {}).get("run") or None, head=head,
     )
     return row
 
@@ -431,7 +433,9 @@ def _staged_reason(raw: Any) -> str:
     return f"(withheld: the secret scan matched {hits[0].rule})" if hits else text
 
 
-def hand_steps_row(home: Path | str, *, now: datetime | None = None) -> dict[str, Any]:
+def hand_steps_row(
+    home: Path | str, *, now: datetime | None = None, head: str | None = None,
+) -> dict[str, Any]:
     """The week's census of hand steps (``report.hand_steps``) as a phase-B
     fact row (S-105, lane C): every ledger change made from a person's
     or an agent's shell rather than by a job, so the overseer can name, for
@@ -440,7 +444,7 @@ def hand_steps_row(home: Path | str, *, now: datetime | None = None) -> dict[str
     census = report.hand_steps(
         home, now=now,
         cursor=cursor["head"] if cursor else None,
-        cursor_run=(cursor or {}).get("run") or None,
+        cursor_run=(cursor or {}).get("run") or None, head=head,
     )
     return {
         "kind": "hand-steps-this-week",
@@ -477,6 +481,9 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         current=current,
         baseline=baseline,
     )
+    # HEAD is read once and both census walks end there, so a commit landing
+    # between them is listed by the next run, never skipped by both.
+    census_head = report.ledger_head(resolved)
     return [
         context_budget_crowding(gathered),
         reference_read_verdict(gathered),
@@ -486,8 +493,8 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         condition_row,
         # S-105: the premise check's facts (design D11) and the week's
         # census of hand steps (hand-maintenance cures, lane C).
-        premise_facts(resolved),
-        hand_steps_row(resolved),
+        premise_facts(resolved, head=census_head),
+        hand_steps_row(resolved, head=census_head),
         {
             "kind": "consolidation-policy",
             "value": (

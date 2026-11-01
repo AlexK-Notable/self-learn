@@ -437,7 +437,7 @@ def test_a_whole_run_publishes_the_census_and_keeps_it_in_the_run_record(tmp_pat
         _step("abc1234", by="agent", note="registered the host by hand"),
         _step("def5678", subject="self-learn: config set overseer.enabled", note="the switch"),
     )}
-    monkeypatch.setattr(health, "hand_steps_row", lambda _home, now=None: row)
+    monkeypatch.setattr(health, "hand_steps_row", lambda _home, now=None, head=None: row)
 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
@@ -458,7 +458,7 @@ def test_a_run_whose_census_could_not_be_read_says_so_in_its_report(tmp_path, mo
     _fake_two_phase(monkeypatch)
     monkeypatch.setattr(
         health, "hand_steps_row",
-        lambda _home, now=None: {"kind": "hand-steps-this-week", **_census(state="unavailable", reason="git failed")},
+        lambda _home, now=None, head=None: {"kind": "hand-steps-this-week", **_census(state="unavailable", reason="git failed")},
     )
 
     result = overseer_run.run(home, dry_run=False, no_push=True)
@@ -484,7 +484,7 @@ def test_a_resumed_run_publishes_the_census_phase_b_was_given(tmp_path, monkeypa
     _silence_notifications(monkeypatch)
     _dispatch_returning(monkeypatch, 6, only_first=True)
     first_row = {"kind": "hand-steps-this-week", **_census(_step("abc1234", note="the first run's step"))}
-    monkeypatch.setattr(health, "hand_steps_row", lambda _home, now=None: first_row)
+    monkeypatch.setattr(health, "hand_steps_row", lambda _home, now=None, head=None: first_row)
 
     first = overseer_run.run(home, dry_run=False, no_push=True)
     assert first.status == "partial", "positive control: run 1 really did stall"
@@ -494,7 +494,7 @@ def test_a_resumed_run_publishes_the_census_phase_b_was_given(tmp_path, monkeypa
         lambda spec: pytest.fail("a resume must not invoke the model"),
     )
     other_row = {"kind": "hand-steps-this-week", **_census(_step("fff9999", note="a later census"))}
-    monkeypatch.setattr(health, "hand_steps_row", lambda _home, now=None: other_row)
+    monkeypatch.setattr(health, "hand_steps_row", lambda _home, now=None, head=None: other_row)
     second = overseer_run.run(home, dry_run=False, no_push=True)
 
     assert (second.run, second.status) == (first.run, "applied")
