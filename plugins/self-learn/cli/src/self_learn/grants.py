@@ -2,7 +2,7 @@
 
 One recorded grant replaces every "a person must run this": an agent's
 shell may run a person-only command (``host add|remove|rebind|set-mode``,
-tier-C ``config set|unset``, ``skill write|rename|retire``) when the ledger
+tier-C ``config set|unset``, ``skill write|rename|retire|veto``) when the ledger
 holds the user's standing grant and the agent says why (``--note``). The
 commit records ``By: agent``, ``Grant: <statement id>`` and the reason,
 never ``human``: the act is the agent's, the grant is what allowed it.

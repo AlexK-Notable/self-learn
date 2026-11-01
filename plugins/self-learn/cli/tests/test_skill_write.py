@@ -165,7 +165,7 @@ class Env:
 
     def veto(self, name: str) -> None:
         def add(registry):
-            registry.add_veto(name, at="2026-10-31T00:00:00Z", statement="stmt-0000aaaa")
+            registry.add_veto(name, at="2026-10-31T00:00:00Z", by="human")
 
         skill_registry.with_update(self.home, add, subject=f"veto {name}")
 

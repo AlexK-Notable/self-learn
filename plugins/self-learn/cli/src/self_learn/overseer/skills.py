@@ -17,8 +17,8 @@ link) is :mod:`self_learn.skill_writer`; the runner calls it in-process with
   and ``changed-since-last-write.diff`` (what changed in its authored text
   since self-learn last wrote it, read from the skills root's history);
 - ``vetoes.yaml``: the vetoed names, the live skills whose name is vetoed,
-  and the user's open retirement requests (SK7's readers in
-  ``overseer/conversation.py``);
+  and the user's open retirement requests (read from the registry by
+  :mod:`self_learn.skill_requests`);
 - ``skill-proposals.yaml``: the steward's parked ``skill-proposal`` cases
   (their files are in ``parked/``);
 - ``skill-writing.yaml``: whether this run deploys what phase B writes.
@@ -405,11 +405,14 @@ def _files_at_last_write(home: Path, name: str, row: dict) -> dict[str, str] | N
     """The skill's files as self-learn's last write committed them to the
     skills root, found by that commit's subject; ``None`` when the commit
     or its ``SKILL.md`` cannot be found."""
-    case = (row.get("last_write") or {}).get("case")
+    last = row.get("last_write") or {}
+    case = last.get("case")
     root = _skills_root(home)
-    if not isinstance(case, str) or root is None:
+    if (case is not None and not isinstance(case, str)) or "case" not in last or root is None:
         return None
-    # The writer's own subject (one definition: `skill_writer._subject`).
+    # The writer's own subject (one definition: `skill_writer._subject`); a
+    # person's write with no case says "(no case)", and the newest such write
+    # of this skill is its last write when the row's case is null.
     subject = skill_writer._subject("write", name, case)  # noqa: SLF001
     proc = gitops._git(  # noqa: SLF001 -- a read
         root, "log", "-1", "--format=%H", "--fixed-strings", f"--grep={subject}",
@@ -478,36 +481,29 @@ def _stage_vetoes(
     home: Path, stage: Path, registry: skill_registry.Registry, staged: StagedSkills,
     write: Writer,
 ) -> None:
-    from . import conversation  # SK7's readers; local, conversation imports run
+    """``vetoes.yaml``: the vetoed names, the live skills under a vetoed
+    name (``renames_owed``) and the live skills the user asked to retire
+    (``retire_requests``), all read from the registry alone
+    (:mod:`self_learn.skill_requests`, S-NEXT-skills-chain)."""
+    from .. import skill_requests
 
     data: dict[str, Any] = {
-        "vetoed": [
-            {"name": entry["name"], "at": entry["at"], "statement": entry["statement"]}
-            for entry in registry.vetoed
-        ],
+        "vetoed": [dict(entry) for entry in registry.vetoed],
         "renames_owed": [],
         "retire_requests": [],
     }
     try:
-        data["renames_owed"] = conversation.pending_renames(home)
+        data["renames_owed"] = skill_requests.pending_renames(home)
     except Exception as exc:  # noqa: BLE001 -- a note, never a refused run
         staged.notes.append(f"vetoes.yaml: the vetoed live skills could not be listed ({exc})")
     try:
-        data["retire_requests"] = conversation.pending_retire_requests(home)
+        data["retire_requests"] = skill_requests.pending_retire_requests(home)
     except Exception as exc:  # noqa: BLE001
         staged.notes.append(
             f"vetoes.yaml: the user's retirement requests could not be read ({exc}); "
             "they reach a later run"
         )
-    text = _yaml_text(data)
-    hits = scan.scan(text)
-    if hits:
-        # Words the user typed went through the statement store's own scan;
-        # this is the backstop, so the stage scan never refuses the run.
-        for request in data["retire_requests"]:
-            request["verbatim"] = f"withheld: the secret scan matched {hits[0].rule}"
-        text = _yaml_text(data)
-    write(stage, stage / VETOES_FILE, text)
+    write(stage, stage / VETOES_FILE, _yaml_text(data))
 
 
 def _stage_proposals(stage: Path, parked_rows: list[dict], write: Writer) -> None:

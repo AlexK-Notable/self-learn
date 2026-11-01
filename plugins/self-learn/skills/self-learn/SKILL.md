@@ -40,6 +40,18 @@ is never read as agreement.
 `/self-learn:review` and the G-3 surface still work exactly as before —
 this is what happens on the nights and weeks nobody opens either one.
 
+## When the user objects to a skill
+
+Self-learn writes, renames and retires the skills it owns without asking;
+never present one to the user or ask about one. When the user says, unasked,
+that a skill's name is wrong or that it should go, do it: `self-learn skill
+veto <name> [--rename-to <new>]` bans the name for ever (the skill under it
+is renamed by the next overseer run, or at once with `--rename-to`);
+`self-learn skill rename <old> <new>` renames; `self-learn skill retire
+<name>` retires, or, while lessons still route into it, records a request
+the next overseer run carries out. From your shell each runs under the
+user's standing grant with `--note "<why>"`.
+
 ## CLI surface
 
 | Verb | Semantics (one line) |
@@ -48,7 +60,7 @@ this is what happens on the nights and weeks nobody opens either one.
 | `teach` | Capture ONE lesson into `pending/` (scan-then-write). Scope: `--skill <name>` \| `--project` \| `--user`; type: `--type behavior --trigger … --instruction …` or `--type knowledge --fact …`; `--context …` (either type) is the background, written as `## Context` and never loaded; `--route [--dest …]` resolves immediately. Capture-time grounding (optional-but-offered, 11 §3): `--verified [--verified-how …]`, `--incident-cost …`, `--generality environment-specific\|general-practice\|uncertain`, `--env COMP=VER` (repeatable) |
 | `route <id> [--dest …]` | Compile the record into its destination (proposal or override), commit + push. Known-partial coverage: `--follow-up <action> [--unblocks-on <gate>] [--follow-up-note …]` rides the routing block |
 | `followup done <id> [--note …]` | Clear a routed record's open follow-up into a dated `follow_up_done` block |
-| `grant add --statement <stmt-…> [--note …]` / `grant list` / `grant revoke <grant-…>` | The user's standing grant, recorded from a statement they typed. While one is in force, an agent's shell runs person-only commands (`host add\|remove\|rebind\|set-mode`, a tier-C `config set\|unset`, `skill write\|rename\|retire`) with `--note "<why>"`, recorded `By: agent` and `Grant: <stmt>`; without it they refuse |
+| `grant add --statement <stmt-…> [--note …]` / `grant list` / `grant revoke <grant-…>` | The user's standing grant, recorded from a statement they typed. While one is in force, an agent's shell runs person-only commands (`host add\|remove\|rebind\|set-mode`, a tier-C `config set\|unset`, `skill write\|rename\|retire\|veto`) with `--note "<why>"`, recorded `By: agent` and `Grant: <stmt>`; without it they refuse |
 | `telemetry note <kind> [--reason …]` | Spool one offer-ledger event (`offer-made` \| `offer-declined`, reason enum: not-durable\|wrong\|duplicate\|private\|later\|other). Cache-only — no repo write, no commit |
 | `telemetry flush` | Spool → tracked `telemetry/` files in the ledger home (scan-at-flush; the flush commits them — every producer commits its own writes, H-5). Teach/import/resolution verbs flush automatically |
 | `report [--json]` | Facts layer v1: lifecycle counts, open follow-ups, deferred aging, offer ledger (capture rate labeled as a ceiling — declined-offer logging is best-effort) |

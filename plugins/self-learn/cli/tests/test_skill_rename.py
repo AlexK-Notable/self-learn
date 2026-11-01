@@ -6,8 +6,8 @@ The plan's three tests: (a) every lesson compiled into the skill before the
 rename is compiled into it after (the control first: both lines are in the
 skill under its old name); (b) a skill whose own ledger bucket
 ``skills/<old>/`` holds a record is refused by name, and the control: an
-empty bucket renames; (c) the old name joins ``vetoed`` when the rename
-came from a veto, and the control: without one it stays free. The rest
+empty bucket renames; (c) a rename leaves the old name free (a veto is
+``skill veto``'s, S-NEXT-skills-chain). The rest
 covers the move itself, the refusals, interrupted runs and the CLI.
 
 The scratch environment is ``test_skill_write``'s (a ledger, a skills root
@@ -33,7 +33,6 @@ from test_skill_write import CASE2, DESCRIPTION, NAME, REF, REF_TEXT, Env, _hand
 
 NEW = "pointer-care"
 CASE3 = "case-9c0d1e2f"
-STMT = "stmt-0000bbbb"
 RID_A = "lrn-5a8e0001"
 RID_B = "lrn-5a8e0002"
 RID_C = "lrn-5a8e0003"
@@ -156,7 +155,7 @@ def test_the_rename_moves_the_folder_the_entry_the_link_and_the_row(env):
     assert row["last_write"]["case"] == CASE2 and row["last_write"]["by"] == "overseer"
     deployed = skill_writer.deployed_authored_sha256(env.home, NEW)
     assert row["last_write"]["authored_sha256"] == deployed == result.authored_sha256
-    assert NAME not in registry.vetoed_names() and not result.vetoed
+    assert NAME not in registry.vetoed_names()
 
     # git: the move is one commit; both trees clean
     tracked = git(env.root, "ls-tree", "-r", "--name-only", "HEAD").stdout.split()
@@ -228,48 +227,17 @@ def test_b_a_record_filed_under_the_new_name_refuses_too(env):
     assert env.snapshot() == before
 
 
-# ============================================== (c) a rename from a veto
+# ======================================== (c) a rename never bans the old name
 
 
-def test_c_a_rename_that_comes_from_a_veto_bans_the_old_name(env):
-    assert env.write().ok
-    assert NAME not in skill_registry.load(env.home).vetoed_names()  # control
-
-    result = _rename(env, by="human", veto_statement=STMT)
-
-    assert result.ok and result.vetoed, result.problems
-    (veto,) = [v for v in skill_registry.load(env.home).vetoed if v["name"] == NAME]
-    assert veto["statement"] == STMT
-    # the old name is never used again
-    again = env.write(case=CASE3)
-    assert not again.ok and "name-vetoed" in _rules(again.problems)
-
-
-def test_c_control_a_rename_without_a_veto_leaves_the_old_name_free(env):
+def test_c_a_rename_leaves_the_old_name_free(env):
+    """A rename no longer records a veto (S-NEXT-skills-chain: ``skill veto``
+    records it before any rename); the old name stays free."""
     assert env.write().ok
     result = _rename(env)
-    assert result.ok and not result.vetoed, result.problems
+    assert result.ok, result.problems
     assert NAME not in skill_registry.load(env.home).vetoed_names()
     assert skill_writer.check(env.home, NAME, draft()).ok
-
-
-def test_c_a_veto_recorded_before_the_rename_is_not_added_twice(env):
-    """``overseer respond --veto-skill`` records the veto first (SK7); the
-    rename that follows it names the same veto and adds nothing."""
-    assert env.write().ok
-    env.veto(NAME)  # statement stmt-0000aaaa
-    result = _rename(env, veto_statement=STMT)
-    assert result.ok and not result.vetoed, result.problems
-    vetoes = [v for v in skill_registry.load(env.home).vetoed if v["name"] == NAME]
-    assert [v["statement"] for v in vetoes] == ["stmt-0000aaaa"]
-
-
-def test_a_veto_that_is_not_a_statement_id_is_refused(env):
-    assert env.write().ok
-    before = env.snapshot()
-    result = _rename(env, veto_statement="the user said so")
-    assert not result.ok and result.kind == "bad-line"
-    assert env.snapshot() == before
 
 
 # ======================================================== refusals
@@ -499,14 +467,27 @@ def test_running_a_finished_rename_again_changes_nothing(env):
 def test_cli_rename_as_the_person(env, capsys):
     assert env.write().ok
     capsys.readouterr()
-    code = cli.main(["skill", "rename", NAME, NEW, "--case", CASE2, "--veto", STMT, "--no-push"])
+    code = cli.main(["skill", "rename", NAME, NEW, "--case", CASE2, "--no-push"])
     assert code == 0, capsys.readouterr().err
     registry = skill_registry.load(env.home)
     assert registry.row(NEW)["last_write"]["by"] == "human"
-    assert NAME in registry.vetoed_names()
+    assert NAME not in registry.vetoed_names()
     assert git(env.root, "log", "-1", "--format=%b").stdout.strip() == "By: human"
     out = capsys.readouterr().out
-    assert f"{NAME} is now {NEW}" in out and "vetoed" in out
+    assert f"{NAME} is now {NEW}" in out
+
+
+def test_cli_rename_without_a_case_records_a_null_case(env, capsys):
+    """S-NEXT-skills-chain (decision 8 of 2026-10-31): a person's rename
+    needs no case id."""
+    assert env.write().ok
+    capsys.readouterr()
+    code = cli.main(["skill", "rename", NAME, NEW, "--no-push"])
+    assert code == 0, capsys.readouterr().err
+    row = skill_registry.load(env.home).row(NEW)
+    assert row["last_write"]["case"] is None and row["last_write"]["by"] == "human"
+    subject = git(env.root, "log", "-1", "--format=%s").stdout.strip()
+    assert subject == f"self-learn: skill rename {NAME} → {NEW} (no case)"
 
 
 def test_cli_rename_from_an_agent_shell_under_the_grant_is_the_agents(env, monkeypatch, capsys):

@@ -240,14 +240,17 @@ def test_cli_retire_from_an_agent_shell_under_the_grant_is_the_agents(env, monke
     assert "By: human" not in body
 
 
-def test_cli_retire_names_the_lessons_that_block_it(env, capsys):
+def test_cli_retire_of_a_skill_with_lessons_records_a_request_naming_them(env, capsys):
+    """S-NEXT-skills-chain (SK-B): the person's retire is no longer refused
+    while lessons route in; it is a request the overseer carries out."""
     assert env.write().ok
     _route_in(env)
     capsys.readouterr()
-    assert cli.main(["skill", "retire", NAME, "--case", CASE2, "--json"]) == 1
+    assert cli.main(["skill", "retire", NAME, "--case", CASE2, "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["ok"] is False and out["routed"] == [RID]
-    assert env.skill_md().is_file()
+    assert out["ok"] is True and out["requested"] is True and out["routed"] == [RID]
+    assert env.skill_md().is_file()  # nothing removed yet
+    assert skill_registry.load(env.home).row(NAME)["retire_requested"]["by"] == "human"
 
 
 def test_the_draft_helper_is_shared(env):

@@ -2233,7 +2233,7 @@ records it (from an agent's shell only with `--note`, committed `By: agent`
 and `Grant: <statement>`); `grant revoke <id>` ends it (anyone may);
 `grant list` shows them. While a grant is in force, an agent's shell may run
 a person-only command (`host add|remove|rebind|set-mode`, a tier-C `config
-set|unset`, `skill write|rename|retire`) with `--note <reason>`; without a
+set|unset`, `skill write|rename|retire|veto`) with `--note <reason>`; without a
 grant in force, or without the note, the command refuses before any lock.
 
 ### 3a.4 The user model
