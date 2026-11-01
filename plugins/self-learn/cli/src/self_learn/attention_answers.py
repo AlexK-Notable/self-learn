@@ -1485,7 +1485,7 @@ def undo(home: Path | str, item_id: str, *, redo: bool = False, note: str | None
     was run. From an agent's shell it needs ``--note`` and is stamped ``By:
     agent`` (its own act); from the page it is the person's, noted "undone
     from the inbox"."""
-    from . import verbs
+    from . import ledger_ops, verbs
     from .overseer import conversation
 
     home = Path(home)
@@ -1547,6 +1547,11 @@ def undo(home: Path | str, item_id: str, *, redo: bool = False, note: str | None
         raise AnswerError(f"{exc}", EXIT_REFUSED) from exc
     except conversation.ConversationError as exc:
         raise AnswerError(f"{exc}", EXIT_REFUSED) from exc
+    except ledger_ops.LedgerOpsError as exc:
+        # Integration of 2026-10-31c (found by the ui-workspace lane in its
+        # walk world): an inverse whose record is gone (RecordNotFound) is
+        # refused in words, never an unhandled traceback.
+        raise AnswerError(f"the inverse could not be run: {exc}", EXIT_REFUSED) from exc
     _try_seal(home, item, {"role": "user" if not agent else "agent",
                            "origin": "clicked" if not agent else "agent",
                            "kind": "redo" if redo else "undo", "text": None, "option": None})

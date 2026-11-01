@@ -1360,3 +1360,31 @@ def test_an_agent_look_at_a_stopped_ledger_is_held_launched_and_committed_by_don
     assert choice["id"] == result.choice and choice["effect"] == "approve"
     (outcome,) = conversation.outcome_rows(home)
     assert outcome["result"] == "done" and outcome["item"] == item["id"]
+
+
+def test_undo_of_a_hook_item_whose_lesson_is_gone_is_refused_in_words(tmp_path, monkeypatch):
+    """Integration (the ui-workspace lane met it in its walk world): the
+    real `hook deactivate` on a lesson id the ledger does not hold raised
+    RecordNotFound, an unhandled traceback out of `attention undo`. It is
+    refused (exit 3) with the reason, and nothing is sealed. Mutation: drop
+    the LedgerOpsError clause -> red (RecordNotFound escapes)."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    runs = home / "cases" / "runs"
+    runs.mkdir(parents=True)
+    at = _iso(-timedelta(hours=1))
+    (runs / "run-bbbbbbbbbbbb.json").write_text(json.dumps({
+        "version": 1, "actor": "steward", "run_id": "run-bbbbbbbbbbbb", "ledger_effects": [],
+        "completed_at": at, "started_at": _iso(-timedelta(hours=2)), "decided": ["lrn-0000dead"],
+        "attention_effects": [{"lesson": "lrn-0000dead", "verb": "route", "destination": "hook",
+                               "always_loaded": False, "hook_activated": True, "at": at}],
+    }), encoding="utf-8")
+    hook = _item(home, "lrn-0000dead@" + at)
+    assert hook["kind"] == "decided.hook-activated"  # control: the item exists
+
+    with pytest.raises(answers.AnswerError) as refused:
+        answers.undo(home, hook["id"])
+
+    assert refused.value.exit_code == 3 and "lrn-0000dead" in str(refused.value)
+    assert not answers.redo_offered(home, hook["id"])
