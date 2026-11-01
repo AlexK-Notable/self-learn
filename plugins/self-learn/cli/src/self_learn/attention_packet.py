@@ -28,6 +28,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -343,6 +344,11 @@ def _case_entry(case_id: str, sections: dict[str, str], body: str, limits: _Limi
         "question": limits.clip(
             _line_value(sections.get("Identity and scope"), "question"), f"{where}.question", 600),
         "decision": limits.clip(decision, f"{where}.decision", 1200),
+        # Humane UI lane 3 (proposal §4): the decision's own fields, so a
+        # page tells the case once (Question, Decision in words, Because)
+        # instead of printing the section's list as one paragraph.
+        "verb": _line_value(decision, "verb"),
+        "confidence": _line_value(decision, "confidence"),
         "because": limits.clip(_line_value(decision, "because"), f"{where}.because", 1200),
         "excerpt": limits.clip(body, f"{where}.excerpt"),
     }
@@ -910,6 +916,7 @@ def build(home: Path | str, item_id: str, *,
         ),
         "undo": {"label": undo.get("label"), "redo_label": undo.get("redo_label")} if isinstance(undo, dict) else None,
         "case_edit": _case_edit(home, item, limits, decided_reader),
+        "run": _run_decisions(home, item, limits),
         "evidence": evidence,
         "more": more,
         "pointers": _pointers(home, item),
@@ -919,6 +926,94 @@ def build(home: Path | str, item_id: str, *,
         "limits": {"bytes": 0, "truncated": limits.truncated},
     }
     return _fit(packet)
+
+
+#: Humane UI lane 3: the longest reason one decision line carries.
+MAX_RUN_REASON_CHARS = 600
+#: ...and the shortest opening it settles for (see :func:`_first_sentence`).
+MIN_REASON_CHARS = 60
+
+
+def _first_sentence(text: str | None) -> str | None:
+    """The opening of *text*: its first sentence, and the next ones while
+    that is still shorter than :data:`MIN_REASON_CHARS` (a first sentence
+    such as "Evidence check." says nothing alone); the whole of it when it
+    has no sentence end."""
+    if not text:
+        return None
+    flat = " ".join(text.split())
+    parts = re.split(r"(?<=[.!?])\s+", flat)
+    out = ""
+    for part in parts:
+        out = f"{out} {part}".strip()
+        if len(out) >= MIN_REASON_CHARS:
+            break
+    return out
+
+
+def _run_decisions(home: Path, item: dict, limits: _Limits) -> dict | None:
+    """Humane UI lane 3 (proposal §4, contract §6): a nightly review's
+    decisions, one row per case the run wrote, each with the lesson it is
+    about, its outcome verb and that verb's group
+    (:data:`self_learn.series.OUTCOME_GROUPS`, the groups the charts use),
+    and the first sentence of its reason; plus the count per group. Read
+    from the run's manifest and its committed case files (frontmatter
+    ``outcome``); counted, never modelled. ``None`` for any other item."""
+    if item.get("kind") != "decided.steward-run":
+        return None
+    from . import cases
+    from .series import OUTCOME_GROUPS
+
+    group_of = {verb: group for group, verbs in OUTCOME_GROUPS.items() for verb in verbs}
+    manifest_path = item.get("_manifest_path")
+    try:
+        manifest = json.loads(Path(str(manifest_path)).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {"decisions": [], "counts": {g: 0 for g in OUTCOME_GROUPS}, "other": 0,
+                "error": "the run's record could not be read"}
+    recipes = manifest.get("cases") if isinstance(manifest, dict) else None
+    case_ids = [c for c in (recipes if isinstance(recipes, dict) else {})
+                if isinstance(c, str) and c.startswith("case-")]
+    counts = {g: 0 for g in OUTCOME_GROUPS}
+    other = 0
+    rows: list[dict] = []
+    for index, case_id in enumerate(case_ids):
+        where = f"run.decisions[{index}]"
+        try:
+            text = cases._case_path_for_id(home, case_id).read_text(encoding="utf-8")  # noqa: SLF001
+            frontmatter, body = cases._split_frontmatter(text)  # noqa: SLF001
+        except Exception:  # noqa: BLE001 -- a missing case is a row without words
+            frontmatter, body = {}, ""
+        sections = _sections(body)
+        decision = sections.get("Decision")
+        verb = frontmatter.get("outcome") if isinstance(frontmatter.get("outcome"), str) else None
+        verb = verb or _line_value(decision, "verb")
+        group = group_of.get(verb or "")
+        if group is None:
+            other += 1
+        else:
+            counts[group] += 1
+        records = [str(r) for r in frontmatter.get("records") or [] if isinstance(r, str)]
+        title = None
+        if records:
+            lesson = _lesson(home, records[0], _Limits(), where)
+            title = (lesson or {}).get("title")
+        because = _line_value(decision, "because")
+        rows.append({
+            "case": case_id,
+            "record": records[0] if records else None,
+            "records": len(records),
+            "title": limits.clip(title, f"{where}.title", 300),
+            "question": limits.clip(
+                _line_value(sections.get("Identity and scope"), "question"), f"{where}.question", 600),
+            "verb": verb,
+            "group": group,
+            "reason": limits.clip(_first_sentence(because), f"{where}.reason", 300),
+            "because": limits.clip(because, f"{where}.because", MAX_RUN_REASON_CHARS),
+        })
+    order = {g: i for i, g in enumerate(OUTCOME_GROUPS)}
+    rows.sort(key=lambda r: (order.get(str(r["group"]), len(order)), str(r["case"])))
+    return {"decisions": rows, "counts": counts, "other": other, "error": None}
 
 
 def _pointers(home: Path, item: dict) -> list[dict]:
