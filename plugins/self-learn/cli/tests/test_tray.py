@@ -270,12 +270,14 @@ def test_2_timeout_and_nonzero_exit_map_to_broken(env):
 
 def test_3_activate_runs_exactly_the_inbox_launcher(env):
     """§3.10: a left click runs exactly
-    `systemd-run --user --collect --quiet -- self-learn-ui-open --page /inbox`
-    (the fake `systemd-run` logs its argv). Mutation: any other argv -> red."""
+    `systemd-run --user --scope --collect --quiet -- self-learn-ui-open --page /inbox`
+    (the fake `systemd-run` logs its argv). `--scope`: a transient service
+    kills the browser the launcher leaves behind when the launcher exits.
+    Mutation: any other argv -> red."""
     out = env.pure("activate")
     assert out["rc"] == 0
     argv = (env.tmp / "calls.log.systemd-run").read_text(encoding="utf-8").splitlines()
-    assert argv == ["--user", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
+    assert argv == ["--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
     assert env.calls() == [], "a click runs no `self-learn` itself"
 
 

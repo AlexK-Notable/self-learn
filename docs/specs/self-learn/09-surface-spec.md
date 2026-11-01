@@ -721,10 +721,14 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
 - **Tooltip.** The reader's `tooltip` line as the SNI tooltip title (markup-escaped:
   Waybar renders the title as markup); a broken poll adds the error as the
   description.
-- **Left click** (`Activate`) runs `systemd-run --user --collect --quiet --
+- **Left click** (`Activate`) runs `systemd-run --user --scope --collect --quiet --
   self-learn-ui-open --page /inbox`. The transient unit carries the user manager's
   current display environment, so the tray needs none; when a UI window is already
-  open, the launcher moves it to the inbox (`/navigate`).
+  open, the launcher moves it to the inbox (`/navigate`). A scope, not a service
+  (2026-11-01): the launcher leaves the browser running and exits, and a service's
+  exit kills what is left in its cgroup, so a browser the click had just started
+  died with it. The launcher takes the first browser that starts (`--version`
+  succeeds), so a browser on `PATH` that cannot run is skipped.
 - **Middle click** (`SecondaryActivate`) runs `self-learn attention seen
   --all-decided` and polls again at once. Seen never clears a needs-you item.
 - **No right-click menu** (no dbusmenu); `ContextMenu` and `Scroll` do nothing.
