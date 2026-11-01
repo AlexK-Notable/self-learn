@@ -4273,6 +4273,75 @@ def _apply_skill_write(
         notes.append(_failure_detail(outcome.warning) or outcome.warning)
 
 
+def _apply_skill_rename(
+    home: Path, run_id: str, case_id: str, recipe: dict[str, Any],
+    cue_outcomes: list[dict[str, Any]], notes: list[str],
+) -> None:
+    """S-NEXT-skills-chain (SK-C2): rename the pair's skill before its case
+    is recorded, as a write is. A step made or refused in an earlier attempt
+    of this run is not made again; a refusal raises :class:`_SkillRefused`
+    (the pair is dropped), and a ``git`` refusal leaves the step open for
+    the resume."""
+    step = _skill_step(recipe)
+    if step is None or step.action != "rename" or not step.deploy:
+        return
+    raw = cast(dict[str, Any], recipe["skill"])
+    if raw.get("state") == "refused":
+        raise _SkillRefused(str(raw.get("line") or f"the rename to {step.name} was refused"))
+    if raw.get("state") == "applied":
+        return
+    outcome = skills_mod.apply_rename(home, case_id, step, case_name=str(recipe["case_name"]))
+    line = _failure_detail(outcome.line) or outcome.line
+    retried = outcome.state == "refused" and outcome.kind == skill_writer.KIND_GIT
+    raw.update(state="retry" if retried else outcome.state, line=line)
+    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+        "status": "skill-rename", "skill": step.name, "from": step.renamed_from,
+        "case": case_id, "state": raw["state"]})
+    if retried:
+        raise _SkillRefused(line, kind=outcome.kind)
+    if outcome.state == "refused":
+        raise _SkillRefused(line)
+    cue_outcomes.append(_skill_cue(step))
+    if outcome.warning:
+        notes.append(_failure_detail(outcome.warning) or outcome.warning)
+
+
+def _owed_requests_not_carried(home: Path, skill_steps: dict[Path, "skills_mod.SkillStep"],
+                               skill_drafts: list[dict[str, Any]]) -> list[str]:
+    """S-NEXT-skills-chain (SK-C2): a "Refused / could not do" line for each
+    vetoed live skill no kept pair renames, and each skill the user asked to
+    retire that no kept pair retires. The request stays on the registry for
+    the next run; nothing is asked of the user."""
+    from .. import skill_requests
+
+    renamed = {s.renamed_from for s in skill_steps.values() if s.action == "rename"}
+    renamed |= {str(d.get("renamed_from")) for d in skill_drafts if d.get("renamed_from")}
+    retired = {s.name for s in skill_steps.values() if s.action == "retire"}
+    retired |= {str(d.get("name")) for d in skill_drafts if d.get("action") == "retire"}
+    lines: list[str] = []
+    try:
+        owed = skill_requests.pending_renames(home)
+        asked = skill_requests.pending_retire_requests(home)
+    except Exception as exc:  # noqa: BLE001 -- a note, never a refused run
+        return [f"the user's skill requests could not be read ({type(exc).__name__}); "
+                "they are carried to the next run"]
+    for row in owed:
+        if row["name"] not in renamed:
+            lines.append(
+                f"skill {row['name']}: the user vetoed its name on {str(row['at'])[:10]}; not "
+                "renamed this run (phase B wrote no pair renaming it); the next run that writes "
+                "skills renames it"
+            )
+    for row in asked:
+        if row["name"] not in retired:
+            lines.append(
+                f"skill {row['name']}: the user asked on {str(row['at'])[:10]} for it to be "
+                "retired; not retired this run (phase B wrote no pair retiring it); the next run "
+                "that writes skills retires it"
+            )
+    return lines
+
+
 def _apply_skill_retire(
     home: Path, run_id: str, case_id: str, recipe: dict[str, Any], result: batch.BatchResult,
     refusals: list[str], cue_outcomes: list[dict[str, Any]],
@@ -4324,13 +4393,17 @@ def _skill_written_case_refused(recipe: dict[str, Any], case_id: str) -> str | N
     on record. ``None`` when the pair wrote no skill."""
     step = _skill_step(recipe)
     raw = recipe.get("skill")
-    if step is None or step.action != "write" or not isinstance(raw, dict):
+    if step is None or step.action not in ("write", "rename") or not isinstance(raw, dict):
         return None
     if raw.get("state") != "applied":
         return None
+    did = (
+        f"renamed from {step.renamed_from}" if step.action == "rename"
+        else "rewritten" if step.updating else "written to the skills root and linked"
+    )
     return (
         f"{step.name} ({recipe['case_name']}): the skill was "
-        + ("rewritten" if step.updating else "written to the skills root and linked")
+        + did
         + f" before its case was refused, and it stays as written; its registry row names "
         f"{case_id}, which is not on record. Next week's run sees it among the skills "
         "self-learn owns and may change or retire it"
@@ -4659,6 +4732,9 @@ def _execute_manifest(
             # SK3: a pair that builds or rewrites a skill writes it first; a
             # refused write drops the pair (`_SkillRefused`, below).
             _apply_skill_write(home, run_id, case_id, recipe, cue_outcomes, runner_notes)
+            # S-NEXT-skills-chain (SK-C2): a pair that renames a skill renames
+            # it first, as a write is made first.
+            _apply_skill_rename(home, run_id, case_id, recipe, cue_outcomes, runner_notes)
             if recipe.get("sheet") is None:
                 result, receipt, effective = _record_sheetless(home, stage, case_id, recipe)
             else:
@@ -6202,6 +6278,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     "status": "skill-folder-dropped", "reason": line})
             case_drops.extend(
                 _failure_detail(note) or note for note in skill_stage.notes
+            )
+            # S-NEXT-skills-chain (SK-C2): a vetoed name or a retirement the
+            # user asked for that no kept pair carries out is reported and
+            # carried to the next run; it is never a question.
+            case_drops.extend(
+                _failure_detail(line) or line
+                for line in _owed_requests_not_carried(home, skill_steps, skill_drafts)
             )
             if skill_state.note:
                 case_drops.append(_failure_detail(skill_state.note) or skill_state.note)

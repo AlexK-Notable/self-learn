@@ -364,8 +364,8 @@ Your inputs: {skills.OWNED_DIR}/<name>/ for each skill self-learn owns, as it is
 {k1a.SKILL_REFERENCES_DIR}/ files: start a change from these), {skills.ROW_FILE} (who made
 it, when, from which case), {skills.LESSONS_FILE} (the lessons routed into it) and
 {skills.DIFF_FILE} (what changed in its text since self-learn last wrote it).
-{skills.VETOES_FILE} lists the names the user vetoed, the skills whose name the user
-vetoed, and the user's requests to retire a skill. {skills.PROPOSALS_FILE} lists the
+{skills.VETOES_FILE} lists the names the user vetoed (vetoed), the live skills whose name the
+user vetoed (renames_owed), and the live skills the user asked to retire (retire_requests). {skills.PROPOSALS_FILE} lists the
 steward's skill proposals; each is a parked case in parked/, decided like any other.
 {skills.WRITING_FILE} says whether this run deploys what you write.
 
@@ -427,8 +427,22 @@ lesson is a kind: reconsider successor of the case that moved it in. A sheet wit
 for a lesson routed into the skill drops the pair. The runner retires
 the skill only after every line of the sheet applied. A skill with no lessons left is
 retired with an empty sheet. A case that retires lessons out of a skill it keeps does not
-name the skill in decision.skill. A request to retire in {skills.VETOES_FILE} is the user's: retire
-that skill this run, or ask the user in questions.yaml why you did not.
+name the skill in decision.skill. A request to retire in {skills.VETOES_FILE} is the user's
+decision: retire that skill this run (move its lessons out first). Never ask the user about it.
+
+To rename a skill self-learn owns: a pair whose case (kind: maintenance, outcome: no-action,
+records: the lessons in {skills.LESSONS_FILE}, or the lessons of the case that built it) carries
+decision.skill {{name: <new name>, renamed_from: <its name now>, why}}, with an empty sheet
+(items: []) and no {skills.STAGE_SKILLS_DIR}/ folder. The runner renames the skill before it
+records the case: its folder, marketplace entry, link, the lessons routed into it and its own
+ledger bucket move to the new name; the new name is checked as a new skill's is. Every skill in
+{skills.VETOES_FILE}'s renames_owed must be renamed this run: choose a name the template
+allows. Change the skill's text in a later run, under its new name. See
+case-skill-rename-example.yaml.
+
+Never ask the user anything about a skill -- whether to build, keep, rename or retire one, or
+what to name it; decide, and the report says what you did. A vetoed or requested skill you did
+not carry out is reported under "Refused / could not do" and comes back next week.
 
 A vetoed name is never used again, and a skill whose name was vetoed cannot be written
 under it. While {skills.WRITING_FILE} says deploy: false, every skill you build or change is
@@ -1131,6 +1145,24 @@ def skill_examples() -> dict[str, str]:
                 ),
                 "confidence": "settled",
                 "skill": {**skill, "why": "Retired: no release has been made here in months."},
+            },
+        }),
+        # A rename of a skill whose name the user vetoed (renames_owed): no
+        # folder, no sheet line; the runner moves everything.
+        "case-skill-rename-example.yaml": _dump({
+            "kind": "maintenance", "trigger": "weekly", "outcome": "no-action",
+            "records": list(EXAMPLE_SKILL_LESSONS), "scope": "user",
+            "question": f"The user vetoed the name {EXAMPLE_SKILL}; what should the skill be called?",
+            "evidence": evidence,
+            "decision": {
+                "verb": "no-action",
+                "because": "The user vetoed the name; the skill itself stands.",
+                "confidence": "settled",
+                "skill": {
+                    "name": "writing-release-notes",
+                    "renamed_from": EXAMPLE_SKILL,
+                    "why": "The user vetoed the old name; the new one says the task it is for.",
+                },
             },
         }),
         "sheet-skill-retire-example.yaml": _dump({

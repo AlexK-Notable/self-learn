@@ -18,6 +18,7 @@ Public surface::
     retire(home, name, *, case, by, no_push=False) -> RetireResult
     rename(home, old, new, *, case, by, expect_sha=None,
            no_push=False) -> RenameResult      # SK8; see the rename section
+    rename_check(home, old, new, *, expect_sha=None) -> RenameCheck
     link_skill(skills_root, name) -> str
     files_at_last_write(home, name, row=None) -> dict[str, str] | None
     routed_lessons(home, name) -> list[str]
@@ -3003,6 +3004,33 @@ def _rename_locked(
         except _Refused as refused:
             return _refused_rename(old, new, refused)
         return _apply_rename(home, plan, case=case, by=by)
+
+
+@dataclass(frozen=True)
+class RenameCheck:
+    old: str
+    new: str
+    ok: bool
+    kind: str | None = None
+    problems: tuple[str, ...] = ()
+
+
+def rename_check(
+    home: Path | str, old: str, new: str, *, expect_sha: str | None = None
+) -> RenameCheck:
+    """Everything :func:`rename` checks before it writes, writing nothing
+    (the overseer's runner checks a rename pair with this before any pair
+    reaches the ledger; S-NEXT-skills-chain, SK-C2)."""
+    try:
+        _rename_preflight(
+            Path(home), old, new, case=_PLACEHOLDER_CASE, by="overseer", now=chrono.now_iso(),
+            expect_sha=expect_sha,
+        )
+    except _Refused as refused:
+        return RenameCheck(old=old, new=new, ok=False, kind=refused.kind, problems=refused.problems)
+    except gitops.GitOpsError as exc:
+        return RenameCheck(old=old, new=new, ok=False, kind=KIND_GIT, problems=(str(exc),))
+    return RenameCheck(old=old, new=new, ok=True)
 
 
 def rename(

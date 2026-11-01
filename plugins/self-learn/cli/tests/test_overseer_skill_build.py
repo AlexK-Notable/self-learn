@@ -1367,3 +1367,156 @@ def test_off_keeps_a_sheetless_rewrite_as_a_draft_and_records_no_case(env, monke
     assert env.row()["last_write"] == recorded
     assert {row["case"] for row in cases.list_cases(env.home)} == before
     assert "[skill changed]" not in _report(result)
+
+
+# ============================== SK-C2: the overseer carries out the user's requests
+
+NEW_NAME = "pointer-care"
+
+
+def _rename_case(rids, *, old=NAME, new=NEW_NAME):
+    return {
+        "kind": "maintenance", "trigger": "weekly", "outcome": "no-action", "records": list(rids),
+        "scope": "skill:s", "question": "The user vetoed the name; what is the skill called now?",
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: routed"} for rid in rids],
+        "decision": {
+            "verb": "no-action", "because": "the user vetoed the name", "confidence": "settled",
+            "skill": {"name": new, "renamed_from": old, "why": "the user vetoed the old name"},
+        },
+    }
+
+
+def _rename_b(rids, *, new=NEW_NAME):
+    def write_b(stage: Path) -> None:
+        _dump(stage / "case-rename.yaml", _rename_case(rids, new=new))
+        _dump(stage / "sheet-rename.yaml", {"version": 1, "items": []})
+    return write_b
+
+
+def _owned_with_a_lesson(env: sk1.Env) -> None:
+    _set_writing(env, '"on"')
+    assert env.write().ok
+    _lesson(env, RID)
+    verbs.route(env.home, RID, dest=f"new-skill:{NAME}", no_push=True)
+
+
+def test_sk_c2_1_a_vetoed_skill_is_renamed_by_the_run(env, monkeypatch):
+    _owned_with_a_lesson(env)
+    env.veto(NAME)
+    from self_learn import skill_requests
+
+    assert [r["name"] for r in skill_requests.pending_renames(env.home)] == [NAME]  # control
+    _phases(monkeypatch, _rename_b([RID]))
+
+    result = _run(env)
+
+    registry = skill_registry.load(env.home)
+    row = registry.row(NEW_NAME)
+    assert row is not None and row["status"] == "live" and row["renamed_from"] == [NAME]
+    assert registry.row(NAME) is None
+    assert env.link(NEW_NAME).is_symlink() and not env.link(NAME).exists()
+    assert f'"name": "{NEW_NAME}"' in env.marketplace.read_text(encoding="utf-8")
+    assert skill_writer.routed_lessons(env.home, NEW_NAME) == [RID]
+    report = _report(result)
+    assert f"[skill renamed] {NEW_NAME}: renamed from {NAME}" in _section(report, "Decided in the user's stead")
+    assert "the user vetoed its name" not in report
+
+
+def test_sk_c2_2_an_owed_rename_phase_b_skipped_is_reported_never_asked(env, monkeypatch):
+    _owned_with_a_lesson(env)
+    env.veto(NAME)
+    seen: dict = {}
+    _phases(monkeypatch, lambda stage: None, seen=seen)
+
+    result = _run(env)
+
+    refused = _section(_report(result), "Refused / could not do")
+    assert f"skill {NAME}: the user vetoed its name" in refused and "not renamed this run" in refused
+    questions = _load(env.home / "overseer" / "open-questions.yaml")
+    assert not (questions or {}).get("questions")
+    assert skill_registry.load(env.home).is_owned(NAME)  # still there, still owed
+    seen2: dict = {}
+    _phases(monkeypatch, lambda stage: None, seen=seen2)
+    _run(env)
+    vetoes = YAML(typ="safe").load(seen2["stage"][skills.VETOES_FILE])
+    assert [r["name"] for r in vetoes["renames_owed"]] == [NAME]
+
+
+def test_sk_c2_2b_an_owed_retirement_phase_b_skipped_is_reported(env, monkeypatch):
+    from self_learn import skill_requests
+
+    _owned_with_a_lesson(env)
+    assert skill_requests.request_retire(env.home, NAME, by="human").ok
+    _phases(monkeypatch, lambda stage: None)
+    result = _run(env)
+    refused = _section(_report(result), "Refused / could not do")
+    assert f"skill {NAME}: the user asked on" in refused and "not retired this run" in refused
+
+
+def test_sk_c2_3_a_requested_retirement_is_carried_out(env, monkeypatch):
+    from self_learn import skill_requests
+
+    _owned_with_a_lesson(env)
+    _lesson(env, RID2)
+    assert skill_requests.request_retire(env.home, NAME, by="human").ok
+    assert "retire_requested" in env.row()  # control
+
+    def write_b(stage):
+        _dump(stage / "case-retire.yaml", _case([RID, RID2], outcome="retire", lessons=[RID]))
+        _dump(stage / "sheet-retire.yaml", {"version": 1, "items": [
+            {"id": RID, "verb": "supersede", "new_id": RID2},
+        ]})
+
+    _phases(monkeypatch, write_b)
+    result = _run(env)
+
+    row = env.row()
+    assert row["status"] == "retired" and "retire_requested" not in row
+    assert skill_writer.routed_lessons(env.home, NAME) == []
+    report = _report(result)
+    assert f"[skill retired] {NAME}" in report and "not retired this run" not in report
+
+
+def test_sk_c2_4_the_formats_never_ask_about_a_skill(formats_dir):
+    readme = (formats_dir / "README.md").read_text(encoding="utf-8")
+    assert "Never ask the user anything about a skill" in readme
+    assert "ask the user in questions.yaml why you did not" not in readme
+    assert "renamed_from" in readme and "case-skill-rename-example.yaml" in readme
+
+
+def test_sk_c2_the_rename_example_validates(formats_dir):
+    case = formats_dir / "case-skill-rename-example.yaml"
+    overseer_run._validate_maintenance_case(case)
+    assert overseer_run._case_rule_problem(case, "abcd1234") is None
+    data = _load(case)
+    assert skills.renamed_from(data) == formats.EXAMPLE_SKILL
+    assert skills.claimed_name(data) == "writing-release-notes"
+
+
+def test_sk_c2_5_a_rename_to_a_vetoed_name_is_dropped_and_reported(env, monkeypatch):
+    _owned_with_a_lesson(env)
+    env.veto(NAME)
+    env.veto(NEW_NAME)
+    _phases(monkeypatch, _rename_b([RID]))
+
+    result = _run(env)
+
+    assert skill_registry.load(env.home).is_owned(NAME)
+    assert skill_registry.load(env.home).row(NEW_NAME) is None
+    refused = _section(_report(result), "Refused / could not do")
+    assert f"the rename of {NAME} to {NEW_NAME} would be refused" in refused
+    assert "name-vetoed" in refused
+
+
+def test_sk_c2_with_writing_off_a_rename_is_a_draft_saying_would_rename(env, monkeypatch):
+    _owned_with_a_lesson(env)
+    env.veto(NAME)
+    _set_writing(env, "off")
+    _phases(monkeypatch, _rename_b([RID]))
+
+    result = _run(env)
+
+    assert skill_registry.load(env.home).is_owned(NAME)
+    decided = _section(_report(result), "Decided in the user's stead")
+    assert f"[skill drafted] {NEW_NAME}: would rename {NAME} to it" in decided
+    assert "not renamed this run" not in _report(result)

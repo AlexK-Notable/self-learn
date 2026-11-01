@@ -95,6 +95,7 @@ __all__ = [
     "StagedSkills",
     "StepOutcome",
     "WritingState",
+    "apply_rename",
     "apply_retire",
     "apply_write",
     "claimed_name",
@@ -103,6 +104,7 @@ __all__ = [
     "draft_files",
     "drafts_dir",
     "preview_for_step",
+    "renamed_from",
     "report_lines",
     "short_hashes",
     "stage_phase_b",
@@ -144,15 +146,18 @@ LEDGER_DIR = "overseer/skills"
 _LABEL_BUILD = "build"
 _LABEL_CHANGE = "change"
 _LABEL_RETIRE = "retire"
+_LABEL_RENAME = "rename"
 _DONE_TAGS = {
     _LABEL_BUILD: "[new skill]",
     _LABEL_CHANGE: "[skill changed]",
     _LABEL_RETIRE: "[skill retired]",
+    _LABEL_RENAME: "[skill renamed]",
 }
 _WOULD = {
     _LABEL_BUILD: "would build",
     _LABEL_CHANGE: "would change",
     _LABEL_RETIRE: "would retire",
+    _LABEL_RENAME: "would rename",
 }
 
 
@@ -498,8 +503,9 @@ def _stage_proposals(stage: Path, parked_rows: list[dict], write: Writer) -> Non
 @dataclass(frozen=True)
 class SkillStep:
     """One skill step a pair carries: ``write`` (build or rewrite, with the
-    folder phase B wrote) or ``retire``. Kept in the run record, so a
-    resumed run makes the same step."""
+    folder phase B wrote), ``retire``, or ``rename`` (S-NEXT-skills-chain,
+    SK-C2: *renamed_from* is the name the skill has, *name* the new one).
+    Kept in the run record, so a resumed run makes the same step."""
 
     action: str
     name: str
@@ -507,32 +513,39 @@ class SkillStep:
     files: dict[str, str] = field(default_factory=dict)
     expect_sha: str | None = None
     deploy: bool = True
+    renamed_from: str | None = None
 
     @property
     def label(self) -> str:
         if self.action == "retire":
             return _LABEL_RETIRE
+        if self.action == "rename":
+            return _LABEL_RENAME
         return _LABEL_CHANGE if self.updating else _LABEL_BUILD
 
     @property
     def sheetless_ok(self) -> bool:
-        """A pair that only changes or retires a skill may have an empty
-        sheet (a skill whose lessons were all folded into its text has none
-        to move); a new skill is built with the lessons it takes in."""
-        return self.action == "retire" or self.updating
+        """A pair that only changes, renames or retires a skill may have an
+        empty sheet (a skill whose lessons were all folded into its text has
+        none to move; a rename moves its lessons itself); a new skill is
+        built with the lessons it takes in."""
+        return self.action in ("retire", "rename") or self.updating
 
     def to_json(self) -> dict[str, Any]:
         return {
             "action": self.action, "name": self.name, "updating": self.updating,
             "files": dict(self.files), "expect_sha": self.expect_sha, "deploy": self.deploy,
+            **({"renamed_from": self.renamed_from} if self.renamed_from else {}),
         }
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "SkillStep":
+        renamed_from = data.get("renamed_from")
         return cls(
             action=str(data["action"]), name=str(data["name"]),
             updating=bool(data.get("updating")), files=dict(data.get("files") or {}),
             expect_sha=data.get("expect_sha"), deploy=bool(data.get("deploy", True)),
+            renamed_from=str(renamed_from) if renamed_from else None,
         )
 
 
@@ -542,6 +555,15 @@ def decision_lessons(case_data: dict) -> list[str]:
     skill = decision.get("skill") if isinstance(decision, dict) else None
     lessons = skill.get("lessons") if isinstance(skill, dict) else None
     return [str(rid) for rid in lessons] if isinstance(lessons, list) else []
+
+
+def renamed_from(case_data: dict) -> str | None:
+    """The skill a staged case renames (``decision.skill.renamed_from``),
+    or ``None``."""
+    decision = case_data.get("decision")
+    skill = decision.get("skill") if isinstance(decision, dict) else None
+    old = skill.get("renamed_from") if isinstance(skill, dict) else None
+    return old if isinstance(old, str) and old else None
 
 
 def claimed_name(case_data: dict) -> str | None:
@@ -627,6 +649,9 @@ def step_for_case(
         raise SkillPairError(f"owned-skills.yaml could not be read ({exc})") from exc
     owned = registry.is_owned(name)
     outcome = case_data.get("outcome")
+    old = renamed_from(case_data)
+    if old is not None:
+        return _rename_step(home, folder, registry, old, name, outcome, staged=staged, deploy=deploy)
     if outcome == "retire":
         if folder.exists():
             raise SkillPairError(
@@ -689,6 +714,49 @@ def step_for_case(
     return SkillStep(
         action="write", name=name, updating=owned, files=text_files, expect_sha=expect,
         deploy=deploy,
+    )
+
+
+def _rename_step(
+    home: Path, folder: Path, registry: skill_registry.Registry, old: str, new: str,
+    outcome: object, *, staged: StagedSkills, deploy: bool,
+) -> SkillStep:
+    """S-NEXT-skills-chain (SK-C2): a case whose ``decision.skill`` names
+    ``renamed_from`` renames that skill self-learn owns to ``name``. The
+    rename is checked by the writer's own rules (``skill_writer.rename_check``:
+    the new name as a write would check it, a vetoed name included, and the
+    bucket rule) before any pair reaches the ledger."""
+    if outcome == "retire":
+        raise SkillPairError(
+            f"a case that renames {old} to {new} does not retire it (outcome: retire)"
+        )
+    if folder.exists():
+        raise SkillPairError(
+            f"a case that renames {old} to {new} writes no {STAGE_SKILLS_DIR}/{new}/ folder; "
+            "change the skill's text in a later run, under its new name"
+        )
+    if not registry.is_owned(old):
+        raise SkillPairError(f"{old} is not a live skill self-learn owns, so it cannot be renamed")
+    if old in staged.missing:
+        raise SkillPairError(
+            f"{old} cannot be renamed this run: its files could not be read from the skills root"
+        )
+    expect = staged.expect.get(old)
+    try:
+        checked = skill_writer.rename_check(home, old, new, expect_sha=expect)
+    except Exception as exc:  # noqa: BLE001 -- a git or hosts read failed: this pair, not the run
+        raise SkillPairError(
+            f"the rename of {old} to {new} could not be checked ({type(exc).__name__}: {exc})"
+        ) from exc
+    if not checked.ok:
+        raise SkillPairError(short_hashes(
+            f"the rename of {old} to {new} would be refused"
+            + (f" [{checked.kind}]" if checked.kind else "")
+            + ": " + "; ".join(checked.problems)
+        ))
+    return SkillStep(
+        action="rename", name=new, updating=True, expect_sha=expect, deploy=deploy,
+        renamed_from=old,
     )
 
 
@@ -846,13 +914,14 @@ def preview_for_step(
 def draft_entry(step: SkillStep, case_name: str, lessons: list[str]) -> dict[str, Any]:
     """A skill step kept, not made (writing not in effect), for the run
     record and the report. A build or a change carries its files, which
-    the runner commits as a draft."""
+    the runner commits as a draft; a rename names the skill it renames."""
     return {
         "name": step.name,
         "action": step.label,
         "case_name": case_name,
         "lessons": sorted(dict.fromkeys(lessons)),
         **({"files": dict(step.files)} if step.action == "write" else {}),
+        **({"renamed_from": step.renamed_from} if step.renamed_from else {}),
     }
 
 
@@ -925,6 +994,10 @@ def _done_line(step: SkillStep, case_id: str) -> str:
         _LABEL_BUILD: "written to the skills root and linked",
         _LABEL_CHANGE: "its text rewritten",
         _LABEL_RETIRE: "removed from the skills root, with its link",
+        _LABEL_RENAME: (
+            f"renamed from {step.renamed_from}; its folder, marketplace entry, link, lessons "
+            "and ledger bucket moved with it"
+        ),
     }[step.label]
     return f"{_DONE_TAGS[step.label]} {step.name}: {what} ({case_id})"
 
@@ -958,6 +1031,35 @@ def apply_write(home: Path | str, case_id: str, step: SkillStep, *, case_name: s
         f"{STAGE_SKILLS_DIR}/{step.name}/ ({case_name}): "
         + _refusal(step.name, result.kind, result.problems).replace("would be", "was")
         + tail,
+        kind=result.kind,
+    )
+
+
+def apply_rename(home: Path | str, case_id: str, step: SkillStep, *, case_name: str) -> StepOutcome:
+    """Rename the skill before its pair is recorded (``by: overseer``,
+    ``no_push``). Idempotent: a resumed run finishes an interrupted rename,
+    and a finished one changes nothing."""
+    assert step.renamed_from is not None
+    result = skill_writer.rename(
+        Path(home), step.renamed_from, step.name, case=case_id, by="overseer",
+        expect_sha=step.expect_sha, no_push=True,
+    )
+    if result.ok:
+        warning = (
+            short_hashes(f"{step.name}: " + "; ".join(result.warnings)) if result.warnings else None
+        )
+        return StepOutcome("applied", _done_line(step, case_id), warning=warning)
+    if result.kind == skill_writer.KIND_GIT:
+        tail = "; the pair waits, and the run's resume renames the skill again"
+    else:
+        tail = "; the pair was dropped"
+    return StepOutcome(
+        "refused",
+        short_hashes(
+            f"{step.renamed_from} → {step.name} ({case_name}): the rename was refused"
+            + (f" [{result.kind}]" if result.kind else "")
+            + ": " + "; ".join(result.problems)
+        ) + tail,
         kind=result.kind,
     )
 
@@ -1007,10 +1109,16 @@ def report_lines(manifest: dict[str, Any]) -> list[str]:
             if isinstance(draft.get("files"), dict) else ""
         )
         lessons = draft.get("lessons") or []
-        moving = f"; it would move {', '.join(lessons)}" if lessons and label != _LABEL_RETIRE else ""
+        moving = (
+            f"; it would move {', '.join(lessons)}"
+            if lessons and label not in (_LABEL_RETIRE, _LABEL_RENAME) else ""
+        )
+        old = draft.get("renamed_from")
+        what = f"would rename {old} to it" if label == _LABEL_RENAME and old else (
+            f"{_WOULD.get(str(label), 'would change')} it"
+        )
         lines.append(
-            f"[skill drafted] {name}: {_WOULD.get(str(label), 'would change')} it "
-            f"({draft.get('case_name')}){where}{moving}"
+            f"[skill drafted] {name}: {what} ({draft.get('case_name')}){where}{moving}"
         )
     state = info.get("state") or {}
     if not state.get("deploy", True):
