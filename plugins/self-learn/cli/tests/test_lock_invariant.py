@@ -296,6 +296,7 @@ NOT_REPO_TRUTH = {
     # and the workspace's cache files.
     "attention._write_seen": "XDG cache: <cache>/attention/seen.json, which items the person has seen (a lost cache only shows items once more); never ledger truth",
     "attention._write_registration_snapshot": "XDG cache: <cache>/attention/registrations.json, the plain registrations the inbox has seen and when each first appeared; rebuildable, never ledger truth",
+    "ask._write_cache": "XDG cache: <cache>/workspace/<item-id>/{packet.json,packet.md,state.json}, the ask agent's working copy of an item's packet and its session id, and <cache>/attention/login-ok.json, the last check-login success; rebuildable, never ledger truth (the conversation's record is the ledger's workspace transcript)",
     "workspace._keep_pending": "XDG cache: <cache>/workspace/<item-id>/pending.jsonl, workspace rows kept while the ledger is STOPPED; workspace.append seals them into the ledger under the lock and removes the file",
     # S-66 / 13 §7.4 (O-2a): `hook_activation._write_claude_runtime` had
     # an entry here through the build and fold r1 (its raw writes sat

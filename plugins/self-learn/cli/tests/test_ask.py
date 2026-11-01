@@ -133,7 +133,8 @@ class _Lines(io.StringIO):
         self.log: list[str] = []
 
     def write(self, s):
-        self.log.append("write")
+        if s:  # `print(..., end="")` also writes the empty end
+            self.log.append("write")
         return super().write(s)
 
     def flush(self):
@@ -489,7 +490,7 @@ def test_the_status_tool_never_runs_the_cli_and_matches_its_payload(monkeypatch,
     assert printed == json.dumps(cli_mod.status_fast_data(home)) + "\n"
 
 
-def test_status_fast_on_an_uninitialized_home_prints_its_payload_unchanged(tmp_path, monkeypatch,
+def test_status_fast_on_a_missing_home_prints_its_payload_unchanged(tmp_path, monkeypatch,
                                                                             capsys):
     bare = tmp_path / "not-a-ledger"
     monkeypatch.setenv("SELF_LEARN_HOME", str(bare))

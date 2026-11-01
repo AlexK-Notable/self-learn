@@ -321,8 +321,9 @@ class _Emitter:
         with self._lock:
             self.events.append(event)
             if self._stream:
-                self._out.write(json.dumps(event, ensure_ascii=False) + "\n")
-                self._out.flush()
+                # One write of the whole line, then a flush.
+                print(json.dumps(event, ensure_ascii=False) + "\n", file=self._out, end="",
+                      flush=True)
 
     def reset_text(self) -> None:
         with self._lock:
@@ -924,8 +925,15 @@ def _read_json(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _write_cache(path: Path, text: str) -> None:
+    """The one writer of this module's files, all under the XDG cache: the
+    item's agent workspace (``packet.json``, ``packet.md``,
+    ``state.json``) and ``attention/login-ok.json``. Never ledger truth."""
+    fsops.atomic_write(path, text, fsync=False)
+
+
 def _write_json(path: Path, data: dict) -> None:
-    fsops.atomic_write(path, json.dumps(data, ensure_ascii=False, indent=1) + "\n", fsync=False)
+    _write_cache(path, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
 
 
 def _fallback_packet(home: Path, item_id: str, why: str) -> dict | None:
@@ -1075,7 +1083,7 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
     previous_packet = _read_json(folder / "packet.json")
     packet_md = attention_packet.render_md(packet)
     _write_json(folder / "packet.json", packet)
-    fsops.atomic_write(folder / "packet.md", packet_md, fsync=False)
+    _write_cache(folder / "packet.md", packet_md)
 
     roots = read_roots(home, list(packet.get("look_at") or []))
     denied = read_denied(home)
