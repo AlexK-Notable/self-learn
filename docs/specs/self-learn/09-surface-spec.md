@@ -572,8 +572,7 @@ section records what the surface is.
   outside the part the panel replaces. Six lines show, the rest fold
   under "Show all". A decision whose apply the run record says did not
   happen (`phase` refused, unfinished, failed or stopped, or a result that
-  applied nothing, found nothing already applied, and refused, stopped or
-  never attempted something) is counted under "Not carried out, nothing
+  applied nothing and refused, stopped or never attempted something) is counted under "Not carried out, nothing
   changed", never under the group of its intended outcome; its line says
   why ("Refused by the ledger", "Not finished yet, it will be tried
   again", "Stopped before it was applied", "Never attempted"), with what

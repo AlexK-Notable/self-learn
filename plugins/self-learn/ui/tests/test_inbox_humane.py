@@ -581,7 +581,7 @@ def test_the_case_panel_words_the_decision_as_its_line_does(tmp_path, monkeypatc
     not carried out passes its reason and the panel says it the same way; an
     unknown reason is ignored. Mutations: the Decision section's verb first
     -> red; ignore `not_done` -> red; take any `not_done` -> red."""
-    client = _case_client(tmp_path, monkeypatch, outcome="replaced", verb="supersede")
+    client = _case_client(tmp_path, monkeypatch, outcome="replaced", verb="note")
     body = client.get("/inbox/case/case-0000beef").text
     assert "<strong>Decision:</strong> Replaced with a new version (held firmly)" in body
     refused = client.get("/inbox/case/case-0000beef?not_done=refused").text

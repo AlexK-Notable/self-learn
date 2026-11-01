@@ -1005,9 +1005,10 @@ def _clip_plain(text: str | None, limit: int) -> str | None:
 def _not_done(entry: object) -> str | None:
     """Why the run record says a case's apply did not happen, or ``None``
     when it did (gate r2 NIT E): its ``phase`` (one of
-    :data:`NOT_CARRIED_OUT_PHASES`), or a result that applied nothing (and
-    found nothing already applied) while it refused, stopped or never
-    attempted something (``refused``, ``stopped``, ``not-attempted``)."""
+    :data:`NOT_CARRIED_OUT_PHASES`), or a result that applied nothing while
+    it refused, stopped or never attempted something (``refused``,
+    ``stopped``, ``not-attempted``): nothing changed in that run, whatever
+    it found already in place."""
     if not isinstance(entry, dict):
         return None
     phase = entry.get("phase")
@@ -1015,8 +1016,7 @@ def _not_done(entry: object) -> str | None:
         return str(phase)
     result = entry.get("result")
     summary = result.get("summary") if isinstance(result, dict) else None
-    if (isinstance(summary, dict) and summary.get("applied") == 0
-            and not summary.get("already_applied")):
+    if isinstance(summary, dict) and summary.get("applied") == 0:
         for key, why in (("refused", "refused"), ("stopped", "stopped"),
                          ("not_attempted", "not-attempted")):
             count = summary.get(key)

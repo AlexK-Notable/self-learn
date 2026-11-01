@@ -285,11 +285,10 @@ def test_question_states_say_where_each_question_stands(tmp_path, monkeypatch):
 def test_a_decision_not_carried_out_says_why_and_comes_first(tmp_path, monkeypatch):
     """Gate r2 NIT E and MINOR B: a result that applied nothing while it
     stopped or never attempted something is not done, nor is a case the
-    steward left unfinished; a result that found its change already there is
-    done. Each row says why (`not_done`), and the rows not carried out sort
+    steward left unfinished; a result that found its change already there,
+    with nothing refused, stopped or left, is done. Each row says why (`not_done`), and the rows not carried out sort
     before every other group. Mutations: drop the `stopped` key -> red; drop
-    `unfinished` from the phases -> red; count `already_applied` as nothing
-    done -> red; sort the not-done rows last -> red."""
+    `unfinished` from the phases -> red; sort the not-done rows last -> red."""
     ledger, case_ids = _run_world(
         tmp_path, monkeypatch, ("reject", "route", "route", "route", "route", "route"), phases={
             1: {"phase": "refused"},
