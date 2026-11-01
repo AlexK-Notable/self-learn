@@ -189,3 +189,24 @@ def test_every_other_surface_s_containment_is_unchanged(tmp_path):
     assert _call(cb, "Read", {"file_path": str(home / "token.env")}).behavior == "allow"
     with pytest.raises(ValueError):
         invocation.containment_for("ask", allowed_tools="Read,Bash")
+
+
+def test_sweep_orphan_judges_only_its_own_key(tmp_path, monkeypatch):
+    """The ask turn's pre-start sweep: a dead sidecar under its own key is
+    cleared, a sibling's (also dead) is left alone. Mutation: delegate to
+    `children.sweep_orphans` -> the sibling goes -> red."""
+    import json
+
+    from self_learn.invocation_sdk import lifecycle
+
+    monkeypatch.setenv("SELF_LEARN_HOME", str(make_home(tmp_path)))
+    cache = lifecycle.worker.cache_dir()
+    dead = {"pid": 2 ** 22 + 4321, "started_at": 0, "cli": "claude"}
+    own = cache / "ask.sdk-child.0123456789ab.pid"
+    sibling = cache / "ask.sdk-child.ba9876543210.pid"
+    for path in (own, sibling):
+        path.write_text(json.dumps(dead), encoding="utf-8")
+    lines: list[str] = []
+    lifecycle.sweep_orphan("ask", "0123456789ab", lines.append)
+    assert not own.exists() and sibling.exists()
+    assert lines and "no live process" in lines[0]
