@@ -155,13 +155,19 @@ def test_words_from_names_only_the_persons_own_reply(tmp_path, monkeypatch):
     origin check in `_reused_words` -> red; drop the agent-shell refusal ->
     red."""
     home, item = _plan_item(tmp_path)
-    _seal_agent(home, item, "The agent's own answer, long enough to be quoted here.")
+    _seal_agent(home, item, DRAFT)
     agent_t = max(r["t"] for r in workspace.rows(home, item["id"]))
+    # A reply that pasted the agent's text: the person's row, but the
+    # agent's words (origin draft-edited), never reusable as their words.
+    pasted = answers.answer(home, item["id"], text=f"Fine. {DRAFT[:45]}")
+    assert workspace.resolve(home, f"workspace:{item['id']}#T{pasted.transcript_row}")[
+        "origin"] == "draft-edited"  # control
     words = answers.answer(home, item["id"], text="My own words.")
     before = (len(_stmts(home)), len(_choices(home)))
 
     for kwargs in (
         {"option": "opt-yes-conditions", "words_from": agent_t},
+        {"option": "opt-yes-conditions", "words_from": pasted.transcript_row},
         {"option": "opt-yes-conditions", "words_from": 999},
         {"words_from": words.transcript_row},
         {"option": "opt-yes-conditions", "words_from": words.transcript_row, "text": "x"},
@@ -293,7 +299,7 @@ def _conflict(tmp_path: Path, older_at: str, newer_at: str) -> tuple[Path, dict,
         row["at"] = {older: older_at, newer: newer_at}.get(row["id"], row["at"])
     path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows), encoding="utf-8")
     _index(home, [{
-        "id": "q-which-holds", "kind": "ask", "cases": [], "statements": [newer, older],
+        "id": "q-which-holds", "kind": "ask", "cases": [], "statements": [older, newer],
         "text": "Two things you said disagree. Which one holds?", "why": "both are yours",
         "needs": "user", "because": "conflict", "default": "The newer one holds meanwhile.",
         "options": [{"id": "opt-newer", "label": "The newer one is right", "effect": "other"},
