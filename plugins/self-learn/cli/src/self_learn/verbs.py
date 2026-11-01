@@ -74,6 +74,7 @@ import difflib
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -3272,6 +3273,7 @@ def _hook_commit_or_undo(
     message: str,
     *,
     by: str | None = None,
+    note: str | None = None,
 ) -> tuple[list[Path], str]:
     """Fold r1, F2(b): *by* — pre-validated by the caller
     (:func:`hook_activate`, before any lock) — rides the commit body as
@@ -3309,7 +3311,11 @@ def _hook_commit_or_undo(
     land" is the over-cautious direction; treating it as "the commit
     landed, keep the runtime change" on nothing more than a failed read
     would be the dangerous one."""
-    commit_body = _body_with_by_trailer("\n".join(result.receipts), by)
+    # S-NEXT-attribution (cures CU-2): the stated reason, when given, opens
+    # the body; the receipts follow.
+    commit_body = _body_with_by_trailer(
+        "\n\n".join(part for part in (note, "\n".join(result.receipts)) if part), by
+    )
     head_before = gitops.head_sha(home)
     try:
         path = ledger_ops.find_record_path(home, record_id)
@@ -3376,6 +3382,7 @@ def hook_activate(
     register: bool = True,
     no_push: bool = False,
     by: str | None = None,
+    note: str | None = None,
 ) -> VerbResult:
     """13 §7.4 — the human path: ``self-learn hook activate <id>``
     always performs every step (placed, registered, activation-
@@ -3414,6 +3421,7 @@ def hook_activate(
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
     _by_trailer(by)  # validates *by*; raises before any lock is taken
+    _scan_or_refuse([], note)  # S-NEXT-attribution: the stated reason rides the body
     claude_dir = selfcheck.claude_runtime_dir()
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -3431,7 +3439,7 @@ def hook_activate(
                 raise VerbError(_residual_message(exc)) from exc
             message = f"self-learn: hook activate {record_id}"
             staged, sha = _hook_commit_or_undo(
-                home, record_id, result, "hook-activated", message, by=by,
+                home, record_id, result, "hook-activated", message, by=by, note=note,
             )
             prune_note = _prune_hook_backups(claude_dir, result)
         push = _push_ledger(home, no_push)
@@ -3463,6 +3471,7 @@ def hook_deactivate(
     *,
     no_push: bool = False,
     by: str | None = None,
+    note: str | None = None,
 ) -> VerbResult:
     """13 §7.4: reverses :func:`hook_activate` — removes the symlink
     (only if it points at the expected target) and surgically removes
@@ -3481,6 +3490,7 @@ def hook_deactivate(
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
     _by_trailer(by)  # S-102: validates before any lock is taken
+    _scan_or_refuse([], note)
 
     claude_dir = selfcheck.claude_runtime_dir()
     hold = sentinel.hold()
@@ -3497,7 +3507,7 @@ def hook_deactivate(
                 raise VerbError(_residual_message(exc)) from exc
             message = f"self-learn: hook deactivate {record_id}"
             staged, sha = _hook_commit_or_undo(
-                home, record_id, result, "hook-deactivated", message, by=by,
+                home, record_id, result, "hook-deactivated", message, by=by, note=note,
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -7529,8 +7539,12 @@ def _refuse_moving_a_person_s_lesson(
     keeps its placement: the new lesson must land where that lesson is now
     (the same destination, in the same bucket), or the replace is refused
     as :class:`NeedsPerson` before anything is written. A person's own
-    replace (``actor == "human"``) is never refused here."""
-    if actor == "human":
+    replace (``actor == "human"``) is never refused here, and neither is one
+    typed into an agent's shell (``actor == "agent"``, S-NEXT-attribution):
+    that shell acts in the person's session (cures CU-5), and before a
+    command-line ``batch`` named its runner it ran here as ``human``; naming
+    who ran it changes the record, not what it may do."""
+    if actor in ("human", "agent"):
         return
     for lesson, path in lessons:
         if lesson.status != "routed":
@@ -8053,7 +8067,10 @@ def replace_lesson(
             merged = supersede(
                 home, also_id, plan.new_id,
                 note=f"merged into {plan.new_id} by replace {record_id}",
-                by=by, no_push=no_push, user_claude_md=user_claude_md, execution=execution,
+                # S-NEXT-attribution (cures CU-2): supersede's `by` IS its
+                # trailer, so the leg carries the runner the main commit does.
+                by=stamp_by if stamp_by is not None else by,
+                no_push=no_push, user_claude_md=user_claude_md, execution=execution,
             )
         except (VerbError, LedgerOpsError) as exc:
             # E3b fold (gate R3): the new lesson exists and is live; say so
@@ -8805,6 +8822,7 @@ def reject(
     no_push: bool = False,
     reconsider_case: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
+    runner: str | None = None,
 ) -> VerbResult:
     """Reject a pending (or deferred) record. Commit: ``self-learn:
     reject lrn-…``. FW-51: refuses BEFORE any lock/mutation, naming the
@@ -8851,6 +8869,7 @@ def reject(
             touched = resolve_record(
                 home, record_id, "rejected", note=note, verb="reject",
                 extra_allowed_source=extra_allowed,
+                resolution_by=_rejecter(by, execution, runner),
             )
             if retire is not None:
                 touched = touched + _reconsider_retirement_records(
@@ -9425,6 +9444,7 @@ def reconsider(
     note: str | None = None,
     no_push: bool = False,
     any_status: bool = False,
+    stamp_by: str | None = None,
 ) -> VerbResult:
     """U5 (`commands/review.md` ~160-186, `02-schema.md` §2/§3a): record
     a successor decision against a record whose prior resolution (route,
@@ -9470,10 +9490,16 @@ def reconsider(
 
     Integration 2026-10-31 (decision 7): *note* is the stated reason an agent
     shell must give (`cli._agent_attribution`); it rides the commit body
-    only, secret-scanned like every verb's note."""
+    only, secret-scanned like every verb's note.
+
+    S-NEXT-attribution (cures CU-2): *by* is who DECIDED the
+    reconsideration and is kept in the ``reconsidered`` history entry;
+    *stamp_by* is who RAN the verb and is the commit's ``By:`` trailer
+    (``None``: the trailer is *by*, as before)."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _by_trailer(by)  # validates `by` before any lock/mutation
+    _by_trailer(stamp_by)
     _scan_or_refuse([], note)  # the note only; a clean or absent note passes
     if not cases.CASE_ID_RE.match(case or ""):
         raise VerbError(f"reconsider: not a case id: {case!r}")
@@ -9514,13 +9540,14 @@ def reconsider(
         message = f"self-learn: reconsider {record_id} (case {case})"
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
-            record.append_history(
-                "reconsidered",
-                {"case": case, "supersedes": case_fm.get("supersedes")},
-            )
+            entry = {"case": case, "supersedes": case_fm.get("supersedes")}
+            if by is not None:
+                entry["by"] = by
+            record.append_history("reconsidered", entry)
             record.write(path)
             staged, sha = _commit_ledger(
-                home, [path], message, _body_with_by_trailer(note, by)
+                home, [path], message,
+                _body_with_by_trailer(note, stamp_by if stamp_by is not None else by),
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -9558,6 +9585,37 @@ _REOPEN_ADMITTED_STATUSES = REOPEN_ADMITTED_STATUSES
 #: never include a rejected lesson, and it reopens only ones it or the
 #: overseer rejected. Keyed on the runner's actor, never the line's `by:`.
 REOPEN_PERSON_REJECT_REFUSED_ACTORS = frozenset({"overseer"})
+
+
+def _rejecter(
+    by: str | None,
+    execution: execution_evidence.ExecutionRef | None,
+    runner: str | None = None,
+) -> str | None:
+    """Who is rejecting (S-NEXT-attribution, cures CU-5): a sheet runner's
+    own actor when a sheet line runs (*execution*'s, or *runner*, which
+    ``batch`` passes; never the line's ``by``), else a ``by`` naming an
+    actor, else the process's (:mod:`attribution`: ``human`` or ``agent``
+    for a command line, the job's name inside one). ``None`` when none of
+    them is an actor a rejection can record."""
+    from . import attribution
+
+    if execution is not None:
+        actor: str | None = execution.actor
+    elif runner is not None:
+        actor = runner
+    elif by in records_mod.RESOLUTION_BY_VALUES:
+        actor = by
+    else:
+        actor = attribution.current_actor()
+    return actor if actor in records_mod.RESOLUTION_BY_VALUES else None
+
+
+#: A case's receipt line saying a ``reject`` of the lesson took effect.
+def _reject_applied_re(record_id: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"item=[1-9][0-9]* {re.escape(record_id)} reject → (?:applied|already-applied)\b"
+    )
 
 
 def person_reject_case(
@@ -9598,15 +9656,48 @@ def person_reject_case(
     person's. A tie in time between a person's reject case and an agent's goes
     to the person; so does a case opened in the same second as the latest
     displacement (times have second precision). A lesson an agent rejected is
-    the overseer's to reconsider (S-76); only a person's is protected here."""
+    the overseer's to reconsider (S-76); only a person's is protected here.
+
+    S-NEXT-attribution (cures CU-5): the ledger now stores who rejected a
+    lesson (``resolution_by``), and that is read FIRST: ``human`` or
+    ``agent`` (a shell; an agent's shell acts in a person's session, as a
+    CLI reject always read) is a person's decision, ``steward`` or
+    ``overseer`` the agent's. Only a lesson rejected before the field existed
+    falls back to the cases above, and there a reject case counts only when
+    its own receipt shows this lesson's ``reject`` line ``applied`` or
+    ``already-applied`` (a steward case whose line was refused is not behind
+    the rejection), and a supersede chain is followed through every case,
+    not only those naming the lesson."""
     hand = "no case an agent recorded covers it, so it was rejected by hand"
     try:
+        record = Record.from_path(find_record_path(home, record_id))
+    except (LedgerOpsError, RecordError, OSError, ValueError):
+        record = None
+    recorded = record.resolution_by if record is not None else None
+    if recorded in ("human", "agent"):
+        return f"the ledger records it was rejected from a {'person' if recorded == 'human' else 'agent'}'s shell"
+    if recorded in ("steward", "overseer"):
+        return ""
+    try:
         if history is None:
-            history = Record.from_path(find_record_path(home, record_id)).history
+            if record is None:
+                return hand
+            history = record.history
         rows = cases.list_cases(home, record_id=record_id)
+        every = cases.list_cases(home)
     except (cases.CaseError, LedgerOpsError, RecordError, OSError, ValueError):
         return hand
-    by_id = {str(row.get("case")): row for row in rows}
+    by_id = {str(row.get("case")): row for row in every}
+    applied = _reject_applied_re(record_id)
+
+    def took_effect(row: dict) -> bool:
+        try:
+            application = cases.show(
+                home, str(row.get("case")), evidence_only=False
+            ).sections.get("Application", "")
+        except cases.CaseError:
+            return False
+        return applied.search(application) is not None
     displaced = max(
         (
             str(entry.get("at") or "")
@@ -9618,6 +9709,8 @@ def person_reject_case(
 
     def behind_the_rejection(row: dict) -> bool:
         if row.get("outcome") != "reject":
+            return False
+        if row.get("actor") in ("steward", "overseer") and not took_effect(row):
             return False
         if displaced and str(row.get("opened_at") or "") <= displaced:
             return False

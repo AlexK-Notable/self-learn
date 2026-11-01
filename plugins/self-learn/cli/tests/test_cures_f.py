@@ -112,6 +112,16 @@ def _record_case(env: Env, name: str, records: list[str], outcome: str, actor: s
     return cases.record(env.home, stage, actor=actor)
 
 
+def _applied(env: Env, case: str, rid: str, state: str = "applied") -> str:
+    """The receipt a sheet run leaves on *case*: its `reject` line of *rid*
+    took effect (or *state*). S-NEXT-attribution (cures CU-5): an agent's
+    reject case speaks for a lesson's rejection only with this receipt."""
+    cases.receipt(env.home, case, {
+        "sheet": f"{case}.yaml", "items": [{"n": 1, "id": rid, "verb": "reject", "state": state, "rc": 0}],
+    })
+    return case
+
+
 def _pending_files(env: Env, rid: str) -> list[str]:
     bucket = find_record_path(env.home, rid).parent.parent
     return sorted(path.name for path in (bucket / "pending").glob("*.md"))
@@ -400,7 +410,7 @@ def test_the_overseer_may_reopen_a_lesson_an_agent_rejected(env):
     A lesson the steward rejected in an open case of its own is the overseer's
     to reopen, as before."""
     _rejected(env, A)
-    _record_case(env, "steward-reject", [A], "reject", actor="steward")
+    _applied(env, _record_case(env, "steward-reject", [A], "reject", actor="steward"), A)
 
     (got,) = _run(env, [_reopen(A)]).items
 
@@ -438,10 +448,10 @@ def test_a_superseded_person_case_does_not_protect_a_lesson_an_agent_then_reject
     prior = _record_case(env, "person-reject", [A], "reject", actor="human")
     # A steward reconsider case supersedes the person's. `cases.record` marks
     # the person's case superseded; the open case is now the steward's.
-    _record_case(
+    _applied(env, _record_case(
         env, "steward-reconsider", [A], "reject", actor="steward",
         kind="reconsider", trigger="reconsider", supersedes=prior,
-    )
+    ), A)
     assert verbs.person_reject_case(env.home, A) == ""  # the reading the guard makes
 
     (got,) = _run(env, [_reopen(A)]).items
@@ -517,7 +527,7 @@ def test_the_overseers_reconsider_of_a_stewards_reject_can_reopen_it(env):
     only because the case did not exist yet. The reading now follows the
     supersede chain through a reconsider case."""
     _rejected(env, A)
-    prior = _record_case(env, "steward-reject", [A], "reject", actor="steward")
+    prior = _applied(env, _record_case(env, "steward-reject", [A], "reject", actor="steward"), A)
     assert verbs.person_reject_case(env.home, A) == ""  # control: the steward's case is read
     stage = env.tmp / "overseer-reconsider.yaml"
     data = _case([A], "route", "route")
@@ -572,7 +582,7 @@ def test_an_agents_old_reject_case_does_not_cover_a_later_hand_reject(env):
     behind the current one and the overseer may not reopen it. Without the
     displacement filter this reopen applies."""
     _rejected(env, A)
-    _record_case(env, "steward-reject", [A], "reject", actor="steward")
+    _applied(env, _record_case(env, "steward-reject", [A], "reject", actor="steward"), A)
     assert verbs.person_reject_case(env.home, A) == ""  # control: it covers the first reject
     verbs.reopen(env.home, A, no_push=True)
     verbs.reject(env.home, A, no_push=True)  # a person's hand reject, no case
@@ -825,3 +835,114 @@ def test_a_failed_stamp_does_not_refuse_the_case_it_follows(env, monkeypatch):
 
     with pytest.raises(verbs.VerbError):
         overseer_run._stamp_reconsidered(env.home, stage_file, case_id)
+
+
+# ================================ (3) the ledger stores who rejected a lesson
+#                                      (S-NEXT-attribution, cures CU-5)
+
+
+def test_each_rejecter_is_recorded_on_the_lesson(env, monkeypatch):
+    """A sheet runner records its own actor (never the line's `by`); a
+    command line records its shell. Mutation: drop `resolution_by=` from
+    `verbs.reject`'s `resolve_record` call -> every field is absent."""
+    from self_learn import attribution, settings
+
+    for marker in settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
+    _seed(env.home, A)
+    (item,) = _run(env, [{"id": A, "verb": "reject", "by": "human", "note": "n"}], actor="steward").items
+    assert (item.state, item.rc) == ("applied", 0), item
+    assert _rec(env.home, A).resolution_by == "steward"
+    _seed(env.home, B)
+    with attribution.process("agent"):
+        verbs.reject(env.home, B, no_push=True, by="agent")
+    assert _rec(env.home, B).resolution_by == "agent"
+    verbs.reopen(env.home, B, no_push=True)
+    assert _rec(env.home, B).resolution_by is None  # displaced with the rejection
+    assert _rec(env.home, B).history[-1].get("by") == "agent"
+    with attribution.process("human"):
+        verbs.reject(env.home, B, no_push=True)
+    assert _rec(env.home, B).resolution_by == "human"
+
+
+def test_an_agents_command_line_batch_reject_is_the_agents(env, monkeypatch, capsys):
+    """Gate r1 finding 1: `commands/review.md` has the agent apply review
+    decisions with `self-learn batch`; its reject is the agent's, not the
+    `human` default. Mutation: `_cmd_batch` calls `batch.run` without
+    `actor=` -> `resolution_by` is `human` and the body holds `By: human`."""
+    from self_learn import cli, settings
+
+    for marker in settings.AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
+    _seed(env.home, A)
+    _sheet(env.tmp, [{"id": A, "verb": "reject", "note": "n"}], name="agent-sheet")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert settings.agent_caller()
+    assert cli.main(["batch", str(env.tmp / "agent-sheet.yaml"), "--no-push"]) == 0, (
+        capsys.readouterr().err
+    )
+    assert _rec(env.home, A).status == "rejected"  # positive control: the line applied
+    assert _rec(env.home, A).resolution_by == "agent"
+    reject_sha = git(env.home, "log", "--format=%H", "--grep", f"reject {A}", "-1").stdout.strip()
+    assert reject_sha  # control: the reject commit is found
+    body = git(env.home, "log", "-1", "--format=%B", reject_sha).stdout
+    assert body.strip().rpartition("\n\n")[2].splitlines() == ["By: agent"]
+    assert "By: human" not in body
+
+
+def test_a_persons_hand_reject_after_a_steward_case_is_the_persons(env):
+    """A steward reject case (here even with a receipt saying its line
+    applied) stays open; the lesson's current rejection is a person's hand
+    reject, which the record says. The record outranks the case reading.
+    Mutation: ignore `resolution_by` in `person_reject_case` -> the steward's
+    case decides and the overseer's reopen applies."""
+    from self_learn import attribution
+
+    _seed(env.home, A)
+    case = _record_case(env, "steward-reject", [A], "reject", actor="steward")
+    _applied(env, case, A)  # even a receipt claiming it applied does not outrank the record
+    with attribution.process("human"):
+        verbs.reject(env.home, A, no_push=True)
+    assert _rec(env.home, A).resolution_by == "human"  # control
+
+    (got,) = _run(env, [_reopen(A)]).items
+
+    assert (got.state, got.kind) == ("refused", "needs-person"), got
+    assert "person's shell" in (got.detail or ""), got.detail
+
+
+def test_a_legacy_reject_whose_steward_line_never_applied_is_the_persons(env):
+    """No `resolution_by` (a record rejected before the field existed): the
+    case reading. A steward reject case whose receipt shows its line refused
+    is not behind the rejection. Mutation: drop the receipt check -> ""."""
+    _rejected(env, A)  # a library reject: no actor, no field
+    assert _rec(env.home, A).resolution_by is None  # control: the legacy shape
+    case = _record_case(env, "steward-reject", [A], "reject", actor="steward")
+    _applied(env, case, A, state="refused")
+
+    assert verbs.person_reject_case(env.home, A) != ""
+    _applied(env, case, A)  # control: the same case with its line applied speaks for it
+    assert verbs.person_reject_case(env.home, A) == ""
+
+
+def test_a_reconsider_naming_only_one_lesson_still_carries_the_other_s_chain(env):
+    """The steward rejected A and B in one case; the overseer's reconsider
+    names only B. A's chain runs through a case that does not name A.
+    Mutation: look successors up among A's own cases only -> A reads as a
+    hand reject (the person's)."""
+    _rejected(env, A)
+    _rejected(env, B)
+    prior = _record_case(env, "steward-reject", [A, B], "reject", actor="steward")
+    cases.receipt(env.home, prior, {"sheet": "s.yaml", "items": [
+        {"n": 1, "id": A, "verb": "reject", "state": "applied", "rc": 0},
+        {"n": 2, "id": B, "verb": "reject", "state": "applied", "rc": 0},
+    ]})
+    stage = env.tmp / "overseer-reconsider-b.yaml"
+    data = _case([B], "route", "route")
+    data.update(kind="reconsider", trigger="reconsider", supersedes=prior)
+    _dump_yaml(stage, data)
+    successor = cases.record(env.home, stage, actor="overseer")
+    assert successor not in {r["case"] for r in cases.list_cases(env.home, record_id=A)}  # control
+
+    assert verbs.person_reject_case(env.home, A) == ""

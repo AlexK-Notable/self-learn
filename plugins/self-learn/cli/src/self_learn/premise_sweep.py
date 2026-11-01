@@ -73,6 +73,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from . import (
+    attribution,
     compiled,
     compilers,
     config,
@@ -1048,6 +1049,7 @@ def _claude_dir(claude_dir: Path | None) -> Path:
     return claude_runtime_dir()
 
 
+@attribution.as_job("sweep")
 def run(
     home: Path | str,
     cache_dir: Path | None = None,

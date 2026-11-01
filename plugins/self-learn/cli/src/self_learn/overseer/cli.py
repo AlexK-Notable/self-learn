@@ -48,7 +48,8 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
         help="your answer, in your own words. For a question that says a plain "
         "yes registers a host, typing yes registers it in this command "
         "(from your own terminal; an agent's shell registers only when its own session "
-        "shows the person typed the yes)",
+        "shows the person typed the yes to its message naming the question, the path "
+        "and the mode)",
     )
     reply.add_argument("--decline", action="store_true")
     respond_parser.add_argument("--scope")

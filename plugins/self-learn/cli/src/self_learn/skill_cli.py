@@ -3,10 +3,13 @@
 
 The person's door to :mod:`self_learn.skill_writer`; the overseer's runner
 calls the same functions in-process. ``write``, ``retire`` and ``rename``
-change the ledger and the skills root, so they are a person's commands:
-from an agent shell (``settings.agent_caller``) they are refused before
-anything is read or locked, the way a tier-C ``config set`` is. ``write
---check`` and ``list`` only read, and run anywhere.
+change the ledger and the skills root, so they are person-only commands:
+from an agent shell (``settings.agent_caller``) they run only under the
+user's standing grant with ``--note`` (:func:`grants.authorize`,
+S-NEXT-attribution), refused before anything is read or locked otherwise,
+the way a tier-C ``config set`` is; under the grant the registry and the
+commits say ``agent``, never ``human``. ``write --check`` and ``list`` only
+read, and run anywhere.
 
     self-learn skill write <name> --from <dir> --case <id> [--by human]
                                   [--expect <sha>] [--check] [--no-push] [--json]
@@ -15,9 +18,9 @@ anything is read or locked, the way a tier-C ``config set`` is. ``write
                                   [--expect <sha>] [--no-push] [--json]
     self-learn skill list [--json]
 
-``--by`` takes only ``human``: the command is a person's, and only the
-overseer's runner, in-process, records a write or a retirement as the
-overseer's. ``rename`` has no ``--by``: run from the CLI it is always the person's and
+``--by`` takes only ``human`` (an agent's shell records ``agent`` whatever
+it passes): only the overseer's runner, in-process, records a write or a
+retirement as the overseer's. ``rename`` has no ``--by``: run from the CLI it is always the person's and
 records ``by: human`` (the skills spec row: the CLI never records the
 overseer, whose runner calls :func:`skill_writer.rename` itself).
 
@@ -32,7 +35,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import settings, skill_registry, skill_writer
+from . import attribution, grants, skill_registry, skill_writer
 from .gitops import EXIT_GIT_FAILED
 from .ledger import resolve_home
 # Called by its bare name, never as ``skill_writer.rename(...)``: the lock
@@ -85,6 +88,10 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
         "--check", action="store_true",
         help="run every check and write nothing",
     )
+    write_p.add_argument(
+        "--note", default=None,
+        help="from an agent's shell, required: why it runs this under the user's standing grant",
+    )
     write_p.add_argument("--no-push", action="store_true", dest="no_push")
     write_p.add_argument("--json", action="store_true", dest="as_json")
 
@@ -96,6 +103,10 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     retire_p.add_argument(
         "--by", choices=_CLI_BY_VALUES, default="human",
         help="who decided the retirement (default: human)",
+    )
+    retire_p.add_argument(
+        "--note", default=None,
+        help="from an agent's shell, required: why it runs this under the user's standing grant",
     )
     retire_p.add_argument("--no-push", action="store_true", dest="no_push")
     retire_p.add_argument("--json", action="store_true", dest="as_json")
@@ -119,6 +130,10 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
         help="the authored sha256 the skill's files have now, when they changed since "
         "self-learn last wrote them (compare-and-swap)",
     )
+    rename_p.add_argument(
+        "--note", default=None,
+        help="from an agent's shell, required: why it runs this under the user's standing grant",
+    )
     rename_p.add_argument("--no-push", action="store_true", dest="no_push")
     rename_p.add_argument("--json", action="store_true", dest="as_json")
 
@@ -134,21 +149,22 @@ def dispatch(args) -> int:
     if command == "list":
         return _list(resolve_home(), args)
     mutating = command in ("retire", "rename") or (command == "write" and not args.check)
-    if mutating and settings.agent_caller():
-        print(
-            f"self-learn skill {command}: {command} is a person's command (the overseer's "
-            "runner calls it in-process); run the same command in your own terminal "
-            "(not through an agent) "
-            f"(agent shell detected: {', '.join(settings.agent_caller_markers())})",
-            file=sys.stderr,
-        )
-        return EXIT_REFUSED
     home = resolve_home()
-    if command == "write":
-        return _write(home, args)
-    if command == "rename":
-        return _rename(home, args)
-    return _retire(home, args)
+    granted: attribution.Authority | None = None
+    if mutating:
+        try:
+            granted = grants.authorize(home, f"skill {command}", note=getattr(args, "note", None))
+        except grants.GrantError as exc:
+            print(f"self-learn skill {command}: {exc}", file=sys.stderr)
+            return exc.exit_code
+        if granted is not None:
+            args.by = "agent"
+    with attribution.acting(granted):
+        if command == "write":
+            return _write(home, args)
+        if command == "rename":
+            return _rename(home, args)
+        return _retire(home, args)
 
 
 def _print_lines(prefix: str, lines, stream) -> None:
@@ -239,7 +255,7 @@ def _retire(home: Path, args) -> int:
 
 def _rename(home: Path, args) -> int:
     result = rename_skill(
-        home, args.old, args.new, case=args.case, by="human",
+        home, args.old, args.new, case=args.case, by=getattr(args, "by", None) or "human",
         veto_statement=args.veto_statement, expect_sha=args.expect_sha, no_push=args.no_push,
     )
     if args.as_json:

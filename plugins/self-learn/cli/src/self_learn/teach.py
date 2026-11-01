@@ -79,7 +79,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from . import analyst, gitops, intents, statements, telemetry, verbs
+from . import analyst, attribution, gitops, intents, statements, telemetry, verbs
 from .primitives import chrono
 from .compilers import CompileError
 from .gitops import EXIT_GIT_FAILED as _EXIT_GIT_FAILED
@@ -420,7 +420,7 @@ def _capture_txn(
             touched.append(meta)
         try:
             gitops.stage(home, touched)
-            gitops.commit(home, message, paths=touched)
+            gitops.commit(home, message, body=attribution.stamp(None), paths=touched)
         except gitops.GitOpsError as exc:
             print(
                 f"self-learn: CAPTURE NOT COMMITTED ({exc})\n"
