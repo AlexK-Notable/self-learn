@@ -489,7 +489,8 @@ def approval_track(
         option.get("id"): option.get("effect")
         for option in row.get("options") or [] if isinstance(option, dict)
     }
-    plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
+    raw_plan = row.get("plan")
+    plan: dict = raw_plan if isinstance(raw_plan, dict) else {}
     sudo = any(
         isinstance(step, dict) and step.get("sudo") is True for step in plan.get("steps") or []
     )
@@ -678,7 +679,8 @@ def reopen(home: Path | str, q_id: str) -> dict:
         current = _load_questions(resolved)
         if any(row["id"] == q_id for row in current):
             raise ConversationError(f"reopen: {q_id} is already open")
-        kept = found.get("row") if isinstance(found.get("row"), dict) else {}
+        raw_kept = found.get("row")
+        kept: dict = raw_kept if isinstance(raw_kept, dict) else {}
         row: dict = {
             key: value for key, value in kept.items() if key in _INDEX_KEYS
         }

@@ -1421,7 +1421,8 @@ def _choice_input(choice: dict[str, Any]) -> dict[str, Any]:
     option's note; an agent's draft is labelled as the agent's words."""
     how = str(choice.get("how") or "clicked")
     text = choice.get("text") if isinstance(choice.get("text"), str) else None
-    answers = choice.get("answers") if isinstance(choice.get("answers"), dict) else {}
+    raw_answers = choice.get("answers")
+    answers: dict[str, Any] = raw_answers if isinstance(raw_answers, dict) else {}
     row: dict[str, Any] = {
         "id": choice.get("id"),
         "ref": answers.get("ref") or choice.get("subject"),
@@ -2257,7 +2258,8 @@ def _withdrawals(
             dropped.append(f"withdraw {label}: dropped — each entry is {{id, why}}")
             continue
         why = _text(entry.get("why"))
-        target = open_entries.get(entry.get("id")) if isinstance(entry.get("id"), str) else None
+        named = entry.get("id")
+        target = open_entries.get(named) if isinstance(named, str) else None
         if target is None:
             dropped.append(f"withdraw {label}: dropped — not an open ask or approval in {OPEN_ASKS_FILE}")
         elif why is None:
