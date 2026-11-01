@@ -17,7 +17,13 @@
        confirm the same way), so one line here, ahead of the list, gives
        every one of those rows its missing context in a single place —
        "one rhythm" rather than a tooltip repeated on each. #}
+    {% if inbox_help_intro %}
+    {# Walk 2 (D4): the inbox's own intro, in the same words as its armed
+       panels (keymap.ARMED_HOW); the review pages keep theirs below. #}
+    <p class="help-intro" data-inbox-help-intro>{{ inbox_help_intro }}</p>
+    {% else %}
     <p class="help-intro">Most actions below stage first, rather than firing immediately: press once to <strong>arm</strong> it, then <kbd>Enter</kbd> to confirm or any other key to cancel — nothing is applied until you confirm.</p>
+    {% endif %}
     <dl>
       {% for entry in keymap_entries %}
       <dt>{{ entry["keys"] | join(" / ") }}</dt>

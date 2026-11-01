@@ -6,7 +6,10 @@
 <section id="ws-meanwhile" class="ws-section" aria-labelledby="ws-meanwhile-h"{% if meanwhile_oob %} hx-swap-oob="true"{% endif %} data-meanwhile>
   <h2 id="ws-meanwhile-h">{% if item.class == "decided" %}What it changes now{% else %}Meanwhile{% endif %}</h2>
   {% set meanwhile = (packet.meanwhile if packet else None) or item.meanwhile %}
-  {% if item.class == "decided" and packet and packet.decided and packet.decided.changes_now %}
+  {% if meanwhile_override %}
+  {# Walk 2 (D3): an answer moved the item on; the top says so. #}
+  <p data-meanwhile-now>{{ meanwhile_override }}</p>
+  {% elif item.class == "decided" and packet and packet.decided and packet.decided.changes_now %}
   <p>{{ packet.decided.changes_now }}</p>
   {% elif meanwhile %}<p>{{ meanwhile }}</p>
   {% elif item.class == "decided" %}<p>Nothing waits on you: this is a record of what was decided for you.{% if item.undo %} Undo it, or tell it something below, if it is wrong.{% else %} Tell it something below if it is wrong.{% endif %}</p>

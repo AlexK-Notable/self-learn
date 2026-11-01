@@ -15,14 +15,7 @@
     <div id="ws-top-result"></div>
     {% if opened_first %}<p class="ws-meta ws-opened-first" data-opened-first>The most pressing item is open first. Every item is in the list (beside this one, or above it on a narrow window); pick any of them there.</p>{% endif %}
     <header class="ws-head">
-      <p class="ws-chips">
-        <span class="chip chip-{{ item.class }}">{{ item.chip }}</span>
-        {% if item.class == "needs-you" and item.age %}<span class="ws-age">open {{ item.age }}</span>{% endif %}
-        {# Walk fixes, item 8: the same mark, with the same word, as the
-           item's row in the list; inbox.js drops both together once the
-           seen click is recorded. #}
-        {% if item.class == "decided" and not item.seen %}<span class="dot-new" data-new-mark>{% if item.flagged %}new{% else %}unseen{% endif %}</span>{% endif %}
-      </p>
+      {% set chipset = item %}{% include "partials/workspace_chips.html" %}
       <h1 id="ws-question">{{ (packet.question if packet and packet.question else item.title) }}</h1>
     </header>
 

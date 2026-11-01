@@ -28,6 +28,8 @@
     <p>{% if next_item %}Next: <a href="/inbox/{{ next_item.id }}" hx-get="/inbox/{{ next_item.id }}/workspace" hx-target="#inbox-workspace" hx-swap="innerHTML" hx-push-url="/inbox/{{ next_item.id }}">{{ next_item.title }}</a>{% else %}Nothing else needs you.{% endif %}</p>
   </div>
 </div>
+{# Walk 2 (D3): the top of the page says the item is closed, not "Needs you". #}
+{% set chipset = {"class": "answered", "chip": "Closed: the login works again"} %}{% set chipset_oob = true %}{% include "partials/workspace_chips.html" %}
 <p id="ws-ask-off" class="ws-ask-off ws-ask-off-ok" role="note" hx-swap-oob="true" data-ask-off-cleared>The login works again, so the agent can answer, but this item is closed. Open another item to ask about it.</p>
 {% include "partials/workspace_list.html" %}
 {% endif %}

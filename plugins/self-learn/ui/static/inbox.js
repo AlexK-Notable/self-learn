@@ -573,11 +573,15 @@
   // Walk fixes, item 4: a result that belongs at the top of the page (a
   // login check that worked) is brought into view and announced, so it is
   // never left below the fold while the item quietly leaves the list.
+  var topResultAt = 0;
   document.addEventListener("htmx:oobAfterSwap", function (e) {
     var swapped = e.detail && e.detail.target;
     if (!swapped || swapped.id !== "ws-top-result") return;
     var target = $("#ws-top-result");  // the element now in the page
     if (!target || !target.textContent.trim()) return;
+    // Walk 2 (D7): this result is the one to look at; the run box's own
+    // swap in the same response does not scroll it away.
+    topResultAt = Date.now();
     try { target.scrollIntoView({ block: "start" }); } catch (err) { target.scrollIntoView(); }
     announce(target.textContent.replace(/\s+/g, " ").trim());
   });
@@ -642,6 +646,18 @@
     // bar puts it on Cancel, so a stray Enter or Space backs out.
     var cancel = target.id === "ws-answer" ? $("#ws-answer [data-armed-cancel]") : null;
     if (cancel) cancel.focus();
+    // Walk 2 (D7): the result of an act is brought into view where the
+    // person is looking (at 1440x900 the answer bar sits below the fold):
+    // the armed panel, the receipt or the refusal; a launch, fix or login
+    // check's result; feedback's words.
+    if (target.id === "ws-answer") {
+      nearestView($("#ws-answer [data-armed-answer], #ws-answer [data-armed-undo], " +
+        "#ws-answer [data-armed-stop], #ws-answer [data-recorded], #ws-answer [data-answer-error], " +
+        "#ws-answer [data-stopped], #ws-answer [data-stop-error], #ws-answer [data-changing]"));
+    } else if ((target.id === "ws-run-result" || target.id === "ws-feedback") &&
+               Date.now() - topResultAt > 1000) {
+      nearestView(target);
+    }
     if (target.id === "ws-answer" || target.id === "inbox-workspace") {
       var kept = $("#ws-reply-text");
       if (kept && kept.value) askProvenance(true);
@@ -673,33 +689,110 @@
     return false;
   }
 
-  // Walk fixes, item 1: a number key never approves or registers. On an
-  // option whose effect is approve or register it ARMS the option (the
-  // answer route answers `keyed=1` with the once-more confirmation a
-  // confirm option gets); a mouse click on the same button still sends at
-  // once (design r2 §0 call 3).
+  // Walk 2 (D2): a key never settles anything. Every number key, `u` and
+  // `s` only ARMS its action; only the armed panel's Confirm sends. An
+  // option the server arms (`data-arm="server"`: an answer, an undo, Stop
+  // it) is clicked with `keyed=1`, and the route answers with its armed
+  // panel; an option the server would run at once (`data-arm="local"`: a
+  // login terminal, Check now, a fix, Mark all seen) is armed here, in the
+  // same panel with the same words (`data-arm-says`, keymap.ARMED_HOW).
   var keyedClick = false;
+  var armedLocal = null;
+
+  function armedHow() {
+    var root = $("[data-inbox]");
+    return root ? root.getAttribute("data-armed-how") || "" : "";
+  }
+
+  function nearestView(el) {
+    if (!el) return;
+    try { el.scrollIntoView({ block: "nearest" }); } catch (err) { el.scrollIntoView(false); }
+  }
+
+  function disarmLocal() {
+    if (armedLocal && armedLocal.panel && armedLocal.panel.parentNode) {
+      armedLocal.panel.parentNode.removeChild(armedLocal.panel);
+    }
+    armedLocal = null;
+  }
+
+  function armLocal(btn) {
+    disarmLocal();
+    var label = (btn.textContent || "").replace(/\s+/g, " ").trim();
+    var panel = document.createElement("div");
+    panel.className = "ws-armed";
+    panel.setAttribute("role", "alert");
+    panel.setAttribute("data-armed-local", "");
+    var say = document.createElement("p");
+    say.textContent = "“" + label + "”: " + (btn.getAttribute("data-arm-says") || "") +
+      " You pressed a key, and a key never acts on its own. Confirm?";
+    panel.appendChild(say);
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "btn";
+    cancel.setAttribute("data-armed-cancel", "");
+    cancel.textContent = "Cancel";
+    var go = document.createElement("button");
+    go.type = "button";
+    go.className = "btn btn-primary";
+    go.setAttribute("data-confirm-armed", "");
+    go.textContent = "Confirm: " + label;
+    panel.appendChild(cancel);
+    panel.appendChild(document.createTextNode(" "));
+    panel.appendChild(go);
+    var how = document.createElement("p");
+    how.className = "ws-meta";
+    how.setAttribute("data-armed-how", "");
+    how.textContent = armedHow() + " Number keys do nothing here.";
+    panel.appendChild(how);
+    cancel.addEventListener("click", function () { disarmLocal(); });
+    go.addEventListener("click", function () {
+      var target = armedLocal ? armedLocal.btn : null;
+      disarmLocal();
+      if (target && document.contains(target) && !target.disabled) target.click();
+    });
+    var anchor = (btn.closest && btn.closest(".ws-options")) || btn;
+    anchor.insertAdjacentElement("afterend", panel);
+    armedLocal = { panel: panel, btn: btn };
+    // As every armed panel: focus on Cancel (a stray Enter backs out), and
+    // Tab reaches Confirm, which comes after it.
+    cancel.focus();
+    nearestView(panel);
+  }
+
+  function anyArmed() {
+    return !!$("#ws-answer [data-armed-answer], #ws-answer [data-armed-stop], " +
+      "#ws-answer [data-armed-undo], [data-armed-local]");
+  }
+
+  function keyedPress(btn) {
+    if (!btn || btn.disabled || btn.hidden) return;
+    if (btn.getAttribute("data-arm") === "local") { armLocal(btn); return; }
+    keyedClick = true;
+    try { btn.click(); } finally { keyedClick = false; }
+  }
 
   function pressOption(key) {
-    var btn = $("#ws-answer [data-option-index=\"" + key + "\"]");
-    if (!btn || btn.disabled || btn.hidden) return;
-    var effect = btn.getAttribute("data-effect");
-    keyedClick = effect === "approve" || effect === "register";
-    try { btn.click(); } finally { keyedClick = false; }
+    keyedPress($("#ws-answer [data-option-index=\"" + key + "\"]"));
   }
 
   document.addEventListener("htmx:configRequest", function (e) {
     if (!keyedClick) return;
     var path = String(e.detail.path || "").split("?")[0];
-    if (/\/answer$/.test(path)) e.detail.parameters.keyed = "1";
+    if (/\/(answer|undo)$/.test(path)) e.detail.parameters.keyed = "1";
   });
 
   function onKey(event) {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      // Walk 2 (D2): a held Ctrl+Enter's auto-repeat never sends again.
+      if (event.repeat) { event.preventDefault(); return; }
       if (sendFocusedBox()) event.preventDefault();
       return;
     }
     if (event.key === "Escape") {
+      // Walk 2 (D4): Escape cancels an armed panel first.
+      var armedCancel = $("[data-armed-local] [data-armed-cancel], #ws-answer [data-armed-cancel]");
+      if (armedCancel) { armedCancel.click(); event.preventDefault(); return; }
       if (clickIfPresent("[data-ask-stop]:not([hidden])")) { event.preventDefault(); return; }
       if (inTextField()) { document.activeElement.blur(); event.preventDefault(); }
       var o = helpOverlay();
@@ -712,6 +805,11 @@
     if (overlay && !overlay.hidden) { overlay.hidden = true; event.preventDefault(); return; }
     var entry = entryFor(event);
     if (!entry) return;
+    // Walk 2 (D2): key repeat never acts (moving through the list aside).
+    if (event.repeat && entry.action !== "inbox_next" && entry.action !== "inbox_prev") {
+      event.preventDefault();
+      return;
+    }
     switch (entry.action) {
       case "inbox_next": moveInList(1); break;
       case "inbox_prev": moveInList(-1); break;
@@ -732,14 +830,20 @@
         // armed bar's own Confirm button confirms (a click, or Enter/Space
         // with it focused), so a digit can never approve.
         if (event.repeat) break;
-        if ($("#ws-answer [data-armed-answer], #ws-answer [data-armed-stop]")) break;
+        if (anyArmed()) break;
         pressOption(event.key);
         break;
       }
       case "inbox_reply": { var r = $("#ws-reply-text"); if (r) r.focus(); break; }
       case "inbox_ask": { var q = $("#ws-ask-text"); if (q && !q.disabled) q.focus(); break; }
-      case "inbox_undo": clickIfPresent("#ws-answer [data-undo]"); break;
-      case "inbox_seen_all": clickIfPresent("[data-inbox-action=\"seen_all\"]"); break;
+      // Walk 2 (D2): `u` and `s` only arm (the undo route answers a keyed
+      // undo with its armed panel; Mark all seen is armed on the page).
+      case "inbox_undo": if (!anyArmed()) keyedPress($("#ws-answer [data-undo]")); break;
+      case "inbox_seen_all": {
+        var all = $("[data-inbox-action=\"seen_all\"]");
+        if (all && !anyArmed()) armLocal(all);
+        break;
+      }
       case "help": toggleHelp(); break;
       default: return;
     }

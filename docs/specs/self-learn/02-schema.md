@@ -4822,6 +4822,14 @@ exception's class name. An undone decided item (its transcript's last
 undo/redo row is an undo) has `meanwhile` and `decided.changes_now` from
 `attention.UNDONE_NOW`; a hook or always-loaded item is titled by its
 lesson's trigger, its id only when the lesson cannot be read.
+*(S-NEXT-walkfix2, D5; C6.)* An approved item's `plan.conditions` (the
+approval's note) comes with `plan.conditions_how`, whose words they are,
+read from the approving choice row by `attention.conditions_provenance`:
+`typed` (a click citing the person's statement: words typed with the
+option, or `--words-from`), `relayed`, `draft-accepted`, `draft-edited`,
+or `unknown`; null when there are no conditions. The page labels the
+conditions by it and never calls the agent's draft "your conditions"
+(walk 2 of 2026-11-01, #019).
 
 **The workspace transcript** (`<ledger>/attention/workspace/<item-id>.jsonl`;
 the ref kind `workspace:<item-id>#T<n>`, rule 11 of §3a.6): row 0 a header,
@@ -4922,7 +4930,20 @@ draft sent with no option, or a reply that pastes the agent's text, is a
 choice that decides nothing on an item with a plan, exactly like words
 alone (no case is told). A later answer appends (latest wins) until it is
 carried out; an ask already answered stays answerable until the overseer's
-next run rewrites the index. An approved change stays changeable until a
+next run rewrites the index. *(S-NEXT-walkfix2, D3.)*
+`attention_answers.answered_item(home, *, item_id=None, subject=None)`
+finds such an answered ask, read-only, by its item id or by the ask id an
+approved item shares as its subject (after an approval was withdrawn), with
+its public fields and options only (never the `_` ones); by subject it is
+`None` while the ask is still open. The page's "Change my answer" reads it,
+and the answer route answers that item through `attention answer` as
+usual. `attention_answers.conflict_side(option)` is the verb's own rule
+for which statement a conflict option keeps, so the page's receipt names
+the side the record took. *(D5.)* "Send the draft as is" with no option is
+recorded as the agent's draft (`origin: draft-accepted`, a choice `how:
+draft-accepted`, no statement), on an item with a plan as on any other:
+walk 2's "Recorded as your words" (#015) was the page's receipt, never the
+record. An approved change stays changeable until a
 session claims it: another option on the approved item is recorded, both
 readers (`attention._approval_track`, `conversation.approval_track`) then
 read the item as answered, and a later `claim` is refused (2, "change

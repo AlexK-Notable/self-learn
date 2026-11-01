@@ -534,6 +534,21 @@ def _plan_has_sudo(plan: object) -> bool:
     )
 
 
+def conditions_provenance(choice: dict) -> str:
+    """Walk 2 (D5, C6): whose words an approval's note (its conditions)
+    is, from the choice row that recorded it. ``typed`` when the person
+    typed them (a click with their words, or words they sent before,
+    both citing their statement), ``relayed`` when an agent relayed them
+    from the person's session, ``draft-accepted`` / ``draft-edited`` when
+    they are the agent's draft; never the person's words otherwise."""
+    how = str(choice.get("how") or "")
+    if how in ("draft-accepted", "draft-edited", "relayed"):
+        return how
+    if how == "clicked" and choice.get("statement"):
+        return "typed"
+    return "unknown"
+
+
 def _answer_of(statement: dict | None, choice: dict | None) -> dict | None:
     """The §4.1 ``answer`` object for the latest statement and/or choice."""
     if statement is None and choice is None:
@@ -646,6 +661,7 @@ def _approval_track(
     state = "open"
     approved_at: str | None = None
     conditions: str | None = None
+    conditions_how: str | None = None
     failed: dict | None = None
     done: dict | None = None
     last_choice: dict | None = None
@@ -662,6 +678,10 @@ def _approval_track(
                 state = "awaiting-sudo" if _plan_has_sudo(plan) else "approved"
                 approved_at = str(row.get("at") or "")
                 conditions = row.get("text") if isinstance(row.get("text"), str) else None
+                # Walk 2 (D5, C6): whose words the conditions are, from the
+                # approval's own record, so the page never labels the
+                # agent's draft as the person's conditions.
+                conditions_how = conditions_provenance(row) if conditions is not None else None
                 done = None
             elif effect in ("decline", "other", "register") and state in (
                 "open", "awaiting-sudo", "approved",
@@ -709,7 +729,8 @@ def _approval_track(
         "approved.pending", subject, title=title, since=approved_at or base["since"],
         updated_at=approved_at, by=base["source"]["by"], refs=base["refs"],
         meanwhile="You approved it; an agent carries it out in a terminal you can see.",
-        state="approved", plan=plan, conditions=conditions, question=base.get("_question"),
+        state="approved", plan=plan, conditions=conditions, conditions_how=conditions_how,
+        question=base.get("_question"),
         source_item=base["id"], why=base.get("_why"), evidence=base.get("_evidence", []),
     )
     item["answer"] = answer

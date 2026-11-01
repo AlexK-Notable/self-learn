@@ -331,6 +331,37 @@ def _answered_ask_item(home: Path, item_id: str) -> dict | None:
     return None
 
 
+def answered_item(home: Path | str, *, item_id: str | None = None,
+                  subject: str | None = None) -> dict | None:
+    """Walk 2 (D3, "Change my answer"): an ask the person already answered
+    that a later answer still changes (:func:`_answered_ask_item`: it stays
+    in the overseer's index until its next weekly run, and the latest
+    answer wins), found by its item id or by its subject (the ask id an
+    approved item shares). Read-only; the public fields only (never the
+    private ``_`` ones), or ``None`` when no answer of it is changeable."""
+    home = Path(home)
+    found: dict | None = None
+    if item_id is not None:
+        found = _answered_ask_item(home, item_id)
+    elif isinstance(subject, str) and subject.startswith("q-"):
+        row = _ask_row(home, subject)
+        if row is not None and isinstance(row.get("id"), str):
+            kind, _key = attention.classify(row)
+            found = _answered_ask_item(home, attention.item_id(kind, row["id"]))
+    if found is None:
+        return None
+    if item_id is None and any(i["id"] == found["id"] for i in _items(home)):
+        return None  # still open: nothing to change back to
+    return {k: v for k, v in found.items() if not k.startswith("_")}
+
+
+def conflict_side(option: dict | None) -> str:
+    """Walk 2 (D3): which statement a conflict option keeps (``newer``,
+    ``older`` or ``both``), the rule the answer verb rules by, so the
+    page's receipt names the side the record took."""
+    return _conflict_side(option)
+
+
 def _find(home: Path, item_id: str, items: list[dict] | None = None) -> dict | None:
     items = _items(home) if items is None else items
     found = next((item for item in items if item["id"] == item_id), None)

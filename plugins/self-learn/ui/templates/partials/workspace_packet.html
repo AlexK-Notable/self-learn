@@ -80,7 +80,13 @@
       {% if plan.money %} It spends money.{% else %} No money.{% endif %}
       {% if plan.by == "code" %} The plan is written by self-learn's code, not a model.{% endif %}
     </p>
-    {% if plan.conditions %}<p><strong>Your conditions:</strong> {{ plan.conditions }}</p>{% endif %}
+    {# Walk 2 (D5, C6): conditions are labelled by whose words they are,
+       from the approval's own record (`conditions_how`): never "your
+       conditions" for the agent's draft. #}
+    {% if plan.conditions %}
+    {% set cond_how = plan.conditions_how %}
+    <p data-conditions="{{ cond_how or 'unknown' }}"><strong>{% if cond_how == "typed" %}Your conditions, in your words:{% elif cond_how == "relayed" %}Your conditions, in your words relayed by an agent from your session:{% elif cond_how == "draft-accepted" %}Conditions, the agent's draft, accepted by you:{% elif cond_how == "draft-edited" %}Conditions, the agent's draft, edited and sent by you:{% else %}Conditions sent with the approval:{% endif %}</strong> {{ plan.conditions }}</p>
+    {% endif %}
     {% if plan.checks %}
     <h3>Checked first (nothing changes if a check fails)</h3>
     <ol class="ws-steps">

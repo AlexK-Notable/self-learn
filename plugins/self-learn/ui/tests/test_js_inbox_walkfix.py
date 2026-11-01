@@ -125,10 +125,10 @@ def test_a_held_keys_auto_repeat_never_acts(page, server):
     page.wait_for_function("() => !!document.querySelector('#ws-answer-form')['htmx-internal-data']",
                            timeout=_WAIT_MS)
     page.click("h1")
-    page.keyboard.press("3")  # control: a real press of 3 sends the decline
-    _wait_for(lambda: bool(_answer_calls(server)))
-    argv = _answer_calls(server)[-1]
-    assert argv[argv.index("--option") + 1] == "opt-no"
+    page.keyboard.press("3")  # control: a real press of 3 arms the decline (walk 2, D2)
+    page.wait_for_selector("#ws-answer [data-armed-answer]", timeout=_WAIT_MS)
+    assert "No, keep the manual note" in page.inner_text("[data-armed-answer]")
+    assert _nothing_sent_for(server)
 
 
 def test_ctrl_enter_on_a_draft_carrying_an_approve_option_arms_it(page, server):
@@ -202,20 +202,30 @@ def test_the_page_never_moves_focus_onto_an_approve_button(page, server):
     page.wait_for_selector('#ws-answer [data-option-index="3"]', timeout=_WAIT_MS)
     page.wait_for_function("() => !!document.querySelector('#ws-answer-form')['htmx-internal-data']",
                            timeout=_WAIT_MS)
-    page.click("h1")
-    page.keyboard.press("3")
+    # Walk 2 (D1): a plain No stays one mouse click (no key, no Tab here).
+    page.click('#ws-answer [data-option-index="3"]')
     page.wait_for_selector("#ws-answer [data-recorded]", timeout=_WAIT_MS)
     assert _answer_calls(server)[-1][4] == "opt-no"  # control: only the decline was sent
     assert len(_answer_calls(server)) == 1
     assert page.evaluate("() => window.__badFocus") == []
 
 
-def test_a_number_key_on_a_decline_option_sends_it(page, server):
-    """Only approve and register arm. Mutation: arm every keyed option ->
-    red."""
+def test_a_number_key_on_a_decline_option_arms_it_and_tab_enter_sends_it(page, server):
+    """Walk 2 (D2, D4): a key never settles anything: 3 on the plain "No"
+    arms it, focus on Cancel; Tab reaches Confirm (Cancel comes first),
+    and Enter there sends it: exactly what the help, the footer and the
+    panel's own line say. Mutations: arm only approve and register keys
+    (the old rule) -> red (3 sends at once); put Confirm before Cancel ->
+    red (Tab leaves the panel)."""
     _open(page, server, ID_OO7)
     page.click("h1")
     page.keyboard.press("3")
+    _armed_and_wired(page)
+    assert _nothing_sent_for(server)
+    assert page.evaluate("() => document.activeElement.hasAttribute('data-armed-cancel')")
+    page.keyboard.press("Tab")
+    assert page.evaluate("() => document.activeElement.hasAttribute('data-confirm-armed')")
+    page.keyboard.press("Enter")
     _wait_for(lambda: bool(_answer_calls(server)))
     argv = _answer_calls(server)[-1]
     assert argv[argv.index("--option") + 1] == "opt-no"

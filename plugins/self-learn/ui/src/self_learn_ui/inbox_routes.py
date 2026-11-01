@@ -43,7 +43,7 @@ import self_learn.primitives.chrono as chrono
 
 from . import ledger, uilog
 from .ask_runner import AskRunner, build_ask_runner
-from .keymap import inbox_keymap_as_dicts, inbox_keymap_json
+from .keymap import ARMED_HOW, INBOX_HELP_INTRO, inbox_keymap_as_dicts, inbox_keymap_json
 from .runner import RunResult
 
 router = APIRouter()
@@ -286,23 +286,189 @@ def launch_unclaimed(item: dict, now: datetime | None = None) -> bool:
 
 def key_hints(options: list[dict]) -> list[dict]:
     """Walk fixes, item 1: the number key of each option and what it does,
-    in words. An option that approves or registers is armed by its key
-    (it asks once more); the hint says "approve" or "register" plainly."""
+    in words; an option that approves or registers says "approve" or
+    "register" plainly. Walk 2 (D2): every key only arms its option (the
+    line under the hints says so once, in :data:`ARMED_HOW`'s steps)."""
     out: list[dict] = []
     for index, option in enumerate(options[:4], start=1):
         if option.get("disabled"):
             continue
         effect = option.get("effect")
         if effect == "approve":
-            does = f"approve: {option.get('label')} (asks you to confirm first)"
+            does = f"approve: {option.get('label')}"
         elif effect == "register":
-            does = f"register: {option.get('label')} (asks you to confirm first)"
-        elif option.get("confirm") or option.get("via") == "stop":
-            does = f"{option.get('label')} (asks you to confirm first)"
+            does = f"register: {option.get('label')}"
         else:
             does = str(option.get("label"))
         out.append({"key": str(index), "does": does})
     return out
+
+
+#: Walk 2 (D1): decided kinds whose undo turns something off or reverses
+#: an applied change, with what the undo and the redo do, in words. Both
+#: directions ask once more (a redo re-applies the change: a hook back on,
+#: a registration, the agent's act). The one other undo, a withdrawn ask's
+#: "ask me anyway", only puts a question back, and stays one click.
+UNDO_ARMS = {
+    "decided.hook-activated": (
+        "turns the hook off: it no longer runs in new Claude Code sessions",
+        "turns the hook back on: it runs in every new Claude Code session again"),
+    "decided.registration": (
+        "removes the registration: self-learn no longer writes into that repository",
+        "registers that repository again, in plain mode: self-learn writes its lines there "
+        "and never commits"),
+    "decided.grant-use": ("reverses what the agent did under your grant",
+                          "does what the agent did under your grant again"),
+    "decided.skill": ("reverses the change to the skill", "makes the change to the skill again"),
+}
+
+
+def undo_arms(kind: object) -> bool:
+    """Walk 2 (D1): whether an undo (or redo) of *kind* asks once more
+    whatever input sent it."""
+    return str(kind) in UNDO_ARMS
+
+
+def undo_arm_line(kind: object, *, redo: bool, label: object, keyed: bool) -> str:
+    """The armed undo's words: what it will do, plainly (walk 2, D1, D3)."""
+    pair = UNDO_ARMS.get(str(kind))
+    if pair is not None:
+        does = pair[1 if redo else 0]
+    else:
+        does = undo_words(kind, redo=redo, label=label).rstrip(".")
+        does = does[:1].lower() + does[1:] if does else "undoes it"
+    line = f"“{label}” {does}." if label else f"This {does}."
+    if keyed:
+        line += " You pressed a key, and a key never acts on its own."
+    return line + " Confirm?"
+
+
+#: Walk 2 (D3): the receipt's and the armed line's "what happens next",
+#: by what the answer is. Lower-case, to follow "You answered “X”: ".
+NEXT_APPROVE = "it approves this change, and an agent then carries it out in a terminal you can see"
+NEXT_WITHDRAW = ("your approval is withdrawn, so nothing will be carried out, and a session that "
+                 "tries to claim the work is refused")
+NEXT_DECLINE = "nothing will be changed; the overseer reads this on its next run"
+NEXT_OTHER = "the overseer reads this on its next run"
+NEXT_WORDS_PLAN = ("nothing is decided yet, and the overseer reads your words on its next run. To "
+                   "decide, pick an option")
+NEXT_WORDS_RUNNING = ("they are kept for the overseer and do not reach the session carrying it "
+                      "out")
+NEXT_WORDS_DECIDED = ("the cases behind this decision are told, so the steward decides it again "
+                      "with your words")
+NEXT_WORDS_ANSWER = "this answers it, and the overseer reads your answer on its next run"
+NEXT_WORDS_CONFLICT = ("this settles it, and the cases that relied on either statement are decided "
+                       "again with your words")
+NEXT_RAN_SUDO = "an agent then does the rest in a terminal you can see"
+NEXT_CONFLICT = {
+    "newer": ("the newer of your two statements holds, and the cases that relied on the older one "
+              "are decided again"),
+    "older": ("the older of your two statements holds, and the cases that relied on the newer one "
+              "are decided again"),
+    "both": ("both statements hold as your note says, and the cases that relied on either are "
+             "decided again"),
+}
+#: Walk 2 (D3): what approved work is doing once the approval is recorded.
+APPROVED_NOW = {
+    "running": "an agent is carrying it out in a terminal you can see",
+    "approved": "it is approved, and no terminal is carrying it out yet",
+    "awaiting-sudo": ("it waits for its sudo steps, which only you can run: run them, then click "
+                      "I ran it"),
+    "done": "it is done",
+}
+
+
+def _conflict_side(option: dict | None) -> str:
+    from self_learn import attention_answers as sl_answers
+
+    return sl_answers.conflict_side(option)
+
+
+def answer_next(item: dict, chosen: dict | None, *, has_plan: bool) -> str:
+    """Walk 2 (D1, D3): what an answer does next, in plain words, from the
+    item and the option it carries (``None``: words alone or a draft with
+    no option). The same sentence is the armed panel's (before) and the
+    receipt's (after), so the page says one thing about an answer."""
+    klass = item.get("class")
+    if chosen is not None and chosen.get("id") == RAN_SUDO_OPTION:
+        return NEXT_RAN_SUDO
+    if chosen is None:
+        if klass == "approved":
+            return NEXT_WORDS_RUNNING
+        if klass == "decided":
+            return NEXT_WORDS_DECIDED
+        if has_plan:
+            return NEXT_WORDS_PLAN
+        return NEXT_WORDS_CONFLICT if item.get("because") == "conflict" else NEXT_WORDS_ANSWER
+    effect = chosen.get("effect")
+    if effect == "approve":
+        return NEXT_APPROVE
+    if klass == "approved":
+        return NEXT_WITHDRAW
+    via = str(chosen.get("via") or "")
+    if via == "refreeze --keep":
+        return "your edit stays, and becomes what was decided"
+    if via == "refreeze --restore":
+        return "the case file goes back to what was decided"
+    if effect == "register":
+        return "it registers that repository, as the question says"
+    if item.get("because") == "conflict":
+        return NEXT_CONFLICT[_conflict_side(chosen)]
+    if klass == "decided":
+        return NEXT_WORDS_DECIDED.replace("with your words", "with your answer")
+    if effect == "decline":
+        return NEXT_DECLINE
+    return NEXT_OTHER
+
+
+def answer_receipt(item: dict, chosen: dict | None, *, has_plan: bool, state: object,
+                   recorded_as: str) -> str:
+    """Walk 2 (D3): the receipt names the decision and what happens next,
+    in plain words ("You answered “No, keep the manual note”: nothing will
+    be changed; the overseer reads this on its next run.")."""
+    effect = (chosen or {}).get("effect")
+    label = (chosen or {}).get("label")
+    if chosen is None:
+        lead = ("You sent the agent's draft" if recorded_as.startswith("as the agent's draft")
+                else "You answered in your own words")
+    elif chosen.get("id") == RAN_SUDO_OPTION:
+        lead = "You said you ran the sudo steps"
+    elif effect == "approve":
+        lead = f"You approved “{label}”"
+    elif item.get("class") == "approved":
+        lead = f"You withdrew your approval and answered “{label}”"
+    else:
+        lead = f"You answered “{label}”"
+    if effect == "approve" or (chosen or {}).get("id") == RAN_SUDO_OPTION:
+        then = APPROVED_NOW.get(str(state), NEXT_APPROVE)
+    else:
+        then = answer_next(item, chosen, has_plan=has_plan)
+    return f"{lead}: {then}."
+
+
+def arm_line(item: dict, chosen: dict | None, *, has_plan: bool, by_key: bool, by_draft: bool,
+             note: str | None = None) -> str:
+    """Walk 2 (D1, D2): the armed panel's words: what will happen, plainly,
+    with the note that goes with it quoted back (walk 2 #036)."""
+    label = (chosen or {}).get("label")
+    effect = (chosen or {}).get("effect")
+    if effect == "approve":
+        line = (DRAFT_APPROVE_LINE if by_draft and not by_key else APPROVE_LINE).format(label=label)
+    elif chosen is not None and item.get("class") == "approved":
+        line = WITHDRAW_LINE.format(label=label)
+    elif chosen is None:
+        then = answer_next(item, None, has_plan=has_plan)
+        line = f"Send your words? {then[:1].upper()}{then[1:]}."
+    else:
+        then = answer_next(item, chosen, has_plan=has_plan)
+        line = f"“{label}”: {then}."
+    if note and chosen is not None:
+        shown = note if len(note) <= 300 else note[:299].rstrip() + "…"
+        line += f" Your note goes with it: “{shown}”."
+    if by_key:
+        line += (" You pressed a key, and a key never approves on its own." if effect == "approve"
+                 else " You pressed a key, and a key never answers on its own.")
+    return line + " Confirm?"
 
 
 def redo_next(item: dict, rows: list[dict]) -> bool:
@@ -373,6 +539,10 @@ def _render(request: Request, name: str, ctx: dict[str, Any], status_code: int =
         "keymap_entries": inbox_keymap_as_dicts(),
         "class_words": CLASS_WORDS,
         "plan_line": PLAN_LINE,
+        # Walk 2 (D4): the armed panels, the `?` overlay and the footer say
+        # the same steps (keymap.ARMED_HOW is the one string).
+        "armed_how": ARMED_HOW,
+        "inbox_help_intro": INBOX_HELP_INTRO,
         **ctx,
     }
     return _templates(request).TemplateResponse(request, name, context, status_code=status_code)
@@ -664,6 +834,20 @@ def _answer_partial(request: Request, item: dict, packet_read: ledger.PacketRead
     # Walk fixes, item 5: after an undo or a redo, "What it changes now"
     # is drawn again (out of band) from the fresh read.
     ctx["oob_meanwhile"] = answer.get("state") == "undone" and not answer.get("closed")
+    if answer.get("state") == "recorded":
+        # Walk 2 (D3): the top of the page re-reads after an answer: the
+        # chip says where the item is now, and an item the answer moved on
+        # says so under "Meanwhile" too, so nothing at the top still shows
+        # the state before the answer.
+        successor = answer.get("successor")
+        if answer.get("closed"):
+            ctx["oob_chips"] = successor or {"class": "answered", "chip": "Answered: nothing waits "
+                                             "on you here"}
+            ctx["meanwhile_override"] = ((successor or {}).get("meanwhile")
+                                         or f"Nothing waits on you here now. {answer.get('receipt')}")
+            ctx["oob_meanwhile"] = True
+        else:
+            ctx["oob_chips"] = _view_item(item)
     if list_read is not None:
         ctx.update({"oob_list": True, **_list_ctx(list_read, item.get("id"))})
     return _render(request, "partials/workspace_answer.html", ctx, status_code=status_code)
@@ -675,6 +859,26 @@ _ROW_T_RE = re.compile(r"^\d{1,6}$")
 def _row_t(value: str | None) -> int | None:
     value = (value or "").strip()
     return int(value) if _ROW_T_RE.match(value) else None
+
+
+#: Walk 2 (D6): the origins of words sent alone that a note-required
+#: option may take as its note: the person's own typed words (cited, never
+#: recorded twice: `--words-from`), and the agent's draft they sent (sent
+#: again with its draft id, so it stays recorded as the agent's draft).
+_REUSABLE_ORIGINS = ("typed", "draft-accepted", "draft-edited")
+
+
+def _reusable(row: dict | None) -> dict | None:
+    if (row is None or row.get("role") != "user" or row.get("kind") != "reply"
+            or row.get("option") or row.get("origin") not in _REUSABLE_ORIGINS
+            or not isinstance(row.get("t"), int)):
+        return None
+    words = row.get("text")
+    if not isinstance(words, str) or not words.strip():
+        return None
+    draft = row.get("draft_id") if isinstance(row.get("draft_id"), str) else None
+    return {"t": row["t"], "text": words, "origin": row.get("origin"),
+            "draft_id": draft if draft and _DRAFT_ID_RE.match(draft) else None}
 
 
 def _sent_words(request: Request, item_id: str, t: int | None) -> str | None:
@@ -689,6 +893,21 @@ def _sent_words(request: Request, item_id: str, t: int | None) -> str | None:
         return None
     words = row.get("text")
     return words if isinstance(words, str) and words.strip() else None
+
+
+def _last_sent(request: Request, item_id: str, t: int | None) -> dict | None:
+    """Walk 2 (D6): the words last sent alone on this item, whatever sent
+    them (Send, Ctrl+Enter, a draft card, a visit before a reload): row *t*
+    when the bar carried it, else the item's newest answer row, when it is
+    words with no option (a reply that went with an option already has its
+    choice). ``{t, text, origin, draft_id}`` or ``None``."""
+    rows = ledger.workspace_rows(_home(request), item_id)
+    if t is not None:
+        hit = _reusable(next((r for r in rows if r.get("t") == t), None))
+        if hit is not None:
+            return hit
+    answers = [r for r in rows if r.get("role") == "user" and r.get("kind") in ("reply", "ran-sudo")]
+    return _reusable(answers[-1]) if answers else None
 
 
 def _draft_option(request: Request, item: dict, draft_id: str | None) -> dict | None:
@@ -720,16 +939,57 @@ DRAFT_CONFIRM_UNARMED = ("The agent's draft carries an option that approves this
                          "to choose it, then confirm.")
 
 
-#: Walk fixes, item 1: an approve option armed by its number key.
-KEYED_APPROVE_LINE = ("“{label}” approves this change: an agent then carries it out in a terminal "
-                      "you can see. You pressed a key, and a key never approves on its own. "
-                      "Confirm?")
+#: Walk 2 (D1): an approve option always asks once more, whatever sent it
+#: (a click, a key, a draft): this approves a change outside self-learn.
+APPROVE_LINE = ("“{label}” approves this change: an agent then carries it out in a terminal you "
+                "can see.")
 #: Walk fixes gate r1 F2: an approve option that rides with the agent's
 #: draft (Send, Ctrl+Enter, or the card's "Send the draft as is"), not with
 #: a click on that option's own button.
 DRAFT_APPROVE_LINE = ("The agent's draft is sent as “{label}”, and that approves this change: an "
                       "agent then carries it out in a terminal you can see. Sending a draft never "
-                      "approves on its own. Confirm?")
+                      "approves on its own.")
+#: Walk 2 (D1): withdrawing approved work (a change of mind on an item
+#: being carried out) asks once more.
+WITHDRAW_LINE = ("“{label}” withdraws your approval: nothing will be carried out, and a session "
+                 "that tries to claim the work is refused.")
+#: "I ran it" (the sudo steps), the one answer option not in the item's own
+#: list; it arms only when a key sent it (walk 2, D2).
+RAN_SUDO_OPTION = "opt-ran-sudo"
+_RAN_SUDO = {"id": RAN_SUDO_OPTION, "label": "I ran it", "effect": "ran-sudo"}
+
+
+def consequential(item: dict, option: dict | None) -> bool:
+    """Walk 2 (D1): an answer option that asks once more whatever input
+    sent it, a mouse click included: one marked ``confirm``, one that
+    registers or approves, and any answer that withdraws or declines
+    approved work (an item being carried out)."""
+    if option is None:
+        return False
+    return bool(option.get("confirm") or option.get("effect") in ("approve", "register")
+                or (item.get("class") == "approved" and option.get("via", "answer") == "answer"))
+
+
+def _words_settle(item: dict, has_plan: bool) -> bool:
+    """Walk 2 (D2): whether words sent alone settle something (answer the
+    item, overturn a decision), so Ctrl+Enter arms them; words on an item
+    with a plan or on work being carried out decide nothing."""
+    if item.get("class") == "approved":
+        return False
+    return not (item.get("class") == "needs-you" and has_plan)
+
+
+def _has_plan(item: dict) -> bool:
+    return any(o.get("effect") == "approve" for o in item.get("options") or [])
+
+
+async def _item_or_answered(request: Request, read: ledger.CliRead, item_id: str) -> dict | None:
+    """The listed item, or (walk 2, D3, "Change my answer") the answered
+    ask whose answer can still change, read through the CLI's own rule."""
+    found = _find(read, item_id)
+    if found is not None or not _ITEM_ID_RE.match(item_id):
+        return found
+    return await asyncio.to_thread(ledger.answered_item, _home(request), item_id=item_id)
 
 
 @router.post("/inbox/{item_id}/answer", response_class=HTMLResponse)
@@ -746,7 +1006,7 @@ async def inbox_answer(
     sent_t: str | None = Form(None),
 ) -> HTMLResponse:
     read = await _doc(request)
-    item = _find(read, item_id)
+    item = await _item_or_answered(request, read, item_id)
     if item is None:
         return _render(request, "partials/workspace_gone.html", {"gone": item_id}, status_code=404)
     option = (option or "").strip() or None
@@ -757,6 +1017,7 @@ async def inbox_answer(
     # (the bar carries it after a words-only send), kept across a refusal.
     last_sent = _row_t(sent_t)
     packet_read: ledger.PacketRead | None = None
+    has_plan = _has_plan(item)
 
     def fail(message: str, status: int = 200, **extra: Any) -> HTMLResponse:
         return _answer_partial(request, item, packet_read,
@@ -771,14 +1032,14 @@ async def inbox_answer(
     if option is None and text is None and draft_id is None:
         return fail("Pick an option or write your answer first.")
     chosen = next((o for o in item.get("options") or [] if o.get("id") == option), None)
-    if option is not None and chosen is None and option != "opt-ran-sudo":
+    if option is not None and chosen is None and option != RAN_SUDO_OPTION:
         return fail("That option is not one this item offers.", 400)
     if option is None and draft_id is not None:
         # Gate r2 N1: the draft's own option, from the server's transcript:
-        # an approval or register it carries arms like any other.
+        # an approval or register it carries arms like any other (walk 2,
+        # D1: so does any option that withdraws approved work).
         carried = _draft_option(request, item, draft_id)
-        if carried is not None and (carried.get("confirm") or carried.get("effect") in (
-                "approve", "register")):
+        if carried is not None and consequential(item, carried):
             chosen = carried
     if chosen is not None and chosen.get("disabled"):
         # Follow-ups 2 (gap 2): a change of mind is off while a session
@@ -791,20 +1052,28 @@ async def inbox_answer(
             return fail("Those words are not ones you sent on this item; write the note in the "
                         "box instead.", 400)
     if chosen is not None and chosen.get("note") == "required" and text is None and reused is None:
-        # Walk fixes, item 3: words sent alone in this visit are offered as
-        # the note, one click, so the person never types them twice.
-        offer = _sent_words(request, item_id, last_sent)
+        # Walk fixes, item 3; walk 2 (D6): the words last sent alone on this
+        # item, by any send path, are offered as the note in one click, so
+        # the person never types them twice.
+        offer = _last_sent(request, item_id, last_sent)
         return fail(f"“{chosen.get('label')}” needs a note: write it in the box, then click it "
-                    "again.", reuse={"t": last_sent, "text": offer, "option": chosen}
-                    if offer is not None else None)
+                    "again.", reuse={**offer, "option": chosen} if offer is not None else None)
     armed = confirm == "1"
     by_key = keyed == "1"
     # Gate r1 F2 / r2 N1: any approval that goes with the agent's draft
     # (the page's mark, or a draft id on the request) asks once more; the
     # answer verb refuses it without --confirm anyway.
     by_draft = from_draft == "1" or draft_id is not None
-    if chosen is not None and not armed:
-        if chosen.get("confirm") or chosen.get("effect") == "register":
+    shown_option = chosen if chosen is not None else (_RAN_SUDO if option == RAN_SUDO_OPTION else None)
+
+    def arm(message: str, **extra: Any) -> HTMLResponse:
+        return _answer_partial(request, item, packet_read, {
+            "state": "armed", "option": shown_option, "text": text, "draft_id": draft_id,
+            "words_from": reuse_t, "sent_t": last_sent, "message": message, **extra,
+        })
+
+    if not armed:
+        if chosen is not None and (chosen.get("confirm") or chosen.get("effect") == "register"):
             # §3.7 "This registers <path> in git mode. Confirm?": the path
             # and mode are in the question itself (the overseer's validator
             # refuses an ask whose text does not name the register path
@@ -816,34 +1085,26 @@ async def inbox_answer(
             packet_q = (packet_read.data or {}).get("question") if isinstance(
                 packet_read.data, dict) else None
             question = packet_q if isinstance(packet_q, str) and packet_q.strip() else item.get("title")
-            return _answer_partial(request, item, packet_read, {
-                "state": "armed", "option": chosen, "text": text, "draft_id": draft_id,
-                "words_from": reuse_t, "sent_t": last_sent,
-                "message": f"“{chosen.get('label')}” answers “{question}”, and it acts "
-                           "outside self-learn once you confirm it. Confirm?",
-            })
-        if chosen.get("effect") == "approve":
+            return arm(f"“{chosen.get('label')}” answers “{question}”, and it acts outside "
+                       "self-learn once you confirm it. Confirm?")
+        if chosen is not None and chosen.get("effect") == "approve":
             packet_read = await _packet(request, item_id)
             sudo = _sudo_steps(packet_read.data)
             if sudo:
-                return _answer_partial(request, item, packet_read, {
-                    "state": "armed", "option": chosen, "text": text, "draft_id": draft_id,
-                    "words_from": reuse_t, "sent_t": last_sent, "sudo": sudo,
-                    "message": "You run these yourself; the agent does the rest after you click "
-                               "I ran it.",
-                })
-            if by_key or by_draft:
-                # Walk fixes, item 1 (design r2 §0 call 3 for a click): a
-                # number key never approves on its own; it arms, exactly as
-                # a confirm option's first click does. Gate r1 F2: neither
-                # does an option carried by the agent's draft (the person
-                # never clicked a button naming it), whatever sent it.
-                line = DRAFT_APPROVE_LINE if by_draft and not by_key else KEYED_APPROVE_LINE
-                return _answer_partial(request, item, packet_read, {
-                    "state": "armed", "option": chosen, "text": text, "draft_id": draft_id,
-                    "words_from": reuse_t, "sent_t": last_sent,
-                    "message": line.format(label=chosen.get("label")),
-                })
+                return arm("You run these yourself; the agent does the rest after you click "
+                           "I ran it.", sudo=sudo)
+        if consequential(item, chosen) or (by_key and (
+                shown_option is not None or _words_settle(item, has_plan))):
+            # Walk 2 (D1): an approval, or withdrawing approved work, asks
+            # once more whatever sent it, a mouse click included (this
+            # revises design r2 §0 call 3 and S-130's "a click sends at
+            # once"). Walk 2 (D2): a key never settles anything: any option
+            # a key pressed, and words Ctrl+Enter sent that would settle the
+            # item, are armed; only the panel's Confirm sends. Gate r1 F2: an
+            # approval carried by the agent's draft says so.
+            note = text if text is not None else reused
+            return arm(arm_line(item, chosen if chosen is not None else shown_option,
+                                has_plan=has_plan, by_key=by_key, by_draft=by_draft, note=note))
     argv = ["attention", "answer", item_id]
     if option is not None:
         argv += ["--option", option]
@@ -892,12 +1153,38 @@ async def inbox_answer(
     row_t = evidence.get("transcript_row")
     words_alone = (no_option and text is not None and draft_id is None
                    and evidence.get("recorded_as") == "as your words" and isinstance(row_t, int))
+    recorded_as = str(evidence.get("recorded_as") or "")
+    # Walk 2 (D3): the receipt names the decision and what happens next;
+    # the option is the one the record took (named, or the draft's own).
+    took = shown_option
+    if took is None and draft_id is not None:
+        took = _draft_option(request, item, draft_id)
+    receipt = answer_receipt(item, took, has_plan=has_plan, state=state, recorded_as=recorded_as)
+    # Walk 2 (D3): while the answer can still change, one click goes back
+    # to the options: approved work's own options (until a session claims
+    # it), or the answered ask's, which a later answer replaces.
+    change: dict | None = None
+    if fresh is None:
+        if successor is not None and successor.get("class") == "approved":
+            if any(not o.get("disabled") and o.get("via", "answer") == "answer"
+                   for o in successor.get("options") or []):
+                change = {"id": successor["id"], "where": "successor"}
+        else:
+            again = await asyncio.to_thread(ledger.answered_item, _home(request), item_id=item_id)
+            if again is None and item.get("class") == "approved":
+                again = await asyncio.to_thread(ledger.answered_item, _home(request),
+                                                subject=item.get("subject"))
+            if again is not None and again.get("options"):
+                change = {"id": again["id"], "where": "answered"}
     return _answer_partial(request, fresh or item, packet_read, {
         "state": "recorded",
-        "recorded_as": evidence.get("recorded_as") or "",
+        "recorded_as": recorded_as,
+        "receipt": receipt,
+        "sent_text": text if text is not None else None,
         "item_state": state,
         "closed": fresh is None,
         "successor": successor,
+        "change": change,
         "words_alone_on_plan": no_option and state == "open" and (
             any(o.get("effect") == "approve" for o in item.get("options") or [])
         ),
@@ -908,13 +1195,39 @@ async def inbox_answer(
     }, list_read=list_read)
 
 
+@router.get("/inbox/{item_id}/change", response_class=HTMLResponse)
+async def inbox_change(request: Request, item_id: str) -> HTMLResponse:
+    """Walk 2 (D3): "Change my answer": the answer bar again, with the
+    item's options, for an answer that can still change (an answered ask
+    stays answerable until the overseer's next weekly run; the newest
+    answer counts)."""
+    read = await _doc(request)
+    item = await _item_or_answered(request, read, item_id)
+    if item is None:
+        return _render(request, "partials/workspace_gone.html", {"gone": item_id}, status_code=404)
+    return _answer_partial(request, item, None, {"state": "changing"})
+
+
 @router.post("/inbox/{item_id}/undo", response_class=HTMLResponse)
-async def inbox_undo(request: Request, item_id: str, redo: str | None = Form(None)) -> HTMLResponse:
+async def inbox_undo(request: Request, item_id: str, redo: str | None = Form(None),
+                     confirm: str | None = Form(None),
+                     keyed: str | None = Form(None)) -> HTMLResponse:
     read = await _doc(request)
     item = _find(read, item_id)
     if item is None:
         return _render(request, "partials/workspace_gone.html", {"gone": item_id}, status_code=404)
-    argv = ["attention", "undo", item_id] + (["--redo"] if redo == "1" else [])
+    again = redo == "1"
+    label = (item.get("undo") or {}).get("redo_label" if again else "label")
+    if confirm != "1" and (undo_arms(item.get("kind")) or keyed == "1"):
+        # Walk 2 (D1): an undo that turns something off or reverses an
+        # applied change (and its redo) asks once more, whatever sent it;
+        # walk 2 (D2): `u` only arms any undo. The panel says what it does.
+        return _answer_partial(request, item, None, {
+            "state": "armed-undo", "redo": again, "label": label,
+            "message": undo_arm_line(item.get("kind"), redo=again, label=label,
+                                     keyed=keyed == "1"),
+        })
+    argv = ["attention", "undo", item_id] + (["--redo"] if again else [])
     result = await _run_verb(request, argv)
     if not result.ok:
         return _answer_partial(request, item, None,
@@ -930,9 +1243,8 @@ async def inbox_undo(request: Request, item_id: str, redo: str | None = Form(Non
     # Walk fixes, item 5: plain words for what it did (the verb's own line
     # sits in a details fold), and "What it changes now" is drawn again
     # from a fresh read, so it describes the item after the undo.
-    label = (item.get("undo") or {}).get("redo_label" if redo == "1" else "label")
-    answer = {"state": "undone", "redo": redo == "1",
-              "words": undo_words(item.get("kind"), redo=redo == "1", label=label),
+    answer = {"state": "undone", "redo": again,
+              "words": undo_words(item.get("kind"), redo=again, label=label),
               "message": (result.stdout or "").strip(),
               "closed": fresh is None, "successor": successor}
     packet_read = await _packet(request, item_id) if fresh is not None else None

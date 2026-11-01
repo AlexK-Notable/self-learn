@@ -115,7 +115,12 @@ def test_unclaimed_approved_work_offers_a_one_click_change(tmp_path, monkeypatch
     assert 'name="option" value="opt-no"' in bar
     assert "disabled" not in bar.split('value="opt-no"')[1].split(">")[0]
     assert "No session has claimed the work yet" in bar
-    resp = client.post(f"/inbox/{ID_APPROVED}/answer", data={"option": "opt-no"}, headers=HX)
+    # Walk 2 (D1): withdrawing approved work asks once more, in words.
+    armed = client.post(f"/inbox/{ID_APPROVED}/answer", data={"option": "opt-no"}, headers=HX)
+    assert "data-armed-answer" in armed.text and "withdraws your approval" in armed.text
+    assert runner.calls == []
+    resp = client.post(f"/inbox/{ID_APPROVED}/answer", data={"option": "opt-no", "confirm": "1"},
+                       headers=HX)
     assert runner.calls == [["attention", "answer", ID_APPROVED, "--option", "opt-no", "--json"]]
     assert "Recorded as your choice of the offered option" in resp.text
 
