@@ -3700,3 +3700,100 @@ table.health-table td.health-rule {
     padding-right: 1rem;
   }
 }
+
+/* === humane lane 5: the "In short" summary box === */
+.in-short {
+  margin: 1rem 0;
+  padding: 0.8rem 1rem;
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-left: 3px solid var(--slu-accent);
+  border-radius: var(--slu-radius-sm);
+  max-width: 48rem;
+  overflow-wrap: anywhere;
+}
+
+.in-short-h {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--slu-fg-muted);
+}
+
+.in-short-text {
+  margin: 0.25rem 0;
+  line-height: 1.55;
+}
+
+.in-short-text p {
+  margin: 0.25rem 0;
+}
+
+.in-short-stale {
+  color: var(--slu-fg-faint);
+}
+
+.in-short-prov,
+.in-short-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.82rem;
+  color: var(--slu-fg-muted);
+}
+
+.in-short-failed {
+  margin: 0.35rem 0;
+  color: var(--slu-danger);
+}
+
+.in-short-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.in-short-actions .in-short-note {
+  margin: 0;
+  flex: 1 1 16rem;
+}
+
+.in-short-how {
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.in-short-how > summary {
+  cursor: pointer;
+  color: var(--slu-accent);
+}
+
+.in-short-again {
+  margin: 0.25rem 0 0;
+}
+
+.in-short-spinner {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.45em;
+  vertical-align: -0.05em;
+  border: 2px solid var(--slu-border-strong);
+  border-top-color: var(--slu-accent);
+  border-radius: 50%;
+  animation: in-short-spin 0.9s linear infinite;
+}
+
+@keyframes in-short-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .in-short-spinner {
+    animation: none;
+  }
+}

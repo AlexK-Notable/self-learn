@@ -41,7 +41,7 @@ from fastapi.responses import HTMLResponse, Response
 
 import self_learn.primitives.chrono as chrono
 
-from . import ledger, report_view, uilog
+from . import ledger, report_view, summary_routes, uilog
 from .ask_runner import AskRunner, build_ask_runner
 from .keymap import ARMED_HOW, INBOX_HELP_INTRO, inbox_keymap_as_dicts, inbox_keymap_json
 from .runner import RunResult
@@ -880,6 +880,8 @@ def _workspace_ctx(
         "launch_unclaimed": launch_unclaimed(item),
         "packet": packet,
         "run": run_view(packet),
+        # Humane UI lane 5: the "In short" box of a report item (read only).
+        "in_short": summary_routes.box_for_item(request, item, packet, deferred=deferred),
         "packet_error": None if packet_read is None or packet_read.data is not None else packet_read.error,
         "deferred": deferred,
         "options": view_options,
@@ -1063,6 +1065,8 @@ async def overseer_report(request: Request, date: str | None = None) -> HTMLResp
     view = report_view.build(text, _home(request)) if text is not None else None
     return _render(request, "overseer_report.html", {
         "report_text": text, "report_error": error, "date": date, "view": view,
+        # Humane UI lane 5: the "In short" box (read only).
+        "in_short": summary_routes.box_for_report(request, text, date),
         "dates": ledger.overseer_report_dates(_home(request)),
     }, status_code=200 if text is not None or date is None else 404)
 

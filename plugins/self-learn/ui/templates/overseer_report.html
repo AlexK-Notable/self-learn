@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {# The overseer's weekly report, read-only (design r2 §4.7 GET
    /overseer-report[/<date>]): the inbox links here; nothing on this page
-   writes anything. Humane UI lane 3 (proposal §5): a title in words, the
+   writes anything but the "In short" box's "Summarise this" (humane UI
+   lane 5), which saves a summary, never the report. Humane UI lane 3 (proposal §5): a title in words, the
    questions (or "Nothing needs you this week.") first, counts from the
    run's own record, the overseer's sections in its own words at a reading
    width, machine text folded (report_view.py). The report file itself is
@@ -69,7 +70,7 @@
   {% endif %}
 
   {% set f = view.facts %}
-  {% if f and (f.examined is not none or f.decided is not none or f.questions is not none) %}
+  {% if f and (f.examined is not none or f.decided is not none or f.questions is not none or f.agreed is not none or f.findings_dropped is not none) %}
   <ul class="rv-tiles" aria-label="This week in numbers, from the run's own record" data-report-tiles>
     {% if f.examined is not none %}<li class="rv-tile"><span class="rv-tile-label">Past decisions re-checked</span>
       <span class="rv-tile-value">{{ f.examined }}</span>{% if f.population is not none %}<span class="rv-tile-of"> of {{ f.population }}</span>{% endif %}</li>{% endif %}
@@ -77,6 +78,12 @@
       <span class="rv-tile-value">{{ f.decided }}</span>{% if f.decisions_dropped %}<span class="rv-tile-of"> ({{ f.decisions_dropped }} more dropped)</span>{% endif %}</li>{% endif %}
     {% if f.questions is not none %}<li class="rv-tile"><span class="rv-tile-label">Questions for you</span>
       <span class="rv-tile-value">{{ f.questions }}</span></li>{% endif %}
+    {# Humane UI lane 5: two counts from the run record's `review` block;
+       a run recorded before it has neither, and no tile is drawn. #}
+    {% if f.agreed is not none %}<li class="rv-tile" data-tile-agreed><span class="rv-tile-label">Re-checked and agreed with</span>
+      <span class="rv-tile-value">{{ f.agreed }}</span>{% if f.disagreed %}<span class="rv-tile-of"> ({{ f.disagreed }} not)</span>{% endif %}{% if f.no_verdict %}<span class="rv-tile-of"> ({{ f.no_verdict }} without a verdict)</span>{% endif %}</li>{% endif %}
+    {% if f.findings_dropped is not none %}<li class="rv-tile" data-tile-findings-dropped><span class="rv-tile-label">Its own findings dropped</span>
+      <span class="rv-tile-value">{{ f.findings_dropped }}</span></li>{% endif %}
   </ul>
   {% endif %}
 

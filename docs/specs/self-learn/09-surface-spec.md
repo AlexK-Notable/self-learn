@@ -628,7 +628,9 @@ section records what the surface is.
   packet's `run` block, read from the run's record and its committed
   cases); the page counts nothing. Its evidence folds under "The case
   files and lessons, in full". A nightly review and a weekly run item
-  carry an empty, marked slot for the "In short" box (lane 5).
+  carry the "In short" box (*S-NEXT-humane-l5*, "Summaries" below): a
+  nightly review shows its counts in words, and a weekly run item the
+  box of its weekly report.
 - **Answers** go to `attention answer` with the option, the reply text as
   a 0600 `--text-file` that is deleted after the run, `--draft` when the
   text started as an agent draft, and `--confirm` on the second click of
@@ -908,20 +910,70 @@ section records what the surface is.
   line becomes a title in words ("Weekly report · Sunday 1 November",
   with "finished at 15:21" under it) and its run id, actor and model move
   to an "About this run" fold; "Earlier reports" is a small menu beside
-  the title. Then an empty, marked slot for the "In short" box (lane 5);
-  then the "Questions for you" section lifted to the top: "Nothing needs
+  the title. Then the "In short" box (*S-NEXT-humane-l5*, "Summaries"
+  below); then the "Questions for you" section lifted to the top: "Nothing needs
   you this week." when it says none, otherwise its questions and a link
   to the inbox, never folded. Counts sit in tiles, from the run's own
   record (`weekly_facts.run_facts`: past decisions re-checked of those it
   could have, decided in the person's stead, questions), never from the
-  prose; a report with no record has no tiles. The overseer's sections
+  prose; a report with no record has no tiles. *(S-NEXT-humane-l5.)* Two
+  more tiles come from the record's `review` block (02 §3a.13a): "Re-checked
+  and agreed with" (the re-checked decisions the overseer said still hold,
+  with how many it said do not and how many it gave no verdict on) and
+  "Its own findings dropped" (its findings of the week the runner dropped);
+  a record made before that block draws neither. The overseer's sections
   follow in its own words at a reading width of about 75 characters.
   Inside a bullet, machine text reads as a short placeholder with the
   original in its tooltip ("the 35 cases", "a path" written from `~`,
   "a hash", "a settings entry"), and the bullet ends with one fold
   holding it as written; a run of fewer than three ids, text in `code`
   (a command to copy) and text in a paragraph stay as written.
-  "Refused / could not do" folds by default with its count.
+  "Refused / could not do" folds by default with its count. The weekly
+  report page is read-only apart from the "In short" box's one control,
+  which writes a summary, never the report.
+- **Summaries** *(added 2026-11-01, S-NEXT-humane-l5; humane proposal §7;
+  the user's words: "let's give me a way to get summaries on demaand")*.
+  A weekly report, and an inbox item for a nightly review or a weekly
+  run, open with an "In short" box (`partials/in_short.html`, built by
+  `summary_routes.py`). It holds, in this order of preference:
+  - **the overseer's own summary**: a weekly report's optional first
+    section `## In short`, three to five plain sentences written in the
+    same weekly call (no extra model call), lifted out of the body and
+    labelled "Written by the overseer in its weekly run, with no extra
+    model call.";
+  - **a nightly review's counts**: the packet's `run.in_short`, words the
+    CLI counts from the run's record by `series.OUTCOME_GROUPS` ("Put 9
+    lessons to use, turned 4 down and left 3 for later. 11 were looked
+    at and kept as they are."), plus the warnings it turned on and the
+    always-loaded lines it changed, labelled "Counted from the run's own
+    record. No model call.";
+  - **a summary written on request**: "Summarise this report" (on a
+    nightly review, "Summarise this in words") runs `self-learn
+    summarise <kind>:<ref>` (17 §1c; 02 §3a.13) once. Under the button: "One
+    model call on your Claude plan (no API charge), usually 10 to 30
+    seconds. The summary is saved, so it is only written once for this
+    report." While it runs the box says "Writing a summary of this
+    report… N seconds so far." with **Stop** and `aria-busy`, and reads
+    itself again every second (a GET) so the words arrive as they are
+    written; then it shows the summary with "Summary written on request
+    <when> by <model>, from this exact report.", a "How it was made" fold
+    (one call, no tools, this text only; its notional cost and seconds)
+    and "Write it again" (`--again`, the only way to spend a second call
+    on the same text). A report whose text changed shows the older
+    summary greyed, "This summary was written for an earlier version of
+    this report.", and "Summarise again"; it never re-summarises by
+    itself. A setup that would bill money says "Summaries are off: this
+    setup would bill money." and offers no button.
+
+  **Nothing calls a model on a page view.** Every page and `GET
+  /summary/<kind>/<ref>` only read: the summary saved for the report's
+  current text (`summarise.state`, files only) and the runner's view of a
+  run in flight. Only `POST /summary/<kind>/<ref>` starts the verb,
+  through the inbox's ask runner (the same cap of two model turns in
+  flight across questions and summaries, the same watchdog and Stop,
+  `POST /summary/<kind>/<ref>/stop`). A second click while one runs gets
+  409 and the running box. A saved summary is found by the report's
+  SHA-256, so a reload, a second click or another viewer costs nothing.
 
 ### 2.6 The tray icon *(added 2026-10-31, S-126; attention-design-r2 §3.5, §3.10)*
 

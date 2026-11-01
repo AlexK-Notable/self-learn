@@ -14,6 +14,7 @@ the runs).
 from __future__ import annotations
 
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -660,7 +661,12 @@ def test_the_weekly_report_renders_read_only(tmp_path, monkeypatch):
     (home / "overseer" / "2026-10-25-report.md").write_text("# Older\n")
     page = client.get("/overseer-report").text
     assert "Overseer report" in page and "/overseer-report/2026-10-25" in page
-    assert "hx-post" not in page.split('id="self-learn-ui-content"')[1].split("<footer")[0]
+    # Humane UI lane 5: the one control that acts is the "In short" box's
+    # "Summarise this" (it writes a summary, never the report); nothing
+    # else on the page posts anything.
+    content = page.split('id="self-learn-ui-content"')[1].split("<footer")[0]
+    posts = re.findall(r'hx-post="([^"]*)"', content)
+    assert posts == ["/summary/overseer-report/latest"], posts
     assert client.get("/overseer-report/not-a-date").status_code == 404
 
 

@@ -47,6 +47,8 @@ from . import uilog
 from .runner import resolve_self_learn_argv_prefix
 
 __all__ = [
+    "SUMMARY_PREFIX",
+    "summary_key",
     "AskRunner",
     "AskTurn",
     "FAKE_ASK_ENV",
@@ -60,8 +62,15 @@ __all__ = [
 
 #: §4.7 "Sandbox switch": the walk world sets it; nothing else may.
 FAKE_ASK_ENV = "SELF_LEARN_UI_FAKE_ASK"
-#: §3.3: at most two turns in flight across the UI.
+#: §3.3: at most two turns in flight across the UI (questions and
+#: summaries together, humane UI lane 5).
 MAX_TURNS_IN_FLIGHT = 2
+#: Humane UI lane 5: a summary turn's key in the runner, never an item id.
+SUMMARY_PREFIX = "summary:"
+
+
+def summary_key(kind: str, ref: str) -> str:
+    return f"{SUMMARY_PREFIX}{kind}:{ref}"
 #: §3.3 "Timeouts": the UI's watchdog is the turn's own timeout plus this.
 WATCHDOG_GRACE_SECS = 30.0
 #: Then SIGTERM, then SIGKILL after this.
@@ -84,6 +93,12 @@ class AskTurn:
     drafts: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
     finished: bool = False
+    #: Humane UI lane 5: the SSE envelope type this turn's events go out
+    #: under -- ``ask`` for a question, ``summary`` for "Summarise this".
+    channel: str = "ask"
+    #: The turn's last ``done`` or ``error`` event, kept after it ends so a
+    #: page reopened later can show what happened.
+    result: dict | None = None
 
     def view(self) -> dict[str, Any]:
         return {"item": self.item, "message": self.message, "text": self.text,
@@ -92,6 +107,8 @@ class AskTurn:
     def absorb(self, event: dict) -> None:
         self.events.append(event)
         ev = event.get("ev")
+        if ev in ("done", "error"):
+            self.result = dict(event)
         if ev == "delta" and isinstance(event.get("text"), str):
             self.text += event["text"]
         elif ev == "done" and isinstance(event.get("text"), str):
@@ -147,28 +164,51 @@ class AskRunner(ABC):
         return turn.view() if turn is not None and not turn.finished else None
 
     def refusal(self, item_id: str) -> str | None:
-        """Why a new turn on *item_id* cannot start now, or ``None``."""
+        """Why a new turn on *item_id* cannot start now, or ``None``. A
+        summary's key (:func:`summary_key`) shares the cap with questions."""
+        summary = item_id.startswith(SUMMARY_PREFIX)
         turn = self._turns.get(item_id)
         if turn is not None and not turn.finished:
-            return "Still answering your last question."
+            return ("A summary of this report is already being written." if summary
+                    else "Still answering your last question.")
         live = sum(1 for t in self._turns.values() if not t.finished)
         if live >= MAX_TURNS_IN_FLIGHT:
+            if summary:
+                return ("Two answers or summaries are already being written; try again when "
+                        "one finishes.")
             return ("Two questions are already being answered on other items; ask again "
                     "when one finishes.")
         return None
 
+    def summary_view(self, key: str) -> dict[str, Any] | None:
+        """Humane UI lane 5: the summary turn under *key*, for the page:
+        ``{running, seconds, text, result}``; ``None`` when there was none
+        since the UI started."""
+        turn = self._turns.get(key)
+        if turn is None:
+            return None
+        seconds = None
+        if not turn.finished:
+            try:
+                seconds = max(0, int(asyncio.get_running_loop().time() - turn.started))
+            except RuntimeError:
+                seconds = 0
+        return {"running": not turn.finished, "seconds": seconds, "text": turn.text,
+                "result": turn.result}
+
     def _relay(self, turn: AskTurn, event: dict) -> None:
         turn.absorb(event)
-        self._publish({**event, "type": "ask", "item": turn.item})
+        self._publish({**event, "type": turn.channel, "item": turn.item})
 
-    def _begin(self, item_id: str, message: str) -> AskTurn:
-        turn = AskTurn(item=item_id, message=message, started=asyncio.get_running_loop().time())
+    def _begin(self, item_id: str, message: str, *, channel: str = "ask") -> AskTurn:
+        turn = AskTurn(item=item_id, message=message, started=asyncio.get_running_loop().time(),
+                       channel=channel)
         self._turns[item_id] = turn
         return turn
 
     def _end(self, turn: AskTurn, exit_code: int | None) -> None:
         turn.finished = True
-        self._publish({"type": "ask", "item": turn.item, "ev": "end", "exit": exit_code})
+        self._publish({"type": turn.channel, "item": turn.item, "ev": "end", "exit": exit_code})
 
     # -- the three operations
 
@@ -184,6 +224,13 @@ class AskRunner(ABC):
     @abstractmethod
     async def check_login(self) -> LoginCheck:
         """``self-learn attention check-login``, never behind the verb runner."""
+
+    async def start_summary(self, kind: str, ref: str, *, again: bool = False) -> str | None:
+        """Humane UI lane 5: start ``self-learn summarise <kind>:<ref>``
+        under :func:`summary_key`. ``None`` when it started, else the
+        refusal in words (the route answers 409). Only a click calls this;
+        a page view never does. :meth:`stop` with the key stops it."""
+        raise NotImplementedError
 
     async def shutdown(self) -> None:  # noqa: B027 - optional hook
         """Stop every turn (the app is shutting down)."""
@@ -276,6 +323,29 @@ class RealAskRunner(AskRunner):
         self._tasks[item_id] = asyncio.ensure_future(self._drive(turn, proc))
         return None
 
+    async def start_summary(self, kind: str, ref: str, *, again: bool = False) -> str | None:
+        key = summary_key(kind, ref)
+        refused = self.refusal(key)
+        if refused is not None:
+            return refused
+        turn = self._begin(key, "", channel="summary")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self._argv_prefix, "summarise", f"{kind}:{ref}", "--stream",
+                *(["--again"] if again else []),
+                env=self._full_env(), stdin=asyncio_subprocess.DEVNULL,
+                stdout=asyncio_subprocess.PIPE, stderr=asyncio_subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            self._relay(turn, {"ev": "error", "code": "failed",
+                               "message": f"the summary could not be started: {exc}", "fix": None})
+            self._end(turn, None)
+            return None
+        self._procs[key] = proc
+        self._tasks[key] = asyncio.ensure_future(self._drive(turn, proc))
+        return None
+
     async def _drive(self, turn: AskTurn, proc: asyncio_subprocess.Process) -> None:
         deadline = self._turn_timeout() + self._watchdog_grace
         terminal_seen = False
@@ -298,7 +368,8 @@ class RealAskRunner(AskRunner):
                 tail = stderr.decode("utf-8", "replace").strip()[-600:]
                 self._relay(turn, {
                     "ev": "error", "code": "interrupted" if code in (-15, -9, 7) else "failed",
-                    "message": tail or f"the ask agent stopped (exit {code})", "fix": None,
+                    "message": tail or (f"the {'summary' if turn.channel == 'summary' else 'ask agent'}"
+                                        f" stopped (exit {code})"), "fix": None,
                 })
             self._end(turn, code)
         except asyncio.CancelledError:
@@ -424,6 +495,18 @@ def _sandbox_script() -> list[dict]:
 
 SANDBOX_SCRIPT = _sandbox_script()
 
+#: Humane UI lane 5: the walk world's scripted summary. It says what it is.
+SANDBOX_SUMMARY = ("(Sandbox: this summary is scripted. No model was called.) The report was "
+                   "checked and nothing in it needs you.")
+
+
+def _summary_script(text: str = SANDBOX_SUMMARY) -> list[dict]:
+    return [
+        {"ev": "start", "model": "sandbox-fake"},
+        *({"ev": "delta", "text": text[i:i + 40]} for i in range(0, len(text), 40)),
+        {"ev": "done", "text": text, "written": True, "summary": None},
+    ]
+
 
 class FakeAskRunner(AskRunner):
     """Scripted playback. Records every start (``calls``), stop
@@ -450,6 +533,9 @@ class FakeAskRunner(AskRunner):
         self.home = Path(home) if home is not None else None
         self.seal = seal
         self.calls: list[tuple[str, str]] = []
+        #: Humane UI lane 5: every summary start, ``(kind, ref, again)``.
+        self.summary_calls: list[tuple[str, str, bool]] = []
+        self.summary_script: list[dict] = _summary_script()
         self.stops: list[str] = []
         self.login_checks = 0
         self._release: dict[str, asyncio.Event] = {}
@@ -464,6 +550,59 @@ class FakeAskRunner(AskRunner):
         self._release[item_id] = asyncio.Event()
         self._tasks[item_id] = asyncio.ensure_future(self._play(turn, header))
         return None
+
+    async def start_summary(self, kind: str, ref: str, *, again: bool = False) -> str | None:
+        key = summary_key(kind, ref)
+        refused = self.refusal(key)
+        if refused is not None:
+            return refused
+        self.summary_calls.append((kind, ref, again))
+        turn = self._begin(key, "", channel="summary")
+        self._release[key] = asyncio.Event()
+        self._tasks[key] = asyncio.ensure_future(self._play_summary(turn, kind, ref))
+        return None
+
+    async def _play_summary(self, turn: AskTurn, kind: str, ref: str) -> None:
+        try:
+            for event in self.summary_script:
+                if event.get("ev") in ("done", "error") and self.hold:
+                    await self._release[turn.item].wait()
+                    if turn.item in self.stops:
+                        self._relay(turn, {"ev": "error", "code": "interrupted",
+                                           "message": "stopped before the summary was written",
+                                           "fix": None})
+                        self._end(turn, 7)
+                        return
+                event = dict(event)
+                if event.get("ev") == "done":
+                    event["summary"] = await self._fake_record(kind, ref, str(event.get("text")))
+                self._relay(turn, event)
+                await asyncio.sleep(0)
+            self._end(turn, 0)
+        except asyncio.CancelledError:
+            self._end(turn, None)
+            raise
+
+    async def _fake_record(self, kind: str, ref: str, text: str) -> dict | None:
+        """The record the real verb would print; saved into the scratch
+        ledger only in the walk world (``seal``)."""
+        if self.home is None:
+            return None
+        from self_learn import summarise
+        from self_learn.primitives import chrono
+
+        try:
+            src = await asyncio.to_thread(summarise.source, self.home, kind, ref)
+        except Exception:  # noqa: BLE001 - the fake still plays
+            return None
+        record = {"schema": summarise.SCHEMA, "kind": kind, "ref": src.ref,
+                  "source_sha256": src.sha256, "source_chars": len(src.text), "text": text,
+                  "model": "sandbox-fake", "created_at": chrono.now_iso(),
+                  "by": summarise.BY_PERSON, "cost_usd": None, "duration_secs": 0.0,
+                  "session": None}
+        if self.seal:
+            await asyncio.to_thread(summarise.save, self.home, record)
+        return record
 
     def release(self, item_id: str) -> None:
         event = self._release.get(item_id)

@@ -165,6 +165,7 @@ _LITERAL_ENV_FIRST_NAMES = frozenset(
         "models.steward",  # U8
         "models.overseer",  # U8
         "models.ask",  # attention round 2026-10-31c (design r2 §4.11), ask-agent lane
+        "models.summary",  # humane UI lane 5 (2026-11-01), "Summarise this"
     ]
 )
 

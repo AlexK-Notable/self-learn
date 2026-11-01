@@ -50,6 +50,9 @@ _HASH_RE = re.compile(r"\b(?:[0-9a-f]{64}|[0-9a-f]{40})\b")
 _TAG_RE = re.compile(r"(<[^>]+>)")
 _NOUNS = {"case": "cases", "lrn": "lessons", "stmt": "of your statements", "sc": "skill ideas"}
 _QUESTIONS = "Questions for you"
+#: Humane UI lane 5: the overseer's own optional summary, drawn in the
+#: "In short" box (``summary_view``), never again in the body.
+_IN_SHORT = "In short"
 
 
 def _home_prefix() -> str:
@@ -237,6 +240,8 @@ def build(text: str, home: Path | str) -> dict[str, Any]:
     questions: dict[str, Any] | None = None
     drawn: list[dict[str, Any]] = []
     for title, body in sections:
+        if title == _IN_SHORT:
+            continue
         if title == _QUESTIONS:
             questions = ({"none": True, "html": None} if _says_none(body) else
                          {"none": False, "html": markupsafe.Markup(render_markdown(body))})

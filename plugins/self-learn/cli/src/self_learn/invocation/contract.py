@@ -477,6 +477,15 @@ class SessionSpec:
     #: and would clear a live sibling's. `False` -- every producer but the
     #: session miner's fan-out -- sweeps exactly as before.
     skip_orphan_sweep: bool = False
+    #: 2026-11-01 (humane UI lane 5, "Summarise this"): the model THIS
+    #: session runs on, when its producer reads it from a setting of its
+    #: own rather than the surface's `models.<surface>`
+    #: (`summarise.py` reads `models.summary` and runs on the `ask`
+    #: surface). `None` -- every other producer -- keeps the seam's
+    #: `provider.model_for(surface)` exactly as before. Keyword and
+    #: defaulted; it sits before `resume_session_id` so the ask lane's
+    #: pin on the last two fields still holds.
+    model: str | None = None
     #: 2026-10-31 (attention round, design r2 §3.3): continue THIS earlier
     #: Claude Code session (the options carry `resume=<id>`), so one turn
     #: of a conversation is one seam session. `None` -- every producer but

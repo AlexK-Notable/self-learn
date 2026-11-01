@@ -1013,7 +1013,66 @@ def _run_decisions(home: Path, item: dict, limits: _Limits) -> dict | None:
         })
     order = {g: i for i, g in enumerate(OUTCOME_GROUPS)}
     rows.sort(key=lambda r: (order.get(str(r["group"]), len(order)), str(r["case"])))
-    return {"decisions": rows, "counts": counts, "other": other, "error": None}
+    # Humane UI lane 5 (proposal §7a): the run's "In short", counted from
+    # the same record -- the groups above and the run's own effects rows --
+    # never written by a model.
+    effects = manifest.get("attention_effects") if isinstance(manifest, dict) else None
+    effects = [e for e in effects if isinstance(e, dict)] if isinstance(effects, list) else []
+    hooks_on = sum(1 for e in effects if e.get("hook_activated"))
+    always_loaded = sum(1 for e in effects if e.get("always_loaded"))
+    return {"decisions": rows, "counts": counts, "other": other, "error": None,
+            "hooks_on": hooks_on, "always_loaded": always_loaded,
+            "in_short": counted_in_short(counts, other, hooks_on=hooks_on,
+                                         always_loaded=always_loaded)}
+
+
+def counted_in_short(counts: dict, other: int = 0, *, hooks_on: int = 0,
+                     always_loaded: int = 0) -> str:
+    """A nightly review's summary in words, counted (humane UI lane 5): "Put
+    9 lessons to use, turned 4 down and left 3 for later. 11 were looked at
+    and kept as they are." Each group is
+    :data:`self_learn.series.OUTCOME_GROUPS`'s, so it agrees with the bar and
+    the charts; a group with no decision is left out; the warnings the run
+    turned on and the always-loaded lines it changed are added when any."""
+    from .attention import plural
+
+    use, no, later, kept = (int(counts.get(g) or 0) for g in ("use", "no", "later", "kept"))
+    parts: list[str] = []
+    noun_used = False
+
+    def lessons(n: int) -> str:
+        nonlocal noun_used
+        if noun_used:
+            return str(n)
+        noun_used = True
+        return plural(n, "lesson")
+
+    if use:
+        parts.append(f"put {lessons(use)} to use")
+    if no:
+        parts.append(f"turned {lessons(no)} down")
+    if later:
+        parts.append(f"left {lessons(later)} for later")
+    sentences: list[str] = []
+    if parts:
+        joined = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+        sentences.append(joined[0].upper() + joined[1:] + ".")
+    if kept:
+        sentences.append(f"{kept} {'was' if kept == 1 else 'were'} looked at and kept as "
+                         f"{'it is' if kept == 1 else 'they are'}."
+                         if parts else
+                         f"Looked at {plural(kept, 'lesson')} and kept "
+                         f"{'it' if kept == 1 else 'them'} as {'it is' if kept == 1 else 'they are'}.")
+    if other:
+        sentences.append(f"{plural(other, 'decision')} ended another way.")
+    if not sentences:
+        sentences.append("No lessons were decided.")
+    if hooks_on:
+        sentences.append(f"It turned on {plural(hooks_on, 'warning')} that "
+                         f"{'runs' if hooks_on == 1 else 'run'} before matching commands.")
+    if always_loaded:
+        sentences.append(f"It changed {plural(always_loaded, 'line')} that every session loads.")
+    return " ".join(sentences)
 
 
 def _pointers(home: Path, item: dict) -> list[dict]:

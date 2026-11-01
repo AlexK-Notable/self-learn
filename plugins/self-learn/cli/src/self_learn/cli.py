@@ -82,7 +82,7 @@ from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
 from .index import cli as index_cli
 from .overseer import cli as overseer_cli
-from . import ask, attention_cli, skill_cli
+from . import ask, attention_cli, skill_cli, summarise
 from .overseer import conversation as overseer_conversation
 from .overseer import run as overseer_run
 from .ledger import (
@@ -1129,6 +1129,7 @@ def _build_parser() -> argparse.ArgumentParser:
     skill_cli.add_parser(sub)
     attention_cli.add_parser(sub)
     ask.add_parser(sub)
+    summarise.add_parser(sub)
 
     steward_p = sub.add_parser(
         "steward", help="autonomous decision runner: run"
@@ -5199,7 +5200,8 @@ def _main(argv: list[str] | None = None) -> int:
     # Attention round (design r2 §3.1, critique 15): `attention` (the tray
     # polls it) and `ask` (the inbox's agent) never tick it either, so
     # neither ever starts a mining run.
-    if args.command not in ("mine", "init", "serve", "attention", "ask"):
+    # Humane UI lane 5: `summarise` (the page's "Summarise this") neither.
+    if args.command not in ("mine", "init", "serve", "attention", "ask", "summarise"):
         try:
             # no_push is passed EXPLICITLY (BLOCKER D): this tick runs
             # before dispatch for every command, so `reject --no-push` used
@@ -5369,6 +5371,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "ask":
         return args._ask_dispatch(args)
+
+    if args.command == "summarise":
+        return args._summarise_dispatch(args)
 
     if args.command == "serve":
         return _cmd_serve(args)

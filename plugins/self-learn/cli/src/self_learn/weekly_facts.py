@@ -62,7 +62,13 @@ def run_facts(home: Path | str, run_id: str | None) -> dict[str, Any] | None:
     - ``decided``: the decisions in the person's stead that reached the
       ledger (``decisions.staged`` less ``decisions.dropped``);
       ``decisions_written``: ``decisions.staged``; ``decisions_dropped``;
-    - ``questions``: the questions it asked the person.
+    - ``questions``: the questions it asked the person;
+    - ``agreed``, ``disagreed``, ``no_verdict``: of the decisions it
+      re-checked, how many it said still hold, how many it said do not, and
+      how many it gave no verdict on; ``findings_dropped``: its own findings
+      of the week that the runner dropped. From the record's ``review``
+      block (humane UI lane 5, 02 §3a.13a); every one ``None`` for a run
+      recorded before that block existed.
     """
     if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id):
         return None
@@ -84,6 +90,8 @@ def run_facts(home: Path | str, run_id: str | None) -> dict[str, Any] | None:
     dropped = _int(decisions.get("dropped"))
     questions = manifest.get("questions")
     asked = questions.get("questions") if isinstance(questions, dict) else None
+    raw_review = manifest.get("review")
+    review: dict[str, Any] = raw_review if isinstance(raw_review, dict) else {}
     status = manifest.get("status")
     finished = manifest.get("progress_at") if status in ("complete", "closed") else None
     return {
@@ -99,4 +107,8 @@ def run_facts(home: Path | str, run_id: str | None) -> dict[str, Any] | None:
         "decisions_written": staged,
         "decisions_dropped": dropped,
         "questions": len(asked) if isinstance(asked, list) else None,
+        "agreed": _int(review.get("agreed")),
+        "disagreed": _int(review.get("disagreed")),
+        "no_verdict": _int(review.get("no_verdict")),
+        "findings_dropped": _int(review.get("findings_dropped")),
     }
