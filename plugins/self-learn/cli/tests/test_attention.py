@@ -446,6 +446,54 @@ def test_approval_moves_an_ask_to_approved_then_done(home, monkeypatch):
     assert len(done) == 1 and done[0]["flagged"] and _by_kind(home, "approved.pending") == []
 
 
+def test_a_reopened_ask_counts_answers_only_from_its_reopen(home, monkeypatch):
+    """Integration (overseer-asks gate r3, cross-lane): after "Ask me anyway"
+    the inbox's walk floors at `reopened_at`, as the overseer's walk does.
+    A withdrawn approval comes back as a question, and an old click no
+    longer closes a reopened ask without a plan.
+
+    Mutations: drop `since=` at the `_approval_track` call -> the reopened
+    plan reads approved.pending (red); drop the floor on `chose` -> the
+    reopened no-plan ask stays closed (red)."""
+    before = _iso(timedelta(hours=-2))
+    reopened = _iso(timedelta(hours=-1))
+    approve = {"id": "chc-0000bbbb", "at": before, "item": "att-000000000000",
+               "subject": _OO7["id"], "how": "clicked", "option": "opt-yes",
+               "label": "Yes, add the binding", "effect": "approve",
+               "answers": {"kind": "question", "ref": _OO7["id"]}}
+    no_plan = _ask(id="q-money-np", needs="user", because="money", default="Nothing is spent.",
+                   asked_at="2026-09-28T04:15:00Z",
+                   options=[{"id": "opt-no", "label": "No", "effect": "decline"}])
+    decline = {"id": "chc-0000cccc", "at": before, "item": "att-000000000001",
+               "subject": no_plan["id"], "how": "clicked", "option": "opt-no", "label": "No",
+               "effect": "decline", "answers": {"kind": "question", "ref": no_plan["id"]}}
+    (home / "attention").mkdir(exist_ok=True)
+    (home / "attention" / "choices.jsonl").write_text(
+        json.dumps(approve) + "\n" + json.dumps(decline) + "\n", encoding="utf-8")
+    monkeypatch.setattr(attention, "_statements", lambda _home: [])
+
+    # Positive control: never reopened, the old clicks stand.
+    monkeypatch.setattr(attention, "_load_questions", lambda _home: [_OO7, no_plan])
+    assert len(_by_kind(home, "approved.pending")) == 1
+    assert _by_kind(home, "ask.system-change") == []
+    assert _by_kind(home, "ask.money") == []
+
+    # Reopened after the clicks: both are questions again, with no answer.
+    rows = [{**_OO7, "reopened_at": reopened}, {**no_plan, "reopened_at": reopened}]
+    monkeypatch.setattr(attention, "_load_questions", lambda _home: rows)
+    assert _by_kind(home, "approved.pending") == []
+    oo7 = _by_kind(home, "ask.system-change")
+    assert len(oo7) == 1 and oo7[0]["state"] == "open" and oo7[0]["answer"] is None
+    money = _by_kind(home, "ask.money")
+    assert len(money) == 1 and money[0]["state"] == "open" and money[0]["answer"] is None
+
+    # A click after the reopen counts again.
+    later = {**approve, "id": "chc-0000dddd", "at": _iso()}
+    with (home / "attention" / "choices.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(later) + "\n")
+    assert len(_by_kind(home, "approved.pending")) == 1
+
+
 # ------------------------------------------------------------------ 12. steward manifest
 
 

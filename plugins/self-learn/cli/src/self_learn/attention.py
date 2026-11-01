@@ -595,23 +595,52 @@ def _run_record(home: Path, approved_id: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _counts_from(row: dict, since: datetime | None) -> bool:
+    """Whether the choice or outcome *row* counts against the floor *since*
+    (``None``: every row counts). A row with no readable time counts only
+    when there is no floor."""
+    if since is None:
+        return True
+    when = _dt(row.get("at"))
+    return when is not None and when >= since
+
+
+def _ask_answer_floor(row: dict, index_floor: str | None) -> datetime | None:
+    """From when an answer, a choice or an outcome counts for the ask *row*:
+    its `reopened_at` when "Ask me anyway" put it back, else its `asked_at`,
+    else the index's last write. The same floor as the overseer's own walk
+    (`overseer.conversation._answer_floor`), so the inbox and the runner
+    agree on a reopened ask (integration of the 2026-10-31c round, the
+    overseer-asks gate r3 cross-lane item): a withdrawn approval comes back
+    as a question, not as "Being carried out", and a click made before the
+    reopen is no longer shown as its answer."""
+    for key in ("reopened_at", "asked_at"):
+        when = _dt(row.get(key)) if isinstance(row.get(key), str) else None
+        if when is not None:
+            return when
+    return _dt(index_floor)
+
+
 def _approval_track(
     home: Path, base: dict, plan: dict | None, choices: list[dict], outcomes: list[dict],
-    now: datetime,
+    now: datetime, *, since: datetime | None = None,
 ) -> list[dict]:
     """The needs-you item *base* (an ask with a plan, or a code item with an
     agent option) after its choices and outcomes (§1.3, §3.4.7): the item
     as it stands (open, awaiting-sudo), or the approved item that replaced
     it, or the done item, or nothing (declined). Events are matched by the
     item's subject and taken in time order; a failed outcome returns the item
-    to open and the approval no longer stands."""
+    to open and the approval no longer stands. With *since* (an ask's
+    :func:`_ask_answer_floor`), only events at or after it count."""
     subject = base["subject"]
     events: list[tuple[str, str, dict]] = []
     for choice in choices:
-        if choice.get("subject") == subject or choice.get("item") == base["id"]:
+        if (choice.get("subject") == subject or choice.get("item") == base["id"]) and _counts_from(
+            choice, since
+        ):
             events.append((str(choice.get("at") or ""), "choice", choice))
     for outcome in outcomes:
-        if outcome.get("subject") == subject:
+        if outcome.get("subject") == subject and _counts_from(outcome, since):
             events.append((str(outcome.get("at") or ""), "outcome", outcome))
     events.sort(key=lambda e: e[0])
     state = "open"
@@ -720,12 +749,15 @@ def _src_asks(home: Path, ctx: "_Ctx") -> list[dict]:
         refs_answering = {q_id}
         if key == "conflict" and isinstance(row.get("statements"), list) and len(row["statements"]) == 2:
             refs_answering.add(f"conflict:{row['statements'][0]}+{row['statements'][1]}")
-        floor_dt = _dt(floor)
+        floor_dt = _ask_answer_floor(row, floor)
         said = [
             s for s in statements if _matches(s, refs_answering)
             and (floor_dt is None or (_dt(s.get("at")) or floor_dt) >= floor_dt)
         ]
-        chose = [c for c in choices if _matches(c, refs_answering) or c.get("subject") == q_id]
+        chose = [
+            c for c in choices
+            if (_matches(c, refs_answering) or c.get("subject") == q_id) and _counts_from(c, floor_dt)
+        ]
         latest_said = max(said, key=lambda r: str(r.get("at") or ""), default=None)
         latest_chose = max(chose, key=lambda r: str(r.get("at") or ""), default=None)
         plan = row.get("plan") if isinstance(row.get("plan"), dict) else None
@@ -777,7 +809,9 @@ def _src_asks(home: Path, ctx: "_Ctx") -> list[dict]:
         has_plan = plan is not None
         if has_plan:
             # Only an option click decides an item with a plan (§1.3).
-            produced = _approval_track(home, item, plan, choices, ctx.outcomes, ctx.now)
+            produced = _approval_track(
+                home, item, plan, choices, ctx.outcomes, ctx.now, since=floor_dt,
+            )
             for still_open in produced:
                 if still_open.get("kind") == kind and still_open.get("answer") is None and latest_said:
                     # Words alone are recorded, and the item stays open.
