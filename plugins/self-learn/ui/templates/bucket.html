@@ -38,7 +38,7 @@
 </div>
 {% if not model.groups and not model.clusters %}
 {% set _in_use = model.archive | length %}
-<p class="place-empty">Nothing is waiting here.{% if _in_use %} {{ _in_use }} rule{{ "s" if _in_use != 1 else "" }} from here {{ "is" if _in_use == 1 else "are" }} in use; {{ "it is" if _in_use == 1 else "they are" }} listed under &ldquo;Routed here&rdquo; below.{% endif %}</p>
+<p class="place-empty">Nothing is waiting here.{% if _in_use %} {{ _in_use }} rule{{ "s" if _in_use != 1 else "" }} from here {{ "is" if _in_use == 1 else "are" }} in use; {{ "it is" if _in_use == 1 else "they are" }} listed under &ldquo;Routed here&rdquo; below.{% endif %}{% if replaced_here %} {{ replaced_here }} earlier rule{{ "s" if replaced_here != 1 else "" }} from here {{ "was" if replaced_here == 1 else "were" }} later replaced or retired.{% endif %}</p>
 {% endif %}
 
 {% if bucket_proposal %}

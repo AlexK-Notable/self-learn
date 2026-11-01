@@ -4,5 +4,5 @@
 {% if jobs_line.late %}
 <a class="jobs-line jobs-line-late" href="/#jobs" role="status"><span class="jobs-mark" aria-hidden="true">!</span>{{ jobs_line.text }}</a>
 {% else %}
-<a class="jobs-line" href="/#jobs"><span class="jobs-dot" aria-hidden="true"></span>{{ jobs_line.text }}{% if jobs_line.last_read %} &middot; last overnight read {{ jobs_line.last_read | humanize_ts }}{% endif %}</a>
+<a class="jobs-line" href="/#jobs"><span class="jobs-dot{% if jobs_line.waiting %} jobs-dot-waiting{% endif %}" aria-hidden="true"></span>{{ jobs_line.text }}{% if jobs_line.last_read %} &middot; last overnight read {{ jobs_line.last_read | humanize_ts }}{% endif %}</a>
 {% endif %}

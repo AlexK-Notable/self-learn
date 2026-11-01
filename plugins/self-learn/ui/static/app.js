@@ -1585,11 +1585,34 @@
   document.addEventListener("htmx:beforeRequest", function (evt) {
     if (isConfirmRequest(evt)) confirmInFlight = true;
   });
+
+  /**
+   * Humane lane 1 (gate r1 MAJOR-1): is this htmx event for one of the
+   * page's background reads? The requesting element says so itself with
+   * `data-background-read` (base.html's jobs line and inbox link, Home's
+   * answer tile). That element is `detail.requestConfig.elt`: it keeps its
+   * attributes after its own outerHTML swap detached it. `detail.elt` is
+   * NOT it -- in htmx 2.0.9 it is the NEW content of an outerHTML swap
+   * (measured: the swapped-in jobs line, unmarked), and for an
+   * out-of-band swap (Home's tile filling the header's inbox link) it is
+   * the out-of-band element; the requester is the marked tile either way.
+   */
+  function isBackgroundRead(evt) {
+    const d = evt && evt.detail;
+    const elt = d && d.requestConfig && d.requestConfig.elt;
+    return !!(elt && elt.hasAttribute && elt.hasAttribute("data-background-read"));
+  }
   // pendingSwaps' own add leg: a swap just landed new content for
   // this request's OWN key (M2: its xhr, not merely its target) — one
   // more resolution (its OWN settle or an F14 failure that owns it)
   // now owed, bounded by its own N9 fallback regardless.
   document.addEventListener("htmx:afterSwap", function (evt) {
+    // Humane lane 1 (gate r1 MAJOR-1): the shared header's after-load
+    // reads (the jobs line, the inbox count, Home's "Needs your answer"
+    // tile) are not page swaps a keystroke could race: they replace only
+    // their own header/tile element, which no key action ever targets.
+    // They owe no settle, so they never hold a key back.
+    if (isBackgroundRead(evt)) return;
     addPendingSwap(pendingSwapKey(evt));
   });
   // Success leg: cleared at swap SETTLE (never earlier — the error
@@ -1600,7 +1623,22 @@
     if (isConfirmRequest(evt)) confirmInFlight = false;
     removePendingSwapForKey(pendingSwapKey(evt)); // N1, drains at zero
     releaseReload();
+    revealArmedFoldBar(evt);
   });
+
+  /**
+   * Humane lane 1 (gate r1 MINOR-5): a rule's armed bar on Home lands
+   * inside its "Decide…" fold, which opened and grew AFTER the key's own
+   * scroll ran (clickAction scrolls the button, before the swap). Once the
+   * armed bar has settled, bring the whole bar on screen -- its Confirm,
+   * Cancel and its lower edge.
+   */
+  function revealArmedFoldBar(evt) {
+    const el = evt && evt.target;
+    if (!el || !el.closest) return;
+    const bar = el.closest('.decide-fold .action-bar[data-armed="true"]');
+    if (bar) bar.scrollIntoView({ block: "nearest" });
+  }
   // Failure legs (F14, extended to pendingSwaps/pendingDispatches,
   // M1/M2/N1): no swap will come for THIS request — remove ONLY the
   // token this request's OWN key owns (M1/M2: a request whose OWN key

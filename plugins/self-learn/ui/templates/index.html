@@ -164,11 +164,11 @@
       {% for p in home.places_waiting %}
       <tr data-row>
         <td data-sort-key="name" data-sort-value="{{ p.label }}"><a href="/bucket/{{ p.scope }}/{{ p.name }}">{{ p.label }}</a>{% if p.path %} <span class="place-path">{{ p.path }}</span>{% endif %}</td>
-        <td class="num" data-sort-key="pending" data-sort-value="{{ p.pending }}">{{ p.pending }}</td>
-        <td class="num" data-sort-key="deferred" data-sort-value="{{ p.deferred }}">{{ p.deferred if p.deferred else "—" }}</td>
-        <td class="num" data-sort-key="unanalyzed" data-sort-value="{{ p.unanalyzed }}">{{ p.unanalyzed if p.unanalyzed else "—" }}</td>
-        <td class="num" data-sort-key="in_use" data-sort-value="{{ p.in_use if p.in_use is not none else -1 }}">{{ p.in_use if p.in_use is not none else "—" }}</td>
-        <td data-sort-key="oldest" data-sort-value="{{ p.oldest_days if p.oldest_days is not none else -1 }}">{{ days_ago_words(p.oldest_days) if p.oldest_days is not none else "—" }}</td>
+        <td class="num" data-label="Waiting" data-sort-key="pending" data-sort-value="{{ p.pending }}">{{ p.pending }}</td>
+        <td class="num" data-label="Left for later" data-sort-key="deferred" data-sort-value="{{ p.deferred }}">{{ p.deferred if p.deferred else "—" }}</td>
+        <td class="num" data-label="No suggestion yet" data-sort-key="unanalyzed" data-sort-value="{{ p.unanalyzed }}">{{ p.unanalyzed if p.unanalyzed else "—" }}</td>
+        <td class="num" data-label="In use" data-sort-key="in_use" data-sort-value="{{ p.in_use if p.in_use is not none else -1 }}">{{ p.in_use if p.in_use is not none else "—" }}</td>
+        <td data-label="Oldest waiting" data-sort-key="oldest" data-sort-value="{{ p.oldest_days if p.oldest_days is not none else -1 }}">{{ days_ago_words(p.oldest_days) if p.oldest_days is not none else "—" }}</td>
       </tr>
       {% endfor %}
     </tbody>

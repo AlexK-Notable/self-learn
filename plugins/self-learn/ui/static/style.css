@@ -2613,3 +2613,65 @@ h1.resolved-title {
     max-width: 100%;
   }
 }
+
+/* Gate r1 MINOR-4: at phone width the places table reflows instead of
+   hiding columns behind a sideways scroll. Each place becomes a short
+   block: its name on one line, then every column as "label value" pairs
+   that wrap (the labels come from each cell's data-label). The column
+   headers, and with them the sort buttons, are a desktop affordance. */
+@media (max-width: 720px) {
+  .table-scroll {
+    overflow-x: visible;
+  }
+
+  .places-table,
+  .places-table tbody,
+  .places-table tr,
+  .places-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .places-table thead {
+    display: none;
+  }
+
+  .places-table tr {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 1rem;
+    padding: 0.6rem 0.5rem;
+    border-bottom: 1px solid var(--slu-border);
+  }
+
+  .places-table td {
+    border: 0;
+    padding: 0;
+    width: auto;
+    text-align: left;
+  }
+
+  .places-table td:first-child {
+    flex: 1 1 100%;
+  }
+
+  .places-table td[data-label]::before {
+    content: attr(data-label) " ";
+    color: var(--slu-fg-faint);
+    font-size: 0.8rem;
+  }
+
+  .places-table .num {
+    text-align: left;
+  }
+
+  .places-table .bucket-walk a,
+  .places-table a {
+    max-width: 100%;
+    white-space: normal;
+  }
+}
+
+.jobs-dot-waiting {
+  background: var(--slu-fg-faint);
+}

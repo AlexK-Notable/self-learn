@@ -167,12 +167,23 @@ now called **Home**, and every page shares one header:*
   or, when a job is late or failed, that job named in words ("The
   overnight read has not run for 3 days", "Drafting suggestions is
   behind", "The last overnight read failed", "The weekly check is
-  overdue"), amber with a "!" mark, never colour alone (Y-10). Late
-  means the CLI's own verdict: the miner's `stale`, the worker's own
-  escalation threshold, a failed last run, or a weekly check a full day
-  past its own `overseer_next`. Home renders the line inline; every
+  overdue", "The nightly review is on hold", "The nightly review is
+  behind", "Job status could not be read"), amber with a "!" mark,
+  never colour alone (Y-10). Late means the CLI's own verdict: the
+  miner's `stale`, the worker's own escalation threshold, a failed last
+  run, a weekly check a full day past its own `overseer_next`, or the
+  steward's own `steward_hold` / `steward_stale` (which `status --json`
+  carries, from the same `steward.nudge_fields` as `status --fast`); a
+  failed run is also marked on that job's own row. When nothing is late
+  but the overnight read has never run, the line says "The overnight
+  read has not run yet" with a neutral mark, never "All jobs ran on
+  time". Home renders the line inline; every
   other page fetches it after load (`GET /header/jobs`, cached for 30
-  seconds per server), so no page waits on `status --json` for it. A
+  seconds per server), so no page waits on `status --json` for it.
+  These after-load header reads (`data-background-read`) never hold a
+  key back: a key pressed while one is in flight acts at once. Home
+  reads the inbox once: the "Needs your answer" tile's response also
+  fills the header's "Inbox (N)" link out of band. A
   page no longer draws its own strip; a page one level below a place
   (a record) adds a "where you are" line (*Home › <place> › this
   lesson*), the record's id on hover only. The `up` key (Esc) keeps
@@ -190,7 +201,10 @@ now called **Home**, and every page shares one header:*
   with where it is placed, how long ago, and why it was seen again, its
   four choices (t/c/g/k), note, reason and "covered by" folded behind
   one **Decide…** button; a key acting inside a closed fold opens it
-  first, so an armed bar is always on screen; **Follow-ups** (Y-6);
+  first, and the armed bar is scrolled into view once it lands, so it
+  is always wholly on screen; a lesson's suggested destination is worded
+  as its bucket row arms it (scope correction, a "wait" recommendation:
+  "no place chosen yet"); **Follow-ups** (Y-6);
   **Where lessons live** (below); **Jobs**: the overnight read, drafting
   suggestions, the nightly review and the weekly check, each with its
   last run and result in a sentence, a **Run now** button for the two
@@ -206,10 +220,17 @@ now called **Home**, and every page shares one header:*
   more places with nothing waiting", and inside that, places whose
   folder no longer exists (`path_exists: false`) fold apart. A gone
   folder that still holds waiting work is never folded. Folded rows
-  carry no `data-row`, like the bucket page's archive.
+  carry no `data-row`, like the bucket page's archive. Below 720 px
+  the table reflows: each place is a block with its counts labelled
+  inline, no column hidden behind a sideways scroll. Labels are resolved
+  over every bucket at once, on Home and on a bucket or record page
+  alike, so two projects sharing a folder name read by their `~` path
+  on both.
 - Bucket and record pages *(§10 of the proposal)*: a bucket page is
   headed by its place's name and says "Nothing is waiting here." when
-  it is empty; a record with no suggestion yet says "No suggestion yet.
+  it is empty, with how many rules from there are in use and how many
+  were later replaced or retired (`report --json`'s per-bucket
+  `counts.superseded`, from the one report read the page makes); a record with no suggestion yet says "No suggestion yet.
   Press `i` to ask for one now." once (the key drawn as a key cap), its
   Approve stays available but is not the primary button, its Iterate
   button reads "Ask for a suggestion (i)", and its destination reads
