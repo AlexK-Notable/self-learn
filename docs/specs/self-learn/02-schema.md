@@ -4838,12 +4838,18 @@ plan; words alone on an item with a plan are recorded (a statement,
 launched. An option marked `note: required` refuses to send without words
 (3); an option marked `confirm`, and every `register` option, needs
 `--confirm` (3). An item without a plan (a stead ask, a sudo ask, a
-conflict, a registration) is decided by an option or by words. A later
-answer appends (latest wins) until it is carried out; an ask already
-answered stays answerable until the overseer's next run rewrites the
-index. An approved change is not withdrawn from the inbox by another
-option: the readers keep it approved, so such an answer is refused (3) and
-the page says to close the terminal and say so in words.
+conflict, a registration) is decided by an option or by words; an agent
+draft sent with no option, or a reply that pastes the agent's text, is a
+choice that decides nothing on an item with a plan, exactly like words
+alone (no case is told). A later answer appends (latest wins) until it is
+carried out; an ask already answered stays answerable until the overseer's
+next run rewrites the index. An approved change stays changeable until a
+session claims it: another option on the approved item is recorded, both
+readers (`attention._approval_track`, `conversation.approval_track`) then
+read the item as answered, and a later `claim` is refused (2, "change
+nothing"). While a live claim holds it the answer is refused (3), naming
+the claiming session. Once the work is done, a new answer is an overturn
+(below).
 
 **Downstream** (§3.4.4). The `answers` of a statement or choice: an ask's
 question id (`kind: question`), a conflict's `conflict:<a>+<b>` (a
@@ -4859,8 +4865,11 @@ every case whose dependencies cite the statement ruled against (the newer
 one when "the older one still holds", the older when "the newer is right",
 both for "both" or words; the side is read from the option's id and label,
 which the overseer writes as "Keep the newer one: …" / "Keep the older one:
-…"); words on any other decided item: `user overturned <item-id> in the
-inbox (ref: stmt-…)`. A `register` option acts first through
+…"); an answer on any other decided item, `decided.approved-done`
+included (its subject still names the ask, but it is answered as the
+decision, never as the question): a statement `answers: {kind:
+instruction, ref: <first case id, else subject>}` and `user overturned
+<item-id> in the inbox (ref: stmt-…|chc-…)` on each case it cites. A `register` option acts first through
 `conversation._register_core` (the text-free half of S-103's registration;
 the consent is the click, or an agent's proved yes), so a refused
 registration records nothing. A `conflict.case-tampered` option runs
@@ -4901,13 +4910,18 @@ claim refuses, 3, naming it). `done --note --session [--failed]` needs the
 live claim's session (3 otherwise, naming the claimant), appends an
 outcome (`by` the process actor) and removes the claim; `--failed` returns
 the item to the person, the reason first among its evidence, and the
-approval no longer stands. **While the ledger is STOPPED** nothing can be
+approval no longer stands. `run` on work already done is 3 (not
+approved), whichever of the three ids names it. **While the ledger is
+STOPPED** nothing can be
 committed and every answer is refused (10), except the person's *Have an
 agent look at it* on the `broken.stopped` item that says so: its choice is
 held in `<cache>/attention/held-approvals/<id>.json`, the workspace row is
 kept pending, and the session is launched on the item itself; its `done`
 commits the held choice, then the outcome, once the session cleared the
-intent.
+intent. A session that looked and left the intent alone reports `done
+--failed`: nothing is committed, the held choice and the claim are dropped
+(the item is the person's again at once), and its note is kept as a
+pending workspace row.
 
 **Code kinds** (§3.4.8): `attention fix <id> --option opt-restart` on a
 `broken.host` item runs `systemctl --user reset-failed` and then `restart`
@@ -4923,7 +4937,8 @@ it* is an approve option over the kind's code-written plan.
 redo in words only; `decided.grant-use` → the inverse from the row's `prior`
 (`config set <prior>`, or `config unset` when it is null; `host remove`;
 `host set-mode <prior mode>`; `skill retire`), redo the recorded verb with
-its `args`; `decided.withdrawn` → `overseer.conversation.reopen`. Every
+its `args` (`skill write` from its recorded `--from` folder, refused, 3,
+when that folder is gone; `skill veto` too); `decided.withdrawn` → `overseer.conversation.reopen`. Every
 other kind has none (3). Person-only inverses run under
 `grants.authorize` from an agent's shell. Each undo or redo seals a
 workspace row `kind: undo|redo`; `redo_offered` reads the last one.
@@ -4938,10 +4953,15 @@ the conflict ruling; both bring a case back whatever it decided. The card
 the agent's draft «text» (not their words)", "Relayed by an agent from
 their session: «words»" (quoting the statement it cites). **Questions to
 the ask agent reach the steward**: the first packet of each run lists every
-`role: user, origin: typed, kind: question` workspace row sealed since the
-last completed run that sent a packet, with its `workspace:` ref and item
-title (`workspace_questions`), as statement candidates; replies are not
-listed (the inbox records a typed reply as a statement itself).
+`role: user, origin: typed, kind: question` workspace row sealed since
+packet 1 of the last completed run that sent packets last started an
+attempt (its `last_attempt_at`, when that prompt was assembled; never the
+run's `completed_at`, which would lose a question sealed while it worked),
+with its `workspace:` ref and item title (`workspace_questions`), as
+statement candidates. A row a statement already cites is left out; at most
+the newest 40 are listed, and the block says how many older ones did not
+fit. Replies are not listed (the inbox records a typed reply as a
+statement itself).
 
 **Verbs** (exit codes as contract §4.6): `attention answer` (0 recorded; 2
 unknown or closed; 3 refused downstream; 10 held; 64 usage), `attention
