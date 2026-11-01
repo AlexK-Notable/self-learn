@@ -59,6 +59,7 @@ __all__ = [
     "kill_child",
     "read_sidecar",
     "run_kill_ladder",
+    "sweep_orphan",
     "sweep_orphans",
     "write_sidecar",
 ]
@@ -179,6 +180,22 @@ def sweep_orphans(surface: str, log: Callable[[str], None]) -> None:
     children.sweep_orphans(
         worker.cache_dir(),
         surface,
+        log,
+        pid_alive=worker._pid_alive,
+        messages=CLI_SHUTDOWN_MESSAGES,
+    )
+
+
+def sweep_orphan(surface: str, session_key: str, log: Callable[[str], None]) -> None:
+    """`K-5` for ONE keyed sidecar (2026-10-31, the ask agent): delegates
+    to the library's single-sidecar sweep the way :func:`sweep_orphans`
+    does, so a session that sweeps before it starts never clears a running
+    sibling's sidecar or a host job's. `worker.cache_dir()` and
+    `worker._pid_alive` are both looked up at CALL time."""
+    children.sweep_orphan(
+        worker.cache_dir(),
+        surface,
+        session_key,
         log,
         pid_alive=worker._pid_alive,
         messages=CLI_SHUTDOWN_MESSAGES,
