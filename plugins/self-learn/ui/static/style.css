@@ -3142,6 +3142,17 @@ table.health-table td.health-rule {
 .run-seg-later { fill: var(--run-later); background: var(--run-later); }
 .run-seg-kept { fill: var(--run-kept); background: var(--run-kept); }
 .run-seg-other { fill: var(--run-other); background: var(--run-other); }
+/* Refused by the ledger: the status colour for "serious", always with its
+   words beside it (gate r1 MAJOR 1). */
+.run-seg-refused { fill: var(--slu-danger); background: var(--slu-danger); }
+
+.answered-q {
+  color: var(--slu-fg-muted);
+}
+
+.rv-callout-asked {
+  background: var(--slu-bg-raised);
+}
 
 .run-legend {
   list-style: none;

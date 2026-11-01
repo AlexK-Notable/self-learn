@@ -1,0 +1,18 @@
+{# One case told once, for a nightly review's "Why?" (GET /inbox/case/<id>;
+   humane UI lane 3, gate r1; gate r2 NIT C/D): Question, Decision worded as
+   its line words it, Because without ids or line references, and the case
+   file as written folded. Everything here passed redact_text (MINOR A). The
+   ids stay on the line, outside this panel. An error is said in words, its
+   raw text folded for an agent. #}
+{% if case %}
+<div class="run-case" data-run-case="{{ case.id }}">
+  {% if case.question %}<p><strong>Question:</strong> {{ case.question }}</p>{% endif %}
+  {% if case.not_done %}<p data-run-case-decision><strong>Decision:</strong> {{ not_done_words.get(case.not_done, not_done_fallback) }}{% if case.verb %} · it was to be: {{ verb_words.get(case.verb, case.verb) }}{% endif %}{% if case.confidence %} ({{ confidence_words.get(case.confidence, case.confidence) }}){% endif %}</p>
+  {% elif case.verb %}<p data-run-case-decision><strong>Decision:</strong> {{ verb_words.get(case.verb, case.verb) }}{% if case.confidence %} ({{ confidence_words.get(case.confidence, case.confidence) }}){% endif %}</p>{% endif %}
+  {% if case.because %}<p><strong>Because:</strong> {{ case.because }}</p>{% endif %}
+  <details class="ws-ev ws-case-file"><summary>The case file as written</summary><pre class="ws-pre">{{ case.excerpt }}</pre></details>
+</div>
+{% else %}
+<p class="ws-meta" data-run-case-error>The case could not be opened.</p>
+{% if case_error %}<details class="ws-ids"><summary>What went wrong, for an agent</summary><code>{{ case_error }}</code></details>{% endif %}
+{% endif %}

@@ -388,16 +388,47 @@ def test_scheduled_in_short_is_none_without_the_section():
 
 
 def test_a_nightly_reviews_in_short_is_counted_in_words():
-    """Mutation: count every verb under `use` (lane 3's M24) shows here as
-    the wrong split; a zero group must not appear."""
-    words = attention_packet.counted_in_short({"use": 9, "no": 4, "later": 3, "kept": 11})
-    assert words == ("Put 9 lessons to use, turned 4 down and left 3 for later. "
-                     "11 were looked at and kept as they are.")
+    """Gate r1 MINOR 4: one unit, decisions, so the total is the title's;
+    the not-carried-out group is said apart. Mutations: count every verb
+    under `use` -> red; say a zero group -> red; leave the refused group
+    out of the total -> red."""
+    words = attention_packet.counted_in_short(
+        {"use": 9, "no": 4, "later": 3, "kept": 11, "refused": 2})
+    assert words == ("29 decisions: 9 put to use, 4 turned down, 3 left for later and 11 "
+                     "looked at and kept as they are. 2 were not carried out, so nothing "
+                     "changed for them.")
     words = attention_packet.counted_in_short({"use": 0, "no": 1, "later": 0, "kept": 0},
                                               hooks_on=2)
-    assert words == "Turned 1 lesson down. It turned on 2 warnings that run before matching commands."
+    assert words == ("1 decision: 1 turned down. It turned on 2 warnings that run before "
+                     "matching commands.")
     assert "for later" not in words and "to use" not in words
-    assert attention_packet.counted_in_short({}) == "No lessons were decided."
+    assert attention_packet.counted_in_short({}) == "The run's record lists no decisions."
+
+
+def test_the_counted_total_is_the_titles_count_with_a_parked_case(tmp_path, monkeypatch):
+    """Gate r1 MINOR 4, live: a run with 14 decided lessons and 15 cases
+    (one parked) read "14 lessons decided" over a box totalling 15. The
+    title and the box now count the same cases."""
+    from self_learn.attention import plural  # noqa: F401 -- the title's own helper
+    import re as _re
+
+    from support import make_home as _mk
+
+    h = _mk(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(h))
+    runs = h / "cases" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    cases_ids = [f"case-0000{n:04x}" for n in range(3)]
+    (runs / "run-a.json").write_text(json.dumps({
+        "actor": "steward", "run_id": "run-a", "started_at": "2026-10-31T03:00:00Z",
+        "completed_at": "2026-10-31T03:10:00Z", "decided": ["lrn-00000001", "lrn-00000002"],
+        "cases": {c: {"phase": "applied"} for c in cases_ids}}), encoding="utf-8")
+    items = [i for i in attention.collect(h, all_items=True) if i["kind"] == "decided.steward-run"]
+    assert len(items) == 1
+    packet = attention_packet.build(h, items[0]["id"])
+    title_n = int(_re.search(r": (\d+) decision", items[0]["title"]).group(1))
+    box_n = int(_re.match(r"(\d+) decision", packet["run"]["in_short"]).group(1))
+    assert title_n == box_n == 3
 
 
 # ----------------------------------------- the week's review, in counts

@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-__all__ = ["HEADING_RE", "parse_heading", "run_facts"]
+__all__ = ["HEADING_RE", "QUESTION_ID_RE", "parse_heading", "question_states", "run_facts"]
 
 #: The report's first line, as the overseer runner writes it.
 HEADING_RE = re.compile(
@@ -32,6 +32,9 @@ HEADING_RE = re.compile(
     r"(?:\s+model\s+(?P<model>\S+))?\s*$"
 )
 _RUN_ID_RE = re.compile(r"^[0-9a-f]{6,16}$")
+#: A question's id as a report's "Questions for you" bullet opens with it:
+#: an ask (``q-…``) or a reading's revision (``um-…@r1``).
+QUESTION_ID_RE = re.compile(r"^(?:q-[a-z0-9-]+|um-[0-9a-z]+@r\d+)$")
 
 
 def parse_heading(text: str | None) -> dict[str, str | None] | None:
@@ -112,3 +115,66 @@ def run_facts(home: Path | str, run_id: str | None) -> dict[str, Any] | None:
         "no_verdict": _int(review.get("no_verdict")),
         "findings_dropped": _int(review.get("findings_dropped")),
     }
+
+
+def question_states(home: Path | str, ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Where each question a report asked stands now (gate r1 MINOR 6), so an
+    old report never invites answering a question settled weeks ago:
+
+    - ``open``: still in the overseer's index and not answered
+      (``overseer.conversation``'s own rule);
+    - ``answered``: the person's latest words recorded as answering it
+      (a statement whose ``answers.ref`` is the id), with ``answer`` (their
+      words, verbatim) and ``at``; or their option click (a choice row), with
+      ``answer`` the option's label when the row has one;
+    - ``closed``: neither -- no longer asked, and no answer on record.
+
+    Read-only; a store that cannot be read leaves a question ``closed``
+    rather than inventing an answer, except that the index is read first,
+    so a question still open is never shown as settled."""
+    home = Path(home)
+    wanted = [i for i in ids if isinstance(i, str) and QUESTION_ID_RE.match(i)]
+    out: dict[str, dict[str, Any]] = {i: {"state": "closed", "answer": None, "at": None}
+                                      for i in wanted}
+    if not wanted:
+        return out
+    try:
+        from .overseer import conversation
+
+        rows = conversation._load_questions(home)  # noqa: SLF001
+        open_rows, _answered = conversation._unanswered(  # noqa: SLF001
+            home, [r for r in rows if r.get("id") in out])
+        still_open = {str(r.get("id")) for r in open_rows}
+    except Exception:  # noqa: BLE001 -- an unreadable index opens nothing
+        still_open = set()
+    try:
+        from . import statements
+
+        said = statements.list_statements(home)
+    except Exception:  # noqa: BLE001
+        said = []
+    for row in said:
+        answers = row.get("answers")
+        ref = answers.get("ref") if isinstance(answers, dict) else None
+        if ref in out and isinstance(row.get("verbatim"), str):
+            at = row.get("at") if isinstance(row.get("at"), str) else None
+            if out[ref]["at"] is None or (at or "") >= str(out[ref]["at"]):
+                out[ref].update(state="answered", answer=row["verbatim"], at=at)
+    try:
+        from .overseer import conversation
+
+        chose = conversation.choice_rows(home)
+    except Exception:  # noqa: BLE001
+        chose = []
+    for row in chose:
+        answers = row.get("answers")
+        ref = answers.get("ref") if isinstance(answers, dict) else None
+        q_id = ref if ref in out else row.get("subject") if row.get("subject") in out else None
+        if q_id is None or out[q_id]["state"] == "answered":
+            continue
+        label = row.get("label") if isinstance(row.get("label"), str) else None
+        out[q_id].update(state="answered", answer=label,
+                         at=row.get("at") if isinstance(row.get("at"), str) else None)
+    for q_id in still_open:
+        out[q_id].update(state="open")
+    return out

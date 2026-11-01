@@ -15,7 +15,7 @@
   {% set decided = groups.get("decided", []) %}
   {% for section in sections %}
   {% set count = section.rows | length %}
-  <h2 class="inbox-group-h" id="inbox-{{ section.key }}-h">{{ section.title }}{% if section.key == "needs-you" and count %} ({{ count }}){% endif %}</h2>
+  <h2 class="inbox-group-h" id="inbox-{{ section.key }}-h">{{ section.title }}{% if section.key in ("needs-you", "approved") and count %} ({{ count }}){% endif %}</h2>
   {% if section.rows %}
   <ul class="inbox-items" aria-labelledby="inbox-{{ section.key }}-h" data-group="{{ section.key }}">
     {% for row in section.rows %}
