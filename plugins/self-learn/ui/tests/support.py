@@ -27,6 +27,7 @@ from self_learn.ledger_ops import (
     write_proposal,
 )
 from self_learn.records import Record
+from self_learn.settings import AGENT_CALLER_MARKERS
 
 from self_learn_ui.runner import FakeRunner, RunResult
 
@@ -98,6 +99,13 @@ def make_env(tmp_path: Path, *, skills: tuple[str, ...] = ("s",)) -> SandboxEnv:
     runtime_dir.mkdir()
 
     env = dict(os.environ)
+    # A person's shell unless a test says so (the CLI suite's convention,
+    # e.g. `test_cures_b.py`): a suite run from an agent's shell would
+    # otherwise hand the real `self-learn` binary the harness's markers,
+    # and a verb that needs `--note` from an agent (S-102's `defer`) exits
+    # 64 for the runner, not for the code under test.
+    for marker in AGENT_CALLER_MARKERS:
+        env.pop(marker, None)
     env["XDG_CACHE_HOME"] = str(cache_home)
     env["XDG_RUNTIME_DIR"] = str(runtime_dir)
     env["SELF_LEARN_HOME"] = str(ledger)
