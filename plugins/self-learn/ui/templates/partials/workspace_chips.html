@@ -1,0 +1,14 @@
+{# The chips under the workspace's title: where the item is (Needs you,
+   Being carried out, Decided), how long it has been open, and the new
+   mark. Its own partial (walk 2, D3) so an answer or a login check can
+   redraw it out of band: the top of the page then says where the item is
+   now, never the state before the answer. `chipset` is the item (or the
+   item it moved to), or a plain {class, chip} for an item that left. #}
+<p id="ws-chips" class="ws-chips"{% if chipset_oob %} hx-swap-oob="true"{% endif %} data-chips="{{ chipset.class }}">
+  <span class="chip chip-{{ chipset.class }}">{{ chipset.chip }}</span>
+  {% if chipset.class == "needs-you" and chipset.age %}<span class="ws-age">open {{ chipset.age }}</span>{% endif %}
+  {# Walk fixes, item 8: the same mark, with the same word, as the item's
+     row in the list; inbox.js drops both together once the seen click is
+     recorded. #}
+  {% if chipset.class == "decided" and chipset.seen is defined and not chipset.seen %}<span class="dot-new" data-new-mark>{% if chipset.flagged %}new{% else %}unseen{% endif %}</span>{% endif %}
+</p>

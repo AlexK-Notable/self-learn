@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import markupsafe
 
-from self_learn_ui import inbox_routes, ledger, rendering
+from self_learn_ui import inbox_routes, keymap, ledger, rendering
 from self_learn_ui.runner import FakeRunner, RunResult
 
 from test_inbox import (  # noqa: F401 -- person is an autouse fixture
@@ -56,11 +56,13 @@ def _answers(runner) -> list[list[str]]:
 # ------------------------------------------------------------ item 1: keys
 
 
-def test_a_key_on_an_approve_option_arms_it_and_a_click_sends_it(tmp_path, monkeypatch):
+def test_a_key_on_an_approve_option_arms_it_and_a_click_arms_it_too(tmp_path, monkeypatch):
     """Walk item 1: `keyed=1` (inbox.js sets it for a number key) on an
     approve option arms it with words that say it approves, and runs no
-    verb; the same option clicked (no `keyed`) is sent at once (design r2
-    §0 call 3). Mutation: ignore `keyed` -> red (the key approves)."""
+    verb. Walk 2 (D1, revising design r2 §0 call 3): the same option
+    clicked (no `keyed`) arms too; only Confirm sends. Mutations: ignore
+    `keyed` -> red (the key approves); a click on an approve option sends
+    at once (the old rule) -> red."""
     runner = FakeRunner(_OK)
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7), {ID_OO7: OO7_PACKET}),
                              runner=runner)
@@ -71,17 +73,30 @@ def test_a_key_on_an_approve_option_arms_it_and_a_click_sends_it(tmp_path, monke
     assert 'name="confirm" value="1"' in keyed.text
     assert _answers(runner) == []
 
-    client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX)
+    clicked = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX)
+    assert "data-armed-answer" in clicked.text and "approves this change" in clicked.text
+    assert "a key never" not in clicked.text  # a click says nothing about a key
+    assert _answers(runner) == []
+    client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes", "confirm": "1"}, headers=HX)
     assert _answers(runner) == [["attention", "answer", ID_OO7, "--option", "opt-yes", "--json"]]
 
 
-def test_a_key_on_a_decline_option_still_sends_it(tmp_path, monkeypatch):
-    """Only approve and register options arm on a key. Mutation: arm every
-    keyed option -> red."""
+def test_a_key_on_a_decline_option_arms_it_and_a_click_sends_it(tmp_path, monkeypatch):
+    """Walk 2 (D2): a key never settles anything, so a key on a plain "No"
+    arms it too, in words that say what it does; (D1) a mouse click on the
+    same ordinary answer still sends at once. Mutations: arm only approve
+    and register keys (the old rule) -> red; arm every click -> red."""
     runner = FakeRunner(_OK)
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7), {ID_OO7: OO7_PACKET}),
                              runner=runner)
-    client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-no", "keyed": "1"}, headers=HX)
+    keyed = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-no", "keyed": "1"},
+                        headers=HX)
+    words = markupsafe.Markup(keyed.text).unescape()
+    assert "data-armed-answer" in words  # control: the armed panel rendered
+    assert "“No, keep the manual note”: nothing will be changed" in words
+    assert "a key never answers on its own" in words
+    assert _answers(runner) == []
+    client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-no"}, headers=HX)
     assert _answers(runner) == [["attention", "answer", ID_OO7, "--option", "opt-no", "--json"]]
 
 
@@ -92,11 +107,13 @@ def test_the_key_hints_say_approve_and_register_plainly(tmp_path, monkeypatch):
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7, REGISTER), {ID_OO7: OO7_PACKET}))
     oo7 = _bar(client.get(f"/inbox/{ID_OO7}").text)
     assert "data-key-hints" in oo7  # control
-    assert "<kbd>1</kbd> approve: Yes, add the binding (asks you to confirm first)" in oo7
+    assert "<kbd>1</kbd> approve: Yes, add the binding" in oo7
     assert "<kbd>3</kbd> No, keep the manual note" in oo7
+    # Walk 2 (D2, D4): every key only arms, and the hints say the panel's steps.
+    assert "A key only arms its option." in oo7 and keymap.ARMED_HOW in oo7
     assert 'data-effect="approve"' in oo7 and 'data-effect="decline"' in oo7
     reg = _bar(client.get(f"/inbox/{ID_REGISTER}").text)
-    assert "<kbd>1</kbd> register: Yes, register it (asks you to confirm first)" in reg
+    assert "<kbd>1</kbd> register: Yes, register it" in reg
 
 
 # ------------------------------------------------------------ item 2: provenance
@@ -190,8 +207,16 @@ def test_words_sent_alone_are_offered_as_the_required_note(tmp_path, monkeypatch
     assert "stay recorded as your words" in refused.text
     assert len(_answers(runner)) == 1
 
+    # Walk 2 (D1): the option approves, so it asks once more, quoting the
+    # words that go with it; Confirm sends them by reference.
+    armed = client.post(f"/inbox/{ID_OO7}/answer",
+                        data={"option": "opt-yes-conditions", "words_from": "4", "sent_t": "4"},
+                        headers=HX)
+    assert "data-armed-answer" in armed.text and len(_answers(runner)) == 1
+    assert 'name="words_from" value="4"' in armed.text
     client.post(f"/inbox/{ID_OO7}/answer",
-                data={"option": "opt-yes-conditions", "words_from": "4", "sent_t": "4"}, headers=HX)
+                data={"option": "opt-yes-conditions", "words_from": "4", "sent_t": "4",
+                      "confirm": "1"}, headers=HX)
     assert _answers(runner)[-1] == ["attention", "answer", ID_OO7, "--option", "opt-yes-conditions",
                                     "--words-from", "4", "--json"]
 
@@ -259,7 +284,7 @@ def test_undo_says_what_it_did_in_words_and_redraws_what_it_changes_now(tmp_path
 
     client, runner, *_ = make_client(tmp_path, monkeypatch, reads, runner=Undo(RunResult(
         0, stdout="attention undo: hook deactivate lrn-9b4bb8f0")))
-    resp = client.post(f"/inbox/{ID_HOOK}/undo", headers=HX)
+    resp = client.post(f"/inbox/{ID_HOOK}/undo", data={"confirm": "1"}, headers=HX)
     bar = _bar(resp.text)
     main = bar.split("<details")[0]
     assert "data-undone" in main  # control
@@ -477,8 +502,12 @@ def test_an_approve_option_carried_by_a_draft_arms_whatever_sent_it(tmp_path, mo
     assert "data-armed-answer" in keyed.text and "a key never approves on its own" in keyed.text
     assert _answers(runner) == []
 
-    # The option's own button, clicked with no draft, still sends at once.
-    client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX)
+    # Walk 2 (D1): the option's own button, clicked with no draft, arms
+    # too, in its own words (not the draft's); Confirm sends it.
+    clicked = markupsafe.Markup(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"},
+                                            headers=HX).text).unescape()
+    assert "data-armed-answer" in clicked and "The agent's draft is sent" not in clicked
+    client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes", "confirm": "1"}, headers=HX)
     assert _answers(runner)[-1] == ["attention", "answer", ID_OO7, "--option", "opt-yes", "--json"]
 
 
@@ -598,8 +627,8 @@ def test_an_approvals_own_launch_finding_its_terminal_open_is_a_plain_status(tmp
         runner = FakeRunner(RunResult(0, stdout=stdout))
         client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7), {ID_OO7: OO7_PACKET}),
                                  runner=runner)
-        return _bar(client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"},
-                                headers=HX).text)
+        return _bar(client.post(f"/inbox/{ID_OO7}/answer",
+                                data={"option": "opt-yes", "confirm": "1"}, headers=HX).text)
 
     plain = answered(False)
     assert message in plain and "error-strip" in plain  # control: the old rendering

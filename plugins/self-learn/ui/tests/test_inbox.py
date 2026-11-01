@@ -291,11 +291,16 @@ def test_an_unseen_item_marks_itself_seen_after_one_second(tmp_path, monkeypatch
 
 
 def test_an_option_click_runs_answer_with_the_option(tmp_path, monkeypatch):
+    """Walk 2 (D1): an approve option asks once more even on a click; its
+    Confirm runs the verb with the option."""
     runner = FakeRunner(RunResult(0, stdout='{"item": "x", "state": "approved", '
                                             '"recorded_as": "as your choice of the offered option"}'))
     client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7), {ID_OO7: OO7_PACKET}),
                              runner=runner)
-    resp = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX)
+    first = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX)
+    assert "data-armed-answer" in first.text and runner.calls == []
+    resp = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes", "confirm": "1"},
+                       headers=HX)
     assert resp.status_code == 200
     assert runner.calls[0][:5] == ["attention", "answer", ID_OO7, "--option", "opt-yes"]
     assert "--text-file" not in runner.calls[0]
@@ -676,7 +681,8 @@ def test_an_approval_that_moves_the_item_on_links_to_it_and_offers_no_old_option
     runner = Moves(RunResult(0, stdout='{"state": "running", "recorded_as": "as your choice of the offered option", '
                                        '"run": {"exit": 0, "message": "Launched in a terminal."}}'))
     client, *_ = make_client(tmp_path, monkeypatch, reads, runner=runner)
-    resp = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX)
+    resp = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes", "confirm": "1"},
+                       headers=HX)
     assert "data-recorded" in resp.text and "Launched in a terminal." in resp.text  # control
     assert "data-answer-closed" in resp.text and f'href="/inbox/{ID_APPROVED}"' in resp.text
     answer_bar = resp.text[: resp.text.index('id="inbox-list"')]
@@ -727,7 +733,8 @@ def test_an_approval_whose_launch_found_no_terminal_offers_run_it_now_for_the_su
     runner = Moves(RunResult(0, stdout=_json.dumps({
         "state": "approved", "recorded_as": "as your choice of the offered option", "run": run})))
     client, *_ = make_client(tmp_path, monkeypatch, reads, runner=runner)
-    resp = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes"}, headers=HX)
+    resp = client.post(f"/inbox/{ID_OO7}/answer", data={"option": "opt-yes", "confirm": "1"},
+                       headers=HX)
     assert "data-answer-closed" in resp.text and "No terminal was found" in resp.text  # control
     assert f'hx-post="/inbox/{ID_APPROVED}/run"' in resp.text and "data-run-now" in resp.text
     assert f'hx-post="/inbox/{ID_OO7}/run"' not in resp.text

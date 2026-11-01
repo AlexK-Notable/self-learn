@@ -32,7 +32,8 @@
   {% endif %}
   <div class="inbox-list-actions">
     {% if decided %}
-    <button type="button" class="btn btn-quiet" data-inbox-action="seen_all"
+    <button type="button" class="btn btn-quiet" data-inbox-action="seen_all" data-arm="local"
+            data-arm-says="It marks every decided item as seen, so their new marks go."
             hx-post="/inbox/seen-all" hx-vals='{"selected": "{{ selected_id or '' }}"}'
             hx-target="#inbox-list" hx-swap="outerHTML">Mark all seen</button>
     {% endif %}

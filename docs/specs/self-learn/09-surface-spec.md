@@ -531,7 +531,7 @@ section records what the surface is.
   on a plan with sudo steps (it lists the sudo commands), and *(S-130,
   item 1)* an approve option chosen by its number key (`keyed=1`: a key
   never approves on its own; a mouse click on the same button still
-  sends at once, design r2 §0 call 3), and *(gate r1 F2)* an approve
+  sends at once, design r2 §0 call 3; revised by D1 below: a click on it arms too), and *(gate r1 F2)* an approve
   option carried by the agent's draft rather than by a click on that
   option's own button (`from_draft=1`: Send, `Ctrl+Enter`, or a draft
   card's "Send the draft as is"; the armed line says that sending the
@@ -545,7 +545,43 @@ section records what the surface is.
   tell the option, it says so in words ("click that option's own button
   to choose it, then confirm"), never the verb's flag. Under the options a key hint gives
   each number key and what it does, "approve: …" or "register: …" in
-  words for such options. *(Gate r1 F1.)* On an armed bar only its own
+  words for such options. *(S-134, the orchestrator's
+  decisions D1-D7, not the user's; evidence: the two source-blind walks,
+  `misc/build-2026-10-31c/walk-attention.md` and
+  `misc/build-2026-11-01/walk2-attention.md`. They revise design r2 §0
+  call 3 and S-130 where these differ.)* **D1.** A consequential answer
+  asks once more whatever input sent it, a mouse click included: an
+  approve or register option (and a `confirm` one), and any answer that
+  withdraws or declines approved work being carried out
+  (`inbox_routes.consequential`); the armed line says in plain words what
+  will happen ("“Yes, add the binding” approves this change: an agent then
+  carries it out in a terminal you can see."; "… withdraws your approval:
+  nothing will be carried out …") and quotes the note that goes with it.
+  An undo that turns something off or reverses an applied change
+  (`decided.hook-activated`, `decided.registration`, `decided.grant-use`,
+  `decided.skill`; `inbox_routes.UNDO_ARMS`) arms on a click too, and so
+  does its redo, which re-applies the change; a withdrawn ask's "Ask me
+  anyway" only puts a question back and stays one click. Ordinary answers
+  stay one click: a plain No, a conflict's side, an answer on a decided
+  item, words. **D2.** A key never settles anything: every number key,
+  `u` and `s` only arms. An option the route would answer (an answer, an
+  undo, Stop it) is pressed with `keyed=1` and the route arms any of them;
+  one it would run at once (a login terminal, Check now, a fix, Mark all
+  seen; `data-arm="local"`) is armed on the page in the same panel, with
+  the same words (`data-arm-says`). `Ctrl+Enter` arms words that would
+  settle the item (an item with no plan, a decided item), never words on
+  an item with a plan or on work being carried out, which decide nothing.
+  No key's auto-repeat acts (`j`/`k` aside), `Ctrl+Enter`'s included.
+  **D4 (the builder's choice of the two offered).** Focus on arming stays
+  on Cancel (S-130's rule: the page never moves focus onto an approve or
+  register option, nor onto Confirm); every armed panel puts Cancel
+  first, so Tab from Cancel reaches Confirm, and Enter there sends;
+  Escape cancels any armed panel. One string, `keymap.ARMED_HOW`
+  ("Nothing is sent until you confirm: press Tab to reach Confirm, then
+  Enter (or click Confirm). Escape or Cancel goes back."), is printed
+  under every armed panel and in the inbox's own `?` intro
+  (`keymap.INBOX_HELP_INTRO`; the review pages keep theirs), and the
+  footer's labels say the same steps. *(Gate r1 F1.)* On an armed bar only its own
   Confirm button goes ahead (a click, or `Enter`/`Space` with it
   focused); no number key confirms or does anything there, a held key's
   auto-repeat never acts, and the armed bar says so. *(Gate r1 F3, the
@@ -578,6 +614,67 @@ section records what the surface is.
   options; if that approval's launch found no terminal, a retry is
   offered for the item it moved to. Verb sentences show their times in
   words ("started just now"), the exact instant on hover.
+  *(S-134, D3.)* The receipt names the decision and what
+  happens next ("You answered “No, keep the manual note”: nothing will be
+  changed; the overseer reads this on its next run."; a conflict's says
+  which statement now holds; an approval's what the work is doing now),
+  from the same sentences the armed line uses (`answer_next`,
+  `answer_receipt`), quotes the words sent, and gives the verb's own
+  `recorded_as` (never a line written in the template: walk 2's "Recorded
+  as your words" for the agent's draft sent as is was that, D5). The top
+  of the page re-reads out of band: the chips (`#ws-chips`: "Answered",
+  or where the item went) and, for an item the answer moved on,
+  "Meanwhile"; a login check that works redraws the chip too. While the
+  answer can still change, the receipt offers **Change my answer**: for
+  an approval, the work being carried out (its other options are there
+  until a session claims it); for an answered ask still in the overseer's
+  index (`ledger.answered_item`), `GET /inbox/<id>/change` brings its
+  options back, and the next answer replaces it. *(D6.)* A `note:
+  required` option clicked with an empty box offers the words last sent
+  alone on the item, whatever sent them (Send, `Ctrl+Enter`, a draft
+  card, a visit before a reload): `sent_t` when the bar carries it, else
+  the item's newest answer row when it holds words (with an option too: gate r1 F4 below); the
+  person's typed words by reference (`--words-from`), the agent's draft
+  they sent again with its draft id, so it stays the agent's. "Your text
+  is kept in the box" is said only when the box held text. *(D7.)* The
+  result of an act is brought into view (scrolled to the nearest edge):
+  the armed panel, the receipt, the refusal, a launch, fix or login
+  check's result, feedback's words; a login result at the top of the page
+  keeps the view. *(D5.)* The carried-out page labels the conditions by
+  `plan.conditions_how` ("Your conditions, in your words:", "Conditions,
+  the agent's draft, accepted by you:", "Conditions sent with the
+  approval:" when unknown), never the old "Your conditions:".
+  *(S-134, gate r1 fold.)* **F1.** A page showing a question that has
+  moved on (an old tab, an old link, "Change my answer") answers the item
+  that took it over, by its rules: the route looks the answered ask up
+  (`ledger.answered_item`, nothing while its subject is listed) and else
+  its successor (`ledger.ask_successor`); work being carried out takes
+  the answer (its claim turns its options off; a withdrawal arms and its
+  Confirm posts to that item), an approval is never sent again, and work
+  already carried out is never started over ("This change was already
+  carried out by an agent, so nothing was recorded …"); the answer verb
+  enforces the same (02 §3a.12). **F2.** A keyed send of the agent's
+  draft with no option (the page lost it: blocked storage, or a crafted
+  request) is armed by the option the server reads from the draft,
+  whatever its effect. **F3.** Every sentence about words sent names whose
+  they are by the recorded or previewed provenance: "the overseer reads
+  the agent's draft", "Send the agent's draft?", "The agent's draft is
+  sent as “X”", never "your words" for the agent's draft. **F4 (the
+  orchestrator's ruling).** Words the person typed with an option are
+  offered again for a note-required option (by reference, citing their
+  statement); the agent's draft sent with an option only with its draft
+  id.
+  *(S-134, gate r2 fold.)* **R2-F1.** On a page whose question has
+  moved on, a reused note, the agent's draft and the words sent alone
+  (`words_from`, `draft_id`, `sent_t`) are the old question's: the
+  first two are refused ("the note offered with this answer, sent on
+  the old question, cannot go with it. Nothing was recorded."), the
+  last is dropped, so the note offer is the new item's own. **R2-F2.**
+  The note offer walks back from the newest answer row to the first
+  that holds words, past a plain click; a row that reused words stands
+  for the typed row it cites (offered by that row's number, one
+  statement). The first row with words decides, so an agent's relayed
+  words are never passed over for older ones.
 - **Being carried out** shows "Running in a terminal (started <time>)",
   never with a relaunch while it runs *(S-130, item 7)*: a new
   terminal (`attention run --json`; the login variant passes `--login`)
@@ -675,8 +772,9 @@ section records what the surface is.
 - **Keys** (`INBOX_KEYMAP`, listed in the `?` overlay on inbox pages):
   `j`/`k`, `Enter`, `1`–`4`, `r`, `a`, `Ctrl+Enter`, `Esc`, `u`, `s`,
   `?`. They are inert while a text field has focus except `Ctrl+Enter`
-  and `Esc`. `1`–`4` arm an option that approves or registers instead of
-  sending it (S-130, item 1); on an armed bar they do nothing,
+  and `Esc`. `1`–`4`, `u` and `s` only arm their action, whatever it is
+  (S-134, D2; S-130 item 1 armed only approve and register);
+  `Esc` cancels an armed panel first (D4); on an armed bar they do nothing,
   their auto-repeat never acts, and `Ctrl+Enter` on a reply carrying such
   an option arms it too (gate r1 F1, F2). `Enter` opens the selected item only when nothing has
   focus; on a focused list link, button or `<summary>` it does what that

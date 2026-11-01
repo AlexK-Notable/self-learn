@@ -336,6 +336,35 @@ def answer_preview(home: Path, item_id: str, *, text: str | None, draft_id: str 
                 "problem": f"how it would be recorded could not be read ({exc})"}
 
 
+def answered_item(home: Path, *, item_id: str | None = None,
+                  subject: str | None = None) -> dict | None:
+    """Walk 2 (D3): an ask already answered whose answer can still be
+    changed (the CLI's ``attention_answers.answered_item``: still in the
+    overseer's index, latest answer wins), by item id or by the ask's
+    subject; ``None`` when there is none or it cannot be read. Read-only."""
+    from self_learn import attention_answers as sl_answers
+
+    try:
+        found = sl_answers.answered_item(home, item_id=item_id, subject=subject)
+    except Exception:  # noqa: BLE001 - an unreadable index offers no change
+        return None
+    return dict(found) if isinstance(found, dict) else None
+
+
+def ask_successor(home: Path, item_id: str) -> dict | None:
+    """Walk 2 gate r1 F1: the listed item that took over the answered ask
+    *item_id* (its approved item, the work being carried out, or what was
+    carried out; the CLI's ``attention_answers.ask_successor``), or
+    ``None``. Read-only."""
+    from self_learn import attention_answers as sl_answers
+
+    try:
+        found = sl_answers.ask_successor(home, item_id)
+    except Exception:  # noqa: BLE001 - an unreadable index names nothing
+        return None
+    return dict(found) if isinstance(found, dict) else None
+
+
 _REPORT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 

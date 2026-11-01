@@ -150,12 +150,13 @@ def test_words_sent_before_become_the_options_note_without_a_second_statement(tm
 
 
 def test_words_from_names_only_the_persons_own_reply(tmp_path, monkeypatch):
-    """A row that is not a typed reply without an option (an agent's
-    answer, a pasted reply, a typed note that already went with a choice),
-    a missing option, extra text, and an agent's shell are refused, and
-    nothing is recorded. Mutations: drop the origin check in
-    `_reused_words` -> red; drop its option check -> red (gate r1 F6, C6c);
-    drop the agent-shell refusal -> red."""
+    """A row that is not the person's typed reply (an agent's answer, a
+    pasted reply), a missing option, extra text, and an agent's shell are
+    refused, and nothing is recorded. Walk 2 gate r1 F4 (the orchestrator's
+    ruling) revised gate r1 F6 C6c of this lane: a typed note that went
+    with an option IS reusable (test_walkfix2.py). Mutations: drop the
+    origin check in `_reused_words` -> red; drop the agent-shell refusal
+    -> red."""
     home, item = _plan_item(tmp_path)
     _seal_agent(home, item, DRAFT)
     agent_t = max(r["t"] for r in workspace.rows(home, item["id"]))
@@ -164,21 +165,12 @@ def test_words_from_names_only_the_persons_own_reply(tmp_path, monkeypatch):
     pasted = answers.answer(home, item["id"], text=f"Fine. {DRAFT[:45]}")
     assert workspace.resolve(home, f"workspace:{item['id']}#T{pasted.transcript_row}")[
         "origin"] == "draft-edited"  # control
-    # The person's typed words that already went with a choice, as its
-    # note: they are that choice's, never offered again as a reply.
-    workspace.append(home, item["id"], [{"role": "user", "origin": "typed", "kind": "reply",
-                                         "text": "Only on weekdays.", "option": "opt-no"}],
-                     header={"item_kind": item["kind"], "subject": item["subject"],
-                             "title": item["title"]})
-    noted_t = max(r["t"] for r in workspace.rows(home, item["id"]))
-    assert workspace.resolve(home, f"workspace:{item['id']}#T{noted_t}")["option"] == "opt-no"
     words = answers.answer(home, item["id"], text="My own words.")
     before = (len(_stmts(home)), len(_choices(home)))
 
     for kwargs in (
         {"option": "opt-yes-conditions", "words_from": agent_t},
         {"option": "opt-yes-conditions", "words_from": pasted.transcript_row},
-        {"option": "opt-yes-conditions", "words_from": noted_t},
         {"option": "opt-yes-conditions", "words_from": 999},
         {"words_from": words.transcript_row},
         {"option": "opt-yes-conditions", "words_from": words.transcript_row, "text": "x"},
