@@ -53,6 +53,7 @@ __all__ = [
     "deny_paths",
     "denied_name",
     "filter_look_at",
+    "plain_reason",
     "redact_text",
     "render_md",
 ]
@@ -940,7 +941,11 @@ MAX_RUN_REASON_CHARS = 200
 MIN_REASON_CHARS = 60
 #: A case whose apply did not happen (the run record's ``phase``): its
 #: outcome is the steward's intent, never an effect (gate r1 MAJOR 1).
-NOT_CARRIED_OUT_PHASES = frozenset({"refused", "failed", "stopped"})
+#: ``unfinished`` is the steward's own phase for a case it will drive again;
+#: ``failed`` and ``stopped`` are taken as said, should a run ever write them.
+NOT_CARRIED_OUT_PHASES = frozenset({"refused", "unfinished", "failed", "stopped"})
+#: Why a decision was not carried out, as the row's ``not_done`` says it.
+NOT_DONE_REASONS = ("refused", "unfinished", "failed", "stopped", "not-attempted")
 #: The group a decision not carried out is counted in.
 REFUSED_GROUP = "refused"
 
@@ -955,7 +960,7 @@ _BARE_REF_WORDS = (
 _LINE_REF_RE = re.compile(r"\s*\b(?:at |on |in )?L\d{2,}(?:-L?\d+)?\b")
 
 
-def _plain_reason(text: str | None) -> str | None:
+def plain_reason(text: str | None) -> str | None:
     """*text* without its ids and transcript line references (gate r1 NIT 8):
     a parenthesis that holds one goes; a bare id reads as words ("an earlier
     case", "your statement"), a reading's id goes; "at L20505" goes. The
@@ -969,6 +974,9 @@ def _plain_reason(text: str | None) -> str | None:
     out = re.sub(r"\s+([,.;:])", r"\1", out)
     out = re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", out)
     return " ".join(out.split())
+
+
+_plain_reason = plain_reason
 
 
 def _first_sentence(text: str | None) -> str | None:
@@ -994,41 +1002,62 @@ def _clip_plain(text: str | None, limit: int) -> str | None:
     return text[: limit - 1].rstrip() + "…"
 
 
-def _carried_out(entry: object) -> bool:
-    """Whether the run record says a case's apply happened: not when its
-    ``phase`` is refused, failed or stopped, nor when its result applied
-    nothing and refused something."""
+def _not_done(entry: object) -> str | None:
+    """Why the run record says a case's apply did not happen, or ``None``
+    when it did (gate r2 NIT E): its ``phase`` (one of
+    :data:`NOT_CARRIED_OUT_PHASES`), or a result that applied nothing (and
+    found nothing already applied) while it refused, stopped or never
+    attempted something (``refused``, ``stopped``, ``not-attempted``)."""
     if not isinstance(entry, dict):
-        return True
-    if entry.get("phase") in NOT_CARRIED_OUT_PHASES:
-        return False
+        return None
+    phase = entry.get("phase")
+    if phase in NOT_CARRIED_OUT_PHASES:
+        return str(phase)
     result = entry.get("result")
     summary = result.get("summary") if isinstance(result, dict) else None
-    if isinstance(summary, dict):
-        applied, refused = summary.get("applied"), summary.get("refused")
-        if applied == 0 and isinstance(refused, int) and refused > 0:
-            return False
-    return True
+    if (isinstance(summary, dict) and summary.get("applied") == 0
+            and not summary.get("already_applied")):
+        for key, why in (("refused", "refused"), ("stopped", "stopped"),
+                         ("not_attempted", "not-attempted")):
+            count = summary.get(key)
+            if isinstance(count, int) and count > 0:
+                return why
+    return None
 
 
-def _fit_run(rows: list[dict]) -> int:
+def _carried_out(entry: object) -> bool:
+    """Whether the run record says a case's apply happened."""
+    return _not_done(entry) is None
+
+
+def _fit_run(rows: list[dict]) -> dict[str, int]:
     """Shorten the rows in place until they take at most
     :data:`MAX_RUN_BYTES`: reasons to 120 characters, then titles to 100,
-    then reasons to 60, then titles to 60, then no reasons; and if that is
-    still too much (a run of very many cases), drop rows from the end.
-    Returns how many rows were dropped; the counts still cover them."""
+    then reasons to 60, then titles to 60, then no reasons. If that is still
+    too much (a run of very many cases), drop rows -- always the last row of
+    the group with the most rows (a tie spares the decisions not carried
+    out), and never a group's last row, so every group keeps a line (gate r2
+    MINOR B). Returns how many rows of each group were dropped; the counts
+    still cover them."""
     def size() -> int:
         return len(json.dumps(rows, ensure_ascii=False).encode("utf-8"))
 
+    dropped: dict[str, int] = {}
     for key, limit in (("reason", 120), ("title", 100), ("reason", 60), ("title", 60), ("reason", 0)):
         if size() <= MAX_RUN_BYTES:
-            return 0
+            return dropped
         for row in rows:
             row[key] = None if limit == 0 else _clip_plain(row.get(key), limit)
-    dropped = 0
     while rows and size() > MAX_RUN_BYTES:
-        rows.pop()
-        dropped += 1
+        sizes: dict[str, int] = {}
+        for row in rows:
+            sizes[str(row.get("group"))] = sizes.get(str(row.get("group")), 0) + 1
+        group = max(sizes, key=lambda g: (sizes[g], g != REFUSED_GROUP))
+        if sizes[group] <= 1:
+            break  # one line per group stays, whatever the budget
+        index = max(i for i, row in enumerate(rows) if str(row.get("group")) == group)
+        rows.pop(index)
+        dropped[group] = dropped.get(group, 0) + 1
     return dropped
 
 
@@ -1039,8 +1068,11 @@ def _run_decisions(home: Path, item: dict, limits: _Limits) -> dict | None:
     agree), each with the lesson it is about, its outcome verb and that
     verb's group (:data:`self_learn.series.OUTCOME_GROUPS`), and the opening
     of its reason in plain words; plus the count per group. A case the run
-    record says was not carried out (refused by the ledger) is counted under
-    :data:`REFUSED_GROUP`, never under the group of what it meant to do.
+    record says was not carried out (:func:`_not_done`) is counted under
+    :data:`REFUSED_GROUP`, never under the group of what it meant to do, and
+    its row says why (``not_done``). Rows not carried out come first; when
+    the block is too big, :func:`_fit_run` drops rows from the largest group
+    and ``omitted_groups`` says how many of each group are not listed.
     Read from the run's manifest and its committed case files; counted,
     never modelled; at most :data:`MAX_RUN_BYTES`. ``None`` for any other
     item."""
@@ -1056,7 +1088,7 @@ def _run_decisions(home: Path, item: dict, limits: _Limits) -> dict | None:
     try:
         manifest = json.loads(Path(str(manifest_path)).read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
-        return {"decisions": [], "counts": counts, "other": 0, "omitted": 0,
+        return {"decisions": [], "counts": counts, "other": 0, "omitted": 0, "omitted_groups": {},
                 "error": "the run's record could not be read"}
     recipes = manifest.get("cases") if isinstance(manifest, dict) else None
     recipes = recipes if isinstance(recipes, dict) else {}
@@ -1072,7 +1104,8 @@ def _run_decisions(home: Path, item: dict, limits: _Limits) -> dict | None:
         decision = _sections(body).get("Decision")
         verb = frontmatter.get("outcome") if isinstance(frontmatter.get("outcome"), str) else None
         verb = verb or _line_value(decision, "verb")
-        carried = _carried_out(recipes.get(case_id))
+        not_done = _not_done(recipes.get(case_id))
+        carried = not_done is None
         group = group_of.get(verb or "") if carried else REFUSED_GROUP
         if group is None:
             other += 1
@@ -1092,12 +1125,16 @@ def _run_decisions(home: Path, item: dict, limits: _Limits) -> dict | None:
             "verb": verb,
             "group": group,
             "carried_out": carried,
+            "not_done": not_done,
             "reason": _clip_plain(redact_text(reason) if reason else None, MAX_RUN_REASON_CHARS),
         })
-    order = {g: i for i, g in enumerate([*OUTCOME_GROUPS, REFUSED_GROUP])}
+    # Gate r2 MINOR B: what was not carried out comes first, where a person
+    # sees it without opening "Show all".
+    order = {g: i for i, g in enumerate([REFUSED_GROUP, *OUTCOME_GROUPS])}
     rows.sort(key=lambda r: (order.get(str(r["group"]), len(order)), str(r["case"])))
-    omitted = _fit_run(rows)
-    return {"decisions": rows, "counts": counts, "other": other, "omitted": omitted, "error": None}
+    dropped = _fit_run(rows)
+    return {"decisions": rows, "counts": counts, "other": other,
+            "omitted": sum(dropped.values()), "omitted_groups": dropped, "error": None}
 
 
 def _pointers(home: Path, item: dict) -> list[dict]:

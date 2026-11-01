@@ -277,3 +277,72 @@ def test_question_states_say_where_each_question_stands(tmp_path, monkeypatch):
     assert states["q-still"]["state"] == "open"
     assert states["q-gone"] == {"state": "closed", "answer": None, "at": None}
     assert "not an id" not in states
+
+
+# ------------------------------------------------------------ gate r2 fold
+
+
+def test_a_decision_not_carried_out_says_why_and_comes_first(tmp_path, monkeypatch):
+    """Gate r2 NIT E and MINOR B: a result that applied nothing while it
+    stopped or never attempted something is not done, nor is a case the
+    steward left unfinished; a result that found its change already there is
+    done. Each row says why (`not_done`), and the rows not carried out sort
+    before every other group. Mutations: drop the `stopped` key -> red; drop
+    `unfinished` from the phases -> red; count `already_applied` as nothing
+    done -> red; sort the not-done rows last -> red."""
+    ledger, case_ids = _run_world(
+        tmp_path, monkeypatch, ("reject", "route", "route", "route", "route", "route"), phases={
+            1: {"phase": "refused"},
+            2: {"result": {"summary": {"applied": 0, "stopped": 1, "total": 1}}},
+            3: {"result": {"summary": {"applied": 0, "not_attempted": 1, "total": 1}}},
+            4: {"phase": "unfinished"},
+            5: {"result": {"summary": {"applied": 0, "already_applied": 1, "refused": 0, "total": 1}}},
+        })
+    run = attention_packet.build(ledger, attention.item_id("decided.steward-run", "run-cccccccccccc"))["run"]
+    rows = {r["case"]: r for r in run["decisions"]}
+    assert rows[case_ids[5]]["carried_out"] is True and rows[case_ids[5]]["not_done"] is None  # control
+    assert rows[case_ids[5]]["group"] == "use"
+    assert [rows[case_ids[i]]["not_done"] for i in (1, 2, 3, 4)] == [
+        "refused", "stopped", "not-attempted", "unfinished"]
+    assert all(rows[case_ids[i]]["group"] == "refused" for i in (1, 2, 3, 4))
+    assert run["counts"] == {"use": 1, "no": 1, "later": 0, "kept": 0, "refused": 4}
+    assert [r["group"] for r in run["decisions"]] == ["refused"] * 4 + ["use", "no"]
+
+
+def _synthetic_rows(use: int, no: int, refused: int) -> list[dict]:
+    """Run rows shaped as `_run_decisions` makes them, with full-length
+    titles and reasons, in its order (not carried out first)."""
+    rows = []
+    for group, n in (("refused", refused), ("use", use), ("no", no)):
+        for i in range(n):
+            rows.append({
+                "case": f"case-{group[:2]}{i:06x}"[:13], "record": f"lrn-{i:08x}", "records": 1,
+                "title": ("About to do a long and specific thing " * 6)[:attention_packet.MAX_RUN_TITLE_CHARS],
+                "verb": {"use": "route", "no": "reject", "refused": "route"}[group], "group": group,
+                "carried_out": group != "refused", "not_done": "refused" if group == "refused" else None,
+                "reason": ("A reason that goes on for a while. " * 8)[:attention_packet.MAX_RUN_REASON_CHARS],
+            })
+    return rows
+
+
+def test_a_very_large_run_drops_from_its_largest_group_and_keeps_every_kind(monkeypatch):
+    """Gate r2 MINOR B: a synthetic run of 75 decisions (60 put to use, 10
+    turned down, 5 not carried out) at the real budget drops only rows put
+    to use; at a budget too small for more than a few rows every group still
+    keeps a line. The block stays within its budget, and what was dropped is
+    counted per group. Mutations: pop from the end of the list -> red; let a
+    group's last row go -> red."""
+    rows = _synthetic_rows(60, 10, 5)
+    dropped = attention_packet._fit_run(rows)  # noqa: SLF001
+    assert sum(dropped.values()) > 0  # control: the budget forces drops
+    assert set(dropped) == {"use"}
+    kept = [r["group"] for r in rows]
+    assert kept.count("refused") == 5 and kept.count("no") == 10
+    assert kept.count("use") + dropped["use"] == 60
+    assert len(json.dumps(rows, ensure_ascii=False).encode("utf-8")) <= attention_packet.MAX_RUN_BYTES
+
+    monkeypatch.setattr(attention_packet, "MAX_RUN_BYTES", 300)
+    tight = _synthetic_rows(60, 10, 5)
+    dropped = attention_packet._fit_run(tight)  # noqa: SLF001
+    assert sorted(r["group"] for r in tight) == ["no", "refused", "use"]
+    assert dropped == {"use": 59, "no": 9, "refused": 4}

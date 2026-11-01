@@ -563,17 +563,28 @@ section records what the surface is.
   one line per decision: the lesson, the outcome in words and the opening
   of its reason with its ids and transcript line references taken out;
   "Why?" fetches the case itself when opened (`GET /inbox/case/<id>`,
-  read-only, `cases.show`'s full view, told once); six lines show, the
-  rest fold under "Show all". A decision whose apply the run record says
-  did not happen (`phase: refused`, failed or stopped, or a result that
-  applied nothing and refused something) is counted and said as "Refused
-  by the ledger, nothing changed", with what it was to be, never under the
-  group of its intended outcome. The counts and lines are the CLI's (the
-  packet's `run` block, read from the run's record and its committed
-  cases, at most 12 KiB so the packet keeps its 64 KiB cap and its
-  evidence: lines are shortened first, and a run too large even then lists
-  fewer lines and says how many more its counts cover); the page counts
-  nothing. Its evidence folds under "The case
+  read-only, `cases.show`'s full view, told once, the id matched whole):
+  its Decision is worded as its line words it (the case's `outcome`
+  first), its Because reads without ids or line references, everything it
+  shows passes the same redaction as every packet path (`redact_text`),
+  and an error is said as "The case could not be opened." with the raw
+  text folded for an agent; the line's own ids fold stays on the line,
+  outside the part the panel replaces. Six lines show, the rest fold
+  under "Show all". A decision whose apply the run record says did not
+  happen (`phase` refused, unfinished, failed or stopped, or a result that
+  applied nothing, found nothing already applied, and refused, stopped or
+  never attempted something) is counted under "Not carried out, nothing
+  changed", never under the group of its intended outcome; its line says
+  why ("Refused by the ledger", "Not finished yet, it will be tried
+  again", "Stopped before it was applied", "Never attempted"), with what
+  it was to be, and "Why?" says the same. These lines come first. The
+  counts and lines are the CLI's (the packet's `run` block, read from the
+  run's record and its committed cases, at most 12 KiB so the packet
+  keeps its 64 KiB cap and its evidence: lines are shortened first; a run
+  too large even then drops lines from its largest group, never a group's
+  last line, and says how many of each kind its counts cover beyond the
+  list, "to keep what the agent is given within its size limit"); the
+  page counts nothing. Its evidence folds under "The case
   files and lessons, in full". A nightly review and a weekly run item
   carry an empty, marked slot for the "In short" box (lane 5).
 - **Answers** go to `attention answer` with the option, the reply text as

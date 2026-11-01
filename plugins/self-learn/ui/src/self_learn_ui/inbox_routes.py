@@ -685,15 +685,27 @@ VERB_WORDS = {
     "note": "A note added", "premises": "Recorded what it rests on",
     "premises set": "Recorded what it rests on", "confirm-held": "Confirmed it still holds",
     "confirm-recurrence": "Confirmed it came up again",
-    "dismiss-suspect": "A suspected repeat set aside", "supersede": "Replaced by a later case",
+    "dismiss-suspect": "A suspected repeat set aside", "supersede": "Replaced with a new version",
     "propose a skill": "A skill proposed",
 }
 #: An outcome group in words (contract §4).
 GROUP_WORDS = {"use": "Put to use", "no": "Turned down", "later": "Left for later",
                "kept": "Looked at, kept as is"}
-#: A nightly review's groups: the four above, plus the decisions the ledger
-#: refused (gate r1 MAJOR 1: what the steward meant is never counted as done).
-RUN_GROUP_WORDS = {**GROUP_WORDS, "refused": "Refused by the ledger, nothing changed"}
+#: A nightly review's groups: the four above, plus the decisions that were
+#: not carried out (gate r1 MAJOR 1: what the steward meant is never counted
+#: as done; gate r2 NIT E: refused is only one of the reasons).
+RUN_GROUP_WORDS = {**GROUP_WORDS, "refused": "Not carried out, nothing changed"}
+#: Why one decision was not carried out (the CLI row's ``not_done``), in
+#: words; each says nothing changed, which is what the run record shows.
+NOT_DONE_WORDS = {
+    "refused": "Refused by the ledger, nothing changed",
+    "unfinished": "Not finished yet, it will be tried again",
+    "failed": "Failed when it was applied, nothing changed",
+    "stopped": "Stopped before it was applied, nothing changed",
+    "not-attempted": "Never attempted, nothing changed",
+}
+#: A decision not carried out whose reason is not one of the above.
+NOT_DONE_FALLBACK = "Not carried out, nothing changed"
 #: A case's ``confidence`` in words.
 CONFIDENCE_WORDS = {"settled": "held firmly", "firm": "held firmly", "provisional": "provisional",
                     "moderate": "held moderately", "tentative": "tentative"}
@@ -738,7 +750,24 @@ def run_view(packet: dict | None) -> dict | None:
         "rest": decisions[RUN_LINES_SHOWN:], "groups": groups, "total": total,
         "other": int(run.get("other") or 0), "segments": segments, "error": run.get("error"),
         "omitted": int(run.get("omitted") or 0),
+        "omitted_words": _omitted_words(run.get("omitted_groups")),
     }
+
+
+def _omitted_words(groups: object) -> str:
+    """"12 put to use and 3 turned down": the rows the CLI left out of the
+    packet, by group, in the groups' order (gate r2 MINOR B)."""
+    counts = groups if isinstance(groups, dict) else {}
+    short = {"refused": "not carried out", "use": "put to use", "no": "turned down",
+             "later": "left for later", "kept": "kept as is"}
+    parts = []
+    for group, words in short.items():
+        n = counts.get(group)
+        if isinstance(n, int) and n > 0:
+            parts.append(f"{n} {words}")
+    if len(parts) > 1:
+        return ", ".join(parts[:-1]) + " and " + parts[-1]
+    return parts[0] if parts else ""
 
 
 def more_words(more: object) -> str:
@@ -799,6 +828,8 @@ def _render(request: Request, name: str, ctx: dict[str, Any], status_code: int =
         "inbox_help_intro": INBOX_HELP_INTRO,
         "verb_words": VERB_WORDS,
         "group_words": RUN_GROUP_WORDS,
+        "not_done_words": NOT_DONE_WORDS,
+        "not_done_fallback": NOT_DONE_FALLBACK,
         "confidence_words": CONFIDENCE_WORDS,
         "status_words": STATUS_WORDS,
         "placement_words": PLACEMENT_WORDS,
@@ -1061,40 +1092,52 @@ async def inbox_conversation(request: Request, item_id: str) -> HTMLResponse:
                    {"item": _view_item(item), **_conversation_ctx(request, item)})
 
 
-_CASE_ID_RE = re.compile(r"^case-[0-9a-f]{8}$")
+_CASE_ID_RE = re.compile(r"case-[0-9a-f]{8}")
 
 
 @router.get("/inbox/case/{case_id}", response_class=HTMLResponse)
-async def inbox_case(request: Request, case_id: str) -> HTMLResponse:
+async def inbox_case(request: Request, case_id: str, not_done: str | None = None) -> HTMLResponse:
     """One case, told once, for a nightly review's "Why?" (humane UI lane 3,
     gate r1 MAJOR 3: the packet's decision rows carry only a short reason, so
     the full reason is read here when asked). Read-only: ``cases.show``'s
-    full view, which re-checks the freeze hash and refuses a tampered case."""
-    if not _CASE_ID_RE.match(case_id):
+    full view, which re-checks the freeze hash and refuses a tampered case.
+
+    Gate r2: everything shown passes ``attention_packet.redact_text``, as
+    every packet path does (MINOR A); the decision is worded as its line
+    words it -- the frontmatter ``outcome`` first, and ``not_done`` (one of
+    the CLI's reasons, passed by the line) says it was not carried out (NIT
+    C); "Because" reads without ids or line references, and an error is said
+    in words with the raw text folded for an agent (NIT D). The id must match
+    whole (NIT G)."""
+    if not _CASE_ID_RE.fullmatch(case_id):
         return _render(request, "partials/workspace_case.html",
                        {"case": None, "case_error": "no such case"}, status_code=404)
+    reason = not_done if not_done in NOT_DONE_WORDS else None
 
     def read() -> tuple[dict | None, str | None]:
         from self_learn import cases
+        from self_learn.attention_packet import plain_reason, redact_text
 
         try:
             view = cases.show(_home(request), case_id, evidence_only=False)
         except Exception as exc:  # noqa: BLE001 -- a missing or tampered case says so
-            return None, str(exc)
+            return None, redact_text(str(exc))
         sections = view.sections
         decision = sections.get("Decision") or ""
 
         def line(text: str, key: str) -> str | None:
             for row in text.splitlines():
                 if row.strip().startswith(f"- {key}:"):
-                    return row.strip()[len(key) + 3:].strip() or None
+                    return redact_text(row.strip()[len(key) + 3:].strip()) or None
             return None
 
+        outcome = view.frontmatter.get("outcome")
         body = "\n\n".join(f"## {k}\n{v}" for k, v in sections.items())
         return {"id": case_id, "question": line(sections.get("Identity and scope") or "", "question"),
-                "verb": line(decision, "verb") or view.frontmatter.get("outcome"),
-                "confidence": line(decision, "confidence"), "because": line(decision, "because"),
-                "excerpt": body}, None
+                "verb": (outcome if isinstance(outcome, str) and outcome else None) or line(decision, "verb"),
+                "not_done": reason,
+                "confidence": line(decision, "confidence"), "because": plain_reason(line(decision, "because")),
+                "excerpt": redact_text(body)}, None
 
     case, error = await asyncio.to_thread(read)
     return _render(request, "partials/workspace_case.html", {"case": case, "case_error": error},
