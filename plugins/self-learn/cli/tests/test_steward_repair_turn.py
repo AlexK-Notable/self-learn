@@ -315,10 +315,14 @@ def test_a_staged_reconsider_case_keeps_its_status_refusal_out_of_the_repair_tur
     tmp_path,
 ):
     """The coordinator's correction to §5: the repair feed previews without
-    the staged case (it is not in the ledger yet), so a `reject` of a ROUTED
-    lesson under a staged `kind: reconsider` case previews as a status
-    refusal the case would in fact widen at apply time. Not collected.
-    The same `reject` under a case that is NOT a reconsider IS collected."""
+    the staged case (it is not in the ledger yet), and a `reject` of a
+    ROUTED lesson under a staged `kind: reconsider` case is a line the case
+    widens at apply time. Not collected: since S-73 item 6 the preview
+    widens it itself (`reconsidered=`), and since S-131 that,
+    not a blanket skip of covered lines, is what keeps it out
+    (`test_steward_confirm_held.py` holds the status refusal a covered
+    line keeps). The same `reject` under a case that is NOT a reconsider
+    IS collected."""
     rid = "lrn-c0000008"
     home = _routed(tmp_path, rid)
     selected = {rid: "routed"}

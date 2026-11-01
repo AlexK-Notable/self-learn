@@ -489,7 +489,12 @@ def test_the_repair_preview_reports_a_broken_warn_example_on_a_reconsider_line(t
     assert record.routing["destination"] == "skill-md"
 
 
-def test_the_repair_preview_still_skips_the_plain_status_refusal_for_a_covered_line(tmp_path):
+def test_the_repair_preview_collects_the_status_refusal_a_covered_line_keeps(tmp_path):
+    """S-131 (2026-11-01), which reverses this test's old pin
+    ("still skips the plain status refusal"): the preview widens a covered
+    line as apply time will (S-73 item 6), so a `status` refusal left in it
+    -- a bare `defer` of a REJECTED lesson, which needs `[reopen, defer]`
+    -- is one apply time gives too, and the repair turn now names it."""
     from self_learn import steward
 
     rid, other = "lrn-a7300102", "lrn-a7300103"
@@ -508,11 +513,12 @@ def test_the_repair_preview_still_skips_the_plain_status_refusal_for_a_covered_l
     message = steward._ledger_repair_message(home, covered, {other: "rejected"})
     # S-88: `prior` does not cover `other` (a bare `reject` wrote no case),
     # so apply time's `verbs.reconsider` would refuse it, and the repair
-    # turn now says so (the region renders: control) -- but the line's
-    # plain status refusal is still skipped for a lesson the case covers.
+    # turn says so (the region renders: control) -- and since S-131
+    # the line's status refusal is named too: the case covering the lesson
+    # widens nothing for a rejected one.
     assert message is not None
     assert f"record {other}: no earlier case covers it" in message
-    assert f"(defer {other})" not in message
+    assert f"(defer {other})" in message and "'rejected'" in message
     assert f"record {rid}:" not in message, "`prior` covers the routed lesson"
 
 

@@ -2084,18 +2084,39 @@ staged sheet the way apply time will — skipping a case the model parked and
 a case the runner will park — and collects the lines the ledger would
 refuse that are the model's to fix: kind `bad-line`, kind
 `destination-unavailable`, and kind `status` when the lesson's status is
-still the one the run selected it with. One exception: this preview runs
-without the staged case, which is not in the ledger yet, so a `reject`,
-`defer` or `revise` of a routed lesson under a staged `kind: reconsider`
-case previews as a `status` refusal that the case itself widens at apply
-time; such a refusal is not collected for a lesson that a reconsider case
-of the same staged case/sheet pair covers. If any line is collected, the
+still the one the run selected it with. This preview runs without the
+staged case, which is not in the ledger yet, but it widens each line a
+staged `kind: reconsider` case covers as that case will at apply time
+(S-73 item 6), so a `status` refusal left in it is one apply time gives
+too, and it is collected like any other *(amended 2026-11-01,
+S-131: until then such a refusal was never collected for a lesson
+a reconsider case of the same staged pair covered, a rule from before the
+preview could widen a line; run `run-14405f3da1fe`'s `confirm-held` lines
+on two rejected lessons reached apply time that way and were parked
+`ledger-refused`)*. If any line is collected, the
 repair turn is spent on those lines exactly as on a format failure (the
 spent allowance committed first), with a message naming each sheet, item,
 verb, lesson and the ledger's words. Refusals left after the repair never
 fail the stage; apply time handles them by kind, as above. A repair turn
 already spent on a format error is not spent again. A dry run does the
 same, writing only to the cache.
+
+*(Amended 2026-11-01, S-131, gate r1 fold.)* The same turn also
+flags a staged case (not parked, not one the runner parks) that would leave
+a `deferred` lesson whose date has passed still deferred and due: no line
+on the lesson decides it or files it. Deciding lines are `route`,
+`reject`, `retire`, `supersede`, `replace` (including its `also`) and a
+`defer` that moves the date after now -- not a `defer` to today or
+earlier, and not one the batch would skip as already applied (a `defer`
+with no `until` on the day the deferral comes due, `batch.classify`;
+gate r2 fold). The filing moves `rehome`/`rescope` leave the deferral
+due: the lesson comes back once, in its new bucket, by design. Such a case
+would apply -- a `note`, `undefer` or `revise` lands -- and rewrite the
+record, a new version no run decided, so the lesson would come back every
+night. Read on the record as it is now with the queue's own predicate
+(`domain.is_queued`); a deferral still ahead is never flagged, and a
+pending lesson is outside this check. A model that keeps the case after
+the repair is not stopped.
 
 *(Amended S-96.)* A case whose outcome is `defer` and
 that the overseer asked the user about comes back to the steward when the
