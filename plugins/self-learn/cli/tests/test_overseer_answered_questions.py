@@ -412,6 +412,10 @@ def test_a_candidate_holding_a_line_break_is_never_used(tmp_path):
     home = make_home(tmp_path)
     broken = _add(home)
     _plant_spelled(home, broken, _ORIGINAL)
-    _seed_manifest(home, "854639e4", _ORIGINAL.replace("bar: decide", "bar:\n### um-ffff decide"))
+    # Differs from the original only by whitespace, so the key matches and
+    # only the line-break filter keeps it out.
+    with_break = _ORIGINAL.replace("bar: decide", "bar:\ndecide")
+    assert user_model._basis_key(with_break) == user_model._basis_key(_ORIGINAL)  # noqa: SLF001
+    _seed_manifest(home, "854639e4", with_break)
 
     assert _entry(home, broken)["basis"] == [user_model._lost_basis_text(broken)]  # noqa: SLF001
