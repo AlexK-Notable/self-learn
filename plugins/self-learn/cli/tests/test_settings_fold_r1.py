@@ -156,6 +156,7 @@ _LITERAL_ENV_FIRST_NAMES = frozenset(
         "provider.bedrock.models.analyst",
         "provider.bedrock.models.steward",  # U8 (17-invocation-runbook.md §1)
         "provider.bedrock.models.overseer",  # U8
+        "provider.bedrock.models.ask",  # attention round 2026-10-31c (design r2 §4.11), ask-agent lane
         "provider.bedrock.models.small_fast",
         "sdk.cli_path",
         "models.worker",
@@ -163,6 +164,7 @@ _LITERAL_ENV_FIRST_NAMES = frozenset(
         "models.analyst",
         "models.steward",  # U8
         "models.overseer",  # U8
+        "models.ask",  # attention round 2026-10-31c (design r2 §4.11), ask-agent lane
     ]
 )
 
@@ -210,6 +212,7 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "premises.rotation_days",  # S-114, tier C, default 90
         "premises.rotation_per_night",  # S-114, tier C, default auto
         "attention.terminal",  # attention round 2026-10-31c (design r2 §4.11)
+        "ask.timeout_secs",  # attention round 2026-10-31c (design r2 §4.11), ask-agent lane
         "attention.class.hold-credentials",  # attention round: answer 7
         "attention.class.hold-money",  # attention round: answer 7
         "attention.class.broken-host",  # attention round: answer 7
@@ -242,6 +245,7 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "sdk.max_turns.analyst",
         "sdk.max_turns.steward",  # U8
         "sdk.max_turns.overseer",  # U8
+        "sdk.max_turns.ask",  # attention round 2026-10-31c (design r2 §4.11), ask-agent lane
         "serve.tick_secs",
         "serve.restart_on_new_code",  # L6 (2026-10-31)
         "ledger.actor",
@@ -258,6 +262,7 @@ _LITERAL_ENABLED_WHEN_NAMES = frozenset(
         "provider.bedrock.models.analyst",
         "provider.bedrock.models.steward",  # U8
         "provider.bedrock.models.overseer",  # U8
+        "provider.bedrock.models.ask",  # attention round 2026-10-31c, ask-agent lane
         "provider.bedrock.models.small_fast",
     ]
 )
