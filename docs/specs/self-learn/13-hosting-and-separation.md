@@ -96,7 +96,12 @@ has to run it after a skill is made or scaffolded (a person's `new-skill`
 route makes the link too). `~/.claude` is not a git repository, so S-80's
 tracked-file guard does not apply to the link. Retiring or renaming an owned
 skill removes or moves its folder, its entry and its link in one skills-root
-commit. Codex's skill folder is not linked.
+commit. Codex's skill folder is not linked. *(Amended S-NEXT-skills-chain.)*
+A person's `new-skill` route under a name nothing uses also makes an owned
+skill: the scaffold is the same plugin, stamped, and the route adds its
+registry row once the host write stood. An overseer run that writes skills
+makes a missing or wrong link of an owned skill again, and a rename carries
+the skill's ledger bucket with it.
 
 ## 3. Ledger home layout
 
