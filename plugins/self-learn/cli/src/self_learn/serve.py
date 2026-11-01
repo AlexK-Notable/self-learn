@@ -74,7 +74,7 @@ from . import (
 from . import hosts as hosts_mod
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, procs
 from .ledger import resolve_home
 
 __all__ = [
@@ -1932,9 +1932,9 @@ def _new_code_imports(timeout: float = 120.0) -> tuple[bool, str]:
     import subprocess
 
     try:
-        proc = subprocess.run(
+        proc = procs.run_bounded(
             [sys.executable, "-P", "-c", "import self_learn.cli, self_learn.serve"],
-            capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+            timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, _short_cause(exc)
@@ -1966,9 +1966,8 @@ def _sync_venv(project: Path, timeout: float = 600.0) -> tuple[bool, str]:
     if not uv:
         return False, "no `uv` to sync the venv with (`UV` is unset and none is on PATH)"
     try:
-        proc = subprocess.run(
-            [uv, "sync", "--project", str(project), "--inexact"],
-            capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+        proc = procs.run_bounded(
+            [uv, "sync", "--project", str(project), "--inexact"], timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, _short_cause(exc)

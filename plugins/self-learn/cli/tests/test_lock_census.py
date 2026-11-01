@@ -55,6 +55,11 @@ _CENSUS: dict[tuple[str, str], str] = {
     # sits in; it writes only that repo's private info/exclude, never the
     # ledger's.
     ("gitops", "ensure_excluded"): "host-repo",
+    # S-109 (cures CU-1 part B, 2026-10-31): ensure_excluded's inverse. Its
+    # repo is the work tree a host switched to git mode sits in
+    # (`hosts._unexclude_for_git` -> `gitops.work_tree_of(<host>/marker)`);
+    # it rewrites only that repo's private info/exclude, never the ledger's.
+    ("gitops", "drop_excluded"): "host-repo",
     ("verbs", "commit_drift"): "host-repo",
     ("verbs", "recompile"): "host-repo",
 }

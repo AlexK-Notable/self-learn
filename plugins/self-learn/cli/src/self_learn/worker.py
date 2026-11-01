@@ -3964,8 +3964,21 @@ def _invoke_claude(
         evidence.observe(outcome)
 
 
-@attribution.as_job("worker")
 def run(
+    home: Path | str, *, coalesce: bool = False, no_push: bool | None = None
+) -> RunResult:
+    """One worker run (:func:`_run_job`) under the ``worker`` job actor
+    (S-109): a worker auto-kicked from an agent's command line still commits
+    as ``worker``. The span is opened here rather than by
+    :func:`attribution.as_job`, whose ``(*args, **kwargs)`` wrapper would
+    hide ``no_push`` from ``run``'s own signature -- the parameter that makes
+    the push policy data, not ambience (BLOCKER D,
+    ``test_round3_fixes.TestNoPushSurvivesSpawns``)."""
+    with attribution.job("worker"):
+        return _run_job(home, coalesce=coalesce, no_push=no_push)
+
+
+def _run_job(
     home: Path | str, *, coalesce: bool = False, no_push: bool | None = None
 ) -> RunResult:
     """``no_push=None`` reads the process boundary once

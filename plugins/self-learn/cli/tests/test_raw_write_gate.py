@@ -346,11 +346,15 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "rebuild)",
         "keep",
     ),
-    ("cli", "worker.py", "run"): (
+    # w31b integration: the body moved from `run` into `_run_job` so
+    # `run` keeps `no_push` in its own signature; same lock file.
+    ("cli", "worker.py", "_run_job"): (
         "flock lock file only (worker.lock) -- never carries content",
         "keep",
     ),
-    ("cli", "miner.py", "run"): (
+    # w31b integration: the body moved from `run` into `_run_job` so
+    # `run` keeps `no_push` in its own signature; same lock file.
+    ("cli", "miner.py", "_run_job"): (
         "flock lock file only (miner.lock) -- never carries content",
         "keep",
     ),
@@ -424,6 +428,14 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
     # journal of its own gets one row in serve's cache journal.
     ("cli", "serve.py", "_log_job_crash"): (
         "XDG cache: serve.journal.jsonl crash rows; NOT_REPO_TRUTH",
+        "keep",
+    ),
+    # S-119 (lane self-maint, 2026-10-31): serve's re-exec rows in the
+    # same cache journal; `test_lock_invariant.py` already carries it as
+    # NOT_REPO_TRUTH. Append semantics, so not an atomic-replace site.
+    ("cli", "serve.py", "_append_serve_journal"): (
+        "XDG cache: serve.journal.jsonl re-exec rows (append-only); "
+        "NOT_REPO_TRUTH",
         "keep",
     ),
     ("cli", "serve.py", "_today_mine_target"): (

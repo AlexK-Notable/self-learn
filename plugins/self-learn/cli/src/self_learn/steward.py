@@ -1835,7 +1835,7 @@ def _premise_review_candidates(
                 ),
                 "review": {
                     "rank": steward_inputs.REVIEW_RANK_NAMES[rank],
-                    "last_look": last.strftime("%Y-%m-%dT%H:%M:%SZ") if last else "",
+                    "last_look": last.strftime(chrono.ISO_FORMAT) if last else "",
                     "looked_by": by,
                     "age_days": age,
                     "period": days,

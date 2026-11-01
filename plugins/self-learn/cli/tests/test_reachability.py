@@ -1183,8 +1183,9 @@ def test_selftest_row_present_and_rc1_on_unreachable(env, tmp_path, monkeypatch,
     ]
     # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest (9 -> 10).
     # 2026-10-31: `owned_skills` (S-107) and `premises`
-    # (S-104) joined it (10 -> 12).
-    assert len(lines) == 12
+    # (S-104) joined it (10 -> 12); `steward-queue` (S-115, lane cadence)
+    # joined it (12 -> 13).
+    assert len(lines) == 13
     assert any(" surface " in line for line in lines)
     assert rc == 1
 

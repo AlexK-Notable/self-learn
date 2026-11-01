@@ -173,8 +173,11 @@ def job(actor: str) -> Iterator[None]:
 
 
 def as_job(actor: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
-    """Decorate a job's entry point (``worker.run``, ``miner.run``, ...) so
-    every commit it makes is the job's, whoever started it."""
+    """Decorate a job's entry point (``steward.run``, ``overseer.run.run``,
+    ``premise_sweep.run``) so every commit it makes is the job's, whoever
+    started it. ``worker.run`` and ``miner.run`` open :func:`job` in their
+    own body instead: this wrapper's ``(*args, **kwargs)`` would hide their
+    ``no_push`` parameter from their own signature."""
     _check(actor)
 
     def wrap(fn: Callable[_P, _R]) -> Callable[_P, _R]:

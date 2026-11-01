@@ -123,8 +123,8 @@ def test_each_job_entry_point_commits_as_the_job_even_from_an_agents_shell(
 ):
     """A worker auto-kicked from an agent's command line is still `worker`.
     The probe replaces the module's `Path` (each entry point's first call)
-    and reads the actor there. Mutation: drop `@attribution.as_job("worker")`
-    from `worker.run` -> the worker case reads `agent`."""
+    and reads the actor there. Mutation: drop the `attribution.job("worker")`
+    span in `worker.run` -> the worker case reads `agent`."""
     seen: list[str | None] = []
 
     def probe(*_args, **_kwargs):

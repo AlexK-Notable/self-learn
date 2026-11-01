@@ -39,7 +39,7 @@ from .. import notices as project_notices
 from .. import report as report_mod
 from ..ledger import discover_buckets, resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
-from ..primitives import chrono, fsops
+from ..primitives import chrono, fsops, procs
 from ..records import Record, build_covered_by
 from . import discovery as discovery_mod, formats, health, notify, population as population_mod, skills as skills_mod
 from . import conversation
@@ -2239,10 +2239,10 @@ def _registered_by_run(home: Path, path: str, run_id: str) -> bool:
     after the registration committed and before the record did)."""
     subject = f"self-learn: host add project {os.path.realpath(path)}"
     try:
-        proc = subprocess.run(
+        proc = procs.run_bounded(
             ["git", "-C", str(home), "log", "--format=%s", "--fixed-strings",
              f"--grep={_registration_run_line(run_id)}", "--", "hosts.yaml"],
-            capture_output=True, text=True, timeout=30,
+            timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
         return False

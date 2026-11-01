@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cli, gitops, miner, verbs, worker
+from self_learn import attribution, cli, gitops, miner, verbs, worker
 from self_learn.ledger_ops import create_record
 from self_learn.records import Record
 from support import (
@@ -1156,3 +1156,24 @@ class TestNoPushSurvivesSpawns:
         assert "no_push" in worker.run.__code__.co_varnames
         monkeypatch.delenv(worker.NO_PUSH_ENV, raising=False)
         assert worker.no_push_requested() is False
+
+    @pytest.mark.parametrize("module, actor", [(miner, "miner"), (worker, "worker")])
+    @pytest.mark.parametrize("value", [True, False, None])
+    def test_an_explicit_no_push_reaches_the_run_body_under_the_job_actor(
+        self, module, actor, value, tmp_path, monkeypatch
+    ):
+        """w31b integration: `run` opens the job-actor span itself (S-109)
+        and hands the body (`_run_job`) the caller's `no_push` unchanged --
+        True stays True with the environment silent, and None still reaches
+        the body to be read at the process boundary there. Mutation: pass
+        `no_push=None` (or drop it) in either `run` -> the True case fails."""
+        monkeypatch.delenv(worker.NO_PUSH_ENV, raising=False)
+        seen: list[tuple[object, str | None]] = []
+
+        def body(home, **kwargs):
+            seen.append((kwargs.get("no_push", "absent"), attribution.current_actor()))
+            return "sentinel"
+
+        monkeypatch.setattr(module, "_run_job", body)
+        assert module.run(tmp_path, no_push=value) == "sentinel"
+        assert seen == [(value, actor)]
