@@ -107,7 +107,7 @@ class TestConfigGet:
                 "description": rows[0]["description"],
                 "group": "limits",
                 "label": "Most one model call may use",
-                "plain": "A cap, in dollars, on any single model call. Empty means no cap.",
+                "plain": "A cap, in dollars, on any single model call. Empty means no limit.",
                 "tier": "A",
                 "warn": None,
                 "note": None,

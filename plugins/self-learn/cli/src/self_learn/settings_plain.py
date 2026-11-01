@@ -113,7 +113,7 @@ _TABLE: dict[str, Plain] = {
     "miner.max_run_usd": _p("limits", "Most one overnight read may use",
         "No new session is started once the read reaches this, in notional dollars. The rest wait for the next night."),
     "sdk.max_budget_usd": _p("limits", "Most one model call may use",
-        "A cap, in dollars, on any single model call. Empty means no cap."),
+        "A cap, in dollars, on any single model call. Empty means no limit."),
     "overseer.max_model_calls": _p("limits", "Model calls in one weekly check",
         "The weekly check stops if it makes more calls than this. A guard against a loop, not a budget."),
     "miner.max_sessions_per_run": _p("limits", "Sessions read in one night",
@@ -129,7 +129,7 @@ _TABLE: dict[str, Plain] = {
     "worker.batch_cap": _p("limits", "Lessons drafted per call",
         "How many lessons drafting prepares in one model call."),
     "steward.packet_size": _p("limits", "Lessons per nightly review call",
-        "How many lessons the nightly review decides in one model call. The run itself has no cap."),
+        "How many lessons the nightly review decides in one model call. The run itself has no limit."),
     "runs.attempt_cap": _p("limits", "Tries before giving up",
         "How many failed attempts one piece of delegated work gets before it is closed out."),
     # -------------------------------------------------------------- models
