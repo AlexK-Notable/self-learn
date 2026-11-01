@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -38,7 +40,7 @@ from test_failstate_overseer import (
     _two_parked,
 )
 from test_overseer_run import _dump, _enabled
-from test_pending_hook import _base_payload, _run_hook
+from test_pending_hook import NOTICE_HEADER, _base_payload, _run_hook
 from test_tracked_target_guard import _head, _lesson, _plain_repo_host, _record
 
 
@@ -197,8 +199,37 @@ def test_a_notice_is_deleted_thirty_days_after_it_was_made(tmp_path):
 # ----------------------------------------------- the uncommitted-change kind
 
 
+#: Short repos made by :func:`_tracked_repo` in the running test; the
+#: autouse fixture below removes them.
+_SHORT_REPOS: list[Path] = []
+
+#: The longest repo path the commit-line tests can rely on. The code notice's
+#: words name the repo (``git -C <repo> commit -m ... -- CLAUDE.md``) only
+#: while the whole line fits in ``notices.MAX_TEXT`` (200); longer, they fall
+#: back by design to "commit that file". pytest's own ``tmp_path`` is not
+#: short enough: under xdist with a four-digit basetemp counter
+#: (``/tmp/pytest-of-<user>/pytest-1487/popen-gw2/test_..._cle0/repo``) the
+#: line measured 201 characters (2026-11-01, integration suite), so six
+#: tests failed on the path, not on the code.
+_REPO_PATH_BUDGET = 60
+
+
+@pytest.fixture(autouse=True)
+def _remove_short_repos():
+    yield
+    while _SHORT_REPOS:
+        shutil.rmtree(_SHORT_REPOS.pop(), ignore_errors=True)
+
+
 def _tracked_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
+    """A git repo whose one tracked file is ``CLAUDE.md``. It lives in a
+    short temporary directory of its own (removed after the test), not
+    under *tmp_path*, so the full commit line always fits (see
+    :data:`_REPO_PATH_BUDGET`)."""
+    base = Path(tempfile.mkdtemp(prefix="pn-"))
+    _SHORT_REPOS.append(base)
+    repo = Path(os.path.realpath(base)) / "repo"
+    assert len(str(repo)) <= _REPO_PATH_BUDGET, repo  # else the commit line may not fit
     repo.mkdir()
     git(repo, "init", "-q", "-b", "main")
     git(repo, "config", "user.email", "t@example.com")
@@ -441,7 +472,10 @@ def test_the_hook_prints_each_notice_line_and_the_count_of_the_rest(tmp_path):
     payload["project_notices_more"] = 4
     result = _run_hook(tmp_path, payload)
     assert result.returncode == 0, result.stderr
+    # 2026-11-01: the notices print under one header line first (M9, design
+    # r2 §3.9, S-127; 13 §7.5).
     assert result.stdout == (
+        f"{NOTICE_HEADER}\n"
         "self-learn: one (done with it: self-learn notice done ntc-00000001)\n"
         "self-learn: two (done with it: self-learn notice done ntc-00000002)\n"
         "self-learn: 4 more notice(s) for this project — self-learn notice list\n"
