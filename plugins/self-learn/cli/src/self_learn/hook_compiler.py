@@ -149,7 +149,7 @@ COMMAND_VIEW_MAX_BYTES = 262144
 #: backticks, ``$'...'``, arithmetic, any other heredoc, a here-string, a
 #: process substitution, a ``git``/``gh`` redefined in the command (a
 #: function, ``alias git=``, ``function gh``), an unterminated
-#: quote, more than 16 A2 bodies -- ends the scan, and the view is the RAW
+#: quote -- ends the scan, and the view is the RAW
 #: command: the behaviour before S-133. No single quote appears in the
 #: program, so the generator embeds it as one bash single-quoted word.
 COMMAND_VIEW_AWK = r"""
@@ -256,7 +256,7 @@ function lineinfo(    k, line) {
 }
 function a2(    t, d, base, j, k, line) {
     if (I > LE) lineinfo()
-    if (I != A2AT || A2N >= 16) return 0
+    if (I != A2AT) return 0
     t = substr(S, I, LE - I)
     d = t; sub(/.*<</, "", d); gsub(/[ \t\047"\\]/, "", d)
     sub(A2CMD, "", t); sub(/[ \t]+<<.*$/, "", t); gsub(/[\047"]/, "", t)
@@ -272,7 +272,6 @@ function a2(    t, d, base, j, k, line) {
     }
     if (j > N) return 0
     if (index(substr(S, k), base) > 0) return 0
-    A2N++
     OUT = OUT substr(S, I, LE - I) "\n" line
     I = k
     return 1
@@ -366,7 +365,7 @@ BEGIN {
 }
 { BUF = (NR == 1) ? $0 : BUF RS $0 }
 END {
-    S = BUF; N = length(S); I = 1; OUT = ""; BAIL = 0; LE = 0; A2N = 0
+    S = BUF; N = length(S); I = 1; OUT = ""; BAIL = 0; LE = 0
     INW = 0; WN = 0; CMD = 0; OK = 0; NEXTMSG = 0; HIDSEG = 0
     if (S ~ REDEF) BAIL = 1
     else lex()
