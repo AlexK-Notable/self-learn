@@ -58,6 +58,8 @@ __all__ = [
     "TOOL_FIELDS",
     "WARN_MESSAGE_MAX",
     "WARN_OUTPUT_CAP",
+    "COMMAND_VIEW_AWK",
+    "COMMAND_VIEW_MAX_BYTES",
     "hook_event",
     "hook_message",
     "hook_mode",
@@ -111,6 +113,232 @@ WARN_MESSAGE_MAX = 2000
 #: cap on hook output (the hand-written precedent, git-stage-status.sh,
 #: keeps the same 7,500).
 WARN_OUTPUT_CAP = 7500
+
+#: S-NEXT-hookmatch: a Bash command longer than this many characters is matched raw, as
+#: before S-NEXT-hookmatch -- the view below is linear, but a hook runs on every call.
+COMMAND_VIEW_MAX_BYTES = 262144
+
+#: S-NEXT-hookmatch: the command view a WARNING hook on Bash matches instead of the
+#: raw command, so text that only mentions a pattern (a commit message, a
+#: heredoc writing a file, a comment) no longer fires the warning. POSIX
+#: awk, run under ``LC_ALL=C``, reading the command on stdin. The view is
+#: the command with:
+#:
+#: - every quoted span's content dropped, its quote marks kept (``"x y"``
+#:   -> ``""``, ``'x'`` -> ``''``, ``$'x'`` -> ``$''``), so the words around
+#:   it stay where they were;
+#: - every heredoc body dropped (the operator, its delimiter word and the
+#:   terminator line stay), ``<<-`` tab stripping included; a body with no
+#:   terminator runs to the end, as bash reads it;
+#: - every ``#`` comment dropped, to the end of its line;
+#:
+#: and with these kept, because they ARE commands: a ``$( )`` or backtick
+#: substitution inside double quotes; the quoted payload of
+#: ``sh|bash|dash|ksh|zsh|su|script ... -c`` (any option word holding a
+#: ``c``), of ``eval`` and of ``ssh``, viewed by the same rules and
+#: written WITHOUT its quote marks (``bash -c 'pkill -f x'`` ->
+#: ``bash -c pkill -f x``, so a regex anchored on a word boundary sees
+#: the payload's first word), nested to depth 32; and the body of a heredoc fed straight to a shell
+#: (``bash <<EOF``, ``ssh host sh -s <<EOF``). An unbalanced quote, an
+#: unclosed ``$(`` or backtick exits 3 and prints nothing, and the hook
+#: then matches the raw text. No single quote appears in the program, so
+#: the generator embeds it as one bash single-quoted word.
+COMMAND_VIEW_AWK = r"""
+function view(str,    sS, sN, sI, sHH, sHN, r) {
+    sS = S; sN = N; sI = I; sHH = HH; sHN = HN
+    S = str; N = length(str); I = 1; HH = HN + 1
+    DEPTH++
+    if (DEPTH > 32) r = str
+    else r = scan("")
+    DEPTH--
+    S = sS; N = sN; I = sI; HH = sHH; HN = sHN
+    return r
+}
+function tailof(out, segs,    t) {
+    t = substr(out, segs)
+    if (length(t) > 256) t = substr(t, length(t) - 255)
+    return t
+}
+function codectx(out, segs,    t) {
+    t = tailof(out, segs)
+    return t ~ SHELL_C || t ~ EVAL_ARGS || t ~ SSH_ARGS
+}
+function wordstart(    p) {
+    if (I == 1) return 1
+    p = substr(S, I - 1, 1)
+    return index(" \t\n;&|()<>", p) > 0
+}
+function squote(out, segs,    k, content) {
+    k = I + 1
+    while (k <= N && substr(S, k, 1) != "\047") k++
+    if (k > N) { ERR = 1; return "" }
+    content = substr(S, I + 1, k - I - 1)
+    I = k + 1
+    if (codectx(out, segs)) return view(content)
+    return "\047\047"
+}
+function ansiq(out, segs,    k, c, content) {
+    k = I + 2
+    while (k <= N) {
+        c = substr(S, k, 1)
+        if (c == "\\") { k += 2; continue }
+        if (c == "\047") break
+        k++
+    }
+    if (k > N) { ERR = 1; return "" }
+    content = substr(S, I + 2, k - I - 2)
+    I = k + 1
+    if (codectx(out, segs)) return view(content)
+    return "$\047\047"
+}
+function dqunescape(raw,    r, k, c, d) {
+    r = ""
+    for (k = 1; k <= length(raw); k++) {
+        c = substr(raw, k, 1)
+        if (c == "\\" && k < length(raw)) {
+            d = substr(raw, k + 1, 1)
+            if (index("$`\"\\", d) > 0) { r = r d; k++; continue }
+            if (d == "\n") { k++; continue }
+        }
+        r = r c
+    }
+    return r
+}
+function dquote(out, segs,    st, c, k, subs, v, raw) {
+    I++
+    st = I; subs = ""
+    while (I <= N) {
+        c = substr(S, I, 1)
+        if (c == "\\") { I += 2; continue }
+        if (c == "\"") break
+        if (c == "$" && substr(S, I + 1, 1) == "(") {
+            I += 2
+            v = scan(")")
+            if (ERR) return ""
+            subs = subs "$(" v ")"
+            continue
+        }
+        if (c == "`") {
+            k = I + 1
+            while (k <= N && substr(S, k, 1) != "`") {
+                if (substr(S, k, 1) == "\\") k++
+                k++
+            }
+            if (k > N) { ERR = 1; return "" }
+            subs = subs "`" view(substr(S, I + 1, k - I - 1)) "`"
+            I = k + 1
+            continue
+        }
+        I++
+    }
+    if (I > N) { ERR = 1; return "" }
+    raw = substr(S, st, I - st)
+    I++
+    if (codectx(out, segs)) return view(dqunescape(raw))
+    return "\"" subs "\""
+}
+function heredoc(out, segs,    op, strip, st, delim, c, k) {
+    op = "<<"; I += 2; strip = 0
+    if (substr(S, I, 1) == "-") { op = op "-"; strip = 1; I++ }
+    while (I <= N && index(" \t", substr(S, I, 1)) > 0) { op = op substr(S, I, 1); I++ }
+    st = I; delim = ""
+    while (I <= N) {
+        c = substr(S, I, 1)
+        if (index(" \t\n;&|()<>", c) > 0) break
+        if (c == "\\") { delim = delim substr(S, I + 1, 1); I += 2; continue }
+        if (c == "\047" || c == "\"") {
+            k = I + 1
+            while (k <= N && substr(S, k, 1) != c) {
+                if (c == "\"" && substr(S, k, 1) == "\\") k++
+                k++
+            }
+            if (k > N) { ERR = 1; return "" }
+            delim = delim substr(S, I + 1, k - I - 1)
+            I = k + 1
+            continue
+        }
+        delim = delim c; I++
+    }
+    if (delim == "") return op substr(S, st, I - st)
+    HN++
+    HD[HN] = delim; HS[HN] = strip
+    HC[HN] = (tailof(out, segs) ~ SHELL_STDIN)
+    return op substr(S, st, I - st)
+}
+function bodies(    res, d, strip, code, bst, k, line, cmp, found) {
+    res = ""
+    while (HH <= HN) {
+        d = HD[HH]; strip = HS[HH]; code = HC[HH]; HH++
+        bst = I; found = 0
+        while (I <= N) {
+            k = I
+            while (k <= N && substr(S, k, 1) != "\n") k++
+            line = substr(S, I, k - I)
+            cmp = line
+            if (strip) sub(/^\t+/, "", cmp)
+            if (cmp == d) { found = 1; break }
+            I = k + 1
+        }
+        if (I > N + 1) I = N + 1
+        if (code) res = res view(substr(S, bst, I - bst))
+        if (found) {
+            res = res line
+            if (k <= N) res = res "\n"
+            I = k + 1
+        }
+    }
+    return res
+}
+function scan(stop,    out, c, depth, segs) {
+    out = ""; depth = 0; segs = 1
+    while (I <= N) {
+        c = substr(S, I, 1)
+        if (c == "\\") { out = out substr(S, I, 2); I += 2; continue }
+        if (c == "\047") { out = out squote(out, segs); if (ERR) return out; continue }
+        if (c == "\"") { out = out dquote(out, segs); if (ERR) return out; continue }
+        if (c == "$" && substr(S, I + 1, 1) == "\047") {
+            out = out ansiq(out, segs); if (ERR) return out; continue
+        }
+        if (c == "#" && wordstart()) {
+            while (I <= N && substr(S, I, 1) != "\n") I++
+            continue
+        }
+        if (c == "<" && substr(S, I + 1, 1) == "<") {
+            if (substr(S, I + 2, 1) == "<") { out = out "<<<"; I += 3; continue }
+            out = out heredoc(out, segs); if (ERR) return out; continue
+        }
+        if (c == "\n") {
+            out = out c; I++
+            if (HH <= HN) out = out bodies()
+            segs = length(out) + 1
+            continue
+        }
+        if (stop == ")" && c == "(") depth++
+        if (stop == ")" && c == ")") {
+            if (depth == 0) { I++; return out }
+            depth--
+        }
+        out = out c; I++
+        if (index(";&|()`", c) > 0) segs = length(out) + 1
+    }
+    if (stop != "") ERR = 1
+    return out
+}
+BEGIN {
+    RS = "\001"
+    SHELL_C = "(^|[ \t/])((ba|da|k|z)?sh|su|script)([ \t]+[^ \t]+)*[ \t]+-[A-Za-z]*c[A-Za-z]*[ \t]+$"
+    EVAL_ARGS = "(^|[ \t])eval([ \t]+[^ \t]+)*[ \t]+$"
+    SSH_ARGS = "(^|[ \t/])ssh([ \t]+[^ \t]+)*[ \t]+$"
+    SHELL_STDIN = "(^|[ \t/])(ba|da|k|z)?sh([ \t]+-[^ \t]*)*[ \t]*$"
+}
+{ BUF = (NR == 1) ? $0 : BUF RS $0 }
+END {
+    ERR = 0; DEPTH = 0; HN = 0; HH = 1
+    R = view(BUF)
+    if (ERR) exit 3
+    printf "%s\n", R
+}
+"""
 
 
 def hook_mode(hook: dict) -> str:
@@ -484,7 +712,14 @@ def _warn_script(
 
     The JSON line is built here, at generation, and embedded as one
     single-quoted literal (the deny guard's quoting), so the script needs
-    no jq to print it and its bytes stay deterministic."""
+    no jq to print it and its bytes stay deterministic.
+
+    S-NEXT-hookmatch: when ``tools`` names Bash, the command is matched through
+    :data:`COMMAND_VIEW_AWK` (its words, not quoted text, comments or
+    heredoc bodies); any trouble there matches the raw text, as before.
+    A deny guard never gets the view: quoting must not get a command past
+    a guard, so a deny guard keeps matching the raw command, false
+    positives included."""
     output = warn_output(event, record_id, message)
     if len(output.encode("utf-8")) > WARN_OUTPUT_CAP:
         raise HookCompileError(
@@ -506,6 +741,19 @@ def _warn_script(
     case_arms = "\n".join(arms)
     regex_sq = _sq(path_regex)
     output_sq = _sq(output)
+    # S-NEXT-hookmatch: a Bash command is matched through the command view, never a
+    # file path; a hook guarding only Edit/Write keeps its old bytes.
+    view_block = ""
+    if "Bash" in tools:
+        view_block = f"""
+# S-NEXT-hookmatch: match the command's words, not quoted text, comments or heredoc
+# bodies (COMMAND_VIEW_AWK). No awk, a command over {COMMAND_VIEW_MAX_BYTES} characters, an
+# unbalanced quote or any awk failure: match the raw text instead.
+if [[ "$TOOL" == Bash ]] && (( ${{#VALUE}} <= {COMMAND_VIEW_MAX_BYTES} )) && command -v awk &>/dev/null; then
+    VIEW=$(LC_ALL=C awk {_sq(COMMAND_VIEW_AWK)} <<<"$VALUE" 2>/dev/null) || VIEW=$VALUE
+    VALUE=$VIEW
+fi
+"""
 
     return f"""#!/usr/bin/env bash
 # {name} — {event} warning hook, generated by self-learn from {record_id}.
@@ -534,7 +782,7 @@ case "$TOOL" in
 esac
 
 [[ -n "$VALUE" ]] || exit 0
-
+{view_block}
 # grep -E: 0 = match, 1 = no match, >= 2 = a broken regex -- only a match warns.
 MATCH_RC=0
 grep -qE -- {regex_sq} <<<"$VALUE" 2>/dev/null || MATCH_RC=$?

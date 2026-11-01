@@ -1519,7 +1519,10 @@ def _hook_lines() -> list[str]:
         "                after the call has run there is nothing to deny;",
         f"                tools from {', '.join(hook_compiler.GUARDABLE_TOOLS)};",
         "                path_regex an extended regular expression matched against the file path",
-        "                (Edit, Write) or the command (Bash); deny_message one line; warn_message",
+        "                (Edit, Write) or the command (Bash); a warning hook matches a Bash command's",
+        "                words only (quoted text, comments and heredoc bodies blanked; a `bash -c`,",
+        "                `eval` or `ssh` payload counts as words), a deny hook the raw command;",
+        "                deny_message one line; warn_message",
         f"                up to {hook_compiler.WARN_MESSAGE_MAX} characters, newlines allowed",
         f"    examples    {verdicts['deny']} for deny, {verdicts['warn']} for warn,"
         f" {low} to {high} each, every one",

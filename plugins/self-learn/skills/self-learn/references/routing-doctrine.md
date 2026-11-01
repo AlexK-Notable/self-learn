@@ -583,6 +583,15 @@ Rules for the hook block:
   override; choose `deny` when the call is always wrong — a warning
   carries no over-block, so its `rationale` names what it warns on and
   what it stays quiet for.
+- **A warning hook on Bash matches the command's words (S-NEXT-hookmatch).** Before
+  its regex runs, the text inside quotes, `#` comments and heredoc bodies
+  is blanked (`git commit -m "x y"` is seen as `git commit -m ""`), so a
+  commit message or a file written through a heredoc that only mentions
+  the pattern stays quiet. The quoted payload of `bash -c`/`sh -c`, `eval`
+  and `ssh`, a `$( )` inside double quotes, and the body of a heredoc fed
+  to a shell still count as words. Write the regex against the command,
+  never against an argument's quoted text. A deny guard matches the raw
+  command: quoting must never get a call past a guard.
 
 ```yaml
 hook:
