@@ -260,6 +260,18 @@ def _answer_calls(server: Server) -> list[list[str]]:
     return [c for c in server.runner.calls if c[:2] == ["attention", "answer"]]
 
 
+def _wait_for_value(page: "Page", selector: str, value: str) -> None:
+    """Poll a field's value from Python. `page.wait_for_function` with a
+    string predicate re-evaluates it inside the page, which the inbox's
+    CSP (`script-src 'self'`, no `unsafe-eval`) refuses whenever the first
+    check is false: a slow restore would read as an EvalError, not as
+    the value missing."""
+    try:
+        _wait_for(lambda: page.input_value(selector) == value)
+    except AssertionError:
+        assert page.input_value(selector) == value
+
+
 def _wait_for(predicate, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -284,8 +296,7 @@ def test_a_restored_draft_is_still_sent_as_the_agents_draft_with_its_option(page
     assert page.input_value("#ws-reply-draft") == DRAFT_ID
     page.reload(wait_until="load")
     page.wait_for_selector(f'#ws[data-item-id="{ID_OO7}"]')
-    page.wait_for_function("document.getElementById('ws-reply-text').value === 'Only the first two.'",
-                           timeout=_WAIT_MS)
+    _wait_for_value(page, "#ws-reply-text", "Only the first two.")
     assert page.input_value("#ws-reply-draft") == DRAFT_ID
     assert page.get_attribute("#ws-answer-form", "data-draft-option") == "opt-yes-conditions"
     assert page.is_visible("#ws-reply-draft-note")
@@ -371,12 +382,10 @@ def test_words_typed_on_a_decided_item_survive_undo(page, server):
     page.wait_for_selector("#ws-answer [data-recorded]", timeout=_WAIT_MS)
     assert ["attention", "undo", ID_HOOK] in server.runner.calls
     assert not _answer_calls(server)  # the undo sent no words
-    page.wait_for_function(f"document.getElementById('ws-reply-text').value === {json.dumps(words)}",
-                           timeout=_WAIT_MS)
+    _wait_for_value(page, "#ws-reply-text", words)
     page.reload(wait_until="load")
     page.wait_for_selector(f'#ws[data-item-id="{ID_HOOK}"]')
-    page.wait_for_function(f"document.getElementById('ws-reply-text').value === {json.dumps(words)}",
-                           timeout=_WAIT_MS)
+    _wait_for_value(page, "#ws-reply-text", words)
 
 
 def test_a_sent_reply_is_still_cleared_from_the_page_memory(page, server):
