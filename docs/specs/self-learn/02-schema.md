@@ -1026,13 +1026,32 @@ no model and no case can still be reviewed). With `premises.enabled` false the r
 `state: off` and carries no counts. A part that cannot be read says `state:
 unavailable` with a reason, and an empty list beside a sweep that has not run is
 labelled by the row's `caution`: an unreadable target is never reported as zero.
-**`hand-steps-this-week`** (hand-maintenance cures, lane C; design M5.3): every ledger
-commit of the last seven days that no job made. A commit is a job's when its subject
-begins `self-learn: steward manifest|telemetry flush|case |worker |mine |overseer`
-(the runners' own), `capture |statement add|user-model ` (new knowledge, not upkeep)
-or `premises refresh ` (reported on the row above), or when it carries a `Case:`
-trailer or `By: steward|overseer|analyst`; everything else is a hand step, whoever's
-shell ran it, including a subject no list anticipated. Each step is `{commit, at,
+**`hand-steps-this-week`** (hand-maintenance cures, lane C; design M5.3; amended
+2026-10-31, S-NEXT-census): every ledger commit since the last published census that no
+job made. *The window* is the ancestry range `<cursor>..HEAD`, where the cursor is the
+`head` in `overseer/census.yaml` (`{head, run, at}`, a ledger file); the walk has no date
+option, because `git log --since` stops at a commit made on a clock set to the past and
+never reaches an in-window commit behind it. With no cursor (a first run), or one that
+is not an ancestor of HEAD (lost, or history rewritten), it walks the whole history and
+keeps the commits whose author date is within seven days, and the row's `label` says
+which case (`since the census of <run> (<sha>)`, `no earlier census; the last 7 days`,
+or `the earlier census point is not in this history; the last 7 days`); `since` is the
+cursor commit's author date, or the fallback cut; `head` is the HEAD read once before the
+walk, the next cursor (one HEAD read serves the premise-refresh walk and this one, so a
+commit landing between them is listed by the next run, never skipped by both). A commit is a
+job's when it carries a `By:`
+trailer naming a job (`miner|worker|sweep|steward|overseer|serve|analyst`; every ledger
+commit carries one since S-102 as extended, so the trailer is read FIRST); `By: human`
+or `By: agent` is a hand step whatever its subject, except the never-a-hand-step subjects
+below. Only a commit with NO `By:` trailer
+(history from before the stamp) falls back to its subject: one beginning
+`self-learn: steward manifest|telemetry flush|case |worker |mine |overseer` or
+`premises refresh ` is a job's, and any other is a hand step, including a subject no list
+anticipated. A subject beginning `capture |statement add|user-model ` records new
+knowledge, and one beginning `telemetry flush |case observe |overseer presentation response`
+is protocol bookkeeping a shell writes as a side effect of ordinary work (it carries the
+shell's actor since S-102, so the trailer cannot tell it from upkeep); neither is ever a
+hand step, whatever `By:` they carry. Each step is `{commit, at,
 subject, by, note}`: `by` is `human` or `agent` from a `By:` trailer, `none` when the
 commit has no trailer (the commit cannot say whether a person or an agent ran it); the
 note is the commit body without its trailer paragraph, one line, at most 240
@@ -1053,8 +1072,18 @@ completes it in the published report: a step of the census the overseer's sectio
 does not name is added as `- <commit> <when> by <by>: <subject> (<note>) — the
 overseer did not name the gap`, steps past the packet's cap are counted in one line,
 an empty week reads `- none`, and a census that could not be read says so in words.
+A report the RUNNER builds (a refused phase B, a failed attempt that closes a week,
+a partial run) carries the same section: the census the run staged, every step marked
+as having no named gap, or, when no census was staged, the line `the census was not
+taken this run; the next report covers this window too`. The window line
+`- window: <label>` heads the runner's additions. **The cursor moves with the report:**
+the commit that publishes a report carrying a census whose `state` is `ok` also writes
+`overseer/census.yaml` (`head` = the census's `head`, `run`, `at`); a run that
+publishes no report, or one whose census was not taken or could not be read, leaves it,
+so the next census covers both windows and no commit is skipped or listed twice. The
+`premise-check` row's `refreshed_this_week` list uses the same walk and the same cursor.
 The census is stored in the run record as `hand_steps` (`state`, `reason`, `total`,
-`steps`), because a resumed run rebuilds its stage without `health.yaml`; a record
+`head`, `label`, `steps`), because a resumed run rebuilds its stage without `health.yaml`; a record
 made before this field has none and its report is published as the overseer wrote it.
 The report's length guide counts the overseer's own lines, not the runner's.
 

@@ -34,6 +34,7 @@ from ruamel.yaml import YAML, YAMLError
 
 from .. import always_loaded, attribution, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, skill_writer, statements, user_model, verbs, worker
 from .. import notices as project_notices
+from .. import report as report_mod
 from ..ledger import discover_buckets, resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
@@ -1440,6 +1441,7 @@ def _report_text(
     refused: list[str] | None = None, hooks: list[str] | None = None,
     reason: str | None = None, user_model_lines: list[str] | None = None,
     questions: list[str] | None = None,
+    hand_steps: dict[str, Any] | None = None,
 ) -> str:
     refused = refused or []
     hooks = hooks or []
@@ -1463,6 +1465,9 @@ def _report_text(
         "## Questions for you", *question_lines, "",
         "## Refused / could not do", *refusal_lines,
     ]
+    # CU-3 (u7c F2): a runner-built report carries the census too, or says it
+    # was not taken (`hand_steps=None`); the next report then covers this window.
+    _put_hand_steps_section(lines, hand_steps)
     return "\n".join(lines) + "\n"
 
 
@@ -1559,12 +1564,9 @@ HAND_STEPS_ROW_KIND = "hand-steps-this-week"
 _GAP_NOT_NAMED = "the overseer did not name the gap"
 
 
-def _staged_hand_steps(stage: Path) -> dict[str, Any]:
-    """The week's census of hand steps as phase B was given it: the
-    ``hand-steps-this-week`` row of the staged ``health.yaml`` (S-105).
-    A stage with no such row, or a file that does not read, answers a census
-    of state ``unavailable`` -- which the report says in words -- and never
-    an empty week: an unread packet must not read as "nothing happened"."""
+def _staged_census_if_any(stage: Path) -> dict[str, Any] | None:
+    """The census row of the staged ``health.yaml`` (keys the report and the
+    run record keep), or ``None`` when the stage carries no such row."""
     try:
         data = _yaml_mapping(stage / "health.yaml")
     except (OSError, OverseerError):
@@ -1574,9 +1576,41 @@ def _staged_hand_steps(stage: Path) -> dict[str, Any]:
         if isinstance(row, dict) and row.get("kind") == HAND_STEPS_ROW_KIND:
             return {
                 key: row.get(key)
-                for key in ("window_days", "since", "state", "reason", "total", "steps")
+                for key in (
+                    "window_days", "since", "head", "label", "state", "reason", "total", "steps",
+                )
             }
+    return None
+
+
+def _staged_hand_steps(stage: Path) -> dict[str, Any]:
+    """The week's census of hand steps as phase B was given it: the
+    ``hand-steps-this-week`` row of the staged ``health.yaml`` (S-105).
+    A stage with no such row, or a file that does not read, answers a census
+    of state ``unavailable`` -- which the report says in words -- and never
+    an empty week: an unread packet must not read as "nothing happened"."""
+    census = _staged_census_if_any(stage)
+    if census is not None:
+        return census
     return {"state": "unavailable", "reason": "this run's inputs carried no census", "steps": []}
+
+
+def _census_cursor_for(
+    home: Path, census: dict[str, Any] | None, run_id: str,
+) -> tuple[Path, str] | None:
+    """What a commit that publishes a report carrying *census* also writes
+    (CU-3): ``overseer/census.yaml`` naming the commit the census reached, as
+    ``(path, text)``. ``None`` when the census was not taken or could not be
+    read: the cursor then stays where it was, so the next census covers this
+    window too (nothing between two reports is skipped or listed twice)."""
+    if not isinstance(census, dict) or census.get("state") != "ok":
+        return None
+    head = census.get("head")
+    if not isinstance(head, str) or not head:
+        return None
+    return report_mod.census_path(home), report_mod.census_cursor_text(
+        head=head, run=run_id, at=chrono.now_iso()
+    )
 
 
 def _hand_step_line(step: dict[str, Any], gap: str | None = None) -> str:
@@ -1591,7 +1625,7 @@ def _hand_step_line(step: dict[str, Any], gap: str | None = None) -> str:
     )
 
 
-def _put_hand_steps_section(lines: list[str], census: dict[str, Any]) -> None:
+def _put_hand_steps_section(lines: list[str], census: dict[str, Any] | None) -> None:
     """Make the published report carry every hand step of the census
     (S-105). The overseer's own section, when it wrote one, stays as it
     is; for each step of the census whose commit the section does not name,
@@ -1612,7 +1646,16 @@ def _put_hand_steps_section(lines: list[str], census: dict[str, Any]) -> None:
     end = next((i for i in range(body_at, len(lines)) if lines[i].startswith("## ")), len(lines))
     written = "\n".join(lines[body_at:end])
     added: list[str] = []
-    if census.get("state") != "ok":
+    keep_none = False
+    if census is None:
+        # CU-3 (u7c F2): a runner-built report from a run that never took the
+        # census. True because the cursor only moves with a report that
+        # carries one, so the next census covers this window as well.
+        added.append(
+            "- the census was not taken this run; the next report covers this "
+            "window too"
+        )
+    elif census.get("state") != "ok":
         reason = str(census.get("reason") or "no reason given")
         added.append(
             f"- the census of hand steps could not be read ({reason}); "
@@ -1620,6 +1663,9 @@ def _put_hand_steps_section(lines: list[str], census: dict[str, Any]) -> None:
         )
     else:
         steps = [row for row in census.get("steps") or [] if isinstance(row, dict)]
+        label = str(census.get("label") or "").strip()
+        if label and label not in written:
+            added.append(f"- window: {label}")
         for step in steps:
             if str(step.get("commit")) not in written:
                 added.append(_hand_step_line(step, _GAP_NOT_NAMED))
@@ -1629,9 +1675,13 @@ def _put_hand_steps_section(lines: list[str], census: dict[str, Any]) -> None:
                 f"- {total - len(steps)} more hand step(s) this week were not in the packet "
                 f"(it carries the newest {len(steps)})"
             )
+        if total == 0 and not [line for line in lines[body_at:end] if line.strip()]:
+            added.append("- none")
+            keep_none = True
     if added:
         lines[end:end] = added
-        _drop_bare_none(lines, body_at)
+        if not keep_none:
+            _drop_bare_none(lines, body_at)
     elif not [line for line in lines[body_at:end] if line.strip()]:
         lines[end:end] = ["- none"]
 
@@ -2425,6 +2475,7 @@ def _commit_failed_attempt(
     journal_text: str | None = None,
     trigger: str = TRIGGER_SCHEDULED,
     classified: dict[str, str] | None = None,
+    census: dict[str, Any] | None = None,
 ) -> Path:
     """One commit for one failed attempt: its report, its failure note and,
     when the cap was reached, the close-out note.
@@ -2460,6 +2511,10 @@ def _commit_failed_attempt(
     )
     if journal is not None:
         paths.append(journal)
+    # CU-3: a report that carries the census moves the cursor, in this commit.
+    cursor = _census_cursor_for(home, census, run_id) if report_path is not None else None
+    if cursor is not None:
+        paths.append(cursor[0])
     subject = f"self-learn: overseer attempt {attempt} failed ({kind})"
     # `intents.ledger_write` is re-entrant: a pass-through when the caller
     # already holds the span, and the outermost acquisition for a failure of
@@ -2497,6 +2552,9 @@ def _commit_failed_attempt(
             report_path.parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(report_path, report_text, fsync=True)
             fsops.atomic_write(latest, report_text, fsync=True)
+        if cursor is not None:
+            cursor[0].parent.mkdir(parents=True, exist_ok=True)
+            fsops.atomic_write(cursor[0], cursor[1], fsync=True)
         if journal is not None and journal_text is not None:
             journal.parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(journal, journal_text, fsync=True)
@@ -2527,6 +2585,7 @@ def _refuse_in_span(
             manual=manual,
         )
     text = _report_text(
+        hand_steps=_staged_census_if_any(stage),
         date=started[:10], run_id=run_id, model=model, selected=selected,
         population_count=population_count, excluded=excluded,
         model_calls=model_calls, guard=guard, reason=reason, questions=close_questions,
@@ -2535,6 +2594,7 @@ def _refuse_in_span(
     if not dry_run and intent is not None:
         report_path = _commit_failed_attempt(
             home, intent, coverage_path=coverage_path, coverage_before=coverage_before,
+            census=_staged_census_if_any(stage),
             report_text=text, date=started[:10], run_id=run_id, week=week,
             started=started, attempt=attempt, cap=cap, kind=kind, detail=detail,
             closed_text=closed_text,
@@ -4123,6 +4183,11 @@ def _write_manifest_truth(
     )
     if closed_note is not None:
         paths.append(closed_note)
+    # CU-3: this commit publishes a report that carries the census (the
+    # finalizer and the partial report both put it in), so it moves the cursor.
+    cursor = _census_cursor_for(home, cast("dict[str, Any] | None", manifest.get("hand_steps")), cast(str, manifest["run_id"]))
+    if cursor is not None:
+        paths.append(cursor[0])
     with intents.ledger_write(home):
         intent = intents.begin(
             home, "overseer-run-finalize", paths,
@@ -4135,6 +4200,9 @@ def _write_manifest_truth(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         fsops.atomic_write(report_path, report_text, fsync=True)
         fsops.atomic_write(latest, report_text, fsync=True)
+        if cursor is not None:
+            cursor[0].parent.mkdir(parents=True, exist_ok=True)
+            fsops.atomic_write(cursor[0], cursor[1], fsync=True)
         if closed_note is not None and closed_text is not None:
             closed_note.parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(closed_note, closed_text, fsync=True)
@@ -5251,6 +5319,7 @@ def _execute_manifest(
             "observations/questions/report finalization"
         ]
         partial_text = _report_text(
+            hand_steps=cast("dict[str, Any] | None", manifest.get("hand_steps")),
             date=cast(str, manifest["date"]), run_id=run_id,
             model=cast(str, manifest["model"]), selected=selected,
             population_count=int(manifest.get("population_count") or 0),
@@ -5840,11 +5909,12 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     home, week=week, attempts=attempt, cap=cap, kind=kind, detail=detail,
                     manual=manual,
                 )
-            text = _report_text(date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, reason=reason, questions=close_questions)
+            text = _report_text(hand_steps=_staged_census_if_any(stage), date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, reason=reason, questions=close_questions)
             report_path = _write_report_only(stage, text)
             if not dry_run and intent is not None:
                 report_path = _commit_failed_attempt(
                     home, intent, coverage_path=coverage_path,
+                    census=_staged_census_if_any(stage),
                     coverage_before=coverage_before, report_text=text,
                     date=started[:10], run_id=run_id, week=week, started=started,
                     attempt=attempt, cap=cap, kind=kind, detail=detail,
@@ -5916,6 +5986,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         manual=manual,
                     )
                 text = _report_text(
+                    hand_steps=_staged_census_if_any(stage),
                     date=started[:10], run_id=run_id, model=str(model), selected=selected,
                     population_count=len(week_rows), excluded=excluded,
                     model_calls=model_calls, guard=guard, reason=str(exc),
@@ -5928,6 +5999,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     # `overseer open` reads it from.
                     published = _commit_failed_attempt(
                         home, intent, coverage_path=coverage_path,
+                        census=_staged_census_if_any(stage),
                         coverage_before=coverage_before,
                         report_text=text if closed_text is not None else None,
                         date=started[:10], run_id=run_id, week=week,
@@ -5964,6 +6036,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     manual=manual,
                 )
             text = _report_text(
+                hand_steps=_staged_census_if_any(stage),
                 date=started[:10], run_id=run_id, model=str(model), selected=selected,
                 population_count=len(week_rows), excluded=excluded,
                 model_calls=model_calls, guard=guard,
@@ -5977,6 +6050,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 # and `last_run_at` must not claim it was.
                 published = _commit_failed_attempt(
                     home, intent, coverage_path=coverage_path,
+                    census=_staged_census_if_any(stage),
                     coverage_before=coverage_before,
                     report_text=text if closed_text is not None else None,
                     date=started[:10], run_id=run_id, week=week,
@@ -6015,11 +6089,12 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     kind="schema-repair", detail=detail,
                     manual=manual,
                 )
-            text = _report_text(date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, reason=refusal_reason, questions=close_questions)
+            text = _report_text(hand_steps=_staged_census_if_any(stage), date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, reason=refusal_reason, questions=close_questions)
             report_path = _write_report_only(stage, text)
             if not dry_run and intent is not None:
                 report_path = _commit_failed_attempt(
                     home, intent, coverage_path=coverage_path,
+                    census=_staged_census_if_any(stage),
                     coverage_before=coverage_before, report_text=text,
                     date=started[:10], run_id=run_id, week=week, started=started,
                     attempt=attempt, cap=cap, kind="schema-repair",
@@ -6494,11 +6569,12 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     kind="schema-repair", detail=detail,
                     manual=manual,
                 )
-            text = _report_text(date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, reason=str(exc), questions=close_questions)
+            text = _report_text(hand_steps=_staged_census_if_any(stage), date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, reason=str(exc), questions=close_questions)
             report_path = _write_report_only(stage, text)
             if not dry_run and intent is not None:
                 report_path = _commit_failed_attempt(
                     home, intent, coverage_path=coverage_path,
+                    census=_staged_census_if_any(stage),
                     coverage_before=coverage_before, report_text=text,
                     date=started[:10], run_id=run_id, week=week, started=started,
                     attempt=attempt, cap=cap, kind="schema-repair",
@@ -6513,7 +6589,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             return RunResult("refused", EXIT_REFUSED, run_id, model_calls, selected, excluded, report=str(report_path))
 
         if dry_run:
-            text = _report_text(date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, parked_decided=preview_apply, preview_sheets=len(pairs), preview_refused=preview_refused, refused=list(case_drops))
+            text = _report_text(hand_steps=_staged_census_if_any(stage), date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, parked_decided=preview_apply, preview_sheets=len(pairs), preview_refused=preview_refused, refused=list(case_drops))
             report_path = _write_report_only(stage, text)
             _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "dry-run", "model_calls": model_calls})
             return RunResult("dry-run", EXIT_OK, run_id, model_calls, selected, excluded, report=str(report_path))
