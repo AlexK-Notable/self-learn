@@ -308,7 +308,10 @@ def test_overseer_command_points_to_the_inbox():
     assert "--recorded-by human" not in text
     # Gate r1 MAJOR 1: a needs-you ask waits for the user, and one with a
     # plan is decided only by an option. Mutation: drop the needs-you passage.
-    assert "needs you; meanwhile" in text
+    # Step 2 names each line as `overseer open` prints it (whitespace
+    # flattened), read from the code's own labels so the two cannot drift.
+    assert f"` {conversation.NEEDS_YOU_LABEL}: <what holds" in text
+    assert f"` {conversation.DEFAULT_LABEL}: <default>`" in text
     assert "self-learn attention answer <att-id> --option" in text
     assert "decided **only by choosing one of its options**" in text
     assert "Nothing in either place is waiting on them" not in text
