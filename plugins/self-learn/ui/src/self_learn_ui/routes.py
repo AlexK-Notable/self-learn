@@ -31,10 +31,9 @@ from starlette.responses import StreamingResponse
 
 from self_learn.hosts import HOST_MODES, effective_default_mode, is_repo_root
 from self_learn.records import Record
-from self_learn.settings import REGISTRY as SETTINGS_REGISTRY
 from self_learn.verbs import GITOPS_DIRTY_MARKER, NO_PROPOSAL_MARKER
 
-from . import ledger, models, pane, proposals, rendering, runner
+from . import ledger, models, pane, proposals, rendering, runner, settings_view
 from .keymap import keymap_as_dicts, keymap_json
 from .prefetch import DetailPrefetchCache
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
@@ -1326,63 +1325,26 @@ def report_page(request: Request) -> HTMLResponse:
 # own argv and runs it through the SAME `VerbRunner` seam every other
 # write in this app uses (never a second mutation path).
 
-#: The registry's own section order (`settings.py`'s `REGISTRY` literal,
-#: worker -> miner -> analyst -> sdk -> serve -> ledger today) -- the
-#: page reads in the same order a human reading the registry source
-#: would, never re-sorted alphabetically.
-#:
-#: NIT-3 (code-gate review r1 2026-09-01): this used to be a HAND-
-#: MAINTAINED tuple, a second copy of a fact `settings.REGISTRY` already
-#: states -- a new section added there and never mirrored here would
-#: silently vanish from the page (no error, no test failure, just a
-#: table that never renders). Derived directly from the registry now:
-#: `dict.fromkeys` dedupes while preserving first-seen order (a section
-#: appears once per `Setting` entry, `REGISTRY` has many entries per
-#: section), and `config_section is not None` skips the one reserved
-#: shape (MINOR-4, same review) that has no section to group under.
-_SETTINGS_SECTION_ORDER: tuple[str, ...] = tuple(
-    dict.fromkeys(
-        s.config_section for s in SETTINGS_REGISTRY if s.config_section is not None
-    )
-)
-
-
-def _setting_section(name: str) -> str:
-    """The top-level `config.yaml` section a dotted setting name lives
-    under -- `"worker.no_notify"` -> `"worker"`, `"sdk.max_turns.worker"`
-    -> `"sdk"`. Mirrors `settings.Setting.config_section` without
-    needing the CLI package's registry object here (`config get --json`
-    already gives every row's plain fields; this is a display-grouping
-    derivation over the `name` string it returns, not a second source of
-    truth for what the section actually is)."""
-    return name.split(".", 1)[0]
-
-
-def _group_settings(rows: list[dict]) -> list[dict[str, Any]]:
-    """`config get --json`'s flat row list, grouped by section in the
-    registry's own order (`_SETTINGS_SECTION_ORDER`) -- a section with no
-    rows (should not happen against the real registry, but a partial/
-    filtered read must not crash the page) is simply omitted."""
-    by_section: dict[str, list[dict]] = {}
-    for row in rows:
-        by_section.setdefault(_setting_section(row["name"]), []).append(row)
-    return [
-        {"section": section, "rows": by_section[section]}
-        for section in _SETTINGS_SECTION_ORDER
-        if by_section.get(section)
-    ]
-
-
 @router.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request) -> HTMLResponse:
+def settings_page(request: Request, q: str = "") -> HTMLResponse:
+    """Grouped by what a person is trying to do (the CLI's own `group`,
+    `label` and `plain` fields; `settings_view` only arranges them). `?q=`
+    is the "Find a setting" box without script: the page script filters
+    live, and a plain form submit reaches the same filter here."""
     home = _home(request)
     settings_read = ledger.settings(home)
-    groups = _group_settings(settings_read.data) if settings_read.ok and settings_read.data else []
+    ok = settings_read.ok and bool(settings_read.data)
+    rows = settings_read.data if ok and settings_read.data else []
+    query = q.strip()
+    groups = settings_view.build_groups(rows, query)
     return _render(
         request,
         "settings.html",
         {
             "groups": groups,
+            "shown": sum(g["shown"] for g in groups),
+            "query": query,
+            "class_options": settings_view.class_options(),
             "settings_error": settings_read.error,
         },
     )
@@ -1476,7 +1438,16 @@ async def settings_set(
             idx = stderr.find(marker)
             trimmed = stderr[idx:].strip() if idx != -1 else stderr
             row["error"] = trimmed or f"self-learn config set {name} failed"
-    return _render(request, "partials/settings_row.html", {"row": row})
+    saved = bool(result.ok and result.evidence is not None)
+    return _render(
+        request,
+        "partials/settings_row.html",
+        {
+            "row": settings_view.decorate(row),
+            "saved": saved,
+            "class_options": settings_view.class_options(),
+        },
+    )
 
 
 # ------------------------------------------------------------------ cluster

@@ -842,6 +842,65 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   `org.kde.StatusNotifierWatcher` appears or changes owner (a bar restart).
 - **Unit and deployment.** `13-hosting-and-separation.md` §7.7.
 
+### 2.7 Settings *(added 2026-11-01, S-NEXT-humane-l4; humane proposal §9)*
+
+`GET /settings` is the page where a person reads and changes the operator
+settings (`self-learn config get|set`). Before this subsection 09 said nothing
+about it beyond the Y-11 command rule. The page renders what `config get --json`
+returns, row for row; it computes no value and keeps no copy of the registry.
+
+- **Grouped by what a person is trying to do.** The CLI's `group` field names one
+  of `settings_plain.GROUPS`; the page shows the groups in that order, each under
+  its `title` and `intro`: What runs on its own, Limits on model use, Which model
+  does what, How it gets your attention, then the folded groups (what the
+  overnight read looks at, time limits, turn limits, Amazon Bedrock, everything
+  else). A group the CLI marks `folded` is a closed `<details>`; the others are
+  open. A row with no or an unknown `group` goes in the last group, so a partial
+  read never drops a setting. Within a group the page shows the switches a person
+  reaches for first (the jobs' `enabled` switches, then skill writing and hook
+  activation), then the registry's order.
+- **A row says what it is in words.** The row's `label` is its heading and its
+  `plain` is a sentence under it, on the page and not only in a hover title. Under
+  that: where the value comes from in words (Default, Set in config.yaml, Set in
+  the environment, Set for this terminal only; any other source is shown as the
+  CLI wrote it), and the key in small faint type for checking against the command
+  line. The registry's technical `description`, the built-in default and any fold
+  `note` sit in the row's "Details" fold. A row from a CLI that sent no `label`
+  shows its key as its heading and no sentence.
+- **Controls.** A bool is an On/Off choice (the verb takes 1 or 0), an int or float
+  a number field with its unit when the key says one (`_usd` dollars, `_secs` and
+  `_s` seconds), anything else a text field. Each row keeps its own form and
+  `POST /settings/set`, which runs the same `config set` verb; the row's DOM id
+  stays `setting-row-<key with dots as dashes>`. With script, a row's Save button
+  shows once its value differs from the stored one; without script it always
+  shows. A saved row comes back with "Saved." and a refused one with the verb's
+  one-line refusal in its error strip, never as "Saved.". A value the refused
+  write left is the stored one, never the posted one.
+- **Tier C is read-only.** A row with `tier` `C` has no editor, here or on the
+  server (`POST /settings/set` refuses it with 400 before the runner is touched);
+  the page says "Read-only here: only you can change this, from a terminal." and
+  spells out no command (Y-11).
+- **A terminal override is one line.** A row whose `warn` is set shows "Set for
+  this terminal only. It outranks config.yaml while it lasts." (on an editable
+  row, plus that a saved value does not take effect until it is removed), and the
+  CLI's full `warn` sentence verbatim in a fold under it.
+- **Where each kind of item goes.** The `attention.class.*` rows are one table
+  under that heading in the attention group, each kind named as in the inbox
+  (the `Inbox: ` prefix is dropped) with a choice among the values the registry
+  accepts, in words: Waits for you, Shows as decided, Stays silent, Its kind's
+  default.
+- **Find a setting.** A search box filters the rows by every typed word, matched
+  against the key, the plain name, the sentence, the technical note and the
+  group's heading. `static/settings.js` filters as you type; the same filter
+  runs on the server for `?q=` (a plain form submit), marking non-matching rows
+  `hidden` and not dropping them, so clearing the box restores them. A group with
+  a match opens; a group with none is hidden along with its jump chip; the page
+  says how many settings match, or that none does. A row of chips jumps to a
+  group and opens it if it is folded.
+- **No new key.** The settings page binds no key (the dispatch pin stands).
+- **A malformed `config.yaml` or an unreadable read** shows the CLI's error in an
+  error strip and no groups; the page is never a 500.
+
 ## 3. Process & data architecture
 
 **The files are the only truth; the server is a reader and a
