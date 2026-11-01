@@ -1376,7 +1376,9 @@ def caller_unit() -> str | None:
     cannot be read. A claim records it, so "Stop it" can tell the terminal
     the page opened from any other session."""
     try:
-        text = _CGROUP_PATH.read_text(encoding="utf-8")
+        # Gate r2 R2-1: a path that is not UTF-8 never fails the claim;
+        # a run unit name is ASCII, so a replaced byte cannot fake one.
+        text = _CGROUP_PATH.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     for line in text.splitlines():

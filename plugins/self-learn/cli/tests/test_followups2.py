@@ -465,6 +465,75 @@ def test_stop_it_is_the_persons_click_and_needs_a_claim(tmp_path, monkeypatch, c
     assert cli.main(["attention", "stop", "att-000000000000"]) == answers.EXIT_USAGE  # still refused first
 
 
+def test_a_cgroup_file_that_is_not_utf8_never_fails_the_claim(tmp_path, monkeypatch):
+    """Gate r2 R2-1. Mutation: read the cgroup file strictly as UTF-8 ->
+    red (`UnicodeDecodeError` out of `claim`)."""
+    path = tmp_path / "cgroup"
+    path.write_bytes(b"0::/user.slice/\xff\xfe/x.scope\n")
+    monkeypatch.setattr(answers, "_CGROUP_PATH", path)
+    assert answers.caller_unit() is None
+    # A run unit beside bytes that are not UTF-8 is still found.
+    path.write_bytes(b"0::/user.slice/\xff\xfe/app.slice/self-learn-run-0123456789ab.service\n")
+    assert answers.caller_unit() == "self-learn-run-0123456789ab"
+
+
+def test_the_innermost_run_unit_of_a_nested_cgroup_is_the_callers(tmp_path, monkeypatch):
+    """Gate r2 R2-3, N7 (its probes): a session nested under the page's
+    unit counts as in it, and a path naming two run units is the innermost
+    one's, so another item's unit nested inside ours is not ours.
+    Mutation: scan the segments outermost-first -> red."""
+    from support import make_home
+
+    home = make_home(tmp_path)
+    _approved, approved_id = _launched(home, tmp_path, monkeypatch)
+    unit = attention.run_unit(approved_id)
+    path = tmp_path / "cgroup-nested"
+    monkeypatch.setattr(answers, "_CGROUP_PATH", path)
+    path.write_text(f"0::/user.slice/user@1000.service/app.slice/{unit}.service/"
+                    "self-learn-run-ba9876543210.service\n", encoding="utf-8")
+    assert answers.caller_unit() == "self-learn-run-ba9876543210"
+    answers.claim(home, approved_id, "sess-x")
+    with pytest.raises(answers.AnswerError) as refused:
+        answers.stop(home, approved_id)
+    assert refused.value.exit_code == answers.EXIT_REFUSED
+
+    # Control: nested deeper under our own unit, the claim is ours.
+    claim_file = attention.cache_dir(home) / "attention" / "claims" / f"{approved_id}.json"
+    claim_file.unlink()
+    path.write_text(f"0::/user.slice/user@1000.service/app.slice/{unit}.service/inner/leaf\n",
+                    encoding="utf-8")
+    answers.claim(home, approved_id, "sess-ours")
+    assert answers.stop(home, approved_id) == answers.STOPPED_MESSAGE
+
+
+def test_stop_refuses_a_launch_older_than_the_current_approval(tmp_path, monkeypatch):
+    """Gate r2 R2-3, N5 (its probe): `stop` itself, not only the page's
+    options, holds a launch to the current approval: a claim from our own
+    unit whose run record predates the approval is refused, with no
+    `systemctl` call on the unit. Mutation: `stop` passes
+    `approved_at=None` -> red."""
+    from support import make_home
+
+    home = make_home(tmp_path)
+    _approved, approved_id = _launched(home, tmp_path, monkeypatch)
+    answers.claim(home, approved_id, "sess-ours")
+    claim = attention.cache_dir(home) / "attention" / "claims" / f"{approved_id}.json"
+    assert json.loads(claim.read_text("utf-8"))["unit"] == attention.run_unit(approved_id)  # control
+    record = attention.cache_dir(home) / "attention" / "runs" / f"{approved_id}.json"
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    record.write_text(json.dumps({**json.loads(record.read_text("utf-8")), "at": old}),
+                      encoding="utf-8")
+    before = len(_calls(tmp_path, "systemctl"))
+
+    with pytest.raises(answers.AnswerError) as refused:
+        answers.stop(home, approved_id)
+
+    assert refused.value.exit_code == answers.EXIT_REFUSED
+    unit = attention.run_unit(approved_id)
+    assert [c for c in _calls(tmp_path, "systemctl")[before:] if unit in c] == []
+    assert attention._claim(home, approved_id, datetime.now(timezone.utc)) is not None  # noqa: SLF001
+
+
 # ------------------------------------------------------------------ 3. run --json
 
 

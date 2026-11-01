@@ -143,3 +143,47 @@ def test_published_question_notes_keep_only_indexed_asks():
     assert overseer_run._published_question_notes(lines, published=True, dropped={"q-b"}) == [lines[0]]
     assert overseer_run._published_question_notes(lines, published=True, dropped=set()) == lines
     assert overseer_run._published_question_notes(lines, published=False, dropped=set()) == []
+
+
+def test_no_kept_note_on_a_run_that_halted(tmp_path, monkeypatch):
+    """Gate r2 R2-3, N11: a run that halts unfinished indexes none of its
+    asks, so its report carries no "(kept, and asked as written)" line,
+    although the note was made (the manifest keeps it for a resume).
+    Mutation: the finalize call site passes `published=True` -> red."""
+    from self_learn import execution_evidence
+    from test_overseer_run import (
+        _dispatch_scripted,
+        _dump,
+        _enabled,
+        _fake_hook_phases,
+        _seed_parked_hook,
+        _silence_notifications,
+    )
+
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_apply_refusal=True)
+    _silence_notifications(monkeypatch)
+    inner = overseer_run.invocation.write_session
+
+    def with_a_question(spec):
+        outcome = inner(spec)
+        if (spec.cwd / "sheet-hook.yaml").exists():  # phase B's stage
+            _dump(spec.cwd / "questions.yaml", {"questions": [
+                _user_ask("q-ids", [parked], text=f"Should {parked} be read again? Yes reads it."),
+            ]})
+        return outcome
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", with_a_question)
+    _dispatch_scripted(monkeypatch, {1: (1, "target-busy"), 2: (6, None)})
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert result.status == "partial"  # control: the run halted
+    manifest = execution_evidence.read_manifest(home, result.run)
+    assert any(line.startswith("question q-ids (kept") for line in manifest["question_notes"])  # control
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert "## Questions for you" in report  # control: the report was published
+    assert "(kept, and asked as written)" not in report
+    assert [row["id"] for row in conversation._load_questions(home)] == []  # noqa: SLF001
