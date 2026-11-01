@@ -19,7 +19,9 @@ needed for T-A (09 §7 / 10 §2 T-A).
 
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,7 @@ from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
+from self_learn import places as sl_places
 from self_learn.hosts import HOST_MODES, effective_default_mode, is_repo_root
 from self_learn.records import Record
 from self_learn.settings import REGISTRY as SETTINGS_REGISTRY
@@ -576,13 +579,81 @@ def front(request: Request, notice: str | None = None) -> HTMLResponse:
         mine_read,
         sentinel_mtime=ledger.sentinel_mtime(),
     )
+    # Humane lane 1 (proposal §3): the Home page's own model, built beside
+    # the front model from the SAME four reads -- no extra CLI call.
+    home_model = models.build_home_model(model, list_read, status_read, report_read, mine_read)
+    _jobs_line_cache(request)["line"] = (time.monotonic(), home_model.jobs_line)
+    report_data = report_read.data if report_read.ok and isinstance(report_read.data, dict) else {}
     # The "Inbox (N)" link fills itself in after load (GET /inbox/count,
     # inbox_routes.py), so the front page never waits on `attention --json`.
+    # So does the "Needs your answer" tile (GET /home/needs-you, below).
     return _render(
         request,
         "index.html",
-        {"model": model, "notice": notice},
+        {
+            "model": model,
+            "home": home_model,
+            "notice": notice,
+            # Lane 0's per-day counts, for lane 2's two Home charts
+            # (`partials/home_charts.html`); None when the report failed.
+            "series": report_data.get("series"),
+            # The shared header's jobs line, already known here, so the
+            # front page does not fetch it a second time.
+            "jobs_line": home_model.jobs_line,
+            # Two small word helpers the Home template calls (kept out of
+            # the shared filter table in app.py).
+            "placed_text": models.placed_text,
+            "days_ago_words": models.days_ago_words,
+        },
     )
+
+
+# ------------------------------------------------- shared header (lane 1)
+
+
+@router.get("/header/jobs", response_class=HTMLResponse)
+def header_jobs(request: Request) -> HTMLResponse:
+    """Humane lane 1 (proposal §2): the shared header's one line about the
+    jobs, fetched after a page has loaded (every page but Home, which
+    renders it inline), so no page waits on `status --json` for it."""
+    cache = _jobs_line_cache(request)
+    now = time.monotonic()
+    cached = cache.get("line")
+    if cached is not None and now - cached[0] < _JOBS_LINE_TTL_SECS:
+        line = cached[1]
+    else:
+        home = _home(request)
+        line = models.build_jobs_line(ledger.status(home), ledger.mine_status(home))
+        cache["line"] = (now, line)
+    return _render(request, "partials/jobs_line.html", {"jobs_line": line})
+
+
+#: The header asks for its jobs line on every page view, and `status
+#: --json` takes seconds on a large ledger; one answer serves every page
+#: viewed within this many seconds (Home always renders a fresh one and
+#: refreshes this copy).
+_JOBS_LINE_TTL_SECS = 30.0
+
+
+def _jobs_line_cache(request: Request) -> dict[str, Any]:
+    cache = getattr(request.app.state, "humane_jobs_line", None)
+    if cache is None:
+        cache = {}
+        request.app.state.humane_jobs_line = cache
+    return cache
+
+
+@router.get("/home/needs-you", response_class=HTMLResponse)
+async def home_needs_you(request: Request) -> HTMLResponse:
+    """The Home page's "Needs your answer" tile, filled in after load from
+    the inbox reader's own `counts.needs_you` (the front page never waits
+    on `attention --json`). `None` (rendered "?") when it could not be read."""
+    read = await asyncio.to_thread(ledger.attention, _home(request))
+    data = read.data if isinstance(read.data, dict) else None
+    count: int | None = None
+    if data is not None and not read.error and not data.get("error"):
+        count = int((data.get("counts") or {}).get("needs_you") or 0)
+    return _render(request, "partials/home_answer_tile.html", {"count": count})
 
 
 # -------------------------------------------------------------------- Bucket
@@ -593,6 +664,23 @@ def _find_bucket(home: Path, scope: str, name: str) -> ledger.Bucket | None:
         if bucket.scope == scope and bucket.name == name:
             return bucket
     return None
+
+
+def _place(home: Path, scope: str, name: str) -> dict[str, Any]:
+    """Humane lane 1 (proposal §2/§10): a bucket's plain name and folder,
+    from lane 0's `self_learn.places` (the same words `status --json`
+    carries), for the page heading and the detail pages' "where you are"
+    line. Display only: a failed read falls back to the bucket name and
+    never breaks the page."""
+    try:
+        bucket = _find_bucket(home, scope, name)
+        if bucket is not None:
+            info = sl_places.bucket_places([bucket]).get((scope, name)) or {}
+            if info.get("label"):
+                return {"label": info["label"], "path": info.get("path")}
+    except Exception:  # noqa: BLE001 -- display words only
+        pass
+    return {"label": name, "path": None}
 
 
 def _belongs_to_bucket(home: Path, record_id: object, scope: str, name: str) -> bool:
@@ -782,6 +870,7 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
         "bucket.html",
         {
             "model": model,
+            "place": _place(home, scope, name),
             "notice": notice,
             "list_error": list_read.error,
             "pane": pane_snapshot,
@@ -850,6 +939,7 @@ def detail_page(
                 "record_id": record_id,
                 "bucket": location.bucket_name,
                 "scope": location.scope,
+                "place": _place(home, location.scope, location.bucket_name),
             },
         )
     location, record, item = bundle.location, bundle.record, bundle.item
@@ -896,6 +986,7 @@ def detail_page(
             "detail_resolved.html",
             {
                 "model": resolved_model,
+                "place": _place(home, location.scope, location.bucket_name),
                 "record_id": record_id,
                 "record_proposal": record_proposal,
                 "proposal_verb_label": (
@@ -953,6 +1044,7 @@ def detail_page(
         "detail.html",
         {
             "model": model,
+            "place": _place(home, location.scope, location.bucket_name),
             "armed": None,
             "record_id": record_id,
             # FW-64 × the pane_close carry-forward. `?dest=` can ONLY be on

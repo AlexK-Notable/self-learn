@@ -259,7 +259,7 @@ class TestUIP3ActionBarButtons:
         monkeypatch.setattr(ledger_mod, "report", lambda home, **kw: CliRead(data=report_data))
         c, _runner = make_client(sb)
         r = c.get("/")
-        assert "Is it holding?" in r.text  # positive control -- the card renders at all
+        assert "Rules seen again (1)" in r.text  # positive control -- the card renders at all
         assert "Dismiss (k)" in r.text
         assert "hx-vals='{\"verb\":\"dismiss-suspect\",\"kind\":\"holding\"}'" in r.text
         # gate r3 Minor 4: the KEY-DISPATCH attribute clickAction() reads

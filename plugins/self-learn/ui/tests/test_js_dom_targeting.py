@@ -863,6 +863,11 @@ class TestAArmedBranch:
         assert len(holding) == 2, ids
         _select(front2_page, holding[0])
         row2_id = ids[holding[1]]
+        # Humane lane 1: a rule's choices sit in its "Decide…" fold; the
+        # mouse path opens the fold first, then clicks the choice.
+        front2_page.locator(
+            f'.holding-row:has(#action-bar-{row2_id}) summary.decide-summary'
+        ).click()
         front2_page.locator(
             f'#action-bar-{row2_id} [data-key-action="dismiss_suspect"]'
         ).click()
@@ -1231,3 +1236,29 @@ class TestRReturnContract:
         front2_page.keyboard.press("Escape")
         front2_page.wait_for_url(lambda u: u.endswith("/report"), timeout=10000)
         assert front2_page.url.endswith("/report")
+
+
+# ------------------------------- humane lane 1: the rule's "Decide…" fold
+
+
+class TestHumaneDecideFold:
+    def test_a_key_opens_the_selected_rules_fold_and_shows_the_armed_bar(
+        self, front1_page: "Page", front1_server: ServerHandle
+    ) -> None:
+        """Humane lane 1 (proposal §3): a rule's four choices sit in a
+        closed "Decide…" fold. `t` on the selected rule must open that fold
+        so the armed bar it produces is on screen -- arming a bar the
+        person cannot see is a dead key with extra steps. The arm route is
+        real (it renders the armed bar; no verb runs before Confirm)."""
+        _open(front1_page, front1_server, "/")
+        ids = _row_ids(front1_page)
+        row = ids.index(HOLD_A)
+        fold = f".holding-row:has(#action-bar-{HOLD_A}) details.decide-fold"
+        # Precondition: the fold starts closed, so the bar is not visible.
+        assert front1_page.evaluate(f"() => document.querySelector('{fold}').open") is False
+        assert not front1_page.locator(f"#action-bar-{HOLD_A}").is_visible()
+        _select(front1_page, row)
+        front1_page.keyboard.press("t")
+        front1_page.wait_for_selector(f'#action-bar-{HOLD_A}[data-armed="true"]', state="attached")
+        assert front1_page.evaluate(f"() => document.querySelector('{fold}').open") is True
+        assert front1_page.locator(f'#action-bar-{HOLD_A}[data-armed="true"]').is_visible()

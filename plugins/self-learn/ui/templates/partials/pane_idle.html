@@ -36,14 +36,19 @@
   {% else %}
   <button type="button" data-key-action="{{ 'bucket_pane' if bucket_pane else 'iterate' }}"
           hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/start"
-          hx-target="#pane-region-wrapper" hx-swap="outerHTML">{% if bucket_pane %}Open bucket chat (p){% else %}Iterate (i){% endif %}</button>
+          hx-target="#pane-region-wrapper" hx-swap="outerHTML">{% if bucket_pane %}Open bucket chat (p){% elif no_suggestion is defined and no_suggestion %}Ask for a suggestion (i){% else %}Iterate (i){% endif %}</button>
   {% if bucket_pane %}
   <p class="pane-hint">Chat about this bucket &mdash; the agent can answer
     questions about the queue and suggest resolutions; nothing runs
     unless you confirm.</p>
   {% else %}
+  {% if no_suggestion is defined and no_suggestion %}
+  <p class="pane-hint">This lesson has no suggestion yet. The overnight drafting
+    job will write one; this opens an agent session that drafts one now.</p>
+  {% else %}
   <p class="pane-hint">No agent session on this record yet &mdash; Iterate opens one
     to refine the proposal or draft what the buttons can't.</p>
+  {% endif %}
   {% endif %}
   {% endif %}
 

@@ -171,7 +171,9 @@ class TestChangeRegionNoProposal:
         constant itself -- self-referential, so a wording change to the
         constant would sail through unnoticed. This pins the literal
         text so an accidental wording change is a visible diff here."""
-        assert NO_ANALYSIS_MESSAGE == "no analysis yet — `i` to analyze now"
+        # Humane lane 1: plain words; the key is drawn as a key cap by
+        # detail.html, never as literal backticks.
+        assert NO_ANALYSIS_MESSAGE == "No suggestion yet."
 
 
 class TestChangeRegionUnrenderable:

@@ -2042,3 +2042,574 @@ header.ws-head {
   flex-wrap: wrap;
   gap: 0.6rem;
 }
+
+/* === humane lane 1: shared header, Home, bucket and detail fixes === */
+/* Proposal §2/§3/§10 (S-NEXT-humane-l1). Only new classes are styled
+   here, plus three narrow overrides named below: the inbox link's
+   `.status-item[title]` dotted underline inside the nav, the primary
+   colour on an Approve with no suggestion yet, and the resolved page's
+   heading. */
+
+.site-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 1.25rem;
+  max-width: 96rem;
+  margin: 0 auto;
+  padding: 0.5rem 1.5rem;
+  font-size: 0.9rem;
+}
+
+.site-brand {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--slu-fg);
+}
+
+.site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+}
+
+.site-nav a {
+  color: var(--slu-fg-muted);
+  text-decoration: none;
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--slu-radius-sm);
+}
+
+.site-nav a:hover {
+  color: var(--slu-fg);
+  background: var(--slu-bg-elevated);
+}
+
+.site-nav a[aria-current="page"] {
+  color: var(--slu-accent);
+  background: var(--slu-accent-bg);
+  font-weight: 600;
+}
+
+/* Override: the inbox link partial carries `.status-item` + a title, which
+   the old strip styled as a dotted "hover me" item. In the nav it is a
+   plain place link. */
+.site-nav .status-item[title] {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.site-nav .inbox-link-active {
+  color: var(--slu-fg);
+  font-weight: 600;
+}
+
+.jobs-line {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--slu-fg-muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.jobs-line:hover {
+  color: var(--slu-fg);
+}
+
+.jobs-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--slu-success);
+  flex: none;
+}
+
+.jobs-line-late {
+  color: var(--slu-warning);
+  background: var(--slu-warning-bg);
+  border: 1px solid color-mix(in srgb, var(--slu-warning) 35%, transparent);
+  border-radius: var(--slu-radius-sm);
+  padding: 0.15rem 0.6rem;
+  font-weight: 600;
+}
+
+.jobs-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  background: var(--slu-warning);
+  color: var(--slu-bg-raised);
+  font-size: 0.75rem;
+  font-weight: 800;
+  flex: none;
+}
+
+.jobs-line-loading {
+  color: var(--slu-fg-faint);
+}
+
+.crumbs {
+  max-width: 96rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 0.5rem;
+  font-size: 0.85rem;
+  color: var(--slu-fg-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.45rem;
+  align-items: baseline;
+}
+
+.crumbs a {
+  text-decoration: none;
+}
+
+.crumbs a:hover {
+  text-decoration: underline;
+}
+
+.crumb-sep {
+  color: var(--slu-fg-faint);
+}
+
+/* ---- Home */
+
+.home-head h1 {
+  font-size: 1.5rem;
+  margin-bottom: 0.2rem;
+}
+
+.home-sub,
+.home-intro,
+.home-note,
+.home-empty {
+  color: var(--slu-fg-muted);
+  margin: 0 0 0.9rem;
+}
+
+.home-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.home-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  height: 100%;
+  padding: 0.8rem 1rem;
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  box-shadow: var(--slu-shadow);
+  color: var(--slu-fg);
+  text-decoration: none;
+}
+
+.home-tile:hover {
+  border-color: var(--slu-accent);
+}
+
+.home-tile-label {
+  font-size: 0.85rem;
+  color: var(--slu-fg-muted);
+}
+
+.home-tile-value {
+  font-size: 1.7rem;
+  font-weight: 650;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.home-tile-note {
+  font-size: 0.8rem;
+  color: var(--slu-fg-faint);
+}
+
+/* A tile at zero is greyed, and says so in its note too. */
+.home-tile-zero .home-tile-value {
+  color: var(--slu-fg-faint);
+}
+
+.home-tile-wrap[data-row].selected .home-tile {
+  outline: 2px solid var(--slu-focus-ring);
+  outline-offset: -2px;
+}
+
+/* Section headings on Home read as headings, not uppercase runners. */
+h2.home-h {
+  font-size: 1.05rem;
+  font-weight: 650;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--slu-fg);
+  margin: 2rem 0 0.35rem;
+}
+
+.home-section {
+  scroll-margin-top: 4rem;
+}
+
+.home-rows {
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  box-shadow: var(--slu-shadow);
+}
+
+/* The rows sit inside one card; the per-row card look of the old
+   `.holding-row` / `.followup-row` is cancelled for these rows only. */
+.home-rows > .home-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem 1rem;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.home-rows > .home-row + .home-row {
+  border-top: 1px solid var(--slu-border);
+}
+
+.home-rows > .home-row[data-row].selected {
+  outline: 2px solid var(--slu-focus-ring);
+  outline-offset: -2px;
+}
+
+.home-row-main {
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+
+.home-row-what {
+  margin: 0;
+  color: var(--slu-fg);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+a.home-row-what {
+  text-decoration: none;
+}
+
+a.home-row-what:hover {
+  text-decoration: underline;
+}
+
+.home-row-meta {
+  margin: 0.15rem 0 0;
+  font-size: 0.83rem;
+  color: var(--slu-fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.home-row-side {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.home-row-side .action-bar form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.btn-link {
+  font-size: 0.83rem;
+  font-weight: 550;
+  padding: 0.32em 0.85em;
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius-sm);
+  background: var(--slu-bg-elevated);
+  color: var(--slu-fg);
+  text-decoration: none;
+}
+
+.btn-link:hover {
+  border-color: var(--slu-accent);
+  color: var(--slu-accent);
+}
+
+/* "Decide…": one button per rule; its actions open below the row. */
+.decide-fold {
+  flex: 0 0 auto;
+}
+
+.decide-fold[open] {
+  flex: 1 0 100%;
+  order: 3;
+}
+
+.decide-summary {
+  display: inline-block;
+  list-style: none;
+  cursor: pointer;
+  font-size: 0.83rem;
+  font-weight: 550;
+  padding: 0.32em 0.85em;
+  border: 1px solid var(--slu-border-strong);
+  border-radius: var(--slu-radius-sm);
+  background: var(--slu-bg-elevated);
+}
+
+.decide-summary::-webkit-details-marker {
+  display: none;
+}
+
+.decide-summary:hover {
+  border-color: var(--slu-accent);
+  color: var(--slu-accent);
+}
+
+.decide-fold[open] > .decide-summary {
+  margin-bottom: 0.6rem;
+}
+
+.decide-fold .action-bar form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+}
+
+.decide-fold .session-note {
+  font-size: 0.8rem;
+  color: var(--slu-fg-faint);
+  margin: 0.5rem 0 0;
+}
+
+/* Where lessons live. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.places-table .num {
+  text-align: right;
+}
+
+.place-path {
+  font-size: 0.8rem;
+  color: var(--slu-fg-faint);
+  overflow-wrap: anywhere;
+}
+
+.places-more,
+.places-gone {
+  margin-top: 0.75rem;
+}
+
+.places-more > summary,
+.places-gone > summary,
+.job-more > summary {
+  cursor: pointer;
+  color: var(--slu-fg-muted);
+}
+
+.places-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 0.35rem 1.5rem;
+}
+
+.places-list a {
+  text-decoration: none;
+  font-weight: 550;
+}
+
+.place-count {
+  font-size: 0.8rem;
+  color: var(--slu-fg-muted);
+}
+
+/* Jobs. */
+.job-row-late .home-row-what {
+  color: var(--slu-warning);
+}
+
+.job-more {
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.job-runs {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--slu-fg-muted);
+}
+
+.job-run-day {
+  color: var(--slu-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Bucket and detail pages (proposal §10) */
+
+.place-head {
+  margin: 0 0 1rem;
+}
+
+.place-title {
+  margin: 0;
+}
+
+.place-head .place-path {
+  margin: 0.1rem 0 0;
+}
+
+.place-empty {
+  color: var(--slu-fg-muted);
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  padding: 0.8rem 1rem;
+}
+
+.change-none kbd {
+  font-size: 0.8rem;
+  padding: 0.05em 0.4em;
+  border: 1px solid var(--slu-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--slu-bg-elevated);
+}
+
+/* Override: with no suggestion yet, Approve keeps working but is not the
+   blue primary; "Ask for a suggestion" (Iterate) is. */
+button[data-key-action="route"].approve-unsuggested {
+  background: var(--slu-bg-elevated);
+  border-color: var(--slu-border-strong);
+  color: var(--slu-fg);
+}
+
+button[data-key-action="route"].approve-unsuggested:hover {
+  background: var(--slu-bg-elevated);
+  border-color: var(--slu-accent);
+  color: var(--slu-accent);
+}
+
+/* Override: the resolved page's heading is the rule in sentence case. */
+h1.resolved-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: 0;
+  margin: 0 0 0.6rem;
+}
+
+/* ---- Narrow screens (390 px): nothing scrolls sideways. */
+@media (max-width: 720px) {
+  /* Three wrapped header lines would cover a fifth of a phone screen if
+     they stayed stuck to the top; on a narrow screen the header scrolls
+     away with the page. */
+  header.site-header {
+    position: static;
+  }
+
+  [data-row] {
+    scroll-margin-top: 0.5rem;
+  }
+
+  .site-bar {
+    padding: 0.45rem 1rem;
+    gap: 0.25rem 0.75rem;
+  }
+
+  .site-nav a {
+    padding: 0.25rem 0.45rem;
+  }
+
+  .jobs-line {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+
+  .crumbs {
+    padding: 0 1rem 0.45rem;
+  }
+
+  main#self-learn-ui-content {
+    padding: 1rem 1rem 2.5rem;
+  }
+
+  .home-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .home-tile {
+    padding: 0.65rem 0.75rem;
+  }
+
+  .home-row-main {
+    flex-basis: 100%;
+  }
+
+  .home-row-side {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .home-row-side .action-bar,
+  .home-row-side .action-bar form,
+  .home-row-side label {
+    width: 100%;
+  }
+
+  .home-row-side .action-bar input[type="text"] {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .decide-fold .action-bar input[type="text"] {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .decide-fold .action-bar label {
+    flex: 1 1 100%;
+  }
+
+  .bucket-walk a {
+    max-width: 22ch;
+  }
+}
+
+.home-row-meta .holding-basis,
+.home-row-meta .followup-note {
+  font-size: inherit;
+  color: inherit;
+  margin: 0;
+}
+
+/* The keys footer (base.html): an entry stays on one line where it fits,
+   but a long one (the inbox's "Send the box you are typing in …") may wrap
+   on a narrow screen instead of pushing the page sideways (390 px). */
+@media (max-width: 720px) {
+  .keymap-footer {
+    padding: 0.6rem 1rem;
+  }
+
+  .keymap-footer-entry {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+}

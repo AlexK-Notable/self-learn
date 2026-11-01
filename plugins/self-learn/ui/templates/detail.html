@@ -9,12 +9,16 @@
 {% block page_kind %}detail{% endblock %}
 {% block body_attrs %} data-bucket="{{ model.bucket }}"{% endblock %}
 
-{% block status_strip %}
-<div class="status-strip">
-  <span class="brand">self-learn</span>
-  <a data-key-action="up" href="/bucket/{{ model.scope }}/{{ model.bucket }}" title="Back to this record's bucket (Esc or h)">&larr; {{ model.bucket }}</a>
-  <span class="status-item" title="This lesson's record id in the ledger">{{ model.id }}</span>
-</div>
+{# Humane lane 1 (proposal §2): the shared header (base.html) names the
+   places; this line says where in them the page sits, and its middle link
+   carries the `up` key action (Esc goes back to the place). The record's
+   id is kept off the running text, on hover only. #}
+{% block crumbs %}
+<nav class="crumbs" aria-label="Where you are">
+  <a href="/">Home</a><span class="crumb-sep" aria-hidden="true">&rsaquo;</span>
+  <a data-key-action="up" href="/bucket/{{ model.scope }}/{{ model.bucket }}" title="Back to this place (Esc)">{{ place.label if place is defined and place else model.bucket }}</a><span class="crumb-sep" aria-hidden="true">&rsaquo;</span>
+  <span class="crumb-here" title="Its id in the ledger: {{ model.id }}">A lesson waiting for a decision</span>
+</nav>
 {% endblock %}
 
 {% block content %}
@@ -89,7 +93,10 @@
   <section aria-label="change">
     <h2>Change</h2>
     {% if model.change.kind == "none" %}
-    <p>{{ model.change.message }}</p>
+    {# Humane lane 1 (proposal §10): the key is drawn as a key cap, not as
+       literal backticks, and this is the one place that says so (the Why
+       section below no longer repeats it). #}
+    <p class="change-none">{{ model.change.message }} Press <kbd>i</kbd> to ask for one now.</p>
     {% elif model.change.kind == "unrenderable" %}
     {# M-F4 (B-11, I): a proposal sibling EXISTS but failed to parse --
        rendered distinctly from "none" (banner/alert, not a plain <p>) so
@@ -169,7 +176,9 @@
     {% if model.why.already_canon %}
     <p class="badge badge-already-canon" title="canon = the guidance file(s) this lesson would write into — already there, so there's nothing new to write">already canon{% if model.why.already_canon_reason %} — {{ model.why.already_canon_reason }}{% endif %}</p>
     {% endif %}
+    {% if model.why.freshness != "none" %}
     <p class="badge badge-{{ model.why.freshness }}">{{ model.why.freshness_label }}</p>
+    {% endif %}
     {# 09 §11 Y-20 / §2.3: the single budget surface — every scope-valid
        candidate's loaded-surface fill, plain words. A missing capped key
        (F5) is simply absent from model.why.budgets; nothing renders for
@@ -211,7 +220,10 @@
   {# A1 (O-2 c): scope=model.scope threaded explicitly — never relied on
      via Jinja context leakage — so action_bar.html's cycle button can
      gloss a claude-md dest through the scope-aware resolver. #}
-  {% with kind="detail", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=model.destination_default, dest_note=model.destination_note, event=None, target=None, already_canon=model.why.already_canon, destination_cycle=model.destination_cycle, scope=model.scope, dest_touched=dest_touched, covered_by=model.why.covered_by %}
+  {# Humane lane 1 (proposal §10): with no suggestion yet, Approve stays
+     available but is not the blue primary button -- Iterate ("Ask for a
+     suggestion") is. #}
+  {% with kind="detail", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=model.destination_default, dest_note=model.destination_note, event=None, target=None, already_canon=model.why.already_canon, destination_cycle=model.destination_cycle, scope=model.scope, dest_touched=dest_touched, covered_by=model.why.covered_by, no_suggestion=(model.why.freshness == "none") %}
     {% include "partials/action_bar.html" %}
   {% endwith %}
   {% endif %}
@@ -227,7 +239,9 @@
   {% if pane_split %}
     {% include "partials/pane.html" %}
   {% else %}
+    {% with no_suggestion=(model.why.freshness == "none") %}
     {% include "partials/pane_idle.html" %}
+    {% endwith %}
   {% endif %}
 </div>
 </div>

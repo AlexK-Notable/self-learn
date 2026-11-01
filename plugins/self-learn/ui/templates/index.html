@@ -1,29 +1,28 @@
 {% extends "base.html" %}
-{% block title %}self-learn — Front{% endblock %}
+{% block title %}self-learn — Home{% endblock %}
 {% block page_kind %}front{% endblock %}
 
-{# Feedback round 1 item 2: every status item explains itself on hover,
-   in plain words (Y-9 — no system vocabulary without a translation). #}
-{% block status_strip %}
-<div class="status-strip">
-  <span class="brand">self-learn</span>
-  {# Attention round (design r2 §4.7): "Inbox (N)", filled in after load. #}
-  {% include "partials/workspace_inbox_link.html" %}
-  <span class="status-item" title="The background analyst that pre-reads new lessons and drafts a routing proposal for each. Overdue means lessons are waiting but it hasn't run recently.">worker: {{ model.status.worker_stale_label }}</span>
-  <span class="status-item" title="Lessons waiting for your decision, across every bucket.">pending: {{ model.status.total_pending }}</span>
-  <span class="status-item" title="Promises recorded while routing (things to circle back on) that are still open.">follow-ups: {{ model.status.open_followups }}</span>
-  <span class="status-item" title="Whether background syncing of the lesson ledger is running normally. It pauses only while a change is being written.">{{ model.status.sentinel_label }}</span>
-  <span class="status-item" title="The background pass that reads finished conversations looking for lessons worth keeping.">{{ model.miner.stale_label }}</span>
-  <a class="status-item" href="/report" title="Open the full activity report: what landed, what's held, and how the system is doing.">report</a>
-  <a class="status-item" href="/settings" title="Every operator setting, its current value, and where it comes from — override, config.yaml, environment, or the built-in default.">settings</a>
-</div>
-{% endblock %}
+{# Humane lane 1 (proposal §3, S-NEXT-humane-l1): Home, read top to
+   bottom as "what is waiting for me": four tiles, the two charts (lane 2's
+   partial), the lessons to decide, the rules seen again, the follow-ups,
+   where lessons live, and the jobs. Every number is one the CLI counted
+   (status / report / list / mine --json); the tiles count rows of those
+   same lists. The shared header (base.html) carries the places and the
+   one-line jobs verdict that this page's old status strip used to spell
+   out item by item.
+
+   Keyboard (unchanged keymap): w/s walk the rows marked data-row (the
+   tiles, the lessons, the rules, the follow-ups, the places with
+   something waiting), Enter opens the selected row's link, and t/c/g/k
+   act on the selected rule. A rule's actions sit in its "Decide…" fold;
+   app.js opens the fold when a key acts on something inside it, so the
+   armed bar is always on screen. #}
 
 {% block content %}
 {% if notice == "resolved-elsewhere" %}
 <p class="banner banner-notice">That record was resolved elsewhere.</p>
 {% elif notice == "bucket-clear" %}
-<p class="banner banner-notice">Bucket clear — nothing pending there now.</p>
+<p class="banner banner-notice">Nothing is waiting in that place now.</p>
 {% elif notice == "not-found" %}
 <p class="banner banner-notice">That record could not be found.</p>
 {% endif %}
@@ -40,156 +39,247 @@
 <p class="banner banner-notice" role="alert">{{ model.status.total_unreadable }} record{{ "s" if model.status.total_unreadable != 1 else "" }} could not be read.</p>
 {% endif %}
 
-<section aria-label="bucket walk">
-  <h1>Buckets</h1>
-  {% if not model.buckets %}
-  <p>Nothing pending anywhere. Good triage.</p>
+<section class="home-head" aria-labelledby="home-h">
+  <h1 id="home-h">Home</h1>
+  <p class="home-sub">{{ home.date_text }}.</p>
+  <div class="home-tiles">
+    {% for t in home.tiles %}
+    <div class="home-tile-wrap" data-row>
+      {% if t.key == "answer" %}
+      {% include "partials/home_answer_tile.html" %}
+      {% else %}
+      <a class="home-tile{% if not t.value %} home-tile-zero{% endif %}" href="{{ t.href }}">
+        <span class="home-tile-label">{{ t.label }}</span>
+        <span class="home-tile-value">{{ t.value }}</span>
+        <span class="home-tile-note">{{ t.note }}{% if t.note_ts %} {{ t.note_ts | humanize_ts }}{% endif %}</span>
+      </a>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+{# Lane 2 draws the two Home charts ("Is it keeping up?", "What got
+   decided, night by night") from `series` (lane 0's report --json block,
+   threaded in by routes.front). Until that partial exists this renders
+   nothing. #}
+{% include "partials/home_charts.html" ignore missing %}
+
+<section id="lessons" class="home-section" aria-labelledby="lessons-h">
+  <h2 id="lessons-h" class="home-h">Lessons to decide ({{ home.lessons | length }})</h2>
+  {% if home.lessons %}
+  <div class="home-rows">
+    {% for row in home.lessons %}
+    <div class="lesson-row home-row" data-row>
+      <div class="home-row-main">
+        <a class="home-row-what" href="/record/{{ row.id }}">{{ row.title }}</a>
+        <p class="home-row-meta">For {{ row.place }}{% if row.source_text %} &middot; {{ row.source_text }}{% endif %}{% if row.created_at %} {{ row.created_at | humanize_ts }}{% endif %} &middot; {{ row.suggestion_text }}</p>
+      </div>
+      <div class="home-row-side"><a class="btn-link" href="/record/{{ row.id }}">Open</a></div>
+    </div>
+    {% endfor %}
+  </div>
   {% else %}
-  {# Feedback round 1 items 1 + 8: clickable, sortable column headers
-     (app.js sorts the tbody client-side; j/k selection reads DOM order,
-     so it follows the sort for free) + a Deferred column. Numeric cells
-     carry data-sort-value so "—"/suffixed text never confuses the sort. #}
-  <table class="bucket-walk">
-    <thead>
-      <tr>
-        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="name" data-sort-type="text" title="Sort by bucket name">Bucket</button></th>
-        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="scope" data-sort-type="text" title="Sort by where the bucket's lessons apply">Scope</button></th>
-        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="pending" data-sort-type="number" title="Sort by lessons waiting for a decision">Pending</button></th>
-        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="oldest" data-sort-type="number" title="Sort by the age of the oldest waiting lesson">Oldest</button></th>
-        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="unanalyzed" data-sort-type="number" title="Sort by lessons the analyst hasn't pre-read yet">Unanalyzed</button></th>
-        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="deferred" data-sort-type="number" title="Sort by snoozed lessons that will resurface later">Deferred</button></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for b in model.buckets %}
-      <tr data-row>
-        <td data-sort-key="name" data-sort-value="{{ b.name }}"><a href="/bucket/{{ b.scope }}/{{ b.name }}">{{ b.name }}</a></td>
-        <td data-sort-key="scope" data-sort-value="{{ b.scope }}">{{ b.scope }}</td>
-        <td data-sort-key="pending" data-sort-value="{{ b.pending }}">{{ b.pending }}</td>
-        <td data-sort-key="oldest" data-sort-value="{{ b.oldest_days if b.oldest_days is not none else -1 }}">{{ (b.oldest_days ~ "d") if b.oldest_days is not none else "—" }}</td>
-        <td data-sort-key="unanalyzed" data-sort-value="{{ b.unanalyzed }}">{{ b.unanalyzed }}</td>
-        <td data-sort-key="deferred" data-sort-value="{{ b.deferred }}">{{ b.deferred if b.deferred else "—" }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <p class="home-empty">Nothing is waiting for a decision.</p>
+  {% endif %}
+  {% if home.lessons_later %}
+  <p class="home-note">{{ home.lessons_later }} more {{ "is" if home.lessons_later == 1 else "are" }} left for later; {{ "it comes" if home.lessons_later == 1 else "they come" }} back on {{ "its" if home.lessons_later == 1 else "their" }} own day.</p>
   {% endif %}
 </section>
 
 {% if model.holding %}
-<section aria-label="is it holding">
-  {# UI-walk defect fix (terminology): "holding" is opaque on its own —
-     these are already-routed rules that got sighted again (possibly
-     violated), asking whether the existing guidance is still holding up
-     or needs revising. #}
-  <h2 title="Rules already written into canon that were sighted again since — is the existing guidance holding up, or does it need revising?">Is it holding?</h2>
-  {% for row in model.holding %}
-  <div class="holding-row" data-row>
-    <p>{{ row.text }}</p>
-    {# Why it was flagged. `fire-violated` means the model reported
-       breaking this rule; the rest are text heuristics — the difference
-       is most of what separates "revise" from "tolerate", and it used to
-       be spooled into telemetry and then dropped before reaching here. #}
-    {% if row.basis_text %}<p class="holding-basis">Flagged because {{ row.basis_text }}.</p>{% endif %}
-    {% with kind="holding", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, event=row.newest_nonce, dest=None, target=None %}
-      {% include "partials/action_bar.html" %}
-    {% endwith %}
+<section id="holding" class="home-section" aria-labelledby="holding-h">
+  {# Was "Is it holding?". These are rules already placed that a later
+     session seemed to run into again; the person decides whether each
+     still holds. Titled by the rule's own words (lane 0's `title`). #}
+  <h2 id="holding-h" class="home-h" title="Rules already placed that a later session seemed to run into again. Is each rule still right, or does it need changing?">Rules seen again ({{ model.holding | length }})</h2>
+  <p class="home-intro">These rules are already in place. A later session looked like it ran into the same situation. Check whether each rule still holds.</p>
+  <div class="home-rows">
+    {% for row in model.holding %}
+    <div class="holding-row home-row" data-row>
+      <div class="home-row-main">
+        <p class="home-row-what">{{ row.title or "A rule whose text could not be read" }}</p>
+        {% set _placed = placed_text(row.destination, row.scope, row.place_label) %}
+        {% set _when = days_ago_words(row.routed_days_ago) %}
+        <p class="home-row-meta">{% if _placed %}{{ _placed }}{% if _when %}, {{ _when }}{% endif %} &middot; {% endif %}seen again {{ "once" if row.sighted_count == 1 else row.sighted_count ~ " times" }}{% if row.basis_text %} <span class="holding-basis">because {{ row.basis_text }}</span>{% endif %}</p>
+      </div>
+      {# The four choices (t / c / g / k), the note, the reason and the
+         "covered by" field stay exactly as they were, folded behind one
+         "Decide…" button per row so seven rules fit on one screen. #}
+      <details class="decide-fold">
+        <summary class="decide-summary">Decide&hellip;</summary>
+        {% with kind="holding", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, event=row.newest_nonce, dest=None, target=None %}
+          {% include "partials/action_bar.html" %}
+        {% endwith %}
+      </details>
+    </div>
+    {% endfor %}
   </div>
-  {% endfor %}
 </section>
 {% endif %}
 
 {% if model.followups %}
-<section aria-label="open follow-ups">
-  <h2>Open follow-ups</h2>
-  {% for row in model.followups %}
-  <div class="followup-row" data-row>
-    <p>{{ row.action or "(no action recorded)" }}{% if row.unblocks_on %} — unblocks on {{ row.unblocks_on | humanize_ts }}{% endif %}</p>
-    {% if row.note %}<p class="followup-note">{{ row.note }}</p>{% endif %}
-    {% with kind="followup", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, event=None, dest=None, target=None %}
-      {% include "partials/action_bar.html" %}
-    {% endwith %}
+<section id="followups" class="home-section" aria-labelledby="followups-h">
+  <h2 id="followups-h" class="home-h">Follow-ups ({{ model.followups | length }})</h2>
+  <p class="home-intro">Promises written down when a lesson was placed: something to come back to once it becomes possible.</p>
+  <div class="home-rows">
+    {% for row in model.followups %}
+    <div class="followup-row home-row" data-row>
+      <div class="home-row-main">
+        <p class="home-row-what">{{ row.action or "No action was written down." }}</p>
+        {% if row.unblocks_on or row.note %}
+        <p class="home-row-meta">{% if row.unblocks_on %}Waits on: {{ row.unblocks_on | humanize_ts }}{% endif %}{% if row.unblocks_on and row.note %} &middot; {% endif %}{% if row.note %}<span class="followup-note">{{ row.note }}</span>{% endif %}</p>
+        {% endif %}
+      </div>
+      <div class="home-row-side">
+        {% with kind="followup", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, event=None, dest=None, target=None %}
+          {% include "partials/action_bar.html" %}
+        {% endwith %}
+      </div>
+    </div>
+    {% endfor %}
   </div>
-  {% endfor %}
 </section>
 {% endif %}
 
-<section aria-label="worker">
-  <h2>Worker</h2>
-  <p>{{ model.status.worker_stale_label }}</p>
-  <form>
-    <button type="submit" formmethod="post" formaction="/worker/kick"
-            hx-post="/worker/kick" hx-swap="none"
-            title="Force the pre-analysis worker to draft routing proposals for anything waiting — the same one-click affordance as the miner's, below.">Force run</button>
-  </form>
-</section>
-
-<section aria-label="miner">
-  <h2>Miner</h2>
-  {% if model.miner.ok %}
-  {# 09 §11 Y-24 one-liner: N sessions read / K landed / M near-misses,
-     all drawn from the SAME latest ok/landed-uncommitted run; the
-     canary suffix appears only once something has ever been planted. #}
-  <p>miner: {{ model.miner.latest_sessions_scanned or 0 }} sessions read, {{ model.miner.latest_landed or 0 }} landed, {{ model.miner.near_miss_count }} near-miss{{ "es" if model.miner.near_miss_count != 1 else "" }}{% if model.miner.canaries %} &middot; canaries {{ model.miner.canaries.caught }}/{{ model.miner.canaries.planted }} caught{% endif %} — last run: {{ (model.miner.last_run | humanize_ts) if model.miner.last_run else "never" }} — {{ model.miner.stale_label }}</p>
-  <details>
-    <summary>runs</summary>
-    <ul>
-      {% for run in model.miner.runs %}
-      {# A run that only initialized records no counts at all, and these
-         fields come back None. They used to render the literal string
-         "None" to the operator ("scanned None, landed None, folded None")
-         — found in a UI walk. The summary line above already guards with
-         `or 0`; this one, five lines below it, did not.
-
-         An em-dash rather than 0, deliberately: "not recorded" and
-         "measured zero" are different facts, and conflating them is the
-         exact error this product exists to avoid elsewhere (a reach check
-         reporting 0 of 0 is not a passing check). #}
-      <li>{{ run.ts | humanize_ts }} — {{ run.status_label }} ({{ run.trigger }}) — scanned {{ run.sessions_scanned if run.sessions_scanned is not none else "—" }},
-        landed {{ run.landed if run.landed is not none else "—" }}, folded {{ run.folded if run.folded is not none else "—" }}, recurrences {{ run.recurrences if run.recurrences is not none else "—" }}</li>
+<section id="places" class="home-section" aria-labelledby="places-h">
+  <h2 id="places-h" class="home-h">Where lessons live</h2>
+  {% if home.places_waiting %}
+  {# Only places with something waiting or left for later are rows here
+     (and in the w/s walk). Sorted oldest-waiting first. The column
+     headers still sort the table (app.js, feedback round 1 item 1). #}
+  <div class="table-scroll">
+  <table class="bucket-walk places-table">
+    <thead>
+      <tr>
+        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="name" data-sort-type="text" title="Sort by place">Place</button></th>
+        <th aria-sort="none" class="num"><button type="button" class="sort-header" data-sort-key="pending" data-sort-type="number" title="Sort by lessons waiting for a decision">Waiting</button></th>
+        <th aria-sort="none" class="num"><button type="button" class="sort-header" data-sort-key="deferred" data-sort-type="number" title="Sort by lessons left for later, which come back on their own day">Left for later</button></th>
+        <th aria-sort="none" class="num"><button type="button" class="sort-header" data-sort-key="unanalyzed" data-sort-type="number" title="Sort by waiting lessons that have no suggestion yet">No suggestion yet</button></th>
+        <th aria-sort="none" class="num"><button type="button" class="sort-header" data-sort-key="in_use" data-sort-type="number" title="Sort by rules from this place in use now">In use</button></th>
+        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="oldest" data-sort-type="number" title="Sort by how long the oldest lesson has waited">Oldest waiting</button></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in home.places_waiting %}
+      <tr data-row>
+        <td data-sort-key="name" data-sort-value="{{ p.label }}"><a href="/bucket/{{ p.scope }}/{{ p.name }}">{{ p.label }}</a>{% if p.path %} <span class="place-path">{{ p.path }}</span>{% endif %}</td>
+        <td class="num" data-sort-key="pending" data-sort-value="{{ p.pending }}">{{ p.pending }}</td>
+        <td class="num" data-sort-key="deferred" data-sort-value="{{ p.deferred }}">{{ p.deferred if p.deferred else "—" }}</td>
+        <td class="num" data-sort-key="unanalyzed" data-sort-value="{{ p.unanalyzed }}">{{ p.unanalyzed if p.unanalyzed else "—" }}</td>
+        <td class="num" data-sort-key="in_use" data-sort-value="{{ p.in_use if p.in_use is not none else -1 }}">{{ p.in_use if p.in_use is not none else "—" }}</td>
+        <td data-sort-key="oldest" data-sort-value="{{ p.oldest_days if p.oldest_days is not none else -1 }}">{{ days_ago_words(p.oldest_days) if p.oldest_days is not none else "—" }}</td>
+      </tr>
       {% endfor %}
-    </ul>
-  </details>
-  {# Default-collapsed, latest run only (F4) — a snapshot of the last
-     pass, never an accumulating multi-run list. No dismiss/snooze/seen
-     control anywhere: Promote is the only exit (§2.4). #}
-  <details>
-    {# UI-walk defect fix (terminology): a near-miss is a candidate the
-       miner considered and DIDN'T capture (fell short of its bar) —
-       shown so a human can promote one it was wrong to skip. #}
-    <summary title="Candidates the miner considered but did not capture — fell short of its bar. Promote one here if it should have.">near-misses ({{ model.miner.near_miss_count }})</summary>
-    {% if not model.miner.near_miss_rows %}
-    <p>Nothing near-missed in the latest run.</p>
-    {% else %}
-    <ul class="near-miss-rows">
-      {% for row in model.miner.near_miss_rows %}
-      <li class="near-miss-row" data-row>
-        <span class="badge badge-{{ row.badge.kind }}">{{ row.badge.text }}</span>
-        <span class="near-miss-reason">{{ row.reason }}</span>
-        {% if row.record_id %}<a href="/record/{{ row.record_id }}">{{ row.record_id }}</a>{% endif %}
-        {% if row.draft_line %}<p class="near-miss-draft">{{ row.draft_line }}</p>{% endif %}
-        {% if row.promotable %}
-        <form hx-post="/mine/near-miss/promote" hx-swap="none">
-          <input type="hidden" name="run_id" value="{{ model.miner.latest_run_id }}">
-          <input type="hidden" name="index" value="{{ row.index }}">
-          <button type="submit">Promote to pending</button>
-        </form>
-        {% endif %}
-      </li>
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="home-empty">Nothing is waiting in any place.</p>
+  {% endif %}
+
+  {# The quiet places fold away. Like the bucket page's "Routed here"
+     archive, these rows deliberately carry NO data-row: the w/s walk
+     never selects a row the person cannot see. Mouse and Tab reach them. #}
+  {% set _quiet_n = home.places_quiet | length + home.places_gone | length %}
+  {% if _quiet_n %}
+  <details class="places-more">
+    <summary>{{ _quiet_n }} more place{{ "s" if _quiet_n != 1 else "" }} with nothing waiting</summary>
+    {% if home.places_quiet %}
+    <ul class="places-list">
+      {% for p in home.places_quiet %}
+      <li><a href="/bucket/{{ p.scope }}/{{ p.name }}">{{ p.label }}</a>{% if p.path %} <span class="place-path">{{ p.path }}</span>{% endif %}{% if p.in_use %} <span class="place-count">{{ p.in_use }} in use</span>{% endif %}</li>
       {% endfor %}
     </ul>
     {% endif %}
+    {% if home.places_gone %}
+    <details class="places-gone">
+      <summary>{{ home.places_gone | length }} whose folder no longer exists (old worktrees and moved projects)</summary>
+      <ul class="places-list">
+        {% for p in home.places_gone %}
+        <li><a href="/bucket/{{ p.scope }}/{{ p.name }}">{{ p.label }}</a>{% if p.path %} <span class="place-path">{{ p.path }}</span>{% endif %}{% if p.in_use %} <span class="place-count">{{ p.in_use }} in use</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
   </details>
-  {% else %}
-  <p class="error-strip" role="alert">{{ model.miner.error }}</p>
   {% endif %}
-  <form>
-    {# UI-walk defect fix (terminology consistency): the worker's own
-       Force run button (above) explains itself on hover; this one,
-       doing the equivalent for the miner, didn't. #}
-    <button type="submit" formmethod="post" formaction="/mine/run"
-            hx-post="/mine/run" hx-swap="none"
-            title="Force the miner to scan recent sessions for lessons worth keeping now, instead of waiting for its next scheduled pass.">Force run</button>
-  </form>
+</section>
+
+<section id="jobs" class="home-section" aria-labelledby="jobs-h">
+  <h2 id="jobs-h" class="home-h">Jobs</h2>
+  <div class="home-rows">
+    {% for job in home.jobs %}
+    <div class="job-row home-row{% if job.late %} job-row-late{% endif %}">
+      <div class="home-row-main">
+        <p class="home-row-what">{{ job.title }}{% if job.late %} <span class="badge badge-stale">needs a look</span>{% endif %}</p>
+        <p class="home-row-meta">{% if job.last_run %}Last ran {{ job.last_run | humanize_ts }}.{% elif not job.detail %}Has not run yet.{% endif %} {{ job.detail }}</p>
+        {% if job.key == "miner" %}
+        {% if model.miner.ok %}
+        {# 09 §11 Y-24: the run list and the near-misses stay here, under
+           the job they belong to. #}
+        <details class="job-more">
+          <summary>Recent runs</summary>
+          <ul class="job-runs">
+            {% for run in model.miner.runs | reverse %}
+            {# A run that only initialized records no counts: an em-dash,
+               never the word "None" (not recorded is not zero). #}
+            <li><span class="job-run-day"{% if run.ts %} title="{{ run.ts }}"{% endif %}>{{ run.day_text or (run.ts | humanize_ts) }}</span> {{ run.status_label }}{% if run.trigger %} ({{ run.trigger }}){% endif %}: read {{ run.sessions_scanned if run.sessions_scanned is not none else "—" }}, new lessons {{ run.landed if run.landed is not none else "—" }}, folded in {{ run.folded if run.folded is not none else "—" }}, rules seen again {{ run.recurrences if run.recurrences is not none else "—" }}</li>
+            {% endfor %}
+          </ul>
+        </details>
+        {# Default-collapsed, latest run only (F4). No dismiss/snooze/seen
+           control anywhere: Promote is the only exit (§2.4). #}
+        <details class="job-more">
+          <summary title="Things the overnight read considered but did not keep as lessons. Promote one if it should have been kept.">Near-misses in the latest run ({{ model.miner.near_miss_count }})</summary>
+          {% if not model.miner.near_miss_rows %}
+          <p>Nothing near-missed in the latest run.</p>
+          {% else %}
+          <ul class="near-miss-rows">
+            {% for row in model.miner.near_miss_rows %}
+            <li class="near-miss-row" data-row>
+              <span class="badge badge-{{ row.badge.kind }}">{{ row.badge.text }}</span>
+              <span class="near-miss-reason">{{ row.reason }}</span>
+              {% if row.record_id %}<a href="/record/{{ row.record_id }}">{{ row.record_id }}</a>{% endif %}
+              {% if row.draft_line %}<p class="near-miss-draft">{{ row.draft_line }}</p>{% endif %}
+              {% if row.promotable %}
+              <form hx-post="/mine/near-miss/promote" hx-swap="none">
+                <input type="hidden" name="run_id" value="{{ model.miner.latest_run_id }}">
+                <input type="hidden" name="index" value="{{ row.index }}">
+                <button type="submit">Promote to pending</button>
+              </form>
+              {% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </details>
+        {% if model.miner.canaries %}<p class="home-row-meta">Test lessons planted to check the read: {{ model.miner.canaries.caught }} of {{ model.miner.canaries.planted }} caught.</p>{% endif %}
+        {% else %}
+        <p class="error-strip" role="alert">{{ model.miner.error }}</p>
+        {% endif %}
+        {% endif %}
+      </div>
+      <div class="home-row-side">
+        {% if job.run == "worker" %}
+        <form>
+          <button type="submit" formmethod="post" formaction="/worker/kick"
+                  hx-post="/worker/kick" hx-swap="none"
+                  title="Draft suggestions now for every lesson that has none, instead of waiting for the next scheduled pass.">Run now</button>
+        </form>
+        {% elif job.run == "miner" %}
+        <form>
+          <button type="submit" formmethod="post" formaction="/mine/run"
+                  hx-post="/mine/run" hx-swap="none"
+                  title="Read recent sessions for lessons worth keeping now, instead of waiting for the next overnight pass.">Run now</button>
+        </form>
+        {% elif job.link_href %}
+        <a href="{{ job.link_href }}">{{ job.link_text }}</a>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="home-note" title="Whether background syncing of the lesson ledger is running normally. It pauses only while a change is being written.">{% if model.status.sentinel_live %}Background syncing is paused while a change is being written.{% else %}Background syncing is running normally.{% endif %}</p>
 </section>
 {% endblock %}

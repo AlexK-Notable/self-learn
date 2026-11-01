@@ -161,7 +161,7 @@
             hx-target="#{{ dom_id }}" hx-swap="outerHTML"
             title="The recurrence-suspect telemetry claim was a matcher false-positive">Dismiss (k)</button>
   </form>
-  <p class="session-note">Revise / Escalate: capture with <code>teach --supersedes</code> (session work).</p>
+  <p class="session-note">To rewrite this rule instead, teach a new lesson that replaces it, from a session.</p>
 
   {% elif kind == "followup" %}
   <form id="form-{{ dom_id }}">
@@ -249,7 +249,7 @@
        the `retire` branch. #}
     <label>Covered by <input type="text" name="covered_by" placeholder="kind:name"
                               value="{{ covered_by or '' }}" required></label>
-    <button type="button" data-key-action="route"
+    <button type="button" data-key-action="route"{% if no_suggestion is defined and no_suggestion %} class="approve-unsuggested"{% endif %}
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"route","kind":"detail"}'
             hx-target="#{{ dom_id }}" hx-swap="outerHTML">Approve (e)</button>
@@ -315,8 +315,8 @@
          label` above; only the RULES qualifier is reachable on this
          bar — a `claude-md:local` dest never arrives here, §3.3(e)). #}
       {% set _rules_topic = dest.split("claude-md:rules:", 1)[1] if (dest and dest.startswith("claude-md:rules:")) else none %}
-      Destination: {% if dest %}<span title="{{ dest }}">{{ dest | destination_label(scope) }}</span>{% else %}(analyst suggestion){% endif %} (o){% if dest == "claude-md" or _rules_topic %} <span class="dest-path">&middot; {{ scope | destination_path(("rules" if _rules_topic else none), _rules_topic) }}</span>{% endif %}
-      {% if dest %}<span class="hint">hook / new-skill need Iterate — not cycle-reachable</span>{% endif %}
+      Destination: {% if dest %}<span title="{{ dest }}">{{ dest | destination_label(scope) }}</span>{% else %}{{ "none chosen" if dest_note else "not suggested yet" }}{% endif %} (o){% if dest == "claude-md" or _rules_topic %} <span class="dest-path">&middot; {{ scope | destination_path(("rules" if _rules_topic else none), _rules_topic) }}</span>{% endif %}
+      {% if dest %}<span class="hint">To make this a warning hook or a new skill, use Iterate.</span>{% endif %}
     </button>
     {# The scope-correction note (09 §2.3 as amended 2026-07-18): plain
        words, rendered beside the destination it corrected — the dest
