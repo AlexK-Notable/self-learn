@@ -543,7 +543,11 @@ def approval_track(
                 continue  # words relayed as a choice name no option: they decide nothing
             if effect == "approve":
                 state, approved_at, done_at = ("awaiting-sudo" if sudo else "approved"), at, None
-            elif effect in ("decline", "other", "register") and state in ("open", "awaiting-sudo"):
+            elif effect in ("decline", "other", "register") and state in (
+                "open", "awaiting-sudo", "approved",
+            ):
+                # answers lane, fix round 1: a changed answer before the work
+                # is carried out stands (as `attention._approval_track`).
                 state = "answered"
         elif state == "approved":
             if event.get("result") == "done":

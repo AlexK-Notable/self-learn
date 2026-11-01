@@ -628,6 +628,12 @@ def answer(
         raise _held()
     ask_row = item.get("_ask") if isinstance(item.get("_ask"), dict) else _ask_row(
         home, item.get("subject"))
+    if item["kind"].startswith("decided.") and item["kind"] != "decided.ask-default":
+        # A decided item's subject can still name an indexed ask (an approved
+        # plan the agent finished, a withdrawn ask): words on it are an
+        # overturn of the decision (§3.4.4, "After an approved item is done,
+        # a new answer is an overturn"), never an answer to the ask.
+        ask_row = None
     options = _options_for(item, ask_row)
 
     # -- the origin (§3.4.1's order)
@@ -692,11 +698,19 @@ def answer(
                 "--confirm", EXIT_REFUSED,
             )
         if item["kind"] == "approved.pending" and chosen.get("effect") != "approve":
-            raise AnswerError(
-                "this change is already approved and handed to the session that carries it "
-                "out; a different answer cannot stop it from here. Close that terminal to stop "
-                "it, and tell the overseer in words", EXIT_REFUSED,
-            )
+            # "The answer stays changeable until it is carried out" (design
+            # r2 §0 call 3, §1.3): only a session that claimed the work is
+            # carrying it out. Unclaimed (not launched, refused, or a
+            # terminal closed before it claimed), the new answer stands and
+            # a later claim is refused.
+            holder = attention._claim(home, item["id"], _now())  # noqa: SLF001
+            if holder is not None:
+                raise AnswerError(
+                    f"session {holder.get('session')} claimed this change at {holder.get('at')} "
+                    "and is carrying it out now, so a different answer cannot stop it from "
+                    "here; tell that session in its terminal. Nothing was recorded",
+                    EXIT_REFUSED,
+                )
         if chosen.get("effect") == "ran-sudo" and item.get("state") != "awaiting-sudo":
             raise AnswerError(f"{item['id']} is not waiting for sudo steps", EXIT_REFUSED)
         if via.startswith("refreeze") and agent:
@@ -827,11 +841,26 @@ def _downstream(
         return "answered"
     if effect in ("approve", "ran-sudo") and plan is not None:
         return _approve(home, item, plan, result, launch=launch, ran_sudo=effect == "ran-sudo")
-    if kind == "approved.pending":
+    if kind == "approved.pending" and effect is None:
+        # Words on approved work change nothing; a different option (no live
+        # claim, checked in `answer`) falls through and answers the ask.
         return str(item.get("state"))
-    if plan is not None and result.choice is None:
-        # Words alone on an item with a plan decide nothing (§1.3): recorded,
-        # the overseer reads them, and the item stays open.
+    if _overturns(kind, ask_row):
+        # A decided item, overturned (§3.4.4): every case it cites is told,
+        # so the steward re-decides it (§3.4.5). Checked before the plan
+        # rule below: a finished approval keeps its plan, and a new answer
+        # on it is an overturn, not an undecided reply.
+        refs = [r for r in item.get("refs") or [] if isinstance(r, str) and r.startswith("case-")]
+        if not refs and isinstance(item.get("_case"), str):
+            refs = [item["_case"]]
+        _observe_all(home, _current_cases(home, refs),
+                     f"user overturned {item['id']} in the inbox", decided_by, warnings)
+        return str(item.get("state") or "done")
+    if plan is not None and effect is None:
+        # Words alone, an agent draft sent with no option, or a reply that
+        # pastes the agent's text, on an item with a plan, decide nothing
+        # (§1.3, §2.3(b)): recorded, the overseer reads them, the item stays
+        # open, and no case is told (nothing was decided to re-decide on).
         return "open"
     if ask_row is not None:
         q_id = str(ask_row["id"])
@@ -841,15 +870,18 @@ def _downstream(
                                                  if isinstance(c, str)]),
                      text, decided_by, warnings)
         return "done" if stead else "answered"
-    if kind.startswith("decided.") and kind != "decided.reading" and result.statement:
-        refs = [r for r in item.get("refs") or [] if isinstance(r, str) and r.startswith("case-")]
-        if not refs and isinstance(item.get("_case"), str):
-            refs = [item["_case"]]
-        _observe_all(home, _current_cases(home, refs),
-                     f"user overturned {item['id']} in the inbox", result.statement, warnings)
     if kind == "conflict.case-tampered":
         return "resolved"
     return str(item.get("state") or "done")
+
+
+def _overturns(kind: str, ask_row: dict | None) -> bool:
+    """Whether an answer on a *kind* item is an overturn in words (§3.4.4):
+    every decided kind except a reading (corrected as a proposition) and a
+    stead ask whose ask is still indexed (answered as the question)."""
+    if not kind.startswith("decided.") or kind == "decided.reading":
+        return False
+    return kind != "decided.ask-default" or ask_row is None
 
 
 def _approve(home: Path, item: dict, plan: dict | None, result: AnswerResult, *,
@@ -1066,6 +1098,15 @@ def run(home: Path | str, item_id: str, *, login: bool = False) -> RunResult:
     item = _approved_for(items, item_id, home)
     if item is None:
         other = next((i for i in items if i["id"] == item_id), None)
+        finished = _done_for(items, item_id)
+        if other is None and finished is not None:
+            # Contract §4.6: 3 is "not approved (... done ...)". The approved
+            # item's id is gone once its work is done (the done item has its
+            # own id), so the done item is looked up by where it came from.
+            return RunResult(EXIT_REFUSED, (
+                f"{item_id} is already done ({finished['id']}); there is nothing to run. To "
+                "change what was done, answer on that item in your own words"
+            ))
         if other is None:
             return RunResult(EXIT_UNKNOWN, f"unknown item {item_id}")
         state = other.get("state")
@@ -1102,6 +1143,19 @@ def run(home: Path | str, item_id: str, *, login: bool = False) -> RunResult:
                            "option": None})
     return RunResult(EXIT_OK, f"Running in a terminal (started {chrono.now_iso()}).",
                      unit=unit, brief=str(brief), argv=argv)
+
+
+def _done_for(items: list[dict], item_id: str) -> dict | None:
+    """The ``decided.approved-done`` item that *item_id* (the done item,
+    the approved item it replaced, or the needs-you item before that)
+    names, or ``None``."""
+    for item in items:
+        if item["kind"] != "decided.approved-done":
+            continue
+        approved_id = attention.item_id("approved.pending", str(item.get("subject")))
+        if item_id in (item["id"], approved_id, item.get("_source_item")):
+            return item
+    return None
 
 
 def _try_seal(home: Path, item: dict, row: dict) -> int | None:
@@ -1181,7 +1235,10 @@ def _clear_claim(home: Path, item_id: str) -> None:
 def _approved_or_refuse(home: Path, item_id: str, code: int = EXIT_UNKNOWN) -> dict:
     item = _approved_for(_items(home), item_id, home)
     if item is None:
-        raise AnswerError(f"{item_id} is not an approved change waiting to be carried out", code)
+        raise AnswerError(
+            f"{item_id} is not an approved change waiting to be carried out (it is done, or the "
+            "person changed their answer before it was claimed); change nothing", code,
+        )
     return item
 
 
@@ -1213,7 +1270,8 @@ def done(home: Path | str, item_id: str, *, session: str, note: str | None,
     home = Path(home)
     if not (note or "").strip():
         raise AnswerError("done needs --note saying what you did or found", EXIT_USAGE)
-    if _ledger_stopped(home):
+    stopped = _ledger_stopped(home)
+    if stopped and not (failed and _held_approval(home, item_id) is not None):
         raise _held()
     item = _approved_or_refuse(home, item_id)
     current = attention._claim(home, item["id"], _now())  # noqa: SLF001
@@ -1224,6 +1282,20 @@ def done(home: Path | str, item_id: str, *, session: str, note: str | None,
             else "no session holds a live claim (run `attention claim` first)"
         )
         raise AnswerError(f"{item['id']}: {claimant}; nothing was recorded", EXIT_REFUSED)
+    if stopped:
+        # Gate r1 NIT 8: "Have an agent look at it" on a STOPPED ledger, and
+        # the session decided not to clear the intent. Nothing can be
+        # committed, and nothing was: the click was only held on this
+        # machine. The held click and the claim are dropped, so the item is
+        # the person's again at once (not "running" until the claim lapses),
+        # and the session's finding is kept as a pending transcript row.
+        _clear_held_approval(home, item["id"])
+        _clear_claim(home, item["id"])
+        _try_seal(home, item, {
+            "role": "system", "origin": "system", "kind": "note",
+            "text": "The agent stopped and changed nothing more: " + str(note),
+        })
+        return "nothing committed (the ledger is STOPPED); the item is yours again"
     held = _held_approval(home, item["id"])
     if held is not None:
         from .overseer import conversation
@@ -1293,6 +1365,12 @@ def _run_argv(home: Path, argv: list[str], *, note: str, no_push: bool) -> str:
         verb, args = "skill retire", words[2:]
     elif words[:2] == ["skill", "rename"] and len(words) >= 4:
         verb, args = "skill rename", words[2:]
+    elif words[:2] == ["skill", "write"] and len(words) >= 5 and words[3] == "--from":
+        # The redo of a written skill (gate r1 MINOR 6): its grant-use row
+        # keeps `<name> --from <folder>` (`skill_cli._use_args`).
+        verb, args = "skill write", words[2:5]
+    elif words[:2] == ["skill", "veto"] and len(words) >= 3:
+        verb, args = "skill veto", words[2:]
     else:
         raise AnswerError(f"no inverse can be run for `self-learn {' '.join(words)}`", EXIT_REFUSED)
     granted = _authorized(home, verb, note)
@@ -1304,6 +1382,17 @@ def _run_argv(home: Path, argv: list[str], *, note: str, no_push: bool) -> str:
     use = grant_uses.GrantUse(home, verb, list(args), prior=prior) if granted is not None else None
     kind = "skills-root" if "--skills-root" in args else "project"
     path = args[0] if args else ""
+    by = "agent" if granted else "human"
+    files: Any = None
+    if verb == "skill write":
+        try:
+            files = skill_writer.read_draft_dir(args[2])
+        except (ValueError, OSError) as exc:
+            raise AnswerError(
+                f"the skill cannot be written again: its draft folder {args[2]} cannot be read "
+                f"({exc}); nothing was run. Say in your own words what you want instead",
+                EXIT_REFUSED,
+            ) from exc
     try:
         with attribution.acting(granted, use=use):
             if verb == "config set":
@@ -1318,16 +1407,36 @@ def _run_argv(home: Path, argv: list[str], *, note: str, no_push: bool) -> str:
             elif verb == "host set-mode":
                 hosts.host_set_mode(home, path, args[1], registration=kind, note=note)
             elif verb == "skill retire":
-                outcome = skill_writer.retire(home, args[0], case=None,
-                                              by="agent" if granted else "human", no_push=no_push)
+                outcome = skill_writer.retire(home, args[0], case=None, by=by, no_push=no_push)
                 if not outcome.ok:
                     if use is not None:
                         use.applies = False
                     raise AnswerError(f"skill retire refused: {'; '.join(outcome.problems)}",
                                       EXIT_REFUSED)
+            elif verb == "skill write":
+                written = skill_writer.write(home, args[0], files, case=None, by=by,
+                                             no_push=no_push)
+                if not written.ok:
+                    if use is not None:
+                        use.applies = False
+                    raise AnswerError(f"skill write refused: {'; '.join(written.problems)}",
+                                      EXIT_REFUSED)
+            elif verb == "skill veto":
+                from . import skill_requests
+
+                rename_to = args[args.index("--rename-to") + 1] if "--rename-to" in args[:-1] else None
+                vetoed = skill_requests.veto(
+                    home, args[0], by=by, rename_to=rename_to, no_push=no_push,
+                    grant=granted.ref if granted is not None and granted.kind == "grant" else None,
+                )
+                if not vetoed.ok:
+                    if use is not None:
+                        use.applies = False
+                    raise AnswerError(f"skill veto refused: {'; '.join(vetoed.problems)}",
+                                      EXIT_REFUSED)
             else:
                 outcome2 = rename_skill(home, args[0], args[1], case=None,
-                                               by="agent" if granted else "human", no_push=no_push)
+                                               by=by, no_push=no_push)
                 if not outcome2.ok:
                     if use is not None:
                         use.applies = False

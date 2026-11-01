@@ -792,31 +792,69 @@ WORKSPACE_QUESTION_CHARS = 2000
 
 def _workspace_questions_since(home: Path) -> str | None:
     """When the steward last read the person's questions to the ask agent:
-    the latest completed run that sent at least one packet to the model
-    (only a packet's session reads them; a night with no lessons sends
-    none, so its questions wait for the next run that does)."""
-    values = [
-        str(row.get("completed_at"))
-        for row in committed_manifests(home)
-        if row.get("status") == "complete" and row.get("completed_at")
-        and any(isinstance(p, dict) for p in row.get("packets") or [])
-    ]
+    the time packet 1 of the latest completed run that sent packets last
+    started an attempt (only packet 1's session reads them, and its prompt
+    is assembled at the start of each attempt; a night with no lessons
+    sends no packet, so its questions wait for the next run that does).
+
+    Gate r1 MINOR 4: not the run's ``completed_at``, which is after the
+    prompt was assembled, so a question sealed while that run was working
+    was never shown and every later run skipped it. A question sealed
+    between the attempt's start and its assembly is shown twice instead;
+    :func:`_workspace_question_rows` leaves out any the steward already
+    recorded as a statement. A manifest without the stamp falls back to the
+    run's ``started_at``, which is earlier still."""
+    values: list[str] = []
+    for row in committed_manifests(home):
+        if row.get("status") != "complete" or not row.get("completed_at"):
+            continue
+        packets = [p for p in row.get("packets") or [] if isinstance(p, dict)]
+        if not packets:
+            continue
+        stamp = packets[0].get("last_attempt_at") or row.get("started_at")
+        if stamp:
+            values.append(str(stamp))
     return max(values) if values else None
 
 
 def _workspace_questions(home: Path, since: str | None) -> list[dict]:
+    """The newest :data:`WORKSPACE_QUESTIONS_MAX` of
+    :func:`_workspace_question_rows`."""
+    return _workspace_question_rows(home, since)[-WORKSPACE_QUESTIONS_MAX:]
+
+
+def _workspace_questions_for_run(home: Path) -> tuple[list[dict], int]:
+    """What packet 1 of a steward run reads (gate r1 MINOR 4): the
+    questions since :func:`_workspace_questions_since`, at most
+    :data:`WORKSPACE_QUESTIONS_MAX`, newest kept, and how many older ones
+    were left out (the block says so; they are not shown again)."""
+    rows = _workspace_question_rows(home, _workspace_questions_since(home))
+    kept = rows[-WORKSPACE_QUESTIONS_MAX:]
+    return kept, len(rows) - len(kept)
+
+
+def _workspace_question_rows(home: Path, since: str | None) -> list[dict]:
     """Design r2 §3.4.2 (critique 22): every question the person typed to
     the inbox's "ask about this" agent (a sealed workspace row with ``role:
     user, origin: typed, kind: question``) since *since*, oldest first, each
     with its ``workspace:`` ref and its item's title. The nightly miner skips
     ask sessions, so this is the only way a correction typed there ("never
     do X") reaches a statement. Replies are not here: the inbox records a
-    typed reply as a statement itself. A redacted row is left out."""
+    typed reply as a statement itself. A redacted row is left out, and so
+    is one a statement already cites (recorded by an earlier run)."""
     folder = home / "attention" / "workspace"
     try:
         paths = sorted(folder.glob("att-*.jsonl"))
     except OSError:
         return []
+    try:
+        cited = {
+            str((row.get("source") or {}).get("message_ref"))
+            for row in statements.list_statements(home)
+            if isinstance(row.get("source"), dict)
+        }
+    except Exception:  # noqa: BLE001 -- an unreadable store cites nothing
+        cited = set()
     floor = chrono.to_dt(since) if since else None
     out: list[dict] = []
     for path in paths:
@@ -843,15 +881,17 @@ def _workspace_questions(home: Path, since: str | None) -> list[dict]:
             at = chrono.to_dt(row.get("at"))
             if floor is not None and (at is None or at <= floor):
                 continue
+            ref = f"workspace:{path.stem}#T{row['t']}"
+            if ref in cited:
+                continue
             text = row["text"]
             if len(text) > WORKSPACE_QUESTION_CHARS:
                 text = text[: WORKSPACE_QUESTION_CHARS - 1] + "…"
             out.append({
-                "ref": f"workspace:{path.stem}#T{row['t']}", "item": path.stem,
-                "title": title, "at": row.get("at"), "text": text,
+                "ref": ref, "item": path.stem, "title": title, "at": row.get("at"), "text": text,
             })
     out.sort(key=lambda r: str(r.get("at") or ""))
-    return out[-WORKSPACE_QUESTIONS_MAX:]
+    return out
 
 
 def _committed_blob(home: Path, path: Path) -> tuple[str, str]:
@@ -7090,13 +7130,16 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 brief_stats = steward_inputs.packet_stats(
                     briefs.values(), packet_record.get("group")
                 )
+                # Attention round (design r2 §3.4.2): only packet 1 reads the
+                # person's questions to the inbox's ask agent.
+                questions_now, questions_omitted = (
+                    _workspace_questions_for_run(home) if packet_index == 1 else (None, 0)
+                )
                 prompt = steward_prompt.assemble(
                     home, cache_dir(home), context, inputs, conditions_items=feed_items,
                     returned=_returned_for(home, open_inputs), briefs=briefs,
-                    workspace_questions=(
-                        _workspace_questions(home, _workspace_questions_since(home))
-                        if packet_index == 1 else None
-                    ),
+                    workspace_questions=questions_now,
+                    workspace_questions_omitted=questions_omitted,
                 )
                 # 2026-09-26: two files. `brief-shared.md` is the part every
                 # packet of the run shares, appended to the system prompt;

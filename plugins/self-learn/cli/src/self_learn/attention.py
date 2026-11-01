@@ -634,7 +634,12 @@ def _approval_track(
                 approved_at = str(row.get("at") or "")
                 conditions = row.get("text") if isinstance(row.get("text"), str) else None
                 done = None
-            elif effect in ("decline", "other", "register") and state in ("open", "awaiting-sudo"):
+            elif effect in ("decline", "other", "register") and state in (
+                "open", "awaiting-sudo", "approved",
+            ):
+                # answers lane, fix round 1 (gate r1 MAJOR 1): an approval
+                # stays changeable until carried out (§0 call 3, §1.3); the
+                # answer verb refuses a new answer while a live claim holds it.
                 state = "answered"
         else:
             if row.get("result") == "done" and state == "approved":
