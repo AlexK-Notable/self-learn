@@ -132,7 +132,14 @@ COMMAND_VIEW_MAX_BYTES = 262144
 #:   and no backslash-escaped quote (``"x y"`` -> ``""``);
 #: - a heredoc body whose terminator line is found, when its delimiter is
 #:   quoted, or unquoted and the body holds no ``$(`` and no backtick (the
-#:   operator, delimiter word and terminator line stay).
+#:   operator, delimiter word and terminator line stay);
+#: - the commit idiom, exactly: a double-quoted ``"$(cat <<'D'`` (or
+#:   ``<<"D"``, ``<<\D``, ``<<-``), a newline, the body, a line that is
+#:   exactly ``D`` (leading tabs only for ``<<-``), then ``)"``. Its body
+#:   is literal and only printed, so it is hidden -- but not in a payload
+#:   or command-position context, not with a heredoc already pending on the
+#:   line, and not when the rest of the ``)"`` line pipes into a shell. Any
+#:   other shape inside ``"$( )"`` shows the rest of the command (below).
 #:
 #: Everything else stays visible as written: ``$'...'``, a double-quoted
 #: string with ``$`` or ``\"`` in it, comments (shown to the end of the
@@ -197,8 +204,45 @@ function ansiq(    k, c, code) {
     else OUT = OUT substr(S, I, k - I + 1)
     I = k + 1
 }
+function catdoc(    j, q, d, strip, k, bs, line, cmp, e, r) {
+    if (substr(S, I + 1, 5) != "$(cat") return 0
+    j = I + 6
+    if (j > N || index(" \t", substr(S, j, 1)) == 0) return 0
+    while (j <= N && index(" \t", substr(S, j, 1)) > 0) j++
+    if (substr(S, j, 2) != "<<") return 0
+    j += 2; strip = 0
+    if (substr(S, j, 1) == "-") { strip = 1; j++ }
+    while (j <= N && index(" \t", substr(S, j, 1)) > 0) j++
+    q = substr(S, j, 1)
+    if (q == "\047" || q == "\"") j++
+    else if (q == "\\") { j++; q = "" }
+    else return 0
+    k = j
+    while (k <= N && substr(S, k, 1) ~ /[A-Za-z0-9_]/) k++
+    if (k == j) return 0
+    d = substr(S, j, k - j)
+    if (q != "") { if (substr(S, k, 1) != q) return 0; k++ }
+    if (substr(S, k, 1) != "\n") return 0
+    bs = k + 1; j = bs
+    while (j <= N) {
+        k = j
+        while (k <= N && substr(S, k, 1) != "\n") k++
+        line = substr(S, j, k - j); cmp = line
+        if (strip) sub(/^\t+/, "", cmp)
+        if (cmp == d) break
+        j = k + 1
+    }
+    if (j > N || substr(S, k, 3) != "\n)\"") return 0
+    e = k + 3; r = e
+    while (r <= N && substr(S, r, 1) != "\n") r++
+    if (substr(S, e, r - e) ~ PIPE_SHELL) return 0
+    OUT = OUT substr(S, I, bs - I) line "\n)\""
+    I = e
+    return 1
+}
 function dquote(    k, c, d, code, plain) {
     code = codectx()
+    if (!code && HH > HN && catdoc()) return
     k = I + 1; plain = 1
     while (k <= N) {
         c = substr(S, k, 1)

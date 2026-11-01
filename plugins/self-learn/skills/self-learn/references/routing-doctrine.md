@@ -585,7 +585,8 @@ Rules for the hook block:
   what it stays quiet for.
 - **A warning hook on Bash matches the command's words (S-133).** Before
   its regex runs, a single-quoted string, a double-quoted string with no
-  `$` or backtick in it, and the body of a heredoc written to a file are
+  `$` or backtick in it, the body of a heredoc written to a file, and a
+  commit message written as `"$(cat <<'EOF'` … `EOF` … `)"` are
   blanked (`git commit -m "x y"` is seen as `git commit -m ""`), so a
   commit message or a file written through a heredoc that only mentions
   the pattern stays quiet. Everything else stays as written, so expect an

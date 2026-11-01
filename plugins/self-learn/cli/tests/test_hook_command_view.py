@@ -151,7 +151,7 @@ CORPUS: dict[str, tuple[str, str]] = {
     "own: sudo sh -c": ('sudo sh -c "pgrep -f worker"', "warn"),
     "own: eval ANSI-C": ("eval $'pkill -f x'", "warn"),
     # --- shown by the conservative rule (not understood, so visible)
-    "rule: the commit idiom ($( ) in double quotes)": (f"git commit -m \"$(cat <<'EOF'\nfix: {BAD}\nEOF\n)\"", "warn"),
+    "rule: the commit idiom ($( ) in double quotes)": (f"git commit -m \"$(cat <<'EOF'\nfix: {BAD}\nEOF\n)\"", "silent"),
     "rule: escaped quotes in double quotes": (f'echo "he said \\"{BAD}\\" twice"', "warn"),
     "rule: ANSI-C quoting": (f"printf $'it\\'s {BAD}'", "warn"),
     "rule: a comment": (f"ls  # {BAD}", "warn"),
@@ -177,7 +177,7 @@ CORPUS: dict[str, tuple[str, str]] = {
     "r1: quoted-cmd": ('"pkill" -f foo', "warn"),
     "r1: quoted-arg": ('rm -rf "$HOME/.self-learn" danger', "warn"),
     "r1: python-c": ('python3 -c \'import os; os.system("pkill -f foo")\'', "silent"),
-    "r1: heredoc-commit": ("git commit -m \"$(cat <<'EOF'\nfix: pkill -f foo danger\nEOF\n)\"", "warn"),
+    "r1: heredoc-commit": ("git commit -m \"$(cat <<'EOF'\nfix: pkill -f foo danger\nEOF\n)\"", "silent"),
     "r1: heredoc-sh": ("bash <<EOF\npkill -f foo\nEOF", "warn"),
     "r1: bash-s-arg": ("bash -s -- arg <<EOF\npkill -f foo\nEOF", "warn"),
     "r1: xargs": ("echo x | xargs -I{} sh -c 'pkill -f {}'", "warn"),
@@ -265,6 +265,28 @@ CORPUS: dict[str, tuple[str, str]] = {
         ("echo $((1<<2)); cat <<'E' >f\npkill -f foo\nE", "silent"),
     "r2 fold: a shift in (( )), then a line equal to its operand":
         ("(( x = 1 << 2 ))\npkill -f foo\n2", "warn"),
+    # --- the commit idiom, recognised exactly (coordinator, before gate r3)
+    "idiom: this repo's commit": ("git commit -q -m \"$(cat <<'EOF'\nfix(hooks): a warning hook on Bash matches the command's words\n\nThe live hook fired on pkill -f text and on notify-send -A examples;\na heredoc fed </dev/null was only quoted here: python3 - <<EOF </dev/null\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nEOF\n)\"", "silent"),
+    "idiom: double-quoted delimiter": ("git commit -m \"$(cat <<\"EOF\"\npkill -f foo\nEOF\n)\"", "silent"),
+    "idiom: backslash delimiter": ("git commit -m \"$(cat <<\\EOF\npkill -f foo\nEOF\n)\"", "silent"),
+    "idiom: <<- with a tab-indented terminator": ("git commit -m \"$(cat <<-'EOF'\n\tpkill -f foo\n\tEOF\n)\"", "silent"),
+    "idiom: a command after it on the same line": ("git commit -m \"$(cat <<'E'\nmsg\nE\n)\" && pkill -f foo", "warn"),
+    "idiom: a command after it on the next line": ("git commit -m \"$(cat <<'E'\nmsg\nE\n)\"\npkill -f foo", "warn"),
+    "idiom near-miss: unquoted delimiter": ("git commit -m \"$(cat <<EOF\npkill -f foo\nEOF\n)\"", "warn"),
+    "idiom near-miss: cat reads a file too": ("git commit -m \"$(cat file <<'E'\npkill -f foo\nE\n)\"", "warn"),
+    "idiom near-miss: piped into sh inside": ("x=\"$(cat <<'E' | sh\npkill -f foo\nE\n)\"", "warn"),
+    "idiom near-miss: bash, not cat": ("x=\"$(bash <<'E'\npkill -f foo\nE\n)\"", "warn"),
+    "idiom near-miss: catx, not cat": ("x=\"$(catx <<'E'\npkill -f foo\nE\n)\"", "warn"),
+    "idiom near-miss: no terminator": ("git commit -m \"$(cat <<'E'\npkill -f foo\n)\"", "warn"),
+    "idiom near-miss: terminator with a trailing space": ("git commit -m \"$(cat <<'E'\npkill -f foo\nE \n)\"", "warn"),
+    "idiom near-miss: tab-indented terminator without <<-": ("git commit -m \"$(cat <<'E'\npkill -f foo\n\tE\n)\"", "warn"),
+    "idiom near-miss: more text inside the $( )": ("x=\"$(cat <<'E'\npkill -f foo\nE\necho y)\"", "warn"),
+    "idiom near-miss: text after the delimiter word": ("x=\"$(cat <<'E' >&2\npkill -f foo\nE\n)\"", "warn"),
+    "idiom near-miss: a bash -c payload": ("bash -c \"$(cat <<'E'\npkill -f foo\nE\n)\"", "warn"),
+    "idiom near-miss: an eval payload": ("eval \"$(cat <<'E'\npkill -f foo\nE\n)\"", "warn"),
+    "idiom near-miss: the command word itself": ("\"$(cat <<'E'\npkill -f foo\nE\n)\"", "warn"),
+    "idiom near-miss: printed into a shell": ("echo \"$(cat <<'E'\npkill -f foo\nE\n)\" | bash", "warn"),
+    "idiom near-miss: a heredoc already pending": ("cat <<A >f; x=\"$(cat <<'E'\npkill -f foo\nE\n)\"\nA", "warn"),
 }
 
 
@@ -473,6 +495,10 @@ AT_CAP = {
     "here-strings": _at_cap("bash <<< 'a'; "),
     "comments with apostrophes": _at_cap("# don't\n"),
     "open parentheses": _at_cap("("),
+    "commit idioms": _at_cap("x \"$(cat <<'E'\ny\nE\n)\" "),
+    "commit idioms on one line each": _at_cap("x \"$(cat <<'E'\ny\nE\n)\"\n"),
+    "an idiom that never ends": _at_cap("y\n", "x \"$(cat <<'E'\n"),
+    "idiom openers": _at_cap("x \"$(cat <<'E'\n"),
 }
 
 
