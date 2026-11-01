@@ -258,3 +258,28 @@ def test_the_review_tiles_show_when_the_record_has_them_and_not_otherwise(tmp_pa
     assert '<span class="rv-tile-value">33</span>' in agreed and "(2 not)" in agreed
     dropped = tiles[tiles.index("data-tile-findings-dropped"):].split("</li>")[0]
     assert '<span class="rv-tile-value">5</span>' in dropped
+
+
+def test_a_run_that_cannot_save_ends_and_says_so(tmp_path, monkeypatch):
+    """Seen live in the scratch walk: the walk world's fake raised while
+    saving and the box said "Writing…" forever. A turn always ends.
+    Mutation: drop the fake's `except Exception` -> red (the turn never
+    ends)."""
+    from self_learn_ui.ask_runner import FakeAskRunner
+
+    def boom(home, record):
+        raise RuntimeError("no git identity")
+
+    monkeypatch.setattr(summarise, "save", boom)
+    holder = {}
+
+    def factory(hub):
+        holder["ask"] = FakeAskRunner(publish=hub.publish_nowait, home=tmp_path / "home", seal=True)
+        return holder["ask"]
+
+    client, ask, _home = _client(tmp_path, monkeypatch, ask=factory, enter=True)
+    client.post("/summary/overseer-report/2026-11-01", headers=HX)
+    client.portal.call(ask.wait, "summary:overseer-report:2026-11-01")
+    box = _box(client.get("/overseer-report").text)
+    assert "data-in-short-failed" in box and "could not be saved" in box
+    assert 'aria-busy="true"' not in box and "data-in-short-start" in box

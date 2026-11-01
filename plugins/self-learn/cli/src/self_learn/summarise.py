@@ -389,24 +389,30 @@ def save(home: Path | str, record: dict) -> str:
     try:
         with intents.ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
-            moved: list[tuple[Path, Path]] = []
+            waiting_rows: list[tuple[Path, Path, dict]] = []
             for waiting in sorted((_cache(home) / "pending").glob("*/*.json")):
                 if waiting.parent.name not in KINDS or _SHA_RE.fullmatch(waiting.stem) is None:
                     continue
                 old = _valid(_read(waiting), waiting.parent.name, waiting.stem)
                 if old is None or (waiting.parent.name, waiting.stem) == (kind, sha):
                     continue
-                dest = summary_path(home, waiting.parent.name, waiting.stem)
+                waiting_rows.append(
+                    (waiting, summary_path(home, waiting.parent.name, waiting.stem), old))
+            paths = [target, *(dest for _w, dest, _o in waiting_rows)]
+            # One recorded transaction (intents): a commit that fails after
+            # the files landed is rolled forward by the next ledger write,
+            # never left as a stray staged file.
+            intent = intents.begin(home, "summary", paths,
+                                   f"self-learn: summary {kind}:{record.get('ref')} {sha[:12]}")
+            for _waiting, dest, old in waiting_rows:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 fsops.atomic_write(dest, _record_text(old), fsync=True)
-                moved.append((waiting, dest))
             target.parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(target, _record_text(record), fsync=True)
-            gitops.stage_and_commit(
-                home, [target, *(dest for _w, dest in moved)],
-                f"self-learn: summary {kind}:{record.get('ref')} {sha[:12]}", None,
-            )
-            for waiting, _dest in moved:
+            intents.complete(intent)
+            gitops.stage_and_commit(home, paths, intent.commit_subject, None)
+            intents.finish(intent)
+            for waiting, _dest, _old in waiting_rows:
                 _drop_cache(waiting)
             _drop_cache(pending_path(home, kind, sha))
             return "ledger"

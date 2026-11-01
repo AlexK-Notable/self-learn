@@ -455,3 +455,33 @@ def test_weekly_facts_leave_the_review_counts_out_for_an_older_record(tmp_path):
         {**base, "review": {"agreed": 33, "disagreed": 2, "no_verdict": 0, "findings_dropped": 5}}))
     facts = weekly_facts.run_facts(tmp_path, "1a2b3c4d")
     assert (facts["agreed"], facts["disagreed"], facts["findings_dropped"]) == (33, 2, 5)
+
+
+def test_a_commit_that_fails_leaves_no_stray_file_and_the_next_write_rolls_it_forward(
+        monkeypatch, home):
+    """Seen live in the scratch walk: a ledger with no git identity refused
+    the commit and left the summary staged. Now the save is one recorded
+    transaction. Mutation: write the file outside an intent -> red (the
+    next ledger write finds nothing to roll forward; the tree stays dirty)."""
+    from self_learn import gitops
+
+    real = gitops.stage_and_commit
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise gitops.GitOpsError("commit refused (test)")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gitops, "stage_and_commit", flaky)
+    code, events, backend, _ = _run(monkeypatch, home, "overseer-report:2026-10-25",
+                                    [Text(ANSWER)])
+    assert code == 1 and events[-1]["ev"] == "error"
+    assert "could not be saved" in events[-1]["message"]
+    with intents.ledger_write(home) as recovered:
+        intents.announce_recovered(recovered)
+    sha = summarise.source(home, "overseer-report", "2026-10-25").sha256
+    path = summarise.summary_path(home, "overseer-report", sha)
+    assert git(home, "ls-files", "--", str(path.relative_to(home))).stdout.strip()
+    assert git(home, "status", "--porcelain").stdout.strip() == ""

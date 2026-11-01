@@ -582,6 +582,10 @@ class FakeAskRunner(AskRunner):
         except asyncio.CancelledError:
             self._end(turn, None)
             raise
+        except Exception as exc:  # noqa: BLE001 - a turn always ends, with its reason
+            self._relay(turn, {"ev": "error", "code": "failed",
+                               "message": f"the summary could not be saved: {exc}", "fix": None})
+            self._end(turn, 1)
 
     async def _fake_record(self, kind: str, ref: str, text: str) -> dict | None:
         """The record the real verb would print; saved into the scratch
