@@ -436,6 +436,8 @@ CORPUS: dict[str, tuple[str, str]] = {
     'idiom near-miss at -m: text after the delimiter word': ('git commit -m "$(cat <<\'E\' >&2\npkill -f foo\nE\n)"', 'warn'),
     'idiom near-miss at -m: tac, not cat': ('git commit -m "$(tac <<\'E\'\npkill -f foo\nE\n)"', 'warn'),
     'A2 near-miss: two heredocs on the A2 line': ("cat <<'X' | sh; cat > f.md <<'E'\npkill -f foo\nX\ny\nE", 'warn'),
+    'A1 near-miss: a second git command after a commit': ("git commit -m 'x'; git log -m 'pkill -f foo'", 'warn'),
+    'A2 near-miss: a continued delimiter line into a shell': ("tee f.md <<'E' \\\n| sh\npkill -f foo\nE", 'warn'),
 }
 
 
@@ -646,6 +648,8 @@ AT_CAP = {
     "an idiom that never ends": _at_cap("y\n", "git commit -m \"$(cat <<'E'\n"),
     "idiom openers": _at_cap("git commit -m \"$(cat <<'E'\n"),
     "A2 bodies": _at_cap("cat > f <<'E'\nx\nE\n"),
+    "A2 bodies, distinct names": "".join(
+        f"cat > f{i:06d} <<'E'\nx\nE\n" for i in range(COMMAND_VIEW_MAX_BYTES // 24)),
     "A2 openers on one line": _at_cap("cat > f ", "x; "),
     "A2 openers, a delimiter at the end": _at_cap("cat > f ", "x; ")[:-20] + " <<'E'",
     "segments starting with c": _at_cap("c;"),

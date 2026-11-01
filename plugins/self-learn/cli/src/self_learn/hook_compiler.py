@@ -300,7 +300,7 @@ function lex(    c, d, k) {
         }
         if (c == "<" || c == ">") {
             endword()
-            if (d == "(" || (c == "<" && d == "<")) { bail(); return }
+            if (c == "<" && d == "<") { bail(); return }
             OUT = OUT c; I++
             if (d != "" && index((c == ">") ? ">&|" : "&>", d) > 0) { OUT = OUT d; I++ }
             if (substr(S, I, 1) == "(") { bail(); return }
