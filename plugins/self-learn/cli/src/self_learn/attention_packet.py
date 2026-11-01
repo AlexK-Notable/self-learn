@@ -731,7 +731,8 @@ def _mark_conflict_sides(item: dict, out: list[dict]) -> None:
     options use), by when it was said: the same comparison the answer verb
     makes when it observes the losing side (``attention_answers.
     _conflict_losers``). Equal or unknown times mark neither."""
-    ask = item.get("_ask") if isinstance(item.get("_ask"), dict) else {}
+    raw = item.get("_ask")
+    ask: dict = raw if isinstance(raw, dict) else {}
     named = ask.get("statements") if ask.get("because") == "conflict" else None
     if not (isinstance(named, list) and len(named) == 2):
         return
