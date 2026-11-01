@@ -538,16 +538,23 @@ def test_the_walker_drives_every_steward_write_path_the_code_has():
     * every sheet key is classified, and each one that names another lesson
       has a row of its own;
     * every `verbs` function the steward calls directly that reaches a
-      lesson-record write is driven (today only `reconsider`, test 1b), and
+      lesson-record write is driven (`reconsider`, test 1b; `recompile` and
+      `post_run_recompile`, test 1f -- S-133's warning-hook regeneration
+      rewrites a lesson record inside every recompile), and
       every `cases` function it, the batch runner or the verbs call is
       classified (test 1c drives the steward's case writes; the batch
       runner's one case write is the receipt on the sheet's own case).
 
     The reachability walk's own positive control: `verbs.reject` reaches a
-    record write and `verbs.recompile` does not."""
+    record write and `verbs.commit_drift` does not. (The negative control
+    was `verbs.recompile` until S-133 gave recompile a real record write,
+    `verbs._refresh_commit`; `commit_drift` is the same kind of control --
+    a host-repo writer whose call graph is large, 135 functions, and
+    writes no lesson record.)"""
     funcs = _functions()
     assert _reaches_record_write(funcs, "verbs.reject")  # positive control
-    assert not _reaches_record_write(funcs, "verbs.recompile")  # negative control
+    assert not _reaches_record_write(funcs, "verbs.commit_drift")  # negative control
+    assert _reaches_record_write(funcs, "verbs._refresh_commit")  # S-133's write is seen
 
     driven_verbs = {line_verb for line_verb in batch.PERMITTED_VERBS}
     row_verbs = {
@@ -571,7 +578,7 @@ def test_the_walker_drives_every_steward_write_path_the_code_has():
         fn for fn in _called(funcs, "steward", "verbs")
         if _reaches_record_write(funcs, f"verbs.{fn}")
     }
-    assert direct == {"reconsider"}, direct
+    assert direct == {"reconsider", "recompile", "post_run_recompile"}, direct
     assert _called(funcs, "steward", "cases") == set(_STEWARD_CASES_CALLS)
     assert _called(funcs, "batch", "cases") == set(_BATCH_CASES_CALLS)
     assert _called(funcs, "verbs", "cases") == set(_VERBS_CASES_CALLS)
@@ -721,6 +728,48 @@ def test_1b_the_stewards_direct_reconsider_is_refused_for_a_held_lesson(tmp_path
         assert batch.refusal_kind(caught.value, rc=1, state="refused") == "bad-line"
         assert gitops.head_sha(env.ledger) == head
         assert find_record_path(env.ledger, A).read_bytes() == record_before
+
+
+@pytest.mark.parametrize("entry", ["recompile", "post_run_recompile"])
+def test_1f_the_stewards_recompile_leaves_a_held_lessons_warning_hook(
+    tmp_path, monkeypatch, entry
+):
+    """S-133: every recompile regenerates an outdated warning hook, which
+    rewrites the lesson's record (`routing.hook.script`), and the steward
+    calls `recompile` and `post_run_recompile` itself. Control first: on a
+    free lesson, under the steward's scope, the hook regenerates (the
+    record carries the current compiler's bytes, the ledger moved). On a
+    held one the ledger leaves it: the record, the placed file and the
+    ledger's HEAD are unchanged, and the warning names the hold."""
+    from test_hook_regenerate import BASH_EXAMPLES, BASH_WARN, _current, _meta, _route
+    from test_route_hook import RID, Env
+
+    for label in ("free", "held"):
+        tmp = tmp_path / label
+        tmp.mkdir()
+        env = Env(tmp)
+        script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
+        old = _meta(env)["script"]
+        assert _current(env) != old  # control: the current compiler disagrees
+        if label == "held":
+            parked = _person_parks(env.home, [RID], tmp)
+        record_before = env.resolved().read_bytes()
+        head = gitops.head_sha(env.home)
+        with ledger_ops.acting_as("steward", env.home):
+            if entry == "recompile":
+                warnings = verbs.recompile(env.home, no_push=True, only_records=[RID]).warnings
+            else:
+                warnings = verbs.post_run_recompile(env.home, [RID])["warnings"]
+        if label == "free":
+            assert _meta(env)["script"] == _current(env)
+            assert gitops.head_sha(env.home) != head
+            continue
+        assert any(
+            f"the overseer holds {RID} (parked case {parked}" in str(w) for w in warnings
+        ), warnings
+        assert env.resolved().read_bytes() == record_before
+        assert script.read_text(encoding="utf-8") == old
+        assert gitops.head_sha(env.home) == head
 
 
 def test_1d_the_batch_preview_refuses_the_steward_as_the_run_does(tmp_path):

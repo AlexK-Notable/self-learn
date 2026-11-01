@@ -13059,7 +13059,15 @@ def _refresh_commit(
     earlier_commits: list[str] | None,
 ) -> None:
     """:func:`refresh_warn_hooks`' write: the records and their one ledger
-    commit, inside the commit lock."""
+    commit, inside the commit lock.
+
+    Each record file passes the gate every rewritten record file passes,
+    :func:`_scan_or_refuse` (P2-7's full-file secret scan, and S-81: while
+    the steward acts -- its direct ``recompile``/``post_run_recompile`` --
+    the ledger refuses it a lesson the overseer holds). A refused record is
+    left as it is and reported in ``result.refused``; the others still
+    regenerate. The new bytes go in through :meth:`Record.set_hook_script`,
+    which rewrites only ``routing.hook.script``: this never routes."""
     with _ledger_write(home, earlier_commits=earlier_commits) as recovered:
         intents.announce_recovered(recovered)
         touched: list[Path] = []
@@ -13078,12 +13086,20 @@ def _refresh_commit(
                 or script_for_hook(current.id, record_title(current), meta) != new
             ):
                 continue
+            try:
+                _scan_or_refuse([path], None)
+            except SecretRefusal:
+                # Never the matched span: this text reaches recompile's
+                # warnings and the maintenance cache file.
+                result.refused[current.id] = "its record file trips the secret scan (P2-7)"
+                continue
+            except SheetLineError as exc:  # S-81: the overseer holds it
+                result.refused[current.id] = " ".join(str(exc).split())
+                continue
             result.previous[current.id] = compiled.sha256_hex(
                 str(meta.get("script") or "").encode("utf-8")
             )
-            meta["script"] = new
-            routing["hook"] = meta
-            current.set_routing(routing)
+            current.set_hook_script(new)
             current.write(path)
             touched.append(path)
             result.regenerated.append(current.id)
@@ -13216,7 +13232,7 @@ def recompile(
         if pending_done:
             from . import hook_pending
 
-            hook_pending.drop(home, pending_done)
+            hook_pending.drop(home, pending_done, earlier_commits=span_commits)
 
     # Enumerate targets off ALL resolved records that ever landed in canon
     # (the ledger is the source of truth — targets are derived, never
@@ -14418,12 +14434,16 @@ def recompile(
                 gitops.push_if_remote(host_repo)
     finally:
         hold.release()
-    _confirm_regenerated(home, result, regenerated_from, pending_place)
+    _confirm_regenerated(home, result, regenerated_from, pending_place, span_commits)
     return result
 
 
 def _confirm_regenerated(
-    home: Path, result: RecompileResult, previous: dict[str, str], pending_place: list[str]
+    home: Path,
+    result: RecompileResult,
+    previous: dict[str, str],
+    pending_place: list[str],
+    span_commits: list[str],
 ) -> None:
     """S-133 gate r1 F2 / r2 G2: keep in ``hooks_regenerated`` only the
     hooks whose placed file now holds the regenerated (stored) bytes. One
@@ -14475,11 +14495,11 @@ def _confirm_regenerated(
         if rid in previous and where is not None:
             hook_pending.record(
                 home, rid, placed_sha256=previous[rid], missing=not where[1].exists(),
-                script_path=str(where[2]), why=why,
+                script_path=str(where[2]), why=why, earlier_commits=span_commits,
             )
     result.hooks_regenerated = confirmed
     result.hooks_placed = placed
-    hook_pending.drop(home, placed)
+    hook_pending.drop(home, placed, earlier_commits=span_commits)
 
 
 @dataclass(frozen=True)
