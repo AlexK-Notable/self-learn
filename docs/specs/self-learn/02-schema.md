@@ -1951,14 +1951,21 @@ in the ledger (never in a host repository) ends in a trailer paragraph with
 `settings.agent_caller` detects), `miner`, `worker`, `sweep` (the premise
 sweep), `steward` or `overseer` for a job (set by the job's entry point, so a
 worker auto-kicked from an agent's command line is `worker`), `serve` for the
-daemon outside a job. A body that already ends in a `By:` paragraph (a
-verb's own, or the execution block below) gets no second one, except that in
-a shell a final `By:` naming another actor that is not an execution block is
-followed by the shell's own. An agent's shell running a person-only command
-under the user's standing grant (§3a.3a) writes `By: agent` and `Grant:
-<statement id>`, with its reason as the body; under a proved typed yes,
-`By: agent` and `Proof: <transcript line>`. Never `By: human` for an
-agent's act.
+daemon outside a job. A body's own final `By:` block is kept only when it
+is provably the writer's: it names the current actor (or, for the worker
+and the miner, `analyst`, the trailer their routing verbs write), or,
+inside a job (never in a shell), it is a sheet runner's (`steward`,
+`overseer`) execution block below. Any other final block, whatever a note
+or a model's text ends in, is followed by the writer's own. A command-line
+`batch` runs as its shell (`human` or `agent`), so its lines record who ran
+them. An agent's shell running a person-only command under the user's
+standing grant (§3a.3a) writes `By: agent` and `Grant: <statement id>`,
+with its reason and the user's words (`Under the user's standing grant
+(<statement id>): "<words>"`) as body paragraphs; under a proved typed yes,
+`By: agent` and `Proof: <transcript line>`. A final block is kept under an
+authority only when it is `By: agent` (it gains the `Grant:`/`Proof:` line)
+or already names that very authority. Never `By: human` for an agent's
+act.
 
 For an opted-in ordinary ledger mutation, the item's own mutation commit has
 one canonical final trailer block: `By: <runner>`, `Case: <case-id>`,
@@ -2207,10 +2214,17 @@ Append-only JSON Lines, like the statement store:
  "at": "…", "by": "agent", "note": "…"}
 ```
 
-A grant is made only from a user-scoped statement whose `message_ref` is a
-transcript line that still resolves, reads as the user's own typing (rule
-10, as `statement add` reads it) and holds the statement's words. Unlike
-`statement add`, a transcript that cannot be found refuses. The newest grant
+A grant is made only from a user-scoped statement of kind `proposition` or
+`instruction` (never a `question`) whose `message_ref` is a transcript line
+that still resolves, reads as the user's own typing (rule 10, as `statement
+add` reads it) and holds the statement's words. Unlike `statement add`, a
+transcript that cannot be found refuses. Which typed proposition grants
+anything is not something code can read, so any statement passing these
+checks qualifies; what keeps a wrong choice visible is that the words are
+copied verbatim into the grant row and the `grant add` commit, printed on
+every command an agent runs under it (`<command>: running under the user's
+standing grant stmt-…("<words>")`) and in its `--note` refusal, and written
+into every commit made under it; `grant revoke` ends it. The newest grant
 no later row revokes is in force. `self-learn grant add --statement <id>`
 records it (from an agent's shell only with `--note`, committed `By: agent`
 and `Grant: <statement>`); `grant revoke <id>` ends it (anyone may);
@@ -3933,13 +3947,16 @@ refresh` commits (code-only changes, so they can be reviewed).
 - **`premises.enabled`** (tier C, default **true**) gates the sweep job and
   both input kinds. With the default, the sweep, the follow-up rule and the
   backfill run from the first night after landing, with no step by a person;
-  setting it false is the person's rollback. Agents never set it: it is tier
-  C, and S-92 refuses a tier-C `config set` or `config unset` from an agent's
-  shell. `premises check`, the `premises` sheet verb and a steward
+  setting it false is the rollback. It is tier C: S-92 refuses a tier-C
+  `config set` or `config unset` from an agent's shell unless the ledger holds
+  the user's standing grant (§3a.3a, S-NEXT-attribution); under it an agent
+  sets it with `--note <reason>`, recorded `By: agent` and `Grant: <statement
+  id>`, and it stays the rollback switch. `premises check`, the `premises` sheet verb and a steward
   `--dry-run` work with it false.
 - **`premises.backfill_per_night`** (tier C, default 10; 0 pauses the
   backfill while the rest of the check runs): how many `premise-extract`
-  inputs a run is offered (3a.10.7). Agents never set it (S-92). It is a
+  inputs a run is offered (3a.10.7). Agents set it only under the user's
+  standing grant with `--note` (S-92 as amended by S-NEXT-attribution). It is a
   setting rather than a constant by the user's 2026-09-20 rule that numbers
   which size a step are not hardcoded, and the shared steward test helpers
   pause it.

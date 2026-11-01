@@ -129,8 +129,9 @@ is held back (the first week) the overseer only drafts, and the user can
 stop the name now, before anything is deployed under it, by vetoing it; a
 draft cannot be retired, because there is nothing to retire yet. A veto bans
 the name for ever: no skill is written under it again, and a live skill under
-it is renamed by the next overseer run that writes skills (or at once by the
-user with `self-learn skill rename` in their own terminal); its words stay as
+it is renamed by the next overseer run that writes skills (or at once with
+`self-learn skill rename`, by the user in their own terminal or by an agent
+under the user's standing grant with `--note`); its words stay as
 they were until then. A retirement request is carried to every overseer run
 until the skill is retired: the run that writes skills moves the skill's
 lessons out first and retires it, or asks the user why it did not, so say
