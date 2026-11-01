@@ -928,10 +928,47 @@ def build(home: Path | str, item_id: str, *,
     return _fit(packet)
 
 
-#: Humane UI lane 3: the longest reason one decision line carries.
-MAX_RUN_REASON_CHARS = 600
-#: ...and the shortest opening it settles for (see :func:`_first_sentence`).
+#: Humane UI lane 3: the most the ``run`` block of a nightly review may take
+#: of the packet (gate r1 MAJOR 3). Its rows carry a title and a short
+#: reason only; the page opens a case's full text on request, so the block
+#: never crowds the evidence out of :data:`MAX_BYTES`.
+MAX_RUN_BYTES = 12 * 1024
+#: The longest title and reason a decision row carries, before the budget.
+MAX_RUN_TITLE_CHARS = 160
+MAX_RUN_REASON_CHARS = 200
+#: ...and the shortest opening a reason settles for (see :func:`_first_sentence`).
 MIN_REASON_CHARS = 60
+#: A case whose apply did not happen (the run record's ``phase``): its
+#: outcome is the steward's intent, never an effect (gate r1 MAJOR 1).
+NOT_CARRIED_OUT_PHASES = frozenset({"refused", "failed", "stopped"})
+#: The group a decision not carried out is counted in.
+REFUSED_GROUP = "refused"
+
+_PAREN_REF_RE = re.compile(
+    r"\s*\((?=[^()]*\b(?:L\d{2,}|(?:case|lrn|stmt|um|op|q|grant|obs)-[0-9a-z]))[^()]*\)")
+_BARE_REF_WORDS = (
+    (re.compile(r"\bcase-[0-9a-f]{6,}\b"), "an earlier case"),
+    (re.compile(r"\blrn-[0-9a-f]{6,}\b"), "a lesson"),
+    (re.compile(r"\bstmt-[0-9a-f]{6,}\b"), "your statement"),
+    (re.compile(r"\s*\bum-[0-9a-z]{3,}(?:@r\d+)?"), ""),
+)
+_LINE_REF_RE = re.compile(r"\s*\b(?:at |on |in )?L\d{2,}(?:-L?\d+)?\b")
+
+
+def _plain_reason(text: str | None) -> str | None:
+    """*text* without its ids and transcript line references (gate r1 NIT 8):
+    a parenthesis that holds one goes; a bare id reads as words ("an earlier
+    case", "your statement"), a reading's id goes; "at L20505" goes. The
+    case file keeps them."""
+    if not text:
+        return text
+    out = _PAREN_REF_RE.sub("", text)
+    for pattern, words in _BARE_REF_WORDS:
+        out = pattern.sub(words, out)
+    out = _LINE_REF_RE.sub("", out)
+    out = re.sub(r"\s+([,.;:])", r"\1", out)
+    out = re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", out)
+    return " ".join(out.split())
 
 
 def _first_sentence(text: str | None) -> str | None:
@@ -951,44 +988,92 @@ def _first_sentence(text: str | None) -> str | None:
     return out
 
 
+def _clip_plain(text: str | None, limit: int) -> str | None:
+    if text is None or len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _carried_out(entry: object) -> bool:
+    """Whether the run record says a case's apply happened: not when its
+    ``phase`` is refused, failed or stopped, nor when its result applied
+    nothing and refused something."""
+    if not isinstance(entry, dict):
+        return True
+    if entry.get("phase") in NOT_CARRIED_OUT_PHASES:
+        return False
+    result = entry.get("result")
+    summary = result.get("summary") if isinstance(result, dict) else None
+    if isinstance(summary, dict):
+        applied, refused = summary.get("applied"), summary.get("refused")
+        if applied == 0 and isinstance(refused, int) and refused > 0:
+            return False
+    return True
+
+
+def _fit_run(rows: list[dict]) -> int:
+    """Shorten the rows in place until they take at most
+    :data:`MAX_RUN_BYTES`: reasons to 120 characters, then titles to 100,
+    then reasons to 60, then titles to 60, then no reasons; and if that is
+    still too much (a run of very many cases), drop rows from the end.
+    Returns how many rows were dropped; the counts still cover them."""
+    def size() -> int:
+        return len(json.dumps(rows, ensure_ascii=False).encode("utf-8"))
+
+    for key, limit in (("reason", 120), ("title", 100), ("reason", 60), ("title", 60), ("reason", 0)):
+        if size() <= MAX_RUN_BYTES:
+            return 0
+        for row in rows:
+            row[key] = None if limit == 0 else _clip_plain(row.get(key), limit)
+    dropped = 0
+    while rows and size() > MAX_RUN_BYTES:
+        rows.pop()
+        dropped += 1
+    return dropped
+
+
 def _run_decisions(home: Path, item: dict, limits: _Limits) -> dict | None:
-    """Humane UI lane 3 (proposal §4, contract §6): a nightly review's
-    decisions, one row per case the run wrote, each with the lesson it is
-    about, its outcome verb and that verb's group
-    (:data:`self_learn.series.OUTCOME_GROUPS`, the groups the charts use),
-    and the first sentence of its reason; plus the count per group. Read
-    from the run's manifest and its committed case files (frontmatter
-    ``outcome``); counted, never modelled. ``None`` for any other item."""
+    """Humane UI lane 3 (proposal §4, contract §6; gate r1): a nightly
+    review's decisions, one row per case the run wrote (its manifest's
+    ``cases``; the item's title counts the same cases, so the two always
+    agree), each with the lesson it is about, its outcome verb and that
+    verb's group (:data:`self_learn.series.OUTCOME_GROUPS`), and the opening
+    of its reason in plain words; plus the count per group. A case the run
+    record says was not carried out (refused by the ledger) is counted under
+    :data:`REFUSED_GROUP`, never under the group of what it meant to do.
+    Read from the run's manifest and its committed case files; counted,
+    never modelled; at most :data:`MAX_RUN_BYTES`. ``None`` for any other
+    item."""
     if item.get("kind") != "decided.steward-run":
         return None
     from . import cases
     from .series import OUTCOME_GROUPS
 
     group_of = {verb: group for group, verbs in OUTCOME_GROUPS.items() for verb in verbs}
+    counts = {g: 0 for g in OUTCOME_GROUPS}
+    counts[REFUSED_GROUP] = 0
     manifest_path = item.get("_manifest_path")
     try:
         manifest = json.loads(Path(str(manifest_path)).read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
-        return {"decisions": [], "counts": {g: 0 for g in OUTCOME_GROUPS}, "other": 0,
+        return {"decisions": [], "counts": counts, "other": 0, "omitted": 0,
                 "error": "the run's record could not be read"}
     recipes = manifest.get("cases") if isinstance(manifest, dict) else None
-    case_ids = [c for c in (recipes if isinstance(recipes, dict) else {})
-                if isinstance(c, str) and c.startswith("case-")]
-    counts = {g: 0 for g in OUTCOME_GROUPS}
+    recipes = recipes if isinstance(recipes, dict) else {}
+    case_ids = [c for c in recipes if isinstance(c, str) and c.startswith("case-")]
     other = 0
     rows: list[dict] = []
-    for index, case_id in enumerate(case_ids):
-        where = f"run.decisions[{index}]"
+    for case_id in case_ids:
         try:
             text = cases._case_path_for_id(home, case_id).read_text(encoding="utf-8")  # noqa: SLF001
             frontmatter, body = cases._split_frontmatter(text)  # noqa: SLF001
         except Exception:  # noqa: BLE001 -- a missing case is a row without words
             frontmatter, body = {}, ""
-        sections = _sections(body)
-        decision = sections.get("Decision")
+        decision = _sections(body).get("Decision")
         verb = frontmatter.get("outcome") if isinstance(frontmatter.get("outcome"), str) else None
         verb = verb or _line_value(decision, "verb")
-        group = group_of.get(verb or "")
+        carried = _carried_out(recipes.get(case_id))
+        group = group_of.get(verb or "") if carried else REFUSED_GROUP
         if group is None:
             other += 1
         else:
@@ -996,24 +1081,23 @@ def _run_decisions(home: Path, item: dict, limits: _Limits) -> dict | None:
         records = [str(r) for r in frontmatter.get("records") or [] if isinstance(r, str)]
         title = None
         if records:
-            lesson = _lesson(home, records[0], _Limits(), where)
+            lesson = _lesson(home, records[0], _Limits(), "run")
             title = (lesson or {}).get("title")
-        because = _line_value(decision, "because")
+        reason = _first_sentence(_plain_reason(_line_value(decision, "because")))
         rows.append({
             "case": case_id,
             "record": records[0] if records else None,
             "records": len(records),
-            "title": limits.clip(title, f"{where}.title", 300),
-            "question": limits.clip(
-                _line_value(sections.get("Identity and scope"), "question"), f"{where}.question", 600),
+            "title": _clip_plain(redact_text(title) if title else None, MAX_RUN_TITLE_CHARS),
             "verb": verb,
             "group": group,
-            "reason": limits.clip(_first_sentence(because), f"{where}.reason", 300),
-            "because": limits.clip(because, f"{where}.because", MAX_RUN_REASON_CHARS),
+            "carried_out": carried,
+            "reason": _clip_plain(redact_text(reason) if reason else None, MAX_RUN_REASON_CHARS),
         })
-    order = {g: i for i, g in enumerate(OUTCOME_GROUPS)}
+    order = {g: i for i, g in enumerate([*OUTCOME_GROUPS, REFUSED_GROUP])}
     rows.sort(key=lambda r: (order.get(str(r["group"]), len(order)), str(r["case"])))
-    return {"decisions": rows, "counts": counts, "other": other, "error": None}
+    omitted = _fit_run(rows)
+    return {"decisions": rows, "counts": counts, "other": other, "omitted": omitted, "error": None}
 
 
 def _pointers(home: Path, item: dict) -> list[dict]:

@@ -116,12 +116,25 @@ def _fold_text(text: str, seen: set[str]) -> str:
             noun = _NOUNS.get(prefixes.pop(), "ids") if len(prefixes) == 1 else "ids"
             return _token(f"the {len(found)} {noun}", match.group(0), "ids", seen)
 
-        piece = _ID_RUN_RE.sub(ids, piece)
-        piece = _PATH_RE.sub(lambda m: _token(
-            "a path", str(markupsafe.escape(_display_path(m.group(0)))), "path", seen), piece)
-        piece = _HASH_RE.sub(lambda m: _token("a hash", m.group(0), "hash", seen), piece)
+        # Each pass replaces text outside the placeholders the passes before
+        # it made, never inside one's title (gate r1 MINOR 4: a path holding
+        # a full hash put a <span> inside the path's title attribute).
+        piece = _outside_tokens(piece, lambda t: _ID_RUN_RE.sub(ids, t))
+        piece = _outside_tokens(piece, lambda t: _PATH_RE.sub(lambda m: _token(
+            "a path", str(markupsafe.escape(_display_path(m.group(0)))), "path", seen), t))
+        piece = _outside_tokens(piece, lambda t: _HASH_RE.sub(
+            lambda m: _token("a hash", m.group(0), "hash", seen), t))
         pieces.append(piece)
     return "".join(pieces)
+
+
+_TOKEN_SPLIT_RE = re.compile(r'(<span class="rv-token"[^>]*>[^<]*</span>)')
+
+
+def _outside_tokens(text: str, sub: Any) -> str:
+    """*sub* applied to the parts of *text* that are not placeholders."""
+    return "".join(part if part.startswith('<span class="rv-token"') else sub(part)
+                   for part in _TOKEN_SPLIT_RE.split(text))
 
 
 def _fold_summary(kinds: set[str]) -> str:
@@ -198,6 +211,36 @@ def _says_none(body: str) -> bool:
     return words in ("", "none", "no questions", "none this week")
 
 
+_QUESTION_LINE_RE = re.compile(r"^[-*+]\s+(?P<id>q-[a-z0-9-]+|um-[0-9a-z]+@r\d+):\s*(?P<text>.*)$")
+
+
+def _questions(body: str, home: Path | str) -> dict[str, Any]:
+    """The report's questions with where each stands now (gate r1 MINOR 6):
+    a question still open asks to be answered in the inbox; one answered
+    since shows the answer, in the person's own words; one no longer asked
+    says so. A bullet that names no question id is shown as written, as
+    asked then. Never folded."""
+    from self_learn import weekly_facts
+
+    if _says_none(body):
+        return {"none": True, "rows": [], "open": 0, "html": None}
+    rows: list[dict[str, Any]] = []
+    loose: list[str] = []
+    for line in body.splitlines():
+        match = _QUESTION_LINE_RE.match(line.strip())
+        if match:
+            rows.append({"id": match.group("id"), "text": match.group("text")})
+        elif line.strip():
+            loose.append(line)
+    states = weekly_facts.question_states(home, [r["id"] for r in rows])
+    for row in rows:
+        row.update(states.get(row["id"]) or {"state": "closed", "answer": None, "at": None})
+    open_count = sum(1 for r in rows if r["state"] == "open")
+    html = markupsafe.Markup(render_markdown("\n".join(loose))) if loose else None
+    return {"none": False, "rows": rows, "open": open_count, "html": html,
+            "unknown": bool(loose)}
+
+
 def _day_words(date: str | None) -> str | None:
     try:
         parsed = datetime.strptime(str(date)[:10], "%Y-%m-%d")
@@ -238,8 +281,7 @@ def build(text: str, home: Path | str) -> dict[str, Any]:
     drawn: list[dict[str, Any]] = []
     for title, body in sections:
         if title == _QUESTIONS:
-            questions = ({"none": True, "html": None} if _says_none(body) else
-                         {"none": False, "html": markupsafe.Markup(render_markdown(body))})
+            questions = _questions(body, home)
             continue
         html = fold_machine_text(render_markdown(body))
         folded = title.lower().startswith("refused")

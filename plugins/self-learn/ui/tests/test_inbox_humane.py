@@ -82,6 +82,19 @@ def test_a_needs_you_item_is_listed_with_its_count_and_no_empty_line(tmp_path, m
     assert "data-nothing-needs-you" not in listing
 
 
+def test_work_being_carried_out_has_its_own_counted_group(tmp_path, monkeypatch):
+    """Gate r1 MINOR 5 (M14) and NIT 9. Mutations: drop the "Being carried
+    out" section -> red; no count on its heading -> red."""
+    from test_inbox import APPROVED, ID_APPROVED
+
+    _fixed_now(monkeypatch)
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(OO7, APPROVED), {ID_OO7: OO7_PACKET}))
+    listing = _list(client.get(f"/inbox/{ID_OO7}").text)
+    assert 'id="inbox-approved-h">Being carried out (1)</h2>' in listing
+    group = listing[listing.index('data-group="approved"'):].split("</ul>")[0]
+    assert f'data-inbox-item="{ID_APPROVED}"' in group and "Approved, not started" in group
+
+
 def test_a_decided_row_has_no_decided_chip_and_says_who_and_when(tmp_path, monkeypatch):
     """Mutations: keep the "Decided" chip -> red; drop the who-and-when line
     -> red."""
@@ -132,11 +145,25 @@ def test_a_fold_holding_the_open_item_is_drawn_open(tmp_path, monkeypatch):
 
 
 def test_the_fold_label_names_the_days():
-    """Mutation: no month on a cross-month span -> red."""
-    items = [_run(1, days=0.5), _run(2, days=3), _run(3, days=6)]
-    span = inbox_routes._day_span(items)  # noqa: SLF001
-    assert span.endswith("Nov") or span.endswith("Oct")
-    assert "–" in span
+    """Gate r1 NIT 10: the exact span. Mutations: first and last day swapped
+    -> red; no month on a cross-month span -> red; a one-day span written
+    as a range -> red."""
+    def at(day: str) -> dict:
+        it = _run(1, days=0)
+        it["updated_at"] = it["since"] = f"{day}T19:00:00Z"
+        return it
+
+    def local(day: str) -> datetime:
+        return datetime.fromisoformat(day + "T19:00:00+00:00").astimezone()
+
+    span = inbox_routes._day_span  # noqa: SLF001
+    a, b = local("2026-10-26"), local("2026-10-31")
+    assert span([at("2026-10-31"), at("2026-10-26")]) == f"{a.day}–{b.day} {b.strftime('%b')}"
+    c, d = local("2026-09-28"), local("2026-10-03")
+    assert span([at("2026-10-03"), at("2026-09-28")]) == (
+        f"{c.day} {c.strftime('%b')} – {d.day} {d.strftime('%b')}")
+    e = local("2026-11-01")
+    assert span([at("2026-11-01"), at("2026-11-01")]) == f"{e.day} {e.strftime('%b')}"
 
 
 def test_the_unseen_mark_is_one_dot_with_its_word_for_a_screen_reader(tmp_path, monkeypatch):
@@ -224,8 +251,8 @@ RUN_ITEM = {**_item(RUN_ID, "decided.steward-run", "decided", None,
 
 def _row(n: int, group: str, verb: str) -> dict:
     return {"case": f"case-0000c0{n:02d}", "record": f"lrn-0000c0{n:02d}", "records": 1,
-            "title": f"About to do thing {n}", "question": f"Question {n}?", "verb": verb,
-            "group": group, "reason": f"Short reason {n}.", "because": f"Short reason {n}. And more."}
+            "title": f"About to do thing {n}", "verb": verb, "group": group,
+            "carried_out": group != "refused", "reason": f"Short reason {n}."}
 
 
 RUN_PACKET = {
@@ -251,6 +278,7 @@ def test_a_nightly_review_lists_each_decision_with_counts_and_a_table(tmp_path, 
     assert 'data-group="use"><span class="run-swatch run-seg-use" aria-hidden="true"></span>Put to use <strong>4</strong>' in run
     assert "Turned down <strong>2</strong>" in run and "Looked at, kept as is <strong>0</strong>" in run
     assert "<summary>Show as a table</summary>" in run and "<th scope=\"row\">All</th><td>8</td>" in run
+    assert '<th scope="col">Decisions</th>' in run  # gate r1 MAJOR 2: the unit, named truly
     # Three groups hold decisions, so three bar segments: none for the empty one.
     assert run.count('class="run-seg run-seg-') == 3 and "run-seg run-seg-kept" not in run
     shown = run[:run.index("data-run-rest")]
@@ -258,10 +286,72 @@ def test_a_nightly_review_lists_each_decision_with_counts_and_a_table(tmp_path, 
     assert "Show all 8 (2 more)" in run
     assert "About to do thing 0" in shown and "Put to use · Short reason 0." in shown
     assert "<summary>Its ids, for an agent</summary><code>case-0000c000</code>" in run
+    # "Why?" fetches the case when opened (gate r1 MAJOR 3).
+    assert 'hx-get="/inbox/case/case-0000c000" hx-trigger="toggle once"' in run
     # The full case files fold on a nightly review.
     assert "data-evidence-fold" in page
     # And "What was decided" (the title again) is not printed.
     assert 'id="ws-decided-h"' not in page
+
+
+def test_a_refused_decision_reads_as_refused_never_as_done(tmp_path, monkeypatch):
+    """Gate r1 MAJOR 1 on the page. Mutation: draw a refused row with its
+    verb's words ("Put to use") -> red; no refused group in the split -> red."""
+    rows = [_row(0, "use", "route"), _row(1, "refused", "route"), _row(2, "no", "reject")]
+    packet = {**RUN_PACKET, "run": {"decisions": rows, "other": 0, "error": None,
+                                    "counts": {"use": 1, "no": 1, "later": 0, "kept": 0, "refused": 1}}}
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(RUN_ITEM), {RUN_ID: packet}))
+    page = client.get(f"/inbox/{RUN_ID}").text
+    run = page[page.index("data-run-decisions"):].split("</section>")[0]
+    assert "Put to use <strong>1</strong>" in run  # control: the split rendered
+    assert "Refused by the ledger, nothing changed <strong>1</strong>" in run
+    assert run.count('class="run-seg run-seg-refused"') == 1
+    line = run[run.index("About to do thing 1"):].split("</summary>")[0]
+    assert "data-run-refused" in line and "it was to be: Put to use" in line
+    assert '<span class="run-decision-line">Put to use' not in line
+
+
+def test_decisions_left_out_for_size_are_said_to_be_counted(tmp_path, monkeypatch):
+    """Gate r1 MAJOR 3: a run too large for its budget lists fewer lines and
+    says so; its counts still cover every decision. Mutation: drop the
+    line -> red."""
+    packet = {**RUN_PACKET, "run": {**RUN_PACKET["run"], "omitted": 3}}
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc(RUN_ITEM), {RUN_ID: packet}))
+    run = client.get(f"/inbox/{RUN_ID}").text
+    run = run[run.index("data-run-decisions"):].split("</section>")[0]
+    assert "Put to use <strong>4</strong>" in run  # control
+    assert "data-run-omitted" in run and "3 more decisions of this review are counted above" in run
+
+
+def test_why_opens_the_case_told_once(tmp_path, monkeypatch):
+    """GET /inbox/case/<id>, the "Why?" of a decision line. Mutations: print
+    the Decision list raw -> red; accept any id -> red."""
+    from types import SimpleNamespace
+
+    from self_learn import cases
+
+    shown = []
+
+    def show(home, case_id, *, evidence_only=True):
+        shown.append((case_id, evidence_only))
+        if case_id == "case-0000dead":
+            raise cases.CaseError("case show: case-0000dead failed its freeze-hash check")
+        return SimpleNamespace(frontmatter={"outcome": "reject"}, sections={
+            "Identity and scope": "- records: lrn-1\n- question: Should it stand?",
+            "Decision": f"- verb: reject\n- because: {CASE_BECAUSE}\n- confidence: settled"})
+
+    monkeypatch.setattr(cases, "show", show)
+    client, *_ = make_client(tmp_path, monkeypatch, Reads(_doc()))
+    body = client.get("/inbox/case/case-0000beef").text
+    assert "<strong>Question:</strong> Should it stand?" in body  # control
+    assert "<strong>Decision:</strong> Turned down (held firmly)" in body
+    outside = body[:body.index("The case file as written")]
+    assert outside.count(CASE_BECAUSE) == 1 and "- verb:" not in outside
+    assert shown == [("case-0000beef", False)]
+    bad = client.get("/inbox/case/..%2Fetc")
+    assert bad.status_code == 404 and len(shown) == 1
+    tampered = client.get("/inbox/case/case-0000dead")
+    assert tampered.status_code == 404 and "failed its freeze-hash check" in tampered.text
 
 
 def test_the_in_short_slot_is_only_on_report_items(tmp_path, monkeypatch):
@@ -381,3 +471,54 @@ def test_the_tiles_count_from_the_runs_record(tmp_path, monkeypatch):
     no_record = _report_client(other, monkeypatch, "- none").get("/overseer-report").text
     assert "<h1>Weekly report · Sunday 1 November</h1>" in no_record  # control
     assert "data-report-tiles" not in no_record
+
+
+def test_a_path_holding_a_hash_is_one_placeholder(tmp_path, monkeypatch):
+    """Gate r1 MINOR 4: no markup inside a placeholder's title. Mutation:
+    the hash pass run over the path's placeholder -> red."""
+    html = report_view.fold_machine_text(
+        "<ul>\n<li>wrote /home/user/.cache/stage/" + "a" * 64 + "/x.yaml today</li>\n</ul>")
+    line = html.split("<details")[0]
+    assert 'data-fold="path"' in line  # control
+    assert line.count("rv-token") == 1
+    title = line[line.index('title="'):].split('"')[1]
+    assert "<" not in title and "a" * 64 in title
+
+
+def _questions_page(tmp_path, monkeypatch, states: dict, date: str | None = None) -> str:
+    from self_learn import weekly_facts
+
+    monkeypatch.setattr(weekly_facts, "question_states", lambda home, ids: {
+        i: states.get(i, {"state": "closed", "answer": None, "at": None}) for i in ids})
+    client = _report_client(tmp_path, monkeypatch,
+                            "- q-hook-activation: register the generated hooks?\n"
+                            "- um-c4e5@r1: confirm or correct the reading.")
+    if date:
+        home = tmp_path / "home"
+        (home / "overseer" / f"{date}-report.md").write_text(
+            (home / "overseer" / "latest-report.md").read_text())
+        return client.get(f"/overseer-report/{date}").text
+    return client.get("/overseer-report").text
+
+
+def test_answered_questions_show_their_answer_and_ask_nothing(tmp_path, monkeypatch):
+    """Gate r1 MINOR 6. Mutations: always "Questions for you" -> red;
+    always the inbox link -> red; drop the answer -> red."""
+    page = _questions_page(tmp_path, monkeypatch, {
+        "q-hook-activation": {"state": "answered", "answer": "yes to both: hooks on.",
+                              "at": "2026-10-06T05:34:13Z"}}, date="2026-10-04")
+    q = page[page.index("data-report-questions"):].split("</section>")[0]
+    assert "The questions it asked" in q and 'data-asking="no"' in q
+    assert "register the generated hooks?" in q  # control: the questions are listed
+    assert "You answered" in q and "“yes to both: hooks on.”" in q
+    assert "No longer asked; no answer is on record." in q
+    assert 'href="/inbox"' not in q and "Questions for you" not in q
+    assert "q-hook-activation:" not in q  # the id is not running text
+
+
+def test_an_open_question_still_asks_to_be_answered(tmp_path, monkeypatch):
+    """Gate r1 MINOR 6, the other side. Mutation: never ask -> red."""
+    page = _questions_page(tmp_path, monkeypatch, {
+        "um-c4e5@r1": {"state": "open", "answer": None, "at": None}})
+    q = page[page.index("data-report-questions"):].split("</section>")[0]
+    assert "Questions for you" in q and 'href="/inbox"' in q and "(still open)" in q

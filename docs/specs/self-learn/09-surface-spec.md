@@ -509,8 +509,11 @@ section records what the surface is.
   while a needs-you or carried-out row keeps its chip, which carries
   words, never colour alone. "new" and "unseen" are one dot whose word is
   its accessible name, the word the page header shows. Run titles are in
-  words ("Nightly review, 31 October: 27 lessons decided", "Weekly
-  report, 1 November"; never "lesson(s)"). Below 760 px the list folds
+  words ("Nightly review, 31 October: 27 decisions", "Weekly report, 1
+  November"; never "lesson(s)"). A nightly review counts its decisions,
+  the run's cases, the same unit its page's split and lines count, so the
+  two never disagree; a run recorded without cases says "N lessons
+  decided". "Being carried out" carries its count, as "Needs you" does. Below 760 px the list folds
   behind an "All items (N)" button above the open item, so the item is
   the first thing on screen; `j`/`k` show the list, and opening an item
   hides it again. With nothing at all,
@@ -556,12 +559,21 @@ section records what the surface is.
   decided", the split of its decisions by outcome group
   (`series.OUTCOME_GROUPS`: Put to use, Turned down, Left for later,
   Looked at, kept as is) as a thin bar of counts with the counts in words
-  beside it and a "Show as a table" view, then one line per decision:
-  the lesson, the outcome in words and the opening of its reason, with
-  "Why?" opening the question and the reason; six lines show, the rest
-  fold under "Show all". The counts and lines are the CLI's (the
+  beside it and a "Show as a table" view (its column is "Decisions"), then
+  one line per decision: the lesson, the outcome in words and the opening
+  of its reason with its ids and transcript line references taken out;
+  "Why?" fetches the case itself when opened (`GET /inbox/case/<id>`,
+  read-only, `cases.show`'s full view, told once); six lines show, the
+  rest fold under "Show all". A decision whose apply the run record says
+  did not happen (`phase: refused`, failed or stopped, or a result that
+  applied nothing and refused something) is counted and said as "Refused
+  by the ledger, nothing changed", with what it was to be, never under the
+  group of its intended outcome. The counts and lines are the CLI's (the
   packet's `run` block, read from the run's record and its committed
-  cases); the page counts nothing. Its evidence folds under "The case
+  cases, at most 12 KiB so the packet keeps its 64 KiB cap and its
+  evidence: lines are shortened first, and a run too large even then lists
+  fewer lines and says how many more its counts cover); the page counts
+  nothing. Its evidence folds under "The case
   files and lessons, in full". A nightly review and a weekly run item
   carry an empty, marked slot for the "In short" box (lane 5).
 - **Answers** go to `attention answer` with the option, the reply text as
@@ -844,9 +856,13 @@ section records what the surface is.
   with "finished at 15:21" under it) and its run id, actor and model move
   to an "About this run" fold; "Earlier reports" is a small menu beside
   the title. Then an empty, marked slot for the "In short" box (lane 5);
-  then the "Questions for you" section lifted to the top: "Nothing needs
-  you this week." when it says none, otherwise its questions and a link
-  to the inbox, never folded. Counts sit in tiles, from the run's own
+  then the "Questions for you" section lifted to the top, never folded:
+  "Nothing needs you this week." when it says none; otherwise each
+  question with where it stands now (`weekly_facts.question_states`):
+  still open, answered (the person's own words and when), or no longer
+  asked. Only when one is still open does the box read "Questions for
+  you" with a link to the inbox; otherwise it reads "The questions it
+  asked". The tile says "Questions it asked". Counts sit in tiles, from the run's own
   record (`weekly_facts.run_facts`: past decisions re-checked of those it
   could have, decided in the person's stead, questions), never from the
   prose; a report with no record has no tiles. The overseer's sections
@@ -1155,7 +1171,8 @@ permission surface of §4.3).
   `attention-design-r2.md` §4.7 and §4.8)*. The inbox lives in its own
   router (`ui/inbox_routes.py`): `GET /inbox`, `/inbox/list`,
   `/inbox/<id>` and its `workspace`, `evidence` and `conversation`
-  partials, `/overseer-report[/<date>]`; `POST /inbox/seen-all`,
+  partials, `/inbox/case/<case id>` (a nightly review's "Why?", read-only;
+  S-NEXT-humane-l3), `/overseer-report[/<date>]`; `POST /inbox/seen-all`,
   `/inbox/<id>/{seen,answer,undo,feedback,run,fix,check-login,ask,ask/stop}`
   and `POST /navigate`. The middleware is unchanged: every POST needs the
   cookie and `HX-Request`. Reads are `attention --json` and `attention

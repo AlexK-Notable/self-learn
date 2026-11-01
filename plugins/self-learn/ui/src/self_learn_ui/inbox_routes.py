@@ -691,6 +691,9 @@ VERB_WORDS = {
 #: An outcome group in words (contract §4).
 GROUP_WORDS = {"use": "Put to use", "no": "Turned down", "later": "Left for later",
                "kept": "Looked at, kept as is"}
+#: A nightly review's groups: the four above, plus the decisions the ledger
+#: refused (gate r1 MAJOR 1: what the steward meant is never counted as done).
+RUN_GROUP_WORDS = {**GROUP_WORDS, "refused": "Refused by the ledger, nothing changed"}
 #: A case's ``confidence`` in words.
 CONFIDENCE_WORDS = {"settled": "held firmly", "firm": "held firmly", "provisional": "provisional",
                     "moderate": "held moderately", "tentative": "tentative"}
@@ -716,7 +719,8 @@ def run_view(packet: dict | None) -> dict | None:
         return None
     raw_counts = run.get("counts")
     counts: dict = raw_counts if isinstance(raw_counts, dict) else {}
-    groups = [(g, int(counts.get(g) or 0)) for g in GROUP_WORDS]
+    groups = [(g, int(counts.get(g) or 0)) for g in RUN_GROUP_WORDS
+              if g in GROUP_WORDS or int(counts.get(g) or 0)]
     total = sum(n for _, n in groups)
     segments: list[dict] = []
     x = 0.0
@@ -726,13 +730,14 @@ def run_view(packet: dict | None) -> dict | None:
     for g, n in shown:
         width = width_all * n / total
         segments.append({"group": g, "count": n, "x": round(x, 2), "width": round(width, 2),
-                         "words": GROUP_WORDS[g]})
+                         "words": RUN_GROUP_WORDS[g]})
         x += width + gap
     decisions = [d for d in run.get("decisions") or [] if isinstance(d, dict)]
     return {
         "decisions": decisions, "shown": decisions[:RUN_LINES_SHOWN],
         "rest": decisions[RUN_LINES_SHOWN:], "groups": groups, "total": total,
         "other": int(run.get("other") or 0), "segments": segments, "error": run.get("error"),
+        "omitted": int(run.get("omitted") or 0),
     }
 
 
@@ -793,7 +798,7 @@ def _render(request: Request, name: str, ctx: dict[str, Any], status_code: int =
         "armed_how": ARMED_HOW,
         "inbox_help_intro": INBOX_HELP_INTRO,
         "verb_words": VERB_WORDS,
-        "group_words": GROUP_WORDS,
+        "group_words": RUN_GROUP_WORDS,
         "confidence_words": CONFIDENCE_WORDS,
         "status_words": STATUS_WORDS,
         "placement_words": PLACEMENT_WORDS,
@@ -1054,6 +1059,46 @@ async def inbox_conversation(request: Request, item_id: str) -> HTMLResponse:
     item = _find(read, item_id) or {"id": item_id, "options": []}
     return _render(request, "partials/workspace_conversation.html",
                    {"item": _view_item(item), **_conversation_ctx(request, item)})
+
+
+_CASE_ID_RE = re.compile(r"^case-[0-9a-f]{8}$")
+
+
+@router.get("/inbox/case/{case_id}", response_class=HTMLResponse)
+async def inbox_case(request: Request, case_id: str) -> HTMLResponse:
+    """One case, told once, for a nightly review's "Why?" (humane UI lane 3,
+    gate r1 MAJOR 3: the packet's decision rows carry only a short reason, so
+    the full reason is read here when asked). Read-only: ``cases.show``'s
+    full view, which re-checks the freeze hash and refuses a tampered case."""
+    if not _CASE_ID_RE.match(case_id):
+        return _render(request, "partials/workspace_case.html",
+                       {"case": None, "case_error": "no such case"}, status_code=404)
+
+    def read() -> tuple[dict | None, str | None]:
+        from self_learn import cases
+
+        try:
+            view = cases.show(_home(request), case_id, evidence_only=False)
+        except Exception as exc:  # noqa: BLE001 -- a missing or tampered case says so
+            return None, str(exc)
+        sections = view.sections
+        decision = sections.get("Decision") or ""
+
+        def line(text: str, key: str) -> str | None:
+            for row in text.splitlines():
+                if row.strip().startswith(f"- {key}:"):
+                    return row.strip()[len(key) + 3:].strip() or None
+            return None
+
+        body = "\n\n".join(f"## {k}\n{v}" for k, v in sections.items())
+        return {"id": case_id, "question": line(sections.get("Identity and scope") or "", "question"),
+                "verb": line(decision, "verb") or view.frontmatter.get("outcome"),
+                "confidence": line(decision, "confidence"), "because": line(decision, "because"),
+                "excerpt": body}, None
+
+    case, error = await asyncio.to_thread(read)
+    return _render(request, "partials/workspace_case.html", {"case": case, "case_error": error},
+                   status_code=200 if case else 404)
 
 
 @router.get("/overseer-report", response_class=HTMLResponse)

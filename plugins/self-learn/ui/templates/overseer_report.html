@@ -56,14 +56,31 @@
      Until then the include renders nothing. #}
   <div class="in-short-slot" data-in-short-slot>{% include "partials/in_short.html" ignore missing %}</div>
 
-  {% if view.questions %}
-  {% if view.questions.none %}
+  {% set q = view.questions %}
+  {% if q %}
+  {% if q.none %}
   <p class="rv-callout rv-callout-ok" data-nothing-needs-you>Nothing needs you this week.</p>
   {% else %}
-  <section class="rv-callout rv-callout-ask" aria-labelledby="rv-questions-h" data-report-questions>
-    <h2 id="rv-questions-h">Questions for you</h2>
-    <div class="report-body">{{ view.questions.html }}</div>
-    <p><a href="/inbox">Answer them in your inbox</a></p>
+  {# Gate r1 MINOR 6: only questions still open ask to be answered; one
+     answered since shows the person's answer; on an older report a bullet
+     naming no question is shown as asked then. Never folded. #}
+  {% set asking = q.open or (q.unknown and not date) %}
+  <section class="rv-callout {{ 'rv-callout-ask' if asking else 'rv-callout-asked' }}" aria-labelledby="rv-questions-h" data-report-questions data-asking="{{ 'yes' if asking else 'no' }}">
+    <h2 id="rv-questions-h">{% if asking %}Questions for you{% else %}The questions it asked{% endif %}</h2>
+    {% if q.rows %}
+    <ul class="rv-questions">
+      {% for r in q.rows %}
+      <li data-question-state="{{ r.state }}" data-question-id="{{ r.id }}">{{ r.text }}
+        {% if r.state == "open" %}<span class="ws-meta"> (still open)</span>
+        {% elif r.state == "answered" %}<br><span class="answered-q">You answered{% if r.at %} {{ r.at | humanize_ts }}{% endif %}{% if r.answer %}: “{{ r.answer | truncate(280, true, "…") }}”{% else %} by choosing an option{% endif %}</span>
+        {% if r.answer and r.answer | length > 280 %}<details class="ws-ids"><summary>All of your words</summary><p>“{{ r.answer }}”</p></details>{% endif %}
+        {% else %}<br><span class="answered-q">No longer asked; no answer is on record.</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if q.html %}<div class="report-body">{{ q.html }}</div>{% endif %}
+    {% if asking %}<p><a href="/inbox">Answer them in your inbox</a></p>{% endif %}
   </section>
   {% endif %}
   {% endif %}
@@ -75,7 +92,7 @@
       <span class="rv-tile-value">{{ f.examined }}</span>{% if f.population is not none %}<span class="rv-tile-of"> of {{ f.population }}</span>{% endif %}</li>{% endif %}
     {% if f.decided is not none %}<li class="rv-tile"><span class="rv-tile-label">Decided in your stead</span>
       <span class="rv-tile-value">{{ f.decided }}</span>{% if f.decisions_dropped %}<span class="rv-tile-of"> ({{ f.decisions_dropped }} more dropped)</span>{% endif %}</li>{% endif %}
-    {% if f.questions is not none %}<li class="rv-tile"><span class="rv-tile-label">Questions for you</span>
+    {% if f.questions is not none %}<li class="rv-tile"><span class="rv-tile-label">Questions it asked</span>
       <span class="rv-tile-value">{{ f.questions }}</span></li>{% endif %}
   </ul>
   {% endif %}

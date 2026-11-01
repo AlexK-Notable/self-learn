@@ -2,7 +2,11 @@
   A nightly review's decisions (humane UI lane 3, proposal §4): the split by
   outcome group as a thin bar with its counts beside it, then one line per
   decision -- the lesson, the outcome in words, a short reason -- each with
-  "Why?" opening the question and the full reason. The counts and the lines
+  "Why?" fetching the case itself (GET /inbox/case/<id>) when it is opened,
+  so the packet carries only the short line (gate r1 MAJOR 3). A decision
+  the ledger refused is counted and said as refused, never as what it meant
+  to do (gate r1 MAJOR 1). The counts are decisions (the run's cases), the
+  same unit as the item's title (gate r1 MAJOR 2). The counts and the lines
   are the CLI's (`attention packet`'s `run` block, grouped by
   self_learn.series.OUTCOME_GROUPS); `run` is inbox_routes.run_view of it.
   The bar draws counts only, and its table view sits under it.
@@ -25,7 +29,7 @@
     <details class="run-table">
       <summary>Show as a table</summary>
       <table>
-        <thead><tr><th scope="col">Outcome</th><th scope="col">Lessons</th></tr></thead>
+        <thead><tr><th scope="col">Outcome</th><th scope="col">Decisions</th></tr></thead>
         <tbody>
           {% for group, count in run.groups %}<tr><th scope="row">{{ group_words[group] }}</th><td>{{ count }}</td></tr>{% endfor %}
           {% if run.other %}<tr><th scope="row">Other</th><td>{{ run.other }}</td></tr>{% endif %}
@@ -40,18 +44,17 @@
   <h3>Each decision</h3>
   {% macro decision_line(d) -%}
   <li class="run-decision" data-run-decision data-group="{{ d.group or 'other' }}">
-    <details>
+    <details hx-get="/inbox/case/{{ d.case }}" hx-trigger="toggle once" hx-target="find .run-decision-body" hx-swap="innerHTML">
       <summary>
         <span class="run-swatch run-seg-{{ d.group or 'other' }}" aria-hidden="true"></span>
         <span class="run-decision-text">
           <span class="run-decision-title">{{ d.title or d.question or "A lesson" }}</span>
-          <span class="run-decision-line">{{ verb_words.get(d.verb, d.verb or "No outcome recorded") }}{% if d.reason %} · {{ d.reason }}{% endif %}</span>
+          <span class="run-decision-line">{% if d.group == "refused" %}<strong data-run-refused>{{ group_words["refused"] }}</strong>{% if d.verb %} · it was to be: {{ verb_words.get(d.verb, d.verb) }}{% endif %}{% else %}{{ verb_words.get(d.verb, d.verb or "No outcome recorded") }}{% endif %}{% if d.reason %} · {{ d.reason }}{% endif %}</span>
         </span>
         <span class="run-why">Why?</span>
       </summary>
-      <div class="run-decision-body">
-        {% if d.question %}<p><strong>Question:</strong> {{ d.question }}</p>{% endif %}
-        {% if d.because %}<p><strong>Because:</strong> {{ d.because }}</p>{% endif %}
+      <div class="run-decision-body" aria-live="polite">
+        <p class="ws-meta">Opening the case…</p>
         <details class="ws-ids"><summary>Its ids, for an agent</summary><code>{{ d.case }}</code>{% if d.record %} <code>{{ d.record }}</code>{% endif %}</details>
       </div>
     </details>
@@ -60,6 +63,9 @@
   <ul class="run-decisions">
     {% for d in run.shown %}{{ decision_line(d) }}{% endfor %}
   </ul>
+  {% if run.omitted %}
+  <p class="ws-meta" data-run-omitted>{{ run.omitted }} more decision{{ '' if run.omitted == 1 else 's' }} of this review {{ 'is' if run.omitted == 1 else 'are' }} counted above but not listed here, to keep this page within its size; the agent can open them.</p>
+  {% endif %}
   {% if run.rest %}
   <details class="run-rest" data-run-rest>
     <summary>Show all {{ run.decisions | length }} ({{ run.rest | length }} more)</summary>
