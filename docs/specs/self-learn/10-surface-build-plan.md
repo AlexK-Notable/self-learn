@@ -782,6 +782,24 @@ in brackets.
   target confirms the brief text appears in **no** compiled canon
   (12 §11 acceptance m-e/m-f/m-g).
 
+- **U-inbox · Inbox and decision workspace** [attention-core, answers,
+  ask-agent] *(added 2026-10-31 — attention round lane `ui-workspace`,
+  `misc/build-2026-10-31c/attention-design-r2.md` §5.5; 09 §2.5, §3
+  "Inbox routes, envelopes and the ask runner", §5 inbox rows, §7 the
+  walk world; S-NEXT-ui-workspace)*: `ui/inbox_routes.py` (its own
+  router, `/navigate` included), `ui/ask_runner.py` (`RealAskRunner`,
+  `FakeAskRunner`), the attention and packet reads in `ui/ledger.py`,
+  the ask leg of `ui/idle.py`, `INBOX_KEYMAP`, the front page's "Inbox
+  (N)", the `inbox`, `overseer_report` and `partials/workspace*`
+  templates, `static/inbox.js`, the `navigate` follower in `app.js`,
+  `self-learn-ui-open --page`, and the sandbox world `attention`.
+  *Tests:* `test_inbox.py`, `test_ask_runner.py`, `test_navigate.py`
+  (the design's tests 1–16, each with the mutation that must turn it
+  red). *DoD:* the three files green with every listed mutation killed;
+  ui pyright not grown; the world `attention` builds; after landing, a
+  source-blind walk of the five shapes in that world only (09 §7),
+  recording experience per surface, not a pass/fail gate.
+
 Parallelism: superseded 2026-07-17 by **§8 — the parallel execution
 plan** (tracks, file-ownership partition, join points, blockers).
 Polish backlog (explicitly deferred, not silently dropped): `proposal
