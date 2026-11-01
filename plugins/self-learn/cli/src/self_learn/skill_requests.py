@@ -151,7 +151,25 @@ def describe_name(home: Path | str, registry: skill_registry.Registry, name: str
             f"{name} is a name the overseer drafted or decided to build: no skill is written "
             "under it, and the overseer chooses another name"
         )
+    if _loaded_here(home, name):
+        # gate r1 NIT: a skill a person made and self-learn does not own
+        return (
+            f"{name} is a skill on this machine that self-learn does not own: it is left as it "
+            "is, and self-learn never writes a skill under the name"
+        )
     return f"{name} is not a name any skill uses: banned for any future skill"
+
+
+def _loaded_here(home: Path, name: str) -> bool:
+    """Whether a skill or command on this machine is loaded under *name*
+    (the writer's own catalogue read); ``False`` when it cannot be read."""
+    try:
+        loaded, _problems, _notes = skill_writer._loaded_names(  # noqa: SLF001 -- one definition
+            home, leaving_out=None
+        )
+    except Exception:  # noqa: BLE001 -- only the printed words depend on it
+        return False
+    return name.casefold() in loaded
 
 
 # ------------------------------------------------------------------ writes

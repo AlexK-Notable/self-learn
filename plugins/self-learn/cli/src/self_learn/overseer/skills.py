@@ -552,15 +552,17 @@ def _changed_since_last_write(
 ) -> str:
     """D4's view for phase B: what a person (or another agent) changed in
     the skill's authored text since self-learn last wrote it."""
-    case = (row.get("last_write") or {}).get("case")
+    last_case = (row.get("last_write") or {}).get("case")
+    # gate r1 NIT: a person's or an agent's step answers no case
+    case = f"case {last_case}" if last_case is not None else skill_writer.NO_CASE
     if current is not None and current == recorded:
         return (
-            f"# Unchanged: {name}'s text is as self-learn last wrote it (case {case}).\n"
+            f"# Unchanged: {name}'s text is as self-learn last wrote it ({case}).\n"
         )
     old = _files_at_last_write(home, name, row)
     if old is None:
         return (
-            f"# Changed: {name}'s text is not as self-learn last wrote it (case {case}), and that "
+            f"# Changed: {name}'s text is not as self-learn last wrote it ({case}), and that "
             "version could not be found in the skills root's history, so no diff can be shown. "
             f"{FILES_DIR}/ holds the text as it is now. Keep what a person wrote unless your case "
             "says why not.\n"
@@ -568,7 +570,7 @@ def _changed_since_last_write(
     before = skill_writer.draft_view(old)
     after = skill_writer.draft_view(deployed)
     lines = [
-        f"# Changed since self-learn last wrote {name} (case {case}): lines starting with + are "
+        f"# Changed since self-learn last wrote {name} ({case}): lines starting with + are "
         "new since then, lines starting with - were taken out. Keep what a person wrote unless "
         "your case says why not.\n"
     ]

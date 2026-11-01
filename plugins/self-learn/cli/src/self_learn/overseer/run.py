@@ -27,7 +27,7 @@ import uuid
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
@@ -4207,16 +4207,107 @@ def _stamp_reconsidered(home: Path, case_path: Path, case_id: str) -> None:
         )
 
 
+def _new_skill_names(sheet: "batch.Sheet | None") -> set[str]:
+    """The skills a sheet's lines route lessons into (``new-skill:<name>``)."""
+    names: set[str] = set()
+    for item in sheet or []:
+        dest = item.fields.get("dest")
+        if isinstance(dest, str) and dest.startswith("new-skill:"):
+            names.add(dest[len("new-skill:"):])
+    return names
+
+
+def _drop_movers_without_build(
+    prepared: list[tuple[Path | None, Path, "batch.Sheet | None"]],
+    skill_steps: dict[Path, "skills_mod.SkillStep"],
+    building: Collection[str],
+) -> list[tuple[tuple[Path | None, Path, "batch.Sheet | None"], str]]:
+    """S-NEXT-skills-chain (SK-F, gate r1 finding 3a): take out of
+    *prepared* (and *skill_steps*) every pair that routes lessons into a
+    skill of *building* that no kept pair builds; returns each pair taken
+    out with the name it needed. Repeated until nothing changes, since a
+    pair taken out may itself have been a build."""
+    dropped: list[tuple[tuple[Path | None, Path, batch.Sheet | None], str]] = []
+    while True:
+        built = {
+            step.name for step in skill_steps.values()
+            if step.action == "write" and not step.updating
+        }
+        orphaned = set(building) - built
+        hit: tuple[tuple[Path | None, Path, batch.Sheet | None], str] | None = None
+        for pair in prepared:
+            needed = _new_skill_names(pair[2]) & orphaned
+            if needed:
+                hit = (pair, sorted(needed)[0])
+                break
+        if hit is None:
+            return dropped
+        prepared.remove(hit[0])
+        if hit[0][0] is not None:
+            skill_steps.pop(hit[0][0], None)
+        dropped.append(hit)
+
+
+def _recipe_new_skill_names(recipe: dict[str, Any]) -> set[str]:
+    """:func:`_new_skill_names` of a run record's pair, from its sheet text."""
+    text = recipe.get("sheet")
+    if not isinstance(text, str):
+        return set()
+    try:
+        data = YAML(typ="safe").load(text)
+    except YAMLError:
+        return set()
+    rows = data.get("items") if isinstance(data, dict) else None
+    names: set[str] = set()
+    for row in rows if isinstance(rows, list) else []:
+        dest = row.get("dest") if isinstance(row, dict) else None
+        if isinstance(dest, str) and dest.startswith("new-skill:"):
+            names.add(dest[len("new-skill:"):])
+    return names
+
+
 class _SkillRefused(Exception):
     """SK3: a pair's skill write was refused at execute time (or was in an
     earlier attempt of this run); the pair is dropped. *kind* is set only
     for a refusal the run's resume tries again (``git``, fix round 2, gate
     r2 NIT): the pair then waits, unapplied, instead of being dropped."""
 
-    def __init__(self, line: str, kind: str | None = None) -> None:
+    def __init__(self, line: str, kind: str | None = None, why: str | None = None) -> None:
         super().__init__(line)
         self.line = line
         self.kind = kind
+        #: What each of the pair's items says it was not applied for, when
+        #: it is not the pair's own skill write (gate r1 finding 3b).
+        self.why = why
+
+
+def _waits_on_unbuilt(
+    case_id: str, recipe: dict[str, Any], unbuilt: dict[str, str | None],
+) -> _SkillRefused | None:
+    """S-NEXT-skills-chain (SK-F, gate r1 finding 3b): a pair applied after
+    the build of a skill this run was refused, whose lines move lessons into
+    that skill, is dropped with it (a retried kind: it waits for the resume
+    with the build). ``None`` when the pair needs no such skill."""
+    own = _skill_step(recipe)
+    needed = _recipe_new_skill_names(recipe) & set(unbuilt)
+    if own is not None:
+        needed.discard(own.name)
+    if not needed:
+        return None
+    name = sorted(needed)[0]
+    kind = unbuilt[name]
+    if kind is not None:
+        why = (
+            f"it moves lessons into new-skill:{name}, whose build met {kind} trouble; the "
+            "run's resume tries again"
+        )
+    else:
+        why = f"it moves lessons into new-skill:{name}, whose build was refused this run"
+    line = (
+        f"{recipe['case_name']} (successor {case_id}): dropped with {recipe['sheet_name']} "
+        f"— {why}"
+    )
+    return _SkillRefused(line, kind=kind, why=why)
 
 
 def _skill_step(recipe: dict[str, Any]) -> "skills_mod.SkillStep | None":
@@ -4412,17 +4503,21 @@ def _skill_written_case_refused(recipe: dict[str, Any], case_id: str) -> str | N
 
 def _skill_refused_result(
     case_id: str, recipe: dict[str, Any], line: str, kind: str | None = None,
+    why: str | None = None,
 ) -> batch.BatchResult:
     """SK3: the dropped pair's items, each a final refusal naming why. With
     a retried *kind* (fix round 2, gate r2 NIT), each carries that kind, so
-    the resume dispatches it again once the skill is written."""
+    the resume dispatches it again once the skill is written. *why* replaces
+    the reason when the pair was dropped for another pair's build (gate r1
+    finding 3b)."""
     del line
-    why = (
-        f"its pair {recipe['case_name']}'s skill write met {kind} trouble; the run's resume "
-        "tries again"
-        if kind is not None
-        else f"the skill write of its pair {recipe['case_name']} was refused"
-    )
+    if why is None:
+        why = (
+            f"its pair {recipe['case_name']}'s skill write met {kind} trouble; the run's "
+            "resume tries again"
+            if kind is not None
+            else f"the skill write of its pair {recipe['case_name']} was refused"
+        )
     items = [
         batch.ItemResult(
             n=int(row["n"]), id=str(row["id"]), verb=str(row["verb"]), rc=1,
@@ -4723,12 +4818,20 @@ def _execute_manifest(
     cap = attempt_cap(home)
     attempts = week_attempts(home, week)
 
+    #: S-NEXT-skills-chain (SK-F, gate r1 finding 3b): each skill whose
+    #: build was refused this attempt, with the refusal's retried kind
+    #: (``None``: final); a later pair moving lessons into it is dropped.
+    unbuilt: dict[str, str | None] = {}
+
     for position, case_id in enumerate(order):
         recipe = recipes[case_id]
         #: SK3: the pair was refused whole (its case or its skill write), so
         #: a retirement it carries is never made.
         pair_refused = False
         try:
+            waiting = _waits_on_unbuilt(case_id, recipe, unbuilt)
+            if waiting is not None:
+                raise waiting
             # SK3: a pair that builds or rewrites a skill writes it first; a
             # refused write drops the pair (`_SkillRefused`, below).
             _apply_skill_write(home, run_id, case_id, recipe, cue_outcomes, runner_notes)
@@ -4798,15 +4901,20 @@ def _execute_manifest(
             # item carries that retried kind, and the pair is named in
             # `retry_pending` (a sheetless pair has no item to keep the run
             # open), so the resume writes the skill and applies the pair.
-            result = _skill_refused_result(case_id, recipe, exc.line, kind=exc.kind)
+            result = _skill_refused_result(case_id, recipe, exc.line, kind=exc.kind, why=exc.why)
             receipt = {"state": "skill-refused", "reason": exc.line}
             effective = batch.Sheet()
             pair_refused = True
             refusals.append(exc.line)
+            built = _skill_step(recipe)
+            if built is not None and built.action == "write" and not built.updating:
+                unbuilt[built.name] = exc.kind
             if exc.kind is not None:
                 retry_pending.append(
                     f"{recipe['case_name']}: the skill write for "
                     f"{recipe['skill'].get('name')} [{exc.kind}]"
+                    if isinstance(recipe.get("skill"), dict)
+                    else f"{recipe['case_name']}: waits for a skill build [{exc.kind}]"
                 )
         except Exception as exc:
             halted = True
@@ -6038,6 +6146,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             building = (
                 skills_mod.building_names(home, stage, staged_cases) if skill_state.deploy else set()
             )
+            #: Each prepared pair's preview counts, so a pair dropped after
+            #: the loop (gate r1 finding 3a) takes its counts with it.
+            pair_counts: dict[Path, tuple[int, int]] = {}
             # SK4: the steward's skill proposals in the parked queue.
             proposals_now = discovery_mod.proposal_ids(parked_rows)
             for case_file, sheet_file in pairs:
@@ -6286,12 +6397,44 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     )
                     skill_pairs[skill_step.name] = case_file.name
                     continue
-                preview_apply += sum(item.state == "would-apply" for item in preview.items)
-                preview_refused += sum(item.state == "would-refuse" for item in preview.items)
+                pair_counts[sheet_file] = (
+                    sum(item.state == "would-apply" for item in preview.items),
+                    sum(item.state == "would-refuse" for item in preview.items),
+                )
+                preview_apply += pair_counts[sheet_file][0]
+                preview_refused += pair_counts[sheet_file][1]
                 prepared.append((case_file, sheet_file, sheet))
                 if skill_step is not None:
                     skill_steps[case_file] = skill_step
                     skill_pairs[skill_step.name] = case_file.name
+            # S-NEXT-skills-chain (SK-F, gate r1 finding 3a): a pair whose
+            # lines move lessons into a skill this run was to build was
+            # judged "would-apply once written". When no kept pair builds
+            # that skill after all (its build pair was dropped later in the
+            # loop), the pair is dropped whole: its reroute lines would be
+            # refused at apply while its case was recorded, a decision
+            # applied only in part.
+            for (case_file, sheet_file, _sheet), name in _drop_movers_without_build(
+                prepared, skill_steps, building,
+            ):
+                line = (
+                    f"{case_file.name}: dropped with {sheet_file.name} — "
+                    if case_file is not None else f"{sheet_file.name}: dropped — "
+                ) + (
+                    f"it moves lessons into new-skill:{name}, and the pair that was to build "
+                    f"{name} this run was dropped"
+                )
+                case_drops.append(line)
+                _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                    "status": "pair-dropped", "reason": line})
+                pairs_dropped += 1
+                applied_count, refused_count = pair_counts.pop(sheet_file, (0, 0))
+                preview_apply -= applied_count
+                preview_refused -= refused_count
+                if case_file is not None:
+                    for skill_name, owner in list(skill_pairs.items()):
+                        if owner == case_file.name:
+                            del skill_pairs[skill_name]
             # S-NEXT-skills-chain (SK-F): a pair that builds a skill applies
             # before the pairs that move lessons into it (the order is
             # otherwise kept).

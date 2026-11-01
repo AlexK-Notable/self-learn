@@ -707,3 +707,42 @@ def test_sk_g_6_a_failed_registry_write_is_a_warning_and_the_route_stands(env, m
     assert any(f"new skill {FRESH}: its registry row was not added" in w for w in result.warnings)
     assert not getattr(result.compile_result, "owned", True)
     assert not any("self-learn maintains it" in note for note in result.post_notes)
+
+
+def test_sk_g_7_a_persons_edit_of_a_route_scaffold_shows_phase_b_a_real_diff(env, tmp_path):
+    """Gate r1 finding 4: an SK-G skill's last write is the route's scaffold
+    commit (it has no ``skill write`` commit), so a person's later edit is
+    shown to phase B as a diff against it, and a removed one could be
+    restored from it. The diff header says "no case", never ``None``."""
+    from self_learn.overseer import skills as overseer_skills
+
+    _pending(env, RID)
+    verbs.route(env.home, RID, dest=f"new-skill:{FRESH}", no_push=True)
+    row = env.row(FRESH)
+    assert row is not None  # control: the route owned it
+    scaffold = skill_writer.files_at_last_write(env.home, FRESH, row)
+    assert scaffold is not None
+    assert scaffold["SKILL.md"] == env.skill_md(FRESH).read_text(encoding="utf-8")
+    path = env.skill_md(FRESH)
+    path.write_text(path.read_text(encoding="utf-8") + "\nA line the person adds.\n", encoding="utf-8")
+    commit_all(env.root, "a person edits the scaffold")
+
+    stage = tmp_path / "stage"
+
+    def write(_stage, target, text):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+
+    overseer_skills.stage_phase_b(
+        env.home, stage, [], overseer_skills.writing_state(env.home), write,
+    )
+
+    diff = (stage / overseer_skills.OWNED_DIR / FRESH / overseer_skills.DIFF_FILE).read_text(
+        encoding="utf-8"
+    )
+    assert "no diff can be shown" not in diff
+    assert "+A line the person adds." in diff
+    assert f"wrote {FRESH} (no case)" in diff and "None" not in diff
+    # a stamp that is not the row's is not taken for the scaffold
+    other = {**row, "created": {**row["created"], "at": "2020-01-01T00:00:00Z"}}
+    assert skill_writer.files_at_last_write(env.home, FRESH, other) is None

@@ -1367,7 +1367,19 @@ def _preflight(
         # against absence, so anything found there now refuses it.
         if not updating:
             raise _Refused(KIND_BAD_LINE, ["only a skill self-learn owns is restored"])
-        if deployed or folder.exists():
+        # Gate r1 finding 2: a rerun of the same restore (the overseer's
+        # resume after a crash) finds exactly this write's own files there:
+        # every deployed file is one the draft writes and the authored hash
+        # is the one this write leaves. That is idempotent, like the update
+        # branch's current == new; the dirty check below still refuses any
+        # uncommitted byte that is not this write's own. Anything else at the
+        # folder (a foreign file, other text) still refuses.
+        own_restore = (
+            bool(deployed)
+            and set(deployed) <= set(draft)
+            and plan.current_sha == plan.new_sha
+        )
+        if (deployed or folder.exists()) and not own_restore:
             raise _Refused(
                 KIND_TARGET_BUSY,
                 [
@@ -2104,8 +2116,6 @@ class _RenamePlan:
     marketplace_text: str = ""
     current_sha: str | None = None
     new_sha: str | None = None
-    #: ``(id, path)`` of every lesson routed ``new-skill:<old>``.
-    lessons: list[tuple[str, Path]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -2147,9 +2157,45 @@ def _skill_files_at(root: Path, sha: str, name: str) -> dict[str, str] | None:
     return files if SKILL_ENTRY_FILE in files else None
 
 
+def _scaffold_files(
+    root: Path, name: str, before: str | None, created: Mapping[str, Any] | None,
+) -> dict[str, str] | None:
+    """Gate r1 finding 4 (SK-G): a skill a person's route scaffolded under
+    a fresh name has no ``skill write`` commit; its last write is the commit
+    that added its SKILL.md, stamped by the route (``case: null``, authored
+    by ``human`` or ``agent``) with the row's ``created`` when the caller has
+    the row. The files at that commit, or ``None`` when there is none or its
+    stamp is not the route's."""
+    rel = f"plugins/{name}/skills/{name}/{SKILL_ENTRY_FILE}"
+    proc = gitops._git(  # noqa: SLF001 -- a read
+        root, "log", "--format=%H", "--no-renames", "--diff-filter=A",
+        before or "HEAD", "--", rel,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    sha = proc.stdout.split()[0]
+    files = _skill_files_at(root, sha, name)
+    if files is None:
+        return None
+    mapping = _read_frontmatter(files[SKILL_ENTRY_FILE]).mapping
+    metadata = mapping.get("metadata") if isinstance(mapping, dict) else None
+    stamp = metadata.get(SKILL_RUNNER_METADATA_KEY) if isinstance(metadata, dict) else None
+    if (
+        not isinstance(stamp, dict)
+        or stamp.get("case") is not None
+        or stamp.get("authored_by") not in skill_registry.CASELESS_BY_VALUES
+    ):
+        return None
+    if created is not None and (
+        stamp.get("authored_by") != created.get("by") or stamp.get("created") != created.get("at")
+    ):
+        return None
+    return files
+
+
 def files_at_last_write(
     home: Path | str, name: str, row: dict | None = None, *, _before: str | None = None,
-    _depth: int = 0,
+    _depth: int = 0, _created: Mapping[str, Any] | None = None,
 ) -> dict[str, str] | None:
     """The skill's files as self-learn last wrote them to the skills root
     (keys relative to the skill folder, as :func:`deployed_files`); ``None``
@@ -2157,22 +2203,29 @@ def files_at_last_write(
     ``skill write <name>`` or a rename to *name*; a rename's files are the
     files of the last write of the name it had, with the name line changed
     (S-NEXT-skills-chain, SK-C1: a rename keeps a person's edit visible as a
-    change since self-learn last wrote the skill). *row* is accepted for the
-    callers that have it; the history is the record."""
-    del row
+    change since self-learn last wrote the skill). A skill a person's route
+    scaffolded (SK-G) has no such commit: its last write is the commit that
+    added its stamped SKILL.md (:func:`_scaffold_files`). *row*, when the
+    caller has it, names the ``created`` stamp that scaffold must carry; the
+    history is the record."""
+    created = _created
+    if created is None and isinstance(row, dict) and isinstance(row.get("created"), dict):
+        created = row["created"]
     root = _skills_root_or_none(Path(home))
     if root is None or _depth > 16:
         return None
     found = _last_write_commit(root, name, _before)
     if found is None:
-        return None
+        return _scaffold_files(root, name, _before, created)
     sha, subject = found
     if subject.startswith(f"self-learn: skill write {name} ("):
         return _skill_files_at(root, sha, name)
     old = subject[len("self-learn: skill rename "):].split(" → ", 1)[0]
     if not _valid_name(old) or old == name:
         return None
-    files = files_at_last_write(home, old, _before=f"{sha}^", _depth=_depth + 1)
+    files = files_at_last_write(
+        home, old, _before=f"{sha}^", _depth=_depth + 1, _created=created,
+    )
     if files is None:
         return None
     try:
@@ -2681,7 +2734,6 @@ def _rename_preflight(
             )
         if plan.new_sha == recorded_new or plan.host_moved:
             plan.new_sha = recorded_new
-    plan.lessons = _lessons_routed_to(home, old)
     return plan
 
 
@@ -2994,10 +3046,16 @@ def _apply_rename(home: Path, plan: _RenamePlan, *, case: str | None, by: str) -
 
     rerouted: list[str] = []
     try:
-        for record_id, path in plan.lessons:
+        # Read again after step 3a: a lesson filed in the skill's own bucket
+        # (scope skill:<old>) and routed new-skill:<old> was just carried to
+        # skills/<new>/, so the path the preflight read is gone.
+        for record_id, path in _lessons_routed_to(home, old):
             sha = _reroute_lesson(
                 home, path, old=old, new=new, body=body,
-                subject=f"self-learn: reroute {record_id} → new-skill:{new} (skill rename {old}, {case})",
+                subject=(
+                    f"self-learn: reroute {record_id} → new-skill:{new} (skill rename {old}, "
+                    f"{case if case is not None else NO_CASE})"
+                ),
             )
             if sha is not None:
                 shas.append(sha)

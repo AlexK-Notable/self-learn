@@ -1638,6 +1638,42 @@ def test_sk_e_3_a_file_appearing_before_the_restore_refuses_it(env, monkeypatch)
     assert "target-busy" in refused and "something is there now" in refused
 
 
+def test_sk_e_3b_the_same_restore_run_again_is_idempotent(env):
+    """Gate r1 finding 2: the overseer's resume re-calls the restore with
+    ``expect_missing``; finding exactly that write's own files there is ok
+    with no second commit. Control: a file the restore does not write,
+    placed beside them, still refuses."""
+    assert env.write().ok
+    _remove_folder(env)
+    restored = sk1.draft()
+    restored["SKILL.md"] += "\nA line the restore adds.\n"
+    first = env.write(restored, case=sk1.CASE2, expect_missing=True)
+    assert first.ok, first.problems
+    ledger, root = env.head(env.home), env.head(env.root)
+
+    again = env.write(restored, case=sk1.CASE2, expect_missing=True)
+
+    assert again.ok, again.problems
+    assert (env.head(env.home), env.head(env.root)) == (ledger, root)
+    assert env.status(env.home) == "" and env.status(env.root) == ""
+
+    # an interrupted restore: its files landed, uncommitted, and the rerun finishes it
+    git(env.root, "reset", "-q", "--soft", "HEAD~1")
+    assert env.status(env.root) != ""  # control: the restore's own bytes are uncommitted
+    resumed = env.write(restored, case=sk1.CASE2, expect_missing=True)
+    assert resumed.ok, resumed.problems
+    assert env.status(env.root) == ""
+
+    # a file a write leaves alone (not a managed reference), so the authored
+    # hash before and after it would be the same: only the file list tells
+    foreign = env.skill_dir() / "notes.txt"
+    foreign.write_text("a person's own file\n", encoding="utf-8")
+    commit_all(env.root, "a person adds a file")
+    refused = env.write(restored, case=sk1.CASE2, expect_missing=True)
+    assert not refused.ok and refused.kind == "target-busy"
+    assert "something is there now" in refused.problems[0]
+
+
 def test_sk_e_a_skill_with_no_folder_and_no_marketplace_entry_retires(env):
     assert env.write().ok
     _remove_folder(env)
@@ -1715,6 +1751,85 @@ def test_sk_f_1_two_cases_placed_lessons_both_move_into_the_new_skill(env, monke
     for rid in (RID, RID2):
         routing = Record.from_path(find_record_path(env.home, rid)).routing or {}
         assert routing.get("destination") == "new-skill" and routing.get("new_skill") == NAME
+
+
+def test_sk_f_1a_a_mover_whose_build_pair_is_dropped_later_in_the_loop_is_dropped(env, monkeypatch):
+    """Gate r1 finding 3a: the mover (a plain reconsider pair, iterated
+    before the build pair) was judged "would-apply once written"; the build
+    pair is then dropped by its rule check. The mover is dropped whole: its
+    case is not recorded and its lesson stays where it was."""
+    _set_writing(env, '"on"')
+    first, second = _two_placed(env)
+    _phases(monkeypatch, _multi_b(first, second, second_names_skill=False))
+    real_rule = overseer_run._case_rule_problem
+
+    def rule(path, run_id):
+        if Path(path).name == "case-build.yaml":
+            return "a rule the test's case writer names"
+        return real_rule(path, run_id)
+
+    monkeypatch.setattr(overseer_run, "_case_rule_problem", rule)
+    before = {row["case"] for row in cases.list_cases(env.home)}
+
+    result = _run(env)
+
+    refused = _section(_report(result), "Refused / could not do")
+    assert "case-build.yaml" in refused and "a rule the test's case writer names" in refused  # control
+    assert (
+        f"case-a-more.yaml: dropped with sheet-a-more.yaml — it moves lessons into "
+        f"new-skill:{NAME}, and the pair that was to build {NAME} this run was dropped"
+    ) in refused
+    assert {row["case"] for row in cases.list_cases(env.home)} == before
+    assert RID2 in _old_skill_md(env) and not env.skill_md().exists()
+
+
+@pytest.mark.parametrize("kind", ["target-busy", "git"])
+def test_sk_f_1b_a_mover_after_a_refused_build_is_dropped_with_it(env, monkeypatch, kind):
+    """Gate r1 finding 3b: the build pair's write is refused at apply; the
+    mover applied after it is dropped with it, its case not recorded. A
+    ``git`` refusal is tried again by the resume, and the mover with it."""
+    _set_writing(env, '"on"')
+    first, second = _two_placed(env)
+    _phases(monkeypatch, _multi_b(first, second, second_names_skill=False))
+    real_write = skill_writer.write
+    calls: list[str] = []
+
+    def write(home, name, files, **kwargs):
+        calls.append(name)
+        if len(calls) == 1:
+            if kind == "git":
+                return _git_refusal(name)
+            return skill_writer.WriteResult(
+                name=name, ok=False, kind=skill_writer.KIND_TARGET_BUSY,
+                problems=("something is in the way",),
+            )
+        return real_write(home, name, files, **kwargs)
+
+    monkeypatch.setattr(skill_writer, "write", write)
+    before = {row["case"] for row in cases.list_cases(env.home)}
+
+    result = _run(env)
+
+    assert calls == [NAME]  # control: the build was tried, and refused
+    refused = _section(_report(result), "Refused / could not do")
+    why = (
+        f"whose build met {kind} trouble; the run's resume tries again" if kind == "git"
+        else "whose build was refused this run"
+    )
+    assert f"dropped with sheet-a-more.yaml — it moves lessons into new-skill:{NAME}, {why}" in refused
+    assert {row["case"] for row in cases.list_cases(env.home)} == before
+    assert RID2 in _old_skill_md(env)
+    if kind != "git":
+        assert overseer_run._unfinished_manifest(env.home) is None
+        return
+
+    assert overseer_run._unfinished_manifest(env.home) is not None
+    _run(env)
+
+    assert overseer_run._unfinished_manifest(env.home) is None
+    text = env.skill_md().read_text(encoding="utf-8")
+    assert f"({RID})" in text and f"({RID2})" in text
+    assert len({row["case"] for row in cases.list_cases(env.home)} - before) == 2
 
 
 def test_sk_f_2_a_line_doomed_on_its_old_side_drops_before_the_skill_is_written(env):

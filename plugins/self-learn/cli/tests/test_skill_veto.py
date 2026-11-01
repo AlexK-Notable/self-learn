@@ -153,6 +153,18 @@ def test_5_a_name_nothing_uses_is_banned_for_any_future_skill(env, capsys):
     assert UNUSED in skill_registry.load(env.home).vetoed_names()
 
 
+def test_5_a_persons_own_skill_is_said_to_be_theirs_not_unused(env, capsys):
+    """Gate r1 NIT: a skill a person made that self-learn does not own is
+    vetoed and said to be theirs, never "not a name any skill uses"."""
+    env.personal_skill("my-own-skill")
+    capsys.readouterr()
+    assert cli.main(["skill", "veto", "my-own-skill"]) == 0, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert "a skill on this machine that self-learn does not own" in out
+    assert "not a name any skill uses" not in out
+    assert "my-own-skill" in skill_registry.load(env.home).vetoed_names()
+
+
 @pytest.mark.parametrize("kind", ["owned", "draft", "build-disposition", "retired"])
 def test_5_each_kind_of_name_is_vetoed_and_said_what_it_is(env, capsys, kind):
     """The three names S-107's presentation anchor refused (a build

@@ -255,6 +255,40 @@ def test_b_a_carried_lesson_decided_before_is_not_offered_again_and_an_edited_on
     assert offered() == {RID_B}
 
 
+def test_b_a_carried_pending_lesson_the_steward_decided_is_not_selected_again(env, monkeypatch):
+    """Gate r1 finding 5: the steward's lesson selection
+    (``_eligible_lessons``) reads a carried pending lesson's identity
+    through its earlier version, as ``_premise_extract_inputs`` does. A
+    decided one stays decided after the rename; one edited after the carry
+    is a new version and is selected (the control)."""
+    from self_learn import steward
+
+    assert env.write().ok
+    for rid in (RID_A, RID_B):
+        create_record(
+            env.home,
+            make_behavior(scope=f"skill:{NAME}", record_id=rid, trigger=f"About to press {rid}."),
+        )
+    commit_all(env.home, "two pending lessons in the skill's own bucket")
+    blobs = {
+        rid: git(env.home, "rev-parse", f"HEAD:skills/{NAME}/pending/{rid}.md").stdout.strip()
+        for rid in (RID_A, RID_B)
+    }
+    decided = {(rid, blob) for rid, blob in blobs.items()}
+    monkeypatch.setattr(steward, "_terminal_versions", lambda *_a, **_k: decided)
+    selected = lambda: {entry.record.id for entry, _row in steward._eligible_lessons(env.home)}  # noqa: E731
+    assert selected() == set()  # control: both decided at their versions
+
+    assert _rename(env).ok
+    assert (env.home / "skills" / NEW / "pending" / f"{RID_A}.md").is_file()  # control: carried
+
+    assert selected() == set()  # carried, unchanged: still decided
+    path = env.home / "skills" / NEW / "pending" / f"{RID_B}.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("Stop the container first.", "Stop it first."), encoding="utf-8")
+    commit_all(env.home, "an edit after the carry")
+    assert selected() == {RID_B}
+
+
 def test_b_the_compile_record_entry_follows_the_skill_md(env):
     """The skills root's compile record keys the SKILL.md's managed region
     by its path; the rename re-keys it, entry unchanged."""
@@ -273,6 +307,34 @@ def test_b_the_compile_record_entry_follows_the_skill_md(env):
     after = compiled.load_record(env.home, slug)["targets"]
     new_key = f"plugins/{NEW}/skills/{NEW}/SKILL.md"
     assert old_key not in after and dict(after[new_key]) == dict(before[old_key])
+
+
+def test_b_a_lesson_in_the_skill_s_own_bucket_routed_into_it_by_name_is_carried_and_rerouted(env):
+    """Gate r1 finding 1: a lesson filed in ``skills/<old>/`` and routed
+    ``new-skill:<old>`` is carried by step 3a and then rerouted from where
+    the carry put it, in one run; the old row is gone. A person's rename
+    (no case) names the step "no case" in the reroute commit."""
+    assert env.write().ok
+    _route(env, RID_A, scope=f"skill:{NAME}")
+    _route(env, RID_B)
+    # control: the lesson is in the skill's own bucket and routed by name
+    assert (env.home / "skills" / NAME / "resolved" / f"{RID_A}.md").is_file()
+    assert skill_writer.routed_lessons(env.home, NAME) == sorted([RID_A, RID_B])
+
+    result = _rename(env, case=None, by="human")
+
+    assert result.ok, result.problems
+    assert sorted(result.rerouted) == sorted([RID_A, RID_B])
+    carried = _record(env, RID_A)
+    assert find_record_path(env.home, RID_A) == env.home / "skills" / NEW / "resolved" / f"{RID_A}.md"
+    assert carried.scope == f"skill:{NEW}" and carried.routing["new_skill"] == NEW
+    rows = skill_registry.load(env.home)
+    assert rows.row(NEW)["status"] == "live" and rows.row(NAME) is None
+    assert _section_ids(env, NEW) == {RID_A, RID_B}
+    subjects = git(env.home, "log", "--format=%s").stdout.splitlines()
+    assert f"self-learn: reroute {RID_A} → new-skill:{NEW} (skill rename {NAME}, no case)" in subjects
+    assert not any("None" in s for s in subjects)
+    assert env.status(env.home) == "" and env.status(env.root) == ""
 
 
 def test_b_control_a_skill_whose_bucket_is_empty_is_renamed(env):
