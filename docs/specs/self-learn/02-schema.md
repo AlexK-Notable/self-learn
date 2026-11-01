@@ -1093,22 +1093,7 @@ questions:
   waiting. An ask without one (an index written before) still counts.
   *(Amended S-NEXT-followups.)* The session-start line therefore reads "the
   overseer has N older question(s) still waiting for you": the count is the
-  legacy questions only, no longer "interpretation questions". And none waits
-  past the next overseer run: a completed run settles every legacy question
-  still waiting (a reading, or an ask without a default, not answered since its
-  index was written, and not asked again by this run under the same id) with
-  S-117's fixed change-nothing default (`REGISTER_DEFAULT` for an ask carrying
-  `register`, else `SYSTEM_DEFAULT`), through the same path as its own asks
-  (`run._legacy_defaults` into `_record_defaults`): the `ask defaulted …`
-  observation, by the overseer and never as the user's answer, releases the
-  deferred lessons to the steward (whose match also takes a reading's
-  `um-…@r<n>` id); the report lists each under "Decided in the user's stead"
-  ("…, a question asked before defaults, was still waiting; settled with the
-  change-nothing default: …"), or under "Refused / could not do" when a cited
-  case is still parked. A legacy ask is carried into the new index with that
-  default, so `overseer open` shows it as decided and an answer can still
-  overturn it; a reading is not carried. The count, and with it the line, is
-  then zero.
+  legacy asks only, no longer "interpretation questions".
 - An answer to an ask with a default is observed, not on the cited cases, but
   on the case each one's line of successors ends at, as `user answered <q-id>
   after its default was applied (ref: stmt-…)`. The steward brings that case

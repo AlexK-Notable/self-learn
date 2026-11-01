@@ -120,12 +120,10 @@ _ASK_ANSWER_OBSERVATION_RE = re.compile(
 #: (`overseer.run._record_defaults`, text from
 #: `overseer.conversation.ask_defaulted_text`). Like an answer (S-96) it
 #: brings back a case that DEFERRED its lessons, with the default as the
-#: card's context, so no lesson waits on the user. S-NEXT-followups: the
-#: runner also settles a legacy READING still waiting this way, so the
-#: question may be a proposition id (`um-<4 hex>@r<n>`) too.
+#: card's context, so no lesson waits on the user.
 _ASK_DEFAULTED_OBSERVATION_RE = re.compile(
     r"^- obs-[0-9a-f]{8} \S+ overseer statement: ask defaulted "
-    r"(?P<question>q-[a-z0-9][a-z0-9-]{1,62}|um-[0-9a-f]{4}@r?\d+); default applied: (?P<default>.+) "
+    r"(?P<question>q-[a-z0-9][a-z0-9-]{1,62}); default applied: (?P<default>.+) "
     r"\(ref: overseer-run:[0-9a-f]+\)$"
 )
 #: S-117: the user's answer to an ask whose default was
