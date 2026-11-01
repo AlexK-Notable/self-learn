@@ -534,11 +534,12 @@ class FakeAskRunner(AskRunner):
         self.login_checks += 1
         if self.seal and self.home is not None and self.login.ok:
             from self_learn import ask as sl_ask
-            from self_learn.primitives import chrono
+            from self_learn.primitives import chrono, fsops
 
             target = sl_ask.login_ok_path(self.home)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps({"at": chrono.now_iso()}) + "\n", encoding="utf-8")
+            # The same cache write the real check makes (ask._write_cache).
+            fsops.atomic_write(target, json.dumps({"at": chrono.now_iso()}) + "\n", fsync=False)
         return self.login
 
     async def shutdown(self) -> None:

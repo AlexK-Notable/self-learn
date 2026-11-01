@@ -56,6 +56,7 @@ import dataclasses
 import fcntl
 import fnmatch
 import hashlib
+import io
 import json
 import os
 import re
@@ -1468,7 +1469,10 @@ def dispatch(args) -> int:
     except (OSError, UnicodeDecodeError) as exc:
         print(f"self-learn ask: cannot read the message: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    sink = sys.stdout if not args.as_json or args.stream else open(os.devnull, "w")  # noqa: SIM115
+    # --json without --stream: the turn's own lines are not shown, only the
+    # final object below; they go to an in-memory sink (one turn's text), so
+    # nothing is opened for writing (the raw-write gate).
+    sink: TextIO = sys.stdout if not args.as_json or args.stream else io.StringIO()
     try:
         code, emitter = run_ask(home, args.id, message, stream=args.stream, out=sink)
     finally:

@@ -456,7 +456,11 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "evidence. See primitives/fsops.py's module docstring",
         "keep",
     ),
-    ("cli", "invocation/fake.py", "FakeBackend._step"): (
+    # 2026-11-01 (attention round, lane ask-agent, S-124): the `Writes`
+    # branch moved out of `FakeBackend._step` into the new
+    # `FakeBackend._perform` (which also replays a `Streams` step's tool
+    # calls); the same fixture write.
+    ("cli", "invocation/fake.py", "FakeBackend._perform"): (
         "test fixture (FakeBackend) writing model-simulated output paths for "
         "tests, not a production content writer",
         "keep",

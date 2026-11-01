@@ -276,3 +276,21 @@ def test_the_fake_switch_builds_the_sealing_fake_and_logs_it(tmp_path):
     assert isinstance(fake, FakeAskRunner) and fake.seal and fake.home == tmp_path
     real = build_ask_runner(home=tmp_path, publish=lambda e: None, environ={})
     assert isinstance(real, RealAskRunner)
+
+
+def test_the_sealing_fake_marks_the_login_working_as_the_real_check_does(tmp_path, monkeypatch):
+    """The walk world's fake (``seal=True``) writes ``login-ok.json`` after a
+    working login check, the file the real ``attention check-login`` writes
+    (S-124), so a ``hold.credentials`` item ends there too. 2026-11-01
+    (integration): it now writes through ``fsops.atomic_write`` (the
+    raw-write gate). Control first: an unsealed fake writes nothing."""
+    from self_learn import ask as sl_ask
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    target = sl_ask.login_ok_path(tmp_path)
+    plain = FakeAskRunner(publish=lambda e: None, home=tmp_path)
+    assert asyncio.run(plain.check_login()).ok
+    assert not target.exists()  # control: no seal, no file
+    sealing = FakeAskRunner(publish=lambda e: None, home=tmp_path, seal=True)
+    assert asyncio.run(sealing.check_login()).ok
+    assert set(json.loads(target.read_text(encoding="utf-8"))) == {"at"}

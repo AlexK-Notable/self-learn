@@ -8,6 +8,7 @@ deletes every agent marker; the one agent-shell test sets one.
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
@@ -946,3 +947,32 @@ def test_request_stop_ignores_an_id_that_is_not_an_item(tmp_path, monkeypatch):
     before = set(watched.rglob("*"))
     ask.request_stop(home, "../escaped")
     assert set(watched.rglob("*")) == before
+
+
+def test_json_without_stream_prints_only_the_final_object(tmp_path, monkeypatch, capsys, home):
+    """`ask --json` without `--stream` (S-124): the turn's own lines go to an
+    in-memory sink, and stdout carries exactly one JSON object, the done or
+    error event plus the exit code. 2026-11-01 (integration): the sink was
+    `open(os.devnull, "w")`, which the raw-write gate refuses; it is now an
+    `io.StringIO`. Control first: with `--stream` the turn's line shows."""
+    message = tmp_path / "message.txt"
+    message.write_text("why is this here?\n", encoding="utf-8")
+
+    def fake_run_ask(home_, item_id, text, *, stream, out):
+        print('{"ev": "delta", "text": "partial"}', file=out)
+        done = {"ev": "done", "text": "because", "item": item_id}
+        return 0, type("E", (), {"events": [{"ev": "delta"}, done]})()
+
+    monkeypatch.setattr(ask, "run_ask", fake_run_ask)
+    parser = ask.add_parser(argparse.ArgumentParser().add_subparsers())
+
+    assert ask.dispatch(parser.parse_args(["att-00000001", "--message-file", str(message),
+                                           "--json", "--stream"])) == 0
+    assert '"partial"' in capsys.readouterr().out  # control: the sink is stdout here
+
+    assert ask.dispatch(parser.parse_args(["att-00000001", "--message-file", str(message),
+                                           "--json"])) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1, lines
+    assert json.loads(lines[0]) == {"ev": "done", "text": "because", "item": "att-00000001",
+                                    "exit": 0}
