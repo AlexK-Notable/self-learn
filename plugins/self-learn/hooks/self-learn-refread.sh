@@ -27,9 +27,10 @@
 #   7. NEVER writes to stdout — PostToolUse stdout is surfaced back into
 #      the session, on the critical path of every reference read.
 #
-# Deploy: install.sh symlinks this into ~/.claude/hooks/; registration in
-# ~/.claude/settings.json is a documented MANUAL step (repo doctrine —
-# U-readref §4.4 RULED this, not migrated to a plugin-provided hook):
+# Deploy: install.sh symlinks this into ~/.claude/hooks/; it runs once this
+# entry is in ~/.claude/settings.json (U-readref §4.4: a settings.json entry,
+# not a plugin-provided hook; whoever installs adds it, an agent included --
+# no person-only step):
 #
 #   {"hooks": {"PostToolUse": [{"matcher": "Read",
 #     "hooks": [{"type": "command",

@@ -2163,7 +2163,14 @@ included, and nowhere else (containment is by path, so `proj2` is not inside
 `self-learn-pending.sh` prints each `line` and, when there are more, one line
 naming `self-learn notice list`. The line's wording lives in
 `notices.format_line`, once. A hook cannot fail a session on this: an absent or
-malformed field prints nothing.
+malformed field prints nothing. *(Amended 2026-11-01, S-NEXT-surfaces,
+congruence M9: before the notices the hook prints one header, once —
+"self-learn notices for this project — yours to carry out in this session (no
+sudo needed): do it, then `self-learn notice done <id>`" — because the design
+depends on that session's agent carrying a notice out, and an imperative
+"Commit it:" line read at session start was otherwise relayed to the user as a
+step waiting on them. The self-learn skill has a matching section, "Project
+notices at session start". The header is the hook's, not part of `line`.)*
 
 **How a notice ends.** Whichever comes first: (1) `self-learn notice done <id>`
 (a person's or an agent's word; cache only); (2) its condition clears, and a

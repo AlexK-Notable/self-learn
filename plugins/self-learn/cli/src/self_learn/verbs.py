@@ -3127,16 +3127,22 @@ def _prepare_sheet_hook(
         raise SheetLineError(str(exc)) from exc
 
 
-#: The three lines a hook ROUTE prints as its manual steps. The prefixes are
+#: The lines a hook ROUTE prints about what is left. The prefixes are
 #: shared with :func:`without_hook_manual_steps`, which removes them from a
 #: route's notes when the activation that follows has already done the work
 #: (S-102): one place renders the text and one place recognises it,
 #: so the two cannot drift.
+#:
+#: Congruence M4 (attention round, design r2 §3.9): the route no longer hands
+#: anyone two manual steps (./install.sh, then a settings.json edit). One
+#: verb does all three -- place the symlink, register settings.json, verify
+#: -- and an agent may run it (with --note from its shell), so the text
+#: names `self-learn hook activate <id>`.
 _HOOK_MANUAL_HEADER = (
-    "hook routed — two manual steps remain (the guard is INERT until both):"
+    "hook routed — the guard is INERT until it is activated:"
 )
-_HOOK_MANUAL_STEP1 = "  1. run ./install.sh"
-_HOOK_MANUAL_STEP2 = "  2. add this to ~/.claude/settings.json"
+_HOOK_MANUAL_STEP1 = "  run: self-learn hook activate"
+_HOOK_MANUAL_STEP2 = "  the registration it writes to ~/.claude/settings.json"
 _HOOK_PLACED_HEADER = (
     "hook placed — one manual step remains (the guard is INERT until it is done):"
 )
@@ -3144,27 +3150,33 @@ _HOOK_PLACED_STEP = "  add this to ~/.claude/settings.json"
 
 
 def _hook_manual_steps(
-    snippet: str, name: str, *, placed: bool = False
+    snippet: str, name: str, *, placed: bool = False, record_id: str | None = None
 ) -> list[str]:
-    """M3-11: the route ends by printing the required manual steps — the
-    hook is inert by design until both are done. S-73: step 2 names the
+    """M3-11: the route ends by printing what is left before the hook acts --
+    the hook is inert by design until activated. M4 (attention round): that
+    is one command, ``self-learn hook activate <record_id>``, which places the
+    ``~/.claude/hooks/<name>`` symlink, registers it and verifies it; the
+    snippet it registers is shown for reference. S-73: the line names the
     event the snippet registers under (a warning hook may be
-    ``PostToolUse``), read back from the snippet itself so the two can
-    never disagree.
+    ``PostToolUse``), read back from the snippet itself so the two can never
+    disagree.
 
-    ``placed=True`` (S-102): the symlink is already in place (an
-    activation ran), so only the settings.json step is still owed — the
-    text says one step, never "two", and never asks for ``./install.sh``."""
+    ``placed=True`` (S-102): the symlink is already in place (an activation
+    ran with ``overseer.hook_activation`` off), so only the settings.json
+    registration is still owed — the text says one step, never asks for
+    ``./install.sh``."""
     event = next(iter(json.loads("{" + snippet + "}")))
     if placed:
         return [
             _HOOK_PLACED_HEADER,
             f"{_HOOK_PLACED_STEP} (hooks, under {event}):\n     {snippet}",
         ]
+    target = record_id or "<id>"
     return [
         _HOOK_MANUAL_HEADER,
-        f"{_HOOK_MANUAL_STEP1} — the ~/.claude/hooks/{name} symlink "
-        "materializes only then",
+        f"{_HOOK_MANUAL_STEP1} {target} — it places the ~/.claude/hooks/{name} "
+        "symlink, registers it and verifies it (from an agent's shell add "
+        '--note "<why>")',
         f"{_HOOK_MANUAL_STEP2} (hooks, under {event}):\n     {snippet}",
     ]
 
@@ -7003,7 +7015,7 @@ def _execute_route(
             diff_text = hook_route.script
 
     post_notes = (
-        _hook_manual_steps(hook_route.snippet, spec.target.name)
+        _hook_manual_steps(hook_route.snippet, spec.target.name, record_id=record_id)
         if hook_route is not None
         # SK2 (D7): no "run ./install.sh" step any more -- the route made
         # the ~/.claude/skills link itself.
@@ -10526,7 +10538,9 @@ def reroute(
                 snippet_block = f"settings.json snippet:\n{hook_route.snippet}"
                 host_note = f"{note}\n\n{snippet_block}" if note else snippet_block
                 assert spec.target is not None  # a hook spec always names its script
-                post_notes += _hook_manual_steps(hook_route.snippet, spec.target.name)
+                post_notes += _hook_manual_steps(
+                    hook_route.snippet, spec.target.name, record_id=record_id
+                )
             compile_result, host_sha = _host_phase(
                 home,
                 spec,

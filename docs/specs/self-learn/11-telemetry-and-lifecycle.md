@@ -336,6 +336,21 @@ offer line (a verbatim-pinned spec edit, declared in §8): *"…offer once
 and briefly to capture it (self-learn teach); if declined, log it:
 `self-learn telemetry note offer-declined [--reason <enum>]`."*
 
+**The offer ledger after silent capture (amended 2026-11-01,
+S-NEXT-surfaces).** The user's answer 9 of the attention round: "no,
+capturing a lesson should happen quietly in the background." Since
+2026-10-31 an agent composes and captures with `self-learn teach` and
+reports the id in one line only if the user is mid-conversation about it:
+no offer, no confirmation. No surface tells an agent to make an offer or
+to log a decline (`SKILL.md`, `commands/teach.md`, the plugin README's S-15
+capture line, `routing-doctrine.md`, the hooks), so `offer-made` and
+`offer-declined` are no longer emitted. The kinds and the `telemetry note`
+verb stay, for the events already in the ledger. `report`'s offer-ledger
+section says "silent capture since 2026-10-31; offers are no longer
+made", prints the `capture` count, and prints the declines only when
+some were logged before then, still labeled a lower bound and the capture
+rate an optimistic ceiling. The `report --json` keys are unchanged.
+
 ### 4.4 Content discipline
 
 Events carry ids, enums, versions, hashes, counts — **never lesson body

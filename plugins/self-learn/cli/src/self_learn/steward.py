@@ -5198,7 +5198,11 @@ def _notify_environment_hold(home: Path, run_id: str, cause: str) -> None:
     to type (:func:`hold_notice_text`)."""
     summary = hold_notice_text(run_id, cause)
     try:
-        overseer_notify.send(home, "routine", summary, [run_id])
+        # Answer 1 (attention round): only a login hold pops up; any other
+        # cause is the tray's inbox item and spawns nothing.
+        overseer_notify.send(
+            home, "routine", summary, [run_id], kind=overseer_notify.hold_kind(cause)
+        )
     except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
             "status": "notify-failed", "error": _short_cause(exc)})

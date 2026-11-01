@@ -475,7 +475,8 @@ def test_the_login_class_is_the_auth_half_of_the_environment_class():
 def test_the_runner_sends_the_new_words_once(tmp_path, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr(
-        steward.overseer_notify, "send", lambda home, cue, summary, ids: sent.append(summary)
+        steward.overseer_notify, "send",
+        lambda home, cue, summary, ids, **kw: sent.append(summary),
     )
     steward._notify_environment_hold(tmp_path, "run-x", "Failed to authenticate: OAuth expired")
     assert len(sent) == 1

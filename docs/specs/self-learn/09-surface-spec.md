@@ -848,6 +848,15 @@ permission surface of §4.3).
   §10). Worker code passes the same ids it already logs. swaync
   renders actions natively; without an action-capable daemon the
   helper degrades to informative-only, exactly M2's behavior.
+  *(Amended 2026-11-01, S-NEXT-surfaces, the user's answer 1 of the
+  attention round: the worker sends no notification any more. The one
+  popup left is a login hold: `overseer.notify.send(...,
+  kind="hold.credentials")`, called by the steward, the overseer and
+  `serve` for a `LOGIN_FIX` or `API_KEY_FIX` cause, runs
+  `self-learn-notify --line … --page /inbox`, whose click action runs
+  `self-learn-ui-open --page /inbox`; every other kind spawns nothing
+  and waits in the tray's inbox. The `--ids` form and its
+  `--record <id>` action remain in the helper with no caller.)*
 - **Server-owned state**: none in the repo. A log at
   `<cache>/ui.log` (size-capped like `worker.log`), the compiled
   `pane-doctrine.md` (§4.2), and the runtime token file. No config

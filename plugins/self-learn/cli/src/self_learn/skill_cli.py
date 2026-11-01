@@ -70,6 +70,14 @@ EXIT_USAGE = 64  # the CLI's own (cli.EXIT_USAGE, sysexits EX_USAGE)
 _CLI_BY_VALUES = ("human", "agent")
 
 
+def default_by() -> str:
+    """``--by``'s default: ``agent`` from an agent's shell
+    (:func:`settings.agent_caller`), ``human`` from a person's terminal."""
+    from . import settings  # lazy: settings imports ledger, which imports hosts
+
+    return "agent" if settings.agent_caller() else "human"
+
+
 def _exit_for(ok: bool, kind: str | None) -> int:
     if ok:
         return EXIT_OK
@@ -95,8 +103,8 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
         help="the case this write belongs to (optional for a person's own step)",
     )
     write_p.add_argument(
-        "--by", choices=_CLI_BY_VALUES, default="human",
-        help="who decided the write (default: human)",
+        "--by", choices=_CLI_BY_VALUES, default=None,
+        help="who decided the write (default: agent from an agent's shell, else human)",
     )
     write_p.add_argument(
         "--expect", dest="expect_sha", default=None,
@@ -124,8 +132,8 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
         help="the case this retirement belongs to (optional for a person's own step)",
     )
     retire_p.add_argument(
-        "--by", choices=_CLI_BY_VALUES, default="human",
-        help="who decided the retirement (default: human)",
+        "--by", choices=_CLI_BY_VALUES, default=None,
+        help="who decided the retirement (default: agent from an agent's shell, else human)",
     )
     retire_p.add_argument(
         "--note", default=None,
@@ -189,6 +197,11 @@ def dispatch(args) -> int:
         return _list(resolve_home(), args)
     mutating = command in ("retire", "rename", "veto") or (command == "write" and not args.check)
     home = resolve_home()
+    # C7 (attention round): with no --by, who decided is who ran it -- an
+    # agent's shell is `agent`, a person's terminal `human`. Before this an
+    # agent that left --by out was stored as the person.
+    if getattr(args, "by", None) is None:
+        args.by = default_by()
     granted: attribution.Authority | None = None
     if mutating:
         try:

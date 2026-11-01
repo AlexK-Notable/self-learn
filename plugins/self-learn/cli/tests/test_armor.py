@@ -250,6 +250,16 @@ class Behaviour:
 #: the string went with them.
 
 
+#: 2026-11-01 (attention round, lane `surfaces`; design r2 §3.9, answer 1):
+#: the shared reason for test_worker.py's nine `missing` doors.
+_NO_WORKER_POPUPS_REASON = (
+    "2026-11-01, attention round design r2 §3.9 (03-decisions.md, S-NEXT-surfaces; "
+    "the user's answer 1: only a login hold may pop up): the worker's popups P1 "
+    "(_notify_proposals) and P2 (_maybe_escalate) were removed outright, so the tests "
+    "of their template, transports, kill switch and debounce went with them"
+)
+
+
 ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # --- FIXTURES: ground truth, whole-file byte-pinned (section 4.3) -
     "support.py": Fixture(),  # 62 importers  (NEW under this unit -- FIX3)
@@ -309,7 +319,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
             "func:test_wr7_seam_is_only_called_from_the_three_call_sites": (
                 "2026-10-31, attention round design r2 §5.4 (03-decisions.md, the ask "
                 "agent's row, S-NEXT-ask-agent): ask.py joins the seam's callers -- the "
-                "inbox's read-only ask agent is the eighth surface, one question one session"
+                "inbox's read-only ask agent is the eighth surface, one question one session. "
+                "2026-11-01, attention round design r2 §3.9 (S-NEXT-surfaces): the same node "
+                "also drops `worker._notify` and `worker._notify_with_ids` from its excluded "
+                "spawn sites, removed with the worker's popups"
             ),
         },
     ),
@@ -337,8 +350,25 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     "test_invocation_sdk.py": Behaviour(
         nodes=139, dump_sha="972fd53200074d879f5cd4ef85282573a75e0cfca5a0deacb2c808fecc1514b7",
     ),
+    # 2026-11-01, attention round lane `surfaces` (design r2 §3.9, answer 1;
+    # 03-decisions.md S-NEXT-surfaces): the worker's popups P1 and P2 were
+    # removed outright, and with them the nine tests of their template,
+    # transports, kill switch and escalation debounce (nine `missing` doors).
+    # `test_a_worker_run_that_writes_proposals_spawns_no_popup` (added) guards
+    # the removal.
     "test_worker.py": Behaviour(
-        nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
+        nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46",
+        missing={
+            "func:test_notification_template_verbatim": _NO_WORKER_POPUPS_REASON,
+            "func:test_notify_kill_switch_both_directions": _NO_WORKER_POPUPS_REASON,
+            "func:test_notify_uses_helper_with_pinned_argv_and_matching_ids": _NO_WORKER_POPUPS_REASON,
+            "func:test_notify_helper_absent_falls_back_to_direct_notify_send": _NO_WORKER_POPUPS_REASON,
+            "func:test_notify_direct_fallback_kill_switch_both_directions": _NO_WORKER_POPUPS_REASON,
+            "func:test_notify_escalation_kill_switch_both_directions": _NO_WORKER_POPUPS_REASON,
+            "func:test_notify_never_blocks_worker_on_detached_helper": _NO_WORKER_POPUPS_REASON,
+            "func:test_escalation_fires_and_debounces": _NO_WORKER_POPUPS_REASON,
+            "func:test_no_escalation_under_thresholds": _NO_WORKER_POPUPS_REASON,
+        },
     ),
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): H1's `edited` door (FW-85's EXIT_HELD) was dropped
     # as VACUOUS by this landing's own refusal; FW-85 is behind the anchor.
@@ -943,9 +973,13 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=0,
+        value=9,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-NEXT-surfaces): 0 -> 9, "
+            "the nine `missing` doors on test_worker.py (the worker popups' tests, removed with "
+            "P1 and P2). Counted by this module's own run at the unchanged ANCHOR; the landing "
+            "remeasure confirms. Previous entry: "
             "2026-10-31, transcribed at ANCHOR 5596021 from this module's own "
             "STALE refusal (2026-10-31 batch landing): 3 -> 0; the 2026-10-30 fix wave's test edits "
             "are anchor-side now. Previous entry: "
@@ -1035,9 +1069,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_edited,
     ),
     "BEH1.control_missing": Measured(
-        value=100,
+        value=109,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-NEXT-surfaces): 100 -> 109, "
+            "the nine deleted test_worker.py popup tests are absent at HEAD and present at the "
+            "retired control anchor c3b48e7. Previous entry: "
             "2026-10-30 audit-merges (S-100; test audit L1-1): 97 -> 100, `test_wr2_...`, `_FakePopen` and `_PopenRaises` are absent at HEAD and present at the retired control anchor c3b48e7. "
             "Previous entry: "
             "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 91 -> 97, the deleted backend-selector tests, counted against the retired control anchor c3b48e7. "
@@ -1053,9 +1090,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=176,
+        value=168,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-NEXT-surfaces): 176 -> 168; "
+            "eight of the nine deleted test_worker.py popup tests differed from c3b48e7 and, "
+            "deleted, no longer count as edited. Measured by this module's own run. Previous entry: "
             "2026-10-30 tests-fix (S-98; 11-telemetry-and-lifecycle.md §2.5): 175 -> 176; "
             "`func:test_defer_cli_until_date` is edited against c3b48e7. Previous entry: "
             "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 179 -> 175, the retirement's edits counted against c3b48e7 (nodes it deleted no longer count as edited). "
@@ -2593,7 +2633,10 @@ def test_beh2_adding_is_free():
     a = _anchor_census(key)
     h = _census(augmented)
     missing, edited = _diff_maps(a, h)
-    assert missing == [], missing
+    # 2026-11-01 (attention round, lane `surfaces`): test_worker.py ships
+    # dated `missing` doors (the worker popups' tests); appending must add
+    # nothing beyond them.
+    assert set(missing) == set(ARMOR[key].missing), missing
     assert edited == [], edited
     assert "func:test_zz_probe" in h
     assert "assign:ZZ_CONST" in h
@@ -3415,7 +3458,12 @@ def test_anc5_remeasure_refuses_a_vacuous_exemption(capsys):
         patched[behaviour_key] = ns["Behaviour"](
             nodes=ns["ARMOR"][behaviour_key].nodes,
             dump_sha=ns["ARMOR"][behaviour_key].dump_sha,
-            missing={live_node: "2026-08-29 §4.7 ANC5 test scaffold, 6815503."},
+            # 2026-11-01 (attention round, lane `surfaces`): the row's own
+            # shipped doors stay, so only the scaffold entry is vacuous.
+            missing={
+                **ns["ARMOR"][behaviour_key].missing,
+                live_node: "2026-08-29 §4.7 ANC5 test scaffold, 6815503.",
+            },
         )
         patched[fixture_key] = ns["Fixture"](
             repinned=(

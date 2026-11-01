@@ -160,7 +160,6 @@ LOG_CAP_BYTES = 1_000_000
 #: to the pin, not a config file).
 ESCALATE_PENDING = 5
 ESCALATE_OLDEST_DAYS = 7
-ESCALATE_DEBOUNCE_SECS = 24 * 60 * 60
 
 #: Recurrence-suspect similarity threshold (11 §2.2 rider; deterministic).
 SUSPECT_JACCARD = 0.6
@@ -1514,7 +1513,6 @@ class RunResult:
     eligible: int = 0
     leftovers: int = 0  # eligible beyond the batch cap (follow-on covers)
     suspects: int = 0
-    escalated: bool = False
     followon: bool = False
     #: Every ledger path this run wrote or deleted — the surgical staging
     #: set for the run-end commit (H-5: producers commit their own writes).
@@ -3583,21 +3581,12 @@ def append_event(event: str, record_ids: list[str], aggregate: dict) -> None:
     _truncate_oldest(path, EVENTS_CAP_BYTES)
 
 
-def render_notification(n: int, buckets: list[str], total: int, scopes: int) -> str:
-    """THE pinned template (08 §7.1 Notification-rendering row)."""
-    s1 = "s" if n != 1 else ""
-    s2 = "s" if scopes != 1 else ""
-    return (
-        f"self-learn: {n} new proposal{s1} for {', '.join(buckets)}. "
-        f"{total} pending across {scopes} scope{s2} — /self-learn:review"
-    )
-
-
 def _notifications_suppressed(home: Path | str | None = None) -> bool:
     """True iff ``SELF_LEARN_NO_NOTIFY=1`` — the EXPLICIT kill switch for
-    BOTH notify transports (:func:`_notify`, :func:`_notify_with_ids`).
+    the one popup transport left, :func:`overseer.notify.send` (the worker's
+    own two transports went with its popups, attention round answer 1).
 
-    Incident 2026-08-09: both functions resolve their helper via PATH,
+    Incident 2026-08-09: the notify functions resolve their helper via PATH,
     which on a dev machine finds the REAL deployed ``~/bin`` scripts
     regardless of whether the CALLING process is a sandboxed/dev/test
     worker run — so any such run notified the operator's REAL desktop
@@ -3636,137 +3625,12 @@ def _notifications_suppressed(home: Path | str | None = None) -> bool:
     return bool(value)
 
 
-def _notify(message: str) -> None:
-    """notify-send when available, stderr otherwise — failure never fails
-    a run (headless/SSH has no DBus). No -A/action flags anywhere, so no
-    wait to bound (user CLAUDE.md swaync rule applies to -A only).
-
-    ``SELF_LEARN_NO_NOTIFY=1`` is a hard no-op (see
-    :func:`_notifications_suppressed`), checked before even probing
-    PATH."""
-    if _notifications_suppressed():
-        return
-    try:
-        if shutil.which("notify-send"):
-            subprocess.run(
-                ["notify-send", "self-learn", message],
-                capture_output=True,
-                timeout=10,
-            )
-            return
-    except Exception:  # noqa: BLE001
-        pass
-    print(message, file=sys.stderr)
-
-
-def _notify_with_ids(message: str, ids: list[str]) -> None:
-    """G-3 emission point (10 U8; 09 §3 "Notifications" / 08 §7.1
-    "Notification rendering" pointer): the ids-bearing (proposals)
-    notification's transport swaps from a direct ``notify-send`` call to
-    a DETACHED spawn of the pinned companion script, with the pinned
-    argv (10 §1 "Companion scripts" row) —
-
-        self-learn-notify --line "<message>" --ids <csv-of-record-ids>
-
-    resolved via PATH (the ``~/bin`` deploy surface). Template, payload,
-    and the events.jsonl line are untouched by this swap — ``message``
-    is still exactly ``render_notification``'s output and ``ids`` is
-    still exactly the ids ``append_event`` already logged; only the
-    transport changes.
-
-    Never waited on: one process per notification, and the worker must
-    never block on swaync/the click-action listener (self-learn-notify
-    itself blocks on ``notify-send --wait`` until the notification is
-    acted on or expires — that latency must never become the worker's).
-    Helper absent (partial/headless deploy, or PATH resolution/spawn
-    failure) degrades to the M2 direct-notify-send path (:func:`_notify`),
-    logged once — the same graceful-degradation posture 09 §5 pins for
-    "swaync absent / action unsupported".
-
-    ``SELF_LEARN_NO_NOTIFY=1`` is a hard no-op (see
-    :func:`_notifications_suppressed`), checked FIRST — before even
-    probing PATH — so a suppressed call never spawns anything (real OR
-    shimmed) and never falls through to the (also-suppressed) fallback."""
-    if _notifications_suppressed():
-        return
-    helper = shutil.which("self-learn-notify")
-    if not helper:
-        log("notify: self-learn-notify not on PATH — falling back to direct notify-send")
-        _notify(message)
-        return
-    try:
-        subprocess.Popen(
-            [helper, "--line", message, "--ids", ",".join(ids)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError:
-        log("notify: failed to spawn self-learn-notify — falling back to direct notify-send")
-        _notify(message)
-
-
-def _oldest_pending_days(home: Path) -> int:
-    # M-B: full-timestamp floor via domain.record_age_days — the old
-    # ``str(created_at)[:10]`` truncation dropped the record's real
-    # time-of-day before subtracting, which is exactly the A1 divergence
-    # from ``list --json``/``status --json``'s ages (both already used the
-    # full timestamp).
-    oldest = 0
-    now = datetime.now(timezone.utc)
-    for bucket in discover_buckets(home):
-        for entry in queue(bucket):
-            oldest = max(oldest, domain.record_age_days(entry.record, now))
-    return oldest
-
-
-def _steward_owns_queue(home: Path | str) -> bool:
-    """True while `steward.enabled` is on: the queue is the steward's, so
-    the worker's person-facing popups ("review", "backlog needs
-    attention") stay silent (L3). A failed settings read is False: the
-    popups then behave as before rather than vanishing."""
-    try:
-        enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
-    except Exception:  # noqa: BLE001 -- a nudge decision never fails a run
-        return False
-    return bool(enabled)
-
-
-def _notify_proposals(home: Path | str, line: str, ids: list[str]) -> None:
-    """The new-proposals popup, unless the steward owns the queue (L3)."""
-    if _steward_owns_queue(home):
-        log("notify: proposals popup skipped — the steward owns the queue")
-        return
-    _notify_with_ids(line, ids)
-
-
-def _maybe_escalate(home: Path, total_pending: int, per_bucket: list[dict]) -> bool:
-    """Worker-run-end-only escalation, debounced 24 h (pinned). Silent
-    while the steward owns the queue (L3)."""
-    if _steward_owns_queue(home):
-        log("escalation: skipped — the steward owns the queue")
-        return False
-    oldest = _oldest_pending_days(home)
-    if total_pending < ESCALATE_PENDING and oldest <= ESCALATE_OLDEST_DAYS:
-        return False
-    marker = _p("worker.last-escalated")
-    try:
-        if time.time() - marker.stat().st_mtime < ESCALATE_DEBOUNCE_SECS:
-            return False
-    except FileNotFoundError:
-        pass
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
-    append_event(
-        "escalation", [], {"pending": total_pending, "buckets": per_bucket}
-    )
-    _notify(
-        f"self-learn: backlog needs attention — {total_pending} pending, "
-        f"oldest {oldest}d — /self-learn:review"
-    )
-    log(f"escalation: pending={total_pending} oldest={oldest}d")
-    return True
+#: Attention round (design r2 §3.9, answer 1): the worker's two popups --
+#: P1, "N new proposals ... /self-learn:review" (`_notify_proposals`), and P2,
+#: "backlog needs attention" (`_maybe_escalate`, with its 24 h debounce
+#: marker and its `escalation` event) -- were removed outright, not only
+#: gated on `steward.enabled`. The `proposals` event is still logged; the
+#: only popup self-learn sends is a login hold (`overseer.notify.send`).
 
 
 # ------------------------------------------------ fast status (T15 pin)
@@ -4403,16 +4267,6 @@ def _run_job(
                     aggregate = {"pending": total_pending, "buckets": per_bucket}
                     if ids:
                         append_event("proposals", ids, aggregate)
-                        _notify_proposals(
-                            home,
-                            render_notification(
-                                n,
-                                sorted(result.buckets) or ["(unknown)"],
-                                total_pending,
-                                len(per_bucket),
-                            ),
-                            ids,
-                        )
                     log(
                         f"run: ok — {len(result.proposed)} proposal(s), "
                         f"{len(result.merge_proposed)} merge, "
@@ -4449,8 +4303,6 @@ def _run_job(
             # outside the lock, because it touches no index.
             if result.committed:
                 _push_run(home, no_push=no_push)
-
-            result.escalated = _maybe_escalate(home, total_pending, per_bucket)
 
             # Worker runs are kick-chained from teach/import — still the
             # human-triggered class (11 §4.2): flush the spool.

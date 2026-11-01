@@ -149,11 +149,13 @@ class TestRouteHook:
         assert '"PreToolUse"' in env.host_body()
         assert f"$HOME/.claude/hooks/{NAME}" in env.host_body()
 
-        # the approval flow surfaces: entire script as the diff + the
-        # manual steps (install.sh + settings.json) as post notes
+        # the approval flow surfaces: entire script as the diff + the one
+        # step left (`self-learn hook activate <id>`, congruence M4) as
+        # post notes
         assert result.diff is not None and result.diff.startswith("#!/usr/bin/env bash")
         notes = "\n".join(result.post_notes)
-        assert "./install.sh" in notes
+        assert f"self-learn hook activate {RID}" in notes
+        assert "./install.sh" not in notes
         assert "settings.json" in notes
         assert '"matcher": "Edit|Write"' in notes
 

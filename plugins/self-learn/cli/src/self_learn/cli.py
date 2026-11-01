@@ -4619,6 +4619,20 @@ def _cmd_statement(args: argparse.Namespace) -> int:
         return code
     try:
         if args.statement_command == "add":
+            # C7 (attention round, design r2 §3.9): an agent's shell records
+            # as `agent`, never as the person. The words stay the user's
+            # through the transcript ref rule 10 checks. Only this CLI
+            # handler refuses: `teach` and `overseer respond` call the
+            # library `statements.add` and pick the recorder themselves.
+            if args.recorded_by == "human" and settings.agent_caller():
+                print(
+                    "self-learn statement add: an agent's shell records as agent; "
+                    "the words stay the user's through the transcript ref -- pass "
+                    "--recorded-by agent (agent shell detected: "
+                    f"{', '.join(settings.agent_caller_markers())})",
+                    file=sys.stderr,
+                )
+                return EXIT_USAGE
             answers = None
             if args.answers_kind or args.answers_ref or args.answers_text:
                 answers = {
