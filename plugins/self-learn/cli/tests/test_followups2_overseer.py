@@ -14,13 +14,20 @@ Each test names the mutation it was checked against.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from self_learn.overseer import conversation
 from self_learn.overseer import run as overseer_run
 from support import make_home
 from test_overseer_answered_questions import _deferred_case
 from test_overseer_asks_needs import (  # noqa: F401 -- `redirect` is an autouse fixture
     SUDO_OPTIONS,
+    _choice,
     _ids,
+    _plan,
+    _row,
+    _system_ask,
+    _write_jsonl,
     _phases,
     _refused_block,
     _run,
@@ -91,3 +98,48 @@ def test_finalize_puts_question_notes_last_under_questions_for_you(tmp_path):
         "- question q-a (kept, and asked as written): its question names lrn-1a2b3c4d",
     ]
     assert "lrn-1a2b3c4d" not in text.split("## Refused / could not do\n", 1)[1]
+
+
+def test_no_kept_note_for_an_ask_dropped_at_publish(tmp_path, monkeypatch):
+    """Gate r1 F4: an ask whose wording names an id but which the finalize
+    drops at publish (here: the user approved its plan while the run was
+    in progress) gets no "(kept, and asked as written)" line, only its
+    drop. Mutation: the finalize publishes every wording note unfiltered
+    -> red."""
+    home = make_home(tmp_path)
+    _rid, case_id = _deferred_case(home, tmp_path)
+    state = _phases(monkeypatch)
+    state["questions"] = [_system_ask("q-net", [case_id])]
+    _run(home, first=True)
+    text = f"Bind the daemon per {case_id}? Yes adds a drop-in; no keeps the note."
+    state["questions"] = [
+        _system_ask("q-net", [case_id], text=text, plan={**_plan(), "summary": "Another plan."}),
+        _system_ask("q-other", [case_id], text=text),
+    ]
+    real = overseer_run._record_defaults
+    clicked: list[str] = []
+
+    def approve_mid_run(given_home, manifest):
+        if not clicked:
+            _write_jsonl(given_home, "choices.jsonl", [
+                _choice("q-net", "opt-yes", "approve", datetime.now(timezone.utc), label="Yes"),
+            ])
+            clicked.append("q-net")
+        return real(given_home, manifest)
+
+    monkeypatch.setattr(overseer_run, "_record_defaults", approve_mid_run)
+    _run(home)
+
+    assert "question q-net: dropped at publish" in _refused_block(home)  # control
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    questions = report.split("## Questions for you\n", 1)[1].split("\n## ", 1)[0]
+    assert "- question q-other (kept, and asked as written)" in questions  # control: notes publish
+    assert "question q-net (kept" not in report
+    assert _row(home, "q-other") is not None
+
+
+def test_published_question_notes_keep_only_indexed_asks():
+    lines = ["question q-a (kept, and asked as written): x", "question q-b (kept, and asked as written): y"]
+    assert overseer_run._published_question_notes(lines, published=True, dropped={"q-b"}) == [lines[0]]
+    assert overseer_run._published_question_notes(lines, published=True, dropped=set()) == lines
+    assert overseer_run._published_question_notes(lines, published=False, dropped=set()) == []

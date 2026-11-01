@@ -725,7 +725,9 @@ def _approval_track(
             "unit": (record or {}).get("unit"), "at": (record or {}).get("at"),
             "claimed_by": (claim or {}).get("session"),
         }
-    item["options"] = change_options(base.get("options") or [], record, claim)
+    item["options"] = change_options(base.get("options") or [], record, claim,
+                                     item_id=item["id"], approved_at=approved_at)
+    item["_approved_at"] = approved_at
     return [item]
 
 
@@ -733,43 +735,75 @@ def _approval_track(
 #: claimed in a terminal this page opened (`attention stop`).
 STOP_OPTION_ID = "opt-stop"
 STOP_LABEL = "Stop it"
+#: The transient unit `attention run` launches an approved item's terminal
+#: in: this prefix plus the item id's 12 hex (`attention_answers.run`).
+RUN_UNIT_PREFIX = "self-learn-run-"
+#: Gate r1 F1: what the page says when the claim is not the terminal it
+#: opened for this approval.
+NOT_OURS_REASON = "it is running in a session self-learn did not open; tell it in its own terminal"
 
 
-def stoppable(record: dict | None, claim: dict | None) -> bool:
-    """Whether ``attention stop`` may act on approved work: a live *claim*
-    made at or after the page's own launch (*record*, not already
-    stopped). A claim older than the launch, or one with no launch, is a
-    session the page did not open (an agent the person approved it in);
-    the page cannot stop that one."""
+def run_unit(item_id: str) -> str:
+    """The unit name `attention run` gives approved item *item_id*'s
+    terminal."""
+    return RUN_UNIT_PREFIX + item_id[len("att-"):]
+
+
+def stoppable(record: dict | None, claim: dict | None, *, item_id: str,
+              approved_at: str | None) -> bool:
+    """Whether ``attention stop`` may act on approved work (gate r1 F1,
+    F2): only when the live *claim* was made from inside the very unit the
+    page launched for THIS approval. All of these must hold:
+
+    - the run record names this item's own unit (:func:`run_unit`), not
+      another item's and not any other unit;
+    - that launch belongs to the current approval (at or after
+      *approved_at*) and is not already stopped;
+    - the claim names the same unit (``attention claim`` records the
+      systemd unit the claiming process runs in, from its cgroup), and was
+      made at or after the launch.
+
+    Any other claim -- an agent in the person's own terminal, a claim from
+    before the launch, one recorded without a unit -- is a session
+    self-learn did not open, which the page can neither stop nor release."""
     if claim is None or record is None or record.get("stopped_at"):
+        return False
+    unit = run_unit(item_id)
+    if record.get("unit") != unit or claim.get("unit") != unit:
         return False
     launched_at = _dt(record.get("at"))
     claimed_at = _dt(claim.get("at"))
-    return launched_at is not None and claimed_at is not None and claimed_at >= launched_at
+    approved = _dt(approved_at) if approved_at else None
+    if launched_at is None or claimed_at is None:
+        return False
+    if approved is not None and launched_at < approved:
+        return False
+    return claimed_at >= launched_at
 
 
-def change_options(options: list[dict], record: dict | None, claim: dict | None) -> list[dict]:
+def change_options(options: list[dict], record: dict | None, claim: dict | None, *,
+                   item_id: str, approved_at: str | None) -> list[dict]:
     """Follow-ups 2 (gap 2): the one-click changes of mind on approved
     work. The originally offered options other than an approval (decline,
     other), each answered by ``attention answer`` like the first click;
     while a session holds a live claim they are off (``disabled``, in
     words), since the answer verb refuses a new answer then, and ``Stop
-    it`` is offered when the claiming session runs in the terminal this
-    page opened (:func:`stoppable`). An approval is not repeated here:
-    "Run it now" is the page's relaunch."""
+    it`` is offered only when the claiming session runs in the unit this
+    page launched for this approval (:func:`stoppable`). An approval is
+    not repeated here: "Run it now" is the page's relaunch."""
     out = [dict(o) for o in options
            if isinstance(o, dict) and o.get("id") and o.get("effect") != "approve"]
     if claim is not None:
         session = claim.get("session")
-        if stoppable(record, claim):
+        ours = stoppable(record, claim, item_id=item_id, approved_at=approved_at)
+        if ours:
             reason = (f"a session ({session}) is carrying it out now and a different answer "
                       "cannot reach it; Stop it first")
         else:
-            reason = (f"a session ({session}) that this page did not open is carrying it out "
-                      "now; tell it in its own terminal")
+            reason = f"{NOT_OURS_REASON} (session {session})"
         for option in out:
             option["disabled"] = reason
-        if stoppable(record, claim):
+        if ours:
             out.append(_option(STOP_OPTION_ID, STOP_LABEL, "other", via="stop", confirm=True))
     return out
 

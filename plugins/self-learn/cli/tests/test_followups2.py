@@ -206,9 +206,22 @@ exit 0
 """
 
 
+def _cgroup(monkeypatch, tmp_path: Path, unit: str | None) -> None:
+    """Gate r1 F1: the cgroup `attention claim` reads its caller's unit
+    from. *unit* None: a process in the person's own terminal (an app
+    scope), not a unit the page launched."""
+    leaf = f"{unit}.service" if unit else "app-alacritty-4242.scope"
+    path = tmp_path / "cgroup"
+    path.write_text(f"0::/user.slice/user-1000.slice/user@1000.service/app.slice/{leaf}\n",
+                    encoding="utf-8")
+    monkeypatch.setattr(answers, "_CGROUP_PATH", path)
+
+
 def _launched(home: Path, tmp_path: Path, monkeypatch, *, state: str = "active") -> tuple[dict, str]:
     """An approved, launched system-change ask, its terminal unit reported
-    `state` by a systemctl shim that `stop` turns inactive."""
+    `state` by a systemctl shim that `stop` turns inactive. A later claim
+    is made from inside that unit unless the test says otherwise
+    (:func:`_cgroup`)."""
     shim = tmp_path / "shim-bin" / "systemctl"
     shim.write_text(_STATE_SHIM, encoding="utf-8")
     shim.chmod(0o755)
@@ -220,6 +233,7 @@ def _launched(home: Path, tmp_path: Path, monkeypatch, *, state: str = "active")
     result = answers.answer(home, first["id"], option="opt-yes")
     assert result.state == "running"  # control: launched
     approved = _item(home, "q-restart-daemon", "approved.pending")
+    _cgroup(monkeypatch, tmp_path, attention.run_unit(approved["id"]))
     return approved, approved["id"]
 
 
@@ -269,11 +283,121 @@ def test_a_claimed_change_turns_the_options_off_and_offers_stop_it(tmp_path, mon
     claim_path.write_text(json.dumps({"session": "sess-agent", "at": early}), encoding="utf-8")
     item = next(i for i in attention.read(home)["items"] if i["id"] == approved_id)
     assert [o["id"] for o in item["options"]] == ["opt-no"]
-    assert "did not open" in item["options"][0]["disabled"]
+    assert attention.NOT_OURS_REASON in item["options"][0]["disabled"]
     with pytest.raises(answers.AnswerError) as not_ours:
         answers.stop(home, approved_id)
     assert not_ours.value.exit_code == answers.EXIT_REFUSED
     assert [c for c in _calls(tmp_path, "systemctl") if "stop" in c] == []
+
+
+@pytest.mark.parametrize("state", ["inactive", "active"])
+def test_a_session_self_learn_did_not_open_is_never_stopped_or_released(
+        tmp_path, monkeypatch, state):
+    """Gate r1 F1 (its probe, both scenarios): the page launched a terminal
+    for this approval, and then an agent in the person's OWN terminal
+    claimed the work after the launch. Stop it is not offered, `stop`
+    refuses without touching any unit, the claim stays, and a different
+    answer is still refused, so nothing tells the person the session was
+    called off. Mutations: `stoppable` without the claim's unit check ->
+    red; ca107106's timestamp-only rule -> red."""
+    from support import make_home
+
+    home = make_home(tmp_path)
+    _approved, approved_id = _launched(home, tmp_path, monkeypatch, state=state)
+    _cgroup(monkeypatch, tmp_path, None)  # the claim comes from outside the unit
+    answers.claim(home, approved_id, "sess-agent-in-own-terminal")
+    claim_file = attention.cache_dir(home) / "attention" / "claims" / f"{approved_id}.json"
+    assert json.loads(claim_file.read_text(encoding="utf-8"))["unit"] is None  # control
+
+    item = next(i for i in attention.read(home)["items"] if i["id"] == approved_id)
+    assert item["state"] == "running" and item["run"]["claimed_by"] == "sess-agent-in-own-terminal"
+    assert [o["id"] for o in item["options"]] == ["opt-no"]  # no Stop it
+    assert attention.NOT_OURS_REASON in item["options"][0]["disabled"]
+    before = len(_calls(tmp_path, "systemctl"))
+    with pytest.raises(answers.AnswerError) as refused:
+        answers.stop(home, approved_id)
+    assert refused.value.exit_code == answers.EXIT_REFUSED
+    assert attention.NOT_OURS_REASON in str(refused.value)
+    unit = attention.run_unit(approved_id)
+    assert [c for c in _calls(tmp_path, "systemctl")[before:] if unit in c] == []
+    held = attention._claim(home, approved_id, datetime.now(timezone.utc))  # noqa: SLF001
+    assert held is not None and held["session"] == "sess-agent-in-own-terminal"
+    with pytest.raises(answers.AnswerError) as still:
+        answers.answer(home, approved_id, option="opt-no")
+    assert still.value.exit_code == answers.EXIT_REFUSED
+
+
+def test_stop_it_acts_only_on_this_items_own_unit_and_this_approvals_launch():
+    """Gate r1 F1 (the launch belongs to the current approval) and F2 (the
+    unit is exactly `self-learn-run-` + this item's id). Mutations: compare
+    the record's and the claim's units only with each other (no item
+    binding) -> red; drop the approval-time check -> red."""
+    item_id = "att-0123456789ab"
+    ours = attention.run_unit(item_id)
+    assert ours == "self-learn-run-0123456789ab"
+    record = {"unit": ours, "at": "2026-11-01T10:00:00Z"}
+    claim = {"session": "s", "at": "2026-11-01T10:00:05Z", "unit": ours}
+    kw = {"item_id": item_id, "approved_at": "2026-11-01T09:59:00Z"}
+    assert attention.stoppable(record, claim, **kw)  # positive control
+    other = "self-learn-run-ba9876543210"
+    assert not attention.stoppable({**record, "unit": other}, {**claim, "unit": other}, **kw)
+    host = "self-learn-host"
+    assert not attention.stoppable({**record, "unit": host}, {**claim, "unit": host}, **kw)
+    assert not attention.stoppable(record, {**claim, "unit": None}, **kw)
+    assert not attention.stoppable(record, {k: v for k, v in claim.items() if k != "unit"}, **kw)
+    assert not attention.stoppable(record, claim, item_id=item_id,
+                                   approved_at="2026-11-01T10:00:01Z")  # an older approval's launch
+    assert not attention.stoppable({**record, "stopped_at": "2026-11-01T10:01:00Z"}, claim, **kw)
+    assert not attention.stoppable(record, {**claim, "at": "2026-11-01T09:59:59Z"}, **kw)
+
+
+def test_a_launch_record_naming_another_items_unit_is_refused_before_any_systemctl(
+        tmp_path, monkeypatch):
+    """Gate r1 F2 (kills its M14): a run record and a claim that both name
+    ANOTHER item's run unit (a stale or hand-edited cache) never let Stop
+    it touch that unit: exit 3, no `systemctl` call at all (not even
+    `is-active`), the claim kept. Mutation: no item binding in
+    `stoppable` -> red (the foreign unit is stopped)."""
+    from support import make_home
+
+    home = make_home(tmp_path)
+    _approved, approved_id = _launched(home, tmp_path, monkeypatch)
+    foreign = "self-learn-run-ba9876543210"
+    record_path = attention.cache_dir(home) / "attention" / "runs" / f"{approved_id}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["unit"] == attention.run_unit(approved_id)  # control: the real launch
+    record_path.write_text(json.dumps({**record, "unit": foreign}), encoding="utf-8")
+    _cgroup(monkeypatch, tmp_path, foreign)
+    answers.claim(home, approved_id, "sess-foreign")
+    before = len(_calls(tmp_path, "systemctl"))
+
+    with pytest.raises(answers.AnswerError) as refused:
+        answers.stop(home, approved_id)
+
+    assert refused.value.exit_code == answers.EXIT_REFUSED
+    touched = [c for c in _calls(tmp_path, "systemctl")[before:]
+               if foreign in c or attention.run_unit(approved_id) in c]
+    assert touched == []  # neither unit was asked about, let alone stopped
+    assert attention._claim(home, approved_id, datetime.now(timezone.utc)) is not None  # noqa: SLF001
+
+
+@pytest.mark.parametrize("text, unit", [
+    ("0::/user.slice/user-1000.slice/user@1000.service/app.slice/self-learn-run-0123456789ab.service\n",
+     "self-learn-run-0123456789ab"),
+    ("12:pids:/user.slice\n1:name=systemd:/user.slice/user@1000.service/app.slice/"
+     "self-learn-run-0123456789ab.service\n0::/user.slice/user@1000.service/app.slice/"
+     "self-learn-run-0123456789ab.service\n", "self-learn-run-0123456789ab"),
+    ("0::/user.slice/user@1000.service/app.slice/app-alacritty-1.scope\n", None),
+    ("0::/user.slice/user@1000.service/app.slice/self-learn-host.service\n", None),
+    ("0::/user.slice/user@1000.service/app.slice/self-learn-run-0123.service\n", None),
+])
+def test_the_claim_records_only_a_run_unit_it_runs_in(tmp_path, monkeypatch, text, unit):
+    path = tmp_path / "cgroup"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(answers, "_CGROUP_PATH", path)
+    assert answers.caller_unit() == unit
+    monkeypatch.setattr(answers, "_CGROUP_PATH", tmp_path / "missing")
+    assert answers.caller_unit() is None
 
 
 def test_stop_it_closes_the_launched_terminal_and_the_answer_can_change(tmp_path, monkeypatch):
