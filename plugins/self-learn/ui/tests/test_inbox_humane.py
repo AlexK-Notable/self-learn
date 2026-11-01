@@ -233,8 +233,8 @@ RUN_PACKET = {
     "decided": {"what": RUN_ITEM["title"], "by": "steward", "at": "2026-10-31T10:00:00Z",
                 "because": None, "changes_now": None},
     "run": {"decisions": [_row(n, g, v) for n, (g, v) in enumerate(
-        [("use", "route")] * 4 + [("no", "reject")] * 2 + [("later", "defer"), ("kept", "no-action")])],
-        "counts": {"use": 4, "no": 2, "later": 1, "kept": 1}, "other": 0, "error": None},
+        [("use", "route")] * 4 + [("no", "reject")] * 2 + [("later", "defer")] * 2)],
+        "counts": {"use": 4, "no": 2, "later": 2, "kept": 0}, "other": 0, "error": None},
     "evidence": [CASE],
 }
 
@@ -249,9 +249,10 @@ def test_a_nightly_review_lists_each_decision_with_counts_and_a_table(tmp_path, 
     run = run[:run.index("</section>")]
     assert "What the steward decided" in run  # control
     assert 'data-group="use"><span class="run-swatch run-seg-use" aria-hidden="true"></span>Put to use <strong>4</strong>' in run
-    assert "Turned down <strong>2</strong>" in run and "Looked at, kept as is <strong>1</strong>" in run
+    assert "Turned down <strong>2</strong>" in run and "Looked at, kept as is <strong>0</strong>" in run
     assert "<summary>Show as a table</summary>" in run and "<th scope=\"row\">All</th><td>8</td>" in run
-    assert run.count('class="run-seg run-seg-') == 4
+    # Three groups hold decisions, so three bar segments: none for the empty one.
+    assert run.count('class="run-seg run-seg-') == 3 and "run-seg run-seg-kept" not in run
     shown = run[:run.index("data-run-rest")]
     assert shown.count("data-run-decision ") == 6
     assert "Show all 8 (2 more)" in run
@@ -350,8 +351,10 @@ def test_machine_text_in_a_bullet_reads_as_a_placeholder_with_the_original_folde
     assert 'title="~/.claude/hooks/x.sh">a path</span>' in line
     assert ">a hash</span>" in line and ">a settings entry</span>" in line
     assert "Show the paths, hashes and settings entries in full" in line
-    # A command to copy is left as written.
-    assert "<code>self-learn host remove /home/user/repos/x --project</code>" in body
+    # A command to copy is left as written, with no placeholder and no fold.
+    undo = body[body.index("undo: <code>"):].split("</li>")[0]
+    assert "<code>self-learn host remove /home/user/repos/x --project</code>" in undo
+    assert "rv-token" not in undo and "rv-fold" not in undo
 
 
 def test_refused_folds_with_its_count(tmp_path, monkeypatch):
