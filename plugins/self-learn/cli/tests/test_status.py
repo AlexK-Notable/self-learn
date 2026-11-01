@@ -83,6 +83,11 @@ def test_status_counts_seeded_pending_record(monkeypatch, tmp_path, capsys):
         "oldest_days": 0,
         "unanalyzed": 1,  # no proposal sibling → eligible (08 §7.1 step 2)
         "unreadable": 0,
+        # S-NEXT-humane: a skill bucket's label is its name; its folder is
+        # found through the skills root, so no path is recorded.
+        "label": "home-assistant",
+        "path": None,
+        "path_exists": None,
     }
     assert rows["user"]["pending"] == 0
 

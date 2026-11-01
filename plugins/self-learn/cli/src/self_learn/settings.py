@@ -2479,7 +2479,10 @@ def setting_row(home: Path | str, setting: Setting) -> dict[str, object]:
     it"), and this is the one place that text is computed for JSON
     consumers, so the CLI table (`preflight`) and the page can never
     drift apart."""
+    from .settings_plain import plain_for  # deferred: it imports this module
+
     value, source = resolve_setting(home, setting)
+    plain = plain_for(setting.name)
     return {
         "name": setting.name,
         "value": value,
@@ -2487,6 +2490,12 @@ def setting_row(home: Path | str, setting: Setting) -> dict[str, object]:
         "kind": setting.kind,
         "default": _default_value(setting),
         "description": setting.description,
+        # S-NEXT-humane (w33-humane lane 0): the settings page's grouping
+        # and plain words, from `settings_plain` (one source, checked
+        # against this registry at import).
+        "group": plain.group,
+        "label": plain.label,
+        "plain": plain.plain,
         "tier": setting.tier,
         "warn": _override_warn_text(setting) if source.startswith("override:") else None,
         # M-S (S-58, r5-m1(c)): the fold detail, named `note` outright

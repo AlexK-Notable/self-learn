@@ -151,7 +151,10 @@ class TestReportRecurrenceSuspects:
         nonce, ts = _spool_suspect(env, rid)
         facts = gather(env.ledger)
         assert facts["recurrence_suspects"] == [
-            {"id": rid, "nonce": nonce, "seen_at": ts, "basis": "origin-match"}
+            {"id": rid, "nonce": nonce, "seen_at": ts, "basis": "origin-match",
+                # S-NEXT-humane: the rule's words and where it lives.
+                "title": "About to edit .storage while HA is running.",
+                "scope": "skill", "bucket": "s", "bucket_label": "s"}
         ]
 
     def test_basis_distinguishes_a_self_report_from_a_text_match(self, env):
@@ -204,7 +207,10 @@ class TestReportRecurrenceSuspects:
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["recurrence_suspects"] == [
-            {"id": rid, "nonce": nonce, "seen_at": ts, "basis": "origin-match"}
+            {"id": rid, "nonce": nonce, "seen_at": ts, "basis": "origin-match",
+                # S-NEXT-humane: the rule's words and where it lives.
+                "title": "About to edit .storage while HA is running.",
+                "scope": "skill", "bucket": "s", "bucket_label": "s"}
         ]
 
     def test_malformed_telemetry_line_is_skipped_not_crashed(self, env):
@@ -237,6 +243,10 @@ class TestReportRecurrenceSuspects:
                 "nonce": good_nonce,
                 "seen_at": good_ts,
                 "basis": "origin-match",
+                "title": "About to edit .storage while HA is running.",
+                "scope": "skill",
+                "bucket": "s",
+                "bucket_label": "s",
             }
         ]
 

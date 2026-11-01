@@ -43,6 +43,7 @@ from .reachability import reachability_rows
 from .records import Record, RecordError, is_retirement
 from .refread import resolve_ref_target
 from .telemetry import read_events
+from . import series as series_mod
 
 #: Answer 9 (attention round, 2026-10-31): lesson capture became silent --
 #: an agent composes and captures with `self-learn teach`, no offer, no
@@ -105,6 +106,12 @@ def _days_since(value, today: date) -> int | None:
 
 def _walk_records(home: Path):
     """(record) for every parseable pending/resolved record file."""
+    for _bucket, record in _walk_records_in_buckets(home):
+        yield record
+
+
+def _walk_records_in_buckets(home: Path):
+    """(bucket, record) for every parseable pending/resolved record file."""
     for bucket in discover_buckets(home):
         for sub in ("pending", "resolved"):
             directory = bucket.path / sub
@@ -112,7 +119,7 @@ def _walk_records(home: Path):
                 continue
             for path in sorted(directory.glob("lrn-*.md")):
                 try:
-                    yield Record.from_path(path)
+                    yield bucket, Record.from_path(path)
                 # 09 §5 FW-18: skip EVERY read/parse failure class, not
                 # RecordError alone — an undecodable/vanished/YAML-broken
                 # file must never crash the full `status --json` path (its
@@ -559,7 +566,9 @@ def ledger_metrics(home: Path | str, *, today: date | None = None) -> dict:
     }
 
 
-def recurrence_suspects(home: Path | str) -> list[dict]:
+def recurrence_suspects(
+    home: Path | str, *, places: dict[tuple[str, str], dict] | None = None
+) -> list[dict]:
     """09 §11 Y-4 (10 U0 substrate): unconfirmed recurrence-suspect
     telemetry against currently-``routed`` records — rows ``{id, nonce,
     seen_at, basis}``, ts-ordered (``read_events`` order).
@@ -575,9 +584,16 @@ def recurrence_suspects(home: Path | str) -> list[dict]:
     double-listing would overstate recurrence pressure, the exact thing
     ``confirm_recurrence`` itself refuses)."""
     home = Path(home)
-    routed: dict[str, Record] = {
-        r.id: r for r in _walk_records(home) if r.status == "routed"
-    }
+    routed: dict[str, Record] = {}
+    where: dict[str, tuple[str, str]] = {}
+    for bucket, r in _walk_records_in_buckets(home):
+        if r.status == "routed":
+            routed[r.id] = r
+            where[r.id] = (bucket.scope, bucket.name)
+    if places is None:
+        from .places import bucket_places  # deferred: places reaches ledger_ops
+
+        places = bucket_places(discover_buckets(home))
     rows: list[dict] = []
     for event in read_events(home):
         if event.get("kind") != "recurrence-suspect":
@@ -607,12 +623,20 @@ def recurrence_suspects(home: Path | str) -> list[dict]:
         # Passed through verbatim, never interpreted: this function
         # exposes the detection, it does not re-derive it, so a basis
         # value added by a future producer arrives without changes here.
+        scope, bucket = where[record.id]
         rows.append(
             {
                 "id": record.id,
                 "nonce": nonce,
                 "seen_at": event.get("ts"),
                 "basis": event.get("basis"),
+                # S-NEXT-humane (w33-humane lane 0): the rule's own words
+                # and where it lives -- the front page's "rules seen
+                # again" rows were titled by dates alone.
+                "title": record_title_safe(record),
+                "scope": scope,
+                "bucket": bucket,
+                "bucket_label": (places.get((scope, bucket)) or {}).get("label", bucket),
             }
         )
     return rows
@@ -2090,6 +2114,9 @@ def gather(
     operator's real ``~/.claude`` from inside a sandboxed test would aim
     the check at the wrong machine."""
     home = Path(home)
+    # The series counts local calendar days; an explicit `today` (tests)
+    # pins its last day too, the default leaves it to the local clock.
+    series_today = today
     today = today if today is not None else datetime.now(timezone.utc).date()
     if claude_dir is None:
         from .selfcheck import claude_runtime_dir  # deferred: same-family reuse
@@ -2115,7 +2142,12 @@ def gather(
     # miner's fate (and, per class, the autonomy ladder's evidence).
     mined: Counter = Counter()
 
-    for bucket in discover_buckets(home):
+    from .places import bucket_places  # deferred: places reaches ledger_ops
+
+    all_buckets = discover_buckets(home)
+    places = bucket_places(all_buckets)
+    for bucket in all_buckets:
+        place = places[(bucket.scope, bucket.name)]
         counts = Counter()
         for sub in ("pending", "resolved"):
             directory = bucket.path / sub
@@ -2164,6 +2196,13 @@ def gather(
                         {
                             "id": record.id,
                             "bucket": bucket.name,
+                            # S-NEXT-humane (w33-humane lane 0): what the
+                            # rule is about, in its own words, and where
+                            # it lives, so a page never shows a bare id.
+                            "scope": bucket.scope,
+                            "bucket_label": place["label"],
+                            "title": record_title_safe(record),
+                            "destination": (record.routing or {}).get("destination"),
                             "routed_days_ago": _days_since(
                                 (record.routing or {}).get("routed_at"), today
                             ),
@@ -2194,7 +2233,7 @@ def gather(
                         }
                     )
         buckets.append(
-            {"bucket": bucket.name, "scope": bucket.scope, "counts": dict(counts)}
+            {"bucket": bucket.name, "scope": bucket.scope, **place, "counts": dict(counts)}
         )
 
     for entry in deferred:  # positive = past due
@@ -2240,7 +2279,7 @@ def gather(
         "graduated": graduated,
         "rejected": rejected,
         "open_followups": open_followups(home),
-        "recurrence_suspects": recurrence_suspects(home),
+        "recurrence_suspects": recurrence_suspects(home, places=places),
         "suspects_dismissed": suspects_dismissed,
         "deferred": deferred,
         "mined": {
@@ -2263,6 +2302,9 @@ def gather(
         "reference_shelf": _reference_shelf(home, today, flush_state=flush_state),
         "context_budget": context_budget(home, today, flush_state=flush_state),
         "surface_reach": _surface_reach(home, claude_dir),
+        # S-NEXT-humane (w33-humane lane 0): per-day counts for the UI's
+        # charts, counted from the ledger (never modelled).
+        "series": series_mod.day_series(home, today=series_today, events=events),
     }
 
 

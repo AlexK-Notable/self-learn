@@ -203,6 +203,9 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
             {
                 "bucket": "home-assistant",
                 "scope": "skill",
+                "label": "home-assistant",
+                "path": None,
+                "path_exists": None,
                 "pending": 2,  # future-deferred excluded from all counts
                 "oldest_days": 5,
                 "unanalyzed": 1,
@@ -211,6 +214,9 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
             {
                 "bucket": "user",
                 "scope": "user",
+                "label": "Your instructions",
+                "path": "~/.claude",
+                "path_exists": True,
                 "pending": 1,
                 "oldest_days": 0,
                 "unanalyzed": 1,
