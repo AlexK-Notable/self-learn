@@ -45,8 +45,10 @@ a content difference; see this unit's report for the note."""
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -303,29 +305,138 @@ def _parse_entry_fields(body: str) -> dict:
     return fields
 
 
-def _heal_char_list(value: Any) -> Any:
+def _basis_key(text: str) -> str:
+    """*text* with whitespace, commas and square brackets removed: what a
+    one-character-per-item `basis` still holds of its original wording
+    (`_parse_scalar` splits on commas and drops blank items, so spaces and
+    commas were lost; brackets are list syntax)."""
+    return re.sub(r"[\s,\[\]]", "", text)
+
+
+def _lost_basis_text(entry_id: str | None) -> str:
+    """What a spelled-out `basis` reads as when its original wording cannot
+    be found. Plain short words with spaces, so the secret scan's
+    40-character run rules never fire on it, and no comma or bracket, so the
+    list rendering keeps it one item."""
+    who = entry_id or "this entry"
+    return (
+        f"{who}: the reason text was lost in the 2026-10-11 storage bug that "
+        "stored it one character per item; no single original was found in "
+        "the run manifests"
+    )
+
+
+def _heal_char_list(
+    value: Any,
+    *,
+    entry_id: str | None = None,
+    resolve: Callable[[str], str | None] | None = None,
+) -> Any:
     """Repair a list that is one string written out a character at a time.
 
     `add_entry` once did `list(basis)` on a string, so an overseer payload
     with `basis: "text"` was stored as `[t, e, x, t]` (um-cea0, 2026-10-11).
-    On the next read the spaces were gone as well (`_parse_scalar` drops
-    blank tokens). A list of two or more items that are each ONE character
-    is never a real list of references or reasons, so it reads back as the
-    one string they spell. The next write of the document stores it that
-    way. Anything else is returned unchanged."""
+    On the next read the spaces and commas were gone as well
+    (`_parse_scalar` drops blank items). A list of two or more items that
+    are each ONE character is never a real list of references or reasons.
+
+    It reads back as ONE item: the original wording when *resolve* finds
+    exactly one (it is given `_basis_key` of the spelled characters and
+    returns the original or None), else :func:`_lost_basis_text`. Never the
+    bare joined characters: a 40+ letter run with no spaces reads as
+    garbage and trips the secret scan's high-entropy rule, which refused
+    the overseer's 2026-11-01 stage (run 5b769e3a). The next write of the
+    document stores the healed item.
+
+    The S-96 heal (2026-10-30) read such a list as its characters joined,
+    and a write before this fix saved that join: ONE item of
+    :data:`_JOINED_MIN` or more characters with no whitespace. That item is
+    looked up the same way and replaced when exactly one original matches;
+    otherwise it is returned unchanged, because a long token may be a real
+    reference. Anything else is returned unchanged. Pure: *resolve* does
+    any reading."""
     if (
         isinstance(value, list)
         and len(value) >= 2
         and all(isinstance(item, str) and len(item) == 1 for item in value)
     ):
-        return ["".join(value)]
+        original = resolve(_basis_key("".join(value))) if resolve else None
+        return [original] if original else [_lost_basis_text(entry_id)]
+    if (
+        resolve is not None
+        and isinstance(value, list)
+        and len(value) == 1
+        and isinstance(value[0], str)
+        and len(value[0]) >= _JOINED_MIN
+        and not any(ch.isspace() for ch in value[0])
+    ):
+        original = resolve(_basis_key(value[0]))
+        return [original] if original else value
     return value
 
 
-def _entry_from_block(entry_id: str, title: str, r: int, body: str) -> dict:
+#: The shortest stored join the heal looks up: the secret scan's
+#: high-entropy-base64 rule fires on a run of this many characters.
+_JOINED_MIN = 40
+
+
+def _manifest_basis_strings(data: Any) -> list[str]:
+    """Every string value under a `basis` key, anywhere in one parsed run
+    manifest (the overseer's `maintenance[].payload.basis`, the steward's
+    under its packets)."""
+    out: list[str] = []
+    stack = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, item in node.items():
+                if key == "basis" and isinstance(item, str):
+                    out.append(item)
+                else:
+                    stack.append(item)
+        elif isinstance(node, list):
+            stack.extend(node)
+    return out
+
+
+def _basis_resolver(home: Path) -> Callable[[str], str | None]:
+    """A resolver for :func:`_heal_char_list` over the ledger's run
+    manifests (`cases/runs/*.json`), where the add payload that was
+    spelled out was recorded with its spaces and commas. Read-only, and no
+    repository operation; the files are read on the first call only (this
+    path is rare). A key matching exactly one distinct original returns it;
+    none or several return None. A candidate that could not be rendered on
+    one line is never returned."""
+    index: dict[str, set[str]] | None = None
+
+    def resolve(key: str) -> str | None:
+        nonlocal index
+        if index is None:
+            index = {}
+            for path in sorted((home / "cases" / "runs").glob("*.json")):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+                    # One unreadable manifest never stops a user-model read.
+                    continue
+                for text in _manifest_basis_strings(data):
+                    if text.strip() and not _STRUCTURAL_RE.search(text):
+                        index.setdefault(_basis_key(text), set()).add(text)
+        found = index.get(key) if key else None
+        return next(iter(found)) if found and len(found) == 1 else None
+
+    return resolve
+
+
+def _entry_from_block(
+    entry_id: str, title: str, r: int, body: str,
+    resolve: Callable[[str], str | None] | None = None,
+) -> dict:
     fields = _parse_entry_fields(body)
     if "basis" in fields:
-        fields["basis"] = _heal_char_list(fields["basis"])
+        fields["basis"] = _heal_char_list(
+            fields["basis"], entry_id=entry_id, resolve=resolve
+        )
     fields.update({"id": entry_id, "title": title, "r": r})
     return fields
 
@@ -359,9 +470,12 @@ def _load(home: Path) -> tuple[dict, dict[str, list[dict]]]:
     fm, body = _split_frontmatter(text)
     container_texts = _split_containers(body)
     containers: dict[str, list[dict]] = {}
+    resolve = _basis_resolver(home)
     for letter in CONTAINERS:
         raw = container_texts.get(letter, "")
-        containers[letter] = [_entry_from_block(*e) for e in _split_entries(raw)]
+        containers[letter] = [
+            _entry_from_block(*e, resolve=resolve) for e in _split_entries(raw)
+        ]
     return fm, containers
 
 
