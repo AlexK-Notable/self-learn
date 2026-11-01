@@ -46,6 +46,7 @@ from . import (
     worker,
 )
 from .ledger import discover_buckets
+from .invocation import failure_class
 from .overseer import notify as overseer_notify
 from .records import Record, RecordError
 from .primitives import chrono
@@ -865,7 +866,24 @@ def _terminal_versions(
     decision SETTLES (`settles`, :func:`_premise_moved_row`: a combined
     follow-up + premise input settles the follow-up's own version too).
     Each is terminal exactly when the row's own version is."""
-    terminal: set[tuple[str, str]] = set()
+    return set(
+        _terminal_rows(home, states, defers_decide=defers_decide, manifests=manifests)
+    )
+
+
+def _terminal_rows(
+    home: Path,
+    states: frozenset[str] = _DECIDED_DISPOSITIONS,
+    *,
+    defers_decide: bool = True,
+    manifests: list[dict] | None = None,
+) -> dict[tuple[str, str], dict[str, str]]:
+    """:func:`_terminal_versions` with its evidence (S-NEXT-cadence, the
+    stranded-lesson census): each decided ``(record, input version)`` maps to
+    the ``{run, case, state}`` of the newest committed row that decided it, so
+    the census can say WHICH run makes a queued lesson terminal. A version a
+    row SETTLES (S-NEXT-rotation P4) carries that row's evidence."""
+    terminal: dict[tuple[str, str], dict[str, str]] = {}
     for manifest in (committed_manifests(home) if manifests is None else manifests):
         recipes = manifest.get("cases") or {}
         for packet in manifest.get("packets") or []:
@@ -888,9 +906,14 @@ def _terminal_versions(
                         continue
                     version = disposition.get("input_version")
                     if isinstance(rid, str) and isinstance(version, str):
-                        terminal.add((rid, version))
+                        evidence = {
+                            "run": str(manifest.get("run_id") or ""),
+                            "case": str(disposition.get("case") or ""),
+                            "state": str(disposition.get("state") or ""),
+                        }
+                        terminal[(rid, version)] = evidence
                         for settled in settles.get((rid, version), ()):
-                            terminal.add((rid, settled))
+                            terminal[(rid, settled)] = dict(evidence)
     return terminal
 
 
@@ -1065,6 +1088,142 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         if reason is not None:
             identity["reason"] = reason
         out.append((entry, identity))
+    return out
+
+
+@dataclass(frozen=True)
+class Stranded:
+    """One queued lesson the steward will never select (S-NEXT-cadence):
+    not an input of any kind, not held by the overseer, and not in an
+    unfinished run. ``reason`` is one plain line; ``run``/``case``/``state``/
+    ``version`` name the committed row that makes it terminal, when one does."""
+
+    record: str
+    bucket: str
+    created_at: str | None
+    reason: str
+    run: str | None = None
+    case: str | None = None
+    state: str | None = None
+    version: str | None = None
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "record": self.record, "bucket": self.bucket, "created_at": self.created_at,
+            "reason": self.reason, "run": self.run, "case": self.case,
+            "state": self.state, "version": self.version,
+        }
+
+
+def _unfinished_inputs(manifests: list[dict]) -> set[str]:
+    """Every record an unfinished committed run selected: the run will
+    decide (or close out) each when it is next attempted."""
+    found: set[str] = set()
+    for manifest in manifests:
+        if manifest.get("status") == "complete":
+            continue
+        for packet in manifest.get("packets") or []:
+            if not isinstance(packet, dict):
+                continue
+            for row in packet.get("inputs") or []:
+                if isinstance(row, dict) and isinstance(row.get("record"), str):
+                    found.add(row["record"])
+            for rid in packet.get("records") or []:
+                if isinstance(rid, str):
+                    found.add(rid)
+    return found
+
+
+def stranded_lessons(home: Path | str) -> list[Stranded]:
+    """THE census of the positive selection invariant (S-NEXT-cadence,
+    `02-schema.md` §3a.8): every queued lesson (pending, its deferral not in
+    the future, in any bucket) is selectable -- an eligible `lesson` input or
+    a `reconsider` input -- or held by the overseer (`cases.held_lessons`), or
+    an input of an unfinished committed run. Anything else is STRANDED: no
+    steward run will ever take it, and nothing else looks at it while the
+    steward owns the queue.
+
+    Selection is a negative set (a lesson is skipped when a committed run's
+    disposition matches it), so a new skip rule can strand a lesson in
+    silence: live, `lrn-e92861b2` and `lrn-f55e9e47` sat 55 days because a
+    pre-U3a deferral counted as a decision for ever (cured by S-95, found by a
+    person). This census finds the class, whatever the rule: it reads the
+    same selections the run reads, so a stranded row is a defect in the
+    selection code or a state the code never meant to leave, and the reason
+    names the committed row (run, case, state, version) that makes the lesson
+    terminal, or says the record's identity could not be read.
+
+    Read-only; about the cost of one `_eligible_lessons` call. Oldest first.
+    """
+    home = Path(home)
+    held = cases.held_lessons(home)
+    manifests = committed_manifests(home)
+    in_runs = _unfinished_inputs(manifests)
+    selectable = {entry.record.id for entry, _row in _eligible_lessons(home)}
+    selectable |= {entry.record.id for entry, _card in _reconsider_proposals(home)[0]}
+    queued: list[tuple[ledger_ops.QueueEntry, str]] = []
+    for bucket in discover_buckets(home):
+        for entry in ledger_ops.queue(bucket):
+            rid = entry.record.id
+            if rid in selectable or rid in held or rid in in_runs:
+                continue
+            queued.append((entry, f"{bucket.scope}:{bucket.name}"))
+    if not queued:
+        return []
+    queued.sort(
+        key=lambda pair: (
+            chrono.to_dt(pair[0].record.created_at)
+            or datetime.fromtimestamp(0, tz=timezone.utc),
+            pair[0].record.id,
+        )
+    )
+    # Evidence: the current rule first, then the rules the selection has
+    # used before (a deferral counted as a decision; the legacy bridge), so
+    # the reason names the row whichever rule made the lesson terminal.
+    rules = (
+        _terminal_rows(home, defers_decide=False, manifests=manifests),
+        _terminal_rows(home, _LEGACY_DECIDED_DISPOSITIONS, defers_decide=False, manifests=manifests),
+        _terminal_rows(home, manifests=manifests),
+    )
+    out: list[Stranded] = []
+    for entry, bucket_label in queued:
+        rid = entry.record.id
+        created = entry.record.created_at
+        created_text = str(created) if created is not None else None
+        try:
+            identity = _record_identity(home, entry)
+        except (ValueError, OSError) as exc:
+            out.append(Stranded(
+                rid, bucket_label, created_text,
+                f"identity unreadable: {_short_cause(exc)}",
+            ))
+            continue
+        versions = [identity.get("version"), identity.get("legacy_version")]
+        found: tuple[str, dict[str, str]] | None = None
+        for rows in rules:
+            for version in versions:
+                if isinstance(version, str) and (rid, version) in rows:
+                    found = (version, rows[(rid, version)])
+                    break
+            if found is not None:
+                break
+        if found is None:
+            out.append(Stranded(
+                rid, bucket_label, created_text,
+                "not selected, and no committed run decided it (the selection skips it "
+                "for a reason the census cannot name)",
+                version=identity.get("version"),
+            ))
+            continue
+        version, row = found
+        which = "proposal" if version == identity.get("legacy_version") else "record"
+        out.append(Stranded(
+            rid, bucket_label, created_text,
+            f"terminal by {row['run']} (case {row['case'] or '?'}, {row['state']}) at its "
+            f"{which} version {version[:12]}",
+            run=row["run"] or None, case=row["case"] or None,
+            state=row["state"] or None, version=version,
+        ))
     return out
 
 
@@ -4697,13 +4856,35 @@ def _records_waiting_for_close_out(
     return list(dict.fromkeys(waiting))
 
 
+#: S-NEXT-cadence: a failed or held steward run is tried again this long
+#: after its last attempt -- the miner's and the overseer's attempt cooldown
+#: (`serve._steward_is_due` reads the same constant).
+RETRY_SECS = 2 * 60 * 60
+
+
+def hold_notice_text(run_id: str, cause: str, *, now: float | None = None) -> str:
+    """The words of the environment-hold notification (S-NEXT-cadence): the
+    cause, when the next try comes (the scheduler retries a held run
+    :data:`RETRY_SECS` after its last attempt, so "after" this minute is
+    true), and, for a login that no longer works, the user's fix."""
+    moment = time.time() if now is None else now
+    retry = datetime.fromtimestamp(moment + RETRY_SECS).astimezone()
+    text = (
+        f"self-learn steward: run {run_id} is held: {cause}. Nothing was counted. "
+        f"It tries again after {retry.strftime('%Y-%m-%d %H:%M %Z').strip()} "
+        f"(every {RETRY_SECS // 3600} h while the cause lasts)."
+    )
+    if failure_class.is_login_failure(cause):
+        text += " The login has expired: run `claude` and `/login`."
+    return text
+
+
 def _notify_environment_hold(home: Path, run_id: str, cause: str) -> None:
     """Once per DISTINCT cause (2026-09-27, fail-state audit finding 4):
-    the steward is held, not failing, until the environment is fixed."""
-    summary = (
-        f"self-learn steward: run {run_id} is held — the model call cannot run "
-        f"here: {cause}. Nothing was counted; it retries on its next attempt."
-    )
+    the steward is held, not failing, until the environment is fixed.
+    S-NEXT-cadence: the words say when it tries again and, for a login, what
+    to type (:func:`hold_notice_text`)."""
+    summary = hold_notice_text(run_id, cause)
     try:
         overseer_notify.send(home, "routine", summary, [run_id])
     except Exception as exc:  # noqa: BLE001 -- a notification never fails a run

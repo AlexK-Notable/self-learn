@@ -484,6 +484,38 @@ def hand_steps_row(
     }
 
 
+def stranded_lessons_row(home: Path | str) -> dict[str, Any]:
+    """S-NEXT-cadence: the stranded-lesson census as a phase-B fact row --
+    every queued lesson the steward will never select (not an input, not
+    held by the overseer, not in an unfinished run), each with the committed
+    row that makes it terminal. Measured now, from the ledger; a census that
+    cannot be taken says so (``state: unavailable``) instead of reading as
+    an empty list."""
+    from .. import steward
+
+    row: dict[str, Any] = {
+        "kind": "stranded-lessons",
+        "caution": (
+            "A stranded lesson is a defect in the steward's selection code or a state it "
+            "never meant to leave, not a judgment on the lesson: name each in the report "
+            "for the people who maintain self-learn, and decide the lesson yourself only "
+            "if it needs a decision now."
+        ),
+    }
+    try:
+        rows = steward.stranded_lessons(Path(home))
+    except Exception as exc:  # noqa: BLE001 -- health facts degrade, never break a run
+        row.update(state="unavailable", reason=_one_line(f"{type(exc).__name__}: {exc}", 200))
+        return row
+    row["state"] = "ok"
+    row["count"] = len(rows)
+    row["lessons"] = [
+        {"record": item.record, "bucket": item.bucket, "reason": _one_line(item.reason, 200)}
+        for item in rows
+    ]
+    return row
+
+
 def gather(home: Path | str) -> list[dict[str, Any]]:
     """Read and render the bounded catalogue-health packet."""
     resolved = Path(home)
@@ -522,6 +554,8 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         # census of hand steps (hand-maintenance cures, lane C).
         premise_facts(resolved, head=census_head),
         hand_steps_row(resolved, head=census_head),
+        # S-NEXT-cadence: queued lessons the steward will never select.
+        stranded_lessons_row(resolved),
         {
             "kind": "consolidation-policy",
             "value": (

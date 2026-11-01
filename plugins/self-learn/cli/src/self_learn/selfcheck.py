@@ -1651,6 +1651,29 @@ def _check_premises(home: Path) -> tuple[Verdict, str]:
     return Verdict.PASS, detail
 
 
+def _check_steward_queue(home: Path) -> tuple[Verdict, str]:
+    """S-NEXT-cadence: the positive selection invariant
+    (`steward.stranded_lessons`): every queued lesson is selectable by the
+    steward, held by the overseer, or in an unfinished run. FAIL lists each
+    stranded lesson with what makes it terminal -- a defect in the selection
+    code, or a state it never meant to leave. A census that cannot be taken
+    is UNMEASURED: an unreadable ledger is not a clean queue."""
+    from . import steward
+
+    try:
+        rows = steward.stranded_lessons(home)
+    except Exception as exc:  # noqa: BLE001 -- a broken row must not end the selftest
+        return Verdict.UNMEASURED, (
+            f"the steward's queue could not be read ({type(exc).__name__}: {exc})"
+        )
+    if rows:
+        listed = "; ".join(f"{row.record} [{row.bucket}]: {row.reason}" for row in rows)
+        return Verdict.FAIL, (
+            f"{len(rows)} queued lesson(s) the steward never selects -- {listed}"
+        )
+    return Verdict.PASS, "every queued lesson is selectable or held"
+
+
 def run_selftest(home: Path) -> int:
     """All checks, each loud, tri-state (M-K): PASS, FAIL, or UNMEASURED
     — a check that could not measure anything must never render or exit
@@ -1662,8 +1685,9 @@ def run_selftest(home: Path) -> int:
     time this function actually RUNS, :mod:`cli` has always finished
     loading) on any UNMEASURED with no FAIL; else 0.
 
-    Twelve checks since S-107 added ``owned_skills`` and
-    S-104 added ``premises`` (ten since S-82 added ``hosts``,
+    Thirteen checks since S-NEXT-cadence added ``steward-queue``
+    (twelve since S-107 added ``owned_skills`` and
+    S-104 added ``premises``; ten since S-82 added ``hosts``,
     2026-10-08). There is no
     ``worker`` row (fold r1, 2026-09-04). M-K originally shipped one as an unconditional, COUNTED
     UNMEASURED entry, which made every home — healthy or not — exit 9
@@ -1699,6 +1723,7 @@ def run_selftest(home: Path) -> int:
         ("sentinel", *_check_sentinel()),
         ("invocation", *_check_invocation(home)),
         ("premises", *_check_premises(home)),
+        ("steward-queue", *_check_steward_queue(home)),
     ]
 
     passed = failed = unmeasured = warned = 0

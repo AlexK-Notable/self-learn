@@ -43,6 +43,7 @@ __all__ = [
     "classify",
     "outcome_class",
     "detail_tag",
+    "is_login_failure",
 ]
 
 FAILURE_CLASSES = ("transient", "safeguard", "environment", "content", "unclassified")
@@ -89,7 +90,28 @@ _TRANSIENT = re.compile(
     re.I,
 )
 
+#: The login half of ``_ENVIRONMENT``: a failure only the user can cure by
+#: logging in again (S-NEXT-cadence: the steward's hold notice names that fix
+#: for these causes, and only for these).
+_LOGIN = re.compile(
+    r"authentication(?:_error| error| failed)"
+    r"|failed to authenticate"
+    r"|oauth (?:session|token)\b[^.\n]{0,60}\b(?:expired|invalid|revoked)"
+    r"|invalid (?:bearer|access) token"
+    r"|not (?:logged|signed) in\b"
+    r"|please run /login"
+    r"|api error:? *401\b",
+    re.I,
+)
+
 _TAG = re.compile(r"\[([a-z][a-z0-9_]{1,63})\]")
+
+
+def is_login_failure(detail: str | None) -> bool:
+    """Whether a failure's text says the login no longer works (an expired or
+    revoked OAuth session, failed authentication, no login at all). The cure
+    is the user's: run ``claude`` and ``/login``."""
+    return bool(_LOGIN.search(detail or ""))
 
 
 def classify(failure: str | None, detail: str | None, result_subtype: str | None = None) -> str | None:

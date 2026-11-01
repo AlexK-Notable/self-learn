@@ -785,8 +785,8 @@ resolved -- say so and move on rather than treating it as an error.
 A parked case whose parked_reason is ledger-refused means the steward decided the lesson and the
 ledger refused its line for a reason only a person or a different decision can fix; the case
 quotes the ledger's words.
-health.yaml's catalogue_health also holds two rows the runner measured from the ledger and its
-history, and you report on both. premise-check: how many placed lessons record no premises yet,
+health.yaml's catalogue_health also holds three rows the runner measured from the ledger and its
+history, and you report on each. premise-check: how many placed lessons record no premises yet,
 written probes with no reading on three sweeps in a row, placement premises that are failing, and
 the baselines the premise sweep re-recorded this week by code alone (no model, no decision); say
 under Catalogue health which of these needs a person, and read the week's code-only refreshes as
@@ -799,6 +799,9 @@ week, directly after Catalogue health, write one line per step, as
 Read the step's note first, and the record in lessons/ when the step names a lesson. A step only the
 user may take (a setting only they set, an answer they typed) is by design: say so instead of
 naming a gap. When the evidence does not show what the gap was, say that.
+stranded-lessons: queued lessons the steward will never select, each with the committed run row that
+makes it terminal; under Catalogue health name every one and its reason (none, when the list is
+empty; that the census could not be taken, when its state is unavailable).
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
 case you decide. To correct a case that is not parked (for example a decision whose line the

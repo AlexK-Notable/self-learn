@@ -18,8 +18,11 @@ What a notice is. One short line about one project, with:
   working directory is that path or somewhere inside it (a git worktree of the
   project included). It never shows anywhere else.
 - ``source``: ``overseer`` (a finding the overseer wrote to its
-  ``notices.yaml``, for a project the ledger knows) or ``code`` (the runner of
-  a plain-host removal, for each tracked file it left changed).
+  ``notices.yaml``, for a project the ledger knows), ``code`` (the runner of
+  a plain-host removal, for each tracked file it left changed) or ``health``
+  (S-NEXT-cadence: self-learn's own health, for the self-learn checkout
+  the host process runs -- today the stranded-lesson census, which the
+  people who can fix the selection code see in that repo, not the user).
 - an end: it stops showing when a person runs ``self-learn notice done <id>``,
   when its condition clears (a ``code`` notice's file has no uncommitted
   change any more), or :data:`NOTICE_DAYS` (14) days after it was made --
@@ -83,8 +86,10 @@ __all__ = [
     "NOTICE_DAYS",
     "Notice",
     "SOURCE_CODE",
+    "SOURCE_HEALTH",
     "SOURCE_OVERSEER",
     "add",
+    "clear_health",
     "add_uncommitted",
     "all_notices",
     "condition_holds",
@@ -95,6 +100,7 @@ __all__ = [
     "notice_id",
     "notices_dir",
     "prune",
+    "set_health",
     "showing_by_project",
     "text_problem",
     "visible",
@@ -127,7 +133,12 @@ GIT_TOTAL_BUDGET = 2.0
 
 SOURCE_OVERSEER = "overseer"
 SOURCE_CODE = "code"
-SOURCES = (SOURCE_OVERSEER, SOURCE_CODE)
+#: S-NEXT-cadence: a measured fact about self-learn's own health, written by
+#: code for the installed self-learn checkout. Its condition is the fact
+#: itself: the writer rewrites it while the fact holds and removes it when
+#: the next measurement is clean (:func:`set_health`, :func:`clear_health`).
+SOURCE_HEALTH = "health"
+SOURCES = (SOURCE_OVERSEER, SOURCE_CODE, SOURCE_HEALTH)
 
 #: A ``code`` notice's condition: its file still has an uncommitted change.
 COND_UNCOMMITTED = "uncommitted"
@@ -453,6 +464,61 @@ def add_uncommitted(
         )
     except Exception:  # noqa: BLE001
         return None
+
+
+def set_health(
+    home: Path | str, *, project: Path | str, key: str, text: str, now: datetime | None = None
+) -> Notice | None:
+    """The ``health`` notice *key* for *project*, saying *text* (S-NEXT-cadence).
+    Called each time the measurement behind it finds the fault. A live notice
+    keeps its first ``created_at`` and takes the new words (a count that
+    changed is shown as it is now); one a person marked done stays done while
+    the fault lasts; one past its days is replaced by a fresh one, so a fault
+    that outlasts 14 days is shown again. Never raises; ``None`` when nothing
+    could be made (the words fail :func:`text_problem`, or the cache cannot be
+    written)."""
+    try:
+        if text_problem(text) is not None:
+            return None
+        real_project = _real(project)
+        nid = notice_id(real_project, SOURCE_HEALTH, key)
+        path = _path_for(home, nid)
+        existing = _load(path)
+        moment = now if now is not None else datetime.now(timezone.utc)
+        if existing is not None and existing.done_at is not None:
+            return existing
+        if existing is not None and is_live(existing, moment):
+            if existing.text == text:
+                return existing
+            notice = Notice(
+                id=nid, project=real_project, text=text, source=SOURCE_HEALTH,
+                created_at=existing.created_at,
+            )
+        else:
+            notice = Notice(
+                id=nid, project=real_project, text=text, source=SOURCE_HEALTH,
+                created_at=chrono.now_iso(now),
+            )
+        _store(path, notice, home)
+        prune(home, now=now)
+        return notice
+    except Exception:  # noqa: BLE001 -- a hint must never fail the job that measured it
+        return None
+
+
+def clear_health(home: Path | str, *, project: Path | str, key: str) -> bool:
+    """End the ``health`` notice *key* for *project*: its fault is gone (the
+    measurement came back clean). Removes the file, done or not, so a fault
+    that comes back later is a fresh notice. Answers whether one was there.
+    Never raises."""
+    try:
+        path = _path_for(home, notice_id(_real(project), SOURCE_HEALTH, key))
+        if not path.exists():
+            return False
+        _discard(path)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def mark_done(home: Path | str, notice_id_: str, *, now: datetime | None = None) -> Notice | None:

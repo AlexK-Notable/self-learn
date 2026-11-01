@@ -669,6 +669,69 @@ initiated runs don't count toward the weekly limit" — and, by the user's choic
 of "No, Sunday still runs", its completion does not make the week done, so the
 scheduled run still happens.)*
 
+**The steward's schedule and retry** *(Added 2026-10-31, `03-decisions.md`
+S-NEXT-cadence; the steward's mirror of the overseer paragraph above)*. The
+steward runs **once a night, after the mine**, and **a run that failed or was
+held is retried after two hours**. Before, one rule did both jobs badly: a
+20-hour `steward.cooldown_secs` rolled from the last attempt, so every run
+started about four hours earlier than the one before (live: 10-19 03:04Z,
+23:22Z, 10-20 19:36Z, …), and a run held by an expired login at 22:07 PDT on
+2026-10-30 waited 20 hours after the user logged in again at about 22:30.
+`serve._steward_is_due`, after the S-68 cache test and the STOP check:
+
+1. **Committed unfinished work** (a failed attempt, an environment hold, a
+   partial run) is due once its last attempt is `steward.RETRY_SECS` old — two
+   hours, the same value as `miner.ATTEMPT_COOLDOWN_SECS` — on any day. The
+   last attempt is the later of the cache attempt journal's newest attempt row
+   and the committed `last_attempt_at`; the journal's rows of an attempt (its
+   end and push rows included) are written after that stamp, so the journal is
+   normally the later one, and the committed stamp stands alone when the cache
+   was lost. `steward.cooldown_secs` does not apply. The attempt cap still closes a run
+   that keeps failing on its content (`runs.attempt_cap`, 02 §3a); an
+   environment hold counts nothing and costs one fast failing call every two
+   hours while its cause lasts, and the user is told once per cause.
+2. **New work** (no unfinished run; at least one input, §3a.8 of
+   `02-schema.md`) is due in the **nightly slot**: the slot opens on the first
+   tick at which today's mine pass has finished after today's mine target
+   (`miner.last-run` newer than the jittered target `serve` already keeps),
+   or at that target plus three hours whatever the mine did (failed, off,
+   still running); until it opens, yesterday's slot is the current one. A
+   slot is taken by a run that started (selected its inputs) at or after its
+   target. New work is due when the current slot is not taken and the last
+   start is at least `steward.cooldown_secs` ago (default 43200 s, 12 h: only a
+   minimum gap between two starts, so a run started by hand in the afternoon
+   leaves the night's run alone and two runs can never pile up). A steward that
+   has never run takes the queue at once. Inputs keep S-81's rule (an
+   eligible lesson is new work when committed or released after the last
+   selection), and a lesson whose deferral came due since then is new work too.
+   In the same tick the mine job runs first, then the premises job, then the
+   steward, so on a normal night the steward starts right after the mine.
+
+The heartbeat's preview (`next_job`, which `doctor`'s serve row prints) reads
+the cache only, like the overseer's: when the journal's newest `attempt-start`
+row is newer than the last completed run (`steward.last-run`) a run is
+unfinished and the preview names the instant the predicate makes it due (the
+journal's newest attempt row plus two hours); otherwise it names the next slot
+not yet taken, no sooner than the minimum gap nor than two hours after the
+journal's newest attempt row (the cache test holds every run that long).
+Unfinished is judged from `attempt-start` rows, never from the newest attempt
+row of any status: a completed run writes its last-run stamp with its end row,
+and its `recompile` and `push` rows come seconds later, so that comparison
+would read almost every completed run as unfinished *(gate r1 of
+S-NEXT-cadence)*. The environment-hold notification says when the run tries again
+("after <date> <time> (every 2 h while the cause lasts)") and, when the cause is
+an expired or missing login (`failure_class.is_login_failure`), "run `claude`
+and `/login`"; another environment cause keeps its cause line.
+
+**The stranded-lesson census** *(Added 2026-10-31, S-NEXT-cadence)*. After
+every steward job, and once a day after the premises job, `serve` takes the
+census of `02-schema.md` §3a.8's positive invariant (`steward.stranded_lessons`)
+and keeps it in `<cache>/steward/stranded.json` (`{at, count, lessons}`,
+`NOT_REPO_TRUTH`), where the session-start status can read
+its count without walking the ledger. A census that could not be taken leaves
+the last file as it was. While it finds a lesson it also keeps one `health`
+notice (§7.5) for the installed self-learn checkout.
+
 **A job that raises is logged** *(Added 2026-09-27, fail-state audit
 finding 6)*. `run_one_job` still turns a job's exception into a failed job
 record, so one job never ends the process; it now also writes the error and
@@ -1954,7 +2017,7 @@ malformed field prints nothing.
 (a person's or an agent's word; cache only); (2) its condition clears; (3) 14 days
 after it was first made. A file older than 30 days is deleted by the next writer.
 
-**Two sources.**
+**Three sources** *(two until S-NEXT-cadence added `health`)*.
 
 1. `source: overseer`. Phase B may write an optional `notices.yaml`,
    `{notices: [{project, text, case?}]}`, beside its other files, and is given
@@ -1978,6 +2041,21 @@ after it was first made. A file older than 30 days is deleted by the next writer
    `<file>` and the change is uncommitted: review it and commit it." (printed after
    the `self-learn:` prefix, so the words do not repeat it) Its
    condition is that `git status --porcelain` still reports the file changed.
+3. `source: health` *(added 2026-10-31, S-NEXT-cadence)*. A measured fact about
+   self-learn's own health, written by code for the self-learn checkout the
+   host process runs (the git work tree of the real path of the running
+   module), and only when that checkout is a registered project host: the
+   people who can change self-learn's code work there, and the user does not
+   need the line elsewhere. Today one: the stranded-lesson census (§5), key
+   `steward-stranded-lessons`, "N queued lesson(s) the steward never selects
+   (oldest `<id>`, terminal by `<run>`); see `self-learn --selftest`". Its
+   condition is the fact itself, judged by its writer, not by the reader: each
+   census that finds a lesson rewrites the words of the live notice (keeping its
+   first `created_at`), and the first census that finds none deletes the file
+   (`notices.set_health`, `notices.clear_health`). A notice marked done stays
+   done while the fault lasts; one past its 14 days is made afresh, so a fault
+   that outlasts them is shown again; a fault that clears and returns is a new
+   notice.
 
 **What reading costs.** `status --fast` stays git-free in every directory outside a
 notice's project: a notice for another project costs a path comparison. Only a

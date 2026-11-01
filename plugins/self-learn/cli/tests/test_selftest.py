@@ -117,7 +117,8 @@ def test_selftest_exits_9_on_healthy_sandbox_no_real_claude_dir(env, capsys):
     # more PASS (no registry, no stamped strays in this host: nothing owed);
     # S-104's `premises` row is the other new PASS (integration).
     assert "PASS owned_skills" in out
-    assert "11 passed, 1 unmeasured, 0 failed" in out
+    # S-NEXT-cadence: the `steward-queue` row joined it, one more PASS.
+    assert "12 passed, 1 unmeasured, 0 failed" in out
 
 
 def test_selftest_leaves_no_scratch_litter(env, capsys):
@@ -818,7 +819,8 @@ def test_selftest_survives_corrupt_resolved_record_prints_every_row(env, capsys)
     # S-107 (2026-10-31): the `owned_skills` row joined the
     # selftest, one more PASS beside S-104's `premises` (ten before
     # both).
-    assert "12 passed, 0 unmeasured, 0 failed" in out
+    # S-NEXT-cadence: the `steward-queue` row joined it, one more PASS.
+    assert "13 passed, 0 unmeasured, 0 failed" in out
     # S-82 (GM fold, 2026-10-08): the `hosts` row is named here too, not
     # only counted, and the test no longer says "nine rows".
     for check in (
