@@ -511,8 +511,9 @@ section records what the surface is.
   text started as an agent draft, and `--confirm` on the second click of
   an armed option. Three cases arm first and run nothing on the first
   click: a `confirm` option and an option with a `register` effect (the
-  armed line repeats the question, which names the path and mode; "This
-  registers <path> in git mode. Confirm?"), and an approve option
+  armed line repeats the packet's full question, never the list title
+  cut at 200 characters, since the question names the path and mode;
+  "This registers <path> in git mode. Confirm?"), and an approve option
   on a plan with sudo steps (it lists the sudo commands). Each sent
   answer shows how it was recorded ("as your words", "as your choice of
   the offered option", "as the agent's draft, accepted by you"). Words
@@ -535,7 +536,8 @@ section records what the surface is.
   through the ask runner) and open a terminal running `claude`
   (`attention run --login`). A working login clears the item and says
   when the held jobs run next, in the host's words from
-  `serve.heartbeat`.
+  `serve.heartbeat`; a stale heartbeat (older than one tick: the host
+  stopped) names no time, and the page says none is known.
 - **Decided items** show what was done and why, the item's undo and
   redo buttons (`attention undo [--redo]`, labelled by the CLI), an overturn-in-words box, and
   the feedback buttons ("Didn't need me", "Should have asked me"). After
@@ -549,7 +551,10 @@ section records what the surface is.
   this draft** and **Send as is**. A draft placed in the reply box keeps
   its `draft_id` and option, also when the page restores the unsent
   reply after a reload or a switch to another item; the server decides
-  the origin. The box is disabled
+  the origin. Emptying the box, or selecting all of it and typing over
+  it, drops the draft id (the words sent are then the person's own); a
+  paste over it keeps the id, and the id comes back when the draft's
+  text is whole in the box again. The box is disabled
   with a plain sentence when the login is broken or asking would bill
   money; every other part of the page still works.
 - **Keys** (`INBOX_KEYMAP`, listed in the `?` overlay on inbox pages):
@@ -563,6 +568,10 @@ section records what the surface is.
 - **One `role="status"` live region** announces recorded answers, the
   agent finishing, errors and item changes. An unsent reply or
   question is kept per item in `localStorage` (a convenience only).
+  Only a recorded send of the answer form (an option, Send, Confirm)
+  empties it; an undo, redo, run, fix or login check re-renders the
+  answer bar without sending the box's text, and the bar's box is
+  refilled from what was typed.
 - **Weekly report** (`/overseer-report[/<date>]`): a read-only render of
   the overseer's report, newest by default, with links to earlier ones.
 
