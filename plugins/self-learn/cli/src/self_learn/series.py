@@ -26,6 +26,8 @@ from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 
+from .primitives import procs
+
 __all__ = ["OUTCOME_GROUPS", "SERIES_DAYS", "day_series"]
 
 #: The window, in days, ending today.
@@ -75,10 +77,13 @@ def _parse_ts(text: str) -> datetime | None:
 
 
 def _git(home: Path, *args: str, stdin: str | None = None) -> str | None:
+    """One read-only git command on the ledger, through the bounded-child
+    seam (``primitives.procs.run_bounded``, the P3 gate's rule for a new
+    call site): on ``_GIT_TIMEOUT`` the whole process group dies. ``None``
+    on any failure; the chart then says the history could not be read."""
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(home), *args], input=stdin, capture_output=True,
-            text=True, timeout=_GIT_TIMEOUT,
+        proc = procs.run_bounded(
+            ["git", "-C", str(home), *args], input=stdin, timeout=_GIT_TIMEOUT,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
