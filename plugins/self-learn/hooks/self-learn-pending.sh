@@ -105,10 +105,10 @@ if intents_stopped_count="$(jq -e -r '.intents_stopped_count' <<<"$out" 2>/dev/n
   fi
 fi
 
-# B-7 consumer half: `total_unreadable` is `status --fast`'s own
-# honest-null field (absent, never a confident zero, when the scan cannot
-# tell). `jq -e` (no fallback) so an absent key reads as "" here rather than
-# manufacturing a "0 unreadable" that isn't real. An unreadable record is a
+# B-7 consumer half: `status --fast` reports `total_unreadable` from the
+# same full record parse as `status --json` (perf batch 1, 2026-11-01).
+# `jq -e` (no fallback) still reads an absent key, from an older CLI, as ""
+# rather than manufacturing a "0 unreadable" that isn't real. An unreadable record is a
 # ledger problem nobody's queue covers, so it prints whoever owns the queue.
 unreadable="$(jq -e -r '.total_unreadable' <<<"$out" 2>/dev/null)" || unreadable=""
 if [ -n "$unreadable" ] && [ "$unreadable" -gt 0 ] 2>/dev/null; then

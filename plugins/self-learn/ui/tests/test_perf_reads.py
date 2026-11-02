@@ -218,6 +218,8 @@ def test_health_search_cache_cannot_extend_header_status_lifetime(tmp_path, monk
 @pytest.mark.parametrize("path", ["/", "/report", "/bucket/skill/s"])
 def test_page_drops_header_seed_if_refresh_arrives_during_read(tmp_path, monkeypatch, path):
     sb = make_env(tmp_path, skills=("s",))
+    # An empty bucket redirects to Home, which would test Home twice.
+    seed_record(sb.ledger, make_behavior(scope="skill:s"))
     monkeypatch.setattr(ledger, "report", lambda home: models.CliRead(data={}))
     monkeypatch.setattr(ledger, "mine_status", lambda home: models.CliRead(data={"runs": []}))
     calls = []
@@ -230,7 +232,7 @@ def test_page_drops_header_seed_if_refresh_arrives_during_read(tmp_path, monkeyp
             client.app.state.refresh_hub.force_refresh("front")
             return models.CliRead(data={"steward_hold": "old hold"})
         monkeypatch.setattr(ledger, "status", old_status)
-        response = client.get(path)
+        response = client.get(path, follow_redirects=False)
         assert response.status_code == 200 and 'class="site-header"' in response.text
         header = client.get("/header/jobs")
         assert "jobs-line" in header.text
