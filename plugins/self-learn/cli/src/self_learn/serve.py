@@ -2329,11 +2329,12 @@ def _sweep_cache(home: Path) -> None:
     serves. Never raises (`prune` contains its own failures); says what it
     removed on stderr so the journal shows it."""
     result = cache_gc.prune(keep_homes=[home])
-    if result.removed_homes or result.removed_locks:
+    if result.removed_homes or result.removed_locks or result.removed_glob_witnesses:
         print(
             f"serve: cache sweep removed {len(result.removed_homes)} orphaned "
-            f"home cache dir(s) and {len(result.removed_locks)} idle host lock "
-            "file(s).",
+            f"home cache dir(s), {len(result.removed_locks)} idle host lock "
+            f"file(s) and {len(result.removed_glob_witnesses)} expired glob "
+            "witness file(s).",
             file=sys.stderr,
         )
 

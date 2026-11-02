@@ -147,6 +147,10 @@ NOT_REPO_TRUTH = {
     # an idle host lock file in the same cache root -- never in a repo.
     "cache_gc.record_home": "XDG cache: <cache>/home-<digest>/.home, the path of the home that directory belongs to",
     "cache_gc._remove_if_unheld": "XDG cache: unlinks an idle host-<slug>.commit.lock under the cache root",
+    # perf batch 1 (2026-11-01): the glob reachability witness cache and its
+    # expiry, both under <cache>/glob-witness-v1/ -- disposable, never a repo.
+    "ledger_ops.glob_reaches": "XDG cache: <cache>/glob-witness-v1/<sha256>.json, a disposable reachability witness",
+    "cache_gc._prune_glob_witnesses": "XDG cache: unlinks expired glob-witness-v1 files and their crash temps",
     # U-cleanup-B (§8.1): worker.write_settings_file is DELETED — the batch
     # round no longer writes a settings file at all (settings=None for the
     # real sdk seam; see WS1 in test_worker_contract.py). No exemption
