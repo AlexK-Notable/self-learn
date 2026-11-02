@@ -58,11 +58,15 @@ _FAKE_SELF_LEARN = textwrap.dedent(
       cat "$FAKE_JSON"
       exit "${FAKE_RC:-0}"
     fi
+    if [ "$1 $2" = "serve --restart" ]; then
+      cat "$FAKE_RECEIPT"
+      exit "${FAKE_RESTART_RC:-0}"
+    fi
     exit 0
     """
 )
 _FAKE_SYSTEMD_RUN = '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$FAKE_LOG.systemd-run"\n'
-_FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG.systemctl"\nexit "${FAKE_SYSTEMCTL_RC:-0}"\n'
+_FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG.systemctl"\nif [ "$2" = "is-active" ]; then exit "${FAKE_ACTIVE_RC:-0}"; fi\nexit "${FAKE_SYSTEMCTL_RC:-0}"\n'
 
 
 def _item(**over) -> dict:
@@ -114,6 +118,7 @@ class Env:
         self.vars = {
             "PATH": str(bin_dir), "HOME": str(tmp_path / "home"), "SELF_LEARN_HOME": str(self.home),
             "FAKE_LOG": str(self.log), "FAKE_JSON": str(self.json),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
         }
         self.write(_attention("idle", "self-learn: nothing needs you", [], self.cache))
 
@@ -136,13 +141,6 @@ class Env:
         path = Path(f"{self.log}.{suffix}")
         return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
-    def heartbeat(self, running: str | None, age: float = 2.0, tick: float = 60.0) -> None:
-        """A `serve.heartbeat` in the JSON's cache_dir, as the background service writes it."""
-        self.cache.mkdir(parents=True, exist_ok=True)
-        body = {"ts": time.time() - age, "pid": 1, "next_job": "mine", "tick_secs": tick}
-        if running:
-            body.update(running=running, running_since=time.time() - age)
-        (self.cache / "serve.heartbeat").write_text(json.dumps(body), encoding="utf-8")
 
 
 @pytest.fixture
@@ -417,16 +415,19 @@ try:
     client.call_sync(service, menu_path, "com.canonical.dbusmenu", "Event",
                      GLib.Variant("(isvu)", (status_id, "clicked", GLib.Variant("i", 0), 0)), None,
                      Gio.DBusCallFlags.NONE, 5000, None)
-    wait(lambda: False, 1.5)
+    wait(lambda: False, 0.1)
     result["status_click_polled"] = polls() > before
     client.call_sync(service, menu_path, "com.canonical.dbusmenu", "Event",
                      GLib.Variant("(isvu)", (menu_ids["Check now"], "clicked", GLib.Variant("i", 0), 0)), None,
                      Gio.DBusCallFlags.NONE, 5000, None)
     result["check_now_polled"] = wait(lambda: polls() > before, 10)
-    errs = client.call_sync(service, menu_path, "com.canonical.dbusmenu", "EventGroup",
-                            GLib.Variant("(a(isvu))", ([(99, "clicked", GLib.Variant("i", 0), 0)],)), None,
-                            Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
-    result["event_group_errors"] = errs
+    try:
+        client.call_sync(service, menu_path, "com.canonical.dbusmenu", "EventGroup",
+                         GLib.Variant("(a(isvu))", ([(99, "clicked", GLib.Variant("i", 0), 0)],)), None,
+                         Gio.DBusCallFlags.NONE, 5000, None)
+        result["all_invalid_error"] = False
+    except GLib.Error:
+        result["all_invalid_error"] = True
     result["about_to_show"] = client.call_sync(service, menu_path, "com.canonical.dbusmenu", "AboutToShow",
                                                GLib.Variant("(i)", (0,)), None, Gio.DBusCallFlags.NONE, 5000,
                                                None).unpack()[0]
@@ -470,6 +471,17 @@ try:
     wait(lambda: ["NewStatus", ("NeedsAttention",)] in [[n, tuple(p)] for n, p in signals], 10)
     result["signals"] = [n for n, _p in signals]
     result["new_status"] = [p for n, p in signals if n == "NewStatus"]
+    # Separate run: a fast periodic timer must not mask broken file monitors
+    # in the preceding run, which retains the production 120-second interval.
+    proc.terminate()
+    result["first_tray_rc"] = proc.wait(10)
+    w2.close()
+    before = polls()
+    proc = subprocess.Popen([sys.executable, "-I", tray, "--poll-secs", "1"],
+                            stderr=open(out_path + ".stderr", "a"))
+    result["periodic_first_poll"] = wait(lambda: polls() > before, 5)
+    before = polls()
+    result["periodic_without_file_change"] = wait(lambda: polls() > before, 3)
 finally:
     proc.terminate()
     result["tray_rc"] = proc.wait(10)
@@ -507,6 +519,7 @@ def test_4_registers_with_the_watcher_and_again_after_its_owner_changes(env):
          str(driver), str(env.tray), str(out), str(env.home), str(env.cache)],
         env=env.env(NEXT_JSON=json.dumps(nxt)), capture_output=True, text=True, timeout=180,
     )
+    assert run.returncode == 0, (run.stdout, run.stderr)
     assert out.exists(), (run.returncode, run.stdout, run.stderr)
     res = json.loads(out.read_text(encoding="utf-8"))
     tray_log = Path(str(out) + ".stderr").read_text(encoding="utf-8")
@@ -532,7 +545,10 @@ def test_4_registers_with_the_watcher_and_again_after_its_owner_changes(env):
     assert res["menu"][0][3] is False, "the state line is greyed out"
     assert not res["status_click_polled"], "a click on the state line does nothing"
     assert res["check_now_polled"], ("Check now over the bus polls", tray_log)
-    assert res["event_group_errors"] == [99]
+    assert res["all_invalid_error"]
+    assert res["periodic_first_poll"]
+    assert res["periodic_without_file_change"]
+    assert res["first_tray_rc"] == 0
     assert res["about_to_show"] is False, "an unchanged menu needs no update"
 
     assert res["activated"] == ["--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
@@ -704,45 +720,234 @@ def test_7d_restart_notifies_and_reports_a_failure(env):
     assert "exited 5" in out["notices"][0][1]
 
 
-def test_7e_background_restart_waits_for_the_running_job(env):
-    """09 §2.6: while the heartbeat names a running job, the background-service
-    restart waits (its item names the job, then greys out while waiting) and
-    runs once the heartbeat shows the service between jobs. Mutation: restart at
-    once -> red (systemctl ran before the job ended); never re-check -> red."""
-    env.heartbeat("mine")
-    assert env.pure("menu")["menu"][9]["label"] == "Restart the background service (after the mine job)"
-
-    during_job = []
-
-    def job_ends():
+def test_7e_background_restart_waits_for_correlated_result(env):
+    env.cache.mkdir(parents=True)
+    result = env.cache / "serve.restart-result"
+    receipt = env.tmp / "receipt.json"
+    receipt.write_text(json.dumps({"requested": True, "id": "fixture", "result_path": str(result)}))
+    during_wait = []
+    def finish():
         time.sleep(2.5)
-        during_job.extend(env.side("systemctl"))
-        env.heartbeat(None)
-
-    ender = threading.Thread(target=job_ends)
+        during_wait.extend(env.side("systemctl"))
+        result.write_text(json.dumps({"id": "fixture", "status": "restarting", "error": None, "at": time.time()}))
+    ender = threading.Thread(target=finish)
     ender.start()
-    out = env.pure("click", "--item", "restart-host", "--wait-secs", "1")
-    ender.join()
-    assert during_job == [], "restarted while the job was still running"
+    try:
+        out = env.pure("click", "--item", "restart-host", "--wait-secs", "1", FAKE_RECEIPT=str(receipt))
+    finally:
+        ender.join()
+    assert during_wait == ["--user is-active --quiet self-learn-host.service"]
+    assert env.side("systemctl") == during_wait
+    assert env.calls() == ["attention --json", "serve --restart"]
     assert out["rc"] == 0
-    assert env.side("systemctl") == ["--user restart self-learn-host.service"]
-    assert out["notices"][0][0] == "self-learn: restart waiting" and "mine" in out["notices"][0][1]
+    assert "between jobs" in out["notices"][0][1]
     assert out["notices"][-1] == ["self-learn: the background service restarted", ""]
-    waiting = [m[9] for m in out["menus"] if not m[9]["enabled"]]
-    assert waiting and waiting[0]["label"] == "Restarting the background service after the mine job…"
-    assert out["menu"][9] == {"id": 10, "key": "restart-host", "type": "standard",
-                              "label": "Restart the background service", "enabled": True}
+    assert any(m[9]["label"] == "Restarting the background service…" and not m[9]["enabled"] for m in out["menus"])
+    assert out["menu"][9]["enabled"]
 
 
-def test_7f_a_stale_or_idle_heartbeat_restarts_at_once(env):
-    """A heartbeat older than its own tick means the service is not running that
-    job (the `heartbeat_is_fresh` rule), and one with no `running` is between
-    jobs: either restarts at once. Mutation: ignore the age -> red."""
-    env.heartbeat("mine", age=300, tick=60)
-    assert env.pure("menu")["menu"][9]["label"] == "Restart the background service"
-    out = env.pure("click", "--item", "restart-host", "--wait-secs", "30")
-    assert env.side("systemctl") == ["--user restart self-learn-host.service"]
-    assert [n[0] for n in out["notices"]] == ["self-learn: the background service restarted"]
-    env.heartbeat(None)
-    env.pure("click", "--item", "restart-host", "--wait-secs", "30")
-    assert env.side("systemctl") == ["--user restart self-learn-host.service"] * 2
+def test_7f_inactive_service_uses_systemctl(env):
+    out = env.pure("click", "--item", "restart-host", FAKE_ACTIVE_RC="3")
+    assert out["rc"] == 0
+    assert env.side("systemctl") == ["--user is-active --quiet self-learn-host.service",
+                                     "--user restart self-learn-host.service"]
+    assert env.calls() == ["attention --json"]
+    assert out["notices"] == [["self-learn: the background service restarted", ""]]
+
+
+_MENU_DRIVER = r'''
+import json, math, os, runpy, sys, time
+from pathlib import Path
+m = runpy.run_path(sys.argv[1])
+Gio, GLib = m["Gio"], m["GLib"]
+ctx = GLib.MainContext.default()
+def wait(cond, secs=2):
+    end = time.monotonic() + secs
+    while time.monotonic() < end:
+        while ctx.pending(): ctx.iteration(False)
+        if cond(): return True
+        time.sleep(.005)
+    return bool(cond())
+def connect():
+    return Gio.DBusConnection.new_for_address_sync(os.environ["DBUS_SESSION_BUS_ADDRESS"],
+        Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+server, client = connect(), connect()
+tray = m["Tray"]()
+menu = m["MenuServer"](tray)
+menu.attach(server)
+signals = []
+client.signal_subscribe(server.get_unique_name(), m["MENU_IFACE"], "LayoutUpdated", m["MENU_PATH"],
+    None, Gio.DBusSignalFlags.NONE, lambda *args: signals.append(args[-1].unpack()))
+def call(method, sig, args, error=False):
+    reply = []
+    def done(conn, res):
+        try: reply.append(conn.call_finish(res).unpack())
+        except GLib.Error as exc: reply.append(exc)
+    client.call(server.get_unique_name(), m["MENU_PATH"], m["MENU_IFACE"], method,
+                GLib.Variant(sig, args), None, Gio.DBusCallFlags.NONE, 1000, None, done)
+    assert wait(lambda: reply), method
+    if error:
+        assert isinstance(reply[0], GLib.Error), (method, reply)
+        assert "UnknownId" in str(reply[0]) or "UnknownProperty" in str(reply[0])
+    else:
+        assert not isinstance(reply[0], GLib.Error), (method, reply)
+    return reply[0]
+def event(mid, kind="clicked"):
+    return call("Event", "(isvu)", (mid, kind, GLib.Variant("i", 0), 0))
+
+menu.refresh()
+assert wait(lambda: len(signals) == 1), signals
+initial = call("GetLayout", "(iias)", (0, -1, []))
+assert len(initial[1][2]) == 12
+assert call("GetLayout", "(iias)", (0, 0, []))[1][2] == []
+assert call("GetProperty", "(is)", (9, "label")) == ("Restart the web UI",)
+assert call("GetProperty", "(is)", (1, "enabled")) == (False,)
+call("GetProperty", "(is)", (99, "label"), error=True)
+assert call("GetGroupProperties", "(aias)", ([9, 99], ["label"])) == ([(9, {"label": "Restart the web UI"})],)
+assert len(call("GetGroupProperties", "(aias)", ([], []))[0]) == 13
+assert call("GetLayout", "(iias)", (9, 0, ["enabled"]))[1] == (9, {"enabled": True}, [])
+assert call("AboutToShow", "(i)", (0,)) == (False,)
+# Partial/full reads cannot consume an unpublished change.
+tray.result["tooltip"] = "changed_state"
+assert call("GetLayout", "(iias)", (1, 0, ["label"]))[1][1] == {"label": "changed__state"}
+call("GetLayout", "(iias)", (0, -1, []))
+assert call("AboutToShow", "(i)", (0,)) == (True,)
+assert wait(lambda: len(signals) == 2), signals
+updated = call("GetLayout", "(iias)", (0, -1, []))
+assert updated[0] == initial[0] + 1 and signals[-1] == (updated[0], 0)
+assert call("AboutToShow", "(i)", (0,)) == (False,)
+call("AboutToShow", "(i)", (99,), error=True)
+call("AboutToShowGroup", "(ai)", ([99],), error=True)
+call("EventGroup", "(a(isvu))", ([(99, "clicked", GLib.Variant("i", 0), 0)],), error=True)
+assert call("EventGroup", "(a(isvu))", ([(0, "opened", GLib.Variant("i", 0), 0),
+    (99, "clicked", GLib.Variant("i", 0), 0)],)) == ([99],)
+assert call("AboutToShowGroup", "(ai)", ([0, 99],)) == ([], [99])
+tray.result["tooltip"] = "another state"
+assert call("AboutToShowGroup", "(ai)", ([1, 99],)) == ([1], [99])
+assert call("AboutToShowGroup", "(ai)", ([0, 1, 99],)) == ([], [99])
+
+# Controlled subprocess callbacks: actual menu events, no executable runs.
+g = m["Tray"].click.__globals__
+spawned, captured, timers, notices, finished = [], [], [], [], []
+g["spawn"] = lambda argv, done=None: spawned.append((argv, done))
+g["capture"] = lambda argv, done: captured.append((argv, done))
+tray.notify = lambda *args: notices.append(args)
+tray.on_change = menu.refresh
+original_timer = GLib.timeout_add_seconds
+GLib.timeout_add_seconds = lambda secs, cb: timers.append(cb)
+for kind in ("hovered", "opened", "closed"):
+    event(9, kind)
+assert spawned == [], spawned
+for mid, key, argv in ((9, "restart-ui", m["RESTART_UI_ARGV"]), (10, "restart-host", m["HOST_ACTIVE_ARGV"])):
+    start = len(spawned)
+    event(mid)
+    tray.click(key)  # guard also protects direct callers
+    event(mid)
+    assert len(spawned) == start + 1 and spawned[-1][0] == argv
+    assert call("GetProperty", "(is)", (mid, "enabled")) == (False,)
+    assert call("GetProperty", "(is)", (mid, "label"))[0].startswith("Restarting the ")
+    spawned[-1][1](0 if mid == 9 else 3)
+    if mid == 10:
+        assert spawned[-1][0] == m["RESTART_HOST_ARGV"]
+        before = len(spawned)
+        event(mid)
+        tray.click(key)
+        assert len(spawned) == before
+        spawned[-1][1](0)
+    assert call("GetProperty", "(is)", (mid, "enabled")) == (True,)
+
+# Active-service request remains pending through command exit AND result watch.
+tray.click("restart-host", lambda rc: finished.append(rc))
+spawned[-1][1](0)
+assert captured[-1][0] == ["self-learn", "serve", "--restart"]
+result_path = Path(os.environ["XDG_CACHE_HOME"]) / "serve.restart-result"
+result_path.parent.mkdir(parents=True, exist_ok=True)
+receipt = {"requested": True, "id": "fixture", "result_path": str(result_path)}
+captured[-1][1](0, json.dumps(receipt), "")
+assert "between jobs" in notices[-1][1]
+check = timers[-1]
+assert check() is True  # missing result
+before = len(spawned)
+event(10)
+tray.click("restart-host")
+assert len(spawned) == before and not finished
+base = {"id": "fixture", "status": "restarting", "error": None, "at": time.time()}
+invalid = [[], {**base, "id": "older"}, {**base, "status": []}, {**base, "error": 3},
+    {**base, "status": "refused"}, *[{**base, "at": v} for v in (float("nan"), float("inf"), True, "1", None, 10**400)]]
+for data in invalid:
+    result_path.write_text(json.dumps(data))
+    assert check() is True and not finished, data
+result_path.write_bytes(b"\xff")
+assert check() is True
+result_path.write_text(json.dumps({**base, "status": "refused", "error": "fixture import failure"}))
+assert check() is False and finished == [1]
+assert notices[-1][1] == "fixture import failure"
+assert "restart-host" not in tray.restarting
+# Deadline leaves the request intact and releases the pending item.
+tray.click("restart-host")
+spawned[-1][1](0)
+captured[-1][1](0, json.dumps({**receipt, "id": "next"}), "")
+old_monotonic = g["time"].monotonic
+now = old_monotonic()
+g["time"].monotonic = lambda: now + 10801
+assert timers[-1]() is False
+assert "not been cancelled" in notices[-1][1] and "restart-host" not in tray.restarting
+g["time"].monotonic = old_monotonic
+# Receipt and command failures release pending state too.
+for rc, text in [(2, ""), (0, "{}"), (0, json.dumps({**receipt, "id": 3})),
+                 (0, json.dumps({**receipt, "requested": 1})),
+                 (0, json.dumps({**receipt, "result_path": "relative"}))]:
+    tray.click("restart-host")
+    spawned[-1][1](0)
+    captured[-1][1](rc, text, "fixture command error")
+    assert "restart-host" not in tray.restarting
+    assert "could not request" in notices[-1][0]
+GLib.timeout_add_seconds = original_timer
+
+# Real Notify calls to a daemon fixture, then a missing daemon on the same private bus.
+notify_conn = connect()
+notify_conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName",
+    GLib.Variant("(su)", (m["NOTIFY"], 0)), None, Gio.DBusCallFlags.NONE, 1000, None)
+xml = ''' + '"""' + r'''<node><interface name="org.freedesktop.Notifications"><method name="Notify">
+<arg type="s" direction="in"/><arg type="u" direction="in"/><arg type="s" direction="in"/>
+<arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="as" direction="in"/>
+<arg type="a{sv}" direction="in"/><arg type="i" direction="in"/><arg type="u" direction="out"/>
+</method></interface></node>''' + '"""' + r'''
+received = []
+def notify_call(conn, sender, path, iface, method, params, inv):
+    received.append(params.unpack())
+    inv.return_value(GLib.Variant("(u)", (1,)))
+notify_conn.register_object("/org/freedesktop/Notifications", Gio.DBusNodeInfo.new_for_xml(xml).interfaces[0], notify_call, None, None)
+sni = m["SniItem"].__new__(m["SniItem"])
+sni.conn = server
+tray.notify = sni.notify
+tray.click("restart-ui")
+spawned[-1][1](0)
+assert wait(lambda: received)
+assert received[-1][3:5] == ("self-learn: the web UI restarted", "")
+notify_conn.close_sync(None)
+logs = []
+g["log"] = logs.append
+tray.click("restart-ui")
+spawned[-1][1](5)
+assert wait(lambda: any("could not show a notification" in line for line in logs)), logs
+assert "restart-ui" not in tray.restarting
+assert call("GetProperty", "(is)", (9, "enabled")) == (True,)
+print("menu protocol, pending restarts, validation, and notification transport verified")
+'''
+
+
+def test_8_menu_protocol_pending_restarts_and_notification_transport(env):
+    """Private exported object; controlled command completions; actual Notify transport."""
+    driver = env.tmp / "menu-driver"
+    driver.write_text(_MENU_DRIVER)
+    # No service activation directories: absence cannot launch a desktop daemon.
+    config = env.tmp / "private-bus.conf"
+    config.write_text('<busconfig><type>session</type><listen>unix:tmpdir=/tmp</listen>'
+                     '<policy context="default"><allow send_destination="*"/>'
+                     '<allow receive_sender="*"/><allow own="*"/></policy></busconfig>')
+    res = subprocess.run([shutil.which("dbus-run-session"), f"--config-file={config}",
+                          f"--dbus-daemon={shutil.which('dbus-daemon')}", "--", SYSTEM_PYTHON, "-I",
+                          str(driver), str(TRAY)], env=env.env(), capture_output=True, text=True, timeout=40)
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    assert "notification transport verified" in res.stdout

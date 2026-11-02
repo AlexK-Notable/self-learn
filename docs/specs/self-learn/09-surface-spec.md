@@ -1072,19 +1072,40 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   come back in 5 s under `Restart=always`, and systemd stops the tray itself).
   Separators group open, check, restart and quit. Only `clicked` on an enabled
   item acts; a literal `_` in a label is doubled (dbusmenu's access-key mark).
-- **The background restart waits for a running job.** systemd stops the service
-  with SIGTERM, which `serve` honours only between jobs, and kills it 90 s later,
-  so a restart during a long job would lose the job. The tray reads
-  `<cache_dir>/serve.heartbeat` (a cache file; `cache_dir` from the reader's
-  JSON): a `running` job in a heartbeat no older than its own `tick_secs`
-  (`serve.heartbeat_is_fresh`'s rule) means busy. The item then reads "Restart
-  the background service (after the <job> job)"; a click while busy shows a
-  notification, greys the item out as "Restarting the background service after
-  the <job> job…", re-reads the heartbeat every 5 s and restarts once it shows
-  no running job. A stale, missing or unreadable heartbeat restarts at once.
-- **Notifications.** Each restart ends with a desktop notification
-  (`org.freedesktop.Notifications`) saying it restarted, or that it failed with
-  systemctl's exit status; every notification is also logged to the journal.
+- **The background restart is coordinated by `serve`.** The tray checks
+  `systemctl --user is-active --quiet self-learn-host.service`. An inactive
+  service is restarted with systemctl. An active one receives
+  `self-learn serve --restart`: a cache-only request with a random id, consumed
+  by the scheduler after the whole tick has returned, never during a job. It
+  uses the same venv sync, import check and re-exec path as a code change,
+  preserving the original process start time. An idle service checks for a
+  request about once a second without starting another tick first. Heartbeats
+  never authorize a restart: a job can start immediately after an idle beat.
+- **Host control: `self-learn serve --restart`.** Resolves `worker.cache_dir(home)`
+  exactly like `serve` and atomically writes `serve.restart` with `requested_at`
+  (epoch float) and a random `id`. Prints one JSON line with `requested: true`,
+  `id` and `result_path`, exits 0, and never starts the loop or touches the ledger.
+  At the safe boundary, just before exec or on refusal (sync, import, exec or
+  malformed request), `serve` atomically writes `serve.restart-result` with
+  `id`, `status` (`restarting` or `refused`), `error` (reason or null), and `at`,
+  and removes the request. Refused requests require another click to retry.
+  SIGTERM is checked outside `_run_tick`; a tick can include several jobs.
+- **Pending restarts and notifications.** Both restart items are disabled from
+  the accepted click through the outcome, labelled "Restarting the background
+  service…" or "Restarting the web UI…"; repeated clicks are ignored. An active
+  host request says "The background service will restart as soon as it is
+  between jobs" and watches the receipt's `result_path` every 5 s for its id.
+  `restarting` says it restarted; `refused` reports the reason. Invalid or
+  non-finite fields are treated as not yet answered. After 3 hours the tray
+  stops watching and says the request is still waiting; it does not cancel it.
+  Command failures also release the item and notify. Notifications go through
+  `org.freedesktop.Notifications` and are logged; a missing daemon is harmless.
+- **Menu publication.** `refresh()` compares against its own last published
+  full menu; each change advances the revision and emits `LayoutUpdated`.
+  Full or partial `GetLayout` reads do not acknowledge a change. `AboutToShow`
+  reports whether refresh found a change. Unknown ids are D-Bus errors for
+  `AboutToShow`; group calls report invalid ids in `idErrors`, error if none
+  exists, and report updates only for requested valid ids (version 3).
 - `ContextMenu` and `Scroll` do nothing (the bar opens the menu itself).
 - **When it polls.** Every 120 s, and one second after a change in
   `$SELF_LEARN_HOME` itself, `$SELF_LEARN_HOME/overseer/`,

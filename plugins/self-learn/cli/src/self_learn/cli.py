@@ -1242,6 +1242,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "serve",
         help="run the long-lived host process (U-engine Phase 2: scheduler + heartbeat)",
     )
+    serve_p.add_argument("--restart", action="store_true",
+                         help="ask the running host to restart between jobs; print a JSON receipt")
     serve_p.add_argument(
         "--max-ticks",
         type=int,
@@ -2284,6 +2286,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     lock in the first place). Never home-gated: the daemon is meant to
     be always-on, even against a pristine/uninitialized home."""
     home = resolve_home()
+    if args.restart:
+        print(json.dumps(serve.request_restart(worker.cache_dir(home))))
+        return 0
     return serve.run_forever(home, max_ticks=args.max_ticks)
 
 

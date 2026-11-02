@@ -21,6 +21,7 @@ bus and prints JSON; the tests use it (`tests/test_tray.py`).
 
 import argparse
 import json
+import math
 import os
 import signal
 import sys
@@ -45,15 +46,16 @@ ACTIVATE_ARGV = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--
 SECONDARY_ARGV = ["self-learn", "attention", "seen", "--all-decided"]
 # The right-click menu (09 §2.6). Open runs the launcher with no page: it
 # focuses an open UI window or opens Home. The UI restart is immediate; the
-# background service's waits for a running job (its stop timeout would kill
-# a long one). Quit stops this unit: a plain exit would come back in 5 s
+# background service uses a scheduler request so jobs finish before re-exec.
+# Quit stops this unit: a plain exit would come back in 5 s
 # (Restart=always), and `--no-block` because systemd stops this process.
 OPEN_ARGV = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open"]
 RESTART_UI_ARGV = ["systemctl", "--user", "restart", "self-learn-ui.service"]
 RESTART_HOST_ARGV = ["systemctl", "--user", "restart", "self-learn-host.service"]
 QUIT_ARGV = ["systemctl", "--user", "--no-block", "stop", "self-learn-tray.service"]
-HEARTBEAT = "serve.heartbeat"  # self_learn.serve.HEARTBEAT_FILENAME, in the JSON's cache_dir
-DEFAULT_TICK_SECS = 60.0  # self_learn.serve.DEFAULT_TICK_SECS
+HOST_ACTIVE_ARGV = ["systemctl", "--user", "is-active", "--quiet", "self-learn-host.service"]
+RESTART_REQUEST_ARGV = ["self-learn", "serve", "--restart"]
+RESTART_WATCH_SECS = 3 * 3600
 WAIT_SECS = 5
 BROKEN_TITLE = "self-learn: could not check what needs you"
 WATCH_EVENTS = {
@@ -128,27 +130,40 @@ def watch_dirs(home, cache_dir):
     return dirs
 
 
-def running_job(cache_dir, now=None):
-    """The job the background service is running right now, read from its
-    heartbeat in `cache_dir`; None when it is between jobs, stopped (the
-    heartbeat is older than its own tick, `serve.heartbeat_is_fresh`'s rule) or
-    the file cannot be read. The heartbeat is a cache file, never the ledger."""
-    if not cache_dir:
-        return None
+def finite_epoch(value):
     try:
-        with open(os.path.join(cache_dir, HEARTBEAT), encoding="utf-8") as fh:
+        return type(value) in (int, float) and math.isfinite(value) and value > 0
+    except OverflowError:
+        return False
+
+
+def restart_receipt(text):
+    try:
+        data = json.loads(text)
+        if (isinstance(data, dict) and data.get("requested") is True
+                and isinstance(data.get("id"), str) and data["id"].strip()
+                and isinstance(data.get("result_path"), str)
+                and os.path.isabs(data["result_path"]) and "\0" not in data["result_path"]):
+            return data
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def restart_outcome(path, request_id):
+    try:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    job, ts, tick = data.get("running"), data.get("ts"), data.get("tick_secs")
-    if not (isinstance(job, str) and job) or not isinstance(ts, (int, float)) or isinstance(ts, bool):
-        return None
-    tick = tick if isinstance(tick, (int, float)) and not isinstance(tick, bool) and tick > 0 else DEFAULT_TICK_SECS
-    if (time.time() if now is None else now) - ts > tick:
-        return None
-    return job
+        if (isinstance(data, dict) and data.get("id") == request_id
+                and isinstance(data.get("status"), str)
+                and data["status"] in ("restarting", "refused")
+                and finite_epoch(data.get("at")) and "error" in data
+                and (data["error"] is None or isinstance(data["error"], str))
+                and (data["status"] != "refused" or bool(data["error"]))):
+            return data
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
 
 
 # The menu's items in order: (id, action key, label). Ids are dbusmenu ids
@@ -170,10 +185,8 @@ MENU = (
 MENU_KEYS = {key: mid for mid, key, _label in MENU if key and key != "status"}
 
 
-def menu_items(result, busy_job=None, waiting_job=None):
-    """The menu as plain data: [{id, key, type, label, enabled}]. The first line
-    is the tooltip's own text, greyed out; the background-service restart says
-    when it will wait for a job, and is greyed out while it is waiting."""
+def menu_items(result, restarting):
+    """Both restart items stay disabled until their outstanding operation ends."""
     items = []
     for mid, key, label in MENU:
         if key is None:
@@ -182,10 +195,9 @@ def menu_items(result, busy_job=None, waiting_job=None):
         enabled = True
         if key == "status":
             label, enabled = result["tooltip"], False
-        elif key == "restart-host" and waiting_job:
-            label, enabled = f"Restarting the background service after the {waiting_job} job…", False
-        elif key == "restart-host" and busy_job:
-            label = f"Restart the background service (after the {busy_job} job)"
+        elif key in restarting:
+            what = "background service" if key == "restart-host" else "web UI"
+            label, enabled = f"Restarting the {what}…", False
         items.append({"id": mid, "key": key, "type": "standard", "label": label, "enabled": enabled})
     return items
 
@@ -215,6 +227,26 @@ def spawn(argv, done=None):
     proc.wait_async(None, finished)
 
 
+def capture(argv, done):
+    """Read a command's JSON asynchronously; never block the menu's bus thread."""
+    try:
+        proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+    except GLib.Error as exc:
+        done(127, "", exc.message)
+        return
+
+    def finished(p, res):
+        try:
+            _ok, stdout, stderr = p.communicate_utf8_finish(res)
+            rc = p.get_exit_status() if p.get_if_exited() else -p.get_term_sig()
+        except GLib.Error as exc:
+            done(1, "", exc.message)
+            return
+        done(rc, stdout or "", stderr or "")
+
+    proc.communicate_utf8_async(None, None, finished)
+
+
 class Tray:
     """State, polling and file monitors. The D-Bus face is `SniItem`."""
 
@@ -224,7 +256,7 @@ class Tray:
         self.on_change = on_change
         self.notify = notify or (lambda summary, body: log(f"{summary} {body}".strip()))
         self.wait_secs = wait_secs
-        self.waiting_job = None
+        self.restarting = set()
         self.result = {"state": "idle", "tooltip": "self-learn: checking…", "error": None, "cache_dir": None}
         self.cache_dir = None
         self.monitors = {}
@@ -313,7 +345,7 @@ class Tray:
         spawn(SECONDARY_ARGV, lambda rc: self.poll(done=(lambda: done(rc)) if done else None))
 
     def menu(self):
-        return menu_items(self.result, running_job(self.cache_dir), self.waiting_job)
+        return menu_items(self.result, self.restarting)
 
     def changed(self):
         if self.on_change:
@@ -322,6 +354,18 @@ class Tray:
     def click(self, key, done=None):
         """One menu item; `done(rc)` when its command has exited."""
         done = done or (lambda _rc: None)
+        if key in ("restart-ui", "restart-host"):
+            if key in self.restarting:
+                return
+            self.restarting.add(key)
+            self.changed()
+            completed = done
+
+            def done(rc):
+                self.restarting.discard(key)
+                self.changed()
+                completed(rc)
+
         if key == "open-inbox":
             self.activate(done)
         elif key == "open":
@@ -350,34 +394,43 @@ class Tray:
         spawn(argv, ran)
 
     def restart_host(self, done):
-        """Restart the background service once it is between jobs: systemd stops
-        it with SIGTERM, which it honours only after the running job, and kills it
-        90 s later, so a restart during a long job would lose that job."""
-        if self.waiting_job:
-            done(0)  # one restart is already waiting
-            return
-        job = running_job(self.cache_dir)
-        if job is None:
-            self.restart(RESTART_HOST_ARGV, "background service", done)
-            return
-        self.waiting_job = job
-        self.notify("self-learn: restart waiting", f"The background service is running its {job} job; "
-                    "it restarts as soon as that finishes.")
-        self.changed()
+        def requested(rc, stdout, stderr):
+            receipt = restart_receipt(stdout) if rc == 0 else None
+            if receipt is None:
+                self.notify("self-learn: could not request a background restart",
+                            stderr.strip() or f"Invalid restart receipt (exit {rc}).")
+                done(rc or 1)
+                return
+            self.notify("self-learn: restart waiting",
+                        "The background service will restart as soon as it is between jobs")
+            deadline = time.monotonic() + RESTART_WATCH_SECS
 
-        def check():
-            job = running_job(self.cache_dir)
-            if job is not None:
-                if job != self.waiting_job:
-                    self.waiting_job = job
-                    self.changed()
+            def check():
+                result = restart_outcome(receipt["result_path"], receipt["id"])
+                if result is not None:
+                    if result["status"] == "restarting":
+                        self.notify("self-learn: the background service restarted", "")
+                        done(0)
+                    else:
+                        self.notify("self-learn: could not restart the background service", result["error"])
+                        done(1)
+                    return False
+                if time.monotonic() >= deadline:
+                    self.notify("self-learn: restart still waiting",
+                                "The request is still waiting after 3 hours; it has not been cancelled.")
+                    done(1)
+                    return False
                 return True
-            self.waiting_job = None
-            self.changed()
-            self.restart(RESTART_HOST_ARGV, "background service", done)
-            return False
 
-        GLib.timeout_add_seconds(self.wait_secs, check)
+            GLib.timeout_add_seconds(self.wait_secs, check)
+
+        def active(rc):
+            if rc == 0:
+                capture(RESTART_REQUEST_ARGV, requested)
+            else:
+                self.restart(RESTART_HOST_ARGV, "background service", done)
+
+        spawn(HOST_ACTIVE_ARGV, active)
 
 
 SNI_XML = """<node><interface name="org.kde.StatusNotifierItem">
@@ -445,7 +498,7 @@ class MenuServer:
         self.tray = tray
         self.conn = None
         self.revision = 1
-        self.served = None
+        self.published = None
         self.iface = Gio.DBusNodeInfo.new_for_xml(MENU_XML).interfaces[0]
 
     def attach(self, conn):
@@ -456,12 +509,12 @@ class MenuServer:
         return {item["id"]: item for item in self.tray.menu()}
 
     def refresh(self):
-        """Emit LayoutUpdated when the menu differs from the one last served; True if it did."""
+        """Emit LayoutUpdated when the menu differs from the one last published; True if it did."""
         items = self.items()
-        if items == self.served:
+        if items == self.published:
             return False
         self.revision += 1
-        self.served = items
+        self.published = items
         if self.conn is not None:
             self.conn.emit_signal(None, MENU_PATH, MENU_IFACE, "LayoutUpdated", GLib.Variant("(ui)", (self.revision, 0)))
         return True
@@ -491,7 +544,6 @@ class MenuServer:
             if parent != 0 and parent not in items:
                 inv.return_dbus_error("com.canonical.dbusmenu.Error.UnknownId", f"no menu item {parent}")
                 return
-            self.served = items  # what the host now holds
             inv.return_value(GLib.Variant("(u(ia{sv}av))", (self.revision, self.node(parent, items, depth, names))))
         elif method == "GetGroupProperties":
             ids, names = args
@@ -512,13 +564,25 @@ class MenuServer:
             self.event(mid, event, items)
             inv.return_value(None)
         elif method == "EventGroup":
-            errors = [mid for mid, event, _data, _ts in args[0] if not self.event(mid, event, items)]
+            events = args[0]
+            valid = [mid for mid, *_ in events if mid == 0 or mid in items]
+            if not valid:
+                inv.return_dbus_error("com.canonical.dbusmenu.Error.UnknownId", "no known menu ids")
+                return
+            errors = [mid for mid, event, _data, _ts in events if not self.event(mid, event, items)]
             inv.return_value(GLib.Variant("(ai)", (errors,)))
-        elif method == "AboutToShow":
-            # The background-service line names a running job, read when the menu opens.
-            inv.return_value(GLib.Variant("(b)", (self.refresh(),)))
-        elif method == "AboutToShowGroup":
-            inv.return_value(GLib.Variant("(aiai)", ([0] if self.refresh() else [], [])))
+        elif method in ("AboutToShow", "AboutToShowGroup"):
+            ids = [args[0]] if method == "AboutToShow" else args[0]
+            valid = [mid for mid in ids if mid == 0 or mid in items]
+            errors = [mid for mid in ids if mid != 0 and mid not in items]
+            if not valid:
+                inv.return_dbus_error("com.canonical.dbusmenu.Error.UnknownId", "no known menu ids")
+                return
+            changed = self.refresh()
+            if method == "AboutToShow":
+                inv.return_value(GLib.Variant("(b)", (changed,)))
+            else:
+                inv.return_value(GLib.Variant("(aiai)", (valid if changed else [], errors)))
         else:
             inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
 
@@ -536,8 +600,9 @@ class SniItem:
     """The StatusNotifierItem on the session bus; registers again whenever the
     watcher (Waybar) appears or changes owner."""
 
-    def __init__(self, loop):
+    def __init__(self, loop, poll_secs=POLL_SECS):
         self.loop = loop
+        self.poll_secs = poll_secs
         self.exit_code = 0
         self.name = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
         self.conn = None
@@ -561,7 +626,7 @@ class SniItem:
         self.owned = True
         self.register()
         self.tray.poll()
-        GLib.timeout_add_seconds(POLL_SECS, self.tick)
+        GLib.timeout_add_seconds(self.poll_secs, self.tick)
 
     def tick(self):
         self.tray.poll()
@@ -722,6 +787,7 @@ def main(argv):
     ap.add_argument("--item", choices=sorted(MENU_KEYS), help="the menu item `--pure click` runs")
     ap.add_argument("--timeout-secs", type=int, default=TIMEOUT_SECS, help=argparse.SUPPRESS)
     ap.add_argument("--wait-secs", type=int, default=WAIT_SECS, help=argparse.SUPPRESS)
+    ap.add_argument("--poll-secs", type=int, default=POLL_SECS, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     if args.pure == "click" and not args.item:
         ap.error("--pure click needs --item")
@@ -730,7 +796,7 @@ def main(argv):
     loop = GLib.MainLoop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         unix_signal_add(sig, lambda: (loop.quit(), False)[1])
-    item = SniItem(loop)
+    item = SniItem(loop, args.poll_secs)
     loop.run()
     return item.exit_code
 
