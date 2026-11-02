@@ -244,8 +244,10 @@ NOT_REPO_TRUTH = {
     # `worker.log` above -- and never staged, never committed:
     "serve.write_heartbeat": "XDG cache: cache_dir()/serve.heartbeat (SUP1's heartbeat; one of H-5 Sec 5.5's FOUR exemptions for THREE cache-dir-only files, gate r2 N-5')",
     "serve.request_restart": "XDG cache: serve.restart, atomic request receipt; never ledger truth",
-    "serve._restart_result": "XDG cache: serve.restart-result and removal of the completed serve.restart request",
-    "serve._consider_restart": "XDG cache: removes a malformed serve.restart request with no usable id",
+    "serve._restart_result": "XDG cache: per-request serve.restart-results/*.json outcomes and one-day result pruning",
+    "serve._finish_restart": "XDG cache: removes only the completed serve.restart.claimed file",
+    "serve._recover_restart": "XDG cache: removes the recovered serve.restart.claimed file at startup",
+    "serve._consider_restart": "XDG cache: atomically renames serve.restart to serve.restart.claimed",
     "serve.request_poke": "XDG cache: cache_dir()/serve.poke (Sec 5.3's verb-to-daemon poke request)",
     "serve._consume_poke": "XDG cache: cache_dir()/serve.poke, unlinked once the tick has read it",
     "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",

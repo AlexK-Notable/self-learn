@@ -51,12 +51,13 @@ SECONDARY_ARGV = ["self-learn", "attention", "seen", "--all-decided"]
 # (Restart=always), and `--no-block` because systemd stops this process.
 OPEN_ARGV = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open"]
 RESTART_UI_ARGV = ["systemctl", "--user", "restart", "self-learn-ui.service"]
-RESTART_HOST_ARGV = ["systemctl", "--user", "restart", "self-learn-host.service"]
+START_HOST_ARGV = ["systemctl", "--user", "start", "self-learn-host.service"]
 QUIT_ARGV = ["systemctl", "--user", "--no-block", "stop", "self-learn-tray.service"]
 HOST_ACTIVE_ARGV = ["systemctl", "--user", "is-active", "--quiet", "self-learn-host.service"]
 RESTART_REQUEST_ARGV = ["self-learn", "serve", "--restart"]
 RESTART_WATCH_SECS = 3 * 3600
 WAIT_SECS = 5
+CONTROL_TIMEOUT_SECS = None  # hidden test-only override; production limits below
 BROKEN_TITLE = "self-learn: could not check what needs you"
 WATCH_EVENTS = {
     Gio.FileMonitorEvent.CHANGES_DONE_HINT, Gio.FileMonitorEvent.CREATED, Gio.FileMonitorEvent.DELETED,
@@ -156,7 +157,7 @@ def restart_outcome(path, request_id):
             data = json.load(fh)
         if (isinstance(data, dict) and data.get("id") == request_id
                 and isinstance(data.get("status"), str)
-                and data["status"] in ("restarting", "refused")
+                and data["status"] in ("restarting", "restarted", "refused")
                 and finite_epoch(data.get("at")) and "error" in data
                 and (data["error"] is None or isinstance(data["error"], str))
                 and (data["status"] != "refused" or bool(data["error"]))):
@@ -202,10 +203,25 @@ def menu_items(result, restarting):
     return items
 
 
+def control_argv(argv):
+    """Bound only the tray's command process, never the background host."""
+    if argv == HOST_ACTIVE_ARGV:
+        secs = 15
+    elif argv[0] == "systemctl" and ("start" in argv or "restart" in argv):
+        secs = 120
+    else:
+        secs = 30
+    return ["timeout", "--kill-after=5", str(CONTROL_TIMEOUT_SECS or secs), *argv]
+
+
+def command_timed_out(rc):
+    return rc in (124, 137) or rc < 0
+
+
 def spawn(argv, done=None):
     """Start argv without blocking the main loop; `done(rc)` when it exits."""
     try:
-        proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE)
+        proc = Gio.Subprocess.new(control_argv(argv), Gio.SubprocessFlags.NONE)
     except GLib.Error as exc:
         log(f"could not start {argv[0]}: {exc.message}")
         if done:
@@ -230,7 +246,7 @@ def spawn(argv, done=None):
 def capture(argv, done):
     """Read a command's JSON asynchronously; never block the menu's bus thread."""
     try:
-        proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+        proc = Gio.Subprocess.new(control_argv(argv), Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
     except GLib.Error as exc:
         done(127, "", exc.message)
         return
@@ -384,17 +400,27 @@ class Tray:
             log(f"no menu item {key!r}")
             done(2)
 
-    def restart(self, argv, what, done):
+    def restart(self, argv, what, done, *, start=False):
+        verb, past = ("start", "started") if start else ("restart", "restarted")
+
         def ran(rc):
             if rc == 0:
-                self.notify(f"self-learn: the {what} restarted", "")
+                self.notify(f"self-learn: the {what} {past}", "")
+            elif command_timed_out(rc):
+                self.notify(f"self-learn: could not confirm the {what} {verb}",
+                            "The command timed out or was killed; the operation may still complete.")
             else:
-                self.notify(f"self-learn: could not restart the {what}", f"systemctl exited {rc}; see its journal.")
+                self.notify(f"self-learn: could not {verb} the {what}", f"systemctl exited {rc}; see its journal.")
             done(rc)
         spawn(argv, ran)
 
     def restart_host(self, done):
         def requested(rc, stdout, stderr):
+            if command_timed_out(rc):
+                self.notify("self-learn: background restart request timed out",
+                            "It is not known whether the request was recorded; the service may still restart.")
+                done(rc)
+                return
             receipt = restart_receipt(stdout) if rc == 0 else None
             if receipt is None:
                 self.notify("self-learn: could not request a background restart",
@@ -407,8 +433,8 @@ class Tray:
 
             def check():
                 result = restart_outcome(receipt["result_path"], receipt["id"])
-                if result is not None:
-                    if result["status"] == "restarting":
+                if result is not None and result["status"] != "restarting":
+                    if result["status"] == "restarted":
                         self.notify("self-learn: the background service restarted", "")
                         done(0)
                     else:
@@ -425,10 +451,14 @@ class Tray:
             GLib.timeout_add_seconds(self.wait_secs, check)
 
         def active(rc):
-            if rc == 0:
+            if command_timed_out(rc):
+                self.notify("self-learn: could not check the background service",
+                            "The status command timed out or was killed; no start or restart was requested.")
+                done(rc)
+            elif rc == 0:
                 capture(RESTART_REQUEST_ARGV, requested)
             else:
-                self.restart(RESTART_HOST_ARGV, "background service", done)
+                self.restart(START_HOST_ARGV, "background service", done, start=True)
 
         spawn(HOST_ACTIVE_ARGV, active)
 
@@ -781,6 +811,7 @@ def unix_signal_add(sig, handler):
 
 
 def main(argv):
+    global CONTROL_TIMEOUT_SECS
     ap = argparse.ArgumentParser(prog="self-learn-tray", description=__doc__.splitlines()[0])
     ap.add_argument("--pure", choices=("poll", "activate", "secondary", "menu", "click"),
                     help="run one step without the session bus and print JSON (tests)")
@@ -788,7 +819,12 @@ def main(argv):
     ap.add_argument("--timeout-secs", type=int, default=TIMEOUT_SECS, help=argparse.SUPPRESS)
     ap.add_argument("--wait-secs", type=int, default=WAIT_SECS, help=argparse.SUPPRESS)
     ap.add_argument("--poll-secs", type=int, default=POLL_SECS, help=argparse.SUPPRESS)
+    ap.add_argument("--control-timeout-secs", type=float, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.control_timeout_secs is not None:
+        if not math.isfinite(args.control_timeout_secs) or args.control_timeout_secs <= 0:
+            ap.error("--control-timeout-secs must be finite and positive")
+        CONTROL_TIMEOUT_SECS = args.control_timeout_secs
     if args.pure == "click" and not args.item:
         ap.error("--pure click needs --item")
     if args.pure:

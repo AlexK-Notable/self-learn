@@ -59,6 +59,7 @@ _FAKE_SELF_LEARN = textwrap.dedent(
       exit "${FAKE_RC:-0}"
     fi
     if [ "$1 $2" = "serve --restart" ]; then
+      [ -n "${FAKE_RESTART_SLEEP:-}" ] && sleep "$FAKE_RESTART_SLEEP"
       cat "$FAKE_RECEIPT"
       exit "${FAKE_RESTART_RC:-0}"
     fi
@@ -66,7 +67,7 @@ _FAKE_SELF_LEARN = textwrap.dedent(
     """
 )
 _FAKE_SYSTEMD_RUN = '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$FAKE_LOG.systemd-run"\n'
-_FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG.systemctl"\nif [ "$2" = "is-active" ]; then exit "${FAKE_ACTIVE_RC:-0}"; fi\nexit "${FAKE_SYSTEMCTL_RC:-0}"\n'
+_FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG.systemctl"\nif [ "$2" = "is-active" ]; then [ -n "${FAKE_ACTIVE_SLEEP:-}" ] && sleep "$FAKE_ACTIVE_SLEEP"; exit "${FAKE_ACTIVE_RC:-0}"; fi\n[ -n "${FAKE_SYSTEMCTL_SLEEP:-}" ] && sleep "$FAKE_SYSTEMCTL_SLEEP"\nexit "${FAKE_SYSTEMCTL_RC:-0}"\n'
 
 
 def _item(**over) -> dict:
@@ -729,7 +730,7 @@ def test_7e_background_restart_waits_for_correlated_result(env):
     def finish():
         time.sleep(2.5)
         during_wait.extend(env.side("systemctl"))
-        result.write_text(json.dumps({"id": "fixture", "status": "restarting", "error": None, "at": time.time()}))
+        result.write_text(json.dumps({"id": "fixture", "status": "restarted", "error": None, "at": time.time()}))
     ender = threading.Thread(target=finish)
     ender.start()
     try:
@@ -746,13 +747,18 @@ def test_7e_background_restart_waits_for_correlated_result(env):
     assert out["menu"][9]["enabled"]
 
 
-def test_7f_inactive_service_uses_systemctl(env):
-    out = env.pure("click", "--item", "restart-host", FAKE_ACTIVE_RC="3")
+@pytest.mark.parametrize("active_rc", ["1", "3", "4", "127"])
+def test_7f_inactive_service_uses_systemctl(env, active_rc):
+    out = env.pure("click", "--item", "restart-host", FAKE_ACTIVE_RC=active_rc)
     assert out["rc"] == 0
     assert env.side("systemctl") == ["--user is-active --quiet self-learn-host.service",
-                                     "--user restart self-learn-host.service"]
+                                     "--user start self-learn-host.service"]
     assert env.calls() == ["attention --json"]
-    assert out["notices"] == [["self-learn: the background service restarted", ""]]
+    assert out["notices"] == [["self-learn: the background service started", ""]]
+    failed = env.pure("click", "--item", "restart-host", FAKE_ACTIVE_RC=active_rc, FAKE_SYSTEMCTL_RC="5")
+    assert failed["rc"] == 5 and failed["menu"][9]["enabled"]
+    assert failed["notices"] == [["self-learn: could not start the background service",
+                                  "systemctl exited 5; see its journal."]]
 
 
 _MENU_DRIVER = r'''
@@ -800,6 +806,7 @@ assert wait(lambda: len(signals) == 1), signals
 initial = call("GetLayout", "(iias)", (0, -1, []))
 assert len(initial[1][2]) == 12
 assert call("GetLayout", "(iias)", (0, 0, []))[1][2] == []
+assert call("GetProperty", "(is)", (0, "children-display")) == ("submenu",)
 assert call("GetProperty", "(is)", (9, "label")) == ("Restart the web UI",)
 assert call("GetProperty", "(is)", (1, "enabled")) == (False,)
 call("GetProperty", "(is)", (99, "label"), error=True)
@@ -828,6 +835,11 @@ assert call("AboutToShowGroup", "(ai)", ([0, 1, 99],)) == ([], [99])
 
 # Controlled subprocess callbacks: actual menu events, no executable runs.
 g = m["Tray"].click.__globals__
+assert all(m["command_timed_out"](rc) for rc in (124, 137, -9, -15))
+assert not any(m["command_timed_out"](rc) for rc in (0, 1, 3, 127))
+for argv, seconds in ((m["HOST_ACTIVE_ARGV"], 15), (m["RESTART_REQUEST_ARGV"], 30),
+                      (m["START_HOST_ARGV"], 120), (m["RESTART_UI_ARGV"], 120)):
+    assert m["control_argv"](argv) == ["timeout", "--kill-after=5", str(seconds), *argv]
 spawned, captured, timers, notices, finished = [], [], [], [], []
 g["spawn"] = lambda argv, done=None: spawned.append((argv, done))
 g["capture"] = lambda argv, done: captured.append((argv, done))
@@ -848,7 +860,7 @@ for mid, key, argv in ((9, "restart-ui", m["RESTART_UI_ARGV"]), (10, "restart-ho
     assert call("GetProperty", "(is)", (mid, "label"))[0].startswith("Restarting the ")
     spawned[-1][1](0 if mid == 9 else 3)
     if mid == 10:
-        assert spawned[-1][0] == m["RESTART_HOST_ARGV"]
+        assert spawned[-1][0] == m["START_HOST_ARGV"]
         before = len(spawned)
         event(mid)
         tray.click(key)
@@ -871,7 +883,9 @@ before = len(spawned)
 event(10)
 tray.click("restart-host")
 assert len(spawned) == before and not finished
-base = {"id": "fixture", "status": "restarting", "error": None, "at": time.time()}
+base = {"id": "fixture", "status": "restarted", "error": None, "at": time.time()}
+result_path.write_text(json.dumps({**base, "status": "restarting"}))
+assert check() is True and not finished and "restart-host" in tray.restarting
 invalid = [[], {**base, "id": "older"}, {**base, "status": []}, {**base, "error": 3},
     {**base, "status": "refused"}, *[{**base, "at": v} for v in (float("nan"), float("inf"), True, "1", None, 10**400)]]
 for data in invalid:
@@ -951,3 +965,23 @@ def test_8_menu_protocol_pending_restarts_and_notification_transport(env):
                           str(driver), str(TRAY)], env=env.env(), capture_output=True, text=True, timeout=40)
     assert res.returncode == 0, (res.stdout, res.stderr)
     assert "notification transport verified" in res.stdout
+
+
+@pytest.mark.parametrize(("item", "extra", "notice"), [
+    ("restart-host", {"FAKE_ACTIVE_SLEEP": "1"}, "no start or restart was requested"),
+    ("restart-host", {"FAKE_RESTART_SLEEP": "1"}, "not known whether the request was recorded; the service may still restart"),
+    ("restart-host", {"FAKE_ACTIVE_RC": "3", "FAKE_SYSTEMCTL_SLEEP": "1"}, "operation may still complete"),
+    ("restart-ui", {"FAKE_SYSTEMCTL_SLEEP": "1"}, "operation may still complete"),
+])
+def test_9_each_control_command_timeout_releases_item(env, item, extra, notice):
+    """Run sleeping command fixtures through real timeout, never signal a host."""
+    started = time.monotonic()
+    out = env.pure("click", "--item", item, "--control-timeout-secs", "0.1", **extra)
+    assert time.monotonic() - started < .9
+    assert out["rc"] in (124, 137) or out["rc"] < 0
+    row = next(row for row in out["menu"] if row["key"] == item)
+    assert row["enabled"]
+    assert notice in out["notices"][-1][1]
+    if "FAKE_ACTIVE_SLEEP" in extra:
+        assert env.side("systemctl") == ["--user is-active --quiet self-learn-host.service"]
+        assert "serve --restart" not in env.calls()

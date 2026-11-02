@@ -1074,7 +1074,9 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   item acts; a literal `_` in a label is doubled (dbusmenu's access-key mark).
 - **The background restart is coordinated by `serve`.** The tray checks
   `systemctl --user is-active --quiet self-learn-host.service`. An inactive
-  service is restarted with systemctl. An active one receives
+  service is started with `systemctl --user start self-learn-host.service`,
+  which never stops a host that became active after the check. Its notification
+  says it was started (or could not be started). An active one receives
   `self-learn serve --restart`: a cache-only request with a random id, consumed
   by the scheduler after the whole tick has returned, never during a job. It
   uses the same venv sync, import check and re-exec path as a code change,
@@ -1085,19 +1087,39 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   exactly like `serve` and atomically writes `serve.restart` with `requested_at`
   (epoch float) and a random `id`. Prints one JSON line with `requested: true`,
   `id` and `result_path`, exits 0, and never starts the loop or touches the ledger.
-  At the safe boundary, just before exec or on refusal (sync, import, exec or
-  malformed request), `serve` atomically writes `serve.restart-result` with
-  `id`, `status` (`restarting` or `refused`), `error` (reason or null), and `at`,
-  and removes the request. Refused requests require another click to retry.
+  At the safe boundary `serve` claims the request with an atomic
+  `os.rename(serve.restart, serve.restart.claimed)` before reading it. It
+  processes and removes only the claimed file. A newer request written while
+  the first is claimed stays in `serve.restart` for the next check: those two
+  requests cause two restarts, in order, not one combined restart.
+  Each receipt names `<cache>/serve.restart-results/<id>.json`; results contain
+  `id`, `status`, `error` (reason or null), and `at` (epoch). Writing a result
+  prunes result files older than one day. Before exec, `restarting` records
+  progress and the request id is passed in `SELF_LEARN_SERVE_RESTART_ID`.
+  At the start of `run_forever`, the new image pops that environment variable
+  and writes `restarted`; later exec environments also discard any stale id.
+  Exec/sync/import failures write `refused` and remove only the claim. A
+  leftover claim at startup without a terminal result is refused with
+  "the service stopped before taking it", unless the new-image id acknowledges
+  it. Malformed requests are refused as well. Refusals require another click.
   SIGTERM is checked outside `_run_tick`; a tick can include several jobs.
 - **Pending restarts and notifications.** Both restart items are disabled from
   the accepted click through the outcome, labelled "Restarting the background
   service…" or "Restarting the web UI…"; repeated clicks are ignored. An active
   host request says "The background service will restart as soon as it is
   between jobs" and watches the receipt's `result_path` every 5 s for its id.
-  `restarting` says it restarted; `refused` reports the reason. Invalid or
+  `restarting` keeps the item pending; only `restarted` says it restarted;
+  `refused` reports the reason. Invalid or
   non-finite fields are treated as not yet answered. After 3 hours the tray
   stops watching and says the request is still waiting; it does not cancel it.
+  Every control-command wait uses `timeout --kill-after=5 <N>`: 15 seconds
+  for `is-active`, 30 seconds for `self-learn serve --restart`, and 120 seconds
+  for systemctl start/restart (other tray control commands: 30 seconds; the
+  attention poll keeps its 10-second bound). A command timeout or signal
+  releases the item and notifies; it never signals the background host. A
+  timed-out status query performs no follow-on operation. A timed-out request
+  says it is not known whether the request was recorded and the service may
+  still restart. A systemctl timeout says the operation may still complete.
   Command failures also release the item and notify. Notifications go through
   `org.freedesktop.Notifications` and are logged; a missing daemon is harmless.
 - **Menu publication.** `refresh()` compares against its own last published
