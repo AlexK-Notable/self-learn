@@ -1739,7 +1739,9 @@ def _status_fast_parts(home: Path) -> tuple[dict, intents.StatusClass | None]:
             None,
         )
     queued_ids: list[str] = []
-    data = worker.fast_status(home, queued_ids)
+    unreadable_paths: list[Path] = []
+    data = worker.fast_status(home, queued_ids, unreadable_paths)
+    data["total_unreadable"] = len(unreadable_paths)
     data["home_state"] = state
     data["miner_last_run"] = miner.last_run_iso()
     data["miner_stale"] = miner.stale()

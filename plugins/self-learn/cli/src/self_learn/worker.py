@@ -3653,18 +3653,22 @@ def last_run_iso() -> str | None:
     )
 
 
-def fast_status(home: Path | str, queued_ids: list[str] | None = None) -> dict:
+def fast_status(
+    home: Path | str,
+    queued_ids: list[str] | None = None,
+    unreadable_paths: list[Path] | None = None,
+) -> dict:
     """Pending-only status: the full queue's record validity and proposal
     eligibility, without a resolved/ walk, git or network. When *queued_ids*
     is given, append each queued record's id for the steward-stale check.
-    Invalid pending files are counted separately, exactly as in full status.
-    """
+    Invalid pending files are counted per bucket exactly as in full status;
+    when *unreadable_paths* is given, each one is appended to it (a side
+    channel like *queued_ids*: the top-level keys stay pinned, OB4)."""
     home = Path(home)
     now = datetime.now(timezone.utc)
     buckets_out: list[dict] = []
     total = 0
     unanalyzed_total = 0
-    unreadable_total = 0
     oldest_all = 0
 
     for bucket in discover_buckets(home):
@@ -3695,7 +3699,8 @@ def fast_status(home: Path | str, queued_ids: list[str] | None = None) -> dict:
                 }
             )
         total += pending
-        unreadable_total += len(unreadable)
+        if unreadable_paths is not None:
+            unreadable_paths.extend(unreadable)
         unanalyzed_total += unanalyzed
         if oldest is not None:
             oldest_all = max(oldest_all, oldest)
@@ -3711,7 +3716,6 @@ def fast_status(home: Path | str, queued_ids: list[str] | None = None) -> dict:
     return {
         "buckets": buckets_out,
         "total_pending": total,
-        "total_unreadable": unreadable_total,
         "unanalyzed_total": unanalyzed_total,
         "oldest_days": oldest_all,
         "worker_last_run": last_run,
