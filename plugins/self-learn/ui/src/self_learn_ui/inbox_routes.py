@@ -32,6 +32,7 @@ import json
 import os
 import re
 import secrets
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -839,8 +840,24 @@ def _render(request: Request, name: str, ctx: dict[str, Any], status_code: int =
     return _templates(request).TemplateResponse(request, name, context, status_code=status_code)
 
 
+def _count_cache(request: Request) -> dict:
+    from .routes import _jobs_line_cache
+
+    # The two header fragments share a 30-second TTL and refresh invalidation.
+    return _jobs_line_cache(request)
+
+
+def _seed_count(request: Request, read: ledger.CliRead) -> None:
+    _count_cache(request)["inbox"] = (time.monotonic(), inbox_link(read))
+
+
 async def _doc(request: Request) -> ledger.CliRead:
-    return await asyncio.to_thread(ledger.attention, _home(request))
+    cache = _count_cache(request)
+    generation = cache["generation"]
+    read = await asyncio.to_thread(ledger.attention, _home(request))
+    if _count_cache(request)["generation"] == generation:
+        _seed_count(request, read)
+    return read
 
 
 async def _packet(request: Request, item_id: str) -> ledger.PacketRead:
@@ -1005,7 +1022,9 @@ async def inbox(request: Request) -> Response:
         # address stays /inbox, so a reload opens whatever is most pressing
         # then.
         first = sorted(items, key=inbox_order)[0]
-        read2, item, packet_read, deferred = await _workspace_for(request, first["id"], budget=1.5)
+        read2, item, packet_read, deferred = await _workspace_for(
+            request, first["id"], budget=1.5, read=read
+        )
         if item is not None:
             ctx = _list_ctx(read2, item["id"])
             return _render(request, "inbox.html", {
@@ -1038,12 +1057,21 @@ def inbox_link(read: ledger.CliRead) -> dict[str, Any]:
 async def inbox_count(request: Request) -> HTMLResponse:
     """The front page's link, filled in after the page loaded, so the front
     page itself never waits on ``attention --json`` (gate r1 NIT 2)."""
-    read = await _doc(request)
-    return _render(request, "partials/workspace_inbox_link.html", {"inbox": inbox_link(read)})
+    from .routes import _JOBS_LINE_TTL_SECS
+
+    cached = _count_cache(request).get("inbox")
+    if cached is not None and time.monotonic() - cached[0] < _JOBS_LINE_TTL_SECS:
+        link = cached[1]
+    else:
+        link = inbox_link(await _doc(request))
+    return _render(request, "partials/workspace_inbox_link.html", {"inbox": link})
 
 
-async def _workspace_for(request: Request, item_id: str, *, budget: float | None):
-    read = await _doc(request)
+async def _workspace_for(
+    request: Request, item_id: str, *, budget: float | None, read: ledger.CliRead | None = None
+):
+    if read is None:
+        read = await _doc(request)
     item = _find(read, item_id)
     if item is None:
         return read, None, None, False

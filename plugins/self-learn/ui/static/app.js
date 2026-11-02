@@ -1134,6 +1134,9 @@
    * this defers only the client's render of it.
    */
   var reloadPending = false;
+  var reloadTimer = null;
+  var reloadStarted = false;
+  var RELOAD_QUIET_MS = 1500;
   var confirmInFlight = false;
   /** U-jsdom disposition (14 §6a): htmx does not finish "hydrating"
    * swapped-in content (attaching its own hx-post/hx-get listeners to
@@ -1557,10 +1560,20 @@
   }
 
   function reload() {
+    if (reloadStarted) return;
+    reloadPending = true;
+    if (reloadTimer !== null) window.clearTimeout(reloadTimer);
+    reloadTimer = window.setTimeout(flushReload, RELOAD_QUIET_MS);
+  }
+
+  function flushReload() {
+    reloadTimer = null;
+    if (reloadStarted || !reloadPending) return;
     // Attention round: the inbox never reloads under the person's hands
     // (a half-typed reply, a streaming answer). It is told instead, and
     // static/inbox.js refreshes its list in place.
     if (isInboxPage()) {
+      reloadPending = false;
       document.dispatchEvent(new CustomEvent("self-learn:refresh"));
       return;
     }
@@ -1568,13 +1581,14 @@
       reloadPending = true; // deferred, never dropped
       return;
     }
+    reloadPending = false;
+    reloadStarted = true;
     window.location.reload();
   }
 
   function releaseReload() {
-    if (reloadPending) {
-      reloadPending = false;
-      reload(); // re-checks the predicate; re-defers if a leg still holds
+    if (reloadPending && reloadTimer === null) {
+      flushReload(); // quiet period elapsed; re-check all holds on release
     }
   }
   // The settings page releases its own holds (a dismissed message, a taken-

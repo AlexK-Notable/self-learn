@@ -172,15 +172,16 @@ def list_items(
     include_deferred: bool = False,
     surface_fill: bool = False,
     record_id: str | None = None,
+    surface_fill_id: str | None = None,
     env: dict[str, str] | None = None,
 ) -> CliRead:
     """09 §11 Y-20 / 08 §1 `surface_fill`: ``surface_fill=True`` passes
     the CLI's opt-in ``--surface-fill`` flag (default OFF — every other
     call site, Front/Bucket, leaves it off, per blind-review F4: those
     paints never show fill, so they must not pay for it). ``record_id``
-    passes ``--id`` (delta F9) — the ONE call site that combines both is
-    Detail's own read, which needs fill for its one displayed record, not
-    every pending record's."""
+    passes ``--id`` (delta F9). Detail uses ``surface_fill_id`` instead:
+    fill remains limited to the displayed record, while the other queue
+    rows are retained to choose the next prefetch without another read."""
     args = ["list", "--json"]
     if include_deferred:
         args.append("--include-deferred")
@@ -188,11 +189,22 @@ def list_items(
         args.append("--surface-fill")
     if record_id is not None:
         args += ["--id", record_id]
+    if surface_fill_id is not None:
+        args += ["--surface-fill-id", surface_fill_id]
     return _invoke_json(args, home=home, env=env)
 
 
 def status(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
     return _invoke_json(["status", "--json"], home=home, env=env)
+
+
+def status_fast(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
+    read = _invoke_json(["status", "--json", "--fast"], home=home, env=env)
+    # Fast status reports an unusable home in its JSON, with exit zero;
+    # full status fails. Preserve the header's failure wording.
+    if read.ok and isinstance(read.data, dict) and read.data.get("home_state", "ok") != "ok":
+        return CliRead(data=None, error=f"ledger home is {read.data['home_state']}")
+    return read
 
 
 def report(home: Path, *, env: dict[str, str] | None = None) -> CliRead:

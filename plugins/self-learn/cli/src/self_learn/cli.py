@@ -455,6 +455,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "to scope it to one record (delta F9).",
     )
     list_p.add_argument(
+        "--surface-fill-id", metavar="ID",
+        help="compute surface fill for only this record, retaining the other queue rows",
+    )
+    list_p.add_argument(
         "--id",
         metavar="ID",
         dest="record_id",
@@ -2751,6 +2755,7 @@ def _cmd_list(
     include_deferred: bool,
     surface_fill: bool = False,
     record_id: str | None = None,
+    surface_fill_id: str | None = None,
 ) -> int:
     home = resolve_home()
     if (code := _home_gate(home)) is not None:
@@ -2761,8 +2766,11 @@ def _cmd_list(
         items = [i for i in items if i["id"] == record_id]
 
     if as_json:
-        if surface_fill:
-            _add_surface_fill(home, items)
+        if surface_fill or surface_fill_id is not None:
+            fill_items = items if surface_fill_id is None else [
+                i for i in items if i["id"] == surface_fill_id
+            ]
+            _add_surface_fill(home, fill_items)
         print(json.dumps(items))
         return EXIT_OK
 
@@ -5261,6 +5269,7 @@ def _main(argv: list[str] | None = None) -> int:
             as_json=args.as_json,
             include_deferred=args.include_deferred,
             surface_fill=args.surface_fill,
+            surface_fill_id=args.surface_fill_id,
             record_id=args.record_id,
         )
 

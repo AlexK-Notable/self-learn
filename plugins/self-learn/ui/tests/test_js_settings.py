@@ -286,7 +286,7 @@ def _reloaded(page, timeout: float = 5.0) -> bool:
 
 def _held(page) -> bool:
     """A refresh was pushed and the page did NOT reload for a while."""
-    time.sleep(1.2)
+    time.sleep(1.8)
     return page.evaluate("window.__mark") == 1
 
 
@@ -294,7 +294,7 @@ def test_dismissing_saved_releases_the_refresh_it_held(page, server):
     """After a save the page holds a broadcast refresh (leg f) so "Saved." is
     not wiped; Dismiss removes the message and the held refresh fires. The
     positive control is that the refresh was held at all (the page had not
-    reloaded 1.2 s after it was pushed). Mutations: the dismiss handler removed
+    reloaded 1.8 s after it was pushed). Mutations: the dismiss handler removed
     -> red (no Dismiss reaches the page); `release()` not dispatched after the
     removal -> red (the page never reloads)."""
     _save(page, server)
