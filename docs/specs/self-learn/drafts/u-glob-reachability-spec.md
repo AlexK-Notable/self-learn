@@ -355,6 +355,29 @@ one of `"match"`, `"none"`, `"budget"`.
      `budget_s`, return `"budget"` immediately.
 6. All roots exhausted with no hit → `"none"`.
 
+**Positive-witness acceleration (2026-11-01).** The public signature and
+three verdicts remain unchanged. The internal probe also returns the
+anchored base and matching path. Default-budget calls may reuse these
+from a bounded process memo or an atomic, disposable file under
+`$XDG_CACHE_HOME/self-learn/glob-witness-v1/` (default `~/.cache`), keyed
+by the ordered absolute roots and exact pattern. Every reuse re-proves
+that the path exists, stays beneath a supplied root with no symlink in
+its ancestry, and matches the same anchored literal/remainder split,
+using the existing §3.4a glob matcher. The base must satisfy step 5's
+zero-directory or DFS candidate conditions, including its directory
+restriction for multi-segment literal tails. No second glob translator
+is introduced. Unusual dot segments and witnesses through symlinks
+fall back to the unchanged probe; this cache does not widen or tighten
+the probe's existing `iglob` tail behavior.
+
+A stale, unreadable, malformed or unprovable witness triggers the full
+probe and is replaced when a new provable match exists. Both `"none"`
+and `"budget"` are always probed fresh, never memoized or persisted.
+Explicit `budget_s` calls bypass both caches, as does a nonpositive
+configured budget. Thus a deleted witness can become `"none"` on the
+very next call, even in the same process. Cache I/O failures are ignored;
+the cache never becomes ledger truth or a reason to fail the probe.
+
 `budget_s` defaults to **30.0** seconds per pattern, overridable by the
 environment variable `SELF_LEARN_GLOB_PROBE_BUDGET_S` (a float; an
 unparseable value falls back to the default without raising).

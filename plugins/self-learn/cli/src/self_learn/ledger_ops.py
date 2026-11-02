@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import contextlib
 import glob as glob_mod
+import hashlib
 import io
+import json
 import os
 import re
 import time
@@ -1219,46 +1221,12 @@ def _glob_probe_budget_s(home: Path | str | None = None) -> float:
     return cast(float, value)
 
 
-def _first_hit(base: Path, rem: str) -> bool:
-    """§4.3 step 4: `base.exists()` when `rem` is empty, else the first
-    hit of `glob.iglob(rem, root_dir=base, recursive=True,
-    include_hidden=True)` — `include_hidden=True` is mandatory (it is
-    what `_glob_match` is measured equivalent to, §2.2). `OSError` reads
-    as no hit, never raises."""
-    if rem == "":
-        return base.exists()
-    try:
-        return (
-            next(
-                iter(
-                    glob_mod.iglob(
-                        rem, root_dir=base, recursive=True, include_hidden=True
-                    )
-                ),
-                None,
-            )
-            is not None
-        )
-    except OSError:
-        return False
+# Positive witnesses only, bounded for long-lived callers. Revalidate on
+# every use: route/selfcheck may run again after a filesystem mutation.
+_GLOB_WITNESSES: dict[Path, tuple[Path, Path]] = {}
 
 
-def glob_reaches(
-    roots: tuple[Path, ...], pattern: str, *, budget_s: float | None = None
-) -> str:
-    """U-glob §4.3: the anchored probe. Proves a `rules_paths` pattern
-    CAN match under at least one of `roots` WITHOUT ever pointing
-    `glob.glob`/`glob.iglob` at a root directly (which does not
-    terminate against a `$HOME`-scale tree — measured M1-M3). Returns
-    ``"match"``, ``"none"``, or ``"budget"`` (the probe could not decide
-    within `budget_s` seconds — a REFUSAL, never read as a pass, §7.2).
-
-    `budget_s=None` reads `GLOB_PROBE_BUDGET_ENV`
-    (`DEFAULT_GLOB_PROBE_BUDGET_S` on an absent/unparseable value)."""
-    if budget_s is None:
-        budget_s = _glob_probe_budget_s()
-    deadline = time.monotonic() + budget_s
-
+def _glob_probe_parts(pattern: str) -> tuple[bool, list[str], str]:
     segs = [s for s in pattern.split("/") if s]
     floating = False
     while segs and segs[0] == "**":
@@ -1269,22 +1237,178 @@ def glob_reaches(
         literal.append(segs.pop(0))
     rem = "/".join(segs)
 
+    return floating, literal, rem
+
+
+def _glob_witness_cache_path(roots: tuple[Path, ...], pattern: str) -> Path:
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache").expanduser().absolute()
+    key = json.dumps(([str(r.absolute()) for r in roots], pattern))
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    return cache / "self-learn" / "glob-witness-v1" / f"{digest}.json"
+
+
+def _glob_witness_valid(
+    roots: tuple[Path, ...], pattern: str, witness: tuple[Path, Path]
+) -> bool:
+    """Re-prove the same anchored hit, without enumerating directories.
+
+    The base must be one the probe would visit; its hit uses the existing
+    glob string matcher (§3.4a), measured against include_hidden iglob.
+    Conservatively decline unusual dot segments and symlinks, including
+    ancestors above a root. These cases still use the original probe.
+    """
+    base, hit = witness
+    try:
+        if not base.is_absolute() or not hit.is_absolute():
+            return False
+        if any(s in (".", "..") for s in pattern.split("/")):
+            return False
+        if ".." in hit.parts or ".." in base.parts:
+            return False
+        if not hit.exists() or any(p.is_symlink() for p in (hit, *hit.parents)):
+            return False
+        relative_hit = hit.relative_to(base).as_posix()
+        floating, literal, rem = _glob_probe_parts(pattern)
+        if rem:
+            # iglob skips the initial empty-string expansion of '**'.
+            if hit == base or not _glob_match(relative_hit, rem):
+                return False
+        elif hit != base:
+            return False
+        for root in roots:
+            root = root.absolute()
+            if ".." in root.parts or not base.is_relative_to(root):
+                continue
+            if base == root.joinpath(*literal):
+                return True
+            if not floating:
+                continue
+            parts = base.relative_to(root).parts
+            if literal:
+                if tuple(parts[-len(literal):]) != tuple(literal):
+                    continue
+                if len(literal) > 1 and not base.is_dir():
+                    continue
+            elif not base.is_dir():
+                continue
+            return True
+    except (OSError, ValueError, ProposalError):
+        pass
+    return False
+
+
+def glob_reaches(
+    roots: tuple[Path, ...], pattern: str, *, budget_s: float | None = None
+) -> str:
+    """Prove reachability using a revalidated witness or the anchored probe.
+
+    Only matches are memoized, in process and in the disposable XDG cache.
+    Explicit budgets retain the original probing behavior. Negative and
+    undecided results are always fresh; cache failures never fail a call.
+    """
+    if budget_s is not None:
+        return _probe_glob_reaches(roots, pattern, budget_s=budget_s)[0]
+    budget_s = _glob_probe_budget_s()
+    if budget_s <= 0:
+        return _probe_glob_reaches(roots, pattern, budget_s=budget_s)[0]
+    cache = _glob_witness_cache_path(roots, pattern)
+    witness = _GLOB_WITNESSES.get(cache)
+    if witness is None:
+        try:
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            if (
+                isinstance(data, dict)
+                and isinstance(data.get("base"), str)
+                and isinstance(data.get("path"), str)
+            ):
+                witness = (Path(data["base"]), Path(data["path"]))
+        except (OSError, ValueError, RecursionError):
+            pass
+    if witness is not None and _glob_witness_valid(roots, pattern, witness):
+        _remember_glob_witness(cache, witness)
+        return "match"
+    _GLOB_WITNESSES.pop(cache, None)
+    verdict, witness = _probe_glob_reaches(roots, pattern, budget_s=budget_s)
+    if witness is not None:
+        witness = (witness[0].absolute(), witness[1].absolute())
+    if (
+        verdict == "match"
+        and witness is not None
+        and _glob_witness_valid(roots, pattern, witness)
+    ):
+        _remember_glob_witness(cache, witness)
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            fsops.atomic_write(
+                cache,
+                json.dumps({"base": str(witness[0]), "path": str(witness[1])}),
+                mode=0o600,
+                fsync=False,
+            )
+        except OSError:
+            pass
+    return verdict
+
+
+def _remember_glob_witness(cache: Path, witness: tuple[Path, Path]) -> None:
+    if len(_GLOB_WITNESSES) >= 4096:
+        _GLOB_WITNESSES.pop(next(iter(_GLOB_WITNESSES)))
+    _GLOB_WITNESSES[cache] = witness
+
+
+def _first_hit(base: Path, rem: str) -> Path | None:
+    """§4.3 step 4: `base.exists()` when `rem` is empty, else the first
+    hit of `glob.iglob(rem, root_dir=base, recursive=True,
+    include_hidden=True)` — `include_hidden=True` is mandatory (it is
+    what `_glob_match` is measured equivalent to, §2.2). `OSError` reads
+    as no hit, never raises."""
+    if rem == "":
+        return base if base.exists() else None
+    try:
+        hit = next(
+            glob_mod.iglob(rem, root_dir=base, recursive=True, include_hidden=True),
+            None,
+        )
+        return base / hit if hit is not None else None
+    except OSError:
+        return None
+
+
+def _probe_glob_reaches(
+    roots: tuple[Path, ...], pattern: str, *, budget_s: float | None = None
+) -> tuple[str, tuple[Path, Path] | None]:
+    """U-glob §4.3: the anchored probe. Proves a `rules_paths` pattern
+    CAN match under at least one of `roots` WITHOUT ever pointing
+    `glob.glob`/`glob.iglob` at a root directly (which does not
+    terminate against a `$HOME`-scale tree — measured M1-M3). Returns
+    a verdict plus its (base, hit) witness: ``"match"``, ``"none"``, or
+    ``"budget"`` (the probe could not decide
+    within `budget_s` seconds — a REFUSAL, never read as a pass, §7.2).
+
+    `budget_s=None` reads `GLOB_PROBE_BUDGET_ENV`
+    (`DEFAULT_GLOB_PROBE_BUDGET_S` on an absent/unparseable value)."""
+    if budget_s is None:
+        budget_s = _glob_probe_budget_s()
+    deadline = time.monotonic() + budget_s
+
+    floating, literal, rem = _glob_probe_parts(pattern)
+
     for root in roots:
         if time.monotonic() > deadline:
-            return "budget"
+            return "budget", None
         base = root.joinpath(*literal) if literal else root
         if not floating:
-            if base.exists() and _first_hit(base, rem):
-                return "match"
+            if base.exists() and (hit := _first_hit(base, rem)) is not None:
+                return "match", (base, hit)
             continue
         # Floating: the zero-directory expansion first, then a
         # symlink-refusing DFS under this root (§4.3 step 5).
-        if base.exists() and _first_hit(base, rem):
-            return "match"
+        if base.exists() and (hit := _first_hit(base, rem)) is not None:
+            return "match", (base, hit)
         stack = [root]
         while stack:
             if time.monotonic() > deadline:
-                return "budget"
+                return "budget", None
             current = stack.pop()
             try:
                 entries = list(os.scandir(current))
@@ -1312,15 +1436,15 @@ def glob_reaches(
                 if literal and entry.name == literal[0] and not is_symlink:
                     cand = entry_path.joinpath(*literal[1:])
                     if len(literal) == 1 or cand.is_dir():
-                        if _first_hit(cand, rem):
-                            return "match"
+                        if (hit := _first_hit(cand, rem)) is not None:
+                            return "match", (cand, hit)
                 if not is_dir:
                     continue
                 if not literal:
-                    if _first_hit(entry_path, rem):
-                        return "match"
+                    if (hit := _first_hit(entry_path, rem)) is not None:
+                        return "match", (entry_path, hit)
                 stack.append(entry_path)
-    return "none"
+    return "none", None
 
 
 def _class_extent(seg: str, i: int) -> int:
