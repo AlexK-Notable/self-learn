@@ -4,8 +4,9 @@
 It shows what `self-learn attention --json` says (attention-design-r2 §3.5,
 §3.10, §4.1): idle (grey, always shown), new (a flagged decided item you have
 not seen), needs-you, or broken. A left click opens the inbox; a middle click
-marks every decided item seen. It never reads the ledger itself and never runs
-git: it runs `timeout 10 self-learn attention --json` every 120 s, and at once
+marks every decided item seen; a right click opens a menu (com.canonical.dbusmenu)
+with the same two actions and open, check now, restart and quit (09 §2.6). It
+never reads the ledger itself and never runs git: it runs `timeout 10 self-learn attention --json` every 120 s, and at once
 when `$SELF_LEARN_HOME` itself (not recursively: a typed reply's statement
 lands in `user-statements.jsonl` there), `$SELF_LEARN_HOME/overseer/`,
 `$SELF_LEARN_HOME/attention/` or `<cache_dir>/attention/` changes (`cache_dir`
@@ -14,15 +15,17 @@ comes from the JSON).
 The system python (`-I`) because the uv venv has no `gi`; Gio only (no Gtk, so
 no display is needed). Deployed by install.sh, run by self-learn-tray.service.
 
-`--pure poll|activate|secondary` runs one step without the session bus and
-prints JSON; the tests use it (`tests/test_tray.py`).
+`--pure poll|activate|secondary|menu|click` runs one step without the session
+bus and prints JSON; the tests use it (`tests/test_tray.py`).
 """
 
 import argparse
 import json
+import math
 import os
 import signal
 import sys
+import time
 
 import gi
 
@@ -41,6 +44,20 @@ STATUS = {"idle": "Passive", "new": "Active", "needs-you": "NeedsAttention", "br
 # the browser runs, outside the tray's own cgroup.
 ACTIVATE_ARGV = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
 SECONDARY_ARGV = ["self-learn", "attention", "seen", "--all-decided"]
+# The right-click menu (09 §2.6). Open runs the launcher with no page: it
+# focuses an open UI window or opens Home. The UI restart is immediate; the
+# background service uses a scheduler request so jobs finish before re-exec.
+# Quit stops this unit: a plain exit would come back in 5 s
+# (Restart=always), and `--no-block` because systemd stops this process.
+OPEN_ARGV = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open"]
+RESTART_UI_ARGV = ["systemctl", "--user", "restart", "self-learn-ui.service"]
+START_HOST_ARGV = ["systemctl", "--user", "start", "self-learn-host.service"]
+QUIT_ARGV = ["systemctl", "--user", "--no-block", "stop", "self-learn-tray.service"]
+HOST_ACTIVE_ARGV = ["systemctl", "--user", "is-active", "--quiet", "self-learn-host.service"]
+RESTART_REQUEST_ARGV = ["self-learn", "serve", "--restart"]
+RESTART_WATCH_SECS = 3 * 3600
+WAIT_SECS = 5
+CONTROL_TIMEOUT_SECS = None  # hidden test-only override; production limits below
 BROKEN_TITLE = "self-learn: could not check what needs you"
 WATCH_EVENTS = {
     Gio.FileMonitorEvent.CHANGES_DONE_HINT, Gio.FileMonitorEvent.CREATED, Gio.FileMonitorEvent.DELETED,
@@ -114,10 +131,101 @@ def watch_dirs(home, cache_dir):
     return dirs
 
 
+def finite_epoch(value):
+    try:
+        return type(value) in (int, float) and math.isfinite(value) and value > 0
+    except OverflowError:
+        return False
+
+
+def restart_receipt(text):
+    try:
+        data = json.loads(text)
+        if (isinstance(data, dict) and data.get("requested") is True
+                and isinstance(data.get("id"), str) and data["id"].strip()
+                and isinstance(data.get("result_path"), str)
+                and os.path.isabs(data["result_path"]) and "\0" not in data["result_path"]):
+            return data
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def restart_outcome(path, request_id):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if (isinstance(data, dict) and data.get("id") == request_id
+                and isinstance(data.get("status"), str)
+                and data["status"] in ("restarting", "restarted", "refused")
+                and finite_epoch(data.get("at")) and "error" in data
+                and (data["error"] is None or isinstance(data["error"], str))
+                and (data["status"] != "refused" or bool(data["error"]))):
+            return data
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+# The menu's items in order: (id, action key, label). Ids are dbusmenu ids
+# (0 is the root); a key of None is a separator, "status" the state line.
+MENU = (
+    (1, "status", None),
+    (2, None, None),
+    (3, "open-inbox", "Open the inbox"),
+    (4, "open", "Open self-learn"),
+    (5, None, None),
+    (6, "check", "Check now"),
+    (7, "seen", "Mark everything decided as seen"),
+    (8, None, None),
+    (9, "restart-ui", "Restart the web UI"),
+    (10, "restart-host", "Restart the background service"),
+    (11, None, None),
+    (12, "quit", "Quit (hide this icon until next login)"),
+)
+MENU_KEYS = {key: mid for mid, key, _label in MENU if key and key != "status"}
+
+
+def menu_items(result, restarting):
+    """Both restart items stay disabled until their outstanding operation ends."""
+    items = []
+    for mid, key, label in MENU:
+        if key is None:
+            items.append({"id": mid, "key": None, "type": "separator", "label": "", "enabled": True})
+            continue
+        enabled = True
+        if key == "status":
+            label, enabled = result["tooltip"], False
+        elif key in restarting:
+            what = "background service" if key == "restart-host" else "web UI"
+            label, enabled = f"Restarting the {what}…", False
+        items.append({"id": mid, "key": key, "type": "standard", "label": label, "enabled": enabled})
+    return items
+
+
+def control_argv(argv):
+    """Bound only the tray's command process, never the background host. The
+    two launchers are not bounded: GNU timeout signals its whole process group,
+    and a browser the launcher started stays in that group."""
+    if argv in (ACTIVATE_ARGV, OPEN_ARGV):
+        return argv
+    if argv == HOST_ACTIVE_ARGV:
+        secs = 15
+    elif argv[0] == "systemctl" and ("start" in argv or "restart" in argv):
+        secs = 120
+    else:
+        secs = 30
+    return ["timeout", "--kill-after=5", str(CONTROL_TIMEOUT_SECS or secs), *argv]
+
+
+def command_timed_out(rc):
+    return rc in (124, 137) or rc < 0
+
+
 def spawn(argv, done=None):
     """Start argv without blocking the main loop; `done(rc)` when it exits."""
     try:
-        proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE)
+        proc = Gio.Subprocess.new(control_argv(argv), Gio.SubprocessFlags.NONE)
     except GLib.Error as exc:
         log(f"could not start {argv[0]}: {exc.message}")
         if done:
@@ -139,13 +247,36 @@ def spawn(argv, done=None):
     proc.wait_async(None, finished)
 
 
+def capture(argv, done):
+    """Read a command's JSON asynchronously; never block the menu's bus thread."""
+    try:
+        proc = Gio.Subprocess.new(control_argv(argv), Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+    except GLib.Error as exc:
+        done(127, "", exc.message)
+        return
+
+    def finished(p, res):
+        try:
+            _ok, stdout, stderr = p.communicate_utf8_finish(res)
+            rc = p.get_exit_status() if p.get_if_exited() else -p.get_term_sig()
+        except GLib.Error as exc:
+            done(1, "", exc.message)
+            return
+        done(rc, stdout or "", stderr or "")
+
+    proc.communicate_utf8_async(None, None, finished)
+
+
 class Tray:
     """State, polling and file monitors. The D-Bus face is `SniItem`."""
 
-    def __init__(self, on_change=None, timeout_secs=TIMEOUT_SECS):
+    def __init__(self, on_change=None, timeout_secs=TIMEOUT_SECS, notify=None, wait_secs=WAIT_SECS):
         self.home = ledger_home()
         self.timeout_secs = timeout_secs
         self.on_change = on_change
+        self.notify = notify or (lambda summary, body: log(f"{summary} {body}".strip()))
+        self.wait_secs = wait_secs
+        self.restarting = set()
         self.result = {"state": "idle", "tooltip": "self-learn: checking…", "error": None, "cache_dir": None}
         self.cache_dir = None
         self.monitors = {}
@@ -233,6 +364,108 @@ class Tray:
         """Mark every decided item seen, then poll so the icon drops `new` at once."""
         spawn(SECONDARY_ARGV, lambda rc: self.poll(done=(lambda: done(rc)) if done else None))
 
+    def menu(self):
+        return menu_items(self.result, self.restarting)
+
+    def changed(self):
+        if self.on_change:
+            self.on_change()
+
+    def click(self, key, done=None):
+        """One menu item; `done(rc)` when its command has exited."""
+        done = done or (lambda _rc: None)
+        if key in ("restart-ui", "restart-host"):
+            if key in self.restarting:
+                return
+            self.restarting.add(key)
+            self.changed()
+            completed = done
+
+            def done(rc):
+                self.restarting.discard(key)
+                self.changed()
+                completed(rc)
+
+        if key == "open-inbox":
+            self.activate(done)
+        elif key == "open":
+            spawn(OPEN_ARGV, done)
+        elif key == "check":
+            self.poll(done=lambda: done(0))
+        elif key == "seen":
+            self.secondary(done)
+        elif key == "restart-ui":
+            self.restart(RESTART_UI_ARGV, "web UI", done)
+        elif key == "restart-host":
+            self.restart_host(done)
+        elif key == "quit":
+            spawn(QUIT_ARGV, done)
+        else:
+            log(f"no menu item {key!r}")
+            done(2)
+
+    def restart(self, argv, what, done, *, start=False):
+        verb, past = ("start", "started") if start else ("restart", "restarted")
+
+        def ran(rc):
+            if rc == 0:
+                self.notify(f"self-learn: the {what} {past}", "")
+            elif command_timed_out(rc):
+                self.notify(f"self-learn: could not confirm the {what} {verb}",
+                            "The command timed out or was killed; the operation may still complete.")
+            else:
+                self.notify(f"self-learn: could not {verb} the {what}", f"systemctl exited {rc}; see its journal.")
+            done(rc)
+        spawn(argv, ran)
+
+    def restart_host(self, done):
+        def requested(rc, stdout, stderr):
+            if command_timed_out(rc):
+                self.notify("self-learn: background restart request timed out",
+                            "It is not known whether the request was recorded; the service may still restart.")
+                done(rc)
+                return
+            receipt = restart_receipt(stdout) if rc == 0 else None
+            if receipt is None:
+                self.notify("self-learn: could not request a background restart",
+                            stderr.strip() or f"Invalid restart receipt (exit {rc}).")
+                done(rc or 1)
+                return
+            self.notify("self-learn: restart waiting",
+                        "The background service will restart as soon as it is between jobs")
+            deadline = time.monotonic() + RESTART_WATCH_SECS
+
+            def check():
+                result = restart_outcome(receipt["result_path"], receipt["id"])
+                if result is not None and result["status"] != "restarting":
+                    if result["status"] == "restarted":
+                        self.notify("self-learn: the background service restarted", "")
+                        done(0)
+                    else:
+                        self.notify("self-learn: could not restart the background service", result["error"])
+                        done(1)
+                    return False
+                if time.monotonic() >= deadline:
+                    self.notify("self-learn: restart still waiting",
+                                "The request is still waiting after 3 hours; it has not been cancelled.")
+                    done(1)
+                    return False
+                return True
+
+            GLib.timeout_add_seconds(self.wait_secs, check)
+
+        def active(rc):
+            if command_timed_out(rc):
+                self.notify("self-learn: could not check the background service",
+                            "The status command timed out or was killed; no start or restart was requested.")
+                done(rc)
+            elif rc == 0:
+                capture(RESTART_REQUEST_ARGV, requested)
+            else:
+                self.restart(START_HOST_ARGV, "background service", done, start=True)
+
+        spawn(HOST_ACTIVE_ARGV, active)
+
 
 SNI_XML = """<node><interface name="org.kde.StatusNotifierItem">
 <property name="Category" type="s" access="read"/><property name="Id" type="s" access="read"/>
@@ -244,6 +477,7 @@ SNI_XML = """<node><interface name="org.kde.StatusNotifierItem">
 <property name="AttentionIconPixmap" type="a(iiay)" access="read"/>
 <property name="ToolTip" type="(sa(iiay)ss)" access="read"/>
 <property name="ItemIsMenu" type="b" access="read"/>
+<property name="Menu" type="o" access="read"/>
 <method name="Activate"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
 <method name="SecondaryActivate"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
 <method name="ContextMenu"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
@@ -255,13 +489,154 @@ SNI_IFACE = "org.kde.StatusNotifierItem"
 SNI_PATH = "/StatusNotifierItem"
 WATCHER = "org.kde.StatusNotifierWatcher"
 
+MENU_XML = """<node><interface name="com.canonical.dbusmenu">
+<property name="Version" type="u" access="read"/><property name="TextDirection" type="s" access="read"/>
+<property name="Status" type="s" access="read"/><property name="IconThemePath" type="as" access="read"/>
+<method name="GetLayout"><arg name="parentId" type="i" direction="in"/><arg name="recursionDepth" type="i" direction="in"/>
+<arg name="propertyNames" type="as" direction="in"/><arg name="revision" type="u" direction="out"/>
+<arg name="layout" type="(ia{sv}av)" direction="out"/></method>
+<method name="GetGroupProperties"><arg name="ids" type="ai" direction="in"/><arg name="propertyNames" type="as" direction="in"/>
+<arg name="properties" type="a(ia{sv})" direction="out"/></method>
+<method name="GetProperty"><arg name="id" type="i" direction="in"/><arg name="name" type="s" direction="in"/>
+<arg name="value" type="v" direction="out"/></method>
+<method name="Event"><arg name="id" type="i" direction="in"/><arg name="eventId" type="s" direction="in"/>
+<arg name="data" type="v" direction="in"/><arg name="timestamp" type="u" direction="in"/></method>
+<method name="EventGroup"><arg name="events" type="a(isvu)" direction="in"/><arg name="idErrors" type="ai" direction="out"/></method>
+<method name="AboutToShow"><arg name="id" type="i" direction="in"/><arg name="needUpdate" type="b" direction="out"/></method>
+<method name="AboutToShowGroup"><arg name="ids" type="ai" direction="in"/><arg name="updatesNeeded" type="ai" direction="out"/>
+<arg name="idErrors" type="ai" direction="out"/></method>
+<signal name="ItemsPropertiesUpdated"><arg name="updatedProps" type="a(ia{sv})"/><arg name="removedProps" type="a(ias)"/></signal>
+<signal name="LayoutUpdated"><arg name="revision" type="u"/><arg name="parent" type="i"/></signal>
+<signal name="ItemActivationRequested"><arg name="id" type="i"/><arg name="timestamp" type="u"/></signal>
+</interface></node>"""
+MENU_IFACE = "com.canonical.dbusmenu"
+MENU_PATH = "/MenuBar"
+NOTIFY = "org.freedesktop.Notifications"
+
+
+def menu_props(item):
+    """One item's dbusmenu properties. An underscore in a label marks an access
+    key in dbusmenu, so a literal one is doubled."""
+    if item["type"] == "separator":
+        return {"type": GLib.Variant("s", "separator")}
+    return {"label": GLib.Variant("s", item["label"].replace("_", "__")),
+            "enabled": GLib.Variant("b", item["enabled"]), "visible": GLib.Variant("b", True)}
+
+
+class MenuServer:
+    """com.canonical.dbusmenu at MENU_PATH: one flat level under the root (id 0).
+    The layout is built from the tray's state at each call; a change bumps the
+    revision and emits LayoutUpdated so the host fetches it again."""
+
+    def __init__(self, tray):
+        self.tray = tray
+        self.conn = None
+        self.revision = 1
+        self.published = None
+        self.iface = Gio.DBusNodeInfo.new_for_xml(MENU_XML).interfaces[0]
+
+    def attach(self, conn):
+        self.conn = conn
+        conn.register_object(MENU_PATH, self.iface, self.on_call, self.on_get, None)
+
+    def items(self):
+        return {item["id"]: item for item in self.tray.menu()}
+
+    def refresh(self):
+        """Emit LayoutUpdated when the menu differs from the one last published; True if it did."""
+        items = self.items()
+        if items == self.published:
+            return False
+        self.revision += 1
+        self.published = items
+        if self.conn is not None:
+            self.conn.emit_signal(None, MENU_PATH, MENU_IFACE, "LayoutUpdated", GLib.Variant("(ui)", (self.revision, 0)))
+        return True
+
+    def on_get(self, _conn, _sender, _path, _iface, prop):
+        values = {"Version": ("u", 3), "TextDirection": ("s", "ltr"), "Status": ("s", "normal"),
+                  "IconThemePath": ("as", [ICON_DIR])}
+        sig, value = values[prop]
+        return GLib.Variant(sig, value)
+
+    @staticmethod
+    def pick(props, names):
+        return {k: v for k, v in props.items() if not names or k in names}
+
+    def node(self, mid, items, depth, names):
+        if mid == 0:
+            props = {"children-display": GLib.Variant("s", "submenu")}
+            kids = [] if depth == 0 else [GLib.Variant("(ia{sv}av)", self.node(i, items, 0, names)) for i in items]
+            return (0, self.pick(props, names), kids)
+        return (mid, self.pick(menu_props(items[mid]), names), [])
+
+    def on_call(self, _conn, _sender, _path, _iface, method, params, inv):
+        items = self.items()
+        args = params.unpack()
+        if method == "GetLayout":
+            parent, depth, names = args
+            if parent != 0 and parent not in items:
+                inv.return_dbus_error("com.canonical.dbusmenu.Error.UnknownId", f"no menu item {parent}")
+                return
+            inv.return_value(GLib.Variant("(u(ia{sv}av))", (self.revision, self.node(parent, items, depth, names))))
+        elif method == "GetGroupProperties":
+            ids, names = args
+            ids = ids or [0, *items]
+            out = [(i, self.pick({"children-display": GLib.Variant("s", "submenu")} if i == 0
+                                 else menu_props(items[i]), names)) for i in ids if i == 0 or i in items]
+            inv.return_value(GLib.Variant("(a(ia{sv}))", (out,)))
+        elif method == "GetProperty":
+            mid, name = args
+            props = ({"children-display": GLib.Variant("s", "submenu")} if mid == 0
+                     else menu_props(items[mid]) if mid in items else {})
+            if name not in props:
+                inv.return_dbus_error("com.canonical.dbusmenu.Error.UnknownProperty", f"{mid} has no {name}")
+                return
+            inv.return_value(GLib.Variant("(v)", (props[name],)))
+        elif method == "Event":
+            mid, event, _data, _ts = args
+            self.event(mid, event, items)
+            inv.return_value(None)
+        elif method == "EventGroup":
+            events = args[0]
+            valid = [mid for mid, *_ in events if mid == 0 or mid in items]
+            if not valid:
+                inv.return_dbus_error("com.canonical.dbusmenu.Error.UnknownId", "no known menu ids")
+                return
+            errors = [mid for mid, event, _data, _ts in events if not self.event(mid, event, items)]
+            inv.return_value(GLib.Variant("(ai)", (errors,)))
+        elif method in ("AboutToShow", "AboutToShowGroup"):
+            ids = [args[0]] if method == "AboutToShow" else args[0]
+            valid = [mid for mid in ids if mid == 0 or mid in items]
+            errors = [mid for mid in ids if mid != 0 and mid not in items]
+            if not valid:
+                inv.return_dbus_error("com.canonical.dbusmenu.Error.UnknownId", "no known menu ids")
+                return
+            changed = self.refresh()
+            if method == "AboutToShow":
+                inv.return_value(GLib.Variant("(b)", (changed,)))
+            else:
+                inv.return_value(GLib.Variant("(aiai)", (valid if changed else [], errors)))
+        else:
+            inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
+
+    def event(self, mid, event, items):
+        """True when `mid` is an item. Only "clicked" on an enabled item acts."""
+        if mid != 0 and mid not in items:
+            return False
+        item = items.get(mid)
+        if event == "clicked" and item and item["enabled"] and item["key"] in MENU_KEYS:
+            self.tray.click(item["key"])
+        return True
+
 
 class SniItem:
     """The StatusNotifierItem on the session bus; registers again whenever the
     watcher (Waybar) appears or changes owner."""
 
-    def __init__(self, loop):
+    def __init__(self, loop, poll_secs=POLL_SECS):
         self.loop = loop
+        self.poll_secs = poll_secs
         self.exit_code = 0
         self.name = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
         self.conn = None
@@ -269,7 +644,8 @@ class SniItem:
         self.watcher = None
         self.shown = None
         self.iface = Gio.DBusNodeInfo.new_for_xml(SNI_XML).interfaces[0]
-        self.tray = Tray(on_change=self.publish)
+        self.tray = Tray(on_change=self.publish, notify=self.notify)
+        self.menu = MenuServer(self.tray)
         Gio.bus_own_name(Gio.BusType.SESSION, self.name, Gio.BusNameOwnerFlags.NONE,
                          self.on_bus, self.on_name, self.on_name_lost)
         Gio.bus_watch_name(Gio.BusType.SESSION, WATCHER, Gio.BusNameWatcherFlags.NONE,
@@ -278,12 +654,13 @@ class SniItem:
     def on_bus(self, conn, _name):
         self.conn = conn
         conn.register_object(SNI_PATH, self.iface, self.on_call, self.on_get, None)
+        self.menu.attach(conn)
 
     def on_name(self, _conn, _name):
         self.owned = True
         self.register()
         self.tray.poll()
-        GLib.timeout_add_seconds(POLL_SECS, self.tick)
+        GLib.timeout_add_seconds(self.poll_secs, self.tick)
 
     def tick(self):
         self.tray.poll()
@@ -328,7 +705,7 @@ class SniItem:
             # Waybar renders the title as markup and escapes the description itself.
             "ToolTip": ("(sa(iiay)ss)", (v["icon_name"], [], GLib.markup_escape_text(v["tooltip_title"]),
                                           v["tooltip_description"])),
-            "ItemIsMenu": ("b", False),
+            "ItemIsMenu": ("b", False), "Menu": ("o", MENU_PATH),
         }
         sig, value = values[prop]
         return GLib.Variant(sig, value)
@@ -340,7 +717,26 @@ class SniItem:
             self.tray.secondary()
         invocation.return_value(None)
 
+    def notify(self, summary, body):
+        """A desktop notification (org.freedesktop.Notifications); logged as well,
+        and a missing notification daemon costs only the popup."""
+        log(f"{summary} {body}".strip())
+        if self.conn is None:
+            return
+
+        def done(conn, res):
+            try:
+                conn.call_finish(res)
+            except GLib.Error as exc:
+                log(f"could not show a notification: {exc.message}")
+
+        icon = os.path.join(ICON_DIR, "self-learn-tray-idle.svg")
+        self.conn.call(NOTIFY, "/org/freedesktop/Notifications", NOTIFY, "Notify",
+                       GLib.Variant("(susssasa{sv}i)", ("self-learn", 0, icon, summary, body, [], {}, -1)),
+                       None, Gio.DBusCallFlags.NONE, 5000, None, done)
+
     def publish(self):
+        self.menu.refresh()
         v = self.view()
         if self.conn is None or v == self.shown:
             return
@@ -353,11 +749,36 @@ class SniItem:
         self.conn.emit_signal(None, SNI_PATH, SNI_IFACE, "NewToolTip", None)
 
 
-def pure(step, timeout_secs):
-    """One step without the session bus; prints what happened as JSON."""
+def pure(step, timeout_secs, item=None, wait_secs=WAIT_SECS):
+    """One step without the session bus; prints what happened as JSON.
+    `menu` polls once and prints the menu; `click` polls once, then runs one
+    menu item (`--item`), recording the notifications and every menu it went
+    through, and prints the menu after."""
     loop = GLib.MainLoop()
     out = {}
-    tray = Tray(timeout_secs=timeout_secs)
+    notices, menus = [], []
+    tray = Tray(timeout_secs=timeout_secs, wait_secs=wait_secs,
+                notify=lambda summary, body: notices.append([summary, body]))
+    tray.on_change = lambda: menus.append(tray.menu())
+
+    if step in ("menu", "click"):
+        def after_click(rc):
+            out.update(rc=rc, notices=notices, menus=menus, menu=tray.menu())
+            GLib.idle_add(loop.quit)
+
+        def polled_first():
+            out.update(view=sni_view(tray.result))
+            if step == "menu":
+                out.update(menu=tray.menu())
+                GLib.idle_add(loop.quit)
+            else:
+                tray.click(item, after_click)
+
+        tray.poll(done=polled_first)
+        GLib.timeout_add_seconds(timeout_secs + 15 + 3 * wait_secs, loop.quit)
+        loop.run()
+        print(json.dumps(out, sort_keys=True))
+        return 0
 
     def polled():
         out.update(view=sni_view(tray.result), error=tray.result["error"],
@@ -394,17 +815,28 @@ def unix_signal_add(sig, handler):
 
 
 def main(argv):
+    global CONTROL_TIMEOUT_SECS
     ap = argparse.ArgumentParser(prog="self-learn-tray", description=__doc__.splitlines()[0])
-    ap.add_argument("--pure", choices=("poll", "activate", "secondary"),
+    ap.add_argument("--pure", choices=("poll", "activate", "secondary", "menu", "click"),
                     help="run one step without the session bus and print JSON (tests)")
+    ap.add_argument("--item", choices=sorted(MENU_KEYS), help="the menu item `--pure click` runs")
     ap.add_argument("--timeout-secs", type=int, default=TIMEOUT_SECS, help=argparse.SUPPRESS)
+    ap.add_argument("--wait-secs", type=int, default=WAIT_SECS, help=argparse.SUPPRESS)
+    ap.add_argument("--poll-secs", type=int, default=POLL_SECS, help=argparse.SUPPRESS)
+    ap.add_argument("--control-timeout-secs", type=float, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.control_timeout_secs is not None:
+        if not math.isfinite(args.control_timeout_secs) or args.control_timeout_secs <= 0:
+            ap.error("--control-timeout-secs must be finite and positive")
+        CONTROL_TIMEOUT_SECS = args.control_timeout_secs
+    if args.pure == "click" and not args.item:
+        ap.error("--pure click needs --item")
     if args.pure:
-        return pure(args.pure, args.timeout_secs)
+        return pure(args.pure, args.timeout_secs, args.item, args.wait_secs)
     loop = GLib.MainLoop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         unix_signal_add(sig, lambda: (loop.quit(), False)[1])
-    item = SniItem(loop)
+    item = SniItem(loop, args.poll_secs)
     loop.run()
     return item.exit_code
 

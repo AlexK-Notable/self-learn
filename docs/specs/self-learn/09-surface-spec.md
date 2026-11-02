@@ -1058,7 +1058,88 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   succeeds), so a browser on `PATH` that cannot run is skipped.
 - **Middle click** (`SecondaryActivate`) runs `self-learn attention seen
   --all-decided` and polls again at once. Seen never clears a needs-you item.
-- **No right-click menu** (no dbusmenu); `ContextMenu` and `Scroll` do nothing.
+- **Right-click menu** *(S-142, 2026-11-02)*. The item's `Menu` property names
+  `/MenuBar`, where the tray serves `com.canonical.dbusmenu` (version 3, one flat
+  level under the root, built from the tray's state at each call; a change bumps
+  the revision and emits `LayoutUpdated`). In order: the tooltip's own line,
+  greyed out; *Open the inbox* (the left click's command); *Open self-learn*
+  (`self-learn-ui-open` with no page, through the same `systemd-run --user
+  --scope`: it focuses an open UI window or opens Home); *Check now* (polls);
+  *Mark everything decided as seen* (the middle click); *Restart the web UI*
+  (`systemctl --user restart self-learn-ui.service`); *Restart the background
+  service* (`self-learn-host.service`); *Quit (hide this icon until next login)*
+  (`systemctl --user --no-block stop self-learn-tray.service`: a plain exit would
+  come back in 5 s under `Restart=always`, and systemd stops the tray itself).
+  Separators group open, check, restart and quit. Only `clicked` on an enabled
+  item acts; a literal `_` in a label is doubled (dbusmenu's access-key mark).
+- **The background restart is coordinated by `serve`.** The tray checks
+  `systemctl --user is-active --quiet self-learn-host.service`. An inactive
+  service is started with `systemctl --user start self-learn-host.service`,
+  which never stops a host that became active after the check. Its notification
+  says it was started (or could not be started). An active one receives
+  `self-learn serve --restart`: a cache-only request with a random id, consumed
+  by the scheduler after the whole tick has returned, never during a job. It
+  uses the same venv sync, import check and re-exec path as a code change,
+  preserving the original process start time. An idle service checks for a
+  request about once a second without starting another tick first. Heartbeats
+  never authorize a restart: a job can start immediately after an idle beat.
+- **Host control: `self-learn serve --restart`.** Resolves `worker.cache_dir(home)`
+  exactly like `serve` and writes `serve.restart` with `requested_at` (epoch
+  float) and a random `id`, linking it into place so that it never replaces a
+  request already waiting: a waiting (not yet claimed) request is joined, and the
+  receipt carries its id with `joined: true`, so every requester watches the one
+  result that restart writes. Prints one JSON line with `requested: true`, `id`,
+  `joined` and `result_path`, exits 0, and never starts the loop or touches the
+  ledger.
+  At the safe boundary `serve` claims the request with an atomic
+  `os.rename(serve.restart, serve.restart.claimed)` before reading it. It
+  processes and removes only the claimed file. A newer request written while
+  the first is claimed stays in `serve.restart` for the next check: those two
+  requests cause two restarts, in order, not one combined restart.
+  Each receipt names `<cache>/serve.restart-results/<id>.json`; results contain
+  `id`, `status`, `error` (reason or null), and `at` (epoch). Writing a result
+  prunes result files older than one day. Before exec, `restarting` records
+  progress and the request id is passed in `SELF_LEARN_SERVE_RESTART_ID`.
+  At the start of `run_forever`, the new image pops that environment variable
+  and writes `restarted`; later exec environments also discard any stale id.
+  Exec/sync/import failures write `refused` and remove only the claim. A
+  leftover claim at startup without a terminal result is refused with
+  "the service stopped before taking it", unless the new-image id acknowledges
+  it. In a running image a claim is finished before the check returns, so one
+  found at a later check is left over from a failed result write: that check
+  finishes it (`refused`, "the service could not record what happened to it")
+  before taking the new request, and while the cache still fails it raises and
+  the next check tries again. Malformed requests are refused as well. Refusals
+  require another click.
+  SIGTERM is checked outside `_run_tick`; a tick can include several jobs.
+- **Pending restarts and notifications.** Both restart items are disabled from
+  the accepted click through the outcome, labelled "Restarting the background
+  service…" or "Restarting the web UI…"; repeated clicks are ignored. An active
+  host request says "The background service will restart as soon as it is
+  between jobs" and watches the receipt's `result_path` every 5 s for its id.
+  `restarting` keeps the item pending; only `restarted` says it restarted;
+  `refused` reports the reason. Invalid or
+  non-finite fields are treated as not yet answered. After 3 hours the tray
+  stops watching and says the request is still waiting; it does not cancel it.
+  Every control-command wait uses `timeout --kill-after=5 <N>`: 15 seconds
+  for `is-active`, 30 seconds for `self-learn serve --restart`, and 120 seconds
+  for systemctl start/restart (other tray control commands: 30 seconds; the
+  attention poll keeps its 10-second bound). The two launchers (the left click
+  and Open self-learn) are not bounded: GNU timeout signals its whole process
+  group, and a browser the launcher starts stays in that group. A command timeout or signal
+  releases the item and notifies; it never signals the background host. A
+  timed-out status query performs no follow-on operation. A timed-out request
+  says it is not known whether the request was recorded and the service may
+  still restart. A systemctl timeout says the operation may still complete.
+  Command failures also release the item and notify. Notifications go through
+  `org.freedesktop.Notifications` and are logged; a missing daemon is harmless.
+- **Menu publication.** `refresh()` compares against its own last published
+  full menu; each change advances the revision and emits `LayoutUpdated`.
+  Full or partial `GetLayout` reads do not acknowledge a change. `AboutToShow`
+  reports whether refresh found a change. Unknown ids are D-Bus errors for
+  `AboutToShow`; group calls report invalid ids in `idErrors`, error if none
+  exists, and report updates only for requested valid ids (version 3).
+- `ContextMenu` and `Scroll` do nothing (the bar opens the menu itself).
 - **When it polls.** Every 120 s, and one second after a change in
   `$SELF_LEARN_HOME` itself, `$SELF_LEARN_HOME/overseer/`,
   `$SELF_LEARN_HOME/attention/` or `<cache_dir>/attention/` (`Gio.FileMonitor`;

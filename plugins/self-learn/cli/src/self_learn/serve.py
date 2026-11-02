@@ -5,11 +5,13 @@ starts :func:`miner.run` and :func:`worker.run` as JOBS; each job still
 takes its own ``commit_lock`` and commits its own paths under its own
 pinned subject, exactly as when a verb or the nightly timer started it.
 ``serve`` itself never stages, never commits, never pushes, and writes
-into ``cache_dir()`` only — three files, corrected 2026-08-27 (gate r2
-D-2): ``serve.heartbeat`` (the heartbeat itself), ``serve.poke`` (a
+into ``cache_dir()`` only. Scheduler cache files include ``serve.heartbeat`` (the heartbeat itself), ``serve.poke`` (a
 verb's watchdog handoff, a separate file so a write never races the
-heartbeat), and ``serve.schedule`` (today's jittered mine target). All
-three are ``NOT_REPO_TRUTH``, mirroring ``worker.log``/``miner.spool_dir``.
+heartbeat), and ``serve.schedule`` (today's jittered mine target).
+Explicit ``serve --restart`` requests use ``serve.restart`` and
+``serve.restart-results/<id>.json``: claimed after a whole tick, via the same safe
+re-exec as a code change, with no ledger write. These cache writers are
+``NOT_REPO_TRUTH``, mirroring ``worker.log``/``miner.spool_dir``.
 Once a day (S-99) it also asks ``cache_gc.prune`` to delete, from
 the cache ROOT, per-home cache directories whose ledger home no longer
 exists and host lock files nobody holds -- cache only, never the home it
@@ -55,6 +57,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -63,6 +66,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from dataclasses import dataclass, replace as _dataclass_replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -342,6 +346,171 @@ def _consume_poke(cache_dir: Path) -> bool:
         return False
     path.unlink(missing_ok=True)
     return True
+
+
+# --------------------------------------------------------------- restart
+
+
+def request_restart(cache_dir: Path) -> dict[str, Any]:
+    """Ask this home's host to re-exec between ticks; only cache is written.
+
+    A request already waiting (not yet claimed) is joined, never replaced: the
+    receipt carries its id (`joined: true`), so every requester watches the one
+    result that restart will write. The new file is linked into place, which
+    fails when one exists, so two requesters can never overwrite each other."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / "serve.restart"
+    request = {"requested_at": time.time(), "id": uuid.uuid4().hex}
+    tmp = cache_dir / f".serve.restart.{request['id']}.tmp"
+    fsops.atomic_write(tmp, json.dumps(request), fsync=False, preserve_mode=False)
+    joined = False
+    try:
+        for _ in range(5):
+            try:
+                os.link(tmp, path)
+                break
+            except FileExistsError:
+                pass
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                continue  # claimed between the two calls: try to link again
+            except (OSError, ValueError):
+                existing = None
+            existing_id = _restart_id(existing.get("id")) if isinstance(existing, dict) else None
+            if existing_id is not None:
+                request, joined = {"id": existing_id}, True
+                break
+            os.replace(tmp, path)  # a malformed waiting file correlates with nobody
+            break
+        else:
+            raise OSError("the restart request file kept changing; try again")
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {"requested": True, "id": request["id"], "joined": joined,
+            "result_path": str(_restart_result_path(cache_dir, request["id"]))}
+
+
+def _restart_id(value: Any) -> str | None:
+    """Only a bounded filename component can name a correlated cache result."""
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) else None
+
+
+def _restart_result_path(cache_dir: Path, request_id: str | None) -> Path:
+    return cache_dir / "serve.restart-results" / f"{request_id or 'malformed'}.json"
+
+
+def _restart_result(cache_dir: Path, request_id: str | None, status: str,
+                    error: str | None) -> None:
+    """Publish this request's result, keeping other outcomes for one day."""
+    path = _restart_result_path(cache_dir, request_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fsops.atomic_write(path, json.dumps({
+        "id": request_id, "status": status, "error": error, "at": time.time(),
+    }), fsync=False, preserve_mode=False)
+    cutoff = time.time() - 86400
+    for old in path.parent.glob("*.json"):
+        try:
+            if old.stat().st_mtime < cutoff:
+                old.unlink(missing_ok=True)
+        except OSError:
+            pass  # best-effort cache retention cannot lose the new outcome
+
+
+def _finish_restart(cache_dir: Path, request_id: str | None, status: str,
+                    error: str | None) -> None:
+    """Finish only the claimed request; never remove a newer pending request."""
+    _restart_result(cache_dir, request_id, status, error)
+    (cache_dir / "serve.restart.claimed").unlink(missing_ok=True)
+
+
+def _recover_restart(cache_dir: Path) -> None:
+    """New-image acknowledgement, or refusal of an interrupted claimed request."""
+    restarted_id = _restart_id(os.environ.pop(_RESTART_ID_ENV, None))
+    if restarted_id is not None:
+        _restart_result(cache_dir, restarted_id, "restarted", None)
+    _settle_claim(cache_dir, "the service stopped before taking it")
+
+
+def _settle_claim(cache_dir: Path, why: str) -> None:
+    """Finish a claim left behind: keep a terminal result already written, else
+    write `refused` with `why`; then remove the claim. A write that fails again
+    raises and leaves the claim for the next attempt, so no request is lost."""
+    claimed = cache_dir / "serve.restart.claimed"
+    try:
+        data = json.loads(claimed.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError):
+        data = None
+    request_id = _restart_id(data.get("id")) if isinstance(data, dict) else None
+    try:
+        result = json.loads(_restart_result_path(cache_dir, request_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        result = None
+    if not (isinstance(result, dict) and result.get("id") == request_id
+            and result.get("status") in ("restarted", "refused")):
+        _restart_result(cache_dir, request_id, "refused", why)
+    claimed.unlink(missing_ok=True)
+
+
+def _consider_restart(home: Path, cache_dir: Path, watch: _CodeWatch, *,
+                      pid: int, tick_secs: float) -> None:
+    """Called only between ticks, including while waiting for the next tick."""
+    if _jobs_in_flight > 0:
+        return
+    path = cache_dir / "serve.restart.claimed"
+    # In a running image a claim is finished before this function returns, so
+    # one found here is left over from a failed outcome write: finish it now
+    # (raising, and so retried at the next check, while the cache still fails).
+    if path.exists():
+        _settle_claim(cache_dir, "the service could not record what happened to it")
+    try:
+        os.rename(cache_dir / "serve.restart", path)
+    except FileNotFoundError:
+        return
+    request_id = None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("expected a JSON object")
+        request_id = _restart_id(data.get("id"))
+        if request_id is None:
+            raise ValueError("id must be a safe nonempty filename component")
+        at = data.get("requested_at")
+        if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at) or at <= 0:
+            raise ValueError("requested_at must be a finite positive epoch")
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError, OverflowError) as exc:
+        # Invalid IDs cannot correlate a result; still discard malformed input.
+        _finish_restart(cache_dir, request_id, "refused", f"Malformed restart request: {exc}")
+        return
+    try:
+        env_now = env_fingerprint()
+        _attempt_reexec(home, cache_dir, watch, pid=pid, tick_secs=tick_secs,
+                        current=_fingerprint(code_fingerprint(), env_now), env_now=env_now,
+                        moment=time.time(), request_id=request_id)
+    except Exception as exc:
+        # An unexpected failure must not leave the claim behind: it would hold
+        # every later request until this process restarts some other way.
+        _finish_restart(cache_dir, request_id, "refused", f"the restart check failed: {_short_cause(exc)}")
+        raise
+
+
+def _wait_between_ticks(stop: threading.Event, secs: float, home: Path,
+                        cache_dir: Path, watch: _CodeWatch, *, pid: int) -> None:
+    deadline = time.monotonic() + secs
+    while not stop.is_set():
+        if (cache_dir / "serve.restart").exists():
+            try:
+                _consider_restart(home, cache_dir, watch, pid=pid, tick_secs=secs)
+            except Exception as exc:  # cache failure must not stop scheduling
+                print(f"serve: restart check failed — {_short_cause(exc)}", file=sys.stderr)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        stop.wait(min(1.0, remaining))
 
 
 # --------------------------------------------------------- systemd surface
@@ -1897,6 +2066,7 @@ REEXEC_STABLE_TICKS = 2
 #: started first began, so the unit-file check below still compares against
 #: the real start after any number of re-execs.
 _STARTED_AT_ENV = "SELF_LEARN_SERVE_STARTED_AT"
+_RESTART_ID_ENV = "SELF_LEARN_SERVE_RESTART_ID"
 
 HOST_UNIT_NAME = "self-learn-host.service"
 
@@ -2265,12 +2435,32 @@ def _consider_reexec(
         return  # never mid-job; the next check between jobs takes it
     if not _restart_on_new_code(home):
         return
+    _attempt_reexec(home, cache_dir, watch, pid=pid, tick_secs=tick_secs,
+                    current=current, env_now=env_now, moment=moment)
+
+
+def _attempt_reexec(home: Path, cache_dir: Path, watch: _CodeWatch, *,
+                    pid: int, tick_secs: float, current: str | None,
+                    env_now: str | None, moment: float, request_id: str | None = None) -> None:
+    """Shared safe tail for a code change and an explicit restart request."""
+    if _jobs_in_flight > 0:
+        return
+
+    def refuse(why: str) -> None:
+        if request_id is not None:
+            _append_serve_journal(cache_dir, {"status": "reexec-refused", "error": why,
+                                              "request_id": request_id})
+            _finish_restart(cache_dir, request_id, "refused", why)
+        else:
+            assert current is not None  # automatic code-change path requires a fingerprint
+            _refuse_reexec(home, cache_dir, watch, current, why, moment)
+
     project = _project_root()
     synced = False
     if env_now != watch.running_env and project is not None:
         ok, why = _sync_venv(project)
         if not ok:
-            _refuse_reexec(home, cache_dir, watch, current, f"uv sync failed: {why}", moment)
+            refuse(f"uv sync failed: {why}")
             return
         synced = True
     ok, why = _new_code_imports()
@@ -2281,7 +2471,7 @@ def _consider_reexec(
         else:
             why = f"{why}; uv sync failed: {sync_why}"
     if not ok:
-        _refuse_reexec(home, cache_dir, watch, current, why, moment)
+        refuse(why)
         return
     # Fix r2 (gate NIT 5): the hold notice is not marked done here; the new
     # image marks it done as it starts (`run_forever`), so a failed exec
@@ -2289,21 +2479,24 @@ def _consider_reexec(
     _append_serve_journal(cache_dir, {"status": "reexec", "from": watch.running, "to": current})
     try:
         write_heartbeat(
-            cache_dir, pid=pid, next_job=f"restarting on new code ({current})",
+            cache_dir, pid=pid, next_job=("restarting on request" if request_id is not None
+                      else f"restarting on new code ({current})"),
             tick_secs=tick_secs,
         )
     except OSError:
         pass
-    print(
-        f"serve: the self-learn code changed ({watch.running} -> {current}); "
-        "restarting the host process between jobs.",
-        file=sys.stderr,
-    )
+    reason = ("a restart was requested" if request_id is not None
+              else f"the self-learn code changed ({watch.running} -> {current})")
+    print(f"serve: {reason}; restarting the host process between jobs.", file=sys.stderr)
     sys.stdout.flush()
     sys.stderr.flush()
     env = dict(os.environ)
+    env.pop(_RESTART_ID_ENV, None)
     env[_STARTED_AT_ENV] = repr(watch.started_at)
     try:
+        if request_id is not None:
+            env[_RESTART_ID_ENV] = request_id
+            _restart_result(cache_dir, request_id, "restarting", None)
         _reexec(_exec_argv(), env)
     except OSError as exc:
         watch.refused, watch.refused_at = current, moment
@@ -2313,7 +2506,10 @@ def _consider_reexec(
         })
         print(f"serve: the restart failed ({_short_cause(exc)}); staying on the running code.",
               file=sys.stderr)
-        _hold_notice(home, f"the restart failed: {_short_cause(exc)}")
+        if request_id is not None:
+            _finish_restart(cache_dir, request_id, "refused", f"exec failed: {_short_cause(exc)}")
+        else:
+            _hold_notice(home, f"the restart failed: {_short_cause(exc)}")
 
 
 # --------------------------------------------------------------- the loop
@@ -2390,6 +2586,7 @@ def run_forever(
     `miner_dir()`/`_p()` -- the one documented, accepted residual."""
     home = Path(home)
     cd = cache_dir if cache_dir is not None else worker.cache_dir(home)
+    _recover_restart(cd)
     secs = tick_secs if tick_secs is not None else tick_secs_from_env(home=home)
     pid = os.getpid()
     stop = threading.Event()
@@ -2445,11 +2642,12 @@ def run_forever(
             # inside `_run_tick`), so this is where new code is picked up.
             if not stop.is_set():
                 try:
+                    _consider_restart(home, cd, watch, pid=pid, tick_secs=secs)
                     _consider_reexec(home, cd, watch, pid=pid, tick_secs=secs)
                 except Exception as exc:  # noqa: BLE001 — never ends the daemon
                     print(f"serve: the code-change check failed — {_short_cause(exc)}",
                           file=sys.stderr)
-            stop.wait(secs)
+            _wait_between_ticks(stop, secs, home, cd, watch, pid=pid)
     finally:
         actor.__exit__(None, None, None)
         signal.signal(signal.SIGTERM, prev_term)
