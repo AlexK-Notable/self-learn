@@ -4,8 +4,8 @@
 (`#!/usr/bin/python3 -I`, because the uv venv has no `gi`), so every test here
 runs it as a subprocess under `/usr/bin/python3 -I`, never imports it. The
 tray's own commands are faked on a scratch PATH: `self-learn` (prints a
-fixture `attention --json` and logs its argv) and `systemd-run` (logs its
-argv). `timeout`, `bash`, `cat` and `sleep` are the real ones. Nothing here
+fixture `attention --json` and logs its argv), `systemd-run` and
+`systemctl` (each logs its argv). `timeout`, `bash`, `cat` and `sleep` are the real ones. Nothing here
 touches the real ledger, a real unit or the user's session bus: test 4 runs
 inside its own `dbus-run-session`.
 
@@ -19,6 +19,8 @@ import re
 import shutil
 import subprocess
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -60,6 +62,7 @@ _FAKE_SELF_LEARN = textwrap.dedent(
     """
 )
 _FAKE_SYSTEMD_RUN = '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$FAKE_LOG.systemd-run"\n'
+_FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG.systemctl"\nexit "${FAKE_SYSTEMCTL_RC:-0}"\n'
 
 
 def _item(**over) -> dict:
@@ -96,7 +99,8 @@ class Env:
         self.json = tmp_path / "attention.json"
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        for name, body in (("self-learn", _FAKE_SELF_LEARN), ("systemd-run", _FAKE_SYSTEMD_RUN)):
+        for name, body in (("self-learn", _FAKE_SELF_LEARN), ("systemd-run", _FAKE_SYSTEMD_RUN),
+                           ("systemctl", _FAKE_SYSTEMCTL)):
             (bin_dir / name).write_text(body, encoding="utf-8")
             (bin_dir / name).chmod(0o755)
         for name in ("bash", "cat", "sleep", "timeout", "env"):
@@ -127,6 +131,18 @@ class Env:
 
     def calls(self) -> list[str]:
         return self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
+
+    def side(self, suffix: str) -> list[str]:
+        path = Path(f"{self.log}.{suffix}")
+        return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+    def heartbeat(self, running: str | None, age: float = 2.0, tick: float = 60.0) -> None:
+        """A `serve.heartbeat` in the JSON's cache_dir, as the background service writes it."""
+        self.cache.mkdir(parents=True, exist_ok=True)
+        body = {"ts": time.time() - age, "pid": 1, "next_job": "mine", "tick_secs": tick}
+        if running:
+            body.update(running=running, running_since=time.time() - age)
+        (self.cache / "serve.heartbeat").write_text(json.dumps(body), encoding="utf-8")
 
 
 @pytest.fixture
@@ -379,7 +395,41 @@ try:
     props = client.call_sync(service, "/StatusNotifierItem", "org.freedesktop.DBus.Properties", "GetAll",
                              GLib.Variant("(s)", ("org.kde.StatusNotifierItem",)), None,
                              Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
-    result["props"] = {k: props[k] for k in ("Id", "Category", "Status", "IconName", "IconThemePath", "ToolTip")}
+    result["props"] = {k: props[k] for k in ("Id", "Category", "Status", "IconName", "IconThemePath", "ToolTip",
+                                             "Menu")}
+
+    # The right-click menu (dbusmenu) at the path the item names.
+    menu_path = props["Menu"]
+    layout = client.call_sync(service, menu_path, "com.canonical.dbusmenu", "GetLayout",
+                              GLib.Variant("(iias)", (0, -1, [])), None, Gio.DBusCallFlags.NONE, 5000, None).unpack()
+    result["menu_revision"] = layout[0]
+    result["menu_root"] = layout[1][1]
+    result["menu"] = [[kid[0], kid[1].get("type", "standard"), kid[1].get("label"), kid[1].get("enabled")]
+                      for kid in layout[1][2]]
+    menu_ids = {label: mid for mid, _t, label, _e in result["menu"]}
+    result["menu_version"] = client.call_sync(
+        service, menu_path, "org.freedesktop.DBus.Properties", "Get",
+        GLib.Variant("(ss)", ("com.canonical.dbusmenu", "Version")), None, Gio.DBusCallFlags.NONE, 5000,
+        None).unpack()[0]
+    # A click on the greyed-out state line does nothing; "Check now" polls.
+    before = polls()
+    status_id = result["menu"][0][0]
+    client.call_sync(service, menu_path, "com.canonical.dbusmenu", "Event",
+                     GLib.Variant("(isvu)", (status_id, "clicked", GLib.Variant("i", 0), 0)), None,
+                     Gio.DBusCallFlags.NONE, 5000, None)
+    wait(lambda: False, 1.5)
+    result["status_click_polled"] = polls() > before
+    client.call_sync(service, menu_path, "com.canonical.dbusmenu", "Event",
+                     GLib.Variant("(isvu)", (menu_ids["Check now"], "clicked", GLib.Variant("i", 0), 0)), None,
+                     Gio.DBusCallFlags.NONE, 5000, None)
+    result["check_now_polled"] = wait(lambda: polls() > before, 10)
+    errs = client.call_sync(service, menu_path, "com.canonical.dbusmenu", "EventGroup",
+                            GLib.Variant("(a(isvu))", ([(99, "clicked", GLib.Variant("i", 0), 0)],)), None,
+                            Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
+    result["event_group_errors"] = errs
+    result["about_to_show"] = client.call_sync(service, menu_path, "com.canonical.dbusmenu", "AboutToShow",
+                                               GLib.Variant("(i)", (0,)), None, Gio.DBusCallFlags.NONE, 5000,
+                                               None).unpack()[0]
 
     w1.close()  # Waybar restarts: the watcher's owner changes
     w2 = Watcher(2)
@@ -471,6 +521,19 @@ def test_4_registers_with_the_watcher_and_again_after_its_owner_changes(env):
     assert Path(props["IconThemePath"]).resolve() == ICON_DIR.resolve()
     # Waybar renders the title as markup: the reader's text is escaped once
     assert props["ToolTip"][2] == "self-learn: 0 need you &amp; &lt;none&gt; new", props["ToolTip"]
+
+    # 09 §2.6: the right-click menu, served as com.canonical.dbusmenu at the item's Menu path.
+    assert props["Menu"] == "/MenuBar"
+    assert res["menu_version"] == 3 and res["menu_root"] == {"children-display": "submenu"}
+    labels = [label for _id, kind, label, _e in res["menu"] if kind != "separator"]
+    assert labels == ["self-learn: 0 need you & <none> new", "Open the inbox", "Open self-learn", "Check now",
+                      "Mark everything decided as seen", "Restart the web UI", "Restart the background service",
+                      "Quit (hide this icon until next login)"], res["menu"]
+    assert res["menu"][0][3] is False, "the state line is greyed out"
+    assert not res["status_click_polled"], "a click on the state line does nothing"
+    assert res["check_now_polled"], ("Check now over the bus polls", tray_log)
+    assert res["event_group_errors"] == [99]
+    assert res["about_to_show"] is False, "an unchanged menu needs no update"
 
     assert res["activated"] == ["--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
     assert res["secondary"], (res["secondary_calls"], tray_log)
@@ -570,3 +633,116 @@ def test_6_watches_the_fixture_ledger_and_the_cache_dir_named_by_the_json(env):
                          capture_output=True, text=True, timeout=60)
     assert res.returncode == 0, res.stderr
     assert json.loads(res.stdout)["home"] == str(env.tmp / "home" / ".self-learn")
+
+
+# ------------------------------------------------------------------ 7
+
+
+def test_7_menu_lists_the_state_then_the_controls(env):
+    """09 §2.6: the right-click menu's first line is the tooltip's own text,
+    greyed out, then open, check, seen, the two restarts and quit, with
+    separators between the groups. Mutation: drop an item, or enable the state
+    line -> red."""
+    env.write(_attention("needs-you", "self-learn: 1 needs you", [_item(**{"class": "needs-you"})], env.cache))
+    out = env.pure("menu")
+    menu = out["menu"]
+    assert [m["type"] for m in menu] == ["standard", "separator", "standard", "standard", "separator",
+                                         "standard", "standard", "separator", "standard", "standard",
+                                         "separator", "standard"]
+    standard = [m for m in menu if m["type"] == "standard"]
+    assert [(m["key"], m["label"], m["enabled"]) for m in standard] == [
+        ("status", "self-learn: 1 needs you", False),
+        ("open-inbox", "Open the inbox", True),
+        ("open", "Open self-learn", True),
+        ("check", "Check now", True),
+        ("seen", "Mark everything decided as seen", True),
+        ("restart-ui", "Restart the web UI", True),
+        ("restart-host", "Restart the background service", True),
+        ("quit", "Quit (hide this icon until next login)", True),
+    ]
+    assert len({m["id"] for m in menu}) == len(menu) and 0 not in {m["id"] for m in menu}
+
+
+@pytest.mark.parametrize(("item", "side", "argv"), [
+    ("open-inbox", "systemd-run",
+     ["--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]),
+    ("open", "systemd-run", ["--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open"]),
+    ("restart-ui", "systemctl", ["--user restart self-learn-ui.service"]),
+    ("quit", "systemctl", ["--user --no-block stop self-learn-tray.service"]),
+])
+def test_7b_each_menu_item_runs_exactly_its_command(env, item, side, argv):
+    """09 §2.6: each item's exact command (the fakes log their argv). Quit
+    stops the unit with `--no-block`, since a plain exit comes back in 5 s
+    (Restart=always) and systemd stops the tray itself. Mutation: any other
+    argv, or quit by exiting -> red."""
+    out = env.pure("click", "--item", item)
+    assert out["rc"] == 0
+    assert env.side(side) == argv
+    other = {"systemd-run": "systemctl", "systemctl": "systemd-run"}[side]
+    assert env.side(other) == [], "one command per item"
+    assert env.calls() == ["attention --json"], "only the pure step's own first poll runs `self-learn`"
+
+
+def test_7c_check_now_polls_and_seen_marks_then_polls(env):
+    """"Check now" polls; "Mark everything decided as seen" is the middle
+    click. Mutation: either item does nothing -> red."""
+    env.pure("click", "--item", "check")
+    assert env.calls() == ["attention --json", "attention --json"]
+    env.log.unlink()
+    env.pure("click", "--item", "seen")
+    assert env.calls() == ["attention --json", "attention seen --all-decided", "attention --json"]
+
+
+def test_7d_restart_notifies_and_reports_a_failure(env):
+    """A restart says it happened, or that it failed with systemctl's exit.
+    Mutation: drop either notification -> red."""
+    out = env.pure("click", "--item", "restart-ui")
+    assert out["notices"] == [["self-learn: the web UI restarted", ""]]
+    out = env.pure("click", "--item", "restart-ui", FAKE_SYSTEMCTL_RC="5")
+    assert out["rc"] == 5
+    assert out["notices"][0][0] == "self-learn: could not restart the web UI"
+    assert "exited 5" in out["notices"][0][1]
+
+
+def test_7e_background_restart_waits_for_the_running_job(env):
+    """09 §2.6: while the heartbeat names a running job, the background-service
+    restart waits (its item names the job, then greys out while waiting) and
+    runs once the heartbeat shows the service between jobs. Mutation: restart at
+    once -> red (systemctl ran before the job ended); never re-check -> red."""
+    env.heartbeat("mine")
+    assert env.pure("menu")["menu"][9]["label"] == "Restart the background service (after the mine job)"
+
+    during_job = []
+
+    def job_ends():
+        time.sleep(2.5)
+        during_job.extend(env.side("systemctl"))
+        env.heartbeat(None)
+
+    ender = threading.Thread(target=job_ends)
+    ender.start()
+    out = env.pure("click", "--item", "restart-host", "--wait-secs", "1")
+    ender.join()
+    assert during_job == [], "restarted while the job was still running"
+    assert out["rc"] == 0
+    assert env.side("systemctl") == ["--user restart self-learn-host.service"]
+    assert out["notices"][0][0] == "self-learn: restart waiting" and "mine" in out["notices"][0][1]
+    assert out["notices"][-1] == ["self-learn: the background service restarted", ""]
+    waiting = [m[9] for m in out["menus"] if not m[9]["enabled"]]
+    assert waiting and waiting[0]["label"] == "Restarting the background service after the mine job…"
+    assert out["menu"][9] == {"id": 10, "key": "restart-host", "type": "standard",
+                              "label": "Restart the background service", "enabled": True}
+
+
+def test_7f_a_stale_or_idle_heartbeat_restarts_at_once(env):
+    """A heartbeat older than its own tick means the service is not running that
+    job (the `heartbeat_is_fresh` rule), and one with no `running` is between
+    jobs: either restarts at once. Mutation: ignore the age -> red."""
+    env.heartbeat("mine", age=300, tick=60)
+    assert env.pure("menu")["menu"][9]["label"] == "Restart the background service"
+    out = env.pure("click", "--item", "restart-host", "--wait-secs", "30")
+    assert env.side("systemctl") == ["--user restart self-learn-host.service"]
+    assert [n[0] for n in out["notices"]] == ["self-learn: the background service restarted"]
+    env.heartbeat(None)
+    env.pure("click", "--item", "restart-host", "--wait-secs", "30")
+    assert env.side("systemctl") == ["--user restart self-learn-host.service"] * 2

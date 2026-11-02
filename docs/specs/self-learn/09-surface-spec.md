@@ -1058,7 +1058,34 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   succeeds), so a browser on `PATH` that cannot run is skipped.
 - **Middle click** (`SecondaryActivate`) runs `self-learn attention seen
   --all-decided` and polls again at once. Seen never clears a needs-you item.
-- **No right-click menu** (no dbusmenu); `ContextMenu` and `Scroll` do nothing.
+- **Right-click menu** *(S-142, 2026-11-02)*. The item's `Menu` property names
+  `/MenuBar`, where the tray serves `com.canonical.dbusmenu` (version 3, one flat
+  level under the root, built from the tray's state at each call; a change bumps
+  the revision and emits `LayoutUpdated`). In order: the tooltip's own line,
+  greyed out; *Open the inbox* (the left click's command); *Open self-learn*
+  (`self-learn-ui-open` with no page, through the same `systemd-run --user
+  --scope`: it focuses an open UI window or opens Home); *Check now* (polls);
+  *Mark everything decided as seen* (the middle click); *Restart the web UI*
+  (`systemctl --user restart self-learn-ui.service`); *Restart the background
+  service* (`self-learn-host.service`); *Quit (hide this icon until next login)*
+  (`systemctl --user --no-block stop self-learn-tray.service`: a plain exit would
+  come back in 5 s under `Restart=always`, and systemd stops the tray itself).
+  Separators group open, check, restart and quit. Only `clicked` on an enabled
+  item acts; a literal `_` in a label is doubled (dbusmenu's access-key mark).
+- **The background restart waits for a running job.** systemd stops the service
+  with SIGTERM, which `serve` honours only between jobs, and kills it 90 s later,
+  so a restart during a long job would lose the job. The tray reads
+  `<cache_dir>/serve.heartbeat` (a cache file; `cache_dir` from the reader's
+  JSON): a `running` job in a heartbeat no older than its own `tick_secs`
+  (`serve.heartbeat_is_fresh`'s rule) means busy. The item then reads "Restart
+  the background service (after the <job> job)"; a click while busy shows a
+  notification, greys the item out as "Restarting the background service after
+  the <job> job…", re-reads the heartbeat every 5 s and restarts once it shows
+  no running job. A stale, missing or unreadable heartbeat restarts at once.
+- **Notifications.** Each restart ends with a desktop notification
+  (`org.freedesktop.Notifications`) saying it restarted, or that it failed with
+  systemctl's exit status; every notification is also logged to the journal.
+- `ContextMenu` and `Scroll` do nothing (the bar opens the menu itself).
 - **When it polls.** Every 120 s, and one second after a change in
   `$SELF_LEARN_HOME` itself, `$SELF_LEARN_HOME/overseer/`,
   `$SELF_LEARN_HOME/attention/` or `<cache_dir>/attention/` (`Gio.FileMonitor`;
