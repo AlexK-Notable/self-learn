@@ -447,10 +447,16 @@ def _consider_restart(home: Path, cache_dir: Path, watch: _CodeWatch, *,
         # Invalid IDs cannot correlate a result; still discard malformed input.
         _finish_restart(cache_dir, request_id, "refused", f"Malformed restart request: {exc}")
         return
-    env_now = env_fingerprint()
-    _attempt_reexec(home, cache_dir, watch, pid=pid, tick_secs=tick_secs,
-                    current=_fingerprint(code_fingerprint(), env_now), env_now=env_now,
-                    moment=time.time(), request_id=request_id)
+    try:
+        env_now = env_fingerprint()
+        _attempt_reexec(home, cache_dir, watch, pid=pid, tick_secs=tick_secs,
+                        current=_fingerprint(code_fingerprint(), env_now), env_now=env_now,
+                        moment=time.time(), request_id=request_id)
+    except Exception as exc:
+        # An unexpected failure must not leave the claim behind: it would hold
+        # every later request until this process restarts some other way.
+        _finish_restart(cache_dir, request_id, "refused", f"the restart check failed: {_short_cause(exc)}")
+        raise
 
 
 def _wait_between_ticks(stop: threading.Event, secs: float, home: Path,

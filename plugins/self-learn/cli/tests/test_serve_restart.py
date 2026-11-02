@@ -319,3 +319,29 @@ def test_refusal_keeps_newer_pending_request_and_its_result(host, monkeypatch):
     assert json.loads(Path(newer[0]["result_path"]).read_text())["error"] == "second refusal"
     assert json.loads(Path(first["result_path"]).read_text())["error"] == "fixture refusal"
     assert not (cache / "serve.restart").exists()
+
+
+def test_unexpected_failure_releases_the_claim(host, monkeypatch):
+    """An unexpected error inside the restart check is reported as refused and
+    clears the claim, so a later request is still taken. Mutation: drop the
+    except branch -> the claim stays and the second request is never taken."""
+    home, cache = host
+    first = serve.request_restart(cache)
+    watch = serve._CodeWatch(running="old", running_env="old", started_at=42)
+
+    def boom():
+        raise RuntimeError("fixture surprise")
+
+    monkeypatch.setattr(serve, "_new_code_imports", boom)
+    with pytest.raises(RuntimeError):
+        serve._consider_restart(home, cache, watch, pid=1, tick_secs=60)
+    result = json.loads(Path(first["result_path"]).read_text())
+    assert result["status"] == "refused" and "fixture surprise" in result["error"]
+    assert not (cache / "serve.restart.claimed").exists()
+
+    second = serve.request_restart(cache)
+    monkeypatch.setattr(serve, "_new_code_imports", lambda: (True, ""))
+    taken = []
+    monkeypatch.setattr(serve, "_reexec", lambda argv, env: taken.append(env[serve._RESTART_ID_ENV]))
+    serve._consider_restart(home, cache, watch, pid=1, tick_secs=60)
+    assert taken == [second["id"]]
