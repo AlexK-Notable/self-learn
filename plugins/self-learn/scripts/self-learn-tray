@@ -204,7 +204,11 @@ def menu_items(result, restarting):
 
 
 def control_argv(argv):
-    """Bound only the tray's command process, never the background host."""
+    """Bound only the tray's command process, never the background host. The
+    two launchers are not bounded: GNU timeout signals its whole process group,
+    and a browser the launcher started stays in that group."""
+    if argv in (ACTIVATE_ARGV, OPEN_ARGV):
+        return argv
     if argv == HOST_ACTIVE_ARGV:
         secs = 15
     elif argv[0] == "systemctl" and ("start" in argv or "restart" in argv):

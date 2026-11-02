@@ -1084,9 +1084,13 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   request about once a second without starting another tick first. Heartbeats
   never authorize a restart: a job can start immediately after an idle beat.
 - **Host control: `self-learn serve --restart`.** Resolves `worker.cache_dir(home)`
-  exactly like `serve` and atomically writes `serve.restart` with `requested_at`
-  (epoch float) and a random `id`. Prints one JSON line with `requested: true`,
-  `id` and `result_path`, exits 0, and never starts the loop or touches the ledger.
+  exactly like `serve` and writes `serve.restart` with `requested_at` (epoch
+  float) and a random `id`, linking it into place so that it never replaces a
+  request already waiting: a waiting (not yet claimed) request is joined, and the
+  receipt carries its id with `joined: true`, so every requester watches the one
+  result that restart writes. Prints one JSON line with `requested: true`, `id`,
+  `joined` and `result_path`, exits 0, and never starts the loop or touches the
+  ledger.
   At the safe boundary `serve` claims the request with an atomic
   `os.rename(serve.restart, serve.restart.claimed)` before reading it. It
   processes and removes only the claimed file. A newer request written while
@@ -1101,7 +1105,12 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   Exec/sync/import failures write `refused` and remove only the claim. A
   leftover claim at startup without a terminal result is refused with
   "the service stopped before taking it", unless the new-image id acknowledges
-  it. Malformed requests are refused as well. Refusals require another click.
+  it. In a running image a claim is finished before the check returns, so one
+  found at a later check is left over from a failed result write: that check
+  finishes it (`refused`, "the service could not record what happened to it")
+  before taking the new request, and while the cache still fails it raises and
+  the next check tries again. Malformed requests are refused as well. Refusals
+  require another click.
   SIGTERM is checked outside `_run_tick`; a tick can include several jobs.
 - **Pending restarts and notifications.** Both restart items are disabled from
   the accepted click through the outcome, labelled "Restarting the background
@@ -1115,7 +1124,9 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   Every control-command wait uses `timeout --kill-after=5 <N>`: 15 seconds
   for `is-active`, 30 seconds for `self-learn serve --restart`, and 120 seconds
   for systemctl start/restart (other tray control commands: 30 seconds; the
-  attention poll keeps its 10-second bound). A command timeout or signal
+  attention poll keeps its 10-second bound). The two launchers (the left click
+  and Open self-learn) are not bounded: GNU timeout signals its whole process
+  group, and a browser the launcher starts stays in that group. A command timeout or signal
   releases the item and notifies; it never signals the background host. A
   timed-out status query performs no follow-on operation. A timed-out request
   says it is not known whether the request was recorded and the service may

@@ -41,11 +41,11 @@ def test_cli_restart_is_cache_only_and_never_starts_loop(host, monkeypatch, caps
     receipt = json.loads(lines[0])
     cache = worker.cache_dir(home)
     request = json.loads((cache / "serve.restart").read_text())
-    assert receipt == {"requested": True, "id": request["id"],
+    assert receipt == {"requested": True, "id": request["id"], "joined": False,
                        "result_path": str(cache / "serve.restart-results" / (request["id"] + ".json"))}
     assert type(request["requested_at"]) is float and abs(request["requested_at"] - time.time()) < 5
     assert len(request["id"]) == 32
-    assert serve.request_restart(cache)["id"] != request["id"]
+    assert serve.request_restart(cache)["id"] == request["id"], "a waiting request is joined"
 
 
 def test_request_during_real_tick_waits_for_all_jobs(host, monkeypatch):
@@ -182,9 +182,7 @@ def test_new_request_survives_claim_and_both_images_acknowledge_in_order(host, m
     second = next_requests[0]
     assert execs == [first["id"]]
     assert json.loads((cache / "serve.restart").read_text())["id"] == second["id"]
-    # A returning exec stub cannot claim over the outstanding first image.
-    serve._consider_restart(home, cache, watch, pid=1, tick_secs=60)
-    assert execs == [first["id"]]
+    # A real exec never returns: the new image's startup recovery runs next.
     monkeypatch.setenv(serve._RESTART_ID_ENV, first["id"])
     serve._recover_restart(cache)
     assert serve._RESTART_ID_ENV not in os.environ
@@ -237,18 +235,17 @@ def test_startup_recovers_leftover_claim_before_any_tick(host, monkeypatch, stat
 
 def test_result_writer_prunes_only_results_older_than_a_day(host):
     _, cache = host
-    old, recent = serve.request_restart(cache), serve.request_restart(cache)
-    serve._restart_result(cache, old["id"], "refused", "old")
-    serve._restart_result(cache, recent["id"], "refused", "recent")
-    old_path, recent_path = Path(old["result_path"]), Path(recent["result_path"])
+    serve._restart_result(cache, "old", "refused", "old")
+    serve._restart_result(cache, "recent", "refused", "recent")
+    old_path = serve._restart_result_path(cache, "old")
+    recent_path = serve._restart_result_path(cache, "recent")
     os.utime(old_path, (time.time() - 86401, time.time() - 86401))
     unrelated = cache / "keep-me"
     unrelated.write_text("keep")
     os.utime(unrelated, (time.time() - 90000, time.time() - 90000))
-    newest = serve.request_restart(cache)
-    serve._restart_result(cache, newest["id"], "restarting", None)
+    serve._restart_result(cache, "newest", "restarting", None)
     assert not old_path.exists()
-    assert recent_path.is_file() and Path(newest["result_path"]).is_file()
+    assert recent_path.is_file() and serve._restart_result_path(cache, "newest").is_file()
     assert unrelated.read_text() == "keep"
 
 
@@ -344,4 +341,58 @@ def test_unexpected_failure_releases_the_claim(host, monkeypatch):
     taken = []
     monkeypatch.setattr(serve, "_reexec", lambda argv, env: taken.append(env[serve._RESTART_ID_ENV]))
     serve._consider_restart(home, cache, watch, pid=1, tick_secs=60)
+    assert taken == [second["id"]]
+
+
+def test_a_second_request_joins_the_waiting_one(host, monkeypatch):
+    """Two requests before the service claims either: the second joins the
+    first (same id, `joined`), so neither requester is left watching a result
+    that will never come (review r2-verify B1). One restart serves both.
+    Mutation: overwrite the waiting request -> red."""
+    home, cache = host
+    first = serve.request_restart(cache)
+    second = serve.request_restart(cache)
+    assert first["joined"] is False and second["joined"] is True
+    assert second["id"] == first["id"] and second["result_path"] == first["result_path"]
+    assert json.loads((cache / "serve.restart").read_text())["id"] == first["id"]
+    assert not list(cache.glob(".serve.restart.*.tmp"))
+    taken = []
+    monkeypatch.setattr(serve, "_reexec", lambda argv, env: taken.append(env[serve._RESTART_ID_ENV]))
+    serve._consider_restart(home, cache, serve._CodeWatch(running="old", running_env="old", started_at=42),
+                            pid=1, tick_secs=60)
+    assert taken == [first["id"]]
+    assert json.loads(Path(first["result_path"]).read_text())["status"] == "restarting"
+
+
+def test_a_failed_outcome_write_is_retried_at_the_next_request(host, monkeypatch):
+    """When the refusal cannot be written, the claim stays; the next request's
+    check finishes it (refused, with a reason) and then takes the new request,
+    so a passing cache fault never blocks later restarts (review r2-verify B2).
+    Mutation: return early on a leftover claim -> the new request is never
+    taken -> red."""
+    home, cache = host
+    watch = serve._CodeWatch(running="old", running_env="old", started_at=42)
+    first = serve.request_restart(cache)
+    real_result = serve._restart_result
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        raise OSError("fixture: disk full")
+
+    monkeypatch.setattr(serve, "_restart_result", flaky)
+    monkeypatch.setattr(serve, "_new_code_imports", lambda: (False, "fixture import failed"))
+    with pytest.raises(OSError):
+        serve._consider_restart(home, cache, watch, pid=1, tick_secs=60)
+    assert calls["n"] >= 1 and (cache / "serve.restart.claimed").exists()
+
+    monkeypatch.setattr(serve, "_restart_result", real_result)
+    monkeypatch.setattr(serve, "_new_code_imports", lambda: (True, ""))
+    second = serve.request_restart(cache)
+    assert second["id"] != first["id"]
+    taken = []
+    monkeypatch.setattr(serve, "_reexec", lambda argv, env: taken.append(env[serve._RESTART_ID_ENV]))
+    serve._consider_restart(home, cache, watch, pid=1, tick_secs=60)
+    old = json.loads(Path(first["result_path"]).read_text())
+    assert old["status"] == "refused" and "could not record" in old["error"]
     assert taken == [second["id"]]

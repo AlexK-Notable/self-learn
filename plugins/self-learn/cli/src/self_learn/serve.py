@@ -352,12 +352,42 @@ def _consume_poke(cache_dir: Path) -> bool:
 
 
 def request_restart(cache_dir: Path) -> dict[str, Any]:
-    """Ask this home's host to re-exec between ticks; only cache is written."""
-    request = {"requested_at": time.time(), "id": uuid.uuid4().hex}
+    """Ask this home's host to re-exec between ticks; only cache is written.
+
+    A request already waiting (not yet claimed) is joined, never replaced: the
+    receipt carries its id (`joined: true`), so every requester watches the one
+    result that restart will write. The new file is linked into place, which
+    fails when one exists, so two requesters can never overwrite each other."""
     cache_dir.mkdir(parents=True, exist_ok=True)
-    fsops.atomic_write(cache_dir / "serve.restart", json.dumps(request),
-                       fsync=False, preserve_mode=False)
-    return {"requested": True, "id": request["id"],
+    path = cache_dir / "serve.restart"
+    request = {"requested_at": time.time(), "id": uuid.uuid4().hex}
+    tmp = cache_dir / f".serve.restart.{request['id']}.tmp"
+    tmp.write_text(json.dumps(request), encoding="utf-8")
+    joined = False
+    try:
+        for _ in range(5):
+            try:
+                os.link(tmp, path)
+                break
+            except FileExistsError:
+                pass
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                continue  # claimed between the two calls: try to link again
+            except (OSError, ValueError):
+                existing = None
+            existing_id = _restart_id(existing.get("id")) if isinstance(existing, dict) else None
+            if existing_id is not None:
+                request, joined = {"id": existing_id}, True
+                break
+            os.replace(tmp, path)  # a malformed waiting file correlates with nobody
+            break
+        else:
+            raise OSError("the restart request file kept changing; try again")
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {"requested": True, "id": request["id"], "joined": joined,
             "result_path": str(_restart_result_path(cache_dir, request["id"]))}
 
 
@@ -399,6 +429,13 @@ def _recover_restart(cache_dir: Path) -> None:
     restarted_id = _restart_id(os.environ.pop(_RESTART_ID_ENV, None))
     if restarted_id is not None:
         _restart_result(cache_dir, restarted_id, "restarted", None)
+    _settle_claim(cache_dir, "the service stopped before taking it")
+
+
+def _settle_claim(cache_dir: Path, why: str) -> None:
+    """Finish a claim left behind: keep a terminal result already written, else
+    write `refused` with `why`; then remove the claim. A write that fails again
+    raises and leaves the claim for the next attempt, so no request is lost."""
     claimed = cache_dir / "serve.restart.claimed"
     try:
         data = json.loads(claimed.read_text(encoding="utf-8"))
@@ -413,7 +450,7 @@ def _recover_restart(cache_dir: Path) -> None:
         result = None
     if not (isinstance(result, dict) and result.get("id") == request_id
             and result.get("status") in ("restarted", "refused")):
-        _restart_result(cache_dir, request_id, "refused", "the service stopped before taking it")
+        _restart_result(cache_dir, request_id, "refused", why)
     claimed.unlink(missing_ok=True)
 
 
@@ -423,9 +460,11 @@ def _consider_restart(home: Path, cache_dir: Path, watch: _CodeWatch, *,
     if _jobs_in_flight > 0:
         return
     path = cache_dir / "serve.restart.claimed"
-    # Only startup recovery or this claim's outcome may clear an older claim.
+    # In a running image a claim is finished before this function returns, so
+    # one found here is left over from a failed outcome write: finish it now
+    # (raising, and so retried at the next check, while the cache still fails).
     if path.exists():
-        return
+        _settle_claim(cache_dir, "the service could not record what happened to it")
     try:
         os.rename(cache_dir / "serve.restart", path)
     except FileNotFoundError:

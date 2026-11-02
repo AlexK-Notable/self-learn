@@ -66,7 +66,9 @@ _FAKE_SELF_LEARN = textwrap.dedent(
     exit 0
     """
 )
-_FAKE_SYSTEMD_RUN = '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$FAKE_LOG.systemd-run"\n'
+_FAKE_SYSTEMD_RUN = ('#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$FAKE_LOG.systemd-run"\n'
+                     'if [ -n "${FAKE_LAUNCH_SLEEP:-}" ]; then sleep "$FAKE_LAUNCH_SLEEP"; '
+                     'echo done > "$FAKE_LOG.launch-done"; fi\n')
 _FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG.systemctl"\nif [ "$2" = "is-active" ]; then [ -n "${FAKE_ACTIVE_SLEEP:-}" ] && sleep "$FAKE_ACTIVE_SLEEP"; exit "${FAKE_ACTIVE_RC:-0}"; fi\n[ -n "${FAKE_SYSTEMCTL_SLEEP:-}" ] && sleep "$FAKE_SYSTEMCTL_SLEEP"\nexit "${FAKE_SYSTEMCTL_RC:-0}"\n'
 
 
@@ -985,3 +987,15 @@ def test_9_each_control_command_timeout_releases_item(env, item, extra, notice):
     if "FAKE_ACTIVE_SLEEP" in extra:
         assert env.side("systemctl") == ["--user is-active --quiet self-learn-host.service"]
         assert "serve --restart" not in env.calls()
+
+
+@pytest.mark.parametrize("item", ["open-inbox", "open"])
+def test_9_launchers_are_never_bounded_by_the_control_timeout(env, item):
+    """GNU timeout signals its whole process group on expiry, and a browser the
+    launcher starts stays in that group, so a bounded launcher that ran long
+    could close the browser it had just opened. The launchers run unbounded
+    (review r2-verify (a)). Mutation: wrap them in `timeout` -> the slow fake
+    launcher is killed before it finishes -> red."""
+    out = env.pure("click", "--item", item, "--control-timeout-secs", "0.3", FAKE_LAUNCH_SLEEP="1")
+    assert out["rc"] == 0
+    assert env.side("launch-done") == ["done"], "the launcher was killed by the control timeout"
