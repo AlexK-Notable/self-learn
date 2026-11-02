@@ -199,12 +199,9 @@ def status(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
 
 
 def status_fast(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
-    read = _invoke_json(["status", "--json", "--fast"], home=home, env=env)
-    # Fast status reports an unusable home in its JSON, with exit zero;
-    # full status fails. Preserve the header's failure wording.
-    if read.ok and isinstance(read.data, dict) and read.data.get("home_state", "ok") != "ok":
-        return CliRead(data=None, error=f"ledger home is {read.data['home_state']}")
-    return read
+    # Both CLI paths succeed for an uninitialized git home, and fail for
+    # missing/non-repo homes. Preserve the real CLI result in either case.
+    return _invoke_json(["status", "--json", "--fast"], home=home, env=env)
 
 
 def report(home: Path, *, env: dict[str, str] | None = None) -> CliRead:

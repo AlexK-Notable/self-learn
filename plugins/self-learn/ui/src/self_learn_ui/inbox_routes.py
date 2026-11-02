@@ -848,7 +848,12 @@ def _count_cache(request: Request) -> dict:
 
 
 def _seed_count(request: Request, read: ledger.CliRead) -> None:
-    _count_cache(request)["inbox"] = (time.monotonic(), inbox_link(read))
+    link = inbox_link(read)
+    cache = _count_cache(request)
+    if link["label"] == "?":
+        cache.pop("inbox", None)
+    else:
+        cache["inbox"] = (time.monotonic(), link)
 
 
 async def _doc(request: Request) -> ledger.CliRead:

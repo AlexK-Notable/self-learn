@@ -25,13 +25,61 @@ def test_fast_header_matches_full_status_on_same_ledger(tmp_path, pending):
     assert new == old
 
 
-def test_fast_header_preserves_unusable_home_error(tmp_path, monkeypatch):
-    monkeypatch.setattr(ledger, "_invoke_json", lambda *a, **kw: models.CliRead(
-        data={"home_state": "missing", "total_pending": 0}))
-    read = ledger.status_fast(tmp_path)
-    line = models.build_jobs_line(read, models.CliRead(data={"runs": []}))
-    assert "Job status could not be read" in line.text
-    assert not read.ok
+@pytest.mark.parametrize("state", ["uninitialized", "missing", "not-a-repo"])
+def test_fast_header_preserves_real_home_result(tmp_path, state):
+    import subprocess
+
+    sb = make_env(tmp_path / "sandbox")
+    home = tmp_path / "empty-home"
+    if state != "missing":
+        home.mkdir()
+    if state == "uninitialized":
+        subprocess.run(["git", "init", "-q", str(home)], check=True, env=sb.env)
+    full = ledger.status(home, env=sb.env)
+    fast = ledger.status_fast(home, env=sb.env)
+    mine = models.CliRead(data={"runs": []})
+    old = models.build_jobs_line(full, mine)
+    new = models.build_jobs_line(fast, mine)
+    assert old.text
+    assert new == old
+    if state == "uninitialized":
+        assert full.ok and fast.ok
+        assert fast.data["home_state"] == state
+        assert new.text == "The overnight read has not run yet"
+    else:
+        assert not full.ok and not fast.ok
+        assert "Job status could not be read" in new.text
+
+
+@pytest.mark.parametrize("valid_pending", [False, True])
+def test_fast_header_rejects_invalid_body_like_full_status(tmp_path, valid_pending):
+    from ruamel.yaml import YAML
+    from self_learn.records import Record, RecordError
+
+    sb = make_env(tmp_path, skills=("s",))
+    path = seed_record(sb.ledger, make_behavior(scope="skill:s", record_id="lrn-aa000001"))
+    text = path.read_text().replace("## Trigger", "## Wrong section")
+    path.write_text(text)
+    # Positive control: this is valid pending frontmatter, but not a valid record.
+    assert YAML(typ="safe").load(text.split("---")[1])["status"] == "pending"
+    with pytest.raises(RecordError):
+        Record.from_path(path)
+    if valid_pending:
+        seed_record(sb.ledger, make_behavior(scope="skill:s", record_id="lrn-aa000002"))
+    full = ledger.status(sb.ledger, env=sb.env)
+    fast = ledger.status_fast(sb.ledger, env=sb.env)
+    mine = ledger.mine_status(sb.ledger, env=sb.env)
+    assert full.ok and fast.ok and mine.ok
+    now = datetime.now(timezone.utc)
+    old = models.build_jobs_line(full, mine, now=now)
+    assert old.text
+    assert models.build_jobs_line(fast, mine, now=now) == old
+    assert full.data["total_pending"] == fast.data["total_pending"] == int(valid_pending)
+    assert full.data["total_unreadable"] == fast.data["total_unreadable"] == 1
+    for key in ("pending", "unanalyzed", "unreadable", "oldest_days"):
+        full_bucket = next(b for b in full.data["buckets"] if b["bucket"] == "s")
+        fast_bucket = next(b for b in fast.data["buckets"] if b["bucket"] == "s")
+        assert full_bucket[key] == fast_bucket[key]
 
 
 def test_header_uses_fast_status_and_expires_on_refresh_and_ttl(tmp_path, monkeypatch):
@@ -165,3 +213,46 @@ def test_health_search_cache_cannot_extend_header_status_lifetime(tmp_path, monk
         header = client.get("/header/jobs")
         assert "The nightly review is behind" in header.text
         assert reads == [sb.ledger]
+
+
+@pytest.mark.parametrize("path", ["/", "/report", "/bucket/skill/s"])
+def test_page_drops_header_seed_if_refresh_arrives_during_read(tmp_path, monkeypatch, path):
+    sb = make_env(tmp_path, skills=("s",))
+    monkeypatch.setattr(ledger, "report", lambda home: models.CliRead(data={}))
+    monkeypatch.setattr(ledger, "mine_status", lambda home: models.CliRead(data={"runs": []}))
+    calls = []
+    def fast(home):
+        calls.append(home)
+        return models.CliRead(data={"steward_stale": True})
+    monkeypatch.setattr(ledger, "status_fast", fast)
+    with _client(sb) as client:
+        def old_status(home):
+            client.app.state.refresh_hub.force_refresh("front")
+            return models.CliRead(data={"steward_hold": "old hold"})
+        monkeypatch.setattr(ledger, "status", old_status)
+        response = client.get(path)
+        assert response.status_code == 200 and 'class="site-header"' in response.text
+        header = client.get("/header/jobs")
+        assert "jobs-line" in header.text
+        assert "The nightly review is behind" in header.text
+        assert "on hold" not in header.text
+        assert calls == [sb.ledger]
+
+
+@pytest.mark.parametrize("failed", [models.CliRead(data=None, error="unavailable"),
+                                   models.CliRead(data={"error": "unavailable"}),
+                                   models.CliRead(data=None)])
+def test_inbox_count_retries_failure_then_caches_success(tmp_path, monkeypatch, failed):
+    sb = make_env(tmp_path)
+    reads = []
+    def attention(home):
+        reads.append(home)
+        return failed if len(reads) == 1 else models.CliRead(data={"counts": {"needs_you": 2}})
+    monkeypatch.setattr(ledger, "attention", attention)
+    with _client(sb) as client:
+        first = client.get("/inbox/count")
+        assert first.status_code == 200 and "Inbox (?)" in first.text
+        second = client.get("/inbox/count")
+        assert second.status_code == 200 and "Inbox (2)" in second.text
+        assert "Inbox (2)" in client.get("/inbox/count").text
+        assert reads == [sb.ledger, sb.ledger]

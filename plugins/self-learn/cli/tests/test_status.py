@@ -95,7 +95,7 @@ def test_status_counts_seeded_pending_record(monkeypatch, tmp_path, capsys):
     assert rows["user"]["pending"] == 0
 
 
-# ---- 09 §5 FW-18: `status --json` unreadable count (full path only).
+# ---- 09 §5 FW-18: `status --json` unreadable counts (full and fast paths).
 
 
 def _seed_valid_plus_corrupt(monkeypatch, tmp_path):
@@ -136,18 +136,18 @@ def test_status_json_counts_unreadable_per_bucket_and_total(
     assert payload["total_unreadable"] == 2
 
 
-def test_status_fast_omits_the_unreadable_field(monkeypatch, tmp_path, capsys):
-    """08 §1 FW-18: `--fast` OMITS the field entirely — its frontmatter-only
-    scan cannot detect the schema/section class, and absence ('unknown')
-    beats a possibly-wrong zero. Kill: leak `unreadable`/`total_unreadable`
-    into the fast payload and this reddens."""
+def test_status_fast_counts_unreadable_like_full_status(monkeypatch, tmp_path, capsys):
+    """Fast and full share pending parsing, including unreadable counts."""
     _seed_valid_plus_corrupt(monkeypatch, tmp_path)
-    rc = cli.main(["status", "--json", "--fast"])
-    assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert "total_unreadable" not in payload
-    for b in payload.get("buckets", []):
-        assert "unreadable" not in b
+    assert cli.main(["status", "--json"]) == 0
+    full = json.loads(capsys.readouterr().out)
+    assert cli.main(["status", "--json", "--fast"]) == 0
+    fast = json.loads(capsys.readouterr().out)
+    assert full["total_pending"] == fast["total_pending"] == 1
+    assert full["total_unreadable"] == fast["total_unreadable"] == 2
+    full_rows = {b["bucket"]: b for b in full["buckets"]}
+    for b in fast["buckets"]:
+        assert b["unreadable"] == full_rows[b["bucket"]]["unreadable"]
 
 
 def test_status_fast_reads_only_the_cached_steward_marker(
@@ -233,10 +233,9 @@ def test_o4_doctor_serve_reads_cached_overseer_marker(monkeypatch, tmp_path):
 def test_status_fast_does_not_crash_on_undecodable_bytes(
     monkeypatch, tmp_path, capsys
 ):
-    """worker.fast_status's read_text catch widened to include
-    UnicodeDecodeError (FW-18 crash-prevention). Kill: narrow it back to
-    `except OSError:` and the decode error propagates → the fast scan
-    crashes (rc != 0), reddening this. The valid record is still counted."""
+    """The shared pending parser catches decode failures (FW-18).
+    Removing UnicodeDecodeError from its skip set must crash this read;
+    the valid record still counts as pending."""
     _seed_valid_plus_corrupt(monkeypatch, tmp_path)
     rc = cli.main(["status", "--json", "--fast"])
     assert rc == 0

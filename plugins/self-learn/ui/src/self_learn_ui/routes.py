@@ -572,6 +572,7 @@ def _render(request: Request, name: str, ctx: dict[str, Any], status_code: int =
 
 @router.get("/", response_class=HTMLResponse)
 def front(request: Request, notice: str | None = None) -> HTMLResponse:
+    generation = _jobs_line_cache(request)["generation"]
     home = _home(request)
     list_read = ledger.list_items(home, include_deferred=True)
     status_read = ledger.status(home)
@@ -590,7 +591,9 @@ def front(request: Request, notice: str | None = None) -> HTMLResponse:
         model, list_read, status_read, report_read, mine_read,
         proposals=_home_proposals(home, list_read),
     )
-    _jobs_line_cache(request)["line"] = (time.monotonic(), home_model.jobs_line)
+    cache = _jobs_line_cache(request)
+    if cache["generation"] == generation:
+        cache["line"] = (time.monotonic(), home_model.jobs_line)
     report_data = report_read.data if report_read.ok and isinstance(report_read.data, dict) else {}
     # The "Inbox (N)" link fills itself in after load (GET /inbox/count,
     # inbox_routes.py), so the front page never waits on `attention --json`.
@@ -678,11 +681,12 @@ def _jobs_line_cache(request: Request) -> dict[str, Any]:
     return cache
 
 
-def _seed_header_status(request: Request, read: ledger.CliRead) -> None:
+def _seed_header_status(request: Request, read: ledger.CliRead, generation: int) -> None:
     # Health and Bucket already paid for full status. Let the background
     # header finish its own mine read without asking status a second time.
     cache = _jobs_line_cache(request)
-    cache["status"] = (time.monotonic(), read)
+    if cache["generation"] == generation:
+        cache["status"] = (time.monotonic(), read)
 
 
 @router.get("/home/needs-you", response_class=HTMLResponse)
@@ -862,6 +866,7 @@ def _gather_archive_entries(
 
 @router.get("/bucket/{scope}/{name}", response_class=HTMLResponse)
 def bucket_page(request: Request, scope: str, name: str, notice: str | None = None) -> Response:
+    generation = _jobs_line_cache(request)["generation"]
     home = _home(request)
     bucket = _find_bucket(home, scope, name)
     if bucket is None:
@@ -899,7 +904,7 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
     # server-side ledger derivation. A failed/old-CLI read (absent field)
     # degrades to 0 (no line), never a crash.
     status_read = ledger.status(home)
-    _seed_header_status(request, status_read)
+    _seed_header_status(request, status_read, generation)
     unreadable = 0
     if status_read.ok and status_read.data:
         for b in status_read.data.get("buckets", []):
@@ -1515,10 +1520,11 @@ def report_page(request: Request) -> HTMLResponse:
     if is_htmx and cached is not None and time.monotonic() - cached[0] < _REPORT_CACHE_TTL:
         report_read, status_read = cached[1], cached[2]
     else:
+        generation = _jobs_line_cache(request)["generation"]
         report_read = ledger.report(home)
         status_read = ledger.status(home)
         _REPORT_CACHE[key] = (time.monotonic(), report_read, status_read)
-        _seed_header_status(request, status_read)
+        _seed_header_status(request, status_read, generation)
     status_data = status_read.data if status_read.ok and isinstance(status_read.data, dict) else {}
     metrics = status_data.get("metrics")
     supply_mix = status_data.get("supply_mix")

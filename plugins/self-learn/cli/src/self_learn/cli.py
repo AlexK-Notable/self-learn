@@ -431,7 +431,7 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument(
         "--fast",
         action="store_true",
-        help="pending/-only frontmatter scan, no git (SessionStart budget; "
+        help="pending/-only record scan, no git (SessionStart budget; "
         "implies --json; excludes follow-up counts — 08 §7.1)",
     )
 
@@ -1722,6 +1722,7 @@ def _status_fast_parts(home: Path) -> tuple[dict, intents.StatusClass | None]:
                 "home_state": state,
                 "home": str(home),
                 "total_pending": 0,
+                "total_unreadable": 0,
                 "unanalyzed_total": 0,
                 "oldest_days": 0,
                 "staleness_alarm": False,
@@ -2658,9 +2659,8 @@ def _cmd_status(as_json: bool) -> int:
             "total_pending": total_pending,
             # 09 §5 unreadable-record row (FW-18): per-bucket `unreadable`
             # rides each buckets[] entry (from status_infos); the top-level
-            # total is the Front consumer's datum. The `--fast` path OMITS
-            # this field entirely (absence = unknown, never zero) — its
-            # frontmatter-only scan cannot detect the schema/section class.
+            # total is the Front consumer's datum. Fast status shares
+            # the pending parser and reports the same unreadable count.
             "total_unreadable": sum(i["unreadable"] for i in infos),
             "open_followups": followups,
             # 08 §7.1 amendment: iso8601 | null (null = never ran here)

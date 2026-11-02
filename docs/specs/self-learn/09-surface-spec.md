@@ -1273,6 +1273,8 @@ permission surface of §4.3).
   a 30-second cache, invalidated by the existing refresh hub generation;
   these caches are hints, never ledger truth. Inbox passes its attention
   read to the first workspace and seeds its header count from that read.
+  Each seed captures the generation before reading and is discarded if it
+  changed during the read. Failed inbox reads are retried, never cached.
 - **Reads**: `list --json` / `status --json` for lists and counts; raw
   files (record md, proposal yaml, diff) for Detail, and raw
   `proposals/merge-*.yaml` for cluster groups (structured YAML —
@@ -1305,7 +1307,8 @@ permission surface of §4.3).
 - **Refresh**: `watchfiles` in the server over every bucket's
   `pending/` + `proposals/` dirs and `events.jsonl`, debounced
   ~300 ms; changes push an **SSE event** to connected pages. The client
-  waits for 1.5 seconds without another in-scope change before refreshing;
+  waits for 1.5 seconds without another in-scope change, verb-completion
+  refresh or Iterate pane proposal event before refreshing;
   once a full reload starts, further events cannot restart it. Inbox
   refreshes its list in place; other pages reload through the Y-16 hold
   checks, preserving unsaved settings and dismissable messages. A held
