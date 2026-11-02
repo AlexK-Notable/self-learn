@@ -40,13 +40,16 @@ from __future__ import annotations
 
 import copy
 import io
+import pickle
 import re
 import secrets
+from functools import lru_cache
 from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.timestamp import TimeStamp
 
 from . import premises as _premises
 from .primitives import chrono, fsops, text, yamlio
@@ -356,7 +359,16 @@ class Record:
 
     @classmethod
     def from_path(cls, path: Path | str) -> "Record":
-        return cls.from_text(Path(path).read_text(encoding="utf-8"))
+        # Always read: timestamps and sizes cannot detect every rewrite, and
+        # a cached parse must not hide a missing/unreadable file. The cached
+        # snapshot is private; even the first caller receives an independent
+        # object graph, including nested round-trip YAML state.
+        text = Path(path).read_text(encoding="utf-8")
+        if cls is not Record:
+            # Preserve custom subclass constructors/from_text overrides; only
+            # the concrete record schema has a known serializable state.
+            return cls.from_text(text)
+        return pickle.loads(_cached_parse(text))
 
     # ---------------------------------------------------------------- create
 
@@ -1287,6 +1299,33 @@ def _validate_scope(scope: object) -> None:
     if isinstance(scope, str) and scope.startswith("skill:") and len(scope) > len("skill:"):
         return
     raise ValidationError(f"scope must be skill:<name>, project, or user, got {scope!r}")
+
+
+def _reduce_timestamp(value: TimeStamp) -> tuple:
+    # ruamel's deepcopy drops timezone/microseconds; datetime's default pickle
+    # drops YAML metadata. Keep both the datetime fields and the instance state.
+    return (
+        TimeStamp,
+        (value.year, value.month, value.day, value.hour, value.minute,
+         value.second, value.microsecond, value.tzinfo),
+        value.__dict__,
+    )
+
+
+@lru_cache(maxsize=8192)
+def _cached_parse(text: str) -> bytes:
+    """Bounded, process-local snapshots of successful file-text parses.
+
+    A pickle round trip preserves ruamel aliases/merge keys that deepcopy
+    changes or shares. The bytes are ONLY produced here from our own parsed
+    record, never accepted from disk or a caller. Exceptions are not cached.
+    """
+    record = Record.from_text(text)
+    buf = io.BytesIO()
+    pickler = pickle.Pickler(buf, protocol=pickle.HIGHEST_PROTOCOL)
+    pickler.dispatch_table = {TimeStamp: _reduce_timestamp}
+    pickler.dump(record)
+    return buf.getvalue()
 
 
 def parse_record(text: str) -> Record:
