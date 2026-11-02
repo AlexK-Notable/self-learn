@@ -44,6 +44,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import hosts as hosts_mod
+from . import cache_gc
 from . import settings
 from . import domain
 from .primitives import chrono, fsops, text, yamlio
@@ -1241,10 +1242,10 @@ def _glob_probe_parts(pattern: str) -> tuple[bool, list[str], str]:
 
 
 def _glob_witness_cache_path(roots: tuple[Path, ...], pattern: str) -> Path:
-    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache").expanduser().absolute()
+    cache = cache_gc.cache_root().absolute()
     key = json.dumps(([str(r.absolute()) for r in roots], pattern))
     digest = hashlib.sha256(key.encode()).hexdigest()
-    return cache / "self-learn" / "glob-witness-v1" / f"{digest}.json"
+    return cache / cache_gc.GLOB_WITNESS_DIR / f"{digest}.json"
 
 
 def _glob_witness_valid(
@@ -1279,6 +1280,14 @@ def _glob_witness_valid(
             root = root.absolute()
             if ".." in root.parts or not base.is_relative_to(root):
                 continue
+            # A stat-able path may still be hidden from scandir/iglob:
+            # execute-only directories allow lookup but forbid listing.
+            if any(
+                not os.access(directory, os.R_OK | os.X_OK)
+                for directory in hit.parents
+                if directory.is_relative_to(root)
+            ):
+                continue
             if base == root.joinpath(*literal):
                 return True
             if not floating:
@@ -1311,7 +1320,10 @@ def glob_reaches(
     budget_s = _glob_probe_budget_s()
     if budget_s <= 0:
         return _probe_glob_reaches(roots, pattern, budget_s=budget_s)[0]
-    cache = _glob_witness_cache_path(roots, pattern)
+    try:
+        cache = _glob_witness_cache_path(roots, pattern)
+    except Exception:  # noqa: BLE001 -- optional cache must not break the probe
+        return _probe_glob_reaches(roots, pattern, budget_s=budget_s)[0]
     witness = _GLOB_WITNESSES.get(cache)
     if witness is None:
         try:
@@ -1330,7 +1342,10 @@ def glob_reaches(
     _GLOB_WITNESSES.pop(cache, None)
     verdict, witness = _probe_glob_reaches(roots, pattern, budget_s=budget_s)
     if witness is not None:
-        witness = (witness[0].absolute(), witness[1].absolute())
+        try:
+            witness = (witness[0].absolute(), witness[1].absolute())
+        except (OSError, ValueError, RuntimeError):
+            return verdict
     if (
         verdict == "match"
         and witness is not None

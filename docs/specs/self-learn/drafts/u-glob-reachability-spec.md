@@ -362,7 +362,9 @@ from a bounded process memo or an atomic, disposable file under
 `$XDG_CACHE_HOME/self-learn/glob-witness-v1/` (default `~/.cache`), keyed
 by the ordered absolute roots and exact pattern. Every reuse re-proves
 that the path exists, stays beneath a supplied root with no symlink in
-its ancestry, and matches the same anchored literal/remainder split,
+its ancestry, and that each directory from that root to the witness's
+parent permits this process to read and enter it (`R_OK | X_OK`). The
+witness must match the same anchored literal/remainder split,
 using the existing §3.4a glob matcher. The base must satisfy step 5's
 zero-directory or DFS candidate conditions, including its directory
 restriction for multi-segment literal tails. No second glob translator
@@ -377,6 +379,14 @@ Explicit `budget_s` calls bypass both caches, as does a nonpositive
 configured budget. Thus a deleted witness can become `"none"` on the
 very next call, even in the same process. Cache I/O failures are ignored;
 the cache never becomes ledger truth or a reason to fail the probe.
+Cache-path resolution failures also fall back to the plain probe.
+
+The directory is resolved through `cache_gc.cache_root()`. Its existing
+prune pass removes witness JSON files 30 days after writing and leftover
+atomic-write temporary files after one day. This is maximum write age,
+not idle time: a hot witness is periodically rebuilt without touching its
+mtime on every read. Cleanup recognizes only the owned filename shapes,
+skips symlinks and directories, and honors the prune pass's dry-run mode.
 
 `budget_s` defaults to **30.0** seconds per pattern, overridable by the
 environment variable `SELF_LEARN_GLOB_PROBE_BUDGET_S` (a float; an
