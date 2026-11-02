@@ -656,8 +656,9 @@ def test_the_front_page_links_the_inbox_with_its_count(tmp_path, monkeypatch):
     reads.clear()
     assert 'hx-get="/inbox/count"' in client.get("/settings").text
     link = client.get("/inbox/count", headers=HX).text
-    assert 'href="/inbox"' in link and "Inbox (2)" in link and reads == ["attention"]
+    assert 'href="/inbox"' in link and "Inbox (2)" in link and reads == []
     monkeypatch.setattr(ledger, "attention", lambda home, env=None: CliRead(data=None, error="boom"))
+    client.app.state.refresh_hub.force_refresh("front")
     assert "Inbox (?)" in client.get("/inbox/count", headers=HX).text
 
 

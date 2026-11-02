@@ -119,7 +119,7 @@ _SHUTDOWN_TIMEOUT_S = 10.0
 _RELOAD_TIMEOUT_MS = 20000
 #: How long to wait before concluding a reload was correctly DEFERRED.
 #: Also loopback-fast; a held leg must never navigate within this window.
-_DEFER_QUIET_S = 0.6
+_DEFER_QUIET_S = 1.8  # exceed the 1.5 s refresh debounce before asserting a hold
 
 TOKEN = "js-dom-harness-token"
 
@@ -520,7 +520,18 @@ def _assert_deferred(page: "Page") -> None:
 
 
 def _assert_reloaded(page: "Page") -> None:
-    page.wait_for_function("window.__navMarker === undefined", timeout=_RELOAD_TIMEOUT_MS)
+    # Poll from Python: wait_for_function's in-page predicate hit a CSP
+    # EvalError during navigation in the performance-lane regression run.
+    deadline = time.monotonic() + _RELOAD_TIMEOUT_MS / 1000
+    while time.monotonic() < deadline:
+        try:
+            if page.evaluate("window.__navMarker === undefined"):
+                return
+        except sync_api.Error as exc:
+            if "Execution context was destroyed" not in str(exc):
+                raise
+        time.sleep(0.02)
+    raise AssertionError("the deferred reload never completed")
 
 
 def _dispatch_htmx(page: "Page", event_name: str, path: str) -> None:

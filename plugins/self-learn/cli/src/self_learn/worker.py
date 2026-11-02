@@ -72,6 +72,7 @@ from .ledger_ops import (
     ProposalError,
     _dump_yaml,
     _dumps_yaml,
+    _load_pending,
     find_record_path,
     is_unanalyzed,
     queue,
@@ -3652,17 +3653,17 @@ def last_run_iso() -> str | None:
     )
 
 
-def fast_status(home: Path | str, queued_ids: list[str] | None = None) -> dict:
-    """`status --json --fast` (08 §7.1 SessionStart pin): a pending/-only
-    frontmatter scan — no git, no network, no resolved/ walk (follow-up
-    counts deliberately excluded), <500 ms warm on 100 records. Queue
-    semantics are THE same rules as `list` (deferred hidden), computed
-    here once so the bash hook never reimplements them. When *queued_ids*
-    is given, the id of every queued record is appended to it (a side
-    channel for the steward-stale check; the returned payload is unchanged)."""
-    from ruamel.yaml import YAML  # local: keep module import cost flat
-
-    yaml = YAML(typ="safe")
+def fast_status(
+    home: Path | str,
+    queued_ids: list[str] | None = None,
+    unreadable_paths: list[Path] | None = None,
+) -> dict:
+    """Pending-only status: the full queue's record validity and proposal
+    eligibility, without a resolved/ walk, git or network. When *queued_ids*
+    is given, append each queued record's id for the steward-stale check.
+    Invalid pending files are counted per bucket exactly as in full status;
+    when *unreadable_paths* is given, each one is appended to it (a side
+    channel like *queued_ids*: the top-level keys stay pinned, OB4)."""
     home = Path(home)
     now = datetime.now(timezone.utc)
     buckets_out: list[dict] = []
@@ -3674,69 +3675,32 @@ def fast_status(home: Path | str, queued_ids: list[str] | None = None) -> dict:
         pending = 0
         unanalyzed = 0
         oldest = None
-        for path in bucket.pending_files():
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                # 09 §5 FW-18 crash-prevention: UnicodeDecodeError is a
-                # ValueError, not an OSError — undecodable bytes would
-                # otherwise crash the --fast scan. The --fast path still
-                # OMITS the `unreadable` count (this is skip-not-count).
+        entries, unreadable = _load_pending(bucket)
+        for entry in entries:
+            record = entry.record
+            if not domain.is_queued(record, now):
                 continue
-            lines = text.split("\n")
-            if not lines or lines[0] != "---":
-                continue
-            try:
-                close = lines[1:].index("---") + 1
-                fm = yaml.load("\n".join(lines[1:close]))
-            except Exception:  # noqa: BLE001 — unparseable: not queued
-                continue
-            if not isinstance(fm, dict):
-                continue
-            # M-B: domain.is_queued is THE membership rule (mapping form —
-            # this scan never loads a full Record) — a lapsed deferral
-            # (``deferred_until`` in the past) is queued, same as
-            # ``list``/``status`` already compute via ``ledger_ops.queue``.
-            if not domain.is_queued(fm, now):
-                continue  # hidden or non-draft — same rule as the queue
             pending += 1
-            if queued_ids is not None and fm.get("id"):
-                queued_ids.append(str(fm["id"]))
-            # Full-timestamp floor (domain.record_age_days) — the old
-            # ``str(created_at)[:10]`` truncation here was the A1
-            # divergence from ``list --json``/``status --json``'s ages.
-            age = domain.record_age_days(fm, now)
+            if queued_ids is not None:
+                queued_ids.append(record.id)
+            age = domain.record_age_days(record, now)
             oldest = age if oldest is None else max(oldest, age)
-            body = "\n".join(lines[close + 1 :])
-            ppath = bucket.path / "proposals" / f"{fm.get('id')}.yaml"
-            fresh = False
-            if ppath.is_file():
-                try:
-                    pdata = yaml.load(ppath.read_text(encoding="utf-8"))
-                    # SAME predicate as is_unanalyzed: hash match AND
-                    # schema validity (audit 2026-07-15: a sha-intact but
-                    # schema-broken proposal must not suppress the alarm).
-                    if (
-                        isinstance(pdata, dict)
-                        and pdata.get("record_sha") == sha_anchor(body)
-                    ):
-                        validate_proposal(dict(pdata), record_text=text)
-                        fresh = True
-                except Exception:  # noqa: BLE001
-                    fresh = False
-            if not fresh:
+            if is_unanalyzed(entry, now=now):
                 unanalyzed += 1
-        if pending:
+        if pending or unreadable:
             buckets_out.append(
                 {
                     "bucket": bucket.name,
                     "scope": bucket.scope,
                     "pending": pending,
                     "unanalyzed": unanalyzed,
+                    "unreadable": len(unreadable),
                     "oldest_days": oldest,
                 }
             )
         total += pending
+        if unreadable_paths is not None:
+            unreadable_paths.extend(unreadable)
         unanalyzed_total += unanalyzed
         if oldest is not None:
             oldest_all = max(oldest_all, oldest)

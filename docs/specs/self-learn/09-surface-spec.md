@@ -1266,6 +1266,15 @@ permission surface of §4.3).
   render escaped; the CSP header must be present). Together with the
   Host/token/POST pins this is **~50 lines of middleware + renderer
   configuration — in scope for v1, not optional hardening**.
+- **Header reads (2026-11-01 performance amendment):** the jobs line uses
+  `status --json --fast` plus `mine status --json`. Health and Bucket pass
+  their already-read full status to that background header request. Home
+  supplies its already-built jobs line. Jobs and inbox-count fragments use
+  a 30-second cache, invalidated by the existing refresh hub generation;
+  these caches are hints, never ledger truth. Inbox passes its attention
+  read to the first workspace and seeds its header count from that read.
+  Each seed captures the generation before reading and is discarded if it
+  changed during the read. Failed inbox reads are retried, never cached.
 - **Reads**: `list --json` / `status --json` for lists and counts; raw
   files (record md, proposal yaml, diff) for Detail, and raw
   `proposals/merge-*.yaml` for cluster groups (structured YAML —
@@ -1297,9 +1306,14 @@ permission surface of §4.3).
   miss.)*
 - **Refresh**: `watchfiles` in the server over every bucket's
   `pending/` + `proposals/` dirs and `events.jsonl`, debounced
-  ~300 ms; changes push an **SSE event** to connected pages, which
-  re-request their current partial (htmx swap); a 10 s client poll is
-  the fallback when SSE is disconnected. Any verb completion forces a
+  ~300 ms; changes push an **SSE event** to connected pages. The client
+  waits for 1.5 seconds without another in-scope change, verb-completion
+  refresh or Iterate pane proposal event before refreshing;
+  once a full reload starts, further events cannot restart it. Inbox
+  refreshes its list in place; other pages reload through the Y-16 hold
+  checks, preserving unsaved settings and dismissable messages. A held
+  refresh releases when its last hold clears, after the quiet period.
+  A 10 s client poll is the fallback when SSE is disconnected. Any verb completion forces a
   push. External mutations (a concurrent `/self-learn:review`
   session, verb- or reconcile-driven pulls — the post-13 ledger has
   no autosync watcher) surface the same way. If the record

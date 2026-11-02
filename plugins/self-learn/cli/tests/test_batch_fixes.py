@@ -246,13 +246,11 @@ class TestHookDependencyDegradation:
     no new non-``test_*.py`` module may appear under ``cli/tests/`` (sprint
     contract §"Code and test rules" item 3).
 
-    ``worker.fast_status`` (worker.py:3224-3230) always emits
-    ``total_pending`` and NEVER emits ``total_unreadable`` at all — both
-    deliberate (comments at cli.py:1358-1360 / worker.py:3248-3251: the
-    ``--fast`` scan's omission of ``total_unreadable`` is honest-null, not
-    a bug). So the ``status_json=`` tests below are forward regression
-    guards against a future CLI JSON-shape change / the day B-7's producer
-    gains this field, not reproductions of a currently-live bug.
+    ``worker.fast_status`` emits ``total_pending`` and, since perf batch 1
+    (2026-11-01), ``total_unreadable`` from the same full record parse as
+    ``status --json``; an older CLI omitted it (honest-null). So the
+    ``status_json=`` tests below guard both shapes against a future CLI
+    JSON-shape change, not reproductions of a currently-live bug.
     """
 
     def _bin_dir(
@@ -450,9 +448,9 @@ class TestHookDependencyDegradation:
         )
 
     def test_unreadable_count_absent_no_annotation(self, tmp_path):
-        """The honest-null default, against the REAL CLI end to end: the
-        real `--fast` path never emits `total_unreadable` at all (a live
-        record, no unreadable ones), so the pending line must render
+        """No unreadable records, against the REAL CLI end to end: the
+        real `--fast` path emits `total_unreadable: 0` (a live record, no
+        unreadable ones), so the pending line must render
         exactly as before, with no manufactured "(0 unreadable)" — the
         `unreadable` read now happens BEFORE the `total -gt 0` branch
         (fold r1 MAJOR 2), so this also proves that reordering did not

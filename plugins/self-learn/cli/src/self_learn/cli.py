@@ -431,7 +431,7 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument(
         "--fast",
         action="store_true",
-        help="pending/-only frontmatter scan, no git (SessionStart budget; "
+        help="pending/-only record scan, no git (SessionStart budget; "
         "implies --json; excludes follow-up counts — 08 §7.1)",
     )
 
@@ -453,6 +453,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "Default OFF; the unflagged --json output is byte-unchanged. "
         "Costly (a routed-record scan per distinct target) — pass --id "
         "to scope it to one record (delta F9).",
+    )
+    list_p.add_argument(
+        "--surface-fill-id", metavar="ID",
+        help="compute surface fill for only this record, retaining the other queue rows",
     )
     list_p.add_argument(
         "--id",
@@ -1718,6 +1722,7 @@ def _status_fast_parts(home: Path) -> tuple[dict, intents.StatusClass | None]:
                 "home_state": state,
                 "home": str(home),
                 "total_pending": 0,
+                "total_unreadable": 0,
                 "unanalyzed_total": 0,
                 "oldest_days": 0,
                 "staleness_alarm": False,
@@ -1734,7 +1739,9 @@ def _status_fast_parts(home: Path) -> tuple[dict, intents.StatusClass | None]:
             None,
         )
     queued_ids: list[str] = []
-    data = worker.fast_status(home, queued_ids)
+    unreadable_paths: list[Path] = []
+    data = worker.fast_status(home, queued_ids, unreadable_paths)
+    data["total_unreadable"] = len(unreadable_paths)
     data["home_state"] = state
     data["miner_last_run"] = miner.last_run_iso()
     data["miner_stale"] = miner.stale()
@@ -2654,9 +2661,8 @@ def _cmd_status(as_json: bool) -> int:
             "total_pending": total_pending,
             # 09 §5 unreadable-record row (FW-18): per-bucket `unreadable`
             # rides each buckets[] entry (from status_infos); the top-level
-            # total is the Front consumer's datum. The `--fast` path OMITS
-            # this field entirely (absence = unknown, never zero) — its
-            # frontmatter-only scan cannot detect the schema/section class.
+            # total is the Front consumer's datum. Fast status shares
+            # the pending parser and reports the same unreadable count.
             "total_unreadable": sum(i["unreadable"] for i in infos),
             "open_followups": followups,
             # 08 §7.1 amendment: iso8601 | null (null = never ran here)
@@ -2751,6 +2757,7 @@ def _cmd_list(
     include_deferred: bool,
     surface_fill: bool = False,
     record_id: str | None = None,
+    surface_fill_id: str | None = None,
 ) -> int:
     home = resolve_home()
     if (code := _home_gate(home)) is not None:
@@ -2761,8 +2768,11 @@ def _cmd_list(
         items = [i for i in items if i["id"] == record_id]
 
     if as_json:
-        if surface_fill:
-            _add_surface_fill(home, items)
+        if surface_fill or surface_fill_id is not None:
+            fill_items = items if surface_fill_id is None else [
+                i for i in items if i["id"] == surface_fill_id
+            ]
+            _add_surface_fill(home, fill_items)
         print(json.dumps(items))
         return EXIT_OK
 
@@ -5261,6 +5271,7 @@ def _main(argv: list[str] | None = None) -> int:
             as_json=args.as_json,
             include_deferred=args.include_deferred,
             surface_fill=args.surface_fill,
+            surface_fill_id=args.surface_fill_id,
             record_id=args.record_id,
         )
 

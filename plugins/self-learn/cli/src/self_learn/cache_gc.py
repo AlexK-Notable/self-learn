@@ -1,7 +1,7 @@
 """Removing cache directories and lock files that belong to nothing
 (S-99).
 
-``${XDG_CACHE_HOME:-~/.cache}/self-learn`` holds two kinds of entry that
+``${XDG_CACHE_HOME:-~/.cache}/self-learn`` holds three kinds of entry that
 can outlive what they were made for:
 
 - ``home-<sha256(home path)[:8]>/`` -- one per ledger home (doc 13 §6).
@@ -15,6 +15,9 @@ can outlive what they were made for:
   (``gitops.host_lock_path``). A lock file is only a rendezvous point, so
   one that nobody holds and nobody has taken for a month is removed (one
   under a ``/tmp`` host path, a day).
+- ``glob-witness-v1/`` -- disposable reachability witnesses, removed
+  30 days after writing so unused patterns cannot accumulate forever.
+  Atomic-write temporary files left by a crash expire after one day.
 
 What it never removes:
 
@@ -25,7 +28,7 @@ What it never removes:
   counted and left alone);
 - anything with a file changed inside the idle window (a drive that is
   only unmounted for a few days keeps its cache);
-- a lock file somebody holds, or any entry that is not one of the two
+- a lock file somebody holds, or any entry that is not one of the three
   shapes above (``autosync-pause.lock`` and the landing state are not
   ours to judge).
 
@@ -39,6 +42,7 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +52,9 @@ from .ledger import resolve_home
 from .primitives import fsops
 
 __all__ = [
+    "GLOB_WITNESS_DIR",
+    "GLOB_WITNESS_MAX_AGE_SECS",
+    "GLOB_WITNESS_TEMP_MAX_AGE_SECS",
     "HOME_POINTER",
     "HOME_MIN_IDLE_SECS",
     "LOCK_MIN_IDLE_SECS",
@@ -71,8 +78,16 @@ LOCK_MIN_IDLE_SECS = 30 * 86400
 #: hosts: the slug of ``/tmp/x`` begins ``-tmp-``).
 TMP_LOCK_MIN_IDLE_SECS = 86400
 
+#: Witness age is since writing, not last access: a hot witness can be
+#: rebuilt once a month without a write on every report cache hit.
+GLOB_WITNESS_DIR = "glob-witness-v1"
+GLOB_WITNESS_MAX_AGE_SECS = 30 * 86400
+GLOB_WITNESS_TEMP_MAX_AGE_SECS = 86400
+
 _HOME_DIR_RE = re.compile(r"home-([0-9a-f]{8})")
 _LOCK_FILE_RE = re.compile(r"host-.+\.commit\.lock")
+_GLOB_WITNESS_RE = re.compile(r"[0-9a-f]{64}\.json")
+_GLOB_WITNESS_TEMP_RE = re.compile(r"\.[0-9a-f]{64}\.json\.[0-9]+\.[0-9a-f]{8}\.tmp")
 
 
 @dataclass
@@ -81,6 +96,8 @@ class PruneResult:
 
     removed_homes: list[str] = field(default_factory=list)
     removed_locks: list[str] = field(default_factory=list)
+    #: Witness and interrupted-write filenames removed within GLOB_WITNESS_DIR.
+    removed_glob_witnesses: list[str] = field(default_factory=list)
     #: ``home-*`` directories left alone because they carry no usable
     #: ``.home`` record.
     unattributed: int = 0
@@ -240,6 +257,43 @@ def _prune_locks(root: Path, now: float, dry_run: bool, out: PruneResult) -> Non
             out.removed_locks.append(name)
 
 
+def _prune_glob_witnesses(root: Path, now: float, dry_run: bool, out: PruneResult) -> None:
+    """Prune only our regular files, without following a replaced directory.
+
+    Keeping the directory fd through unlink prevents a concurrent symlink
+    swap of the cache directory from redirecting cleanup outside it.
+    """
+    try:
+        fd = os.open(root / GLOB_WITNESS_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return
+    try:
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if _GLOB_WITNESS_RE.fullmatch(entry.name):
+                    limit = GLOB_WITNESS_MAX_AGE_SECS
+                elif _GLOB_WITNESS_TEMP_RE.fullmatch(entry.name):
+                    limit = GLOB_WITNESS_TEMP_MAX_AGE_SECS
+                else:
+                    continue
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode):
+                        continue
+                    if now - info.st_mtime < limit:
+                        out.too_recent += 1
+                        continue
+                    if not dry_run:
+                        os.unlink(entry.name, dir_fd=fd)
+                    out.removed_glob_witnesses.append(entry.name)
+                except FileNotFoundError:
+                    continue  # another cleanup pass won the race
+                except OSError as exc:
+                    out.errors.append(f"{GLOB_WITNESS_DIR}/{entry.name}: {exc}")
+    finally:
+        os.close(fd)
+
+
 def prune(
     *,
     root: Path | None = None,
@@ -257,6 +311,7 @@ def prune(
         keep.add(home_digest(resolve_home()))
         _prune_homes(base, keep, stamp, dry_run, result)
         _prune_locks(base, stamp, dry_run, result)
+        _prune_glob_witnesses(base, stamp, dry_run, result)
     except Exception as exc:  # noqa: BLE001 -- housekeeping must never break its caller
         result.errors.append(f"{type(exc).__name__}: {exc}")
     return result

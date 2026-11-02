@@ -23,6 +23,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass, replace as dataclass_replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -31,6 +32,7 @@ from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
+from self_learn import domain as sl_domain
 from self_learn import places as sl_places
 from self_learn.hosts import HOST_MODES, effective_default_mode, is_repo_root
 from self_learn.records import Record
@@ -347,7 +349,8 @@ def cycle_destination(
 
 
 def _next_pending_id(
-    home: Path, scope: str, bucket_name: str, exclude_id: str
+    home: Path, scope: str, bucket_name: str, exclude_id: str,
+    *, list_read: ledger.CliRead | None = None,
 ) -> str | None:
     """The next pending record in the SAME ``(scope, bucket_name)`` bucket
     (any destination group, oldest-first per the CLI's own list order),
@@ -372,14 +375,18 @@ def _next_pending_id(
     record LIVES sidesteps the vocabulary mismatch between a bucket's
     bare scope and a record's own (``skill:<name>``-qualified) one, so
     there is no second scope-comparison rule to get wrong here."""
-    read = ledger.list_items(home, include_deferred=False)
+    read = list_read if list_read is not None else ledger.list_items(home, include_deferred=False)
     if not read.ok or not read.data:
         return None
+    # The retained --include-deferred rows can contain a non-draft record
+    # still in pending/; use the CLI's full queue-membership predicate.
+    now = datetime.now(timezone.utc)
     for item in read.data:
         item_id = item.get("id")
         if (
             item.get("bucket") == bucket_name
             and item_id != exclude_id
+            and (list_read is None or sl_domain.is_queued(item, now))
             and _belongs_to_bucket(home, item_id, scope, bucket_name)
         ):
             return item_id
@@ -431,6 +438,7 @@ class DetailReadBundle:
     registry: list[dict]
     host_registered: bool
     host_add_command: str | None
+    queue_read: ledger.CliRead | None = None
 
 
 def _gather_detail_bundle(home: Path, record_id: str) -> DetailReadBundle | None:
@@ -446,13 +454,10 @@ def _gather_detail_bundle(home: Path, record_id: str) -> DetailReadBundle | None
     record = ledger.read_record(location.path)
     if record is None:
         return None
-    # 09 §11 Y-20 / delta F9: the ONE call site that passes --surface-fill,
-    # scoped via --id to this one record — Front/Bucket never request it
-    # (blind-review F4). Riding inside this bundle means the budget datum
-    # is cached and invalidated by the SAME Y-19 generation gate as the
-    # rest of Detail (global on any verb completion — Y-20 decision 3).
+    # Retain the queue rows for prefetch, but probe fill ONLY for the
+    # displayed record's targets (Y-20 / delta F9).
     list_read = ledger.list_items(
-        home, include_deferred=True, surface_fill=True, record_id=record_id
+        home, include_deferred=True, surface_fill_id=record_id
     )
     item = None
     if list_read.ok:
@@ -498,6 +503,7 @@ def _gather_detail_bundle(home: Path, record_id: str) -> DetailReadBundle | None
         registry=registry,
         host_registered=host_registered,
         host_add_command=host_add_command,
+        queue_read=list_read,
     )
 
 
@@ -566,6 +572,7 @@ def _render(request: Request, name: str, ctx: dict[str, Any], status_code: int =
 
 @router.get("/", response_class=HTMLResponse)
 def front(request: Request, notice: str | None = None) -> HTMLResponse:
+    generation = _jobs_line_cache(request)["generation"]
     home = _home(request)
     list_read = ledger.list_items(home, include_deferred=True)
     status_read = ledger.status(home)
@@ -584,7 +591,9 @@ def front(request: Request, notice: str | None = None) -> HTMLResponse:
         model, list_read, status_read, report_read, mine_read,
         proposals=_home_proposals(home, list_read),
     )
-    _jobs_line_cache(request)["line"] = (time.monotonic(), home_model.jobs_line)
+    cache = _jobs_line_cache(request)
+    if cache["generation"] == generation:
+        cache["line"] = (time.monotonic(), home_model.jobs_line)
     report_data = report_read.data if report_read.ok and isinstance(report_read.data, dict) else {}
     # The "Inbox (N)" link fills itself in after load (GET /inbox/count,
     # inbox_routes.py), so the front page never waits on `attention --json`.
@@ -645,8 +654,13 @@ def header_jobs(request: Request) -> HTMLResponse:
         line = cached[1]
     else:
         home = _home(request)
-        line = models.build_jobs_line(ledger.status(home), ledger.mine_status(home))
-        cache["line"] = (now, line)
+        generation = cache["generation"]
+        seeded = cache.pop("status", None)
+        status_read = (seeded[1] if seeded is not None and now - seeded[0] < _JOBS_LINE_TTL_SECS
+                       else ledger.status_fast(home))
+        line = models.build_jobs_line(status_read, ledger.mine_status(home))
+        if _jobs_line_cache(request)["generation"] == generation:
+            cache["line"] = (now, line)
     return _render(request, "partials/jobs_line.html", {"jobs_line": line})
 
 
@@ -659,10 +673,20 @@ _JOBS_LINE_TTL_SECS = 30.0
 
 def _jobs_line_cache(request: Request) -> dict[str, Any]:
     cache = getattr(request.app.state, "humane_jobs_line", None)
-    if cache is None:
-        cache = {}
+    generation = getattr(getattr(request.app.state, "refresh_hub", None), "generation", 0)
+    if cache is None or cache.get("generation") != generation:
+        # Replace the dict: an in-flight reader may still hold the old one.
+        cache = {"generation": generation}
         request.app.state.humane_jobs_line = cache
     return cache
+
+
+def _seed_header_status(request: Request, read: ledger.CliRead, generation: int) -> None:
+    # Health and Bucket already paid for full status. Let the background
+    # header finish its own mine read without asking status a second time.
+    cache = _jobs_line_cache(request)
+    if cache["generation"] == generation:
+        cache["status"] = (time.monotonic(), read)
 
 
 @router.get("/home/needs-you", response_class=HTMLResponse)
@@ -670,9 +694,9 @@ async def home_needs_you(request: Request) -> HTMLResponse:
     """The Home page's "Needs your answer" tile, filled in after load from
     the inbox reader's own `counts.needs_you` (the front page never waits
     on `attention --json`). `None` (rendered "?") when it could not be read."""
-    from .inbox_routes import inbox_link  # the header link's own words
+    from .inbox_routes import _doc, inbox_link  # share the header count
 
-    read = await asyncio.to_thread(ledger.attention, _home(request))
+    read = await _doc(request)
     data = read.data if isinstance(read.data, dict) else None
     count: int | None = None
     if data is not None and not read.error and not data.get("error"):
@@ -842,6 +866,7 @@ def _gather_archive_entries(
 
 @router.get("/bucket/{scope}/{name}", response_class=HTMLResponse)
 def bucket_page(request: Request, scope: str, name: str, notice: str | None = None) -> Response:
+    generation = _jobs_line_cache(request)["generation"]
     home = _home(request)
     bucket = _find_bucket(home, scope, name)
     if bucket is None:
@@ -879,6 +904,7 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
     # server-side ledger derivation. A failed/old-CLI read (absent field)
     # degrades to 0 (no line), never a crash.
     status_read = ledger.status(home)
+    _seed_header_status(request, status_read, generation)
     unreadable = 0
     if status_read.ok and status_read.data:
         for b in status_read.data.get("buckets", []):
@@ -1130,7 +1156,9 @@ def detail_page(
     # since this route returns a Response object directly (FastAPI only
     # auto-attaches BackgroundTasks when it builds the Response itself).
     if cache is not None and hub is not None:
-        next_id = _next_pending_id(home, location.scope, location.bucket_name, record_id)
+        next_id = _next_pending_id(
+            home, location.scope, location.bucket_name, record_id, list_read=bundle.queue_read
+        )
         if next_id is not None:
             background_tasks.add_task(_warm_detail_prefetch, cache, hub, home, next_id)
             response.background = background_tasks
@@ -1492,9 +1520,11 @@ def report_page(request: Request) -> HTMLResponse:
     if is_htmx and cached is not None and time.monotonic() - cached[0] < _REPORT_CACHE_TTL:
         report_read, status_read = cached[1], cached[2]
     else:
+        generation = _jobs_line_cache(request)["generation"]
         report_read = ledger.report(home)
         status_read = ledger.status(home)
         _REPORT_CACHE[key] = (time.monotonic(), report_read, status_read)
+        _seed_header_status(request, status_read, generation)
     status_data = status_read.data if status_read.ok and isinstance(status_read.data, dict) else {}
     metrics = status_data.get("metrics")
     supply_mix = status_data.get("supply_mix")

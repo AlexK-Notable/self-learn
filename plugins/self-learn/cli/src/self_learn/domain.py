@@ -3,8 +3,8 @@ plan v2 SS2). Every consumer that used to re-derive one of these three
 questions -- "is this record queued", "is this record's routing still
 live", "how old is this record" -- imports this leaf instead:
 ``ledger_ops.queue``/``is_unanalyzed``, ``report.ledger_metrics``,
-``report``'s ``routed_live`` accumulation, ``worker.fast_status`` (mapping
-form), ``worker._oldest_pending_days``, ``compilers._eligible``,
+``report``'s ``routed_live`` accumulation, ``worker.fast_status``,
+``worker._oldest_pending_days``, ``compilers._eligible``,
 ``verbs.recompile``'s ``retired``, UI ``models._is_deferred``.
 
 Depends on nothing but :mod:`self_learn.records` (the schema) and
@@ -25,8 +25,7 @@ from .primitives import chrono
 from .records import DRAFT_STATUSES, Record
 
 #: A full :class:`~self_learn.records.Record` OR a plain frontmatter
-#: mapping (``worker.fast_status``'s ``--fast`` scan never loads a full
-#: Record -- it reads the YAML frontmatter dict directly, S4).
+#: mapping (for callers that already hold a serialized queue row).
 RecordLike = Union[Record, Mapping]
 
 
