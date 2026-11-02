@@ -67,8 +67,6 @@ from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator
-
 from . import ledger_ops, premises
 from .invocation.contract import McpTool, McpToolset, ToolReply
 from .premises import Observation, PremiseCheck, ProbeEnv
@@ -349,6 +347,8 @@ class PremiseProbeTool:
         placement: PlacementReader | None = None,
         denied_roots: Sequence[str | Path] = (),
     ) -> None:
+        from jsonschema import Draft202012Validator
+
         self.home = Path(home)
         self._env = env
         self._placement = placement

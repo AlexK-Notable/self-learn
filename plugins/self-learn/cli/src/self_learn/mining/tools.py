@@ -20,8 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from jsonschema import Draft202012Validator, validators
-
 from .. import refs, transcript_lines
 from ..index import fts5, textquery
 from ..index.protocol import EmbedProvider
@@ -35,12 +33,6 @@ from .contract import typed_turn_lines
 from .spine import epoch
 
 _log = logging.getLogger(__name__)
-StrictValidator = validators.extend(
-    Draft202012Validator,
-    type_checker=Draft202012Validator.TYPE_CHECKER.redefine(
-        "integer", lambda checker, value: isinstance(value, int) and not isinstance(value, bool)
-    ),
-)
 #: Hook output these events inject is context the agent read (a reminder in
 #: front of it matters to a rule check), so their ``hook_success`` rows stay.
 _CONTEXT_HOOK_EVENTS = frozenset({"SessionStart", "UserPromptSubmit"})
@@ -186,6 +178,16 @@ class SessionTools:
         self._lock = threading.Lock()
 
     def toolset(self) -> McpToolset:
+        # Flags and read commands use this module's transcript helpers without
+        # constructing model tools; only tool construction needs jsonschema.
+        from jsonschema import Draft202012Validator, validators
+
+        StrictValidator = validators.extend(
+            Draft202012Validator,
+            type_checker=Draft202012Validator.TYPE_CHECKER.redefine(
+                "integer", lambda checker, value: isinstance(value, int) and not isinstance(value, bool)
+            ),
+        )
         tools = []
         for definition in TOOL_DEFINITIONS:
             name = definition["name"]

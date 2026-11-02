@@ -25,19 +25,10 @@ function both charters use to decide "which key names the path") only
 no `.miner`, no `.invocation_sdk.events`, no `self_learn_ui` anywhere
 in this file.
 
-**That claim is about what this file WRITES, not what importing it
-PULLS IN (code gate r1, M-2).** `.invocation_sdk.charter` is a
-sub-import of the `invocation_sdk` PACKAGE -- `invocation_sdk/
-__init__.py` eagerly imports `backend.py`, which imports `worker` (and
-`provider`) at ITS top level. `import self_learn.corroborate` therefore
-transitively loads `worker.py` (and everything IT imports) regardless
-of this module's own two-line import list. This is why the two
-relative imports below sit AFTER `RunEvidence`'s full definition, not
-before it: `worker.py`'s own top-level `from .corroborate import
-MISMATCH, NO_EVIDENCE, RunEvidence` re-enters this module mid-exec via
-that same transitive chain, and needs all three names already bound
-when it does. See `test_m2_fresh_interpreter_import_does_not_
-circular_import`.
+The charter import is deferred until tool events are observed. Importing
+that package loads its SDK backend, which read-only CLI commands never
+need. Keeping it inside `observe` also avoids the historical import cycle
+through `backend` and `worker` (code gate r1, M-2).
 """
 
 from __future__ import annotations
@@ -118,6 +109,8 @@ class RunEvidence:
         self.had_events = bool(events)
         if not events:
             return
+
+        from .invocation_sdk.charter import W
 
         # code gate r1 N-2: a MALFORMED event (not a dict at all -- a
         # stray string, say) must be skipped, never raised on. `observe`
@@ -239,24 +232,13 @@ class RunEvidence:
         return frozenset(self.outside)
 
 
-# M-2 (code gate r1, 2026-08-28): these two imports must come AFTER
-# `RunEvidence`'s full definition, not before it. `W`/`extract_target_
-# path` are referenced only inside method BODIES (`observe`), resolved
-# at CALL time via the module's global namespace -- never at class-
-# DEFINITION time -- so the class parses fine without them existing
-# yet. Every shipped entry path imports `worker` (or `miner`) before
-# ever touching `corroborate` directly, and `worker.py`/`miner.py` both
-# do `from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence`.
-# Placed BEFORE `RunEvidence`, this import statement re-enters
-# `self_learn.invocation_sdk` (`.charter` triggers `invocation_sdk/
-# __init__.py` -> `backend.py` -> `from .. import provider, worker` ->
-# `worker.py`'s own top-level `from .corroborate import ...`) while
-# `corroborate` is still mid-exec and has not yet defined `RunEvidence`
-# -- `ImportError: cannot import name 'RunEvidence' from partially
-# initialized module`. Moved here, the cascade finds all three names
-# already bound. Verified with a FRESH interpreter, not just this
-# process's already-warm `sys.modules` cache (which would silently
-# hide the defect): `test_m2_fresh_interpreter_import_does_not_
-# circular_import`.
-from .invocation_sdk.charter import W
 from .sdksession.toolpaths import extract_target_path
+
+
+def __getattr__(name: str) -> frozenset[str]:
+    """Preserve the shared `W` attribute without loading the SDK at startup."""
+    if name == "W":
+        from .invocation_sdk.charter import W
+
+        return W
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
