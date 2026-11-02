@@ -362,7 +362,7 @@ def request_restart(cache_dir: Path) -> dict[str, Any]:
     path = cache_dir / "serve.restart"
     request = {"requested_at": time.time(), "id": uuid.uuid4().hex}
     tmp = cache_dir / f".serve.restart.{request['id']}.tmp"
-    tmp.write_text(json.dumps(request), encoding="utf-8")
+    fsops.atomic_write(tmp, json.dumps(request), fsync=False, preserve_mode=False)
     joined = False
     try:
         for _ in range(5):
