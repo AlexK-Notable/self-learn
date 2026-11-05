@@ -922,6 +922,52 @@ for rc, text in [(2, ""), (0, "{}"), (0, json.dumps({**receipt, "id": 3})),
     captured[-1][1](rc, text, "fixture command error")
     assert "restart-host" not in tray.restarting
     assert "could not request" in notices[-1][0]
+# S-143 verification: after the 3-hour mark, a force restart holds the ordinary
+# restart item, and a request whose receipt lands during the force is settled by it.
+force_result = Path(os.environ["XDG_CACHE_HOME"]) / "force-fixture.json"
+force_receipt = {"requested": True, "id": "forced", "result_path": str(force_result)}
+tray.click("restart-host")
+spawned[-1][1](0)
+captured[-1][1](0, json.dumps(force_receipt), "")
+check_a = timers[-1]
+now = old_monotonic()
+g["time"].monotonic = lambda: now + 10801
+assert check_a() is True and "restart-host" not in tray.restarting
+g["time"].monotonic = old_monotonic
+# Force straight after the 3-hour mark: the ordinary item is free, so only the
+# force hold keeps it greyed out and ignored; a failed force gives both back.
+tray.click("force-restart-host")
+assert spawned[-1][0] == m["FORCE_HOST_ARGV"]
+failing_force = spawned[-1][1]
+before = len(spawned)
+tray.click("restart-host")
+assert len(spawned) == before, "no ordinary restart while the force runs"
+assert call("GetProperty", "(is)", (10, "enabled")) == (False,)
+failing_force(5)
+items = {i["key"]: i for i in tray.menu()}
+assert items["restart-host"]["enabled"] and items["force-restart-host"]["enabled"]
+tray.click("restart-host")          # a new request after the 3-hour mark ...
+spawned[-1][1](0)
+in_flight = captured[-1]            # ... whose receipt has not arrived yet
+assert "force-restart-host" in [i["key"] for i in tray.menu()]
+tray.click("force-restart-host")
+assert spawned[-1][0] == m["FORCE_HOST_ARGV"]
+force_done = spawned[-1][1]
+before = len(spawned)
+tray.click("restart-host")
+assert len(spawned) == before, "no ordinary restart while the force runs"
+items = {i["key"]: i for i in tray.menu()}
+assert not items["restart-host"]["enabled"] and not items["force-restart-host"]["enabled"]
+in_flight[1](0, json.dumps(force_receipt), "")   # joins the waiting request
+check_b = timers[-1]
+force_result.write_text(json.dumps({"id": "forced", "status": "restarted", "error": None, "at": time.time()}))
+said = len(notices)
+assert check_b() is True and len(notices) == said, "no result is read while the force runs"
+force_done(0)
+assert [n[0] for n in notices[said:]] == ["self-learn: the background service restarted"], notices[said:]
+assert tray.host_wait is None and not tray.restarting
+assert check_b() is False and len(notices) == said + 1
+assert "force-restart-host" not in [i["key"] for i in tray.menu()]
 GLib.timeout_add_seconds = original_timer
 
 # Real Notify calls to a daemon fixture, then a missing daemon on the same private bus.

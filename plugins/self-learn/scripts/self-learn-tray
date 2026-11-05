@@ -208,7 +208,7 @@ def menu_items(result, restarting, host_waiting=False):
                 label, enabled = "Force restarting the background service…", False
         elif key == "status":
             label, enabled = result["tooltip"], False
-        elif key in restarting:
+        elif key in restarting or (key == "restart-host" and "force-restart-host" in restarting):
             what = "background service" if key == "restart-host" else "web UI"
             label, enabled = f"Restarting the {what}…", False
         items.append({"id": mid, "key": key, "type": "standard", "label": label, "enabled": enabled})
@@ -293,6 +293,7 @@ class Tray:
         self.restarting = set()
         self.host_wait = None  # the background restart request being watched, if any
         self.watch_secs = RESTART_WATCH_SECS
+        self.forcing = False  # a force restart is running: no result is read, no restart starts
         self.result = {"state": "idle", "tooltip": "self-learn: checking…", "error": None, "cache_dir": None}
         self.cache_dir = None
         self.monitors = {}
@@ -391,7 +392,7 @@ class Tray:
         """One menu item; `done(rc)` when its command has exited."""
         done = done or (lambda _rc: None)
         if key in ("restart-ui", "restart-host", "force-restart-host"):
-            if key in self.restarting:
+            if key in self.restarting or (key == "restart-host" and self.forcing):
                 return
             self.restarting.add(key)
             self.changed()
@@ -455,12 +456,12 @@ class Tray:
             deadline = time.monotonic() + self.watch_secs
             # One waiting request: `released` frees the restart item (its
             # outcome, or the 3-hour mark); `over` ends the wait and hides the
-            # force item (an outcome, or a successful force restart); while
-            # `forcing`, the watch reads nothing, so a result landing during the
+            # force item (an outcome, or a successful force restart). While the
+            # tray is forcing, no watch reads a result, so one landing during the
             # force restart neither notifies twice nor frees the item early.
             if self.host_wait is not None:
                 self.host_wait["over"] = True  # superseded by this request
-            wait = {"released": False, "over": False, "forcing": False}
+            wait = {"released": False, "over": False}
             self.host_wait = wait
             self.changed()
 
@@ -481,7 +482,7 @@ class Tray:
             def check():
                 if wait["over"]:
                     return False
-                if wait["forcing"]:
+                if self.forcing:
                     return True  # decided by the force restart's outcome
                 result = restart_outcome(receipt["result_path"], receipt["id"])
                 if result is not None and result["status"] != "restarting":
@@ -520,18 +521,19 @@ class Tray:
         that never ends. Only while a request is waiting: then the waiting
         restart is over too (the fresh process takes the request left behind
         and re-execs once more, idle). On failure the request keeps waiting."""
-        wait = self.host_wait
-        if wait is None or wait["over"]:
+        if self.host_wait is None or self.host_wait["over"]:
             log("force restart: no background restart is waiting")
             done(2)
             return
-        wait["forcing"] = True
+        self.forcing = True
 
         def ran(rc):
-            wait["forcing"] = False
+            self.forcing = False
             done(rc)  # the force item first, so the restart item never frees while it runs
-            if rc == 0:
-                wait["end"](0)  # restart() has said it restarted
+            # The wait current NOW: a request whose receipt arrived during the
+            # force restart replaced the one the click saw, and is settled too.
+            if rc == 0 and self.host_wait is not None:
+                self.host_wait["end"](0)  # restart() has said it restarted
 
         self.restart(FORCE_HOST_ARGV, "background service", ran)
 

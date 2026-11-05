@@ -1134,7 +1134,9 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   which re-execs once more while idle. On failure the request keeps waiting and
   the force item comes back. While the force restart runs, the watch reads no
   result, so an outcome landing meanwhile is announced once (by the force
-  restart) and the restart item stays greyed out until the force ends. The
+  restart) and the restart item stays greyed out, and ignores clicks, until the
+  force ends; a restart request whose receipt arrives meanwhile joins the
+  waiting one and is settled by the force restart's outcome too. The
   waiting notification and the 3-hour notice both point to it.
   Every control-command wait uses `timeout --kill-after=5 <N>`: 15 seconds
   for `is-active`, 30 seconds for `self-learn serve --restart`, and 120 seconds
