@@ -840,7 +840,8 @@ g = m["Tray"].click.__globals__
 assert all(m["command_timed_out"](rc) for rc in (124, 137, -9, -15))
 assert not any(m["command_timed_out"](rc) for rc in (0, 1, 3, 127))
 for argv, seconds in ((m["HOST_ACTIVE_ARGV"], 15), (m["RESTART_REQUEST_ARGV"], 30),
-                      (m["START_HOST_ARGV"], 120), (m["RESTART_UI_ARGV"], 120)):
+                      (m["START_HOST_ARGV"], 120), (m["RESTART_UI_ARGV"], 120),
+                      (m["FORCE_HOST_ARGV"], 180)):
     assert m["control_argv"](argv) == ["timeout", "--kill-after=5", str(seconds), *argv]
 spawned, captured, timers, notices, finished = [], [], [], [], []
 g["spawn"] = lambda argv, done=None: spawned.append((argv, done))
@@ -906,8 +907,11 @@ captured[-1][1](0, json.dumps({**receipt, "id": "next"}), "")
 old_monotonic = g["time"].monotonic
 now = old_monotonic()
 g["time"].monotonic = lambda: now + 10801
-assert timers[-1]() is False
+assert timers[-1]() is True  # S-143: the watch goes on quietly, so the force item stays
 assert "not been cancelled" in notices[-1][1] and "restart-host" not in tray.restarting
+assert tray.host_wait is not None and "force-restart-host" in [i["key"] for i in tray.menu()]
+assert timers[-1]() is True and notices[-1][0] == "self-learn: restart still waiting"
+assert sum(n[0] == "self-learn: restart still waiting" for n in notices) == 1, "the 3-hour notice is said once"
 g["time"].monotonic = old_monotonic
 # Receipt and command failures release pending state too.
 for rc, text in [(2, ""), (0, "{}"), (0, json.dumps({**receipt, "id": 3})),
@@ -918,6 +922,52 @@ for rc, text in [(2, ""), (0, "{}"), (0, json.dumps({**receipt, "id": 3})),
     captured[-1][1](rc, text, "fixture command error")
     assert "restart-host" not in tray.restarting
     assert "could not request" in notices[-1][0]
+# S-143 verification: after the 3-hour mark, a force restart holds the ordinary
+# restart item, and a request whose receipt lands during the force is settled by it.
+force_result = Path(os.environ["XDG_CACHE_HOME"]) / "force-fixture.json"
+force_receipt = {"requested": True, "id": "forced", "result_path": str(force_result)}
+tray.click("restart-host")
+spawned[-1][1](0)
+captured[-1][1](0, json.dumps(force_receipt), "")
+check_a = timers[-1]
+now = old_monotonic()
+g["time"].monotonic = lambda: now + 10801
+assert check_a() is True and "restart-host" not in tray.restarting
+g["time"].monotonic = old_monotonic
+# Force straight after the 3-hour mark: the ordinary item is free, so only the
+# force hold keeps it greyed out and ignored; a failed force gives both back.
+tray.click("force-restart-host")
+assert spawned[-1][0] == m["FORCE_HOST_ARGV"]
+failing_force = spawned[-1][1]
+before = len(spawned)
+tray.click("restart-host")
+assert len(spawned) == before, "no ordinary restart while the force runs"
+assert call("GetProperty", "(is)", (10, "enabled")) == (False,)
+failing_force(5)
+items = {i["key"]: i for i in tray.menu()}
+assert items["restart-host"]["enabled"] and items["force-restart-host"]["enabled"]
+tray.click("restart-host")          # a new request after the 3-hour mark ...
+spawned[-1][1](0)
+in_flight = captured[-1]            # ... whose receipt has not arrived yet
+assert "force-restart-host" in [i["key"] for i in tray.menu()]
+tray.click("force-restart-host")
+assert spawned[-1][0] == m["FORCE_HOST_ARGV"]
+force_done = spawned[-1][1]
+before = len(spawned)
+tray.click("restart-host")
+assert len(spawned) == before, "no ordinary restart while the force runs"
+items = {i["key"]: i for i in tray.menu()}
+assert not items["restart-host"]["enabled"] and not items["force-restart-host"]["enabled"]
+in_flight[1](0, json.dumps(force_receipt), "")   # joins the waiting request
+check_b = timers[-1]
+force_result.write_text(json.dumps({"id": "forced", "status": "restarted", "error": None, "at": time.time()}))
+said = len(notices)
+assert check_b() is True and len(notices) == said, "no result is read while the force runs"
+force_done(0)
+assert [n[0] for n in notices[said:]] == ["self-learn: the background service restarted"], notices[said:]
+assert tray.host_wait is None and not tray.restarting
+assert check_b() is False and len(notices) == said + 1
+assert "force-restart-host" not in [i["key"] for i in tray.menu()]
 GLib.timeout_add_seconds = original_timer
 
 # Real Notify calls to a daemon fixture, then a missing daemon on the same private bus.
@@ -999,3 +1049,109 @@ def test_9_launchers_are_never_bounded_by_the_control_timeout(env, item):
     out = env.pure("click", "--item", item, "--control-timeout-secs", "0.3", FAKE_LAUNCH_SLEEP="1")
     assert out["rc"] == 0
     assert env.side("launch-done") == ["done"], "the launcher was killed by the control timeout"
+
+
+def _waiting_receipt(env):
+    env.cache.mkdir(parents=True, exist_ok=True)
+    receipt = env.tmp / "receipt.json"
+    receipt.write_text(json.dumps({"requested": True, "id": "fixture",
+                                   "result_path": str(env.cache / "never-written.json")}))
+    return receipt
+
+
+def test_10_force_restart_is_offered_only_while_a_restart_waits(env):
+    """09 §2.6 (S-143): "Force restart now (stops the running job)" is listed
+    only while a background restart request waits for the service to be between
+    jobs; a click runs the plain systemd restart, which ends the wait. Mutations:
+    list it always -> red (test 7's exact list); never list it -> red here;
+    leave the wait running after a successful force -> red (rc/menus)."""
+    receipt = _waiting_receipt(env)
+    assert "force-restart-host" not in [m["key"] for m in env.pure("menu")["menu"]]
+    out = env.pure("click", "--item", "restart-host", "--then", "force-restart-host", "--then-after", "1.5",
+                   "--wait-secs", "1", FAKE_RECEIPT=str(receipt))
+    force = [m for m in out["then_menu"] if m["key"] == "force-restart-host"]
+    assert force == [{"id": 13, "key": "force-restart-host", "type": "standard",
+                      "label": "Force restart now (stops the running job)", "enabled": True}]
+    assert [m["key"] for m in out["then_menu"]].index("force-restart-host") == \
+        [m["key"] for m in out["then_menu"]].index("restart-host") + 1
+    assert env.side("systemctl") == ["--user is-active --quiet self-learn-host.service",
+                                     "--user restart self-learn-host.service"]
+    assert out["rc"] == 0 and out["then_rc"] == 0, out
+    assert out["notices"][-1] == ["self-learn: the background service restarted", ""]
+    assert any(m["key"] == "force-restart-host" and not m["enabled"]
+               and m["label"] == "Force restarting the background service…"
+               for menu in out["menus"] for m in menu)
+    final = {m["key"]: m for m in out["menus"][-1]}
+    assert "force-restart-host" not in final and final["restart-host"]["enabled"]
+
+
+def test_10b_a_failed_force_restart_keeps_the_request_waiting(env):
+    """When the systemd restart fails, the original request keeps waiting and the
+    force item comes back. Mutation: end the wait on failure -> red."""
+    receipt = _waiting_receipt(env)
+    out = env.pure("click", "--item", "restart-host", "--then", "force-restart-host", "--then-after", "1.5",
+                   "--wait-secs", "1", "--timeout-secs", "1", FAKE_RECEIPT=str(receipt), FAKE_SYSTEMCTL_RC="5")
+    assert out.get("then_rc") == 5, out
+    assert "rc" not in out, "the waiting restart must not have ended"
+    assert any(n[0] == "self-learn: could not restart the background service" for n in out["notices"])
+    last = {m["key"]: m for m in out["menus"][-1]}
+    assert last["force-restart-host"]["enabled"] and not last["restart-host"]["enabled"]
+
+
+def _write_result_later(env, delay, status="restarted"):
+    def write():
+        time.sleep(delay)
+        (env.cache / "never-written.json").write_text(json.dumps(
+            {"id": "fixture", "status": status, "error": None, "at": time.time()}))
+    thread = threading.Thread(target=write)
+    thread.start()
+    return thread
+
+
+def test_10c_a_result_landing_during_the_force_restart_is_not_announced_twice(env):
+    """Review S-143 finding 1: the original request finishes while the force
+    restart still runs. The watch holds off until the force outcome: one
+    "restarted" notice, and the restart item never frees before the force ends.
+    Mutation: drop the `forcing` hold -> two notices, early release -> red."""
+    receipt = _waiting_receipt(env)
+    writer = _write_result_later(env, 2.0)
+    try:
+        out = env.pure("click", "--item", "restart-host", "--then", "force-restart-host", "--then-after", "1.0",
+                       "--wait-secs", "1", "--linger", "2.5", FAKE_RECEIPT=str(receipt), FAKE_SYSTEMCTL_SLEEP="3")
+    finally:
+        writer.join()
+    assert out["rc"] == 0 and out["then_rc"] == 0, out
+    assert [n[0] for n in out["notices"]].count("self-learn: the background service restarted") == 1, out["notices"]
+    for menu in out["menus"]:
+        keys = {m["key"]: m for m in menu}
+        if "force-restart-host" in keys and not keys["force-restart-host"]["enabled"]:
+            assert not keys["restart-host"]["enabled"], "the restart item was freed while the force ran"
+
+
+def test_10d_a_result_after_a_successful_force_is_ignored(env):
+    """After a force restart succeeds, the old watch ends: a result the fresh
+    process writes later is not announced again. Mutation: drop the `over`
+    check in the watch -> a second notice -> red."""
+    receipt = _waiting_receipt(env)
+    writer = _write_result_later(env, 3.0)
+    try:
+        out = env.pure("click", "--item", "restart-host", "--then", "force-restart-host", "--then-after", "1.0",
+                       "--wait-secs", "1", "--linger", "4", FAKE_RECEIPT=str(receipt))
+    finally:
+        writer.join()
+    assert out["then_rc"] == 0
+    assert [n[0] for n in out["notices"]].count("self-learn: the background service restarted") == 1, out["notices"]
+
+
+def test_10e_the_force_item_stays_after_the_three_hour_mark(env):
+    """Review S-143 finding 2: at the watch's deadline the restart item is free
+    again but the request still waits, so the force item stays and works.
+    Mutation: end the wait at the deadline -> the force item is gone -> red."""
+    receipt = _waiting_receipt(env)
+    out = env.pure("click", "--item", "restart-host", "--then", "force-restart-host", "--then-after", "3.5",
+                   "--wait-secs", "1", "--watch-secs", "1", "--linger", "4", FAKE_RECEIPT=str(receipt))
+    assert out["rc"] == 1 and any(n[0] == "self-learn: restart still waiting" for n in out["notices"])
+    keys = {m["key"]: m for m in out["then_menu"]}
+    assert keys["force-restart-host"]["enabled"] and keys["restart-host"]["enabled"]
+    assert out["then_rc"] == 0
+    assert env.side("systemctl")[-1] == "--user restart self-learn-host.service"

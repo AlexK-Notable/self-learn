@@ -52,6 +52,10 @@ SECONDARY_ARGV = ["self-learn", "attention", "seen", "--all-decided"]
 OPEN_ARGV = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open"]
 RESTART_UI_ARGV = ["systemctl", "--user", "restart", "self-learn-ui.service"]
 START_HOST_ARGV = ["systemctl", "--user", "start", "self-learn-host.service"]
+# Offered only while a background restart is waiting for a job that may never
+# end: a plain systemd restart, which stops the running job (SIGTERM, then a
+# kill after the unit's 90 s stop timeout), so it gets a longer bound.
+FORCE_HOST_ARGV = ["systemctl", "--user", "restart", "self-learn-host.service"]
 QUIT_ARGV = ["systemctl", "--user", "--no-block", "stop", "self-learn-tray.service"]
 HOST_ACTIVE_ARGV = ["systemctl", "--user", "is-active", "--quiet", "self-learn-host.service"]
 RESTART_REQUEST_ARGV = ["self-learn", "serve", "--restart"]
@@ -180,23 +184,31 @@ MENU = (
     (8, None, None),
     (9, "restart-ui", "Restart the web UI"),
     (10, "restart-host", "Restart the background service"),
+    (13, "force-restart-host", "Force restart now (stops the running job)"),
     (11, None, None),
     (12, "quit", "Quit (hide this icon until next login)"),
 )
 MENU_KEYS = {key: mid for mid, key, _label in MENU if key and key != "status"}
 
 
-def menu_items(result, restarting):
-    """Both restart items stay disabled until their outstanding operation ends."""
+def menu_items(result, restarting, host_waiting=False):
+    """Both restart items stay disabled until their outstanding operation ends.
+    The force restart is listed only while a background restart request is
+    waiting for the service to be between jobs."""
     items = []
     for mid, key, label in MENU:
         if key is None:
             items.append({"id": mid, "key": None, "type": "separator", "label": "", "enabled": True})
             continue
         enabled = True
-        if key == "status":
+        if key == "force-restart-host":
+            if not (host_waiting or key in restarting):
+                continue
+            if key in restarting:
+                label, enabled = "Force restarting the background service…", False
+        elif key == "status":
             label, enabled = result["tooltip"], False
-        elif key in restarting:
+        elif key in restarting or (key == "restart-host" and "force-restart-host" in restarting):
             what = "background service" if key == "restart-host" else "web UI"
             label, enabled = f"Restarting the {what}…", False
         items.append({"id": mid, "key": key, "type": "standard", "label": label, "enabled": enabled})
@@ -211,6 +223,8 @@ def control_argv(argv):
         return argv
     if argv == HOST_ACTIVE_ARGV:
         secs = 15
+    elif argv == FORCE_HOST_ARGV:
+        secs = 180  # the unit's 90 s stop timeout, then the start
     elif argv[0] == "systemctl" and ("start" in argv or "restart" in argv):
         secs = 120
     else:
@@ -277,6 +291,9 @@ class Tray:
         self.notify = notify or (lambda summary, body: log(f"{summary} {body}".strip()))
         self.wait_secs = wait_secs
         self.restarting = set()
+        self.host_wait = None  # the background restart request being watched, if any
+        self.watch_secs = RESTART_WATCH_SECS
+        self.forcing = False  # a force restart is running: no result is read, no restart starts
         self.result = {"state": "idle", "tooltip": "self-learn: checking…", "error": None, "cache_dir": None}
         self.cache_dir = None
         self.monitors = {}
@@ -365,7 +382,7 @@ class Tray:
         spawn(SECONDARY_ARGV, lambda rc: self.poll(done=(lambda: done(rc)) if done else None))
 
     def menu(self):
-        return menu_items(self.result, self.restarting)
+        return menu_items(self.result, self.restarting, self.host_wait is not None)
 
     def changed(self):
         if self.on_change:
@@ -374,8 +391,8 @@ class Tray:
     def click(self, key, done=None):
         """One menu item; `done(rc)` when its command has exited."""
         done = done or (lambda _rc: None)
-        if key in ("restart-ui", "restart-host"):
-            if key in self.restarting:
+        if key in ("restart-ui", "restart-host", "force-restart-host"):
+            if key in self.restarting or (key == "restart-host" and self.forcing):
                 return
             self.restarting.add(key)
             self.changed()
@@ -398,6 +415,8 @@ class Tray:
             self.restart(RESTART_UI_ARGV, "web UI", done)
         elif key == "restart-host":
             self.restart_host(done)
+        elif key == "force-restart-host":
+            self.force_restart_host(done)
         elif key == "quit":
             spawn(QUIT_ARGV, done)
         else:
@@ -432,24 +451,55 @@ class Tray:
                 done(rc or 1)
                 return
             self.notify("self-learn: restart waiting",
-                        "The background service will restart as soon as it is between jobs")
-            deadline = time.monotonic() + RESTART_WATCH_SECS
+                        "The background service will restart as soon as it is between jobs. "
+                        "If a job is stuck, the menu now offers a force restart.")
+            deadline = time.monotonic() + self.watch_secs
+            # One waiting request: `released` frees the restart item (its
+            # outcome, or the 3-hour mark); `over` ends the wait and hides the
+            # force item (an outcome, or a successful force restart). While the
+            # tray is forcing, no watch reads a result, so one landing during the
+            # force restart neither notifies twice nor frees the item early.
+            if self.host_wait is not None:
+                self.host_wait["over"] = True  # superseded by this request
+            wait = {"released": False, "over": False}
+            self.host_wait = wait
+            self.changed()
+
+            def release(rc):
+                if not wait["released"]:
+                    wait["released"] = True
+                    done(rc)
+
+            def end(rc):
+                wait["over"] = True
+                if self.host_wait is wait:
+                    self.host_wait = None
+                    self.changed()
+                release(rc)
+
+            wait["end"] = end
 
             def check():
+                if wait["over"]:
+                    return False
+                if self.forcing:
+                    return True  # decided by the force restart's outcome
                 result = restart_outcome(receipt["result_path"], receipt["id"])
                 if result is not None and result["status"] != "restarting":
                     if result["status"] == "restarted":
                         self.notify("self-learn: the background service restarted", "")
-                        done(0)
+                        end(0)
                     else:
                         self.notify("self-learn: could not restart the background service", result["error"])
-                        done(1)
+                        end(1)
                     return False
-                if time.monotonic() >= deadline:
+                if not wait["released"] and time.monotonic() >= deadline:
+                    # The restart item is free again; the request still waits,
+                    # so the watch goes on quietly and the force item stays.
                     self.notify("self-learn: restart still waiting",
-                                "The request is still waiting after 3 hours; it has not been cancelled.")
-                    done(1)
-                    return False
+                                "The request is still waiting after 3 hours; it has not been cancelled. "
+                                "If a job is stuck, use Force restart in the menu.")
+                    release(1)
                 return True
 
             GLib.timeout_add_seconds(self.wait_secs, check)
@@ -465,6 +515,27 @@ class Tray:
                 self.restart(START_HOST_ARGV, "background service", done, start=True)
 
         spawn(HOST_ACTIVE_ARGV, active)
+
+    def force_restart_host(self, done):
+        """Restart the background service through systemd now, stopping a job
+        that never ends. Only while a request is waiting: then the waiting
+        restart is over too (the fresh process takes the request left behind
+        and re-execs once more, idle). On failure the request keeps waiting."""
+        if self.host_wait is None or self.host_wait["over"]:
+            log("force restart: no background restart is waiting")
+            done(2)
+            return
+        self.forcing = True
+
+        def ran(rc):
+            self.forcing = False
+            done(rc)  # the force item first, so the restart item never frees while it runs
+            # The wait current NOW: a request whose receipt arrived during the
+            # force restart replaced the one the click saw, and is settled too.
+            if rc == 0 and self.host_wait is not None:
+                self.host_wait["end"](0)  # restart() has said it restarted
+
+        self.restart(FORCE_HOST_ARGV, "background service", ran)
 
 
 SNI_XML = """<node><interface name="org.kde.StatusNotifierItem">
@@ -749,7 +820,8 @@ class SniItem:
         self.conn.emit_signal(None, SNI_PATH, SNI_IFACE, "NewToolTip", None)
 
 
-def pure(step, timeout_secs, item=None, wait_secs=WAIT_SECS):
+def pure(step, timeout_secs, item=None, wait_secs=WAIT_SECS, then=None, then_after=2.0, watch_secs=None,
+         linger=0.0):
     """One step without the session bus; prints what happened as JSON.
     `menu` polls once and prints the menu; `click` polls once, then runs one
     menu item (`--item`), recording the notifications and every menu it went
@@ -760,11 +832,14 @@ def pure(step, timeout_secs, item=None, wait_secs=WAIT_SECS):
     tray = Tray(timeout_secs=timeout_secs, wait_secs=wait_secs,
                 notify=lambda summary, body: notices.append([summary, body]))
     tray.on_change = lambda: menus.append(tray.menu())
+    if watch_secs is not None:
+        tray.watch_secs = watch_secs
 
     if step in ("menu", "click"):
         def after_click(rc):
             out.update(rc=rc, notices=notices, menus=menus, menu=tray.menu())
-            GLib.idle_add(loop.quit)
+            # `linger` keeps the loop (and any watch still running) going a while.
+            GLib.timeout_add(int(linger * 1000), lambda: (loop.quit(), False)[1])
 
         def polled_first():
             out.update(view=sni_view(tray.result))
@@ -773,6 +848,17 @@ def pure(step, timeout_secs, item=None, wait_secs=WAIT_SECS):
                 GLib.idle_add(loop.quit)
             else:
                 tray.click(item, after_click)
+                if then:
+                    # A second item, `then_after` seconds into the first (tests only).
+                    def second():
+                        out.update(then_menu=tray.menu())
+                        def then_done(rc):
+                            out.update(then_rc=rc, notices=notices, menus=menus)
+                            if "rc" not in out:  # the first item is still running: stop soon
+                                GLib.timeout_add(int(max(linger, 0.5) * 1000), lambda: (loop.quit(), False)[1])
+                        tray.click(then, then_done)
+                        return False
+                    GLib.timeout_add(int(then_after * 1000), second)
 
         tray.poll(done=polled_first)
         GLib.timeout_add_seconds(timeout_secs + 15 + 3 * wait_secs, loop.quit)
@@ -824,6 +910,10 @@ def main(argv):
     ap.add_argument("--wait-secs", type=int, default=WAIT_SECS, help=argparse.SUPPRESS)
     ap.add_argument("--poll-secs", type=int, default=POLL_SECS, help=argparse.SUPPRESS)
     ap.add_argument("--control-timeout-secs", type=float, help=argparse.SUPPRESS)
+    ap.add_argument("--then", choices=sorted(MENU_KEYS), help=argparse.SUPPRESS)
+    ap.add_argument("--then-after", type=float, default=2.0, help=argparse.SUPPRESS)
+    ap.add_argument("--watch-secs", type=float, default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--linger", type=float, default=0.0, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     if args.control_timeout_secs is not None:
         if not math.isfinite(args.control_timeout_secs) or args.control_timeout_secs <= 0:
@@ -832,7 +922,8 @@ def main(argv):
     if args.pure == "click" and not args.item:
         ap.error("--pure click needs --item")
     if args.pure:
-        return pure(args.pure, args.timeout_secs, args.item, args.wait_secs)
+        return pure(args.pure, args.timeout_secs, args.item, args.wait_secs, args.then, args.then_after,
+                    args.watch_secs, args.linger)
     loop = GLib.MainLoop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         unix_signal_add(sig, lambda: (loop.quit(), False)[1])

@@ -1120,7 +1120,24 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   `restarting` keeps the item pending; only `restarted` says it restarted;
   `refused` reports the reason. Invalid or
   non-finite fields are treated as not yet answered. After 3 hours the tray
-  stops watching and says the request is still waiting; it does not cancel it.
+  frees the restart item and says once that the request is still waiting; it
+  does not cancel it, and keeps watching quietly, so the force item stays
+  (S-143) until an outcome arrives or a new request replaces the watch.
+- **Force restart** *(S-143, 2026-11-05)*. While a background restart request is
+  waiting, and only then, the menu lists "Force restart now (stops the running
+  job)" right below the restart item (dbusmenu id 13; the layout update adds and
+  removes it). A click runs `systemctl --user restart self-learn-host.service`
+  (bounded at 180 s: the unit's 90 s stop timeout, then the start), which stops
+  a job that never ends. While it runs it reads "Force restarting the background
+  service…", greyed out. On success the waiting restart is over and both items
+  return to normal; the request left in the cache is taken by the fresh process,
+  which re-execs once more while idle. On failure the request keeps waiting and
+  the force item comes back. While the force restart runs, the watch reads no
+  result, so an outcome landing meanwhile is announced once (by the force
+  restart) and the restart item stays greyed out, and ignores clicks, until the
+  force ends; a restart request whose receipt arrives meanwhile joins the
+  waiting one and is settled by the force restart's outcome too. The
+  waiting notification and the 3-hour notice both point to it.
   Every control-command wait uses `timeout --kill-after=5 <N>`: 15 seconds
   for `is-active`, 30 seconds for `self-learn serve --restart`, and 120 seconds
   for systemctl start/restart (other tray control commands: 30 seconds; the
