@@ -429,6 +429,29 @@ def _parse_bracket_list(line: str) -> list[str]:
     return [tok.strip() for tok in inner.split(",") if tok.strip()]
 
 
+#: S-154: a refused or stopped receipt line says why. The ledger's own words
+#: for the refusal were dropped, so a case read "refused by replace before
+#: its ledger commit" and nobody could tell what to fix (the overseer's notice
+#: of 2026-11-13).
+RECEIPT_CAUSE_CHARS = 400
+
+
+def _cause_suffix(state: object, detail: object) -> str:
+    """``; cause: <the refusal's own words>`` for a refused or stopped item,
+    on one line and capped; empty for any other state, for no detail, and
+    for words the secret scan or the heading rule would refuse (the line
+    must still be written, so the cause is left off rather than the receipt
+    lost)."""
+    if state not in ("refused", "stopped") or not detail:
+        return ""
+    words = " ".join(str(detail).split())
+    if len(words) > RECEIPT_CAUSE_CHARS:
+        words = words[: RECEIPT_CAUSE_CHARS - 1].rstrip() + "…"
+    if not words or secret_scan(words) or words.lstrip().startswith("#"):
+        return ""
+    return f"; cause: {words}"
+
+
 def _scan_or_refuse(texts: list[str], *, withhold_spans: bool = False) -> None:
     for text in texts:
         hits = secret_scan(text)
@@ -1909,6 +1932,7 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
                     new_by_key[key] = (
                         f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
                         f"{state} (exit {rc}){made_suffix}{warning_suffix}{evidence_suffix}"
+                        f"{_cause_suffix(state, detail)}"
                     )
     new_lines = list(new_by_key.values())
 

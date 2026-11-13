@@ -301,6 +301,56 @@ def test_d_receipt_not_attempted_after_stopped_at(tmp_path):
     assert app.count("refused (exit 1)") == 1
 
 
+# ------------------------------------------- S-154: a refusal says why
+
+
+def _refused_result(detail, state="refused"):
+    return {
+        "sheet": "01.yaml", "stopped_at": None, "code": None,
+        "items": [
+            {"n": 1, "id": "lrn-08ed825b", "verb": "replace", "state": state, "rc": 1,
+             "detail": detail, "evidence": "refused by replace before its ledger commit; nothing written"},
+            {"n": 2, "id": "lrn-e8b13ee8", "verb": "reject", "state": "applied", "rc": 0,
+             "detail": "words of an applied line"},
+        ],
+    }
+
+
+def _application(tmp_path, result):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    cases.receipt(home, case_id, result)
+    return cases.show(home, case_id, evidence_only=False).sections["Application"]
+
+
+def test_s154_a_refused_line_carries_the_ledgers_words(tmp_path):
+    app = _application(tmp_path, _refused_result(
+        "replace: the new lesson is not valid --\n   behavior records need kind"))
+    refused, applied = app.splitlines()
+    assert refused.endswith(
+        "nothing written; cause: replace: the new lesson is not valid -- behavior records need kind")
+    assert "refused (exit 1)" in refused
+    # only a refusal has a cause: an applied line keeps its old shape
+    assert "cause:" not in applied and "words of an applied line" not in applied
+
+
+def test_s154_a_stopped_line_carries_its_cause_too(tmp_path):
+    app = _application(tmp_path, _refused_result("the ledger moved under the sheet", state="stopped"))
+    assert "; cause: the ledger moved under the sheet" in app.splitlines()[0]
+
+
+def test_s154_a_long_cause_is_capped(tmp_path):
+    app = _application(tmp_path, _refused_result("word " * 400))
+    cause = app.splitlines()[0].split("; cause: ", 1)[1]
+    assert len(cause) == cases.RECEIPT_CAUSE_CHARS and cause.endswith("…")
+
+
+def test_s154_a_cause_the_scan_would_refuse_is_left_off_and_the_receipt_is_still_written(tmp_path):
+    app = _application(tmp_path, _refused_result(f"the verb said {_TOKEN}"))
+    refused = app.splitlines()[0]
+    assert "refused (exit 1)" in refused and "cause:" not in refused and _TOKEN not in app
+
+
 # ------------------------------------------------- fold r1 (F1, F8): receipt
 
 
