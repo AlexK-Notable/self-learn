@@ -1686,6 +1686,59 @@
     }
   );
 
+  /**
+   * Speed batch 2: a part of a page that fetches itself after the page
+   * appeared (`data-lazy-section`: Health's body, the bucket page's routed
+   * archive) shows a "loading" line until its answer swaps in. When the
+   * request fails outright (an error status, no connection, a timeout) no
+   * swap ever comes, so this replaces the loading line with a visible
+   * error and a "Try again" button; the button asks the same element to
+   * load again (its `retry-lazy` trigger). A section whose read merely
+   * failed on the server answers with its own error text and never gets
+   * here. The sections are background reads, so none of this holds a key
+   * back or a refresh up.
+   */
+  function lazyRequester(evt) {
+    const d = evt && evt.detail;
+    const elt = d && d.requestConfig && d.requestConfig.elt;
+    return elt && elt.hasAttribute && elt.hasAttribute("data-lazy-section") ? elt : null;
+  }
+  function showLazyError(elt) {
+    elt.classList.add("lazy-error");
+    elt.setAttribute("aria-busy", "false");
+    let line = elt.querySelector(".lazy-loading");
+    if (!line) {
+      line = document.createElement("p");
+      elt.appendChild(line);
+    }
+    line.className = "lazy-loading lazy-failed";
+    line.setAttribute("role", "alert");
+    line.textContent = "This part could not be loaded. ";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "lazy-retry";
+    retry.textContent = "Try again";
+    retry.addEventListener("click", function () {
+      elt.classList.remove("lazy-error");
+      elt.setAttribute("aria-busy", "true");
+      line.className = "lazy-loading";
+      line.setAttribute("role", "status");
+      line.textContent = "Loading\u2026";
+      if (window.htmx) window.htmx.trigger(elt, "retry-lazy");
+    });
+    line.appendChild(retry);
+  }
+  document.addEventListener("htmx:beforeRequest", function (evt) {
+    const elt = lazyRequester(evt);
+    if (elt) elt.setAttribute("aria-busy", "true");
+  });
+  ["htmx:responseError", "htmx:sendError", "htmx:timeout", "htmx:swapError"].forEach(function (name) {
+    document.addEventListener(name, function (evt) {
+      const elt = lazyRequester(evt);
+      if (elt) showLazyError(elt);
+    });
+  });
+
   // Layer 2 (code gate r5, the durable guard; redesigned code gate r6
   // MAJOR-1). Ruling: every round of bugs this unit has found (r1
   // through r5) caused harm through exactly ONE mechanism -- a native,

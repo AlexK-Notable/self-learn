@@ -18,9 +18,7 @@
 
 {# 09 §5 unreadable-record row: this bucket's skip-and-count line,
    sourced from `status --json`'s per-bucket `unreadable` field. #}
-{% if model.unreadable %}
-<p class="banner banner-notice" role="alert">{{ model.unreadable }} record{{ "s" if model.unreadable != 1 else "" }} could not be read.</p>
-{% endif %}
+<div id="bucket-unreadable"></div>
 
 {# Y-13 (09 §2.2/§4.5): the bucket page splits like Detail — left the
    grouped record list, right the bucket chat pane (`p`), with any
@@ -37,8 +35,7 @@
   {% if place is defined and place and place.path %}<p class="place-path">{{ place.path }}</p>{% endif %}
 </div>
 {% if not model.groups and not model.clusters %}
-{% set _in_use = model.archive | length %}
-<p class="place-empty">Nothing is waiting here.{% if _in_use %} {{ _in_use }} rule{{ "s" if _in_use != 1 else "" }} from here {{ "is" if _in_use == 1 else "are" }} in use; {{ "it is" if _in_use == 1 else "they are" }} listed under &ldquo;Routed here&rdquo; below.{% endif %}{% if replaced_here %} {{ replaced_here }} earlier rule{{ "s" if replaced_here != 1 else "" }} from here {{ "was" if replaced_here == 1 else "were" }} later replaced or retired.{% endif %}</p>
+<p class="place-empty">Nothing is waiting here.<span id="bucket-empty-more"></span></p>
 {% endif %}
 
 {% if bucket_proposal %}
@@ -149,25 +146,15 @@
    `model.archive_error` is set ONLY on a genuine CLI read failure
    (models.py's own pin) — this branch renders a distinct failure
    header instead of the row list, never both, never neither. #}
-{% if model.archive_error %}
-<details class="archive-section archive-section-error">
-  <summary>Routed here (unavailable)</summary>
-  <p class="archive-error-note" role="alert">{{ model.archive_error }}</p>
-</details>
-{% elif model.archive %}
-<details class="archive-section">
-  <summary>Routed here ({{ model.archive | length }})</summary>
-  {% for row in model.archive %}
-  <div class="record-row archive-row">
-    <a href="/record/{{ row.id }}" class="record-row-lead">{{ row.leading_text }}</a>
-    <span class="record-row-meta">
-      <span class="record-row-id">{{ row.id }}</span>
-    </span>
-    <p class="archive-row-facts">{{ row.fact_text }}</p>
-  </div>
-  {% endfor %}
-</details>
-{% endif %}
+{# The archive, the replaced-rule count and the unreadable line fill
+   themselves in after the page appeared (GET .../later: partials/
+   bucket_later.html), because they wait on `report --json` and `status
+   --json`. The placeholder is a background read (a key never waits on it)
+   and a lazy section (app.js shows its error and a retry). #}
+<div id="bucket-later" class="lazy-section" data-lazy-section data-background-read aria-busy="true"
+     hx-get="{{ later_url }}" hx-trigger="load, retry-lazy" hx-swap="outerHTML">
+  <p class="lazy-loading" role="status">Reading what was routed from here&hellip;</p>
+</div>
 </div>
 
 <div class="bucket-right">

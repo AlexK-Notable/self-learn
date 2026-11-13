@@ -1,0 +1,263 @@
+{# The Health page's body: every fact comes from `report --json` and
+   `status --json`, so the page shell (report.html) loads this after it has
+   appeared (GET /report/body); a filter request (htmx) gets it inline. #}
+{% if report_error %}
+<div class="error-strip" role="alert"><p>{{ report_error }}</p></div>
+{% endif %}
+{% if status_error %}
+<div class="error-strip" role="alert"><p>{{ status_error }}</p></div>
+{% endif %}
+
+{% if health and health.has_report %}
+<div class="health-page">
+<h1>Health</h1>
+<p class="health-sub">How the lessons system is doing over time. Every number here is counted from the ledger; nothing is estimated.{% if health.generated %} Counted on {{ health.generated }}.{% endif %}</p>
+
+<div class="health-tiles" role="list">
+  {% for t in health.tiles %}
+  <div class="health-tile" role="listitem">
+    <div class="health-tile-label">{{ t.label }}</div>
+    <div class="health-tile-value">{{ t.value }}</div>
+    {% if t.note %}<div class="health-tile-note">{{ t.note }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="chart-grid">
+  <section class="chart-card" aria-label="is it keeping up">
+    <h2 class="chart-q">Is it keeping up?</h2>
+    <p class="chart-a">{{ chart_waiting_sentence(health.series) }}</p>
+    {{ chart_waiting(health.series) }}
+  </section>
+  <section class="chart-card" aria-label="where lessons come from">
+    <h2 class="chart-q">Where do lessons come from?</h2>
+    <p class="chart-a">{{ chart_supply_sentence(health.supply_mix) }}</p>
+    {{ chart_supply(health.supply_mix) }}
+  </section>
+</div>
+<section class="chart-card chart-card-full" aria-label="what got decided">
+  <h2 class="chart-q">What got decided, night by night</h2>
+  <p class="chart-a">{{ chart_decided_sentence(health.series) }}</p>
+  {{ chart_decided_legend() }}
+  {{ chart_decided(health.series) }}
+</section>
+
+<section class="health-section" aria-label="rules in use">
+  <h2>Rules in use ({{ health.rules_total }})</h2>
+  {% if health.destinations_line %}<p class="health-more">{{ health.destinations_line }}</p>{% endif %}
+  {# The filter goes through htmx (hx-get): app.js cancels every form submit
+     htmx does not take, so a plain GET form does nothing. The input stays put
+     and only the list below is swapped; the URL is pushed so Back and a
+     shared link keep the filter. #}
+  <form class="health-filter" method="get" action="/report" role="search"
+        hx-get="/report" hx-target="#health-rules-list" hx-select="#health-rules-list"
+        hx-swap="outerHTML" hx-push-url="true" hx-disabled-elt="find button">
+    <label for="health-rule-filter" class="visually-hidden">Find a rule</label>
+    <input id="health-rule-filter" type="search" name="q" value="{{ health.query }}" placeholder="Find a rule" autocomplete="off" />
+    {% if health.show_all %}<input type="hidden" name="all" value="1" />{% endif %}
+    <button type="submit">Find</button>
+    <span class="health-searching" role="status">Searching&hellip;</span>
+  </form>
+  <div id="health-rules-list">
+  {% if health.rules %}
+  <div class="health-table-wrap">
+  <table class="health-table health-stack">
+    <thead><tr><th scope="col">Rule (when it applies)</th><th scope="col">Where</th><th scope="col" class="num">In use for</th><th scope="col" class="num" title="Times a sighting of this rule was confirmed">Confirmed again</th></tr></thead>
+    <tbody>
+      {% for r in health.rules %}
+      <tr>
+        <td class="health-rule">{% if r.id %}<a href="/record/{{ r.id }}">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</td>
+        <td data-label="Where"><div>{{ r.what }}{% if r.where %}<span class="health-where">{{ r.where }}</span>{% endif %}</div></td>
+        <td class="num" data-label="In use for">{{ r.age_words }}</td>
+        <td class="num" data-label="Confirmed again">{{ r.seen_words }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="health-more">
+    {% if health.query %}{{ health.rules_matched }} of {{ health.rules_total }} rules match &ldquo;{{ health.query }}&rdquo;. <a href="/report">Show every rule</a>.{% endif %}
+    {% if health.rules_hidden > 0 %}
+      Showing the first {{ health.rules | length }}, most often confirmed again first.
+      <a href="/report?all=1{% if health.query %}&amp;q={{ health.query | urlencode }}{% endif %}">Show all {{ health.rules_matched }}</a>
+    {% elif health.show_all and health.rules_matched > health.limit %}
+      Showing all {{ health.rules | length }}.
+    {% endif %}
+  </p>
+  {% elif health.query %}
+  <p class="health-more">No rule matches &ldquo;{{ health.query }}&rdquo;. <a href="/report">Show every rule</a></p>
+  {% else %}
+  <p class="health-more">No rule is in use yet.</p>
+  {% endif %}
+  </div>
+</section>
+
+<section class="health-section" aria-label="rules seen again">
+  <h2>Rules seen again, not yet decided ({{ health.seen_again | length }})</h2>
+  {% if health.seen_again %}
+  <p class="health-more">Sightings of a rule after it was put in place that nobody has judged yet (the table above counts the ones already confirmed). Decide these on the <a href="/">Home page</a>.</p>
+  <div class="health-table-wrap">
+  <table class="health-table health-stack">
+    <thead><tr><th scope="col">Rule</th><th scope="col">Where</th><th scope="col" class="num">Times seen</th><th scope="col">Last time</th><th scope="col">Why it was flagged</th></tr></thead>
+    <tbody>
+      {% for s in health.seen_again %}
+      <tr>
+        <td class="health-rule">{% if s.id %}<a href="/record/{{ s.id }}">{{ s.title }}</a>{% else %}{{ s.title }}{% endif %}</td>
+        <td data-label="Where">{{ s.where }}</td>
+        <td class="num" data-label="Times seen">{{ s.count }}</td>
+        <td data-label="Last time">{{ (s.last | humanize_ts) if s.last else "" }}</td>
+        <td data-label="Why it was flagged">{{ s.basis | join("; ") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="health-more">No rule is waiting to be looked at again.</p>
+  {% endif %}
+</section>
+
+<section class="health-section" aria-label="open follow-ups">
+  <h2>Open follow-ups ({{ health.followups | length }})</h2>
+  {% if health.followups %}
+  <div class="health-table-wrap">
+  <table class="health-table health-stack">
+    <thead><tr><th scope="col">What to check</th><th scope="col">Waiting for</th><th scope="col">Since</th></tr></thead>
+    <tbody>
+      {% for f in health.followups %}
+      <tr>
+        <td class="health-rule">{% if f.id %}<a href="/record/{{ f.id }}">{{ f.action or "A follow-up with no text" }}</a>{% else %}{{ f.action }}{% endif %}</td>
+        <td data-label="Waiting for">{{ (f.unblocks_on | humanize_ts) if f.unblocks_on else "" }}</td>
+        <td data-label="Since">{{ (f.routed_at | humanize_ts) if f.routed_at else "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="health-more">Nothing is waiting on a follow-up.</p>
+  {% endif %}
+</section>
+
+<section class="health-section" aria-label="put off for later">
+  <h2>Put off for later ({{ health.deferred | length }})</h2>
+  {% if health.deferred %}
+  <div class="health-table-wrap">
+  <table class="health-table health-stack">
+    <thead><tr><th scope="col">Lesson</th><th scope="col">Where</th><th scope="col">Put off until</th><th scope="col">When</th></tr></thead>
+    <tbody>
+      {% for d in health.deferred %}
+      <tr>
+        <td class="health-rule">{% if d.id %}<a href="/record/{{ d.id }}">{{ d.title }}</a>{% else %}{{ d.title }}{% endif %}</td>
+        <td data-label="Where">{{ d.where }}</td>
+        <td data-label="Put off until">{{ d.until }}</td>
+        <td data-label="When">{{ d.due }}{% if d.overdue %} (overdue){% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="health-more">Nothing is put off.</p>
+  {% endif %}
+</section>
+
+<details class="health-fold" aria-label="dismissed sightings">
+  <summary>Sightings that were dismissed ({{ health.dismissed | length }})</summary>
+  {% if health.dismissed %}
+  <div class="health-table-wrap">
+  <table class="health-table health-stack">
+    <thead><tr><th scope="col">Rule</th><th scope="col">Dismissed on</th><th scope="col">Reason</th><th scope="col">Why it was flagged</th></tr></thead>
+    <tbody>
+      {% for d in health.dismissed %}
+      <tr>
+        <td class="health-rule">{% if d.linked %}<a href="/record/{{ d.id }}">{{ d.title }}</a>{% else %}{{ d.title }}{% endif %}</td>
+        <td data-label="Dismissed on">{{ d.on }}</td>
+        <td data-label="Reason">{{ d.why }}</td>
+        <td data-label="Why it was flagged">{{ d.basis }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="health-more">No sighting has been dismissed.</p>
+  {% endif %}
+</details>
+
+{% if health.reach %}
+<details class="health-fold" aria-label="reach">
+  <summary>Do the rules reach where the assistant reads them?</summary>
+  <p class="health-more">Of {{ health.reach.checked if health.reach.checked is not none else "an unknown number of" }} rules checked: {{ health.reach.reachable if health.reach.reachable is not none else "not known" }} reach a place the assistant reads, {{ health.reach.unreachable if health.reach.unreachable is not none else "not known" }} do not, and {{ health.reach.unmeasurable if health.reach.unmeasurable is not none else "not known" }} could not be measured.</p>
+  {% if health.reach.kinds %}
+  <div class="health-table-wrap">
+  <table class="health-table health-stack">
+    <thead><tr><th scope="col">Kind</th><th scope="col" class="num">Reach</th><th scope="col" class="num">Do not reach</th><th scope="col" class="num">Could not be measured</th></tr></thead>
+    <tbody>
+      {% for k in health.reach.kinds %}
+      <tr><td class="health-rule">{{ k.what }}</td><td class="num" data-label="Reach">{{ k.reachable if k.reachable is not none else "not known" }}</td><td class="num" data-label="Do not reach">{{ k.unreachable if k.unreachable is not none else "not known" }}</td><td class="num" data-label="Could not be measured">{{ k.unmeasurable if k.unmeasurable is not none else "not known" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</details>
+{% endif %}
+
+{% if health.budget %}
+<details class="health-fold" aria-label="instruction file size">
+  <summary>How big the instruction files are ({{ health.budget | length }}){% if health.warnings %}, {{ health.warnings | length }} flagged{% endif %}</summary>
+  {% if health.warnings %}
+  <p class="health-more">What the checks flagged:</p>
+  <ul class="health-warnings">
+    {% for w in health.warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+  <p class="health-more">The pair-by-pair detail behind these is in the command-line report.</p>
+  {% endif %}
+  <div class="health-table-wrap">
+  <table class="health-table health-stack">
+    <thead><tr><th scope="col">File</th><th scope="col" class="num">Words</th><th scope="col" class="num">Written by self-learn</th><th scope="col">State</th></tr></thead>
+    <tbody>
+      {% for b in health.budget %}
+      <tr><td class="health-rule">{{ b.name }}</td><td class="num" data-label="Words">{{ b.words if b.words is not none else "not known" }}</td><td class="num" data-label="Written by self-learn">{% if b.written is not none %}{{ b.written }} words{% if b.share %} ({{ b.share }}){% endif %}{% else %}not known{% endif %}</td><td data-label="State">{{ b.state }}{% if b.flagged %} (flagged){% endif %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</details>
+{% endif %}
+
+{% if health.bucket_counts %}
+<details class="health-fold" aria-label="lessons by place">
+  <summary>Lessons by place ({{ health.bucket_counts | length }})</summary>
+  <div class="health-table-wrap">
+  <table class="health-table health-stack">
+    <thead><tr><th scope="col">Place</th><th scope="col">Lessons</th></tr></thead>
+    <tbody>
+      {% for b in health.bucket_counts %}
+      <tr><td class="health-rule">{{ b.name }}{% if b.path %}<span class="health-where">{{ b.path }}</span>{% endif %}</td><td data-label="Lessons">{{ b.words }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</details>
+{% endif %}
+
+{% if health.reference_note %}<p class="health-more">{{ health.reference_note }}</p>{% endif %}
+
+<details class="health-fold">
+  <summary>All counters, with their names (for checking against the command line)</summary>
+  <p class="health-more">These are the numbers behind this page, under the names the command line uses for them. Rates are shown as percentages. A list of rows (the per-rule reach rows, the reference files, the pairs behind the flagged checks) shows as its number of entries; the rows themselves are in the command-line report.</p>
+  <div class="health-table-wrap">
+  <table class="health-table health-counters">
+    <thead><tr><th scope="col">Name</th><th scope="col" class="num">Value</th></tr></thead>
+    <tbody>
+      {% for name, value in health.counters %}
+      <tr><td><code>{{ name }}</code></td><td class="num">{{ value }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</details>
+</div>
+{% endif %}

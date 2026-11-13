@@ -103,6 +103,11 @@ def page(browser: "Browser", health_server: str) -> Iterator["Page"]:
     pg = context.new_page()
     pg.goto(f"{health_server}/?token={TOKEN}", wait_until="load")
     pg.goto(f"{health_server}/report", wait_until="load")
+    # the body loads itself after the page: wait until it has swapped in (the
+    # filter form is processed by htmx at the swap), not merely "load"
+    expect(pg.locator("#health-rules-list")).to_be_attached()
+    expect(pg.locator("#health-body")).to_have_count(0)
+    expect(pg.locator(".htmx-added")).to_have_count(0)  # htmx has settled (the form is wired)
     try:
         yield pg
     finally:
@@ -159,6 +164,8 @@ class TestRuleFilterInABrowser:
 
     def test_filtering_from_the_all_view_keeps_it(self, page: "Page", health_server: str) -> None:
         page.goto(f"{health_server}/report?all=1", wait_until="load")
+        expect(page.locator("#health-body")).to_have_count(0)  # the body loads itself after the page
+        expect(page.locator(".htmx-added")).to_have_count(0)  # and htmx has settled
         box = page.locator("#health-rule-filter")
         box.fill("rule")
         box.press("Enter")
@@ -227,5 +234,56 @@ class TestNarrowScreen:
             box = cell.bounding_box()
             assert box is not None and box["x"] >= 0 and box["x"] + box["width"] <= 390 + 1, box
             assert pg.evaluate("document.documentElement.scrollWidth") <= 390
+        finally:
+            ctx.close()
+
+
+class TestBodyLoadsAfterThePage:
+    """Speed batch 2: the page is a shell that fetches its own body."""
+
+    def test_a_failed_body_shows_an_error_and_try_again_recovers(self, browser: "Browser", health_server: str) -> None:
+        ctx = browser.new_context()
+        try:
+            pg = ctx.new_page()
+            pg.goto(f"{health_server}/?token={TOKEN}", wait_until="load")
+            failing = {"on": True}
+
+            def handle(route) -> None:
+                if failing["on"]:
+                    route.fulfill(status=500, body="boom")
+                else:
+                    route.continue_()
+
+            pg.route("**/report/body*", handle)
+            pg.goto(f"{health_server}/report", wait_until="load")
+            expect(pg.locator("#health-body .lazy-failed")).to_contain_text("could not be loaded")
+            expect(pg.locator("#health-body")).to_have_attribute("aria-busy", "false")
+            expect(pg.locator(RULES)).to_have_count(0)
+            failing["on"] = False
+            pg.locator("#health-body .lazy-retry").click()
+            expect(pg.locator(RULES)).to_have_count(3)  # the body came in on the retry
+            expect(pg.locator("#health-body")).to_have_count(0)  # the placeholder is gone
+        finally:
+            ctx.close()
+
+    def test_keyboard_focus_stays_put_when_the_body_arrives(self, browser: "Browser", health_server: str) -> None:
+        ctx = browser.new_context()
+        try:
+            pg = ctx.new_page()
+            pg.goto(f"{health_server}/?token={TOKEN}", wait_until="load")
+            held: list = []
+            pg.route("**/report/body*", lambda route: held.append(route))
+            pg.goto(f"{health_server}/report", wait_until="load")
+            deadline = time.monotonic() + 10
+            while not held and time.monotonic() < deadline:
+                pg.wait_for_timeout(50)
+            assert held, "positive control: the body request was made and is being held"
+            expect(pg.locator("#health-body .lazy-loading")).to_contain_text("Counting")  # the loading state shows
+            link = pg.locator('a[data-key-action="up"]').first
+            link.focus()
+            expect(link).to_be_focused()
+            held[0].continue_()
+            expect(pg.locator(RULES)).to_have_count(3)
+            expect(link).to_be_focused()
         finally:
             ctx.close()

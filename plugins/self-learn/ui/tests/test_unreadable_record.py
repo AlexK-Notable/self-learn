@@ -188,11 +188,15 @@ class TestFrontBucketSkipAndCount:
         c = make_client(sb)
         r = c.get("/bucket/skill/s")
         assert r.status_code == 200
-        assert "1 record could not be read" in r.text
         # the valid record still lists; the corrupt one is skipped, never a
         # normal row.
         assert rec.id in r.text
         assert f'href="/record/{bad_rid}"' not in r.text
+        # the count line fills in after the page appeared (out of band)
+        late = c.get("/bucket/skill/s/later")
+        assert late.status_code == 200
+        assert 'id="bucket-unreadable"' in late.text
+        assert "1 record could not be read" in late.text
 
     def test_clean_bucket_shows_no_count_line(self, tmp_path):
         sb = make_env(tmp_path)
@@ -201,6 +205,9 @@ class TestFrontBucketSkipAndCount:
         r = c.get("/bucket/skill/s")
         assert r.status_code == 200
         assert "could not be read" not in r.text
+        late = c.get("/bucket/skill/s/later")
+        assert 'id="bucket-unreadable"' in late.text  # positive control: the slot rendered
+        assert "could not be read" not in late.text
 
 
 # ------------------------------------------------- salvage_record layers
