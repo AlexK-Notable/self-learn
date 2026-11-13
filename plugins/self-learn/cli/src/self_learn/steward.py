@@ -535,9 +535,14 @@ def crash_log_path(home: Path | str) -> Path:
 
 def _note_crash(home: Path | str, cause: str) -> None:
     """Append one crash line (`NOT_REPO_TRUTH`: a cache file). Never raises."""
+    path = crash_log_path(home)
     try:
-        with open(crash_log_path(home), "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": chrono.now_iso(), "cause": cause[:600]}) + "\n")
+        try:
+            kept = path.read_text(encoding="utf-8").splitlines()[-49:]
+        except OSError:
+            kept = []
+        kept.append(json.dumps({"ts": chrono.now_iso(), "cause": cause[:600]}))
+        fsops.atomic_write(path, "\n".join(kept) + "\n", fsync=False, preserve_mode=False)
     except OSError:
         pass
 

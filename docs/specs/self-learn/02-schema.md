@@ -1400,7 +1400,7 @@ mode stays the user's); every other failure drops that entry, named by ordinal i
 `registrations` (`{path, case, why}` each). When the record is executed, after the
 notices and before any sheet, each is registered through
 `hosts.register_plain_project` unless `hosts.registration_problem` names why not (not
-an existing directory strictly inside the user's home; the ledger or self-learn's
+an existing directory strictly inside the user's home (or, since S-149, strictly inside a root listed in `hosts.extra_roots`); the ledger or self-learn's
 cache, inside either or above either; already registered in either registration;
 taken out of the registry by a `host remove` commit, whoever made it (nothing in self-learn removes a
 host on its own), the most recent one for that path in the ledger's history of `hosts.yaml`, which an unreadable

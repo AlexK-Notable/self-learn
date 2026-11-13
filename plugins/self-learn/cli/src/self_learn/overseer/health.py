@@ -85,7 +85,7 @@ def user_always_loaded_budget(home: Path) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 -- a health row never ends the packet
         value = f"unavailable ({type(exc).__name__})"
     return {
-        "kind": "user-always-loaded-budget",
+        "kind": "user-claude-md-budget",
         "label": (
             "Words of lesson lines in the user's always-loaded CLAUDE.md against the budget "
             "(`always_loaded.user_word_budget`). Over it, do not add a line there without "

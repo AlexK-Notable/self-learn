@@ -160,7 +160,7 @@ KIND_PROBE = "probe"
 KIND_LEDGER = "ledger"
 KIND_PLACEMENT = "placement"
 
-REACH, WRITABLE, INTACT, BUDGET, CANON = premises.PLACEMENT_PREMISE_IDS
+REACH, WRITABLE, INTACT, BUDGET, CANON, DISPUTED = premises.PLACEMENT_PREMISE_IDS
 
 _PLACEMENT_CLAIMS = {
     REACH: "a session loads the file this lesson was placed in",
@@ -168,6 +168,7 @@ _PLACEMENT_CLAIMS = {
     INTACT: "the managed block holding this lesson is as self-learn left it",
     BUDGET: "the user's always-loaded CLAUDE.md has room for this lesson's line",
     CANON: "nothing the user wrote by hand in their own instruction files covers this lesson",
+    DISPUTED: "no open lesson is recorded as contradicting this one",
 }
 #: The destinations whose lessons have ``@reach`` and ``@writable``
 #: (02 §3a.10.3); ``@intact`` only for the two that have a managed region
@@ -821,7 +822,40 @@ def _placement_rows(
                 regions.append(region)
     facts.extend(_intact_facts(regions, members_by_target))
     facts.extend(_budget_facts(home, placed, regions, claude_dir, sweep))
+    facts.extend(_disputed_facts(home, placed))
     return [_fact_row(fact, sweep) for fact in facts]
+
+
+def _disputed_facts(home: Path, placed: list[tuple[Bucket, Record]]) -> list[_Fact]:
+    """``@disputed`` (S-150): a failing fact for each placed lesson
+    that an OPEN lesson (pending or deferred) names in `links.contradicts`.
+    The steward may not touch a placed lesson it was not given, so before
+    this a new lesson contradicting a placed rule was parked for the weekly
+    overseer while the old rule kept loading (six days, live 2026-11-02 to
+    11-07, ended by a hand replace). The value is the set of open lessons
+    disputing it: decided once, the lesson is not offered again until
+    another one disputes it. No fact for a lesson nothing disputes."""
+    placed_ids = {record.id for _bucket, record in placed}
+    disputed: dict[str, set[str]] = {}
+    for bucket in discover_buckets(home):
+        for path in bucket.pending_files():
+            try:
+                record = Record.from_path(path)
+            except (RecordError, UnicodeDecodeError, OSError):
+                continue
+            if record.status not in ("pending", "deferred"):
+                continue
+            for target in record.contradicts:
+                if target in placed_ids and target != record.id:
+                    disputed.setdefault(str(target), set()).add(record.id)
+    return [
+        _Fact(
+            rid, DISPUTED, "failing", "disputed-by:" + ",".join(sorted(by)),
+            "contradicted by " + ", ".join(sorted(by)),
+            f"the open lesson(s) {', '.join(sorted(by))} are recorded as contradicting this one",
+        )
+        for rid, by in sorted(disputed.items())
+    ]
 
 
 #: S-148: a lesson whose stored text is this close (cosine, the index's

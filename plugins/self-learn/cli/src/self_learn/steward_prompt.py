@@ -1507,6 +1507,13 @@ def _premise_lines() -> list[str]:
         "  An `@canon` input: the user wrote text by hand in their own instruction files that",
         "  resembles this placed lesson. Their words outrank a lesson: retire it as covered,",
         "  rewrite it to agree, or leave it with a note saying what it adds.",
+        # S-150
+        "  A NEW LESSON THAT CONTRADICTS A PLACED ONE you were not given: do not park it for",
+        "  that. In its sheet write `link-contradicts` (`target`: the placed lesson's id) and",
+        "  then `defer` it (`until`: five days on). The placed lesson comes as an `@disputed` input",
+        "  within two nights, with the new lesson's words; rewriting, narrowing or retiring it",
+        "  is yours there. The deferred lesson returns after that and is decided against the",
+        "  result.",
     ]
 
 

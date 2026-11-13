@@ -470,6 +470,22 @@ different line, destination or verb, or park the case with the reason that
 names its question — and never write the same line again, since a second
 refusal parks it with `ledger-refused`.
 
+**A new lesson that contradicts a placed one.** When a lesson in your
+packet says a placed lesson is wrong, too broad or out of date, and that
+placed lesson is not an input of this run, you may not rewrite it here, and
+you do not park the new lesson for that reason either: parked, it waits up
+to a week for the overseer while the old rule keeps loading into every
+session. Record the contradiction and step aside for two nights: in the new
+lesson's sheet, a `link-contradicts` line whose `target` is the placed
+lesson's id, then a `defer` line with `until` five days on. The daily check then offers you
+the placed lesson as a premise-moved input (`@disputed`, §17) with the new
+lesson's words beside it, and there narrowing, rewriting or retiring it is
+yours without the overseer. The deferred lesson comes back afterwards and is
+decided against the result, usually rejected as covered by the rewrite. When
+the two rest on statements of the user that disagree, the words the user
+typed most recently win; park only when you cannot tell which is the more
+recent or what they meant.
+
 **A lesson the overseer holds.** Once a lesson is parked — by you, by
 your runner, or by a person — it is the overseer's to decide, and it
 stays so until the overseer's decision replaces the parked case. Your
@@ -761,6 +777,38 @@ sits:
   has `outcome: no-action`, and the restore lines are its answer. Leaving
   the block as it is is not an answer: an edited block stops every later
   write to that file until it is decided; fold, restore, or park.
+
+- **`@budget`: the user's always-loaded file is over its word budget.**
+  The user's `CLAUDE.md` is read into every session of every project, and
+  the user's rule is that it holds only lessons about high-value problems
+  that recur across many sessions and many projects. Its lesson lines have
+  a word budget (`always_loaded.user_word_budget`). The daily check ranks
+  the lines by how often sessions were seen meeting them; the lines ranked
+  past the budget come to you, ten a night. For each, find the cheapest
+  place it is still met: a warning hook when it is about one command or
+  tool call; a path-scoped rule when it only matters around certain files;
+  the project its evidence comes from; an existing skill whose moment it
+  belongs to; retirement when something already loaded says it. Keeping it
+  where it is, is `outcome: no-action` with §14's three tests evidenced
+  again in `decision.always_loaded`, which the runner requires: a line kept
+  keeps the file over its budget, so wording alone is never the evidence.
+  The same budget refuses a case of yours that would add a line to that
+  file past it; choose a cheaper destination or park the case
+  (`always-loaded-user-scope`).
+- **`@canon`: the user wrote something by hand that resembles the lesson.**
+  The daily check keeps the hand-written text of the user's own instruction
+  files and notices the lines they gain. The brief shows what the user
+  wrote. Their own words outrank a lesson: when they say what the lesson
+  says, retire the lesson with `covered_by` naming the file, so one rule is
+  not loaded twice; when they narrow or contradict it, rewrite the lesson
+  to agree or retire it; when the resemblance is only of words, leave it
+  with a note saying what the lesson adds.
+- **`@disputed`: a newer lesson, still open, contradicts this placed one**
+  (§12 says how such a link is recorded). The brief shows the newer
+  lesson's words. Decide the placed lesson here: rewrite it to agree,
+  retire it, or keep it with a note saying why the newer one is mistaken.
+  Do not merge the open lesson in with `also`; it is decided on its own
+  when it returns.
 
 A placement check needs no rebaseline: the same failure of the same
 placement, or of the same write of the block, is not offered again once a

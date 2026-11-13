@@ -184,6 +184,8 @@ class TestConfigGet:
             # warning; the overseer's hook route stays a rollback switch.
             "overseer.hook_activation",
             "hosts.extra_roots",
+            # S-147: the word budget of the user's always-loaded file.
+            "always_loaded.user_word_budget",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 

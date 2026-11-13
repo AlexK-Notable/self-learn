@@ -21,7 +21,7 @@ from self_learn.premise_tool import PremiseProbeTool
 from self_learn.premises import ProbeEnv
 from support import make_behavior, make_home
 
-REACH, WRITABLE, INTACT = premises.PLACEMENT_PREMISE_IDS
+REACH, WRITABLE, INTACT = premises.PLACEMENT_PREMISE_IDS[:3]
 D1, D2 = "2026-10-29T03:30:00Z", "2026-10-30T03:30:00Z"
 NOW = datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc).timestamp()
 ROUTED = "2026-09-22T06:24:50Z"

@@ -99,7 +99,7 @@ QUALIFIED_NAME = f"mcp__{SERVER}__{TOOL_NAME}"
 PLACEMENT_VERDICTS = frozenset({"holds", "moved", "unavailable"})
 
 _LESSON_ID = r"^lrn-[0-9a-f]{8}$"
-_PREMISE_ID = r"^(p[1-4]|@reach|@writable|@intact|@budget|@canon)$"
+_PREMISE_ID = r"^(p[1-4]|@reach|@writable|@intact|@budget|@canon|@disputed)$"
 _ARG_KEYS = frozenset({"probe", "holds_if", "match", "lesson", "premise"})
 
 

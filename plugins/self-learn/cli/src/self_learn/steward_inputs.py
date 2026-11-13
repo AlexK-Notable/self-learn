@@ -1406,6 +1406,10 @@ _PLACEMENT_WORDS = {
         "lesson"
     ),
 }
+_PLACEMENT_WORDS["@disputed"] = (
+    "a newer lesson that is still open is recorded as contradicting this placed one"
+)
+_LESSON_ID_RE = re.compile(r"\blrn-[0-9a-f]{8}\b")
 _CANON_CHANGE_RE = re.compile(r"\bchange:([0-9a-f]{12})\b")
 #: The user's added text is shown up to this many characters.
 _CANON_SHOWN_CHARS = 2_400
@@ -1520,6 +1524,8 @@ def _placement_item_lines(home: Path, record: Record, item: Mapping[str, Any]) -
         lines.append(f"    detail: {_clip(item.get('detail'), 400)}")
     if pid == "@canon":
         lines += _canon_text_lines(home, item)
+    if pid == "@disputed":
+        lines += _disputed_text_lines(home, record, item)
     if pid == "@intact":
         members = [str(m) for m in item.get("members") or [] if str(m) != record.id]
         if members:
@@ -1557,6 +1563,50 @@ def _canon_text_lines(home: Path, item: Mapping[str, Any]) -> list[str]:
         out.append("      | " + (_shown_line(line) if not scan_hit(line) else "(withheld: secret scan)"))
         shown += len(line)
     return out
+
+
+def _disputed_text_lines(home: Path, record: Record, item: Mapping[str, Any]) -> list[str]:
+    """S-150: the open lessons that dispute this placed one, each with
+    its status and its own words (read from the ledger now)."""
+    from .ledger_ops import find_record_path  # late
+
+    out: list[str] = []
+    for rid in dict.fromkeys(_LESSON_ID_RE.findall(str(item.get("now") or ""))):
+        if rid == record.id:
+            continue
+        try:
+            other = Record.from_path(find_record_path(home, rid))
+        except Exception:  # noqa: BLE001 -- gone or unreadable: said, not fatal
+            out.append(f"    {rid}: no longer readable")
+            continue
+        out.append(f"    {rid} ({other.status}) says:")
+        for line in str(other.body or "").splitlines():
+            if line.strip():
+                out.append(
+                    "      | " + (_shown_line(line) if not scan_hit(line) else "(withheld: secret scan)")
+                )
+    return out
+
+
+def _disputed_decide_lines(case: str) -> list[str]:
+    """S-150: the [how to decide it] lines of an ``@disputed`` mover."""
+    return [
+        f"[how to decide the contradiction] in {case}. A lesson captured later says this placed "
+        "lesson is wrong, too broad or out of date; its words are above. Read the evidence of "
+        "both (the newer one's is in its own record) and decide THIS placed lesson:",
+        "  - the newer lesson is right and this one is too broad: `replace` this one with "
+        "wording that agrees (every idea of the old text in `decision.rewrite`, and say which "
+        "the newer lesson overturned); do not name the open lesson in `also`: it is decided "
+        "on its own when it returns to you, usually rejected as covered by the rewrite;",
+        "  - the newer lesson is right and nothing of this one is left: `retire` it, or `reject` "
+        "it with the reason;",
+        "  - this lesson is right and the newer one is mistaken or about something else: "
+        "`outcome: no-action` with one `note` saying why; the newer lesson is rejected or "
+        "narrowed when it returns to you;",
+        "  - the two rest on statements of the user that disagree: the words the user typed "
+        "most recently win, and you decide on them here; park only when you cannot tell "
+        "which is the more recent or what they meant.",
+    ]
 
 
 def _canon_decide_lines(case: str) -> list[str]:
@@ -1638,6 +1688,8 @@ def _placement_decide_lines(
         out += _budget_decide_lines(case)
     if "@canon" in placement_ids:
         out += _canon_decide_lines(case)
+    if "@disputed" in placement_ids:
+        out += _disputed_decide_lines(case)
     out.append(
         "  Moving, narrowing, rewriting or retiring this placed lesson is yours here without "
         "the overseer (method section 17); merging it with another placed lesson is not."

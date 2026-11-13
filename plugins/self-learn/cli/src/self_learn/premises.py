@@ -253,7 +253,9 @@ BASELINE_STATES = frozenset({"holds", "contradicts-claim"})
 #: always-loaded CLAUDE.md (`always_budget.py`).
 #: `@canon` (S-148): derived only for a placed lesson that text the user
 #: wrote by hand in their own instruction files resembles (`canon_watch.py`).
-PLACEMENT_PREMISE_IDS = ("@reach", "@writable", "@intact", "@budget", "@canon")
+#: `@disputed` (S-150): derived only for a placed lesson that an open
+#: (pending or deferred) lesson is recorded as contradicting.
+PLACEMENT_PREMISE_IDS = ("@reach", "@writable", "@intact", "@budget", "@canon", "@disputed")
 
 
 def intact_failing_value(verdict: str, region_sha: str | None) -> str | None:

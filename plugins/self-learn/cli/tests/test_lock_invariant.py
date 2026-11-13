@@ -151,6 +151,10 @@ NOT_REPO_TRUTH = {
     # expiry, both under <cache>/glob-witness-v1/ -- disposable, never a repo.
     "ledger_ops.glob_reaches": "XDG cache: <cache>/glob-witness-v1/<sha256>.json, a disposable reachability witness",
     "cache_gc._prune_glob_witnesses": "XDG cache: unlinks expired glob-witness-v1 files and their crash temps",
+    # 2026-11-12 (S-144, S-148): three cache-only writers, none of them repo truth.
+    "steward._note_crash": "XDG cache: <cache>/steward/crashes.jsonl, the causes of crashed steward jobs",
+    "canon_watch._write": "XDG cache: <cache>/premises/canon-watch/, snapshots of the user's hand-written text and the changes seen",
+    "premise_sweep._canon_semantic": "XDG cache: <cache>/premises/canon-watch/semantic-<sha>.json, one change's embedding neighbours",
     # U-cleanup-B (§8.1): worker.write_settings_file is DELETED — the batch
     # round no longer writes a settings file at all (settings=None for the
     # real sdk seam; see WS1 in test_worker_contract.py). No exemption
