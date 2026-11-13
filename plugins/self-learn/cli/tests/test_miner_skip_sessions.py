@@ -27,6 +27,7 @@ import json
 import pytest
 
 from self_learn import miner, settings
+from test_session_shim import shim_reader
 from support import commit_all, make_home
 
 LISTED_TAIL = "LISTED-SESSION-TAIL-marimba"
@@ -47,6 +48,8 @@ ENV_VAR = "SELF_LEARN_MINER_SKIP_SESSIONS"
 def redirect(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
     monkeypatch.setenv("SELF_LEARN_ACTOR", "testhost")
+    monkeypatch.setenv("SELF_LEARN_EMBED_PROVIDER", "none")
+    monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(tmp_path / "claude-dir"))
     monkeypatch.delenv(ENV_VAR, raising=False)
 
 
@@ -102,18 +105,6 @@ def track_at_end(path):
     miner._save_cursors(cursors)
 
 
-def shim_reader(monkeypatch):
-    """Replace the model pass; return the list of prompts it was given."""
-    prompts: list[str] = []
-
-    def fake(h, prompt):
-        prompts.append(prompt)
-        out = miner.spool_dir() / miner.OUTPUT_BASENAME
-        out.write_text(json.dumps({"candidates": [], "fires": []}), encoding="utf-8")
-        return out
-
-    monkeypatch.setattr(miner, "_invoke_reader", fake)
-    return prompts
 
 
 def record_reads(monkeypatch):
@@ -185,7 +176,9 @@ def test_an_unlisted_sibling_in_the_same_folder_is_read_as_before(home, transcri
     assert miner.run(home).status == "ok"
 
     assert SIBLING_TAIL in prompts[0] and GROWN_TAIL in prompts[0]
-    assert "first-part" not in prompts[0]  # the grown one is read from its cursor, as before
+    # the grown one is judged from its cursor, as before: its first turn is shown only as context
+    assert "· already mined\nYOU: please fix the failing test in the parser" in prompts[0]
+    assert "· new\nYOU: one more thing" in prompts[0]
     assert LISTED_TAIL not in prompts[0]
     cursors = miner._load_cursors()
     assert not cursors[str(sibling)].get("halt") and not cursors[str(grown)].get("halt")
@@ -237,7 +230,8 @@ def test_taking_an_id_off_the_list_makes_the_file_readable_again(home, transcrip
     assert len(prompts) == 2
     assert LISTED_TAIL in prompts[1]  # from line 0
     assert GROWN_TAIL in prompts[1]  # from its cursor ...
-    assert "already-mined-part" not in prompts[1]  # ... not from line 0
+    # ... not from line 0: the part before the cursor is context only
+    assert "· already mined\nYOU: please fix the failing test in the parser" in prompts[1]
     cursors = miner._load_cursors()
     assert not cursors[str(never_tracked)].get("halt") and not cursors[str(tracked)].get("halt")
 

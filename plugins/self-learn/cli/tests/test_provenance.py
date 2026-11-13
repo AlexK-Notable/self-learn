@@ -317,34 +317,3 @@ def test_digest_labels_each_turn_by_who_wrote_it(tmp_path):
     assert digest is not None and f"[agent L4] {BRIEF}" in digest
 
 
-def test_the_reader_is_told_only_a_user_line_is_the_persons(tmp_path):
-    prompt, _corrupt = miner._compose_prompt(make_home(tmp_path), ["(digest)"], tmp_path / "out.json")  # pyright: ignore[reportPrivateUsage]
-    assert "Only a [user] line is the user's own words." in prompt
-    rubric = " ".join(miner._rubric()[0].split())  # pyright: ignore[reportPrivateUsage]
-    assert "Only a `[user]` line is the user's own words;" in rubric
-
-
-def test_a_miner_run_sweeps_the_transcripts_for_sends(tmp_path, monkeypatch):
-    home = make_home(tmp_path)
-    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
-    root = tmp_path / "transcripts"
-    write(root, ORCH, [typed("send the brief to the worker", 1, session=ORCH),
-                       bash(f'herdr agent prompt w1:p2 "{BRIEF}"', 8), asst("sent", 9, session=ORCH)])
-    write(root, WORKER, [typed(BRIEF, 10), asst("reading the brief", 11)])
-    monkeypatch.setenv("SELF_LEARN_TRANSCRIPTS_DIR", str(root))
-    miner._save_cursors({"__initialized__": "test-fixture"})  # pyright: ignore[reportPrivateUsage]
-    captured: dict = {}
-
-    def fake(h, prompt):
-        captured["prompt"] = prompt
-        out = miner.spool_dir() / miner.OUTPUT_BASENAME
-        out.write_text(json.dumps({"candidates": [], "fires": []}), encoding="utf-8")
-        return out
-
-    monkeypatch.setattr(miner, "_invoke_reader", fake)
-    result = miner.run(home)
-    assert result.status == "ok"
-    assert "[user L1] send the brief to the worker" in captured["prompt"]  # positive control
-    assert f"[agent L1] {BRIEF}" in captured["prompt"]
-    assert f"[user L1] {BRIEF}" not in captured["prompt"]

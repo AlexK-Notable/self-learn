@@ -877,7 +877,7 @@ class TestNoMutationPrecedesItsLock:
             # the four files round 7 found — each one's real shape
             ("hosts", "    save_hosts(home, hosts)\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
             ("verbs", "    compile_reference(a, b)\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
-            ("miner", "    _reconcile_and_land(home, p, r, c, w)\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
+            ("miner", "    _write_lesson(home, p, r)\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
             ("teach", "    create_record(home, record)\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
             # P7 widening (M-M): the new open(a+) append leaf's own bug
             # class — an append BEFORE the lock, exactly the shape moving

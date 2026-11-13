@@ -97,19 +97,6 @@ def _ledger_with_one_bad_resolved(tmp_path, monkeypatch, *, routed_good: bool = 
     return env, bad
 
 
-def test_miner_prompt_indexes_skip_and_name_the_file(tmp_path, monkeypatch):
-    env, bad = _ledger_with_one_bad_resolved(tmp_path, monkeypatch, routed_good=True)
-    corrupt: list = []
-    ledger_index = miner._ledger_index(env.ledger, corrupt)
-    canon_index = miner._canon_index(env.ledger, corrupt)
-    # positive control: the good records are indexed
-    assert "lrn-9e000001" in ledger_index
-    assert "lrn-9e000002" in canon_index
-    assert "lrn-9e0000ff" not in ledger_index + canon_index
-    # named, once per sweep, through the journal's `corrupt_records` channel
-    assert corrupt == [bad, bad]
-
-
 def test_miner_landing_readers_skip_the_file(tmp_path, monkeypatch):
     env, _bad = _ledger_with_one_bad_resolved(tmp_path, monkeypatch)
     assert miner._find_record(env.ledger, "lrn-9e0000ff") is None

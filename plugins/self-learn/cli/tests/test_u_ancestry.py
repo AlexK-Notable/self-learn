@@ -836,28 +836,6 @@ def test_references_hit_is_not_already_canon(tmp_path):
 # ===================================================================== TEL
 
 
-def test_fire_crosses_host_boundary(tmp_path):
-    """TEL1: a `fire … outcome: violated` naming an ANCESTOR-bucket
-    record, observed while mining a CHILD-host session, raises the
-    `recurrence-suspect` against that ancestor record — `miner._canon_index`
-    already iterates every bucket, so this is a no-regression assertion."""
-    from self_learn import miner
-
-    home, ancestor, child = _ancestor_pair(tmp_path)
-    ancestor_record = make_behavior(scope="project", record_id="lrn-00000be1")
-    ancestor_record.set_routing(
-        {"routed_at": "2026-07-13T18:02:00Z", "destination": "claude-md", "by": "human"}
-    )
-    ancestor_record.set_status("routed")
-    (bucket_dir := home / "projects" / slug_for(ancestor)).mkdir(parents=True)
-    ensure_project_meta(bucket_dir, ancestor)
-    (bucket_dir / "resolved").mkdir()
-    ancestor_record.write(bucket_dir / "resolved" / f"{ancestor_record.id}.md")
-
-    index = miner._canon_index(home)
-    assert ancestor_record.id in index, "the ancestor-bucket record must be indexable from ANY session"
-
-
 def test_recurrence_suspects_same_bucket_only(tmp_path):
     """TEL2: `worker._recurrence_suspects` still compares only within
     `entry.bucket_dir / "resolved"` — this unit does NOT widen it.

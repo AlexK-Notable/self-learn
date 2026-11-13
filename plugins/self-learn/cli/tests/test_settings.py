@@ -15,6 +15,7 @@ precedent): `env`, `sdk_fake_worker`, `seed_pending`, `_defect_script`,
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -32,7 +33,8 @@ from self_learn.invocation_sdk import events as events_mod
 
 from test_worker import env, sdk_fake_worker, seed_pending  # noqa: F401 -- fixtures resolved by name
 from test_repair import _defect_script, _t4_missing_target  # noqa: F401
-from test_miner import a as miner_a, candidate as miner_candidate, shim_reader, u as miner_u, write_transcript
+from test_session_shim import shim_reader as session_shim_reader
+from test_miner import a as miner_a, write_transcript
 from test_recover_or_refuse import _plant_stop, _probe_file  # noqa: F401 -- gate r1 MAJOR-3
 from support import make_home
 
@@ -118,8 +120,11 @@ _GENERIC_DEFAULT_NAMES = [n for n in _ALL_NAMES if n not in _ENABLED_WHEN_NAMES]
 _GENERIC_CONFIG_BEATS_DEFAULT_NAMES = [
     n for n in _ALL_NAMES if n not in _ENABLED_WHEN_NAMES and n not in _ACCEPTS_NAMES
 ]
+#: A setting that refuses values it cannot read (`accepts`: `miner.schedule_time`)
+#: would fold this test's made-up string to its default, so its config-over-env
+#: order is pinned in its own test file instead.
 _GENERIC_CONFIG_BEATS_ENV_NAMES = [
-    n for n in _ALL_NAMES if n not in _ENV_FIRST_NAMES
+    n for n in _ALL_NAMES if n not in _ENV_FIRST_NAMES and n != "miner.schedule_time"
 ]
 _GENERIC_STR_NAMES = [n for n in _STR_NAMES if n not in _ENABLED_WHEN_NAMES]
 
@@ -1030,12 +1035,20 @@ def test_miner_run_threads_its_own_home_to_pending_gate_and_cap_for(tmp_path, mo
     other_home = tmp_path / "other"
     other_home.mkdir()
     monkeypatch.setenv("SELF_LEARN_HOME", str(other_home))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    monkeypatch.setenv("SELF_LEARN_EMBED_PROVIDER", "none")
+    monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(tmp_path / "claude-dir"))
     transcripts_root = tmp_path / "transcripts"
     (transcripts_root / "-home-u-proj").mkdir(parents=True)
     monkeypatch.setenv("SELF_LEARN_TRANSCRIPTS_DIR", str(transcripts_root))
     miner._save_cursors({"__initialized__": "test-fixture"})
-    write_transcript(transcripts_root, "sess-e2e", [miner_u("work"), miner_a("found the cause")])
-    shim_reader(monkeypatch, {"candidates": [miner_candidate()], "fires": []})
+    typed_row = {"entrypoint": "cli", "promptSource": "typed", "origin": {"kind": "human"}}
+    write_transcript(transcripts_root, "sess-e2e", [
+        json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "work"}]},
+                    **typed_row}),
+        miner_a("found the cause"),
+    ])
+    session_shim_reader(monkeypatch)
     monkeypatch.setattr(miner.worker, "kick", lambda h, **kw: "spawned")
 
     captured: dict[str, object] = {}
@@ -1052,7 +1065,9 @@ def test_miner_run_threads_its_own_home_to_pending_gate_and_cap_for(tmp_path, mo
 
     monkeypatch.setattr(miner, "pending_gate", spy_gate)
     monkeypatch.setattr(miner, "cap_for", spy_cap)
-    miner.run(real_home, trigger="timer")
+    ran = miner.run(real_home, trigger="timer")
+    log = (miner.miner_dir() / "miner.log").read_text(encoding="utf-8") if (miner.miner_dir() / "miner.log").exists() else ""
+    assert ran.status == "ok", (ran.status, log[-600:])
     assert captured["gate_home"] == real_home
     assert captured["cap_home"] == real_home
     assert captured["gate_home"] != other_home

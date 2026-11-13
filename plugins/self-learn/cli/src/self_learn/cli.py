@@ -1170,19 +1170,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "library's own status string, never a re-derived label; exit "
         "status unchanged (07 §4 contract 2)",
     )
-    # new-miner plan §3.8 (R2): the session engine. `--engine session` lands
-    # nothing without the user's `miner.engine` flip: alone it is refused,
-    # and with `--preview` it lands nothing at all.
+    # The digest engine was retired on 2026-11-12; `session` is the only
+    # engine, so the flag survives only to refuse the old name in a sentence.
     mrun.add_argument(
         "--engine",
-        choices=("digest", "session"),
         default=None,
-        help="this run's engine, over the miner.engine setting; session only with --preview",
+        help="kept for old scripts: only 'session' is accepted (the digest engine was retired on 2026-11-12)",
     )
     mrun.add_argument(
         "--preview",
         action="store_true",
-        help="session engine only: call and check, write the run folder, print counts; "
+        help="call and check with the session engine, write the run folder, print counts; "
         "nothing lands, no cursor moves, no judged uuid is stored",
     )
     mrun.add_argument(
@@ -1893,23 +1891,16 @@ def _print_unattended_stop(surface: str, stopped: list[str]) -> None:
 
 
 def _mine_engine_refusal(home: Path, args: argparse.Namespace) -> str | None:
-    """Why ``mine run``'s engine flags are refused, or None (plan §3.8):
-    ``--engine session`` only with ``--preview`` (only the user's flip of
-    ``miner.engine`` makes the session engine land); ``--preview`` only on
-    the session engine; ``--session`` only with ``--preview``."""
-    if args.engine == "session" and not args.preview:
+    """Why ``mine run``'s engine flags are refused, or None: ``--engine``
+    other than ``session`` (the digest engine was retired on 2026-11-12;
+    ``session`` is the only engine) and ``--session`` without ``--preview``."""
+    if args.engine is not None and args.engine != "session":
         return (
-            "--engine session needs --preview: the session engine lands nothing until "
-            "the user sets miner.engine to session"
+            f"--engine {args.engine[:40]!r} is not available: the digest engine was retired on "
+            "2026-11-12 and the session engine is the only one (drop --engine)"
         )
     if args.sessions and not args.preview:
         return "--session needs --preview"
-    if args.preview:
-        engine = args.engine
-        if engine is None:
-            engine, _source = settings.resolve_setting(home, settings.by_name("miner.engine"))
-        if engine != "session":
-            return "--preview belongs to the session engine (add --engine session)"
     for sid in args.sessions:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{3,63}", sid):
             return f"--session needs a transcript's session id, got {sid[:80]!r}"
@@ -2309,14 +2300,12 @@ def _cmd_doctor_settings(home: Path) -> int:
 
 def _cmd_doctor_miner(home: Path) -> int:
     """`doctor miner` (new miner R2, fix round 4): every verdict from
-    :func:`mining.waiting.preflight`. A stuck item, or waiting answers a
-    `digest` engine will never land, is a WARN, never a FAIL, so this verb
+    :func:`mining.waiting.preflight`. A stuck item is a WARN, never a FAIL, so this verb
     always exits 0. The miner's cache folder is read where
     `miner.miner_dir` writes it, never created."""
     from .mining import waiting as mining_waiting
 
-    engine, _source = settings.resolve_setting(home, settings.by_name("miner.engine"))
-    for row in mining_waiting.preflight(worker.cache_dir() / "miner", engine=str(engine)):
+    for row in mining_waiting.preflight(worker.cache_dir() / "miner"):
         print(f"doctor: {row.verdict} {row.name} — {row.detail}")
     return EXIT_OK
 

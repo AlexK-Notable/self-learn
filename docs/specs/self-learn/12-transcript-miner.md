@@ -1097,7 +1097,15 @@ the shared lesson-writing passage and output schema after this method.
 
 ### 13.3 The session engine in `miner.run` (R2, 2026-10-19)
 
-`miner.engine` (`digest` | `session`, default `digest`, tier C, no environment
+> **Retired 2026-11-12: the digest engine.** The session engine has run every
+> night since 2026-10-25 with `ok` runs only, so the digest engine was retired
+> on 2026-11-12. `miner.engine` now has one value, `session`, which is also its
+> default; a config that still says `digest` reads as `session` and `doctor
+> settings` names it. `mine run --engine digest` is refused. Where this section
+> and the sections below describe the two engines, a rollback or a flip, read the
+> session engine only.
+
+`miner.engine` (until 2026-11-12 `digest` | `session`, default `digest`; now `session` only; tier C, no environment
 variable, and no process override: `SELF_LEARN_OVERRIDE_MINER_ENGINE` is
 ignored, named by `doctor settings` as a var that does nothing, and
 `settings.override` refuses the entry) chooses the engine of a run. The session engine replaces exactly the

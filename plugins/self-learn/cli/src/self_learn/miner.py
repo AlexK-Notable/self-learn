@@ -49,7 +49,7 @@ import traceback
 import uuid
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple, cast
@@ -71,9 +71,7 @@ from .mining import waiting as mining_waiting
 from .overseer import run as overseer_run
 from .records import (
     GENERALITIES,
-    KINDS,
     RECORD_ID_RE,
-    FrontmatterLoadError,
     Record,
     RecordError,
 )
@@ -119,11 +117,6 @@ INVOKE_TIMEOUT_SECS = float(cast(float, settings.by_name("miner.reader_timeout_s
 JOURNAL_CAP_BYTES = 2_000_000
 DEFAULT_MINER_MODEL = "claude-sonnet-5"
 
-#: Injection-bandwidth caps (audit 2026-07-15: transcript text is
-#: attacker-influenceable and landed fields autosync to the remote —
-#: oversize model output is refused, never clipped into canon).
-MAX_QUOTE_CHARS = 400
-MAX_FIELD_CHARS = 1_000
 
 #: 12 §11 / 02 §1 (U18): the episode brief's dedicated cap, one-sided by
 #: design — ≈ the 200-word bound. The 100-word floor is rubric guidance
@@ -144,35 +137,20 @@ MAX_NEARMISS_SNIPPET_CHARS = 600
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{3,63}$")
 _SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
-#: Digest limits — a runaway session must not blow the reader's context.
-#: Each is the DEFAULT of a registry setting (the number lives there);
-#: a run reads the operative values once, into a :class:`DigestLimits`.
-MAX_TEXT_CHARS = cast(int, settings.by_name("miner.message_chars").default)  # per kept turn
-MAX_DIGEST_CHARS = cast(int, settings.by_name("miner.session_chars").default)  # per session digest
-#: per run; overflow waits for the next run
-MAX_PROMPT_DIGESTS_CHARS = cast(int, settings.by_name("miner.run_chars").default)
+#: Digest limits for :func:`digest_transcript`, the structural digest the
+#: halt tests still use as their oracle (no run calls it since the digest
+#: engine was retired on 2026-11-12; the settings that tuned it are gone).
+MAX_TEXT_CHARS = 2_000  # per kept turn
+MAX_DIGEST_CHARS = 60_000  # per session digest
 
 
 @dataclass(frozen=True)
 class DigestLimits:
-    """How much of the scanned sessions one mining run hands its reader.
-
-    Every field is the registry setting ``miner.<field name>``;
-    :func:`digest_limits` resolves them by walking the fields, so a new
-    limit is one field here plus one ``settings.sizing_knob`` line and
-    nothing else. All three are character counts today. This object is
-    the one thing :func:`digest_transcript` and :func:`run` size
-    against, so a different measure would be introduced here."""
+    """How much of a scanned session :func:`digest_transcript` keeps."""
 
     message_chars: int = MAX_TEXT_CHARS
     session_chars: int = MAX_DIGEST_CHARS
-    run_chars: int = MAX_PROMPT_DIGESTS_CHARS
 
-
-def digest_limits(home: Path | str | None = None) -> DigestLimits:
-    """The operative :class:`DigestLimits` (config.yaml > env > default)."""
-    root = home if home is not None else resolve_home()
-    return DigestLimits(**{f.name: settings.resolve_int(root, f"miner.{f.name}") for f in fields(DigestLimits)})
 
 #: Sessions whose FIRST user turn opens with one of these are the
 #: system's own machinery — never mined (M-5). The worker's, the steward's and
@@ -1069,162 +1047,12 @@ def _rubric() -> tuple[str, str]:
     return text, (m.group(1) if m else "unversioned")
 
 
-def _ledger_index(home: Path, corrupt: list[Path] | None = None) -> str:
-    """Compact all-status index the reader reconciles against (doc 12 §5:
-    in-context comparison beats a vector index at this ledger size).
-
-    FW-53: a ledger file that fails to even decode as UTF-8 is skipped
-    exactly like a ``RecordError`` (malformed frontmatter) already was —
-    its status/scope can't be read either way, so this sweep cannot place
-    it, and this is the FIRST thing every productive run does (`run()`'s
-    outer handler previously turned one bad byte anywhere in the ledger
-    into `status: failed` for the whole run, before the reader ever saw a
-    prompt). Unlike the pre-existing RecordError skip, the caller wants to
-    know about THIS failure mode — appended to `corrupt` when given, so
-    `_compose_prompt`/`_run_locked` can surface a non-silent count in the
-    run journal (skip-and-report, not skip-and-forget)."""
-    rows: list[str] = []
-    for bucket in discover_buckets(home):
-        for sub in ("pending", "resolved"):
-            d = bucket.path / sub
-            if not d.is_dir():
-                continue
-            for path in sorted(d.glob("lrn-*.md")):
-                try:
-                    r = Record.from_path(path)
-                except (FrontmatterLoadError, UnicodeDecodeError):
-                    # R4 (sweep 2, 2026-09-27): a header that does not
-                    # load is reported exactly like FW-53's bad bytes.
-                    if corrupt is not None:
-                        corrupt.append(path)
-                    continue
-                except RecordError:
-                    continue
-                rows.append(
-                    f"- {r.id} [{r.status}] ({r.scope}): {record_title(r)}"
-                )
-    return "\n".join(rows) if rows else "(ledger is empty)"
 
 
-def _canon_index(home: Path, corrupt: list[Path] | None = None) -> str:
-    """Routed rules for fire observation: id + title.
-
-    FW-53: same decode-safety treatment as :func:`_ledger_index` (same
-    sweep, same crash-before-the-reader risk, same skip-and-report
-    contract)."""
-    rows: list[str] = []
-    for bucket in discover_buckets(home):
-        d = bucket.path / "resolved"
-        if not d.is_dir():
-            continue
-        for path in sorted(d.glob("lrn-*.md")):
-            try:
-                r = Record.from_path(path)
-            except (FrontmatterLoadError, UnicodeDecodeError):
-                if corrupt is not None:
-                    corrupt.append(path)
-                continue
-            except RecordError:
-                continue
-            if r.status == "routed":
-                rows.append(f"- {r.id} ({r.scope}): {record_title(r)}")
-    return "\n".join(rows) if rows else "(no routed rules yet)"
 
 
-_PROMPT_TEMPLATE = """You are the self-learn transcript miner. Below are structural digests of
-recent Claude Code sessions (tool-result bodies removed; [user],
-[agent], [relay], [subagent] and [assistant] turns and error/retry
-annotations kept, each tagged with its transcript line). Your job: find
-DURABLE lessons — user corrections, verified gotchas, stated standing
-preferences, repeated friction — and
-observations of routed rules firing. Apply the mining rubric strictly;
-when in doubt, do not emit. A one-off task instruction is never a lesson.
-
-Only a [user] line is the user's own words. An [agent] line is text
-another agent wrote and typed into the session as if the user typed it
-(a brief handed over by an orchestrating session, an accepted suggested
-prompt); a [relay] line is text the harness or a program put there (a
-headless prompt, a task notification, skill text, a compaction summary);
-a [subagent] line is a subagent's. Read them as context around a moment,
-never as a correction, ruling, or preference of the user's, and never
-quote one as the user's words.
-
-Write EXACTLY ONE file: {output_path}
-JSON, this shape:
-{{
-  "candidates": [
-    {{
-      "scope": "skill:<name>" | "project" | "user",
-      "type": "behavior" | "knowledge",
-      "kind": "anti-pattern" | "surface-rule" | "reasoning-pattern",
-      "trigger": "<firing condition — concrete paths/commands/situations>",
-      "instruction": "<what to do, carrying the why, one line>",
-      "fact": "<knowledge records only>", "context": "<optional>",
-      "quote": "<SHORTEST transcript span proving the sighting>",
-      "session": "<session id>", "line": <transcript line number>,
-      "verified": true|false, "verified_how": "<if verified>",
-      "incident_cost": "<human terms, if visible>",
-      "generality": "environment-specific" | "general-practice" | "uncertain",
-      "confidence": "high" | "medium" | "low",
-      "why_durable": "<one line: why this will recur>",
-      "episode_brief": "<OPTIONAL, 100-200 words: the attempt -> failure -> correction -> resolution arc, told in the plain, domestic terms the human lived it in — no record ids, no destination names (skill-md/hook/etc.), no unexpanded acronyms. RETELL, never quote: no verbatim transcript spans beyond the shortest-span quote above. Omit the field entirely when there is nothing worth reconstructing.>",
-      "match": {{"record": "lrn-…" | null, "status": "pending" | "routed" | "rejected" | null}}
-    }}
-  ],
-  "fires": [
-    {{"record": "lrn-…", "session": "<id>", "line": <n>,
-      "outcome": "suspected-compliance" | "suspected-violation" | "cannot-tell"}}
-  ]
-}}
-
-Rules: behavior records need trigger+instruction; knowledge records need
-fact. `match` reconciles against the LEDGER INDEX below — if a candidate
-is the same lesson as an existing record, name it (the CLI verifies your
-claim; a wrong id demotes the candidate). Never emit secrets, tokens, or
-credentials in any field — shorten quotes around them. Emit nothing for
-sessions that contain no durable lesson: an empty candidates list is a
-correct and common answer. `episode_brief` is optional narrative prose
-(100-200 words) reconstructing the episode so a human can recognize it
-again after the transcript is gone — plain words, no jargon, a retelling
-never a quotation; leave it out rather than pad it to reach the floor.
-A fire is a suspicion, never a verdict: `suspected-compliance` — the
-session's own text reads as following the rule; `suspected-violation` —
-it reads as breaking it; `cannot-tell` — the digest does not show enough
-to say either way, so emit this rather than guessing. The steward, not
-you, decides whether a `suspected-violation` is a real recurrence.
-
-=== MINING RUBRIC ===
-{rubric}
-
-=== LEDGER INDEX (reconcile against this) ===
-{ledger}
-
-=== ROUTED RULES (observe fires against these) ===
-{canon}
-
-=== SESSION DIGESTS ===
-{digests}
-"""
 
 
-def _compose_prompt(
-    home: Path, digests: list[str], output_path: Path
-) -> tuple[str, list[Path]]:
-    """Returns ``(prompt, corrupt)`` — ``corrupt`` is every ledger file the
-    index sweeps (:func:`_ledger_index`, :func:`_canon_index`) skipped for
-    failing to decode as UTF-8 (FW-53), so the caller can journal it
-    instead of losing the fact silently."""
-    corrupt: list[Path] = []
-    ledger = _ledger_index(home, corrupt)
-    canon = _canon_index(home, corrupt)
-    prompt = _PROMPT_TEMPLATE.format(
-        output_path=output_path,
-        rubric=_rubric()[0],
-        ledger=ledger,
-        canon=canon,
-        digests="\n\n".join(digests),
-    )
-    return prompt, corrupt
 
 
 def _invoke_reader(home: Path, prompt: str) -> Path | None:
@@ -1566,119 +1394,12 @@ def _valid_skill_scope(home: Path, scope: str) -> bool:
     return any(p.is_dir() for p in root.glob(f"plugins/*/skills/{name}"))
 
 
-def _build_record(home: Path, cand: dict) -> Record:
-    """Compose a Record from a candidate dict; raises RecordError on any
-    schema violation (the caller journals + drops)."""
-    scope = str(cand.get("scope") or "project")
-    if scope.startswith("skill:") and not _valid_skill_scope(home, scope):
-        raise RecordError(f"unknown skill bucket for scope {scope!r}")
-    if scope not in ("project", "user") and not scope.startswith("skill:"):
-        raise RecordError(f"bad scope {scope!r}")
-    rtype = str(cand.get("type") or "")
-    if rtype == "behavior":
-        kind = str(cand.get("kind") or "surface-rule")
-        if kind not in KINDS:
-            raise RecordError(f"bad kind {kind!r}")  # drop, never coerce
-        trigger = str(cand.get("trigger") or "").strip()
-        instruction = str(cand.get("instruction") or "").strip()
-        if len(trigger) > MAX_FIELD_CHARS or len(instruction) > MAX_FIELD_CHARS:
-            raise RecordError("field over injection-bandwidth cap")
-        record = Record.create(
-            type="behavior",
-            scope=scope,
-            source="session",
-            kind=kind,
-            trigger=trigger,
-            instruction=instruction,
-        )
-    elif rtype == "knowledge":
-        fact = str(cand.get("fact") or "").strip()
-        context = (
-            (str(cand.get("context")).strip() or None)
-            if cand.get("context")
-            else None
-        )
-        if len(fact) > MAX_FIELD_CHARS or len(context or "") > MAX_FIELD_CHARS:
-            raise RecordError("field over injection-bandwidth cap")
-        record = Record.create(
-            type="knowledge",
-            scope=scope,
-            source="session",
-            fact=fact,
-            context=context,
-        )
-    else:
-        raise RecordError(f"bad type {rtype!r}")
-    # 12 §11 / 02 §1 (U18): the episode brief COMPOSES INTO record.body
-    # HERE — before _scan_candidate runs (miner.py:1024) — never in
-    # create_record (which runs after the scan). This ordering is the
-    # whole compose-before-scan invariant: the brief is body bytes the
-    # secret scan already walks (record.body is in _scan_candidate's
-    # text list) ONLY because it landed in the body before the scan call.
-    # Both record types register "Episode brief" as optional (records.py
-    # OPTIONAL_SECTIONS), so record.set_body's re-validation accepts it.
-    # Free prose, no structured refs — no _valid_ref gating applies here.
-    episode_brief = str(cand.get("episode_brief") or "").strip()
-    if episode_brief:
-        if len(episode_brief) > MAX_EPISODE_BRIEF_CHARS:
-            # Refuse-not-clip (§10-2 posture): over the ceiling drops the
-            # WHOLE candidate, never a truncated brief on a landed record.
-            raise RecordError(
-                f"episode brief over cap ({MAX_EPISODE_BRIEF_CHARS} chars)"
-            )
-        record.set_body(
-            record.body.rstrip("\n") + "\n\n## Episode brief\n" + episode_brief + "\n"
-        )
-    if cand.get("verified"):
-        record.set_verified(True, how=(cand.get("verified_how") or None))
-    if cand.get("incident_cost"):
-        record.set_incident_cost(str(cand["incident_cost"]))
-    generality = cand.get("generality")
-    if generality in GENERALITIES:
-        record.set_generality(generality)
-    return record
 
 
-def _scan_candidate(record: Record, cand: dict, quote: str) -> list:
-    """Scan everything that will land or be journaled. ``quote`` is the
-    EFFECTIVE quote (post length-cap), not the raw candidate field."""
-    texts = [record.body, quote]
-    for key in ("verified_how", "incident_cost", "why_durable"):
-        if cand.get(key):
-            texts.append(str(cand[key]))
-    return [h for t in texts if t for h in secret_scan(t)]
 
 
-def _valid_ref(cand: dict) -> tuple[str, int] | None:
-    """Validate the model-authored (session, line) pair — these build the
-    evidence origin, which lands in tracked files and telemetry events
-    (all-or-nothing flush: one secret-shaped span there would wedge every
-    future flush). Free text is refused, never passed through."""
-    session_id = str(cand.get("session") or "")
-    line = cand.get("line")
-    if not _SESSION_ID_RE.match(session_id):
-        return None
-    if not isinstance(line, int) or isinstance(line, bool) or not (
-        1 <= line <= 10_000_000
-    ):
-        return None
-    return session_id, line
 
 
-#: U-recur spec §4 decision 1: a literal distinct from the candidate
-#: path's "miner-match" (:1183) and from the worker's origin-match /
-#: title-token-overlap (worker.py:1001-1006) — it labels the SOURCE of
-#: suspicion, not a similarity metric. *Amended 2026-09-13 (steward
-#: build, U6):* THE CROSSOVER is removed — a miner-observed
-#: `suspected-violation` is never auto-decided into a recurrence-suspect
-#: (11 §4.3, `12-transcript-miner.md` §7 M-1). THE BACKFILL below is the
-#: only remaining caller: a one-way migration net for rows already
-#: sitting in the tracked plane with the pre-U6 raw `violated` value,
-#: never for anything reported under the new vocabulary. The label moves
-#: with the rename `commands/review.md` already applies on read (a basis
-#: recorded before it still reads `fire-violated`; the CLI accepts both
-#: spellings).
-_FIRE_VIOLATED_BASIS = "fire-suspected-violation"
 
 
 def _event_seen(
@@ -1729,32 +1450,6 @@ def _event_seen(
     return seen, violated_fires
 
 
-def _raise_recurrence_suspect(
-    result: MineResult,
-    seen_events: set[tuple[str, str, str]],
-    rid: str,
-    origin: str,
-    basis: str,
-) -> None:
-    """U-recur spec §4 decision 5's ONE emission point: spools the
-    suspect, checks/updates THE SUSPECT KEY
-    (``("recurrence-suspect", rid, origin)``) against ``seen_events``,
-    appends to ``result.recurrences``, and writes the
-    ``recurrence-from-fire`` journal row. *Amended 2026-09-13 (steward
-    build, U6):* THE CROSSOVER is gone (11 §4.3, `12-transcript-miner.md`
-    §7 M-1 — a fire is never auto-decided into a recurrence by the
-    miner); THE BACKFILL (below) is now the only caller, kept as one
-    emission point on principle even with a single call site. A no-op
-    when the key is already present; that is the whole dedupe contract."""
-    key = ("recurrence-suspect", rid, origin)
-    if key in seen_events:
-        return
-    telemetry.spool_quiet(
-        "recurrence-suspect", record=rid, origin=origin, basis=basis, line_format=transcript_lines.FORMAT
-    )
-    seen_events.add(key)
-    result.recurrences.append(rid)
-    _outcome(result, origin, "recurrence-from-fire", record=rid)
 
 
 # ---------------------------------------- FW-34 §1: near-miss visibility
@@ -1799,92 +1494,10 @@ _NEARMISS_REASON: dict[str, str] = {
 _PROMOTABLE_DISPOSITIONS = frozenset({"cap-refused", "rubric-dropped"})
 
 
-def _snippet_fields(cand: dict) -> dict | None:
-    """§1.2: ``{type, trigger, instruction}`` | ``{type, fact, context}``
-    + ``why_durable``, drawn from a candidate/near-miss dict already in
-    scope. ``None`` for an unrecognized ``type`` — never a guessed shape.
-    No evidence quote is ever included (§1.2 / F3-(a)).
-
-    Also carries ``scope``/``kind`` WHEN the source dict has them (a full
-    reader ``candidates[]`` entry does; the leaner ``near_misses[]``
-    schema, §1.3, does not) — §2.3's promote argv needs a scope to build
-    ``teach --<scope>``, and these are cheap, short, enum-shaped strings
-    already scanned/capped by the same snippet defenses. A rubric-dropped
-    row with no source scope simply has none here; the promote route
-    falls back to teach's own documented default (project, 01 §2)."""
-    rtype = str(cand.get("type") or "")
-    if rtype == "behavior":
-        fields: dict = {
-            "type": "behavior",
-            "trigger": str(cand.get("trigger") or "").strip(),
-            "instruction": str(cand.get("instruction") or "").strip(),
-        }
-        kind = str(cand.get("kind") or "").strip()
-        if kind:
-            fields["kind"] = kind
-    elif rtype == "knowledge":
-        fields = {"type": "knowledge", "fact": str(cand.get("fact") or "").strip()}
-        context = str(cand.get("context") or "").strip()
-        if context:
-            fields["context"] = context
-    else:
-        return None
-    scope = str(cand.get("scope") or "").strip()
-    if scope:
-        fields["scope"] = scope
-    why_durable = str(cand.get("why_durable") or "").strip()
-    if why_durable:
-        fields["why_durable"] = why_durable
-    return fields
 
 
-def _nearmiss_snippet(fields: dict) -> dict:
-    """§1.2 build-pin: field-by-field ``secret_scan``, evaluated BEFORE
-    the caller's ``_outcome`` call — nothing near-miss enters the journal
-    unscanned. Returns a clean dict, ``{scan_refused_rule}`` (rule name
-    only, never the content), or ``{overlength: True}``
-    (:data:`MAX_NEARMISS_SNIPPET_CHARS`, refuse-not-clip — checked
-    first, so an oversize attacker-influenceable blob is never scanned
-    for nothing)."""
-    total = sum(len(v) for v in fields.values() if isinstance(v, str))
-    if total > MAX_NEARMISS_SNIPPET_CHARS:
-        return {"overlength": True}
-    for value in fields.values():
-        if isinstance(value, str) and value:
-            hits = secret_scan(value)
-            if hits:
-                return {"scan_refused_rule": hits[0].rule}
-    return fields
 
 
-def _handle_near_misses(result: MineResult, parsed: dict) -> None:
-    """§1.3: the one reader-output extension — an optional
-    ``near_misses[]`` array beside ``candidates``/``fires``. Every field
-    rides the identical injection-bandwidth defenses as candidate fields:
-    :data:`MAX_FIELD_CHARS` refuse-not-clip (an over-length field drops
-    the WHOLE near-miss, mirroring `_build_record`'s candidate cap), the
-    §1.2 build-pin scan, and `_valid_ref` gating on the session/line ref
-    (an invalid ref drops the whole near-miss too — never a guessed
-    origin). The miner works completely without this array (M-3)."""
-    near_misses = parsed.get("near_misses") or []
-    if not isinstance(near_misses, list):
-        return
-    for nm in near_misses:
-        if not isinstance(nm, dict):
-            continue
-        ref = _valid_ref(nm)
-        if ref is None:
-            continue  # invalid ref drops the whole near-miss (§1.3)
-        session_id, line = ref
-        origin = f"transcript:{session_id}#L{line}"
-        fields = _snippet_fields(nm)
-        if fields is None:
-            continue  # unrecognized type — never a guessed shape
-        text_values = [v for k, v in fields.items() if k != "type"]
-        if any(len(v) > MAX_FIELD_CHARS for v in text_values):
-            continue  # refuse-not-clip: over-length drops the WHOLE near-miss
-        snippet = _nearmiss_snippet(fields)
-        _outcome(result, origin, "rubric-dropped", snippet=snippet)
 
 
 def _enrich_near_miss(outcome_entry: dict) -> dict:
@@ -1917,304 +1530,6 @@ def _enrich_near_miss(outcome_entry: dict) -> dict:
     return enriched
 
 
-def _reconcile_and_land(
-    home: Path,
-    parsed: dict,
-    result: MineResult,
-    cap: int,
-    cwds: dict[str, str] | None = None,
-    digested: dict[str, bool] | None = None,
-    *, sent: provenance.SentIndex | None = None,
-) -> None:
-    """``cwds`` maps session id → that session's transcript ``cwd``; a
-    project-scoped candidate lands in the bucket for THAT path (doc 13
-    §3) — no cwd on file → dropped-invalid, never a guessed bucket.
-
-    ``digested`` (U-cursorhold H-1/H-2) maps session id → that slice's
-    halt flag, for EVERY session this run's reader actually saw text
-    from. It classifies a cap drop's cursor effect: ``None`` behaves as
-    ``{}`` (every cap drop then classifies ``advanced-unmatched``), so
-    the function stays callable from a test without it."""
-    cwds = cwds or {}
-    digested = digested or {}
-    origin_index = _OriginIndex(home, sent)
-    origins = _known_mining_origins(home, index=origin_index)
-    seen_events, violated_fires = _event_seen(home, origin_index)
-    seen_events |= _spooled_seen(origin_index)
-    candidates = parsed.get("candidates") or []
-    if not isinstance(candidates, list):
-        candidates = []
-    for cand in candidates:
-        if not isinstance(cand, dict):
-            continue
-        ref = _valid_ref(cand)
-        if ref is None:
-            _outcome(result, "(invalid-ref)", "dropped-invalid",
-                     reason="bad session/line reference")
-            continue
-        session_id, line = ref
-        origin = f"transcript:{session_id}#L{line}"
-        if origin in origins:
-            _outcome(result, origin, "skipped-known-origin")
-            continue
-
-        quote = str(cand.get("quote") or "")
-        if len(quote) > MAX_QUOTE_CHARS:
-            quote = ""  # injection-bandwidth cap: evidence rides the ref
-            _outcome(result, origin, "quote-dropped-overlength")
-
-        # --- match-claim verification (never trust the model's claim raw)
-        match = cand.get("match") or {}
-        claimed_id = match.get("record") if isinstance(match, dict) else None
-        target = _find_record(home, str(claimed_id)) if claimed_id else None
-        if claimed_id and target is None:
-            _outcome(
-                result, origin, "match-claim-invalid", claimed=str(claimed_id)[:40]
-            )
-            # demote to no-match; fall through to landing
-        resurface_of: str | None = None
-        resurface_n = 0
-        if target is not None:
-            record, sub = target
-            if sub == "pending":
-                entry = {"session": session_id, "ts": _now_iso(), "origin": origin}
-                if quote:
-                    if secret_scan(quote):
-                        _outcome(result, origin, "fold-quote-scan-refused",
-                                 record=record.id)
-                    else:
-                        entry["quote"] = quote
-                record.append_evidence(entry)
-                record.set_sightings(record.sightings + 1)  # spec Phase 3
-                pending_path = None
-                for bucket in discover_buckets(home):
-                    p = bucket.path / "pending" / f"{record.id}.md"
-                    if p.is_file():
-                        pending_path = p
-                        break
-                if pending_path is not None:
-                    record.write(pending_path)
-                    result.folded.append(record.id)
-                    result.touched.append(pending_path)
-                    _outcome(result, origin, "folded", record=record.id)
-                    origins.add(origin)
-                    continue
-            elif record.status == "routed":
-                key = ("recurrence-suspect", record.id, origin)
-                if key not in seen_events:
-                    telemetry.spool_quiet(
-                        "recurrence-suspect",
-                        record=record.id,
-                        origin=origin,
-                        basis="miner-match", line_format=transcript_lines.FORMAT,
-                    )
-                    seen_events.add(key)
-                    result.recurrences.append(record.id)
-                    _outcome(result, origin, "recurrence", record=record.id)
-                else:
-                    _outcome(result, origin, "recurrence-already-known",
-                             record=record.id)
-                continue
-            elif record.status == "rejected":
-                n = _rejected_counter_bump(record.id, origin)
-                if n < 0 or n < REJECTED_RESURFACE_SIGHTINGS:
-                    # FW-34 §1.1 double-absence pin: no `record=` kwarg —
-                    # surfacing the rejected id would invite re-promoting
-                    # a lesson the human said no to. Counts-only
-                    # (`sightings` may stay); the resurfacing counter
-                    # above stays the ONLY path a rejected class returns.
-                    _outcome(
-                        result,
-                        origin,
-                        "dropped-rejected",
-                        sightings=max(n, 0),
-                    )
-                    continue
-                cand = dict(cand)
-                cand["why_durable"] = (
-                    f"previously rejected as {record.id}; sighted "
-                    f"{n}× since — resurfaced per doc 12 §8 Q4. "
-                    + str(cand.get("why_durable") or "")
-                ).strip()
-                # marked landed only AFTER create_record succeeds (audit:
-                # marking here + a cap/scan drop killed resurfacing forever)
-                resurface_of, resurface_n = record.id, n
-            else:
-                _outcome(result, origin, "skipped-resolved", record=record.id)
-                continue
-
-        # --- landing (cap-checked, scan-gated)
-        if len(result.landed) >= cap:
-            result.dropped += 1
-            # FW-34 §1.2 build-pin: scan BEFORE _outcome — this branch
-            # used to fire before _build_record/_scan_candidate ever ran,
-            # so cap-refused prose was never scanned at all. The near-miss
-            # snippet closes that leak; the candidate is still dropped
-            # unconditionally (the cap decision is unaffected by scan
-            # outcome — even a scan-refused snippet stays cap-refused).
-            snippet_fields = _snippet_fields(cand)
-            extra: dict[str, object] = (
-                {"snippet": _nearmiss_snippet(snippet_fields)}
-                if snippet_fields is not None
-                else {}
-            )
-            # U-cursorhold H-2: classify this drop's cursor effect. A
-            # session absent from `digested` was never read by this run's
-            # reader — nothing to hold (`advanced-unmatched`). A session
-            # present and unhalted holds (`held`, and only then is it
-            # added to `result.held_sessions`); a session present and
-            # ALREADY halted advances with its halt persisted regardless —
-            # M-5 wins, unconditionally (`advanced-halted`, §3.2).
-            if session_id not in digested:
-                cursor = "advanced-unmatched"
-            elif digested[session_id]:
-                cursor = "advanced-halted"
-            else:
-                cursor = "held"
-                result.held_sessions.add(session_id)
-            extra["cursor"] = cursor
-            _outcome(result, origin, "dropped-cap", **extra)
-            continue
-        try:
-            record = _build_record(home, cand)
-        except RecordError as exc:
-            _outcome(result, origin, "dropped-invalid", reason=str(exc)[:200])
-            continue
-        except HostsError as exc:
-            # 2026-09-28 (fail-state audit finding 14): a hosts.yaml that
-            # does not load made a skill-scoped candidate's check raise out
-            # of the whole pass. Only this candidate is held: its session's
-            # cursor is held exactly as the cap drop above holds it, so the
-            # session is read again once hosts.yaml loads; every other
-            # candidate goes on. Named by the error's type, never its text.
-            if session_id not in digested:
-                cursor = "advanced-unmatched"
-            elif digested[session_id]:
-                cursor = "advanced-halted"
-            else:
-                cursor = "held"
-                result.held_sessions.add(session_id)
-            _outcome(
-                result, origin, "dropped-invalid", cursor=cursor,
-                reason=f"hosts.yaml does not load ({type(exc).__name__}); "
-                "the skill scope could not be checked",
-            )
-            log(f"run: candidate {origin} held — hosts.yaml does not load ({type(exc).__name__})")
-            continue
-        hits = _scan_candidate(record, cand, quote)
-        if hits:
-            _outcome(result, origin, "scan-refused", rule=hits[0].rule)
-            log(f"run: candidate {origin} refused by secret scan ({hits[0].rule})")
-            continue
-        project_path = None
-        if record.scope == "project":
-            cwd = cwds.get(session_id)
-            if not cwd:
-                _outcome(
-                    result,
-                    origin,
-                    "dropped-invalid",
-                    reason="no cwd for project scope",
-                )
-                continue
-            project_path = capture_host_path(home, Path(cwd))  # FW-162
-        entry = {"session": session_id, "ts": _now_iso(), "origin": origin}
-        if quote:
-            entry["quote"] = quote
-        record.append_evidence(entry)
-        try:
-            path = create_record(home, record, project_path=project_path)
-        except LedgerOpsError as exc:
-            _outcome(result, origin, "dropped-land-failed", reason=str(exc)[:200])
-            continue
-        result.touched.append(path)
-        meta = path.parent.parent / "meta.yaml"
-        if meta.is_file():
-            result.touched.append(meta)
-        if resurface_of is not None:
-            _rejected_mark_landed(resurface_of)
-            _outcome(result, origin, "resurfaced", record=resurface_of,
-                     sightings=resurface_n)
-        origins.add(origin)
-        result.landed.append(record.id)
-        _outcome(
-            result,
-            origin,
-            "landed",
-            record=record.id,
-            confidence=str(cand.get("confidence") or "unstated"),
-            why=str(cand.get("why_durable") or "")[:300],
-        )
-        telemetry.spool_quiet(
-            "capture", source="session", scope=record.scope, record=record.id
-        )
-        log(f"run: landed {record.id} → {path}")
-
-    # FW-34 §1.3: the one reader-output extension — near-misses the
-    # rubric judged below the durability bar. Never affects landing.
-    _handle_near_misses(result, parsed)
-
-    fires = parsed.get("fires") or []
-    if isinstance(fires, list):
-        for fire in fires:
-            if not isinstance(fire, dict):
-                continue
-            rid = str(fire.get("record") or "")
-            outcome = str(fire.get("outcome") or "")
-            ref = _valid_ref(fire)
-            if (
-                ref is None
-                or not RECORD_ID_RE.match(rid)
-                or outcome not in (
-                    "suspected-compliance", "suspected-violation", "cannot-tell",
-                )
-            ):
-                continue
-            found = _find_record(home, rid)
-            if found is None or found[0].status != "routed":
-                continue  # fires only against live routed rules
-            origin = f"transcript:{ref[0]}#L{ref[1]}"
-            key = ("fire", rid, origin)
-            if key in seen_events:
-                continue
-            telemetry.spool_quiet(
-                "fire", record=rid, origin=origin, outcome=outcome, line_format=transcript_lines.FORMAT
-            )
-            seen_events.add(key)
-            result.fires += 1
-            # *Amended 2026-09-13 (steward build, U6):* THE CROSSOVER that
-            # used to sit here — an immediate `_raise_recurrence_suspect`
-            # call when `outcome == "violated"` — is removed. A
-            # `suspected-violation` fire is spooled above and nothing
-            # else: the steward reads it as evidence against the
-            # transcript line and decides recurrence itself (11 §4.3,
-            # `12-transcript-miner.md` §7 M-1, mining-rubric.md "Fire
-            # observations"). This loop no longer calls
-            # `_raise_recurrence_suspect` at all.
-
-    # THE BACKFILL (U-recur spec §2.2, scope narrowed 2026-09-13 steward
-    # build U6): a one-way migration net, not a live decision path. It
-    # exists only because rows already sitting in the tracked plane with
-    # the pre-U6 raw `outcome: "violated"` predate both the vocabulary
-    # change and the acceptance check that now refuses that value from
-    # the model — those rows were captured back when the (now-removed)
-    # crossover was the live mechanism meant to promote them, and this
-    # is the only remaining path that finishes that promotion. It can
-    # never fire for anything reported under the new vocabulary:
-    # `violated_fires` (`_event_seen`, read with `map_legacy_outcome=
-    # False`) only ever contains rows whose RAW on-disk outcome is the
-    # literal string `"violated"`, which nothing written after this
-    # build can produce. This mirrors the old crossover's `routed` guard
-    # EXACTLY, including its `found is None` half (AC7): an unbounded
-    # pass over an append-only telemetry plane must never raise on one
-    # unresolvable row — run()'s outer handler would turn that into
-    # `status: failed` and the offending row would never go away,
-    # wedging every future nightly run.
-    for rid, origin in violated_fires:
-        found = _find_record(home, rid)
-        if found is None or found[0].status != "routed":
-            continue
-        _raise_recurrence_suspect(result, seen_events, rid, origin, _FIRE_VIOLATED_BASIS)
 
 
 # ------------------------------------- the session engine's landing (R2)
@@ -3403,11 +2718,12 @@ def _run_job(
     # U-settings Phase 1: resolves through the registry's `miner.enabled`
     # entry (config.yaml `miner.enabled` > env `SELF_LEARN_MINER` > `True`
     # -- U-flip 2026-09-01, S-58: config wins).
-    chosen = engine if engine is not None else str(settings.resolve_setting(home, settings.by_name("miner.engine"))[0])
-    if chosen not in settings.MINER_ENGINES:
-        raise ValueError(f"miner.run: unknown engine {chosen!r}")
-    if (preview or sessions) and chosen != "session":
-        raise ValueError("miner.run: --preview and --session belong to the session engine")
+    # The digest engine was retired on 2026-11-12: `session` is the only
+    # engine. A `miner.engine: digest` left in config.yaml reads as session
+    # (the setting's own validate), so only an explicit `engine=` can name
+    # another one, and that is refused.
+    if engine is not None and engine not in settings.MINER_ENGINES:
+        raise ValueError(f"miner.run: engine {engine!r} is not available: only the session engine exists")
     if sessions and not preview:
         raise ValueError("miner.run: --session needs --preview")
     enabled, _source = settings.resolve_setting(home, settings.by_name("miner.enabled"))
@@ -3456,8 +2772,7 @@ def _run_job(
             # today there is only a write.
             "model": provider.model_for("miner-reader", home=home),
         }
-        if chosen == "session":
-            base["model"] = provider.model_for(engine_mod.SURFACE, home=home)
+        base["model"] = provider.model_for(engine_mod.SURFACE, home=home)
 
         # BLOCKER 11 (audit 2026-07-16): the nightly miner resolves the
         # home too — and a unit resolving a DIFFERENT home than the shell
@@ -3476,7 +2791,7 @@ def _run_job(
         try:
             if preview:
                 return _run_preview(home, since, t0, run_id, base, sessions)
-            return _run_locked(home, since, t0, run_id, base, no_push=no_push, engine=chosen)
+            return _run_locked(home, since, t0, run_id, base, no_push=no_push)
         except Exception as exc:  # noqa: BLE001 — A1: EVERY run journals,
             # even a crashed one (audit B1: an uncaught error previously
             # left no journal entry at all — invisible to mine status).
@@ -3503,7 +2818,6 @@ def _run_locked(
     base: dict,
     *,
     no_push: bool = False,
-    engine: str = "digest",
 ) -> MineResult:
     # SELF-HEALING (audit 2026-07-16 round 7 MAJOR 4). Before mining
     # anything new, commit whatever a previous producer wrote and could
@@ -3613,28 +2927,14 @@ def _run_locked(
             "scheduled jobs this time; they are checked again next run"
         )
 
-    if engine == "session":
-        # a run that stopped between saving an answer and moving its
-        # session's cursor moves it here, before the walk: a saved answer
-        # is never asked for again
-        waiting_now, _broken = mining_waiting.load_all(miner_dir())
-        moved = _settle_waiting_cursors(waiting_now)
-        if moved:
-            log(f"run {run_id}: moved {moved} cursor(s) to their waiting answers")
+    # a run that stopped between saving an answer and moving its
+    # session's cursor moves it here, before the walk: a saved answer
+    # is never asked for again
+    waiting_now, _broken = mining_waiting.load_all(miner_dir())
+    moved = _settle_waiting_cursors(waiting_now)
+    if moved:
+        log(f"run {run_id}: moved {moved} cursor(s) to their waiting answers")
     slices = walk(since)
-    digests: list[str] = []
-    processed: list[tuple[SessionSlice, bool]] = []
-    cwds: dict[str, str] = {}  # session id → transcript cwd (doc 13 §3)
-    #: U-cursorhold H-1: session id → that slice's halt flag, populated ONLY
-    #: in the branch below that appends a digest — never for a slice
-    #: excluded (nothing minable) or deferred (over budget). A session
-    #: absent from this map is a session whose text this run's reader
-    #: never saw, so a cap drop citing it cannot hold anything (H-2).
-    digested: dict[str, bool] = {}
-    excluded = 0
-    total_chars = 0
-    deferred_files = 0
-    limits = digest_limits(home)  # read once: one run, one set of limits
     # refs rule 10 (2026-10-19): text other sessions handed to herdr, read
     # once per run from the transcripts and the sibling Codex, Hermes, agy and pi stores.
     sent = (
@@ -3642,229 +2942,11 @@ def _run_locked(
         if slices
         else provenance.SentIndex()
     )
-    if engine == "session":
-        # new-miner plan §1: the session engine replaces exactly the digest
-        # step; everything above (lock, healing, seeding, sweeps, walk, the
-        # sends) and the landing commit are shared
-        return _run_session_engine(
-            home, slices, sent, mined_scheduled, run_id, base, t0, preview=False, no_push=no_push
-        )
-    for s in slices:
-        digest, halt = digest_transcript(s, limits, mined_scheduled=mined_scheduled, sent=sent)
-        if digest is None:
-            excluded += 1
-            processed.append((s, halt))  # nothing minable — cursor advances
-            continue
-        if total_chars + len(digest) > limits.run_chars:
-            deferred_files += 1  # stays behind the cursor for next run
-            continue
-        total_chars += len(digest)
-        digests.append(digest)
-        processed.append((s, halt))
-        digested[s.session_id] = halt
-        cwd = _slice_cwd(s)
-        if cwd:
-            cwds[s.session_id] = cwd
-    halted_by_reason: Counter[str] = Counter()
-    for s, halt in processed:
-        if halt and s.halt_reason:
-            halted_by_reason[s.halt_reason] += 1
-    if halted_by_reason:
-        # counts by reason only: never a path, a job's name, or a session's text
-        log(
-            f"run {run_id}: halted {sum(halted_by_reason.values())} sessions, the rest of each never mined ("
-            + ", ".join(f"{reason}: {n}" for reason, n in sorted(halted_by_reason.items()))
-            + ")"
-        )
-
-    result = MineResult(
-        status="idle", run_id=run_id, sessions_scanned=len(digests)
+    # new-miner plan §1: the session engine does the judging; everything above
+    # (lock, healing, seeding, sweeps, walk, the sends) and the landing commit are shared
+    return _run_session_engine(
+        home, slices, sent, mined_scheduled, run_id, base, t0, preview=False, no_push=no_push
     )
-
-    if not digests:
-        _advance_cursors(processed)
-        (miner_dir() / "miner.last-run").touch()
-        _journal({**base, "status": "idle", "sessions_scanned": 0,
-                  "excluded": excluded,
-                  "duration_secs": round(time.time() - t0, 1)})
-        log(f"run {run_id}: idle (nothing new)")
-        return result
-
-    # Flood gate (§8 Q3): don't advance cursors — nothing is missed.
-    total_pending = worker.fast_status(home)["total_pending"]
-    gate = pending_gate(home=home)
-    if total_pending >= gate:
-        result.status = "held-gate"
-        (miner_dir() / "miner.last-run").touch()
-        _journal({**base, "status": "held-gate",
-                  "pending": total_pending, "gate": gate,
-                  "sessions_ready": len(digests),
-                  "duration_secs": round(time.time() - t0, 1)})
-        log(f"run {run_id}: held — {total_pending} pending ≥ gate {gate}")
-        return result
-
-    out_path = spool_dir() / OUTPUT_BASENAME
-    prompt, corrupt = _compose_prompt(home, digests, out_path)
-    if corrupt:
-        # FW-53: degrade, don't wedge — the rest of the ledger still
-        # reconciles and this run still lands candidates; the corruption
-        # is reported (miner.log + every journal entry from here on),
-        # never swallowed.
-        result.corrupt_records = sorted({str(p) for p in corrupt})
-        for p in result.corrupt_records:
-            log(f"run {run_id}: ledger record {p} not readable (not UTF-8, "
-                "or a frontmatter that does not load) — excluded from the "
-                "reconciliation index")
-    artifact = _invoke_reader(home, prompt)
-    if artifact is None:
-        result.status = "failed"
-        _journal({**base, "status": "failed",
-                  "reason": "reader produced no output",
-                  "sessions_scanned": len(digests),
-                  "corrupt_records": result.corrupt_records,
-                  "duration_secs": round(time.time() - t0, 1)})
-        return result
-    try:
-        parsed = json.loads(artifact.read_text(encoding="utf-8"))
-        if not isinstance(parsed, dict):
-            raise ValueError("output is not a JSON object")
-    except (OSError, ValueError) as exc:
-        result.status = "failed"
-        _journal({**base, "status": "failed",
-                  "reason": f"unparseable reader output: {exc}",
-                  "sessions_scanned": len(digests),
-                  "corrupt_records": result.corrupt_records,
-                  "duration_secs": round(time.time() - t0, 1)})
-        return result
-
-    cap = cap_for(len(digests), home=home)
-    hold = sentinel.hold()
-    try:
-        # ONE lock spanning [first mutation → commit] (audit 2026-07-16
-        # round 7): the lock used to open at the commit below, but
-        # `_reconcile_and_land` mutates first — a FOLD rewrites an
-        # existing pending record, and that file is TRACKED, so a racing
-        # `pull --rebase --autostash` stashes the rewrite and restores it
-        # into a conflict. Landing a NEW record is the benign half
-        # (untracked files survive an autostash); folding is not, and both
-        # live in the same call.
-        with intents.ledger_write(home) as recovered:  # S-62: the landing lock's own backstop check
-            # §7.2a.5(3): UNATTENDED — log each recovered id on its own
-            # line, the same shape the run-start reconcile healing above
-            # uses, never a bare stderr print (this lock is not the run's
-            # first, so a STOP found HERE cannot be reported until after
-            # this `with` raises; a clean recovery here is logged now).
-            for intent_id in recovered.rolled_forward:
-                log(
-                    f"run {run_id}: recovered {intent_id} (rolled forward: its "
-                    "commit landed — the host phase did not run; run "
-                    "'self-learn recompile')"
-                )
-            for intent_id in recovered.restored:
-                log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
-            _reconcile_and_land(home, parsed, result, cap, cwds, digested, sent=sent)
-            _commit_landing(home, result, run_id, no_push=no_push)
-    except gitops.GitOpsError as exc:
-        # BLOCKER B: every GitOpsError is caught — including a lock
-        # TIMEOUT, which is not an error but a busy neighbour. This is a
-        # detached timer job; an escaping exception is a stack dump in
-        # miner.log and a dead nightly run. A timeout HERE is now a clean
-        # no-op: the lock is taken before the first mutation.
-        result.landing_uncommitted = bool(result.landed)
-        log(f"run {run_id}: could not take the ledger lock ({exc})")
-    finally:
-        hold.release()
-
-    # FW-34 §3: deterministic canary scoring — after _reconcile_and_land,
-    # reusing worker._tokens/SUSPECT_JACCARD (never reimplemented), no
-    # reader change. Cache-local (canaries.json) and never fatal to the
-    # run — a scoring failure is logged, not raised (M-3 spirit; counts
-    # never enter supply_mix or the mined-accept-rate, worker-ecology §4-3).
-    try:
-        _score_canaries(
-            home,
-            result.landed + result.folded,
-            {s.session_id for s, _halt in processed},
-        )
-    except Exception as exc:  # noqa: BLE001 — canary scoring never crashes a run
-        log(f"run {run_id}: canary scoring skipped ({exc})")
-
-    # U-cursorhold H-3: withhold an entry of `processed` iff its slice's
-    # session id was HELD by this run's cap AND that slice's own halt
-    # flag is False. `processed` itself is not mutated or reassigned —
-    # this is a freshly built list at this one call site, and the halted
-    # half of the guard is load-bearing, not belt-and-braces: a same-stem
-    # unhalted twin can classify `held` (§3.1 H-5's aliasing), and
-    # filtering on session id alone would then withhold a HALTED slice's
-    # cursor too — the exact M-5 regression this unit refuses (§3.2).
-    _advance_cursors(
-        [
-            (s, halt)
-            for s, halt in processed
-            if s.session_id not in result.held_sessions or halt
-        ]
-    )
-    (miner_dir() / "miner.last-run").touch()
-    # A run whose landings never committed is NOT "ok" (BLOCKER B (c)):
-    # `mine status` would otherwise report a clean nightly run over records
-    # that no clone will ever see. It is no longer DATA LOSS, though (round
-    # 7 MAJOR 4): the next run's `reconcile` step commits them, and so does
-    # `self-learn reconcile` / `self-learn push` on demand.
-    result.status = "landed-uncommitted" if result.landing_uncommitted else "ok"
-    # FW-34 §1.1/§4: fold each outcome's disposition/reason/promotable at
-    # journal-write time (the no-derivation rule — the UI renders this
-    # verbatim, never re-maps it) + the per-run near_miss_count.
-    enriched_outcomes = [_enrich_near_miss(o) for o in result.outcomes]
-    near_miss_count = sum(1 for o in enriched_outcomes if "disposition" in o)
-    _journal({**base, "status": result.status,
-              "landing_uncommitted": result.landing_uncommitted,
-              "sessions_scanned": len(digests),
-              "excluded": excluded,
-              "deferred_files": deferred_files,
-              "cap": cap,
-              "landed": len(result.landed),
-              "folded": len(result.folded),
-              "recurrences": len(result.recurrences),
-              "fires": result.fires,
-              "outcomes": enriched_outcomes,
-              "near_miss_count": near_miss_count,
-              "corrupt_records": result.corrupt_records,
-              # U-cursorhold O-2: distinct held sessions — covers `ok` and
-              # `landed-uncommitted` ONLY, by construction (this is the one
-              # journal write both statuses share). An absent key means
-              # "not a landing run", never "no cursors were held" — a
-              # `held-gate` run holds EVERY cursor and writes a different
-              # entry entirely, with no key of this name.
-              "cursors_held": len(result.held_sessions),
-              "duration_secs": round(time.time() - t0, 1)})
-    log(
-        f"run {run_id}: {result.status} — {len(result.landed)} landed, "
-        f"{len(result.folded)} folded, {len(result.recurrences)} "
-        f"recurrence(s), {result.fires} fire(s)"
-    )
-
-    # Flush only when this run actually produced events — an empty nightly
-    # flush would put a machine-triggered commit on the tracked telemetry
-    # plane for nothing (audit m8).
-    if result.landed or result.folded or result.recurrences or result.fires:
-        try:
-            flush_report = telemetry.flush(home)
-        except telemetry.TelemetryError as exc:
-            log(f"run {run_id}: telemetry flush refused ({exc})")
-        else:
-            # §7.2a.5(3): unattended — log, never print.
-            for intent_id in flush_report.recovered_rolled_forward:
-                log(
-                    f"run {run_id}: recovered {intent_id} (rolled forward: its "
-                    "commit landed — the host phase did not run; run "
-                    "'self-learn recompile')"
-                )
-            for intent_id in flush_report.recovered_restored:
-                log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
-
-    if result.landed:
-        worker.kick(home)  # analyzed before any human sees the card
-    return result
 
 
 # ------------------------------------------------ the session engine's run

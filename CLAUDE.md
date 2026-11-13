@@ -120,12 +120,14 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
   rollback, drafts only), `skill_discovery` and `premises.enabled` on,
   `backfill_per_night` at 10, `rotation_days` at 90 (0 turns the rotation
   off) and `rotation_per_night` at `auto`.
-- The miner's session engine (S-91) is switched by `miner.engine`; agents
-  set it only under the user's standing grant, with a reason, and never run
-  `mine run --preview` outside the test suite: a preview makes real model
-  calls (ask before spending). The CLI runs a tier-C `config set` or `config
-  unset` from an agent's shell only with the grant in force and `--note`,
-  detected by environment markers; never unset the markers to get around it. Answers the engine saved under
+- The miner has one engine, the session engine (S-91); the digest engine was
+  retired on 2026-11-12. `miner.engine` survives only as a key old configs may
+  still carry: its one value is `session`, and an old `digest` reads as `session`
+  (`doctor settings` says so). Never run `mine run --preview` outside the test
+  suite: a preview makes real model calls (ask before spending). The CLI runs a
+  tier-C `config set` or `config unset` from an agent's shell only with the grant
+  in force and `--note`, detected by environment markers; never unset the markers
+  to get around it. Answers the engine saved under
   `<cache>/miner/pending/` are the miner's to land; never edit or delete
   one by hand outside a test's scratch cache.
 - Revert probes by inverse edit and verify with `sha256sum` against

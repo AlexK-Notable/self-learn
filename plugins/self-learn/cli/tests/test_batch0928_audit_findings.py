@@ -67,36 +67,6 @@ def mine_home(tmp_path, monkeypatch):
     return home, root
 
 
-def test_a_hosts_file_that_does_not_load_holds_only_the_skill_candidate(mine_home, monkeypatch):
-    """Before: a malformed hosts.yaml made the skill-scope check raise
-    `HostsError`, which the landing loop did not catch, so the whole mine
-    pass failed after its reader call, every two hours. Now only the
-    skill-scoped candidate is held (its session's cursor is held, so it is
-    read again once hosts.yaml loads); the user-scoped one lands."""
-    home, root = mine_home
-    write_transcript(root, "sess-hosts", [u("work")])
-    shim_reader(monkeypatch, {
-        "candidates": [
-            candidate(session="sess-hosts", line=1),
-            candidate(session="sess-hosts", line=2, scope="user",
-                      trigger="About to rsync a whole home directory"),
-        ],
-        "fires": [],
-    })
-    (home / "hosts.yaml").write_text("hosts: [unclosed\n", encoding="utf-8")
-
-    result = miner.run(home)
-
-    assert result.status != "failed"
-    assert len(result.landed) == 1 and len(pending_ids(home)) == 1  # positive control
-    outcomes = miner.read_journal()[-1]["outcomes"]
-    held = [o for o in outcomes if o["outcome"] == "dropped-invalid"]
-    assert len(held) == 1 and held[0]["cursor"] == "held"
-    logged = (miner.miner_dir() / "miner.log").read_text(encoding="utf-8")
-    assert "held — hosts.yaml does not load (HostsError)" in logged
-    assert "sess-hosts" in result.held_sessions
-
-
 # ------------------------------------------------------------ finding 10
 
 
