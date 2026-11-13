@@ -120,8 +120,11 @@ _GENERIC_DEFAULT_NAMES = [n for n in _ALL_NAMES if n not in _ENABLED_WHEN_NAMES]
 _GENERIC_CONFIG_BEATS_DEFAULT_NAMES = [
     n for n in _ALL_NAMES if n not in _ENABLED_WHEN_NAMES and n not in _ACCEPTS_NAMES
 ]
+#: A setting that refuses values it cannot read (`accepts`: `miner.schedule_time`)
+#: would fold this test's made-up string to its default, so its config-over-env
+#: order is pinned in its own test file instead.
 _GENERIC_CONFIG_BEATS_ENV_NAMES = [
-    n for n in _ALL_NAMES if n not in _ENV_FIRST_NAMES
+    n for n in _ALL_NAMES if n not in _ENV_FIRST_NAMES and n != "miner.schedule_time"
 ]
 _GENERIC_STR_NAMES = [n for n in _STR_NAMES if n not in _ENABLED_WHEN_NAMES]
 

@@ -179,6 +179,18 @@ MINER_ENGINES: tuple[str, ...] = ("session",)
 #: What an old `miner.engine` value may still say; it reads as `session`.
 MINER_ENGINE_RETIRED: tuple[str, ...] = ("digest",)
 
+#: `miner.schedule_time`: a 24-hour local time of day, `HH:MM`, zero-padded.
+_SCHEDULE_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+DEFAULT_SCHEDULE_TIME = "03:30"
+
+
+def parse_schedule_time(value: object) -> tuple[int, int] | None:
+    """``"03:30"`` -> ``(3, 30)``; anything that is not a zero-padded 24-hour
+    ``HH:MM`` -> ``None``."""
+    m = _SCHEDULE_TIME_RE.match(value) if isinstance(value, str) else None
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 #: `overseer.skill_writing`'s two values (S-107 part 6 as amended by
 #: S-107 amended 2026-10-31): ``on`` (the default: the overseer deploys every
 #: skill it builds, changes, renames or retires from its first run) and
@@ -998,6 +1010,25 @@ REGISTRY: tuple[Setting, ...] = (
             "session ids the miner never reads, comma-separated, each the transcript's file name "
             "without .jsonl; applies to --since backfills too"
         ),
+    ),
+    # When the nightly mine pass runs (the user, 2026-07-19: a settings page
+    # where they decide "what their miner schedule looks like"). Local time;
+    # `serve` reads it each time it decides whether the pass is due, so a change
+    # needs no restart. The pass keeps its jitter (up to 15 minutes after this
+    # time), its catch-up after a sleep and its once-a-day rule. The steward's
+    # and the overseer's times are not settings.
+    Setting(
+        name="miner.schedule_time",
+        env_var="SELF_LEARN_MINER_SCHEDULE_TIME",
+        config_section="miner",
+        config_key="schedule_time",
+        kind="str",
+        default=DEFAULT_SCHEDULE_TIME,
+        description="local time of day the nightly mining pass starts, 24-hour HH:MM (a jitter of up to 15 minutes is added)",
+        # a hand-edited value that is not a time reads as the default
+        validate=lambda v: v if parse_schedule_time(v) is not None else DEFAULT_SCHEDULE_TIME,
+        accepts=lambda v: parse_schedule_time(v) is not None,
+        accepts_hint="a time of day as 24-hour HH:MM, for example 03:30 or 22:15",
     ),
     # ------------------------------------------------------- refs (U1, 2026-09-26)
     Setting(

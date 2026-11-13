@@ -163,6 +163,9 @@ _TABLE: dict[str, Plain] = {
         "Seconds drafting waits for more lessons to arrive before it starts, so several go in one call."),
     "worker.invoke_timeout_secs": _p("time", "Drafting time limit", "Seconds one drafting call may run."),
     "worker.repair_timeout_secs": _p("time", "Repair time limit", "Seconds one repair round may run."),
+    "miner.schedule_time": _p("time", "Overnight read starts at",
+        "The time of day, as 24-hour HH:MM like 03:30, when the overnight read of your sessions starts. "
+        "It may begin up to 15 minutes later, and a missed night is made up when the machine wakes."),
     "miner.reader_timeout_secs": _p("time", "Overnight read call time limit", "Seconds one model call of the overnight read may run."),
     "analyst.timeout_secs": _p("time", "One-off suggestion time limit", "Seconds the one-off suggestion may run."),
     "steward.timeout_secs": _p("time", "Nightly review call time limit", "Seconds one model call of the nightly review may run."),

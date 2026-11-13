@@ -118,6 +118,8 @@ DEFAULT_TICK_SECS = 60.0
 
 #: Mirrors `systemd/self-learn-miner.timer`'s `OnCalendar=*-*-* 03:30` +
 #: `RandomizedDelaySec=15m` (both measured, spec §5.2/§8.1).
+#: The default of the registry setting `miner.schedule_time` (`03:30`); the
+#: nightly pass reads the setting each time it decides (`_mine_clock`).
 MINE_HOUR, MINE_MINUTE = 3, 30
 MINE_JITTER_SECS = 15 * 60
 # Shipped timer parity: Sunday at 04:15 local time. ONE definition now
@@ -803,7 +805,20 @@ def _steward_recently_attempted(cache_dir: Path, now: float) -> bool:
     return epoch is not None and now - epoch < steward.RETRY_SECS
 
 
-def _target_for(now: float) -> float:
+def _mine_clock(home: Path | None) -> tuple[int, int]:
+    """The local time of day the nightly mine pass is aimed at: the
+    registry setting `miner.schedule_time` (`HH:MM`), read afresh on every
+    call so a change takes effect without a restart. With no `home`, the
+    shipped default. A value that does not read as a time (a hand-edited
+    config.yaml) reads as the default, never raises."""
+    if home is None:
+        return MINE_HOUR, MINE_MINUTE
+    value, _source = settings.resolve_setting(home, settings.by_name("miner.schedule_time"))
+    parsed = settings.parse_schedule_time(value)
+    return parsed if parsed is not None else (MINE_HOUR, MINE_MINUTE)
+
+
+def _target_for(now: float, home: Path | None = None) -> float:
     """Pure: the jittered mine-pass target for whatever calendar day
     `now` falls in -- `MINE_HOUR:MINE_MINUTE` local, plus 0..
     `MINE_JITTER_SECS`, deterministic per day (seeded by the day's date
@@ -814,14 +829,15 @@ def _target_for(now: float) -> float:
     without ever writing today's cache entry early."""
     local = time.localtime(now)
     day_key = time.strftime("%Y-%m-%d", local)
+    hour, minute = _mine_clock(home)
     base = time.mktime(
-        (local.tm_year, local.tm_mon, local.tm_mday, MINE_HOUR, MINE_MINUTE, 0, 0, 0, -1)
+        (local.tm_year, local.tm_mon, local.tm_mday, hour, minute, 0, 0, 0, -1)
     )
     jitter = random.Random(day_key).uniform(0, MINE_JITTER_SECS)
     return base + jitter
 
 
-def _today_mine_target(cache_dir: Path, now: float) -> float:
+def _today_mine_target(cache_dir: Path, now: float, home: Path | None = None) -> float:
     """Deterministic per-day jitter, cached so a restart mid-day (or a
     daemon that ticks every minute) does not recompute a different
     target — `Persistent=true` parity with `self-learn-miner.timer`
@@ -835,10 +851,22 @@ def _today_mine_target(cache_dir: Path, now: float) -> float:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         state = None
-    if isinstance(state, dict) and state.get("day") == day_key and isinstance(state.get("target"), (int, float)):
+    # `at` is the schedule time the cached target was made for (a file written
+    # before `miner.schedule_time` existed has none, and was made for the
+    # default): a changed setting recomputes today's target.
+    hour, minute = _mine_clock(home)
+    at = f"{hour:02d}:{minute:02d}"
+    if (
+        isinstance(state, dict)
+        and state.get("day") == day_key
+        and isinstance(state.get("target"), (int, float))
+        # a caller with no `home` (the steward's slot arithmetic) takes whatever
+        # target the mine's own check cached for today, and never rewrites it
+        and (home is None or state.get("at", f"{MINE_HOUR:02d}:{MINE_MINUTE:02d}") == at)
+    ):
         return state["target"]
-    target = _target_for(now)
-    path.write_text(json.dumps({"day": day_key, "target": target}), encoding="utf-8")
+    target = _target_for(now, home)
+    path.write_text(json.dumps({"day": day_key, "target": target, "at": at}), encoding="utf-8")
     return target
 
 
@@ -862,7 +890,9 @@ def _recently_attempted(now: float) -> bool:
     return now - attempt_epoch < miner.ATTEMPT_COOLDOWN_SECS
 
 
-def _mine_is_due(cache_dir: Path, now: float, *, ignore_schedule: bool = False) -> bool:
+def _mine_is_due(
+    cache_dir: Path, now: float, *, ignore_schedule: bool = False, home: Path | None = None
+) -> bool:
     """Due iff (a) the SCHEDULE leg says so and (b) the last COMPLETED
     run predates it and (c, gate r1 B-1, spec r6 HP8) no ATTEMPT is
     still inside its own cooldown window -- the SAME guard `maybe_kick`'s
@@ -896,7 +926,7 @@ def _mine_is_due(cache_dir: Path, now: float, *, ignore_schedule: bool = False) 
         if now - last_epoch <= miner.KICK_AFTER_SECS:
             return False
     else:
-        target = _today_mine_target(cache_dir, now)
+        target = _today_mine_target(cache_dir, now, home)
         if now < target:
             return False
         if last_epoch >= target:
@@ -924,9 +954,9 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     that has not been evaluated for hours. Each leg is guarded
     separately: one broken preview never blanks the other two."""
     try:
-        target = _today_mine_target(cache_dir, now)
+        target = _today_mine_target(cache_dir, now, home)
         if now >= target:
-            target = _target_for(now + 24 * 60 * 60)
+            target = _target_for(now + 24 * 60 * 60, home)
         when = datetime.fromtimestamp(target).isoformat(timespec="seconds")
     except Exception as exc:  # noqa: BLE001 — a preview must never raise
         when = f"held: {_short_cause(exc)}"
@@ -1934,8 +1964,8 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             home,
             cache_dir,
             now,
-            lambda: (poked and _mine_is_due(cache_dir, now, ignore_schedule=True))
-            or _mine_is_due(cache_dir, now),
+            lambda: (poked and _mine_is_due(cache_dir, now, ignore_schedule=True, home=home))
+            or _mine_is_due(cache_dir, now, home=home),
         ):
             mine_record = run_one_job(
                 cache_dir, Job("mine", "miner-reader", lambda: _run_mine_job(home)), pid=pid, tick_secs=tick_secs, home=home
