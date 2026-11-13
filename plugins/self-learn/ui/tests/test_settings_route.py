@@ -384,9 +384,9 @@ class TestSettingsFind:
 
     def test_a_folded_groups_count_follows_the_search(self, tmp_path: Path) -> None:
         text = self._get(tmp_path, "sleeps")
-        assert "(1 of 10)" in text
+        assert "(1 of 11)" in text
         text = self._get(tmp_path, "")
-        assert "(1 of 10)" not in text and "(10)" in text
+        assert "(1 of 11)" not in text and "(11)" in text
 
     def test_show_all_only_when_a_search_is_on_the_page(self, tmp_path: Path) -> None:
         assert "data-settings-clear" in self._get(tmp_path, "sleeps")
