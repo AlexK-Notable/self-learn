@@ -22,9 +22,6 @@ from support import commit_all, make_behavior, make_home
 
 KNOBS = (
     "worker.batch_cap",
-    "miner.message_chars",
-    "miner.session_chars",
-    "miner.run_chars",
     "miner.reader_timeout_secs",
 )
 
@@ -86,18 +83,15 @@ def test_a_knob_default_must_be_a_number_above_zero(default):
         settings.sizing_knob("a.b", default=default, description="d")
 
 
-def test_the_five_knobs_are_registered_with_the_numbers_the_code_had():
+def test_the_knobs_are_registered_with_the_numbers_the_code_had():
     expected = {
         "worker.batch_cap": 15,
-        "miner.message_chars": 2_000,
-        "miner.session_chars": 60_000,
-        "miner.run_chars": 400_000,
         "miner.reader_timeout_secs": 900.0,
     }
     assert {name: settings.by_name(name).default for name in KNOBS} == expected
     # the module constants are copies of those defaults, not second literals
     assert worker.BATCH_CAP == 15
-    assert (miner.MAX_TEXT_CHARS, miner.MAX_DIGEST_CHARS, miner.MAX_PROMPT_DIGESTS_CHARS) == (2_000, 60_000, 400_000)
+    assert (miner.MAX_TEXT_CHARS, miner.MAX_DIGEST_CHARS) == (2_000, 60_000)
     assert miner.INVOKE_TIMEOUT_SECS == 900.0
 
 
@@ -140,15 +134,10 @@ def test_the_worker_takes_as_many_lessons_per_call_as_config_says(home, elsewher
     assert (len(batch), leftovers) == (4, 2)
 
 
-def test_every_digest_limit_is_a_registered_miner_setting_with_the_same_default():
-    for f in dataclasses.fields(miner.DigestLimits):
-        assert settings.by_name(f"miner.{f.name}").default == f.default, f.name
-
-
-def test_the_miner_reads_all_three_input_sizes_from_config(home, elsewhere):
-    assert miner.digest_limits(home) == miner.DigestLimits(2_000, 60_000, 400_000)
-    configure(home, "miner", message_chars=300, session_chars=5_000, run_chars=90_000)
-    assert miner.digest_limits(home) == miner.DigestLimits(300, 5_000, 90_000)
+def test_the_retired_digest_input_sizes_are_no_longer_settings():
+    for name in ("miner.message_chars", "miner.session_chars", "miner.run_chars"):
+        with pytest.raises(KeyError):
+            settings.by_name(name)
 
 
 def _user(text: str) -> str:
@@ -203,41 +192,6 @@ def mining(home, tmp_path, monkeypatch):
         (root / "-home-u-proj" / f"{name}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     return write_session, prompts
-
-
-def test_a_real_run_clips_messages_and_sessions_at_the_sizes_in_config(home, mining):
-    """The two sizes `run` does not apply itself: it hands them to
-    `digest_transcript`. Without that hand-off a config value would be read
-    and then used by nothing."""
-    write_session, prompts = mining
-    write_session("sess-long-message", [_user("HEAD" + "m" * 1_000 + "TAIL")])
-    write_session("sess-many-messages", [_user(f"message number {i} " + "s" * 80) for i in range(40)])
-    assert miner.run(home).status == "ok"
-    assert "sess-long-message" in prompts[0] and "sess-many-messages" in prompts[0]
-    assert "[clipped]" not in prompts[0] and "session digest clipped" not in prompts[0]  # positive control: defaults clip neither
-
-    write_session("sess-long-message-2", [_user("HEAD" + "m" * 1_000 + "TAIL")])
-    write_session("sess-many-messages-2", [_user(f"message number {i} " + "s" * 80) for i in range(40)])
-    configure(home, "miner", message_chars=200, session_chars=1_500)
-    assert miner.run(home).status == "ok"
-    assert "sess-long-message-2" in prompts[1] and "sess-many-messages-2" in prompts[1]
-    assert "m …[clipped]… m" in prompts[1]  # the 1,008-character message, cut to 200
-    assert "…[session digest clipped]" in prompts[1]  # the ~4,000-character session, cut to 1,500
-
-
-def test_a_run_stops_adding_sessions_at_the_run_limit(home, mining):
-    write_session, prompts = mining
-    for name in ("sess-one", "sess-two", "sess-three"):
-        write_session(name, [_user(f"{name} says " + "r" * 400)])
-    configure(home, "miner", run_chars=1_000)  # each digest is ~460 characters: two fit, the third waits
-    assert miner.run(home).status == "ok"
-    entry = miner.read_journal(limit=1)[-1]
-    assert (entry["sessions_scanned"], entry["deferred_files"]) == (2, 1)
-    assert sum(f"=== session {n} " in prompts[0] for n in ("sess-one", "sess-two", "sess-three")) == 2
-    # the session that waited is picked up by the next run, not lost
-    assert miner.run(home).status == "ok"
-    entry = miner.read_journal(limit=1)[-1]
-    assert (entry["sessions_scanned"], entry["deferred_files"]) == (1, 0)
 
 
 def test_the_reader_timeout_is_read_from_config(home, elsewhere, monkeypatch):

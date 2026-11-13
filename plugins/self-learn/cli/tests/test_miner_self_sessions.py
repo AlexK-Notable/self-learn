@@ -32,6 +32,7 @@ import pytest
 from self_learn import miner, steward, steward_prompt, worker
 from self_learn.overseer import discovery as overseer_discovery
 from self_learn.overseer import run as overseer_run
+from test_session_shim import shim_reader as _shim_reader
 from support import make_home
 
 # The distinctive words a session says AFTER its prompt. They must never reach
@@ -58,6 +59,8 @@ ORDINARY_FOLDER = "-home-u-proj"
 def redirect(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
     monkeypatch.setenv("SELF_LEARN_ACTOR", "testhost")
+    monkeypatch.setenv("SELF_LEARN_EMBED_PROVIDER", "none")
+    monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(tmp_path / "claude-dir"))
 
 
 @pytest.fixture()
@@ -114,18 +117,27 @@ def slice_of(path, start=0):
     )
 
 
+class _Captured:
+    """What the last `miner.run` sent, as the old one-reader-call dict said it:
+    ``captured["prompt"]`` is every session prompt of that run, and the key is
+    absent when nothing was sent."""
+
+    def __init__(self, runs):
+        self.runs = runs
+
+    def __contains__(self, key):
+        return bool(self.runs and self.runs[-1].strip())
+
+    def __getitem__(self, key):
+        return self.runs[-1]
+
+    def get(self, key, default=""):
+        return self.runs[-1] if key in self else default
+
+
 def shim_reader(monkeypatch):
-    """Replace the model pass; return the dict that captures its prompt."""
-    captured: dict = {}
-
-    def fake(h, prompt):
-        captured["prompt"] = prompt
-        out = miner.spool_dir() / miner.OUTPUT_BASENAME
-        out.write_text(json.dumps({"candidates": [], "fires": []}), encoding="utf-8")
-        return out
-
-    monkeypatch.setattr(miner, "_invoke_reader", fake)
-    return captured
+    """Replace the model pass; return what the last run sent."""
+    return _Captured(_shim_reader(monkeypatch))
 
 
 # ------------------------------------------------------- the real prompts
@@ -241,8 +253,9 @@ def test_a_program_run_session_that_is_not_self_learns_is_still_mined(tmp_path, 
     append(tracked, user_row(f"{ORDINARY_TAIL} second turn", **SDK_ROW), assistant_row("ok"))
     captured = shim_reader(monkeypatch)
     result = miner.run(home)
-    assert result.status == "ok" and result.sessions_scanned == 2
-    assert f"{ORDINARY_TAIL} second turn" in captured["prompt"] and prompt in captured["prompt"]
+    # the session engine shelves a session with no typed turn (user ruling, new-miner plan
+    # §0), so nothing is sent; the point here is that no halt is set on these sessions
+    assert result.status == "idle" and "prompt" not in captured
     cursors = miner._load_cursors()
     assert not cursors[str(path)].get("halt") and not cursors[str(tracked)].get("halt")
 
@@ -319,37 +332,22 @@ def session_miner_prompt(transcripts, home) -> str:
     return plan.spine.text
 
 
-@pytest.mark.parametrize("engine_name", ["digest", "session"])
-def test_the_session_miner_s_own_sessions_are_halted_by_both_engines(tmp_path, home, transcripts, monkeypatch,
-                                                                     engine_name):
+def test_the_session_miner_s_own_sessions_are_halted(tmp_path, home, transcripts, monkeypatch):
     """New-miner plan §3.2: the spine opens with the old header and a
-    self-learn command tag, so a night run of either engine halts the session
-    miner's own transcript (written under its stage folder's slug) and judges
-    the ordinary session beside it."""
-    from self_learn import invocation
-
-    monkeypatch.setenv("SELF_LEARN_EMBED_PROVIDER", "none")
+    self-learn command tag, so a night run halts the session miner's own
+    transcript (written under its stage folder's slug) and judges the
+    ordinary session beside it."""
     stage_folder = "-home-u--cache-self-learn-home-0123abcd-miner-session-stage"
     (transcripts / stage_folder).mkdir()
     own = write_session(transcripts, stage_folder, "sess-session-miner",
                         own_session_lines(session_miner_prompt(transcripts, home)))
     ordinary = write_session(transcripts, ORDINARY_FOLDER, "sess-ordinary", ordinary_session_lines())
     captured = shim_reader(monkeypatch)
-    prompts: list[str] = []
 
-    class Backend:
-        def text_session(self, spec):
-            prompts.append(spec.prompt)
-            return invocation.Outcome(ok=True, rc=0, stdout=json.dumps(
-                {"contract": "miner-output-model/1", "lessons": [], "sightings": [], "rule_checks": []}),
-                detail="", failure=None)
-
-    monkeypatch.setattr(invocation.registry, "backend_for", lambda *a, **k: Backend())
-
-    result = miner.run(home, engine=engine_name, no_push=True)
+    result = miner.run(home, no_push=True)
 
     assert result.status == "ok"
-    seen = captured.get("prompt", "") if engine_name == "digest" else "\n".join(prompts)
+    seen = captured.get("prompt", "")
     assert ORDINARY_TAIL in seen  # positive control: the ordinary session was judged
     assert OWN_TAIL not in seen
     cursors = miner._load_cursors()

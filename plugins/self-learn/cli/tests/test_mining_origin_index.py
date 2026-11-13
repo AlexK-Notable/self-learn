@@ -99,26 +99,6 @@ def test_new_events_mark_lf_origins_before_later_replay(home, root, backend, tmp
     assert miner._OriginIndex(home).event(event) == f'transcript:{sid}#L3'
 
 
-@pytest.mark.parametrize('tracked', [False, True])
-def test_digest_recurrence_uses_same_event_index(home, root, tmp_path, tracked):
-    sid, rid = 's1digestevent-0000', 'lrn-55550004'
-    rows = session_rows(sid, host(tmp_path))
-    rows[0]['message']['content'][0]['text'] += '\u2028extra'
-    write(root/PROJECT/f'{sid}.jsonl', rows)
-    put_record(home, rid, status='routed')
-    telemetry.spool_event('recurrence-suspect', record=rid, origin=f'transcript:{sid}#L4')
-    if tracked:
-        telemetry.flush(home, push=False)
-    events = telemetry.read_events(home) if tracked else telemetry.read_spooled(('recurrence-suspect',))
-    assert any(e.get('record') == rid for e in events)
-    result = miner.MineResult(status='ok')
-    with intents.ledger_write(home):
-        miner._reconcile_and_land(home, {'candidates': [
-            {'session': sid, 'line': 3, 'match': {'record': rid}}]}, result, 5)
-    assert [o['outcome'] for o in result.outcomes] == ['recurrence-already-known']
-    assert result.recurrences == []
-
-
 def test_unavailable_new_sighting_is_marked_and_later_converges(home, root):
     origin = 'transcript:late#L2'
     assert miner._rejected_counter_bump('lrn-1', origin) == 1
@@ -224,7 +204,7 @@ def test_corrupt_record_retains_its_raw_origin_independently(home, root):
     assert miner._known_mining_origins(home) == {origin, 'transcript:corrupt-control#L2'}
 
 
-@pytest.mark.parametrize('surface', ['session', 'digest-recurrence', 'digest-fire', 'legacy-fire'])
+@pytest.mark.parametrize('surface', ['session'])
 def test_all_event_writers_mark_new_line_counts(home, root, surface):
     rid, sid = 'lrn-55550009', 's1eventmarker-0000'
     put_record(home, rid, status='routed')
@@ -234,13 +214,7 @@ def test_all_event_writers_mark_new_line_counts(home, root, surface):
         if surface == 'session':
             st = miner._Landing(home, result, 5, set(), set())
             miner._write_event(st, 'recurrence-suspect', rid, origin, None)
-        elif surface == 'legacy-fire':
-            miner._raise_recurrence_suspect(result, set(), rid, origin, 'fire-suspected-violation')
-        else:
-            parsed = ({'candidates': [{'session': sid, 'line': 3, 'match': {'record': rid}}]}
-                      if surface == 'digest-recurrence' else
-                      {'fires': [{'record': rid, 'session': sid, 'line': 3, 'outcome': 'cannot-tell'}]})
-            miner._reconcile_and_land(home, parsed, result, 5)
+
     events = [e for e in telemetry.read_spooled(('fire', 'recurrence-suspect')) if e.get('record') == rid]
     assert len(events) == 1 and events[0]['origin'] == origin
     assert events[0]['line_format'] == 'newline-v1'

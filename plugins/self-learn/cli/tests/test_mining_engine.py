@@ -602,26 +602,7 @@ def test_e9_transcript_copies_of_the_surface_are_pruned_too(tmp_path):
 # ===================================================================== E10
 
 
-def test_e10_the_digest_engine_runs_the_old_path(home, root, tmp_path, monkeypatch):
-    calls: list[str] = []
-
-    def reader(_home, prompt):
-        calls.append(prompt)
-        out = miner.spool_dir() / miner.OUTPUT_BASENAME
-        out.write_text(json.dumps({"candidates": []}))
-        return out
-
-    monkeypatch.setattr(miner, "_invoke_reader", reader)
-    monkeypatch.setattr(miner, "_session_call", lambda spec: pytest.fail("the session engine was called"))
-    sid = "s1kkkkkk-0000"
-    write_session(root, sid, session_rows(sid, host(tmp_path)))
-    result = miner.run(home, no_push=True)  # miner.engine's default
-    assert settings.resolve_setting(home, settings.by_name("miner.engine"))[0] == "digest"
-    assert result.status == "ok" and len(calls) == 1
-    assert "engine" not in journal_last() and not (miner.miner_dir() / "runs").exists()
-
-
-def test_e10_the_setting_switches_the_engine(home, root, backend, tmp_path):
+def test_e10_a_config_saying_session_runs_the_session_path(home, root, backend, tmp_path):
     (home / "config.yaml").write_text("miner:\n  engine: session\n")
     commit_all(home, "config")
     sid = "s2kkkkkk-0000"
@@ -636,32 +617,37 @@ def test_e10_the_setting_switches_the_engine(home, root, backend, tmp_path):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["mine", "run", "--engine", "session"],
         ["mine", "run", "--session", "abcd-0001"],
-        ["mine", "run", "--preview"],
+        ["mine", "run", "--engine", "digest"],
         ["mine", "run", "--engine", "digest", "--preview"],
         ["mine", "run", "--engine", "session", "--preview", "--session", "../x"],
     ],
 )
-def test_e12_the_session_engine_lands_only_after_the_user_s_flip(home, root, argv, capsys, monkeypatch):
+def test_e12_refused_engine_flags_never_start_a_run(home, root, argv, capsys, monkeypatch):
     monkeypatch.setattr(miner, "run", lambda *a, **k: pytest.fail("refused flags must never start a run"))
     assert cli.main(argv) == cli.EXIT_USAGE
     assert "self-learn mine:" in capsys.readouterr().err
 
 
-def test_e12_preview_alone_is_allowed_once_the_setting_is_session(home, root, monkeypatch):
+def test_e12_engine_digest_is_refused_in_a_plain_sentence(home, root, capsys):
+    assert cli.main(["mine", "run", "--engine", "digest"]) == cli.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "the digest engine was retired on 2026-11-12" in err and "drop --engine" in err
+
+
+def test_e12_preview_alone_and_engine_session_are_allowed(home, root, monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(miner, "run", lambda h, **k: seen.update(k) or miner.MineResult(status="preview", run_id="r"))
-    (home / "config.yaml").write_text("miner:\n  engine: session\n")
     assert cli.main(["mine", "run", "--preview"]) == 0
     assert seen["preview"] is True and seen["engine"] is None
-    assert cli.main(["mine", "run", "--engine", "digest"]) == 0  # a one-run rollback is allowed
+    assert cli.main(["mine", "run", "--engine", "session"]) == 0
+    assert seen["engine"] == "session"
 
 
 def test_e12_miner_engine_is_tier_c_without_an_env_var():
     s = settings.by_name("miner.engine")
-    assert s.tier == "C" and s.env_var is None and s.default == "digest"
-    assert s.accepts is not None and s.accepts("session") and not s.accepts("other")
+    assert s.tier == "C" and s.env_var is None and s.default == "session"
+    assert s.accepts is not None and s.accepts("session") and not s.accepts("digest") and not s.accepts("other")
 
 
 # ===================================================================== E13
@@ -1280,30 +1266,16 @@ def test_a_preview_changes_nothing_in_the_cache_outside_its_run_folder(home, roo
     assert backend.specs[0].skip_orphan_sweep is True and backend.specs[0].cwd == folder / "stage"
 
 
-def test_the_override_channel_cannot_switch_the_engine(home, root, tmp_path, monkeypatch):
-    calls: list[str] = []
-
-    def reader(_home, prompt):
-        calls.append(prompt)
-        out = miner.spool_dir() / miner.OUTPUT_BASENAME
-        out.write_text(json.dumps({"candidates": []}))
-        return out
-
-    monkeypatch.setattr(miner, "_invoke_reader", reader)
-    monkeypatch.setattr(miner, "_session_call", lambda spec: pytest.fail("the session engine was called"))
+def test_the_override_channel_does_not_reach_the_engine_setting(home, root, tmp_path, monkeypatch):
     from self_learn import config
 
     var = config.override_env_var("miner.engine")
     assert var == "SELF_LEARN_OVERRIDE_MINER_ENGINE"
-    monkeypatch.setenv(var, "session")
+    monkeypatch.setenv(var, "digest")
     # control: the same channel does move an ordinary entry
     monkeypatch.setenv("SELF_LEARN_OVERRIDE_MINER_PARALLEL", "3")
     assert settings.resolve_setting(home, settings.by_name("miner.parallel")) == (3, "override:miner.parallel")
-    assert settings.resolve_setting(home, settings.by_name("miner.engine"))[0] == "digest"
-    sid = "s1ovrrde-0000"
-    write_session(root, sid, session_rows(sid, host(tmp_path)))
-    result = miner.run(home, no_push=True)
-    assert result.status == "ok" and len(calls) == 1 and "engine" not in journal_last()
+    assert settings.resolve_setting(home, settings.by_name("miner.engine"))[0] == "session"
     assert var in settings.unknown_override_vars()  # doctor settings names it: set, and doing nothing
     with pytest.raises(ValueError):
         with settings.override("miner.engine", "session"):
@@ -1787,9 +1759,9 @@ def test_a_preview_s_tools_read_its_own_copy_of_the_lesson_index(home, root, tmp
     assert live.read_bytes() == before
 
 
-@pytest.mark.parametrize("chosen", ["digest", "session"])
+@pytest.mark.parametrize("chosen", ["session"])
 @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085", ""])
-def test_newline_cursor_continues_both_engines(home, root, backend, tmp_path, monkeypatch, chosen, separator):
+def test_newline_cursor_continues_the_session_engine(home, root, backend, tmp_path, monkeypatch, chosen, separator):
     sid = "newline-migration"
     rows = session_rows(sid, host(tmp_path))
     rows[0]["message"]["content"][0]["text"] += separator + "previously processed"
@@ -1809,13 +1781,7 @@ def test_newline_cursor_continues_both_engines(home, root, backend, tmp_path, mo
         seen.extend((s.start_line, [json.loads(x)["uuid"] for x in s.lines]) for s in result)
         return result
 
-    def reader(_home, prompt):
-        out = miner.spool_dir() / miner.OUTPUT_BASENAME
-        out.write_text(json.dumps({"candidates": []}))
-        return out
-
     monkeypatch.setattr(miner, "walk", walk)
-    monkeypatch.setattr(miner, "_invoke_reader", reader)
     assert miner.run(home, no_push=True, engine=chosen).status == "ok"
     assert seen == [(2, [r["uuid"] for r in rows[2:]])]
     assert cursor(path)["lines"] == 7 and cursor(path)["line_format"] == "newline-v1"

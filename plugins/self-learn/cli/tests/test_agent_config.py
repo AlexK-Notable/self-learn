@@ -50,16 +50,16 @@ def test_each_tier_c_refused_before_lock(setting, operation, tmp_path, monkeypat
 def test_each_marker_cli_refuses(markers, marker_value, operation, tmp_path, monkeypatch, capsys):
     home = make_home(tmp_path)
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
-    args = ["config", operation, "miner.engine"]
+    args = ["config", operation, "overseer.skill_writing"]
     if operation == "set":
-        args.append("session")
+        args.append("on")
     before = git(home, "rev-parse", "HEAD").stdout
-    settings.config_set(home, "miner.engine", "digest")
+    settings.config_set(home, "overseer.skill_writing", "off")
     assert git(home, "rev-parse", "HEAD").stdout != before
     before = git(home, "rev-parse", "HEAD").stdout
     assert cli.main(args) == 0
     assert git(home, "rev-parse", "HEAD").stdout != before
-    settings.config_set(home, "miner.engine", "digest")
+    settings.config_set(home, "overseer.skill_writing", "off")
     original = (home / "config.yaml").read_bytes()
     head = git(home, "rev-parse", "HEAD").stdout
     capsys.readouterr()
@@ -73,7 +73,7 @@ def test_each_marker_cli_refuses(markers, marker_value, operation, tmp_path, mon
     assert captured.out == ""
     detected = ", ".join(marker for marker in MARKERS if marker in markers)
     assert captured.err == (
-        f"self-learn config {operation}: config {operation} miner.engine is a person-only "
+        f"self-learn config {operation}: config {operation} overseer.skill_writing is a person-only "
         "command; from an agent's shell it runs under the user's standing grant and needs "
         "--note TEXT saying why (the ledger records By: agent, the grant and the reason) "
         f"(agent shell detected: {detected})\n"

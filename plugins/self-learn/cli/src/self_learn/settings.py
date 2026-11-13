@@ -170,10 +170,26 @@ Kind = Literal["str", "int", "float", "bool"]
 #: parsed AS that `kind`).
 SettingValue = str | int | float | bool | None
 
-#: `miner.engine`'s two values (new-miner plan §3.8): the digest engine
-#: (one reader call over every session's digest) and the session engine
-#: (one call per session). `miner.run` reads the setting.
-MINER_ENGINES: tuple[str, ...] = ("digest", "session")
+#: `miner.engine`'s one value: the session engine (one call per session).
+#: The digest engine (one reader call over every session's digest) was
+#: retired on 2026-11-12 after clean nights since 2026-10-25; a config that
+#: still says `digest` reads as `session` and `doctor settings` says so.
+MINER_ENGINES: tuple[str, ...] = ("session",)
+
+#: What an old `miner.engine` value may still say; it reads as `session`.
+MINER_ENGINE_RETIRED: tuple[str, ...] = ("digest",)
+
+#: `miner.schedule_time`: a 24-hour local time of day, `HH:MM`, zero-padded.
+_SCHEDULE_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+DEFAULT_SCHEDULE_TIME = "03:30"
+
+
+def parse_schedule_time(value: object) -> tuple[int, int] | None:
+    """``"03:30"`` -> ``(3, 30)``; anything that is not a zero-padded 24-hour
+    ``HH:MM`` -> ``None``."""
+    m = _SCHEDULE_TIME_RE.match(value) if isinstance(value, str) else None
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
 
 #: `overseer.skill_writing`'s two values (S-107 part 6 as amended by
 #: S-107 amended 2026-10-31): ``on`` (the default: the overseer deploys every
@@ -873,27 +889,8 @@ REGISTRY: tuple[Setting, ...] = (
         description="pending-queue size that gates a mining run",
         validate=lambda v: max(0, cast(int, v)),
     ),
-    # The miner reader's input budget (`miner.DigestLimits`) and its time
-    # limit. All four were constants or env-only until 2026-09-20. The
-    # three budgets are counted in CHARACTERS because that is what the
-    # code counted when they were moved here, unchanged; the unit itself
-    # is an open question with the user, and `miner.DigestLimits` is the
-    # one place a different measure would be introduced.
-    sizing_knob(
-        "miner.message_chars",
-        default=2_000,  # miner.MAX_TEXT_CHARS reads this
-        description="characters kept from one message of a scanned session (the digest engine only)",
-    ),
-    sizing_knob(
-        "miner.session_chars",
-        default=60_000,  # miner.MAX_DIGEST_CHARS reads this
-        description="characters kept from one scanned session; the rest of that session is clipped (the digest engine only)",
-    ),
-    sizing_knob(
-        "miner.run_chars",
-        default=400_000,  # miner.MAX_PROMPT_DIGESTS_CHARS reads this
-        description="characters of session digests in one mining run's model call; sessions over it wait for the next run (the digest engine only)",
-    ),
+    # The miner's model-call time limit (the digest engine's three input budgets,
+    # miner.message_chars / session_chars / run_chars, were removed on 2026-11-12).
     sizing_knob(
         "miner.reader_timeout_secs",
         default=900.0,  # miner.INVOKE_TIMEOUT_SECS reads this
@@ -902,25 +899,25 @@ REGISTRY: tuple[Setting, ...] = (
     ),
     # The session engine (new-miner plan §3.8, unit R2, 2026-10-19): one
     # model call per session, with its own tools, landing checked output.
-    # `miner.engine` is the runner switch between the two engines. It is
-    # the user's to flip (tier C, no env var, like `steward.enabled`);
-    # `self-learn mine run --engine session` without `--preview` is refused,
-    # so nothing but this setting makes the session engine land.
+    # `miner.engine` once switched between two engines; the digest engine
+    # was retired on 2026-11-12 and `session` is the only value (an old
+    # `digest` in config.yaml reads as `session`). The key stays so that
+    # old configs keep reading and `doctor settings` can name the old value.
     Setting(
         name="miner.engine",
         env_var=None,
         config_section="miner",
         config_key="engine",
         kind="str",
-        default="digest",
+        default="session",
         description=(
-            "which engine a mining run uses: digest (one call over every session's digest) or "
-            "session (one call per session, with its own tools); the user flips it"
+            "the mining engine: session (one call per session, with its own tools) is the only one; "
+            "the digest engine was retired on 2026-11-12 and an old `digest` value reads as session"
         ),
-        # an unknown value hand-edited into config.yaml reads as the default
-        validate=lambda v: v if v in MINER_ENGINES else "digest",
+        # an old `digest` (or an unknown value hand-edited into config.yaml) reads as session
+        validate=lambda v: "session",
         accepts=lambda v: v in MINER_ENGINES,
-        accepts_hint="digest or session",
+        accepts_hint="session (the digest engine was retired on 2026-11-12)",
         tier="C",
         override_channel=False,
     ),
@@ -1013,6 +1010,25 @@ REGISTRY: tuple[Setting, ...] = (
             "session ids the miner never reads, comma-separated, each the transcript's file name "
             "without .jsonl; applies to --since backfills too"
         ),
+    ),
+    # When the nightly mine pass runs (the user, 2026-07-19: a settings page
+    # where they decide "what their miner schedule looks like"). Local time;
+    # `serve` reads it each time it decides whether the pass is due, so a change
+    # needs no restart. The pass keeps its jitter (up to 15 minutes after this
+    # time), its catch-up after a sleep and its once-a-day rule. The steward's
+    # and the overseer's times are not settings.
+    Setting(
+        name="miner.schedule_time",
+        env_var="SELF_LEARN_MINER_SCHEDULE_TIME",
+        config_section="miner",
+        config_key="schedule_time",
+        kind="str",
+        default=DEFAULT_SCHEDULE_TIME,
+        description="local time of day the nightly mining pass starts, 24-hour HH:MM (a jitter of up to 15 minutes is added)",
+        # a hand-edited value that is not a time reads as the default
+        validate=lambda v: v if parse_schedule_time(v) is not None else DEFAULT_SCHEDULE_TIME,
+        accepts=lambda v: parse_schedule_time(v) is not None,
+        accepts_hint="a time of day as 24-hour HH:MM, for example 03:30 or 22:15",
     ),
     # ------------------------------------------------------- refs (U1, 2026-09-26)
     Setting(
@@ -2120,6 +2136,17 @@ def retired_keys(home: Path | str) -> list[str]:
     return sorted(found)
 
 
+def miner_engine_retired_detail(source: str) -> str:
+    """The one sentence a retired `miner.engine` value earns in `doctor
+    settings`: what was read, what runs, and how to clear it."""
+    where = "the environment" if source.startswith("env:") else "config.yaml"
+    return (
+        f"miner.engine in {where} still says a retired engine ({'/'.join(MINER_ENGINE_RETIRED)}); the digest "
+        "engine was retired on 2026-11-12, so mining runs as session; remove the old value with "
+        "`self-learn config unset miner.engine`"
+    )
+
+
 def retired_key_detail(key: str) -> str:
     action = (f"self-learn config unset {shlex.quote(key)}"
               if key.startswith("invocation.") else f"unset {shlex.quote(key)}")
@@ -2284,6 +2311,9 @@ def preflight(home: Path | str) -> list[SettingRow]:
         value, source = resolve_setting(home, setting)
         note = _fold_note(home, setting, source)
         note_suffix = f" [{note}]" if note else ""
+        if setting.name == "miner.engine" and note:
+            rows.append(SettingRow(name=setting.name, verdict="WARN", detail=miner_engine_retired_detail(source)))
+            continue
         if source.startswith("override:"):
             # M-S (code-gate fold r1): a PAIRED entry's `source` may
             # name the GENERAL sibling's own override var -- the "Unset

@@ -110,7 +110,7 @@ _TABLE: dict[str, Plain] = {
     "miner.autokick": _p("runs", "Overnight read starts itself",
         "Let the overnight read be started by its watchdog when a run was missed. A safety switch."),
     "miner.engine": _p("runs", "How sessions are read",
-        "digest: one model call over short digests of every session. session: one call per session, with tools to read it."),
+        "One model call per session, with tools to read it. The older all-sessions-in-one-digest way was retired on 2026-11-12; an old setting naming it reads as this."),
     "serve.restart_on_new_code": _p("runs", "Restart on new code",
         "Restart the background service between jobs when the self-learn code on disk has changed."),
     # -------------------------------------------------------------- limits
@@ -160,12 +160,6 @@ _TABLE: dict[str, Plain] = {
         "Session ids the overnight read always skips, separated by commas."),
     "refs.transcript_roots": _p("reading", "Where quoted sessions are looked up",
         "The folders searched, in order, when a lesson's quote is checked against its session."),
-    "miner.message_chars": _p("reading", "Characters kept per message",
-        "How much of one message is kept in a session's digest (digest engine only)."),
-    "miner.session_chars": _p("reading", "Characters kept per session",
-        "How much of one session is kept in its digest; the rest is cut (digest engine only)."),
-    "miner.run_chars": _p("reading", "Characters read per night",
-        "How much digest text one overnight read sends; sessions over it wait for the next night (digest engine only)."),
     "miner.spine_tokens": _p("reading", "Session size before shortening",
         "Above this estimated size, the session engine shortens the agent's own messages. Your typed words are never cut."),
     # ---------------------------------------------------------------- time
@@ -173,6 +167,9 @@ _TABLE: dict[str, Plain] = {
         "Seconds drafting waits for more lessons to arrive before it starts, so several go in one call."),
     "worker.invoke_timeout_secs": _p("time", "Drafting time limit", "Seconds one drafting call may run."),
     "worker.repair_timeout_secs": _p("time", "Repair time limit", "Seconds one repair round may run."),
+    "miner.schedule_time": _p("time", "Overnight read starts at",
+        "The time of day, as 24-hour HH:MM like 03:30, when the overnight read of your sessions starts. "
+        "It may begin up to 15 minutes later, and a missed night is made up when the machine wakes."),
     "miner.reader_timeout_secs": _p("time", "Overnight read call time limit", "Seconds one model call of the overnight read may run."),
     "analyst.timeout_secs": _p("time", "One-off suggestion time limit", "Seconds the one-off suggestion may run."),
     "steward.timeout_secs": _p("time", "Nightly review call time limit", "Seconds one model call of the nightly review may run."),

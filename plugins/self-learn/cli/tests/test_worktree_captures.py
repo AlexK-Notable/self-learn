@@ -4,7 +4,7 @@ parent host, never under an unregistered bucket keyed to the worktree.
 Every repo here is real: ``git init`` plus ``git worktree add`` in
 ``tmp_path``. Captures go through the producers' own entry points —
 ``self-learn teach`` (``cli.main``), the miner's
-``_reconcile_and_land`` and ``import_memory`` — so each remapping test
+the miner's landing (``_write_lesson``) and ``import_memory`` — so each remapping test
 fails on the code before FW-162 by landing in the worktree's bucket, not
 by a missing name.
 
@@ -70,24 +70,23 @@ def _teach(monkeypatch, home: Path, cwd: Path, fact: str) -> None:
 
 
 def _mine(home: Path, cwds: dict[str, Path]) -> miner.MineResult:
-    """Land one project-scoped knowledge candidate per session in *cwds*."""
+    """Land one project-scoped knowledge lesson per session in *cwds*, through
+    the session engine's landing (`miner._write_lesson`), each with its session's cwd."""
+    from self_learn import intents
+
     result = miner.MineResult(status="ok")
-    parsed = {
-        "candidates": [
-            {
-                "scope": "project",
-                "type": "knowledge",
-                "fact": f"Fact number {i} about the proxy.",
-                "session": session,
-                "line": 7,
-                "quote": "",
-            }
-            for i, session in enumerate(cwds, start=1)
-        ]
-    }
-    miner._reconcile_and_land(
-        home, parsed, result, 10, {s: str(p) for s, p in cwds.items()}
-    )
+    st = miner._Landing(home, result, 10, set(), set())  # pyright: ignore[reportPrivateUsage]
+    with intents.ledger_write(home):
+        for i, (session, path) in enumerate(cwds.items(), start=1):
+            ref = {"session": session, "line": 7, "uuid": f"{session}-u-7", "role": "user",
+                   "project_dir": "-proj", "file": f"{session}.jsonl", "entry_ts": "2026-10-01T10:00:03.000Z"}
+            lesson = {"id": f"L{i}", "shape": "correction", "scope": "project", "type": "knowledge",
+                      "kind": None, "trigger": None, "instruction": None,
+                      "fact": f"Fact number {i} about the proxy.", "context": None,
+                      "evidence": [{"ref": ref, "quote": None}], "steps": [], "verification": None,
+                      "incident_cost": None, "generality": None, "why_durable": "recurs",
+                      "subagent_cause": None}
+            miner._write_lesson(st, lesson, str(path))  # pyright: ignore[reportPrivateUsage]
     return result
 
 

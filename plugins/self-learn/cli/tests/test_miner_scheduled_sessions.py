@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import miner, settings
+from test_session_shim import shim_reader
 from support import commit_all, make_home
 
 SCHEDULED_TAIL = "SCHEDULED-SESSION-TAIL-glockenspiel"
@@ -49,6 +50,8 @@ ENV_VAR = "SELF_LEARN_MINER_MINED_SCHEDULED_JOBS"
 def redirect(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
     monkeypatch.setenv("SELF_LEARN_ACTOR", "testhost")
+    monkeypatch.setenv("SELF_LEARN_EMBED_PROVIDER", "none")
+    monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(tmp_path / "claude-dir"))
     monkeypatch.delenv(ENV_VAR, raising=False)
 
 
@@ -109,18 +112,6 @@ def track_at_end(path):
     miner._save_cursors(cursors)
 
 
-def shim_reader(monkeypatch):
-    """Replace the model pass; return the list of prompts it was given."""
-    prompts: list[str] = []
-
-    def fake(h, prompt):
-        prompts.append(prompt)
-        out = miner.spool_dir() / miner.OUTPUT_BASENAME
-        out.write_text(json.dumps({"candidates": [], "fires": []}), encoding="utf-8")
-        return out
-
-    monkeypatch.setattr(miner, "_invoke_reader", fake)
-    return prompts
 
 
 def scheduled_prompt(name):
@@ -296,8 +287,11 @@ def test_a_job_the_user_names_is_mined_and_the_others_are_not(home, transcripts,
         "miner:\n  mined_scheduled_jobs: 'news-digest, weekly-review'\n", encoding="utf-8"
     )
     commit_all(home, "config: opt two scheduled jobs in")
-    named = write_session(transcripts, SCHEDULED_FOLDER, "sess-news", scheduled_lines("news-digest"))
-    unnamed = write_session(transcripts, SCHEDULED_FOLDER, "sess-sync", scheduled_lines("notes-sync"))
+    # a scheduled job's own opening is no typed turn (the session engine shelves a
+    # session with none), so each job's session gets one typed follow-up
+    follow = [user_row("please also fix the typo", **TYPED_ROW), assistant_row("done")]
+    named = write_session(transcripts, SCHEDULED_FOLDER, "sess-news", scheduled_lines("news-digest") + follow)
+    unnamed = write_session(transcripts, SCHEDULED_FOLDER, "sess-sync", scheduled_lines("notes-sync") + follow)
     prompts = shim_reader(monkeypatch)
 
     assert miner.run(home).status == "ok"
