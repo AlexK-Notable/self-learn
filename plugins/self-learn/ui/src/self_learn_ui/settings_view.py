@@ -70,7 +70,6 @@ def source_words(source: str) -> str:
 #: machine words, keyed by (setting, value). Any other value shows as is.
 _VALUE_WORDS = {
     ("miner.engine", "session"): "Each session on its own",
-    ("miner.engine", "digest"): "All sessions as short digests",
     ("premises.rotation_per_night", "auto"): "Automatic",
 }
 
