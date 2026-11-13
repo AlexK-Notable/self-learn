@@ -1285,9 +1285,9 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         # decided then, it stays decided.
         carried = ledger_ops.carried_version(entry.record)
         legacy = identity.get("legacy_version")
-        hits = [
-            key for key in ((rid, identity["version"]), (rid, carried))
-            if key[1] is not None and key in terminal
+        hits: list[tuple[str, str]] = [
+            (rid, version) for version in (identity["version"], carried)
+            if isinstance(version, str) and (rid, version) in terminal
         ]
         if isinstance(legacy, str) and (rid, legacy) in legacy_terminal:
             hits.append((rid, legacy))

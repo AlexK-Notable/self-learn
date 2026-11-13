@@ -884,6 +884,8 @@ def _canon_semantic(home: Path, cache_dir: Path, change: "Any", wanted: set[str]
 
         try:
             index = LessonIndex.open_existing(home)
+            if index is None:
+                return {}
             result = textquery.nearest_text(index, change.text, limit=40)
         except Exception:  # noqa: BLE001 -- no index: the word match stands alone
             return {}
