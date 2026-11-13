@@ -91,6 +91,8 @@ _TABLE: dict[str, Plain] = {
         "Let the weekly check look for groups of lessons that would make a skill, and decide each idea (one more model call a week)."),
     "overseer.hook_activation": _p("runs", "Turn on warnings it writes",
         "Let the weekly check switch on the warning hooks it writes, after testing them. Off: it places them but leaves them off."),
+    "hosts.extra_roots": _p("runs", "Folders outside home it may register",
+        "Folders on another disk. The weekly check may register a project inside one of them as a place lessons are written. The folder itself never counts; only what is inside it."),
     "premises.enabled": _p("runs", "Re-check what rules assume",
         "Each day, check whether the facts a rule depends on (a file, a version, a setting) are still true."),
     "premises.backfill_per_night": _p("runs", "Older rules given checks each night",
