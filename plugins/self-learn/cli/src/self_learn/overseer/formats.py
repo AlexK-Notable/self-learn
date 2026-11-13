@@ -552,6 +552,9 @@ candidate's sc-... id, or the proposal's case-... id), disposition, because, and
   them there this run when you can.
 - defer: not now; would_change_it says what evidence would change that.
 - decline: not a skill; because says why.
+A candidate with held_because names a skill (into) that phase S's skills-index did not list: it is
+kept, not dropped, so decide it like any other: build (the lessons as a new skill under a name you
+choose), add-to-existing only if you can name a real skill, defer, or decline.
 When a candidate and a proposal are the same group, decide it once: give both the same
 disposition, and say so only in the proposal's because. A candidate's because and
 would_change_it never name a proposal, a case or the steward: next week's discovery
