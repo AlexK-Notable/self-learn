@@ -1,0 +1,32 @@
+{# The bucket page's slow sections (GET /bucket/<scope>/<name>/later), swapped
+   into the page after it appeared: the archive replaces the placeholder,
+   the other two parts fill their slots out of band. The archive rows carry
+   NO `data-row` (see bucket.html's old note: the s/d walk must not select a
+   row in a closed section). A failed read is its own state, never an
+   omission. #}
+{% if archive_error %}
+<details id="bucket-later" class="archive-section archive-section-error">
+  <summary>Routed here (unavailable)</summary>
+  <p class="archive-error-note" role="alert">{{ archive_error }}</p>
+</details>
+{% elif archive %}
+<details id="bucket-later" class="archive-section">
+  <summary>Routed here ({{ archive | length }})</summary>
+  {% for row in archive %}
+  <div class="record-row archive-row">
+    <a href="/record/{{ row.id }}" class="record-row-lead">{{ row.leading_text }}</a>
+    <span class="record-row-meta">
+      <span class="record-row-id">{{ row.id }}</span>
+    </span>
+    <p class="archive-row-facts">{{ row.fact_text }}</p>
+  </div>
+  {% endfor %}
+</details>
+{% else %}
+<div id="bucket-later" hidden></div>
+{% endif %}
+<div id="bucket-unreadable" hx-swap-oob="true">{% if unreadable %}<p class="banner banner-notice" role="alert">{{ unreadable }} record{{ "s" if unreadable != 1 else "" }} could not be read.</p>{% endif %}</div>
+{% if empty %}
+{% set _in_use = archive | length %}
+<span id="bucket-empty-more" hx-swap-oob="true">{% if _in_use %} {{ _in_use }} rule{{ "s" if _in_use != 1 else "" }} from here {{ "is" if _in_use == 1 else "are" }} in use; {{ "it is" if _in_use == 1 else "they are" }} listed under &ldquo;Routed here&rdquo; below.{% endif %}{% if replaced_here %} {{ replaced_here }} earlier rule{{ "s" if replaced_here != 1 else "" }} from here {{ "was" if replaced_here == 1 else "were" }} later replaced or retired.{% endif %}</span>
+{% endif %}

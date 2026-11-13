@@ -365,9 +365,15 @@ class TestBucketAndDetailWords:
         rec = make_behavior(scope="skill:s")  # one decided rule, nothing waiting
         seed_record(sb.ledger, rec)
         resolve_record_directly(sb.ledger, sb.ledger / "skills" / "s", rec)
-        page = _client(sb).get("/bucket/skill/s").text
+        client = _client(sb)
+        page = client.get("/bucket/skill/s").text
         assert '<h1 class="place-title">s</h1>' in page
-        assert "Nothing is waiting here. 1 rule from here is in use" in page
+        assert "Nothing is waiting here." in page
+        # the counts fill in after the page appeared (out of band, into the sentence)
+        late = client.get("/bucket/skill/s/later?empty=1").text
+        assert 'id="bucket-empty-more"' in late
+        assert "1 rule from here is in use" in late
+        assert 'hx-get="/bucket/skill/s/later?empty=1"' in page
 
     def test_a_place_with_waiting_work_does_not_say_it_is_empty(self, tmp_path):
         sb = make_env(tmp_path)
@@ -439,15 +445,19 @@ class TestGateR1Fold:
             ]})
 
         monkeypatch.setattr(ledger_mod, "report", report)
-        page = _client(sb).get("/bucket/skill/s").text
+        client = _client(sb)
+        page = client.get("/bucket/skill/s").text
         assert "Nothing is waiting here." in page  # positive control: the sentence
-        assert "2 earlier rules from here were later replaced or retired." in page
+        late = client.get("/bucket/skill/s/later?empty=1").text
+        assert "2 earlier rules from here were later replaced or retired." in late
         assert calls == ["report"]  # one report read for the whole page
         monkeypatch.setattr(ledger_mod, "report",
                             lambda home, **kw: CliRead(data=None, error="boom"))
-        failed = _client(sb).get("/bucket/skill/s").text
+        failed_client = _client(sb)
+        failed = failed_client.get("/bucket/skill/s").text
         assert "Nothing is waiting here." in failed
-        assert "replaced or retired" not in failed
+        failed_late = failed_client.get("/bucket/skill/s/later?empty=1").text
+        assert "replaced or retired" not in failed_late
 
     def test_home_reads_the_inbox_once_and_fills_the_header_link_from_it(
         self, tmp_path, monkeypatch

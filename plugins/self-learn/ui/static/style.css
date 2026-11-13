@@ -3909,3 +3909,30 @@ ul.health-warnings {
 .jobs-dot-waiting {
   background: var(--slu-fg-faint);
 }
+
+/* Speed batch 2: parts of a page that load themselves after the page appeared. */
+.lazy-section .lazy-loading {
+  color: var(--slu-fg-muted);
+  margin: 0.75rem 0;
+}
+.lazy-section[aria-busy="true"] .lazy-loading::before {
+  content: "";
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-right: 0.5em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: lazy-spin 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lazy-section[aria-busy="true"] .lazy-loading::before { animation: none; }
+}
+@keyframes lazy-spin { to { transform: rotate(360deg); } }
+.lazy-section .lazy-failed {
+  color: var(--slu-danger);
+}
+.lazy-retry {
+  margin-left: 0.5em;
+}

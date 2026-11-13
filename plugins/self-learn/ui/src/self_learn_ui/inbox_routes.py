@@ -859,7 +859,16 @@ def _seed_count(request: Request, read: ledger.CliRead) -> None:
 async def _doc(request: Request) -> ledger.CliRead:
     cache = _count_cache(request)
     generation = cache["generation"]
-    read = await asyncio.to_thread(ledger.attention, _home(request))
+    from .routes import _read
+
+    home = _home(request)
+    # Never stored (ttl=0: the answer depends on state outside the ledger's
+    # git HEAD), but a read already running for this same ledger state is
+    # shared: Home asks for the inbox count and the "Needs your answer" tile
+    # at the same moment, and the CLI reads it once for both.
+    read = await asyncio.to_thread(
+        _read, request, "attention", lambda: ledger.attention(home), ttl=0
+    )
     if _count_cache(request)["generation"] == generation:
         _seed_count(request, read)
     return read

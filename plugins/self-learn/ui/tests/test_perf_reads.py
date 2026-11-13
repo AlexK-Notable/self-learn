@@ -92,7 +92,8 @@ def test_header_uses_fast_status_and_expires_on_refresh_and_ttl(tmp_path, monkey
     with _client(sb) as client:
         first = client.get("/header/jobs")
         assert first.status_code == 200 and "jobs-line" in first.text
-        assert calls == [["status", "--json", "--fast"], ["mine", "status", "--json"]]
+        # the two reads now run at the same time, so their order is not fixed
+        assert sorted(calls) == [["mine", "status", "--json"], ["status", "--json", "--fast"]]
         assert client.get("/header/jobs").text == first.text
         assert len(calls) == 2
         client.app.state.refresh_hub.force_refresh("front")
@@ -101,8 +102,20 @@ def test_header_uses_fast_status_and_expires_on_refresh_and_ttl(tmp_path, monkey
         cache = client.app.state.humane_jobs_line
         stamp, line = cache["line"]
         cache["line"] = (stamp - 31, line)
+        # the shared read cache keeps its own 30 s clock: still warm, so the
+        # header rebuilds its line without another CLI call
+        client.get("/header/jobs")
+        assert len(calls) == 4
+        for entry in client.app.state.read_cache._entries.values():
+            entry.stamp -= 31
+        stamp, line = cache["line"]
+        cache["line"] = (stamp - 31, line)
         client.get("/header/jobs")
         assert len(calls) == 6
+
+
+#: the pages whose slow reads moved into a section the page loads itself
+LATE = {"/report": "/report/body", "/bucket/skill/s": "/bucket/skill/s/later"}
 
 
 @pytest.mark.parametrize("path", ["/report", "/bucket/skill/s"])
@@ -119,6 +132,8 @@ def test_page_passes_status_to_background_header(tmp_path, monkeypatch, path):
         response = client.get(path)
         assert response.status_code == 200 and 'class="site-header"' in response.text
         assert 'data-background-read hx-get="/header/jobs"' in response.text
+        assert [c for c in calls if c[0] == "status"] == []  # the shell reads no status
+        assert client.get(LATE[path]).status_code == 200
         full_calls = [c for c in calls if c[0] == "status"]
         assert full_calls == [["status", "--json"]]
         header = client.get("/header/jobs")
@@ -196,7 +211,7 @@ def test_health_search_cache_cannot_extend_header_status_lifetime(tmp_path, monk
     monkeypatch.setattr(ledger, "status_fast", lambda home: models.CliRead(data={"steward_hold": "new hold"}))
     monkeypatch.setattr(ledger, "mine_status", lambda home: models.CliRead(data={"runs": []}))
     with _client(sb) as client:
-        assert client.get("/report").status_code == 200
+        assert client.get("/report/body").status_code == 200
         assert "on hold" in client.get("/header/jobs").text
         cache = client.app.state.humane_jobs_line
         stamp, line = cache["line"]
@@ -234,6 +249,8 @@ def test_page_drops_header_seed_if_refresh_arrives_during_read(tmp_path, monkeyp
         monkeypatch.setattr(ledger, "status", old_status)
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 200 and 'class="site-header"' in response.text
+        if path in LATE:  # the slow read runs in the section the page loads itself
+            assert client.get(LATE[path]).status_code == 200
         header = client.get("/header/jobs")
         assert "jobs-line" in header.text
         assert "The nightly review is behind" in header.text
