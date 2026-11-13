@@ -358,6 +358,20 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "flock lock file only (miner.lock) -- never carries content",
         "keep",
     ),
+    # S-155 (2026-11-12): the two unfinished-work verbs take the same lock
+    # file as a run, and the nights log is cache-only like the run journal.
+    ("cli", "miner.py", "backfill_tasks"): (
+        "flock lock file only (miner.lock) -- never carries content",
+        "keep",
+    ),
+    ("cli", "miner.py", "file_reviewed_run"): (
+        "flock lock file only (miner.lock) -- never carries content",
+        "keep",
+    ),
+    ("cli", "mining/tasks.py", "append_night"): (
+        "append-only XDG cache log (tasks-nights.jsonl); NOT_REPO_TRUTH",
+        "keep",
+    ),
     ("cli", "miner.py", "maybe_kick"): (
         "flock lock file only (miner.spawn.lock) -- never carries content",
         "keep",

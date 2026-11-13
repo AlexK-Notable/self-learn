@@ -77,7 +77,7 @@ NOTE_MAX = 400
 #: Times an approved item may be refused by the tracker before it is given up on.
 MAX_REFUSALS = 3
 #: The window ``miner.tasks_per_night`` counts filings in.
-NIGHT_HOURS = 24
+NIGHT_HOURS = 20
 
 
 def folder_slug(path: Path | str) -> str:
@@ -706,12 +706,14 @@ def file_approved(
         project = dec["project"]
         try:
             if project not in titles:
-                titles[project] = {}
+                seen: dict[str, Mapping[str, Any]] = {}
                 for i in tracker.items(project):  # newest first: the newest of a title wins
-                    titles[project].setdefault(_norm(str(i.get("title", ""))), i)
+                    seen.setdefault(_norm(str(i.get("title", ""))), i)
+                titles[project] = seen
             same = titles[project].get(_norm(dec["title"]))
             if same is not None:
-                if same.get("owner") == WORKER_LABEL and same.get("stage") == "idea":
+                held = {i.get("item") for i in store.items.values() if i.get("status") == "filed"}
+                if same.get("owner") == WORKER_LABEL and same.get("stage") == "idea" and same.get("id") not in held:
                     item.update(status="filed", item=same.get("id"), filed_at=_iso(now), filed_run=run_id,
                                 recovered=True)
                     out.filed.append(str(same.get("id")))

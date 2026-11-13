@@ -570,9 +570,28 @@ def test_a_create_whose_reply_was_lost_is_recorded_under_the_existing_id(tmp_pat
     assert s.items["s1#L4"]["status"] == "filed" and s.items["s1#L4"]["item"] == "W-77"
 
 
+def test_a_busy_tracker_is_not_a_refusal_and_an_id_is_recovered_once(tmp_path, monkeypatch):
+    from self_learn.mining import tracker as tracker_mod
+
+    busy = tracker_mod._refusal("the create", {"code": "unavailable", "message": "store busy"})  # pyright: ignore[reportPrivateUsage]
+    gone = tracker_mod._refusal("the create", {"code": "not_found", "message": "no project"})  # pyright: ignore[reportPrivateUsage]
+    assert type(busy) is TrackerError and isinstance(gone, TrackerRefused)
+    dec = {"file": True, "reason": "still-open", "project": "host-repo", "title": "Document the flag",
+           "why": "w" * 30, "note": ""}
+    s = mt.Store(tmp_path / "t.json", {
+        "a#L1": item("a#L1", status="filed", item="W-77"),
+        "b#L1": item("b#L1", status="approved", decision=dict(dec)),
+    })
+    tr = FakeTracker(existing={"host-repo": [{"id": "W-77", "stage": "idea", "status": "open",
+                                              "title": "Document the flag", "owner": "self-learn"}]})
+    f = mt.file_approved(s, tr, 5, run_id="r1", now=NOW)
+    assert f.filed == [] and f.duplicates == 1
+    assert s.items["b#L1"]["status"] == "skipped" and s.items["b#L1"]["decision"]["reason"] == "already-tracked"
+
+
 def test_the_cap_counts_what_was_filed_in_the_last_day(tmp_path):
     recent = (NOW - timedelta(hours=3)).isoformat()
-    old = (NOW - timedelta(hours=30)).isoformat()
+    old = (NOW - timedelta(hours=21)).isoformat()
     s = mt.Store(tmp_path / "t.json", {
         f"f{n}#L1": item(f"f{n}#L1", status="filed", filed_at=recent) for n in range(4)
     } | {"g#L1": item("g#L1", status="filed", filed_at=old)})
@@ -613,7 +632,7 @@ def test_the_own_folder_is_searched_even_under_the_skip_prefix_and_others_there_
     text = tools.search_later_sessions("T1", "README dry-run", all_folders=True)
     assert "same session" in text and "README dry-run done" in text
     assert "own prompt" not in text and "tmp folder" in text
-    assert mt.folder_slug("/home/komi/.cache/self-learn") == "-home-komi--cache-self-learn"
+    assert mt.folder_slug("/home/user/.cache/self-learn") == "-home-user--cache-self-learn"
 
 
 class _PagedTracker(Tracker):

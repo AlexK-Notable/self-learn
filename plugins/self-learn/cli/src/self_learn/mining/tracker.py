@@ -48,6 +48,22 @@ class TrackerRefused(TrackerError):
 #: The daemon is on this machine: never send its traffic through a proxy
 #: the environment names (``http_proxy`` would otherwise apply to 127.0.0.1).
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+#: Codes znote answers with when the store, not the request, is the trouble
+#: (busy, not ready, maintenance, a gate timeout): retry later, count nothing.
+_RETRY_CODES = frozenset({"unavailable"})
+
+
+def _refusal(what: str, err: object) -> TrackerError:
+    """An ``ok: false`` answer: :class:`TrackerRefused` when znote refused the
+    request itself, a plain :class:`TrackerError` when it could not serve it
+    now."""
+    code = err.get("code") if isinstance(err, dict) else None
+    msg = str(err.get("message", "") if isinstance(err, dict) else "")[:300]
+    if code in _RETRY_CODES or not isinstance(code, str):
+        return TrackerError(f"znote could not take {what} now ({code}): {msg}")
+    return TrackerRefused(f"znote refused {what} ({code}): {msg}")
+
+
 _PROJECT_RE = re.compile(r"^(\s*)\* (\S+)\s*$")
 _FIELD_RE = re.compile(r"^(\s+)([A-Za-z][A-Za-z ]*):\s?(.*)$")
 
@@ -98,12 +114,12 @@ class Tracker:
         if not isinstance(doc, dict) or "error" in doc:
             err = doc.get("error") if isinstance(doc, dict) else None
             msg = err.get("message") if isinstance(err, dict) else None
-            raise TrackerRefused(f"znote refused {tool}: {str(msg)[:200]}")
+            raise TrackerError(f"znote could not take {tool}: {str(msg)[:200]}")
         result = doc.get("result")
         if not isinstance(result, dict):
             raise TrackerError(f"znote's reply to {tool} has no result")
         if result.get("isError"):
-            raise TrackerRefused(f"znote refused {tool}: {self.text(result)[:300]}")
+            raise TrackerError(f"znote could not take {tool}: {self.text(result)[:300]}")
         return result
 
     @staticmethod
@@ -154,8 +170,7 @@ class Tracker:
                 )
             )
             if s.get("ok") is False:
-                err = s.get("error") or {}
-                raise TrackerRefused(f"znote refused the list: {str(err.get('message', ''))[:200]}")
+                raise _refusal("the list", s.get("error"))
             page = s.get("items") or []
             out.extend(i for i in page if isinstance(i, dict))
             total = s.get("total") or 0
@@ -187,8 +202,7 @@ class Tracker:
         result = self.call("zk_work", args)
         s = self.structured(result)
         if s.get("ok") is False:
-            err = s.get("error") or {}
-            raise TrackerRefused(f"znote refused the create: {str(err.get('message', ''))[:300]}")
+            raise _refusal("the create", s.get("error"))
         for candidate in (s.get("item") or {}).get("id") if isinstance(s.get("item"), dict) else None, s.get("summary"):
             if isinstance(candidate, str):
                 m = _ITEM_ID_RE.search(candidate)
