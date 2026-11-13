@@ -188,6 +188,8 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "miner.mined_scheduled_jobs",  # 2026-10-07: scheduled jobs the miner reads anyway
         "miner.skip_sessions",  # 2026-10-11: session ids the miner never reads
         "miner.schedule_time",  # 2026-11-12: when the nightly mine pass starts
+        "miner.tasks_enabled",  # 2026-11-12 (S-155): look for unfinished work too
+        "miner.tasks_per_night",  # 2026-11-12 (S-155): most filed in one night
         "miner.engine",  # new miner R2: the runner switch between the two engines
         "miner.parallel",  # new miner R2
         "miner.spine_tokens",  # new miner R2

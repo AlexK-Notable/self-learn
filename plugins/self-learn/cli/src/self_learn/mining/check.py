@@ -130,6 +130,10 @@ class CheckResult:
     quote_redacted: int
     cut_to_limit: int = 0
     prose_before_json: int = 0
+    #: S-155: the unfinished work the model reported, checked on its own
+    #: (:func:`check_tasks`); never part of ``checked``.
+    tasks: tuple[dict[str, Any], ...] = ()
+    task_drops: tuple[dict[str, Any], ...] = ()
 
 
 def _shown_match(quote: str, shown: str) -> bool:
@@ -629,8 +633,13 @@ def check_output(
     if problem is None and not isinstance(obj, dict):
         problem = "the final message is not a JSON object"
     over: list[dict[str, Any]] = []
+    raw_tasks: Any = None
     if problem is None:
         assert isinstance(obj, dict)
+        # S-155: the optional tasks list is taken out before the lesson
+        # contract is checked, so nothing in it can make the session's
+        # lessons bad output
+        raw_tasks = obj.pop("tasks", None)
         over = _over_count(obj)
         errors = contract.validate_model_output(obj)
         if errors:
@@ -652,4 +661,61 @@ def check_output(
     errors = contract.validate_checked_output(checked)
     if errors:
         raise CheckerError("; ".join(errors[:5]))
-    return CheckResult(checked, ck.quote_redacted, ck.cut_to_limit, prose_before_json)
+    try:
+        tasks, task_drops = check_tasks(raw_tasks, spine, roots, judged_uuids, sent)
+    except Exception:  # noqa: BLE001 -- a defect in the task check never costs the session its lessons
+        tasks, task_drops = [], [_drop("tasks", "bad-output", "the task check failed")]
+    return CheckResult(
+        checked, ck.quote_redacted, ck.cut_to_limit, prose_before_json, tuple(tasks), tuple(task_drops)
+    )
+
+
+def check_tasks(
+    raw: Any,
+    spine: Spine,
+    roots: Sequence[Path | str] | None,
+    judged_uuids: Container[str],
+    sent: provenance.SentIndex | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """S-155: the model's ``tasks`` list, each item checked on its own: the
+    contract (:func:`contract.validate_model_task`), its one quote resolved
+    and verified like a lesson's evidence (same session, inside the judged
+    range, not judged before), free text redacted. Returns ``(kept,
+    drops)``; a task that fails any check is dropped with its reason, and
+    nothing here ever raises for the model's output."""
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        return [], [_drop("tasks", "bad-output", "not a list")]
+    ck = _Checker(spine, roots, judged_uuids, frozenset(), sent)
+    kept: list[dict[str, Any]] = []
+    for i, item in enumerate(raw):
+        path = f"tasks[{i}]"
+        if i >= contract.MAX_TASKS:
+            ck.drop(path, "over-count", f"more than {contract.MAX_TASKS}")
+            continue
+        errors = contract.validate_model_task(item, path)
+        if errors:
+            ck.drop(path, "bad-output", f"{len(errors)} contract error{'s' if len(errors) != 1 else ''}")
+            continue
+        try:
+            evidence, ref = ck.quoted({"line": item["evidence"]["line"], "quote": item["evidence"]["quote"]})
+            if not ck.inside(ref):
+                raise _Fail("out-of-range", "the evidence is outside the judged range")
+        except _Fail as f:
+            ck.drop(path, f.reason, f.detail)
+            continue
+        if evidence["quote"] == QUOTE_WITHHELD:
+            ck.drop(path, "redaction-overflow", "the quote holds redacted text")
+            continue
+        if any(t["evidence"]["ref"]["line"] == ref.line for t in kept):
+            ck.drop(path, "duplicate", f"line {ref.line} is an earlier task's evidence")
+            continue
+        kept.append(
+            {
+                "title": " ".join(ck.text(item["title"], contract.TASK_TITLE_MAX).split()),
+                "left_undone": " ".join(ck.text(item["left_undone"], contract.TASK_LEFT_MAX).split()),
+                "evidence": evidence,
+            }
+        )
+    return kept, ck.drops

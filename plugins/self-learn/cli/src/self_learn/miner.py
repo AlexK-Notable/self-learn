@@ -52,7 +52,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 from . import attribution, gitops, intents, invocation, provenance, provider, refs, sentinel, settings, steward_prompt, telemetry, worker
 from .primitives import chrono, fsops
@@ -65,6 +65,7 @@ from .ledger import discover_buckets, home_state, home_state_message, resolve_ho
 from .ledger_ops import LedgerOpsError, create_record, record_title
 from .mining import check as check_mod
 from .mining import engine as engine_mod
+from .mining import tasks as mining_tasks
 from .mining import tools as mining_tools
 from .mining import uuids as mining_uuids
 from .mining import waiting as mining_waiting
@@ -2944,9 +2945,101 @@ def _run_locked(
     )
     # new-miner plan §1: the session engine does the judging; everything above
     # (lock, healing, seeding, sweeps, walk, the sends) and the landing commit are shared
-    return _run_session_engine(
+    result = _run_session_engine(
         home, slices, sent, mined_scheduled, run_id, base, t0, preview=False, no_push=no_push
     )
+    # S-155: unfinished work found on earlier nights is checked and filed,
+    # still under the miner's lock; it never changes the run's outcome
+    _tasks_night(home, run_id, result)
+    return result
+
+
+# ------------------------------------------------ unfinished work (S-155)
+
+
+def tasks_enabled(home: Path | str) -> bool:
+    value, _source = settings.resolve_setting(home, settings.by_name("miner.tasks_enabled"))
+    return bool(value)
+
+
+def _task_spec_maker(home: Path, run_id: str, stage: Path) -> Callable[..., invocation.SessionSpec]:
+    """The check call's ``SessionSpec``: the session miner's surface (its own
+    read-only tools only, no writes), its prompt opening with the miner's own
+    session openings so no later run ever mines it."""
+
+    def make(prompt: str, toolset: Any, k: int) -> invocation.SessionSpec:
+        stage.mkdir(parents=True, exist_ok=True)
+        return invocation.SessionSpec(
+            surface=engine_mod.SURFACE,
+            prompt=prompt,
+            cwd=stage,
+            timeout=reader_timeout_secs(home),
+            containment=invocation.containment_for(
+                engine_mod.SURFACE,
+                allowed_tools=",".join(toolset.qualified_names),
+                disallowed_tools=READER_DISALLOWED_TOOLS,
+            ),
+            log=log,
+            label=f"tasks check {k}",
+            ledger_home=home,
+            extra_env=invocation.NO_AUTO_MEMORY_ENV,
+            transcript_group=run_id,
+            mcp_toolset=toolset,
+            sidecar_key=f"{run_id}-tasks-{k}",
+            skip_orphan_sweep=True,
+        )
+
+    return make
+
+
+def _own_folders_prefix() -> str:
+    """The transcript-folder prefix of every session self-learn itself runs
+    (its stages and workspaces all sit under its cache root)."""
+    return mining_tasks.folder_slug(miner_dir().parent.parent)
+
+
+def _tasks_night(home: Path, run_id: str, result: MineResult, *, tracker: Any = None) -> None:
+    """S-155's nightly step: check the ripe items, file the approved ones
+    (``mining.tasks.night``). Off with ``miner.tasks_enabled``; any failure is
+    logged and leaves every item where it was."""
+    if not tasks_enabled(home):
+        return
+    from .mining import tracker as tracker_mod
+
+    store = None
+    try:
+        store = mining_tasks.Store.load(mining_tasks.store_path(miner_dir()))
+        rep = mining_tasks.night(
+            store,
+            tracker=tracker or tracker_mod.Tracker(),
+            root=transcripts_root(home),
+            make_spec=_task_spec_maker(home, run_id, miner_dir() / "session-stage"),
+            call=_session_call,
+            run_id=run_id,
+            cap=store.remaining(settings.resolve_int(home, "miner.tasks_per_night")),
+            log=log,
+            skip_prefix=_own_folders_prefix(),
+        )
+        mining_tasks.append_night(miner_dir(), run_id, rep)
+    except Exception as exc:  # noqa: BLE001 -- the tasks step never fails the mining run
+        log(f"run {run_id}: unfinished-work step skipped ({type(exc).__name__}: {str(exc)[:200]})")
+        return
+    finally:
+        # what was filed before anything went wrong keeps its id
+        if store is not None:
+            try:
+                store.save()
+            except OSError as exc:
+                log(f"run {run_id}: the unfinished-work store was not saved ({exc})")
+    if isinstance(result.engine, dict):
+        result.engine["tasks"] = rep.as_dict()
+    if rep.ripe or rep.filed or rep.failure:
+        log(
+            f"run {run_id}: unfinished work — {rep.ripe} ready to check, {rep.checked} checked, "
+            f"{rep.approved} approved, {rep.skipped} skipped, {len(rep.filed)} filed"
+            + (f" ({', '.join(rep.filed)})" if rep.filed else "")
+            + (f"; {rep.failure}" if rep.failure else "")
+        )
 
 
 # ------------------------------------------------ the session engine's run
@@ -3186,8 +3279,10 @@ def _run_session_engine(
         log(f"run {run_id}: {status} — {reason}")
         return result
 
+    # S-155: one reading of the unfinished-work switch for the whole run
+    tasks_on = tasks_enabled(home)
     try:
-        shared_text, method_version = engine_mod.shared_instructions()
+        shared_text, method_version = engine_mod.shared_instructions(tasks=tasks_on)
     except engine_mod.EngineError as exc:
         return stop("failed", str(exc))
     jbase["method_version"] = method_version
@@ -3354,6 +3449,17 @@ def _run_session_engine(
             _advance_cursors([(s, halt)])
             for drop in res.checked["drops"]:
                 _outcome(result, f"transcript:{sid}", "dropped-check", reason=drop["reason"], item=drop["item"])
+            if tasks_on and res.tasks:
+                # S-155: the session's unfinished work waits in the cache for
+                # its check; a store that cannot be written never fails the run
+                try:
+                    found = mining_tasks.Store.load(mining_tasks.store_path(mdir))
+                    n = found.add(res.tasks, session=sid, transcript=str(s.path), cwd=_slice_cwd(s), run_id=run_id)
+                    if n:
+                        found.save()
+                        summary["tasks_found"] = summary.get("tasks_found", 0) + n
+                except Exception as exc:  # noqa: BLE001
+                    log(f"run {run_id}: the unfinished work of {sid} was not kept ({type(exc).__name__})")
         if not gated:
             _advance_cursors(processed)
 
@@ -3576,3 +3682,258 @@ def _commit_landing(
         gitops.push_pending(home)
     except gitops.GitOpsError as exc:
         log(f"run {run_id}: push errored ({exc}) — commit kept")
+
+
+# ------------------------------------------- unfinished work: backfill (S-155)
+
+#: ``mine backfill-tasks --days`` reads at most this many days back.
+BACKFILL_MAX_DAYS = 30
+
+
+def _backfill_slices(home: Path, days: int) -> list[SessionSlice]:
+    """Every session file changed in the last ``days`` days, newest first,
+    whole: not one on ``miner.skip_sessions``, none in the folders the
+    system's own sessions run in."""
+    root = transcripts_root(home)
+    listed = skip_sessions(home)
+    cutoff = time.time() - days * 86400
+    own = _own_folders_prefix()
+    found: list[tuple[float, Path]] = []
+    if root.is_dir():
+        for d in root.iterdir():
+            if not d.is_dir() or d.name.startswith(own):
+                continue
+            for f in d.glob("*.jsonl"):
+                try:
+                    mtime = f.stat().st_mtime
+                except OSError:
+                    continue
+                if mtime >= cutoff and _SESSION_ID_RE.match(f.stem) and f.stem not in listed:
+                    found.append((mtime, f))
+    found.sort(key=lambda x: x[0], reverse=True)
+    slices: list[SessionSlice] = []
+    seen: set[str] = set()
+    for _m, f in found:
+        if f.stem in seen:
+            continue
+        lines = _complete_lines(f)
+        if not lines:
+            continue
+        seen.add(f.stem)
+        slices.append(SessionSlice(path=f, session_id=f.stem, project=f.parent.name, start_line=0,
+                                   lines=lines, stat_size=f.stat().st_size))
+    return slices
+
+
+def file_reviewed_run(home: Path | str, run_id: str, *, file_cap: int | None = None, tracker: Any = None) -> dict:
+    """``mine backfill-tasks --file-from RUN``: file the items a dry run
+    approved, exactly as that run decided them, so what lands in the tracker
+    is what a reader of the dry run's report saw. (An agent cannot take back
+    an idea it filed: the tracker leaves that to the owner.) Items the live
+    store already has are left as they are."""
+    home = Path(home)
+    if not re.fullmatch(r"[0-9a-f]{8}", run_id):
+        raise ValueError("file_reviewed_run: a run id is 8 hex characters")
+    if not tasks_enabled(home):
+        return {"status": "disabled", "reason": "miner.tasks_enabled is off"}
+    from .mining import tracker as tracker_mod
+
+    reviewed_path = miner_dir() / "runs" / run_id / mining_tasks.STORE_NAME
+    if not reviewed_path.is_file():
+        return {"status": "missing", "reason": f"run {run_id} has no dry-run store"}
+    tracker = tracker or tracker_mod.Tracker()
+    lock_fh = open(miner_dir() / "miner.lock", "a", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"status": "busy", "reason": "a mining run holds the miner's lock"}
+        reviewed = mining_tasks.Store.load(reviewed_path)
+        live = mining_tasks.Store.load(mining_tasks.store_path(miner_dir()))
+        taken = 0
+        mine: set[str] = set()
+        for key, item in reviewed.items.items():
+            same = any(
+                k == key or (i.get("session") == item.get("session")
+                             and mining_tasks._norm(str(i.get("title", ""))) == mining_tasks._norm(str(item.get("title", ""))))  # pyright: ignore[reportPrivateUsage]
+                for k, i in live.items.items()
+            )
+            if not same:
+                live.items[key] = {**item, "reviewed_run": run_id}
+                mine.add(key)
+                taken += 1
+        live.save()
+        cap = live.remaining(settings.resolve_int(home, "miner.tasks_per_night")) if file_cap is None else file_cap
+        filed = mining_tasks.file_approved(live, tracker, cap, run_id=run_id, only=mine)
+        live.save()
+        log(f"file-from {run_id}: took {taken} item(s), filed {len(filed.filed)}"
+            + (f" ({', '.join(filed.filed)})" if filed.filed else "") + (f"; {filed.failure}" if filed.failure else ""))
+        return {
+            "status": "ok" if not filed.failure else "failed",
+            "run_id": run_id,
+            "taken": taken,
+            "filed": filed.filed,
+            "duplicates": filed.duplicates,
+            "failure": filed.failure,
+            "items": [i for i in live.items.values() if i.get("reviewed_run") == run_id],
+        }
+    finally:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lock_fh.close()
+
+
+def backfill_tasks(
+    home: Path | str,
+    days: int,
+    *,
+    dry_run: bool = False,
+    file_cap: int | None = None,
+    max_sessions: int = 60,
+    max_usd: float | None = None,
+    call: Callable[[Any], Any] | None = None,
+    tracker: Any = None,
+) -> dict:
+    """``mine backfill-tasks``: look for unfinished work in the sessions of
+    the last ``days`` days (at most :data:`BACKFILL_MAX_DAYS`, the newest
+    ``max_sessions`` that would be read), then check and file it as a night
+    would. The nightly read never goes back on its own (S-155).
+
+    Each session is read whole with the session engine's own call, and the
+    lessons it also finds are thrown away: nothing lands, no cursor moves, no
+    judged uuid is stored, and the lesson index is read through a copy.
+    ``dry_run``: what is found goes to a store inside the run folder and is
+    checked; nothing is filed. Returns a report, also written to the run
+    folder as ``tasks-report.json``."""
+    home = Path(home)
+    if not 1 <= days <= BACKFILL_MAX_DAYS:
+        raise ValueError(f"backfill_tasks: days must be 1 to {BACKFILL_MAX_DAYS}")
+    if not tasks_enabled(home):
+        return {"status": "disabled", "reason": "miner.tasks_enabled is off"}
+    from . import steward_inputs
+    from .mining import tracker as tracker_mod
+
+    call = call or _session_call
+    tracker = tracker or tracker_mod.Tracker()
+    run_id = uuid.uuid4().hex[:8]
+    lock_fh = open(miner_dir() / "miner.lock", "a", encoding="utf-8")
+    global _LOG_TO
+    try:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"status": "busy", "reason": "a mining run holds the miner's lock"}
+        folder = engine_mod.RunFolder(miner_dir(), run_id)
+        _LOG_TO = folder.path / "miner.log"
+        cfg = engine_mod.EngineSettings.resolve(home)
+        root = transcripts_root(home)
+        slices = _backfill_slices(home, days)
+        sent = provenance.sweep(provenance.sender_dirs([root])) if slices else provenance.SentIndex()
+        mined_scheduled = mined_scheduled_jobs(home)
+        index, _info = steward_inputs.refresh_index(home, copy_to=folder.path / "copies")
+        plans: list[tuple[SessionSlice, engine_mod.Plan]] = []
+        try:
+            records = mining_tools.load_records(home)
+            for s in slices:
+                if len(plans) >= max_sessions:
+                    break
+                hp = halt_point(s, mined_scheduled=mined_scheduled)
+                plan = engine_mod.plan_session(
+                    s.path, s.start_line, len(s.lines), hp.end, home=home, sent=sent, judged_uuids=frozenset(),
+                    spine_tokens=cfg.spine_tokens, index=index, records=records,
+                    index_file=index.path if index is not None else folder.path / "copies" / "no-index",
+                )
+                if plan.skip is None:
+                    plans.append((s, plan))
+        finally:
+            if index is not None:
+                index.close()
+        log(f"backfill {run_id}: {len(slices)} session file(s) in {days} day(s), {len(plans)} to read")
+        shared_text, method_version = engine_mod.shared_instructions(tasks=True)
+        shared_path = folder.put("shared-instructions.md", shared_text)
+        stage = folder.path / "stage"
+        stage.mkdir(parents=True, exist_ok=True)
+        timeout = reader_timeout_secs(home)
+
+        def make_spec(plan: engine_mod.Plan, k: int) -> invocation.SessionSpec:
+            return engine_mod.session_spec(
+                plan, k, home=home, run_id=run_id, stage=stage, shared=shared_path, timeout=timeout,
+                disallowed_tools=READER_DISALLOWED_TOOLS, log=log, sweep=False,
+            )
+
+        for _s, plan in plans:
+            engine_mod.save_plan(folder, plan)
+        calls, stopped = engine_mod.call_sessions(
+            [p for _s, p in plans], make_spec=make_spec, call=call, parallel=cfg.parallel,
+            max_usd=cfg.max_usd if max_usd is None else max_usd,
+        )
+        model = provider.model_for(engine_mod.SURFACE, home=home)
+        roots = list(dict.fromkeys([root, *refs.transcript_roots(home)]))
+        store = mining_tasks.Store.load(
+            folder.path / "tasks.json" if dry_run else mining_tasks.store_path(miner_dir())
+        )
+        before = set(store.items)
+        read_cost = 0.0
+        called = failed = 0
+        for s, plan in plans:
+            rec = calls.get(plan.session_id)
+            if rec is None or not rec.started:
+                continue
+            called += 1
+            read_cost += rec.cost_usd or 0.0
+            res = engine_mod.check_session(
+                plan, rec, run_id=run_id, model=model, method_version=method_version, roots=roots,
+                judged_uuids=frozenset(), known_records=frozenset(records), search_mode="lexical-only", sent=sent,
+            )
+            engine_mod.save_result(folder, res)
+            if res.status != "ok":
+                failed += 1
+                continue
+            store.add(res.tasks, session=plan.session_id, transcript=str(s.path), cwd=_slice_cwd(s), run_id=run_id)
+        new_keys = [k for k in store.items if k not in before]
+        store.save()
+        cap = store.remaining(settings.resolve_int(home, "miner.tasks_per_night")) if file_cap is None else file_cap
+        try:
+            rep = mining_tasks.night(
+                store, tracker=tracker, root=root,
+                make_spec=_task_spec_maker(home, run_id, stage), call=call, run_id=run_id, cap=cap,
+                max_batches=len(new_keys) // mining_tasks.CHECK_BATCH + 2, dry_run=dry_run, log=log,
+                skip_prefix=_own_folders_prefix(),
+            )
+        except Exception as exc:  # noqa: BLE001 -- the report is still written
+            rep = mining_tasks.NightReport(dry_run=dry_run, failure=f"the check step raised {type(exc).__name__}")
+        store.save()
+        if not dry_run:
+            mining_tasks.append_night(miner_dir(), run_id, rep)
+        report = {
+            "status": "stopped-ceiling" if stopped else "ok",
+            "run_id": run_id,
+            "dry_run": dry_run,
+            "days": days,
+            "session_files": len(slices),
+            "sessions_planned": len(plans),
+            "sessions_read": called,
+            "sessions_failed": failed,
+            "read_cost_usd": round(read_cost, 4),
+            "check": rep.as_dict(),
+            "found": len(new_keys),
+            "items": [store.items[k] for k in new_keys],
+            "run_folder": str(folder.path),
+        }
+        folder.put_json("tasks-report.json", report)
+        engine_mod.drop_copies(folder.path / "copies")
+        log(
+            f"backfill {run_id}: read {called} session(s) (${read_cost:.2f}), found {len(new_keys)}, "
+            f"checked {rep.checked}, approved {rep.approved}, filed {len(rep.filed)}"
+            + (" (dry run)" if dry_run else "")
+        )
+        return report
+    finally:
+        _LOG_TO = None
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lock_fh.close()

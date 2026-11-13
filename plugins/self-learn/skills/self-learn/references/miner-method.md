@@ -1,4 +1,4 @@
-<!-- method-version: 2 -->
+<!-- method-version: 3 -->
 # Session miner method
 
 Read one session. Judge only the lines marked new. Find durable lessons,
@@ -125,6 +125,44 @@ an existing rule, not a new lesson. Record what the session actually supports:
 Never emit `complied` or `violated`. These are evidence for the steward to
 weigh with the cited lines, never confirmed recurrence. Whether a suspected
 violation is a real recurrence-suspect is the steward's decision.
+
+<!-- tasks:begin -->
+## Unfinished work (`tasks`, optional)
+
+Separately from lessons, list at most 3 pieces of work this session left
+undone that a later session should still do. Look for them where sessions
+name them: the assistant's last messages in the judged lines (open the last
+stretch), and words such as "not done", "left", "still open", "next",
+"follow-up", "not merged", "did not get to", "TODO". A later check reads the
+sessions after this one and the tracker before anything is filed, so list
+what the session itself shows; do not guess beyond it. List one when all
+hold:
+
+- **The session committed to it or found it.** The assistant said it would
+  do it, the person asked for it and it was not done, or the assistant found
+  a concrete defect or loose end and named it as not dealt with here (a
+  branch pushed but not merged, a fix not deployed, a failing check left).
+- **It was not done.** Something said as "next I will…" and then done in a
+  later turn is not unfinished work.
+- **Nobody set it aside.** Not something the person declined, put on hold,
+  deferred, called out of scope, or chose against; not an option the session
+  offered that the person did not take.
+- **It was not written down where a later agent would find it.** Not one the
+  session put in a tracker (`zk_work`), wrote as a TODO or follow-up into a
+  file or note, or filed as an issue. Telling the person in a chat message,
+  or handing them a command to run, is not writing it down.
+- **It is real work.** A change, fix, check or build someone could pick up,
+  naming what and where (repository, file, branch, command, service). Not a
+  lesson, a wish, a question for the person, waiting for CI, or rerunning
+  what the session already ran.
+
+Give the one line where the work was promised or the loose end named,
+quoted verbatim from the main session (never a subagent log). `title`: an
+instruction in plain words, saying what to do to what. `left_undone`: one or
+two sentences on what was left and why it still matters. Leave out anything
+the session does not show clearly; an empty list is fine when nothing was
+left.
+<!-- tasks:end -->
 
 ## Subagent causes and output
 

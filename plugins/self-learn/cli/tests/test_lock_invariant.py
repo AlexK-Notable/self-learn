@@ -1012,6 +1012,10 @@ _ARGV_FOR = {
     "_cmd_link": [["link", "contradicts", "lrn-eeee0001", "lrn-eeee0002"]],
     "_cmd_list": [["list"]],
     "_cmd_mine": [["mine", "status"]],
+    # S-155: both write only the XDG cache (tasks.json, a run folder) and the
+    # znote tracker, never the ledger; `mine tasks` only reads.
+    "_cmd_mine_tasks": None,
+    "_cmd_mine_backfill_tasks": None,
     "_cmd_proposal": [["proposal", "validate", "lrn-eeee0001"]],
     "_cmd_prune_memory": None,  # rewrites ~/.claude memory, not the ledger
     "_cmd_push": [["push"]],

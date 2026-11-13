@@ -86,6 +86,10 @@ SPINE_TOKENS_MIN = 2_000
 
 _METHOD = "miner-method.md"
 _VERSION_RE = re.compile(r"<!--\s*method-version:\s*(\S+?)\s*-->")
+#: S-155: the method's unfinished-work section, sent only while
+#: ``miner.tasks_enabled`` is on.
+_TASKS_BLOCK_RE = re.compile(r"\n*<!-- tasks:begin -->.*?<!-- tasks:end -->\n*", re.S)
+_TASKS_MARKER_RE = re.compile(r"<!-- tasks:(?:begin|end) -->\n?")
 _SCHEMA_LINE = f"=== OUTPUT SCHEMA ({contract.MODEL_CONTRACT}) ==="
 
 
@@ -118,18 +122,21 @@ class EngineSettings:
 # ---------------------------------------------------- shared instructions
 
 
-def shared_instructions() -> tuple[str, str]:
+def shared_instructions(tasks: bool = True) -> tuple[str, str]:
     """``(text, method version)``: the part of every call's system prompt
     that is the same bytes for the whole run (plan §3.4) -- the method, the
     lesson-writing passage inlined between its markers (S-84), and the
-    output schema. Read from the files each run, so it cannot drift."""
+    output schema. Read from the files each run, so it cannot drift.
+    ``tasks`` (S-155): with it off, the method's unfinished-work section
+    and the schema's ``tasks`` list are left out."""
     path = worker.package_skill_refs() / _METHOD
     if not path.is_file():
         raise EngineError(f"the session miner's method is missing ({_METHOD})")
     method = path.read_text(encoding="utf-8")
     m = _VERSION_RE.search(method)
     version = m.group(1) if m else "unversioned"
-    schema = json.dumps(contract.model_output_json_schema(), indent=1, sort_keys=True)
+    method = _TASKS_MARKER_RE.sub("", method) if tasks else _TASKS_BLOCK_RE.sub("\n\n", method)
+    schema = json.dumps(contract.model_output_json_schema(tasks=tasks), indent=1, sort_keys=True)
     text = (
         method.rstrip("\n")
         + "\n\n"
@@ -638,6 +645,9 @@ class SessionResult:
     cut_to_limit: int = 0
     prose_before_json: int = 0
     error: str | None = None
+    #: S-155: the checked unfinished work (``check.check_tasks``) and its drops
+    tasks: tuple[dict, ...] = ()
+    task_drops: tuple[dict, ...] = ()
 
 
 def check_session(
@@ -685,7 +695,7 @@ def check_session(
         return failed("checker-error")
     return SessionResult(
         plan, rec, res.checked["status"], res.checked, quote_redacted=res.quote_redacted, cut_to_limit=res.cut_to_limit,
-        prose_before_json=res.prose_before_json,
+        prose_before_json=res.prose_before_json, tasks=res.tasks, task_drops=res.task_drops,
     )
 
 
@@ -721,6 +731,9 @@ def save_result(folder: RunFolder, res: SessionResult) -> None:
     if res.call.ok:
         folder.put(f"raw/{sid}.txt", res.call.stdout)
     folder.put_json(f"out/{sid}.json", res.checked)
+    if res.tasks or res.task_drops:
+        # beside out/, never in it: out/ holds one checked document per session
+        folder.put_json(f"tasks/{sid}.json", {"tasks": list(res.tasks), "drops": list(res.task_drops)})
     folder.put_json(f"calls/{sid}.json", {**res.call.to_json(), "out_status": res.status, "error": res.error})
 
 

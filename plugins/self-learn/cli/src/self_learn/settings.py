@@ -1030,6 +1030,33 @@ REGISTRY: tuple[Setting, ...] = (
         accepts=lambda v: parse_schedule_time(v) is not None,
         accepts_hint="a time of day as 24-hour HH:MM, for example 03:30 or 22:15",
     ),
+    # S-155, 2026-11-12 (the user, 2026-08-19: "there's another shape of
+    # information other than learning that would be valuable to mine and
+    # keep track of: oustanding tasks"): the nightly read also notes work a
+    # session left undone, checks it against later sessions and the znote
+    # tracker after two days, and files what survives as a tracker idea.
+    Setting(
+        name="miner.tasks_enabled",
+        env_var="SELF_LEARN_MINER_TASKS_ENABLED",
+        config_section="miner",
+        config_key="tasks_enabled",
+        kind="bool",
+        default=True,
+        description=(
+            "the nightly read also looks for work a session left undone and, after checking later "
+            "sessions and the znote tracker, files it there as an idea (off: neither is done)"
+        ),
+    ),
+    Setting(
+        name="miner.tasks_per_night",
+        env_var="SELF_LEARN_MINER_TASKS_PER_NIGHT",
+        config_section="miner",
+        config_key="tasks_per_night",
+        kind="int",
+        default=5,
+        description="most unfinished-work items filed in the znote tracker in one night (0 files none)",
+        validate=lambda v: max(0, cast(int, v)),
+    ),
     # ------------------------------------------------------- refs (U1, 2026-09-26)
     Setting(
         name="refs.transcript_roots",

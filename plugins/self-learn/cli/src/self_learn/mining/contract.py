@@ -96,7 +96,11 @@ __all__ = [
     "typed_turn_lines",
     "validate_checked_output",
     "validate_model_output",
+    "validate_model_task",
     "validate_run",
+    "MAX_TASKS",
+    "TASK_TITLE_MAX",
+    "TASK_LEFT_MAX",
 ]
 
 MODEL_CONTRACT = "miner-output-model/1"
@@ -162,6 +166,13 @@ HOW_MAX = 300
 COST_TEXT_MAX = 300
 WHY_DURABLE_MAX = 300
 DROP_DETAIL_MAX = 200
+#: Unfinished work a session left (S-155, 2026-11-12): an optional ``tasks``
+#: list beside the three lesson lists. It is checked on its own (a bad task is
+#: dropped, never the session's lessons) and never enters the checked
+#: document: ``mining.tasks`` keeps what survives in the cache.
+MAX_TASKS = 3
+TASK_TITLE_MAX = 120
+TASK_LEFT_MAX = 400
 
 #: The ledger's own record-id rule, reused (``records.RECORD_ID_RE``).
 RECORD_ID_PATTERN = records.RECORD_ID_RE.pattern
@@ -482,6 +493,23 @@ def validate_model_output(obj: object) -> list[str]:
         _point(v, _join(cp, "situation"), co.get("situation"))
         if co.get("action") is not None:
             _point(v, _join(cp, "action"), co.get("action"))
+    return v.errors
+
+
+def validate_model_task(obj: object, path: str = "task") -> list[str]:
+    """Messages for one item of the model output's optional ``tasks`` list
+    (S-155); empty means valid. A task points at one line of the main
+    session file (never a subagent's) with a verbatim quote."""
+    v = _V()
+    o = v.obj(path, obj, ("title", "left_undone", "evidence"))
+    if o is None:
+        return v.errors
+    v.string(_join(path, "title"), o.get("title"), 8, TASK_TITLE_MAX)
+    v.string(_join(path, "left_undone"), o.get("left_undone"), 20, TASK_LEFT_MAX)
+    ev = v.obj(_join(path, "evidence"), o.get("evidence"), ("line", "quote"))
+    if ev is not None:
+        v.integer(_join(path, "evidence.line"), ev.get("line"), lo=1)
+        v.string(_join(path, "evidence.quote"), ev.get("quote"), 1, QUOTE_MAX)
     return v.errors
 
 
@@ -1107,11 +1135,37 @@ def _lesson_schema() -> dict[str, Any]:
     }
 
 
-def model_output_json_schema() -> dict[str, Any]:
+def _task_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "title": _s(8, TASK_TITLE_MAX),
+            "left_undone": _s(20, TASK_LEFT_MAX),
+            "evidence": {
+                "type": "object",
+                "properties": {"line": {"type": "integer", "minimum": 1}, "quote": _s(1, QUOTE_MAX)},
+                "required": ["line", "quote"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["title", "left_undone", "evidence"],
+        "additionalProperties": False,
+    }
+
+
+def model_output_json_schema(tasks: bool = True) -> dict[str, Any]:
     """A JSON Schema (draft 2020-12) document for the model output, built from
     the constants above. Shown to the model in its instructions; the
     validators do not use it. Serialise with ``json.dumps(..., sort_keys=True)``
-    for the stable form."""
+    for the stable form. ``tasks`` (S-155): the optional ``tasks`` list is
+    shown only while ``miner.tasks_enabled`` is on."""
+    schema = _model_output_json_schema()
+    if tasks:
+        schema["properties"]["tasks"] = {"type": "array", "items": _task_schema(), "maxItems": MAX_TASKS}
+    return schema
+
+
+def _model_output_json_schema() -> dict[str, Any]:
     quoted = _point_schema({"quote": _s(1, QUOTE_MAX)})
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

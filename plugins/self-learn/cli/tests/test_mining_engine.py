@@ -273,13 +273,15 @@ def test_e1_the_shared_instructions_are_method_passage_and_schema_byte_identical
     assert len(texts) == 1
     text = texts.pop().decode()
     method = (Path(miner.worker.package_skill_refs()) / "miner-method.md").read_text()
+    # S-155: the unfinished-work section is sent without its two markers
+    method = re.sub(r"<!-- tasks:(?:begin|end) -->\n?", "", method)
     assert text.startswith(method.rstrip("\n"))
     from self_learn import lesson_writing
 
     assert lesson_writing.extract(text) == lesson_writing.text()
     tail = text.split(f"=== OUTPUT SCHEMA ({contract.MODEL_CONTRACT}) ===\n", 1)[1]
     assert json.loads(tail) == contract.model_output_json_schema()
-    assert engine.shared_instructions() == (text, "2")
+    assert engine.shared_instructions() == (text, "3")
 
 
 # ===================================================================== E2
@@ -564,7 +566,7 @@ def test_e8_the_journal_row_keeps_every_old_key_and_adds_the_new(home, root, bac
     run(home)
     row = journal_last()
     assert OLD_JOURNAL_KEYS <= set(row)
-    assert row["engine"] == "session" and row["sessions_called"] == 1 and row["method_version"] == "2"
+    assert row["engine"] == "session" and row["sessions_called"] == 1 and row["method_version"] == "3"
     assert row["drops"] == {"quote-not-found": 1, "no-evidence": 1}
     assert {"origin": f"transcript:{sid}", "outcome": "dropped-check", "reason": "quote-not-found",
             "item": "L1.evidence[0]"} in row["outcomes"]
