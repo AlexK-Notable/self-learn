@@ -1429,7 +1429,8 @@ def registration_problem(home: Path | str, raw_path: object) -> str | None:
     """Why self-learn may not register *raw_path* as a plain project on its
     own (S-112, decision 5), or ``None``. The checks, in order: an
     absolute path; an existing directory; strictly under the user's home
-    directory (``$HOME`` itself is refused); not the ledger, inside it or
+    directory or under a root the setting ``hosts.extra_roots`` lists (``$HOME``
+    and a listed root themselves are refused); not the ledger, inside it or
     above it; not inside self-learn's cache (or above it); not registered
     already, in either registration or either mode; never taken out of the
     registry by a ``host remove`` (gate r1 MAJOR 1: the removal is the
@@ -1446,8 +1447,14 @@ def registration_problem(home: Path | str, raw_path: object) -> str | None:
         return f"{text} is not an existing directory"
     real = Path(os.path.realpath(target))
     user_home = Path(os.path.realpath(Path.home()))
-    if real == user_home or user_home not in real.parents:
-        return f"{real} is not inside the user's home directory {user_home}"
+    from . import settings as _settings  # lazy: settings does not import hosts
+
+    extra, _ignored = _settings.host_extra_roots(home)
+    if not any(root in real.parents for root in [user_home, *extra]):
+        return (
+            f"{real} is not inside the user's home directory {user_home} or under a root listed in "
+            "the setting hosts.extra_roots (`self-learn config set hosts.extra_roots <dir>`)"
+        )
     ledger = Path(os.path.realpath(Path(home).expanduser()))
     if _under(real, ledger) or ledger in real.parents or real in ledger.parents:
         return f"{real} is the ledger, inside it or above it"
