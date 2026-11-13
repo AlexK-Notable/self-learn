@@ -615,7 +615,10 @@ value; `present`, `equals`, `version`; `changed`, the default: holds while
 the value is what it was). A `file-match` or `git-file` probe's value is the
 token `present` or `absent` (the literal goes in the probe's `contains`), so
 write `holds_if: equals` with `match: absent` for "the line is not there"; a
-`lines` probe takes `changed` only; anything else is refused. Use
+`lines` probe takes `changed` only; anything else is refused. A `contains`
+probe searches the file as a stream, so a fact about Claude Code's built-in
+behaviour can be probed by searching the installed `claude` binary (up to 1 GiB)
+for a fixed string; `line` and `lines` refuse any file over 256 KiB. Use
 `on_change: refresh` only where any change is
 uninteresting (a version pin, a file hash); code then re-records it without
 asking you. A claim about behaviour ("the daemon does not reconnect after a
