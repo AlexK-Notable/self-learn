@@ -877,27 +877,8 @@ REGISTRY: tuple[Setting, ...] = (
         description="pending-queue size that gates a mining run",
         validate=lambda v: max(0, cast(int, v)),
     ),
-    # The miner reader's input budget (`miner.DigestLimits`) and its time
-    # limit. All four were constants or env-only until 2026-09-20. The
-    # three budgets are counted in CHARACTERS because that is what the
-    # code counted when they were moved here, unchanged; the unit itself
-    # is an open question with the user, and `miner.DigestLimits` is the
-    # one place a different measure would be introduced.
-    sizing_knob(
-        "miner.message_chars",
-        default=2_000,  # miner.MAX_TEXT_CHARS reads this
-        description="characters kept from one message of a scanned session (the digest engine only)",
-    ),
-    sizing_knob(
-        "miner.session_chars",
-        default=60_000,  # miner.MAX_DIGEST_CHARS reads this
-        description="characters kept from one scanned session; the rest of that session is clipped (the digest engine only)",
-    ),
-    sizing_knob(
-        "miner.run_chars",
-        default=400_000,  # miner.MAX_PROMPT_DIGESTS_CHARS reads this
-        description="characters of session digests in one mining run's model call; sessions over it wait for the next run (the digest engine only)",
-    ),
+    # The miner's model-call time limit (the digest engine's three input budgets,
+    # miner.message_chars / session_chars / run_chars, were removed on 2026-11-12).
     sizing_knob(
         "miner.reader_timeout_secs",
         default=900.0,  # miner.INVOKE_TIMEOUT_SECS reads this

@@ -317,10 +317,3 @@ def test_digest_labels_each_turn_by_who_wrote_it(tmp_path):
     assert digest is not None and f"[agent L4] {BRIEF}" in digest
 
 
-def test_the_reader_is_told_only_a_user_line_is_the_persons(tmp_path):
-    prompt, _corrupt = miner._compose_prompt(make_home(tmp_path), ["(digest)"], tmp_path / "out.json")  # pyright: ignore[reportPrivateUsage]
-    assert "Only a [user] line is the user's own words." in prompt
-    rubric = " ".join(miner._rubric()[0].split())  # pyright: ignore[reportPrivateUsage]
-    assert "Only a `[user]` line is the user's own words;" in rubric
-
-

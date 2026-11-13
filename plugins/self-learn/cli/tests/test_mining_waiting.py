@@ -462,9 +462,11 @@ def test_a_stuck_item_reaches_doctor_and_run_json_and_keeps_retrying(home, root,
     assert not [ln for ln in _doctor(capsys) if "waiting-item-stuck" in ln]
 
 
-@pytest.mark.parametrize("engine", ["session"])
-def test_doctor_warns_when_waiting_answers_are_stranded_by_the_digest_engine(home, root, backend, tmp_path,
-                                                                            monkeypatch, capsys, engine):
+@pytest.mark.parametrize("engine", ["session", "digest"])
+def test_doctor_does_not_call_waiting_answers_stranded_whatever_the_old_engine_setting_says(
+        home, root, backend, tmp_path, monkeypatch, capsys, engine):
+    """The digest engine is retired (2026-11-12): an old `digest` in config.yaml
+    reads as `session`, so waiting answers are never stranded by it."""
     sid = "s1stranded-0000"
     write_session(root, sid, session_rows(sid, host(tmp_path)))
     backend.answers[sid] = output([lesson()])
@@ -476,12 +478,7 @@ def test_doctor_warns_when_waiting_answers_are_stranded_by_the_digest_engine(hom
     capsys.readouterr()
     lines = _doctor(capsys)
     assert "doctor: OK waiting-answers — 1 waiting answer(s), 1 item(s) still to land" in lines  # control
-    stranded = [ln for ln in lines if "waiting-answers-stranded" in ln]
-    if engine == "digest":
-        assert stranded == ["doctor: WARN waiting-answers-stranded — 1 waiting answer(s) (1 item(s)) and "
-                            "miner.engine is digest: they land only when the session engine runs"]
-    else:
-        assert stranded == []
+    assert [ln for ln in lines if "waiting-answers-stranded" in ln] == []
 
 
 def test_doctor_is_quiet_about_the_digest_engine_when_nothing_waits(home, root, capsys):

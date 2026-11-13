@@ -455,49 +455,7 @@ class TestProducerCommits:
         for rid in report.created:
             assert (env.ledger / "skills" / "s" / "pending" / f"{rid}.md").is_file()
 
-    def test_miner_lands_project_candidate_with_cwd(self, env, project_repo):
-        result = miner.MineResult(status="ok")
-        parsed = {
-            "candidates": [
-                {
-                    "scope": "project",
-                    "type": "knowledge",
-                    "fact": "The proxy strips trailing slashes.",
-                    "session": "sess-0001",
-                    "line": 7,
-                    "quote": "",
-                }
-            ]
-        }
-        miner._reconcile_and_land(
-            env.ledger, parsed, result, 5, {"sess-0001": str(project_repo)}
-        )
-        assert len(result.landed) == 1
-        bucket = env.ledger / "projects" / slug_for(project_repo)
-        assert list((bucket / "pending").glob("lrn-*.md"))
-        assert bucket_project_path(bucket) == project_repo.resolve()
-        assert result.touched  # the landing-commit staging set is tracked
 
-    def test_miner_drops_project_candidate_without_cwd(self, env):
-        result = miner.MineResult(status="ok")
-        parsed = {
-            "candidates": [
-                {
-                    "scope": "project",
-                    "type": "knowledge",
-                    "fact": "The proxy strips trailing slashes.",
-                    "session": "sess-0002",
-                    "line": 3,
-                }
-            ]
-        }
-        miner._reconcile_and_land(env.ledger, parsed, result, 5, {})
-        assert result.landed == []
-        assert any(
-            o["outcome"] == "dropped-invalid"
-            and o.get("reason") == "no cwd for project scope"
-            for o in result.outcomes
-        )
 
 
 # ------------------------------------------------------- two-phase routing

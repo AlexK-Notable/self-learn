@@ -22,9 +22,6 @@ from support import commit_all, make_behavior, make_home
 
 KNOBS = (
     "worker.batch_cap",
-    "miner.message_chars",
-    "miner.session_chars",
-    "miner.run_chars",
     "miner.reader_timeout_secs",
 )
 
@@ -86,18 +83,15 @@ def test_a_knob_default_must_be_a_number_above_zero(default):
         settings.sizing_knob("a.b", default=default, description="d")
 
 
-def test_the_five_knobs_are_registered_with_the_numbers_the_code_had():
+def test_the_knobs_are_registered_with_the_numbers_the_code_had():
     expected = {
         "worker.batch_cap": 15,
-        "miner.message_chars": 2_000,
-        "miner.session_chars": 60_000,
-        "miner.run_chars": 400_000,
         "miner.reader_timeout_secs": 900.0,
     }
     assert {name: settings.by_name(name).default for name in KNOBS} == expected
     # the module constants are copies of those defaults, not second literals
     assert worker.BATCH_CAP == 15
-    assert (miner.MAX_TEXT_CHARS, miner.MAX_DIGEST_CHARS, miner.MAX_PROMPT_DIGESTS_CHARS) == (2_000, 60_000, 400_000)
+    assert (miner.MAX_TEXT_CHARS, miner.MAX_DIGEST_CHARS) == (2_000, 60_000)
     assert miner.INVOKE_TIMEOUT_SECS == 900.0
 
 
@@ -140,15 +134,10 @@ def test_the_worker_takes_as_many_lessons_per_call_as_config_says(home, elsewher
     assert (len(batch), leftovers) == (4, 2)
 
 
-def test_every_digest_limit_is_a_registered_miner_setting_with_the_same_default():
-    for f in dataclasses.fields(miner.DigestLimits):
-        assert settings.by_name(f"miner.{f.name}").default == f.default, f.name
-
-
-def test_the_miner_reads_all_three_input_sizes_from_config(home, elsewhere):
-    assert miner.digest_limits(home) == miner.DigestLimits(2_000, 60_000, 400_000)
-    configure(home, "miner", message_chars=300, session_chars=5_000, run_chars=90_000)
-    assert miner.digest_limits(home) == miner.DigestLimits(300, 5_000, 90_000)
+def test_the_retired_digest_input_sizes_are_no_longer_settings():
+    for name in ("miner.message_chars", "miner.session_chars", "miner.run_chars"):
+        with pytest.raises(KeyError):
+            settings.by_name(name)
 
 
 def _user(text: str) -> str:

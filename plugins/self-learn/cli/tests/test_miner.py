@@ -358,40 +358,14 @@ def test_rejected_old_sighting_does_not_count_again(home, transcripts, with_uuid
 
 
 def test_teach_sourced_record_never_carries_episode_brief(home):
-    """The brief is written ONLY by the miner's _build_record — a
-    teach/import-created record (this ledger's create_record path, never
-    touching miner.py) has no section, by construction (12 §11)."""
+    """The brief is written only by the session landing; a teach/import-created
+    record (this ledger's create_record path, never touching miner.py) has no
+    section, by construction (12 §11)."""
     record = make_behavior()
     create_record(home, record)
     landed = Record.from_path(home / "skills/s/pending" / f"{record.id}.md")
     assert landed.source == "teach"
     assert "## Episode brief" not in landed.body
-
-
-def test_reader_prompt_pins_episode_brief_instruction(home):
-    """Live model output cannot be asserted in a unit test — pin the
-    prompt TEXT instead (100-200 words, plain-words retell-never-quote
-    register, optional-and-omittable framing)."""
-    prompt, corrupt = miner._compose_prompt(home, ["(digest)"], Path("/tmp/out.json"))
-    assert corrupt == []
-    assert '"episode_brief"' in prompt
-    assert "100-200 words" in prompt
-    assert "RETELL, never quote" in prompt
-    assert "optional" in prompt.lower()
-
-
-def test_reader_prompt_pins_three_value_fire_outcome(home):
-    """U6 (12 §Phase-2 contract; rubric lines 70–76): the prompt's fire shape
-    names the three suspicion values and never the retired two. The
-    acceptance check refuses the old values, so a prompt that reverted to
-    them would have every fire silently dropped — pin the TEXT."""
-    prompt, corrupt = miner._compose_prompt(home, ["(digest)"], Path("/tmp/out.json"))
-    assert corrupt == []
-    assert '"suspected-compliance"' in prompt
-    assert '"suspected-violation"' in prompt
-    assert '"cannot-tell"' in prompt
-    assert '"outcome": "complied"' not in prompt
-    assert '"complied" | "violated"' not in prompt
 
 
 def _resolve(home, record, status):
@@ -684,51 +658,6 @@ def _write_bad_bytes(path: Path, prefix: str = "") -> None:
     selfcheck.py's own FW-66 helper of the same name/shape)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(prefix.encode("utf-8") + b"\xff\xfe garbage")
-
-
-def test_ledger_index_skips_undecodable_record_and_reports_it(home):
-    good = make_behavior(record_id="lrn-00009999")
-    pending = home / "skills/s/pending"
-    pending.mkdir(parents=True, exist_ok=True)
-    good.write(pending / f"{good.id}.md")
-    bad_path = pending / "lrn-0badbeef.md"
-    _write_bad_bytes(bad_path, "---\ntype: behavior\nid: lrn-0badbeef\n---\n")
-
-    corrupt: list[Path] = []
-    index = miner._ledger_index(home, corrupt)
-
-    assert good.id in index
-    assert "lrn-0badbeef" not in index
-    assert corrupt == [bad_path]
-
-
-def test_canon_index_skips_undecodable_record_and_reports_it(home):
-    routed = make_behavior(record_id="lrn-00009999")
-    _resolve(home, routed, "routed")
-    bad_path = home / "skills/s/resolved" / "lrn-0badbeef.md"
-    _write_bad_bytes(
-        bad_path, "---\ntype: behavior\nid: lrn-0badbeef\nstatus: routed\n---\n"
-    )
-
-    corrupt: list[Path] = []
-    index = miner._canon_index(home, corrupt)
-
-    assert routed.id in index
-    assert "lrn-0badbeef" not in index
-    assert corrupt == [bad_path]
-
-
-def test_compose_prompt_surfaces_corrupt_records_without_crashing(home):
-    _write_bad_bytes(
-        home / "skills/s/pending" / "lrn-0badbeef.md",
-        "---\ntype: behavior\nid: lrn-0badbeef\n---\n",
-    )
-
-    prompt, corrupt = miner._compose_prompt(home, ["(digest)"], Path("/tmp/out.json"))
-
-    assert len(corrupt) == 1
-    assert corrupt[0].name == "lrn-0badbeef.md"
-    assert "(digest)" in prompt  # composition still completed
 
 
 def test_find_record_returns_none_for_undecodable_file_never_raises(home):

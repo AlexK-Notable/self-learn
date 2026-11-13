@@ -2300,14 +2300,12 @@ def _cmd_doctor_settings(home: Path) -> int:
 
 def _cmd_doctor_miner(home: Path) -> int:
     """`doctor miner` (new miner R2, fix round 4): every verdict from
-    :func:`mining.waiting.preflight`. A stuck item, or waiting answers a
-    `digest` engine will never land, is a WARN, never a FAIL, so this verb
+    :func:`mining.waiting.preflight`. A stuck item is a WARN, never a FAIL, so this verb
     always exits 0. The miner's cache folder is read where
     `miner.miner_dir` writes it, never created."""
     from .mining import waiting as mining_waiting
 
-    engine, _source = settings.resolve_setting(home, settings.by_name("miner.engine"))
-    for row in mining_waiting.preflight(worker.cache_dir() / "miner", engine=str(engine)):
+    for row in mining_waiting.preflight(worker.cache_dir() / "miner"):
         print(f"doctor: {row.verdict} {row.name} — {row.detail}")
     return EXIT_OK
 

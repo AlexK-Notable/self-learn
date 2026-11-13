@@ -156,12 +156,6 @@ _TABLE: dict[str, Plain] = {
         "Session ids the overnight read always skips, separated by commas."),
     "refs.transcript_roots": _p("reading", "Where quoted sessions are looked up",
         "The folders searched, in order, when a lesson's quote is checked against its session."),
-    "miner.message_chars": _p("reading", "Characters kept per message",
-        "How much of one message is kept in a session's digest (digest engine only)."),
-    "miner.session_chars": _p("reading", "Characters kept per session",
-        "How much of one session is kept in its digest; the rest is cut (digest engine only)."),
-    "miner.run_chars": _p("reading", "Characters read per night",
-        "How much digest text one overnight read sends; sessions over it wait for the next night (digest engine only)."),
     "miner.spine_tokens": _p("reading", "Session size before shortening",
         "Above this estimated size, the session engine shortens the agent's own messages. Your typed words are never cut."),
     # ---------------------------------------------------------------- time
