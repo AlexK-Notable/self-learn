@@ -80,8 +80,9 @@ def _archive_section(html: str) -> str:
     """The Bucket page's B1 archive section only — scoping assertions to
     this substring is what makes a presence/absence check about the
     ARCHIVE specifically, not the whole page (a pending row also prints
-    its own id elsewhere on the page)."""
-    match = re.search(r'<details class="archive-section">.*?</details>', html, re.S)
+    its own id elsewhere on the page). The archive loads after the page
+    appeared (speed batch 2), so callers hand this the `/later` fragment."""
+    match = re.search(r'<details[^>]*class="archive-section"[^>]*>.*?</details>', html, re.S)
     return match.group(0) if match else ""
 
 
@@ -106,7 +107,7 @@ class TestLinkWalkReachability:
         bucket_link = re.search(r'href="(/bucket/skill/s)"', front_html)
         assert bucket_link, "no bucket link found on the front page"
 
-        bucket_html = c.get(bucket_link.group(1)).text
+        bucket_html = c.get(bucket_link.group(1) + "/later").text  # the archive loads after the page
         archive = _archive_section(bucket_html)
         assert archive, "no archive section rendered on the bucket page"
         record_link = re.search(r'href="(/record/lrn-[0-9a-f]{8})"', archive)
@@ -148,7 +149,7 @@ class TestIndexListsIndexSetOnly:
         _retire_directly(sb, bucket_dir, graduated)
 
         c, _runner = make_client(sb)
-        archive = _archive_section(c.get("/bucket/skill/s").text)
+        archive = _archive_section(c.get("/bucket/skill/s/later").text)
 
         assert routed.id in archive
         assert pending.id not in archive
@@ -174,8 +175,8 @@ class TestIndexDoesNotCrossBuckets:
         resolve_record_directly(sb.ledger, _bucket_dir(sb, "skill", "t"), rec_t)
 
         c, _runner = make_client(sb)
-        archive_s = _archive_section(c.get("/bucket/skill/s").text)
-        archive_t = _archive_section(c.get("/bucket/skill/t").text)
+        archive_s = _archive_section(c.get("/bucket/skill/s/later").text)
+        archive_t = _archive_section(c.get("/bucket/skill/t/later").text)
 
         assert rec_s.id in archive_s
         assert rec_t.id not in archive_s
@@ -201,8 +202,8 @@ class TestIndexDoesNotCrossBuckets:
         resolve_record_directly(sb.ledger, _bucket_dir(sb, "user"), rec_user)
 
         c, _runner = make_client(sb)
-        skill_archive = _archive_section(c.get("/bucket/skill/user").text)
-        user_archive = _archive_section(c.get("/bucket/user/user").text)
+        skill_archive = _archive_section(c.get("/bucket/skill/user/later").text)
+        user_archive = _archive_section(c.get("/bucket/user/user/later").text)
 
         assert rec_skill.id in skill_archive
         assert rec_user.id not in skill_archive
@@ -225,7 +226,7 @@ class TestArchiveRowHonestyAndSelectionHygiene:
         seed_record(sb.ledger, rec)
         resolve_record_directly(sb.ledger, _bucket_dir(sb), rec)
         c, _runner = make_client(sb)
-        archive = _archive_section(c.get("/bucket/skill/s").text)
+        archive = _archive_section(c.get("/bucket/skill/s/later").text)
 
         # Scoped to the `.record-row-lead` ELEMENT specifically (§4's own
         # wording) — never row-scoped or page-scoped, which would be
@@ -260,7 +261,7 @@ class TestArchiveRowHonestyAndSelectionHygiene:
 
         c, _runner = make_client(sb)
         page = c.get("/bucket/skill/s").text
-        archive = _archive_section(page)
+        archive = _archive_section(c.get("/bucket/skill/s/later").text)
 
         assert archive, "no archive section rendered"
         assert "data-row" not in archive
@@ -748,9 +749,10 @@ class TestArchiveReadFailureShowsAFailureLine:
         monkeypatch.setattr(routes.ledger, "report", failing_report)
 
         page = c.get("/bucket/skill/s").text
-        assert "Routed here (unavailable)" in page
-        assert "self-learn report --json exited 1" in page
-        assert rec.id in page
+        late = c.get("/bucket/skill/s/later").text
+        assert "Routed here (unavailable)" in late
+        assert "self-learn report --json exited 1" in late
+        assert rec.id in page  # the pending queue still rendered
 
     def test_healthy_bucket_with_nothing_routed_renders_no_failure_line(
         self, tmp_path: Path
@@ -765,8 +767,10 @@ class TestArchiveReadFailureShowsAFailureLine:
         seed_record(sb.ledger, rec)
         c, _runner = make_client(sb)
         page = c.get("/bucket/skill/s").text
-        assert "Routed here (unavailable)" not in page
-        assert "archive-section" not in page
+        late = c.get("/bucket/skill/s/later").text
+        assert 'id="bucket-unreadable"' in late  # presence control: the section rendered
+        assert "Routed here (unavailable)" not in late
+        assert "archive-section" not in late
         assert rec.id in page  # presence control: the page did render
 
     def test_wrong_shape_report_data_fails_loud_not_500(
@@ -792,8 +796,8 @@ class TestArchiveReadFailureShowsAFailureLine:
 
         monkeypatch.setattr(routes.ledger, "report", wrong_shape_report)
 
-        resp = c.get("/bucket/skill/s")
+        resp = c.get("/bucket/skill/s/later")
         assert resp.status_code == 200
         assert "Routed here (unavailable)" in resp.text
         assert "list" in resp.text
-        assert rec.id in resp.text
+        assert rec.id in c.get("/bucket/skill/s").text
