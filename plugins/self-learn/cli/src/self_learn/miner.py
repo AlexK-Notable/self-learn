@@ -3710,6 +3710,58 @@ def _backfill_slices(home: Path, days: int) -> list[SessionSlice]:
     return slices
 
 
+def file_reviewed_run(home: Path | str, run_id: str, *, file_cap: int, tracker: Any = None) -> dict:
+    """``mine backfill-tasks --file-from RUN``: file the items a dry run
+    approved, exactly as that run decided them, so what lands in the tracker
+    is what a reader of the dry run's report saw. (An agent cannot take back
+    an idea it filed: the tracker leaves that to the owner.) Items the live
+    store already has are left as they are."""
+    home = Path(home)
+    if not re.fullmatch(r"[0-9a-f]{8}", run_id):
+        raise ValueError("file_reviewed_run: a run id is 8 hex characters")
+    if not tasks_enabled(home):
+        return {"status": "disabled", "reason": "miner.tasks_enabled is off"}
+    from .mining import tracker as tracker_mod
+
+    reviewed_path = miner_dir() / "runs" / run_id / mining_tasks.STORE_NAME
+    if not reviewed_path.is_file():
+        return {"status": "missing", "reason": f"run {run_id} has no dry-run store"}
+    tracker = tracker or tracker_mod.Tracker()
+    lock_fh = open(miner_dir() / "miner.lock", "a", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"status": "busy", "reason": "a mining run holds the miner's lock"}
+        reviewed = mining_tasks.Store.load(reviewed_path)
+        live = mining_tasks.Store.load(mining_tasks.store_path(miner_dir()))
+        taken = 0
+        for key, item in reviewed.items.items():
+            if key not in live.items:
+                live.items[key] = {**item, "reviewed_run": run_id}
+                taken += 1
+        live.save()
+        filed = mining_tasks.file_approved(live, tracker, file_cap, run_id=run_id)
+        live.save()
+        log(f"file-from {run_id}: took {taken} item(s), filed {len(filed.filed)}"
+            + (f" ({', '.join(filed.filed)})" if filed.filed else "") + (f"; {filed.failure}" if filed.failure else ""))
+        return {
+            "status": "ok" if not filed.failure else "failed",
+            "run_id": run_id,
+            "taken": taken,
+            "filed": filed.filed,
+            "duplicates": filed.duplicates,
+            "failure": filed.failure,
+            "items": [i for i in live.items.values() if i.get("reviewed_run") == run_id],
+        }
+    finally:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lock_fh.close()
+
+
 def backfill_tasks(
     home: Path | str,
     days: int,

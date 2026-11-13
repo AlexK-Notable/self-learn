@@ -1207,7 +1207,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="look for unfinished work in the last N days of sessions (real model calls), "
         "check it and file it in the znote tracker",
     )
-    mback.add_argument("--days", type=int, required=True, metavar="N", help="1 to 30")
+    mback.add_argument("--days", type=int, default=None, metavar="N", help="1 to 30")
+    mback.add_argument("--file-from", dest="file_from", default=None, metavar="RUN",
+                       help="instead of reading: file what the dry run RUN approved, exactly as it decided")
     mback.add_argument("--dry-run", dest="dry_run", action="store_true",
                        help="find and check, file nothing (the found items stay in the run folder)")
     mback.add_argument("--max-file", dest="max_file", type=int, default=None, metavar="N",
@@ -1985,7 +1987,27 @@ def _cmd_mine_tasks(args: argparse.Namespace) -> int:
 
 def _cmd_mine_backfill_tasks(home: Path, args: argparse.Namespace) -> int:
     """``mine backfill-tasks --days N``: S-155's one bounded look back."""
-    if not 1 <= args.days <= miner.BACKFILL_MAX_DAYS:
+    if args.file_from is not None:
+        if args.days is not None or args.dry_run:
+            print("self-learn mine backfill-tasks: --file-from takes no --days or --dry-run", file=sys.stderr)
+            return EXIT_USAGE
+        try:
+            cap = settings.resolve_int(home, "miner.tasks_per_night") if args.max_file is None else args.max_file
+            done = miner.file_reviewed_run(home, args.file_from, file_cap=cap)
+        except ValueError as exc:
+            print(f"self-learn mine backfill-tasks: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        if args.as_json:
+            print(json.dumps(done))
+        elif done["status"] in ("ok", "failed"):
+            print(f"mine backfill-tasks: from run {done['run_id']}: took {done['taken']}, filed {len(done['filed'])}"
+                  + (f"; {done['failure']}" if done["failure"] else ""))
+            for item in done["items"]:
+                print(_task_line(item))
+        else:
+            print(f"mine backfill-tasks: {done['status']} — {done['reason']}")
+        return EXIT_OK if done["status"] == "ok" else EXIT_HELD
+    if args.days is None or not 1 <= args.days <= miner.BACKFILL_MAX_DAYS:
         print(f"self-learn mine backfill-tasks: --days must be 1 to {miner.BACKFILL_MAX_DAYS}", file=sys.stderr)
         return EXIT_USAGE
     if args.max_file is not None and args.max_file < 0:

@@ -496,3 +496,27 @@ def test_backfill_refuses_days_out_of_range_and_runs_nothing_when_off(home, monk
         miner.backfill_tasks(home, 31)
     monkeypatch.setenv("SELF_LEARN_MINER_TASKS_ENABLED", "0")
     assert miner.backfill_tasks(home, 3)["status"] == "disabled"
+
+
+def test_file_from_files_exactly_what_the_dry_run_approved(home, root, cbackend, fake_tracker, tmp_path, capsys):
+    from self_learn import cli
+
+    sid = "s1aaaaaa-0000"
+    write_session(root, sid, task_rows(sid, host(tmp_path)))
+    cbackend.answers[sid] = answer(tasks=[task()])
+    cbackend.check_answer = decisions(file_it())
+    dry = miner.backfill_tasks(home, 14, dry_run=True)
+    assert fake_tracker.created == []
+    calls_before = len(cbackend.specs) + len(cbackend.check_prompts)
+    assert cli.main(["mine", "backfill-tasks", "--file-from", dry["run_id"], "--max-file", "5"]) == 0
+    assert "took 1, filed 1" in capsys.readouterr().out
+    assert len(cbackend.specs) + len(cbackend.check_prompts) == calls_before  # no model call
+    assert [c["title"] for c in fake_tracker.created] == ["Document the --dry-run flag in the export README"]
+    it = store().items[f"{sid}#L4"]
+    assert it["status"] == "filed" and it["reviewed_run"] == dry["run_id"]
+    # again: nothing new to take, nothing filed twice
+    assert cli.main(["mine", "backfill-tasks", "--file-from", dry["run_id"]]) == 0
+    assert len(fake_tracker.created) == 1
+    assert cli.main(["mine", "backfill-tasks", "--file-from", "../etc"]) == cli.EXIT_USAGE
+    assert cli.main(["mine", "tasks"]) == 0
+    assert "1 filed" in capsys.readouterr().out
