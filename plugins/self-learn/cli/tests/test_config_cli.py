@@ -183,6 +183,7 @@ class TestConfigGet:
             # L6 (2026-10-31): registered so `doctor settings` stops
             # warning; the overseer's hook route stays a rollback switch.
             "overseer.hook_activation",
+            "hosts.extra_roots",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 
