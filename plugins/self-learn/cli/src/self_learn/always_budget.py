@@ -182,7 +182,10 @@ def standings(lines: Iterable[Line], budget: int, today: date) -> dict[str, Stan
     out: dict[str, Standing] = {}
 
     def in_grace(line: Line) -> bool:
-        return line.placed_at is not None and (today - line.placed_at.date()).days < GRACE_DAYS
+        if line.placed_at is None:
+            return False
+        # calendar days, by ordinal (never a bare timedelta's `.days`)
+        return today.toordinal() - line.placed_at.date().toordinal() < GRACE_DAYS
 
     used = sum(line.words for line in ordered if in_grace(line))
     full = False
