@@ -304,7 +304,11 @@ def entry_line(record: Record) -> str:
     sections = _body_sections(record)
     if record.type == "behavior":
         trigger = _LEADING_WHEN_RE.sub("", _one_liner(sections.get("Trigger", "")))
+        # The line writes its own colon after the trigger: a trigger's closing
+        # full stop or colon (S-148: a hand `replace` on 2026-11-07 fixed a
+        # rendered "…::") is dropped, whichever the lesson's writer left.
         trigger = trigger[:-1].rstrip() if trigger.endswith(".") else trigger
+        trigger = trigger.rstrip(": \t")
         instruction = _lower_first(_one_liner(sections.get("Instruction", "")))
         return f"- **When {_lower_first(trigger)}:** {instruction} *({record.id})*"
     fact = _one_liner(sections.get("Fact", ""))

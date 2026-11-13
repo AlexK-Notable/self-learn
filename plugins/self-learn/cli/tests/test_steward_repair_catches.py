@@ -545,13 +545,15 @@ def test_a_pending_reconsider_input_is_sent_back_only_when_the_next_run_selects_
 ):
     """The rule behind D1 is "decided by no one", read from the selection
     itself (`steward._selected_again`). A pending reconsider input whose
-    lesson the next run will select is sent back. One whose record version
-    a committed run already decided -- here a `parked` row the model wrote,
-    whose parked case the overseer then decided leaving the lesson pending
-    -- is not selected again, so it is still parked now for the overseer:
-    sent back, nobody would decide it. (Before gate S1b F6 the "decided"
-    control was a bare secret-scan `refused` row; that row now sends the
-    lesson back, so it no longer decides the version.)"""
+    lesson the next run will select is sent back.
+
+    S-144: that now includes a lesson a `parked` row handed to the
+    overseer whose parked case the overseer then decided leaving the lesson
+    pending. Before, that row kept the lesson out of the selection for good,
+    so the reconsider was parked again for the overseer ("sent back, nobody
+    would decide it") and the lesson itself was stranded; now the lesson is
+    the steward's again once the hold lifts, so its reconsider is sent back
+    like any other."""
     decided = MovedPair(tmp_path / "decided", observed=False, prefix="lrn-c8d0")
     sent = _notifications(monkeypatch)
     prompts: list[str] = []
@@ -564,8 +566,8 @@ def test_a_pending_reconsider_input_is_sent_back_only_when_the_next_run_selects_
     _overseer_decides(decided.home, parked, list(decided.ids), tmp_path)
     assert not [row for row in cases.list_cases(decided.home, parked_for="overseer")
                 if not row.get("superseded_by")]  # control: the overseer let them go
-    assert not {entry.record.id for entry, _row in steward._eligible_lessons(decided.home)} & set(
-        decided.ids)
+    assert {entry.record.id for entry, _row in steward._eligible_lessons(decided.home)} >= set(
+        decided.ids)  # S-144: the hold lifted, so they are selected again
     cases.observe(decided.home, decided.moving_case, "statement",
                   text="the user said more", ref=decided.statement, by="steward")
     monkeypatch.setattr(steward.invocation, "write_session",
@@ -578,11 +580,9 @@ def test_a_pending_reconsider_input_is_sent_back_only_when_the_next_run_selects_
         ("reconsider", "pending")}
     for rid in decided.ids:
         row = packet["dispositions"][rid]
-        assert (row["state"], row["kind"]) == ("abandoned", "status"), row
-        (parked,) = cases.list_cases(decided.home, record_id=rid, parked_for="overseer",
-                                     parked_reason="ledger-refused")
-        assert parked["case"] == row["successor_case"]
-    assert sent, "the user is told about a park-now"
+        assert (row["state"], row["kind"]) == ("returned", "status"), row
+        assert not cases.list_cases(decided.home, record_id=rid, parked_for="overseer",
+                                    parked_reason="ledger-refused")
 
     fresh = MovedPair(tmp_path / "fresh", observed=True, prefix="lrn-c8e0")
     monkeypatch.setattr(steward.invocation, "write_session",

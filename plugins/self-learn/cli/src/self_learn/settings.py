@@ -1190,6 +1190,27 @@ REGISTRY: tuple[Setting, ...] = (
         tier="C",
         override_channel=False,
     ),
+    # S-147: the word budget of the lesson lines in the user's always-loaded
+    # CLAUDE.md (`always_budget.py`). The sweep fails `@budget` for the lines
+    # ranked past it, and the steward's runner refuses a case that would
+    # enter a line past it. 0 turns both off.
+    Setting(
+        name="always_loaded.user_word_budget",
+        env_var=None,
+        config_section="always_loaded",
+        config_key="user_word_budget",
+        kind="int",
+        default=1500,  # always_budget.DEFAULT_WORDS
+        validate=lambda v: max(cast(int, v), 0),
+        validate_hint="must be >= 0",
+        description=(
+            "the most words the lesson lines of the user's always-loaded CLAUDE.md may hold; "
+            "lines ranked past it are offered to the steward to move, and the steward may "
+            "not add one past it; 0 turns the budget off"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
     # S-114: how many `premise-review` inputs one run may take.
     # `auto` (the default) is ceil(live placed lessons / rotation_days) + 1,
     # which grows with the ledger, so the backlog always drains and the
@@ -1265,6 +1286,26 @@ REGISTRY: tuple[Setting, ...] = (
         description=(
             "whether the overseer's own hook route may go on from placing a hook to "
             "registering and verifying it (13 §7.4); a rollback switch"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
+    # 2026-11-12 (host-roots): the overseer registers a plain project only
+    # strictly inside the user's home directory (S-112); a directory on
+    # another disk is reachable only under a root the user lists here.
+    # os.pathsep-joined like `refs.transcript_roots`; read by
+    # `host_extra_roots`. Config-only and tier C: a root widens where
+    # self-learn may write instruction files on its own.
+    Setting(
+        name="hosts.extra_roots",
+        env_var=None,
+        config_section="hosts",
+        config_key="extra_roots",
+        kind="str",
+        default="",
+        description=(
+            "absolute directories outside the home directory under which the overseer may register "
+            "a plain project on its own (os.pathsep-separated); the root itself is never one"
         ),
         tier="C",
         override_channel=False,
@@ -2280,6 +2321,15 @@ def preflight(home: Path | str) -> list[SettingRow]:
         )
     rows.extend(SettingRow(name="retired", verdict="WARN", detail=retired_key_detail(key))
                 for key in retired_keys(home))
+    _roots_ok, roots_bad = host_extra_roots(home)
+    rows.extend(
+        SettingRow(
+            name="hosts.extra_roots",
+            verdict="WARN",
+            detail=f"hosts.extra_roots: ignored, {why}",
+        )
+        for why in roots_bad
+    )
     rows.extend(_intents_preflight_rows(home))
     return rows
 
@@ -2345,6 +2395,34 @@ def skill_writing_misread(home: Path | str) -> str | None:
         "every skill it builds or changes as a draft; a person sets it with `self-learn "
         "config set overseer.skill_writing on|off`"
     )
+
+
+def host_extra_roots(home: Path | str) -> tuple[list[Path], list[str]]:
+    """The roots ``hosts.extra_roots`` lists that count, and one sentence per
+    listed root that does not. A root counts when it is an absolute path to an
+    existing directory the current user owns and is not ``/``; the result holds
+    real paths. Anything else is ignored (never raises), and `doctor settings`
+    prints the sentence (:func:`preflight`)."""
+    raw, _src = resolve_setting(home, by_name("hosts.extra_roots"))
+    good: list[Path] = []
+    bad: list[str] = []
+    for item in cast(str, raw).split(os.pathsep):
+        text = item.strip()
+        if not text:
+            continue
+        if not os.path.isabs(text):
+            bad.append(f"{text} is not an absolute path")
+            continue
+        real = Path(os.path.realpath(text))
+        if not real.is_dir():
+            bad.append(f"{text} is not an existing directory")
+        elif real == Path(real.anchor):
+            bad.append(f"{text} is the filesystem root, which would admit every directory")
+        elif real.stat().st_uid != os.getuid():
+            bad.append(f"{text} is not owned by the current user")
+        elif real not in good:
+            good.append(real)
+    return good, bad
 
 
 def _intents_preflight_rows(home: Path | str) -> list[SettingRow]:

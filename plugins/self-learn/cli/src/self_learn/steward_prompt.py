@@ -1450,7 +1450,9 @@ def _premise_lines() -> list[str]:
         f"  ({_words(premises.HOLDS_IF_VALUES)}; default changed), `match` (the literal text the",
         "  value must contain, lack, equal or satisfy; none for changed; a `file-match`/`git-file`",
         "  probe with `contains` or `line` reads the token present or absent: write `holds_if:",
-        "  equals` with `match: present|absent`; a `lines` probe takes changed only), `on_change`",
+        "  equals` with `match: present|absent`; a `lines` probe takes changed only; `contains`",
+        "  can search a large program file such as the installed claude binary for a fixed",
+        "  string, `line` and `lines` refuse a file over 256 KiB), `on_change`",
         f"  ({_words(premises.ON_CHANGE_VALUES)}; refresh only with changed), `source`. A probe is a",
         "  mapping with `kind` and that kind's fields:",
         *probe_fields,
@@ -1494,6 +1496,24 @@ def _premise_lines() -> list[str]:
         "  `supersedes` (the runner fills one in only when exactly one earlier case covers any",
         "  of them). Both lines are refused on any other input. On an `@reach` or `@writable`",
         "  input the lesson moves with a `route` line (applied as a reroute), or is retired.",
+        # S-147
+        "  An `@budget` input: the user's always-loaded CLAUDE.md holds more lesson words than",
+        "  its budget (`always_loaded.user_word_budget`) and this line is ranked past it. Move",
+        "  it somewhere cheaper, retire it, or keep it by evidencing the combined test again;",
+        "  the input's own lines list the choices in order. The same budget refuses a case of",
+        "  yours that would put a new line into that file past it: choose a cheaper destination",
+        "  or park the case (always-loaded-user-scope).",
+        # S-148
+        "  An `@canon` input: the user wrote text by hand in their own instruction files that",
+        "  resembles this placed lesson. Their words outrank a lesson: retire it as covered,",
+        "  rewrite it to agree, or leave it with a note saying what it adds.",
+        # S-150
+        "  A NEW LESSON THAT CONTRADICTS A PLACED ONE you were not given: do not park it for",
+        "  that. In its sheet write `link-contradicts` (`target`: the placed lesson's id) and",
+        "  then `defer` it (`until`: five days on). The placed lesson comes as an `@disputed` input",
+        "  within two nights, with the new lesson's words; rewriting, narrowing or retiring it",
+        "  is yours there. The deferred lesson returns after that and is decided against the",
+        "  result.",
     ]
 
 
@@ -1543,6 +1563,11 @@ def _hook_lines() -> list[str]:
         "  You never write the script: the runner generates it from the hook block and replays",
         "  every example against it before anything is committed; an example the script gets",
         "  wrong refuses that line alone. The lesson must have a Trigger (a behavior lesson).",
+        "  A FACT (type knowledge) has no Trigger, so the ledger refuses to route it to a hook",
+        "  as it is. When a pending fact is really a rule about one call, `replace` it first (no",
+        "  `dest`, so the new lesson lands pending) with `type: behavior`, a `kind`, `trigger`",
+        "  and `instruction`; the new lesson comes to you in the next run and takes the hook",
+        "  route then. Otherwise place the fact where facts go.",
         "  The runner places the script; switching it on stays the user's setting",
         "  (`overseer.hook_activation`), so with it off the hook is placed and not registered.",
     ]

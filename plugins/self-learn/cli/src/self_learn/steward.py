@@ -25,6 +25,7 @@ from ruamel.yaml import YAML, YAMLError
 
 from . import (
     attribution,
+    always_budget,
     always_loaded,
     domain,
     model_failures,
@@ -523,6 +524,51 @@ def steward_dir(home: Path | str) -> Path:
 
 def journal_path(home: Path | str) -> Path:
     return steward_dir(home) / "journal.jsonl"
+
+
+def crash_log_path(home: Path | str) -> Path:
+    """S-144: one JSON line per steward job that ended in an exception
+    (cache only). The cap close-out reads it, so a lesson parked because the
+    job kept crashing carries the crash's own words instead of "no-progress"."""
+    return steward_dir(home) / "crashes.jsonl"
+
+
+def _note_crash(home: Path | str, cause: str) -> None:
+    """Append one crash line (`NOT_REPO_TRUTH`: a cache file). Never raises."""
+    path = crash_log_path(home)
+    try:
+        try:
+            kept = path.read_text(encoding="utf-8").splitlines()[-49:]
+        except OSError:
+            kept = []
+        kept.append(json.dumps({"ts": chrono.now_iso(), "cause": cause[:600]}))
+        fsops.atomic_write(path, "\n".join(kept) + "\n", fsync=False, preserve_mode=False)
+    except OSError:
+        pass
+
+
+def _crashes_since(home: Path | str, since: object) -> list[str]:
+    """The distinct crash causes noted at or after *since* (an ISO time), oldest
+    first; all of them when *since* cannot be read. Never raises."""
+    start = chrono.to_dt(since)
+    causes: list[str] = []
+    try:
+        lines = crash_log_path(home).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return causes
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or not isinstance(row.get("cause"), str):
+            continue
+        when = chrono.to_dt(row.get("ts"))
+        if start is not None and when is not None and when < start:
+            continue
+        if row["cause"] not in causes:
+            causes.append(row["cause"])
+    return causes
 
 
 #: 2026-09-26 (agenda item 25): True while a `--dry-run` is in progress.
@@ -1065,7 +1111,10 @@ def _terminal_rows(
                     if isinstance(rid, str) and isinstance(version, str):
                         evidence = {
                             "run": str(manifest.get("run_id") or ""),
-                            "case": str(disposition.get("case") or ""),
+                            "case": str(
+                                disposition.get("case")
+                                or disposition.get("successor_case") or ""
+                            ),
                             "state": str(disposition.get("state") or ""),
                         }
                         terminal[(rid, version)] = evidence
@@ -1218,10 +1267,12 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
             entry.record.id,
         )
     )
-    terminal = _terminal_versions(home, defers_decide=False)
+    manifests = committed_manifests(home)
+    terminal = _terminal_versions(home, defers_decide=False, manifests=manifests)
     legacy_terminal = _terminal_versions(
-        home, _LEGACY_DECIDED_DISPOSITIONS, defers_decide=False
+        home, _LEGACY_DECIDED_DISPOSITIONS, defers_decide=False, manifests=manifests
     )
+    evidence = _terminal_rows(home, defers_decide=False, manifests=manifests)
     out: list[tuple[ledger_ops.QueueEntry, dict]] = []
     for entry in entries:
         try:
@@ -1229,23 +1280,80 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         except ValueError:
             continue
         rid = entry.record.id
-        if (rid, identity["version"]) in terminal:
-            continue
         # S-110 (SK-C1): a lesson a skill rename carried to the
         # renamed skill's bucket, unchanged since, is the version it was;
         # decided then, it stays decided.
         carried = ledger_ops.carried_version(entry.record)
-        if carried is not None and (rid, carried) in terminal:
-            continue
         legacy = identity.get("legacy_version")
+        hits: list[tuple[str, str]] = [
+            (rid, version) for version in (identity["version"], carried)
+            if isinstance(version, str) and (rid, version) in terminal
+        ]
         if isinstance(legacy, str) and (rid, legacy) in legacy_terminal:
+            hits.append((rid, legacy))
+        deciding = [evidence.get(key) or {"state": "decided"} for key in hits]
+        # S-144: a row that HANDED the lesson to the overseer (`parked`,
+        # `abandoned`) decided nothing itself. While the overseer holds the
+        # lesson it is not in *entries* at all; here the hold has lifted (the
+        # overseer's decision superseded the parked case) and the lesson is
+        # still queued at the same version, so that decision never took
+        # effect -- live 2026-11-08: the overseer's `route` of lrn-9aa1ff9c
+        # was refused, and nothing looked at the lesson again. It is the
+        # steward's once more, with a card line saying where it has been.
+        if any(row["state"] not in _HANDOFF_DISPOSITIONS for row in deciding):
             continue
+        if deciding:
+            identity["reason"] = _returned_from_overseer(home, rid, deciding[0])
         # S-88: a deferred lesson no case covers says so on its card.
         reason = _deferred_unresolved(home, entry.record)
         if reason is not None:
             identity["reason"] = reason
         out.append((entry, identity))
     return out
+
+
+#: S-144: the dispositions that hand a lesson to the overseer rather than
+#: decide it. Each leaves a parked case that holds the lesson
+#: (`cases.held_lessons`) until the overseer's decision supersedes it.
+_HANDOFF_DISPOSITIONS = frozenset({"parked", "abandoned"})
+
+
+def _returned_from_overseer(home: Path, record_id: str, row: Mapping[str, str]) -> str:
+    """The card line of a lesson that comes back from the overseer still
+    queued (S-144): which run handed it over, which case the overseer
+    answered with, and what the ledger said to that case's lines."""
+    final = row.get("case") or ""
+    refusals: list[str] = []
+    try:
+        by_id = {
+            str(item.get("case")): item
+            for item in cases.list_cases(home, record_id=record_id, only_ok=True)
+        }
+        seen: set[str] = set()
+        while final in by_id and by_id[final].get("superseded_by") and final not in seen:
+            seen.add(final)
+            final = str(by_id[final]["superseded_by"])
+        if final:
+            application = cases.show(home, final, evidence_only=False).sections.get(
+                "Application", ""
+            )
+            refusals = [
+                " ".join(line.split())[:400]
+                for line in application.splitlines()
+                if record_id in line and "refused" in line
+            ]
+    except Exception:  # noqa: BLE001 -- the card line is context, never a gate
+        refusals = []
+    text = (
+        f"Run {row.get('run') or '?'} handed this lesson to the overseer "
+        f"({row.get('state')}); the overseer's answer"
+        + (f" ({final})" if final else "")
+        + " left it in the queue, so it is yours again. Decide it now, by a different "
+        "line than the one that failed"
+    )
+    if refusals:
+        text += ": " + "; ".join(refusals[-2:])
+    return text + "."
 
 
 @dataclass(frozen=True)
@@ -2601,14 +2709,23 @@ def _pair_problem(
         replace_problem = _placement_decision_problem(
             home, case_data, lines, inputs, label=case_path.name
         )
+    if replace_problem is None:
+        replace_problem = _budget_keep_problem(case_data, inputs, label=case_path.name)
     if replace_problem is not None:
         return replace_problem
-    return always_loaded.route_problem(
+    combined = always_loaded.route_problem(
         case_data,
         items if isinstance(items, list) else [],
         resolve=always_loaded.proposal_resolver(home) if home is not None else None,
         placement=always_loaded.placement_resolver(home) if home is not None else None,
         label=case_path.name,
+    )
+    if combined is not None or home is None:
+        return combined
+    # S-147: the user's always-loaded file has a word budget the steward
+    # may not pass (`always_budget.route_problem`).
+    return always_budget.route_problem(
+        home, case_data, items if isinstance(items, list) else [], label=case_path.name,
     )
 
 
@@ -2895,6 +3012,41 @@ def _quotable_words(line: str) -> str:
     start of a quoted line) the words after it (`steward_inputs.quotable_line`
     shows the brief the same)."""
     return steward_inputs.quotable_line(line)
+
+
+def _budget_keep_problem(
+    case_data: dict, inputs: Mapping[str, Mapping] | None, *, label: str
+) -> str | None:
+    """S-147: a decision that KEEPS a lesson in the user's always-loaded
+    CLAUDE.md while that file is over its budget (`outcome: no-action` on an
+    `@budget` premise-moved input) must evidence the combined test again, all
+    three parts, from the case's own evidence (`always_loaded.missing_tests`)
+    -- the bar a new line has to pass. Without it "keep" is the cheapest
+    answer and the file never comes down. A parked case is never applied."""
+    if case_data.get("kind") == "parked" or not inputs:
+        return None
+    if case_data.get("outcome") != "no-action":
+        return None
+    kept = [
+        str(rid) for rid in case_data.get("records") or []
+        if any(
+            isinstance(item, Mapping) and item.get("source") == "placement"
+            and item.get("premise") == always_budget.PREMISE_ID
+            for item in (inputs.get(str(rid)) or {}).get("moved") or []
+        )
+    ]
+    if not kept:
+        return None
+    missing = always_loaded.missing_tests(case_data)
+    if not missing:
+        return None
+    return (
+        f"{label}: this `no-action` case keeps {kept} in the user's always-loaded CLAUDE.md, "
+        "which is over its word budget; keeping a line there needs all three tests evidenced "
+        f"in decision.{always_loaded.DECISION_KEY} (missing or without evidence: {missing}; "
+        "each needs `because` and `refs` naming this case's own evidence refs) -- or move the "
+        "lesson somewhere cheaper, retire it, or park the case"
+    )
 
 
 def _placement_decision_problem(
@@ -3368,12 +3520,26 @@ def _stage_repair_message(
     rules, and the lines the ledger would refuse (pairs that failed are
     left out of the ledger preview). *predecessors*: the packet's
     (`packet["predecessors"]`), which the runner fills in as `supersedes`."""
+    try:
+        ledger_message = _ledger_repair_message(
+            home, stage, selected_status, skip=set(check.problems), predecessors=predecessors,
+        )
+    except Exception as exc:  # noqa: BLE001 -- S-144: a preview never ends the job
+        # The preview is advice for the one repair turn. Live 2026-11-07 an
+        # exception in it ended the whole steward job on three attempts and
+        # the packet's five lessons were parked with no cause on record.
+        _note_crash(home, f"the ledger preview of the staged sheets failed -- {_short_cause(exc)}")
+        ledger_message = (
+            "The runner could not preview your staged sheets against the ledger: "
+            f"{_short_cause(exc)}. A line you wrote most likely has a shape the ledger "
+            "cannot read (a `replace` or `restate` that turns a fact into a behavior lesson "
+            "needs `type: behavior` AND `kind:`; a hook needs a behavior lesson). Fix that "
+            "line, or park its case with what you found."
+        )
     return "\n\n".join(filter(None, [
         _pair_message(check),
         _case_rule_message(stage),
-        _ledger_repair_message(
-            home, stage, selected_status, skip=set(check.problems), predecessors=predecessors,
-        ),
+        ledger_message,
     ])) or None
 
 
@@ -5485,9 +5651,23 @@ def _close_out_detail(manifest: dict, packet: dict, record_id: str, detail: str)
     the same sheet item every night, the real reason is the ledger's
     refusal text, not the generic guard sentence."""
     refusals = _ledger_refusals(manifest, packet, record_id)
-    if not refusals:
+    if refusals:
+        detail = f"{detail}; the ledger refused: " + "; ".join(refusals)
+    return detail
+
+
+def _with_crash_causes(home: Path, manifest: dict, detail: str) -> str:
+    """S-144: when the steward job itself ended in an exception during this
+    run, the parked case says so in the crash's own words (live 2026-11-07:
+    five lessons parked as `no-progress` after three crashes, and the weekly
+    overseer could only ask a later agent to "check why that run stalled")."""
+    crashes = _crashes_since(home, manifest.get("started_at"))
+    if not crashes:
         return detail
-    return f"{detail}; the ledger refused: " + "; ".join(refusals)
+    return (
+        f"{detail}; the steward job itself ended in an error during this run "
+        "(a defect in self-learn, not a judgment on the lesson): " + "; ".join(crashes[-3:])
+    )
 
 
 def _close_out_packet(home: Path, run_id: str, packet_index: int) -> list[str]:
@@ -5528,7 +5708,9 @@ def _close_out_packet(home: Path, run_id: str, packet_index: int) -> list[str]:
             dispositions[record_id] = _held_row(record_id, versions.get(record_id), holding)
             waiting.remove(record_id)
     for record_id in waiting:
-        record_detail = _close_out_detail(manifest, packet, record_id, detail)
+        record_detail = _with_crash_causes(
+            home, manifest, _close_out_detail(manifest, packet, record_id, detail)
+        )
         question, because = _cap_close_out_texts(record_id, attempts, kind, record_detail)
         try:
             successor = _close_out_record(
@@ -6905,7 +7087,14 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
         # writer -- is asked as the steward, so the ledger refuses it a
         # lesson the overseer holds whichever path reaches one.
         with ledger_ops.acting_as("steward", home):
-            result = _run(home, dry_run=dry_run)
+            try:
+                result = _run(home, dry_run=dry_run)
+            except Exception as exc:
+                # S-144: keep the cause where the cap close-out can read it;
+                # the job still fails loudly (`serve` logs the traceback).
+                if not dry_run:
+                    _note_crash(home, _short_cause(exc))
+                raise
             if not dry_run and _HOST_RESULT_IDS:
                 result.recompile_skipped = _post_run_recompile(
                     home, result.run_id, _HOST_RESULT_IDS, _MOVED_FROM

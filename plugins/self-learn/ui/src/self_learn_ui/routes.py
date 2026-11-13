@@ -38,7 +38,7 @@ from self_learn.hosts import HOST_MODES, effective_default_mode, is_repo_root
 from self_learn.records import Record
 from self_learn.verbs import GITOPS_DIRTY_MARKER, NO_PROPOSAL_MARKER
 
-from . import health, ledger, models, pane, proposals, rendering, runner, settings_view
+from . import health, ledger, models, pane, proposals, readcache, rendering, runner, settings_view
 from .keymap import keymap_as_dicts, keymap_json
 from .prefetch import DetailPrefetchCache
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
@@ -572,12 +572,18 @@ def _render(request: Request, name: str, ctx: dict[str, Any], status_code: int =
 
 @router.get("/", response_class=HTMLResponse)
 def front(request: Request, notice: str | None = None) -> HTMLResponse:
+    _note_reload(request)
     generation = _jobs_line_cache(request)["generation"]
     home = _home(request)
-    list_read = ledger.list_items(home, include_deferred=True)
-    status_read = ledger.status(home)
-    report_read = ledger.report(home)
-    mine_read = ledger.mine_status(home)
+    reads = _gather(
+        request,
+        list=lambda: _list_read(request),
+        status=lambda: _status_read(request),
+        report=lambda: _report_read(request),
+        mine=lambda: _mine_read(request),
+    )
+    list_read, status_read = reads["list"], reads["status"]
+    report_read, mine_read = reads["report"], reads["mine"]
     model = models.build_front_model(
         list_read,
         status_read,
@@ -656,9 +662,13 @@ def header_jobs(request: Request) -> HTMLResponse:
         home = _home(request)
         generation = cache["generation"]
         seeded = cache.pop("status", None)
-        status_read = (seeded[1] if seeded is not None and now - seeded[0] < _JOBS_LINE_TTL_SECS
-                       else ledger.status_fast(home))
-        line = models.build_jobs_line(status_read, ledger.mine_status(home))
+        reads = _gather(
+            request,
+            status=(lambda: seeded[1]) if seeded is not None and now - seeded[0] < _JOBS_LINE_TTL_SECS
+            else (lambda: _status_fast_read(request)),
+            mine=lambda: _mine_read(request),
+        )
+        line = models.build_jobs_line(reads["status"], reads["mine"])
         if _jobs_line_cache(request)["generation"] == generation:
             cache["line"] = (now, line)
     return _render(request, "partials/jobs_line.html", {"jobs_line": line})
@@ -687,6 +697,97 @@ def _seed_header_status(request: Request, read: ledger.CliRead, generation: int)
     cache = _jobs_line_cache(request)
     if cache["generation"] == generation:
         cache["status"] = (time.monotonic(), read)
+
+
+# ----------------------------------------------- shared, concurrent reads
+#
+# Speed batch 2. The pages' CLI reads (`report`, `status`, `list`, `mine
+# status`) are shared between pages through one `readcache.ReadCache` on the
+# app, keyed on the ledger's state (the refresh hub's generation, which every
+# watcher event and every finished verb bumps, plus the ledger's git HEAD)
+# and expiring after `_JOBS_LINE_TTL_SECS`. It sits beside the header's own
+# 30 s caches above and shares their invalidation. A page's independent
+# reads run at the same time (`_gather`).
+
+
+def _read_cache(request: Request) -> "readcache.ReadCache":
+    cache = getattr(request.app.state, "read_cache", None)
+    if cache is None:
+        cache = readcache.ReadCache(ttl=_JOBS_LINE_TTL_SECS)
+        request.app.state.read_cache = cache
+    return cache
+
+
+def _ledger_state(request: Request) -> tuple[int, str | None]:
+    hub = getattr(request.app.state, "refresh_hub", None)
+    return (getattr(hub, "generation", 0), readcache.head_signature(_home(request)))
+
+
+def _note_reload(request: Request) -> None:
+    """A browser reload (`Cache-Control: no-cache` / `max-age=0`) of a full
+    page asks for fresh facts: forget every remembered read first."""
+    if request.headers.get("HX-Request") == "true":
+        return
+    control = request.headers.get("cache-control", "").lower()
+    if "no-cache" in control or "max-age=0" in control:
+        _read_cache(request).clear()
+
+
+def _read(
+    request: Request, name: str, produce, *, keep=None, ttl: float | None = None, ran: list | None = None
+) -> ledger.CliRead:
+    """One page read through the shared cache (see the block comment above).
+    ``ran``, when given, gets an item if THIS call ran the CLI (rather than
+    being served a remembered or in-flight answer): only a read made now may
+    seed the header's status line (`_seed_header_status`)."""
+
+    def run():
+        if ran is not None:
+            ran.append(1)
+        return produce()
+
+    return _read_cache(request).get(
+        (name, str(_home(request))), _ledger_state(request), run, keep=keep, ttl=ttl
+    )
+
+
+def _gather(request: Request, **reads) -> dict[str, Any]:
+    """Run a page's independent reads at the same time and return them by
+    name; each is ``produce`` for :func:`_read`. An exception from one is
+    raised here, after the others have finished."""
+    names = list(reads)
+    if len(names) == 1:
+        return {names[0]: reads[names[0]]()}
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=len(names), thread_name_prefix="page-read") as pool:
+        futures = {name: pool.submit(reads[name]) for name in names}
+        return {name: futures[name].result() for name in names}
+
+
+def _list_read(request: Request) -> ledger.CliRead:
+    home = _home(request)
+    return _read(request, "list-deferred", lambda: ledger.list_items(home, include_deferred=True))
+
+
+def _status_read(request: Request) -> ledger.CliRead:
+    home = _home(request)
+    return _read(request, "status", lambda: ledger.status(home))
+
+
+def _status_fast_read(request: Request) -> ledger.CliRead:
+    home = _home(request)
+    return _read(request, "status-fast", lambda: ledger.status_fast(home))
+
+
+def _report_read(request: Request) -> ledger.CliRead:
+    home = _home(request)
+    return _read(request, "report", lambda: ledger.report(home))
+
+
+def _mine_read(request: Request) -> ledger.CliRead:
+    home = _home(request)
+    return _read(request, "mine-status", lambda: ledger.mine_status(home))
 
 
 @router.get("/home/needs-you", response_class=HTMLResponse)
@@ -866,13 +967,13 @@ def _gather_archive_entries(
 
 @router.get("/bucket/{scope}/{name}", response_class=HTMLResponse)
 def bucket_page(request: Request, scope: str, name: str, notice: str | None = None) -> Response:
-    generation = _jobs_line_cache(request)["generation"]
+    _note_reload(request)
     home = _home(request)
     bucket = _find_bucket(home, scope, name)
     if bucket is None:
         return RedirectResponse(url=f"/?notice={NOTICE_NOT_FOUND}", status_code=303)
 
-    list_read = ledger.list_items(home, include_deferred=True)
+    list_read = _list_read(request)
     items = [
         item
         for item in (list_read.data or [])
@@ -893,25 +994,9 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
     registry = ledger.read_registry()
     host_registered = items[0].get("host_registered", True) if items else True
     host_add_command = models.host_add_command(scope, ledger.project_path_for(bucket.path))
-    report_read = ledger.report(home)
-    archive_entries, archive_error = _gather_archive_entries(
-        home, scope, name, report_read=report_read
-    )
-    replaced_here = _replaced_here(report_read, scope, name)
-
-    # 09 §5 unreadable-record row: the skip-and-count line's number comes
-    # from `status --json`'s per-bucket `unreadable` field — never a
-    # server-side ledger derivation. A failed/old-CLI read (absent field)
-    # degrades to 0 (no line), never a crash.
-    status_read = ledger.status(home)
-    _seed_header_status(request, status_read, generation)
-    unreadable = 0
-    if status_read.ok and status_read.data:
-        for b in status_read.data.get("buckets", []):
-            if b.get("bucket") == name and b.get("scope") == scope:
-                unreadable = b.get("unreadable", 0)
-                break
-
+    # The routed-here archive, the replaced-rule count and the unreadable
+    # line need `report --json` and `status --json` (seconds on a large
+    # ledger): they load after the page appears (`bucket_later`, below).
     model = models.build_bucket_model(
         name,
         scope,
@@ -921,9 +1006,6 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
         registry,
         host_registered=host_registered,
         host_add_command=host_add_command,
-        unreadable=unreadable,
-        archive_entries=archive_entries,
-        archive_error=archive_error,
     )
 
     # Y-13: the bucket pane split (09 §2.2) + any pending proposal on a
@@ -948,7 +1030,8 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
         {
             "model": model,
             "place": _place(home, scope, name),
-            "replaced_here": replaced_here,
+            "later_url": f"/bucket/{quote(scope)}/{quote(name)}/later"
+            + ("?empty=1" if not model.groups and not model.clusters else ""),
             "notice": notice,
             "list_error": list_read.error,
             "pane": pane_snapshot,
@@ -961,6 +1044,51 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
                 if bucket_proposal is not None
                 else None
             ),
+        },
+    )
+
+
+@router.get("/bucket/{scope}/{name}/later", response_class=HTMLResponse)
+def bucket_later(request: Request, scope: str, name: str, empty: int = 0) -> Response:
+    """The bucket page's slow sections, fetched by the page after it has
+    appeared: the "Routed here" archive, the count of replaced rules and the
+    unreadable-records line, from `report --json` and `status --json` read at
+    the same time. ``empty`` says the page showed its "Nothing is waiting"
+    sentence, whose tail (the counts) this fills in. A failed report read
+    shows the archive's own "unavailable" state, as before."""
+    home = _home(request)
+    if _find_bucket(home, scope, name) is None:
+        return Response(status_code=404)
+    generation = _jobs_line_cache(request)["generation"]
+    status_ran: list = []
+    reads = _gather(
+        request,
+        report=lambda: _report_read(request),
+        status=lambda: _read(request, "status", lambda: ledger.status(home), ran=status_ran),
+    )
+    report_read, status_read = reads["report"], reads["status"]
+    if status_ran:
+        _seed_header_status(request, status_read, generation)
+    archive_entries, archive_error = _gather_archive_entries(home, scope, name, report_read=report_read)
+    # 09 §5 unreadable-record row: the skip-and-count line's number comes
+    # from `status --json`'s per-bucket `unreadable` field -- never a
+    # server-side ledger derivation. A failed/old-CLI read (absent field)
+    # degrades to 0 (no line), never a crash.
+    unreadable = 0
+    if status_read.ok and status_read.data:
+        for b in status_read.data.get("buckets", []):
+            if b.get("bucket") == name and b.get("scope") == scope:
+                unreadable = b.get("unreadable", 0)
+                break
+    return _render(
+        request,
+        "partials/bucket_later.html",
+        {
+            "archive": models.build_archive_rows(archive_entries, scope),
+            "archive_error": archive_error,
+            "replaced_here": _replaced_here(report_read, scope, name),
+            "unreadable": unreadable,
+            "empty": bool(empty),
         },
     )
 
@@ -1467,13 +1595,13 @@ async def mine_near_miss_promote(
 # -------------------------------------------------------------------- Report
 
 
-#: The Health page re-reads `report --json` and `status --json` (about 8 s
-#: on the real ledger) on every full load. A filter or "show all" request
-#: from the page's own htmx form re-arranges what that page already showed, so
-#: it reuses the last full load's reads for this long (gate r2 m-1). A full
-#: page load (no HX-Request) always re-reads and refreshes the cache.
+#: A filter or "show all" request from the Health page's own htmx form
+#: re-arranges what the page already showed, so it may reuse the page's
+#: reads for this long (gate r2 m-1) -- longer than the 30 s the shared read
+#: cache gives other pages, but still only while the ledger's state is
+#: unchanged (a write drops them). The page's own first load reads through
+#: the shared cache at its ordinary expiry.
 _REPORT_CACHE_TTL = 300.0
-_REPORT_CACHE: dict[str, tuple[float, Any, Any]] = {}
 
 
 def _deferred_titles(home: Path, report: Any) -> dict[str, str]:
@@ -1503,56 +1631,76 @@ def _report_url(q: str, show_all: bool) -> str:
     return "/report" + ("?" + "&".join(params) if params else "")
 
 
+def _health_ctx(request: Request, *, ttl: float | None) -> dict[str, Any]:
+    """The Health page's body context: `report --json` and `status --json`
+    (read at the same time, through the shared cache) arranged by
+    :func:`health.build_health`. *ttl* overrides the cache's expiry for the
+    page's own filter requests."""
+    home = _home(request)
+    generation = _jobs_line_cache(request)["generation"]
+    status_ran: list = []
+    reads = _gather(
+        request,
+        report=lambda: _read(request, "report", lambda: ledger.report(home), ttl=ttl),
+        status=lambda: _read(request, "status", lambda: ledger.status(home), ttl=ttl, ran=status_ran),
+    )
+    report_read, status_read = reads["report"], reads["status"]
+    if status_ran:  # a remembered read (a filter) must not re-seed an older status
+        _seed_header_status(request, status_read, generation)
+    status_data = status_read.data if status_read.ok and isinstance(status_read.data, dict) else {}
+    q = request.query_params.get("q", "").strip()
+    show_all = request.query_params.get("all", "") not in ("", "0")
+    model = health.build_health(
+        report_read.data,
+        status_data.get("metrics"),
+        status_data.get("supply_mix"),
+        status_data.get("buckets"),
+        query=q,
+        show_all=show_all,
+        titles=_deferred_titles(home, report_read.data),
+    )
+    return {
+        "report": report_read.data,
+        "report_error": report_read.error,
+        "health": model,
+        "status_error": status_read.error,
+    }
+
+
 @router.get("/report", response_class=HTMLResponse)
 def report_page(request: Request) -> HTMLResponse:
     """The Health page (humane lane 2, 09 §2.7): `report --json` and
     `status --json`'s counted facts, arranged in a person's words by
     :func:`health.build_health` -- tiles, three charts, a table of the
     rules in use by their own text. `?q=` filters that table on the
-    server through the page's htmx form, `?all=1` lifts its row limit."""
-    import time
+    server through the page's htmx form, `?all=1` lifts its row limit.
 
-    home = _home(request)
+    A full page load answers at once with a shell that fetches its own body
+    (`GET /report/body`, below) after it has appeared; a request from the
+    page's htmx form, or a history restore, gets the whole page with its
+    body, from the reads the page already made."""
+    _note_reload(request)
     is_htmx = request.headers.get("HX-Request") == "true"
     restoring = request.headers.get("HX-History-Restore-Request") == "true"
-    key = str(home)
-    cached = _REPORT_CACHE.get(key)
-    if is_htmx and cached is not None and time.monotonic() - cached[0] < _REPORT_CACHE_TTL:
-        report_read, status_read = cached[1], cached[2]
-    else:
-        generation = _jobs_line_cache(request)["generation"]
-        report_read = ledger.report(home)
-        status_read = ledger.status(home)
-        _REPORT_CACHE[key] = (time.monotonic(), report_read, status_read)
-        _seed_header_status(request, status_read, generation)
-    status_data = status_read.data if status_read.ok and isinstance(status_read.data, dict) else {}
-    metrics = status_data.get("metrics")
-    supply_mix = status_data.get("supply_mix")
-    q = request.query_params.get("q", "").strip()
-    show_all = request.query_params.get("all", "") not in ("", "0")
-    model = health.build_health(
-        report_read.data,
-        metrics,
-        supply_mix,
-        status_data.get("buckets"),
-        query=q,
-        show_all=show_all,
-        titles=_deferred_titles(home, report_read.data),
-    )
-    response = _render(
-        request,
-        "report.html",
-        {
-            "report": report_read.data,
-            "report_error": report_read.error,
-            "health": model,
-            "status_error": status_read.error,
-        },
-    )
-    if is_htmx and not restoring:
+    if not is_htmx:
+        query = request.url.query
+        return _render(request, "report.html", {"lazy": True, "lazy_query": f"?{query}" if query else ""})
+    response = _render(request, "report.html", _health_ctx(request, ttl=_REPORT_CACHE_TTL))
+    if not restoring:
+        q = request.query_params.get("q", "").strip()
+        show_all = request.query_params.get("all", "") not in ("", "0")
         # the address bar shows the clean form: no empty `?q=` after a cleared box
         response.headers["HX-Push-Url"] = _report_url(q, show_all)
     return response
+
+
+@router.get("/report/body", response_class=HTMLResponse)
+def report_body(request: Request) -> HTMLResponse:
+    """The Health page's body, fetched by the shell after it appeared. A
+    failed read comes back as the body's own error strip (nothing else
+    about the page is affected); the shell's script shows its own error and
+    a retry for a request that fails outright."""
+    return _render(request, "partials/health_body.html", _health_ctx(request, ttl=None))
 
 
 # ---------------------------------------------------------------- settings

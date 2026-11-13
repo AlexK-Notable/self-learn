@@ -160,12 +160,15 @@ KIND_PROBE = "probe"
 KIND_LEDGER = "ledger"
 KIND_PLACEMENT = "placement"
 
-REACH, WRITABLE, INTACT = premises.PLACEMENT_PREMISE_IDS
+REACH, WRITABLE, INTACT, BUDGET, CANON, DISPUTED = premises.PLACEMENT_PREMISE_IDS
 
 _PLACEMENT_CLAIMS = {
     REACH: "a session loads the file this lesson was placed in",
     WRITABLE: "self-learn may still write to the place this lesson was routed to",
     INTACT: "the managed block holding this lesson is as self-learn left it",
+    BUDGET: "the user's always-loaded CLAUDE.md has room for this lesson's line",
+    CANON: "nothing the user wrote by hand in their own instruction files covers this lesson",
+    DISPUTED: "no open lesson is recorded as contradicting this one",
 }
 #: The destinations whose lessons have ``@reach`` and ``@writable``
 #: (02 §3a.10.3); ``@intact`` only for the two that have a managed region
@@ -818,7 +821,181 @@ def _placement_rows(
             else:
                 regions.append(region)
     facts.extend(_intact_facts(regions, members_by_target))
+    facts.extend(_budget_facts(home, placed, regions, claude_dir, sweep))
+    facts.extend(_disputed_facts(home, placed))
     return [_fact_row(fact, sweep) for fact in facts]
+
+
+def _disputed_facts(home: Path, placed: list[tuple[Bucket, Record]]) -> list[_Fact]:
+    """``@disputed`` (S-150): a failing fact for each placed lesson
+    that an OPEN lesson (pending or deferred) names in `links.contradicts`.
+    The steward may not touch a placed lesson it was not given, so before
+    this a new lesson contradicting a placed rule was parked for the weekly
+    overseer while the old rule kept loading (six days, live 2026-11-02 to
+    11-07, ended by a hand replace). The value is the set of open lessons
+    disputing it: decided once, the lesson is not offered again until
+    another one disputes it. No fact for a lesson nothing disputes."""
+    placed_ids = {record.id for _bucket, record in placed}
+    disputed: dict[str, set[str]] = {}
+    for bucket in discover_buckets(home):
+        for path in bucket.pending_files():
+            try:
+                record = Record.from_path(path)
+            except (RecordError, UnicodeDecodeError, OSError):
+                continue
+            if record.status not in ("pending", "deferred"):
+                continue
+            for target in record.contradicts:
+                if target in placed_ids and target != record.id:
+                    disputed.setdefault(str(target), set()).add(record.id)
+    return [
+        _Fact(
+            rid, DISPUTED, "failing", "disputed-by:" + ",".join(sorted(by)),
+            "contradicted by " + ", ".join(sorted(by)),
+            f"the open lesson(s) {', '.join(sorted(by))} are recorded as contradicting this one",
+        )
+        for rid, by in sorted(disputed.items())
+    ]
+
+
+#: S-148: a lesson whose stored text is this close (cosine, the index's
+#: own embedding) to text the user wrote by hand is offered as covered by it.
+#: Measured 2026-11-12 on the one live case (a hand-written section against
+#: 412 lessons): the lesson it duplicated scored 0.85, the nearest unrelated
+#: placed lesson 0.75 -- which is also `index.related`'s bar for "related".
+CANON_COSINE_BAR = 0.80
+
+
+def _canon_semantic(home: Path, cache_dir: Path, change: "Any", wanted: set[str]) -> dict[str, float]:
+    """``lesson id -> cosine`` for the placed lessons the lesson index puts
+    at or above :data:`CANON_COSINE_BAR` to *change*'s text. Asked once per
+    change (one embedding call) and kept in the cache; an index with no
+    embeddings, or a failed call, gives ``{}`` and is asked again next sweep."""
+    from . import canon_watch
+
+    kept = canon_watch.watch_dir(cache_dir) / f"semantic-{change.sha}.json"
+    try:
+        found = json.loads(kept.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        found = None
+    if not isinstance(found, dict):
+        from .index import textquery
+        from .index.store import HYBRID, LessonIndex
+
+        try:
+            index = LessonIndex.open_existing(home)
+            if index is None:
+                return {}
+            result = textquery.nearest_text(index, change.text, limit=40)
+        except Exception:  # noqa: BLE001 -- no index: the word match stands alone
+            return {}
+        if result.mode != HYBRID:
+            return {}
+        found = {
+            hit.id: round(float(hit.cosine), 3)
+            for hit in result.hits
+            if hit.cosine is not None and hit.cosine >= CANON_COSINE_BAR
+        }
+        try:
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            fsops.atomic_write(kept, json.dumps(found) + "\n", fsync=False, preserve_mode=False)
+        except OSError:
+            pass
+    return {rid: float(score) for rid, score in found.items() if rid in wanted}
+
+
+def _canon_facts(
+    home: Path, placed: list[tuple[Bucket, Record]], claude_dir: Path, cache_dir: Path,
+    now: datetime,
+) -> list[_Fact]:
+    """``@canon`` (S-148): a failing fact for each placed lesson that
+    text the user added by hand to their own always-loaded files resembles
+    (`canon_watch`: a word match, and the lesson index's embeddings when it
+    has them); no fact for any other lesson, so a lesson that stops
+    resembling anything simply has no row. The value is the change's short
+    hash, so one change is one input version for a lesson: decided once, it
+    is not offered again."""
+    from . import canon_watch
+
+    changes = canon_watch.observe(cache_dir, claude_dir, now=now)
+    if not changes:
+        return []
+    lessons = {record.id: str(record.body or "") for _bucket, record in placed}
+    best = canon_watch.resembling(changes, lessons)
+    for change in changes:
+        near = sorted(
+            _canon_semantic(home, cache_dir, change, set(lessons)).items(),
+            key=lambda pair: (-pair[1], pair[0]),
+        )[: canon_watch.MAX_LESSONS_PER_CHANGE]
+        for rid, score in near:
+            if rid not in best or score > best[rid][1]:
+                best[rid] = (change, score)
+    facts: list[_Fact] = []
+    for rid in sorted(best):
+        change, score = best[rid]
+        name = Path(change.path).name
+        facts.append(_Fact(
+            rid, CANON, "failing", f"canon:{change.sha}",
+            f"{name} change:{change.sha} first seen {change.at[:10]}",
+            f"text the user wrote by hand in {name} (first seen {change.at[:10]}) resembles "
+            f"this lesson (match {score})",
+        ))
+    return facts
+
+
+def _budget_facts(
+    home: Path, placed: list[tuple[Bucket, Record]], regions: list[_Region],
+    claude_dir: Path, sweep: str,
+) -> list[_Fact]:
+    """``@budget`` (S-147) for every lesson placed in the user's
+    always-loaded CLAUDE.md: `holds` while its line is among those the word
+    budget has room for, `failing` when it is ranked past the budget
+    (`always_budget.standings`). No fact at all with the budget off, and for
+    every other placement. A file that cannot be read is `unavailable`."""
+    from . import always_budget
+    from .always_loaded import is_always_loaded
+
+    budget = always_budget.budget_words(home)
+    if budget <= 0:
+        return []
+    mine: dict[str, Record] = {}
+    for bucket, record in placed:
+        routing = record.routing or {}
+        if bucket.scope == "user" and is_always_loaded(
+            routing.get("destination"), routing.get("variant")
+        ) and routing.get("variant") is None:
+            mine[record.id] = record
+    if not mine:
+        return []
+    target = claude_dir / "CLAUDE.md"
+    observed = next(
+        (r.observed for r in regions if r.target == target and r.observed is not None), None
+    )
+    if observed is None:
+        return [
+            _Fact(rid, BUDGET, "unavailable", detail="the user's CLAUDE.md block cannot be read")
+            for rid in sorted(mine)
+        ]
+    now = chrono.to_dt(sweep) or datetime.now(timezone.utc)
+    lines = always_budget.user_lines(
+        home, observed.decode("utf-8", errors="replace"), mine, now=now
+    )
+    standing = always_budget.standings(lines, budget, now.date())
+    facts: list[_Fact] = []
+    for rid in sorted(mine):
+        row = standing.get(rid)
+        if row is None:
+            facts.append(_Fact(rid, BUDGET, "unavailable", detail="its line is not in the block"))
+        elif row.over:
+            facts.append(_Fact(
+                rid, BUDGET, "failing", always_budget.failing_value(budget, now.date()),
+                row.shown(), row.detail(),
+            ))
+        else:
+            facts.append(_Fact(
+                rid, BUDGET, "holds", "within", "in its first days" if row.grace else row.shown()
+            ))
+    return facts
 
 
 # ------------------------------------------------------ judging a history
@@ -1331,6 +1508,19 @@ def run(
             result.errors.append(f"placement premises failed ({type(exc).__name__})")
         rows.extend(placement)
         result.placement = len(placement)
+        try:
+            canon = [
+                _fact_row(fact, sweep_at)
+                for fact in _canon_facts(
+                    home, placed, _claude_dir(claude_dir), cache_dir,
+                    datetime.fromtimestamp(now_epoch, timezone.utc),
+                )
+            ]
+        except Exception as exc:  # noqa: BLE001 -- never takes a sweep down
+            canon = []
+            result.errors.append(f"the user's own files could not be read against the lessons ({type(exc).__name__})")
+        rows.extend(canon)
+        result.placement += len(canon)
     result.unavailable = sum(1 for row in rows if row["state"] == premises.OBS_UNAVAILABLE)
 
     history = read_history(cache_dir)

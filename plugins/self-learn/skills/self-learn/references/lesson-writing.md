@@ -25,5 +25,12 @@ Make the Trigger a situation the agent can recognise from inside it: name the fi
 text, what the user says. Do not start it with "When"; the line adds that word. Keep the user's own words
 exactly when they are the point, and quote them; never put your paraphrase in quote marks.
 
+A Context that reports what the user said says no more than the quote it rests on. Put the quote in, in
+their words, and add beside it only what you can point to. Before you place a lesson, and whenever you
+re-read one, compare each sentence of its Context that speaks for the user with the evidence quote; where
+the sentence claims more than the quote says (a wider rule, a stronger word, a reason they did not give),
+`revise` the Context down to the quote first. An overstated Context is how a narrow remark becomes a
+standing rule nobody gave.
+
 When you rewrite an existing lesson, account for every idea in the old text: still loaded, moved to Context
 or a field, or dropped. A dropped idea needs a reason (wrong, out of date, or said by another lesson you name).

@@ -1056,8 +1056,11 @@ commits or pushes there. List one only when a lesson's case shows it belongs in 
 projects.yaml shows the project registered: no (registered: removed is a person's or agent's undo, and it
 stands). path is the absolute path; case is the case-… id it comes
 from; why is one line of at most {REGISTRATION_WHY_MAX} characters. The runner refuses a path that is not an
-existing directory inside the user's home, is the ledger or self-learn's cache, is registered already or was
-removed, and never registers git mode (that stays the user's). Each registration is listed in the report with the
+existing directory inside the user's home or inside a root the user listed in the setting hosts.extra_roots (a
+directory on another disk: the root itself never counts), is the ledger or self-learn's cache, is registered already
+or was removed, and never registers git mode (that stays the user's). When a lesson's directory is under neither
+home nor a listed root, do not list it: say so in report.md, naming the directory and the setting hosts.extra_roots
+(only the user adds a root). Each registration is listed in the report with the
 command that undoes it; a lesson can be routed there from the next run on. At most
 {hosts_mod.MAX_REGISTRATIONS_PER_RUN} a run.
 user-model-delta.yaml is {{updates: [...]}}. Each update is either
@@ -1291,8 +1294,9 @@ def _run_phase_s(
             "status": "skill-candidate-dropped", "reason": line[:300]})
     if not dry_run and model_calls:
         discovery_mod.keep(home, workspace, week, key, run_id)
+    held = tuple(_failure_detail(line) or line for line in checked.held)
     return discovery_mod.PhaseS(
-        discovery_mod.STATE_OK, candidates=checked.entries, notes=drops,
+        discovery_mod.STATE_OK, candidates=checked.entries, notes=(*drops, *held),
         model_calls=model_calls, reused_from=reused_from,
     )
 
@@ -3095,7 +3099,7 @@ def _validate_registrations(
     """Validate hosts.yaml (S-112) ENTRY BY ENTRY, as notices are: a
     bad entry costs that entry, named by its ordinal (never its text) in
     one runner line for "Refused / could not do". Shape only: the path's
-    own checks (an existing directory inside the user's home, not the
+    own checks (an existing directory inside the user's home or a root listed in hosts.extra_roots, not the
     ledger or the cache, not registered) run when the record executes
     (:func:`hosts.registration_problem`), against the registry as it is
     then. Each kept entry is ``{path, case, why}``; a request for git mode

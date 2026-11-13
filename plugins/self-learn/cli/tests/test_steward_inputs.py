@@ -205,7 +205,9 @@ def test_identity_is_the_record_and_changes_when_the_record_changes(tmp_path, ro
     assert first == _blob(home, record_path)
     assert row["legacy_version"] == _blob(home, record_path.parent.parent / "proposals" / "lrn-a0000002.yaml")
 
-    _publish_disposition(home, "lrn-a0000002", first, "parked", "run-aaaaaaaa0001")
+    # S-144: a `refused` row decides a version; a `parked` one only hands
+    # the lesson to the overseer (test_s144_steward_crash.py).
+    _publish_disposition(home, "lrn-a0000002", first, "refused", "run-aaaaaaaa0001")
     assert _selected(home) == [], "decided at this version: not offered again"
 
     # an analyst proposal rewritten beside the record changes nothing ...
@@ -227,8 +229,10 @@ def test_identity_is_the_record_and_changes_when_the_record_changes(tmp_path, ro
 
 def test_a_version_decided_under_the_proposal_identity_is_still_decided(tmp_path, roots):
     """Every run record before U3a keyed its dispositions by the PROPOSAL
-    blob. A lesson parked for the overseer then stays pending; without the
-    bridge it would be offered again every night."""
+    blob. A lesson decided then and still pending stays decided; without the
+    bridge it would be offered again every night. (S-144: the row
+    here is `applied`; a `parked` row hands a lesson to the overseer, whose
+    parked case holds it, and decides nothing by itself.)"""
     home = make_env(tmp_path).ledger
     for rid in ("lrn-a0000003", "lrn-a0000004"):
         ledger_ops.create_record(home, _behavior(rid))
@@ -236,7 +240,7 @@ def test_a_version_decided_under_the_proposal_identity_is_still_decided(tmp_path
     commit_all(home, "two lessons with proposals")
     assert _selected(home) == ["lrn-a0000003", "lrn-a0000004"], "positive control"
     proposal = ledger_ops.find_record_path(home, "lrn-a0000003").parent.parent / "proposals" / "lrn-a0000003.yaml"
-    _publish_disposition(home, "lrn-a0000003", _blob(home, proposal), "parked", "run-aaaaaaaa0002")
+    _publish_disposition(home, "lrn-a0000003", _blob(home, proposal), "applied", "run-aaaaaaaa0002")
 
     assert _selected(home) == ["lrn-a0000004"]
 
@@ -663,7 +667,11 @@ def test_a_legacy_fire_is_one_observation_with_its_backfill_suspect(ledger):
 
 @pytest.mark.parametrize(
     ("state", "selected"),
-    [("refused", True), ("applied", False), ("parked", False), ("abandoned", False)],
+    # S-144: `parked` and `abandoned` hand a lesson to the overseer.
+    # While its parked case stands the lesson is held and never reaches the
+    # selection; with no such case (as here) the hand-over ended without a
+    # decision and the lesson is the steward's again.
+    [("refused", True), ("applied", False), ("parked", True), ("abandoned", True)],
 )
 def test_the_legacy_bridge_carries_decisions_but_not_refusals(state, selected, tmp_path, roots):
     """Orchestrator review, 2026-09-27: two live lessons were refused over a

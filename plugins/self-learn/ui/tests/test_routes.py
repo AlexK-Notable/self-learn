@@ -3247,7 +3247,8 @@ class TestReportPage:
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
         c, _runner = make_client(sb)
-        r = c.get("/report")
+        assert c.get("/report").status_code == 200  # the shell
+        r = c.get("/report/body")
         assert r.status_code == 200
         assert "Health" in r.text
         fold = r.text.split("All counters, with their names", 1)[1]

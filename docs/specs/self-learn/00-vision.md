@@ -31,6 +31,18 @@ loads natively.** It is not a runtime injection layer, not a statistical
 learning loop, and not a portability framework — gen 1 designed all three
 first, and review killed each for v1 (`05-evidence.md`, E-1/E-2/E-3).
 
+> **Dated note, 2026-11-12 — portability is deferred, not ruled out by the
+> owner.** The owner's first request for this project (2026-06-22) was: "i
+> want something 'transposable' that can get adopted into another repo." The
+> sentence above, which lists a portability framework among the things
+> self-learn is not, records the outcome of an agent-run design review for
+> v1. No message typed by the owner agreeing to drop portability has been
+> found, so it must not be read as the owner's decision. The request stands
+> as open work: `06-horizon.md` carries it as G-2 ("second host": a manifest
+> and an install story so that self-learn in another repository is an
+> installable act), with the packaging phase as its groundwork. Whether and
+> when to build it is the owner's call; nothing in this document settles it.
+
 Two distinctions from gen 1 survive intact and matter everywhere:
 
 - **Knowledge vs behavior.** A knowledge lesson is a fact ("HA caches

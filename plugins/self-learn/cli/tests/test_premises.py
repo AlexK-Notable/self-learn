@@ -777,7 +777,7 @@ class TestFiles:
         ).state == OBS_UNAVAILABLE
         (fakes.home / "big.conf").write_bytes(b"x" * (premises.READ_LIMIT + 1))
         big = premises.run_probe(
-            {"kind": "file-match", "path": "~/big.conf", "contains": "x"}, fakes.env()
+            {"kind": "file-match", "path": "~/big.conf", "line": "x"}, fakes.env()
         )
         assert big.state == OBS_UNAVAILABLE and "read limit" in big.reason
 

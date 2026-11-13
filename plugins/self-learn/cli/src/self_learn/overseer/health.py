@@ -40,6 +40,61 @@ def context_budget_crowding(gathered: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def user_instruction_changes(home: Path) -> dict[str, Any]:
+    """S-148: the text the user added by hand to their own always-loaded
+    files in the last weeks (`canon_watch`, kept by the daily sweep). The
+    nightly steward is offered the placed lessons a change RESEMBLES; a
+    lesson a change contradicts in substance without sharing its words is
+    only found by reading, which is this row's job."""
+    from .. import canon_watch, premise_sweep
+
+    try:
+        changes = canon_watch._load_changes(  # noqa: SLF001 -- read-only
+            canon_watch.watch_dir(premise_sweep.default_cache_dir(home))
+        )
+        value: Any = [
+            {
+                "file": change.path, "first_seen": change.at[:10],
+                "text": scan.redact(change.text[:1500])[0],
+            }
+            for change in changes
+        ]
+    except Exception as exc:  # noqa: BLE001 -- a health row never ends the packet
+        value = f"unavailable ({type(exc).__name__})"
+    return {
+        "kind": "user-instruction-changes",
+        "label": (
+            "Text the user wrote by hand in their own instruction files recently. Their words "
+            "outrank a lesson: when a placed lesson (in any scope, a skill included) says more "
+            "than, or the opposite of, what they wrote here, reconsider it in this run -- "
+            "narrow it, replace it or retire it -- so that no agent has to do it by hand."
+        ),
+        "value": value,
+    }
+
+
+def user_always_loaded_budget(home: Path) -> dict[str, Any]:
+    """S-147: the word budget of the user's always-loaded lesson lines and
+    how the file stands against it (`always_budget.summary`). The nightly
+    steward moves the lines ranked past it; the overseer is told the numbers
+    because its own routes into that file are not refused by the budget."""
+    from .. import always_budget
+
+    try:
+        value: Any = always_budget.summary(home)
+    except Exception as exc:  # noqa: BLE001 -- a health row never ends the packet
+        value = f"unavailable ({type(exc).__name__})"
+    return {
+        "kind": "user-claude-md-budget",
+        "label": (
+            "Words of lesson lines in the user's always-loaded CLAUDE.md against the budget "
+            "(`always_loaded.user_word_budget`). Over it, do not add a line there without "
+            "moving one out in the same run; the steward is moving the least-met lines."
+        ),
+        "value": value,
+    }
+
+
 def reference_read_verdict(gathered: dict[str, Any]) -> dict[str, Any]:
     context = gathered.get("context_budget") or {}
     return {
@@ -572,6 +627,8 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         surface_reach(gathered),
         recurrence_suspects(gathered),
         never_fired_always_loaded(_always_loaded_ids(resolved), fired),
+        user_always_loaded_budget(resolved),
+        user_instruction_changes(resolved),
         condition_row,
         # S-105: the premise check's facts (design D11) and the week's
         # census of hand steps (hand-maintenance cures, lane C).

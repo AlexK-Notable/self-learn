@@ -449,15 +449,15 @@ def client(tmp_path: Path, monkeypatch):
 
 class TestHealthPage:
     def test_positive_control_the_page_rendered_with_its_regions(self, client) -> None:
-        r = client.get("/report")
+        r = client.get("/report/body")
         assert r.status_code == 200
         for region in ("rules in use", "rules seen again", "open follow-ups", "is it keeping up",
                        "where lessons come from", "what got decided"):
             assert f'aria-label="{region}"' in r.text
-        assert 'data-page="report"' in r.text
+        assert 'data-page="report"' in client.get("/report").text  # the shell carries the page kind
 
     def test_tiles_quote_the_cli_numbers(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         tiles = re.findall(r'health-tile-label">(.*?)</div>\s*<div class="health-tile-value">(.*?)</div>', text)
         assert tiles == [
             ("Rules in use", "3"),
@@ -468,7 +468,7 @@ class TestHealthPage:
         assert "of 211 put to use, 10%: replaced later by a better rule" in text
 
     def test_rules_are_listed_by_their_words_not_their_ids(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         table = text.split('aria-label="rules in use"', 1)[1].split("</table>", 1)[0]
         assert "About to accept an empty result as proof a check passed" in table
         # the id is only the link target, never visible text
@@ -480,17 +480,17 @@ class TestHealthPage:
         assert "Your instructions" in table and "Warning hook" in table
 
     def test_most_seen_again_first(self, client) -> None:
-        table = client.get("/report").text.split('aria-label="rules in use"', 1)[1]
+        table = client.get("/report/body").text.split('aria-label="rules in use"', 1)[1]
         assert table.index("empty result") < table.index("pkill")
 
     def test_no_raw_json_and_no_old_machine_headings(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         assert 'class="raw-report"' not in text and "Raw (verbatim)" not in text
         assert "&#34;routed_live&#34;" not in text and '"routed_live"' not in text
         assert "<pre" not in text
 
     def test_counters_keep_their_cli_names_with_rates_as_percent(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         fold = text.split("All counters, with their names", 1)[1]
         assert "<code>routed_ever</code></td><td class=\"num\">211</td>" in fold
         assert "<code>supersede_rate</code></td><td class=\"num\">10.4%</td>" in fold
@@ -499,22 +499,22 @@ class TestHealthPage:
         assert "<code>metrics.pending_over_30d_pct</code></td><td class=\"num\">0%</td>" in fold
 
     def test_seen_again_groups_sightings_by_rule(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         sec = text.split('aria-label="rules seen again"', 1)[1].split("</section>", 1)[0]
         assert sec.count("<tr>") == 2  # header + ONE row for two sightings
         assert re.search(r'<td class="num" data-label="Times seen">2</td>', sec)
         assert "A transcript matched the rule&#39;s text" in sec and "A session broke the rule" in sec
 
     def test_filter_is_server_side(self, client) -> None:
-        text = client.get("/report", params={"q": "pkill"}).text
+        text = client.get("/report/body", params={"q": "pkill"}).text
         table = text.split('aria-label="rules in use"', 1)[1].split("</table>", 1)[0]
         assert "pkill" in table and "empty result" not in table
         assert "1 of 3 rules match" in text
-        none = client.get("/report", params={"q": "zzzz"}).text
+        none = client.get("/report/body", params={"q": "zzzz"}).text
         assert "No rule matches" in none
 
     def test_the_filter_text_is_escaped(self, client) -> None:
-        text = client.get("/report", params={"q": '"><script>x</script>'}).text
+        text = client.get("/report/body", params={"q": '"><script>x</script>'}).text
         assert "<script>x</script>" not in text
 
     def test_rows_are_limited_until_show_all(self, client, monkeypatch) -> None:
@@ -526,33 +526,37 @@ class TestHealthPage:
             for i in range(health.DEFAULT_LIMIT + 7)
         ]
         monkeypatch.setattr(ledger, "report", lambda home: CliRead(data=many))
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         assert text.count('class="health-rule"') >= health.DEFAULT_LIMIT
         assert f"Show all {health.DEFAULT_LIMIT + 7}" in text
-        full = client.get("/report", params={"all": "1"}).text
+        full = client.get("/report/body", params={"all": "1"}).text
         assert "Rule number %d" % (health.DEFAULT_LIMIT + 6) in full
         assert "Rule number %d" % (health.DEFAULT_LIMIT + 6) not in text
         assert f"Showing all {health.DEFAULT_LIMIT + 7}." in full
         # gate r1 n-5 / r2 n-3: "Showing all" compares the MATCHED count with the limit
-        few = client.get("/report", params={"all": "1", "q": "number 3"}).text
+        few = client.get("/report/body", params={"all": "1", "q": "number 3"}).text
         assert "rules match" in few and "Showing all" not in few
         # gate r2 n-8: filtering from the "all" view keeps it (a hidden field in the form)
         assert 'name="all" value="1"' in few and 'name="all"' not in text
 
     def test_a_filter_request_from_the_page_does_not_re_read_the_report(self, client, monkeypatch) -> None:
         """Gate r2 m-1: `report --json` takes about 8 s on the real ledger.
-        The page's own htmx filter reuses the last full load's reads; a full
-        page load always re-reads."""
+        The page's own htmx filter reuses the reads the page's body made (its
+        `/report/body` fetch); a change to the ledger, or the reads growing
+        stale, makes the next request read again."""
         from self_learn_ui import routes
 
-        client.get("/report")
+        client.get("/report")  # the shell: it reads nothing, its body does
+        assert client.calls == {"report": 0, "status": 0}
+        client.get("/report/body")
         assert client.calls == {"report": 1, "status": 1}
         hx = {"HX-Request": "true"}
         r = client.get("/report", params={"q": "pkill"}, headers=hx)
         assert "1 of 3 rules match" in r.text
         client.get("/report", params={"all": "1"}, headers=hx)
         assert client.calls == {"report": 1, "status": 1}, "a filter must not re-run the CLI"
-        client.get("/report", params={"q": "pkill"})  # a shared link / reload: a full load
+        client.app.state.refresh_hub.force_refresh("front")  # the ledger changed
+        client.get("/report", params={"q": "pkill"}, headers=hx)
         assert client.calls == {"report": 2, "status": 2}
         monkeypatch.setattr(routes, "_REPORT_CACHE_TTL", 0.0)  # a stale cache is re-read
         client.get("/report", params={"q": "x"}, headers=hx)
@@ -569,7 +573,7 @@ class TestHealthPage:
         assert "HX-Push-Url" not in client.get("/report", params={"q": "x"}, headers=restore).headers
 
     def test_the_filter_form_shows_a_search_indicator_and_disables_its_button(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         form = text.split('<form class="health-filter"', 1)[1].split("</form>", 1)[0]
         assert 'hx-disabled-elt="find button"' in form
         assert 'class="health-searching" role="status">Searching' in form
@@ -581,7 +585,7 @@ class TestHealthPage:
         top-level key of `report --json` is a counter in the fold under its
         CLI name (the lists of rows as an entry count), and the facts a
         person would look for are also in readable sections."""
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         fold = text.split("All counters, with their names", 1)[1]
         names = re.findall(r"<code>([^<]+)</code>", fold)
         assert names, "positive control: the counters fold rendered rows"
@@ -599,7 +603,7 @@ class TestHealthPage:
         assert "<code>reference_shelf.targets</code></td><td class=\"num\">2 entries</td>" in fold
 
     def test_deferred_lessons_have_readable_rows(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         sec = text.split('aria-label="put off for later"', 1)[1].split("</section>", 1)[0]
         assert "Put off for later (3)" in sec
         assert "widget" in sec  # the place by its label, not the bucket slug
@@ -614,13 +618,13 @@ class TestHealthPage:
         assert "lrn-" not in visible and "Open the lesson" not in sec
 
     def test_deferred_rows_are_most_overdue_first_and_not_yet_due_last(self, client) -> None:
-        sec = client.get("/report").text.split('aria-label="put off for later"', 1)[1]
+        sec = client.get("/report/body").text.split('aria-label="put off for later"', 1)[1]
         assert sec.index("31 days overdue") < sec.index("2 days overdue") < sec.index("due in 7 days")
 
     def test_flagged_checks_name_the_file_in_words(self, client) -> None:
         """Gate r2 m-5: a warning the CLI raised reads with the file it is
         about, not only as a counter that says "yes"."""
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         budget = text.split('aria-label="instruction file size"', 1)[1].split("</details>", 1)[0]
         assert "2 flagged</summary>" in budget
         assert "widget: most of what self-learn wrote there is warnings; self-learn&#39;s share of the file grew fast this month." in budget
@@ -631,7 +635,7 @@ class TestHealthPage:
         assert "the rows themselves are in the command-line report" in fold
 
     def test_dismissed_sightings_have_readable_rows(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         sec = text.split('aria-label="dismissed sightings"', 1)[1].split("</details>", 1)[0]
         assert "(2)" in sec
         assert "About to accept an empty result as proof a check passed" in sec  # the rule's words
@@ -642,7 +646,7 @@ class TestHealthPage:
         assert "lrn-" not in visible
 
     def test_reach_budget_places_and_destinations_in_words(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         reach = text.split('aria-label="reach"', 1)[1].split("</details>", 1)[0]
         assert "Of 163 rules checked: 43 reach a place the assistant reads, 56 do not, and 64 could not be measured." in reach
         assert '<td class="health-rule">Warning hook</td><td class="num" data-label="Reach">0</td><td class="num" data-label="Do not reach">8</td>' in reach
@@ -661,14 +665,14 @@ class TestHealthPage:
         assert "Counted on 2026-11-01." in text
 
     def test_the_two_seen_again_numbers_say_what_each_counts(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         assert 'title="Times a sighting of this rule was confirmed">Confirmed again</th>' in text
         sec = text.split('aria-label="rules seen again"', 1)[1]
         assert "Rules seen again, not yet decided (1)" in sec
         assert "Times seen</th>" in sec and "that nobody has judged yet" in sec
 
     def test_a_user_level_hook_does_not_read_as_living_in_the_instructions(self, client) -> None:
-        text = client.get("/report").text
+        text = client.get("/report/body").text
         table = text.split('aria-label="rules in use"', 1)[1].split("</table>", 1)[0]
         # lrn-aaaa0002 is a hook in the USER bucket, whose label is "Your instructions"
         assert 'Warning hook<span class="health-where">For all your work</span>' in table
@@ -686,7 +690,7 @@ class TestHealthPage:
 
         monkeypatch.setattr(ledger, "report", lambda home: CliRead(data=None, error="report failed: boom"))
         monkeypatch.setattr(ledger, "status", lambda home: CliRead(data=None, error="status failed"))
-        r = c.get("/report")
+        r = c.get("/report/body")
         assert r.status_code == 200
         assert "report failed: boom" in r.text
         assert "health-tile" not in r.text

@@ -99,7 +99,7 @@ QUALIFIED_NAME = f"mcp__{SERVER}__{TOOL_NAME}"
 PLACEMENT_VERDICTS = frozenset({"holds", "moved", "unavailable"})
 
 _LESSON_ID = r"^lrn-[0-9a-f]{8}$"
-_PREMISE_ID = r"^(p[1-4]|@reach|@writable|@intact)$"
+_PREMISE_ID = r"^(p[1-4]|@reach|@writable|@intact|@budget|@canon|@disputed)$"
 _ARG_KEYS = frozenset({"probe", "holds_if", "match", "lesson", "premise"})
 
 
@@ -172,7 +172,10 @@ _DESCRIPTION = (
     "Probe kinds and their fields: path {path} (exists, type, symlink "
     "target); file-match {path, and exactly one of contains | line | "
     "lines} (a literal anywhere, a whole line, or the hash of lines "
-    "'A' or 'A-B'; a literal, not a regular expression; for contains "
+    "'A' or 'A-B'; a literal, not a regular expression; `contains` "
+    "searches the file as a stream, so it also works on a large program "
+    "file such as the installed claude binary (up to 1 GiB), while `line` "
+    "and `lines` refuse a file over 256 KiB; for contains "
     "and line the value is the token present or absent, so a premise on "
     "it is holds_if equals with match present or absent, or changed; "
     "lines takes changed only); json-key / "

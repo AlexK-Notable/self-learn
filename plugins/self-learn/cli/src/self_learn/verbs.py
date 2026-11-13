@@ -7787,6 +7787,26 @@ def _merged_follow_up(records: list[Record]) -> dict | None:
     return open_ups[0][1] if open_ups else None
 
 
+def _create_from_line(verb: str, **fields) -> Record:
+    """`Record.create` for a lesson a sheet line words (S-144): a lesson the
+    record schema refuses -- a fact rewritten as a behavior lesson with no
+    `kind`, an empty section -- is the LINE's mistake, so it is refused as
+    one (`bad-line`: the writer's to fix in its repair turn) instead of
+    escaping as a bare `records.ValidationError`. Live 2026-11-07: that
+    escape ended the steward job three times over one `replace` line and
+    parked the whole packet of five lessons at the attempt cap."""
+    try:
+        return Record.create(**fields)
+    except records_mod.ValidationError as exc:
+        hint = (
+            " (a behavior lesson needs `kind:` on the line when the lesson it "
+            "rewrites is a fact)"
+            if fields.get("type") == "behavior" and fields.get("kind") is None
+            else ""
+        )
+        raise SheetLineError(f"{verb}: the new lesson is not valid -- {exc}{hint}") from exc
+
+
 def _compose_replacement(
     first: Record,
     also: list[Record],
@@ -7812,7 +7832,8 @@ def _compose_replacement(
     if new_type == "behavior":
         if kind is None and first.type == "behavior":
             kind = first.kind
-        record = Record.create(
+        record = _create_from_line(
+            "replace",
             type="behavior", scope=scope, source="rewrite", kind=kind,
             trigger=sections.get("Trigger"), instruction=sections.get("Instruction"),
             context=sections.get("Context"), evidence=evidence, record_id=record_id,
@@ -7820,7 +7841,8 @@ def _compose_replacement(
     else:
         if kind is not None:
             raise SheetLineError("replace: kind applies to behavior lessons only")
-        record = Record.create(
+        record = _create_from_line(
+            "replace",
             type="knowledge", scope=scope, source="rewrite", fact=sections.get("Fact"),
             context=sections.get("Context"), evidence=evidence, record_id=record_id,
         )
@@ -8406,7 +8428,8 @@ def _compose_restatement(
     if new_type == "behavior":
         if kind is None and anchor.type == "behavior":
             kind = anchor.kind
-        record = Record.create(
+        record = _create_from_line(
+            "restate",
             type="behavior", scope=scope, source="rewrite", kind=kind,
             trigger=sections.get("Trigger"), instruction=sections.get("Instruction"),
             context=sections.get("Context"), evidence=evidence, record_id=record_id,
@@ -8414,7 +8437,8 @@ def _compose_restatement(
     else:
         if kind is not None:
             raise SheetLineError("restate: kind applies to behavior lessons only")
-        record = Record.create(
+        record = _create_from_line(
+            "restate",
             type="knowledge", scope=scope, source="rewrite", fact=sections.get("Fact"),
             context=sections.get("Context"), evidence=evidence, record_id=record_id,
         )

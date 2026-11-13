@@ -374,6 +374,27 @@ def _scanned(text: str, where: str) -> str:
     return _withheld(hits[0].rule, where) if hits else text
 
 
+def _withhold_matches(value: Any, *, keep: tuple[str, ...] = ()) -> None:
+    """Replace, in place, every text the secret scan matches inside *value*
+    (a list or mapping of rows) with a one-line note naming the rule; the
+    keys in *keep* are left alone. The rest of the row stays shown."""
+    if isinstance(value, dict):
+        items: Any = list(value.items())
+    elif isinstance(value, list):
+        items = list(enumerate(value))
+    else:
+        return
+    for key, item in items:
+        if key in keep:
+            continue
+        if isinstance(item, str):
+            hits = scan.scan(item)
+            if hits:
+                value[key] = _withheld(hits[0].rule, "the field").strip()
+        else:
+            _withhold_matches(item, keep=keep)
+
+
 def _blind(value: object) -> object:
     """*value* with every case id, every mention of the steward and every
     mention of a (skill) proposal replaced by ``[withheld]``; a value that
@@ -470,10 +491,13 @@ def stage_inputs(
 
     # skills-index.yaml: every skill loaded here, and which self-learn owns.
     index = catalogue.render_skills_index(machine)
-    for row in index["skills"]:
-        description = row.get("description")
-        if isinstance(description, str) and scan.scan(description):
-            row["description"] = _withheld(scan.scan(description)[0].rule, "its SKILL.md").strip()
+    # Withhold only the field the secret scan matches, never the whole file:
+    # a plugin-cache path carries a commit hash that the scan reads as
+    # high-entropy base64, and stubbing the file for it left phase S, and
+    # the `into` check, with no skill at all (2026-11-08).
+    _withhold_matches(index["skills"], keep=("name",))
+    for key in ("not_loaded", "problems"):
+        _withhold_matches(index[key])
     from .. import skill_registry
 
     try:
@@ -484,13 +508,19 @@ def stage_inputs(
         staged.notes.append(f"owned-skills.yaml could not be read ({exc})")
         index["self_learn_owns"] = []
         index["vetoed_names"] = []
+    # A skill whose own name the scan matches cannot be named in `into`.
+    shown_names = {
+        str(row["name"]) for row in index["skills"]
+        if isinstance(row.get("name"), str) and not scan.scan(row["name"])
+    }
+    for row in index["skills"]:
+        if isinstance(row.get("name"), str) and row["name"] not in shown_names:
+            row["name"] = _withheld(scan.scan(row["name"])[0].rule, "its name").strip()
     index_text = _yaml_text(index)
     shown_index = _scanned(index_text, "the skills index")
     write(workspace, workspace / SKILLS_INDEX_FILE, shown_index)
     # A stubbed index showed phase S no skill, so `into:` may name none.
-    staged.skill_names = frozenset(
-        str(row["name"]) for row in index["skills"] if isinstance(row.get("name"), str)
-    ) if shown_index == index_text else frozenset()
+    staged.skill_names = frozenset(shown_names) if shown_index == index_text else frozenset()
 
     # history.yaml: earlier runs' candidates and what became of each.
     past = history(home)
@@ -703,6 +733,9 @@ class Candidates:
     entries: tuple[dict[str, Any], ...] = ()
     drops: tuple[str, ...] = ()
     why: str | None = None
+    #: Lines for candidates kept in ``entries`` with a ``held_because`` (an
+    #: ``into`` that names no skill phase S was shown); never dropped.
+    held: tuple[str, ...] = ()
 
 
 def _text_ok(value: object) -> bool:
@@ -751,8 +784,8 @@ def _candidate_problem(
                 "name must be lowercase letters, digits and single hyphens, at most "
                 f"{SKILL_NAME_MAX_CHARS} characters"
             )
-    elif not isinstance(entry["into"], str) or entry["into"] not in skills:
-        return f"into names {entry['into']!r}, which is not a skill in {SKILLS_INDEX_FILE}"
+    elif not isinstance(entry["into"], str):
+        return "into must be the name of a skill in " + SKILLS_INDEX_FILE
     checked = entry.get("checked")
     if checked is not None:
         if not isinstance(checked, list) or any(
@@ -795,6 +828,7 @@ def read_candidates(path: Path, inputs: StagedInputs) -> Candidates:
         return Candidates(False, why=f"{name} has unknown top-level key(s): {', '.join(map(str, unknown))}")
     kept: list[dict[str, Any]] = []
     drops: list[str] = []
+    held: list[str] = []
     seen: set[str] = set()
     for ordinal, entry in enumerate(data["candidates"], start=1):
         problem = _candidate_problem(
@@ -805,12 +839,23 @@ def read_candidates(path: Path, inputs: StagedInputs) -> Candidates:
             continue
         assert isinstance(entry, dict)
         seen.add(entry["id"])
-        kept.append({
+        row = {
             key: entry[key]
             for key in ("id", "name", "into", "lessons", "moment", "why", "checked")
             if key in entry
-        })
-    return Candidates(True, tuple(kept), tuple(drops))
+        }
+        if "into" in entry and entry["into"] not in inputs.skill_names:
+            # Not dropped: the group of lessons is real, and only the skill
+            # it names is unknown to the index. Phase B sees it, with this
+            # reason, and decides it (build under a new name, defer, decline).
+            reason = (
+                f"into names {entry['into']!r}, which is not a skill in {SKILLS_INDEX_FILE}; "
+                "decide it as build (a new skill), defer or decline"
+            )
+            row["held_because"] = reason
+            held.append(f"{name}: candidate {_label(entry, ordinal)} kept for phase B — {reason}")
+        kept.append(row)
+    return Candidates(True, tuple(kept), tuple(drops), held=tuple(held))
 
 
 @dataclass(frozen=True)

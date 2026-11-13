@@ -432,7 +432,7 @@ always resolves, so this one is checked after resolution). Such a
    each as a PLAIN project host through `hosts.register_plain_project`,
    committed `By: overseer` whatever shell started the run, with the case,
    the reason and the undo command in the body. It refuses, writing nothing,
-   a path that is not an existing directory strictly inside the user's home,
+   a path that is not an existing directory strictly inside the user's home (or, since S-149, strictly inside a root listed in `hosts.extra_roots`),
    that is the ledger or self-learn's cache (inside either or above either),
    or that is registered already; it never registers git mode, which stays a
    person's act (or the agent's under the grant): git mode is the one case

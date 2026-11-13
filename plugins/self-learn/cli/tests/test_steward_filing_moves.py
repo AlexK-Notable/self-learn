@@ -212,7 +212,9 @@ def test_a_lesson_moved_before_the_move_entry_existed_is_selected_again(tmp_path
 
 
 @pytest.mark.parametrize("by", ["overseer", None], ids=["overseer", "person"])
-def test_a_parked_lesson_a_person_or_the_overseer_moves_is_selected_again(by, tmp_path):
+def test_a_parked_lesson_a_person_or_the_overseer_moves_is_selected_again(
+    by, tmp_path, monkeypatch
+):
     """The overseer decides a parked case by moving the lesson (live:
     `case-64084ade` -> `case-7d83a07b` rehomed `lrn-56860b4a`; that move
     was project->user and so changed the bytes by luck). A same-scope move
@@ -224,7 +226,14 @@ def test_a_parked_lesson_a_person_or_the_overseer_moves_is_selected_again(by, tm
     _publish_run(env.home, "run-f11000000002", [
         (row, "parked", "case-f1100002", [{"n": 1, "id": rid, "verb": "route"}]),
     ])
-    assert _selected(env.home) == [], "positive control: parked and unmoved, still decided"
+    # S-144: what keeps a parked lesson from the steward is its
+    # parked case (`cases.held_lessons`), not the run's row.
+    with monkeypatch.context() as held:
+        held.setattr(
+            steward.cases, "held_lessons",
+            lambda h: {rid: [{"case": "case-f1100002", "parked_reason": "authority-unclear"}]},
+        )
+        assert _selected(env.home) == [], "positive control: parked and unmoved, still held"
 
     env.move(rid, env.host_b, by=by)
 
@@ -233,7 +242,7 @@ def test_a_parked_lesson_a_person_or_the_overseer_moves_is_selected_again(by, tm
 
 
 @pytest.mark.parametrize("state", ["parked", "refused", "abandoned", "overtaken"])
-def test_host_rebind_leaves_a_decided_lesson_decided(state, tmp_path):
+def test_host_rebind_leaves_a_decided_lesson_decided(state, tmp_path, monkeypatch):
     """Gate F1 on 61ec621: `host rebind` renames a whole bucket and writes
     no record. A decision tied to the bucket made every decided lesson in
     it look undecided -- a second case beside the overseer's parked one, a
@@ -243,6 +252,13 @@ def test_host_rebind_leaves_a_decided_lesson_decided(state, tmp_path):
     rid = "lrn-f1100003"
     env.lesson(rid)
     row = env.row(rid)
+    if state in ("parked", "abandoned"):
+        # S-144: a hand-over is kept by its parked case, which a
+        # rebind does not touch either.
+        monkeypatch.setattr(
+            steward.cases, "held_lessons",
+            lambda h: {rid: [{"case": "case-f1100003", "parked_reason": "authority-unclear"}]},
+        )
     _publish_run(env.home, "run-f11000000003", [
         (row, state, "case-f1100003", [{"n": 1, "id": rid, "verb": "route"}]),
     ])
