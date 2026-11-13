@@ -601,7 +601,7 @@ def _inputs(known=(RID_A, RID_B), skills_here=("example-diagrams",)):
     (_candidate(lessons=()), "non-empty list"),
     ({**_candidate(), "extra": 1}, "unknown key"),
     ({**_candidate(), "id": "release-notes"}, "sc-<short-kebab-slug>"),
-    ({k: v for k, v in _candidate(into="nowhere").items() if k != "name"}, "not a skill in"),
+    ({k: v for k, v in _candidate(into=5).items() if k != "name"}, "into must be the name"),
 ])
 def test_a_bad_candidate_costs_that_candidate_only(tmp_path, entry, why):
     path = tmp_path / discovery.CANDIDATES_FILE

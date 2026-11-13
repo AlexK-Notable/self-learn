@@ -1291,8 +1291,9 @@ def _run_phase_s(
             "status": "skill-candidate-dropped", "reason": line[:300]})
     if not dry_run and model_calls:
         discovery_mod.keep(home, workspace, week, key, run_id)
+    held = tuple(_failure_detail(line) or line for line in checked.held)
     return discovery_mod.PhaseS(
-        discovery_mod.STATE_OK, candidates=checked.entries, notes=drops,
+        discovery_mod.STATE_OK, candidates=checked.entries, notes=(*drops, *held),
         model_calls=model_calls, reused_from=reused_from,
     )
 
