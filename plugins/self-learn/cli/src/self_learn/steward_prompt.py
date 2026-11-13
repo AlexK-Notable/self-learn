@@ -1543,6 +1543,11 @@ def _hook_lines() -> list[str]:
         "  You never write the script: the runner generates it from the hook block and replays",
         "  every example against it before anything is committed; an example the script gets",
         "  wrong refuses that line alone. The lesson must have a Trigger (a behavior lesson).",
+        "  A FACT (type knowledge) has no Trigger, so the ledger refuses to route it to a hook",
+        "  as it is. When a pending fact is really a rule about one call, `replace` it first (no",
+        "  `dest`, so the new lesson lands pending) with `type: behavior`, a `kind`, `trigger`",
+        "  and `instruction`; the new lesson comes to you in the next run and takes the hook",
+        "  route then. Otherwise place the fact where facts go.",
         "  The runner places the script; switching it on stays the user's setting",
         "  (`overseer.hook_activation`), so with it off the hook is placed and not registered.",
     ]
