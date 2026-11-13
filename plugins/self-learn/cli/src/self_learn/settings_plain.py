@@ -97,6 +97,8 @@ _TABLE: dict[str, Plain] = {
         "How many older rules with no checks yet the nightly review is offered each night to write them. 0 pauses it."),
     "premises.rotation_days": _p("runs", "Re-read each rule every",
         "How many days pass before a placed rule is re-read to see if it still holds. 0 turns re-reading off."),
+    "always_loaded.user_word_budget": _p("runs", "Room for lessons every session loads",
+        "The most words of lessons your main instructions file may hold. Over it, the nightly review moves the least-used lessons somewhere cheaper. 0 turns the limit off."),
     "premises.rotation_per_night": _p("runs", "Rules re-read each night",
         "How many rules the nightly review re-reads a night: auto spreads them so each is read once per period."),
     "worker.repair": _p("runs", "Retry a failed draft",

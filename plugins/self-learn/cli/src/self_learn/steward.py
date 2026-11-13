@@ -25,6 +25,7 @@ from ruamel.yaml import YAML, YAMLError
 
 from . import (
     attribution,
+    always_budget,
     always_loaded,
     domain,
     model_failures,
@@ -2703,14 +2704,23 @@ def _pair_problem(
         replace_problem = _placement_decision_problem(
             home, case_data, lines, inputs, label=case_path.name
         )
+    if replace_problem is None:
+        replace_problem = _budget_keep_problem(case_data, inputs, label=case_path.name)
     if replace_problem is not None:
         return replace_problem
-    return always_loaded.route_problem(
+    combined = always_loaded.route_problem(
         case_data,
         items if isinstance(items, list) else [],
         resolve=always_loaded.proposal_resolver(home) if home is not None else None,
         placement=always_loaded.placement_resolver(home) if home is not None else None,
         label=case_path.name,
+    )
+    if combined is not None or home is None:
+        return combined
+    # S-147: the user's always-loaded file has a word budget the steward
+    # may not pass (`always_budget.route_problem`).
+    return always_budget.route_problem(
+        home, case_data, items if isinstance(items, list) else [], label=case_path.name,
     )
 
 
@@ -2997,6 +3007,41 @@ def _quotable_words(line: str) -> str:
     start of a quoted line) the words after it (`steward_inputs.quotable_line`
     shows the brief the same)."""
     return steward_inputs.quotable_line(line)
+
+
+def _budget_keep_problem(
+    case_data: dict, inputs: Mapping[str, Mapping] | None, *, label: str
+) -> str | None:
+    """S-147: a decision that KEEPS a lesson in the user's always-loaded
+    CLAUDE.md while that file is over its budget (`outcome: no-action` on an
+    `@budget` premise-moved input) must evidence the combined test again, all
+    three parts, from the case's own evidence (`always_loaded.missing_tests`)
+    -- the bar a new line has to pass. Without it "keep" is the cheapest
+    answer and the file never comes down. A parked case is never applied."""
+    if case_data.get("kind") == "parked" or not inputs:
+        return None
+    if case_data.get("outcome") != "no-action":
+        return None
+    kept = [
+        str(rid) for rid in case_data.get("records") or []
+        if any(
+            isinstance(item, Mapping) and item.get("source") == "placement"
+            and item.get("premise") == always_budget.PREMISE_ID
+            for item in (inputs.get(str(rid)) or {}).get("moved") or []
+        )
+    ]
+    if not kept:
+        return None
+    missing = always_loaded.missing_tests(case_data)
+    if not missing:
+        return None
+    return (
+        f"{label}: this `no-action` case keeps {kept} in the user's always-loaded CLAUDE.md, "
+        "which is over its word budget; keeping a line there needs all three tests evidenced "
+        f"in decision.{always_loaded.DECISION_KEY} (missing or without evidence: {missing}; "
+        "each needs `because` and `refs` naming this case's own evidence refs) -- or move the "
+        "lesson somewhere cheaper, retire it, or park the case"
+    )
 
 
 def _placement_decision_problem(

@@ -249,7 +249,11 @@ ON_CHANGE_VALUES = frozenset({"re-decide", "refresh"})
 BASELINE_STATES = frozenset({"holds", "contradicts-claim"})
 #: U8's implicit placement premises (02 §3a.10.3 as drafted): derived by
 #: code, never written. The ``@`` keeps them apart from written ids.
-PLACEMENT_PREMISE_IDS = ("@reach", "@writable", "@intact")
+#: `@budget` (S-147): derived only for a lesson placed in the user's
+#: always-loaded CLAUDE.md (`always_budget.py`).
+#: `@canon` (S-148): derived only for a placed lesson that text the user
+#: wrote by hand in their own instruction files resembles (`canon_watch.py`).
+PLACEMENT_PREMISE_IDS = ("@reach", "@writable", "@intact", "@budget", "@canon")
 
 
 def intact_failing_value(verdict: str, region_sha: str | None) -> str | None:

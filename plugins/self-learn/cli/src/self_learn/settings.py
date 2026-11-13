@@ -1190,6 +1190,27 @@ REGISTRY: tuple[Setting, ...] = (
         tier="C",
         override_channel=False,
     ),
+    # S-147: the word budget of the lesson lines in the user's always-loaded
+    # CLAUDE.md (`always_budget.py`). The sweep fails `@budget` for the lines
+    # ranked past it, and the steward's runner refuses a case that would
+    # enter a line past it. 0 turns both off.
+    Setting(
+        name="always_loaded.user_word_budget",
+        env_var=None,
+        config_section="always_loaded",
+        config_key="user_word_budget",
+        kind="int",
+        default=1500,  # always_budget.DEFAULT_WORDS
+        validate=lambda v: max(cast(int, v), 0),
+        validate_hint="must be >= 0",
+        description=(
+            "the most words the lesson lines of the user's always-loaded CLAUDE.md may hold; "
+            "lines ranked past it are offered to the steward to move, and the steward may "
+            "not add one past it; 0 turns the budget off"
+        ),
+        tier="C",
+        override_channel=False,
+    ),
     # S-114: how many `premise-review` inputs one run may take.
     # `auto` (the default) is ceil(live placed lessons / rotation_days) + 1,
     # which grows with the ledger, so the backlog always drains and the

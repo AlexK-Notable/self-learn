@@ -1496,6 +1496,17 @@ def _premise_lines() -> list[str]:
         "  `supersedes` (the runner fills one in only when exactly one earlier case covers any",
         "  of them). Both lines are refused on any other input. On an `@reach` or `@writable`",
         "  input the lesson moves with a `route` line (applied as a reroute), or is retired.",
+        # S-147
+        "  An `@budget` input: the user's always-loaded CLAUDE.md holds more lesson words than",
+        "  its budget (`always_loaded.user_word_budget`) and this line is ranked past it. Move",
+        "  it somewhere cheaper, retire it, or keep it by evidencing the combined test again;",
+        "  the input's own lines list the choices in order. The same budget refuses a case of",
+        "  yours that would put a new line into that file past it: choose a cheaper destination",
+        "  or park the case (always-loaded-user-scope).",
+        # S-148
+        "  An `@canon` input: the user wrote text by hand in their own instruction files that",
+        "  resembles this placed lesson. Their words outrank a lesson: retire it as covered,",
+        "  rewrite it to agree, or leave it with a note saying what it adds.",
     ]
 
 

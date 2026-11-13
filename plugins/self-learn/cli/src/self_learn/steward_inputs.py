@@ -1397,7 +1397,18 @@ _PLACEMENT_WORDS = {
     "@reach": "no session loads the file this lesson sits in any more",
     "@writable": "self-learn may no longer write where this lesson sits",
     "@intact": "a person edited this lesson's managed block by hand",
+    "@budget": (
+        "the user's always-loaded CLAUDE.md is over its word budget, and this line is "
+        "ranked past it"
+    ),
+    "@canon": (
+        "the user wrote text by hand in their own instruction files that resembles this "
+        "lesson"
+    ),
 }
+_CANON_CHANGE_RE = re.compile(r"\bchange:([0-9a-f]{12})\b")
+#: The user's added text is shown up to this many characters.
+_CANON_SHOWN_CHARS = 2_400
 #: A managed block longer than this is shown as its diff only.
 _REGION_SHOWN_CHARS = 6_000
 #: At most this many diff lines in a brief.
@@ -1507,6 +1518,8 @@ def _placement_item_lines(home: Path, record: Record, item: Mapping[str, Any]) -
     ]
     if item.get("detail"):
         lines.append(f"    detail: {_clip(item.get('detail'), 400)}")
+    if pid == "@canon":
+        lines += _canon_text_lines(home, item)
     if pid == "@intact":
         members = [str(m) for m in item.get("members") or [] if str(m) != record.id]
         if members:
@@ -1516,6 +1529,52 @@ def _placement_item_lines(home: Path, record: Record, item: Mapping[str, Any]) -
             )
         lines += _intact_region_lines(home, record.id)
     return lines
+
+
+def _canon_text_lines(home: Path, item: Mapping[str, Any]) -> list[str]:
+    """S-148: what the user wrote, for an ``@canon`` mover: read from the
+    sweep's cache by the change's short hash (the run record keeps only the
+    hash). A line the secret scan matches is shown as withheld."""
+    from . import canon_watch, premise_sweep  # late
+
+    match = _CANON_CHANGE_RE.search(str(item.get("now") or ""))
+    change = None
+    if match:
+        try:
+            change = canon_watch.change_by_sha(
+                premise_sweep.default_cache_dir(home), match.group(1)
+            )
+        except Exception:  # noqa: BLE001 -- unreadable cache: said below
+            change = None
+    if change is None:
+        return ["    what the user wrote: no longer kept (read the file named above yourself)"]
+    out = [f"    what the user wrote by hand in {change.path} (first seen {change.at[:10]}):"]
+    shown = 0
+    for line in change.text.splitlines():
+        if shown >= _CANON_SHOWN_CHARS:
+            out.append("      ... (more in the file)")
+            break
+        out.append("      | " + (_shown_line(line) if not scan_hit(line) else "(withheld: secret scan)"))
+        shown += len(line)
+    return out
+
+
+def _canon_decide_lines(case: str) -> list[str]:
+    """S-148: the [how to decide it] lines of an ``@canon`` mover."""
+    return [
+        f"[how to decide it against the user's own words] in {case}. The user wrote the text "
+        "above themselves, after this lesson was placed or without knowing of it; their words "
+        "outrank a lesson. Read both and decide which is true:",
+        "  - their text says what the lesson says (or more): `retire` the lesson with "
+        "`covered_by` naming that file, so the same rule is not loaded twice;",
+        "  - their text narrows or contradicts part of the lesson: `replace` it with wording "
+        "that agrees with what they wrote, keeping only what their text does not already say "
+        "(every idea of the old text in `decision.rewrite`), or `retire` it when nothing is "
+        "left;",
+        "  - the resemblance is only of words, and the lesson says something their text does "
+        "not: `outcome: no-action` with one `note` saying what the lesson adds;",
+        "  - you cannot tell which the user means now: park it with both quoted.",
+    ]
 
 
 def _placement_decide_lines(
@@ -1575,11 +1634,44 @@ def _placement_decide_lines(
             "  - you cannot tell, or a person placed it (the runner refuses moving a person's "
             "lesson): park it with your tentative answer.",
         ]
+    if "@budget" in placement_ids:
+        out += _budget_decide_lines(case)
+    if "@canon" in placement_ids:
+        out += _canon_decide_lines(case)
     out.append(
         "  Moving, narrowing, rewriting or retiring this placed lesson is yours here without "
         "the overseer (method section 17); merging it with another placed lesson is not."
     )
     return out
+
+
+def _budget_decide_lines(case: str) -> list[str]:
+    """S-147: the [how to decide it] lines of an ``@budget`` mover."""
+    return [
+        f"[how to decide what leaves the always-loaded file] in {case}. Every session of every "
+        "project pays for each line of that file, and the user's rule is that it holds only "
+        "lessons about high-value problems that recur across many sessions and many projects. "
+        "The file is over its budget, so the question is where this lesson is cheapest to "
+        "carry and still met, in this order:",
+        "  - it is about one command or one tool call: a warning hook (`route`, `dest: hook`, "
+        "its `hook` block; applied as a reroute);",
+        "  - it only matters while certain files are being read or edited: a path-scoped rule "
+        "(`route`, `dest: claude-md:rules:<topic>`, with `rules_paths`);",
+        "  - its evidence is from one project: that project (`replace` with `to: <the "
+        "project's path>` and a `dest`, usually `claude-md:local` or a rule there; every idea "
+        "of the old text in `decision.rewrite`);",
+        "  - it belongs to the moment an existing skill is loaded: that skill (`replace` with "
+        "`to: skill:<name>` and `dest: skill-md`);",
+        "  - something already loaded says it, or it no longer holds: `retire` with "
+        "`covered_by`, or `reject` it with the reason;",
+        "  - it must stay (it can come up in any session with nothing to warn the agent, "
+        "missing it is silent or costs real work, and nothing cheaper reaches the moment): "
+        "`outcome: no-action`, one `note` saying so, and `decision.always_loaded` evidencing "
+        "ALL THREE tests from this case's own evidence. Each line kept is a line that keeps "
+        "the file over its budget, so a lesson with no recorded sighting in ninety days stays "
+        "only on evidence stronger than its wording;",
+        "  - you cannot tell: park it with your tentative answer.",
+    ]
 
 
 def render_premise_moved(
