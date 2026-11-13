@@ -21,7 +21,7 @@ import pytest
 from self_learn import miner
 from self_learn.mining import contract, engine
 from self_learn.mining import tasks as mt
-from self_learn.mining.tracker import Project, TrackerError
+from self_learn.mining.tracker import Project, Tracker, TrackerError, TrackerRefused
 from test_mining_engine import (  # noqa: F401 -- fixtures
     PROJECT,
     FakeOutcome,
@@ -57,6 +57,7 @@ class FakeTracker:
     created: list[dict] = field(default_factory=list)
     fail_projects: bool = False
     fail_create: bool = False
+    refuse_projects: set = field(default_factory=set)
 
     def projects(self):
         if self.fail_projects:
@@ -75,6 +76,8 @@ class FakeTracker:
     def create_idea(self, *, project, title, why, quote=None):
         if self.fail_create:
             raise TrackerError("the znote daemon did not answer (URLError)")
+        if project in self.refuse_projects:
+            raise TrackerRefused(f"znote refused zk_work: no project {project!r}")
         wid = f"W-{900 + len(self.created)}"
         self.created.append({"id": wid, "project": project, "title": title, "why": why, "quote": quote})
         return wid
@@ -229,7 +232,10 @@ def test_a_bad_task_is_dropped_and_never_costs_the_session_its_lessons(home, roo
     result = run(home)
     assert result.status == "ok", result.engine
     assert len(pending(home)) == 1
-    out = json.loads((miner.miner_dir() / "runs" / result.run_id / "out" / f"{sid}.tasks.json").read_text())
+    folder = miner.miner_dir() / "runs" / result.run_id
+    out = json.loads((folder / "tasks" / f"{sid}.json").read_text())
+    # the run folder's out/ keeps one checked document per session, nothing else
+    assert sorted(x.name for x in (folder / "out").iterdir()) == [f"{sid}.json"]
     reasons = [d["reason"] for d in out["drops"]]
     assert reasons == ["bad-output", "quote-not-found", "bad-output", "over-count"]
     assert out["tasks"] == []
@@ -443,7 +449,8 @@ def test_search_later_sessions_reads_only_after_the_item_and_in_its_folders(tmp_
     worker.parent.mkdir(parents=True)
     worker.write_text(_line("assistant", "2026-11-04T09:00:00Z", "README dry-run in a worker", 1) + "\n")
     it = item(transcript=str(own), project_dir="-w-repo", line=2, entry_ts="2026-11-01T10:05:00Z")
-    tools = mt.CheckTools({"T1": it}, rootdir, FakeTracker(), frozenset({"host-repo"}))
+    tools = mt.CheckTools({"T1": it}, rootdir, FakeTracker(), frozenset({"host-repo"}),
+                          skip_prefix="-home-x--cache-self-learn")
     text = tools.search_later_sessions("T1", "README dry-run")
     assert "same session" in text and "L3, AGENT: README now documents dry-run" in text
     assert "I will document" not in text and "needs the dry-run" not in text
@@ -520,3 +527,115 @@ def test_file_from_files_exactly_what_the_dry_run_approved(home, root, cbackend,
     assert cli.main(["mine", "backfill-tasks", "--file-from", "../etc"]) == cli.EXIT_USAGE
     assert cli.main(["mine", "tasks"]) == 0
     assert "1 filed" in capsys.readouterr().out
+
+
+# ============================================================ gate fixes
+
+
+def test_parse_decisions_never_raises_on_odd_shapes():
+    deep = "[" * 5000 + "]" * 5000
+    for text in (
+        decisions({**file_it(), "id": ["T1"]}),
+        decisions({**file_it(), "project": ["host-repo"]}),
+        decisions({**file_it(), "reason": ["still-open"]}),
+        '{"decisions": ' + deep + "}",
+    ):
+        assert mt.parse_decisions(text, ["T1"], ["host-repo"]) == {}
+
+
+def test_a_refused_item_is_skipped_alone_and_given_up_after_three_refusals(tmp_path):
+    dec = {"file": True, "reason": "still-open", "title": "Document the flag", "why": "w" * 30, "note": ""}
+    s = mt.Store(tmp_path / "t.json", {
+        "a#L1": item("a#L1", when="2026-11-01T10:00:00Z", status="approved", decision={**dec, "project": "gone"}),
+        "b#L1": item("b#L1", when="2026-11-02T10:00:00Z", status="approved",
+                     decision={**dec, "project": "host-repo", "title": "Fix the export path check"}),
+    })
+    tr = FakeTracker(refuse_projects={"gone"})
+    f = mt.file_approved(s, tr, 5, run_id="r1", now=NOW)
+    assert f.filed == ["W-900"] and f.refused == 1 and f.failure is None
+    assert s.items["a#L1"]["status"] == "approved" and s.items["a#L1"]["refusals"] == 1
+    for _ in range(2):
+        mt.file_approved(s, tr, 5, run_id="r2", now=NOW)
+    assert s.items["a#L1"]["status"] == "skipped" and s.items["a#L1"]["decision"]["reason"] == "refused"
+
+
+def test_a_create_whose_reply_was_lost_is_recorded_under_the_existing_id(tmp_path):
+    s = mt.Store(tmp_path / "t.json", {"s1#L4": item(status="approved", decision={
+        "file": True, "reason": "still-open", "project": "host-repo", "title": "Document the flag",
+        "why": "w" * 30, "note": ""})})
+    tr = FakeTracker(existing={"host-repo": [{"id": "W-77", "stage": "idea", "status": "open",
+                                              "title": "Document the flag", "owner": "self-learn"}]})
+    f = mt.file_approved(s, tr, 5, run_id="r1", now=NOW)
+    assert f.filed == ["W-77"] and tr.created == []
+    assert s.items["s1#L4"]["status"] == "filed" and s.items["s1#L4"]["item"] == "W-77"
+
+
+def test_the_cap_counts_what_was_filed_in_the_last_day(tmp_path):
+    recent = (NOW - timedelta(hours=3)).isoformat()
+    old = (NOW - timedelta(hours=30)).isoformat()
+    s = mt.Store(tmp_path / "t.json", {
+        f"f{n}#L1": item(f"f{n}#L1", status="filed", filed_at=recent) for n in range(4)
+    } | {"g#L1": item("g#L1", status="filed", filed_at=old)})
+    assert s.remaining(5, NOW) == 1 and s.remaining(3, NOW) == 0
+
+
+def test_file_from_files_only_the_items_of_its_own_run(home, root, cbackend, fake_tracker, tmp_path):
+    sid = "s1aaaaaa-0000"
+    write_session(root, sid, task_rows(sid, host(tmp_path)))
+    cbackend.answers[sid] = answer(tasks=[task()])
+    cbackend.check_answer = decisions(file_it())
+    dry = miner.backfill_tasks(home, 14, dry_run=True)
+    live = store()
+    live.items["other#L9"] = item("other#L9", status="approved", decision={
+        "file": True, "reason": "still-open", "project": "host-repo", "title": "Some other approved work",
+        "why": "w" * 30, "note": ""})
+    live.save()
+    done = miner.file_reviewed_run(home, dry["run_id"], file_cap=5)
+    assert done["taken"] == 1 and len(done["filed"]) == 1
+    assert [c["title"] for c in fake_tracker.created] == ["Document the --dry-run flag in the export README"]
+    assert store().items["other#L9"]["status"] == "approved"
+
+
+def test_the_own_folder_is_searched_even_under_the_skip_prefix_and_others_there_never(tmp_path):
+    rootdir = tmp_path / "projects"
+    own = rootdir / "-c-self-learn-stage" / "s1.jsonl"
+    own.parent.mkdir(parents=True)
+    own.write_text(_line("assistant", "2026-11-01T10:00:00Z", "start", 1) + "\n"
+                   + _line("assistant", "2026-11-01T11:00:00Z", "README dry-run done", 2) + "\n")
+    sibling = rootdir / "-c-self-learn-other" / "s2.jsonl"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text(_line("assistant", "2026-11-02T11:00:00Z", "README dry-run in my own prompt", 1) + "\n")
+    tmpdir = rootdir / "-home-x-tmp-work" / "s3.jsonl"
+    tmpdir.parent.mkdir(parents=True)
+    tmpdir.write_text(_line("assistant", "2026-11-02T11:00:00Z", "README dry-run in a tmp folder", 1) + "\n")
+    it = item(transcript=str(own), project_dir="-c-self-learn-stage", line=1, entry_ts="2026-11-01T10:00:00Z")
+    tools = mt.CheckTools({"T1": it}, rootdir, FakeTracker(), frozenset({"host-repo"}), skip_prefix="-c-self-learn")
+    text = tools.search_later_sessions("T1", "README dry-run", all_folders=True)
+    assert "same session" in text and "README dry-run done" in text
+    assert "own prompt" not in text and "tmp folder" in text
+    assert mt.folder_slug("/home/komi/.cache/self-learn") == "-home-komi--cache-self-learn"
+
+
+class _PagedTracker(Tracker):
+    def __init__(self, pages, projects_text=""):
+        super().__init__("http://127.0.0.1:9/mcp")
+        self.pages, self.projects_text = pages, projects_text
+
+    def call(self, tool, arguments):
+        if tool == "zk_manage_projects":
+            return {"content": [{"type": "text", "text": self.projects_text}]}
+        off = arguments["offset"]
+        page = self.pages[off // 100] if off // 100 < len(self.pages) else []
+        return {"structuredContent": {"ok": True, "items": page, "total": sum(len(p) for p in self.pages)}}
+
+
+def test_tracker_items_come_newest_first_and_sub_projects_keep_their_own_words():
+    pages = [[{"id": f"W-{n}", "title": f"t{n}"} for n in range(k, k + 100)] for k in (1, 101)]
+    pages.append([{"id": "W-201", "title": "newest"}])
+    items = _PagedTracker(pages).items("p")
+    assert items[0]["id"] == "W-201" and items[-1]["id"] == "W-1" and len(items) == 201
+    text = ("Projects (2):\n\n* repo\n  Name: Repo\n  Description: the repo\n\n"
+            "  * repo/sub\n    Name: Sub\n    Description: the sub thing\n\n* other\n  Name: Other\n")
+    got = _PagedTracker([], text).projects()
+    assert got == [Project("repo", "Repo", "the repo"), Project("repo/sub", "Sub", "the sub thing"),
+                   Project("other", "Other", "")]

@@ -18,6 +18,7 @@ night.
 
 from __future__ import annotations
 
+import http.client
 import itertools
 import json
 import os
@@ -27,7 +28,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["WORKER_LABEL", "Project", "Tracker", "TrackerError", "default_url"]
+__all__ = ["WORKER_LABEL", "Project", "Tracker", "TrackerError", "TrackerRefused", "default_url"]
 
 #: The worker label every item self-learn files carries, and so its owner.
 WORKER_LABEL = "self-learn"
@@ -37,6 +38,18 @@ _ids = itertools.count(1)
 
 class TrackerError(RuntimeError):
     """The tracker could not be reached, or refused the call."""
+
+
+class TrackerRefused(TrackerError):
+    """The tracker answered and refused this one call (a project that is
+    gone, a title it will not take): the next item may still go through."""
+
+
+#: The daemon is on this machine: never send its traffic through a proxy
+#: the environment names (``http_proxy`` would otherwise apply to 127.0.0.1).
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_PROJECT_RE = re.compile(r"^(\s*)\* (\S+)\s*$")
+_FIELD_RE = re.compile(r"^(\s+)([A-Za-z][A-Za-z ]*):\s?(.*)$")
 
 
 def default_url() -> str:
@@ -74,23 +87,23 @@ class Tracker:
             headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with _OPENER.open(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
             raise TrackerError(f"the znote daemon did not answer ({type(exc).__name__})") from None
         try:
             doc = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             raise TrackerError("the znote daemon's reply is not JSON") from None
         if not isinstance(doc, dict) or "error" in doc:
             err = doc.get("error") if isinstance(doc, dict) else None
             msg = err.get("message") if isinstance(err, dict) else None
-            raise TrackerError(f"znote refused {tool}: {str(msg)[:200]}")
+            raise TrackerRefused(f"znote refused {tool}: {str(msg)[:200]}")
         result = doc.get("result")
         if not isinstance(result, dict):
             raise TrackerError(f"znote's reply to {tool} has no result")
         if result.get("isError"):
-            raise TrackerError(f"znote refused {tool}: {self.text(result)[:300]}")
+            raise TrackerRefused(f"znote refused {tool}: {self.text(result)[:300]}")
         return result
 
     @staticmethod
@@ -106,24 +119,31 @@ class Tracker:
     # ---- reads
 
     def projects(self) -> list[Project]:
-        """The active projects, parsed from ``zk_manage_projects list``."""
+        """The active projects, sub-projects included, parsed from
+        ``zk_manage_projects list``: each ``* <id>`` line opens one (a
+        sub-project's is indented two spaces per level), and the field lines
+        under it, indented deeper than it, are its own."""
         text = self.text(self.call("zk_manage_projects", {"action": "list", "include_note_counts": False}))
         out: list[Project] = []
         cur: dict[str, str] | None = None
+        depth = 0
         for line in text.splitlines():
-            if line.startswith("* "):
+            m = _PROJECT_RE.match(line)
+            if m:
                 if cur:
                     out.append(Project(cur["id"], cur.get("name", cur["id"]), cur.get("description", "")))
-                cur = {"id": line[2:].strip()}
-            elif cur is not None and line.startswith("  ") and ":" in line:
-                key, _, value = line.strip().partition(":")
-                cur[key.strip().lower()] = value.strip()
+                cur, depth = {"id": m.group(2)}, len(m.group(1))
+                continue
+            f = _FIELD_RE.match(line)
+            if cur is not None and f and len(f.group(1)) > depth:
+                cur.setdefault(f.group(2).strip().lower(), f.group(3).strip())
         if cur:
             out.append(Project(cur["id"], cur.get("name", cur["id"]), cur.get("description", "")))
         return [p for p in out if p.id]
 
-    def items(self, project: str, *, include_closed: bool = True, limit: int = 150) -> list[dict[str, Any]]:
-        """A project's tracker items, newest pages first as znote returns them."""
+    def items(self, project: str, *, include_closed: bool = True, limit: int = 5000) -> list[dict[str, Any]]:
+        """A project's tracker items, newest first (znote lists them oldest
+        first, by id, so every page is read and the order turned round)."""
         out: list[dict[str, Any]] = []
         offset = 0
         while True:
@@ -135,13 +155,13 @@ class Tracker:
             )
             if s.get("ok") is False:
                 err = s.get("error") or {}
-                raise TrackerError(f"znote refused the list: {str(err.get('message', ''))[:200]}")
+                raise TrackerRefused(f"znote refused the list: {str(err.get('message', ''))[:200]}")
             page = s.get("items") or []
             out.extend(i for i in page if isinstance(i, dict))
             total = s.get("total") or 0
             offset += len(page)
             if not page or offset >= total or len(out) >= limit:
-                return out[:limit]
+                return list(reversed(out))[:limit]
 
     def search_notes(self, query: str, project: str | None = None, limit: int = 5) -> str:
         args: dict[str, Any] = {"query": query, "limit": limit, "sources": "notes", "output": "full"}
@@ -168,7 +188,7 @@ class Tracker:
         s = self.structured(result)
         if s.get("ok") is False:
             err = s.get("error") or {}
-            raise TrackerError(f"znote refused the create: {str(err.get('message', ''))[:300]}")
+            raise TrackerRefused(f"znote refused the create: {str(err.get('message', ''))[:300]}")
         for candidate in (s.get("item") or {}).get("id") if isinstance(s.get("item"), dict) else None, s.get("summary"):
             if isinstance(candidate, str):
                 m = _ITEM_ID_RE.search(candidate)

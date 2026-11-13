@@ -37,14 +37,14 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Container, Iterable, Mapping, Sequence
 
 from ..invocation.contract import McpTool, McpToolset, ToolReply
 from ..primitives import fsops
 from .. import refs
 from ..scan import redact
 from . import spine as spine_mod
-from .tracker import Project, Tracker, TrackerError
+from .tracker import WORKER_LABEL, Project, Tracker, TrackerError, TrackerRefused
 
 __all__ = [
     "CHECK_BATCH",
@@ -74,7 +74,16 @@ REASONS = ("still-open", *SKIP_REASONS)
 TITLE_MAX = 120
 WHY_MAX = 500
 NOTE_MAX = 400
-WORKER_DIRS = re.compile(r"--cache-|-tmp-")
+#: Times an approved item may be refused by the tracker before it is given up on.
+MAX_REFUSALS = 3
+#: The window ``miner.tasks_per_night`` counts filings in.
+NIGHT_HOURS = 24
+
+
+def folder_slug(path: Path | str) -> str:
+    """The transcript folder name Claude Code gives a session started in
+    ``path`` (every character but a letter, digit or ``-`` becomes ``-``)."""
+    return re.sub(r"[^A-Za-z0-9-]", "-", str(path))
 _WORD_RE = re.compile(r"[\w.\-/]{3,}", re.U)
 
 
@@ -201,6 +210,17 @@ class Store:
                 n += 1
         return n
 
+    def filed_since(self, since: datetime) -> int:
+        return sum(1 for i in self.items.values()
+                   if i.get("status") == "filed" and (_parse(i.get("filed_at")) or since) > since)
+
+    def remaining(self, cap: int, now: datetime | None = None) -> int:
+        """What ``miner.tasks_per_night`` (``cap``) still allows: the cap less
+        what was filed in the last :data:`NIGHT_HOURS` hours, whichever run
+        filed it."""
+        now = now or _now()
+        return max(0, cap - self.filed_since(now - timedelta(hours=NIGHT_HOURS)))
+
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {}
         for i in self.items.values():
@@ -271,6 +291,9 @@ class CheckTools:
     root: Path
     tracker: Tracker
     project_ids: frozenset[str]
+    #: folder-name prefix of self-learn's own sessions (``folder_slug`` of
+    #: its cache root): never searched, except an item's own folder
+    skip_prefix: str = ""
     max_hits: int = 25
     _calls: int = field(default=0)
 
@@ -376,11 +399,12 @@ class CheckTools:
         files: list[Path] = []
         if self.root.is_dir():
             for d in self.root.iterdir():
-                if not d.is_dir() or WORKER_DIRS.search(d.name):
+                if not d.is_dir():
                     continue
                 # the folder itself and its worktrees' folders: a bare prefix
                 # would make a session started in the home folder match all
-                if not all_folders and d.name != family and not d.name.startswith(family + "--claude-worktrees-"):
+                mine = d.name == family or d.name.startswith(family + "--claude-worktrees-")
+                if not mine and (not all_folders or (self.skip_prefix and d.name.startswith(self.skip_prefix))):
                     continue
                 for f in d.glob("*.jsonl"):
                     try:
@@ -431,7 +455,7 @@ class CheckTools:
     def tracker_items(self, project: str, words: str = "") -> str:
         if project not in self.project_ids:
             raise ValueError(f"no project {project!r}; use one of the listed projects")
-        items = self.tracker.items(project, include_closed=True, limit=300)
+        items = self.tracker.items(project, include_closed=True)  # newest first
         terms = [w.casefold() for w in _WORD_RE.findall(words)]
         if terms:
             items = [i for i in items if any(t in str(i.get("title", "")).casefold() for t in terms)]
@@ -441,7 +465,8 @@ class CheckTools:
             f"{i.get('id')} [{i.get('stage')}/{i.get('status')}] {i.get('title')} (owner {i.get('owner')})"
             for i in items[:120]
         ]
-        return f"{len(items)} item(s) in {project}:\n" + "\n".join(rows)
+        more = f"\n(+{len(items) - 120} older not shown; give words to search them)" if len(items) > 120 else ""
+        return f"{len(items)} item(s) in {project}, newest first:\n" + "\n".join(rows) + more
 
     def search_notes(self, query: str, project: str = "") -> str:
         if project and project not in self.project_ids:
@@ -477,7 +502,9 @@ File an item only when every one of these holds:
 6. One of the listed projects clearly fits it, judged from the session's
    folder and the item's subject. Otherwise `unsure`.
 
-When you are not sure of any of these, skip it with `unsure`.
+When you are not sure of any of these, skip it with `unsure`. When two
+items below are the same work, file at most one and skip the other as
+`already-tracked`.
 
 For an item you file (`still-open`), write:
 - `title`: what to do to what, as an instruction in plain words, at most 100
@@ -533,7 +560,7 @@ def parse_decisions(text: str, batch_ids: Iterable[str], project_ids: Iterable[s
         return {}
     try:
         doc = json.loads(m.group(0))
-    except ValueError:
+    except (ValueError, RecursionError):
         return {}
     raw = doc.get("decisions") if isinstance(doc, dict) else None
     if not isinstance(raw, list):
@@ -541,17 +568,18 @@ def parse_decisions(text: str, batch_ids: Iterable[str], project_ids: Iterable[s
     ids, projects = set(batch_ids), set(project_ids)
     out: dict[str, dict] = {}
     for d in raw:
-        if not isinstance(d, dict) or d.get("id") not in ids or d["id"] in out:
+        if not isinstance(d, dict) or not isinstance(d.get("id"), str) or d["id"] not in ids or d["id"] in out:
             continue
         reason, file_it = d.get("reason"), d.get("file")
-        if reason not in REASONS or not isinstance(file_it, bool) or file_it != (reason == "still-open"):
+        if not isinstance(reason, str) or reason not in REASONS or not isinstance(file_it, bool) or file_it != (reason == "still-open"):
             continue
         raw_note = d.get("note")
         note = raw_note if isinstance(raw_note, str) else ""
         dec: dict[str, Any] = {"file": file_it, "reason": reason, "note": redact(note)[0][:NOTE_MAX]}
         if file_it:
             project, title, why = d.get("project"), d.get("title"), d.get("why")
-            if project not in projects or not isinstance(title, str) or not isinstance(why, str):
+            if not isinstance(project, str) or project not in projects or not isinstance(title, str) \
+                    or not isinstance(why, str):
                 continue
             title, why = " ".join(redact(title)[0].split()), " ".join(redact(why)[0].split())
             if not 8 <= len(title) <= TITLE_MAX or not 20 <= len(why) <= WHY_MAX:
@@ -582,12 +610,13 @@ def check_batch(
     run_id: str,
     k: int = 0,
     now: datetime | None = None,
+    skip_prefix: str = "",
 ) -> CheckOutcome:
     """One check call over ``items`` (at most :data:`CHECK_BATCH`); each
     item's ``status`` and ``decision`` are set in place."""
     now = now or _now()
     batch = {f"T{n}": i for n, i in enumerate(items[:CHECK_BATCH], 1)}
-    tools = CheckTools(batch, root, tracker, frozenset(p.id for p in projects))
+    tools = CheckTools(batch, root, tracker, frozenset(p.id for p in projects), skip_prefix=skip_prefix)
     toolset = tools.toolset()
     spec = make_spec(check_prompt(batch, projects), toolset, k)
     out = CheckOutcome()
@@ -601,7 +630,10 @@ def check_batch(
     if outcome is not None and not getattr(outcome, "ok", False):
         out.failure = str(getattr(outcome, "failure", None) or "the check call failed")[:300]
     stdout = str(getattr(outcome, "stdout", "") or "") if outcome is not None and getattr(outcome, "ok", False) else ""
-    decisions = parse_decisions(stdout, batch, (p.id for p in projects)) if stdout else {}
+    try:
+        decisions = parse_decisions(stdout, batch, (p.id for p in projects)) if stdout else {}
+    except Exception:  # noqa: BLE001 -- defensive: an answer never crashes the night
+        decisions = {}
     for tid, item in batch.items():
         dec = decisions.get(tid)
         if dec is None:
@@ -642,28 +674,51 @@ def why_text(item: Mapping[str, Any]) -> str:
 class FileOutcome:
     filed: list[str] = field(default_factory=list)
     duplicates: int = 0
+    refused: int = 0
     failure: str | None = None
 
 
-def file_approved(store: Store, tracker: Tracker, cap: int, *, run_id: str, now: datetime | None = None) -> FileOutcome:
-    """File approved items, oldest first, at most ``cap``. An item whose
-    title the project already has (same words, any status) is skipped as
-    ``already-tracked``. The first refusal or transport failure stops the
-    filing; what is left stays approved."""
+def file_approved(
+    store: Store,
+    tracker: Tracker,
+    cap: int,
+    *,
+    run_id: str,
+    now: datetime | None = None,
+    only: Container[str] | None = None,
+) -> FileOutcome:
+    """File approved items, oldest first, at most ``cap`` (``only``: these
+    keys and no others). An item whose title the project already has (same
+    words, any status) is not filed again: when that item is self-learn's own
+    (a create whose reply was lost) it is recorded as filed under that id,
+    otherwise skipped ``already-tracked``. A refusal skips that item, and the
+    third refusal of one item gives it up (``refused``); a transport failure
+    stops the filing, and what is left stays approved."""
     now = now or _now()
     out = FileOutcome()
-    titles: dict[str, set[str]] = {}
+    titles: dict[str, dict[str, Mapping[str, Any]]] = {}
     for item in store.approved():
         if len(out.filed) >= cap:
             break
+        if only is not None and item["key"] not in only:
+            continue
         dec = item["decision"]
         project = dec["project"]
         try:
             if project not in titles:
-                titles[project] = {_norm(str(i.get("title", ""))) for i in tracker.items(project, limit=500)}
-            if _norm(dec["title"]) in titles[project]:
+                titles[project] = {}
+                for i in tracker.items(project):  # newest first: the newest of a title wins
+                    titles[project].setdefault(_norm(str(i.get("title", ""))), i)
+            same = titles[project].get(_norm(dec["title"]))
+            if same is not None:
+                if same.get("owner") == WORKER_LABEL and same.get("stage") == "idea":
+                    item.update(status="filed", item=same.get("id"), filed_at=_iso(now), filed_run=run_id,
+                                recovered=True)
+                    out.filed.append(str(same.get("id")))
+                    continue
                 item["status"] = "skipped"
-                item["decision"] = {**dec, "reason": "already-tracked", "note": "the project has an item with this title"}
+                item["decision"] = {**dec, "reason": "already-tracked",
+                                    "note": f"the project has {same.get('id')} with this title"}
                 out.duplicates += 1
                 continue
             wid = tracker.create_idea(
@@ -674,11 +729,18 @@ def file_approved(store: Store, tracker: Tracker, cap: int, *, run_id: str, now:
                 # line they typed is one
                 quote=str(item["quote"]) if item.get("role") == "user" else None,
             )
+        except TrackerRefused as exc:
+            item["refusals"] = int(item.get("refusals") or 0) + 1
+            if item["refusals"] >= MAX_REFUSALS:
+                item["status"] = "skipped"
+                item["decision"] = {**dec, "reason": "refused", "note": str(exc)[:NOTE_MAX]}
+            out.refused += 1
+            continue
         except TrackerError as exc:
             out.failure = str(exc)[:300]
             break
         item.update(status="filed", item=wid, filed_at=_iso(now), filed_run=run_id)
-        titles[project].add(_norm(dec["title"]))
+        titles[project][_norm(dec["title"])] = {"id": wid, "owner": WORKER_LABEL, "stage": "idea"}
         out.filed.append(wid)
     return out
 
@@ -696,6 +758,7 @@ class NightReport:
     skipped: int = 0
     filed: list[str] = field(default_factory=list)
     duplicates: int = 0
+    refused: int = 0
     expired: int = 0
     cost_usd: float = 0.0
     failure: str | None = None
@@ -720,6 +783,7 @@ def night(
     dry_run: bool = False,
     now: datetime | None = None,
     log: Callable[[str], None] = lambda _m: None,
+    skip_prefix: str = "",
 ) -> NightReport:
     """The checked-and-filed half of one night: approved items left from an
     earlier night are filed first, then up to ``max_batches`` check calls
@@ -748,6 +812,7 @@ def night(
         f = file_approved(store, tracker, remaining, run_id=run_id, now=now)
         rep.filed += f.filed
         rep.duplicates += f.duplicates
+        rep.refused += f.refused
         remaining -= len(f.filed)
         if f.failure:
             rep.failure = f.failure
@@ -757,8 +822,13 @@ def night(
         batch = store.ripe(now, settle_days)[:CHECK_BATCH]
         if not batch:
             break
-        o = check_batch(batch, projects=projects, tracker=tracker, root=root, make_spec=make_spec, call=call,
-                        run_id=run_id, k=k, now=now)
+        try:
+            o = check_batch(batch, projects=projects, tracker=tracker, root=root, make_spec=make_spec, call=call,
+                            run_id=run_id, k=k, now=now, skip_prefix=skip_prefix)
+        except Exception as exc:  # noqa: BLE001 -- the step keeps what it did; the rest waits
+            rep.failure = f"the check raised {type(exc).__name__}"
+            log(f"tasks: {rep.failure}; its items wait for the next night")
+            break
         rep.checked += o.decided
         rep.approved += o.approved
         rep.skipped += o.skipped
@@ -772,6 +842,7 @@ def night(
         f = file_approved(store, tracker, remaining, run_id=run_id, now=now)
         rep.filed += f.filed
         rep.duplicates += f.duplicates
+        rep.refused += f.refused
         if f.failure:
             rep.failure = f.failure
             log(f"tasks: filing stopped ({f.failure}); the rest wait")

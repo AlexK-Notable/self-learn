@@ -732,7 +732,8 @@ def save_result(folder: RunFolder, res: SessionResult) -> None:
         folder.put(f"raw/{sid}.txt", res.call.stdout)
     folder.put_json(f"out/{sid}.json", res.checked)
     if res.tasks or res.task_drops:
-        folder.put_json(f"out/{sid}.tasks.json", {"tasks": list(res.tasks), "drops": list(res.task_drops)})
+        # beside out/, never in it: out/ holds one checked document per session
+        folder.put_json(f"tasks/{sid}.json", {"tasks": list(res.tasks), "drops": list(res.task_drops)})
     folder.put_json(f"calls/{sid}.json", {**res.call.to_json(), "out_status": res.status, "error": res.error})
 
 

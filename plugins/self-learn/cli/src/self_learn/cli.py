@@ -1213,7 +1213,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mback.add_argument("--dry-run", dest="dry_run", action="store_true",
                        help="find and check, file nothing (the found items stay in the run folder)")
     mback.add_argument("--max-file", dest="max_file", type=int, default=None, metavar="N",
-                       help="file at most N items (default: miner.tasks_per_night)")
+                       help="file at most N items (default: what miner.tasks_per_night still allows today)")
     mback.add_argument("--max-sessions", dest="max_sessions", type=int, default=60, metavar="N")
     mback.add_argument("--max-usd", dest="max_usd", type=float, default=None, metavar="USD",
                        help="runaway guard for the reading calls (default: miner.max_run_usd)")
@@ -1992,8 +1992,7 @@ def _cmd_mine_backfill_tasks(home: Path, args: argparse.Namespace) -> int:
             print("self-learn mine backfill-tasks: --file-from takes no --days or --dry-run", file=sys.stderr)
             return EXIT_USAGE
         try:
-            cap = settings.resolve_int(home, "miner.tasks_per_night") if args.max_file is None else args.max_file
-            done = miner.file_reviewed_run(home, args.file_from, file_cap=cap)
+            done = miner.file_reviewed_run(home, args.file_from, file_cap=args.max_file)
         except ValueError as exc:
             print(f"self-learn mine backfill-tasks: {exc}", file=sys.stderr)
             return EXIT_USAGE

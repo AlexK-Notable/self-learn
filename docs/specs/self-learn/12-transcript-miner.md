@@ -1450,7 +1450,8 @@ each item alone (contract, the quote resolved and verified like a lesson's
 evidence, inside the judged range, not judged before, redacted) and drops a
 failing one with its reason. The kept items never enter `miner-output/1`:
 they ride on `engine.SessionResult.tasks`, are written to the run folder as
-`out/<session>.tasks.json`, and once the session's answer is saved they are
+`tasks/<session>.json` (never under `out/`, which keeps one checked document
+per session), and once the session's answer is saved they are
 added to `<miner dir>/tasks.json` (cache, mode 0600), keyed
 `<session>#L<line>`; the same session and title is not added twice. A
 preview adds nothing.
@@ -1463,8 +1464,10 @@ call (own tools only, no writes; its prompt opens with the miner's own
 session openings, so the miner never reads it) with three read-only tools:
 `search_later_sessions` (the rest of the item's session after its line, and
 later sessions in the same transcript folder and its worktrees' folders, or
-every folder; never the system's own `--cache-` folders), `tracker_items`
-(the project's items, open and closed) and `search_notes`. It decides each
+every folder; never the folders of self-learn's own sessions, found by the
+folder name of its cache root, except the item's own), `tracker_items` (the
+project's items, open and closed, newest first) and `search_notes`. When two
+items in one call are the same work, at most one is filed. It decides each
 item: `still-open` (file it, with a project from znote's list, a plain title
 and a one- or two-sentence `why`) or a skip: `done-later`,
 `already-tracked`, `written-down`, `set-aside`, `not-real-work`, `unsure`.
@@ -1474,8 +1477,8 @@ failed call counts against nobody. An item still not checked 30 days after it
 was found (the tracker down all that time) expires.
 
 **Filed.** Approved items are filed oldest first, at most
-`miner.tasks_per_night` a night (default 5; 0 files none; the rest wait
-approved for the next night), as `idea` items through `mining.tracker`: the
+`miner.tasks_per_night` (default 5; 0 files none) counted over the last 24
+hours, whichever run filed them (the rest wait approved for the next night), as `idea` items through `mining.tracker`: the
 znote daemon's own MCP endpoint over local HTTP (`ZNOTE_HTTP_HOST`/`PORT`),
 as an unverified caller with the worker label `self-learn`. That is the
 whole of what the daemon allows a program that is not a Claude Code session:
@@ -1484,8 +1487,12 @@ daemon's `admin.token` or `caller.key` or calls `/admin/`; nothing is put in
 the owner's name or made to wait on them. The `why` ends with the session id,
 its folder, the date and line, and the quote. The tracker's `quote` field is
 read as the person's own words, so it is set only when the quoted line is one
-they typed. A title the project already has is skipped `already-tracked`.
-A tracker that does not answer leaves every item where it was. An agent
+they typed. A title the project already has is not filed again: when that item is
+self-learn's own idea (a create whose reply was lost) the item is recorded as
+filed under its id, otherwise it is skipped `already-tracked`. A refusal skips
+that one item (the third refusal gives it up, `refused`); a tracker that does
+not answer leaves every item where it was. A check answer of any shape never
+stops the step, and the store is saved whatever happens. An agent
 cannot drop or park an idea it filed; that stays the owner's.
 
 **No backfill by default; one bounded command.** `mine backfill-tasks --days
@@ -1495,5 +1502,6 @@ lessons it finds are thrown away, nothing lands, no cursor moves, the lesson
 index is read through a copy. Then it checks and files as a night does (cap
 `--max-file`, default the setting). `--dry-run` keeps everything in a store
 inside the run folder and files nothing; `--file-from RUN` then files exactly
-what that dry run approved, with no model call. `mine tasks` lists the
+what that dry run approved, and nothing else waiting in the live store, with
+no model call. An explicit `--max-file` replaces the day's remaining cap. `mine tasks` lists the
 store. `tasks-nights.jsonl` keeps one line of counts and ids per night.

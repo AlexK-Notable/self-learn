@@ -2992,6 +2992,12 @@ def _task_spec_maker(home: Path, run_id: str, stage: Path) -> Callable[..., invo
     return make
 
 
+def _own_folders_prefix() -> str:
+    """The transcript-folder prefix of every session self-learn itself runs
+    (its stages and workspaces all sit under its cache root)."""
+    return mining_tasks.folder_slug(miner_dir().parent.parent)
+
+
 def _tasks_night(home: Path, run_id: str, result: MineResult, *, tracker: Any = None) -> None:
     """S-155's nightly step: check the ripe items, file the approved ones
     (``mining.tasks.night``). Off with ``miner.tasks_enabled``; any failure is
@@ -3000,6 +3006,7 @@ def _tasks_night(home: Path, run_id: str, result: MineResult, *, tracker: Any = 
         return
     from .mining import tracker as tracker_mod
 
+    store = None
     try:
         store = mining_tasks.Store.load(mining_tasks.store_path(miner_dir()))
         rep = mining_tasks.night(
@@ -3009,14 +3016,21 @@ def _tasks_night(home: Path, run_id: str, result: MineResult, *, tracker: Any = 
             make_spec=_task_spec_maker(home, run_id, miner_dir() / "session-stage"),
             call=_session_call,
             run_id=run_id,
-            cap=settings.resolve_int(home, "miner.tasks_per_night"),
+            cap=store.remaining(settings.resolve_int(home, "miner.tasks_per_night")),
             log=log,
+            skip_prefix=_own_folders_prefix(),
         )
-        store.save()
         mining_tasks.append_night(miner_dir(), run_id, rep)
     except Exception as exc:  # noqa: BLE001 -- the tasks step never fails the mining run
         log(f"run {run_id}: unfinished-work step skipped ({type(exc).__name__}: {str(exc)[:200]})")
         return
+    finally:
+        # what was filed before anything went wrong keeps its id
+        if store is not None:
+            try:
+                store.save()
+            except OSError as exc:
+                log(f"run {run_id}: the unfinished-work store was not saved ({exc})")
     if isinstance(result.engine, dict):
         result.engine["tasks"] = rep.as_dict()
     if rep.ripe or rep.filed or rep.failure:
@@ -3683,10 +3697,11 @@ def _backfill_slices(home: Path, days: int) -> list[SessionSlice]:
     root = transcripts_root(home)
     listed = skip_sessions(home)
     cutoff = time.time() - days * 86400
+    own = _own_folders_prefix()
     found: list[tuple[float, Path]] = []
     if root.is_dir():
         for d in root.iterdir():
-            if not d.is_dir() or mining_tasks.WORKER_DIRS.search(d.name):
+            if not d.is_dir() or d.name.startswith(own):
                 continue
             for f in d.glob("*.jsonl"):
                 try:
@@ -3710,7 +3725,7 @@ def _backfill_slices(home: Path, days: int) -> list[SessionSlice]:
     return slices
 
 
-def file_reviewed_run(home: Path | str, run_id: str, *, file_cap: int, tracker: Any = None) -> dict:
+def file_reviewed_run(home: Path | str, run_id: str, *, file_cap: int | None = None, tracker: Any = None) -> dict:
     """``mine backfill-tasks --file-from RUN``: file the items a dry run
     approved, exactly as that run decided them, so what lands in the tracker
     is what a reader of the dry run's report saw. (An agent cannot take back
@@ -3736,12 +3751,20 @@ def file_reviewed_run(home: Path | str, run_id: str, *, file_cap: int, tracker: 
         reviewed = mining_tasks.Store.load(reviewed_path)
         live = mining_tasks.Store.load(mining_tasks.store_path(miner_dir()))
         taken = 0
+        mine: set[str] = set()
         for key, item in reviewed.items.items():
-            if key not in live.items:
+            same = any(
+                k == key or (i.get("session") == item.get("session")
+                             and mining_tasks._norm(str(i.get("title", ""))) == mining_tasks._norm(str(item.get("title", ""))))  # pyright: ignore[reportPrivateUsage]
+                for k, i in live.items.items()
+            )
+            if not same:
                 live.items[key] = {**item, "reviewed_run": run_id}
+                mine.add(key)
                 taken += 1
         live.save()
-        filed = mining_tasks.file_approved(live, tracker, file_cap, run_id=run_id)
+        cap = live.remaining(settings.resolve_int(home, "miner.tasks_per_night")) if file_cap is None else file_cap
+        filed = mining_tasks.file_approved(live, tracker, cap, run_id=run_id, only=mine)
         live.save()
         log(f"file-from {run_id}: took {taken} item(s), filed {len(filed.filed)}"
             + (f" ({', '.join(filed.filed)})" if filed.filed else "") + (f"; {filed.failure}" if filed.failure else ""))
@@ -3871,12 +3894,16 @@ def backfill_tasks(
             store.add(res.tasks, session=plan.session_id, transcript=str(s.path), cwd=_slice_cwd(s), run_id=run_id)
         new_keys = [k for k in store.items if k not in before]
         store.save()
-        cap = settings.resolve_int(home, "miner.tasks_per_night") if file_cap is None else file_cap
-        rep = mining_tasks.night(
-            store, tracker=tracker, root=root,
-            make_spec=_task_spec_maker(home, run_id, stage), call=call, run_id=run_id, cap=cap,
-            max_batches=len(new_keys) // mining_tasks.CHECK_BATCH + 2, dry_run=dry_run, log=log,
-        )
+        cap = store.remaining(settings.resolve_int(home, "miner.tasks_per_night")) if file_cap is None else file_cap
+        try:
+            rep = mining_tasks.night(
+                store, tracker=tracker, root=root,
+                make_spec=_task_spec_maker(home, run_id, stage), call=call, run_id=run_id, cap=cap,
+                max_batches=len(new_keys) // mining_tasks.CHECK_BATCH + 2, dry_run=dry_run, log=log,
+                skip_prefix=_own_folders_prefix(),
+            )
+        except Exception as exc:  # noqa: BLE001 -- the report is still written
+            rep = mining_tasks.NightReport(dry_run=dry_run, failure=f"the check step raised {type(exc).__name__}")
         store.save()
         if not dry_run:
             mining_tasks.append_night(miner_dir(), run_id, rep)
