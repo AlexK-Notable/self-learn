@@ -205,41 +205,6 @@ def mining(home, tmp_path, monkeypatch):
     return write_session, prompts
 
 
-def test_a_real_run_clips_messages_and_sessions_at_the_sizes_in_config(home, mining):
-    """The two sizes `run` does not apply itself: it hands them to
-    `digest_transcript`. Without that hand-off a config value would be read
-    and then used by nothing."""
-    write_session, prompts = mining
-    write_session("sess-long-message", [_user("HEAD" + "m" * 1_000 + "TAIL")])
-    write_session("sess-many-messages", [_user(f"message number {i} " + "s" * 80) for i in range(40)])
-    assert miner.run(home).status == "ok"
-    assert "sess-long-message" in prompts[0] and "sess-many-messages" in prompts[0]
-    assert "[clipped]" not in prompts[0] and "session digest clipped" not in prompts[0]  # positive control: defaults clip neither
-
-    write_session("sess-long-message-2", [_user("HEAD" + "m" * 1_000 + "TAIL")])
-    write_session("sess-many-messages-2", [_user(f"message number {i} " + "s" * 80) for i in range(40)])
-    configure(home, "miner", message_chars=200, session_chars=1_500)
-    assert miner.run(home).status == "ok"
-    assert "sess-long-message-2" in prompts[1] and "sess-many-messages-2" in prompts[1]
-    assert "m …[clipped]… m" in prompts[1]  # the 1,008-character message, cut to 200
-    assert "…[session digest clipped]" in prompts[1]  # the ~4,000-character session, cut to 1,500
-
-
-def test_a_run_stops_adding_sessions_at_the_run_limit(home, mining):
-    write_session, prompts = mining
-    for name in ("sess-one", "sess-two", "sess-three"):
-        write_session(name, [_user(f"{name} says " + "r" * 400)])
-    configure(home, "miner", run_chars=1_000)  # each digest is ~460 characters: two fit, the third waits
-    assert miner.run(home).status == "ok"
-    entry = miner.read_journal(limit=1)[-1]
-    assert (entry["sessions_scanned"], entry["deferred_files"]) == (2, 1)
-    assert sum(f"=== session {n} " in prompts[0] for n in ("sess-one", "sess-two", "sess-three")) == 2
-    # the session that waited is picked up by the next run, not lost
-    assert miner.run(home).status == "ok"
-    entry = miner.read_journal(limit=1)[-1]
-    assert (entry["sessions_scanned"], entry["deferred_files"]) == (1, 0)
-
-
 def test_the_reader_timeout_is_read_from_config(home, elsewhere, monkeypatch):
     assert miner.reader_timeout_secs(home) == 900.0
     monkeypatch.setenv("SELF_LEARN_READER_TIMEOUT_SECS", "120")

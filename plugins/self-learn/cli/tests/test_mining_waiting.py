@@ -462,7 +462,7 @@ def test_a_stuck_item_reaches_doctor_and_run_json_and_keeps_retrying(home, root,
     assert not [ln for ln in _doctor(capsys) if "waiting-item-stuck" in ln]
 
 
-@pytest.mark.parametrize("engine", ["digest", "session"])
+@pytest.mark.parametrize("engine", ["session"])
 def test_doctor_warns_when_waiting_answers_are_stranded_by_the_digest_engine(home, root, backend, tmp_path,
                                                                             monkeypatch, capsys, engine):
     sid = "s1stranded-0000"

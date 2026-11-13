@@ -3403,11 +3403,13 @@ def _run_job(
     # U-settings Phase 1: resolves through the registry's `miner.enabled`
     # entry (config.yaml `miner.enabled` > env `SELF_LEARN_MINER` > `True`
     # -- U-flip 2026-09-01, S-58: config wins).
-    chosen = engine if engine is not None else str(settings.resolve_setting(home, settings.by_name("miner.engine"))[0])
-    if chosen not in settings.MINER_ENGINES:
-        raise ValueError(f"miner.run: unknown engine {chosen!r}")
-    if (preview or sessions) and chosen != "session":
-        raise ValueError("miner.run: --preview and --session belong to the session engine")
+    # The digest engine was retired on 2026-11-12: `session` is the only
+    # engine. A `miner.engine: digest` left in config.yaml reads as session
+    # (the setting's own validate), so only an explicit `engine=` can name
+    # another one, and that is refused.
+    if engine is not None and engine not in settings.MINER_ENGINES:
+        raise ValueError(f"miner.run: engine {engine!r} is not available: only the session engine exists")
+    chosen = "session"
     if sessions and not preview:
         raise ValueError("miner.run: --session needs --preview")
     enabled, _source = settings.resolve_setting(home, settings.by_name("miner.enabled"))

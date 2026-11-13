@@ -106,7 +106,7 @@ _TABLE: dict[str, Plain] = {
     "miner.autokick": _p("runs", "Overnight read starts itself",
         "Let the overnight read be started by its watchdog when a run was missed. A safety switch."),
     "miner.engine": _p("runs", "How sessions are read",
-        "digest: one model call over short digests of every session. session: one call per session, with tools to read it."),
+        "One model call per session, with tools to read it. The older all-sessions-in-one-digest way was retired on 2026-11-12; an old setting naming it reads as this."),
     "serve.restart_on_new_code": _p("runs", "Restart on new code",
         "Restart the background service between jobs when the self-learn code on disk has changed."),
     # -------------------------------------------------------------- limits

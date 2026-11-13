@@ -170,10 +170,14 @@ Kind = Literal["str", "int", "float", "bool"]
 #: parsed AS that `kind`).
 SettingValue = str | int | float | bool | None
 
-#: `miner.engine`'s two values (new-miner plan §3.8): the digest engine
-#: (one reader call over every session's digest) and the session engine
-#: (one call per session). `miner.run` reads the setting.
-MINER_ENGINES: tuple[str, ...] = ("digest", "session")
+#: `miner.engine`'s one value: the session engine (one call per session).
+#: The digest engine (one reader call over every session's digest) was
+#: retired on 2026-11-12 after clean nights since 2026-10-25; a config that
+#: still says `digest` reads as `session` and `doctor settings` says so.
+MINER_ENGINES: tuple[str, ...] = ("session",)
+
+#: What an old `miner.engine` value may still say; it reads as `session`.
+MINER_ENGINE_RETIRED: tuple[str, ...] = ("digest",)
 
 #: `overseer.skill_writing`'s two values (S-107 part 6 as amended by
 #: S-107 amended 2026-10-31): ``on`` (the default: the overseer deploys every
@@ -902,25 +906,25 @@ REGISTRY: tuple[Setting, ...] = (
     ),
     # The session engine (new-miner plan §3.8, unit R2, 2026-10-19): one
     # model call per session, with its own tools, landing checked output.
-    # `miner.engine` is the runner switch between the two engines. It is
-    # the user's to flip (tier C, no env var, like `steward.enabled`);
-    # `self-learn mine run --engine session` without `--preview` is refused,
-    # so nothing but this setting makes the session engine land.
+    # `miner.engine` once switched between two engines; the digest engine
+    # was retired on 2026-11-12 and `session` is the only value (an old
+    # `digest` in config.yaml reads as `session`). The key stays so that
+    # old configs keep reading and `doctor settings` can name the old value.
     Setting(
         name="miner.engine",
         env_var=None,
         config_section="miner",
         config_key="engine",
         kind="str",
-        default="digest",
+        default="session",
         description=(
-            "which engine a mining run uses: digest (one call over every session's digest) or "
-            "session (one call per session, with its own tools); the user flips it"
+            "the mining engine: session (one call per session, with its own tools) is the only one; "
+            "the digest engine was retired on 2026-11-12 and an old `digest` value reads as session"
         ),
-        # an unknown value hand-edited into config.yaml reads as the default
-        validate=lambda v: v if v in MINER_ENGINES else "digest",
+        # an old `digest` (or an unknown value hand-edited into config.yaml) reads as session
+        validate=lambda v: "session",
         accepts=lambda v: v in MINER_ENGINES,
-        accepts_hint="digest or session",
+        accepts_hint="session (the digest engine was retired on 2026-11-12)",
         tier="C",
         override_channel=False,
     ),
@@ -2079,6 +2083,17 @@ def retired_keys(home: Path | str) -> list[str]:
     return sorted(found)
 
 
+def miner_engine_retired_detail(source: str) -> str:
+    """The one sentence a retired `miner.engine` value earns in `doctor
+    settings`: what was read, what runs, and how to clear it."""
+    where = "the environment" if source.startswith("env:") else "config.yaml"
+    return (
+        f"miner.engine in {where} still says a retired engine ({'/'.join(MINER_ENGINE_RETIRED)}); the digest "
+        "engine was retired on 2026-11-12, so mining runs as session; remove the old value with "
+        "`self-learn config unset miner.engine`"
+    )
+
+
 def retired_key_detail(key: str) -> str:
     action = (f"self-learn config unset {shlex.quote(key)}"
               if key.startswith("invocation.") else f"unset {shlex.quote(key)}")
@@ -2243,6 +2258,9 @@ def preflight(home: Path | str) -> list[SettingRow]:
         value, source = resolve_setting(home, setting)
         note = _fold_note(home, setting, source)
         note_suffix = f" [{note}]" if note else ""
+        if setting.name == "miner.engine" and note:
+            rows.append(SettingRow(name=setting.name, verdict="WARN", detail=miner_engine_retired_detail(source)))
+            continue
         if source.startswith("override:"):
             # M-S (code-gate fold r1): a PAIRED entry's `source` may
             # name the GENERAL sibling's own override var -- the "Unset
