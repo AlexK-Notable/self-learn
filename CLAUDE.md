@@ -127,7 +127,12 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
   suite: a preview makes real model calls (ask before spending). The CLI runs a
   tier-C `config set` or `config unset` from an agent's shell only with the grant
   in force and `--note`, detected by environment markers; never unset the markers
-  to get around it. Answers the engine saved under
+  to get around it. The miner also files unfinished work it finds in sessions
+  into the znote tracker as ideas (S-155, 12 §14; `miner.tasks_enabled`,
+  `miner.tasks_per_night`). `mine backfill-tasks` makes real model calls and,
+  without `--dry-run`, files into the live tracker, where an agent cannot take
+  an idea back: run `--dry-run` first, read its report, then `--file-from` it.
+  Tests reach znote only through a fake tracker. Answers the engine saved under
   `<cache>/miner/pending/` are the miner's to land; never edit or delete
   one by hand outside a test's scratch cache.
 - Revert probes by inverse edit and verify with `sha256sum` against

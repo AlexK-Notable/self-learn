@@ -1424,3 +1424,76 @@ lock without truncating it. What it may still write outside: the lock file
 when it did not exist, and the seam's own copies and logs of its calls. `--session ID` (repeatable,
 preview only) judges those sessions' whole files (the larger file when two
 folders hold one id; a listed `miner.skip_sessions` id is not read).
+
+## 14. Unfinished work (S-155, 2026-11-12)
+
+The user, 2026-08-19: "there's another shape of information other than
+learning that would be valuable to mine and keep track of: oustanding tasks.
+being able to look through a transcript and find all of the tasks that were
+supposed to get completed, then verifying whether or not they've been
+completed". Built on 2026-11-12. The list goes to the znote tracker, the
+user's work tracker since November, rather than into a project's
+`CLAUDE.md`: the always-loaded files have a word budget, and the weekly
+project summaries already read the tracker.
+
+**Found (in the session call).** While `miner.tasks_enabled` is on (default
+on), the method carries an "Unfinished work" section (between
+`<!-- tasks:begin -->` and `<!-- tasks:end -->`, removed whole when the setting
+is off) and the schema an optional `tasks` list: at most three items of
+`title`, `left_undone` and one `evidence` pointer with a verbatim quote, main
+session file only. The rules are precision first: committed or found by the
+session, not done later in the judged lines, not set aside by the person, not
+written down (tracker, TODO, follow-up list), real work. `check.check_output`
+takes `tasks` out of the answer before the lesson contract is checked, so
+nothing in it can make the session's output bad; `check.check_tasks` checks
+each item alone (contract, the quote resolved and verified like a lesson's
+evidence, inside the judged range, not judged before, redacted) and drops a
+failing one with its reason. The kept items never enter `miner-output/1`:
+they ride on `engine.SessionResult.tasks`, are written to the run folder as
+`out/<session>.tasks.json`, and once the session's answer is saved they are
+added to `<miner dir>/tasks.json` (cache, mode 0600), keyed
+`<session>#L<line>`; the same session and title is not added twice. A
+preview adds nothing.
+
+**Checked (two days later).** After the night's run, still under the miner's
+lock, `mining.tasks.night` takes the items whose quoted line is at least two
+days old (`SETTLE_DAYS`), so the sessions after them exist, and makes one
+check call over at most eight of them. The call is a `miner-session` surface
+call (own tools only, no writes; its prompt opens with the miner's own
+session openings, so the miner never reads it) with three read-only tools:
+`search_later_sessions` (the rest of the item's session after its line, and
+later sessions in the same transcript folder and its worktrees' folders, or
+every folder; never the system's own `--cache-` folders), `tracker_items`
+(the project's items, open and closed) and `search_notes`. It decides each
+item: `still-open` (file it, with a project from znote's list, a plain title
+and a one- or two-sentence `why`) or a skip: `done-later`,
+`already-tracked`, `written-down`, `set-aside`, `not-real-work`, `unsure`.
+Unsure is a skip. An answer that breaks a rule is ignored for that item; an
+item with no usable decision after three answers is skipped `unchecked`; a
+failed call counts against nobody. An item still not checked 30 days after it
+was found (the tracker down all that time) expires.
+
+**Filed.** Approved items are filed oldest first, at most
+`miner.tasks_per_night` a night (default 5; 0 files none; the rest wait
+approved for the next night), as `idea` items through `mining.tracker`: the
+znote daemon's own MCP endpoint over local HTTP (`ZNOTE_HTTP_HOST`/`PORT`),
+as an unverified caller with the worker label `self-learn`. That is the
+whole of what the daemon allows a program that is not a Claude Code session:
+read, and create an idea it owns through its label. Nothing here reads the
+daemon's `admin.token` or `caller.key` or calls `/admin/`; nothing is put in
+the owner's name or made to wait on them. The `why` ends with the session id,
+its folder, the date and line, and the quote. The tracker's `quote` field is
+read as the person's own words, so it is set only when the quoted line is one
+they typed. A title the project already has is skipped `already-tracked`.
+A tracker that does not answer leaves every item where it was. An agent
+cannot drop or park an idea it filed; that stays the owner's.
+
+**No backfill by default; one bounded command.** `mine backfill-tasks --days
+N` (1 to 30) reads the newest sessions changed in the last N days whole, with
+the session call and the method above, ignoring the judged-uuid store; the
+lessons it finds are thrown away, nothing lands, no cursor moves, the lesson
+index is read through a copy. Then it checks and files as a night does (cap
+`--max-file`, default the setting). `--dry-run` keeps everything in a store
+inside the run folder and files nothing; `--file-from RUN` then files exactly
+what that dry run approved, with no model call. `mine tasks` lists the
+store. `tasks-nights.jsonl` keeps one line of counts and ids per night.
