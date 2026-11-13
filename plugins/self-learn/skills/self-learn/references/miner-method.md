@@ -1,4 +1,4 @@
-<!-- method-version: 2 -->
+<!-- method-version: 3 -->
 # Session miner method
 
 Read one session. Judge only the lines marked new. Find durable lessons,
@@ -125,6 +125,36 @@ an existing rule, not a new lesson. Record what the session actually supports:
 Never emit `complied` or `violated`. These are evidence for the steward to
 weigh with the cited lines, never confirmed recurrence. Whether a suspected
 violation is a real recurrence-suspect is the steward's decision.
+
+<!-- tasks:begin -->
+## Unfinished work (`tasks`, optional)
+
+Separately from lessons, list at most 3 pieces of work this session left
+undone that a later session should still do. Most sessions have none, and an
+empty or absent list is the right answer then. List one only when all hold:
+
+- **The session committed to it or found it.** The assistant said it would
+  do it, the person asked for it and it was not done, or the assistant found
+  a concrete defect or loose end and said it was not dealt with here.
+- **It was not done.** Read the rest of the judged lines with `open_stretch`
+  where needed: something said as "next I will…" and then done is not
+  unfinished work, nor is something done in a later turn.
+- **Nobody set it aside.** Not something the person declined, deferred
+  without a date, called out of scope, or chose against; not something the
+  session presented as a choice the person did not take.
+- **It was not written down.** Not one the session put in a tracker
+  (`zk_work`), a TODO or follow-up list it wrote to a file or note, an issue,
+  or a final report's "not done" list it saved.
+- **It is real work.** A change, fix, check or build someone could pick up,
+  naming what and where (repository, file, command, service). Not a lesson,
+  a wish, a question, waiting for CI, or rerunning what the session ran.
+
+Give the one line where the work was promised or the loose end named,
+quoted verbatim from the main session (never a subagent log). `title`: an
+instruction in plain words, saying what to do to what. `left_undone`: one or
+two sentences on what was left and why it still matters. When unsure, leave
+it out: a wrong item costs more than a missed one.
+<!-- tasks:end -->
 
 ## Subagent causes and output
 

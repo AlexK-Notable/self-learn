@@ -141,7 +141,7 @@ def test_an_answer_is_saved_whole_before_anything_of_it_lands(home, root, backen
     assert s["doc"]["items"][0]["intent"] == {"output": "lesson", "record": None, "origin": f"transcript:{sid}#L3"}
     doc = s["doc"]
     assert doc["session"] == sid and doc["transcript"] == str(path) and doc["run_id"] == result.run_id
-    assert doc["method_version"] == "2" and doc["halted"] is False and doc["cursor"] == {"lines": 7,
+    assert doc["method_version"] == "3" and doc["halted"] is False and doc["cursor"] == {"lines": 7,
                                                                                          "size": path.stat().st_size,
                                                                                          "halt": False,
                                                                                          "line_format": "newline-v1"}
@@ -1334,7 +1334,7 @@ def test_a_closed_gate_holds_waiting_answers_on_a_run_with_nothing_to_call(home,
     with monkeypatch.context() as m:
         m.setenv("SELF_LEARN_MINE_PENDING_GATE", "0")
         if method_error:  # the stop() path: the method file cannot be read
-            def bad():
+            def bad(**_kw):
                 raise engine.EngineError("synthetic unavailable method")
 
             m.setattr(engine, "shared_instructions", bad)
@@ -1350,7 +1350,7 @@ def test_a_closed_gate_holds_waiting_answers_on_a_run_with_nothing_to_call(home,
 def test_the_stop_path_drains_when_the_gate_is_open(home, root, backend, tmp_path, monkeypatch):
     _saved_while_busy(home, root, backend, tmp_path, monkeypatch)
 
-    def bad():
+    def bad(**_kw):
         raise engine.EngineError("synthetic unavailable method")
 
     with monkeypatch.context() as m:

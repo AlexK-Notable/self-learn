@@ -389,7 +389,7 @@ def test_k1_every_error_is_a_path_then_a_message():
 
 #: SHA-256 of ``json.dumps(model_output_json_schema(), indent=1, sort_keys=True)``.
 #: A change to the schema is always deliberate: update this constant with it.
-SCHEMA_SHA256 = "fe0c7c331adce2a0aa7a6d8d3388c55d749014ad08c9379aa6f2804511238e20"
+SCHEMA_SHA256 = "101174ad2aea2e48b4f4821090eec8a870b5b4d6504f7c2159c5379c18ddf7ae"
 
 
 def _schema_text() -> str:

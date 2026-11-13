@@ -98,8 +98,8 @@ def test_t1_definitions_pin():
 def test_method_pin_and_required_parts():
     path = Path(__file__).resolve().parents[2] / "skills/self-learn/references/miner-method.md"
     method = path.read_text()
-    assert hashlib.sha256(method.encode()).hexdigest() == "86b70d08e24df6ba45d291fdb2e7d870e9efffc6ac94a77803a5ddeb3e8de965"
-    assert method.startswith("<!-- method-version: 2 -->")
+    assert hashlib.sha256(method.encode()).hexdigest() == "511e747852fd003fb48478546b98ca6cce3e6170624ac70705586d6977dbe42f"
+    assert method.startswith("<!-- method-version: 3 -->")
     for text in ("within this session", "verification.how", "incident_cost.text", "## Context",
                  "AGENT-WRITTEN", "bad-brief", "left-brief", "unchecked-report", "FLAG",
                  "suspected-compliance", "suspected-violation", "cannot-tell", "each one line",

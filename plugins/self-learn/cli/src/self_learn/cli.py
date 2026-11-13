@@ -1195,6 +1195,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "status", help="last runs, outcomes, and staleness — from the journal"
     )
     mstatus.add_argument("--json", dest="as_json", action="store_true")
+    # S-155: unfinished work the nightly read found, and the one bounded way
+    # to look back further than the night
+    mtasks = mine_sub.add_parser(
+        "tasks", help="unfinished work found in sessions: what waits, what was filed in znote, what was skipped and why"
+    )
+    mtasks.add_argument("--json", dest="as_json", action="store_true")
+    mtasks.add_argument("--all", dest="show_all", action="store_true", help="every item, not only the last 30")
+    mback = mine_sub.add_parser(
+        "backfill-tasks",
+        help="look for unfinished work in the last N days of sessions (real model calls), "
+        "check it and file it in the znote tracker",
+    )
+    mback.add_argument("--days", type=int, required=True, metavar="N", help="1 to 30")
+    mback.add_argument("--dry-run", dest="dry_run", action="store_true",
+                       help="find and check, file nothing (the found items stay in the run folder)")
+    mback.add_argument("--max-file", dest="max_file", type=int, default=None, metavar="N",
+                       help="file at most N items (default: miner.tasks_per_night)")
+    mback.add_argument("--max-sessions", dest="max_sessions", type=int, default=60, metavar="N")
+    mback.add_argument("--max-usd", dest="max_usd", type=float, default=None, metavar="USD",
+                       help="runaway guard for the reading calls (default: miner.max_run_usd)")
+    mback.add_argument("--json", dest="as_json", action="store_true")
 
     canary_p = sub.add_parser(
         "canary", help="recall check: plant a lesson, scored on later mining runs (FW-34 §3)"
@@ -1931,6 +1952,67 @@ def _preview_lines(result: "miner.MineResult") -> list[str]:
     return lines
 
 
+def _task_line(item: dict) -> str:
+    dec = item.get("decision") or {}
+    when = str(item.get("entry_ts") or item.get("found_at") or "")[:10]
+    head = f"{item.get('status', '?'):8} {when} {str(item.get('session', ''))[:8]} L{item.get('line')}"
+    if item.get("status") == "filed":
+        return f"{head}  {item.get('item')} in {dec.get('project')}: {dec.get('title')}"
+    if item.get("status") in ("approved",):
+        return f"{head}  for {dec.get('project')}: {dec.get('title')}"
+    tail = f" — {dec.get('reason')}: {dec.get('note', '')}" if dec else ""
+    return f"{head}  {item.get('title')}{tail}"
+
+
+def _cmd_mine_tasks(args: argparse.Namespace) -> int:
+    """``mine tasks``: the unfinished-work store (S-155), newest first."""
+    from .mining import tasks as mining_tasks
+
+    store = mining_tasks.Store.load(mining_tasks.store_path(miner.miner_dir()))
+    items = sorted(store.items.values(), key=lambda i: str(i.get("entry_ts") or i.get("found_at") or ""), reverse=True)
+    if not args.show_all:
+        items = items[:30]
+    if args.as_json:
+        print(json.dumps({"counts": store.counts(), "enabled": miner.tasks_enabled(resolve_home()), "items": items}))
+        return EXIT_OK
+    counts = ", ".join(f"{n} {k}" for k, n in store.counts().items()) or "none yet"
+    state = "on" if miner.tasks_enabled(resolve_home()) else "off (miner.tasks_enabled)"
+    print(f"unfinished work: {counts} · {state}")
+    for item in items:
+        print(_task_line(item))
+    return EXIT_OK
+
+
+def _cmd_mine_backfill_tasks(home: Path, args: argparse.Namespace) -> int:
+    """``mine backfill-tasks --days N``: S-155's one bounded look back."""
+    if not 1 <= args.days <= miner.BACKFILL_MAX_DAYS:
+        print(f"self-learn mine backfill-tasks: --days must be 1 to {miner.BACKFILL_MAX_DAYS}", file=sys.stderr)
+        return EXIT_USAGE
+    if args.max_file is not None and args.max_file < 0:
+        print("self-learn mine backfill-tasks: --max-file must be 0 or more", file=sys.stderr)
+        return EXIT_USAGE
+    report = miner.backfill_tasks(
+        home, args.days, dry_run=args.dry_run, file_cap=args.max_file, max_sessions=args.max_sessions,
+        max_usd=args.max_usd,
+    )
+    if args.as_json:
+        print(json.dumps(report))
+    elif report.get("status") in ("busy", "disabled"):
+        print(f"mine backfill-tasks: {report['status']} — {report['reason']}")
+    else:
+        check = report["check"]
+        print(
+            f"mine backfill-tasks: read {report['sessions_read']} of {report['session_files']} session file(s) "
+            f"from {report['days']} day(s) (${report['read_cost_usd']:.2f}); found {report['found']}; "
+            f"checked {check['checked']} (${check['cost_usd']:.2f}); approved {check['approved']}; "
+            f"filed {len(check['filed'])}" + (" (dry run: nothing filed)" if report["dry_run"] else "")
+        )
+        for item in report["items"]:
+            print(_task_line(item))
+        print(f"run folder: {report['run_folder']}")
+    return EXIT_OK if report.get("status") in ("ok", "stopped-ceiling") else EXIT_HELD
+
+
 def _cmd_mine(args: argparse.Namespace) -> int:
     home = resolve_home()
     if args.mine_command == "run":
@@ -2026,6 +2108,10 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                 f"{result.status!r} — FW-85's exit-code map "
                 "(cli.py:_MINE_RUN_EXIT) has no entry for it"
             ) from None
+    if args.mine_command == "tasks":
+        return _cmd_mine_tasks(args)
+    if args.mine_command == "backfill-tasks":
+        return _cmd_mine_backfill_tasks(home, args)
     if args.mine_command == "status":
         entries = miner.read_journal()
         if args.as_json:
