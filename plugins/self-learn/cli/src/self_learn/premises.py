@@ -84,7 +84,9 @@ by construction of this module rather than by convention:
   a probe cannot tell a present credential file from an absent one. File
   reads never follow a FIFO or device (``O_NONBLOCK`` + a regular-file
   check) and stop at :data:`READ_LIMIT`; a larger file is
-  ``unavailable``, never a partial answer. A key probe may not name a key
+  ``unavailable``, never a partial answer. The one exception is a
+  ``file-match`` ``contains`` probe, which streams the file in chunks up
+  to :data:`SEARCH_LIMIT` (so a large program file can be searched). A key probe may not name a key
   that marks a credential (``password``, ``api_key``, ``token`` ...), and
   a ``systemd-show`` probe may not read a property that carries an
   environment, a credential or a command line (``Environment``,
@@ -174,6 +176,8 @@ __all__ = [
     "ProbeEnv",
     "ProbeRefused",
     "READ_LIMIT",
+    "SEARCH_LIMIT",
+    "SEARCH_CHUNK",
     "VERDICTS",
     "VERDICT_HOLDS",
     "VERDICT_MOVED",
@@ -283,6 +287,11 @@ PROBE_TIMEOUT = 5.0
 MAX_BLOCKED_PROBES = 4
 #: The most a file probe reads, and the most command output kept.
 READ_LIMIT = 256 * 1024
+#: The most a ``file-match`` ``contains`` probe will stream through (it
+#: holds one chunk at a time), and the piece size it reads. The installed
+#: `claude` program is ~350 MB; 1 GiB leaves room to grow.
+SEARCH_LIMIT = 1024 * 1024 * 1024
+SEARCH_CHUNK = 1024 * 1024
 #: Display strings longer than this are not stored (the hash still is).
 SHOWN_LIMIT = 120
 #: Value hashes are sha256 truncated to 32 hex characters (128 bits): the
@@ -1701,15 +1710,13 @@ def _absent_mount(target: str, env: ProbeEnv) -> _Unavailable | None:
     return None
 
 
-def _read_file(path: str, env: ProbeEnv) -> bytes | _Unavailable:
-    """The bytes of a regular file, or ``_Unavailable`` -- a file that is
-    gone included (02 §3a.10.2 rule 4). The path is resolved WITHOUT
-    requiring it to exist (``realpath`` non-strict follows every link it
-    can) and the resolved path is checked against the credential rules
-    before anything is opened, so a link into ``~/.ssh`` is refused the
-    same way whether or not its target exists. FIFOs, devices and
-    directories are refused without blocking; a file over
-    :data:`READ_LIMIT` is unavailable rather than half-read."""
+def _open_regular(path: str, env: ProbeEnv) -> tuple[int, os.stat_result] | _Unavailable:
+    """Open a regular file for reading, or ``_Unavailable``. Every path
+    rule lives here, so a read and a stream search share them: the
+    home-directory check, the resolved-path credential and denied-root
+    rules (checked BEFORE anything is opened), ``O_NOFOLLOW``, and the
+    refusal of FIFOs, devices and directories without blocking. The
+    caller owns the returned descriptor."""
     home = _home_problem(path, env)
     if home is not None:
         return home
@@ -1731,8 +1738,24 @@ def _read_file(path: str, env: ProbeEnv) -> bytes | _Unavailable:
         return _Unavailable(f"cannot open the file ({type(exc).__name__})")
     try:
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            return _Unavailable("not a regular file")
+    except OSError as exc:
+        os.close(fd)
+        return _Unavailable(f"cannot read the file ({type(exc).__name__})")
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        return _Unavailable("not a regular file")
+    return fd, st
+
+
+def _read_file(path: str, env: ProbeEnv) -> bytes | _Unavailable:
+    """The bytes of a regular file, or ``_Unavailable`` -- a file that is
+    gone included (02 §3a.10.2 rule 4). Path rules: :func:`_open_regular`.
+    A file over :data:`READ_LIMIT` is unavailable rather than half-read."""
+    opened = _open_regular(path, env)
+    if isinstance(opened, _Unavailable):
+        return opened
+    fd, st = opened
+    try:
         if st.st_size > READ_LIMIT:
             return _Unavailable("file larger than the read limit")
         chunks: list[bytes] = []
@@ -1746,6 +1769,47 @@ def _read_file(path: str, env: ProbeEnv) -> bytes | _Unavailable:
         if total > READ_LIMIT:
             return _Unavailable("file larger than the read limit")
         return b"".join(chunks)
+    except OSError as exc:
+        return _Unavailable(f"cannot read the file ({type(exc).__name__})")
+    finally:
+        os.close(fd)
+
+
+def _search_file(path: str, needle: bytes, env: ProbeEnv) -> str | _Unavailable:
+    """``present``/``absent`` for a literal anywhere in a regular file of up
+    to :data:`SEARCH_LIMIT` bytes, found by streaming it in
+    :data:`SEARCH_CHUNK` pieces as bytes (never decoded, never held whole).
+    Each piece is searched together with the last ``len(needle)`` bytes of
+    the one before, so a literal that straddles a boundary is found. The
+    answer is the same token :func:`_match_bytes` gives for a small file.
+    Path rules: :func:`_open_regular`. A file over the bound, one that grows
+    past it while read, or a search that outlives the probe's bound is
+    ``unavailable``: never a partial answer."""
+    opened = _open_regular(path, env)
+    if isinstance(opened, _Unavailable):
+        return opened
+    fd, st = opened
+    deadline = time.monotonic() + env.bounded_timeout() * 0.9
+    try:
+        if st.st_size > SEARCH_LIMIT:
+            return _Unavailable("file larger than the search limit")
+        if not needle:
+            return PRESENT
+        tail = b""
+        total = 0
+        while True:
+            chunk = os.read(fd, SEARCH_CHUNK)
+            if not chunk:
+                return ABSENT
+            total += len(chunk)
+            if total > SEARCH_LIMIT:
+                return _Unavailable("file larger than the search limit")
+            window = tail + chunk
+            if needle in window:
+                return PRESENT
+            tail = window[-len(needle):]
+            if time.monotonic() > deadline:
+                return _Unavailable("the search did not finish within the probe's time bound")
     except OSError as exc:
         return _Unavailable(f"cannot read the file ({type(exc).__name__})")
     finally:
@@ -1813,6 +1877,11 @@ def _probe_path(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
 
 
 def _probe_file_match(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
+    if "contains" in probe:
+        # A literal anywhere is searched as a stream, so a large file (the
+        # installed `claude` program) can be asked about; `line` and
+        # `lines` need the text split and stay at READ_LIMIT.
+        return _search_file(str(probe["path"]), str(probe["contains"]).encode("utf-8"), env)
     data = _read_file(str(probe["path"]), env)
     if isinstance(data, _Unavailable):
         return data
