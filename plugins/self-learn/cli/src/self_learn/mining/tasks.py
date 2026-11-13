@@ -41,6 +41,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..invocation.contract import McpTool, McpToolset, ToolReply
 from ..primitives import fsops
+from .. import refs
 from ..scan import redact
 from . import spine as spine_mod
 from .tracker import Project, Tracker, TrackerError
@@ -222,12 +223,15 @@ def _entry_texts(entry: Mapping[str, Any]) -> list[tuple[str, str]]:
         return out
     content = msg.get("content")
     if kind == "user":
+        # who wrote it, as the miner's spine labels it: only `YOU` is the
+        # person; an agent's brief and the harness's text are not
+        label = {"user": "YOU", "agent": "AGENT-WRITTEN"}.get(refs.role_of(dict(entry)), "RELAY")
         if isinstance(content, str):
-            out.append(("YOU", content))
+            out.append((label, content))
         elif isinstance(content, list):
             for b in content:
                 if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str):
-                    out.append(("YOU", b["text"]))
+                    out.append((label, b["text"]))
     elif kind == "assistant" and isinstance(content, list):
         for b in content:
             if not isinstance(b, dict):
@@ -374,7 +378,9 @@ class CheckTools:
             for d in self.root.iterdir():
                 if not d.is_dir() or WORKER_DIRS.search(d.name):
                     continue
-                if not all_folders and not d.name.startswith(family):
+                # the folder itself and its worktrees' folders: a bare prefix
+                # would make a session started in the home folder match all
+                if not all_folders and d.name != family and not d.name.startswith(family + "--claude-worktrees-"):
                     continue
                 for f in d.glob("*.jsonl"):
                     try:

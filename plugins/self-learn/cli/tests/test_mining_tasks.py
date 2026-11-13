@@ -433,6 +433,9 @@ def test_search_later_sessions_reads_only_after_the_item_and_in_its_folders(tmp_
     wt.parent.mkdir(parents=True)
     wt.write_text(_line("user", "2026-11-03T09:00:00Z", "did the README dry-run section land?", 1) + "\n"
                   + _line("assistant", "2026-10-01T09:00:00Z", "README dry-run old talk", 2) + "\n")
+    longer = rootdir / "-w-repo-two" / "s5.jsonl"  # shares the name's start, is another folder
+    longer.parent.mkdir(parents=True)
+    longer.write_text(_line("assistant", "2026-11-04T09:00:00Z", "README dry-run next door", 1) + "\n")
     other = rootdir / "-w-other" / "s3.jsonl"
     other.parent.mkdir(parents=True)
     other.write_text(_line("assistant", "2026-11-04T09:00:00Z", "README dry-run elsewhere", 1) + "\n")
@@ -445,7 +448,7 @@ def test_search_later_sessions_reads_only_after_the_item_and_in_its_folders(tmp_
     assert "same session" in text and "L3, AGENT: README now documents dry-run" in text
     assert "I will document" not in text and "needs the dry-run" not in text
     assert "session s2" in text and "YOU: did the README" in text and "old talk" not in text
-    assert "elsewhere" not in text and "worker" not in text
+    assert "elsewhere" not in text and "worker" not in text and "next door" not in text
     wide = tools.search_later_sessions("T1", "README dry-run", all_folders=True)
     assert "elsewhere" in wide and "in a worker" not in wide
     assert tools.dispatch("search_later_sessions", {"item": "T7", "words": "x y z"}).is_error
