@@ -2711,6 +2711,8 @@ def _pair_problem(
         )
     if replace_problem is None:
         replace_problem = _budget_keep_problem(case_data, inputs, label=case_path.name)
+    if replace_problem is None:
+        replace_problem = _budget_reject_problem(case_data, lines, inputs, label=case_path.name)
     if replace_problem is not None:
         return replace_problem
     combined = always_loaded.route_problem(
@@ -3012,6 +3014,54 @@ def _quotable_words(line: str) -> str:
     start of a quoted line) the words after it (`steward_inputs.quotable_line`
     shows the brief the same)."""
     return steward_inputs.quotable_line(line)
+
+
+def _budget_only_ids(inputs: Mapping[str, Mapping] | None, ids: Iterable[object]) -> set[str]:
+    """The lessons among *ids* whose only moved input is the ``@budget``
+    placement premise (S-147): the word budget is the one reason they came
+    up tonight."""
+    out: set[str] = set()
+    for rid in ids:
+        moved = [
+            item for item in (inputs or {}).get(str(rid), {}).get("moved") or []
+            if isinstance(item, Mapping)
+        ]
+        if moved and all(
+            item.get("source") == "placement" and item.get("premise") == always_budget.PREMISE_ID
+            for item in moved
+        ):
+            out.add(str(rid))
+    return out
+
+
+def _budget_reject_problem(
+    case_data: dict, items: list, inputs: Mapping[str, Mapping] | None, *, label: str
+) -> str | None:
+    """W-295 (2026-11-14): a `reject` line on a lesson that came up only
+    because the user's always-loaded CLAUDE.md is over its word budget is
+    refused. The budget decides where a lesson is carried, never whether it
+    still holds: on 2026-11-13 (case-d18026ad) the steward rejected
+    lrn-fefa56c1, a rule resting on the user's own typed words, to get
+    under the budget, calling it unseen "in 90 days" when it had been placed
+    29 days. A lesson with no cheaper home is parked for the overseer, which
+    weighs it against the lines already there. A parked case is never
+    applied."""
+    if case_data.get("kind") == "parked" or not inputs:
+        return None
+    budget_only = _budget_only_ids(inputs, case_data.get("records") or [])
+    for item in items:
+        if not isinstance(item, Mapping) or item.get("verb") != "reject":
+            continue
+        rid = str(item.get("id"))
+        if rid in budget_only:
+            return (
+                f"{label}: reject {rid}: this lesson came up only because the user's "
+                "always-loaded CLAUDE.md is over its word budget, and the budget is never a "
+                "reason to reject a lesson. Move it somewhere cheaper, retire it as covered "
+                "by something already loaded, keep it with all three tests evidenced, or "
+                "park the case (always-loaded-user-scope) for the overseer"
+            )
+    return None
 
 
 def _budget_keep_problem(

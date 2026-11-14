@@ -792,6 +792,10 @@ sits:
   where it is, is `outcome: no-action` with §14's three tests evidenced
   again in `decision.always_loaded`, which the runner requires: a line kept
   keeps the file over its budget, so wording alone is never the evidence.
+  The budget is never a reason to reject a lesson: the runner refuses a
+  `reject` on a lesson that came to you only for `@budget` (S-156). When
+  nothing cheaper reaches its moment and you cannot evidence the three
+  tests, park the case (`always-loaded-user-scope`) for the overseer.
   The same budget refuses a case of yours that would add a line to that
   file past it; choose a cheaper destination or park the case
   (`always-loaded-user-scope`).

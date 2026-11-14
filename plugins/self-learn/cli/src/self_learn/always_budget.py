@@ -102,6 +102,10 @@ class Standing:
     sessions: int
     total_words: int
     budget: int
+    #: W-295 (2026-11-14): the days the fire count covers -- the window, or
+    #: the days since the line was placed when that is shorter. A 29-day-old
+    #: line used to be described as unseen "in 90 days".
+    window_days: int = FIRE_WINDOW_DAYS
 
     def shown(self) -> str:
         return (
@@ -113,8 +117,15 @@ class Standing:
         return (
             f"the lesson lines of the user's CLAUDE.md hold {self.total_words} words against a "
             f"budget of {self.budget}; this one is {self.words} words, seen met "
-            f"{self.fires} time(s) in {self.sessions} session(s) in {FIRE_WINDOW_DAYS} days"
+            f"{self.fires} time(s) in {self.sessions} session(s) in {self.window_text()}"
         )
+
+    def window_text(self) -> str:
+        """``"90 days"``, or ``"the 29 days since it was placed"`` for a line
+        placed less than the window ago."""
+        if self.window_days < FIRE_WINDOW_DAYS:
+            return f"the {self.window_days} days since it was placed"
+        return f"{FIRE_WINDOW_DAYS} days"
 
 
 def budget_words(home: Path | str) -> int:
@@ -199,9 +210,18 @@ def standings(lines: Iterable[Line], budget: int, today: date) -> dict[str, Stan
                 used += line.words
         out[line.record_id] = Standing(
             line.record_id, over, grace, position, len(ordered), line.words,
-            line.fires, line.sessions, total, budget,
+            line.fires, line.sessions, total, budget, _window_days(line, today),
         )
     return out
+
+
+def _window_days(line: Line, today: date) -> int:
+    """The days *line*'s fire count covers: :data:`FIRE_WINDOW_DAYS`, or
+    fewer when it was placed more recently (W-295)."""
+    if line.placed_at is None:
+        return FIRE_WINDOW_DAYS
+    age = today.toordinal() - line.placed_at.date().toordinal()
+    return max(0, min(FIRE_WINDOW_DAYS, age))
 
 
 def failing_value(budget: int, today: date) -> str:
