@@ -500,14 +500,16 @@ def stage_inputs(
     try:
         registry = skill_registry.load(home)
         index["self_learn_owns"] = registry.live()
+        index["self_learn_registered"] = [n for n in registry.editable() if registry.is_registered(n)]
         index["vetoed_names"] = registry.vetoed_names()
     except skill_registry.SkillRegistryError as exc:
         staged.notes.append(f"owned-skills.yaml could not be read ({exc})")
         index["self_learn_owns"] = []
+        index["self_learn_registered"] = []
         index["vetoed_names"] = []
     # Include registry metadata too: one vetoed name must not stub every skill.
     _withhold_matches(index["skills"], keep=("name",))
-    for key in ("not_loaded", "problems", "self_learn_owns", "vetoed_names"):
+    for key in ("not_loaded", "problems", "self_learn_owns", "self_learn_registered", "vetoed_names"):
         _withhold_matches(index[key])
     # A skill whose own name the scan matches cannot be named in `into`.
     shown_names = {

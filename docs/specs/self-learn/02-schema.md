@@ -839,6 +839,59 @@ vetoed:
   - {name: <name>, at: <iso>, statement: stmt-xxxxxxxx}              # written before it
 ```
 
+**S-157: registration is editorial permission, not ownership.** The same file accepts
+an optional top-level `registrations` mapping; a name cannot occur in both collections:
+
+```yaml
+registrations:
+  <name>:
+    status: live                   # live | withdrawn
+    plugin: plugins/<name>
+    registered:
+      at: <iso>
+      by: human|agent
+      note: <required reason>
+      path: <absolute real skill directory>
+      original: <absolute original directory>
+      backup: <cache backup path or null>
+      checks: [readable-frontmatter, matching-name, no-installer-signals,
+               no-upstream-marker, repository-location, no-linked-files]
+      authored_sha256: <baseline hash>
+    last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent,
+                 authored_sha256: <hex>}  # present after first full write
+    withdrawn: {at: <iso>, by: human|agent, note: <reason>}  # withdrawn only
+```
+
+`Registry.is_owned` and `live` still inspect only authored skills. `may_edit` accepts
+live owned or registered skills; `editable` enumerates both. Withdrawal keeps the
+registration history, files, links and backup. Registering again refreshes permission
+and the baseline; repeat registration while live is a no-op. History of earlier
+registrations and withdrawals is retained in ledger commits. The writer stamps
+`metadata.self-learn: {registered_by, registered}` for registered skills, never
+`authored_by`, and never changes their name. The registration hash protects the first
+write; `last_write` protects subsequent writes. Restore, rename and retire require
+ownership. Stage rows label permission as registered, omitting long hashes from model
+inputs; expected hashes stay in the runner. Missing registered files are not restored.
+
+`skill-requests.yaml` is a sibling ledger file, version 1, with `requests: [...]`.
+Each row is `{id: sr-<12 hex>, kind: build|change, name, lessons: [<ids>], note,
+by: human|agent, at: <iso>, state: open|closed}`. Closed rows additionally carry
+`answer: built|changed|declined`, `reason`, `decided_at`, and the deciding `run` id.
+Request filing and closure use the ledger commit lock and intents. Build requests
+require distinct existing lessons; change requests require `may_edit`. These verbs
+and register/unregister are agent-available without a standing grant. Direct skill
+write/rename/retire/veto retain their existing authority rules.
+
+Every phase B stage includes all open requests in `skill-requests.yaml`. Its output
+`skill-request-decisions.yaml` is `{decisions: [{id, answer, reason, case?}]}`; every
+staged id must occur exactly once, with built for build, changed for change, or
+declined. A successful answer names the case filename performing the write. The
+manifest retains the answers; finalization checks that exact case's applied writer
+receipt, matching name and create/update action, before closing it. A build also
+requires every requested lesson to be routed into that skill. A completed
+run closes declines; halted runs, drafts and refused writes retain open requests.
+The report lists every answer, or says open and why no successful answer landed.
+
 A skill is owned when it has a `live` row; a retired row keeps its history
 and owns nothing. `by` is `overseer` only when the overseer's runner calls
 the writer itself (a Python call, not the CLI), `human` for every write,
@@ -907,7 +960,7 @@ ignored.
 **The overseer's workspace for skills.** Phase S's stage holds `catalogue/`,
 `neighbourhoods.md`, `skills-index.yaml`, `history.yaml`, `briefs/` and
 `answers.yaml`, and never `full/` or `parked/`; it writes
-`skill-candidates.yaml`. Phase B's stage adds `owned-skills/<name>/` (the
+`skill-candidates.yaml`. Phase B's stage adds `owned-skills/<name>/` for owned and registered skills (the
 skill's files as they are now, its registry row,
 `changed-since-last-write.diff` and the ids of the lessons routed into it),
 `vetoes.yaml` (the vetoed names, and the open requests, read from the

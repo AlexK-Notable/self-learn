@@ -980,6 +980,17 @@ Never route a lesson to `reference` (a references/ shelf file): the runner refus
 on a shelf is taken off it.
 Skills self-learn owns: {formats.FORMATS_DIR}/README.md's "Skills self-learn owns" section says when and how to
 build, change or retire one; {skills_mod.OWNED_DIR}/, {skills_mod.VETOES_FILE}, {skills_mod.PROPOSALS_FILE} and {skills_mod.WRITING_FILE} are its inputs.
+Registered skills are also in owned-skills/, labelled permission: registered in row.yaml.
+They belong to the user: correct, extend and reorganise them while preserving the user's
+intent and voice. Never rename, retire or restore a registered skill. An add-to-existing
+candidate may fully rewrite a registered skill through the same case and skills/ folder.
+Read skill-requests.yaml every run. Decide EVERY request in skill-request-decisions.yaml:
+{{decisions: [{{id: sr-..., answer: built|changed|declined, reason: "one sentence", case: case-name.yaml}}]}}.
+Use built for build requests and changed for change requests, or decline with a reason.
+For built/changed, case names the case file that writes the requested skill; make that
+case and its skills/ folder. Only a deployed write closes it; drafts/refusals stay open.
+List every request and its answer in the report. A build can use the maintenance-case
+route for placed lessons with no covering case (S-156).
 {_discovery_prompt_lines(discovery)}{_YAML_TEXT_RULE_B}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
 an evidence item with such a line is dropped, and any other field with one refuses the case.
@@ -7249,6 +7260,8 @@ def _execute_manifest(
             "applied": application_count,
         })
     try:
+        from . import skill_work_requests
+        request_lines = skill_work_requests.settle(home, manifest, complete=not halted)
         def _render(
             withdrawn: list[dict[str, str]], carry_notes: list[str], publish_dropped: set[str],
         ) -> str:
@@ -7285,6 +7298,7 @@ def _execute_manifest(
                     *host_lines,
                     *cast(list[str], manifest.get("policy_lines") or []),
                     *skills_mod.report_lines(manifest),
+                    *request_lines,
                     # SK4: one line per disposition phase B recorded.
                     *discovery_mod.report_lines(manifest),
                 ],
@@ -7839,6 +7853,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             skill_stage = skills_mod.stage_phase_b(
                 home, stage, parked_rows, skill_state, _write_stage,
             )
+            from . import skill_work_requests
+            work_requests = skill_work_requests.stage_requests(home, stage, _write_stage)
             skill_stage.notes.extend(link_problems)
             # SK4: phase S's candidates (or what it came to), for phase B's
             # dispositions.
@@ -8616,6 +8632,10 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         "status": "skill-disposition-note", "reason": line[:300]})
             else:
                 dispositions = None
+            try:
+                request_decisions = skill_work_requests.read_decisions(stage, work_requests)
+            except ValueError as exc:
+                raise OverseerError(str(exc)) from exc
         except (OverseerError, batch.BatchError) as exc:
             detail = _failure_detail(exc)
             closed_text, close_questions = (None, [])
@@ -8684,6 +8704,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     # SK4: phase S and phase B's dispositions, for the week
                     # file this record's commit writes and for the report.
                     "discovery": discovery_mod.manifest_info(phase_s, dispositions),
+                    "requests": request_decisions,
                 },
             )
         except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes
