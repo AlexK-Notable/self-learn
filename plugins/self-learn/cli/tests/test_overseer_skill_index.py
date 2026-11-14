@@ -158,3 +158,95 @@ def test_a_skill_whose_own_name_matches_the_scan_is_not_nameable_but_others_are(
     assert "sample-fine" in staged.skill_names
     assert odd not in staged.skill_names
     assert odd not in json.dumps(index)
+
+
+
+def test_a_secret_looking_description_withholds_only_that_field(home, claude, tmp_path):
+    description = "Use when token = " + "synthetic-value-only"
+    assert scan.scan(description)[0].rule == "credential-assignment"
+    _skill(claude / "skills" / "sample-sensitive", description)
+    _skill(claude / "skills" / "sample-clean")
+
+    staged, index = _stage(home, tmp_path)
+
+    rows = {row["name"]: row for row in index["skills"]}
+    assert {"sample-sensitive", "sample-clean"} <= rows.keys()
+    assert {"sample-sensitive", "sample-clean"} <= staged.skill_names
+    assert rows["sample-clean"]["description"] == "Use when testing the index."
+    assert "withheld" in rows["sample-sensitive"]["description"]
+    assert "credential-assignment" in rows["sample-sensitive"]["description"]
+    assert description not in json.dumps(index)
+    assert not scan.scan((tmp_path / "ws" / discovery.SKILLS_INDEX_FILE).read_text())
+
+
+def test_registry_metadata_cannot_withhold_the_skills_index(home, claude, tmp_path, monkeypatch):
+    from self_learn import skill_registry
+
+    odd = "synthetic" * 7
+    assert scan.scan(odd)[0].rule == "high-entropy-base64"
+    _skill(claude / "skills" / "sample-clean")
+    _skill(claude / "skills" / odd)
+    (claude / "settings.json").write_text(
+        json.dumps({"skillOverrides": {odd: "off"}}), encoding="utf-8",
+    )
+
+    class Registry:
+        def live(self):
+            return ["sample-clean"]
+
+        def vetoed_names(self):
+            return [odd]
+
+    monkeypatch.setattr(skill_registry, "load", lambda home: Registry())
+    staged, index = _stage(home, tmp_path)
+
+    assert "sample-clean" in {row["name"] for row in index["skills"]}
+    assert "sample-clean" in staged.skill_names
+    assert index["self_learn_owns"] == ["sample-clean"]
+    assert "high-entropy-base64" in index["vetoed_names"][0]
+    assert any("withheld" in row["name"] for row in index["not_loaded"])
+    assert odd not in json.dumps(index)
+    assert not scan.scan((tmp_path / "ws" / discovery.SKILLS_INDEX_FILE).read_text())
+
+
+@pytest.mark.parametrize("unavailable", ["withheld", "missing", "unreadable"])
+def test_unavailable_index_uses_machine_roster_for_into(
+    home, claude, tmp_path, monkeypatch, unavailable,
+):
+    _skill(claude / "skills" / "sample-real")
+    _skill(claude / "skills" / "sample-disabled")
+    (claude / "settings.json").write_text(
+        json.dumps({"skillOverrides": {"sample-disabled": "off"}}), encoding="utf-8",
+    )
+    scanned = discovery._scanned
+
+    def withhold_index(text, where):
+        if where == "the skills index":
+            return discovery._withheld("high-entropy-base64", where)
+        return scanned(text, where)
+
+    monkeypatch.setattr(discovery, "_scanned", withhold_index)
+    workspace = tmp_path / "ws"
+    staged = discovery.stage_inputs(home, workspace, _writer, answers=[])
+    path = workspace / discovery.SKILLS_INDEX_FILE
+    assert path.read_text().startswith("withheld:")  # the fallback is exercised
+    if unavailable == "missing":
+        path.unlink()
+    elif unavailable == "unreadable":
+        path.write_bytes(b"\xff")
+    entries = []
+    for ordinal, target in enumerate(("sample-real", "sample-invented", "sample-disabled")):
+        entry = {k: v for k, v in _candidate(f"sc-fallback-{ordinal}").items() if k != "name"}
+        entry["into"] = target
+        entries.append(entry)
+    candidates = tmp_path / discovery.CANDIDATES_FILE
+    _dump(candidates, {"candidates": entries})
+
+    checked = discovery.read_candidates(candidates, staged)
+
+    assert checked.valid and not checked.drops
+    rows = {row["into"]: row for row in checked.entries}
+    assert set(rows) == {"sample-real", "sample-invented", "sample-disabled"}
+    assert "held_because" not in rows["sample-real"]
+    assert "held_because" in rows["sample-invented"]
+    assert "held_because" in rows["sample-disabled"]

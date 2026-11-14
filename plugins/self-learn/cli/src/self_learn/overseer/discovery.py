@@ -357,7 +357,7 @@ class StagedInputs:
     lesson_count: int = 0
     surfaces: int = 0
     groups: int = 0
-    #: Every skill name in skills-index.yaml (what ``into`` may name).
+    #: Safe names from the machine roster, even if the staged index is unavailable.
     skill_names: frozenset[str] = frozenset()
     history_runs: int = 0
     briefs: int = 0
@@ -495,9 +495,6 @@ def stage_inputs(
     # a plugin-cache path carries a commit hash that the scan reads as
     # high-entropy base64, and stubbing the file for it left phase S, and
     # the `into` check, with no skill at all (2026-11-08).
-    _withhold_matches(index["skills"], keep=("name",))
-    for key in ("not_loaded", "problems"):
-        _withhold_matches(index[key])
     from .. import skill_registry
 
     try:
@@ -508,6 +505,10 @@ def stage_inputs(
         staged.notes.append(f"owned-skills.yaml could not be read ({exc})")
         index["self_learn_owns"] = []
         index["vetoed_names"] = []
+    # Include registry metadata too: one vetoed name must not stub every skill.
+    _withhold_matches(index["skills"], keep=("name",))
+    for key in ("not_loaded", "problems", "self_learn_owns", "vetoed_names"):
+        _withhold_matches(index[key])
     # A skill whose own name the scan matches cannot be named in `into`.
     shown_names = {
         str(row["name"]) for row in index["skills"]
@@ -519,8 +520,9 @@ def stage_inputs(
     index_text = _yaml_text(index)
     shown_index = _scanned(index_text, "the skills index")
     write(workspace, workspace / SKILLS_INDEX_FILE, shown_index)
-    # A stubbed index showed phase S no skill, so `into:` may name none.
-    staged.skill_names = frozenset(shown_names) if shown_index == index_text else frozenset()
+    # Validate against the real roster even if the final safety scan withholds
+    # the index, or its staged copy is later lost. Never admit invented targets.
+    staged.skill_names = frozenset(shown_names)
 
     # history.yaml: earlier runs' candidates and what became of each.
     past = history(home)
