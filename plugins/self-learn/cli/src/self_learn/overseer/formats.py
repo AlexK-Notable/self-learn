@@ -392,6 +392,18 @@ def _skills_rules() -> list[str]:
     text = f"""\
 ## Skills self-learn owns
 
+S-157 also stages registered skills here, marked `permission: registered` in row.yaml.
+A registration permits full prose, description and reference-file updates. The skill
+belongs to the user: preserve their intent and voice. Never rename, retire or restore it.
+An add-to-existing disposition may rewrite a registered skill through the same pair.
+
+Read skill-requests.yaml on every run and answer each row in skill-request-decisions.yaml:
+`{{decisions: [{{id: sr-..., answer: built|changed|declined, reason: "one sentence", case: case-name.yaml}}]}}`.
+The case field is required for built/changed and identifies the pair performing the write.
+The runner closes successful requests using applied writer receipts. Drafts and refused
+writes remain open. Explain each request and its answer in the report. Build requests may
+move placed lessons using the uncovered-lesson maintenance route described below.
+
 Lessons that are parts of one task can become one skill that self-learn writes, keeps
 up to date and can retire. The lessons stay lessons inside it: they compile into the
 skill's managed section, as they do in any skill, and keep their history. The text

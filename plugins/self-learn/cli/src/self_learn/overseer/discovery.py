@@ -503,6 +503,7 @@ def stage_inputs(
     try:
         registry = skill_registry.load(home)
         index["self_learn_owns"] = registry.live()
+        index["self_learn_registered"] = [n for n in registry.editable() if registry.is_registered(n)]
         index["vetoed_names"] = registry.vetoed_names()
     except skill_registry.SkillRegistryError as exc:
         staged.notes.append(f"owned-skills.yaml could not be read ({exc})")

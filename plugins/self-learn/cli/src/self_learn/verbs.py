@@ -2347,9 +2347,9 @@ def owned_skill_refusal(home: Path | str, name: str | None) -> VerbError | None:
         registry = _owned_skills(home)
     except VerbError as exc:
         return exc
-    if not registry.is_owned(name):
+    if not registry.may_edit(name):
         return SheetLineError(
-            f"new-skill:{name} is not a skill self-learn owns (no live row in "
+            f"new-skill:{name} is not a skill self-learn owns or is registered to edit (no live row in "
             "owned-skills.yaml), and a route never creates a skill for an agent: "
             "`self-learn skill write` does. A lesson for a skill self-learn does not "
             "own goes to that skill's skill-md; a group of lessons that should become "
@@ -2386,7 +2386,7 @@ def _refuse_rescaffolding_an_owned_skill(home: Path, name: str) -> None:
     other name goes ahead as before (D5). Raises
     :class:`DestinationUnavailable`, or :class:`NeedsPerson` for a registry
     that does not read back."""
-    if _owned_skills(home).is_owned(name):
+    if _owned_skills(home).may_edit(name):
         raise DestinationUnavailable(
             f"new-skill:{name} is a skill self-learn owns and its SKILL.md is missing "
             "-- a route never scaffolds it; run its `skill write` again to finish the "
@@ -5083,7 +5083,7 @@ def _scaffold_owner(home: Path, spec: TargetSpec) -> str | None:
         registry = skill_registry.load(home)
     except skill_registry.SkillRegistryError:
         return None
-    if name in registry.skills or name in registry.vetoed_names():
+    if name in registry.skills or name in registry.registrations or name in registry.vetoed_names():
         return None
     return by
 
@@ -5094,7 +5094,7 @@ def _add_owned_scaffold_row(
     """SK-G's registry change: a live row for the person's scaffold, with
     the stamp's ``created`` and its authored hash as the last write. A row
     that exists by now (a race with another writer) is left alone."""
-    if name in registry.skills:
+    if name in registry.skills or name in registry.registrations:
         return
     step = {"at": stamp["created"], "case": None, "by": stamp["authored_by"]}
     registry.skills[name] = {
