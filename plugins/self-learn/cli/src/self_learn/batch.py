@@ -1058,6 +1058,34 @@ def _hook_activation_registered(record: Record) -> bool | None:
     return "delegated" not in note
 
 
+def hook_input_changes_placed(record: Record, fields: Mapping) -> bool:
+    """2026-11-14 (W-294): whether a hook route line's compile input
+    (``fields["hook"]["hook"]``) asks for a different guard than the one the
+    lesson already has placed: another mode, event, tool list, match or
+    message. Such a line is a correction of the placed hook, never "already
+    applied": the overseer's run of 2026-11-13 (0e8a885d) widened
+    lrn-a5b96978's match in a reconsider case, the line read as
+    already-applied because the lesson was a registered hook, and the
+    report said the widening had landed when nothing had changed. A line
+    with no compile input, or one whose block matches the placed one, is
+    not a change."""
+    from .hook_compiler import hook_event, hook_mode
+
+    hook_input = fields.get("hook")
+    wanted = hook_input.get("hook") if isinstance(hook_input, Mapping) else None
+    placed = (record.routing or {}).get("hook")
+    if not isinstance(wanted, Mapping) or not isinstance(placed, Mapping):
+        return False
+    if hook_mode(dict(wanted)) != hook_mode(dict(placed)):
+        return True
+    if hook_event(dict(wanted)) != hook_event(dict(placed)):
+        return True
+    for key in ("tools", "path_regex", "warn_message", "deny_message"):
+        if key in wanted and wanted.get(key) != placed.get(key):
+            return True
+    return False
+
+
 def replace_made(home: Path | str, record_id: str, fields: dict) -> Record | None:
     """The lesson a ``replace`` line made, iff the line is fully applied
     (E1, D-AUTHOR §2.2) -- else ``None``. Applied means: *record_id* reads
@@ -1146,6 +1174,11 @@ def classify(
             # the activation leg only (the route leg is skipped there,
             # since `verbs.route` itself would refuse a second attempt
             # against an already-routed record).
+            if hook_input_changes_placed(record, f):
+                # W-294: a new match or message for a placed hook is a
+                # change to make (a reroute under the line's case), not a
+                # line that already landed.
+                return False
             registered = _hook_activation_registered(record)
             if registered is None:
                 return False
@@ -1404,6 +1437,26 @@ def _reconsider_case_for(
     return case
 
 
+#: Who may move a placed lesson no case covers, and under which case kind
+#: (:func:`_resolution_reroute_for`): the steward under a resolution case
+#: (S-104), the overseer under a maintenance case (W-296, 2026-11-14).
+_UNCOVERED_MOVE_CASE_KIND: dict[str, str] = {
+    "steward": "resolution",
+    "overseer": "maintenance",
+}
+
+
+def uncovered_placed(home: Path, record_id: str) -> bool:
+    """Whether *record_id* is placed (routed) and no case a reconsider could
+    supersede covers it -- the lessons :func:`_resolution_reroute_for` lets
+    the overseer move under a maintenance case. Read only."""
+    try:
+        record = Record.from_path(find_record_path(home, record_id))
+    except (LedgerOpsError, RecordError, OSError):
+        return False
+    return record.status == "routed" and not _covered_by_another_case(home, record_id, None)
+
+
 def _resolution_reroute_for(
     home: Path,
     record_id: str,
@@ -1432,8 +1485,19 @@ def _resolution_reroute_for(
     is unchanged (a person reroutes with `self-learn reroute`). *rerouted*
     (:func:`dry_run` only, like ``reconsidered``): the record ids a staged
     resolution case covers when it is not recorded yet; :func:`run` never
-    passes it and reads the recorded case instead."""
-    if verb != "route" or actor != "steward":
+    passes it and reads the recorded case instead.
+
+    2026-11-14 (W-296): the overseer gets the same move under its own
+    case kind for a lesson no case covers, a ``kind: maintenance`` case
+    that names the lesson and supersedes nothing (the kind its brief
+    already gives "a lesson no correctable case covers"). Before, a placed
+    lesson that a person or an agent routed by hand before decisions were
+    recorded could never be moved by the overseer at all: it has no case
+    for a reconsider to supersede, so the 2026-11-13 runs deferred the
+    Hyprland display skill twice ("no placing decision for any of them
+    could be identified"). A covered lesson still moves only through a
+    reconsider of the case that covers it."""
+    if verb != "route" or actor not in _UNCOVERED_MOVE_CASE_KIND:
         return False
     if case is None and record_id not in rerouted:
         return False
@@ -1450,7 +1514,7 @@ def _resolution_reroute_for(
             return False
         front = view.frontmatter
         if (
-            front.get("kind") != "resolution" or front.get("supersedes")
+            front.get("kind") != _UNCOVERED_MOVE_CASE_KIND[actor] or front.get("supersedes")
             or record_id not in [str(rid) for rid in front.get("records") or []]
         ):
             return False
@@ -1631,7 +1695,8 @@ def _dispatch_reroute_if_moved(
     if _resolution_reroute_for(home, item.id, case, verb, actor):
         return _dispatch_reroute(
             home, item, actor=actor, hook_activation=hook_activation,
-            is_hook_dest=is_hook_dest, why="premise moved", execution=execution,
+            is_hook_dest=is_hook_dest, execution=execution,
+            why="premise moved" if actor == "steward" else "a lesson no case covers",
         )
     return None
 
@@ -1865,7 +1930,12 @@ def _dispatch_route(
             and (pre_record.routing or {}).get("destination")
             == REFUSED_HOOK_DESTINATION
         )
-        if already_routed_to_hook:
+        # W-294: a line carrying a different guard for a placed hook is not
+        # an activation retry. It falls through to the reroute below (under
+        # a reconsider case, or the moves `_resolution_reroute_for`
+        # admits), which re-places the hook from the line's compile input;
+        # without such a case `verbs.route` refuses it by name.
+        if already_routed_to_hook and not hook_input_changes_placed(pre_record, f):
             return _dispatch_hook_activation(
                 home, item, actor=actor, hook_activation=hook_activation,
                 route_result=None,

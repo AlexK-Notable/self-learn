@@ -1714,13 +1714,17 @@ def _budget_decide_lines(case: str) -> list[str]:
         "of the old text in `decision.rewrite`);",
         "  - it belongs to the moment an existing skill is loaded: that skill (`replace` with "
         "`to: skill:<name>` and `dest: skill-md`);",
-        "  - something already loaded says it, or it no longer holds: `retire` with "
-        "`covered_by`, or `reject` it with the reason;",
+        "  - something already loaded says it: `retire` with `covered_by`. The budget is "
+        "never a reason to `reject` a lesson: a reject on this input is refused at the stage "
+        "check, because a lesson that still holds and has nowhere cheaper to go is the "
+        "overseer's to weigh against the lines already there, so park it "
+        "(always-loaded-user-scope);",
         "  - it must stay (it can come up in any session with nothing to warn the agent, "
         "missing it is silent or costs real work, and nothing cheaper reaches the moment): "
         "`outcome: no-action`, one `note` saying so, and `decision.always_loaded` evidencing "
         "ALL THREE tests from this case's own evidence. Each line kept is a line that keeps "
-        "the file over its budget, so a lesson with no recorded sighting in ninety days stays "
+        "the file over its budget, so a lesson with no recorded sighting since it was placed "
+        "(at most ninety days back) stays "
         "only on evidence stronger than its wording;",
         "  - you cannot tell: park it with your tentative answer.",
     ]

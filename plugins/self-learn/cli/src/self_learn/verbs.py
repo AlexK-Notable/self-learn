@@ -2771,6 +2771,23 @@ def _hooks_dir_for(home: Path, scope: str) -> tuple[Path, Path]:
     return root, root / "hooks" / "self-learn"
 
 
+def _owns_hook_script(record: Record, root: Path, target: Path) -> bool:
+    """W-294 (2026-11-14): whether *target* is the script *record* itself
+    has placed -- the lesson is routed to a hook whose stored
+    ``script_path`` is that file. Re-placing a lesson's own hook with a new
+    match or message (a reconsider's hook-to-hook reroute) rewrites that
+    file; any other existing file at the path is still refused."""
+    routing = record.routing or {}
+    meta = routing.get("hook") if isinstance(routing.get("hook"), dict) else {}
+    rel = meta.get("script_path") if isinstance(meta, dict) else None
+    return (
+        record.status == "routed"
+        and routing.get("destination") == "hook"
+        and isinstance(rel, str)
+        and (root / rel) == target
+    )
+
+
 def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> TargetSpec:
     """PRE-FLIGHT the hook script path (raises before any commit)."""
     root, hooks_dir = _hooks_dir_for(home, record.scope)
@@ -2780,7 +2797,7 @@ def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> Target
     except Exception as exc:  # HookCompileError: unsluggable trigger
         raise VerbError(str(exc)) from exc
     target = hooks_dir / name
-    if target.exists():
+    if target.exists() and not _owns_hook_script(record, root, target):
         raise NeedsPerson(
             f"hook script already exists at {target} — refusing to "
             "overwrite; supersede the record that owns it first"
@@ -4636,6 +4653,14 @@ def _retirement_host_phase(
         )
         return host_sha, retirement.spec.host_path
     if retirement.removal is not None:
+        if skip_target is not None and retirement.removal[1] == skip_target:
+            # W-294: a hook re-placed with a new match or message (a reroute
+            # from hook to hook) writes its new script at the same path; the
+            # successor's write is the whole story, as for a same-target
+            # managed file above. Removing it first would also print a
+            # "remove the settings.json entry by hand" step that is wrong:
+            # the entry still names the same, rewritten script.
+            return None, None
         host_sha = _remove_hook_script(
             home, retirement.removal, record_id, note, warnings, post_notes
         )

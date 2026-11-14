@@ -334,7 +334,12 @@ _REPLACE_RULES = (
     "a lesson a case the steward or you recorded covers, write a kind: reconsider",
     "successor of that case; for anything else -- a shortening, a merge, a lesson no",
     "correctable case covers -- write a named kind: maintenance pair. Never a lesson",
-    "routed to a hook: move it with `route`.",
+    "routed to a hook: move it with `route`; to change a placed hook's match or",
+    "message, write a `route` line with dest: hook and the whole new `hook` input in",
+    "the same pair kinds, and the runner re-places the hook (a `revise` of a placed",
+    "lesson is refused). A rewrite that turns a fact into a behavior lesson needs",
+    "`type: behavior` and `kind:` (anti-pattern, reasoning-pattern or surface-rule) on",
+    "the line, or it is refused.",
     "The case's records name every lesson the line changes (its id and each id in",
     "also), and its decision carries `rewrite`: each idea of the old text, in a few",
     "words, with where it is now -- loaded, context, field:<name>, or dropped with a",
@@ -430,7 +435,12 @@ in by the same route line in a kind: reconsider successor of the case that place
 which the runner applies as a reroute once the skill is written. One build may gather
 lessons placed by several cases: the build pair is the successor of one of them, and each
 other case gets a kind: reconsider successor of its own whose sheet routes its lesson in with
-dest: new-skill:<name> and no folder; the runner applies the build pair first. See {SKILL_EXAMPLE_DIR}/,
+dest: new-skill:<name> and no folder; the runner applies the build pair first.
+{run.LESSONS_DIR}/{run.COVERING_CASES_FILE} names the cases that cover each lesson (a record file
+names none). A placed lesson it does not list was placed before decisions were recorded and no
+case covers it: it moves in by its route line in a kind: maintenance pair whose records name it
+(the build pair itself when that is kind: maintenance), applied as a reroute. Never defer a
+skill because a lesson's placing decision cannot be found. See {SKILL_EXAMPLE_DIR}/,
 case-skill-example.yaml and sheet-skill-example.yaml. The runner writes the skill
 first, then records the case and applies the sheet; if the write is refused, the whole
 pair is dropped and named under "Refused / could not do", and no lesson moves. The

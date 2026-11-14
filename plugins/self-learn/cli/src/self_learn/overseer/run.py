@@ -1705,7 +1705,57 @@ def _stage_lessons(home: Path, stage: Path) -> int:
                     )
                 _write_stage(stage, lessons / f"{path.stem}.md", text)
                 staged.add(path.stem)
+    _stage_covering_cases(home, stage)
     return len(staged)
+
+
+#: W-296: the file in :data:`LESSONS_DIR` naming, for each lesson, the cases
+#: a `kind: reconsider` successor may supersede to re-decide it.
+COVERING_CASES_FILE = "covering-cases.yaml"
+
+
+def _stage_covering_cases(home: Path, stage: Path) -> None:
+    """W-296 (2026-11-14): write ``lessons/covering-cases.yaml``: every
+    lesson some current case names, with those cases (id, kind, actor) --
+    the cases a reconsider may supersede to move or correct it (a person's
+    case excepted, which the brief says). A record file names no case, so
+    before this a placed lesson's covering case could be found only when
+    that case happened to be among the week's selected ones: the
+    2026-11-13 runs could not find one for any of the five Hyprland display
+    lessons and deferred their skill twice. A placed lesson absent from the
+    file is covered by no case and moves under a ``kind: maintenance``
+    case (`batch._resolution_reroute_for`). Only freeze-verified,
+    not-superseded cases are listed; an unreadable index writes the file
+    with a note instead."""
+    covering: dict[str, list[dict[str, str]]] = {}
+    note: str | None = None
+    try:
+        rows = cases.list_cases(home, only_ok=True)
+    except (cases.CaseError, OSError, ValueError) as exc:
+        rows = []
+        note = f"the case index could not be read ({type(exc).__name__}); no case is listed"
+    for row in rows:
+        case_id = row.get("case")
+        if not isinstance(case_id, str) or row.get("superseded_by"):
+            continue
+        for rid in row.get("records") or []:
+            covering.setdefault(str(rid), []).append({
+                "case": case_id,
+                "kind": str(row.get("kind") or ""),
+                "actor": str(row.get("actor") or ""),
+            })
+    data: dict[str, Any] = {
+        "about": (
+            "For each lesson, the current cases that name it: a kind: reconsider successor "
+            "of one of them (not one a person recorded) re-decides it. A placed lesson not "
+            "listed here is covered by no case: move it with a route line in a kind: "
+            "maintenance pair whose records name it (applied as a reroute)."
+        ),
+        "lessons": {rid: covering[rid] for rid in sorted(covering)},
+    }
+    if note is not None:
+        data["note"] = note
+    _write_stage(stage, stage / LESSONS_DIR / COVERING_CASES_FILE, _yaml_text(data))
 
 
 #: S-132: phase B's folder of the current decisions whose dependencies list
@@ -2739,6 +2789,34 @@ def _put_hand_steps_section(lines: list[str], census: dict[str, Any] | None) -> 
         lines[end:end] = ["- none"]
 
 
+def _in_short_note(
+    *, dropped: int, staged: int, lines_dropped: int, items_not_landed: int,
+) -> str | None:
+    """W-294 (2026-11-14): the runner's plain sentence under the model's "In
+    short" paragraph when some of the run's decisions did not land, or
+    ``None`` when everything did. The model writes "In short" before the
+    sheets are applied, so it describes what was intended; the run of
+    2026-11-13 (0e8a885d) said three corrections were made when its own
+    "Refused / could not do" list showed two dropped and the third had
+    changed nothing."""
+    parts: list[str] = []
+    if dropped:
+        parts.append(
+            f"{dropped} of {staged} decision(s) were dropped before they reached the ledger"
+        )
+    if lines_dropped:
+        parts.append(f"{lines_dropped} line(s) were left out because they would have been refused")
+    if items_not_landed:
+        parts.append(f"{items_not_landed} change(s) were refused when applied")
+    if not parts:
+        return None
+    return (
+        "Runner's note: the paragraph above was written before the changes were applied, "
+        "and not all of them were made: " + "; ".join(parts) + ". Anything above that one "
+        "of them would have changed is unchanged; each is named under Refused / could not do."
+    )
+
+
 def _finalize_model_report(
     path: Path, *, date: str, run_id: str, model: str, selected: tuple[str, ...],
     population_count: int, excluded: int, model_calls: int, guard: int,
@@ -2749,9 +2827,13 @@ def _finalize_model_report(
     decided: list[str] | None = None,
     hand_steps: dict[str, Any] | None = None,
     question_notes: list[str] | None = None,
+    in_short_note: str | None = None,
 ) -> str:
     """The published report: the model's own text, whole, with the
-    runner's factual lines added. *notes* are runner lines for "Refused /
+    runner's factual lines added. *in_short_note* (W-294) is the runner's
+    sentence added under the model's "In short" paragraph when some of the
+    run's decisions did not land: the model writes that paragraph before
+    the sheets are applied, so on its own it describes what was intended. *notes* are runner lines for "Refused /
     could not do" that are not refusals of any decision (a dropped
     question, the report's own length); they are not counted as refused.
     *decided* (2026-09-28, follow-up 4) are runner lines for "Decided in
@@ -2775,6 +2857,20 @@ def _finalize_model_report(
     ]
     lines[examined_at:examined_at] = facts
     _drop_bare_none(lines, examined_at)
+    if in_short_note:
+        short_at = next(
+            (i for i, line in enumerate(lines)
+             if line.startswith("## ") and _heading_name(line) == IN_SHORT_SECTION),
+            None,
+        )
+        if short_at is not None:
+            short_end = next(
+                (i for i in range(short_at + 1, len(lines)) if lines[i].startswith("## ")),
+                len(lines),
+            )
+            while short_end > short_at + 1 and not lines[short_end - 1].strip():
+                short_end -= 1
+            lines[short_end:short_end] = ["", in_short_note]
     if decided:
         decided_at = next(
             i for i, line in enumerate(lines) if line.startswith("## Decided in the user's stead")
@@ -3535,6 +3631,23 @@ def _drop_preview_refused(
         for new, old in enumerate(kept_indexes, start=1)
     }
     return kept, lines
+
+
+def _uncovered_moved_by(home: Path, case_data: object) -> frozenset[str]:
+    """W-296 (2026-11-14): the lessons a staged ``kind: maintenance`` case
+    names that are placed and that no case a reconsider could supersede
+    covers -- the ones whose `route` line the runner applies as a reroute
+    (`batch._resolution_reroute_for`, the overseer's move of a lesson placed
+    before decisions were recorded). Any other case kind: none."""
+    if (
+        not isinstance(case_data, dict) or case_data.get("kind") != "maintenance"
+        or case_data.get("supersedes")
+    ):
+        return frozenset()
+    return frozenset(
+        str(rid) for rid in case_data.get("records") or []
+        if batch.uncovered_placed(home, str(rid))
+    )
 
 
 def _is_maintenance_pair(case_file: Path) -> bool:
@@ -6686,6 +6799,9 @@ def _execute_manifest(
     hook_ids: list[str] = []
     notice_ids: list[str] = []
     application_count = 0
+    #: W-294: sheet items of this attempt that did not land (refused,
+    #: stopped, host unresolved), for the runner's note under "In short".
+    items_not_landed = 0
     halted = False
     halt_reason: str | None = None
     #: 2026-09-26 (Q19): items refused with a retried kind (`git`,
@@ -6826,6 +6942,7 @@ def _execute_manifest(
             _apply_skill_retire(home, run_id, case_id, recipe, result, refusals, cue_outcomes)
         for item in result.items:
             if item.state in ("refused", "stopped", "unresolved-host"):
+                items_not_landed += 1
                 # "Refused / could not do" is the report's question to the
                 # user (S-68 ruling 2); the kind says what kind of question.
                 # EVERY item not applied is listed, with its state (N11:
@@ -7054,6 +7171,11 @@ def _execute_manifest(
             "under Refused / could not do)"
         )
 
+    in_short_note = _in_short_note(
+        dropped=decisions_dropped, staged=decisions_staged,
+        lines_dropped=decisions_lines_dropped, items_not_landed=items_not_landed,
+    )
+
     # S-68's generic guard. An attempt that ran and moved NOTHING toward a
     # terminal value is a failed attempt and counts exactly like one that
     # raised, so a trap nobody has thought of still closes out after
@@ -7167,6 +7289,7 @@ def _execute_manifest(
                     *discovery_mod.report_lines(manifest),
                 ],
                 hand_steps=cast("dict[str, Any] | None", manifest.get("hand_steps")),
+                in_short_note=in_short_note,
             )
         manifest, report_path, latest = _write_manifest_truth(
             home, manifest, report_text=_render, complete=not halted, closed=closed,
@@ -8335,6 +8458,10 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     from ..steward import _reconsidered_by  # one definition, the steward's
 
                     reconsidered = _reconsidered_by(_yaml_mapping(case_file))
+                    # W-296: a maintenance pair moves a placed lesson no
+                    # case covers (`batch._resolution_reroute_for`); its
+                    # preview is that reroute, as a reconsider's is.
+                    rerouted = _uncovered_moved_by(home, _yaml_mapping(case_file))
                     preview = batch.dry_run(
                         home, sheet, actor="overseer",
                         hook_activation=config.hook_activation_enabled(home),
@@ -8346,6 +8473,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         # as the routed-status refusal. 2026-10-05: before,
                         # every reconsider reroute counted "would refuse".
                         reconsidered=reconsidered,
+                        rerouted=rerouted,
                     )
                     # SK3: a line routing a lesson into the skill this pair
                     # builds is previewed before the skill exists; only
@@ -8355,8 +8483,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     # reconsider case covers moves in by reroute (fix
                     # round 2, gate r2 MAJOR).
                     preview = skills_mod.preview_for_step(
-                        home, preview, sheet, skill_step, reconsidered=reconsidered,
-                        building=building,
+                        home, preview, sheet, skill_step,
+                        reconsidered=reconsidered | rerouted, building=building,
                     )
                     _refuse_doomed_reconsider(case_file, predecessor, preview)
                     # S-101: a preview that says would-refuse is
