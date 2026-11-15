@@ -184,7 +184,7 @@ MODEL_JOURNAL_NAME = "journal.md"
 #: Stage files the whole-stage secret scan leaves to their own handling:
 #: a secret in the journal commits a stub, and a secret in one question
 #: drops that question -- neither may refuse the run.
-_OWN_SCAN_STAGE_FILES = frozenset({MODEL_JOURNAL_NAME, "questions.yaml"})
+_OWN_SCAN_STAGE_FILES = frozenset({MODEL_JOURNAL_NAME, "questions.yaml", "skill-request-decisions.yaml"})
 _LEGACY_RETIRE_ALIAS = "grad" + "uate"
 
 #: 02-schema §3a: `failure_detail` is at most 2,000 characters, truncated
@@ -670,7 +670,7 @@ def _secret_files(stage: Path, case_files: frozenset[Path] = frozenset()) -> lis
     for path in _stage_files(stage):
         if path.parent == stage and path.name in _OWN_SCAN_STAGE_FILES:
             # Scanned by their own handling (`_model_journal_text`,
-            # `_questions`): neither may refuse the whole run.
+            # `_questions`, request decisions): a bad item never costs the run.
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -984,10 +984,17 @@ Registered skills are also in owned-skills/, labelled permission: registered in 
 They belong to the user: correct, extend and reorganise them while preserving the user's
 intent and voice. Never rename, retire or restore a registered skill. An add-to-existing
 candidate may fully rewrite a registered skill through the same case and skills/ folder.
+Preserve the registered skill's existing name, even if it contains a reserved word.
+Carry existing non-allowlisted frontmatter keys unchanged (including allowed-tools
+and version); do not add, change or remove such keys. Prose and description may change.
+A target: withdrawn change request has lost upkeep permission: decline with that reason.
+A build answer may name a case writing a different or existing skill, provided ALL
+requested lessons route there. Case names work with or without .yaml. Missing or bad
+answers stay open and are reported individually; never abandon other work for one.
 Read skill-requests.yaml every run. Decide EVERY request in skill-request-decisions.yaml:
 {{decisions: [{{id: sr-..., answer: built|changed|declined, reason: "one sentence", case: case-name.yaml}}]}}.
 Use built for build requests and changed for change requests, or decline with a reason.
-For built/changed, case names the case file that writes the requested skill; make that
+For built/changed, case names the case file that performs the write; make that
 case and its skills/ folder. Only a deployed write closes it; drafts/refusals stay open.
 List every request and its answer in the report. A build can use the maintenance-case
 route for placed lessons with no covering case (S-156).
@@ -7854,7 +7861,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 home, stage, parked_rows, skill_state, _write_stage,
             )
             from . import skill_work_requests
-            work_requests = skill_work_requests.stage_requests(home, stage, _write_stage)
+            work_requests = skill_work_requests.stage_requests(home, stage, _write_stage, skill_stage.notes)
             skill_stage.notes.extend(link_problems)
             # SK4: phase S's candidates (or what it came to), for phase B's
             # dispositions.
@@ -8632,10 +8639,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         "status": "skill-disposition-note", "reason": line[:300]})
             else:
                 dispositions = None
-            try:
-                request_decisions = skill_work_requests.read_decisions(stage, work_requests)
-            except ValueError as exc:
-                raise OverseerError(str(exc)) from exc
+            request_decisions = skill_work_requests.read_decisions(stage, work_requests, case_drops)
         except (OverseerError, batch.BatchError) as exc:
             detail = _failure_detail(exc)
             closed_text, close_questions = (None, [])

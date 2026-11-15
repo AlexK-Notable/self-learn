@@ -119,7 +119,8 @@ def test_requests_do_not_close_for_drafts_claims_or_missing_answers(env, monkeyp
     assert skill_requests.requests(env.home, open_only=True)[0]["id"] == row["id"]
     report = build._report(result)
     if mode == "missing":
-        assert result.status == "refused" and work.OUTPUT in report
+        assert result.status == "applied" and work.OUTPUT in report
+        assert row["id"] in report and "Refused / could not do" in report
     else:
         assert row["id"] in report and "open —" in report
     assert "This draft is not deployed." not in env.skill_md().read_text()
@@ -131,6 +132,9 @@ def test_registered_missing_never_restored_or_renamed_by_veto(env, tmp_path):
     veto = skill_requests.veto(env.home, NAME, by="human", no_push=True)
     assert veto.ok and "never renames" in veto.what
     assert skill_requests.pending_renames(env.home) == []
+    assert NAME not in skill_registry.load(env.home).editable()
+    # Withdraw the veto solely to exercise missing-file staging separately.
+    skill_registry.with_update(env.home, lambda r: r.vetoed.clear(), subject="clear test veto")
     env.skill_md().unlink()
     stage = tmp_path / "stage"
     staged = skills.stage_phase_b(env.home, stage, [], skills.writing_state(env.home), runner._write_stage)
@@ -188,3 +192,108 @@ def test_build_receipt_without_requested_lessons_stays_open(env):
     lines = work.settle(env.home, manifest, complete=True)
     assert skill_requests.requests(env.home, open_only=True)[0]["id"] == row["id"]
     assert "open —" in lines[0]
+
+
+@pytest.mark.parametrize("source", ["request", "registration", "unreadable", "withdrawn"])
+def test_stored_request_trouble_does_not_cost_run(env, monkeypatch, source):
+    from support import commit_all
+    from self_learn import skill_registration, scan
+    registration.seed(env)
+    registration.register(env)
+    row = request(env)
+    bad = "Mention token: EXAMPLE_CREDENTIAL"
+    if source == "registration":
+        path = env.home / skill_registry.REGISTRY_FILENAME
+        data = build._load(path)
+        data["registrations"][NAME]["registered"]["note"] = bad
+        build._dump(path, data)
+    elif source == "request":
+        path = env.home / skill_requests.REQUESTS_FILE
+        data = build._load(path)
+        data["requests"][0]["note"] = bad
+        build._dump(path, data)
+    elif source == "unreadable":
+        (env.home / skill_requests.REQUESTS_FILE).write_text("requests: [broken")
+    else:
+        skill_registration.unregister(env.home, NAME, note="User will maintain it", by="agent")
+    if source != "withdrawn":
+        commit_all(env.home, "synthetic stored request condition")
+    def phase_b(stage):
+        shown = build._load(stage / work.INPUT)["requests"]
+        assert not scan.scan((stage / work.INPUT).read_text())
+        if source == "unreadable":
+            assert shown == []
+        else:
+            assert shown[0]["id"] == row["id"]
+            if source == "withdrawn":
+                assert shown[0]["target"] == "withdrawn"
+            if source == "registration":
+                text = (stage / skills.OWNED_DIR / NAME / skills.ROW_FILE).read_text()
+                assert "withheld" in text and not scan.scan(text)
+            answer(stage, row, "declined")
+    build._phases(monkeypatch, phase_b)
+    result = build._run(env)
+    report = build._report(result)
+    assert result.status == "applied", report
+    assert "EXAMPLE_CREDENTIAL" not in report
+    if source == "unreadable":
+        assert "cannot read requests" in report and "Refused / could not do" in report
+    else:
+        assert skill_requests.requests(env.home)[0]["answer"] == "declined"
+        assert row["id"] in report
+
+
+@pytest.mark.parametrize("bad", ["missing", "unknown", "kind", "empty", "nontext", "malformed", "secret", "folded"])
+def test_bad_answer_isolated_from_good_write(env, monkeypatch, bad):
+    registration.seed(env)
+    registration.register(env)
+    build._lesson(env, build.RID)
+    first = request(env)
+    second = request(env, "build", "other-example", [build.RID])
+    def phase_b(stage):
+        build._rewrite_b("A useful independent rewrite landed.")(stage)
+        good = {"id": first["id"], "answer": "changed", "case": "case-change.yaml", "reason": "Useful rewrite.\n"}
+        other = {"id": second["id"], "answer": "declined", "reason": "No need.\n"}
+        if bad == "missing":
+            answers = [good]
+        else:
+            if bad == "unknown": other["id"] = "sr-unknown"
+            if bad == "kind": other["answer"] = "changed"
+            if bad == "empty": other["reason"] = " \n "
+            if bad == "nontext": other["reason"] = ["not prose"]
+            if bad == "secret": other["reason"] = "Mention token: EXAMPLE_CREDENTIAL"
+            if bad == "folded": other["reason"] = "No need\nfor a duplicate.\n"
+            answers = [other if bad != "malformed" else "not a mapping", good]
+        build._dump(stage / work.OUTPUT, {"decisions": answers})
+    build._phases(monkeypatch, phase_b)
+    result = build._run(env)
+    report = build._report(result)
+    assert result.status == "applied", report
+    assert "A useful independent rewrite landed." in env.skill_md().read_text()
+    rows = {r["id"]: r for r in skill_requests.requests(env.home)}
+    assert rows[first["id"]]["answer"] == "changed"
+    assert rows[first["id"]]["reason"] == "Useful rewrite."
+    if bad == "folded":
+        assert rows[second["id"]]["reason"] == "No need for a duplicate."
+        assert rows[second["id"]]["state"] == "closed"
+    else:
+        assert rows[second["id"]]["state"] == "open"
+        assert second["id"] in report and "Refused / could not do" in report
+    assert "EXAMPLE_CREDENTIAL" not in report
+
+
+@pytest.mark.parametrize("updating", [False, True])
+def test_build_receipt_accepts_actual_name_and_case_stem(env, updating):
+    from self_learn import verbs
+    build._lesson(env, build.RID)
+    row = request(env, "build", "proposed-example", [build.RID])
+    assert env.write().ok
+    assert verbs.route(env.home, build.RID, dest=f"new-skill:{NAME}", no_push=True)
+    manifest = {"run_id": "synthetic-run", "skills": {"requests": [{**row,
+        "answer": "built", "reason": "Used the existing procedure.", "case": "case-build"}]},
+        "cases": {sk1.CASE: {"case_name": "case-build.yaml", "skill": {
+            "name": NAME, "action": "write", "updating": updating, "state": "applied"}}}}
+    lines = work.settle(env.home, manifest, complete=True)
+    closed = skill_requests.requests(env.home)[0]
+    assert closed["state"] == "closed" and closed["answer"] == "built"
+    assert closed["actual_name"] == NAME and NAME in lines[0]

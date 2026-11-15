@@ -2378,8 +2378,11 @@ runtime setting, `SELF_LEARN_AGENTS_DIR` (default `~/.agents`), and `CODEX_HOME`
 Canonical in-root skills register in place. A loose directory with no repository or
 installer marks is copied to a unique cache backup, moved to
 `plugins/<name>/skills/<name>`, given the writer's plugin manifest and marketplace
-entry, committed in the git skills root, and linked from its original and runtime
-locations. Adoption refuses plain mode, occupied destinations and dirty marketplace
-files. A failed host commit restores the original directory and marketplace; backups
-are retained. Registration is committed only after adoption succeeds. Withdrawal
+entry, committed in the git skills root, and linked from its original location only.
+An in-place registration ensures the Claude runtime link exists; repeating registration
+repairs it. External adoption never introduces a new Claude runtime link. Adoption refuses plain mode, occupied destinations and dirty marketplace
+files. A failed host commit independently restores the original directory, removes the
+new plugin files, restores marketplace bytes, then attempts index cleanup last.
+A combined refusal names the retained backup and any failed recovery steps. After a
+successful commit, linking is retried or the exact link to repair is reported. Registration is committed only after adoption succeeds. Withdrawal
 revokes editing permission without undoing adoption or deleting files.

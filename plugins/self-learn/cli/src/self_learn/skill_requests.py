@@ -380,6 +380,13 @@ def file_request(home: Path | str, kind: str, name: str, *, lessons: list[str], 
         if kind == "change" and not registry.may_edit(name):
             raise ValueError(f"{name} is neither owned nor registered; register it first")
         if kind == "build":
+            from .skill_scaffold import _check_name
+            problems = _check_name(name, loaded_names=frozenset(),
+                vetoed_names=frozenset(registry.vetoed_names()), expected_name=name)
+            if problems:
+                raise ValueError("; ".join(str(p) for p in problems))
+            if registry.is_registered(name):
+                raise ValueError(f"{name} is already registered; file a change request instead")
             if not lessons or len(set(lessons)) != len(lessons):
                 raise ValueError("build needs distinct existing lesson ids")
             for rid in lessons:
@@ -392,12 +399,18 @@ def file_request(home: Path | str, kind: str, name: str, *, lessons: list[str], 
         row = {"id": "sr-" + uuid.uuid4().hex[:12], "kind": kind, "name": name,
             "lessons": lessons, "note": note.strip(), "by": by, "at": chrono.now_iso(), "state": "open"}
         rows = requests(home)
-        rows.append(row)
+        existing = next((r for r in rows if r["state"] == "open" and r["kind"] == kind
+            and r["name"] == name and set(r["lessons"]) == set(lessons)), None)
+        if existing is not None:
+            existing.setdefault("followups", []).append({"note": note.strip(), "by": by, "at": row["at"]})
+            row = existing
+        else:
+            rows.append(row)
         sha = _save_requests(home, rows, f"self-learn: skill request {kind} {name}", by)
         return {**row, "ledger_commit": sha}
 
 
-def close_request(home: Path | str, ident: str, *, answer: str, reason: str, run: str) -> None:
+def close_request(home: Path | str, ident: str, *, answer: str, reason: str, run: str, actual_name: str | None = None) -> None:
     from . import intents
     if answer not in ("built", "changed", "declined") or not isinstance(reason, str) or not reason.strip():
         raise ValueError("request answer needs built/changed/declined and a reason")
@@ -411,4 +424,25 @@ def close_request(home: Path | str, ident: str, *, answer: str, reason: str, run
         if row["state"] == "closed":
             return
         row.update(state="closed", answer=answer, reason=reason.strip(), decided_at=chrono.now_iso(), run=run)
+        if actual_name is not None:
+            row["actual_name"] = actual_name
         _save_requests(home, rows, f"self-learn: skill request {ident} {answer}", "overseer")
+
+
+def withdraw_request(home: Path | str, ident: str, *, note: str, by: str) -> dict:
+    from . import intents
+    from .skill_registration import _note_by
+    _note_by(note, by)
+    home = Path(home)
+    with intents.ledger_write(home) as recovered:
+        intents.announce_recovered(recovered)
+        rows = requests(home)
+        row = next((r for r in rows if r["id"] == ident), None)
+        if row is None:
+            raise ValueError(f"unknown request {ident}")
+        if row["state"] == "closed":
+            return row
+        row.update(state="closed", answer="withdrawn", reason=note.strip(),
+            decided_at=chrono.now_iso(), withdrawn_by=by)
+        _save_requests(home, rows, f"self-learn: skill request {ident} withdrawn", by)
+        return row

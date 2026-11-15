@@ -235,6 +235,11 @@ CASES: dict[str, Case] = {
         {"description-xml-tag": "<b>"},
     ),
     # ---- frontmatter keys
+    "carried-key-changed": Case(
+        skill(front={"version": q("2.0")}),
+        {"frontmatter-carried-key-changed": "version"},
+        {"carried_frontmatter": {"version": "1.0"}},
+    ),
     "hooks-key": Case(
         skill(front={"hooks": json.dumps({"PreToolUse": []})}),
         {"frontmatter-key-refused": "hooks"},

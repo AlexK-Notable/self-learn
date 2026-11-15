@@ -323,6 +323,8 @@ def _row_for_stage(row: dict) -> dict:
         last.pop("authored_sha256", None)
     if "registered" in out:
         out["registered"].pop("authored_sha256", None)
+    if scan.scan(_yaml_text(out)):
+        return {"permission": out.get("permission"), "withheld": "Registry text matched the secret scan; read the local registry for details."}
     return out
 
 

@@ -12,7 +12,7 @@ import uuid
 from functools import partial
 from pathlib import Path
 
-from . import gitops, intents, skill_registry, skill_writer
+from . import gitops, intents, scan, skill_registry, skill_writer
 from .hosts import HostsError, host_mode, load_hosts, validate_host_path
 from .primitives import chrono, fsops
 from .selfcheck import claude_runtime_dir
@@ -26,6 +26,9 @@ class RegistrationError(ValueError):
 def _note_by(note: str, by: str) -> None:
     if not isinstance(note, str) or not note.strip():
         raise RegistrationError("--note must explain why")
+    hits = scan.scan(note)
+    if hits:
+        raise RegistrationError("--note secret scan refused: " + ", ".join(sorted({hit.rule for hit in hits})))
     if by not in ("human", "agent"):
         raise RegistrationError("registration attribution must be human or agent")
 
@@ -59,7 +62,7 @@ def _inspect(root: Path, path: Path) -> tuple[str, str, list[str]]:
     real = path.resolve(strict=True)
     name = path.name
     if not skill_writer._valid_name(name):
-        raise RegistrationError("skill folder name must be kebab-case")
+        raise RegistrationError("name-not-kebab: skill folder name must be kebab-case")
     md = real / "SKILL.md"
     if md.is_symlink():
         raise RegistrationError("SKILL.md is a symlink; registration requires local files")
@@ -69,12 +72,16 @@ def _inspect(root: Path, path: Path) -> tuple[str, str, list[str]]:
         raise RegistrationError(f"SKILL.md is not readable: {exc}") from exc
     front = _read_frontmatter(text)
     if front.mapping is None or front.finding:
-        raise RegistrationError("SKILL.md has invalid frontmatter")
+        raise RegistrationError("SKILL.md: " + (front.finding.rule if front.finding else "frontmatter-unparseable"))
     if front.mapping.get("name") != name:
-        raise RegistrationError(f"frontmatter name must match {name}")
+        raise RegistrationError(f"name-dir-mismatch: frontmatter name must match {name}")
     description = front.mapping.get("description")
     if not isinstance(description, str) or not description.strip():
-        raise RegistrationError("frontmatter description must be nonempty text")
+        # A full rewrite can supply this editable field. The adoption package
+        # needs a label now; preserve the actual SKILL.md until that rewrite.
+        description = f"User-maintained skill {name}."
+    if front.mapping.get("metadata") is not None and not isinstance(front.mapping["metadata"], dict):
+        raise RegistrationError("metadata-not-mapping: metadata must be a mapping to preserve it when stamping")
     claude = claude_runtime_dir().resolve()
     agents = Path(os.environ.get("SELF_LEARN_AGENTS_DIR", str(Path.home() / ".agents"))).expanduser().resolve()
     codex = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
@@ -161,7 +168,8 @@ def _register_locked(home: Path, root: Path, path: Path, *, note: str, by: str) 
         raise RegistrationError(f"{name} is already owned by self-learn; nothing to register")
     if registry.is_registered(name):
         if registry.registrations[name]["registered"]["path"] != str(path.resolve()):
-            raise RegistrationError(f"{name} is registered at a different path")
+            raise RegistrationError(f"{name} is registered at a different path; unregister and register again")
+        _repair_links(root, name, registry.registrations[name]["registered"])
         return {"name": name, "state": "already registered"}
     if name in registry.skills:
         raise RegistrationError(f"{name} has an ownership history; choose a different name")
@@ -171,6 +179,8 @@ def _register_locked(home: Path, root: Path, path: Path, *, note: str, by: str) 
     host_sha = None
     if original != target:
         backup, host_sha = _adopt(home, root, original, name, description, by)
+    if original == target:
+        skill_writer.link_skill(root, name)
     row = {"status": "live", "plugin": f"plugins/{name}", "registered": {
         "at": chrono.now_iso(), "by": by, "note": note.strip(),
         "path": str(target.resolve()), "original": str(original),
@@ -217,16 +227,47 @@ def _adopt(home: Path, root: Path, original: Path, name: str, description: str, 
         fsops.atomic_write(plugin / ".claude-plugin" / "plugin.json", manifest or "")
         fsops.atomic_write(market, after)
         sha = gitops.stage_and_commit(root, [plugin, market], f"self-learn: skill adopt {name}", f"By: {by}")
-    except Exception:
-        gitops.unstage(root, [plugin, market])
-        if target.exists():
-            shutil.move(str(target), str(original))
-        if plugin.exists():
-            shutil.rmtree(plugin)
-        fsops.atomic_write(market, before)
-        # Return the index to the restored bytes without discarding unrelated edits.
-        gitops.stage(root, [plugin, market])
-        raise
-    skill_writer._place_link(original, target)
-    skill_writer.link_skill(root, name)
+    except Exception as exc:
+        failures = [f"adoption failed ({type(exc).__name__})"]
+        # Restore runtime access independently of git's index lock. A partial
+        # cross-device move may have left both directories: use the full backup.
+        try:
+            if original.exists():
+                shutil.rmtree(original)
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(backup, original)
+        except Exception as restore_exc:
+            failures.append(f"restore {original}: {type(restore_exc).__name__}")
+        try:
+            if plugin.exists():
+                shutil.rmtree(plugin)
+        except Exception as cleanup_exc:
+            failures.append(f"remove {plugin}: {type(cleanup_exc).__name__}")
+        try:
+            fsops.atomic_write(market, before)
+        except Exception as market_exc:
+            failures.append(f"restore {market}: {type(market_exc).__name__}")
+        try:
+            gitops.unstage(root, [plugin, market])
+        except Exception as index_exc:
+            failures.append(f"clean git index: {type(index_exc).__name__}")
+        raise RegistrationError("; ".join(failures) + f"; backup: {backup}") from exc
+    try:
+        skill_writer._place_link(original, target)
+    except Exception as exc:
+        # The host commit landed. Retry the link only; never undo that commit.
+        try:
+            skill_writer._place_link(original, target)
+        except Exception as link_exc:
+            raise RegistrationError(f"adoption committed; repair link {original} -> {target}; backup: {backup}") from link_exc
     return backup, sha
+
+
+def _repair_links(root: Path, name: str, stamp: dict) -> None:
+    original = Path(stamp["original"])
+    target = skill_writer.skill_dir(root, name)
+    if original == target:
+        skill_writer.link_skill(root, name)
+    else:
+        skill_writer._place_link(original, target)
