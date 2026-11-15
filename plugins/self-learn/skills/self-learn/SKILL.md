@@ -141,9 +141,11 @@ the signal named. Loose user skills are backed up and adopted into the git skill
 Ask the next overseer run for work:
 - `self-learn skill request build --name <name> --lessons <id1>,<id2> --note "why"`
 - `self-learn skill request change <owned-or-registered-skill> --note "what and why"`
+- `self-learn skill request withdraw <id> --note "why no longer needed"`
 
 Each request gets a report answer: built, changed or declined with a reason. Failed
-writes and drafts remain open. See [skill upkeep](references/skill-upkeep.md) for
+writes, drafts and missing or malformed answers remain open without blocking other work.
+Notes are secret-scanned; refusal messages name the rule, never the match. See [skill upkeep](references/skill-upkeep.md) for
 refusal signals, adoption and edit protection.
 
 ## Slash commands

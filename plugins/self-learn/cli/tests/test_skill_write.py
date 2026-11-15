@@ -209,6 +209,15 @@ def test_each_template_rule_refuses_with_nothing_written(env, case_id):
         env.personal_skill(loaded)
     for vetoed in case.kwargs.get("vetoed_names", ()):
         env.veto(vetoed)
+    carried = case.kwargs.get("carried_frontmatter")
+    if carried:
+        from self_learn import skill_registration
+        for rel, text in k1a.skill(front={key: k1a.q(value) for key, value in carried.items()}).items():
+            target = env.skill_dir(name) / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        commit_all(env.root, "seed registered template case")
+        skill_registration.register(env.home, name, note="Maintain the example", by="human")
     before = env.snapshot()
 
     result = env.write(case.files, name=name)
@@ -217,7 +226,7 @@ def test_each_template_rule_refuses_with_nothing_written(env, case_id):
     assert result.kind == "bad-line"
     assert set(case.expect) <= _rules(result.problems), result.problems
     assert env.snapshot() == before
-    assert not env.plugin_dir(name).exists()
+    assert env.plugin_dir(name).exists() == bool(carried)
 
 
 def test_check_reports_the_same_refusal_and_writes_nothing(env):

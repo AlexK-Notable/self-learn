@@ -868,8 +868,8 @@ def _region_kind_for(spec: TargetSpec) -> str | None:
     PRIMARY target is via the ``managed``-only, self-computing
     convenience path (:func:`_write_compile_record_entry`) — ``None``
     when the destination is explicitly OUT of the record's scope
-    (``new-skill``, §8 OUT-7: a whole file created once, already
-    covered by its own collision rule) OR when the destination's real
+    (``new-skill`` before its scaffold exists, §8 OUT-7: a whole file
+    created once, already covered by its own collision rule) OR when the destination's real
     write target resolves OUTSIDE ``spec.target`` entirely
     (``reference`` — see below) or needs externally-supplied bytes this
     function cannot derive on its own (``hook`` — the APPROVED script
@@ -887,6 +887,11 @@ def _region_kind_for(spec: TargetSpec) -> str | None:
     ``_commit_ledger`` call for the canonical shape every other site
     mirrors."""
     if spec.destination in ("skill-md", "claude-md"):
+        return "managed"
+    # S-157: an existing skill's managed section is shared by skill-md and
+    # new-skill routes. Both must advance the same compile record; only a
+    # brand-new scaffold remains outside the record before its first write.
+    if spec.destination == "new-skill" and spec.target is not None and spec.target.is_file():
         return "managed"
     return None
 

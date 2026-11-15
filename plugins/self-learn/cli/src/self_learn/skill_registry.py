@@ -450,7 +450,7 @@ class Registry:
         return self.is_owned(name) or self.is_registered(name)
 
     def editable(self) -> list[str]:
-        return sorted(set(self.live()) | {n for n in self.registrations if self.is_registered(n)})
+        return sorted(set(self.live()) | {n for n in self.registrations if self.is_registered(n) and not self.veto_of(n)})
 
     def live(self) -> list[str]:
         return sorted(name for name, row in self.skills.items() if row.get("status") == STATUS_LIVE)
@@ -712,9 +712,9 @@ def _check_registrations(value: object, owned: dict) -> dict[str, dict]:
     out = copy.deepcopy(value)
     for name, row in out.items():
         _check_name(name, "registrations")
-        if name in owned:
-            raise SkillRegistryError(f"{name}: cannot be both owned and registered")
         _check_keys(row, ("status", "plugin", "registered", "withdrawn", "last_write"), name)
+        if name in owned and row.get("status") != "withdrawn":
+            raise SkillRegistryError(f"{name}: cannot be both owned and registered")
         if row.get("status") not in (STATUS_LIVE, "withdrawn"):
             raise SkillRegistryError(f"{name}: registration status must be live or withdrawn")
         if row.get("plugin") != f"plugins/{name}":

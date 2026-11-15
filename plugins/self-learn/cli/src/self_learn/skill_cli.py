@@ -199,7 +199,9 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     build.add_argument("--lessons", required=True, help="comma-separated lesson ids")
     change = requests.add_parser("change", help="request changes to an owned or registered skill")
     change.add_argument("name")
-    for item in (build, change):
+    withdraw = requests.add_parser("withdraw", help="withdraw an open request; agents need no standing grant")
+    withdraw.add_argument("name", metavar="id")
+    for item in (build, change, withdraw):
         item.add_argument("--note", required=True, help="what should change and why")
         item.add_argument("--json", action="store_true", dest="as_json")
 
@@ -524,10 +526,13 @@ def _list(home: Path, args) -> int:
 def _registration_request(home: Path, args) -> int:
     from . import skill_registration
     try:
+        skill_registration._note_by(args.note, default_by())
         if args.skill_command == "register":
             result = skill_registration.register(home, args.name, note=args.note, by=default_by())
         elif args.skill_command == "unregister":
             result = skill_registration.unregister(home, args.name, note=args.note, by=default_by())
+        elif args.request_kind == "withdraw":
+            result = skill_requests.withdraw_request(home, args.name, note=args.note, by=default_by())
         else:
             result = skill_requests.file_request(home, args.request_kind, args.name,
                 lessons=[s.strip() for s in getattr(args, "lessons", "").split(",") if s.strip()],

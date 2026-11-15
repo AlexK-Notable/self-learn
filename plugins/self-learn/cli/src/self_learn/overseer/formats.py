@@ -397,6 +397,13 @@ A registration permits full prose, description and reference-file updates. The s
 belongs to the user: preserve their intent and voice. Never rename, retire or restore it.
 An add-to-existing disposition may rewrite a registered skill through the same pair.
 
+Preserve the registered skill's existing name, even if it contains a reserved word.
+Carry existing non-allowlisted frontmatter keys unchanged (including allowed-tools
+and version); do not add, change or remove such keys. Prose and description may change.
+A target: withdrawn change request has lost upkeep permission: decline with that reason.
+A build answer may name a case writing a different or existing skill, provided ALL
+requested lessons route there. Case names work with or without .yaml. Missing or bad
+answers stay open and are reported individually; never abandon other work for one.
 Read skill-requests.yaml on every run and answer each row in skill-request-decisions.yaml:
 `{{decisions: [{{id: sr-..., answer: built|changed|declined, reason: "one sentence", case: case-name.yaml}}]}}`.
 The case field is required for built/changed and identifies the pair performing the write.
