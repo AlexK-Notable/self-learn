@@ -87,9 +87,10 @@ def verify(home: Path, row: dict, *, notices: list[str] | None = None) -> str | 
         evidence = review.get("corroboration") or {}
         if evidence.get("kind") == "native":
             path = native_path(home, review["session"])
-            if str(path) != evidence.get("path"):
-                raise ValueError("native transcript location mismatch")
             try:
+                if str(path) != evidence.get("path"):
+                    # The review cwd/config moved: read neither transcript path.
+                    raise FileNotFoundError("native transcript location changed")
                 digest = native_digest(path, review["session"], row["version"], result)
             except OSError:
                 if notices is not None:

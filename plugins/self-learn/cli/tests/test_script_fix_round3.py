@@ -117,3 +117,28 @@ def test_native_lookup_never_reads_other_project(env, monkeypatch):
     row = scripts.review(env.home, original.held(env)['id'], note='expected location only')
     assert row['state'] == 'active'
     assert row['review']['corroboration'] == {'kind': 'git'}
+
+
+def test_changed_projects_directory_keeps_approval_without_reading_either_path(env, monkeypatch):
+    row, recorded = _approve(env, monkeypatch)
+    projects = recorded.parent.parent / 'relocated-projects'
+    monkeypatch.setattr(session_copies, 'claude_projects_dir', lambda: projects)
+    current = script_proof.native_path(env.home, 'fake-session')
+    assert current != recorded
+    current.parent.mkdir(parents=True)
+    current.write_text('contradictory transcript in the new location')
+    recorded.write_text('contradictory transcript in the old location')
+    read = Path.read_bytes
+    def guarded(path):
+        assert path not in (recorded, current), 'changed location must read neither path'
+        return read(path)
+    monkeypatch.setattr(Path, 'read_bytes', guarded)
+    assert scripts.listed(env.home)[0]['approval_status'] == 'verified'
+    assert NOTICE in ' '.join(scripts.audit(env.home))
+    assert scripts.get(env.home, row['id'])['state'] == 'active'
+    target = env.skill_dir() / 'scripts/count'
+    assert target.read_text() == original.GOOD
+    assert target.stat().st_mode & 0o111
+    assert 'scripts/count' in env.skill_md().read_text()
+    assert NOTICE not in ' '.join(scripts.audit(env.home))
+    assert script_proof.verify(env.home, scripts.get(env.home, row['id'])) is None

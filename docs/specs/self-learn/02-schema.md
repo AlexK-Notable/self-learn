@@ -5473,7 +5473,9 @@ it is looked up exclusively at the escaped review cwd beneath the resolved
 Claude projects directory, never by scanning other project folders. A present
 record must match its digest, models, session, tool-freedom and exact-version
 verdict. Contradictions make the row `unverified`. Missing or unreadable native
-transcripts do not invalidate the approval: the commit suffices. Enforcement
+transcripts do not invalidate the approval: the commit suffices. A recorded path
+that differs from today's expected path (moved ledger or Claude configuration)
+is treated as absent, without reading either path. Enforcement
 emits one notice per version, "review transcript no longer present; verified from
 the ledger review commit", persisting `transcript_missing_noticed` on the row.
 Read-only checks never write this notice marker. Listing, activation and every
