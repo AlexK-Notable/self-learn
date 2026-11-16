@@ -91,9 +91,12 @@ def test_a_every_lesson_compiled_before_the_rename_is_compiled_after(env):
     assert sorted(result.rerouted) == sorted(before)
     assert _section_ids(env, NEW) == before
     assert not env.plugin_dir(NAME).exists()
-    # one ledger commit to begin, one per lesson, one to finish; one skills-root commit
-    assert len(result.ledger_shas) == 2 + len(before)
-    assert env.count(env.home) == ledger_count + 2 + len(before)
+    # S-157: existing new-skill routes now track their shared managed region.
+    # Begin, carry its compile record, one per lesson, finish; one host commit.
+    assert len(result.ledger_shas) == 3 + len(before)
+    assert env.count(env.home) == ledger_count + 3 + len(before)
+    subjects = [git(env.home, "show", "-s", "--format=%s", sha).stdout for sha in result.ledger_shas]
+    assert any(f"carry skills/{NAME}/ to skills/{NEW}/" in subject for subject in subjects)
     assert env.count(env.root) == root_count + 1 and result.settle_sha is None
     for rid in before:
         record = _record(env, rid)

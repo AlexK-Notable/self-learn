@@ -321,6 +321,10 @@ def _row_for_stage(row: dict) -> dict:
     last = out.get("last_write")
     if isinstance(last, dict):
         last.pop("authored_sha256", None)
+    if "registered" in out:
+        out["registered"].pop("authored_sha256", None)
+    if scan.scan(_yaml_text(out)):
+        return {"permission": out.get("permission"), "withheld": "Registry text matched the secret scan; read the local registry for details."}
     return out
 
 
@@ -347,7 +351,7 @@ def stage_phase_b(
         write(stage, stage / VETOES_FILE, _yaml_text({"unreadable": why}))
         _stage_proposals(stage, parked_rows, write)
         return staged
-    for name in registry.live():
+    for name in registry.editable():
         try:
             _stage_owned(home, stage, registry, name, staged, write)
         except Exception as exc:  # noqa: BLE001 -- one skill's trouble never costs the run
@@ -373,6 +377,7 @@ def _stage_owned(
 ) -> None:
     folder = stage / OWNED_DIR / name
     row = registry.row(name) or {}
+    row["permission"] = "registered" if registry.is_registered(name) else "owned"
     lessons = skill_writer.routed_lessons(home, name)
     held = _reference_held(home, name)
     write(stage, folder / LESSONS_FILE, _yaml_text({
@@ -382,8 +387,13 @@ def _stage_owned(
     deployed = skill_writer.deployed_files(home, name)
     if deployed is None:
         staged.missing.add(name)
-        staged.absent.add(name)
-        _stage_absent(home, stage, folder, name, row, write)
+        if registry.is_owned(name):
+            staged.absent.add(name)
+        if registry.is_registered(name):
+            write(stage, folder / ROW_FILE, _yaml_text({"name": name, "row": _row_for_stage(row),
+                "deployed": False, "says": "Registered skill is missing; do not restore, rename or retire it."}))
+        else:
+            _stage_absent(home, stage, folder, name, row, write)
         return
     withheld: list[str] = []
     for rel, text in sorted(skill_writer.draft_view(deployed).items()):
@@ -393,7 +403,7 @@ def _stage_owned(
             text = _stub(hits[0].rule, "the skills root")
         write(stage, folder / FILES_DIR / rel, text)
     current = skill_writer.deployed_authored_sha256(home, name)
-    recorded = (row.get("last_write") or {}).get("authored_sha256")
+    recorded = (row.get("last_write") or row.get("registered") or {}).get("authored_sha256")
     diff = _changed_since_last_write(home, name, row, deployed, current, recorded)
     hits = scan.scan(diff)
     if hits:
@@ -754,7 +764,7 @@ def building_names(home: Path | str, stage: Path, cases_data: list[dict]) -> set
     for data in cases_data:
         name = claimed_name(data)
         if (
-            name is not None and not registry.is_owned(name)
+            name is not None and not registry.may_edit(name)
             and renamed_from(data) is None and data.get("outcome") != "retire"
             and (stage / STAGE_SKILLS_DIR / name).is_dir()
         ):
@@ -801,6 +811,7 @@ def step_for_case(
     except SkillRegistryError as exc:
         raise SkillPairError(f"owned-skills.yaml could not be read ({exc})") from exc
     owned = registry.is_owned(name)
+    editable = registry.may_edit(name)
     outcome = case_data.get("outcome")
     old = renamed_from(case_data)
     if old is not None:
@@ -822,7 +833,7 @@ def step_for_case(
         _refuse_a_retire_that_leaves_lessons(home, name, sheet_ids)
         return SkillStep(action="retire", name=name, updating=True, deploy=deploy)
     if not folder.is_dir():
-        if owned:
+        if editable:
             return None  # lessons routed into an owned skill: ordinary routing
         if name in building:
             # SK-F: another pair of this run builds the skill; this one
@@ -837,18 +848,18 @@ def step_for_case(
         # A skill this case names but does not build (a declined proposal,
         # a route into a linked skill): no skill step, ordinary routing.
         return None
-    if not owned and outcome != "route":
+    if not editable and outcome != "route":
         raise SkillPairError(
             f"a new skill ({name}) is built by a case with outcome: route whose sheet moves "
             f"lessons into it, not outcome: {outcome}"
         )
-    if owned and name in staged.withheld:
+    if editable and name in staged.withheld:
         raise SkillPairError(
             f"{name} cannot be rewritten this run: part of its text matched the secret scan, so "
             "it was not shown to you in full; a person must remove that text first"
         )
     restoring = owned and name in staged.absent
-    if owned and name in staged.missing and not restoring:
+    if editable and name in staged.missing and not restoring:
         raise SkillPairError(
             f"{name} cannot be rewritten this run: its files could not be read from the skills root"
         )
@@ -856,11 +867,11 @@ def step_for_case(
         files = skill_writer.read_draft_dir(folder)
     except (ValueError, OSError) as exc:
         raise SkillPairError(f"{STAGE_SKILLS_DIR}/{name}/ cannot be read as a skill: {exc}") from exc
-    expect = staged.expect.get(name) if owned else None
+    expect = staged.expect.get(name) if editable else None
     try:
         # A file that is not UTF-8 comes back as bytes; the template check names it.
         checked = skill_writer.check(
-            home, name, cast(Mapping[str, str], files), expect_sha=expect, updating=owned,
+            home, name, cast(Mapping[str, str], files), expect_sha=expect, updating=editable,
             expect_missing=restoring,
         )
     except Exception as exc:  # noqa: BLE001 -- a git or hosts read failed: this pair, not the run
@@ -871,7 +882,7 @@ def step_for_case(
         raise SkillPairError(_refusal(name, checked.kind, checked.problems))
     text_files = {key: value for key, value in files.items() if isinstance(value, str)}
     return SkillStep(
-        action="write", name=name, updating=owned, files=text_files, expect_sha=expect,
+        action="write", name=name, updating=editable, files=text_files, expect_sha=expect,
         deploy=deploy, expect_missing=restoring,
     )
 

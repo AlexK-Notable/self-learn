@@ -1641,7 +1641,7 @@ def _check_owned_skills_registry(home: Path, claude_dir: Path) -> tuple[Verdict,
     if root.is_dir():
         for skill_md in sorted(root.glob(f"plugins/*/skills/*/{SKILL_ENTRY_FILE}")):
             skill = skill_md.parent.name
-            if skill in registry.skills:
+            if skill in registry.skills or skill in registry.registrations:
                 continue
             try:
                 # The key must appear as text for a stamp to exist at all;

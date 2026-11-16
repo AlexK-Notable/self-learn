@@ -155,7 +155,7 @@ STATUSES = (STATUS_LIVE, STATUS_RETIRED)
 #: (S-109: an agent's act is never recorded as the person's).
 BY_VALUES = ("overseer", "human", "agent")
 
-_TOP_KEYS = ("version", "skills", "vetoed")
+_TOP_KEYS = ("version", "skills", "vetoed", "registrations")
 _ROW_KEYS = (
     "status", "plugin", "created", "last_write", "retired", "renamed_from", "retire_requested",
 )
@@ -429,10 +429,12 @@ class Registry:
     written."""
 
     def __init__(
-        self, skills: dict[str, dict] | None = None, vetoed: list[dict] | None = None
+        self, skills: dict[str, dict] | None = None, vetoed: list[dict] | None = None,
+        registrations: dict[str, dict] | None = None
     ) -> None:
         self.skills: dict[str, dict] = skills if skills is not None else {}
         self.vetoed: list[dict] = vetoed if vetoed is not None else []
+        self.registrations: dict[str, dict] = registrations or {}
 
     # -- reads
 
@@ -440,6 +442,15 @@ class Registry:
         """True only for a LIVE row. A retired skill is not owned."""
         row = self.skills.get(name) if isinstance(name, str) else None
         return row is not None and row.get("status") == STATUS_LIVE
+
+    def is_registered(self, name: str) -> bool:
+        return self.registrations.get(name, {}).get("status") == STATUS_LIVE
+
+    def may_edit(self, name: str) -> bool:
+        return self.is_owned(name) or self.is_registered(name)
+
+    def editable(self) -> list[str]:
+        return sorted(set(self.live()) | {n for n in self.registrations if self.is_registered(n) and not self.veto_of(n)})
 
     def live(self) -> list[str]:
         return sorted(name for name, row in self.skills.items() if row.get("status") == STATUS_LIVE)
@@ -450,7 +461,7 @@ class Registry:
     def row(self, name: str) -> dict | None:
         """The row for *name*, whatever its status, as a copy; ``None`` when
         there is none."""
-        row = self.skills.get(name) if isinstance(name, str) else None
+        row = (self.skills.get(name) or self.registrations.get(name)) if isinstance(name, str) else None
         return copy.deepcopy(row) if row is not None else None
 
     # -- helpers for a callback
@@ -479,14 +490,14 @@ class Registry:
         return None
 
     def copy(self) -> "Registry":
-        return Registry(copy.deepcopy(self.skills), copy.deepcopy(self.vetoed))
+        return Registry(copy.deepcopy(self.skills), copy.deepcopy(self.vetoed), copy.deepcopy(self.registrations))
 
     # -- validation and shape
 
     def validated(self) -> "Registry":
         """A normalised copy, or :class:`SkillRegistryError` naming what is wrong."""
         rows, vetoes = _normalise(self.skills, self.vetoed)
-        return Registry(rows, vetoes)
+        return Registry(rows, vetoes, _check_registrations(self.registrations, rows))
 
     def to_data(self) -> dict:
         """The file's content as plain data, in a fixed order: skills sorted
@@ -500,6 +511,7 @@ class Registry:
             "version": REGISTRY_VERSION,
             "skills": skills,
             "vetoed": copy.deepcopy(self.vetoed),
+            **({"registrations": copy.deepcopy(self.registrations)} if self.registrations else {}),
         }
 
     def __eq__(self, other: object) -> bool:
@@ -520,7 +532,7 @@ def _parse(text: str, where: Path | str) -> Registry:
             f"{REGISTRY_FILENAME}: version must be {REGISTRY_VERSION}, got {version!r}"
         )
     rows, vetoes = _normalise(top.get("skills"), top.get("vetoed"))
-    return Registry(rows, vetoes)
+    return Registry(rows, vetoes, _check_registrations(top.get("registrations", {}), rows))
 
 
 def load(home: Path | str) -> Registry:
@@ -692,3 +704,40 @@ def authored_sha256(skill_md_text: str, reference_files: Mapping[str, str] | Non
         blob += f"{len(label_bytes)}:".encode("ascii") + label_bytes
         blob += f"{len(content_bytes)}:".encode("ascii") + content_bytes + b"\n"
     return sha256_hex(bytes(blob))
+
+
+def _check_registrations(value: object, owned: dict) -> dict[str, dict]:
+    if not isinstance(value, dict):
+        raise SkillRegistryError("registrations must be a mapping")
+    out = copy.deepcopy(value)
+    for name, row in out.items():
+        _check_name(name, "registrations")
+        _check_keys(row, ("status", "plugin", "registered", "withdrawn", "last_write"), name)
+        if name in owned and row.get("status") != "withdrawn":
+            raise SkillRegistryError(f"{name}: cannot be both owned and registered")
+        if row.get("status") not in (STATUS_LIVE, "withdrawn"):
+            raise SkillRegistryError(f"{name}: registration status must be live or withdrawn")
+        if row.get("plugin") != f"plugins/{name}":
+            raise SkillRegistryError(f"{name}: registration plugin must be plugins/{name}")
+        stamp = _check_keys(row.get("registered"),
+            ("at", "by", "note", "path", "original", "backup", "checks", "authored_sha256"), name)
+        _check_at(_need(stamp, "at", name), name)
+        if stamp.get("by") not in REQUEST_BY_VALUES:
+            raise SkillRegistryError(f"{name}: registration by must be human or agent")
+        for key in ("note", "path", "original"):
+            if not isinstance(stamp.get(key), str) or not stamp[key].strip():
+                raise SkillRegistryError(f"{name}: registration {key} must be nonempty text")
+        if not Path(stamp["path"]).is_absolute() or not Path(stamp["original"]).is_absolute():
+            raise SkillRegistryError(f"{name}: registration paths must be absolute")
+        if not isinstance(stamp.get("checks"), list) or not stamp["checks"] or not all(isinstance(c, str) for c in stamp["checks"]):
+            raise SkillRegistryError(f"{name}: registration checks must be a nonempty list")
+        if not isinstance(stamp.get("authored_sha256"), str) or not _SHA256_RE.fullmatch(stamp["authored_sha256"]):
+            raise SkillRegistryError(f"{name}: registration hash must be sha256")
+        if "last_write" in row:
+            row["last_write"] = _check_last_write(row["last_write"], name)
+        if row["status"] == "withdrawn":
+            stamp = _check_keys(row.get("withdrawn"), ("at", "by", "note"), name)
+            _check_at(_need(stamp, "at", name), name)
+            if stamp.get("by") not in REQUEST_BY_VALUES or not isinstance(stamp.get("note"), str) or not stamp["note"].strip():
+                raise SkillRegistryError(f"{name}: withdrawal needs by and note")
+    return out

@@ -2362,3 +2362,27 @@ shell), and it touches no other unit.
 - **H-7** · In a plain host inside a git repository, self-learn never
   writes a file git would track or publish. The check runs in the CLI, on
   the real path, for every actor, on the files the write changes (S-80).
+
+### Per-skill registration (S-157)
+
+`skill register <name-or-path> --note` opts a user-maintained skill into full editing,
+without claiming authorship. Resolve names in the registered skills root before the
+Claude runtime directory; resolve paths through symlinks. Require a readable SKILL.md
+with matching frontmatter name. Refuse `.aws-skill-metadata`, the agents shared store
+or `.skill-lock.json`, Claude plugins or synced skills, any `node_modules`, Codex
+system skills, `LOCAL ADDITIONS BELOW`, `metadata.upstream`, and another git repository
+(including the public product repository). Also refuse vetoed or already-owned names,
+linked descendants and noncanonical in-root layout. Home locations follow the Claude
+runtime setting, `SELF_LEARN_AGENTS_DIR` (default `~/.agents`), and `CODEX_HOME`.
+
+Canonical in-root skills register in place. A loose directory with no repository or
+installer marks is copied to a unique cache backup, moved to
+`plugins/<name>/skills/<name>`, given the writer's plugin manifest and marketplace
+entry, committed in the git skills root, and linked from its original location only.
+An in-place registration ensures the Claude runtime link exists; repeating registration
+repairs it. External adoption never introduces a new Claude runtime link. Adoption refuses plain mode, occupied destinations and dirty marketplace
+files. A failed host commit independently restores the original directory, removes the
+new plugin files, restores marketplace bytes, then attempts index cleanup last.
+A combined refusal names the retained backup and any failed recovery steps. After a
+successful commit, linking is retried or the exact link to repair is reported. Registration is committed only after adoption succeeds. Withdrawal
+revokes editing permission without undoing adoption or deleting files.

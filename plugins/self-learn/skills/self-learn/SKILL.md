@@ -126,6 +126,28 @@ agent`, `statement add --recorded-by agent` (an agent's shell may not pass
 All record-body writes pass the secret scan: default **refuse** (span +
 rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
 
+## Skills agents can put under upkeep
+
+When the user maintains a skill and it would benefit from self-learn's upkeep,
+run `self-learn skill register <name-or-path> --note "why"`. Any agent may register,
+withdraw with `skill unregister <name> --note "why"`, or file a request; no standing
+grant is needed for those verbs. `skill list` shows registrations.
+
+Registration permits prose, description and reference-file rewrites while preserving
+user intent and voice; it never permits renaming or retiring the user's skill.
+Installer-managed, upstream-tracked and foreign-repository skills are refused, with
+the signal named. Loose user skills are backed up and adopted into the git skills root.
+
+Ask the next overseer run for work:
+- `self-learn skill request build --name <name> --lessons <id1>,<id2> --note "why"`
+- `self-learn skill request change <owned-or-registered-skill> --note "what and why"`
+- `self-learn skill request withdraw <id> --note "why no longer needed"`
+
+Each request gets a report answer: built, changed or declined with a reason. Failed
+writes, drafts and missing or malformed answers remain open without blocking other work.
+Notes are secret-scanned; refusal messages name the rule, never the match. See [skill upkeep](references/skill-upkeep.md) for
+refusal signals, adoption and edit protection.
+
 ## Slash commands
 
 - `/self-learn:teach` — extraction UX: compose trigger/instruction/evidence

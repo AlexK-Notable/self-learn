@@ -868,8 +868,8 @@ def _region_kind_for(spec: TargetSpec) -> str | None:
     PRIMARY target is via the ``managed``-only, self-computing
     convenience path (:func:`_write_compile_record_entry`) — ``None``
     when the destination is explicitly OUT of the record's scope
-    (``new-skill``, §8 OUT-7: a whole file created once, already
-    covered by its own collision rule) OR when the destination's real
+    (``new-skill`` before its scaffold exists, §8 OUT-7: a whole file
+    created once, already covered by its own collision rule) OR when the destination's real
     write target resolves OUTSIDE ``spec.target`` entirely
     (``reference`` — see below) or needs externally-supplied bytes this
     function cannot derive on its own (``hook`` — the APPROVED script
@@ -887,6 +887,11 @@ def _region_kind_for(spec: TargetSpec) -> str | None:
     ``_commit_ledger`` call for the canonical shape every other site
     mirrors."""
     if spec.destination in ("skill-md", "claude-md"):
+        return "managed"
+    # S-157: an existing skill's managed section is shared by skill-md and
+    # new-skill routes. Both must advance the same compile record; only a
+    # brand-new scaffold remains outside the record before its first write.
+    if spec.destination == "new-skill" and spec.target is not None and spec.target.is_file():
         return "managed"
     return None
 
@@ -2347,9 +2352,9 @@ def owned_skill_refusal(home: Path | str, name: str | None) -> VerbError | None:
         registry = _owned_skills(home)
     except VerbError as exc:
         return exc
-    if not registry.is_owned(name):
+    if not registry.may_edit(name):
         return SheetLineError(
-            f"new-skill:{name} is not a skill self-learn owns (no live row in "
+            f"new-skill:{name} is not a skill self-learn owns or is registered to edit (no live row in "
             "owned-skills.yaml), and a route never creates a skill for an agent: "
             "`self-learn skill write` does. A lesson for a skill self-learn does not "
             "own goes to that skill's skill-md; a group of lessons that should become "
@@ -2386,7 +2391,7 @@ def _refuse_rescaffolding_an_owned_skill(home: Path, name: str) -> None:
     other name goes ahead as before (D5). Raises
     :class:`DestinationUnavailable`, or :class:`NeedsPerson` for a registry
     that does not read back."""
-    if _owned_skills(home).is_owned(name):
+    if _owned_skills(home).may_edit(name):
         raise DestinationUnavailable(
             f"new-skill:{name} is a skill self-learn owns and its SKILL.md is missing "
             "-- a route never scaffolds it; run its `skill write` again to finish the "
@@ -5083,7 +5088,7 @@ def _scaffold_owner(home: Path, spec: TargetSpec) -> str | None:
         registry = skill_registry.load(home)
     except skill_registry.SkillRegistryError:
         return None
-    if name in registry.skills or name in registry.vetoed_names():
+    if name in registry.skills or name in registry.registrations or name in registry.vetoed_names():
         return None
     return by
 
@@ -5094,7 +5099,7 @@ def _add_owned_scaffold_row(
     """SK-G's registry change: a live row for the person's scaffold, with
     the stamp's ``created`` and its authored hash as the last write. A row
     that exists by now (a race with another writer) is left alone."""
-    if name in registry.skills:
+    if name in registry.skills or name in registry.registrations:
         return
     step = {"at": stamp["created"], "case": None, "by": stamp["authored_by"]}
     registry.skills[name] = {

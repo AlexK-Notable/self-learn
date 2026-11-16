@@ -839,6 +839,84 @@ vetoed:
   - {name: <name>, at: <iso>, statement: stmt-xxxxxxxx}              # written before it
 ```
 
+**S-157: registration is editorial permission, not ownership.** The same file accepts
+an optional top-level `registrations` mapping. Live registration and ownership cannot
+coexist; a withdrawn row may remain beside a later owned row, which takes precedence:
+
+```yaml
+registrations:
+  <name>:
+    status: live                   # live | withdrawn
+    plugin: plugins/<name>
+    registered:
+      at: <iso>
+      by: human|agent
+      note: <required reason>
+      path: <absolute real skill directory>
+      original: <absolute original directory>
+      backup: <cache backup path or null>
+      checks: [readable-frontmatter, matching-name, no-installer-signals,
+               no-upstream-marker, repository-location, no-linked-files]
+      authored_sha256: <baseline hash>
+    last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent,
+                 authored_sha256: <hex>}  # present after first full write
+    withdrawn: {at: <iso>, by: human|agent, note: <reason>}  # withdrawn only
+```
+
+`Registry.is_owned` and `live` still inspect only authored skills. `may_edit` accepts
+live owned or registered skills; `editable` excludes vetoed registrations. Withdrawal keeps the
+registration history, files, links and backup. Registering again refreshes permission
+and the baseline; repeat registration while live repairs missing links without a new ledger row. History of earlier
+registrations and withdrawals is retained in ledger commits. The writer stamps
+`metadata.self-learn: {registered_by, registered}` for registered skills, never
+`authored_by`, and never changes their name. The registration hash protects the first
+write; `last_write` protects subsequent writes. Restore, rename and retire require
+ownership. Stage rows label permission as registered, omitting long hashes from model
+inputs; expected hashes stay in the runner. Matching secret-scan text in a stored row
+is stubbed before staging or manifest construction. Missing registered files are not
+restored. Updates retain the existing name even when it contains a reserved word.
+Registered drafts must preserve existing non-allowlisted frontmatter keys unchanged;
+adding a refused/unknown key, changing or removing a carried key refuses the draft.
+Registration refuses invalid frontmatter and non-mapping metadata by rule name.
+An editable description can be supplied or corrected on the first rewrite; adoption
+uses a generic package label in the meantime without changing the user's SKILL.md.
+
+`skill-requests.yaml` is a sibling ledger file, version 1, with `requests: [...]`.
+Each row is `{id: sr-<12 hex>, kind: build|change, name, lessons: [<ids>], note,
+by: human|agent, at: <iso>, state: open|closed}`. Closed rows additionally carry
+`answer: built|changed|declined|withdrawn`, `reason`, `decided_at`, and either the
+deciding `run` id or `withdrawn_by`. Successful writes also record `actual_name`.
+Duplicate open requests (kind, name, lesson set) append `{note, by, at}` to `followups`
+in the existing row. `skill request withdraw <id> --note` closes an open request.
+Request filing and closure use the ledger commit lock and intents. Build requests
+require distinct existing lessons and writer-valid names, and refuse live registered
+names with advice to request a change. Change requests require `may_edit`. All notes
+are secret-scanned before any mutation, with rule-only refusals. These verbs
+and register/unregister are agent-available without a standing grant. Direct skill
+write/rename/retire/veto retain their existing authority rules.
+
+Every phase B stage includes all open requests in `skill-requests.yaml`. Its output
+`skill-request-decisions.yaml` is `{decisions: [{id, answer, reason, case?}]}`; every
+staged id must occur exactly once, with built for build, changed for change, or
+declined. A successful answer names the case filename performing the write. The
+manifest retains only validated, scan-clean answers. Each malformed, unknown, missing
+or wrong-kind answer is dropped independently and reported under “Refused / could
+not do”; its request stays open while other work lands. Reasons are stripped and
+whitespace folded, with empty/non-text reasons refused. Unreadable requests stage as
+an empty list with a report note. Withdrawn change targets stage `target: withdrawn`.
+Finalization matches the case with or without `.yaml` against an applied writer
+receipt. Change answers match the target name; a build may create or update another
+name if every requested lesson routes there, recording the actual name. A completed
+run closes declines; halted runs, drafts and refused writes retain open requests.
+The report lists every answer, or says open and why no successful answer landed.
+
+`skill-md` and `new-skill` routes resolving to the same skill compile the union of
+its lessons. A `new-skill` write to an existing managed section advances that same
+compile record, so a later `skill-md` route does not misclassify it as a hand edit.
+The new-scaffold exclusion applies only before that scaffold exists. Owned renames
+carry these compile-record entries through their existing intent-protected carry
+step, adding its ledger commit even when the old skill has no lesson bucket.
+
 A skill is owned when it has a `live` row; a retired row keeps its history
 and owns nothing. `by` is `overseer` only when the overseer's runner calls
 the writer itself (a Python call, not the CLI), `human` for every write,
@@ -907,7 +985,7 @@ ignored.
 **The overseer's workspace for skills.** Phase S's stage holds `catalogue/`,
 `neighbourhoods.md`, `skills-index.yaml`, `history.yaml`, `briefs/` and
 `answers.yaml`, and never `full/` or `parked/`; it writes
-`skill-candidates.yaml`. Phase B's stage adds `owned-skills/<name>/` (the
+`skill-candidates.yaml`. Phase B's stage adds `owned-skills/<name>/` for owned and registered skills (the
 skill's files as they are now, its registry row,
 `changed-since-last-write.diff` and the ids of the lessons routed into it),
 `vetoes.yaml` (the vetoed names, and the open requests, read from the
@@ -4191,9 +4269,9 @@ lesson's own premises do not.
   repairs; it is not a hand edit and moves nothing.
 - **Which lessons have an `@intact`.** Only those whose target has a
   managed region the compile record tracks: `claude-md` (any variant) and
-  `skill-md` (`verbs._region_kind_for`). A `new-skill` lesson's file is
-  outside the compile record by design (a whole file created once; OUT-7
-  of `drafts/u-hostmode-git-optional-hosts-spec.md`). A `hook` lesson's
+  `skill-md` (`verbs._region_kind_for`), and, as amended by S-157, `new-skill`
+  when its target already exists. Only creating a new scaffold remains outside
+  the compile record (OUT-7 of `drafts/u-hostmode-git-optional-hosts-spec.md`). A `hook` lesson's
   script IS in the compile record (`region_kind: script`), and an edited
   script refuses later writes too, but it is a whole generated file rather
   than a block of lesson lines; giving it an `@intact` is left out of this

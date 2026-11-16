@@ -387,6 +387,7 @@ RULE_FRONTMATTER_FLOW_TOO_DEEP = "frontmatter-flow-too-deep"
 RULE_FRONTMATTER_ANCHOR = "frontmatter-anchor-alias"
 RULE_FRONTMATTER_KEY_REFUSED = "frontmatter-key-refused"
 RULE_FRONTMATTER_KEY_UNKNOWN = "frontmatter-key-unknown"
+RULE_FRONTMATTER_CARRIED_KEY = "frontmatter-carried-key-changed"
 RULE_NAME_MISSING = "name-missing"
 RULE_NAME_NOT_KEBAB = "name-not-kebab"
 RULE_NAME_TOO_LONG = "name-too-long"
@@ -430,6 +431,7 @@ SKILL_RULE_IDS: tuple[str, ...] = (
     RULE_FRONTMATTER_ANCHOR,
     RULE_FRONTMATTER_KEY_REFUSED,
     RULE_FRONTMATTER_KEY_UNKNOWN,
+    RULE_FRONTMATTER_CARRIED_KEY,
     RULE_NAME_MISSING,
     RULE_NAME_NOT_KEBAB,
     RULE_NAME_TOO_LONG,
@@ -1298,6 +1300,8 @@ def check_skill(
     loaded_names: Iterable[str],
     vetoed_names: Iterable[str],
     expected_name: str | None = None,
+    existing_name: str | None = None,
+    carried_frontmatter: Mapping | None = None,
 ) -> SkillCheck:
     """Check a skill draft against the template. Pure: text and lists in,
     findings out; it writes nothing, reads no live state, and never raises
@@ -1311,6 +1315,9 @@ def check_skill(
     without regard to case, and both are required so a caller cannot skip
     them by accident. ``expected_name``, when the caller knows the skill's
     directory name, makes a different frontmatter ``name`` a problem.
+    ``existing_name`` exempts a name-preserving update from reserved words.
+    ``carried_frontmatter`` is a registered skill's deployed mapping: keys
+    outside the allow-list must be retained unchanged, not silently dropped.
 
     Every problem is collected; a draft with two faults reports both. A file
     key or value that is not text is a problem too, and every offending
@@ -1343,16 +1350,24 @@ def check_skill(
             assert frontmatter.finding is not None
             problems.append(frontmatter.finding)
         else:
-            problems += _check_name(
+            name_problems = _check_name(
                 mapping.get("name", _ABSENT),
                 loaded_names=loaded,
                 vetoed_names=vetoed,
                 expected_name=expected_name,
             )
+            problems += [p for p in name_problems if not (
+                p.rule == RULE_NAME_RESERVED_WORD and mapping.get("name") == existing_name)]
             problems += _check_description(mapping.get("description", _ABSENT))
             problems += _check_when_to_use(mapping)
             problems += _check_listing(mapping)
-            problems += _check_keys(mapping)
+            carried = {k: v for k, v in (carried_frontmatter or {}).items()
+                if k not in SKILL_FRONTMATTER_ALLOWED_KEYS}
+            problems += _check_keys({k: v for k, v in mapping.items() if k not in carried})
+            for key, value in carried.items():
+                if key not in mapping or mapping[key] != value:
+                    problems.append(SkillFinding(RULE_FRONTMATTER_CARRIED_KEY,
+                        f"carried frontmatter key {_shown(key)} must remain unchanged"))
             problems += _check_metadata(mapping)
             problems += _check_paths(mapping)
             description = mapping.get("description")

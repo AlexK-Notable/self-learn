@@ -49,7 +49,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import attribution, grant_uses, grants, skill_registry, skill_requests, skill_writer
+from . import gitops, attribution, grant_uses, grants, skill_registry, skill_requests, skill_writer
 from .gitops import EXIT_GIT_FAILED
 from .ledger import resolve_home
 # Called by its bare name, never as ``skill_writer.rename(...)``: the lock
@@ -86,7 +86,7 @@ def _exit_for(ok: bool, kind: str | None) -> int:
 
 def add_parser(subparsers) -> argparse.ArgumentParser:
     parser = subparsers.add_parser(
-        "skill", help="the skills self-learn owns: write | retire | rename | list"
+        "skill", help="create, maintain, register skills, or request a build/change"
     )
     commands = parser.add_subparsers(dest="skill_command", required=True)
 
@@ -187,6 +187,24 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     list_p = commands.add_parser("list", help="the skills self-learn owns, and their state")
     list_p.add_argument("--json", action="store_true", dest="as_json")
 
+    for verb in ("register", "unregister"):
+        reg = commands.add_parser(verb, help=("permit full upkeep of a user-maintained skill (name or path)" if verb == "register" else "withdraw upkeep permission; keep the skill and link"))
+        reg.add_argument("name")
+        reg.add_argument("--note", required=True, help="why; agents may run this without a standing grant")
+        reg.add_argument("--json", action="store_true", dest="as_json")
+    req = commands.add_parser("request", help="ask the next overseer run to build or change a skill")
+    requests = req.add_subparsers(dest="request_kind", required=True)
+    build = requests.add_parser("build", help="request a new skill from existing lessons")
+    build.add_argument("--name", required=True)
+    build.add_argument("--lessons", required=True, help="comma-separated lesson ids")
+    change = requests.add_parser("change", help="request changes to an owned or registered skill")
+    change.add_argument("name")
+    withdraw = requests.add_parser("withdraw", help="withdraw an open request; agents need no standing grant")
+    withdraw.add_argument("name", metavar="id")
+    for item in (build, change, withdraw):
+        item.add_argument("--note", required=True, help="what should change and why")
+        item.add_argument("--json", action="store_true", dest="as_json")
+
     parser.set_defaults(_skill_dispatch=dispatch)
     return parser
 
@@ -195,6 +213,8 @@ def dispatch(args) -> int:
     command = args.skill_command
     if command == "list":
         return _list(resolve_home(), args)
+    if command in ("register", "unregister", "request"):
+        return _registration_request(resolve_home(), args)
     mutating = command in ("retire", "rename", "veto") or (command == "write" and not args.check)
     home = resolve_home()
     # C7 (attention round): with no --by, who decided is who ran it -- an
@@ -480,6 +500,7 @@ def _list(home: Path, args) -> int:
     if args.as_json:
         print(json.dumps({
             "command": "skill list", "skills": states, "vetoed": registry.vetoed_names(),
+            "registrations": registry.registrations,
         }, sort_keys=True, default=str))
         return EXIT_OK
     if not states:
@@ -494,6 +515,33 @@ def _list(home: Path, args) -> int:
         if state.get("retire_requested"):
             line += "; retirement requested"
         print(line)
+    for name, row in sorted(registry.registrations.items()):
+        stamp = row["registered"]
+        print(f"{name}: registered ({row['status']}); {stamp['path']}; by {stamp['by']} at {stamp['at']}; {stamp['note']}")
     if registry.vetoed:
         print("vetoed names: " + ", ".join(registry.vetoed_names()))
+    return EXIT_OK
+
+
+def _registration_request(home: Path, args) -> int:
+    from . import skill_registration
+    try:
+        skill_registration._note_by(args.note, default_by())
+        if args.skill_command == "register":
+            result = skill_registration.register(home, args.name, note=args.note, by=default_by())
+        elif args.skill_command == "unregister":
+            result = skill_registration.unregister(home, args.name, note=args.note, by=default_by())
+        elif args.request_kind == "withdraw":
+            result = skill_requests.withdraw_request(home, args.name, note=args.note, by=default_by())
+        else:
+            result = skill_requests.file_request(home, args.request_kind, args.name,
+                lessons=[s.strip() for s in getattr(args, "lessons", "").split(",") if s.strip()],
+                note=args.note, by=default_by())
+    except (ValueError, OSError, skill_registry.SkillRegistryError, gitops.GitOpsError) as exc:
+        print(f"self-learn skill {args.skill_command}: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    if args.as_json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(f"{result['name']}: {result['state']}" + (f" ({result['id']})" if "id" in result else ""))
     return EXIT_OK

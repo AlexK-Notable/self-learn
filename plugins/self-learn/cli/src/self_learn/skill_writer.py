@@ -674,6 +674,10 @@ def _split_frontmatter(text: str) -> tuple[str, str, str, str]:
 def _stamp_block(stamp: Mapping[str, Any]) -> str:
     # A person's step that answers no case stamps ``case: null`` (YAML's
     # null), never Python's ``None``, which YAML would read as a string.
+    if "registered_by" in stamp:
+        return ("metadata:\n" + f"  {SKILL_RUNNER_METADATA_KEY}:\n"
+                + f"    registered_by: {stamp['registered_by']}\n"
+                + f"    registered: {json.dumps(stamp['registered'])}\n")
     case = stamp["case"] if stamp["case"] is not None else "null"
     return (
         "metadata:\n"
@@ -709,9 +713,8 @@ def _stamped(text: str, stamp: Mapping[str, Any]) -> str:
         if data.get("metadata") is None:
             data["metadata"] = CommentedMap()
         stamp_map = CommentedMap()
-        stamp_map["authored_by"] = stamp["authored_by"]
-        stamp_map["case"] = stamp["case"]
-        stamp_map["created"] = DoubleQuotedScalarString(stamp["created"])
+        for key, value in stamp.items():
+            stamp_map[key] = DoubleQuotedScalarString(value) if key in ("created", "registered") else value
         data["metadata"][SKILL_RUNNER_METADATA_KEY] = stamp_map
         new_inner = _rt_dump(data)
     new_text = opening + new_inner + closing + body
@@ -1241,14 +1244,19 @@ def _preflight(
     registry = _load_registry(home)
     root = _skills_root(home)
     owned = registry.is_owned(name)
+    editable = registry.may_edit(name)
     if updating is None:
-        updating = owned
-    if updating and not owned:
+        updating = editable
+    if not updating and registry.is_registered(name):
+        raise _Refused(KIND_BAD_LINE, [f"{name} is already registered; update it instead of creating it"])
+    if updating and not editable:
         raise _Refused(
             KIND_NEEDS_PERSON,
-            [f"{name} is not a skill self-learn owns, so there is nothing to update"],
+            [f"{name} is neither owned nor registered; register it before updating"],
         )
-    row = registry.row(name)
+    # A withdrawn registration is history, not the row this new owned write
+    # replaces. Rollback must remove a failed owned creation and keep history.
+    row = registry.row(name) if updating or name in registry.skills else None
     plan = _Plan(name=name, root=root, updating=updating, row_before=row)
     expected_plugin = f"plugins/{name}"
     if updating and row is not None and row["plugin"] != expected_plugin:
@@ -1292,11 +1300,18 @@ def _preflight(
         problems += [f"name-collision: {t}" for t in taken]
 
     # -- the template and the secret scan
+    deployed_md_for_check = _read_tree(plan.folder).get(SKILL_ENTRY_FILE) if updating else None
+    deployed_front = (
+        _read_frontmatter(_unstamped(deployed_md_for_check)).mapping
+        if deployed_md_for_check is not None else None
+    )
     result = check_skill(
         files,
         loaded_names=sorted(loaded),
         vetoed_names=registry.vetoed_names(),
         expected_name=name,
+        existing_name=name if updating and deployed_front and deployed_front.get("name") == name else None,
+        carried_frontmatter=deployed_front if registry.is_registered(name) else None,
     )
     problems += [str(p) if p.path == SKILL_ENTRY_FILE else f"{p} ({p.path})" for p in result.problems]
     plan.notes += [str(n) for n in result.notes]
@@ -1308,9 +1323,16 @@ def _preflight(
 
     # -- the files as they would be deployed
     if updating and row is not None:
-        created = row["created"]
-        plan.stamp = {"authored_by": created["by"], "case": created["case"], "created": created["at"]}
-        plan.recorded_sha = row["last_write"]["authored_sha256"]
+        if registry.is_registered(name):
+            registered = row["registered"]
+            if Path(registered["path"]).resolve() != plan.folder.resolve():
+                raise _Refused(KIND_NEEDS_PERSON, ["registered path no longer matches the skills root; unregister and register again"])
+            plan.stamp = {"registered_by": registered["by"], "registered": registered["at"]}
+            plan.recorded_sha = (row.get("last_write") or registered)["authored_sha256"]
+        else:
+            created = row["created"]
+            plan.stamp = {"authored_by": created["by"], "case": created["case"], "created": created["at"]}
+            plan.recorded_sha = row["last_write"]["authored_sha256"]
     else:
         plan.stamp = {"authored_by": by, "case": case, "created": now}
     folder = plan.folder
@@ -1365,7 +1387,7 @@ def _preflight(
         # S-110 (SK-E): the overseer restores an owned skill
         # whose folder was gone when phase B was staged; the swap is
         # against absence, so anything found there now refuses it.
-        if not updating:
+        if not owned:
             raise _Refused(KIND_BAD_LINE, ["only a skill self-learn owns is restored"])
         # Gate r1 finding 2: a rerun of the same restore (the overseer's
         # resume after a crash) finds exactly this write's own files there:
@@ -1531,9 +1553,9 @@ def _registry_after_write(
 ) -> None:
     """The row a write leaves: unchanged when it already records *sha* for a
     live skill; else ``last_write`` updated, or a new row."""
-    row = registry.skills.get(name)
+    row = registry.registrations.get(name) if registry.is_registered(name) else registry.skills.get(name)
     if row is not None and row.get("status") == STATUS_LIVE:
-        if row["last_write"]["authored_sha256"] == sha:
+        if (row.get("last_write") or {}).get("authored_sha256") == sha:
             return
         row["last_write"] = {"at": now, "case": case, "by": by, "authored_sha256": sha}
         return
@@ -1549,7 +1571,9 @@ def _registry_after_write(
 
 
 def _registry_restore(registry: skill_registry.Registry, *, name: str, row: dict | None) -> None:
-    if row is None:
+    if row is not None and "registered" in row:
+        registry.registrations[name] = row
+    elif row is None:
         registry.skills.pop(name, None)
     else:
         registry.skills[name] = row
@@ -1667,7 +1691,11 @@ def _apply_write(home: Path, plan: _Plan, *, case: str | None, by: str, now: str
             ledger_sha=restored or ledger_sha,
         )
     try:
-        link = link_skill(plan.root, name)
+        registered = (plan.row_before or {}).get("registered")
+        if registered and Path(registered["original"]) != plan.folder:
+            link = _place_link(Path(registered["original"]), plan.folder)
+        else:
+            link = link_skill(plan.root, name)
     except (SkillLinkError, OSError) as exc:
         return WriteResult(
             name=name, ok=False, kind=KIND_NEEDS_PERSON,
@@ -1760,7 +1788,9 @@ def write(
             home, name, files, plan.root, case=case, by=by,
             expect_sha=expect_sha, updating=updating, now=now, expect_missing=expect_missing,
         )
-    except (gitops.GitOpsError, SkillRegistryError) as exc:
+    except SkillRegistryError as exc:
+        return WriteResult(name=name, ok=False, kind=KIND_BAD_LINE, problems=(str(exc),))
+    except gitops.GitOpsError as exc:
         return WriteResult(name=name, ok=False, kind=KIND_GIT, problems=(str(exc),))
     finally:
         hold.release()
