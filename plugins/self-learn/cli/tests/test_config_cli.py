@@ -180,6 +180,9 @@ class TestConfigGet:
             # SK4 (S-107): whether the overseer looks for
             # skills (phase S) is the user's switch too.
             "overseer.skill_discovery",
+            # S-160 (F10): script-review cost caps are tier C.
+            "overseer.script_reviews_per_run",
+            "scripts.reviews_per_day",
             # L6 (2026-10-31): registered so `doctor settings` stops
             # warning; the overseer's hook route stays a rollback switch.
             "overseer.hook_activation",
