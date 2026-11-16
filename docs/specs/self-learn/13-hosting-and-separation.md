@@ -2386,3 +2386,54 @@ new plugin files, restores marketplace bytes, then attempts index cleanup last.
 A combined refusal names the retained backup and any failed recovery steps. After a
 successful commit, linking is retried or the exact link to repair is reported. Registration is committed only after adoption succeeds. Withdrawal
 revokes editing permission without undoing adoption or deleting files.
+
+
+### Anthropic skill authoring reference (S-159)
+
+The CLI ships `self_learn/skill_reference/PACK.md` and `sources.yaml` as package
+resources, version `anthropic-2026-11-15`. Each numbered rule has a short quotation,
+source URL and read date. This is the evidence for drafting, full rewrites and
+reference reorganisation in owned and registered skills, including agent build and
+change requests. The phase-B stage always contains `skill-reference/`, even when
+writing is off; its prompt and method require PACK.md, EXAMPLES.md and STATUS.md.
+The writer checks the same requirements for supplied drafts. The legacy route seed
+checks its deterministic text before deployment and owned seeds use the same stamp.
+
+New refusals add `name-hyphens` (trailing/doubled hyphen), `name-synced`, and
+`compatibility-limit` (string, at most 500 characters). Existing required fields,
+64-character name, 1,024-character description, character set, reserved words,
+XML tags, directory match and direct one-level references remain checked.
+`license` and `compatibility` are accepted descriptive fields. Names retained on
+updates and carried registered fields are never changed to satisfy the pack; the
+conflict is a note. Existing registered license/compatibility also stay immutable.
+
+Description trigger/person/angle-bracket heuristics, a labelled characters/4 token
+estimate and reference contents-list heuristics produce notes, not refusals. The
+existing line/word soft limits remain advisory. Free-form metadata is valid for the
+Claude Code target but is noted as nonportable when values are not strings. The
+runner's nested provenance map is an intentional format choice. No upload occurs:
+API request/upload limits and the portable six-key allow-list do not reject valid
+Claude Code settings. Local template restrictions on executable/support files,
+permissions, managed blocks and safe paths remain separate from Anthropic rules.
+Static checks cannot establish semantic quality or correct skill invocation.
+
+Native examples are runtime-only. `SELF_LEARN_SKILL_REFERENCE_PLUGIN_ROOT` replaces
+the default skill-creator plugin-cache root;
+`SELF_LEARN_SKILL_REFERENCE_SYNCED_ROOT` replaces the synced-skills root, both below
+`SELF_LEARN_CLAUDE_DIR` by default. The latest creator copy by mtime is selected;
+synced entries must be attributed to `anthropic` or `anthropic-example` by their
+manifest. Absent copies are omitted. Stage Markdown and license text through the
+existing secret scanner before invocation, never scripts for execution. The staged
+source manifest displays hash prefixes to avoid entropy false positives; the installed
+manifest retains full hashes for HTTP comparison. No example is vendored and
+no redistribution grant is inferred for restricted or unlicensed installed skills.
+
+`skill reference show [--path]` exposes the pack; `check NAME-OR-PATH` is read-only
+and prints rule ids and sources for refusals and notes. Name resolution uses the
+registered skills root and Claude runtime directory, reporting ambiguity.
+`skill write` prints the checked version and `skill list` displays each last-write
+version. `status` reports version/date/age/sources offline; `status --fetch` uses
+plain HTTP with bounded requests, records results in the per-home cache, and exits
+0 only when all sources match, 1 when changed or unreachable. The weekly run reads
+this cache only. A refresh re-gathers the source text and licensing facts, updates
+PACK.md, hashes, version/date and tests, and lands a normal code/spec change.
