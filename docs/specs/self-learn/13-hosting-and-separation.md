@@ -2448,7 +2448,7 @@ target failure; recompile continues with other targets.
 Optional examples are read defensively: malformed manifests, unreadable content
 and copies removed during discovery are omitted with a Refused / could not do
 note. Reference staging failure never refuses the weekly run. Reference facts
-have their own Skill reference report section; draft guidance is reported only
+live under the declared Catalogue health report heading; draft guidance is reported only
 for a retained draft or an applied write, including resumed writes.
 
 The read-only reference check uses the same editable view as the writer:
@@ -2485,3 +2485,13 @@ Installed mode keeps the editable-view behavior and retained-file notes.
 A manifest-level shape/read failure omits that manifest. A bad individual row,
 including a missing downloaded folder, adds exactly one row note and omits only
 that example; valid rows before and after it still stage, in list or map form.
+
+#### S-159 suite corrections (2026-11-15)
+
+Pack age uses primitives.chrono.age_days with the read date interpreted at UTC
+midnight (the precision the pack records), a full UTC current timestamp, and
+zero for dates in the future. Injected test dates likewise mean UTC midnight.
+Pack status and applied/retained guidance belong under Catalogue health in both
+model-finalized and runner-only reports. Repeated publication adds no duplicate
+facts. The report retains its declared heading order and its existing repair
+rules; no additional Skill reference heading is published.

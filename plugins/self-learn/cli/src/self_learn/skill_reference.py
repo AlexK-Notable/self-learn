@@ -15,6 +15,8 @@ from urllib.request import Request, urlopen
 
 from ruamel.yaml import YAML
 
+from .primitives import chrono
+
 PACK_DIR = Path(__file__).with_suffix("")
 VERSION = "anthropic-2026-11-15"
 READ_DATE = "2026-11-15"
@@ -97,8 +99,10 @@ def _fetch_before(get, url: str, deadline: float) -> str:
 
 
 def status(home: Path, *, fetch: bool = False, fetcher=None, today: date | None = None) -> dict:
+    # The pack records a calendar date, so its known precision is UTC midnight.
+    now = datetime.combine(today, datetime.min.time(), timezone.utc) if today else datetime.now(timezone.utc)
     result = {"version": VERSION, "date_read": READ_DATE,
-              "age_days": ((today or date.today()) - date.fromisoformat(READ_DATE)).days,
+              "age_days": chrono.age_days(chrono.to_dt(READ_DATE), now),
               "normalization": NORMALIZATION, "sources": sources()}
     if fetch:
         get = fetcher or fetch_text
