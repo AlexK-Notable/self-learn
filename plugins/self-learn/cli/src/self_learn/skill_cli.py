@@ -544,4 +544,5 @@ def _registration_request(home: Path, args) -> int:
         print(json.dumps(result, sort_keys=True))
     else:
         print(f"{result['name']}: {result['state']}" + (f" ({result['id']})" if "id" in result else ""))
+    _print_lines("  warning: ", result.get("notes", []), sys.stderr)
     return EXIT_OK

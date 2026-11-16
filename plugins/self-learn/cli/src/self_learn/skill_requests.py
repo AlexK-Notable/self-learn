@@ -374,6 +374,7 @@ def file_request(home: Path | str, kind: str, name: str, *, lessons: list[str], 
     if kind not in ("build", "change") or not _valid_name(name):
         raise ValueError("request needs build/change and a valid skill name")
     home = Path(home)
+    notes: list[str] = []
     with intents.ledger_write(home) as recovered:
         intents.announce_recovered(recovered)
         registry = skill_registry.load(home)
@@ -386,8 +387,7 @@ def file_request(home: Path | str, kind: str, name: str, *, lessons: list[str], 
             if registry.is_registered(name):
                 raise ValueError(f"{name} is already registered; file a change request instead")
             loaded, catalogue_problems, _ = skill_writer._loaded_names(home, leaving_out=None)
-            if catalogue_problems:
-                raise ValueError("cannot check loaded skill names: " + "; ".join(catalogue_problems))
+            notes += [f"skills on this machine: {p}" for p in catalogue_problems]
             problems = _check_name(name, loaded_names=frozenset(loaded),
                 vetoed_names=frozenset(registry.vetoed_names()), expected_name=name)
             if problems:
@@ -414,7 +414,7 @@ def file_request(home: Path | str, kind: str, name: str, *, lessons: list[str], 
         else:
             rows.append(row)
         sha = _save_requests(home, rows, f"self-learn: skill request {kind} {name}", by)
-        return {**row, "ledger_commit": sha}
+        return {**row, "ledger_commit": sha, "notes": notes}
 
 
 def close_request(home: Path | str, ident: str, *, answer: str, reason: str, run: str, actual_name: str | None = None) -> None:
