@@ -194,6 +194,12 @@ def test_registry_metadata_cannot_withhold_the_skills_index(home, claude, tmp_pa
         def live(self):
             return ["sample-clean"]
 
+        def editable(self):
+            return self.live()
+
+        def is_registered(self, name):
+            return False
+
         def vetoed_names(self):
             return [odd]
 
