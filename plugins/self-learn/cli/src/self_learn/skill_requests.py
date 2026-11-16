@@ -379,14 +379,21 @@ def file_request(home: Path | str, kind: str, name: str, *, lessons: list[str], 
         registry = skill_registry.load(home)
         if kind == "change" and not registry.may_edit(name):
             raise ValueError(f"{name} is neither owned nor registered; register it first")
+        if kind == "change" and registry.veto_of(name):
+            raise ValueError(f"{name} is vetoed; upkeep is disabled for this skill")
         if kind == "build":
             from .skill_scaffold import _check_name
-            problems = _check_name(name, loaded_names=frozenset(),
-                vetoed_names=frozenset(registry.vetoed_names()), expected_name=name)
-            if problems:
-                raise ValueError("; ".join(str(p) for p in problems))
             if registry.is_registered(name):
                 raise ValueError(f"{name} is already registered; file a change request instead")
+            loaded, catalogue_problems, _ = skill_writer._loaded_names(home, leaving_out=None)
+            if catalogue_problems:
+                raise ValueError("cannot check loaded skill names: " + "; ".join(catalogue_problems))
+            problems = _check_name(name, loaded_names=frozenset(loaded),
+                vetoed_names=frozenset(registry.vetoed_names()), expected_name=name)
+            if problems:
+                clashes = sorted(n for n in loaded if n.rsplit(":", 1)[-1] == name.casefold())
+                detail = "; already loaded: " + ", ".join(clashes) if clashes else ""
+                raise ValueError("; ".join(str(p) for p in problems) + detail)
             if not lessons or len(set(lessons)) != len(lessons):
                 raise ValueError("build needs distinct existing lesson ids")
             for rid in lessons:
