@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Print the kernel's view of every DRM display output: connection, enabled, DPMS.
+
+Read-only. Usage: drm-state.py /sys/class/drm
+Reads <folder>/card*-*/{status,enabled,dpms} and prints one line per output, so
+the kernel's state can be compared with `hyprctl monitors` and the Hyprland log.
+"""
+import sys
+from pathlib import Path
+
+
+def read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "?"
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("usage: drm-state.py /sys/class/drm", file=sys.stderr)
+        return 2
+    root = Path(sys.argv[1])
+    outputs = sorted(p for p in root.glob("card*-*") if p.is_dir())
+    if not outputs:
+        print(f"no DRM outputs found under {root}")
+        return 1
+    print(f"{'output':<28} {'status':<14} {'enabled':<10} dpms")
+    for out in outputs:
+        print(f"{out.name:<28} {read(out / 'status'):<14} {read(out / 'enabled'):<10} {read(out / 'dpms')}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

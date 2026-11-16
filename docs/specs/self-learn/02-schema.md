@@ -5485,6 +5485,49 @@ approved in the live ledger. **This raises the bar; it is not proof against
 someone who controls the machine and can forge all local records.**
 Cost is reported when available; count/time/turn bounds do not promise a dollar price or dollar ceiling.
 
+S-160 path derivation (2026-11-16): read checks track bindings separately in
+functions and comprehensions. Elements retain their provenance through `sorted`,
+`reversed`, `list`, `tuple`, `set`, `filter` with a lambda or named predicate,
+comprehensions and generator expressions. A collection variable must qualify at
+every assignment; mixed unsafe elements, unknown sources and mutation through an
+alias invalidate its provenance. Relative literals retain the existing read-only
+path policy; they do not become caller-derived paths for helper parameters.
+A named helper parameter qualifies only when every direct call supplies a
+caller-derived argument in that position (including keyword calls), and any
+default is caller-derived. Rebinding the parameter is checked as another source.
+Functions used as values, decorated functions, and calls using unpacked arguments
+do not supply parameter evidence. A named filter predicate is a function used as
+a value: filtering preserves the collection's elements, but does not certify the
+predicate's parameters. Ordinary recursion may qualify if every call edge does;
+recursive generators are refused as unbounded. These facts only satisfy the path
+screen; all module, command, credential, effect and approval gates still apply.
+
+Collection escape (D1): placing a derived collection inside a display, an
+attribute/subscript store, a lambda body, return/yield, or a global/nonlocal
+binding invalidates it and its plain-name aliases. Unbound methods and call
+arguments also invalidate it, except qualifying helper parameters and the
+read-only builtins `sorted`, `len`, `print`, `reversed`, `enumerate`, `zip`, `str`,
+`any`, `all`. `min` and `max` may return an argument itself, so they count as
+escapes. Boolean operands and conditional-expression branches also escape unless
+the expression is directly the test of an `if` or `while` (the independent
+unbounded-loop refusal still applies to `while`). A helper parameter may carry collection elements only
+while every call/default qualifies and the helper does not let it escape. These
+checks repeat until helper calls and aliases agree; class-body stores count as
+escapes, including a store shadowing the outer name. An alias with mixed
+assignments still counts as a possible reference to the original collection
+when it escapes, even though the alias itself does not qualify for reads.
+Pattern matching may bind an alias; binary operators and comparisons may call
+user code implicitly. Those uses also invalidate collection derivation.
+
+Upward path navigation (`parent`, `parents`, `anchor`, `root`, `drive`, and
+`os.path.dirname`) never carries derivation. `resolve()` and `absolute()` retain
+it until upward navigation follows. Appended path components must be known
+relative values without `..` or an initial `dev`, `proc`, or `sys` segment
+(including leading `./`). This applies to `/`, `joinpath`, path constructors,
+`os.path.join`, and filename-changing methods. A second caller argument cannot
+be assumed to be a relative component. The caller's original path remains
+permitted, including the local device-state inputs used by the trial control.
+
 Activation reruns the current screen against the exact reviewed bytes and refuses
 with named rules even if the approval is otherwise corroborated. It takes ledger then host lock,
 refuses symlink paths, existing destinations and dirty affected files, and commits

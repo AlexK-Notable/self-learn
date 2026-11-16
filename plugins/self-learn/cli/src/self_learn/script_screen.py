@@ -153,17 +153,417 @@ def _input_path(node: ast.AST, paths: set[str], assignments: dict[str, list[ast.
     return False
 
 
-def _path_rules(tree: ast.AST, paths: set[str], assignments: dict[str, list[ast.AST]], imported: dict[str, str]) -> list[str]:
+# Path facts are separate from the syntax/effect allow-list above.
+_READ, _CALLER, _ITEM_READ, _ITEM_CALLER = 1, 2, 4, 8
+
+
+class _PathFlow:
+    """Scope-aware, all-sources provenance; unknown bindings fail closed."""
+
+    def __init__(self, tree: ast.AST):
+        self.scopes: dict[ast.AST, ast.AST] = {}
+        self.outer: dict[ast.AST, ast.AST] = {}
+        self.sources: dict[tuple[ast.AST, str], list[tuple[ast.AST, str]]] = {}
+        self.imports: dict[tuple[ast.AST, str], str] = {}
+        self.functions: dict[tuple[ast.AST, str], ast.FunctionDef] = {}
+        self.params: dict[ast.arg, tuple[ast.AST, str]] = {}
+        self.invalid: set[tuple[ast.AST, str]] = set()
+        self.approved: set[tuple[ast.AST, str]] = set()
+        self.parameter_facts: dict[tuple[ast.AST, str], int] = {}
+        self.safe_arguments: set[ast.AST] = set()
+        self._visit(tree, tree)
+        parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+        # Mutation through an alias taints every name sharing that collection.
+        aliases: list[tuple[tuple[ast.AST, str], tuple[ast.AST, str]]] = []
+        for key, sources in self.sources.items():
+            for value, mode in sources:
+                if mode == 'value' and isinstance(value, ast.Name):
+                    aliases.append((key, self._key(value)))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {
+                'append', 'extend', 'insert', 'add', 'update', 'clear', 'pop', 'popitem', 'discard', 'setdefault', 'sort', 'reverse', 'remove'}:
+                self._invalidate(node.func.value)
+            if isinstance(node, (ast.AugAssign, ast.Delete)):
+                for target in ([node.target] if isinstance(node, ast.AugAssign) else node.targets):
+                    self._invalidate(target)
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                for key in self.sources:
+                    if key[1] in node.names:
+                        self.invalid.add(key)
+            if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                self._invalidate(node.value)
+        for _ in range(len(aliases) + 1):
+            for a, b in aliases:
+                if a in self.invalid or b in self.invalid:
+                    self.invalid.update((a, b))
+        self.calls: dict[tuple[ast.AST, str], list[ast.Call]] = {k: [] for k in self.functions}
+        escaped = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                for key in self._load_keys(node):
+                    if key in self.functions:
+                        parent = parents.get(node)
+                        if isinstance(parent, ast.Call) and parent.func is node:
+                            self.calls[key].append(parent)
+                        else:
+                            escaped.add(key)
+        graph: dict[ast.AST, set[ast.AST]] = {fn: set() for fn in self.functions.values()}
+        for key, calls in self.calls.items():
+            for call in calls:
+                owner = self.scopes[call]
+                while owner not in graph and owner in self.outer:
+                    owner = self.outer[owner]
+                if owner in graph:
+                    graph[owner].add(self.functions[key])
+        self.recursive_generators = False
+        for fn in graph:
+            pending, reached = list(graph[fn]), set()
+            while pending:
+                callee = pending.pop()
+                if callee in reached:
+                    continue
+                reached.add(callee)
+                pending.extend(graph.get(callee, ()))
+            if fn in reached and any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in ast.walk(fn)):
+                self.recursive_generators = True
+        # Optimistic parameter facts, then remove any contradicted by a call.
+        # This admits recursive calls only while every edge remains derived.
+        for key, fn in self.functions.items():
+            if key not in escaped and key not in self.invalid and len(self.sources[key]) == 1 and self.calls[key] and not fn.decorator_list:
+                self.approved.update(self.params[a] for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs)
+        while True:
+            changed = False
+            self.safe_arguments.clear()
+            for key, fn in self.functions.items():
+                args = fn.args.posonlyargs + fn.args.args
+                defaults = dict(zip([a.arg for a in args[-len(fn.args.defaults):]] if fn.args.defaults else [], fn.args.defaults))
+                defaults.update({a.arg: d for a, d in zip(fn.args.kwonlyargs, fn.args.kw_defaults) if d is not None})
+                for param in args + fn.args.kwonlyargs:
+                    binding = self.params[param]
+                    if binding not in self.approved:
+                        continue
+                    default = defaults.get(param.arg)
+                    facts = self.parameter_facts.get(binding, 15)
+                    if default is not None:
+                        facts &= self._argument_facts(default)
+                    for call in self.calls[key]:
+                        if any(isinstance(a, ast.Starred) for a in call.args) or any(k.arg is None for k in call.keywords):
+                            facts = 0
+                            continue
+                        actual = call.args[args.index(param)] if param in args and args.index(param) < len(call.args) else default
+                        keywords = [k.value for k in call.keywords if k.arg == param.arg]
+                        if keywords:
+                            if actual is not default or len(keywords) != 1 or param in fn.args.posonlyargs:
+                                facts = 0
+                            actual = keywords[0]
+                        facts &= self._argument_facts(actual) if actual is not None else 0
+                        if actual is not None and binding not in self.invalid:
+                            self.safe_arguments.add(actual)
+                    if binding in self.invalid:
+                        facts = 0
+                    if default is not None and facts:
+                        self.safe_arguments.add(default)
+                    if facts != self.parameter_facts.get(binding, 15):
+                        self.parameter_facts[binding] = facts
+                        changed = True
+                    if not facts:
+                        self.approved.discard(binding)
+                        changed = True
+            # Settle scalar versus collection facts before inspecting escapes.
+            # Optimistic helper facts must not taint an ordinary scalar path.
+            if changed:
+                continue
+            # An alias with mixed assignments can still reach the original list.
+            # Escape uses possible aliases; read checks still require ALL sources.
+            collections = {key for key in self.sources
+                if self._binding_facts(key, frozenset()) & (_ITEM_READ | _ITEM_CALLER)}
+            for _ in range(len(aliases) + 1):
+                for left, right in aliases:
+                    if left in collections or right in collections:
+                        collections.update((left, right))
+            # Take a snapshot before invalidation so sibling escapes are all seen.
+            escaping = {key for n in ast.walk(tree)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                for key in self._load_keys(n)
+                if key in collections and self._collection_escapes(n, parents)}
+            before = len(self.invalid)
+            self.invalid.update(escaping)
+            for _ in range(len(aliases) + 1):
+                for left, right in aliases:
+                    if left in self.invalid or right in self.invalid:
+                        self.invalid.update((left, right))
+            if not changed and len(self.invalid) == before:
+                break
+
+    def _argument_facts(self, node: ast.AST) -> int:
+        facts = self._facts(node)
+        return ((_READ | _CALLER) if facts & _CALLER else 0) | ((_ITEM_READ | _ITEM_CALLER) if facts & _ITEM_CALLER else 0)
+
+    def _collection_escapes(self, node: ast.Name, parents: dict[ast.AST, ast.AST]) -> bool:
+        scope = self.scopes[node]
+        while scope in self.outer:
+            if isinstance(scope, ast.Lambda):
+                return True
+            scope = self.outer[scope]
+        current: ast.AST = node
+        while current in parents:
+            parent = parents[current]
+            if isinstance(parent, (ast.List, ast.Tuple, ast.Set, ast.Dict, ast.Return, ast.Yield, ast.YieldFrom)):
+                return True
+            if isinstance(parent, ast.arguments):
+                return current not in self.safe_arguments
+            if isinstance(parent, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                return True
+            if isinstance(parent, ast.Assign):
+                return isinstance(self.scopes[parent], ast.ClassDef) or parent.value is not node or any(not isinstance(t, ast.Name) for t in parent.targets)
+            if isinstance(parent, ast.AnnAssign):
+                return isinstance(self.scopes[parent], ast.ClassDef) or parent.value is not node or not isinstance(parent.target, ast.Name)
+            if isinstance(parent, ast.NamedExpr):
+                # A walrus is an alias AND an expression; inspect its destination.
+                if parent.value is not node or not isinstance(parent.target, ast.Name):
+                    return True
+            if isinstance(parent, (ast.BoolOp, ast.IfExp)):
+                if isinstance(parent, ast.IfExp) and parent.test is current:
+                    return False  # only the branches can return this collection
+                expression: ast.AST = parent
+                while isinstance(parents.get(expression), (ast.BoolOp, ast.IfExp)):
+                    expression = parents[expression]
+                owner = parents.get(expression)
+                return not (isinstance(owner, (ast.If, ast.While)) and owner.test is expression)
+            if isinstance(parent, ast.Call):
+                if current in parent.args or any(k.value is current for k in parent.keywords) or isinstance(current, ast.keyword):
+                    if self._canonical(parent.func) in {'sorted', 'len', 'print', 'reversed', 'enumerate', 'zip', 'str', 'any', 'all'}:
+                        return False
+                    return current not in self.safe_arguments and not (isinstance(current, ast.keyword) and current.value in self.safe_arguments)
+                return True  # including collection-bound and unbound methods
+            if isinstance(parent, ast.Attribute):
+                return True
+            if isinstance(parent, ast.Subscript) and parent.value is current:
+                return False  # indexing a flat path collection yields a path
+            if isinstance(parent, (ast.For, ast.comprehension)) and parent.iter is current:
+                return False
+            if isinstance(parent, (ast.Match, ast.BinOp, ast.Compare)):
+                return True  # pattern aliases or implicit calls to user operators
+            if isinstance(parent, (ast.If, ast.While, ast.UnaryOp)):
+                return False  # truth testing does not expose the container
+            current = parent
+        return False
+
+    def _component(self, node: ast.AST, seen: frozenset[tuple[ast.AST, str]]) -> bool:
+        value = self._constant(node, seen)
+        parts = [p for p in value.replace('\\', '/').split('/') if p not in {'', '.'}] if value is not None else []
+        return value is not None and _relative(value) and (not parts or parts[0] not in {'dev', 'proc', 'sys'})
+
+    def _bind(self, target: ast.AST, value: ast.AST, mode: str, scope: ast.AST) -> None:
+        if isinstance(target, ast.Name):
+            self.sources.setdefault((scope, target.id), []).append((value, mode))
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                self._bind(elt, value, 'unknown', scope)
+
+    def _visit(self, node: ast.AST, scope: ast.AST) -> None:
+        self.scopes[node] = scope
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                key = (scope, node.name)
+                self.sources.setdefault(key, []).append((node, 'unknown'))
+                if isinstance(node, ast.FunctionDef):
+                    self.functions[key] = node
+            self.outer[node] = scope
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                for default in [*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)]:
+                    self._visit(default, scope)
+                for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs, *([node.args.vararg] if node.args.vararg else []), *([node.args.kwarg] if node.args.kwarg else [])]:
+                    self.params[arg] = (node, arg.arg)
+                    self.sources.setdefault((node, arg.arg), []).append((arg, 'parameter'))
+                    if arg.annotation is not None:
+                        self._visit(arg.annotation, scope)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+                    self._visit(node.returns, scope)
+                body = [node.body] if isinstance(node, ast.Lambda) else node.body
+            else:
+                body = node.body
+                for base in [*node.bases, *(k.value for k in node.keywords)]:
+                    self._visit(base, scope)
+            for decorator in getattr(node, 'decorator_list', []):
+                self._visit(decorator, scope)
+            for child in body:
+                self._visit(child, node)
+            return
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            self.outer[node] = scope
+            for index, generator in enumerate(node.generators):
+                self._visit(generator.iter, scope if index == 0 else node)
+                self._bind(generator.target, generator.iter, 'element', node)
+                self._visit(generator.target, node)
+                for condition in generator.ifs:
+                    self._visit(condition, node)
+            for elt in ([node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]):
+                self._visit(elt, node)
+            return
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                self._bind(target, node.value, 'value', scope)
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+            binding_scope = scope
+            if isinstance(node, ast.NamedExpr):
+                while isinstance(binding_scope, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+                    binding_scope = self.outer[binding_scope]
+            self._bind(node.target, node.value, 'value', binding_scope)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            self.sources.setdefault((scope, node.name), []).append((node, 'unknown'))
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            self.sources.setdefault((scope, node.rest), []).append((node, 'unknown'))
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            self._bind(node.target, node.iter, 'element', scope)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                key = (scope, alias.asname or alias.name.split('.')[0])
+                self.sources.setdefault(key, []).append((node, 'unknown'))
+                self.imports[key] = ((node.module or '') + '.' + alias.name) if isinstance(node, ast.ImportFrom) else alias.name.split('.')[0]
+        elif isinstance(node, ast.With):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    self._bind(item.optional_vars, node, 'unknown', scope)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            self.sources.setdefault((scope, node.name), []).append((node, 'unknown'))
+        for child in ast.iter_child_nodes(node):
+            self._visit(child, scope)
+
+    def _key(self, node: ast.Name) -> tuple[ast.AST, str]:
+        scope = self.scopes[node]
+        while scope in self.outer:
+            if (scope, node.id) in self.sources and not (isinstance(scope, ast.ClassDef) and scope is not self.scopes[node]):
+                break
+            # Functions/comprehensions do not close over a class namespace.
+            scope = self.outer[scope]
+        return scope, node.id
+
+    def _load_keys(self, node: ast.Name) -> set[tuple[ast.AST, str]]:
+        keys = {self._key(node)}
+        scope = self.scopes[node]
+        # A class can read an outer name before assigning the same name locally.
+        # Both resolutions must satisfy the no-escape/all-calls rule.
+        if isinstance(scope, ast.ClassDef):
+            while scope in self.outer:
+                scope = self.outer[scope]
+                if (scope, node.id) in self.sources:
+                    keys.add((scope, node.id))
+                    break
+        return keys
+
+    def _invalidate(self, node: ast.AST) -> None:
+        while isinstance(node, (ast.Subscript, ast.Attribute)):
+            node = node.value
+        if isinstance(node, ast.Name):
+            self.invalid.add(self._key(node))
+
+    def _canonical(self, node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            key = self._key(node)
+            if key in self.invalid:
+                return ''
+            if key not in self.sources:
+                return node.id  # unshadowed builtin
+            return self.imports.get(key, '') if len(self.sources[key]) == 1 else ''
+        if isinstance(node, ast.Attribute):
+            head = self._canonical(node.value)
+            return head + '.' + node.attr if head else ''
+        return ''
+
+    def input(self, node: ast.AST) -> bool:
+        return bool(self._facts(node) & _READ)
+
+    def caller(self, node: ast.AST) -> bool:
+        return bool(self._facts(node) & _CALLER)
+
+    def _constant(self, node: ast.AST, seen: frozenset[tuple[ast.AST, str]]) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            key = self._key(node)
+            sources = self.sources.get(key, [])
+            if key not in seen and key not in self.invalid and len(sources) == 1 and sources[0][1] == 'value':
+                return self._constant(sources[0][0], seen | {key})
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            a, b = self._constant(node.left, seen), self._constant(node.right, seen)
+            return a + b if a is not None and b is not None else None
+        if isinstance(node, ast.JoinedStr):
+            parts = [self._constant(n.value if isinstance(n, ast.FormattedValue) else n, seen) for n in node.values]
+            return ''.join(v for v in parts if v is not None) if all(v is not None for v in parts) else None
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'join' and len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
+            sep = self._constant(node.func.value, seen)
+            parts = [self._constant(n, seen) for n in node.args[0].elts]
+            return sep.join(v for v in parts if v is not None) if sep is not None and all(v is not None for v in parts) else None
+        return None
+
+    def _binding_facts(self, key: tuple[ast.AST, str], seen: frozenset[tuple[ast.AST, str]]) -> int:
+        if key in seen or key in self.invalid or key not in self.sources:
+            return 0
+        facts = []
+        for value, mode in self.sources[key]:
+            if mode == 'parameter':
+                facts.append(self.parameter_facts.get(key, 15) if key in self.approved else 0)
+            elif mode == 'unknown':
+                facts.append(0)
+            else:
+                fact = self._facts(value, seen | {key})
+                facts.append((fact >> 2) if mode == 'element' else fact)
+        return self._all(facts)
+
+    def _facts(self, node: ast.AST, seen: frozenset[tuple[ast.AST, str]] = frozenset()) -> int:
+        if isinstance(node, ast.Name):
+            return self._binding_facts(self._key(node), seen)
+        literal = self._constant(node, seen)
+        if literal is not None:
+            return _READ if _relative(literal) else 0
+        if isinstance(node, ast.Subscript) and self._canonical(node.value) == 'sys.argv' and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, int) and node.slice.value > 0:
+            return _READ | _CALLER
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            left, right = self._facts(node.left, seen), self._facts(node.right, seen)
+            return left & (_READ | _CALLER) if right & _READ and self._component(node.right, seen) else 0
+        if isinstance(node, ast.Attribute) and node.attr == 'path':
+            return self._facts(node.value, seen) & (_READ | _CALLER)
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            return (self._all([self._facts(n, seen) for n in node.elts]) & (_READ | _CALLER)) << 2
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            return (self._facts(node.key if isinstance(node, ast.DictComp) else node.elt, seen) & (_READ | _CALLER)) << 2
+        if isinstance(node, ast.Call):
+            name = self._canonical(node.func)
+            args = [self._facts(n, seen) for n in node.args]
+            if name in {'sys.stdin.read', 'sys.stdin.readline'}:
+                return _READ | _CALLER
+            if name in {'Path', 'pathlib.Path', 'PurePath', 'pathlib.PurePath', 'os.path.join'} and not node.keywords:
+                if not args:
+                    return _READ
+                return args[0] & (_READ | _CALLER) if all(a & _READ for a in args) and all(self._component(n, seen) for n in node.args[1:]) else 0
+            if name in {'sorted', 'reversed', 'list', 'tuple', 'set'} and len(args) == 1:
+                return args[0] & (_ITEM_READ | _ITEM_CALLER)
+            if name == 'filter' and len(args) == 2 and (isinstance(node.args[0], ast.Lambda) or isinstance(node.args[0], ast.Name) and self._key(node.args[0]) in self.functions):
+                return args[1] & (_ITEM_READ | _ITEM_CALLER)
+            if name in {'os.listdir', 'os.scandir', 'glob.glob', 'glob.iglob'} and args:
+                return (args[0] & (_READ | _CALLER)) << 2
+            if isinstance(node.func, ast.Attribute):
+                base = self._facts(node.func.value, seen)
+                if node.func.attr in {'iterdir', 'glob', 'rglob'} and all(a & _READ for a in args):
+                    return (base & (_READ | _CALLER)) << 2
+                if node.func.attr in {'joinpath', 'with_name', 'with_suffix', 'with_stem', 'strip', 'rstrip', 'resolve', 'absolute'} and all(a & _READ for a in args):
+                    if node.func.attr in {'joinpath', 'with_name', 'with_suffix', 'with_stem'} and not all(self._component(n, seen) for n in node.args):
+                        return 0
+                    return base & (_READ | _CALLER)
+        return 0
+
+    @staticmethod
+    def _all(facts: list[int]) -> int:
+        value = 15
+        for fact in facts:
+            value &= fact
+        return value if facts else 0
+
+
+def _path_rules(tree: ast.AST, flow: _PathFlow, assignments: dict[str, list[ast.AST]], imported: dict[str, str]) -> list[str]:
     rules = []
-    derived = set(paths)
     for node in ast.walk(tree):
-        if isinstance(node, (ast.For, ast.comprehension)) and isinstance(node.target, ast.Name) and isinstance(node.iter, ast.Call):
-            call = node.iter
-            name = imported.get(ast.unparse(call.func), ast.unparse(call.func))
-            if name in FILE_CALLS and call.args and _input_path(call.args[0], derived, assignments):
-                derived.add(node.target.id)
-            elif isinstance(call.func, ast.Attribute) and call.func.attr in {"iterdir", "glob", "rglob"} and _input_path(call.func.value, derived, assignments):
-                derived.add(node.target.id)
         folded = _fold(node, assignments)
         if folded is not None and CREDENTIAL.search(folded):
             rules.append("credentials: constant-folded value names a credential")
@@ -179,7 +579,7 @@ def _path_rules(tree: ast.AST, paths: set[str], assignments: dict[str, list[ast.
                 targets = [node.func.value]
                 if node.func.attr in {"glob", "rglob"}:
                     targets += list(node.args)
-            if any(not _input_path(n, derived, assignments) for n in targets):
+            if any(not flow.input(n) for n in targets):
                 rules.append("input-path: file access requires caller/stdin input or a relative path without parent traversal")
             if name == "range" and any(isinstance(n, ast.Pow) or isinstance(n, ast.Constant) and isinstance(n.value, int) and abs(n.value) > 1_000_000 for arg in node.args for n in ast.walk(arg)):
                 rules.append("bounded: oversized constant ranges are refused")
@@ -215,6 +615,9 @@ def _python(text: str) -> list[str]:
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 imported[alias.name] = (node.module or "") + "." + alias.name
+    flow = _PathFlow(tree)
+    if flow.recursive_generators:
+        rules.append("bounded: recursive generators are refused")
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     local_calls = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
     builtins = set("abs all any ascii bin bool bytearray bytes chr complex dict divmod enumerate filter float format frozenset hash hex int isinstance issubclass iter len list map max min next oct open ord pow print range repr reversed round set slice sorted str sum tuple type zip object super Exception ValueError TypeError RuntimeError KeyError IndexError StopIteration OSError FileNotFoundError".split())
@@ -302,13 +705,13 @@ def _python(text: str) -> list[str]:
                     rules.append("open-mode: only read or exclusive create is permitted")
                 else:
                     target = node.func.value if method and isinstance(node.func, ast.Attribute) else (node.args[0] if node.args else ast.Constant(None))
-                    if not (_caller_path(target, paths) if str(mode.value).startswith("x") else _input_path(target, paths, assignments)):
+                    if not (_caller_path(target, paths) if str(mode.value).startswith("x") else flow.input(target)):
                         rules.append("output-path: file access must derive from caller/stdin or a relative read path")
             if name.startswith("os.") and name not in {"os.stat", "os.lstat", "os.listdir", "os.scandir", "os.walk", "os.getcwd", "os.fspath"} and not name.startswith("os.path."):
                 rules.append("os-effects: only local read operations are permitted")
             if name.startswith("itertools.") and name.split(".")[-1] in {"count", "cycle", "repeat"}:
                 rules.append("bounded: potentially infinite iterators are refused")
-    rules.extend(_path_rules(tree, paths, assignments, imported))
+    rules.extend(_path_rules(tree, flow, assignments, imported))
     return rules
 
 

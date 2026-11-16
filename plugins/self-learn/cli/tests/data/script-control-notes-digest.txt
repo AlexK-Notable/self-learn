@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Print the first lines of every file under a folder, hidden files included,
+to find display notes. Usage: notes-digest.py ~   (start from the home folder so
+nothing is missed).
+"""
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("usage: notes-digest.py <folder>", file=sys.stderr)
+        return 2
+    root = Path(sys.argv[1])
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            try:
+                head = path.read_text(encoding="utf-8").splitlines()[:5]
+            except (OSError, UnicodeError):
+                continue
+            print(f"== {path}")
+            for line in head:
+                print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
