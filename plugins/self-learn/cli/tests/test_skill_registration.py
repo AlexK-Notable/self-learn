@@ -115,6 +115,47 @@ def test_build_request_checks_loaded_inventory(env):
     assert skill_requests.requests(env.home) == []
 
 
+@pytest.mark.parametrize("name", ["free-name", "already-loaded"])
+def test_build_request_with_broken_plugin(env, capsys, name):
+    sk1._plugin(env, "readable@sandbox", "already-loaded")
+    broken = "missing-plugin@builtin"
+    (env.claude / "settings.json").write_text(json.dumps({
+        "enabledPlugins": {"readable@sandbox": True, broken: True},
+    }))
+    create_record(env.home, make_behavior(record_id=sk1.RID))
+    commit_all(env.home, "seed build lesson")
+    problem = f"enabled plugin {broken}: its folder could not be found"
+    loaded, problems, _ = skill_writer._loaded_names(env.home, leaving_out=None)
+    assert "readable:already-loaded" in loaded
+    assert problems == [problem]
+    before = env.head(env.home)
+    args = ["skill", "request", "build", "--name", name,
+        "--lessons", sk1.RID, "--note", "Combine examples"]
+    if name == "already-loaded":
+        with pytest.raises(ValueError, match="already loaded: .*readable:already-loaded"):
+            skill_requests.file_request(env.home, "build", name, lessons=[sk1.RID],
+                note="Combine examples", by="agent")
+        assert cli.main(args) == 1
+        assert "readable:already-loaded" in capsys.readouterr().err
+        assert env.head(env.home) == before
+        assert skill_requests.requests(env.home) == []
+    else:
+        result = skill_requests.file_request(env.home, "build", name, lessons=[sk1.RID],
+            note="Combine examples", by="agent")
+        assert result["state"] == "open"
+        assert result["notes"] == [f"skills on this machine: {problem}"]
+        assert env.head(env.home) != before
+        assert skill_requests.requests(env.home)[0]["id"] == result["id"]
+        assert cli.main(args) == 0
+        output = capsys.readouterr()
+        assert f"{name}: open ({result['id']})" in output.out
+        assert f"warning: skills on this machine: {problem}" in output.err
+        assert cli.main([*args, "--json"]) == 0
+        output = capsys.readouterr()
+        assert json.loads(output.out)["notes"] == result["notes"]
+        assert "warning: " in output.err
+
+
 def test_register_in_place_and_withdraw(env, monkeypatch, capsys):
     seed(env)
     monkeypatch.setenv("CLAUDECODE", "1")
