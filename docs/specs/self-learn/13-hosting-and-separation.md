@@ -2575,8 +2575,10 @@ stamp is local evidence, not a defense against a machine owner forging both file
 #### S-160 fix round 2 (2026-11-15, R1–R4)
 
 Activation and retries rerun the current mechanical screen. Corroboration checks
-Claude Code's own transcript when readable; otherwise it checks the ledger review
-commit's exact bytes and version/session trailers (02 §S-160). Generated observation
+the ledger review commit's exact bytes and version/session trailers for every
+approval (02 §S-160, amended R5–R6). Claude Code's own transcript, when recorded
+and still readable, is additional evidence; absence produces a one-time notice
+and never invalidates the commit. Present contradictory evidence refuses. Generated observation
 files alone cannot approve anything. Local machine control can still forge the
 native record or git history; this is corroboration, not cryptographic attestation.
 

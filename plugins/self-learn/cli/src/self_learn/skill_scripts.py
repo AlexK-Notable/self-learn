@@ -410,7 +410,7 @@ def deactivate(home: Path | str, ident: str, *, note: str) -> str:
         return _deactivate_locked(home, records, row, note)
 
 
-def _live_problem(home: Path, row: dict, root: Path) -> str | None:
+def _live_problem(home: Path, row: dict, root: Path, *, notices: list[str] | None = None) -> str | None:
     from . import script_proof
     folder = skill_writer.skill_dir(root, row["skill"])
     path = folder / "scripts" / row["name"]
@@ -422,7 +422,7 @@ def _live_problem(home: Path, row: dict, root: Path) -> str | None:
         return "script mode changed"
     if hashlib.sha256(path.read_bytes()).hexdigest() != row["script_sha256"]:
         return "script bytes changed"
-    return script_proof.verify(home, row)
+    return script_proof.verify(home, row, notices=notices)
 
 
 def _integrity(home: Path, *, enforce: bool) -> list[str]:
@@ -454,8 +454,9 @@ def _integrity(home: Path, *, enforce: bool) -> list[str]:
             try:
                 path = folder / "scripts" / row["name"]
                 reason = None
+                evidence_notices: list[str] = []
                 if row["state"] == "active":
-                    reason = _live_problem(home, row, root)
+                    reason = _live_problem(home, row, root, notices=evidence_notices)
                     if broken:
                         reason = reason or "usage block changed or missing"
                 elif (row.get("owns_target") or row.get("deactivated_at")) and (path.exists() or path.is_symlink()):
@@ -484,7 +485,7 @@ def _integrity(home: Path, *, enforce: bool) -> list[str]:
                         notices.append(f"script {name}/{row['name']}: {reason}; run self-learn recompile")
                 elif row["state"] == "approved" and row is [r for r in group if r["name"] == row["name"]][-1]:
                     from . import script_proof
-                    error = script_proof.verify(home, row)
+                    error = script_proof.verify(home, row, notices=evidence_notices)
                     if error:
                         notices.append(f"script {name}/{row['name']}: {error}")
                     elif enforce:
@@ -495,6 +496,11 @@ def _integrity(home: Path, *, enforce: bool) -> list[str]:
                             row["activation_error"] = str(exc)
                             _save(home, records, f"script activation held {row['id']}")
                             notices.append(f"script {name}/{row['name']}: activation held: {exc}")
+                if evidence_notices and not row.get("transcript_missing_noticed"):
+                    notices.extend(f"script {name}/{row['name']}: {notice}" for notice in evidence_notices)
+                    if enforce:
+                        row["transcript_missing_noticed"] = True
+                        _save(home, records, f"script transcript absence noticed {row['id']}")
             except Exception as exc:
                 notices.append(f"script {name}/{row['name']}: integrity failure ({type(exc).__name__}: {exc})")
                 if enforce and (row["state"] == "active" or row.get("owns_target")):
@@ -638,8 +644,9 @@ def inspect(home: Path | str) -> list[str]:
                 folder = skill_writer.skill_dir(root, row["skill"])
                 md = folder / "SKILL.md"
                 reason = None
+                evidence_notices: list[str] = []
                 if row["state"] == "active":
-                    reason = _live_problem(home, row, root)
+                    reason = _live_problem(home, row, root, notices=evidence_notices)
                     if folder.is_symlink() or not md.is_file() or _usage_changed(md, records, row["skill"]):
                         reason = reason or "usage block changed or missing"
                 elif row["state"] == "approved":

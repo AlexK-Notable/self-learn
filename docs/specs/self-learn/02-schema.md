@@ -5461,21 +5461,26 @@ and every assistant message as structured transcript lines, including tool-use
 flags. Approval stores those lines at the held version's `review.jsonl`, with a
 relative ledger path and SHA-256 over the complete file. These lines are committed
 with the approval and retained independently of cache-log retention. They are only
-observations; they are not sufficient corroboration. `review.corroboration` records
-either `kind: native`, the Claude Code transcript path and SHA-256 of its assistant
-lines (all models, session ids, tool-use blocks, exact-version verdict checked), or
-`kind: git` if that native record cannot be read reliably. The native source lives
-under the configured Claude Code `projects/<project>/<session>.jsonl` directory,
-outside the ledger, and is not the generated `review.jsonl`.
-The git fallback requires a reachable `self-learn: script review <id>: approve`
-commit introducing that approval, with `Script-Version` and `Script-Session`
-trailers matching the row. Its tree must contain the exact held source, generated
-observations, usage and review stamp. A later arbitrary commit of a forged index
-is insufficient. Activation, listing and every integrity check verify both the
-observations and the selected corroboration record. Native evidence disappearing
-or changing does not silently downgrade an existing approval to the git fallback. Missing/changed evidence is `unverified`,
-never an approval self-learn vouches for. **This raises the bar; it is not proof
-against someone who controls the machine and can forge all local records.**
+observations; they are not sufficient corroboration. Every approval requires a
+reachable `self-learn: script review <id>: approve` ledger commit introducing that
+approval, with `Script-Version` and `Script-Session` trailers matching the row.
+Its tree must contain the exact held source, generated observations, usage and
+review stamp. A later arbitrary commit of a forged index is insufficient.
+`review.corroboration` records `kind: native`, the native transcript path and
+SHA-256 of its assistant lines when readable, or `kind: git` otherwise. Both
+kinds require the review commit. The native transcript is extra evidence only;
+it is looked up exclusively at the escaped review cwd beneath the resolved
+Claude projects directory, never by scanning other project folders. A present
+record must match its digest, models, session, tool-freedom and exact-version
+verdict. Contradictions make the row `unverified`. Missing or unreadable native
+transcripts do not invalidate the approval: the commit suffices. Enforcement
+emits one notice per version, "review transcript no longer present; verified from
+the ledger review commit", persisting `transcript_missing_noticed` on the row.
+Read-only checks never write this notice marker. Listing, activation and every
+integrity check require the commit and validate any available native evidence.
+No migration of native-only approvals is needed: no scripts have ever been
+approved in the live ledger. **This raises the bar; it is not proof against
+someone who controls the machine and can forge all local records.**
 Cost is reported when available; count/time/turn bounds do not promise a dollar price or dollar ceiling.
 
 Activation reruns the current screen against the exact reviewed bytes and refuses

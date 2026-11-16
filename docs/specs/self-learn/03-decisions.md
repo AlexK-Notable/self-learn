@@ -347,3 +347,10 @@ Recover valid approvals from ledger history; supersede unverified reviews when
 recovery cannot corroborate them. An inactive name does not own a person's new
 file: quarantine only known managed bytes at that name. These are the
 orchestrator's R1–R4 decisions; the user's quoted limits above remain unchanged.
+
+S-160 fix round 3 (2026-11-15, orchestrator's R5–R6 decision): every approval
+requires its introducing ledger review commit. Native evidence is additional,
+never sufficient alone. Missing/unreadable native transcripts keep approval on
+the commit alone, with one notice; present contradictions make it unverified.
+Only the review cwd's expected transcript location is consulted. No native-only
+live approvals exist, so no migration is required.

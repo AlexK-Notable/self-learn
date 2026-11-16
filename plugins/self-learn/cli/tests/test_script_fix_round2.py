@@ -123,7 +123,7 @@ def test_native_transcript_checked_at_activation_and_integrity(env, monkeypatch)
     from self_learn import session_copies
     original.fake(monkeypatch)
     fake = sdk.SdkBackend.text_session
-    native = session_copies.claude_projects_dir() / 'fake-project' / 'fake-session.jsonl'
+    native = script_proof.native_path(env.home, 'fake-session')
     def with_native(self, spec):
         outcome = fake(self, spec)
         native.parent.mkdir(parents=True, exist_ok=True)
@@ -208,7 +208,7 @@ def test_native_contradiction_never_falls_back_to_git(env, monkeypatch, bad):
     from self_learn import session_copies
     original.fake(monkeypatch)
     fake = sdk.SdkBackend.text_session
-    native = session_copies.claude_projects_dir() / 'fake-project' / 'fake-session.jsonl'
+    native = script_proof.native_path(env.home, 'fake-session')
     def with_bad_native(self, spec):
         outcome = fake(self, spec)
         native.parent.mkdir(parents=True, exist_ok=True)

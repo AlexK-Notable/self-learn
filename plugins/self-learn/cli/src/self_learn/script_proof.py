@@ -52,7 +52,7 @@ def encode(messages: tuple[dict, ...]) -> bytes:
     return ("".join(json.dumps(m, sort_keys=True, ensure_ascii=False) + "\n" for m in messages)).encode()
 
 
-def verify(home: Path, row: dict) -> str | None:
+def verify(home: Path, row: dict, *, notices: list[str] | None = None) -> str | None:
     """Read-only; returns an explanation instead of vouching for a broken row."""
     from .skill_scripts import _held, _safe, version
     try:
@@ -82,17 +82,22 @@ def verify(home: Path, row: dict) -> str | None:
         result = inspect([json.loads(line) for line in data.splitlines()], session=review["session"], version=row["version"])
         if result["verdict"] != "approve" or result["reasons"] != review["reasons"]:
             raise ValueError("approval transcript verdict mismatch")
+        # The review commit is mandatory, even when native evidence exists.
+        verify_commit(home, row, raw, data)
         evidence = review.get("corroboration") or {}
         if evidence.get("kind") == "native":
-            path = Path(evidence["path"])
-            from . import session_copies
-            if path != session_copies._find(session_copies.claude_projects_dir(), review["session"], home):
+            path = native_path(home, review["session"])
+            if str(path) != evidence.get("path"):
                 raise ValueError("native transcript location mismatch")
-            if native_digest(path, review["session"], row["version"], result) != evidence["sha256"]:
-                raise ValueError("native transcript evidence changed")
-        elif evidence.get("kind") == "git":
-            verify_commit(home, row, raw, data)
-        else:
+            try:
+                digest = native_digest(path, review["session"], row["version"], result)
+            except OSError:
+                if notices is not None:
+                    notices.append("review transcript no longer present; verified from the ledger review commit")
+            else:
+                if digest != evidence["sha256"]:
+                    raise ValueError("native transcript evidence changed")
+        elif evidence.get("kind") != "git":
             raise ValueError("approval lacks independent corroboration")
     except Exception as exc:
         return f"unverified: {type(exc).__name__}: {exc}"
@@ -120,18 +125,23 @@ def native_digest(path: Path, session: str, version: str, expected: dict) -> str
     return hashlib.sha256(b"".join(lines)).hexdigest()
 
 
-def corroboration(home: Path, row: dict, result: dict) -> dict:
+def native_path(home: Path, session: str) -> Path:
+    """Only the review cwd's transcript; never scan other projects."""
     from . import session_copies
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}", session):
+        raise ValueError("invalid review session id")
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(home.resolve()))
+    return session_copies.claude_projects_dir().resolve() / slug / (session + ".jsonl")
+
+
+def corroboration(home: Path, row: dict, result: dict) -> dict:
     session = result["session"]
-    if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}", session):
-        try:
-            path = session_copies._find(session_copies.claude_projects_dir(), session, home)
-            if path is not None:
-                expected = {key: result[key] for key in ("verdict", "reasons", "changes", "version")}
-                return {"kind": "native", "path": str(path), "sha256": native_digest(path, session, row["version"], expected)}
-        except (OSError, json.JSONDecodeError, KeyError, TypeError):
-            pass
-    return {"kind": "git"}
+    path = native_path(home, session)
+    try:
+        expected = {key: result[key] for key in ("verdict", "reasons", "changes", "version")}
+        return {"kind": "native", "path": str(path), "sha256": native_digest(path, session, row["version"], expected)}
+    except OSError:
+        return {"kind": "git"}
 
 
 def verify_commit(home: Path, row: dict, raw: bytes, transcript: bytes) -> None:
