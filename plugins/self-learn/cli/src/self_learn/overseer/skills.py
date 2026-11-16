@@ -338,6 +338,10 @@ def stage_phase_b(
     what could not be shown."""
     home = Path(home)
     staged = StagedSkills()
+    from .. import skill_scripts
+    history = [{"skill": r["skill"], "name": r["name"], "state": r["state"],
+        "screen": r["screen"], "review": r["review"]} for r in skill_scripts.rows(home)]
+    write(stage, stage / "script-reviews.yaml", short_hashes(_yaml_text(history)))
     from ..skill_reference import stage_pack
     staged.reference_lines = stage_pack(home, stage, write, notes=staged.notes)
     write(stage, stage / WRITING_FILE, state.stage_text())
@@ -656,6 +660,7 @@ class SkillStep:
     #: staged: the write is a compare-and-swap against absence (SK-E).
     expect_missing: bool = False
     reference_notes: list[str] = field(default_factory=list)
+    scripts: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def label(self) -> str:
@@ -677,7 +682,7 @@ class SkillStep:
         return {
             "action": self.action, "name": self.name, "updating": self.updating,
             "files": dict(self.files), "expect_sha": self.expect_sha, "deploy": self.deploy,
-            "reference_notes": list(self.reference_notes),
+            "reference_notes": list(self.reference_notes), "scripts": self.scripts,
             **({"renamed_from": self.renamed_from} if self.renamed_from else {}),
             **({"expect_missing": True} if self.expect_missing else {}),
         }
@@ -692,6 +697,7 @@ class SkillStep:
             renamed_from=str(renamed_from) if renamed_from else None,
             expect_missing=bool(data.get("expect_missing")),
             reference_notes=list(data.get("reference_notes") or []),
+            scripts=list(data.get("scripts") or []),
         )
 
 
@@ -873,6 +879,10 @@ def step_for_case(
         files = skill_writer.read_draft_dir(folder)
     except (ValueError, OSError) as exc:
         raise SkillPairError(f"{STAGE_SKILLS_DIR}/{name}/ cannot be read as a skill: {exc}") from exc
+    try:
+        files, scripts = extract_scripts(files)
+    except ValueError as exc:
+        raise SkillPairError(str(exc)) from exc
     expect = staged.expect.get(name) if editable else None
     try:
         # A file that is not UTF-8 comes back as bytes; the template check names it.
@@ -889,7 +899,7 @@ def step_for_case(
     text_files = {key: value for key, value in files.items() if isinstance(value, str)}
     return SkillStep(
         action="write", name=name, updating=editable, files=text_files, expect_sha=expect,
-        deploy=deploy, expect_missing=restoring, reference_notes=list(checked.notes),
+        deploy=deploy, expect_missing=restoring, reference_notes=list(checked.notes), scripts=scripts,
     )
 
 
@@ -1112,6 +1122,7 @@ def draft_entry(step: SkillStep, case_name: str, lessons: list[str]) -> dict[str
         "action": step.label,
         "case_name": case_name,
         "reference_notes": list(step.reference_notes),
+        "scripts": step.scripts,
         "lessons": sorted(dict.fromkeys(lessons)),
         **({"files": dict(step.files)} if step.action == "write" else {}),
         **({"renamed_from": step.renamed_from} if step.renamed_from else {}),
@@ -1129,6 +1140,9 @@ def draft_files(home: Path | str, week: str, drafts: list[dict]) -> list[tuple[P
         folder = drafts_dir(home, week, str(draft["name"]))
         for rel, text in sorted(files.items()):
             out.append((folder / rel, str(text)))
+        for script in draft.get("scripts", []):
+            out.append((folder / "scripts" / script["name"], script["text"]))
+            out.append((folder / "scripts" / (script["name"] + ".usage.md"), script["usage"]))
     return out
 
 
@@ -1144,6 +1158,8 @@ def stale_draft_files(home: Path | str, week: str, drafts: list[dict]) -> list[P
         if not folder.is_dir():
             continue
         keep = {folder / rel for rel in files}
+        for script in draft.get("scripts", []):
+            keep.update((folder / "scripts" / script["name"], folder / "scripts" / (script["name"] + ".usage.md")))
         stale += sorted(p for p in folder.rglob("*") if p.is_file() and p not in keep)
     return stale
 
@@ -1200,6 +1216,7 @@ def apply_write(home: Path | str, case_id: str, step: SkillStep, *, case_name: s
     ``no_push``: the run's own push publishes both repositories)."""
     home = Path(home)
     if _already_written(home, case_id, step):
+        hold_scripts(home, step)
         return StepOutcome("applied", _done_line(step, case_id))
     result = skill_writer.write(
         home, step.name, step.files, case=case_id, by="overseer",
@@ -1207,6 +1224,7 @@ def apply_write(home: Path | str, case_id: str, step: SkillStep, *, case_name: s
         expect_missing=step.expect_missing,
     )
     if result.ok:
+        hold_scripts(home, step)
         return StepOutcome("applied", _done_line(step, case_id))
     if result.authored_sha256 is not None and (result.ledger_sha or result.host_sha):
         # The files and the row landed; only the link could not be made.
@@ -1336,3 +1354,28 @@ def reference_report_lines(manifest: dict[str, Any]) -> list[str]:
     for draft in info.get("drafts") or []:
         lines.extend(f"{draft['name']} (draft): {note}" for note in draft.get("reference_notes") or [])
     return lines
+
+
+def extract_scripts(files: dict) -> tuple[dict, list[dict[str, str]]]:
+    """Phase B uses scripts/<name> plus scripts/<name>.usage.md; neither deploys."""
+    from ..skill_scripts import _names
+    prose, scripts = dict(files), []
+    names = [key for key in files if key.startswith("scripts/") and not key.endswith(".usage.md")]
+    for key in names:
+        name = key.removeprefix("scripts/")
+        _names("draft-skill", name)
+        usage_key = key + ".usage.md"
+        if not isinstance(files[key], str) or not isinstance(files.get(usage_key), str):
+            raise ValueError("script draft requires UTF-8 source and a .usage.md companion")
+        scripts.append({"name": name, "text": files[key], "usage": files[usage_key].strip()})
+        prose.pop(key)
+        prose.pop(usage_key)
+    if any(key.startswith("scripts/") for key in prose):
+        raise ValueError("orphan script usage file")
+    return prose, scripts
+
+
+def hold_scripts(home: Path, step: SkillStep) -> None:
+    from .. import skill_scripts
+    for script in step.scripts:
+        skill_scripts.draft(home, step.name, **script, note="overseer phase B helper", by="overseer")

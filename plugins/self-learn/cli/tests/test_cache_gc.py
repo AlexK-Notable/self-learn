@@ -13,6 +13,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from self_learn import cache_gc, gitops, serve, worker
 
 DAY = 86400.0
@@ -91,6 +93,30 @@ def test_orphan_home_cache_is_removed_once_idle_long_enough(tmp_path):
     result = cache_gc.prune()
     assert result.removed_homes == [d.name]
     assert not d.exists()
+
+
+@pytest.mark.parametrize("kind", ["file", "empty", "broken-link"])
+def test_script_quarantine_survives_orphan_cache_gc(tmp_path, kind):
+    """S-160: quarantine remains user data after its ledger is gone."""
+    home = tmp_path / "gone-ledger"
+    d = _cache_for(home)
+    quarantine = d / "script-quarantine"
+    if kind == "broken-link":
+        quarantine.symlink_to(tmp_path / "unmounted-backup")
+    else:
+        quarantine.mkdir()
+        if kind == "file":
+            (quarantine / "hand-edited-script").write_bytes(b"user edit\n")
+    _age(d, 400)
+    assert not home.exists() and d.exists()
+    assert d.name not in cache_gc.prune().removed_homes
+    assert d.exists()
+    if kind == "file":
+        assert (quarantine / "hand-edited-script").read_bytes() == b"user edit\n"
+    elif kind == "empty":
+        assert quarantine.is_dir()
+    else:
+        assert quarantine.is_symlink()
 
 
 def test_deleted_home_is_an_orphan(tmp_path):

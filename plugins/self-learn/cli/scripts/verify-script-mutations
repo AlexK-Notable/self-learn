@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""S-160 focused mutation witnesses. Run only in a disposable worktree.
+
+Every pytest command uses test-sweep. Requires an explicit durable evidence
+folder; never chooses a temporary directory. Restores and hashes exact bytes.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+
+root = Path(__file__).resolve().parents[1]
+out = Path(sys.argv[1]).resolve()
+out.mkdir(parents=True, exist_ok=True)
+source = root / "src/self_learn"
+# name, file, old text, new text, pytest selector
+mutations = [
+    ("no-cross-device-quarantine", "skill_scripts.py", 'shutil.move(str(target), str(destination))', 'os.rename(target, destination)', "quarantine_cross_filesystem"),
+    ("read-credential-source", "script_cli.py", 'if CREDENTIAL.search(str(args.file)) or CREDENTIAL.search(str(args.file.resolve())):', 'if False:', "credential_source"),
+    ("refusal-bypass", "script_screen.py", "tuple(dict.fromkeys(rules))", "()", "refusals or language_syntax"),
+    ("refuse-allowed", "script_screen.py", "tuple(dict.fromkeys(rules))", '("mutation: reject",)', "test_allowed"),
+    ("draft-executable", "skill_scripts.py", "path.chmod(0o600)", "path.chmod(0o755)", "draft_permissions"),
+    ("ignore-usage-hash", "skill_scripts.py", "json.dumps([text, usage]", 'json.dumps([text, ""]', "draft_permissions"),
+    ("repeat-review", "skill_scripts.py", 'if row["review"] is not None:', 'if False:', "review_proof"),
+    ("ignore-model-proof", "skill_scripts.py", "verdict = json.loads(outcome.stdout) if proven else None", "verdict = json.loads(outcome.stdout)", "review_proof and (wrong or mixed or unproven or missing-assistant)"),
+    ("ignore-rejection", "skill_scripts.py", 'if result["verdict"] == "approve":', 'if result["verdict"] in ("approve", "reject"):', "review_proof and reject"),
+    ("bad-json-approve", "skill_scripts.py", 'verdict = json.loads(outcome.stdout) if proven else None', 'verdict = {"verdict": "approve", "reasons": ["mutation"], "changes": []}', "review_proof and bad-json"),
+    ("omit-activation", "skill_scripts.py", "_activate_locked(home, records, row)\n", "pass\n", "activation_and_writer or review_proof and approve"),
+    ("omit-writer-block", "skill_writer.py", 'if scripts_block:\n            new_md', 'if False:\n            new_md', "activation_and_writer"),
+    ("allow-script-draft", "skill_writer.py", '    home = Path(home)\n    try:\n        plan = _preflight(', '    if any(k.startswith("scripts/") for k in files):\n        return SkillWriteCheck(name=name, ok=True)\n    home = Path(home)\n    try:\n        plan = _preflight(', "activation_and_writer"),
+    ("skip-integrity", "skill_scripts.py", '    if not rows(home):\n', '    if True:\n', "audit_quarantines or integrity_entrypoints"),
+    ("ignore-caps", "skill_scripts.py", "if count >= cap:", "if False:", "caps_screen"),
+    ("ignore-held-change", "skill_scripts.py", 'if version(text, row["usage"]) != row["version"]:', 'if False:', "tampering_and_collision"),
+    ("skip-cli", "script_cli.py", '        command = args.script_command', '        return 1\n        command = args.script_command', "cli_lifecycle"),
+    ("discard-phase-b-scripts", "overseer/skills.py", 'reference_notes=list(checked.notes), scripts=scripts,', 'reference_notes=list(checked.notes), scripts=[],', "overseer_extract"),
+    ("omit-model-observation", "invocation_sdk/backend.py", 'if model_observations is not None:', 'if False:', "sdk_proof_capture"),
+    ("omit-model-outcome", "invocation_sdk/backend.py", 'init_models=tuple(m for kind, m in model_observations if kind == "init")', 'init_models=()', "sdk_outcome"),
+    ("ignore-review-setting", "skill_scripts.py", 'if _setting(home, "models.script_review") != MODEL:', 'if False:', "review_failure_reservation"),
+    ("skip-quarantine", "skill_scripts.py", '    if not target.exists() and not target.is_symlink():', '    if True:', "activation_failure"),
+    ("allow-retire-active", "skill_writer.py", '    _scripts_inactive(home, name)\n', '    pass\n', "external_files"),
+    ("omit-rejection-input", "overseer/skills.py", 'short_hashes(_yaml_text(history))', '_yaml_text([])', "overseer_stages"),
+    ("drop-held-draft-files", "overseer/skills.py", 'for script in draft.get("scripts", []):', 'for script in []:', "overseer_stages"),
+    ("skip-doctor-audit", "cli.py", 'for notice in skill_scripts.audit(home):', 'for notice in []:', "integrity_entrypoints and doctor"),
+    ("skip-recompile-audit", "verbs.py", 'for notice in skill_scripts.audit(home):', 'for notice in []:', "integrity_entrypoints and recompile"),
+    ("skip-overseer-audit", "overseer/run.py", 'for notice in skill_scripts.audit(home):', 'for notice in []:', "integrity_entrypoints and overseer"),
+]
+env = os.environ.copy()
+for key in list(env):
+    if key.startswith("SELF_LEARN_OVERRIDE_") or key in {"SELF_LEARN_ANALYST_MODEL", "SELF_LEARN_ANALYST_TIMEOUT"}:
+        env.pop(key)
+for key, folder in {"SELF_LEARN_HOME": "home", "XDG_CACHE_HOME": "cache", "SELF_LEARN_CLAUDE_DIR": "claude", "TMPDIR": "tmp", "XDG_RUNTIME_DIR": "runtime"}.items():
+    path = out / folder; path.mkdir(exist_ok=True); env[key] = str(path)
+baseline_xml = out / "baseline.xml"
+base_cmd = ["test-sweep", "--", "uv", "run", "--no-sync", "--project", ".", "python", "-B", "-m", "pytest", "tests/test_skill_scripts.py", "-q", "-p", "no:cacheprovider", "--junitxml=" + str(baseline_xml), "--basetemp=" + str(out / "pytest-control")]
+with (out / "baseline.log").open("w") as log:
+    control = subprocess.run(base_cmd, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
+if control.returncode:
+    raise SystemExit("baseline failed; no mutations applied")
+expected = {case.attrib["name"] for case in ET.parse(baseline_xml).iter("testcase")}
+print(f"baseline: {len(expected)} cases passed", flush=True)
+results = []
+for name, file, old, new, selection in mutations:
+    path = source / file
+    original = path.read_bytes()
+    before = hashlib.sha256(original).hexdigest()
+    text = original.decode()
+    if old not in text:
+        raise SystemExit(f"mutation anchor missing: {name}")
+    xml = out / (name + ".xml")
+    try:
+        path.write_text(text.replace(old, new, 1))
+        # Disable bytecode caching: rapid same-length edits must never reuse pyc.
+        cmd = ["test-sweep", "--", "uv", "run", "--no-sync", "--project", ".", "python", "-B", "-m", "pytest", "tests/test_skill_scripts.py", "-k", selection, "-q", "-p", "no:cacheprovider", "--junitxml=" + str(xml), "--basetemp=" + str(out / ("pytest-" + name))]
+        env["PYTHONPYCACHEPREFIX"] = str(out / ("pycache-" + name))
+        with (out / (name + ".log")).open("w") as log:
+            proc = subprocess.run(cmd, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
+        failed = [case.attrib["name"] for case in ET.parse(xml).iter("testcase") if case.find("failure") is not None]
+        result = {"name": name, "file": file, "returncode": proc.returncode, "failed": failed, "before": before}
+    finally:
+        path.write_bytes(original)
+        after = hashlib.sha256(path.read_bytes()).hexdigest()
+        if after != before:
+            raise SystemExit(f"RESTORE HASH MISMATCH: {name}")
+    result["after"] = after
+    results.append(result)
+    (out / "mutation-results.json").write_text(json.dumps(results, indent=2) + "\n")
+    print(f"{name}: rc={proc.returncode}, {len(failed)} test failures, restored={before == after}", flush=True)
+    if proc.returncode != 1 or not failed:
+        raise SystemExit("mutation not caught by a test: " + name)
+
+covered = {case for result in results for case in result["failed"]}
+missing = sorted(expected - covered)
+(out / "coverage.json").write_text(json.dumps({"cases": len(expected), "covered": len(expected & covered), "missing": missing}, indent=2) + "\n")
+print(f"mutation coverage: {len(expected & covered)}/{len(expected)} cases", flush=True)
+if missing:
+    raise SystemExit("unwitnessed cases: " + ", ".join(missing))

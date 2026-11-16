@@ -171,6 +171,8 @@ _LITERAL_ENV_FIRST_NAMES = frozenset(
 
 _LITERAL_CONFIG_FIRST_NAMES = frozenset(
     [
+        # 2026-11-15, S-160: fixed reviewer and review-count caps.
+        "models.script_review", "overseer.script_reviews_per_run", "scripts.reviews_per_day",
         "worker.coalesce_secs",
         "worker.invoke_timeout_secs",
         "worker.repair_timeout_secs",

@@ -1,6 +1,6 @@
 # Anthropic skill authoring reference
 
-Version: `anthropic-2026-11-15`. Read: 2026-11-15.
+Version: `anthropic-2026-11-15-scripts`. Read: 2026-11-15.
 
 ## Scope and precedence
 
@@ -98,7 +98,7 @@ Source: https://code.claude.com/docs/en/skills.md (read 2026-11-15). Short quote
 
 ### G07 — script guidance
 
-Bundled scripts suit repeated deterministic work; distinguish running a script from reading its source and verify dependencies. Self-learn currently writes Markdown-only skills; this reference does not authorize executable deployment.
+Bundled scripts suit repeated deterministic work; distinguish running a script from reading its source and verify dependencies. Self-learn keeps drafts separate from deployable prose; only the S-160 review and activation path can install an executable.
 
 Source: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices.md (read 2026-11-15). Short quote: “Prefer scripts for deterministic operations:”.
 
@@ -113,3 +113,32 @@ No examples are redistributed in this package. At runtime EXAMPLES.md lists avai
 Read with `self-learn skill reference show`. Inspect a draft using `self-learn skill reference check NAME-OR-PATH`. `status` is offline; `status --fetch` compares all source hashes using plain HTTP and records the observation in the per-ledger XDG cache. Fetch waits at most 20 seconds per source and 60 seconds overall, including DNS and response reads; deadlines report unreachable. Exit 0 means every source was unchanged; exit 1 means changed or unreachable. A missing cached observation is unknown, not proof of freshness.
 
 To refresh, re-gather the named pages and native examples, review semantic changes and licenses, update this pack and sources.yaml using normalize()/digest(), bump VERSION and READ_DATE together with the manifest, add corresponding checker tests, and land a code/spec revision. Never have a weekly model silently replace the reference. Hash normalization is NFC Unicode plus collapsed whitespace over Markdown endpoints; no dates or substantive content are removed.
+
+## Local script policy (S-160, 2026-11-15)
+
+Anthropic's public PDF skill uses scripts for bounding-box checks, extracting form
+structure, conversion and validation images. Its skill-creator uses a frontmatter
+validator and packager; webapp-testing wraps a server for browser work. These are
+examples of reusable deterministic work, not authorization for their effects here.
+Sources read 2026-11-15, public repository revision
+`1780c5e5a552fd4d1c9d6a7b0cab26b0c2bef064`:
+[Anthropic skills repository](https://github.com/anthropics/skills), paths
+`skills/pdf`, `skills/skill-creator`, and `skills/webapp-testing` at that revision.
+
+The user's own typed limits (15 November 2026):
+
+> let the self-learn skills write scripts with a couple of exeptions: no curl, nothing that connects to outside networks, nothing that can delete data from my computer or my backups, and nothing that starts long running processes. that basically means scripts that takes programmatic, repeatable work out of the hands of agents is okay, not scripts that update things automatically, download things, delete things, etc. also, scripts can only be 'activated' once reviewed and approved explicitly by a fable agent.
+
+Here a helper may parse, count, compare, check, format, convert or report local
+facts. It prints or exclusively creates new files under a caller-supplied path.
+No network at all, including local machines; no credential reads, deleting,
+moving, truncating or overwriting existing files; no background/detached/long
+running processes, updates, downloads or installers. A Python API is subject to
+the same effect rules as a shell command. Bash or standard-library Python only.
+
+Keep the complete manual procedure in SKILL.md. Draft source and a paragraph of
+usage are held outside the skill root and are never executable. Every new version
+must pass a refusal-only screen and a fresh tool-free Fable review. Approval is
+accepted only when init and every assistant message prove claude-fable-5-2.
+Only activation installs the script and its managed usage entry. An edit or missing
+file revokes activation; changed bytes are quarantined, never deleted.

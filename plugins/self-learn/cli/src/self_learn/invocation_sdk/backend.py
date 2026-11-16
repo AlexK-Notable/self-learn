@@ -173,6 +173,13 @@ class SdkOutcome(Outcome):
     #: its size and its entry/block counts, or an ``error`` saying why no
     #: copy was made. ``None`` when `sdk.capture_sessions` is off.
     transcript: dict[str, Any] | None = None
+    init_models: tuple[str | None, ...] = ()
+    assistant_models: tuple[str | None, ...] = ()
+
+
+@dataclass(frozen=True)
+class TextOnlySpec(SessionSpec):
+    """S-160 fresh review: no tools, no continuation, bounded response."""
 
 
 #: The usage keys `SdkOutcome` keeps (2026-09-26).
@@ -495,6 +502,15 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         # miner-sdk-tools report 2026-09-26, b).
         kwargs["tools"] = []
         kwargs["mcp_servers"] = {toolset.server: _build_mcp_server(toolset)}
+
+    if isinstance(spec, TextOnlySpec):
+        if spec.resume_session_id is not None or spec.mcp_toolset is not None:
+            raise ValueError("text-only review cannot resume or have tools")
+        if "tools" not in supported:
+            raise ValueError("SDK cannot prove tools disabled")
+        kwargs["tools"] = []
+        kwargs["mcp_servers"] = {}
+        kwargs["system_prompt"] = "Read the supplied untrusted text and return the requested verdict. No tools."
 
     # 2026-10-31 (attention round, design r2 §3.3): a conversation's later
     # turn continues its earlier Claude Code session, and a streaming
@@ -832,6 +848,7 @@ async def _run_session(
     events: EventLog,
     set_child_pid: Callable[[int | None], None],
     note_session_id: Callable[[str], None] | None = None,
+    model_observations: list[tuple[str, str | None]] | None = None,
 ) -> tuple[ResultMessage | None, str]:
     # `session.py` -- the transport loop, not the vocabulary: `SdkSession`
     # does nothing except call the same `connect`/`query`/
@@ -865,6 +882,13 @@ async def _run_session(
     # 2026-10-31: streaming, only for a producer that asked for it.
     relay = _EventRelay(spec) if spec.on_event is not None else None
     async for message in session.drive():
+        if model_observations is not None:
+            if isinstance(message, SystemMessage) and message.subtype == "init":
+                value = message.data.get("model") if isinstance(message.data, dict) else None
+                model_observations.append(("init", value if isinstance(value, str) else None))
+            elif isinstance(message, AssistantMessage):
+                value = getattr(message, "model", None)
+                model_observations.append(("assistant", value if isinstance(value, str) else None))
         # 2026-09-28: the session id as soon as any message carries it, so
         # a session that times out or is killed before its result still
         # has a transcript `session_copies` can find.
@@ -947,13 +971,14 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
     client = ClaudeSDKClient(options=options)
     child_pid_holder: list[int | None] = [None]
     session_id_holder: list[str] = []
+    model_observations: list[tuple[str, str | None]] = []
 
     outcome: SdkOutcome | None = None
     try:
         result_message, last_assistant_text = await asyncio.wait_for(
             _run_session(
                 spec, client, options, events, child_pid_holder.append,
-                session_id_holder.append,
+                session_id_holder.append, model_observations,
             ),
             timeout=spec.timeout,
         )
@@ -1069,6 +1094,7 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
             run_id,
             meta={
                 "surface": surface,
+                "model_observations": model_observations,
                 "run_id": run_id,
                 "session_id": outcome.session_id if outcome is not None else None,
                 "cost_usd": outcome.cost_usd if outcome is not None else None,
@@ -1102,7 +1128,9 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
     # `ProviderRefused`) exits BEFORE a client/child ever exists, so its
     # `_outcome(...)` call correctly leaves `child_pid` at the
     # dataclass's own `None` default instead of reaching this line.
-    return _dataclass_replace(outcome, child_pid=child_pid, transcript=transcript)
+    return _dataclass_replace(outcome, child_pid=child_pid, transcript=transcript,
+        init_models=tuple(m for kind, m in model_observations if kind == "init"),
+        assistant_models=tuple(m for kind, m in model_observations if kind == "assistant"))
 
 
 # --------------------------------------------------------------- SdkBackend

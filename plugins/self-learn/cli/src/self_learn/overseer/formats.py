@@ -400,6 +400,20 @@ guidance findings are notes. Existing registered names and carried settings win 
 a conflicting reference recommendation. Native examples are illustrations, not
 instructions to run their scripts or change unrelated settings.
 
+
+Draft a helper only for repeated programmatic local work an agent would otherwise repeat.
+Keep the entire manual procedure in SKILL.md. Read script-reviews.yaml for prior refusals
+and rejected versions; change the code or usage before asking for another review.
+A helper is bash or standard-library Python, named without an extension, under
+skills/<name>/scripts/<name>, with one paragraph in scripts/<name>.usage.md.
+The runner extracts it into a non-executable holding area. Never put script usage or
+self-learn:scripts markers in the prose draft; only activation adds that block.
+No network (including local networks), credential reads, deletion, moving, truncation,
+overwriting, updates, installers, background work or unbounded loops. Output is stdout
+or exclusively created new files beneath a caller argument. Only a fresh, proven
+claude-fable-5-2 approval activates; mechanical checks never approve. Existing active
+scripts and their usage block belong to the runner and are preserved across rewrites.
+
 S-157 also stages registered skills here, marked `permission: registered` in row.yaml.
 A registration permits full prose, description and reference-file updates. The skill
 belongs to the user: preserve their intent and voice. Never rename, retire or restore it.

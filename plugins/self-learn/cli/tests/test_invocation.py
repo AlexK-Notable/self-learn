@@ -1374,7 +1374,8 @@ def test_wr7_seam_is_only_called_from_the_three_call_sites():
                     sites.setdefault(rel, []).append((node.lineno, name))
     # 2026-10-31 (attention round, design r2 §3.3): the inbox's ask agent
     # (`ask.py`) is the sixth caller -- one question is one seam session.
-    assert set(sites) == {"worker.py", "miner.py", "analyst.py", "steward.py", "overseer/run.py", "ask.py"}, sites
+    # 2026-11-15, S-160: fresh tool-free Fable review is an explicit SDK caller.
+    assert set(sites) == {"worker.py", "miner.py", "analyst.py", "steward.py", "overseer/run.py", "ask.py", "skill_scripts.py"}, sites
 
     # O-a/D-24: the exclusion is EXPLICIT, by name -- every non-model
     # subprocess spawn site named in Sec 7.1's table, deliberately outside
