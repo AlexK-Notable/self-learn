@@ -5413,3 +5413,70 @@ drop it from the section. (The backlog importer's bulk-acknowledge resolves
 already-canon knowledge entries with the same marking — one mechanism,
 several doors into it. ha-note's `--promoted` verb is the precedent.) That hand-weave is all that remains of
 gen 1's "Level C," demoted from an automated milestone to an editing habit.
+
+### S-160 — skill script versions and approval stamps
+
+`skill-scripts.json` is a version-1 ledger document with a `scripts` array. Each
+row has `id` (`ss-` plus 24 random hex digits), skill, extensionless kebab-case name,
+state (`drafted`, `approved`, `active`), source `script_sha256`, `version`, usage,
+note, by, at, screen and review. The version is SHA-256 over compact UTF-8 JSON
+`[source_text, usage_text]` with non-ASCII characters retained. This unambiguously
+binds both byte strings. Source is UTF-8 and stored as mode 0600 at
+`skill-scripts/<skill>/<name>/<version>/draft`, never in the skills root.
+An identical submission returns the same row; changed usage is a new version.
+Only `may_edit` owned/registered non-vetoed names qualify. A new version deactivates
+its predecessor. Versions and review attempts are retained indefinitely.
+
+The screen stamp contains language, ok and named rules. A refusal blocks a review
+and does not spend an attempt. A review stamp is committed BEFORE invocation:
+`verdict: no review`, at, note, run (null for manual), version, screen, model,
+session, cost_usd and reasons. This reservation counts against the cap even after
+an interrupted session. No version is reviewed twice. `models.script_review`
+defaults to `claude-fable-5-2`; any other setting refuses the invocation. Default
+`scripts.reviews_per_day` is 5 (manual, UTC); `overseer.script_reviews_per_run` is 3,
+keyed by the durable run id, including resumes. Both accept zero to stop reviews.
+
+The fresh SDK session uses the analyst transport with an explicit model,
+TextOnlySpec, no tools/MCP, no resumed session, one response and a 180-second
+wall deadline. It receives source, usage, skill name/description, user's verbatim
+limits, effect policy and screen result. SDK outcomes and event logs retain
+init/assistant model observations, including missing values. Both sequences must
+be nonempty and every observation must equal the required id. Missing session id,
+tool activity, invocation failure, invalid JSON, invalid verdict/reasons or reject
+without required changes yield `no review`. Valid rejection retains reasons and
+required changes. Approval records model, session, date, version, proof, reasons,
+changes and reported USD cost. These are session observations, not model claims.
+There is no current-session or command-line approval route. Cost is reported when
+available; count/time/turn bounds do not promise a dollar price or dollar ceiling.
+
+Activation checks the exact current held bytes again, takes ledger then host lock,
+refuses symlink paths, existing destinations and dirty affected files, and commits
+an `activation_pending` stamp before copying. It creates `scripts/<name>`
+exclusively, mode 0755, writes the separate `self-learn:scripts:begin/end` usage
+block and commits both in the host. It then records `active_version` and clears
+pending in the ledger. Cross-repository commits are not physically atomic: a
+pending stamp is deliberately recoverable by deactivation. An ordinary failed
+host commit quarantines the created file and restores prose. There is no retry
+that spends another review. Approved but undeployed rows report activation_error.
+
+Every non-dry overseer run, every recompile and every doctor subcommand checks
+active source hashes and the exact approved usage block. Changed or damaged usage
+preserves the entire edited SKILL.md in quarantine before removing managed entries;
+all scripts of that skill are revoked. Unrecognizable prose is retained. Missing/changed/symlink scripts and interrupted activation
+are deactivated under the same lock order. Existing bytes or symlinks are moved (including across filesystems)
+into the ledger-scoped cache `script-quarantine/<date>-<nonce>/<name>` and ordinary
+files become mode 0600. The usage entry is removed, the host change committed and
+the row becomes drafted while retaining approval history. The notice names the
+script and quarantine path (or says the file was missing). Orphan-cache cleanup
+retains any home cache with a `script-quarantine` entry, even after its ledger
+has gone; quarantined user edits never expire as disposable cache. No file is deleted by
+this lifecycle. Dry runs do not mutate; selftest remains a read-only health view.
+
+The writer owns prose/references, not executable deployment. Drafts may not contain
+scripts or the scripts block. Draft views strip that block; writes reattach it
+byte for byte and leave script files untouched. Only active block-listed script
+bytes and the scripts block are excluded from the prose author's hash; foreign
+files still participate. The writer separately compares the block to the ledger
+and checks every active source hash before writing. Installer/user scripts are
+never adopted as self-learn scripts. Manual prose must describe the complete
+procedure without the helper (a drafting/review obligation, not a string heuristic).

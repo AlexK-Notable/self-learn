@@ -2464,3 +2464,47 @@ the caller reports unreachable and records the observation; an uncancellable
 platform DNS/socket operation can finish in that daemon later or end at process
 exit. Weekly runs remain offline. See 02 §S-159 rollback note before reverting
 code after a write has recorded reference_pack.
+
+### Reviewed local skill helpers (S-160)
+
+Use scripts for repeated local parsing, counting, comparison, checks, formatting,
+conversion or reports. Keep manual instructions complete. Phase B may emit
+`skills/<skill>/scripts/<name>` and `scripts/<name>.usage.md` (one paragraph).
+The runner removes these from the prose deployment, holds them after the owned or
+registered skill is successfully deployed, then requests bounded Fable reviews.
+Drafts-only mode retains them with the ordinary skill draft and never reviews them.
+`script-reviews.yaml` supplies previous screens/reasons/required changes to phase B.
+Rejected/invalid/unreviewed drafts remain visible and count-cap refusals appear in
+the factual run report.
+
+Agents and people can use `skill script draft <skill> --file <path> --name <name>
+--usage <paragraph> --note <why>`, `list`, `show <id>`, `review <id> --note <why>`
+and `deactivate <id> --note <why>`. No grant and no approve command. Review attempts
+are durable and once-only, including failed/unproven sessions. A changed version
+is submitted anew. List/show include state, version, screen and approval evidence.
+
+Mechanical screen rules are conservative, not a sandbox. Python is parsed with
+AST: allowed standard-library imports only; no alias/wildcard imports, dynamic
+execution/introspection, destructive/process attributes, asynchronous operations,
+while loops or infinite itertools; open allows read or exclusive create only,
+with output statically derived from a caller argument. Credential names and encoded
+payloads refuse. Bash requires noclobber as its first effective line and checks
+all pipeline commands against the local read/report allow-list. It refuses command
+substitution, functions, loops, eval/exec/source, background work, append/clobber
+redirects, non-argument redirects, unsafe git subcommands/options, sed effects,
+find execution/deletion/output and command-specific output flags. Embedded awk
+programs are conservatively refused because this token scanner cannot prove their
+effects. Unsupported constructs can be rewritten as simple Python. Fable must
+inspect indirect effects and caller-input validation; passing this filter is never
+approval. The policy forbids all networking, existing-data replacement/removal,
+credential reads, updates/installers and persistent/unbounded work, regardless of
+which language/API expresses them. See 02 §S-160 for stamps and recovery.
+
+Git read commands require `--no-pager --no-optional-locks -c core.fsmonitor=false
+-c log.showSignature=false`. Diff/show/log additionally require `--no-ext-diff
+--no-textconv`, and blame requires `--no-textconv`. Filters, signature requests and
+external/output options refuse. This prevents ordinary read helpers from refreshing
+an index or invoking configured helpers. Date-setting and sort compression programs
+also refuse. Sed accepts only simple slash-delimited substitutions and print,
+pattern-space-delete or quit expressions; file scripts and unknown flags refuse.
+The supported subset is intentionally narrower than each command's full language.
