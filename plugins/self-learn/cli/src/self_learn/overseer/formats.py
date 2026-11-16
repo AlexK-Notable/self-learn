@@ -401,6 +401,7 @@ Preserve the registered skill's existing name, even if it contains a reserved wo
 Carry existing non-allowlisted frontmatter keys unchanged (including allowed-tools
 and version); do not add, change or remove such keys. Prose and description may change.
 A target: withdrawn change request has lost upkeep permission: decline with that reason.
+A target: vetoed change request is banned from upkeep: decline with that reason.
 A build answer may name a case writing a different or existing skill, provided ALL
 requested lessons route there. Case names work with or without .yaml. Missing or bad
 answers stay open and are reported individually; never abandon other work for one.

@@ -194,6 +194,18 @@ def _register_locked(home: Path, root: Path, path: Path, *, note: str, by: str) 
         "ledger_commit": sha, "host_commit": host_sha}
 
 
+def _same_tree(folder: Path, backup: Path) -> bool:
+    """A failed cross-device move may leave either copy incomplete."""
+    if not folder.is_dir():
+        return False
+    paths = {p.relative_to(folder) for p in folder.rglob("*")}
+    if paths != {p.relative_to(backup) for p in backup.rglob("*")}:
+        return False
+    return all((folder / p).is_dir() == (backup / p).is_dir()
+        and ((folder / p).is_dir() or (folder / p).read_bytes() == (backup / p).read_bytes())
+        for p in paths)
+
+
 def _adopt(home: Path, root: Path, original: Path, name: str, description: str, by: str) -> tuple[Path, str | None]:
     try:
         skill_writer._skills_root(home)  # git mode and marketplace required
@@ -229,14 +241,20 @@ def _adopt(home: Path, root: Path, original: Path, name: str, description: str, 
         sha = gitops.stage_and_commit(root, [plugin, market], f"self-learn: skill adopt {name}", f"By: {by}")
     except Exception as exc:
         failures = [f"adoption failed ({type(exc).__name__})"]
-        # Restore runtime access independently of git's index lock. A partial
-        # cross-device move may have left both directories: use the full backup.
+        # Leave an untouched original alone. Move a complete copy back without
+        # deleting it first; only a partial move needs the retained backup.
         try:
-            if original.exists():
-                shutil.rmtree(original)
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.copytree(backup, original)
+            if original.exists() and _same_tree(original, backup):
+                pass
+            elif not original.exists() and target.exists() and _same_tree(target, backup):
+                try:
+                    os.rename(target, original)
+                except OSError:
+                    shutil.copytree(backup, original)
+            elif target.exists() or not _same_tree(original, backup):
+                if original.exists():
+                    shutil.rmtree(original)
+                shutil.copytree(backup, original)
         except Exception as restore_exc:
             failures.append(f"restore {original}: {type(restore_exc).__name__}")
         try:

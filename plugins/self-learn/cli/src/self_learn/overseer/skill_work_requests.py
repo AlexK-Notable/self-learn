@@ -33,7 +33,10 @@ def stage_requests(home: Path, stage: Path, write: Callable, notes: list[str] | 
                 continue
         if row["kind"] == "change":
             try:
-                if not skill_registry.load(home).may_edit(row["name"]):
+                registry = skill_registry.load(home)
+                if registry.veto_of(row["name"]):
+                    row = {**row, "target": "vetoed"}
+                elif not registry.may_edit(row["name"]):
                     row = {**row, "target": "withdrawn"}
             except skill_registry.SkillRegistryError:
                 row = {**row, "target": "unavailable"}

@@ -34,6 +34,87 @@ def register(env, path=None):
     return reg.register(env.home, str(path or NAME), note="Keep this user skill current", by="agent")
 
 
+@pytest.mark.parametrize("failure", ["mkdir", "before-move", "both-complete", "commit", "partial-target", "rename"])
+def test_adoption_rollback_preserves_original_copy(env, monkeypatch, failure):
+    path = seed(env, env.claude / "skills" / NAME)
+    original = {p.relative_to(path): p.read_bytes() for p in path.rglob("*") if p.is_file()}
+    inode = path.stat().st_ino
+    target = env.skill_dir()
+    real_mkdir, real_move, real_copy = Path.mkdir, reg.shutil.move, reg.shutil.copytree
+    copies_back = []
+
+    def copy(source, destination, *args, **kwargs):
+        if Path(destination) == path:
+            copies_back.append(destination)
+            if failure in ("mkdir", "before-move", "both-complete", "commit"):
+                raise OSError("backup restore unavailable")
+        return real_copy(source, destination, *args, **kwargs)
+
+    def mkdir(folder, *args, **kwargs):
+        if failure == "mkdir" and folder == target.parent:
+            raise OSError("target parent unavailable")
+        return real_mkdir(folder, *args, **kwargs)
+
+    def move(source, destination):
+        if failure == "before-move":
+            raise OSError("move did not start")
+        if failure == "both-complete":
+            real_copy(source, destination)
+            raise OSError("copy complete but source untouched")
+        real_move(source, destination)
+        if failure == "partial-target":
+            (target / "SKILL.md").unlink()
+            raise OSError("incomplete moved copy")
+
+    def commit(*args, **kwargs):
+        raise OSError("commit unavailable")
+
+    def rename(*args, **kwargs):
+        raise OSError("rename unavailable")
+
+    monkeypatch.setattr(reg.shutil, "copytree", copy)
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(reg.shutil, "move", move)
+    monkeypatch.setattr(reg.gitops, "stage_and_commit", commit)
+    if failure == "rename":
+        monkeypatch.setattr(reg.os, "rename", rename)
+    with pytest.raises(reg.RegistrationError, match="adoption failed"):
+        register(env, path)
+    assert path.is_dir()
+    assert {p.relative_to(path): p.read_bytes() for p in path.rglob("*") if p.is_file()} == original
+    if failure in ("mkdir", "before-move", "both-complete", "commit"):
+        assert path.stat().st_ino == inode
+        assert copies_back == []
+    else:
+        assert len(copies_back) == 1
+    assert not env.plugin_dir().exists()
+
+
+def test_change_request_refuses_vetoed_registration(env):
+    seed(env)
+    register(env)
+    assert skill_requests.veto(env.home, NAME, by="human", no_push=True).ok
+    before = env.head(env.home)
+    with pytest.raises(ValueError, match=NAME + " is vetoed; upkeep is disabled"):
+        skill_requests.file_request(env.home, "change", NAME, lessons=[], note="Improve examples", by="agent")
+    assert env.head(env.home) == before
+    assert skill_requests.requests(env.home) == []
+
+
+def test_build_request_checks_loaded_inventory(env):
+    name = "already-loaded"
+    seed(env, env.claude / "skills" / name, text=sk1.draft(name)["SKILL.md"])
+    create_record(env.home, make_behavior(record_id=sk1.RID))
+    commit_all(env.home, "seed build lesson")
+    loaded, problems, _ = skill_writer._loaded_names(env.home, leaving_out=None)
+    assert name in loaded and not problems
+    before = env.head(env.home)
+    with pytest.raises(ValueError, match="already loaded: " + name):
+        skill_requests.file_request(env.home, "build", name, lessons=[sk1.RID], note="Combine examples", by="agent")
+    assert env.head(env.home) == before
+    assert skill_requests.requests(env.home) == []
+
+
 def test_register_in_place_and_withdraw(env, monkeypatch, capsys):
     seed(env)
     monkeypatch.setenv("CLAUDECODE", "1")

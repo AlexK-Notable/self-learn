@@ -27,6 +27,19 @@ def answer(stage, row, result, case=None):
     build._dump(stage / work.OUTPUT, {"decisions": [{"id": row["id"], "answer": result, "reason": "The examples now cover the missing step.", "case": case}]})
 
 
+def test_open_change_request_stages_vetoed_target(env):
+    registration.seed(env)
+    registration.register(env)
+    row = request(env)
+    assert skill_requests.veto(env.home, NAME, by="human", no_push=True).ok
+    stage = env.tmp / "vetoed-stage"
+    shown = work.stage_requests(env.home, stage, runner._write_stage)
+    assert len(shown) == 1 and shown[0]["id"] == row["id"]
+    assert shown[0]["target"] == "vetoed"
+    assert build._load(stage / work.INPUT)["requests"] == shown
+    assert skill_requests.requests(env.home, open_only=True)[0]["id"] == row["id"]
+
+
 def test_registered_stage_and_request_rewrite(env, monkeypatch):
     registration.seed(env)
     registration.register(env)
