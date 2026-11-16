@@ -2331,18 +2331,19 @@ def owned_skill_refusal(home: Path | str, name: str | None) -> VerbError | None:
     cannot take a lesson from the steward or the overseer, or by a
     ``reroute`` -- or ``None`` when it can.
 
-    It can when *name* is a skill self-learn owns (a live row in the
-    ledger's ``owned-skills.yaml``) and that skill's ``SKILL.md`` is in the
-    skills root with self-learn's managed section. A route there then only
-    adds the lesson's line to a skill that exists; it never scaffolds one.
+    It can when *name* is owned or registered and its SKILL.md exists.
+    Owned skills must also retain their managed section; registered skills
+    bootstrap that section on first compile, preserving the user's prose.
+    A route never scaffolds either kind of editable skill.
     ``self-learn skill write`` is the only way an agent creates a skill.
 
     The refusal is returned, not raised, so each caller can name itself in
     the message (the batch's actor, ``reroute``'s RER4). Its class is its
     S-71 kind: :class:`SheetLineError` (``bad-line``) for no name or a
-    skill self-learn does not own -- the line is the mistake;
-    :class:`DestinationUnavailable` for an owned skill whose files are
-    missing (an interrupted ``skill write``, which a rerun finishes);
+    skill self-learn neither owns nor is registered to edit -- the line
+    is the mistake; :class:`DestinationUnavailable` for a missing SKILL.md
+    or an owned skill missing its managed section (an interrupted
+    ``skill write``, which a rerun finishes);
     :class:`NeedsPerson` for an unreadable registry or ``hosts.yaml``."""
     home = Path(home)
     if not name:
@@ -2371,10 +2372,18 @@ def owned_skill_refusal(home: Path | str, name: str | None) -> VerbError | None:
         )
     target = hosts.skills_root / "plugins" / name / "skills" / name / "SKILL.md"
     try:
-        deployed = target.is_file() and BEGIN_MARKER in target.read_text(encoding="utf-8")
+        deployed = target.is_file() and (
+            not registry.is_owned(name)
+            or BEGIN_MARKER in target.read_text(encoding="utf-8")
+        )
     except (OSError, UnicodeDecodeError):
         deployed = False
     if not deployed:
+        if not registry.is_owned(name):
+            return DestinationUnavailable(
+                f"new-skill:{name} is registered to edit, but {target} is missing "
+                "or unreadable -- a route never scaffolds a registered skill"
+            )
         return DestinationUnavailable(
             f"new-skill:{name} is a skill self-learn owns, but {target} is missing or "
             "has no self-learn managed section -- an interrupted `skill write` is "
@@ -2386,13 +2395,19 @@ def owned_skill_refusal(home: Path | str, name: str | None) -> VerbError | None:
 
 def _refuse_rescaffolding_an_owned_skill(home: Path, name: str) -> None:
     """SK2: a ``new-skill`` write about to SCAFFOLD (its ``SKILL.md`` is not
-    there) under the name of a skill self-learn owns refuses instead. The
+    there) under an owned or registered name refuses instead. The
     scaffold's seed text would stand in for the skill's authored text and
     its ``skill write`` could no longer finish; a person's scaffold of any
     other name goes ahead as before (D5). Raises
     :class:`DestinationUnavailable`, or :class:`NeedsPerson` for a registry
     that does not read back."""
-    if _owned_skills(home).may_edit(name):
+    registry = _owned_skills(home)
+    if registry.is_registered(name) and not registry.is_owned(name):
+        raise DestinationUnavailable(
+            f"new-skill:{name} is registered to edit and its SKILL.md is missing "
+            "-- a route never scaffolds a registered skill"
+        )
+    if registry.is_owned(name):
         raise DestinationUnavailable(
             f"new-skill:{name} is a skill self-learn owns and its SKILL.md is missing "
             "-- a route never scaffolds it; run its `skill write` again to finish the "
@@ -2478,7 +2493,12 @@ def _resolve_target_unguarded(
                 "skill-md destination needs skill:<name> scope, "
                 f"got {scope!r} — use claude-md or reference"
             )
-        root, skill_dir = _hosts_skill_dir(home, scope.partition(":")[2])
+        name = scope.partition(":")[2]
+        root, skill_dir = _hosts_skill_dir(home, name)
+        if _owned_skills(home).is_owned(name):
+            refusal = owned_skill_refusal(home, name)
+            if refusal is not None:
+                raise refusal
         target = skill_dir / "SKILL.md"
         if not target.is_file():
             raise DestinationUnavailable(
@@ -2626,12 +2646,15 @@ def _resolve_target_unguarded(
             # resolve", as they do M3-9's.
             _refuse_rescaffolding_an_owned_skill(home, name)
         if plugin_dir.exists():
-            # M3-9 collision rule: append only into a self-learn-scaffolded
-            # skill (its SKILL.md carries a managed section); anything else
-            # is a FOREIGN authored plugin — refuse, never inject.
+            # S-157: registration permits bootstrapping a managed section
+            # in the user's existing file. Owned skills still require theirs.
+            registry = _owned_skills(home)
             if not (
                 target.is_file()
-                and BEGIN_MARKER in target.read_text(encoding="utf-8")
+                and (
+                    (registry.is_registered(name) and not registry.is_owned(name))
+                    or BEGIN_MARKER in target.read_text(encoding="utf-8")
+                )
             ):
                 raise VerbError(
                     f"plugins/{name} already exists and is a foreign "

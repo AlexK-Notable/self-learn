@@ -288,7 +288,7 @@ RESTATE_REFUSED_ACTORS: frozenset[str] = frozenset({"steward"})
 
 #: SK2 (S-107, 2026-10-31; skill-writing plan D5 and §1.3 fact 1):
 #: the actors whose route into `new-skill:<name>` is accepted only when
-#: <name> is a skill self-learn owns and has deployed
+#: <name> is owned (with a managed section) or registered (with a SKILL.md)
 #: (:func:`verbs.owned_skill_refusal`). Before this, nothing in the batch,
 #: the steward's runner or the overseer's runner refused such a route -- only
 #: their instructions said never -- so a steward sheet could scaffold a new
@@ -345,7 +345,9 @@ def _refuse_agent_new_skill(
 ) -> None:
     """Raise the refusal of a route that resolves to ``new-skill`` when
     *actor* is one :data:`NEW_SKILL_OWNED_ONLY_ACTORS` names and the skill
-    is not one self-learn owns (or its files are missing). The class carries
+    is neither owned nor registered (or its required files are missing).
+    Registered SKILL.md files bootstrap their section on first compile.
+    The class carries
     the S-71 kind (``bad-line`` for a skill self-learn does not own, so the
     line is sent back). Keyed on the runner's *actor*, never on the line's
     own ``by:``. The ONE sentence `_dispatch` and `dry_run` both show.
