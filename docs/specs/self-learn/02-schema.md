@@ -830,7 +830,7 @@ skills:
     plugin: plugins/<name>  # relative to the skills root
     created: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent}
     last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent,
-                 authored_sha256: <hex>}
+                 authored_sha256: <hex>, reference_pack: anthropic-2026-11-15}
     retired: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent}  # only when retired
     renamed_from: [<old name>, ...]                                 # optional
     retire_requested: {at: <iso>, by: human|agent, grant: stmt-xxxxxxxx}  # optional, live rows only
@@ -838,6 +838,39 @@ vetoed:
   - {name: <name>, at: <iso>, by: human|agent, grant: stmt-xxxxxxxx}  # S-110
   - {name: <name>, at: <iso>, statement: stmt-xxxxxxxx}              # written before it
 ```
+
+**S-159: authoring reference provenance.** Every successful full write and newly
+owned route scaffold records `reference_pack` in `last_write` and the nested
+`metadata.self-learn` stamp. The authored stamp is `{authored_by, case, created,
+reference_pack}`; the registered stamp is `{registered_by, registered,
+reference_pack}`. The version is the reference checked at this write, not at original
+creation. Older rows/stamps without it remain readable and list as `unrecorded`;
+there is no bulk migration. A rename retains the prior reference version because it
+changes only the name, not the authored instructions. Registry parsing accepts only a nonempty version string
+when present. A write under a new pack updates the row even when the authored hash
+is unchanged. Both human and overseer paths use the same writer.
+
+**S-159 rollback note (2026-11-15, review F6).** The pre-S-159 registry parser
+rejects unknown last_write keys. Recording the requested version in that row
+therefore makes a code-only rollback incompatible after the first write.
+Before running pre-S-159 code, a reviewed ledger migration must remove only
+last_write.reference_pack from owned and registered rows, retaining all other
+fields and all rows; commit that migration while the S-159 parser still runs.
+Alternatively retain S-159's parser when reverting the authoring feature.
+Do not try a code-only rollback against the newer ledger. Older code tolerates
+the added nested stamp field, which need not be removed. This is an explicit
+rollback procedure, not permission for a builder to edit the live ledger.
+
+The bundled `skill_reference/sources.yaml` contains version, date_read,
+normalization identifier and source rows `{id, url, title, date_read, sha256}`.
+The hash is SHA-256 of UTF-8 NFC text with whitespace collapsed, fetched from
+Markdown URLs without models. Fetch observations live only in the per-ledger XDG
+cache's `skill-reference-status.json`, with the pack version, checked_at and checks
+`{url, state: unchanged|changed|unreachable, sha256? , error?}`. They are disposable
+observations, not ledger truth. Offline status ignores observations for a different
+pack; no recorded fetch means unknown freshness. The overseer's manifest retains
+`skills.reference_lines` (version, age, recorded source changes/failures and guidance)
+so a resumed report describes the pack used in that run.
 
 **S-157: registration is editorial permission, not ownership.** The same file accepts
 an optional top-level `registrations` mapping. Live registration and ownership cannot
@@ -859,7 +892,7 @@ registrations:
                no-upstream-marker, repository-location, no-linked-files]
       authored_sha256: <baseline hash>
     last_write: {at: <iso>, case: case-xxxxxxxx|null, by: overseer|human|agent,
-                 authored_sha256: <hex>}  # present after first full write
+                 authored_sha256: <hex>, reference_pack: anthropic-2026-11-15}  # present after first full write
     withdrawn: {at: <iso>, by: human|agent, note: <reason>}  # withdrawn only
 ```
 
@@ -868,7 +901,7 @@ live owned or registered skills; `editable` excludes vetoed registrations. Withd
 registration history, files, links and backup. Registering again refreshes permission
 and the baseline; repeat registration while live repairs missing links without a new ledger row. History of earlier
 registrations and withdrawals is retained in ledger commits. The writer stamps
-`metadata.self-learn: {registered_by, registered}` for registered skills, never
+`metadata.self-learn: {registered_by, registered, reference_pack}` for registered skills, never
 `authored_by`, and never changes their name. The registration hash protects the first
 write; `last_write` protects subsequent writes. Restore, rename and retire require
 ownership. Stage rows label permission as registered, omitting long hashes from model

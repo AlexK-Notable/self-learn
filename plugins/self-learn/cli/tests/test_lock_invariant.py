@@ -129,6 +129,8 @@ _STREAMS = ("buf", "fh", "f", "sys", "stderr", "stdout", "out", "handle", "proc"
 #: :func:`test_the_exemption_list_cannot_rot`), so a rename or a deletion
 #: cannot leave a stale exemption quietly widening the hole.
 NOT_REPO_TRUTH = {
+    # 2026-11-15 S-159, 02-schema skill reference: disposable HTTP status, never ledger truth.
+    "skill_reference.record_status": "XDG cache: per-home skill-reference-status.json; source drift observation only",
     # $XDG_CACHE_HOME/self-learn/autosync-pause — global, cross-repo pause
     # contract (doc 13 §4.4). Never in a repo.
     "sentinel.hold": "XDG cache: the autosync-pause sentinel",

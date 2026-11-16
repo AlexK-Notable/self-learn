@@ -611,7 +611,8 @@ def test_sk_g_1_a_persons_first_route_into_a_fresh_name_leaves_an_owned_stamped_
     # the row records exactly what is deployed, so no write reads it as a hand edit
     assert row["last_write"]["authored_sha256"] == skill_writer.authored_sha256_at(env.root, FRESH)
     stamp = _stamp_of(env.skill_md(FRESH))
-    assert stamp == {"authored_by": "human", "case": None, "created": row["created"]["at"]}
+    assert stamp == {"authored_by": "human", "case": None, "created": row["created"]["at"],
+                     "reference_pack": skill_writer.REFERENCE_VERSION}
     assert getattr(result.compile_result, "owned", None) is True
     assert env.status(env.root) == ""  # the stamped seed was committed with the scaffold
     # and the overseer may now write its text: the lesson's line stays in the managed section

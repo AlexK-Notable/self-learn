@@ -1,0 +1,32 @@
+version: anthropic-2026-11-15
+date_read: '2026-11-15'
+normalization: markdown-nfc-whitespace-v1
+sources:
+- id: BP
+  title: Skill authoring best practices
+  url:
+    https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices.md
+  date_read: '2026-11-15'
+  sha256: d3ac462f1a9ca93a02239bb49f81082c3d084f595f73c7069d6f09bf4c579303
+- id: OV
+  title: Agent Skills overview
+  url:
+    https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview.md
+  date_read: '2026-11-15'
+  sha256: 9fc890359797e0e12716557be5b260406590807b50e0b1a5551f37e85dd9a6b9
+- id: SPEC
+  title: Agent Skills specification
+  url: https://agentskills.io/specification.md
+  date_read: '2026-11-15'
+  sha256: a83e4665f068c5c3b909b8e95e6b8f98836a3254a3e3a3873794228367f1d46f
+- id: CC
+  title: Claude Code skills
+  url: https://code.claude.com/docs/en/skills.md
+  date_read: '2026-11-15'
+  sha256: 294f6cf69458514a354bc751323ba2069aee22092942793fbc7b644c98551f8a
+- id: SC
+  title: Anthropic native skill-creator
+  url:
+    https://raw.githubusercontent.com/anthropics/skills/main/skills/skill-creator/SKILL.md
+  date_read: '2026-11-15'
+  sha256: 1705167bba4f7d5ad2e6d5040aeb7b11673ee7dceeef375a8592cab01fd4b3bc

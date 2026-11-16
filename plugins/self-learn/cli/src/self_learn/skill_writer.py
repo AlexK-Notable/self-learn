@@ -110,6 +110,8 @@ the locked block (``tests/test_lock_invariant.py``).
 
 from __future__ import annotations
 
+from .skill_reference import VERSION as REFERENCE_VERSION
+
 import copy
 import io
 import json
@@ -556,7 +558,7 @@ def stamp_skill_md(text: str, *, by: str, case: str | None, created: str) -> str
     :class:`ValueError` when the stamp cannot be added without changing the
     rest of the frontmatter."""
     try:
-        return _stamped(text, {"authored_by": by, "case": case, "created": created})
+        return _stamped(text, {"authored_by": by, "case": case, "created": created, "reference_pack": REFERENCE_VERSION})
     except _Refused as exc:
         raise ValueError("; ".join(exc.problems)) from exc
 
@@ -674,17 +676,18 @@ def _split_frontmatter(text: str) -> tuple[str, str, str, str]:
 def _stamp_block(stamp: Mapping[str, Any]) -> str:
     # A person's step that answers no case stamps ``case: null`` (YAML's
     # null), never Python's ``None``, which YAML would read as a string.
+    reference = f"    reference_pack: {stamp['reference_pack']}\n" if "reference_pack" in stamp else ""
     if "registered_by" in stamp:
         return ("metadata:\n" + f"  {SKILL_RUNNER_METADATA_KEY}:\n"
                 + f"    registered_by: {stamp['registered_by']}\n"
-                + f"    registered: {json.dumps(stamp['registered'])}\n")
+                + f"    registered: {json.dumps(stamp['registered'])}\n" + reference)
     case = stamp["case"] if stamp["case"] is not None else "null"
     return (
         "metadata:\n"
         f"  {SKILL_RUNNER_METADATA_KEY}:\n"
         f"    authored_by: {stamp['authored_by']}\n"
         f"    case: {case}\n"
-        f"    created: {json.dumps(stamp['created'])}\n"
+        f"    created: {json.dumps(stamp['created'])}\n" + reference
     )
 
 
@@ -750,7 +753,7 @@ def _unstamped(text: str) -> str:
     if (
         list(meta) == [SKILL_RUNNER_METADATA_KEY]
         and isinstance(stamp, dict)
-        and set(stamp) == set(_STAMP_KEYS)
+        and set(stamp) in (set(_STAMP_KEYS), set(_STAMP_KEYS) | {"reference_pack"})
         and all(isinstance(stamp[k], str) for k in _STAMP_KEYS)
         and inner.endswith(_stamp_block(stamp))
     ):
@@ -1335,6 +1338,7 @@ def _preflight(
             plan.recorded_sha = row["last_write"]["authored_sha256"]
     else:
         plan.stamp = {"authored_by": by, "case": case, "created": now}
+    plan.stamp["reference_pack"] = REFERENCE_VERSION
     folder = plan.folder
     deployed = _read_tree(folder)
     deployed_md = deployed.get(SKILL_ENTRY_FILE)
@@ -1555,15 +1559,16 @@ def _registry_after_write(
     live skill; else ``last_write`` updated, or a new row."""
     row = registry.registrations.get(name) if registry.is_registered(name) else registry.skills.get(name)
     if row is not None and row.get("status") == STATUS_LIVE:
-        if (row.get("last_write") or {}).get("authored_sha256") == sha:
+        if ((row.get("last_write") or {}).get("authored_sha256") == sha
+                and row["last_write"].get("reference_pack") == REFERENCE_VERSION):
             return
-        row["last_write"] = {"at": now, "case": case, "by": by, "authored_sha256": sha}
+        row["last_write"] = {"at": now, "case": case, "by": by, "authored_sha256": sha, "reference_pack": REFERENCE_VERSION}
         return
     fresh: dict[str, Any] = {
         "status": STATUS_LIVE,
         "plugin": f"plugins/{name}",
         "created": {"at": now, "case": case, "by": by},
-        "last_write": {"at": now, "case": case, "by": by, "authored_sha256": sha},
+        "last_write": {"at": now, "case": case, "by": by, "authored_sha256": sha, "reference_pack": REFERENCE_VERSION},
     }
     if row is not None and row.get("renamed_from"):
         fresh["renamed_from"] = list(row["renamed_from"])
@@ -2743,7 +2748,9 @@ def _rename_preflight(
             "status": STATUS_LIVE,
             "plugin": f"plugins/{new}",
             "created": dict(old_row["created"]),
-            "last_write": {"at": now, "case": case, "by": by, "authored_sha256": recorded_new},
+            "last_write": {"at": now, "case": case, "by": by, "authored_sha256": recorded_new,
+                           **({"reference_pack": old_row["last_write"]["reference_pack"]}
+                              if "reference_pack" in old_row["last_write"] else {})},
             "renamed_from": renamed_from,
         }
     else:

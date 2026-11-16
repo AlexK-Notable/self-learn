@@ -160,7 +160,7 @@ _ROW_KEYS = (
     "status", "plugin", "created", "last_write", "retired", "renamed_from", "retire_requested",
 )
 _STAMP_KEYS = ("at", "case", "by")
-_WRITE_KEYS = ("at", "case", "by", "authored_sha256")
+_WRITE_KEYS = ("at", "case", "by", "authored_sha256", "reference_pack")
 _VETO_KEYS = ("name", "at", "statement", "by", "grant")
 _REQUEST_KEYS = ("at", "by", "grant")
 #: Who may make a request (a veto, a retirement request): the person, or an
@@ -309,6 +309,8 @@ def _check_retire_request(value: object, where: str) -> dict:
 
 def _check_last_write(value: object, where: str) -> dict:
     stamp = _check_keys(value, _WRITE_KEYS, where)
+    if "reference_pack" in stamp and (not isinstance(stamp["reference_pack"], str) or not stamp["reference_pack"].strip()):
+        raise SkillRegistryError(f"{where}.reference_pack: expected a nonempty version string")
     sha = _need(stamp, "authored_sha256", where)
     if not isinstance(sha, str) or _SHA256_RE.fullmatch(sha) is None:
         raise SkillRegistryError(
@@ -319,6 +321,7 @@ def _check_last_write(value: object, where: str) -> dict:
         "case": _check_stamp_case(stamp, where),
         "by": _check_by(_need(stamp, "by", where), f"{where}.by"),
         "authored_sha256": sha,
+        **({"reference_pack": stamp["reference_pack"]} if "reference_pack" in stamp else {}),
     }
 
 

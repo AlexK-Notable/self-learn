@@ -48,6 +48,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Mapping, cast
 
 from . import gitops, attribution, grant_uses, grants, skill_registry, skill_requests, skill_writer
 from .gitops import EXIT_GIT_FAILED
@@ -205,12 +206,28 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
         item.add_argument("--note", required=True, help="what should change and why")
         item.add_argument("--json", action="store_true", dest="as_json")
 
+    ref = commands.add_parser("reference", help="read, check or inspect the Anthropic authoring reference")
+    ref_commands = ref.add_subparsers(dest="reference_command", required=True)
+    show = ref_commands.add_parser("show", help="print the reference pack")
+    show.add_argument("--path", action="store_true", help="print its installed path instead")
+    check = ref_commands.add_parser("check", help="check a skill name or folder, read-only")
+    check.add_argument("target")
+    mode = check.add_mutually_exclusive_group()
+    mode.add_argument("--draft", dest="reference_mode", action="store_const", const="draft",
+                      help="check every supplied file as a write draft")
+    mode.add_argument("--installed", dest="reference_mode", action="store_const", const="installed",
+                      help="check the editable view, retaining compiler blocks and user assets")
+
+    status = ref_commands.add_parser("status", help="pack age and last source check")
+    status.add_argument("--fetch", action="store_true", help="HTTP-check sources and record cache status; exit 1 if changed/unreachable")
     parser.set_defaults(_skill_dispatch=dispatch)
     return parser
 
 
 def dispatch(args) -> int:
     command = args.skill_command
+    if command == "reference":
+        return _reference(resolve_home(), args)
     if command == "list":
         return _list(resolve_home(), args)
     if command in ("register", "unregister", "request"):
@@ -274,6 +291,7 @@ def _print_lines(prefix: str, lines, stream) -> None:
 
 
 def _write(home: Path, args) -> int:
+    from .skill_reference import VERSION
     try:
         files = skill_writer.read_draft_dir(args.source)
     except (ValueError, OSError) as exc:
@@ -281,9 +299,11 @@ def _write(home: Path, args) -> int:
         return EXIT_USAGE
     if args.check:
         result = skill_writer.check(home, args.name, files, expect_sha=args.expect_sha)
+        if not args.as_json:
+            print(f"skill reference checked: {VERSION}")
         if args.as_json:
             print(json.dumps({
-                "command": "skill write --check", "name": result.name, "ok": result.ok,
+                "reference_pack": VERSION, "command": "skill write --check", "name": result.name, "ok": result.ok,
                 "kind": result.kind, "problems": list(result.problems),
                 "notes": list(result.notes), "updating": result.updating,
                 "current_sha": result.current_sha, "recorded_sha": result.recorded_sha,
@@ -302,9 +322,11 @@ def _write(home: Path, args) -> int:
         home, args.name, files, case=args.case, by=args.by,
         expect_sha=args.expect_sha, no_push=args.no_push,
     )
+    if not args.as_json:
+        print(f"skill reference checked: {VERSION}")
     if args.as_json:
         print(json.dumps({
-            "command": "skill write", "name": written.name, "ok": written.ok,
+            "reference_pack": VERSION, "command": "skill write", "name": written.name, "ok": written.ok,
             "kind": written.kind, "problems": list(written.problems),
             "notes": list(written.notes), "warnings": list(written.warnings),
             "updating": written.updating, "ledger_commit": written.ledger_sha,
@@ -512,12 +534,13 @@ def _list(home: Path, args) -> int:
         case = state["last_write"]["case"]
         line += (f"; last written {state['last_write']['at']} by {state['last_write']['by']} "
                  f"({case if case is not None else skill_writer.NO_CASE})")
+        line += f"; reference {state['last_write'].get('reference_pack', 'unrecorded')}"
         if state.get("retire_requested"):
             line += "; retirement requested"
         print(line)
     for name, row in sorted(registry.registrations.items()):
         stamp = row["registered"]
-        print(f"{name}: registered ({row['status']}); {stamp['path']}; by {stamp['by']} at {stamp['at']}; {stamp['note']}")
+        print(f"{name}: registered ({row['status']}); {stamp['path']}; by {stamp['by']} at {stamp['at']}; {stamp['note']}; reference {(row.get('last_write') or {}).get('reference_pack', 'unrecorded')}")
     if registry.vetoed:
         print("vetoed names: " + ", ".join(registry.vetoed_names()))
     return EXIT_OK
@@ -546,3 +569,108 @@ def _registration_request(home: Path, args) -> int:
         print(f"{result['name']}: {result['state']}" + (f" ({result['id']})" if "id" in result else ""))
     _print_lines("  warning: ", result.get("notes", []), sys.stderr)
     return EXIT_OK
+
+
+def _reference_files(target: Path) -> tuple[dict, list[str]]:
+    """Read only files a rewrite replaces; do not open retained user assets."""
+    import os
+
+    files = {}
+    retained = []
+    for current, dirs, names in os.walk(target, followlinks=False):
+        here = Path(current)
+        for dirname in list(dirs):
+            path = here / dirname
+            if path.is_symlink():
+                retained.append(path.relative_to(target).as_posix() + "/")
+                dirs.remove(dirname)
+        for name in names:
+            path = here / name
+            key = path.relative_to(target).as_posix()
+            if key != "SKILL.md" and not skill_writer._is_managed_reference(key):
+                retained.append(key)
+                continue
+            if path.is_symlink():
+                raise ValueError(f"{key} is a symlink; editable draft files must be plain files")
+            if path.stat().st_size > skill_writer.MAX_DRAFT_FILE_BYTES:
+                raise ValueError(f"{key} is too large for a draft")
+            raw = path.read_bytes()
+            try:
+                files[key] = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                files[key] = raw
+    return files, sorted(retained)
+
+
+def _reference(home: Path, args) -> int:
+    from . import skill_reference as reference
+    from .skill_scaffold import check_skill, _read_frontmatter
+    from .hosts import HostsError, load_hosts
+    if args.reference_command == "show":
+        path = reference.PACK_DIR / "PACK.md"
+        print(path if args.path else path.read_text(), end="\n")
+        return EXIT_OK
+    if args.reference_command == "status":
+        result = reference.status(home, fetch=args.fetch)
+        print("\n".join(reference.status_lines(result)))
+        for source in result["sources"]:
+            print(f"{source['title']} ({source['date_read']}): {source['url']}")
+        return EXIT_REFUSED if any(r["state"] != "unchanged" for r in result.get("checks", [])) else EXIT_OK
+    try:
+        target = Path(args.target).expanduser()
+        if not target.is_dir():
+            from .skill_reference import resolve_skill
+            target = resolve_skill(home, args.target)
+        target = target.resolve()
+        registry = skill_registry.load(home)
+        root = load_hosts(home).skills_root
+        deployed = {}
+        if root:
+            for name in registry.skills:
+                if registry.is_owned(name):
+                    deployed[name] = skill_writer.skill_dir(Path(root), name).resolve()
+        for name, row in registry.registrations.items():
+            if row["status"] == skill_registry.STATUS_LIVE:
+                deployed[name] = Path(row["registered"]["path"]).resolve()
+        matched = next((name for name, folder in deployed.items() if folder == target), None)
+        mode = getattr(args, "reference_mode", None) or ("installed" if matched else "draft")
+        retained = []
+        if mode == "installed":
+            files, retained = _reference_files(target)
+            text = {k: v for k, v in files.items() if isinstance(v, str)}
+            clean = dict(skill_writer.draft_view(text))
+            clean.update({k: v for k, v in files.items() if not isinstance(v, str)})
+        else:
+            clean = skill_writer.read_draft_dir(target)
+        entry = clean.get("SKILL.md")
+        front = _read_frontmatter(entry).mapping if isinstance(entry, str) else None
+        name = front.get("name") if front else None
+        expected = target.name if mode == "installed" else name if isinstance(name, str) else None
+        existing = None
+        carried = None
+        if isinstance(name, str) and name in deployed:
+            # Drafts of registered rewrites get the same carried-key allowance,
+            # read from deployment, never from the supplied draft's own claims.
+            deployed_md = deployed[name] / "SKILL.md"
+            if deployed_md.is_file():
+                previous = _read_frontmatter(skill_writer._unstamped(deployed_md.read_text())).mapping
+                if previous and previous.get("name") == name:
+                    existing = name
+                if registry.is_registered(name):
+                    carried = previous
+        result = check_skill(cast(Mapping[str, str], clean), loaded_names=(), vetoed_names=(),
+                             expected_name=expected, existing_name=existing, carried_frontmatter=carried)
+        extra = skill_writer._compiler_owned_in_draft(clean) + skill_writer._secret_problems(clean)
+    except (OSError, ValueError, HostsError, skill_registry.SkillRegistryError) as exc:
+        print(f"skill reference check: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"skill reference checked: {reference.VERSION}; mode: {mode}; {target}")
+    for key in retained:
+        print(f"note: retained-file: {key}: left in place by writes; not part of a Markdown draft; source: self-learn writing policy")
+    for severity, findings in (("refusal", result.problems), ("note", result.notes)):
+        for finding in findings:
+            print(f"{severity}: {finding} ({finding.path}); source: {reference.finding_source(finding.rule)}")
+    for problem in extra:
+        print(f"refusal: {problem}; source: self-learn writing policy")
+    print(f"{len(result.problems) + len(extra)} refusals; {len(result.notes) + len(retained)} notes; semantic quality and triggering need real usage evaluation")
+    return EXIT_OK if result.ok and not extra else EXIT_REFUSED

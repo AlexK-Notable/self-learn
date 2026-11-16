@@ -118,6 +118,7 @@ from .skill_scaffold import (
     scaffold_description,
     skill_md_seed,
     validate_skill_name,
+    validate_seed_name,
 )
 from . import compiled
 from .compilers import (
@@ -2585,7 +2586,10 @@ def _resolve_target_unguarded(
                 "new-skill needs a name — the name slot is the human's "
                 "call (08 §8.1): route --dest new-skill:<name>"
             )
-        name = validate_skill_name(ref_name)
+        try:
+            name = validate_skill_name(ref_name)
+        except SkillScaffoldError as exc:
+            raise VerbError(str(exc)) from exc
         hosts = _load_hosts_or_refuse(home)
         if hosts.skills_root is None:
             raise DestinationUnavailable(
@@ -2602,6 +2606,13 @@ def _resolve_target_unguarded(
             )
         plugin_dir = root / "plugins" / name
         target = plugin_dir / "skills" / name / "SKILL.md"
+        if not removal and not target.parent.exists():
+            # S-159 R1: existing names are user settings. Full authoring
+            # rules belong only to a fresh scaffold, before ledger commit.
+            try:
+                validate_seed_name(name)
+            except SkillScaffoldError as exc:
+                raise VerbError(str(exc)) from exc
         if not removal and not target.is_file():
             # SK2 (S-107): this write would scaffold. Ahead of
             # M3-9, so an owned skill that lost its SKILL.md is named as
@@ -4928,6 +4939,8 @@ def _apply_new_skill(
     if not records:
         return _empty_new_skill_section(spec)
     name = spec.new_skill
+    if not name:
+        raise VerbError("new-skill needs a name")
     root = spec.host_path
     target = spec.target
     plugin_dir = root / "plugins" / name
@@ -4947,42 +4960,45 @@ def _apply_new_skill(
     changed = False
     scaffolded = False
     owned_stamp: dict | None = None
-    seed_text = skill_md_seed(name, description) if name else ""
-    if owner is not None and name and not manifest.is_file() and not target.is_file():
-        from . import skill_writer  # local: skill_writer reads verbs lazily too
-
-        stamp = {"authored_by": owner, "case": None, "created": chrono.now_iso()}
-        try:
-            seed_text = skill_writer.stamp_skill_md(
-                seed_text, by=owner, case=None, created=stamp["created"]
-            )
-            owned_stamp = stamp
-        except ValueError:
-            # Not reachable for the seed's own frontmatter; if it ever is,
-            # the scaffold goes ahead unowned, exactly as before SK-G.
-            owned_stamp = None
     if name and target is not None and not target.is_file():
         # SK2: also checked when the target is resolved (route and recompile
         # alike); here it is the last stop, for a SKILL.md that went missing
         # between that check and this write, so no path re-seeds an owned
         # skill. Recompile's git leg catches the refusal per target.
         _refuse_rescaffolding_an_owned_skill(home, name)
+    if not target.is_file():
+        # Compute at the write boundary: an earlier existence check can race.
+        _refuse_rescaffolding_an_owned_skill(home, name)
+        try:
+            seed_text = skill_md_seed(name, description)
+        except SkillScaffoldError as exc:
+            raise VerbError(str(exc)) from exc
+        if owner is not None and not manifest.is_file():
+            from . import skill_writer
+
+            stamp = {"authored_by": owner, "case": None, "created": chrono.now_iso()}
+            try:
+                seed_text = skill_writer.stamp_skill_md(
+                    seed_text, by=owner, case=None, created=stamp["created"]
+                )
+                owned_stamp = stamp
+            except ValueError:
+                owned_stamp = None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(
+            target,
+            seed_text,
+            preserve_mode=True,
+            fsync=True,
+            follow_symlinks=True,
+        )
+        changed = scaffolded = True
     if not manifest.is_file():
         manifest.parent.mkdir(parents=True, exist_ok=True)
         # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
         fsops.atomic_write(
             manifest,
             plugin_manifest_text(name, description),
-            preserve_mode=True,
-            fsync=True,
-            follow_symlinks=True,
-        )
-        changed = scaffolded = True
-    if not target.is_file():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fsops.atomic_write(
-            target,
-            seed_text,
             preserve_mode=True,
             fsync=True,
             follow_symlinks=True,
@@ -5101,12 +5117,14 @@ def _add_owned_scaffold_row(
     that exists by now (a race with another writer) is left alone."""
     if name in registry.skills or name in registry.registrations:
         return
+    from .skill_reference import VERSION
     step = {"at": stamp["created"], "case": None, "by": stamp["authored_by"]}
     registry.skills[name] = {
         "status": "live",
         "plugin": f"plugins/{name}",
         "created": dict(step),
-        "last_write": {**step, "authored_sha256": sha},
+        "last_write": {**step, "authored_sha256": sha,
+                       "reference_pack": VERSION},
     }
 
 

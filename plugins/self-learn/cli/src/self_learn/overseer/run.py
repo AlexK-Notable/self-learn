@@ -912,6 +912,9 @@ def _phase_b_prompt(
     stage: Path, selected: tuple[str, ...], parked: tuple[str, ...], *, discovery: bool = True,
 ) -> str:
     return f"""You are the self-learn overseer. The evidence-first view is complete.
+Read skill-reference/PACK.md, EXAMPLES.md and STATUS.md first. Draft, rewrite and reorganise
+every skill against this pack and the available native examples. Report its version and guidance
+findings; preserve registered user settings where the pack conflicts. Never fetch sources here.
 You may now read the steward rationale and full decided account in full/*.md.
 This folder, {stage}, is your workspace: you can read and write only inside it.
 {_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
@@ -2836,6 +2839,21 @@ def _in_short_note(
     )
 
 
+def _put_skill_reference_lines(lines: list[str], facts: list[str]) -> None:
+    """Keep pack facts in the declared Catalogue health section, once each."""
+    if not facts:
+        return
+    start = next((i for i, line in enumerate(lines)
+                  if line.startswith("## ") and _heading_name(line) == "Catalogue health"), None)
+    if start is None:
+        lines.extend(["", "## Catalogue health"])
+        start = len(lines) - 1
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    present = set(lines[start + 1:end])
+    lines[end:end] = [f"- {fact}" for fact in facts if f"- {fact}" not in present]
+    _drop_bare_none(lines, start + 1)
+
+
 def _finalize_model_report(
     path: Path, *, date: str, run_id: str, model: str, selected: tuple[str, ...],
     population_count: int, excluded: int, model_calls: int, guard: int,
@@ -2847,6 +2865,7 @@ def _finalize_model_report(
     hand_steps: dict[str, Any] | None = None,
     question_notes: list[str] | None = None,
     in_short_note: str | None = None,
+    reference_lines: list[str] | None = None,
 ) -> str:
     """The published report: the model's own text, whole, with the
     runner's factual lines added. *in_short_note* (W-294) is the runner's
@@ -2862,6 +2881,8 @@ def _finalize_model_report(
     questions, never under "Refused / could not do"."""
     lines = _validate_model_report(path)
     model_line_count = len(lines)
+    if reference_lines:
+        _put_skill_reference_lines(lines, reference_lines)
     runner_notes = list(notes or [])
     if model_line_count > _REPORT_LINE_GUIDE:
         runner_notes.append(
@@ -3832,6 +3853,11 @@ class _CaseRefused(Exception):
 
 def _write_report_only(stage: Path, text: str) -> Path:
     path = stage / "report.final.md"
+    reference_status = stage / "skill-reference" / "STATUS.md"
+    if reference_status.is_file():
+        lines = text.splitlines()
+        _put_skill_reference_lines(lines, reference_status.read_text(encoding="utf-8").splitlines())
+        text = "\n".join(lines) + "\n"
     _write_stage(stage, path, text)
     return path
 
@@ -7312,6 +7338,7 @@ def _execute_manifest(
                 ],
                 hand_steps=cast("dict[str, Any] | None", manifest.get("hand_steps")),
                 in_short_note=in_short_note,
+                reference_lines=skills_mod.reference_report_lines(manifest),
             )
         manifest, report_path, latest = _write_manifest_truth(
             home, manifest, report_text=_render, complete=not halted, closed=closed,
@@ -8702,6 +8729,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 },
                 skill_steps=skill_steps,
                 skills_info={
+                    "reference_lines": skill_stage.reference_lines,
                     "state": skill_state.to_json(),
                     "drafts": skill_drafts,
                     # SK-E: links made again before phase B was staged.

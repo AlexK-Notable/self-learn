@@ -536,6 +536,12 @@ CASES: dict[str, Case] = {
     ),
 }
 
+CASES.update({
+    "name-hyphens": Case(skill(front={"name": q("bad--name")}), {"name-hyphens": "hyphen"}),
+    "name-synced": Case(skill(front={"name": q("synced")}), {"name-synced": "reserved"}),
+    "compatibility-limit": Case(skill(front={"compatibility": q("x" * 501)}), {"compatibility-limit": "500"}),
+})
+
 _ALL_RULE_IDS = set(skill_scaffold.SKILL_RULE_IDS)
 
 
@@ -587,6 +593,8 @@ def test_the_nine_keys_the_design_refuses_by_name_are_all_listed():
         "when_to_use",
         "paths",
         "metadata",
+        "compatibility",
+        "license",
     )
 
 
@@ -704,7 +712,7 @@ def test_paths_may_be_absent():
 
 def test_a_long_description_is_a_note_not_a_problem():
     words = report.DESCRIPTION_SOFT_MAX_WORDS
-    long_description = " ".join(["word"] * (words + 1))
+    long_description = "when " + " ".join(["word"] * words)
     result = run(skill(front={"description": q(long_description)}))
     assert result.problems == ()
     assert result.note_rules == ("description-long-words",)
@@ -714,7 +722,7 @@ def test_a_long_description_is_a_note_not_a_problem():
 
 def test_a_description_at_the_soft_word_limit_is_not_noted():
     words = report.DESCRIPTION_SOFT_MAX_WORDS
-    exact = " ".join(["word"] * words)
+    exact = "when " + " ".join(["word"] * (words - 1))
     result = run(skill(front={"description": q(exact)}))
     assert result.problems == () and result.notes == ()
 
@@ -746,7 +754,7 @@ def test_a_body_of_exactly_500_lines_is_not_noted():
 
 def test_both_notes_together_and_with_a_problem_stay_separate():
     files = _skill_md_with_body_lines(501)
-    long_description = " ".join(["word"] * (report.DESCRIPTION_SOFT_MAX_WORDS + 1))
+    long_description = "when " + " ".join(["word"] * report.DESCRIPTION_SOFT_MAX_WORDS)
     files["SKILL.md"] = files["SKILL.md"].replace(
         q(DESCRIPTION), q(long_description)
     )

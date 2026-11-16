@@ -2386,3 +2386,112 @@ new plugin files, restores marketplace bytes, then attempts index cleanup last.
 A combined refusal names the retained backup and any failed recovery steps. After a
 successful commit, linking is retried or the exact link to repair is reported. Registration is committed only after adoption succeeds. Withdrawal
 revokes editing permission without undoing adoption or deleting files.
+
+
+### Anthropic skill authoring reference (S-159)
+
+The CLI ships `self_learn/skill_reference/PACK.md` and `sources.yaml` as package
+resources, version `anthropic-2026-11-15`. Each numbered rule has a short quotation,
+source URL and read date. This is the evidence for drafting, full rewrites and
+reference reorganisation in owned and registered skills, including agent build and
+change requests. The phase-B stage always contains `skill-reference/`, even when
+writing is off; its prompt and method require PACK.md, EXAMPLES.md and STATUS.md.
+The writer checks the same requirements for supplied drafts. The legacy route seed
+checks its deterministic text before deployment and owned seeds use the same stamp.
+
+New refusals add `name-hyphens` (trailing/doubled hyphen), `name-synced`, and
+`compatibility-limit` (string, at most 500 characters). Existing required fields,
+64-character name, 1,024-character description, character set, reserved words,
+XML tags, directory match and direct one-level references remain checked.
+`license` and `compatibility` are accepted descriptive fields. Names retained on
+updates and carried registered fields are never changed to satisfy the pack; the
+conflict is a note. Existing registered license/compatibility also stay immutable.
+
+Description trigger/person/angle-bracket heuristics, a labelled characters/4 token
+estimate and reference contents-list heuristics produce notes, not refusals. The
+existing line/word soft limits remain advisory. Free-form metadata is valid for the
+Claude Code target but is noted as nonportable when values are not strings. The
+runner's nested provenance map is an intentional format choice. No upload occurs:
+API request/upload limits and the portable six-key allow-list do not reject valid
+Claude Code settings. Local template restrictions on executable/support files,
+permissions, managed blocks and safe paths remain separate from Anthropic rules.
+Static checks cannot establish semantic quality or correct skill invocation.
+
+Native examples are runtime-only. `SELF_LEARN_SKILL_REFERENCE_PLUGIN_ROOT` replaces
+the default skill-creator plugin-cache root;
+`SELF_LEARN_SKILL_REFERENCE_SYNCED_ROOT` replaces the synced-skills root, both below
+`SELF_LEARN_CLAUDE_DIR` by default. The latest creator copy by mtime is selected;
+synced entries must be attributed to `anthropic` or `anthropic-example` by their
+manifest. Absent copies are omitted. Stage Markdown and license text through the
+existing secret scanner before invocation, never scripts for execution. The staged
+source manifest displays hash prefixes to avoid entropy false positives; the installed
+manifest retains full hashes for HTTP comparison. No example is vendored and
+no redistribution grant is inferred for restricted or unlicensed installed skills.
+
+`skill reference show [--path]` exposes the pack; `check NAME-OR-PATH` is read-only
+and prints rule ids and sources for refusals and notes. Name resolution uses the
+registered skills root and Claude runtime directory, reporting ambiguity.
+`skill write` prints the checked version and `skill list` displays each last-write
+version. `status` reports version/date/age/sources offline; `status --fetch` uses
+plain HTTP with bounded requests, records results in the per-home cache, and exits
+0 only when all sources match, 1 when changed or unreachable. The weekly run reads
+this cache only. A refresh re-gathers the source text and licensing facts, updates
+PACK.md, hashes, version/date and tests, and lands a normal code/spec change.
+
+#### S-159 review corrections (2026-11-15)
+
+Seed routes check names against the reference rules before committing the ledger.
+Seed descriptions replace angle brackets with square brackets and cap the text
+at 1,024 characters. Seed failures during host application become a reported
+target failure; recompile continues with other targets.
+
+Optional examples are read defensively: malformed manifests, unreadable content
+and copies removed during discovery are omitted with a Refused / could not do
+note. Reference staging failure never refuses the weekly run. Reference facts
+live under the declared Catalogue health report heading; draft guidance is reported only
+for a retained draft or an applied write, including resumed writes.
+
+The read-only reference check uses the same editable view as the writer:
+runner/compiler blocks are removed in memory, the default LEARNINGS.md shelf
+and other files the writer leaves alone are notes, and retained assets are not
+opened. Owned names and registered carried settings get the writer's exemptions.
+Malformed hosts configuration produces a diagnostic and usage exit, not a traceback.
+
+Fetch has a 20-second source wait and a 60-second overall wall-clock deadline.
+DNS or a trickling socket cannot extend the caller's wait: a daemon HTTP worker
+has no cache-writing authority and starts no subsequent requests. At a deadline
+the caller reports unreachable and records the observation; an uncancellable
+platform DNS/socket operation can finish in that daemon later or end at process
+exit. Weekly runs remain offline. See 02 §S-159 rollback note before reverting
+code after a write has recorded reference_pack.
+
+#### S-159 re-review corrections (2026-11-15, R1–R3)
+
+Full new-skill name validation is a precommit gate only when a non-removal
+operation would create a missing skill folder. Existing new-skill targets retain
+the previous slug/path validation and collision gates; reserved words and other
+new-authoring name rules do not prevent routing, recompile or removal of lessons.
+
+Reference check prints draft or installed mode. Automatic selection uses the
+resolved deployed path of a live owned or registered skill; every other path is
+a draft. Mutually exclusive --draft and --installed flags override that choice,
+so an unregistered installation can be checked as installed explicitly. Draft
+mode reads every supplied file and applies the writer's template, compiler-owned
+content and secret-scan refusals. It uses the declared skill name as the eventual
+write target, allowing an arbitrary staging folder name. A registered rewrite
+uses carried settings read from deployment, never from the draft's own claims.
+Installed mode keeps the editable-view behavior and retained-file notes.
+
+A manifest-level shape/read failure omits that manifest. A bad individual row,
+including a missing downloaded folder, adds exactly one row note and omits only
+that example; valid rows before and after it still stage, in list or map form.
+
+#### S-159 suite corrections (2026-11-15)
+
+Pack age uses primitives.chrono.age_days with the read date interpreted at UTC
+midnight (the precision the pack records), a full UTC current timestamp, and
+zero for dates in the future. Injected test dates likewise mean UTC midnight.
+Pack status and applied/retained guidance belong under Catalogue health in both
+model-finalized and runner-only reports. Repeated publication adds no duplicate
+facts. The report retains its declared heading order and its existing repair
+rules; no additional Skill reference heading is published.
