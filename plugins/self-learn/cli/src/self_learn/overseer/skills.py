@@ -339,8 +339,13 @@ def stage_phase_b(
     home = Path(home)
     staged = StagedSkills()
     from .. import skill_scripts
+    try:
+        script_rows = skill_scripts.listed(home)
+    except Exception as exc:
+        script_rows = []
+        staged.notes.append(f"script index unavailable ({type(exc).__name__}); no approval is assumed")
     history = [{"skill": r["skill"], "name": r["name"], "state": r["state"],
-        "screen": r["screen"], "review": r["review"]} for r in skill_scripts.rows(home)]
+        "screen": r["screen"], "review": r["review"]} for r in script_rows]
     write(stage, stage / "script-reviews.yaml", short_hashes(_yaml_text(history)))
     from ..skill_reference import stage_pack
     staged.reference_lines = stage_pack(home, stage, write, notes=staged.notes)
@@ -876,11 +881,11 @@ def step_for_case(
             f"{name} cannot be rewritten this run: its files could not be read from the skills root"
         )
     try:
-        files = skill_writer.read_draft_dir(folder)
+        files = skill_writer.read_draft_dir(folder, script_notes=staged.notes)
     except (ValueError, OSError) as exc:
         raise SkillPairError(f"{STAGE_SKILLS_DIR}/{name}/ cannot be read as a skill: {exc}") from exc
     try:
-        files, scripts = extract_scripts(files)
+        files, scripts = extract_scripts(files, notes=staged.notes)
     except ValueError as exc:
         raise SkillPairError(str(exc)) from exc
     expect = staged.expect.get(name) if editable else None
@@ -1216,16 +1221,16 @@ def apply_write(home: Path | str, case_id: str, step: SkillStep, *, case_name: s
     ``no_push``: the run's own push publishes both repositories)."""
     home = Path(home)
     if _already_written(home, case_id, step):
-        hold_scripts(home, step)
-        return StepOutcome("applied", _done_line(step, case_id))
+        warnings = hold_scripts(home, step)
+        return StepOutcome("applied", _done_line(step, case_id), warning="; ".join(warnings) or None)
     result = skill_writer.write(
         home, step.name, step.files, case=case_id, by="overseer",
         expect_sha=step.expect_sha, updating=step.updating, no_push=True,
         expect_missing=step.expect_missing,
     )
     if result.ok:
-        hold_scripts(home, step)
-        return StepOutcome("applied", _done_line(step, case_id))
+        warnings = hold_scripts(home, step)
+        return StepOutcome("applied", _done_line(step, case_id), warning="; ".join(warnings) or None)
     if result.authored_sha256 is not None and (result.ledger_sha or result.host_sha):
         # The files and the row landed; only the link could not be made.
         return StepOutcome(
@@ -1356,26 +1361,35 @@ def reference_report_lines(manifest: dict[str, Any]) -> list[str]:
     return lines
 
 
-def extract_scripts(files: dict) -> tuple[dict, list[dict[str, str]]]:
-    """Phase B uses scripts/<name> plus scripts/<name>.usage.md; neither deploys."""
-    from ..skill_scripts import _names
-    prose, scripts = dict(files), []
+def extract_scripts(files: dict, *, notes: list[str] | None = None) -> tuple[dict, list[dict[str, str]]]:
+    """Drop only malformed helpers; prose and subsequent cases still apply."""
+    from ..skill_scripts import _names, normalize_usage
+    notes = notes if notes is not None else []
+    prose = {key: value for key, value in files.items() if not key.startswith("scripts/")}
+    scripts = []
     names = [key for key in files if key.startswith("scripts/") and not key.endswith(".usage.md")]
     for key in names:
         name = key.removeprefix("scripts/")
-        _names("draft-skill", name)
-        usage_key = key + ".usage.md"
-        if not isinstance(files[key], str) or not isinstance(files.get(usage_key), str):
-            raise ValueError("script draft requires UTF-8 source and a .usage.md companion")
-        scripts.append({"name": name, "text": files[key], "usage": files[usage_key].strip()})
-        prose.pop(key)
-        prose.pop(usage_key)
-    if any(key.startswith("scripts/") for key in prose):
-        raise ValueError("orphan script usage file")
+        try:
+            _names("draft-skill", name)
+            if not isinstance(files[key], str) or not isinstance(files.get(key + ".usage.md"), str):
+                raise ValueError("script draft requires UTF-8 source and a .usage.md companion")
+            usage = normalize_usage(files[key + ".usage.md"])
+            scripts.append({"name": name, "text": files[key], "usage": usage})
+        except Exception as exc:
+            notes.append(f"script {name}: dropped draft ({type(exc).__name__}: {exc}); prose still applies")
+    for key in files:
+        if key.startswith("scripts/") and key.endswith(".usage.md") and key.removesuffix(".usage.md") not in files:
+            notes.append(f"{key}: dropped orphan script usage file; prose still applies")
     return prose, scripts
 
 
-def hold_scripts(home: Path, step: SkillStep) -> None:
+def hold_scripts(home: Path, step: SkillStep) -> list[str]:
     from .. import skill_scripts
+    warnings = []
     for script in step.scripts:
-        skill_scripts.draft(home, step.name, **script, note="overseer phase B helper", by="overseer")
+        try:
+            skill_scripts.draft(home, step.name, **script, note="overseer phase B helper", by="overseer")
+        except Exception as exc:
+            warnings.append(f"script {step.name}/{script.get('name', '?')}: dropped draft ({type(exc).__name__}: {exc}); prose write applied")
+    return warnings

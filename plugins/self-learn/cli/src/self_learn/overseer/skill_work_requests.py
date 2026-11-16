@@ -105,7 +105,7 @@ def settle(home: Path, manifest: dict, *, complete: bool) -> list[str]:
         if not applied:
             for recipe in (manifest.get("cases") or {}).values():
                 step = recipe.get("skill") or {}
-                if (str(recipe.get("case_name", "")).removesuffix(".yaml") == str(answer.get("case", "")).removesuffix(".yaml")
+                if ((result == "changed" or str(recipe.get("case_name", "")).removesuffix(".yaml") == str(answer.get("case", "")).removesuffix(".yaml"))
                     and (result == "built" or step.get("name") == answer["name"]) and step.get("action") == "write"
                     and step.get("state") == "applied"):
                     applied = (result != "built" or set(answer["lessons"]).issubset(

@@ -5424,8 +5424,9 @@ note, by, at, screen and review. The version is SHA-256 over compact UTF-8 JSON
 binds both byte strings. Source is UTF-8 and stored as mode 0600 at
 `skill-scripts/<skill>/<name>/<version>/draft`, never in the skills root.
 An identical submission returns the same row; changed usage is a new version.
-Only `may_edit` owned/registered non-vetoed names qualify. A new version deactivates
-its predecessor. Versions and review attempts are retained indefinitely.
+Only `may_edit` owned/registered non-vetoed names qualify. A new draft leaves the
+active predecessor in place. Only approved activation swaps it out under both locks.
+Versions and review attempts are retained indefinitely.
 
 The screen stamp contains language, ok and named rules. A refusal blocks a review
 and does not spend an attempt. A review stamp is committed BEFORE invocation:
@@ -5435,6 +5436,9 @@ an interrupted session. No version is reviewed twice. `models.script_review`
 defaults to `claude-fable-5-2`; any other setting refuses the invocation. Default
 `scripts.reviews_per_day` is 5 (manual, UTC); `overseer.script_reviews_per_run` is 3,
 keyed by the durable run id, including resumes. Both accept zero to stop reviews.
+These two caps are tier C, config-only: no plain environment or process-override
+rung can raise them. An agent needs the
+standing grant and a reason to change them; a person may change them directly.
 
 The fresh SDK session uses the analyst transport with an explicit model,
 TextOnlySpec, no tools/MCP, no resumed session, one response and a 180-second
@@ -5446,8 +5450,19 @@ tool activity, invocation failure, invalid JSON, invalid verdict/reasons or reje
 without required changes yield `no review`. Valid rejection retains reasons and
 required changes. Approval records model, session, date, version, proof, reasons,
 changes and reported USD cost. These are session observations, not model claims.
-There is no current-session or command-line approval route. Cost is reported when
-available; count/time/turn bounds do not promise a dollar price or dollar ceiling.
+There is no current-session or command-line approval route. A fenced JSON verdict
+is accepted. The verdict must name the exact version hash and contain only
+`verdict`, `reasons`, `changes`, and `version`; extra fields cannot overwrite
+backend-owned accounting/session metadata. The SDK captures init
+and every assistant message as structured transcript lines, including tool-use
+flags. Approval stores those lines at the held version's `review.jsonl`, with a
+relative ledger path and SHA-256 over the complete file. These lines are committed
+with the approval and retained independently of cache-log retention. Activation,
+listing and every integrity check reread the file and verify model, session,
+version, verdict and absence of tool use. Missing/changed evidence is `unverified`,
+never an approval self-learn vouches for. **This raises the bar; it is not proof
+against someone who controls the machine and can forge all local records.**
+Cost is reported when available; count/time/turn bounds do not promise a dollar price or dollar ceiling.
 
 Activation checks the exact current held bytes again, takes ledger then host lock,
 refuses symlink paths, existing destinations and dirty affected files, and commits
@@ -5458,10 +5473,17 @@ pending in the ledger. Cross-repository commits are not physically atomic: a
 pending stamp is deliberately recoverable by deactivation. An ordinary failed
 host commit quarantines the created file and restores prose. There is no retry
 that spends another review. Approved but undeployed rows report activation_error.
+Every enforcing audit and overseer run retries a current approved version, as does
+`skill script activate <id>`. Neither route spends another review. Superseded versions are not retried.
+Exclusive file creation precedes an ownership stamp; a collision never makes
+the newcomer self-learn's file. An existing foreign file refuses a draft before
+review spending. `active_mode` records 0755; mode changes revoke activation.
 
-Every non-dry overseer run, every recompile and every doctor subcommand checks
-active source hashes and the exact approved usage block. Changed or damaged usage
-preserves the entire edited SKILL.md in quarantine before removing managed entries;
+Every non-dry overseer run, every recompile, and the host process's daily
+maintenance pass enforce active source hashes, modes, transcript evidence and
+the exact approved usage block. Doctor checks these read-only: no locks, recovery,
+quarantine, activation or commits. Its failure row names recompile as the repair.
+Changed or damaged usage preserves the entire edited SKILL.md in quarantine before removing managed entries;
 all scripts of that skill are revoked. Unrecognizable prose is retained. Missing/changed/symlink scripts and interrupted activation
 are deactivated under the same lock order. Existing bytes or symlinks are moved (including across filesystems)
 into the ledger-scoped cache `script-quarantine/<date>-<nonce>/<name>` and ordinary
@@ -5471,6 +5493,15 @@ script and quarantine path (or says the file was missing). Orphan-cache cleanup
 retains any home cache with a `script-quarantine` entry, even after its ledger
 has gone; quarantined user edits never expire as disposable cache. No file is deleted by
 this lifecycle. Dry runs do not mutate; selftest remains a read-only health view.
+Per-row/index/read/git failures become notices; they do not crash the calling
+operation or stop checking other rows. Swapped script/skill directory symlinks
+are moved themselves; their targets are not followed. Historical managed files
+restored without an active approved version are quarantined too. If normal
+cache/commit recovery fails, preserve unsafe bytes under `skill-scripts-recovery/`
+in the ledger before disabling them. Damaged indexes are preserved before
+recovering identities, never assumed approvals. Failures of preservation or
+permissions are reported as incomplete enforcement, never silently counted as
+success. Unrelated uncommitted prose remains uncommitted during deactivation.
 
 The writer owns prose/references, not executable deployment. Drafts may not contain
 scripts or the scripts block. Draft views strip that block; writes reattach it

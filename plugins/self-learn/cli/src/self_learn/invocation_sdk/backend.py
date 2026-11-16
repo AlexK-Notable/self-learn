@@ -175,6 +175,7 @@ class SdkOutcome(Outcome):
     transcript: dict[str, Any] | None = None
     init_models: tuple[str | None, ...] = ()
     assistant_models: tuple[str | None, ...] = ()
+    review_messages: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -849,6 +850,7 @@ async def _run_session(
     set_child_pid: Callable[[int | None], None],
     note_session_id: Callable[[str], None] | None = None,
     model_observations: list[tuple[str, str | None]] | None = None,
+    review_messages: list[dict[str, Any]] | None = None,
 ) -> tuple[ResultMessage | None, str]:
     # `session.py` -- the transport loop, not the vocabulary: `SdkSession`
     # does nothing except call the same `connect`/`query`/
@@ -882,6 +884,13 @@ async def _run_session(
     # 2026-10-31: streaming, only for a producer that asked for it.
     relay = _EventRelay(spec) if spec.on_event is not None else None
     async for message in session.drive():
+        if review_messages is not None:
+            if isinstance(message, SystemMessage) and message.subtype == "init":
+                review_messages.append({"type": "init", "model": message.data.get("model"), "session": message.data.get("session_id")})
+            elif isinstance(message, AssistantMessage):
+                review_messages.append({"type": "assistant", "model": getattr(message, "model", None),
+                    "text": "".join(b.text for b in message.content if isinstance(b, TextBlock)),
+                    "tool_use": any(isinstance(b, ToolUseBlock) for b in message.content)})
         if model_observations is not None:
             if isinstance(message, SystemMessage) and message.subtype == "init":
                 value = message.data.get("model") if isinstance(message.data, dict) else None
@@ -972,13 +981,14 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
     child_pid_holder: list[int | None] = [None]
     session_id_holder: list[str] = []
     model_observations: list[tuple[str, str | None]] = []
+    review_messages: list[dict[str, Any]] = []
 
     outcome: SdkOutcome | None = None
     try:
         result_message, last_assistant_text = await asyncio.wait_for(
             _run_session(
                 spec, client, options, events, child_pid_holder.append,
-                session_id_holder.append, model_observations,
+                session_id_holder.append, model_observations, review_messages,
             ),
             timeout=spec.timeout,
         )
@@ -1130,7 +1140,8 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
     # dataclass's own `None` default instead of reaching this line.
     return _dataclass_replace(outcome, child_pid=child_pid, transcript=transcript,
         init_models=tuple(m for kind, m in model_observations if kind == "init"),
-        assistant_models=tuple(m for kind, m in model_observations if kind == "assistant"))
+        assistant_models=tuple(m for kind, m in model_observations if kind == "assistant"),
+        review_messages=tuple(review_messages))
 
 
 # --------------------------------------------------------------- SdkBackend

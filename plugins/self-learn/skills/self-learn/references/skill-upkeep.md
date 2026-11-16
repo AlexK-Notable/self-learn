@@ -106,6 +106,7 @@ self-learn skill script draft <skill> --file <path> --name <name> --usage "How t
 self-learn skill script list
 self-learn skill script show <id>
 self-learn skill script review <id> --note "Review this version"
+self-learn skill script activate <id>
 self-learn skill script deactivate <id> --note "Why to stop using it"
 ```
 
@@ -116,8 +117,17 @@ the exact source+usage version, installs an executable and adds a managed usage
 entry. Nobody can approve by command or from an already running session. Each
 version gets one review attempt ever (default manual cap 5/day, overseer 3/run).
 Inspect rejected/no-review reasons and submit a changed version to try again.
+A new draft leaves the active helper in place until approved replacement. An
+approved version held by dirty files retries automatically; `activate` applies
+that existing approval without another review. List shows activation refusals
+and labels missing or inconsistent transcript evidence unverified. Review caps
+are tier C, configuration-only; agents need the standing grant and a reason to
+change them. Local transcript corroboration cannot defeat someone able to forge
+all machine-local records.
 
-Every overseer run, recompile and doctor checks active bytes. Changed or missing
+Every overseer run, recompile and daily host maintenance enforces active bytes,
+modes and transcript evidence. Doctor reports problems without writing; run
+`self-learn recompile` to enforce them. Changed or missing
 scripts lose their usage entry; changed files move to a dated quarantine in the
 ledger's cache, and the notice gives its location. Deactivation needs no grant.
 Prose rewrites preserve active scripts and their block; never include either in a

@@ -6403,6 +6403,8 @@ def _apply_skill_write(
     if raw.get("state") == "refused":
         raise _SkillRefused(str(raw.get("line") or f"the skill write for {step.name} was refused"))
     if raw.get("state") == "applied":
+        if raw.get("warning"):
+            notes.append(str(raw["warning"]))
         return
     outcome = skills_mod.apply_write(home, case_id, step, case_name=str(recipe["case_name"]))
     line = _failure_detail(outcome.line) or outcome.line
@@ -6422,7 +6424,8 @@ def _apply_skill_write(
         raise _SkillRefused(line)
     cue_outcomes.append(_skill_cue(step))
     if outcome.warning:
-        notes.append(_failure_detail(outcome.warning) or outcome.warning)
+        raw["warning"] = _failure_detail(outcome.warning) or outcome.warning
+        notes.append(str(raw["warning"]))
 
 
 def _apply_skill_rename(

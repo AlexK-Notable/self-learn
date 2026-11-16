@@ -2510,7 +2510,9 @@ the factual run report.
 
 Agents and people can use `skill script draft <skill> --file <path> --name <name>
 --usage <paragraph> --note <why>`, `list`, `show <id>`, `review <id> --note <why>`
-and `deactivate <id> --note <why>`. No grant and no approve command. Review attempts
+and `deactivate <id> --note <why>`. `activate <id>` retries an already corroborated
+approval without a model call. These lifecycle commands need no grant; raising
+either review-count cap is tier C. There is no approve command. Review attempts
 are durable and once-only, including failed/unproven sessions. A changed version
 is submitted anew. List/show include state, version, screen and approval evidence.
 
@@ -2539,3 +2541,32 @@ an index or invoking configured helpers. Date-setting and sort compression progr
 also refuse. Sed accepts only simple slash-delimited substitutions and print,
 pattern-space-delete or quit expressions; file scripts and unknown flags refuse.
 The supported subset is intentionally narrower than each command's full language.
+
+#### S-160 fix round 1 (2026-11-15, F1–F13)
+
+The screen is a positive allow-list of modules, imported members, module
+attributes, value methods, call targets, shell commands, exact option spellings
+and operand counts. Import spelling never bypasses member checks; module aliases,
+reflective calls, two-argument iter, environment reads and FileType refuse. File
+openers must be called directly so mode/path checks cannot be skipped by passing
+them through map or partial. Format fields are literal, simple argument names or
+positions, with no attribute/index lookup or nested fields; format methods cannot
+be passed indirectly. Known credential paths include netrc and process-environment
+files. Shell
+quote removal precedes credential checks; unknown expansions, abbreviated options,
+unsafe short-option bundles and unscreened jq programs refuse. Printf requires a
+literal read/report format, excluding its variable-assignment conversion. The supported
+read/report operations retain positive examples, including both reviewer controls.
+
+Usage paragraphs may wrap across lines; the runner joins them. Invalid names,
+unreadable companions, marker/secret failures and errors while holding a draft
+produce Refused / could not do notes for the helper only. The skill write and later
+cases still apply, including on resume. A change request is satisfied by any applied
+write to that same skill in the run, independent of the model's named case. Build
+requests retain their named-case and routed-lesson checks.
+
+Drafting a replacement leaves the current helper running. Approval retries on
+integrity checks and through `skill script activate`. Doctor stays read-only;
+enforcement also runs daily in the existing serve maintenance job. A transcript
+stamp corroborates each approval, with the exact version in the verdict. The
+stamp is local evidence, not a defense against a machine owner forging both files.

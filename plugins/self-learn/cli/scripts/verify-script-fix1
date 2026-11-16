@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""S-160 fix round 1 mutation witnesses. Run only in a disposable worktree.
+
+Run this serial test runner through test-sweep; every child inherits its budget.
+Requires an explicit durable evidence
+folder; never chooses a temporary directory. Restores and hashes exact bytes.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+
+# One allocation for the entire serial batch, like scripts/suite. Refuse an
+# accidental direct launch: mutations may only run inside the testing budget.
+cgroup = Path("/proc/self/cgroup").read_text()
+if not any("/" + name + "/" in cgroup for name in ("testing.slice", "fulltest.slice")):
+    raise SystemExit("run through test-sweep -- python scripts/verify-script-fix1 <evidence-folder>")
+root = Path(__file__).resolve().parents[1]
+out = Path(sys.argv[1]).resolve()
+out.mkdir(parents=True, exist_ok=True)
+source = root / "src/self_learn"
+# name, file, old text, new text, pytest selector
+mutations = [('allow-screen-bypasses',
+  'script_screen.py',
+  'return Screen(language, tuple(dict.fromkeys(rules)))',
+  'return Screen(language, ())',
+  'reviewer_screen_probes or additional_member_indirection or shell_control_variables'),
+ ('reject-report-controls',
+  'script_screen.py',
+  'return Screen(language, tuple(dict.fromkeys(rules)))',
+  'return Screen(language, ("mutation: refused",))',
+  '(reviewer_screen_probes and allowed_report) or shell_control_variables_printf or literal_format_reports_allowed or additional_read_reports_allowed'),
+ ('strand-approved',
+  'skill_scripts.py',
+  'def _activate_locked(home: Path, records: list[dict], row: dict) -> None:\n',
+  'def _activate_locked(home: Path, records: list[dict], row: dict) -> None:\n'
+  '    if row.get("activation_error"):\n'
+  '        return\n',
+  'approved_activation_retries'),
+ ('revoke-on-draft',
+  'skill_scripts.py',
+  '        same = next((r for r in records',
+  '        for old in records:\n'
+  '            if old["state"] == "active":\n'
+  '                _deactivate_locked(home, records, old, "mutation")\n'
+  '        same = next((r for r in records',
+  'new_draft_preserves'),
+ ('skip-enforcement',
+  'skill_scripts.py',
+  'return _integrity(home, enforce=True)',
+  'return []',
+  'integrity_contains_damage'),
+ ('propagate-corrupt-index',
+  'skill_writer.py',
+  '    for notice in skill_scripts.audit(home):\n        print(notice)\n    try:',
+  '    entries = skill_scripts.rows(home)\n'
+  '    for notice in skill_scripts.audit(home):\n'
+  '        print(notice)\n'
+  '    try:',
+  'corrupt_index_does_not_block'),
+ ('trust-index-only',
+  'script_proof.py',
+  'def verify(home: Path, row: dict) -> str | None:\n',
+  'def verify(home: Path, row: dict) -> str | None:\n    return None\n',
+  'transcript_required'),
+ ('ignore-outcome-tools', 'skill_scripts.py', ' and not outcome.tool_events', '', 'tool_use_rejected'),
+ ('reject-fenced-verdict',
+  'script_proof.py',
+  'if text.startswith("```json\\n") and text.endswith("\\n```"):',
+  'if False:',
+  'fenced_verdict'),
+ ('mutating-doctor',
+  'cli.py',
+  'for notice in skill_scripts.inspect(home):',
+  'for notice in skill_scripts.audit(home):',
+  'doctor_read_only'),
+ ('skip-nightly',
+  'maintenance.py',
+  'for notice in skill_scripts.audit(home):',
+  'for notice in []:',
+  'doctor_read_only'),
+ ('raise-manual-cap-env',
+  'settings.py',
+  'Setting(name="scripts.reviews_per_day", env_var=None, tier="C", override_channel=False,',
+  'Setting(name="scripts.reviews_per_day", env_var="SELF_LEARN_SCRIPT_REVIEWS_PER_DAY", tier="A", '
+  'override_channel=True,',
+  'caps_person'),
+ ('raise-run-cap-env',
+  'settings.py',
+  'Setting(name="overseer.script_reviews_per_run", env_var=None, tier="C", override_channel=False,',
+  'Setting(name="overseer.script_reviews_per_run", env_var="SELF_LEARN_OVERSEER_SCRIPT_REVIEWS_PER_RUN", '
+  'tier="A", override_channel=True,',
+  'caps_person'),
+ ('drop-whole-skill',
+  'overseer/skills.py',
+  '    prose = {key: value for key, value in files.items() if not key.startswith("scripts/")}',
+  '    if any(key.startswith("scripts/") for key in files):\n'
+  '        raise ValueError("mutation: refuse whole skill")\n'
+  '    prose = {key: value for key, value in files.items() if not key.startswith("scripts/")}',
+  'usage_draft'),
+ ('propagate-holding-failure',
+  'overseer/skills.py',
+  '            warnings.append(f"script {step.name}/',
+  '            raise\n            warnings.append(f"script {step.name}/',
+  'usage_draft and holding-fails'),
+ ('crash-damaged-staging',
+  'skill_scripts.py',
+  'def view_block(text: str) -> tuple[str, str]:\n',
+  'def view_block(text: str) -> tuple[str, str]:\n    return split_block(text)\n',
+  'deactivation_preserves_uncommitted'),
+ ('commit-unrelated-prose',
+  'skill_scripts.py',
+  'if working is not None and base_md is not None:',
+  'if False:',
+  'deactivation_preserves_uncommitted'),
+ ('claim-creation-collision',
+  'skill_scripts.py',
+  'row.update(activation_pending=True, target_created=False)',
+  'row.update(activation_pending=True, target_created=True)',
+  'creation_collision'),
+ ('require-model-case-for-change',
+  'overseer/skill_work_requests.py',
+  '(result == "changed" or str(recipe.get',
+  '(False or str(recipe.get',
+  'change_request_closes'),
+ ('omit-sdk-tool-flag',
+  'invocation_sdk/backend.py',
+  '"tool_use": any(isinstance(b, ToolUseBlock) for b in message.content)',
+  '"tool_use": False',
+  'native_sdk_transcript'),
+ ('adopt-foreign-collision',
+  'skill_scripts.py',
+  'owns_target=raw.get("owns_target", False) or raw.get("state") == "active"',
+  'owns_target=True',
+  'corrupt_index_does_not_adopt')]
+mutations.append((
+    "trust-verdict-metadata", "script_proof.py",
+    'if set(data) != {"verdict", "reasons", "changes", "version"}:',
+    'if False:', "verdict_cannot_overwrite_session_metadata"))
+metadata_only = len(sys.argv) > 2 and sys.argv[2] == "--metadata-only"
+screen_only = len(sys.argv) > 2 and sys.argv[2] == "--screen-only"
+if metadata_only:
+    mutations = [item for item in mutations if item[0] == "trust-verdict-metadata"]
+if screen_only:
+    mutations = mutations[:2]
+env = os.environ.copy()
+for key in list(env):
+    if key.startswith("SELF_LEARN_OVERRIDE_") or key in {"SELF_LEARN_ANALYST_MODEL", "SELF_LEARN_ANALYST_TIMEOUT"}:
+        env.pop(key)
+for key, folder in {"SELF_LEARN_HOME": "home", "XDG_CACHE_HOME": "cache", "SELF_LEARN_CLAUDE_DIR": "claude", "TMPDIR": "tmp", "XDG_RUNTIME_DIR": "runtime"}.items():
+    path = out / folder; path.mkdir(exist_ok=True); env[key] = str(path)
+baseline_xml = out / "baseline.xml"
+base_cmd = ["uv", "run", "--no-sync", "--project", ".", "python", "-B", "-m", "pytest", "tests/test_script_fix_round1.py", "-q", "-p", "no:cacheprovider", "--junitxml=" + str(baseline_xml), "--basetemp=" + str(out / "pytest-control")]
+if metadata_only:
+    base_cmd += ["-k", "verdict_cannot_overwrite_session_metadata"]
+if screen_only:
+    base_cmd += ["-k", "reviewer_screen_probes or additional_member_indirection or shell_control_variables or literal_format_reports_allowed or additional_read_reports_allowed"]
+with (out / "baseline.log").open("w") as log:
+    control = subprocess.run(base_cmd, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
+if control.returncode:
+    raise SystemExit("baseline failed; no mutations applied")
+expected = {case.attrib["name"] for case in ET.parse(baseline_xml).iter("testcase")}
+print(f"baseline: {len(expected)} cases passed", flush=True)
+results = []
+for name, file, old, new, selection in mutations:
+    path = source / file
+    original = path.read_bytes()
+    before = hashlib.sha256(original).hexdigest()
+    text = original.decode()
+    if old not in text:
+        raise SystemExit(f"mutation anchor missing: {name}")
+    xml = out / (name + ".xml")
+    try:
+        path.write_text(text.replace(old, new, 1))
+        # Disable bytecode caching: rapid same-length edits must never reuse pyc.
+        cmd = ["uv", "run", "--no-sync", "--project", ".", "python", "-B", "-m", "pytest", "tests/test_script_fix_round1.py", "-k", selection, "-q", "-p", "no:cacheprovider", "--junitxml=" + str(xml), "--basetemp=" + str(out / ("pytest-" + name))]
+        env["PYTHONPYCACHEPREFIX"] = str(out / ("pycache-" + name))
+        with (out / (name + ".log")).open("w") as log:
+            proc = subprocess.run(cmd, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
+        failed = [case.attrib["name"] for case in ET.parse(xml).iter("testcase") if case.find("failure") is not None]
+        result = {"name": name, "file": file, "returncode": proc.returncode, "failed": failed, "before": before}
+    finally:
+        path.write_bytes(original)
+        after = hashlib.sha256(path.read_bytes()).hexdigest()
+        if after != before:
+            raise SystemExit(f"RESTORE HASH MISMATCH: {name}")
+    result["after"] = after
+    results.append(result)
+    (out / "mutation-results.json").write_text(json.dumps(results, indent=2) + "\n")
+    print(f"{name}: rc={proc.returncode}, {len(failed)} test failures, restored={before == after}", flush=True)
+    if proc.returncode != 1 or not failed:
+        raise SystemExit("mutation not caught by a test: " + name)
+
+covered = {case for result in results for case in result["failed"]}
+missing = sorted(expected - covered)
+(out / "coverage.json").write_text(json.dumps({"cases": len(expected), "covered": len(expected & covered), "missing": missing}, indent=2) + "\n")
+print(f"mutation coverage: {len(expected & covered)}/{len(expected)} cases", flush=True)
+if missing:
+    raise SystemExit("unwitnessed cases: " + ", ".join(missing))

@@ -2514,13 +2514,13 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     preflight` (`settings`, U-settings Phase 1), the single source of
     truth for each verb. Never home-gated (`_home_gate` guards WRITE
     surfaces against a missing/uninitialized ledger; this command never
-    initializes a pristine home. S-160 first revokes changed active scripts
-    under the ledger/host locks; the provider/settings probes remain read-only.
+    initializes a pristine home. S-160 reports integrity failures without writes
+    or locks; enforcement belongs to recompile and maintenance.
     A pristine home with no script index still requires no lock — `Doc-c`)."""
     home = resolve_home()
     from . import skill_scripts
-    for notice in skill_scripts.audit(home):
-        print("doctor: " + notice)
+    for notice in skill_scripts.inspect(home):
+        print("doctor: FAIL script-integrity: " + notice)
     if args.doctor_command == "settings":
         return _cmd_doctor_settings(home)
     if args.doctor_command == "miner":

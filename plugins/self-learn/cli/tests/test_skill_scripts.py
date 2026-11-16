@@ -101,7 +101,10 @@ def fake(monkeypatch, *, verdict="approve", init=(scripts.MODEL,), assistants=(s
     calls = []
     def run(self, spec):
         calls.append(spec)
-        return sdk.SdkOutcome(ok=True, rc=0, stdout=raw if raw is not None else json.dumps({"verdict": verdict, "reasons": ["inspected effects"], "changes": ["remove hazards"] if verdict == "reject" else []}), detail="", failure=None, session_id="fake-session", cost_usd=0.12, init_models=init, assistant_models=assistants)
+        content = raw if raw is not None else json.dumps({"verdict": verdict, "reasons": ["inspected effects"], "changes": ["remove hazards"] if verdict == "reject" else [], "version": json.loads(spec.prompt)["version"]})
+        messages = tuple([{"type": "init", "model": m, "session": "fake-session"} for m in init] + [{"type": "assistant", "model": m, "text": content, "tool_use": False} for m in assistants])
+        return sdk.SdkOutcome(ok=True, rc=0, stdout=content, detail="", failure=None, session_id="fake-session", cost_usd=.12, init_models=init, assistant_models=assistants, review_messages=messages)
+
     monkeypatch.setattr(sdk.SdkBackend, "text_session", run)
     return calls
 
@@ -205,7 +208,7 @@ def test_audit_quarantines_without_data_loss(env, monkeypatch, change):
 
 def test_caps_screen_and_new_versions(env, monkeypatch):
     calls = fake(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_SCRIPT_REVIEWS_PER_DAY", "1")
+    (env.home / "config.yaml").write_text("scripts:\n  reviews_per_day: 1\noverseer:\n  script_reviews_per_run: 1\n")
     a = held(env)
     scripts.review(env.home, a["id"], note="first")
     b = held(env, name="second")
@@ -215,14 +218,13 @@ def test_caps_screen_and_new_versions(env, monkeypatch):
     with pytest.raises(ValueError, match="screen refused"):
         scripts.review(env.home, bad["id"], note="bad")
     assert len(calls) == 1 and scripts.get(env.home, b["id"])["review"] is None
-    monkeypatch.setenv("SELF_LEARN_OVERSEER_SCRIPT_REVIEWS_PER_RUN", "1")
     scripts.review(env.home, b["id"], note="run first", run="r1")
     c = held(env, name="third")
     with pytest.raises(ValueError, match="cap"):
         scripts.review(env.home, c["id"], note="run second", run="r1")
     assert any("cap" in line for line in scripts.review_pending(env.home, "r1"))
     newer = held(env, text=GOOD + 'print("new")\n')
-    assert newer["state"] == "drafted" and scripts.get(env.home, a["id"])["state"] == "drafted"
+    assert newer["state"] == "drafted" and scripts.get(env.home, a["id"])["state"] == "active"
     with pytest.raises(ValueError, match="superseded"):
         scripts.review(env.home, a["id"], note="old")
 
@@ -270,8 +272,9 @@ def test_overseer_extract_and_hold(env, monkeypatch):
     assert result.state == "applied", result
     assert scripts.rows(env.home)[0]["state"] == "drafted"
     assert not (env.skill_dir() / "scripts/count").exists()
-    with pytest.raises(ValueError, match="companion"):
-        skills.extract_scripts({"scripts/count": GOOD})
+    notes = []
+    assert skills.extract_scripts({"scripts/count": GOOD}, notes=notes) == ({}, [])
+    assert "companion" in notes[0]
 
 
 def test_sdk_proof_capture_and_no_tools(env, monkeypatch):
@@ -313,8 +316,8 @@ def test_integrity_entrypoints(env, monkeypatch, entry, capsys):
     else:
         monkeypatch.setattr(overrun, "_run", lambda *a, **k: overrun.RunResult("test", 0, "test", 0, (), ()))
         overrun.run(env.home, no_push=True)
-    assert scripts.get(env.home, row["id"])["state"] == "drafted"
-    assert "deactivated" in capsys.readouterr().out
+    assert scripts.get(env.home, row["id"])["state"] == ("active" if entry == "doctor" else "drafted")
+    assert ("FAIL script-integrity" if entry == "doctor" else "deactivated") in capsys.readouterr().out
 
 
 def test_sdk_outcome_carries_observed_models(env, monkeypatch):
@@ -381,7 +384,7 @@ def test_activation_failure_and_recovery(env, monkeypatch):
     assert Path(result["quarantine"]).read_text() == GOOD
     assert git(env.root, "status", "--porcelain").stdout == ""
     assert scripts.audit(env.home)
-    assert scripts.get(env.home, row["id"])["state"] == "drafted"
+    assert scripts.get(env.home, row["id"])["state"] == "active"
 
 
 def test_external_files_and_lifecycle_boundaries(env, monkeypatch):

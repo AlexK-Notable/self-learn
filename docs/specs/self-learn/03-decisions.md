@@ -329,3 +329,12 @@ mode has a name now (E-4) and this table is where we watch for it.
 | # | Decision | Rationale (inputs) |
 |---|---|---|
 | S-160 | **Only proven Fable approval activates a local skill helper.** Keep draft, approved and active states; hash source plus usage; no command can approve. Preserve the manual procedure. Screen effects conservatively, retain every attempt and verdict, cap review attempts, and quarantine changes. | User's own typed words, 15 November 2026: "let the self-learn skills write scripts with a couple of exeptions: no curl, nothing that connects to outside networks, nothing that can delete data from my computer or my backups, and nothing that starts long running processes. that basically means scripts that takes programmatic, repeatable work out of the hands of agents is okay, not scripts that update things automatically, download things, delete things, etc. also, scripts can only be 'activated' once reviewed and approved explicitly by a fable agent." The supplied brief is the orchestrator's design; schema, conservative syntax restrictions and recovery details are implementation choices. |
+
+S-160 fix round 1 (2026-11-15): the orchestrator's ratified decisions following
+F1–F13 require positive member/option lists, durable transcript corroboration
+(which cannot defeat a machine owner), retryable activation without review
+spending, approved-only replacement, tier-C config-only caps, read-only doctor
+and daily enforcement. Malformed helpers cannot halt prose or later cases.
+Change requests use any applied write to the requested skill; builds still
+require their named case and routed lessons. These are design decisions, not
+additional quotations from the person.

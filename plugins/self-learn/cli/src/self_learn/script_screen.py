@@ -4,11 +4,49 @@ from __future__ import annotations
 import ast
 import re
 import shlex
+import string
 from dataclasses import dataclass
 
-CREDENTIAL = re.compile(r"(?i)(?:\.env\b|\.ssh\b|credentials|token|hosts\.yml|\.aws\b|\.gnupg\b|id_rsa|id_ed25519|\.(?:pem|key)\b)")
-MODULES = frozenset("sys pathlib os json csv re math statistics collections itertools functools operator string textwrap datetime calendar hashlib difflib argparse decimal fractions pprint unicodedata typing dataclasses enum io".split())
+CREDENTIAL = re.compile(r"(?i)(?:\.env\b|\.ssh\b|credentials|token|hosts\.yml|\.aws\b|\.gnupg\b|\.netrc\b|/proc/(?:self|thread-self|[0-9]+)/environ\b|id_rsa|id_ed25519|\.(?:pem|key)\b)")
 DANGEROUS = frozenset[str]("remove unlink rmdir removedirs rename renames replace truncate rmtree move write_text write_bytes touch mkdir makedirs chmod chown symlink link system exec execv execve execl execlp execvp execvpe spawn fork forkpty popen FileIO start_server open_connection create_connection connect bind listen send recv run Popen sleep decode fromhex loads load read_pickle extract extractall dump dumps".split()) - frozenset({"loads", "load", "dump", "dumps", "decode", "replace"})
+# F1-F3: module members are positive lists, including from-import spellings.
+MEMBERS = {
+    "sys": "argv stdin stdout stderr exit",
+    "json": "load loads dump dumps JSONDecodeError",
+    "re": "compile search match fullmatch findall finditer split sub subn escape IGNORECASE MULTILINE DOTALL ASCII VERBOSE",
+    "csv": "reader writer DictReader DictWriter Sniffer QUOTE_ALL QUOTE_MINIMAL QUOTE_NONE QUOTE_NONNUMERIC",
+    "collections": "Counter defaultdict deque namedtuple OrderedDict ChainMap",
+    "itertools": "chain combinations combinations_with_replacement permutations product accumulate islice takewhile dropwhile filterfalse groupby starmap zip_longest pairwise batched compress tee",
+    "pathlib": "Path PurePath PurePosixPath PureWindowsPath",
+    "os": "path listdir scandir walk stat lstat sep getcwd fspath",
+    "os.path": "abspath basename commonpath commonprefix dirname exists isabs isdir isfile islink join normcase normpath realpath relpath split splitdrive splitext getsize getmtime getctime getatime",
+    "datetime": "date datetime time timedelta timezone MINYEAR MAXYEAR",
+    "math": "ceil floor trunc fabs factorial gcd lcm isclose isfinite isinf isnan sqrt isqrt pow exp log log2 log10 sin cos tan asin acos atan atan2 degrees radians hypot dist fsum prod comb perm pi e tau inf nan",
+    "statistics": "mean fmean geometric_mean harmonic_mean median median_low median_high median_grouped mode multimode quantiles pstdev pvariance stdev variance covariance correlation linear_regression",
+    "hashlib": "sha256 sha512 sha384 sha224 sha1 md5 blake2b blake2s shake_128 shake_256 file_digest",
+    "difflib": "SequenceMatcher unified_diff context_diff ndiff get_close_matches Differ HtmlDiff",
+    "fnmatch": "fnmatch fnmatchcase filter translate",
+    "glob": "glob iglob escape",
+    "textwrap": "wrap fill dedent indent shorten TextWrapper",
+    "string": "ascii_letters ascii_lowercase ascii_uppercase digits hexdigits octdigits punctuation whitespace printable Template capwords",
+    "typing": "Any Iterable Iterator Mapping Sequence Optional Union Literal NamedTuple TypedDict Callable TypeVar Generic",
+    "dataclasses": "dataclass field fields asdict astuple replace is_dataclass",
+    "enum": "Enum IntEnum StrEnum Flag IntFlag auto unique",
+    "tomllib": "load loads TOMLDecodeError",
+    "shlex": "split",
+    "argparse": "ArgumentParser Namespace ArgumentError SUPPRESS",
+    "io": "StringIO BytesIO open",
+    "decimal": "Decimal Context localcontext getcontext",
+    "fractions": "Fraction",
+    "functools": "reduce partial cache lru_cache cmp_to_key",
+    "pprint": "pprint pformat pp",
+    "unicodedata": "normalize category name lookup combining decimal digit numeric",
+    "calendar": "monthrange isleap leapdays monthcalendar day_name day_abbr month_name month_abbr",
+}
+MODULES = frozenset(MEMBERS)
+# Methods of values (never module objects). No reflective/destructive methods.
+VALUE_MEMBERS = frozenset("path name suffix suffixes stem parent parents parts anchor drive root is_absolute is_relative_to relative_to with_name with_suffix with_stem as_posix resolve absolute exists is_file is_dir is_symlink stat lstat iterdir glob rglob read_text read_bytes open match joinpath read readline readlines write writelines flush close closed seek tell encoding getvalue keys values items get setdefault update copy clear pop popitem append extend insert remove sort reverse count index add discard union intersection difference most_common elements total strip lstrip rstrip split rsplit splitlines join lower upper casefold title capitalize startswith endswith replace find rfind index rindex format format_map encode decode isdigit isalpha isalnum isspace islower isupper zfill center ljust rjust partition rpartition rematch groups group groupdict start end span search fullmatch findall finditer sub subn hexdigest digest update copy isoformat strftime strptime fromisoformat today now utcnow date time timestamp total_seconds weekday isoweekday year month day hour minute second microsecond tzinfo days seconds writerow writerows writeheader fieldnames line_num dialect add_argument parse_args parse_known_args print_help format_help add_subparsers add_parser set_defaults setdefault get_opcodes get_matching_blocks ratio quick_ratio real_quick_ratio get_close_matches st_mode st_size st_mtime st_ctime st_atime st_ino".split())
+
 COMMANDS = frozenset("cat grep sed awk find sort uniq wc cut tr head tail jq date stat sha256sum printf echo test basename dirname realpath comm diff git".split())
 GIT_READ = frozenset("log show diff status rev-parse ls-files blame cat-file".split())
 
@@ -76,11 +114,44 @@ def _python(text: str) -> list[str]:
         for name, values in assignments.items():
             if len(values) == 1 and _caller_path(values[0], paths):
                 paths.add(name)
+    imported: dict[str, str] = {}
     for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported[alias.name.split(".")[0]] = alias.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imported[alias.name] = (node.module or "") + "." + alias.name
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    local_calls = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    builtins = set("abs all any ascii bin bool bytearray bytes chr complex dict divmod enumerate filter float format frozenset hash hex int isinstance issubclass iter len list map max min next oct open ord pow print range repr reversed round set slice sorted str sum tuple type zip object super Exception ValueError TypeError RuntimeError KeyError IndexError StopIteration OSError FileNotFoundError".split())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
+            dotted = ast.unparse(node)
+            head = dotted.split(".")[0]
+            canonical = imported.get(head, head) + dotted[len(head):]
+            parent = parents.get(node)
+            if canonical in MODULES and not (isinstance(parent, ast.Attribute) and parent.value is node):
+                rules.append("indirection: module objects cannot be used as values or rebound")
+        if (isinstance(node, ast.Name) and node.id == "open" or isinstance(node, ast.Attribute) and node.attr in {"open", "format", "format_map"}):
+            parent = parents.get(node)
+            if not isinstance(parent, ast.Call) or parent.func is not node:
+                rules.append("indirection: checked open/format methods must be called directly")
+        if isinstance(node, ast.Name) and node.id.startswith("__") and node.id != "__name__":
+            rules.append("indirection: hidden namespace access is refused")
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and CREDENTIAL.search(node.value):
+            rules.append("credentials: normalized string names a credential")
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            value = getattr(node, "value", None)
+            values = ast.walk(value) if isinstance(value, (ast.List, ast.Tuple, ast.Set, ast.Dict)) else [value]
+            if any(v is not None and imported.get(ast.unparse(v), ast.unparse(v)) in MODULES for v in values):
+                rules.append("indirection: module objects cannot be rebound")
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             modules = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]
             if any(m not in MODULES for m in modules) or (isinstance(node, ast.ImportFrom) and node.level):
                 rules.append("imports: only the read/report standard-library allow-list is permitted")
+            if isinstance(node, ast.ImportFrom) and any(a.name not in MEMBERS.get(node.module or "", "").split() for a in node.names):
+                rules.append("imports: member is not on this module's allow-list")
             if isinstance(node, ast.ImportFrom) and any(a.name in DANGEROUS or a.name == "replace" for a in node.names):
                 rules.append("effects: destructive or process imports are forbidden")
             if any(a.asname or a.name == "*" for a in node.names):
@@ -88,12 +159,41 @@ def _python(text: str) -> list[str]:
         if isinstance(node, (ast.While, ast.AsyncFor, ast.AsyncWith, ast.Await)):
             rules.append("bounded: while loops and asynchronous work are refused")
         if isinstance(node, ast.Attribute):
+            dotted = ast.unparse(node)
+            head = dotted.split(".")[0]
+            canonical = imported.get(head, head) + dotted[len(head):]
+            parent, _, member = canonical.rpartition(".")
+            if parent in MODULES:
+                if member not in MEMBERS[parent].split():
+                    rules.append("module-member: attribute is not on this module's allow-list")
+            elif node.attr not in VALUE_MEMBERS:
+                rules.append("value-member: method or attribute is not on the read/report allow-list")
             if node.attr.startswith("_") or node.attr in DANGEROUS or (node.attr == "replace" and not isinstance(node.value, ast.Constant)):
                 rules.append("effects: mutation, process, or hidden attribute is forbidden")
         if isinstance(node, ast.Name) and node.id in {"eval", "exec", "compile", "__import__", "getattr", "setattr", "delattr", "globals", "locals", "vars", "breakpoint", "input"}:
             rules.append("indirection: dynamic execution or introspection is forbidden")
         if isinstance(node, ast.Call):
             name = ast.unparse(node.func)
+            if isinstance(node.func, ast.Name) and name not in builtins | local_calls | set(imported):
+                rules.append("call-target: only declared functions and allowed builtins/imports may be called")
+            if not isinstance(node.func, (ast.Name, ast.Attribute)):
+                rules.append("call-target: indirect call expressions are refused")
+            if isinstance(node.func, ast.Attribute) and node.func.attr in {"format", "format_map"}:
+                fmt = node.func.value
+                valid = False
+                if isinstance(fmt, ast.Constant) and isinstance(fmt.value, str):
+                    try:
+                        valid = all(field is None or (
+                            re.fullmatch(r"[A-Za-z0-9_]*", field) is not None
+                            and "{" not in (spec or "") and "}" not in (spec or "")
+                            and conversion in {None, "r", "s", "a"})
+                            for _literal, field, spec, conversion in string.Formatter().parse(fmt.value))
+                    except ValueError:
+                        pass
+                if not valid:
+                    rules.append("format: require literal fields without attribute/index lookup")
+            if name == "iter" and len(node.args) != 1:
+                rules.append("bounded: sentinel iterators are refused")
             if name in {"open", "io.open"} or isinstance(node.func, ast.Attribute) and node.func.attr == "open":
                 method = isinstance(node.func, ast.Attribute) and name != "io.open"
                 index = 0 if method else 1
@@ -101,11 +201,11 @@ def _python(text: str) -> list[str]:
                 mode = next((k.value for k in node.keywords if k.arg == "mode"), mode)
                 if not isinstance(mode, ast.Constant) or mode.value not in ("r", "rb", "rt", "x", "xb", "xt") or any(k.arg in ("opener", None) for k in node.keywords):
                     rules.append("open-mode: only read or exclusive create is permitted")
-                elif str(mode.value).startswith("x"):
+                else:
                     target = node.func.value if method and isinstance(node.func, ast.Attribute) else (node.args[0] if node.args else ast.Constant(None))
                     if not _caller_path(target, paths):
-                        rules.append("output-path: exclusive output must derive from a caller argument")
-            if name.startswith("os.") and name not in {"os.stat", "os.lstat", "os.listdir", "os.walk", "os.fspath"} and not name.startswith("os.path."):
+                        rules.append("output-path: file access must derive from a caller argument")
+            if name.startswith("os.") and name not in {"os.stat", "os.lstat", "os.listdir", "os.scandir", "os.walk", "os.getcwd", "os.fspath"} and not name.startswith("os.path."):
                 rules.append("os-effects: only local read operations are permitted")
             if name.startswith("itertools.") and name.split(".")[-1] in {"count", "cycle", "repeat"}:
                 rules.append("bounded: potentially infinite iterators are refused")
@@ -125,6 +225,7 @@ def _bash(text: str) -> list[str]:
     try:
         lex = shlex.shlex("\n".join(lines), posix=True, punctuation_chars=";&|<>\n")
         lex.whitespace = " \t\r"
+        lex.whitespace_split = True
         tokens = list(lex)
     except ValueError:
         return rules + ["syntax: invalid shell quoting"]
@@ -136,14 +237,30 @@ def _bash(text: str) -> list[str]:
             rules.append("shell-effects: background work, append and unsafe redirects are refused")
         else:
             commands[-1].append(token)
+    assigned: set[str] = set()
     for command in commands:
         if not command:
+            continue
+        normalized = " ".join(command)
+        if CREDENTIAL.search(normalized):
+            rules.append("credentials: normalized shell word names a credential")
+        if any(w.startswith("~") or w.startswith("/") for w in command):
+            rules.append("input-path: local file operands must come from caller arguments")
+        variables = re.findall(r"\$([A-Za-z_][A-Za-z_0-9]*)", normalized)
+        if any(v not in assigned for v in variables):
+            rules.append("variables: only positional or script-assigned variables may expand")
+        if len(command) == 1 and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=[^;]*", command[0]):
+            name = command[0].split("=", 1)[0]
+            if name in {"PATH", "IFS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "CDPATH", "GLOBIGNORE", "LD_PRELOAD", "LD_LIBRARY_PATH"}:
+                rules.append("variables: shell control variables cannot be assigned")
+            assigned.add(name)
             continue
         if command == ["set", "-o", "noclobber"]:
             continue
         if command[0] not in COMMANDS:
             rules.append("command: not on the local read/report allow-list: " + command[0])
             continue
+        rules.extend(_command_options(command))
         for i, token in enumerate(command):
             if token in (">", "<"):
                 if i + 1 >= len(command) or not re.fullmatch(r"\$[1-9][0-9]*(?:/[a-zA-Z0-9_.-]+)?", command[i + 1]) or ".." in command[i + 1]:
@@ -215,3 +332,107 @@ def _git_read_only(args: list[str]) -> bool:
     if subcommand == "blame" and "--no-textconv" not in rest:
         return False
     return True
+
+# F2: exact options only. No getopt abbreviation; every short cluster is parsed.
+# (short flags, short flags taking a value, long flags, long value flags, min/max operands)
+OPTIONS = {
+    "cat": ("AbenstuvET", "", "show-all number-nonblank number squeeze-blank show-ends show-tabs show-nonprinting", "", 0, None),
+    "grep": ("EFGPivwxyzcLlnHhoqsrIR", "efmABCD", "extended-regexp fixed-strings perl-regexp ignore-case invert-match word-regexp line-regexp count files-without-match files-with-matches line-number with-filename no-filename only-matching quiet silent recursive dereference-recursive", "regexp max-count after-context before-context context directories", 1, None),
+    "sort": ("bdfgimnhrRsuVz", "kSt", "ignore-leading-blanks dictionary-order ignore-case general-numeric-sort ignore-nonprinting month-sort numeric-sort human-numeric-sort reverse random-sort stable unique zero-terminated check", "key buffer-size field-separator parallel", 0, None),
+    "uniq": ("cduiz", "fsw", "count repeated unique ignore-case zero-terminated", "skip-fields skip-chars check-chars", 0, 1),
+    "wc": ("clmwL", "", "bytes chars lines words max-line-length", "", 0, None),
+    "cut": ("nsz", "bcdf", "complement only-delimited zero-terminated", "bytes characters fields delimiter output-delimiter", 0, None),
+    "tr": ("cdsCt", "", "complement delete squeeze-repeats truncate-set", "", 1, 2),
+    "head": ("qvz", "nc", "quiet silent verbose zero-terminated", "lines bytes", 0, None),
+    "tail": ("qvz", "nc", "quiet silent verbose zero-terminated", "lines bytes", 0, None),
+    "jq": ("nrcsCeajMSR", "", "null-input raw-output compact-output slurp color-output monochrome-output exit-status ascii-output join-output sort-keys raw-input", "indent", 1, None),
+    "date": ("uR", "d", "utc universal rfc-email", "date iso-8601 rfc-3339", 0, 1),
+    "stat": ("Lf", "ct", "dereference file-system", "format printf", 1, None),
+    "sha256sum": ("btcz", "", "binary text check zero tag ignore-missing quiet status strict warn", "", 0, None),
+    "printf": ("", "", "", "", 1, None),
+    "echo": ("nE", "", "", "", 0, None),
+    "test": ("", "", "", "", 1, 3),
+    "basename": ("az", "s", "multiple zero", "suffix", 1, 2),
+    "dirname": ("z", "", "zero", "", 1, None),
+    "realpath": ("eLmPqsz", "", "canonicalize-existing canonicalize-missing logical physical quiet strip no-symlinks zero", "relative-to relative-base", 1, None),
+    "comm": ("123z", "", "check-order nocheck-order zero-terminated total", "output-delimiter", 2, 2),
+    "diff": ("abBiEwZyqrsuN", "UC", "text ignore-space-change ignore-blank-lines ignore-case ignore-tab-expansion ignore-all-space ignore-trailing-space side-by-side brief recursive report-identical-files new-file", "unified context width", 2, 2),
+}
+
+
+def _options(command: str, args: list[str]) -> tuple[list[str], bool]:
+    flags, values, longs, longvalues, minimum, maximum = OPTIONS[command]
+    operands: list[str] = []
+    i, options = 0, True
+    while i < len(args):
+        word = args[i]
+        i += 1
+        if word == "--" and options:
+            options = False
+        elif options and word.startswith("--"):
+            key, equal, _ = word[2:].partition("=")
+            if key in longvalues.split():
+                if not equal:
+                    if i == len(args): return operands, False
+                    i += 1
+            elif key not in longs.split() or equal:
+                return operands, False
+        elif options and word.startswith("-") and word != "-":
+            cluster = word[1:]
+            for at, char in enumerate(cluster):
+                if char in values:
+                    if at == len(cluster) - 1:
+                        if i == len(args): return operands, False
+                        i += 1
+                    break
+                if char not in flags:
+                    return operands, False
+        else:
+            operands.append(word)
+    return operands, len(operands) >= minimum and (maximum is None or len(operands) <= maximum)
+
+
+def _command_arguments(command: list[str]) -> list[str]:
+    args: list[str] = []
+    i = 1
+    while i < len(command):
+        if command[i] in {"<", ">"}:
+            i += 2
+        else:
+            args.append(command[i]); i += 1
+    return args
+
+
+def _command_options(command: list[str]) -> list[str]:
+    name, args = command[0], _command_arguments(command)
+    if name == "test":
+        unary = {"-e", "-f", "-d", "-r", "-w", "-x", "-s", "-L", "-z", "-n"}
+        binary = {"=", "!=", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-nt", "-ot", "-ef"}
+        if len(args) == 1 or len(args) == 2 and args[0] in unary or len(args) == 3 and args[1] in binary:
+            return []
+        return ["options: unsupported test expression"]
+    if name in OPTIONS:
+        operands, valid = _options(name, args)
+        if not valid:
+            return ["options: unsupported option, option bundle, or operand count for " + name]
+        if name == "printf" and not re.fullmatch(r"(?:[^%$]|%%|%[-+ #0]*[0-9]*(?:\.[0-9]+)?[diouxXfFeEgGaAcspbq])*", operands[0]):
+            return ["printf-format: require a literal read/report format; no variable assignments"]
+        if name == "jq":
+            # Small data-expression language: no file programs, environment, input
+            # streams, recursion, loops or user-defined filters.
+            words = set(re.findall(r"(?<![.\w])[A-Za-z_][A-Za-z_0-9]*", operands[0]))
+            if not words <= {"length", "keys", "values", "sort", "unique", "reverse", "flatten", "map", "select", "true", "false", "null", "type", "tostring", "tonumber", "add", "min", "max", "has"}:
+                return ["jq: unsupported data expression"]
+            if re.search(r"\.\.|\b(?:env|input|inputs|repeat|recurse|while|until|def)\b|\$", operands[0]):
+                return ["jq: persistent, environment or indirect program access"]
+    elif name == "find":
+        allowed = {"-H", "-L", "-P", "-name", "-iname", "-path", "-ipath", "-type", "-size", "-mtime", "-maxdepth", "-mindepth", "-print", "-print0", "-empty", "-readable", "-writable", "-executable", "-a", "-o", "-not", "!"}
+        if not args or any(w.startswith("-") and w not in allowed and not re.fullmatch(r"-[0-9]+", w) for w in args):
+            return ["options: unsupported find option"]
+    elif name == "git":
+        # Globals are vetted separately; subcommand options have no abbreviations.
+        sub = next((i for i, w in enumerate(args) if w in GIT_READ), None)
+        allowed = {"--no-ext-diff", "--no-textconv", "--oneline", "--stat", "--name-only", "--name-status", "--short", "--porcelain", "--branch", "--cached", "--staged", "--numstat", "--check", "--abbrev-ref", "--show-toplevel", "--show-prefix", "--verify", "--is-inside-work-tree", "--pretty", "--format", "--max-count", "--since", "--until", "--author", "--grep", "--all", "--reverse", "--no-renames", "--follow", "--", "-n", "-p", "-s", "-z", "-b", "-l", "-e", "-t"}
+        if sub is None or any(w.startswith("-") and w.split("=", 1)[0] not in allowed for w in args[sub + 1:]):
+            return ["options: unsupported git option"]
+    return []
