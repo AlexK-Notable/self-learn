@@ -220,12 +220,17 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
 
     status = ref_commands.add_parser("status", help="pack age and last source check")
     status.add_argument("--fetch", action="store_true", help="HTTP-check sources and record cache status; exit 1 if changed/unreachable")
+    from . import script_cli
+    script_cli.add_parser(commands)
     parser.set_defaults(_skill_dispatch=dispatch)
     return parser
 
 
 def dispatch(args) -> int:
     command = args.skill_command
+    if command == "script":
+        from . import script_cli
+        return script_cli.dispatch(resolve_home(), args)
     if command == "reference":
         return _reference(resolve_home(), args)
     if command == "list":

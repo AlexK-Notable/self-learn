@@ -18,7 +18,7 @@ from ruamel.yaml import YAML
 from .primitives import chrono
 
 PACK_DIR = Path(__file__).with_suffix("")
-VERSION = "anthropic-2026-11-15"
+VERSION = "anthropic-2026-11-15-scripts"
 READ_DATE = "2026-11-15"
 NORMALIZATION = "markdown-nfc-whitespace-v1"
 BP = "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices"

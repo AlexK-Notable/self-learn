@@ -915,6 +915,20 @@ def _phase_b_prompt(
 Read skill-reference/PACK.md, EXAMPLES.md and STATUS.md first. Draft, rewrite and reorganise
 every skill against this pack and the available native examples. Report its version and guidance
 findings; preserve registered user settings where the pack conflicts. Never fetch sources here.
+
+Draft a helper only for repeated programmatic local work an agent would otherwise repeat.
+Keep the entire manual procedure in SKILL.md. Read script-reviews.yaml for prior refusals
+and rejected versions; change the code or usage before asking for another review.
+A helper is bash or standard-library Python, named without an extension, under
+skills/<name>/scripts/<name>, with one paragraph in scripts/<name>.usage.md.
+The runner extracts it into a non-executable holding area. Never put script usage or
+self-learn:scripts markers in the prose draft; only activation adds that block.
+No network (including local networks), credential reads, deletion, moving, truncation,
+overwriting, updates, installers, background work or unbounded loops. Output is stdout
+or exclusively created new files beneath a caller argument. Only a fresh, proven
+claude-fable-5-2 approval activates; mechanical checks never approve. Existing active
+scripts and their usage block belong to the runner and are preserved across rewrites.
+
 You may now read the steward rationale and full decided account in full/*.md.
 This folder, {stage}, is your workspace: you can read and write only inside it.
 {_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
@@ -6389,6 +6403,8 @@ def _apply_skill_write(
     if raw.get("state") == "refused":
         raise _SkillRefused(str(raw.get("line") or f"the skill write for {step.name} was refused"))
     if raw.get("state") == "applied":
+        if raw.get("warning"):
+            notes.append(str(raw["warning"]))
         return
     outcome = skills_mod.apply_write(home, case_id, step, case_name=str(recipe["case_name"]))
     line = _failure_detail(outcome.line) or outcome.line
@@ -6408,7 +6424,8 @@ def _apply_skill_write(
         raise _SkillRefused(line)
     cue_outcomes.append(_skill_cue(step))
     if outcome.warning:
-        notes.append(_failure_detail(outcome.warning) or outcome.warning)
+        raw["warning"] = _failure_detail(outcome.warning) or outcome.warning
+        notes.append(str(raw["warning"]))
 
 
 def _apply_skill_rename(
@@ -7296,6 +7313,8 @@ def _execute_manifest(
     try:
         from . import skill_work_requests
         request_lines = skill_work_requests.settle(home, manifest, complete=not halted)
+        from .. import skill_scripts
+        script_lines = skill_scripts.review_pending(home, run_id) if not halted and skills_mod.writing_state(home).deploy else []
         def _render(
             withdrawn: list[dict[str, str]], carry_notes: list[str], publish_dropped: set[str],
         ) -> str:
@@ -7333,6 +7352,7 @@ def _execute_manifest(
                     *cast(list[str], manifest.get("policy_lines") or []),
                     *skills_mod.report_lines(manifest),
                     *request_lines,
+                    *script_lines,
                     # SK4: one line per disposition phase B recorded.
                     *discovery_mod.report_lines(manifest),
                 ],
@@ -7469,6 +7489,10 @@ def run(
     closes a week, and -- the user's choice, "No, Sunday still runs" --
     does not count as the week's review when it completes."""
     home = Path(home) if home is not None else resolve_home()
+    if not dry_run:
+        from .. import skill_scripts
+        for notice in skill_scripts.audit(home):
+            print(notice)
     boundary_no_push = worker.no_push_requested() if no_push is None else no_push
     publish = not dry_run and not boundary_no_push
     head_before = verbs.ledger_head(home) if publish else None

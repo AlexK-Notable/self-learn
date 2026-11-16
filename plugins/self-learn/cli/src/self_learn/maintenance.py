@@ -171,6 +171,9 @@ def run(home: Path | str, cache_dir: Path, *, now: float | None = None) -> Maint
         datetime.fromtimestamp(now, timezone.utc) if now is not None else None
     )
     _store_state(cache_dir, {"last_attempt_at": stamp, "status": "started"})
+    from . import skill_scripts
+    for notice in skill_scripts.audit(home):
+        print("serve: maintenance " + notice, file=sys.stderr)
     found = selfcheck.unrecorded_targets(home)
     targets = [str(t) for t in found]
     # S-133: placed warning hooks the current compiler would

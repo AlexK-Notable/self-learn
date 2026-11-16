@@ -5413,3 +5413,132 @@ drop it from the section. (The backlog importer's bulk-acknowledge resolves
 already-canon knowledge entries with the same marking — one mechanism,
 several doors into it. ha-note's `--promoted` verb is the precedent.) That hand-weave is all that remains of
 gen 1's "Level C," demoted from an automated milestone to an editing habit.
+
+### S-160 — skill script versions and approval stamps
+
+`skill-scripts.json` is a version-1 ledger document with a `scripts` array. Each
+row has `id` (`ss-` plus 24 random hex digits), skill, extensionless kebab-case name,
+state (`drafted`, `approved`, `active`), source `script_sha256`, `version`, usage,
+note, by, at, screen and review. The version is SHA-256 over compact UTF-8 JSON
+`[source_text, usage_text]` with non-ASCII characters retained. This unambiguously
+binds both byte strings. Source is UTF-8 and stored as mode 0600 at
+`skill-scripts/<skill>/<name>/<version>/draft`, never in the skills root.
+A mode-0600 `proposal.json` beside the draft preserves its identity and usage for
+index recovery. An identical submission returns the same row; changed usage is a new version.
+Only `may_edit` owned/registered non-vetoed names qualify. A new draft leaves the
+active predecessor in place. Only approved activation swaps it out under both locks.
+Versions and review attempts are retained indefinitely.
+
+The screen stamp contains language, ok and named rules. A refusal blocks a review
+and does not spend an attempt. A review stamp is committed BEFORE invocation:
+`verdict: no review`, at, note, run (null for manual), version, screen, model,
+session, cost_usd and reasons. This reservation counts against the cap even after
+an interrupted session. No version is reviewed twice except after index recovery
+supersedes an uncorroborated review; those attempts remain in `superseded_reviews`
+and still count against the applicable caps. `models.script_review`
+defaults to `claude-fable-5-2`; any other setting refuses the invocation. Default
+`scripts.reviews_per_day` is 5 (manual, UTC); `overseer.script_reviews_per_run` is 3,
+keyed by the durable run id, including resumes. Both accept zero to stop reviews.
+These two caps are tier C, config-only: no plain environment or process-override
+rung can raise them. An agent needs the
+standing grant and a reason to change them; a person may change them directly.
+
+The fresh SDK session uses the analyst transport with an explicit model,
+TextOnlySpec, no tools/MCP, no resumed session, one response and a 180-second
+wall deadline. It receives source, usage, skill name/description, user's verbatim
+limits, effect policy and screen result. SDK outcomes and event logs retain
+init/assistant model observations, including missing values. Both sequences must
+be nonempty and every observation must equal the required id. Missing session id,
+tool activity, invocation failure, invalid JSON, invalid verdict/reasons or reject
+without required changes yield `no review`. Valid rejection retains reasons and
+required changes. Approval records model, session, date, version, proof, reasons,
+changes and reported USD cost. These are session observations, not model claims.
+There is no current-session or command-line approval route. A fenced JSON verdict
+is accepted. The verdict must name the exact version hash and contain only
+`verdict`, `reasons`, `changes`, and `version`; extra fields cannot overwrite
+backend-owned accounting/session metadata. The SDK captures init
+and every assistant message as structured transcript lines, including tool-use
+flags. Approval stores those lines at the held version's `review.jsonl`, with a
+relative ledger path and SHA-256 over the complete file. These lines are committed
+with the approval and retained independently of cache-log retention. They are only
+observations; they are not sufficient corroboration. Every approval requires a
+reachable `self-learn: script review <id>: approve` ledger commit introducing that
+approval, with `Script-Version` and `Script-Session` trailers matching the row.
+Its tree must contain the exact held source, generated observations, usage and
+review stamp. A later arbitrary commit of a forged index is insufficient.
+`review.corroboration` records `kind: native`, the native transcript path and
+SHA-256 of its assistant lines when readable, or `kind: git` otherwise. Both
+kinds require the review commit. The native transcript is extra evidence only;
+it is looked up exclusively at the escaped review cwd beneath the resolved
+Claude projects directory, never by scanning other project folders. A present
+record must match its digest, models, session, tool-freedom and exact-version
+verdict. Contradictions make the row `unverified`. Missing or unreadable native
+transcripts do not invalidate the approval: the commit suffices. A recorded path
+that differs from today's expected path (moved ledger or Claude configuration)
+is treated as absent, without reading either path. Enforcement
+emits one notice per version, "review transcript no longer present; verified from
+the ledger review commit", persisting `transcript_missing_noticed` on the row.
+Read-only checks never write this notice marker. Listing, activation and every
+integrity check require the commit and validate any available native evidence.
+No migration of native-only approvals is needed: no scripts have ever been
+approved in the live ledger. **This raises the bar; it is not proof against
+someone who controls the machine and can forge all local records.**
+Cost is reported when available; count/time/turn bounds do not promise a dollar price or dollar ceiling.
+
+Activation reruns the current screen against the exact reviewed bytes and refuses
+with named rules even if the approval is otherwise corroborated. It takes ledger then host lock,
+refuses symlink paths, existing destinations and dirty affected files, and commits
+an `activation_pending` stamp before copying. It creates `scripts/<name>`
+exclusively, mode 0755, writes the separate `self-learn:scripts:begin/end` usage
+block and commits both in the host. It then records `active_version` and clears
+pending in the ledger. Cross-repository commits are not physically atomic: a
+pending stamp is deliberately recoverable by deactivation. An ordinary failed
+host commit quarantines the created file and restores prose. There is no retry
+that spends another review. Approved but undeployed rows report activation_error.
+Every enforcing audit and overseer run retries a current approved version, as does
+`skill script activate <id>`. Neither route spends another review. Superseded versions are not retried.
+Exclusive file creation precedes an ownership stamp; a collision never makes
+the newcomer self-learn's file. An existing foreign file refuses a draft before
+review spending. `active_mode` records 0755; mode changes revoke activation.
+
+Every non-dry overseer run, every recompile, and the host process's daily
+maintenance pass enforce active source hashes, modes, transcript evidence and
+the exact approved usage block. Doctor checks these read-only: no locks, recovery,
+quarantine, activation or commits. Its failure row names recompile as the repair.
+Changed or damaged usage preserves the entire edited SKILL.md in quarantine before removing managed entries;
+all scripts of that skill are revoked. Unrecognizable prose is retained. Missing/changed/symlink scripts and interrupted activation
+are deactivated under the same lock order. Existing bytes or symlinks are moved (including across filesystems)
+into the ledger-scoped cache `script-quarantine/<date>-<nonce>/<name>` and ordinary
+files become mode 0600. The usage entry is removed, the host change committed and
+the row becomes drafted while retaining approval history. The notice names the
+script and quarantine path (or says the file was missing). Orphan-cache cleanup
+retains any home cache with a `script-quarantine` entry, even after its ledger
+has gone; quarantined user edits never expire as disposable cache. No file is deleted by
+this lifecycle. Dry runs do not mutate; selftest remains a read-only health view.
+Per-row/index/read/git failures become notices; they do not crash the calling
+operation or stop checking other rows. Swapped script/skill directory symlinks
+are moved themselves; their targets are not followed. Historical managed files
+restored without an active approved version are quarantined only when their bytes
+match a version self-learn previously managed for that skill/name. Unknown bytes
+at an inactive name belong to the person: leave the file in place, remove any
+stale managed usage entry, and report “not managed by self-learn” once per observed
+content hash. Active files still deactivate on any byte/mode/symlink change. If normal
+cache/commit recovery fails, preserve unsafe bytes under `skill-scripts-recovery/`
+in the ledger before disabling them. Damaged indexes are preserved before
+restoring the last structurally sound committed index from ledger git history.
+Every recovered approval is reverified; valid approvals keep their state and retry
+activation as usual. Without good history, recover drafts from `proposal.json`.
+An uncorroborated old review is superseded, its observations archived intact, and a
+fresh review is allowed. Recovery never treats a held proposal alone as ownership
+of an installed file. Failures of preservation or
+permissions are reported as incomplete enforcement, never silently counted as
+success. Unrelated uncommitted prose remains uncommitted during deactivation.
+
+The writer owns prose/references, not executable deployment. Drafts may not contain
+scripts or the scripts block. Draft views strip that block; writes reattach it
+byte for byte and leave script files untouched. Only active block-listed script
+bytes and the scripts block are excluded from the prose author's hash; foreign
+files still participate. The writer separately compares the block to the ledger
+and checks every active source hash before writing. Installer/user scripts are
+never adopted as self-learn scripts. Manual prose must describe the complete
+procedure without the helper (a drafting/review obligation, not a string heuristic).

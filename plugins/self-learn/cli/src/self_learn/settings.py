@@ -1886,6 +1886,21 @@ REGISTRY: tuple[Setting, ...] = (
     ),
 )
 
+# S-160: review count bounds. A different configured model is refused by the caller.
+REGISTRY += (
+    Setting(name="models.script_review", env_var="SELF_LEARN_SCRIPT_REVIEW_MODEL",
+        config_section="models", config_key="script_review", kind="str",
+        default="claude-fable-5-2", description="required model for script review"),
+    Setting(name="scripts.reviews_per_day", env_var=None, tier="C", override_channel=False,
+        config_section="scripts", config_key="reviews_per_day", kind="int", default=5,
+        validate=lambda v: v if cast(int, v) >= 0 else None,
+        validate_hint="must be >= 0", description="manual script reviews per UTC day"),
+    Setting(name="overseer.script_reviews_per_run", env_var=None, tier="C", override_channel=False,
+        config_section="overseer", config_key="script_reviews_per_run", kind="int", default=3,
+        validate=lambda v: v if cast(int, v) >= 0 else None,
+        validate_hint="must be >= 0", description="script reviews per overseer run including resumes"),
+)
+
 #: Attention round (design r2 §4.2, §4.11; the user's answer 7): every
 #: code-classified inbox kind -- every kind but the overseer's own asks,
 #: whose class the overseer judges -- can be moved to another class by one

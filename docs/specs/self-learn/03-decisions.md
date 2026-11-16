@@ -323,3 +323,34 @@ mode has a name now (E-4) and this table is where we watch for it.
 | # | Decision | Rationale (inputs) |
 |---|---|---|
 | S-159 | **Every skill draft and rewrite uses a versioned Anthropic reference.** Ship PACK.md and a source/hash manifest inside the CLI package. Stage them and available native examples for every phase B, including drafts-only runs. Check documented limits before writes; retain local template policy separately. Advice is non-refusing and heuristically detected findings are labelled as such. Preserve registered names and carried settings; report conflicts only. Record the pack version in both stamp forms and last_write, expose show/check/status, and cache optional plain-HTTP fetch observations for offline weekly reporting. Refresh requires a reviewed code/spec change, never a model silently changing the pack. No examples are redistributed; runtime copies retain prose/licenses only and pass the stage secret scan. | User's own typed words, 15 November 2026: "ensure that the skill builder uses anthropic documentation / native anthropic skills to use as the reference point for skills built or modified via the self-learn skill building system." The implementation brief was written by the Claude orchestrator; packaging, checks, stamps and refresh mechanics are that brief's decisions and this lane's implementation choices, not further quotations from the user. Anthropic's documented portable and Claude Code formats differ: the target here is Claude Code, so free-form metadata and carried runtime settings do not become upload-compatibility refusals. |
+
+### Local skill scripts (2026-11-15)
+
+| # | Decision | Rationale (inputs) |
+|---|---|---|
+| S-160 | **Only proven Fable approval activates a local skill helper.** Keep draft, approved and active states; hash source plus usage; no command can approve. Preserve the manual procedure. Screen effects conservatively, retain every attempt and verdict, cap review attempts, and quarantine changes. | User's own typed words, 15 November 2026: "let the self-learn skills write scripts with a couple of exeptions: no curl, nothing that connects to outside networks, nothing that can delete data from my computer or my backups, and nothing that starts long running processes. that basically means scripts that takes programmatic, repeatable work out of the hands of agents is okay, not scripts that update things automatically, download things, delete things, etc. also, scripts can only be 'activated' once reviewed and approved explicitly by a fable agent." The supplied brief is the orchestrator's design; schema, conservative syntax restrictions and recovery details are implementation choices. |
+
+S-160 fix round 1 (2026-11-15): the orchestrator's ratified decisions following
+F1–F13 require positive member/option lists, durable transcript corroboration
+(which cannot defeat a machine owner), retryable activation without review
+spending, approved-only replacement, tier-C config-only caps, read-only doctor
+and daily enforcement. Malformed helpers cannot halt prose or later cases.
+Change requests use any applied write to the requested skill; builds still
+require their named case and routed lessons. These are design decisions, not
+additional quotations from the person.
+
+
+S-160 fix round 2 (2026-11-15): approval observation files alone are insufficient.
+Use the native Claude Code transcript when readable, else a review commit with
+version/session trailers and exact draft bytes. Always rerun the current screen.
+Recover valid approvals from ledger history; supersede unverified reviews when
+recovery cannot corroborate them. An inactive name does not own a person's new
+file: quarantine only known managed bytes at that name. These are the
+orchestrator's R1–R4 decisions; the user's quoted limits above remain unchanged.
+
+S-160 fix round 3 (2026-11-15, orchestrator's R5–R6 decision): every approval
+requires its introducing ledger review commit. Native evidence is additional,
+never sufficient alone. Missing/unreadable native transcripts keep approval on
+the commit alone, with one notice; present contradictions make it unverified.
+Only the review cwd's expected transcript location is consulted. No native-only
+live approvals exist, so no migration is required.

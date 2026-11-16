@@ -78,6 +78,9 @@ _JOB = {
 }
 
 _TABLE: dict[str, Plain] = {
+    "models.script_review": _p("models", "Script reviewer", "Only claude-fable-5-2 may approve a local skill helper."),
+    "scripts.reviews_per_day": _p("limits", "Manual script reviews per day", "Maximum fresh script review attempts per UTC day; zero stops them."),
+    "overseer.script_reviews_per_run": _p("limits", "Script reviews per weekly run", "Maximum script review attempts in one overseer run, including resumes."),
     # ---------------------------------------------------------------- runs
     "miner.enabled": _p("runs", "Read my sessions overnight",
         "Each night, read the day's Claude Code sessions and write down new lessons. Off stops every overnight read."),

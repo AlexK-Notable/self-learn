@@ -115,6 +115,7 @@ from .skill_reference import VERSION as REFERENCE_VERSION
 import copy
 import io
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -448,7 +449,7 @@ def _drop_link(link: Path, target: Path) -> bool:
 # ------------------------------------------------------------ reading files
 
 
-def read_draft_dir(path: Path | str) -> dict[str, str | bytes]:
+def read_draft_dir(path: Path | str, *, script_notes: list[str] | None = None) -> dict[str, str | bytes]:
     """Every regular file under *path* as ``{relative posix path: text}``.
     A file that is not UTF-8 comes back as ``bytes`` (the template check
     then names it). A symlink, or a file over :data:`MAX_DRAFT_FILE_BYTES`,
@@ -461,17 +462,26 @@ def read_draft_dir(path: Path | str) -> dict[str, str | bytes]:
         here = Path(current)
         for dirname in list(dirnames):
             if (here / dirname).is_symlink():
+                if script_notes is not None and (here / dirname).relative_to(base).parts[0] == "scripts":
+                    script_notes.append(f"{(here / dirname).relative_to(base)}: dropped symlinked draft folder; prose still applies")
+                    dirnames.remove(dirname)
+                    continue
                 raise ValueError(f"{here / dirname} is a symlink; a draft holds plain files")
         for filename in sorted(filenames):
             file_path = here / filename
-            if file_path.is_symlink():
-                raise ValueError(f"{file_path} is a symlink; a draft holds plain files")
-            if file_path.stat().st_size > MAX_DRAFT_FILE_BYTES:
-                raise ValueError(
-                    f"{file_path} is larger than {MAX_DRAFT_FILE_BYTES} bytes"
-                )
-            data = file_path.read_bytes()
             key = file_path.relative_to(base).as_posix()
+            try:
+                if file_path.is_symlink():
+                    raise ValueError(f"{file_path} is a symlink; a draft holds plain files")
+                if file_path.stat().st_size > MAX_DRAFT_FILE_BYTES:
+                    raise ValueError(f"{file_path} is larger than {MAX_DRAFT_FILE_BYTES} bytes")
+                data = file_path.read_bytes()
+            except (OSError, ValueError) as exc:
+                if script_notes is None or not key.startswith("scripts/"):
+                    raise
+                script_notes.append(f"{key}: dropped unreadable script draft ({type(exc).__name__}); prose still applies")
+                files[key] = b""
+                continue
             try:
                 files[key] = data.decode("utf-8")
             except UnicodeDecodeError:
@@ -517,8 +527,11 @@ def deployed_files(home: Path | str, name: str) -> dict[str, str] | None:
 
 
 def _authored_sha(files: Mapping[str, str]) -> str:
-    others = {key: value for key, value in files.items() if key != SKILL_ENTRY_FILE}
-    return skill_registry.authored_sha256(files[SKILL_ENTRY_FILE], others)
+    from .skill_scripts import view_block
+    text, block = view_block(files[SKILL_ENTRY_FILE])
+    active_paths = set(re.findall(r"^- `(scripts/[a-z0-9-]+)`:", block, re.MULTILINE))
+    others = {key: value for key, value in files.items() if key != SKILL_ENTRY_FILE and key not in active_paths}
+    return skill_registry.authored_sha256(text.rstrip() + "\n", others)
 
 
 def _authored_sha_or_refuse(files: Mapping[str, str], what: str) -> str:
@@ -527,7 +540,7 @@ def _authored_sha_or_refuse(files: Mapping[str, str], what: str) -> str:
     reason, never a traceback."""
     try:
         return _authored_sha(files)
-    except SkillRegistryError as exc:
+    except (SkillRegistryError, ValueError, OSError) as exc:
         raise _Refused(
             KIND_NEEDS_PERSON,
             [f"the authored sha256 of {what} cannot be taken: {exc}; a person must look at the folder"],
@@ -580,7 +593,8 @@ def draft_view(files: Mapping[str, str]) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, value in files.items():
         if key == SKILL_ENTRY_FILE:
-            out[key] = _authored_part(_unstamped(value)) + "\n"
+            from .skill_scripts import view_block
+            out[key] = _authored_part(_unstamped(view_block(value)[0])) + "\n"
         elif _is_managed_reference(key):
             out[key] = value
     return out
@@ -1318,6 +1332,21 @@ def _preflight(
     )
     problems += [str(p) if p.path == SKILL_ENTRY_FILE else f"{p} ({p.path})" for p in result.problems]
     plan.notes += [str(n) for n in result.notes]
+    from . import skill_scripts
+    if any(marker in str(files.get(SKILL_ENTRY_FILE, "")) for marker in (skill_scripts.BEGIN, skill_scripts.END)):
+        problems.append("scripts-block: drafts cannot contain the activation-owned block")
+    if updating:
+        try:
+            _plain, current_block = skill_scripts.split_block(deployed_md_for_check or "")
+            if current_block != skill_scripts._block(skill_scripts.rows(home), name):
+                problems.append("scripts-block: deployed block differs from ledger; run self-learn recompile")
+            for active in skill_scripts.rows(home):
+                if active["skill"] == name and active["state"] == "active":
+                    path = plan.folder / "scripts" / active["name"]
+                    if skill_scripts._live_problem(home, active, plan.root):
+                        problems.append("scripts-bytes: active script is unverified or changed; run self-learn recompile")
+        except (ValueError, OSError, KeyError) as exc:
+            problems.append(f"script integrity unavailable: {exc}; run self-learn recompile")
     problems += _compiler_owned_in_draft(files)
     problems += _secret_problems(files)
     if problems:
@@ -1354,6 +1383,10 @@ def _preflight(
     # place needs --expect (the hash covers it) and why draft_view hands it
     # back to whoever edits the skill.
     new_md = _with_section(authored, section, pointer)
+    if deployed_md is not None:
+        _plain, scripts_block = skill_scripts.split_block(deployed_md)
+        if scripts_block:
+            new_md = new_md.rstrip() + "\n\n" + scripts_block + "\n"
     plan.writes[folder / SKILL_ENTRY_FILE] = new_md
     for key, text in draft.items():
         if key != SKILL_ENTRY_FILE:
@@ -1825,6 +1858,7 @@ def _retire_preflight(home: Path, name: str) -> _RetirePlan | None:
     """``None`` when the skill is already retired (nothing to do)."""
     if not _valid_name(name):
         raise _Refused(KIND_BAD_LINE, [f"{name!r} is not a skill name"])
+    _scripts_inactive(home, name)
     registry = _load_registry(home)
     row = registry.row(name)
     if row is not None and row["status"] == STATUS_RETIRED:
@@ -2652,6 +2686,7 @@ def _rename_preflight(
     no live old row is a FINISHED rename. A live old row with another
     ``created`` stamp is a skill made under the old name since, and is
     renamed only as a first run would be (refused: the new name is taken)."""
+    _scripts_inactive(home, old)
     for value in (old, new):
         if not _valid_name(value):
             raise _Refused(
@@ -3243,3 +3278,23 @@ def rename(
     ledger_push, host_push = _push(home, plan.root, ledger_sha, host_sha)
     return _with_pushes(result, ledger_push, host_push)
 
+
+
+def _scripts_inactive(home: Path, name: str) -> None:
+    from . import skill_scripts
+    for notice in skill_scripts.audit(home):
+        print(notice)
+    try:
+        entries = skill_scripts.rows(home)
+    except Exception:
+        folder = skill_dir(_skills_root(home), name)
+        md = folder / SKILL_ENTRY_FILE
+        try:
+            managed = md.is_file() and skill_scripts.BEGIN in md.read_text()
+        except OSError:
+            managed = True
+        if managed:
+            raise _Refused(KIND_BAD_LINE, ["this skill's script state is unreadable; run self-learn recompile"])
+        return
+    if any(row["skill"] == name and (row["state"] == "active" or row.get("activation_pending")) for row in entries):
+        raise _Refused(KIND_BAD_LINE, ["deactivate this skill's scripts before renaming or retiring it"])

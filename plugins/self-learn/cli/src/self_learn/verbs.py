@@ -13306,6 +13306,9 @@ def recompile(
     hand run) leaves the body empty, as before."""
     home = Path(home)
     result = RecompileResult()
+    from . import skill_scripts
+    for notice in skill_scripts.audit(home):
+        print(notice)
     # Gate r1 MAJOR-1 (§7.2a.5(4), multi-span): `recompile` takes several
     # sequential OUTERMOST ledger spans in one invocation (one per adopted
     # region in an `--adopt` run; per-target spans, then the final resync

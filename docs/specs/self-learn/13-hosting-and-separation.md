@@ -2495,3 +2495,107 @@ Pack status and applied/retained guidance belong under Catalogue health in both
 model-finalized and runner-only reports. Repeated publication adds no duplicate
 facts. The report retains its declared heading order and its existing repair
 rules; no additional Skill reference heading is published.
+
+### Reviewed local skill helpers (S-160)
+
+Use scripts for repeated local parsing, counting, comparison, checks, formatting,
+conversion or reports. Keep manual instructions complete. Phase B may emit
+`skills/<skill>/scripts/<name>` and `scripts/<name>.usage.md` (one paragraph).
+The runner removes these from the prose deployment, holds them after the owned or
+registered skill is successfully deployed, then requests bounded Fable reviews.
+Drafts-only mode retains them with the ordinary skill draft and never reviews them.
+`script-reviews.yaml` supplies previous screens/reasons/required changes to phase B.
+Rejected/invalid/unreviewed drafts remain visible and count-cap refusals appear in
+the factual run report.
+
+Agents and people can use `skill script draft <skill> --file <path> --name <name>
+--usage <paragraph> --note <why>`, `list`, `show <id>`, `review <id> --note <why>`
+and `deactivate <id> --note <why>`. `activate <id>` retries an already corroborated
+approval without a model call. These lifecycle commands need no grant; raising
+either review-count cap is tier C. There is no approve command. Review attempts
+are durable and once-only, including failed/unproven sessions. A changed version
+is submitted anew. List/show include state, version, screen and approval evidence.
+
+Mechanical screen rules are conservative, not a sandbox. Python is parsed with
+AST: allowed standard-library imports only; no alias/wildcard imports, dynamic
+execution/introspection, destructive/process attributes, asynchronous operations,
+while loops or infinite itertools; open allows read or exclusive create only,
+with output statically derived from a caller argument. Credential names and encoded
+payloads refuse. Bash requires noclobber as its first effective line and checks
+all pipeline commands against the local read/report allow-list. It refuses command
+substitution, functions, loops, eval/exec/source, background work, append/clobber
+redirects, non-argument redirects, unsafe git subcommands/options, sed effects,
+find execution/deletion/output and command-specific output flags. Embedded awk
+programs are conservatively refused because this token scanner cannot prove their
+effects. Unsupported constructs can be rewritten as simple Python. Fable must
+inspect indirect effects and caller-input validation; passing this filter is never
+approval. The policy forbids all networking, existing-data replacement/removal,
+credential reads, updates/installers and persistent/unbounded work, regardless of
+which language/API expresses them. See 02 §S-160 for stamps and recovery.
+
+Git read commands require `--no-pager --no-optional-locks -c core.fsmonitor=false
+-c log.showSignature=false`. Diff/show/log additionally require `--no-ext-diff
+--no-textconv`, and blame requires `--no-textconv`. Filters, signature requests and
+external/output options refuse. This prevents ordinary read helpers from refreshing
+an index or invoking configured helpers. Date-setting and sort compression programs
+also refuse. Sed accepts only simple slash-delimited substitutions and print,
+pattern-space-delete or quit expressions; file scripts and unknown flags refuse.
+The supported subset is intentionally narrower than each command's full language.
+
+#### S-160 fix round 1 (2026-11-15, F1–F13)
+
+The screen is a positive allow-list of modules, imported members, module
+attributes, value methods, call targets, shell commands, exact option spellings
+and operand counts. Import spelling never bypasses member checks; module aliases,
+reflective calls, two-argument iter, environment reads and FileType refuse. File
+openers must be called directly so mode/path checks cannot be skipped by passing
+them through map or partial. Format fields are literal, simple argument names or
+positions, with no attribute/index lookup or nested fields; format methods cannot
+be passed indirectly. Known credential paths include netrc and process-environment
+files. Shell
+quote removal precedes credential checks; unknown expansions, abbreviated options,
+unsafe short-option bundles and unscreened jq programs refuse. Printf requires a
+literal read/report format, excluding its variable-assignment conversion. The supported
+read/report operations retain positive examples, including both reviewer controls.
+
+Usage paragraphs may wrap across lines; the runner joins them. Invalid names,
+unreadable companions, marker/secret failures and errors while holding a draft
+produce Refused / could not do notes for the helper only. The skill write and later
+cases still apply, including on resume. A change request is satisfied by any applied
+write to that same skill in the run, independent of the model's named case. Build
+requests retain their named-case and routed-lesson checks.
+
+Drafting a replacement leaves the current helper running. Approval retries on
+integrity checks and through `skill script activate`. Doctor stays read-only;
+enforcement also runs daily in the existing serve maintenance job. A transcript
+stamp corroborates each approval, with the exact version in the verdict. The
+stamp is local evidence, not a defense against a machine owner forging both files.
+
+
+#### S-160 fix round 2 (2026-11-15, R1–R4)
+
+Activation and retries rerun the current mechanical screen. Corroboration checks
+the ledger review commit's exact bytes and version/session trailers for every
+approval (02 §S-160, amended R5–R6). Claude Code's own transcript, when recorded
+and still readable, is additional evidence; absence produces a one-time notice
+and never invalidates the commit. Present contradictory evidence refuses. Generated observation
+files alone cannot approve anything. Local machine control can still forge the
+native record or git history; this is corroboration, not cryptographic attestation.
+
+Python filesystem calls and Path reads/listing use one input-path policy: caller
+arguments, stdin, or a relative literal without parent traversal. Home expansion,
+absolute literals and `..` components refuse. Credential checks also inspect
+constant-folded concatenations, f-strings and joins; credential names include
+rclone, Docker, npm, PostgreSQL, netrc, git, Kubernetes, GnuPG, AWS, password-store,
+age, GitHub, Claude and id_* keys. Exclusive outputs still require caller paths.
+Bash input operands cannot combine variables with other variables or literal
+suffixes; unquoted path globs, parent traversal, recursive grep and device paths
+other than /dev/null refuse. Redirects retain a single caller output directory
+plus one simple filename, under noclobber, for the report-writing control.
+Oversized constant ranges and iteration that grows the iterated collection refuse.
+
+Index recovery restores the last good committed rows and rechecks approvals;
+unverifiable reviews are superseded with their history preserved. An inactive
+name does not confer ownership of new bytes a person writes there. Only known
+managed bytes restored at that name are quarantined; foreign replacements are
+left in place and noticed once, outside the managed scripts block.

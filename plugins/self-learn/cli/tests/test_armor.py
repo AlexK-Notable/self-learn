@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "adde030"
+ANCHOR = "94bd238"
 
 
 # ===================================================================== #
@@ -316,6 +316,7 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # ask.py seam caller, S-124/S-127) was dropped as VACUOUS by this landing's own refusal; it is anchor-side now.
     "test_invocation.py": Behaviour(
         nodes=72, dump_sha="20bb2a73b4def8c17c2a5bcdce313bc429b52b329af8c7862c35bfccefdd5d19",
+        edited={"func:test_wr7_seam_is_only_called_from_the_three_call_sites": "2026-11-15, S-160 (02-schema.md §S-160): add the explicit fresh tool-free Fable script-review SDK caller to the closed inventory."},
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
@@ -998,9 +999,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=1,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-11-15, S-160 (02-schema.md §S-160): 0 -> 1; WR7 names the new "
+            "script-review SDK caller. One explicit edited node; anchor unchanged. Previous entry: "
             "2026-11-01, transcribed at ANCHOR 208289b from this module's own "
             "STALE refusal (um-basis): 1 -> 0; the attention round's test edits and deletions "
             "are anchor-side now. Previous entry: "

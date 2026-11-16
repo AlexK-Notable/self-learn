@@ -91,3 +91,44 @@ No native examples are vendored; optional roots can be set through
 `SELF_LEARN_SKILL_REFERENCE_PLUGIN_ROOT` and `SELF_LEARN_SKILL_REFERENCE_SYNCED_ROOT`.
 Absent examples are omitted. Existing registered license/compatibility values, like
 other carried settings, stay unchanged; conflicts with the reference are notes.
+
+## Local helper scripts
+
+Draft helpers for programmatic, repeatable local work: parse, count, compare,
+check, format, convert, collect facts or report. Keep the skill's manual procedure
+complete. Bash or standard-library Python only, with an extensionless name.
+No network (even local machines), credential reads, deletion, moving, truncation,
+overwriting existing files, updates/downloads/installers, background processes or
+unbounded loops. Print results or exclusively create new files beneath a caller path.
+
+```
+self-learn skill script draft <skill> --file <path> --name <name> --usage "How to use it" --note "Why it helps"
+self-learn skill script list
+self-learn skill script show <id>
+self-learn skill script review <id> --note "Review this version"
+self-learn skill script activate <id>
+self-learn skill script deactivate <id> --note "Why to stop using it"
+```
+
+Drafts stay non-executable outside the skills root. The mechanical screen only
+refuses. Review starts a fresh tool-free claude-fable-5-2 session and requires model
+proof from init and every assistant message. Only its explicit approval activates
+the exact source+usage version, installs an executable and adds a managed usage
+entry. Nobody can approve by command or from an already running session. Each
+version gets one review attempt ever (default manual cap 5/day, overseer 3/run).
+Inspect rejected/no-review reasons and submit a changed version to try again.
+A new draft leaves the active helper in place until approved replacement. An
+approved version held by dirty files retries automatically; `activate` applies
+that existing approval without another review. List shows activation refusals
+and labels missing or inconsistent transcript evidence unverified. Review caps
+are tier C, configuration-only; agents need the standing grant and a reason to
+change them. Local transcript corroboration cannot defeat someone able to forge
+all machine-local records.
+
+Every overseer run, recompile and daily host maintenance enforces active bytes,
+modes and transcript evidence. Doctor reports problems without writing; run
+`self-learn recompile` to enforce them. Changed or missing
+scripts lose their usage entry; changed files move to a dated quarantine in the
+ledger's cache, and the notice gives its location. Deactivation needs no grant.
+Prose rewrites preserve active scripts and their block; never include either in a
+manual skill rewrite. External/user scripts remain their owners' files.

@@ -21,6 +21,8 @@ can outlive what they were made for:
 
 What it never removes:
 
+- a home cache containing ``script-quarantine`` (S-160): these are preserved
+  user edits, even when the ledger itself has gone;
 - the cache of a home that exists, or of a home the caller names in
   ``keep_homes`` (the serving daemon passes its own);
 - a ``home-*`` directory with no ``.home`` record, or whose record does not
@@ -32,7 +34,7 @@ What it never removes:
   shapes above (``autosync-pause.lock`` and the landing state are not
   ours to judge).
 
-Everything here is cache: never a repo's truth, never load-bearing state.
+Other entries are disposable cache. Script quarantine is preserved user data.
 """
 
 from __future__ import annotations
@@ -185,6 +187,9 @@ def _prune_homes(
             continue
         directory = root / name
         if directory.is_symlink() or not directory.is_dir():
+            continue
+        quarantine = directory / "script-quarantine"
+        if not _gone(quarantine) or quarantine.is_symlink():
             continue
         if match.group(1) in keep:
             continue

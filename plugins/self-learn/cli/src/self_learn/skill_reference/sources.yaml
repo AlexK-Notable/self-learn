@@ -1,4 +1,4 @@
-version: anthropic-2026-11-15
+version: anthropic-2026-11-15-scripts
 date_read: '2026-11-15'
 normalization: markdown-nfc-whitespace-v1
 sources:
