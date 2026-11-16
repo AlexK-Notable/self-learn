@@ -15,6 +15,8 @@ from urllib.request import Request, urlopen
 
 from ruamel.yaml import YAML
 
+from .primitives import chrono
+
 PACK_DIR = Path(__file__).with_suffix("")
 VERSION = "anthropic-2026-11-15-scripts"
 READ_DATE = "2026-11-15"
@@ -97,8 +99,10 @@ def _fetch_before(get, url: str, deadline: float) -> str:
 
 
 def status(home: Path, *, fetch: bool = False, fetcher=None, today: date | None = None) -> dict:
+    # The pack records a calendar date, so its known precision is UTC midnight.
+    now = datetime.combine(today, datetime.min.time(), timezone.utc) if today else datetime.now(timezone.utc)
     result = {"version": VERSION, "date_read": READ_DATE,
-              "age_days": ((today or date.today()) - date.fromisoformat(READ_DATE)).days,
+              "age_days": chrono.age_days(chrono.to_dt(READ_DATE), now),
               "normalization": NORMALIZATION, "sources": sources()}
     if fetch:
         get = fetcher or fetch_text
@@ -172,27 +176,27 @@ def local_examples(notes: list[str] | None = None) -> dict[str, Path]:
                 raise ValueError("manifest must be a mapping")
             rows = data["skills"]
             if isinstance(rows, dict):
-                if any(not isinstance(value, dict) for value in rows.values()):
-                    raise ValueError("manifest entries must be mappings")
-                rows = [dict(value, name=key) for key, value in rows.items()]
-            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                rows = [dict(value, name=key) if isinstance(value, dict) else value
+                        for key, value in rows.items()]
+            if not isinstance(rows, list):
                 raise ValueError("manifest skills must be a list or mapping")
-            found = {}
-            for row in rows:
-                if not isinstance(row.get("source"), str):
-                    raise ValueError("manifest source must be text")
-                if row.get("source") not in ("anthropic", "anthropic-example"):
+        except Exception as exc:
+            notes.append(f"skill reference example manifest omitted ({type(exc).__name__})")
+            continue
+        for index, row in enumerate(rows):
+            try:
+                if not isinstance(row, dict) or not isinstance(row.get("source"), str):
+                    raise ValueError("manifest row must have a text source")
+                if row["source"] not in ("anthropic", "anthropic-example"):
                     continue
                 name = row.get("name", "")
                 if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9-]+", name):
                     raise ValueError("invalid example name")
                 folder = manifest.parent / name
                 (folder / "SKILL.md").stat()
-                found.setdefault("synced-" + name, folder)
-            for name, folder in found.items():
-                examples.setdefault(name, folder)
-        except Exception as exc:
-            notes.append(f"skill reference example manifest omitted ({type(exc).__name__})")
+                examples.setdefault("synced-" + name, folder)
+            except Exception as exc:
+                notes.append(f"skill reference example row {index + 1} omitted ({type(exc).__name__})")
     return examples
 
 

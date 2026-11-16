@@ -2448,7 +2448,7 @@ target failure; recompile continues with other targets.
 Optional examples are read defensively: malformed manifests, unreadable content
 and copies removed during discovery are omitted with a Refused / could not do
 note. Reference staging failure never refuses the weekly run. Reference facts
-have their own Skill reference report section; draft guidance is reported only
+live under the declared Catalogue health report heading; draft guidance is reported only
 for a retained draft or an applied write, including resumed writes.
 
 The read-only reference check uses the same editable view as the writer:
@@ -2464,6 +2464,37 @@ the caller reports unreachable and records the observation; an uncancellable
 platform DNS/socket operation can finish in that daemon later or end at process
 exit. Weekly runs remain offline. See 02 §S-159 rollback note before reverting
 code after a write has recorded reference_pack.
+
+#### S-159 re-review corrections (2026-11-15, R1–R3)
+
+Full new-skill name validation is a precommit gate only when a non-removal
+operation would create a missing skill folder. Existing new-skill targets retain
+the previous slug/path validation and collision gates; reserved words and other
+new-authoring name rules do not prevent routing, recompile or removal of lessons.
+
+Reference check prints draft or installed mode. Automatic selection uses the
+resolved deployed path of a live owned or registered skill; every other path is
+a draft. Mutually exclusive --draft and --installed flags override that choice,
+so an unregistered installation can be checked as installed explicitly. Draft
+mode reads every supplied file and applies the writer's template, compiler-owned
+content and secret-scan refusals. It uses the declared skill name as the eventual
+write target, allowing an arbitrary staging folder name. A registered rewrite
+uses carried settings read from deployment, never from the draft's own claims.
+Installed mode keeps the editable-view behavior and retained-file notes.
+
+A manifest-level shape/read failure omits that manifest. A bad individual row,
+including a missing downloaded folder, adds exactly one row note and omits only
+that example; valid rows before and after it still stage, in list or map form.
+
+#### S-159 suite corrections (2026-11-15)
+
+Pack age uses primitives.chrono.age_days with the read date interpreted at UTC
+midnight (the precision the pack records), a full UTC current timestamp, and
+zero for dates in the future. Injected test dates likewise mean UTC midnight.
+Pack status and applied/retained guidance belong under Catalogue health in both
+model-finalized and runner-only reports. Repeated publication adds no duplicate
+facts. The report retains its declared heading order and its existing repair
+rules; no additional Skill reference heading is published.
 
 ### Reviewed local skill helpers (S-160)
 

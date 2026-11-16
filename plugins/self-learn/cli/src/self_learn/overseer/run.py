@@ -2853,6 +2853,21 @@ def _in_short_note(
     )
 
 
+def _put_skill_reference_lines(lines: list[str], facts: list[str]) -> None:
+    """Keep pack facts in the declared Catalogue health section, once each."""
+    if not facts:
+        return
+    start = next((i for i, line in enumerate(lines)
+                  if line.startswith("## ") and _heading_name(line) == "Catalogue health"), None)
+    if start is None:
+        lines.extend(["", "## Catalogue health"])
+        start = len(lines) - 1
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    present = set(lines[start + 1:end])
+    lines[end:end] = [f"- {fact}" for fact in facts if f"- {fact}" not in present]
+    _drop_bare_none(lines, start + 1)
+
+
 def _finalize_model_report(
     path: Path, *, date: str, run_id: str, model: str, selected: tuple[str, ...],
     population_count: int, excluded: int, model_calls: int, guard: int,
@@ -2881,7 +2896,7 @@ def _finalize_model_report(
     lines = _validate_model_report(path)
     model_line_count = len(lines)
     if reference_lines:
-        lines.extend(["", "## Skill reference", *[f"- {line}" for line in reference_lines]])
+        _put_skill_reference_lines(lines, reference_lines)
     runner_notes = list(notes or [])
     if model_line_count > _REPORT_LINE_GUIDE:
         runner_notes.append(
@@ -3853,8 +3868,10 @@ class _CaseRefused(Exception):
 def _write_report_only(stage: Path, text: str) -> Path:
     path = stage / "report.final.md"
     reference_status = stage / "skill-reference" / "STATUS.md"
-    if reference_status.is_file() and "## Skill reference" not in text:
-        text = text.rstrip() + "\n\n## Skill reference\n" + reference_status.read_text(encoding="utf-8")
+    if reference_status.is_file():
+        lines = text.splitlines()
+        _put_skill_reference_lines(lines, reference_status.read_text(encoding="utf-8").splitlines())
+        text = "\n".join(lines) + "\n"
     _write_stage(stage, path, text)
     return path
 
