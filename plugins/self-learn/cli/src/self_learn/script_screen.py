@@ -7,7 +7,7 @@ import shlex
 import string
 from dataclasses import dataclass
 
-CREDENTIAL = re.compile(r"(?i)(?:\.env\b|\.ssh\b|credentials|token|hosts\.yml|\.aws\b|\.gnupg\b|\.netrc\b|/proc/(?:self|thread-self|[0-9]+)/environ\b|id_rsa|id_ed25519|\.(?:pem|key)\b)")
+CREDENTIAL = re.compile(r"(?i)(?:\.env\b|\.ssh\b|credentials|token|hosts\.yml|\.aws\b|\.gnupg\b|\.netrc\b|/proc/(?:self|thread-self|[0-9]+)/environ\b|rclone\.conf|\.docker/config\.json|\.npmrc\b|\.pgpass\b|\.git-credentials\b|\.kube/config|\.password-store\b|(?:^|/)age(?:/|\b)|\.config/gh\b|id_[a-z0-9_*?-]+|shadow\b|\.(?:pem|key)\b)")
 DANGEROUS = frozenset[str]("remove unlink rmdir removedirs rename renames replace truncate rmtree move write_text write_bytes touch mkdir makedirs chmod chown symlink link system exec execv execve execl execlp execvp execvpe spawn fork forkpty popen FileIO start_server open_connection create_connection connect bind listen send recv run Popen sleep decode fromhex loads load read_pickle extract extractall dump dumps".split()) - frozenset({"loads", "load", "dump", "dumps", "decode", "replace"})
 # F1-F3: module members are positive lists, including from-import spellings.
 MEMBERS = {
@@ -96,6 +96,99 @@ def _caller_path(node: ast.AST, names: set[str]) -> bool:
     return False
 
 
+
+FILE_METHODS = frozenset("read_text read_bytes iterdir glob rglob stat lstat exists is_file is_dir is_symlink resolve absolute readlink open".split())
+FILE_CALLS = frozenset("os.listdir os.scandir os.walk os.stat os.lstat glob.glob glob.iglob os.path.exists os.path.isdir os.path.isfile os.path.islink os.path.getsize os.path.getmtime os.path.getctime os.path.getatime os.path.realpath os.path.abspath".split())
+
+
+def _fold(node: ast.AST, assignments: dict[str, list[ast.AST]], seen: frozenset[str] = frozenset()) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name) and node.id not in seen and len(assignments.get(node.id, [])) == 1:
+        return _fold(assignments[node.id][0], assignments, seen | {node.id})
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        a, b = _fold(node.left, assignments, seen), _fold(node.right, assignments, seen)
+        return a + b if a is not None and b is not None else None
+    if isinstance(node, ast.JoinedStr):
+        pieces = [_fold(n.value if isinstance(n, ast.FormattedValue) else n, assignments, seen) for n in node.values]
+        return "".join(v for v in pieces if isinstance(v, str)) if all(isinstance(v, str) for v in pieces) else None
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "join":
+        sep = _fold(node.func.value, assignments, seen)
+        if sep is not None and len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
+            parts = [_fold(n, assignments, seen) for n in node.args[0].elts]
+            return sep.join(v for v in parts if isinstance(v, str)) if all(isinstance(v, str) for v in parts) else None
+    return None
+
+
+def _relative(text: str) -> bool:
+    return not (text.startswith(("/", "~", "\\")) or re.match(r"[A-Za-z]:", text) or
+        ".." in text.replace("\\", "/").split("/") or CREDENTIAL.search(text))
+
+
+def _input_path(node: ast.AST, paths: set[str], assignments: dict[str, list[ast.AST]], seen: frozenset[str] = frozenset()) -> bool:
+    value = _fold(node, assignments)
+    if value is not None:
+        return _relative(value)
+    if isinstance(node, ast.Name):
+        if node.id in paths:
+            return True
+        if node.id not in seen and len(assignments.get(node.id, [])) == 1:
+            return _input_path(assignments[node.id][0], paths, assignments, seen | {node.id})
+        return False
+    if _caller_path(node, paths):
+        return True
+    if isinstance(node, ast.Call):
+        name = ast.unparse(node.func)
+        if name in {"sys.stdin.readline", "sys.stdin.read"}:
+            return True
+        if name in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath", "os.path.join"}:
+            return all(_input_path(n, paths, assignments, seen) for n in node.args) and not node.keywords
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {"joinpath", "with_name", "with_suffix", "with_stem", "strip", "rstrip", "resolve", "absolute"}:
+            return _input_path(node.func.value, paths, assignments, seen) and all(_input_path(n, paths, assignments, seen) for n in node.args)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _input_path(node.left, paths, assignments, seen) and _input_path(node.right, paths, assignments, seen)
+    if isinstance(node, ast.Attribute) and node.attr in {"parent", "path"}:
+        # parent can escape an allowed relative directory.
+        return node.attr == "path" and _input_path(node.value, paths, assignments, seen)
+    return False
+
+
+def _path_rules(tree: ast.AST, paths: set[str], assignments: dict[str, list[ast.AST]], imported: dict[str, str]) -> list[str]:
+    rules = []
+    derived = set(paths)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.For, ast.comprehension)) and isinstance(node.target, ast.Name) and isinstance(node.iter, ast.Call):
+            call = node.iter
+            name = imported.get(ast.unparse(call.func), ast.unparse(call.func))
+            if name in FILE_CALLS and call.args and _input_path(call.args[0], derived, assignments):
+                derived.add(node.target.id)
+            elif isinstance(call.func, ast.Attribute) and call.func.attr in {"iterdir", "glob", "rglob"} and _input_path(call.func.value, derived, assignments):
+                derived.add(node.target.id)
+        folded = _fold(node, assignments)
+        if folded is not None and CREDENTIAL.search(folded):
+            rules.append("credentials: constant-folded value names a credential")
+        if isinstance(node, ast.Call):
+            name = imported.get(ast.unparse(node.func), ast.unparse(node.func))
+            targets = []
+            if name in FILE_CALLS or name in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath"}:
+                targets = list(node.args) or [ast.Constant(".")]
+                targets += [k.value for k in node.keywords if k.arg in {"path", "pathname", "root_dir"}]
+                if any(k.arg not in {"path", "pathname", "root_dir", "recursive", "include_hidden", "follow_symlinks", "topdown", "onerror"} for k in node.keywords):
+                    rules.append("input-path: unsupported filesystem keyword")
+            elif isinstance(node.func, ast.Attribute) and node.func.attr in FILE_METHODS and name != "io.open":
+                targets = [node.func.value]
+                if node.func.attr in {"glob", "rglob"}:
+                    targets += list(node.args)
+            if any(not _input_path(n, derived, assignments) for n in targets):
+                rules.append("input-path: file access requires caller/stdin input or a relative path without parent traversal")
+            if name == "range" and any(isinstance(n, ast.Pow) or isinstance(n, ast.Constant) and isinstance(n.value, int) and abs(n.value) > 1_000_000 for arg in node.args for n in ast.walk(arg)):
+                rules.append("bounded: oversized constant ranges are refused")
+        if isinstance(node, ast.For):
+            iterable = ast.unparse(node.iter)
+            if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and ast.unparse(n.func.value) == iterable and n.func.attr in {"append", "extend", "insert", "add", "update"} for stmt in node.body for n in ast.walk(stmt)):
+                rules.append("bounded: mutating the collection being iterated is refused")
+    return rules
+
 def _python(text: str) -> list[str]:
     try:
         tree = ast.parse(text)
@@ -131,12 +224,18 @@ def _python(text: str) -> list[str]:
             head = dotted.split(".")[0]
             canonical = imported.get(head, head) + dotted[len(head):]
             parent = parents.get(node)
+            if canonical in FILE_CALLS and not (isinstance(parent, ast.Call) and parent.func is node):
+                rules.append("indirection: filesystem functions must be called directly")
             if canonical in MODULES and not (isinstance(parent, ast.Attribute) and parent.value is node):
                 rules.append("indirection: module objects cannot be used as values or rebound")
-        if (isinstance(node, ast.Name) and node.id == "open" or isinstance(node, ast.Attribute) and node.attr in {"open", "format", "format_map"}):
+        if (isinstance(node, ast.Name) and node.id == "open" or isinstance(node, ast.Attribute) and node.attr in FILE_METHODS | {"format", "format_map"}):
             parent = parents.get(node)
             if not isinstance(parent, ast.Call) or parent.func is not node:
                 rules.append("indirection: checked open/format methods must be called directly")
+        if isinstance(node, ast.Name) and imported.get(node.id) in FILE_CALLS:
+            parent = parents.get(node)
+            if not isinstance(parent, ast.Call) or parent.func is not node:
+                rules.append("indirection: filesystem functions must be called directly")
         if isinstance(node, ast.Name) and node.id.startswith("__") and node.id != "__name__":
             rules.append("indirection: hidden namespace access is refused")
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and CREDENTIAL.search(node.value):
@@ -203,18 +302,38 @@ def _python(text: str) -> list[str]:
                     rules.append("open-mode: only read or exclusive create is permitted")
                 else:
                     target = node.func.value if method and isinstance(node.func, ast.Attribute) else (node.args[0] if node.args else ast.Constant(None))
-                    if not _caller_path(target, paths):
-                        rules.append("output-path: file access must derive from a caller argument")
+                    if not (_caller_path(target, paths) if str(mode.value).startswith("x") else _input_path(target, paths, assignments)):
+                        rules.append("output-path: file access must derive from caller/stdin or a relative read path")
             if name.startswith("os.") and name not in {"os.stat", "os.lstat", "os.listdir", "os.scandir", "os.walk", "os.getcwd", "os.fspath"} and not name.startswith("os.path."):
                 rules.append("os-effects: only local read operations are permitted")
             if name.startswith("itertools.") and name.split(".")[-1] in {"count", "cycle", "repeat"}:
                 rules.append("bounded: potentially infinite iterators are refused")
+    rules.extend(_path_rules(tree, paths, assignments, imported))
     return rules
+
+
+
+def _unquoted_glob(text: str) -> bool:
+    quote = None
+    for line in text.splitlines()[1:]:
+        if line.lstrip().startswith("#"):
+            continue
+        for char in line:
+            if quote:
+                if char == quote:
+                    quote = None
+            elif char in {"'", '"'}:
+                quote = char
+            elif char in "*?[":
+                return True
+    return False
 
 
 def _bash(text: str) -> list[str]:
     rules: list[str] = []
     lines = text.splitlines()[1:]
+    if _unquoted_glob(text):
+        rules.append("input-path: unquoted glob operands are refused")
     effective = [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
     if not effective or effective[0] != "set -o noclobber":
         rules.append("noclobber: bash requires set -o noclobber")
@@ -238,14 +357,30 @@ def _bash(text: str) -> list[str]:
         else:
             commands[-1].append(token)
     assigned: set[str] = set()
+    assigned_values: dict[str, str] = {}
     for command in commands:
         if not command:
             continue
         normalized = " ".join(command)
         if CREDENTIAL.search(normalized):
             rules.append("credentials: normalized shell word names a credential")
-        if any(w.startswith("~") or w.startswith("/") for w in command):
+        if any(w.startswith("~") or w.startswith("/") and w != "/dev/null" for w in command):
             rules.append("input-path: local file operands must come from caller arguments")
+        for i, word in enumerate(command[1:], 1):
+            output = i > 0 and command[i - 1] == ">"
+            if not output and "$" in word and not re.fullmatch(r"\$(?:[1-9][0-9]*|[A-Za-z_][A-Za-z_0-9]*)", word):
+                rules.append("input-path: composed variable operands are refused")
+            if ".." in word.split("/") or word.startswith("~"):
+                rules.append("input-path: parent traversal and home expansion are refused")
+            if re.search(r"(?:^|/)dev/+", word) and word != "/dev/null":
+                rules.append("input-path: device files other than /dev/null are refused")
+            if command[0] in {"cat", "grep", "sort", "uniq", "head", "tail", "wc", "stat", "sha256sum", "diff", "comm", "realpath", "dirname", "basename", "find"} and re.search(r"[?*\[]", word):
+                # Literal quoted patterns are useful for grep/find; shell expansion
+                # is refused, including a glob appended after a quoted parameter.
+                if not any(q + word + q in text for q in ("'", '"')):
+                    rules.append("input-path: unquoted glob operands are refused")
+            if word.startswith("$") and word[1:] in assigned_values and not _relative(assigned_values[word[1:]]):
+                rules.append("input-path: assigned path is absolute, traversing or credential-shaped")
         variables = re.findall(r"\$([A-Za-z_][A-Za-z_0-9]*)", normalized)
         if any(v not in assigned for v in variables):
             rules.append("variables: only positional or script-assigned variables may expand")
@@ -253,6 +388,10 @@ def _bash(text: str) -> list[str]:
             name = command[0].split("=", 1)[0]
             if name in {"PATH", "IFS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "CDPATH", "GLOBIGNORE", "LD_PRELOAD", "LD_LIBRARY_PATH"}:
                 rules.append("variables: shell control variables cannot be assigned")
+            value = command[0].split("=", 1)[1]
+            if not _relative(value) or "$" in value and not re.fullmatch(r"\$[1-9][0-9]*", value):
+                rules.append("input-path: assigned values must be relative literals or a positional parameter")
+            assigned_values[name] = value
             assigned.add(name)
             continue
         if command == ["set", "-o", "noclobber"]:
@@ -337,7 +476,7 @@ def _git_read_only(args: list[str]) -> bool:
 # (short flags, short flags taking a value, long flags, long value flags, min/max operands)
 OPTIONS = {
     "cat": ("AbenstuvET", "", "show-all number-nonblank number squeeze-blank show-ends show-tabs show-nonprinting", "", 0, None),
-    "grep": ("EFGPivwxyzcLlnHhoqsrIR", "efmABCD", "extended-regexp fixed-strings perl-regexp ignore-case invert-match word-regexp line-regexp count files-without-match files-with-matches line-number with-filename no-filename only-matching quiet silent recursive dereference-recursive", "regexp max-count after-context before-context context directories", 1, None),
+    "grep": ("EFGPivwxyzcLlnHhoqs", "efmABCD", "extended-regexp fixed-strings perl-regexp ignore-case invert-match word-regexp line-regexp count files-without-match files-with-matches line-number with-filename no-filename only-matching quiet silent", "regexp max-count after-context before-context context directories", 1, None),
     "sort": ("bdfgimnhrRsuVz", "kSt", "ignore-leading-blanks dictionary-order ignore-case general-numeric-sort ignore-nonprinting month-sort numeric-sort human-numeric-sort reverse random-sort stable unique zero-terminated check", "key buffer-size field-separator parallel", 0, None),
     "uniq": ("cduiz", "fsw", "count repeated unique ignore-case zero-terminated", "skip-fields skip-chars check-chars", 0, 1),
     "wc": ("clmwL", "", "bytes chars lines words max-line-length", "", 0, None),
@@ -381,6 +520,8 @@ def _options(command: str, args: list[str]) -> tuple[list[str], bool]:
             cluster = word[1:]
             for at, char in enumerate(cluster):
                 if char in values:
+                    if command in {"tail", "head"} and at < len(cluster) - 1 and not re.fullmatch(r"[+-]?[0-9]+[bBkKmMgG]?", cluster[at + 1:]):
+                        return operands, False
                     if at == len(cluster) - 1:
                         if i == len(args): return operands, False
                         i += 1

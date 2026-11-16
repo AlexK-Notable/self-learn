@@ -35,15 +35,19 @@ def rows(home: Path | str) -> list[dict]:
     path = Path(home) / INDEX
     if not path.exists():
         return []
-    data = json.loads(path.read_text())
+    return _parse_rows(path.read_text())
+
+
+def _parse_rows(text: str) -> list[dict]:
+    data = json.loads(text)
     if data.get("version") != 1 or not isinstance(data.get("scripts"), list):
         raise ValueError("invalid skill scripts index")
     for row in data["scripts"]:
         if not isinstance(row, dict) or not re.fullmatch(r"ss-[0-9a-f]{24}", row.get("id", "")) or row.get("state") not in {"drafted", "approved", "active"}:
             raise ValueError("invalid skill script record")
         _names(row["skill"], row["name"])
-        if not re.fullmatch(r"[0-9a-f]{64}", row["version"]):
-            raise ValueError("invalid script version")
+        if not re.fullmatch(r"[0-9a-f]{64}", row["version"]) or not re.fullmatch(r"[0-9a-f]{64}", row.get("script_sha256", "")) or not isinstance(row.get("usage"), str):
+            raise ValueError("invalid script version or usage")
     return data["scripts"]
 
 
@@ -56,12 +60,12 @@ def _held(home: Path, row: dict) -> Path:
     return home / "skill-scripts" / row["skill"] / row["name"] / row["version"] / "draft"
 
 
-def _save(home: Path, records: list[dict], subject: str, extra: tuple[Path, ...] = ()) -> None:
+def _save(home: Path, records: list[dict], subject: str, extra: tuple[Path, ...] = (), *, trailers: str = "") -> None:
     path = home / INDEX
     intent = intents.begin(home, "skill-scripts", [path, *extra], subject)
     fsops.atomic_write(path, json.dumps({"version": 1, "scripts": records}, indent=2) + "\n", fsync=True)
     intents.complete(intent)
-    gitops.stage_and_commit(home, [path, *extra], "self-learn: " + subject, "S-160 script lifecycle")
+    gitops.stage_and_commit(home, [path, *extra], "self-learn: " + subject, "S-160 script lifecycle" + ("\n\n" + trailers if trailers else ""))
     intents.finish(intent)
 
 
@@ -109,7 +113,11 @@ def draft(home: Path | str, skill: str, *, text: str, name: str, usage: str, not
             stream.write(text)
         path.chmod(0o600)
         records.append(row)
-        _save(home, records, f"script draft {skill}/{name}", (path,))
+        proposal = path.parent / "proposal.json"
+        with proposal.open("x") as stream:
+            json.dump(row, stream)
+        proposal.chmod(0o600)
+        _save(home, records, f"script draft {skill}/{name}", (path, proposal))
         return row
 
 
@@ -190,7 +198,7 @@ def review(home: Path | str, ident: str, *, note: str, run: str | None = None) -
         if _setting(home, "models.script_review") != MODEL:
             raise ValueError("script review requires claude-fable-5-2")
         today = chrono.now_iso()[:10]
-        attempts = [r["review"] for r in records if r["review"]]
+        attempts = [review for r in records for review in [r.get("review"), *r.get("superseded_reviews", [])] if review]
         count = sum(1 for r in attempts if (r.get("run") == run if run else r.get("run") is None and r["at"][:10] == today))
         cap = int(str(_setting(home, "overseer.script_reviews_per_run" if run else "scripts.reviews_per_day")))
         if count >= cap:
@@ -225,6 +233,7 @@ def review(home: Path | str, ident: str, *, note: str, run: str | None = None) -
         if script_proof.verdict(outcome.stdout) != verdict:
             raise ValueError("result differs from assistant transcript verdict")
         result.update(verdict)
+        result["corroboration"] = script_proof.corroboration(home, row, result)
     except Exception as exc:
         result.update(verdict="no review", reasons=[f"review unavailable: {type(exc).__name__}"])
     with intents.ledger_write(home):
@@ -243,7 +252,8 @@ def review(home: Path | str, ident: str, *, note: str, run: str | None = None) -
         row["review"].update(result, completed_at=chrono.now_iso())
         if result["verdict"] == "approve":
             row["state"] = "approved"
-        _save(home, records, f"script review {ident}: {result['verdict']}", extra)
+        _save(home, records, f"script review {ident}: {result['verdict']}", extra,
+            trailers=f"Script-Version: {row['version']}\nScript-Session: {result.get('session', '')}" if result["verdict"] == "approve" else "")
         if row["state"] == "approved":
             try:
                 _fresh(home, records, row)
@@ -258,6 +268,9 @@ def _activate_locked(home: Path, records: list[dict], row: dict) -> None:
     from . import script_proof
     if row["state"] != "approved":
         raise ValueError("activation requires an approved version")
+    checked = screen(_fresh(home, records, row))
+    if not checked.ok:
+        raise ValueError("screen refused: " + "; ".join(checked.rules))
     error = script_proof.verify(home, row)
     if error:
         raise ValueError(error)
@@ -361,11 +374,12 @@ def _deactivate_locked(home: Path, records: list[dict], row: dict, note: str) ->
             saved.chmod(0o600)
             row["usage_quarantine"] = str(saved)
             _save(home, records, f"script usage preserved {row['id']}")
-        quarantine = _quarantine(home, target, row, records) or row.get("quarantine")
+        owned = _managed_file(target, row, records)
+        quarantine = (_quarantine(home, target, row, records) if owned else None) or row.get("quarantine")
         row.update(state="drafted", active_version=None, activation_pending=False, deactivated_at=chrono.now_iso(), deactivation_note=note, quarantine=quarantine)
         if md.exists():
             _write_block(md, records, row["skill"], recovering=True)
-        touched = [p for p in (target, md) if p.exists() or skill_writer._head_text(root, p) is not None]
+        touched = [p for p in ((target, md) if owned else (md,)) if p.exists() or skill_writer._head_text(root, p) is not None]
         dirty = skill_writer._dirty_under(root, touched)
         touched = [p for p in touched if os.path.relpath(p, root) in dirty]
         if touched:
@@ -447,7 +461,18 @@ def _integrity(home: Path, *, enforce: bool) -> list[str]:
                 elif (row.get("owns_target") or row.get("deactivated_at")) and (path.exists() or path.is_symlink()):
                     # Another active version can legitimately occupy this slot.
                     if not any(r["name"] == row["name"] and r["state"] == "active" for r in group):
-                        reason = "managed file restored without an active approved version"
+                        if _managed_file(path, row, records):
+                            reason = "managed file restored without an active approved version"
+                        else:
+                            fingerprint = hashlib.sha256(path.read_bytes()).hexdigest() if not path.is_symlink() and path.is_file() else "foreign-link"
+                            if row.get("foreign_notice") != fingerprint:
+                                notices.append(f"script {name}/{row['name']}: not managed by self-learn; left in place")
+                                if enforce:
+                                    row["foreign_notice"] = fingerprint
+                                    _save(home, records, f"script foreign file noticed {row['id']}")
+                            if broken and enforce and not folder.is_symlink() and not path.parent.is_symlink():
+                                notices.append(_deactivate_locked(home, records, row, "remove stale managed usage; foreign file left in place"))
+                            continue
                 if row.get("activation_pending") and row.get("target_created", True):
                     reason = reason or "interrupted activation"
                 if broken and row.get("owns_target"):
@@ -516,51 +541,86 @@ def listed(home: Path | str) -> list[dict]:
     return result
 
 
-def _recovery_identities(home: Path) -> list[dict]:
-    """Read-only identity recovery. A held proposal alone never owns a live file."""
-    records: list[dict] = []
-    try:
-        committed = json.loads(skill_writer._head_text(home, home / INDEX) or "{}")
-        for raw in committed.get("scripts", []):
-            _names(raw["skill"], raw["name"])
-            if not re.fullmatch(r"[0-9a-f]{64}", raw["version"]) or not re.fullmatch(r"ss-[0-9a-f]{24}", raw["id"]):
-                continue
-            row = dict(raw)
-            row.update(state="drafted", active_version=None, activation_pending=False,
-                owns_target=raw.get("owns_target", False) or raw.get("state") == "active")
-            records.append(row)
-    except Exception:
-        pass
-    known = {(r["skill"], r["name"], r["version"]) for r in records}
-    root = skill_writer._skills_root(home)
-    for path in sorted((home / "skill-scripts").glob("*/*/*/draft")):
-        skill, name, digest = path.parts[-4:-1]
+def _committed_rows(home: Path) -> list[dict] | None:
+    """Newest structurally sound index, including history before a bad commit."""
+    for commit in gitops._git_ok(home, "log", "--format=%H", "--", INDEX).stdout.splitlines():
         try:
-            _names(skill, name)
-            _safe(home, path)
-            if not re.fullmatch(r"[0-9a-f]{64}", digest) or (skill, name, digest) in known:
-                continue
-            md = skill_writer.skill_dir(root, skill) / "SKILL.md"
-            _safe(root, md)
-            _text, block = view_block(md.read_text())
-            owned = f'- `scripts/{name}`:' in block
-            records.append({"id": "ss-" + uuid.uuid4().hex[:24], "skill": skill, "name": name, "version": digest,
-                "script_sha256": "", "usage": "unverified recovered draft", "state": "drafted", "screen": {}, "review": {"verdict": "no review", "at": chrono.now_iso(), "reasons": ["index damaged; approval unknown"]}, "owns_target": owned})
-        except Exception:
+            return _parse_rows(gitops._git_ok(home, "show", commit + ":" + INDEX).stdout)
+        except (ValueError, KeyError, TypeError, gitops.GitOpsError):
             continue
+    return None
+
+
+def _recovery_identities(home: Path) -> list[dict]:
+    """Read-only recovery: reverify history; held proposals never own live files."""
+    from . import script_proof
+    records = _committed_rows(home)
+    from_history = records is not None
+    if records is None:
+        records = []
+        for path in sorted((home / "skill-scripts").glob("*/*/*/proposal.json")):
+            try:
+                _safe(home, path)
+                row = _parse_rows(json.dumps({"version": 1, "scripts": [json.loads(path.read_text())]}))[0]
+                if _held(home, row).parent != path.parent:
+                    continue
+                row.pop("owns_target", None)
+                if (path.parent / "review.jsonl").exists():
+                    row["review"] = {"verdict": "superseded", "at": chrono.now_iso(),
+                        "reasons": ["unverified observations recovered without index history; prior accounting unknown"]}
+                records.append(row)
+            except (ValueError, KeyError, TypeError, OSError):
+                continue
+    for row in records:
+        if (row.get("review") or {}).get("verdict") == "approve" and script_proof.verify(home, row) is None:
+            continue
+        if from_history and row["state"] == "drafted" and (row.get("review") or {}).get("verdict") != "approve":
+            continue
+        if row.get("review"):
+            row.setdefault("superseded_reviews", []).append(dict(row["review"], superseded=True))
+        row.update(state="drafted", review=None, active_version=None, activation_pending=False,
+            recovery_note="unverified old review superseded; fresh review allowed")
     return records
 
 
 def _recover_rows(home: Path, *, enforce: bool) -> list[dict]:
-    """Preserve the damaged index before recovering identities, never approvals."""
+    """Preserve damaged bytes and restore verified approvals from git history."""
     records = _recovery_identities(home)
+    if not enforce:
+        return records
+    extra = []
     original = home / INDEX
     if original.exists():
         backup = home / "skill-scripts-recovery" / (uuid.uuid4().hex + ".json")
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(original), str(backup))
-        _save(home, records, "script index recovered without approvals", (backup,))
+        try:
+            backup.read_bytes()
+            extra.append(backup)
+        except OSError:
+            # Preservation succeeded even if snapshotting this inode is denied.
+            # Do not let the intent snapshot strand the replacement index.
+            for row in records:
+                row["recovery_backup"] = str(backup)
+    for row in records:
+        if row.get("review") is None:
+            transcript = _held(home, row).parent / "review.jsonl"
+            if transcript.exists():
+                archive = transcript.with_name("superseded-review-" + uuid.uuid4().hex + ".jsonl")
+                shutil.move(str(transcript), str(archive))
+                extra.extend((transcript, archive))
+    _save(home, records, "script index recovered and approvals reverified", tuple(extra))
     return records
+
+
+def _managed_file(path: Path, row: dict, records: list[dict]) -> bool:
+    if row["state"] == "active" or row.get("activation_pending") and row.get("target_created", True):
+        return True
+    if path.is_symlink() or not path.is_file():
+        return False
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return any(r["skill"] == row["skill"] and r["name"] == row["name"] and
+        r.get("owns_target") and r.get("script_sha256") == digest for r in records)
 
 
 def inspect(home: Path | str) -> list[str]:
@@ -587,7 +647,7 @@ def inspect(home: Path | str) -> list[str]:
                 elif row.get("owns_target") or row.get("deactivated_at"):
                     target = folder / "scripts" / row["name"]
                     if (target.exists() or target.is_symlink()) and not any(r["skill"] == row["skill"] and r["name"] == row["name"] and r["state"] == "active" for r in records):
-                        reason = "managed file restored without active approval"
+                        reason = "managed file restored without active approval" if _managed_file(target, row, records) else "not managed by self-learn; left in place"
                 if reason:
                     notes.append(f"script {row['skill']}/{row['name']}: {reason}; run self-learn recompile")
             except Exception as exc:
@@ -608,7 +668,7 @@ def _emergency_revoke(home: Path, root: Path, records: list[dict], row: dict) ->
     target = folder / "scripts" / row["name"]
     target = folder if folder.is_symlink() else target.parent if target.parent.is_symlink() else target
     try:
-        if target.exists() or target.is_symlink():
+        if (target.exists() or target.is_symlink()) and _managed_file(target, row, records):
             dest = home / "skill-scripts-recovery" / uuid.uuid4().hex / target.name
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(target), str(dest))

@@ -338,3 +338,12 @@ and daily enforcement. Malformed helpers cannot halt prose or later cases.
 Change requests use any applied write to the requested skill; builds still
 require their named case and routed lessons. These are design decisions, not
 additional quotations from the person.
+
+
+S-160 fix round 2 (2026-11-15): approval observation files alone are insufficient.
+Use the native Claude Code transcript when readable, else a review commit with
+version/session trailers and exact draft bytes. Always rerun the current screen.
+Recover valid approvals from ledger history; supersede unverified reviews when
+recovery cannot corroborate them. An inactive name does not own a person's new
+file: quarantine only known managed bytes at that name. These are the
+orchestrator's R1–R4 decisions; the user's quoted limits above remain unchanged.

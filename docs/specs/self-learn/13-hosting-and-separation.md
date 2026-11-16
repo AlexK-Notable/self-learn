@@ -2570,3 +2570,30 @@ integrity checks and through `skill script activate`. Doctor stays read-only;
 enforcement also runs daily in the existing serve maintenance job. A transcript
 stamp corroborates each approval, with the exact version in the verdict. The
 stamp is local evidence, not a defense against a machine owner forging both files.
+
+
+#### S-160 fix round 2 (2026-11-15, R1–R4)
+
+Activation and retries rerun the current mechanical screen. Corroboration checks
+Claude Code's own transcript when readable; otherwise it checks the ledger review
+commit's exact bytes and version/session trailers (02 §S-160). Generated observation
+files alone cannot approve anything. Local machine control can still forge the
+native record or git history; this is corroboration, not cryptographic attestation.
+
+Python filesystem calls and Path reads/listing use one input-path policy: caller
+arguments, stdin, or a relative literal without parent traversal. Home expansion,
+absolute literals and `..` components refuse. Credential checks also inspect
+constant-folded concatenations, f-strings and joins; credential names include
+rclone, Docker, npm, PostgreSQL, netrc, git, Kubernetes, GnuPG, AWS, password-store,
+age, GitHub, Claude and id_* keys. Exclusive outputs still require caller paths.
+Bash input operands cannot combine variables with other variables or literal
+suffixes; unquoted path globs, parent traversal, recursive grep and device paths
+other than /dev/null refuse. Redirects retain a single caller output directory
+plus one simple filename, under noclobber, for the report-writing control.
+Oversized constant ranges and iteration that grows the iterated collection refuse.
+
+Index recovery restores the last good committed rows and rechecks approvals;
+unverifiable reviews are superseded with their history preserved. An inactive
+name does not confer ownership of new bytes a person writes there. Only known
+managed bytes restored at that name are quarantined; foreign replacements are
+left in place and noticed once, outside the managed scripts block.

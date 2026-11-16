@@ -5423,7 +5423,8 @@ note, by, at, screen and review. The version is SHA-256 over compact UTF-8 JSON
 `[source_text, usage_text]` with non-ASCII characters retained. This unambiguously
 binds both byte strings. Source is UTF-8 and stored as mode 0600 at
 `skill-scripts/<skill>/<name>/<version>/draft`, never in the skills root.
-An identical submission returns the same row; changed usage is a new version.
+A mode-0600 `proposal.json` beside the draft preserves its identity and usage for
+index recovery. An identical submission returns the same row; changed usage is a new version.
 Only `may_edit` owned/registered non-vetoed names qualify. A new draft leaves the
 active predecessor in place. Only approved activation swaps it out under both locks.
 Versions and review attempts are retained indefinitely.
@@ -5432,7 +5433,9 @@ The screen stamp contains language, ok and named rules. A refusal blocks a revie
 and does not spend an attempt. A review stamp is committed BEFORE invocation:
 `verdict: no review`, at, note, run (null for manual), version, screen, model,
 session, cost_usd and reasons. This reservation counts against the cap even after
-an interrupted session. No version is reviewed twice. `models.script_review`
+an interrupted session. No version is reviewed twice except after index recovery
+supersedes an uncorroborated review; those attempts remain in `superseded_reviews`
+and still count against the applicable caps. `models.script_review`
 defaults to `claude-fable-5-2`; any other setting refuses the invocation. Default
 `scripts.reviews_per_day` is 5 (manual, UTC); `overseer.script_reviews_per_run` is 3,
 keyed by the durable run id, including resumes. Both accept zero to stop reviews.
@@ -5457,14 +5460,26 @@ backend-owned accounting/session metadata. The SDK captures init
 and every assistant message as structured transcript lines, including tool-use
 flags. Approval stores those lines at the held version's `review.jsonl`, with a
 relative ledger path and SHA-256 over the complete file. These lines are committed
-with the approval and retained independently of cache-log retention. Activation,
-listing and every integrity check reread the file and verify model, session,
-version, verdict and absence of tool use. Missing/changed evidence is `unverified`,
+with the approval and retained independently of cache-log retention. They are only
+observations; they are not sufficient corroboration. `review.corroboration` records
+either `kind: native`, the Claude Code transcript path and SHA-256 of its assistant
+lines (all models, session ids, tool-use blocks, exact-version verdict checked), or
+`kind: git` if that native record cannot be read reliably. The native source lives
+under the configured Claude Code `projects/<project>/<session>.jsonl` directory,
+outside the ledger, and is not the generated `review.jsonl`.
+The git fallback requires a reachable `self-learn: script review <id>: approve`
+commit introducing that approval, with `Script-Version` and `Script-Session`
+trailers matching the row. Its tree must contain the exact held source, generated
+observations, usage and review stamp. A later arbitrary commit of a forged index
+is insufficient. Activation, listing and every integrity check verify both the
+observations and the selected corroboration record. Native evidence disappearing
+or changing does not silently downgrade an existing approval to the git fallback. Missing/changed evidence is `unverified`,
 never an approval self-learn vouches for. **This raises the bar; it is not proof
 against someone who controls the machine and can forge all local records.**
 Cost is reported when available; count/time/turn bounds do not promise a dollar price or dollar ceiling.
 
-Activation checks the exact current held bytes again, takes ledger then host lock,
+Activation reruns the current screen against the exact reviewed bytes and refuses
+with named rules even if the approval is otherwise corroborated. It takes ledger then host lock,
 refuses symlink paths, existing destinations and dirty affected files, and commits
 an `activation_pending` stamp before copying. It creates `scripts/<name>`
 exclusively, mode 0755, writes the separate `self-learn:scripts:begin/end` usage
@@ -5496,10 +5511,19 @@ this lifecycle. Dry runs do not mutate; selftest remains a read-only health view
 Per-row/index/read/git failures become notices; they do not crash the calling
 operation or stop checking other rows. Swapped script/skill directory symlinks
 are moved themselves; their targets are not followed. Historical managed files
-restored without an active approved version are quarantined too. If normal
+restored without an active approved version are quarantined only when their bytes
+match a version self-learn previously managed for that skill/name. Unknown bytes
+at an inactive name belong to the person: leave the file in place, remove any
+stale managed usage entry, and report “not managed by self-learn” once per observed
+content hash. Active files still deactivate on any byte/mode/symlink change. If normal
 cache/commit recovery fails, preserve unsafe bytes under `skill-scripts-recovery/`
 in the ledger before disabling them. Damaged indexes are preserved before
-recovering identities, never assumed approvals. Failures of preservation or
+restoring the last structurally sound committed index from ledger git history.
+Every recovered approval is reverified; valid approvals keep their state and retry
+activation as usual. Without good history, recover drafts from `proposal.json`.
+An uncorroborated old review is superseded, its observations archived intact, and a
+fresh review is allowed. Recovery never treats a held proposal alone as ownership
+of an installed file. Failures of preservation or
 permissions are reported as incomplete enforcement, never silently counted as
 success. Unrelated uncommitted prose remains uncommitted during deactivation.
 

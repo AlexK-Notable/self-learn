@@ -139,13 +139,17 @@ def test_integrity_contains_damage_and_keeps_other_work(env, monkeypatch, change
             monkeypatch.setattr(Path, 'read_bytes', unreadable)
     notices = scripts.audit(env.home)
     assert notices
-    assert not target.exists() and not target.is_symlink()
-    assert not any(r['state'] == 'active' for r in scripts.rows(env.home))
+    if change in {'corrupt-index', 'unreadable-index'}:
+        assert target.read_text() == GOOD
+        assert scripts.get(env.home, row['id'])['state'] == 'active'
+    else:
+        assert not target.exists() and not target.is_symlink()
+        assert not any(r['state'] == 'active' for r in scripts.rows(env.home))
     # A normal compile still returns; no global crash after a malformed index.
     verbs.recompile(env.home, no_push=True)
     if change in {'folder-link', 'skill-link'}:
         assert moved.exists()
-    elif change != 'unreadable':
+    elif change not in {'unreadable', 'corrupt-index', 'unreadable-index'}:
         assert any(Path(r['quarantine']).exists() for r in scripts.rows(env.home) if r.get('quarantine'))
 
 
@@ -258,8 +262,8 @@ def test_creation_collision_never_quarantines_newcomer(env, monkeypatch):
     original.fake(monkeypatch)
     real = scripts._save
     target = env.skill_dir() / 'scripts/count'
-    def collision(home, records, subject, extra=()):
-        real(home, records, subject, extra)
+    def collision(home, records, subject, extra=(), **kwargs):
+        real(home, records, subject, extra, **kwargs)
         if subject.startswith('script activation pending'):
             target.parent.mkdir(exist_ok=True)
             target.write_text('unrelated newcomer')
