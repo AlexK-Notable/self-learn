@@ -169,6 +169,8 @@ class _PathFlow:
         self.params: dict[ast.arg, tuple[ast.AST, str]] = {}
         self.invalid: set[tuple[ast.AST, str]] = set()
         self.approved: set[tuple[ast.AST, str]] = set()
+        self.parameter_facts: dict[tuple[ast.AST, str], int] = {}
+        self.safe_arguments: set[ast.AST] = set()
         self._visit(tree, tree)
         parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
         # Mutation through an alias taints every name sharing that collection.
@@ -198,17 +200,7 @@ class _PathFlow:
         escaped = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                keys = {self._key(node)}
-                scope = self.scopes[node]
-                # Class bodies can read an outer name before assigning it locally.
-                # Both resolutions must satisfy the no-escape/all-calls rule.
-                if isinstance(scope, ast.ClassDef):
-                    while scope in self.outer:
-                        scope = self.outer[scope]
-                        if (scope, node.id) in self.sources:
-                            keys.add((scope, node.id))
-                            break
-                for key in keys:
+                for key in self._load_keys(node):
                     if key in self.functions:
                         parent = parents.get(node)
                         if isinstance(parent, ast.Call) and parent.func is node:
@@ -240,7 +232,8 @@ class _PathFlow:
             if key not in escaped and key not in self.invalid and len(self.sources[key]) == 1 and self.calls[key] and not fn.decorator_list:
                 self.approved.update(self.params[a] for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs)
         while True:
-            rejected = set()
+            changed = False
+            self.safe_arguments.clear()
             for key, fn in self.functions.items():
                 args = fn.args.posonlyargs + fn.args.args
                 defaults = dict(zip([a.arg for a in args[-len(fn.args.defaults):]] if fn.args.defaults else [], fn.args.defaults))
@@ -250,23 +243,108 @@ class _PathFlow:
                     if binding not in self.approved:
                         continue
                     default = defaults.get(param.arg)
-                    if default is not None and not self.caller(default):
-                        rejected.add(binding)
+                    facts = self.parameter_facts.get(binding, 15)
+                    if default is not None:
+                        facts &= self._argument_facts(default)
                     for call in self.calls[key]:
                         if any(isinstance(a, ast.Starred) for a in call.args) or any(k.arg is None for k in call.keywords):
-                            rejected.add(binding)
+                            facts = 0
                             continue
                         actual = call.args[args.index(param)] if param in args and args.index(param) < len(call.args) else default
                         keywords = [k.value for k in call.keywords if k.arg == param.arg]
                         if keywords:
                             if actual is not default or len(keywords) != 1 or param in fn.args.posonlyargs:
-                                rejected.add(binding)
+                                facts = 0
                             actual = keywords[0]
-                        if actual is None or not self.caller(actual):
-                            rejected.add(binding)
-            if not rejected:
+                        facts &= self._argument_facts(actual) if actual is not None else 0
+                        if actual is not None and binding not in self.invalid:
+                            self.safe_arguments.add(actual)
+                    if binding in self.invalid:
+                        facts = 0
+                    if default is not None and facts:
+                        self.safe_arguments.add(default)
+                    if facts != self.parameter_facts.get(binding, 15):
+                        self.parameter_facts[binding] = facts
+                        changed = True
+                    if not facts:
+                        self.approved.discard(binding)
+                        changed = True
+            # Settle scalar versus collection facts before inspecting escapes.
+            # Optimistic helper facts must not taint an ordinary scalar path.
+            if changed:
+                continue
+            # An alias with mixed assignments can still reach the original list.
+            # Escape uses possible aliases; read checks still require ALL sources.
+            collections = {key for key in self.sources
+                if self._binding_facts(key, frozenset()) & (_ITEM_READ | _ITEM_CALLER)}
+            for _ in range(len(aliases) + 1):
+                for left, right in aliases:
+                    if left in collections or right in collections:
+                        collections.update((left, right))
+            # Take a snapshot before invalidation so sibling escapes are all seen.
+            escaping = {key for n in ast.walk(tree)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                for key in self._load_keys(n)
+                if key in collections and self._collection_escapes(n, parents)}
+            before = len(self.invalid)
+            self.invalid.update(escaping)
+            for _ in range(len(aliases) + 1):
+                for left, right in aliases:
+                    if left in self.invalid or right in self.invalid:
+                        self.invalid.update((left, right))
+            if not changed and len(self.invalid) == before:
                 break
-            self.approved.difference_update(rejected)
+
+    def _argument_facts(self, node: ast.AST) -> int:
+        facts = self._facts(node)
+        return ((_READ | _CALLER) if facts & _CALLER else 0) | ((_ITEM_READ | _ITEM_CALLER) if facts & _ITEM_CALLER else 0)
+
+    def _collection_escapes(self, node: ast.Name, parents: dict[ast.AST, ast.AST]) -> bool:
+        scope = self.scopes[node]
+        while scope in self.outer:
+            if isinstance(scope, ast.Lambda):
+                return True
+            scope = self.outer[scope]
+        current: ast.AST = node
+        while current in parents:
+            parent = parents[current]
+            if isinstance(parent, (ast.List, ast.Tuple, ast.Set, ast.Dict, ast.Return, ast.Yield, ast.YieldFrom)):
+                return True
+            if isinstance(parent, ast.arguments):
+                return current not in self.safe_arguments
+            if isinstance(parent, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                return True
+            if isinstance(parent, ast.Assign):
+                return isinstance(self.scopes[parent], ast.ClassDef) or parent.value is not node or any(not isinstance(t, ast.Name) for t in parent.targets)
+            if isinstance(parent, ast.AnnAssign):
+                return isinstance(self.scopes[parent], ast.ClassDef) or parent.value is not node or not isinstance(parent.target, ast.Name)
+            if isinstance(parent, ast.NamedExpr):
+                # A walrus is an alias AND an expression; inspect its destination.
+                if parent.value is not node or not isinstance(parent.target, ast.Name):
+                    return True
+            if isinstance(parent, ast.Call):
+                if current in parent.args or any(k.value is current for k in parent.keywords) or isinstance(current, ast.keyword):
+                    if self._canonical(parent.func) in {'sorted', 'len', 'print', 'reversed', 'enumerate', 'zip', 'str', 'any', 'all', 'min', 'max'}:
+                        return False
+                    return current not in self.safe_arguments and not (isinstance(current, ast.keyword) and current.value in self.safe_arguments)
+                return True  # including collection-bound and unbound methods
+            if isinstance(parent, ast.Attribute):
+                return True
+            if isinstance(parent, ast.Subscript) and parent.value is current:
+                return False  # indexing a flat path collection yields a path
+            if isinstance(parent, (ast.For, ast.comprehension)) and parent.iter is current:
+                return False
+            if isinstance(parent, (ast.Match, ast.BinOp, ast.Compare)):
+                return True  # pattern aliases or implicit calls to user operators
+            if isinstance(parent, (ast.If, ast.While, ast.UnaryOp)):
+                return False  # truth testing does not expose the container
+            current = parent
+        return False
+
+    def _component(self, node: ast.AST, seen: frozenset[tuple[ast.AST, str]]) -> bool:
+        value = self._constant(node, seen)
+        parts = [p for p in value.replace('\\', '/').split('/') if p not in {'', '.'}] if value is not None else []
+        return value is not None and _relative(value) and (not parts or parts[0] not in {'dev', 'proc', 'sys'})
 
     def _bind(self, target: ast.AST, value: ast.AST, mode: str, scope: ast.AST) -> None:
         if isinstance(target, ast.Name):
@@ -353,6 +431,19 @@ class _PathFlow:
             scope = self.outer[scope]
         return scope, node.id
 
+    def _load_keys(self, node: ast.Name) -> set[tuple[ast.AST, str]]:
+        keys = {self._key(node)}
+        scope = self.scopes[node]
+        # A class can read an outer name before assigning the same name locally.
+        # Both resolutions must satisfy the no-escape/all-calls rule.
+        if isinstance(scope, ast.ClassDef):
+            while scope in self.outer:
+                scope = self.outer[scope]
+                if (scope, node.id) in self.sources:
+                    keys.add((scope, node.id))
+                    break
+        return keys
+
     def _invalidate(self, node: ast.AST) -> None:
         while isinstance(node, (ast.Subscript, ast.Attribute)):
             node = node.value
@@ -398,21 +489,23 @@ class _PathFlow:
             return sep.join(v for v in parts if v is not None) if sep is not None and all(v is not None for v in parts) else None
         return None
 
+    def _binding_facts(self, key: tuple[ast.AST, str], seen: frozenset[tuple[ast.AST, str]]) -> int:
+        if key in seen or key in self.invalid or key not in self.sources:
+            return 0
+        facts = []
+        for value, mode in self.sources[key]:
+            if mode == 'parameter':
+                facts.append(self.parameter_facts.get(key, 15) if key in self.approved else 0)
+            elif mode == 'unknown':
+                facts.append(0)
+            else:
+                fact = self._facts(value, seen | {key})
+                facts.append((fact >> 2) if mode == 'element' else fact)
+        return self._all(facts)
+
     def _facts(self, node: ast.AST, seen: frozenset[tuple[ast.AST, str]] = frozenset()) -> int:
         if isinstance(node, ast.Name):
-            key = self._key(node)
-            if key in seen or key in self.invalid or key not in self.sources:
-                return 0
-            facts = []
-            for value, mode in self.sources[key]:
-                if mode == 'parameter':
-                    facts.append((_READ | _CALLER) if key in self.approved else 0)
-                elif mode == 'unknown':
-                    facts.append(0)
-                else:
-                    fact = self._facts(value, seen | {key})
-                    facts.append((fact >> 2) if mode == 'element' else fact)
-            return self._all(facts)
+            return self._binding_facts(self._key(node), seen)
         literal = self._constant(node, seen)
         if literal is not None:
             return _READ if _relative(literal) else 0
@@ -420,7 +513,7 @@ class _PathFlow:
             return _READ | _CALLER
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
             left, right = self._facts(node.left, seen), self._facts(node.right, seen)
-            return left & (_READ | _CALLER) if right & _READ else 0
+            return left & (_READ | _CALLER) if right & _READ and self._component(node.right, seen) else 0
         if isinstance(node, ast.Attribute) and node.attr == 'path':
             return self._facts(node.value, seen) & (_READ | _CALLER)
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
@@ -435,7 +528,7 @@ class _PathFlow:
             if name in {'Path', 'pathlib.Path', 'PurePath', 'pathlib.PurePath', 'os.path.join'} and not node.keywords:
                 if not args:
                     return _READ
-                return args[0] & (_READ | _CALLER) if all(a & _READ for a in args) else 0
+                return args[0] & (_READ | _CALLER) if all(a & _READ for a in args) and all(self._component(n, seen) for n in node.args[1:]) else 0
             if name in {'sorted', 'reversed', 'list', 'tuple', 'set'} and len(args) == 1:
                 return args[0] & (_ITEM_READ | _ITEM_CALLER)
             if name == 'filter' and len(args) == 2 and (isinstance(node.args[0], ast.Lambda) or isinstance(node.args[0], ast.Name) and self._key(node.args[0]) in self.functions):
@@ -447,6 +540,8 @@ class _PathFlow:
                 if node.func.attr in {'iterdir', 'glob', 'rglob'} and all(a & _READ for a in args):
                     return (base & (_READ | _CALLER)) << 2
                 if node.func.attr in {'joinpath', 'with_name', 'with_suffix', 'with_stem', 'strip', 'rstrip', 'resolve', 'absolute'} and all(a & _READ for a in args):
+                    if node.func.attr in {'joinpath', 'with_name', 'with_suffix', 'with_stem'} and not all(self._component(n, seen) for n in node.args):
+                        return 0
                     return base & (_READ | _CALLER)
         return 0
 

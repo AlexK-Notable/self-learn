@@ -5502,6 +5502,29 @@ predicate's parameters. Ordinary recursion may qualify if every call edge does;
 recursive generators are refused as unbounded. These facts only satisfy the path
 screen; all module, command, credential, effect and approval gates still apply.
 
+Collection escape (D1): placing a derived collection inside a display, an
+attribute/subscript store, a lambda body, return/yield, or a global/nonlocal
+binding invalidates it and its plain-name aliases. Unbound methods and call
+arguments also invalidate it, except qualifying helper parameters and the
+read-only builtins `sorted`, `len`, `print`, `reversed`, `enumerate`, `zip`, `str`,
+`any`, `all`, `min`, `max`. A helper parameter may carry collection elements only
+while every call/default qualifies and the helper does not let it escape. These
+checks repeat until helper calls and aliases agree; class-body stores count as
+escapes, including a store shadowing the outer name. An alias with mixed
+assignments still counts as a possible reference to the original collection
+when it escapes, even though the alias itself does not qualify for reads.
+Pattern matching may bind an alias; binary operators and comparisons may call
+user code implicitly. Those uses also invalidate collection derivation.
+
+Upward path navigation (`parent`, `parents`, `anchor`, `root`, `drive`, and
+`os.path.dirname`) never carries derivation. `resolve()` and `absolute()` retain
+it until upward navigation follows. Appended path components must be known
+relative values without `..` or an initial `dev`, `proc`, or `sys` segment
+(including leading `./`). This applies to `/`, `joinpath`, path constructors,
+`os.path.join`, and filename-changing methods. A second caller argument cannot
+be assumed to be a relative component. The caller's original path remains
+permitted, including the local device-state inputs used by the trial control.
+
 Activation reruns the current screen against the exact reviewed bytes and refuses
 with named rules even if the approval is otherwise corroborated. It takes ledger then host lock,
 refuses symlink paths, existing destinations and dirty affected files, and commits
