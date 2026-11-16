@@ -10,7 +10,7 @@ BASE = PREFIX + 'paths = sorted(root.iterdir())\n'
 USE = '\nfor p in paths:\n    print(p.read_bytes())\n'
 DATA = Path(__file__).parent / 'data'
 PROBES = json.loads((DATA / 'script_screen_probes_escape.json').read_text())
-CONTROLS = {'control_sorted_derived', 'closure_rebind_nonlocal_free', 'comprehension_shadow_sorted', 'isolated_str_literal'}
+CONTROLS = {'control_sorted_derived', 'closure_rebind_nonlocal_free', 'comprehension_shadow_sorted', 'isolated_str_literal', 'control', 'with_suffix_ok'}
 
 
 @pytest.mark.parametrize('escape', [
@@ -58,7 +58,7 @@ def test_nonlocal_collection_loses_derivation():
 @pytest.mark.parametrize('use', [
     'sorted(paths)', 'len(paths)', 'print(paths)', 'reversed(paths)',
     'enumerate(paths)', 'zip(paths, paths)', 'str(paths)', 'any(paths)',
-    'all(paths)', 'min(paths)', 'max(paths)', 'alias = paths',
+    'all(paths)', 'alias = paths',
     'def report(xs):\n    for p in xs: print(p.read_bytes())\nreport(paths)',
     'def report(*, xs):\n    for p in xs: print(p.read_bytes())\nreport(xs=paths)',
     'def report(xs=paths):\n    for p in xs: print(p.read_bytes())\nreport()',
@@ -102,3 +102,30 @@ def test_reviewer_escape_probes(name):
     checked = screen(PROBES[name])
     assert checked.ok == (name.split(':')[1] in CONTROLS), (name, checked.rules)
     assert checked.ok or all(':' in rule for rule in checked.rules)
+
+
+@pytest.mark.parametrize('code, escapes', [
+    ('min(paths)', True), ('max(paths)', True),
+    ('r = max(paths, [])\nr.append(root)', True),
+    ('r = min(paths, paths)\nr.append(root)', True),
+    ('r = max(paths or [], [])\nr.append(root)', True),
+    ('print(paths or [])', True), ('len([] or paths)', True),
+    ('print(paths and [])', True), ('len(True and paths)', True),
+    ('print(paths if True else [])', True),
+    ('print([] if False else paths)', True),
+    ('print((paths or []) if True else [])', True),
+    ('print(paths or (paths if True else []))', True),
+    ('if len(paths or []): pass', True),
+    ('if print(paths if True else []): pass', True),
+    ('if paths or []: pass', False), ('if paths and True: pass', False),
+    ('if paths if True else []: pass', False),
+    ('if [] if False else paths: pass', False),
+    ('if (paths or []) and (paths if True else []): pass', False),
+    ('while paths or []: break', False),
+    ('print(1 if paths else 2)', False),
+])
+def test_min_max_and_boolean_collection_escape(code, escapes):
+    checked = screen(BASE + code + USE)
+    assert any(r.startswith('input-path:') for r in checked.rules) == escapes, checked.rules
+    if not escapes and not code.startswith('while '):
+        assert checked.ok, checked.rules

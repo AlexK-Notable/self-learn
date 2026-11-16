@@ -322,9 +322,17 @@ class _PathFlow:
                 # A walrus is an alias AND an expression; inspect its destination.
                 if parent.value is not node or not isinstance(parent.target, ast.Name):
                     return True
+            if isinstance(parent, (ast.BoolOp, ast.IfExp)):
+                if isinstance(parent, ast.IfExp) and parent.test is current:
+                    return False  # only the branches can return this collection
+                expression: ast.AST = parent
+                while isinstance(parents.get(expression), (ast.BoolOp, ast.IfExp)):
+                    expression = parents[expression]
+                owner = parents.get(expression)
+                return not (isinstance(owner, (ast.If, ast.While)) and owner.test is expression)
             if isinstance(parent, ast.Call):
                 if current in parent.args or any(k.value is current for k in parent.keywords) or isinstance(current, ast.keyword):
-                    if self._canonical(parent.func) in {'sorted', 'len', 'print', 'reversed', 'enumerate', 'zip', 'str', 'any', 'all', 'min', 'max'}:
+                    if self._canonical(parent.func) in {'sorted', 'len', 'print', 'reversed', 'enumerate', 'zip', 'str', 'any', 'all'}:
                         return False
                     return current not in self.safe_arguments and not (isinstance(current, ast.keyword) and current.value in self.safe_arguments)
                 return True  # including collection-bound and unbound methods

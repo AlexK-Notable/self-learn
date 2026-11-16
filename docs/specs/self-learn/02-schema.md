@@ -5507,7 +5507,10 @@ attribute/subscript store, a lambda body, return/yield, or a global/nonlocal
 binding invalidates it and its plain-name aliases. Unbound methods and call
 arguments also invalidate it, except qualifying helper parameters and the
 read-only builtins `sorted`, `len`, `print`, `reversed`, `enumerate`, `zip`, `str`,
-`any`, `all`, `min`, `max`. A helper parameter may carry collection elements only
+`any`, `all`. `min` and `max` may return an argument itself, so they count as
+escapes. Boolean operands and conditional-expression branches also escape unless
+the expression is directly the test of an `if` or `while` (the independent
+unbounded-loop refusal still applies to `while`). A helper parameter may carry collection elements only
 while every call/default qualifies and the helper does not let it escape. These
 checks repeat until helper calls and aliases agree; class-body stores count as
 escapes, including a store shadowing the outer name. An alias with mixed
