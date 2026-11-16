@@ -212,6 +212,12 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     show.add_argument("--path", action="store_true", help="print its installed path instead")
     check = ref_commands.add_parser("check", help="check a skill name or folder, read-only")
     check.add_argument("target")
+    mode = check.add_mutually_exclusive_group()
+    mode.add_argument("--draft", dest="reference_mode", action="store_const", const="draft",
+                      help="check every supplied file as a write draft")
+    mode.add_argument("--installed", dest="reference_mode", action="store_const", const="installed",
+                      help="check the editable view, retaining compiler blocks and user assets")
+
     status = ref_commands.add_parser("status", help="pack age and last source check")
     status.add_argument("--fetch", action="store_true", help="HTTP-check sources and record cache status; exit 1 if changed/unreachable")
     parser.set_defaults(_skill_dispatch=dispatch)
@@ -615,35 +621,55 @@ def _reference(home: Path, args) -> int:
             from .skill_reference import resolve_skill
             target = resolve_skill(home, args.target)
         target = target.resolve()
-        files, retained = _reference_files(target)
-        carried = None
-        existing = None
         registry = skill_registry.load(home)
-        for name, row in registry.registrations.items():
-            if row["status"] == skill_registry.STATUS_LIVE and Path(row["registered"]["path"]).resolve() == target:
-                carried = _read_frontmatter(skill_writer._unstamped(str(files.get("SKILL.md", "")))).mapping
-                existing = name
         root = load_hosts(home).skills_root
+        deployed = {}
         if root:
             for name in registry.skills:
-                if registry.is_owned(name) and skill_writer.skill_dir(Path(root), name).resolve() == target:
+                if registry.is_owned(name):
+                    deployed[name] = skill_writer.skill_dir(Path(root), name).resolve()
+        for name, row in registry.registrations.items():
+            if row["status"] == skill_registry.STATUS_LIVE:
+                deployed[name] = Path(row["registered"]["path"]).resolve()
+        matched = next((name for name, folder in deployed.items() if folder == target), None)
+        mode = getattr(args, "reference_mode", None) or ("installed" if matched else "draft")
+        retained = []
+        if mode == "installed":
+            files, retained = _reference_files(target)
+            text = {k: v for k, v in files.items() if isinstance(v, str)}
+            clean = dict(skill_writer.draft_view(text))
+            clean.update({k: v for k, v in files.items() if not isinstance(v, str)})
+        else:
+            clean = skill_writer.read_draft_dir(target)
+        entry = clean.get("SKILL.md")
+        front = _read_frontmatter(entry).mapping if isinstance(entry, str) else None
+        name = front.get("name") if front else None
+        expected = target.name if mode == "installed" else name if isinstance(name, str) else None
+        existing = None
+        carried = None
+        if isinstance(name, str) and name in deployed:
+            # Drafts of registered rewrites get the same carried-key allowance,
+            # read from deployment, never from the supplied draft's own claims.
+            deployed_md = deployed[name] / "SKILL.md"
+            if deployed_md.is_file():
+                previous = _read_frontmatter(skill_writer._unstamped(deployed_md.read_text())).mapping
+                if previous and previous.get("name") == name:
                     existing = name
-        # Runner stamps and compiler blocks are not drafts; remove these only in memory.
-        text = {k: v for k, v in files.items() if isinstance(v, str)}
-        clean = dict(skill_writer.draft_view(text))
-        # Binary draft-owned files still need a template refusal.
-        clean.update({k: v for k, v in files.items() if not isinstance(v, str)
-                      and (k == "SKILL.md" or skill_writer._is_managed_reference(k))})
+                if registry.is_registered(name):
+                    carried = previous
         result = check_skill(cast(Mapping[str, str], clean), loaded_names=(), vetoed_names=(),
-                             expected_name=target.name, existing_name=existing, carried_frontmatter=carried)
+                             expected_name=expected, existing_name=existing, carried_frontmatter=carried)
+        extra = skill_writer._compiler_owned_in_draft(clean) + skill_writer._secret_problems(clean)
     except (OSError, ValueError, HostsError, skill_registry.SkillRegistryError) as exc:
         print(f"skill reference check: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    print(f"skill reference checked: {reference.VERSION}; {target}")
+    print(f"skill reference checked: {reference.VERSION}; mode: {mode}; {target}")
     for key in retained:
         print(f"note: retained-file: {key}: left in place by writes; not part of a Markdown draft; source: self-learn writing policy")
     for severity, findings in (("refusal", result.problems), ("note", result.notes)):
         for finding in findings:
             print(f"{severity}: {finding} ({finding.path}); source: {reference.finding_source(finding.rule)}")
-    print(f"{len(result.problems)} refusals; {len(result.notes) + len(retained)} notes; semantic quality and triggering need real usage evaluation")
-    return EXIT_OK if result.ok else EXIT_REFUSED
+    for problem in extra:
+        print(f"refusal: {problem}; source: self-learn writing policy")
+    print(f"{len(result.problems) + len(extra)} refusals; {len(result.notes) + len(retained)} notes; semantic quality and triggering need real usage evaluation")
+    return EXIT_OK if result.ok and not extra else EXIT_REFUSED

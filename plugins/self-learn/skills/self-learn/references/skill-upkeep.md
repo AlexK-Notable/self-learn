@@ -65,7 +65,12 @@ If the skills root moves, unregister and register again at the new location.
 Before drafting, rewriting or reorganising a skill, read `self-learn skill reference
 show` (or `show --path`) and the native examples available on this machine. The
 weekly overseer gets the same pack and examples in `skill-reference/`. Then run
-`self-learn skill reference check <skill-name-or-path>` on the draft. Refusals name
+`self-learn skill reference check <skill-name-or-path> --draft` on the draft.
+The command prints its mode. Without a flag it uses installed mode only for the
+deployed folder of an owned or registered skill; other folders are drafts.
+Use `--installed` to inspect an unregistered installation or a copy of it.
+Draft mode checks all supplied files, including stamps and compiler blocks;
+installed mode strips those blocks in memory and notes retained user files. Refusals name
 the rule and source; notes are advice, not permission to change the user's carried
 settings or name. A passing static check does not prove useful triggering or output.
 `skill write` reports its checked pack version and writes it into provenance;

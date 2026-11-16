@@ -151,7 +151,8 @@ def test_bad_example_manifest_never_refuses_weekly_run(env, monkeypatch, shape):
     result = ob._run(env)
     report = ob._report(result)
     assert result.status == "applied", report
-    assert "example manifest omitted" in ob._section(report, "Refused / could not do")
+    assert "omitted" in ob._section(report, "Refused / could not do")
+    assert "skill reference example" in ob._section(report, "Refused / could not do")
     assert ref.VERSION in report
 
 
@@ -368,3 +369,110 @@ def test_guidance_from_a_refused_write_is_not_reported_as_applied(env, monkeypat
     assert "synthetic apply refusal" in ob._section(report, "Refused / could not do")
     assert ref.VERSION in ob._section(report, "Skill reference")
     assert "guidance-description-trigger" not in report
+
+
+@pytest.mark.parametrize("name", ["cron-claude", "anthropic-helper", "tips-", "a--b", "synced"])
+def test_existing_legacy_name_allows_route_recompile_and_reroute(env, name):
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+    folder = env.skill_dir(name)
+    folder.mkdir(parents=True)
+    authored = f"---\nname: {name}\ndescription: Use when scheduling jobs.\n---\n\n# Existing skill\n"
+    (folder / "SKILL.md").write_text(authored + f"\n{BEGIN_MARKER}\n{END_MARKER}\n")
+    commit_all(env.root, "seed existing user skill")
+    pending(env)
+    result = verbs.route(env.home, RID, dest="new-skill:" + name, no_push=True)
+    assert not result.warnings, result.warnings
+    assert RID in (folder / "SKILL.md").read_text()
+    compiled = verbs.recompile(env.home, no_push=True)
+    assert not any("name-" in note for note in compiled.warnings), compiled.warnings
+    assert RID in (folder / "SKILL.md").read_text()
+    moved = verbs.reroute(env.home, RID, dest="reference", no_push=True)
+    assert not any("HOST PHASE FAILED" in note for note in moved.warnings), moved.warnings
+    assert RID not in (folder / "SKILL.md").read_text()
+    assert (folder / "SKILL.md").read_text().startswith(authored)
+    assert Record.from_path(find_record_path(env.home, RID)).routing["destination"] == "reference"
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_reference_modes_match_draft_and_installed_writer_views(env, capsys, registered):
+    if registered:
+        sr.seed(env)
+        sr.register(env)
+    assert env.write().ok
+    deployed = env.skill_dir()
+    (deployed / "scripts").mkdir()
+    (deployed / "scripts/helper.py").write_text("print('fixture helper')\n")
+    commit_all(env.root, "user-owned asset")
+    assert cli.main(["skill", "reference", "check", str(deployed)]) == 0
+    installed_output = capsys.readouterr().out
+    assert "mode: installed" in installed_output and "retained-file: scripts/helper.py" in installed_output
+    # The reviewer's folder shape: stamped SKILL.md, compiler block, helper.
+    draft = env.home.parent / "draft-probe"
+    shutil.copytree(deployed, draft)
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+    md = draft / "SKILL.md"
+    md.write_text(md.read_text() + f"\n{BEGIN_MARKER}\n- a line\n{END_MARKER}\n")
+    before = {str(p): p.read_bytes() for p in draft.rglob("*") if p.is_file()}
+    supplied = skill_writer.read_draft_dir(draft)
+    checked = skill_writer.check(env.home, sk1.NAME, supplied)
+    assert not checked.ok and any("metadata-self-learn" in line for line in checked.problems)
+    assert cli.main(["skill", "reference", "check", str(draft)]) == 1
+    output = capsys.readouterr().out
+    assert "mode: draft" in output
+    for rule in ("metadata-self-learn", "file-outside-references", "file-not-markdown"):
+        assert rule in output and any(rule in line for line in checked.problems)
+    assert cli.main(["skill", "write", sk1.NAME, "--from", str(draft), "--check"]) == 1
+    capsys.readouterr()
+    assert cli.main(["skill", "reference", "check", str(deployed), "--draft"]) == 1
+    assert "mode: draft" in capsys.readouterr().out
+    # Force the installed interpretation of an off-root copy named like its skill.
+    installed_copy = env.home.parent / "installed-copy" / sk1.NAME
+    shutil.copytree(deployed, installed_copy)
+    assert cli.main(["skill", "reference", "check", str(installed_copy), "--installed"]) == 0
+    assert "mode: installed" in capsys.readouterr().out
+    assert {str(p): p.read_bytes() for p in draft.rglob("*") if p.is_file()} == before
+
+
+def test_draft_mode_keeps_pointer_and_shelf_refusals(env, capsys):
+    assert env.write().ok
+    create_record(env.home, make_behavior(scope="skill:" + sk1.NAME, record_id=RID))
+    commit_all(env.home, "seed shelf lesson")
+    verbs.route(env.home, RID, dest="reference", no_push=True)
+    source = env.home.parent / "incoming-draft"
+    shutil.copytree(env.skill_dir(), source)
+    assert cli.main(["skill", "reference", "check", str(source)]) == 1
+    text = capsys.readouterr().out
+    assert "mode: draft" in text and "reference-shelf" in text and "pointer-block" in text
+    files = skill_writer.draft_view(skill_writer.deployed_files(env.home, sk1.NAME))
+    shutil.rmtree(source)
+    source.mkdir()
+    for key, value in files.items():
+        path = source / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(value)
+    assert skill_writer.check(env.home, sk1.NAME, files).ok
+    assert cli.main(["skill", "reference", "check", str(source)]) == 0
+    assert "mode: draft" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mapping", [False, True])
+@pytest.mark.parametrize("bad", [None, {}, {"source": []}, {"source": "anthropic", "name": "../bad"},
+                                 {"source": "anthropic", "name": "not-downloaded"}])
+def test_one_bad_manifest_row_keeps_other_examples(env, monkeypatch, mapping, bad):
+    _, account = native(env, monkeypatch)
+    good = [{"source": "anthropic", "name": "before"}, {"source": "anthropic-example", "name": "after"}]
+    for row in good:
+        folder = account / row["name"]
+        folder.mkdir()
+        (folder / "SKILL.md").write_text("Example " + row["name"])
+    rows = [good[0], bad, good[1]]
+    if mapping:
+        rows = {row.get("name", "bad") if isinstance(row, dict) else "bad": row for row in rows}
+    (account / "manifest.json").write_text(json.dumps({"skills": rows}))
+    stage = env.home.parent / "stage"
+    staged = skills.stage_phase_b(env.home, stage, [], skills.WritingState("on", True), ob.overseer_run._write_stage)
+    for name in ("before", "after"):
+        assert (stage / f"skill-reference/examples/synced-{name}/SKILL.md").read_text() == "Example " + name
+    assert len(staged.notes) == 1 and "row 2 omitted" in staged.notes[0], staged.notes
+    index = (stage / "skill-reference/EXAMPLES.md").read_text()
+    assert "synced-before" in index and "synced-after" in index

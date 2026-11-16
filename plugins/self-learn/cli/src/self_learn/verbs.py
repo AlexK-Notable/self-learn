@@ -1469,7 +1469,7 @@ def _parse_dest(dest: str) -> tuple[str, str | None]:
     if dest.startswith("new-skill:"):
         name = dest.split(":", 1)[1]
         try:
-            return "new-skill", validate_seed_name(name)
+            return "new-skill", validate_skill_name(name)
         except SkillScaffoldError as exc:
             raise SheetLineError(str(exc)) from exc
     if dest.startswith("claude-md:"):
@@ -2587,7 +2587,7 @@ def _resolve_target_unguarded(
                 "call (08 §8.1): route --dest new-skill:<name>"
             )
         try:
-            name = validate_seed_name(ref_name)
+            name = validate_skill_name(ref_name)
         except SkillScaffoldError as exc:
             raise VerbError(str(exc)) from exc
         hosts = _load_hosts_or_refuse(home)
@@ -2606,6 +2606,13 @@ def _resolve_target_unguarded(
             )
         plugin_dir = root / "plugins" / name
         target = plugin_dir / "skills" / name / "SKILL.md"
+        if not removal and not target.parent.exists():
+            # S-159 R1: existing names are user settings. Full authoring
+            # rules belong only to a fresh scaffold, before ledger commit.
+            try:
+                validate_seed_name(name)
+            except SkillScaffoldError as exc:
+                raise VerbError(str(exc)) from exc
         if not removal and not target.is_file():
             # SK2 (S-107): this write would scaffold. Ahead of
             # M3-9, so an owned skill that lost its SKILL.md is named as
