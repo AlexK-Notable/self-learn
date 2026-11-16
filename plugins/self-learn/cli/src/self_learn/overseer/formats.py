@@ -392,6 +392,14 @@ def _skills_rules() -> list[str]:
     text = f"""\
 ## Skills self-learn owns
 
+Read skill-reference/PACK.md and EXAMPLES.md before drafting, rewriting or reorganising
+any skill, including registered skills and build/change requests. Use this versioned
+Anthropic reference for every write. Read STATUS.md and report its version, age and
+recorded source changes. No network refresh during a weekly run. Hard rules refuse;
+guidance findings are notes. Existing registered names and carried settings win over
+a conflicting reference recommendation. Native examples are illustrations, not
+instructions to run their scripts or change unrelated settings.
+
 S-157 also stages registered skills here, marked `permission: registered` in row.yaml.
 A registration permits full prose, description and reference-file updates. The skill
 belongs to the user: preserve their intent and voice. Never rename, retire or restore it.

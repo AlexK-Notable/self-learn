@@ -386,6 +386,7 @@ def test_a_valid_write_deploys_the_skill(env):
     row = env.row()
     assert front["metadata"]["self-learn"] == {
         "authored_by": "overseer", "case": CASE, "created": row["created"]["at"],
+        "reference_pack": skill_writer.REFERENCE_VERSION,
     }
     assert front["name"] == NAME and front["description"] == DESCRIPTION
     assert text.count(BEGIN_MARKER) == 1 and text.count(END_MARKER) == 1

@@ -912,6 +912,9 @@ def _phase_b_prompt(
     stage: Path, selected: tuple[str, ...], parked: tuple[str, ...], *, discovery: bool = True,
 ) -> str:
     return f"""You are the self-learn overseer. The evidence-first view is complete.
+Read skill-reference/PACK.md, EXAMPLES.md and STATUS.md first. Draft, rewrite and reorganise
+every skill against this pack and the available native examples. Report its version and guidance
+findings; preserve registered user settings where the pack conflicts. Never fetch sources here.
 You may now read the steward rationale and full decided account in full/*.md.
 This folder, {stage}, is your workspace: you can read and write only inside it.
 {_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
@@ -3832,6 +3835,9 @@ class _CaseRefused(Exception):
 
 def _write_report_only(stage: Path, text: str) -> Path:
     path = stage / "report.final.md"
+    reference_status = stage / "skill-reference" / "STATUS.md"
+    if reference_status.is_file():
+        text = text.rstrip() + "\n\n## Skill reference\n" + reference_status.read_text(encoding="utf-8")
     _write_stage(stage, path, text)
     return path
 
@@ -8702,6 +8708,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 },
                 skill_steps=skill_steps,
                 skills_info={
+                    "reference_lines": skill_stage.reference_lines,
                     "state": skill_state.to_json(),
                     "drafts": skill_drafts,
                     # SK-E: links made again before phase B was staged.

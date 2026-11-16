@@ -4947,7 +4947,7 @@ def _apply_new_skill(
     changed = False
     scaffolded = False
     owned_stamp: dict | None = None
-    seed_text = skill_md_seed(name, description) if name else ""
+    seed_text = skill_md_seed(name, description) if name and target is not None and not target.is_file() else ""
     if owner is not None and name and not manifest.is_file() and not target.is_file():
         from . import skill_writer  # local: skill_writer reads verbs lazily too
 
@@ -5101,12 +5101,14 @@ def _add_owned_scaffold_row(
     that exists by now (a race with another writer) is left alone."""
     if name in registry.skills or name in registry.registrations:
         return
+    from .skill_reference import VERSION
     step = {"at": stamp["created"], "case": None, "by": stamp["authored_by"]}
     registry.skills[name] = {
         "status": "live",
         "plugin": f"plugins/{name}",
         "created": dict(step),
-        "last_write": {**step, "authored_sha256": sha},
+        "last_write": {**step, "authored_sha256": sha,
+                       "reference_pack": VERSION},
     }
 
 

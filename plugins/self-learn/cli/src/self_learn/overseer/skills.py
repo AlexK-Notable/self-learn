@@ -302,6 +302,7 @@ class StagedSkills:
     absent: set[str] = field(default_factory=set)
     #: Lines for "Refused / could not do" (nothing here refuses the run).
     notes: list[str] = field(default_factory=list)
+    reference_lines: list[str] = field(default_factory=list)
 
 
 Writer = Callable[[Path, Path, str], None]
@@ -337,6 +338,8 @@ def stage_phase_b(
     what could not be shown."""
     home = Path(home)
     staged = StagedSkills()
+    from ..skill_reference import stage_pack
+    staged.reference_lines = stage_pack(home, stage, write)
     write(stage, stage / WRITING_FILE, state.stage_text())
     try:
         registry = skill_registry.load(home)
@@ -880,6 +883,7 @@ def step_for_case(
         ) from exc
     if not checked.ok:
         raise SkillPairError(_refusal(name, checked.kind, checked.problems))
+    staged.reference_lines.extend(f"{name}: {note}" for note in checked.notes)
     text_files = {key: value for key, value in files.items() if isinstance(value, str)}
     return SkillStep(
         action="write", name=name, updating=editable, files=text_files, expect_sha=expect,
@@ -1282,6 +1286,7 @@ def report_lines(manifest: dict[str, Any]) -> list[str]:
     lines: list[str] = [
         str(line) for line in info.get("repairs") or [] if isinstance(line, str)
     ]
+    lines.extend(info.get("reference_lines") or [])
     recipes = manifest.get("cases") or {}
     for case_id in manifest.get("case_order") or []:
         raw = (recipes.get(case_id) or {}).get("skill")

@@ -58,3 +58,31 @@ there; the closed request records that actual name. Bad or missing answers leave
 only those requests open and appear under “Refused / could not do”. A withdrawn
 change target is labelled `target: withdrawn` so it can be declined with a reason.
 If the skills root moves, unregister and register again at the new location.
+
+
+## Draft against the Anthropic reference
+
+Before drafting, rewriting or reorganising a skill, read `self-learn skill reference
+show` (or `show --path`) and the native examples available on this machine. The
+weekly overseer gets the same pack and examples in `skill-reference/`. Then run
+`self-learn skill reference check <skill-name-or-path>` on the draft. Refusals name
+the rule and source; notes are advice, not permission to change the user's carried
+settings or name. A passing static check does not prove useful triggering or output.
+`skill write` reports its checked pack version and writes it into provenance;
+`skill list` shows the version used by the last write.
+
+`self-learn skill reference status` reads the pack's age, sources and last recorded
+fetch without using the network. Use `status --fetch` to compare sources over plain
+HTTP: exit 0 means all unchanged; exit 1 means a source changed or was unreachable.
+An unavailable source is not evidence that the pack is current. Weekly runs use only
+the recorded observation, so an outage cannot block skill writing.
+
+To refresh: re-gather the named documentation and native skill examples, review
+changes and licenses, update the packaged PACK.md and sources.yaml, calculate hashes
+with `self_learn.skill_reference.digest`, bump the version/read date in both the
+module and manifest, update checks/tests for changed requirements, and land a normal
+code/spec revision. Do not edit the installed pack or replace it from model memory.
+No native examples are vendored; optional roots can be set through
+`SELF_LEARN_SKILL_REFERENCE_PLUGIN_ROOT` and `SELF_LEARN_SKILL_REFERENCE_SYNCED_ROOT`.
+Absent examples are omitted. Existing registered license/compatibility values, like
+other carried settings, stay unchanged; conflicts with the reference are notes.

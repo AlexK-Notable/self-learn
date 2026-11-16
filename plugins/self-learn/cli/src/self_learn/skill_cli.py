@@ -48,6 +48,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Mapping, cast
 
 from . import gitops, attribution, grant_uses, grants, skill_registry, skill_requests, skill_writer
 from .gitops import EXIT_GIT_FAILED
@@ -205,12 +206,22 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
         item.add_argument("--note", required=True, help="what should change and why")
         item.add_argument("--json", action="store_true", dest="as_json")
 
+    ref = commands.add_parser("reference", help="read, check or inspect the Anthropic authoring reference")
+    ref_commands = ref.add_subparsers(dest="reference_command", required=True)
+    show = ref_commands.add_parser("show", help="print the reference pack")
+    show.add_argument("--path", action="store_true", help="print its installed path instead")
+    check = ref_commands.add_parser("check", help="check a skill name or folder, read-only")
+    check.add_argument("target")
+    status = ref_commands.add_parser("status", help="pack age and last source check")
+    status.add_argument("--fetch", action="store_true", help="HTTP-check sources and record cache status; exit 1 if changed/unreachable")
     parser.set_defaults(_skill_dispatch=dispatch)
     return parser
 
 
 def dispatch(args) -> int:
     command = args.skill_command
+    if command == "reference":
+        return _reference(resolve_home(), args)
     if command == "list":
         return _list(resolve_home(), args)
     if command in ("register", "unregister", "request"):
@@ -274,6 +285,9 @@ def _print_lines(prefix: str, lines, stream) -> None:
 
 
 def _write(home: Path, args) -> int:
+    from .skill_reference import VERSION
+    if not args.as_json:
+        print(f"skill reference checked: {VERSION}")
     try:
         files = skill_writer.read_draft_dir(args.source)
     except (ValueError, OSError) as exc:
@@ -283,7 +297,7 @@ def _write(home: Path, args) -> int:
         result = skill_writer.check(home, args.name, files, expect_sha=args.expect_sha)
         if args.as_json:
             print(json.dumps({
-                "command": "skill write --check", "name": result.name, "ok": result.ok,
+                "reference_pack": VERSION, "command": "skill write --check", "name": result.name, "ok": result.ok,
                 "kind": result.kind, "problems": list(result.problems),
                 "notes": list(result.notes), "updating": result.updating,
                 "current_sha": result.current_sha, "recorded_sha": result.recorded_sha,
@@ -304,7 +318,7 @@ def _write(home: Path, args) -> int:
     )
     if args.as_json:
         print(json.dumps({
-            "command": "skill write", "name": written.name, "ok": written.ok,
+            "reference_pack": VERSION, "command": "skill write", "name": written.name, "ok": written.ok,
             "kind": written.kind, "problems": list(written.problems),
             "notes": list(written.notes), "warnings": list(written.warnings),
             "updating": written.updating, "ledger_commit": written.ledger_sha,
@@ -512,12 +526,13 @@ def _list(home: Path, args) -> int:
         case = state["last_write"]["case"]
         line += (f"; last written {state['last_write']['at']} by {state['last_write']['by']} "
                  f"({case if case is not None else skill_writer.NO_CASE})")
+        line += f"; reference {state['last_write'].get('reference_pack', 'unrecorded')}"
         if state.get("retire_requested"):
             line += "; retirement requested"
         print(line)
     for name, row in sorted(registry.registrations.items()):
         stamp = row["registered"]
-        print(f"{name}: registered ({row['status']}); {stamp['path']}; by {stamp['by']} at {stamp['at']}; {stamp['note']}")
+        print(f"{name}: registered ({row['status']}); {stamp['path']}; by {stamp['by']} at {stamp['at']}; {stamp['note']}; reference {(row.get('last_write') or {}).get('reference_pack', 'unrecorded')}")
     if registry.vetoed:
         print("vetoed names: " + ", ".join(registry.vetoed_names()))
     return EXIT_OK
@@ -545,3 +560,47 @@ def _registration_request(home: Path, args) -> int:
     else:
         print(f"{result['name']}: {result['state']}" + (f" ({result['id']})" if "id" in result else ""))
     return EXIT_OK
+
+
+def _reference(home: Path, args) -> int:
+    from . import skill_reference as reference
+    from .skill_scaffold import check_skill, _read_frontmatter
+    if args.reference_command == "show":
+        path = reference.PACK_DIR / "PACK.md"
+        print(path if args.path else path.read_text(), end="\n")
+        return EXIT_OK
+    if args.reference_command == "status":
+        result = reference.status(home, fetch=args.fetch)
+        print("\n".join(reference.status_lines(result)))
+        for source in result["sources"]:
+            print(f"{source['title']} ({source['date_read']}): {source['url']}")
+        return EXIT_REFUSED if any(r["state"] != "unchanged" for r in result.get("checks", [])) else EXIT_OK
+    try:
+        target = Path(args.target).expanduser()
+        if not target.is_dir():
+            from .skill_reference import resolve_skill
+            target = resolve_skill(home, args.target)
+        target = target.resolve()
+        files = skill_writer.read_draft_dir(target)
+        carried = None
+        existing = None
+        registry = skill_registry.load(home)
+        for name, row in registry.registrations.items():
+            if row["status"] == skill_registry.STATUS_LIVE and Path(row["registered"]["path"]).resolve() == target:
+                carried = _read_frontmatter(skill_writer._unstamped(str(files.get("SKILL.md", "")))).mapping
+                existing = name
+        # Runner stamps and compiler blocks are not drafts; remove these only in memory.
+        text = {k: v for k, v in files.items() if isinstance(v, str)}
+        clean = dict(files)
+        clean.update(skill_writer.draft_view(text))
+        result = check_skill(cast(Mapping[str, str], clean), loaded_names=(), vetoed_names=(),
+                             expected_name=target.name, existing_name=existing, carried_frontmatter=carried)
+    except (OSError, ValueError, skill_registry.SkillRegistryError) as exc:
+        print(f"skill reference check: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"skill reference checked: {reference.VERSION}; {target}")
+    for severity, findings in (("refusal", result.problems), ("note", result.notes)):
+        for finding in findings:
+            print(f"{severity}: {finding} ({finding.path}); source: {reference.finding_source(finding.rule)}")
+    print(f"{len(result.problems)} refusals; {len(result.notes)} notes; semantic quality and triggering need real usage evaluation")
+    return EXIT_OK if result.ok else EXIT_REFUSED

@@ -120,7 +120,7 @@ def skill_md_seed(name: str, description: str) -> str:
     compiler bootstraps its marker pair on first compile (08 §1 pin), so
     from the first route on this file behaves exactly like every other
     compile target."""
-    return (
+    text = (
         "---\n"
         f"name: {name}\n"
         f"description: {json.dumps(description, ensure_ascii=False)}\n"
@@ -133,6 +133,11 @@ def skill_md_seed(name: str, description: str) -> str:
         "here survives every recompile (text outside the markers is\n"
         "never touched).\n"
     )
+
+    checked = check_skill({SKILL_ENTRY_FILE: text}, loaded_names=(), vetoed_names=(), expected_name=name)
+    if not checked.ok:
+        raise SkillScaffoldError("; ".join(str(p) for p in checked.problems))
+    return text
 
 
 def marketplace_with_entry(
@@ -341,6 +346,8 @@ SKILL_FRONTMATTER_ALLOWED_KEYS: tuple[str, ...] = (
     "when_to_use",
     "paths",
     "metadata",
+    "compatibility",
+    "license",
 )
 
 #: Keys refused by name, each with the plain reason the refusal quotes.
@@ -459,6 +466,7 @@ SKILL_RULE_IDS: tuple[str, ...] = (
     RULE_FILE_NOT_MARKDOWN,
     RULE_FILE_NESTED,
     RULE_REFERENCE_NOT_LINKED,
+    "name-hyphens", "name-synced", "compatibility-limit",
 )
 
 NOTE_DESCRIPTION_LONG_WORDS = "description-long-words"
@@ -468,6 +476,9 @@ NOTE_BODY_LONG_LINES = "body-long-lines"
 SKILL_NOTE_IDS: tuple[str, ...] = (
     NOTE_DESCRIPTION_LONG_WORDS,
     NOTE_BODY_LONG_LINES,
+    "metadata-string-values", "guidance-description-trigger",
+    "guidance-description-person", "guidance-angle-brackets",
+    "guidance-body-tokens", "guidance-reference-contents", "carried-reference-conflict",
 )
 
 # =============================================================================
@@ -1356,13 +1367,16 @@ def check_skill(
                 vetoed_names=vetoed,
                 expected_name=expected_name,
             )
-            problems += [p for p in name_problems if not (
-                p.rule == RULE_NAME_RESERVED_WORD and mapping.get("name") == existing_name)]
+            for problem in name_problems:
+                if existing_name is not None and mapping.get("name") == existing_name and problem.rule not in (RULE_NAME_COLLISION, RULE_NAME_VETOED):
+                    notes.append(SkillFinding("carried-reference-conflict", str(problem) + "; existing user name retained"))
+                else:
+                    problems.append(problem)
             problems += _check_description(mapping.get("description", _ABSENT))
             problems += _check_when_to_use(mapping)
             problems += _check_listing(mapping)
             carried = {k: v for k, v in (carried_frontmatter or {}).items()
-                if k not in SKILL_FRONTMATTER_ALLOWED_KEYS}
+                if k not in SKILL_FRONTMATTER_ALLOWED_KEYS or k in ("compatibility", "license")}
             problems += _check_keys({k: v for k, v in mapping.items() if k not in carried})
             for key, value in carried.items():
                 if key not in mapping or mapping[key] != value:
@@ -1370,6 +1384,11 @@ def check_skill(
                         f"carried frontmatter key {_shown(key)} must remain unchanged"))
             problems += _check_metadata(mapping)
             problems += _check_paths(mapping)
+            from .skill_reference import check_requirements
+            extra_problems, extra_notes = check_requirements(
+                mapping, body, files, existing_name=existing_name, carried=carried_frontmatter)
+            problems += extra_problems
+            notes += extra_notes
             description = mapping.get("description")
             if isinstance(description, str):
                 # Read at call time: report imports ledger_ops, which
