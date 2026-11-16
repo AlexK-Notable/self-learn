@@ -95,12 +95,18 @@ def scaffold_description(record: Record) -> str:
     native skill loading keys on."""
     from .ledger_ops import record_title  # local: avoids a module cycle
 
-    title = record_title(record).rstrip(".")
+    title = record_title(record).replace("<", "[").replace(">", "]").rstrip(".")
     lead = f"Use when: {title}." if title else ""
     return (
         f"{lead} Scaffolded by self-learn from routed lessons; enrich the "
         "prose post-hoc (plugin-dev optional)."
-    ).strip()
+    ).strip()[:SKILL_DESCRIPTION_MAX_CHARS]
+
+
+def validate_seed_name(name: str) -> str:
+    """Use the full authoring name rules before a route commits anything."""
+    skill_md_seed(name, "Use when working with routed lessons.")
+    return name
 
 
 def plugin_manifest_text(name: str, description: str) -> str:

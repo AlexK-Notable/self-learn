@@ -2850,6 +2850,7 @@ def _finalize_model_report(
     hand_steps: dict[str, Any] | None = None,
     question_notes: list[str] | None = None,
     in_short_note: str | None = None,
+    reference_lines: list[str] | None = None,
 ) -> str:
     """The published report: the model's own text, whole, with the
     runner's factual lines added. *in_short_note* (W-294) is the runner's
@@ -2865,6 +2866,8 @@ def _finalize_model_report(
     questions, never under "Refused / could not do"."""
     lines = _validate_model_report(path)
     model_line_count = len(lines)
+    if reference_lines:
+        lines.extend(["", "## Skill reference", *[f"- {line}" for line in reference_lines]])
     runner_notes = list(notes or [])
     if model_line_count > _REPORT_LINE_GUIDE:
         runner_notes.append(
@@ -3836,7 +3839,7 @@ class _CaseRefused(Exception):
 def _write_report_only(stage: Path, text: str) -> Path:
     path = stage / "report.final.md"
     reference_status = stage / "skill-reference" / "STATUS.md"
-    if reference_status.is_file():
+    if reference_status.is_file() and "## Skill reference" not in text:
         text = text.rstrip() + "\n\n## Skill reference\n" + reference_status.read_text(encoding="utf-8")
     _write_stage(stage, path, text)
     return path
@@ -7318,6 +7321,7 @@ def _execute_manifest(
                 ],
                 hand_steps=cast("dict[str, Any] | None", manifest.get("hand_steps")),
                 in_short_note=in_short_note,
+                reference_lines=skills_mod.reference_report_lines(manifest),
             )
         manifest, report_path, latest = _write_manifest_truth(
             home, manifest, report_text=_render, complete=not halted, closed=closed,

@@ -286,8 +286,6 @@ def _print_lines(prefix: str, lines, stream) -> None:
 
 def _write(home: Path, args) -> int:
     from .skill_reference import VERSION
-    if not args.as_json:
-        print(f"skill reference checked: {VERSION}")
     try:
         files = skill_writer.read_draft_dir(args.source)
     except (ValueError, OSError) as exc:
@@ -295,6 +293,8 @@ def _write(home: Path, args) -> int:
         return EXIT_USAGE
     if args.check:
         result = skill_writer.check(home, args.name, files, expect_sha=args.expect_sha)
+        if not args.as_json:
+            print(f"skill reference checked: {VERSION}")
         if args.as_json:
             print(json.dumps({
                 "reference_pack": VERSION, "command": "skill write --check", "name": result.name, "ok": result.ok,
@@ -316,6 +316,8 @@ def _write(home: Path, args) -> int:
         home, args.name, files, case=args.case, by=args.by,
         expect_sha=args.expect_sha, no_push=args.no_push,
     )
+    if not args.as_json:
+        print(f"skill reference checked: {VERSION}")
     if args.as_json:
         print(json.dumps({
             "reference_pack": VERSION, "command": "skill write", "name": written.name, "ok": written.ok,
@@ -562,9 +564,41 @@ def _registration_request(home: Path, args) -> int:
     return EXIT_OK
 
 
+def _reference_files(target: Path) -> tuple[dict, list[str]]:
+    """Read only files a rewrite replaces; do not open retained user assets."""
+    import os
+
+    files = {}
+    retained = []
+    for current, dirs, names in os.walk(target, followlinks=False):
+        here = Path(current)
+        for dirname in list(dirs):
+            path = here / dirname
+            if path.is_symlink():
+                retained.append(path.relative_to(target).as_posix() + "/")
+                dirs.remove(dirname)
+        for name in names:
+            path = here / name
+            key = path.relative_to(target).as_posix()
+            if key != "SKILL.md" and not skill_writer._is_managed_reference(key):
+                retained.append(key)
+                continue
+            if path.is_symlink():
+                raise ValueError(f"{key} is a symlink; editable draft files must be plain files")
+            if path.stat().st_size > skill_writer.MAX_DRAFT_FILE_BYTES:
+                raise ValueError(f"{key} is too large for a draft")
+            raw = path.read_bytes()
+            try:
+                files[key] = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                files[key] = raw
+    return files, sorted(retained)
+
+
 def _reference(home: Path, args) -> int:
     from . import skill_reference as reference
     from .skill_scaffold import check_skill, _read_frontmatter
+    from .hosts import HostsError, load_hosts
     if args.reference_command == "show":
         path = reference.PACK_DIR / "PACK.md"
         print(path if args.path else path.read_text(), end="\n")
@@ -581,7 +615,7 @@ def _reference(home: Path, args) -> int:
             from .skill_reference import resolve_skill
             target = resolve_skill(home, args.target)
         target = target.resolve()
-        files = skill_writer.read_draft_dir(target)
+        files, retained = _reference_files(target)
         carried = None
         existing = None
         registry = skill_registry.load(home)
@@ -589,18 +623,27 @@ def _reference(home: Path, args) -> int:
             if row["status"] == skill_registry.STATUS_LIVE and Path(row["registered"]["path"]).resolve() == target:
                 carried = _read_frontmatter(skill_writer._unstamped(str(files.get("SKILL.md", "")))).mapping
                 existing = name
+        root = load_hosts(home).skills_root
+        if root:
+            for name in registry.skills:
+                if registry.is_owned(name) and skill_writer.skill_dir(Path(root), name).resolve() == target:
+                    existing = name
         # Runner stamps and compiler blocks are not drafts; remove these only in memory.
         text = {k: v for k, v in files.items() if isinstance(v, str)}
-        clean = dict(files)
-        clean.update(skill_writer.draft_view(text))
+        clean = dict(skill_writer.draft_view(text))
+        # Binary draft-owned files still need a template refusal.
+        clean.update({k: v for k, v in files.items() if not isinstance(v, str)
+                      and (k == "SKILL.md" or skill_writer._is_managed_reference(k))})
         result = check_skill(cast(Mapping[str, str], clean), loaded_names=(), vetoed_names=(),
                              expected_name=target.name, existing_name=existing, carried_frontmatter=carried)
-    except (OSError, ValueError, skill_registry.SkillRegistryError) as exc:
+    except (OSError, ValueError, HostsError, skill_registry.SkillRegistryError) as exc:
         print(f"skill reference check: {exc}", file=sys.stderr)
         return EXIT_USAGE
     print(f"skill reference checked: {reference.VERSION}; {target}")
+    for key in retained:
+        print(f"note: retained-file: {key}: left in place by writes; not part of a Markdown draft; source: self-learn writing policy")
     for severity, findings in (("refusal", result.problems), ("note", result.notes)):
         for finding in findings:
             print(f"{severity}: {finding} ({finding.path}); source: {reference.finding_source(finding.rule)}")
-    print(f"{len(result.problems)} refusals; {len(result.notes)} notes; semantic quality and triggering need real usage evaluation")
+    print(f"{len(result.problems)} refusals; {len(result.notes) + len(retained)} notes; semantic quality and triggering need real usage evaluation")
     return EXIT_OK if result.ok else EXIT_REFUSED

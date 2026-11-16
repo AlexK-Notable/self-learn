@@ -2437,3 +2437,30 @@ plain HTTP with bounded requests, records results in the per-home cache, and exi
 0 only when all sources match, 1 when changed or unreachable. The weekly run reads
 this cache only. A refresh re-gathers the source text and licensing facts, updates
 PACK.md, hashes, version/date and tests, and lands a normal code/spec change.
+
+#### S-159 review corrections (2026-11-15)
+
+Seed routes check names against the reference rules before committing the ledger.
+Seed descriptions replace angle brackets with square brackets and cap the text
+at 1,024 characters. Seed failures during host application become a reported
+target failure; recompile continues with other targets.
+
+Optional examples are read defensively: malformed manifests, unreadable content
+and copies removed during discovery are omitted with a Refused / could not do
+note. Reference staging failure never refuses the weekly run. Reference facts
+have their own Skill reference report section; draft guidance is reported only
+for a retained draft or an applied write, including resumed writes.
+
+The read-only reference check uses the same editable view as the writer:
+runner/compiler blocks are removed in memory, the default LEARNINGS.md shelf
+and other files the writer leaves alone are notes, and retained assets are not
+opened. Owned names and registered carried settings get the writer's exemptions.
+Malformed hosts configuration produces a diagnostic and usage exit, not a traceback.
+
+Fetch has a 20-second source wait and a 60-second overall wall-clock deadline.
+DNS or a trickling socket cannot extend the caller's wait: a daemon HTTP worker
+has no cache-writing authority and starts no subsequent requests. At a deadline
+the caller reports unreachable and records the observation; an uncancellable
+platform DNS/socket operation can finish in that daemon later or end at process
+exit. Weekly runs remain offline. See 02 §S-159 rollback note before reverting
+code after a write has recorded reference_pack.

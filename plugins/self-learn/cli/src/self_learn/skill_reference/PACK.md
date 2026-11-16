@@ -38,7 +38,7 @@ Source: https://code.claude.com/docs/en/skills.md (read 2026-11-15). Short quote
 
 ### R05 — description limits
 
-Use at most 1,024 characters and no XML tags in name or description.
+Use at most 1,024 characters and no XML tags in name or description. Self-learn deliberately enforces the portable 1,024-character description limit even though it performs no uploads. A registered skill with an over-long description must have it shortened in its first rewrite; its other settings are still carried.
 
 Source: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview.md (read 2026-11-15). Short quote: “Cannot contain XML tags”.
 
@@ -62,7 +62,7 @@ Source: https://agentskills.io/specification.md (read 2026-11-15). Short quote: 
 
 ### G01 — description guidance
 
-Describe both the capability and when to invoke it. Name concrete user contexts and useful exclusions. Prefer third-person task wording plus Use when; do not mechanically rewrite a good description to satisfy a phrase detector.
+Describe both the capability and when to invoke it. Name concrete user contexts and useful exclusions. Prefer third-person task wording plus Use when; do not mechanically rewrite a good description to satisfy a phrase detector. The overview states that descriptions must cover both what and when. The checker cannot reliably judge that meaning, so its wording heuristic is a note; the author remains responsible for the documented requirement.
 
 Source: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices.md (read 2026-11-15). Short quote: “Be specific and include key terms”.
 
@@ -104,12 +104,12 @@ Source: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-p
 
 ## Checker rule ids
 
-R01: skill-md-missing, frontmatter-*, name-missing, description-empty. R02: name-not-kebab, name-too-long, name-reserved-word. R03: name-hyphens, name-dir-mismatch. R04: name-synced (anthropic-skills is also caught by name-reserved-word). R05: description-too-long, name-xml-tag, description-xml-tag. R06: compatibility-limit. R07: file-nested, reference-not-linked. R08: metadata-string-values (note). Guidance: guidance-description-trigger, guidance-description-person, guidance-angle-brackets, guidance-body-tokens, guidance-reference-contents, body-long-lines; description-long-words remains a local readability target. carried-reference-conflict is a note about preserved user settings.
+R01: skill-md-missing, frontmatter-*, name-missing, description-empty. R02: name-not-kebab, name-too-long, name-reserved-word. R03: name-hyphens, name-dir-mismatch. R04: name-synced (anthropic-skills is also caught by name-reserved-word). R05: description-too-long, name-xml-tag, description-xml-tag. R06: compatibility-limit. R07: file-nested, reference-not-linked. R08: metadata-string-values (note). Guidance: guidance-description-trigger, guidance-description-person, guidance-angle-brackets, guidance-body-tokens, guidance-reference-contents, body-long-lines; description-long-words remains a local readability target. The existing Claude Code listing check is listing-text-too-long (description and when_to_use combined, at most 1,536 characters); when-to-use-not-text and when-to-use-xml-tag check that optional field. carried-reference-conflict is a note about preserved user settings.
 
 ## Native examples and refresh
 
 No examples are redistributed in this package. At runtime EXAMPLES.md lists available native skill-creator and manifest-attributed Anthropic synced skills, including restricted examples only from installed local copies. Override SELF_LEARN_SKILL_REFERENCE_PLUGIN_ROOT or SELF_LEARN_SKILL_REFERENCE_SYNCED_ROOT to choose roots; defaults are below SELF_LEARN_CLAUDE_DIR. Absent examples are simply omitted. Staged copies contain prose and license text only, are secret-scanned, and never execute scripts.
 
-Read with `self-learn skill reference show`. Inspect a draft using `self-learn skill reference check NAME-OR-PATH`. `status` is offline; `status --fetch` compares all source hashes using plain HTTP and records the observation in the per-ledger XDG cache. Exit 0 means every source was unchanged; exit 1 means changed or unreachable. A missing cached observation is unknown, not proof of freshness.
+Read with `self-learn skill reference show`. Inspect a draft using `self-learn skill reference check NAME-OR-PATH`. `status` is offline; `status --fetch` compares all source hashes using plain HTTP and records the observation in the per-ledger XDG cache. Fetch waits at most 20 seconds per source and 60 seconds overall, including DNS and response reads; deadlines report unreachable. Exit 0 means every source was unchanged; exit 1 means changed or unreachable. A missing cached observation is unknown, not proof of freshness.
 
 To refresh, re-gather the named pages and native examples, review semantic changes and licenses, update this pack and sources.yaml using normalize()/digest(), bump VERSION and READ_DATE together with the manifest, add corresponding checker tests, and land a code/spec revision. Never have a weekly model silently replace the reference. Hash normalization is NFC Unicode plus collapsed whitespace over Markdown endpoints; no dates or substantive content are removed.

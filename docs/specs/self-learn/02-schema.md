@@ -850,6 +850,17 @@ changes only the name, not the authored instructions. Registry parsing accepts o
 when present. A write under a new pack updates the row even when the authored hash
 is unchanged. Both human and overseer paths use the same writer.
 
+**S-159 rollback note (2026-11-15, review F6).** The pre-S-159 registry parser
+rejects unknown last_write keys. Recording the requested version in that row
+therefore makes a code-only rollback incompatible after the first write.
+Before running pre-S-159 code, a reviewed ledger migration must remove only
+last_write.reference_pack from owned and registered rows, retaining all other
+fields and all rows; commit that migration while the S-159 parser still runs.
+Alternatively retain S-159's parser when reverting the authoring feature.
+Do not try a code-only rollback against the newer ledger. Older code tolerates
+the added nested stamp field, which need not be removed. This is an explicit
+rollback procedure, not permission for a builder to edit the live ledger.
+
 The bundled `skill_reference/sources.yaml` contains version, date_read,
 normalization identifier and source rows `{id, url, title, date_read, sha256}`.
 The hash is SHA-256 of UTF-8 NFC text with whitespace collapsed, fetched from

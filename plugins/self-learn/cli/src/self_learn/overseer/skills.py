@@ -339,7 +339,7 @@ def stage_phase_b(
     home = Path(home)
     staged = StagedSkills()
     from ..skill_reference import stage_pack
-    staged.reference_lines = stage_pack(home, stage, write)
+    staged.reference_lines = stage_pack(home, stage, write, notes=staged.notes)
     write(stage, stage / WRITING_FILE, state.stage_text())
     try:
         registry = skill_registry.load(home)
@@ -655,6 +655,7 @@ class SkillStep:
     #: A rewrite of an owned skill whose folder was gone when phase B was
     #: staged: the write is a compare-and-swap against absence (SK-E).
     expect_missing: bool = False
+    reference_notes: list[str] = field(default_factory=list)
 
     @property
     def label(self) -> str:
@@ -676,6 +677,7 @@ class SkillStep:
         return {
             "action": self.action, "name": self.name, "updating": self.updating,
             "files": dict(self.files), "expect_sha": self.expect_sha, "deploy": self.deploy,
+            "reference_notes": list(self.reference_notes),
             **({"renamed_from": self.renamed_from} if self.renamed_from else {}),
             **({"expect_missing": True} if self.expect_missing else {}),
         }
@@ -689,6 +691,7 @@ class SkillStep:
             expect_sha=data.get("expect_sha"), deploy=bool(data.get("deploy", True)),
             renamed_from=str(renamed_from) if renamed_from else None,
             expect_missing=bool(data.get("expect_missing")),
+            reference_notes=list(data.get("reference_notes") or []),
         )
 
 
@@ -883,11 +886,10 @@ def step_for_case(
         ) from exc
     if not checked.ok:
         raise SkillPairError(_refusal(name, checked.kind, checked.problems))
-    staged.reference_lines.extend(f"{name}: {note}" for note in checked.notes)
     text_files = {key: value for key, value in files.items() if isinstance(value, str)}
     return SkillStep(
         action="write", name=name, updating=editable, files=text_files, expect_sha=expect,
-        deploy=deploy, expect_missing=restoring,
+        deploy=deploy, expect_missing=restoring, reference_notes=list(checked.notes),
     )
 
 
@@ -1109,6 +1111,7 @@ def draft_entry(step: SkillStep, case_name: str, lessons: list[str]) -> dict[str
         "name": step.name,
         "action": step.label,
         "case_name": case_name,
+        "reference_notes": list(step.reference_notes),
         "lessons": sorted(dict.fromkeys(lessons)),
         **({"files": dict(step.files)} if step.action == "write" else {}),
         **({"renamed_from": step.renamed_from} if step.renamed_from else {}),
@@ -1286,7 +1289,6 @@ def report_lines(manifest: dict[str, Any]) -> list[str]:
     lines: list[str] = [
         str(line) for line in info.get("repairs") or [] if isinstance(line, str)
     ]
-    lines.extend(info.get("reference_lines") or [])
     recipes = manifest.get("cases") or {}
     for case_id in manifest.get("case_order") or []:
         raw = (recipes.get(case_id) or {}).get("skill")
@@ -1320,4 +1322,17 @@ def report_lines(manifest: dict[str, Any]) -> list[str]:
             "skill writing is off (overseer.skill_writing): every skill phase B built or "
             "changed was kept as a checked draft; nothing was deployed or retired"
         )
+    return lines
+
+
+def reference_report_lines(manifest: dict[str, Any]) -> list[str]:
+    """Pack facts and guidance only for applied steps or retained drafts."""
+    info = manifest.get("skills") or {}
+    lines = list(info.get("reference_lines") or [])
+    for recipe in (manifest.get("cases") or {}).values():
+        raw = recipe.get("skill") or {}
+        if raw.get("state") == "applied":
+            lines.extend(f"{raw['name']}: {note}" for note in raw.get("reference_notes") or [])
+    for draft in info.get("drafts") or []:
+        lines.extend(f"{draft['name']} (draft): {note}" for note in draft.get("reference_notes") or [])
     return lines

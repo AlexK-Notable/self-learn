@@ -209,7 +209,7 @@ def test_example_scan_and_manifest_hashes(env,monkeypatch,tmp_path):
     folder=tmp_path/'native';folder.mkdir()
     sensitive='token' + '=abcdefghijklmno'
     (folder/'SKILL.md').write_text(sensitive)
-    monkeypatch.setattr(ref,'local_examples',lambda:{'native':folder})
+    monkeypatch.setattr(ref,'local_examples',lambda notes=None:{'native':folder})
     stage=tmp_path/'stage'
     ref.stage_pack(env.home,stage,ob.overseer_run._write_stage)
     manifest=(stage/'skill-reference/sources.yaml').read_text()
