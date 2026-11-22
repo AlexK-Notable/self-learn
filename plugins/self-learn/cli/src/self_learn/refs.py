@@ -73,10 +73,11 @@ rule names the field it reads, first match wins:
    bookkeeping row -> ``relay``;
 10. a turn rules 5, 8 or 9 call ``user`` -> ``agent`` when an agent wrote
    it (:func:`provenance.agent_written`, 2026-10-19): its whole text is
-   an ``<agent-message>`` element, or Claude Code recorded it as an
+   an ``<agent-message>`` element or one element herdr-core's ``hc``
+   wrote (``<hc …>…</hc>``, 2026-11-22), or Claude Code recorded it as an
    accepted suggestion, or -- when the caller passes a
    :class:`provenance.SentIndex` -- another session handed exactly that
-   text to herdr just before. Text another agent types into a session's
+   text to herdr or ``hc`` just before. Text another agent types into a session's
    terminal is recorded field-for-field like the person typing (measured
    2026-09-26 and 2026-10-19), so these signs are the only way to tell.
    An ``agent`` turn is context around a moment, never the person's words.

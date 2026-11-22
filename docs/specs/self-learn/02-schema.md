@@ -3151,10 +3151,50 @@ tool call as its name and the string values of its input, an attachment's
      wrapper, is one `<agent-message>…</agent-message>` element (agents
      tag what they send through herdr since 2026-10-19; a person who
      writes beside a pasted agent message is not tagged);
+   - **delivered by hc** *(W-397, 2026-11-22)*: the whole text, after at
+     most one `<pasted_content …>` wrapper, is one element herdr-core's
+     `hc` writes, whatever it holds: it opens with `<hc>` or with `<hc`
+     followed only by `name="value"` attributes (hc 0.1.22 writes `from`
+     and `reach`), ends with `</hc>`, and that first tag is not closed
+     before the final `</hc>`. Opening and closing `hc` tags inside it
+     are counted, nested ones balance, and tags inside a backtick code
+     span or fence are not counted, so a brief that quotes the tag still
+     matches. When the inner text holds a `</hc>` followed anywhere later
+     by an opening `hc` tag, no tag is treated as code and every tag is
+     counted, since backtick spans could bridge two elements.
+     Measured 2026-11-22 on hc 0.1.22 in isolated cores: hc adds the
+     element when the command that sends or launches runs inside a
+     terminal whose program has reported an agent status, a nested shell
+     there included. It wraps a send (`<hc from="t1 lead">…</hc>`), a
+     template launch's first message (`<hc from="t1 lead" reach="hc send
+     t1 when done or stuck">…</hc>`), and writes its own note to a parent
+     when a child exits, is blocked or errs (`<hc>t3 kid-exit exited (exit
+     3). Read: hc read t3</hc>`; a child reporting `done` produced none).
+     A send or template launch from outside any terminal or from a plain
+     program's terminal arrives bare; its own `<agent-message>` tag or the
+     sent sign is what marks it. Because hc wraps by terminal and not by
+     author, **the person's own hc send stays `user`**: when the caller
+     passes the sends, an `hc` element is not `agent` if a command the
+     person ran themselves in another session in the same window (a
+     Claude Code `!` command, recorded as a `type: user` row whose whole
+     text is `<bash-input>COMMAND</bash-input>`) mentions herdr or runs
+     `hc send`/`hc run` and holds the element's inner text by the sent
+     sign's rules (folded, a short text as one quoted argument, a
+     file-backed TEXT argument equal to it), unless the inner text is
+     itself tagged by this rule (the person relayed an agent's message or
+     an hc report, which stays `agent`). Such commands are read only for
+     this exception, never as an agent's send. A person who pastes two
+     hc deliveries with their own words between them closes the first
+     element before the end and is not tagged; a person whose unfinished
+     draft hc's delivery lands in keeps their words outside the element
+     and is not tagged;
    - **an accepted suggestion**: `promptSource: suggestion_accepted`;
    - **sent**, read only when the caller passes the sends
      (`refs.sent_index`, `provenance.sweep`): another session made a tool
-     call whose text mentions herdr at most 30 minutes before the turn
+     call whose text mentions herdr, or calls herdr-core's `hc send` or
+     `hc run` (a word `hc`, optionally followed by `--json`, then `send`
+     or `run`, as shell words or as a JSON argv list; W-397), at most 30
+     minutes before the turn
      (5 seconds after, for clock skew), and that text, with quoting and
      escapes folded away, holds the turn's whole text; a turn under 40
      folded characters must sit in it as one quoted argument. Sends are
@@ -3172,7 +3212,13 @@ tool call as its name and the string values of its input, an attachment's
    - **file-backed send** (the same sent sign): a whole double-quoted
      `"$(cat FILE)"`, `"$(cat -- FILE)"` or `"$(< FILE)"` TEXT argument to
      `herdr [--session NAME] agent prompt TARGET` or `pane send-text TARGET`
-     may supply the text. FILE is one literal path (shell quotes allowed),
+     may supply the text, and so may the TEXT argument of
+     `hc [--json] send [OPTIONS] TARGET TEXT` (options `--if` and
+     `--timeout` take a value) and the last argument of
+     `hc [--json] run [OPTIONS] PROGRAM … TASK` when at least one program
+     word comes before it (options `--name`, `--cwd`, `--on`, `--label`,
+     `--parent`, `--timeout` take a value; the first word that is not an
+     option starts the program). FILE is one literal path (shell quotes allowed),
      resolved against the call's recorded absolute cwd for relative paths;
      any possible directory-changing command token anywhere in the call makes
      relative paths ineligible. Hermes requires an explicit absolute `workdir`
@@ -3190,7 +3236,19 @@ tool call as its name and the string values of its input, an attachment's
 
    An `agent` turn is context around a moment, never the person's own
    words. Not covered: variable-built paths, shell wrappers or transformations,
-   unavailable or modified historical briefs, and unrecognised harness formats.
+   unavailable or modified historical briefs, and unrecognised harness formats;
+   an `hc` element whose own prose holds an unbalanced `hc` tag outside
+   backtick code (a bare `</hc>` reads as closing it early, a bare opening tag
+   leaves it unclosed, so the turn stays `user` unless the sent sign finds it); `hc` called through another name or an alias; and
+   `herdr-app do … --task` file substitutions (its inline text is a herdr
+   mention and is read); and a person's own hc send run from inside an
+   agent's terminal by any route other than a Claude Code `!` command
+   (another harness's shell escape, a script the person starts there) or
+   read by a caller that passes no sends: its element reads as `agent`; a
+   brief that quotes a closing `</hc>` before an opening `hc` tag, even in
+   backticks (every tag counts then, so it reads as closed early); and a
+   `!` command an agent typed into a Claude Code pane through a channel that
+   adds no wrapper, which is recorded like the person's own.
 11. *(S-121, attention round 2026-10-31c)* A workspace row
    is the person's typing exactly when self-learn's UI recorded it with
    `role: user, origin: typed`. `clicked`, `draft-accepted`, `draft-edited`

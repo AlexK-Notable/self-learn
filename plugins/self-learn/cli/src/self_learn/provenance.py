@@ -13,14 +13,26 @@ A turn :func:`refs.role_of` would call ``user`` is written by an agent when
 one of three signs holds (:func:`agent_written`):
 
 1. **Tagged.** Its whole text -- after at most one ``<pasted_content>``
-   wrapper -- is one ``<agent-message>…</agent-message>`` element
-   (:func:`is_tagged`). Agents tag what they send through herdr since
-   2026-10-19. A person who pastes an agent's message and writes below it
-   is not tagged: their own words are in the turn.
+   wrapper -- is one ``<agent-message>…</agent-message>`` element, or one
+   element herdr-core's ``hc`` writes (:func:`is_tagged`,
+   :func:`is_hc_delivered`). Agents tag what they send through herdr since
+   2026-10-19. ``hc`` (2026-11-22, W-397) wraps a send whose sender is an
+   agent's terminal in ``<hc from="t1 lead">…</hc>``, a template launch's
+   first message in ``<hc from="…" reach="…">…</hc>``, and its own notes
+   to a parent in ``<hc>…</hc>``. hc adds the element when the sending
+   command runs inside a terminal whose program reported an agent status,
+   a nested shell there included, so the person's own ``!hc send …`` from
+   a Claude Code pane is wrapped too: when the caller passes the sends, an
+   hc element whose inner text such a ``!`` command in another session sent
+   (:meth:`SentIndex.person_sent`) stays the person's, unless that inner
+   text is itself tagged (the person relayed an agent's message). A person who pastes
+   an agent's message, or two hc deliveries, and writes beside it is not
+   tagged: their own words are in the turn.
 2. **An accepted suggestion.** ``promptSource == "suggestion_accepted"``:
    Claude Code's own suggested prompt, accepted with one keystroke.
 3. **Sent.** Another session made a tool call whose text mentions herdr
-   at most :data:`SEND_WINDOW_SECS` before the turn (and at most
+   or runs ``hc send`` / ``hc run`` (:func:`is_send_call`) at most
+   :data:`SEND_WINDOW_SECS` before the turn (and at most
    :data:`SEND_SKEW_SECS` after it), and that text holds the turn's whole
    text (:meth:`SentIndex.sender_of`). This covers untagged history. A
    turn shorter than :data:`SHORT_CHARS` after :func:`fold` must sit in
@@ -35,7 +47,7 @@ files are cached by path, mtime and size, including the stat fingerprints of
 referenced brief files. Hermes reads are cached against both the database
 and its WAL, since WAL changes need not change the database file.
 
-Literal file substitutions in a herdr text argument are read only when the
+Literal file substitutions in a herdr or hc text argument are read only when the
 file has neither an mtime nor a ctime later than the send. No shell is executed or variables expanded.
 """
 
@@ -64,6 +76,8 @@ __all__ = [
     "SentIndex",
     "agent_written",
     "fold",
+    "is_hc_delivered",
+    "is_send_call",
     "is_tagged",
     "sender_dirs",
     "sweep",
@@ -72,6 +86,7 @@ __all__ = [
 
 AGENT_OPEN = "<agent-message>"
 AGENT_CLOSE = "</agent-message>"
+HC_CLOSE = "</hc>"
 #: How long before a turn a send may have been made (module docstring, sign 3).
 SEND_WINDOW_SECS = 30 * 60
 #: How long after a turn a send may be stamped: the sender's row and the
@@ -87,6 +102,26 @@ _ESCAPED_SPACE = re.compile(r"\\[nrt]")
 _DROPPED = re.compile(r"[\\\"'`]")
 _WS = re.compile(r"\s+")
 _HERDR = b"herdr"
+#: The opening tag hc writes: ``<hc>``, or ``<hc`` with ``name="value"``
+#: attributes only (0.1.22 writes ``from`` and ``reach``).
+_HC_OPEN = r'<hc(?:\s+[A-Za-z_][\w.-]*="[^"\n]*")*\s*>'
+_HC_OPEN_AT_START = re.compile(_HC_OPEN)
+_HC_TAGS = re.compile(_HC_OPEN + "|" + re.escape(HC_CLOSE))
+#: Backtick code (a fence, or a span on one line): a tag quoted there is prose.
+_CODE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
+#: A close followed later by an opening tag may be the boundary between two
+#: elements with the person's words between them; when the inner text holds
+#: one anywhere, no tag is treated as prose.
+_CLOSE_THEN_OPEN = re.compile(re.escape(HC_CLOSE) + r".*?" + _HC_OPEN, re.S)
+#: A call of herdr-core's CLI that hands text to a terminal: the word ``hc``
+#: (not part of a longer word or file name; after an escaped newline or tab
+#: when the call is stored JSON-escaped), optionally ``--json``, then
+#: ``send`` or ``run``; or the same words as an argv list (``"hc", "send"``,
+#: quotes JSON-escaped or not).
+_HC_CALL_PAT = (r"(?:(?<![\w.-])|(?<=\\[nt]))hc(?:\s+--json)?\s+(?:send|run)\b"
+                r'|\\?"(?:[^"\s\\]*/)?hc\\?"\s*,\s*\\?"(?:--json\\?"\s*,\s*\\?")?(?:send|run)\\?"')
+_HC_CALL = re.compile(_HC_CALL_PAT)
+_HC_CALL_BYTES = re.compile(_HC_CALL_PAT.encode())
 _CODEX_CALLS = ("function_call", "custom_tool_call", "local_shell_call")
 #: How a short sent text is quoted: shell quotes, or a JSON-escaped double quote.
 _QUOTES = ('"', "'", '\\"')
@@ -101,13 +136,58 @@ def unwrap_paste(text: str) -> str:
 
 def is_tagged(text: str) -> bool:
     """Sign 1: the whole text, after at most one paste wrapper, is one
-    ``<agent-message>`` element."""
+    ``<agent-message>`` element or one element hc wrote
+    (:func:`is_hc_delivered`)."""
     body = unwrap_paste(text).strip()
     return (
         body.startswith(AGENT_OPEN)
         and body.endswith(AGENT_CLOSE)
         and body.count(AGENT_OPEN) == 1
-    )
+    ) or _is_hc_element(body)
+
+
+def is_hc_delivered(text: str) -> bool:
+    """The whole text, after at most one paste wrapper, is one element
+    herdr-core's ``hc`` wrote, whatever it holds (02 §3a.6 rule 10,
+    "delivered by hc")."""
+    return _is_hc_element(unwrap_paste(text).strip())
+
+
+def _is_hc_element(body: str) -> bool:
+    """``body`` opens with an hc tag that only its final ``</hc>`` closes.
+    Nested hc tags balance; tags inside backtick code are prose and are not
+    counted, unless a close is followed anywhere by an opening tag (then every
+    tag counts). Two elements with words between them close the first one
+    early."""
+    first = _HC_OPEN_AT_START.match(body)
+    if first is None or not body.endswith(HC_CLOSE) or len(body) < first.end() + len(HC_CLOSE):
+        return False
+    end = len(body) - len(HC_CLOSE)
+    inner = body[first.end():end]
+    if _CLOSE_THEN_OPEN.search(inner) is None:
+        inner = _CODE.sub(lambda m: " " * len(m.group(0)), inner)
+    depth = 1
+    for tag in _HC_TAGS.finditer(inner):
+        depth += -1 if tag.group(0) == HC_CLOSE else 1
+        if depth == 0:
+            return False
+    return depth == 1
+
+
+def _hc_inner(text: str) -> str | None:
+    """What an hc element holds, without its outer tags; None when ``text``
+    is not one (:func:`is_hc_delivered`)."""
+    body = unwrap_paste(text).strip()
+    first = _HC_OPEN_AT_START.match(body)
+    if first is None or not _is_hc_element(body):
+        return None
+    return body[first.end():len(body) - len(HC_CLOSE)]
+
+
+def is_send_call(text: str) -> bool:
+    """A tool call's text hands text to another terminal: it mentions
+    herdr, or runs ``hc send`` or ``hc run`` (sign 3)."""
+    return "herdr" in text or _HC_CALL.search(text) is not None
 
 
 def fold(text: str) -> str:
@@ -129,7 +209,7 @@ def _epoch(ts: object) -> float | None:
 
 @dataclass(frozen=True)
 class Send:
-    """One tool call that mentions herdr: when, from which session, its text."""
+    """One tool call that sends (:func:`is_send_call`): when, from which session, its text."""
 
     at: float
     session: str
@@ -138,6 +218,9 @@ class Send:
     cwd: str | None = None
     file_text: bool = False
     command: str | None = None
+    #: A command the person ran themselves (a Claude Code ``!`` command),
+    #: never an agent's send: only :meth:`SentIndex.person_sent` reads it.
+    by_person: bool = False
 
 
 class SentIndex:
@@ -154,10 +237,18 @@ class SentIndex:
         """The latest send from a session other than ``session``, made at
         most :data:`SEND_WINDOW_SECS` before ``at``, that holds ``text``
         (module docstring, sign 3); None when there is none or ``at`` is
-        unknown."""
+        unknown. Commands the person ran themselves are never senders."""
+        return self._find(unwrap_paste(text).strip(), at, session, by_person=False)
+
+    def person_sent(self, text: str, at: float | None, session: str | None) -> Send | None:
+        """The latest command the person ran themselves in a session other
+        than ``session`` (a Claude Code ``!`` command), in the same window,
+        that holds ``text`` by the same rules as :meth:`sender_of`."""
+        return self._find(text.strip(), at, session, by_person=True)
+
+    def _find(self, body: str, at: float | None, session: str | None, *, by_person: bool) -> Send | None:
         if at is None:
             return None
-        body = unwrap_paste(text).strip()
         folded = fold(body)
         if not folded:
             return None
@@ -165,7 +256,7 @@ class SentIndex:
         lo = bisect.bisect_left(self._times, at - SEND_WINDOW_SECS)
         hi = bisect.bisect_right(self._times, at + SEND_SKEW_SECS)
         for send in reversed(self._sends[lo:hi]):
-            if send.session == session or folded not in send.folded:
+            if send.by_person != by_person or send.session == session or folded not in send.folded:
                 continue
             if send.file_text and folded != send.folded:
                 continue
@@ -177,18 +268,25 @@ class SentIndex:
 
 def agent_written(entry: dict, text: str, sent: SentIndex | None = None) -> bool:
     """True when the typed turn ``entry``, whose text is ``text``, was
-    written by an agent (module docstring: signs 1-3; sign 3 only when
-    ``sent`` is given)."""
-    if is_tagged(text) or entry.get("promptSource") == SUGGESTION_ACCEPTED:
+    written by an agent (module docstring: signs 1-3; sign 3, and the
+    person's own hc sends, only when ``sent`` is given)."""
+    if entry.get("promptSource") == SUGGESTION_ACCEPTED:
         return True
+    tagged = is_tagged(text)
     if sent is None or not len(sent):
-        return False
+        return tagged
     ts = entry.get("timestamp")
     att = entry.get("attachment")
     if ts is None and isinstance(att, dict):
         ts = att.get("timestamp")
+    at = _epoch(ts)
     session = entry.get("sessionId")
-    return sent.sender_of(text, _epoch(ts), session if isinstance(session, str) else None) is not None
+    session = session if isinstance(session, str) else None
+    if tagged:
+        inner = _hc_inner(text)
+        # An agent's tagged text the person relayed with ``!hc send`` stays the agent's.
+        return inner is None or is_tagged(inner) or sent.person_sent(inner, at, session) is None
+    return sent.sender_of(text, at, session) is not None
 
 
 # ------------------------------------------------------------ the sweep
@@ -209,7 +307,29 @@ def sender_dirs(transcript_roots: Sequence[Path]) -> list[Path]:
     return out
 
 
+_BASH_INPUT = re.compile(r"\A<bash-input>(.*)</bash-input>\Z", re.S)
+
+
+def _claude_person_sends(raw: dict, fallback_session: str) -> list[Send]:
+    """A ``!`` command the person ran in a Claude Code session (a user row
+    whose whole text is ``<bash-input>…</bash-input>``) that sends."""
+    message = raw.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    at = _epoch(raw.get("timestamp"))
+    if at is None or raw.get("isMeta") or not isinstance(content, str):
+        return []
+    m = _BASH_INPUT.match(content.strip())
+    if m is None or not is_send_call(m.group(1)):
+        return []
+    session = raw.get("sessionId")
+    session = session if isinstance(session, str) else fallback_session
+    cmd = m.group(1)
+    return [Send(at, session, cmd, fold(cmd), _cwd(raw.get("cwd")), by_person=True)]
+
+
 def _claude_sends(raw: dict, fallback_session: str) -> list[Send]:
+    if raw.get("type") == "user":
+        return _claude_person_sends(raw, fallback_session)
     if raw.get("type") != "assistant":
         return []
     at = _epoch(raw.get("timestamp"))
@@ -225,7 +345,7 @@ def _claude_sends(raw: dict, fallback_session: str) -> list[Send]:
             continue
         inp = block.get("input")
         cmd = inp.get("command") if isinstance(inp, dict) else None
-        if isinstance(cmd, str) and "herdr" in cmd:
+        if isinstance(cmd, str) and is_send_call(cmd):
             out.append(Send(at, session, cmd, fold(cmd), _cwd(_object(inp).get("cwd") or raw.get("cwd"))))
     return out
 
@@ -239,7 +359,7 @@ def _codex_sends(raw: dict, session: str, cwd: str | None = None) -> list[Send]:
     at = _epoch(raw.get("timestamp"))
     body = payload.get("arguments") or payload.get("input") or payload.get("action")
     text = body if isinstance(body, str) else json.dumps(body)
-    if at is None or "herdr" not in text:
+    if at is None or not is_send_call(text):
         return []
     # Preserve the original text for the established inline rule. Decode the
     # command separately for file substitutions; JSON escaping is not shell syntax.
@@ -295,7 +415,7 @@ def _pi_sends(raw: dict, session: str, cwd: str | None) -> list[Send]:
             continue
         args = _object(block.get("arguments"))
         cmd = args.get("command")
-        if isinstance(cmd, str) and "herdr" in cmd:
+        if isinstance(cmd, str) and is_send_call(cmd):
             out.append(Send(at, session, cmd, fold(cmd), _cwd(args.get("cwd")) or cwd))
     return out
 
@@ -311,7 +431,7 @@ def _agy_sends(raw: dict, session: str) -> list[Send]:
             continue
         args = _object(call.get("args"))
         cmd = args.get("CommandLine")
-        if isinstance(cmd, str) and "herdr" in cmd:
+        if isinstance(cmd, str) and is_send_call(cmd):
             out.append(Send(at, session, cmd, fold(cmd), _cwd(args.get("Cwd"))))
     return out
 
@@ -323,7 +443,7 @@ def _read_hermes_sends(path: Path) -> list[Send]:
         db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
         try:
             rows = db.execute("SELECT session_id, timestamp, tool_calls FROM messages "
-                              "WHERE role='assistant' AND tool_calls LIKE '%herdr%'")
+                              "WHERE role='assistant' AND (tool_calls LIKE '%herdr%' OR tool_calls LIKE '%hc%')")
             for session, at, encoded in rows:
                 try:
                     if not isinstance(at, (int, float)) or not math.isfinite(at):
@@ -334,7 +454,7 @@ def _read_hermes_sends(path: Path) -> list[Send]:
                         fn = _object(_object(call).get("function"))
                         args = _object(fn.get("arguments"))
                         cmd = args.get("command")
-                        if fn.get("name") == "terminal" and isinstance(cmd, str) and "herdr" in cmd:
+                        if fn.get("name") == "terminal" and isinstance(cmd, str) and is_send_call(cmd):
                             row_sends.append(Send(at, "hermes:" + str(session), cmd, fold(cmd),
                                                   _cwd(args.get("workdir"))))
                     out.extend(_checked_sends(row_sends))
@@ -424,14 +544,8 @@ def _brief_paths(send: Send) -> list[Path]:
             continue
         args = segment
         segment = []
-        if not args or args[0] != "herdr":
-            continue
-        args = args[1:]
-        if args[:1] == ["--session"]:
-            args = args[2:]
-        if len(args) < 4 or args[:2] not in (["agent", "prompt"], ["pane", "send-text"]):
-            continue
-        literal = candidates.get(args[3])
+        text_arg = _text_argument(args)
+        literal = candidates.get(text_arg) if text_arg is not None else None
         if literal is None:
             continue
         try:
@@ -452,6 +566,50 @@ def _brief_paths(send: Send) -> list[Path]:
             path = Path(cwd) / path
         out.append(path)
     return out
+
+
+#: ``hc run`` options that take a value; every other option is a flag.
+_HC_RUN_VALUED = frozenset(("--name", "--cwd", "--on", "--label", "--parent", "--timeout"))
+#: ``hc send`` options that take a value.
+_HC_SEND_VALUED = frozenset(("--if", "--timeout"))
+
+
+def _text_argument(args: list[str]) -> str | None:
+    """The token that carries the sent text in one simple command, or None:
+    the TEXT of ``herdr [--session NAME] agent prompt|pane send-text TARGET
+    TEXT``, of ``hc [--json] send [OPTIONS] TARGET TEXT``, or the last
+    argument of ``hc [--json] run [OPTIONS] PROGRAM … TASK`` when a program
+    word comes before it (02 §3a.6 rule 10, file-backed send)."""
+    if not args:
+        return None
+    if args[0] == "herdr":
+        rest = args[1:]
+        if rest[:1] == ["--session"]:
+            rest = rest[2:]
+        if len(rest) < 4 or rest[:2] not in (["agent", "prompt"], ["pane", "send-text"]):
+            return None
+        return rest[3]
+    if args[0] != "hc":
+        return None
+    rest = args[1:]
+    if rest[:1] == ["--json"]:
+        rest = rest[1:]
+    if not rest or rest[0] not in ("send", "run"):
+        return None
+    verb, rest = rest[0], rest[1:]
+    if verb == "send":
+        words, i = [], 0
+        while i < len(rest):
+            word = rest[i]
+            i += 2 if word in _HC_SEND_VALUED else 1
+            if not word.startswith("--"):
+                words.append(word)
+        return words[1] if len(words) == 2 else None
+    i = 0
+    while i < len(rest) and rest[i].startswith("-"):
+        i += 2 if rest[i] in _HC_RUN_VALUED else 1
+    argv = rest[i:]
+    return argv[-1] if len(argv) >= 2 else None
 
 
 Fingerprint = tuple[int, int, int, int, int]
@@ -495,7 +653,7 @@ def _expand_files(sends: Iterable[Send], deps: dict[Path, Fingerprint | None]) -
             if _fingerprint(path) != before or len(body.encode("utf-8")) > 1024 * 1024:
                 continue
             if body.strip():
-                out.append(Send(send.at, send.session, body, fold(body), file_text=True))
+                out.append(Send(send.at, send.session, body, fold(body), file_text=True, by_person=send.by_person))
     return out
 
 
@@ -524,7 +682,8 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
         with path.open("rb") as fh:
             for line in fh:
                 # Header/context rows carry cwd, even without a herdr mention.
-                if _HERDR not in line and not ((codex or pi) and b'"cwd"' in line):
+                if (_HERDR not in line and _HC_CALL_BYTES.search(line) is None
+                        and not ((codex or pi) and b'"cwd"' in line)):
                     continue
                 try:
                     raw = json.loads(line)
