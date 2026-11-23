@@ -68,6 +68,7 @@ def test_the_file_is_private_and_holds_the_parsing_codes_hash(tmp_path):
     path = p._disk_path()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert path.is_relative_to(tmp_path / "xdg-cache"), "the file follows XDG_CACHE_HOME"
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     data = json.loads(path.read_text())
     assert data["version"] == p._DISK_VERSION and data["code"] == p._code_hash() and len(data["code"]) == 64
     assert [name for name in os.listdir(path.parent)] == ["sends.json"], "no temporary file is left behind"
@@ -274,8 +275,112 @@ def test_the_cold_process_guard_holds_through_the_file(tmp_path):
     assert any(s["file_text"] for row in kept.values() for s in row[2]), "control: the entry on disk holds the file's text"
     time.sleep(0.002)
     os.replace(replacement, path)
+    assert path.stat().st_mtime <= at < path.stat().st_ctime, "control: old mtime, new ctime"
     fresh_process()
     assert sum(s.file_text for s in p.sweep([root])._sends) == 0
+
+
+def test_a_brief_that_could_not_be_read_is_not_kept_in_the_file(tmp_path, monkeypatch):
+    """A brief that passes every test and then fails to open (no file
+    handles left, an I/O error) is a passing fault, not a fact about the
+    file: its fingerprint is unchanged, so an entry saved now would say in
+    every later process that the brief was never sent, and an agent's brief
+    would read as the person's words for good. Positive control: with the
+    fault the answer is `user` in this process. Then a new process, the fault
+    gone, must read the brief. Mutation: save the entry anyway -> `user`
+    again -> red."""
+    path = brief_file(tmp_path)
+    root = transcripts(tmp_path, f'herdr agent prompt worker "$(cat \'{path}\')"')
+    real_open = os.open
+
+    def no_handles(target, *args, **kwargs):
+        if str(target) == str(path):
+            raise OSError(24, "Too many open files")
+        return real_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", no_handles)
+    assert role(root) == "user", "control: the fault hides the brief in this process"
+    monkeypatch.setattr(os, "open", real_open)
+    fresh_process()
+    assert role(root) == "agent"
+    fresh_process()
+    no_parsing(monkeypatch)
+    assert role(root) == "agent", "and the good read is kept"
+
+
+def test_a_good_entry_is_withdrawn_when_a_later_read_of_its_brief_fails(tmp_path, monkeypatch):
+    """The file already holds a good entry; the brief's fingerprint then
+    changes (so the entry is stale) and the re-read fails. The stale entry
+    must leave the file with it, never be left looking current."""
+    path = brief_file(tmp_path)
+    root = transcripts(tmp_path, f'herdr agent prompt worker "$(cat \'{path}\')"')
+    assert role(root) == "agent"
+    assert len(json.loads(p._disk_path().read_text())["files"]) == 1
+    path.write_text(BRIEF)  # same text, new mtime and ctime: after the send, so no longer evidence
+    os.utime(path, (p._epoch(typed("", 1)["timestamp"]), p._epoch(typed("", 1)["timestamp"])))
+    real_open = os.open
+
+    def no_handles(target, *args, **kwargs):
+        if str(target) == str(path):
+            raise OSError(24, "Too many open files")
+        return real_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", no_handles)
+    fresh_process()
+    role(root)
+    assert json.loads(p._disk_path().read_text())["files"] == {}
+
+
+def test_the_temporary_file_of_a_killed_save_is_removed_by_a_later_one(tmp_path):
+    """The inbox page stops a packet with SIGKILL, which can land during a
+    save and leave a temporary file as large as the cache. A later save
+    removes one that is old, and leaves a fresh one (another process may be
+    writing it right now)."""
+    root = transcripts(tmp_path)
+    assert role(root) == "agent"
+    folder = p._disk_path().parent
+    old, new = folder / ".sends-killed.tmp", folder / ".sends-inflight.tmp"
+    for leftover in (old, new):
+        leftover.write_text("{")
+    os.utime(old, (1_700_000_000, 1_700_000_000))
+    write(root, "0f0e0d0c-0000-4000-8000-00000000abcd", [bash('herdr agent prompt worker "one more"', 8)])
+    fresh_process()
+    assert role(root) == "agent"
+    assert len(json.loads(p._disk_path().read_text())["files"]) == 2, "control: that sweep saved"
+    assert not old.exists() and new.exists()
+
+
+def test_two_threads_sweeping_at_once_save_without_error(tmp_path, monkeypatch):
+    """`ask` runs its tools in threads, and two of them sweep. A save walks
+    the entries another thread's sweep adds to; unguarded, that raises
+    RuntimeError out of `sweep`. Each thread parses its own store's 40
+    transcripts with the save interval at zero, so saves and inserts
+    interleave throughout."""
+    import threading
+
+    monkeypatch.setattr(p, "_DISK_SAVE_EVERY_SECS", 0.0)
+    roots = []
+    for n in range(2):
+        root = tmp_path / f"store-{n}"
+        for i in range(40):
+            write(root, f"0f0e0d0c-0000-4000-8000-{n:04d}{i:08d}", [bash(f'herdr agent prompt worker "task {n} {i} for the worker"', 8)])
+        roots.append(root)
+    errors, counts = [], []
+
+    def work(root):
+        try:
+            with p.saving():
+                counts.append(len(p.sweep([root])))
+        except BaseException as exc:  # noqa: BLE001 - the test reports whatever escaped
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work, args=(root,)) for root in roots]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    assert errors == [] and counts == [40, 40]
+    assert len(json.loads(p._disk_path().read_text())["files"]) == 80
 
 
 # ------------------------------------------------------------ the line gate
@@ -298,6 +403,22 @@ def test_every_line_the_hc_pattern_keeps_passes_the_gate(line):
     raw = line.encode()
     assert p._HC_CALL_BYTES.search(raw) is not None, "control: the full pattern matches this line"
     assert p._HC_CALL_GATE.search(raw) is not None
+
+
+@pytest.mark.parametrize("command", [
+    f'hc\tsend worker "{BRIEF}"',
+    f'cd /work\nhc\t--json\tsend worker "{BRIEF}"',
+])
+def test_a_tab_after_hc_is_still_a_send(tmp_path, command):
+    """A transcript stores the command JSON-escaped, so a tab after `hc` is
+    the two bytes backslash and t, which no `\\s` in a bytes pattern matches:
+    the line was dropped before it was read, and the decoded command, which
+    is a send, never looked at. Positive control: the stored line holds the
+    escaped form."""
+    root = transcripts(tmp_path, command)
+    stored = next(root.rglob("*.jsonl")).read_text()
+    assert "hc\\t" in stored and "herdr" not in stored
+    assert role(root) == "agent"
 
 
 def test_the_gate_is_not_the_pattern():

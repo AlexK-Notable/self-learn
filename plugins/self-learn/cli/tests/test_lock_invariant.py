@@ -129,6 +129,12 @@ _STREAMS = ("buf", "fh", "f", "sys", "stderr", "stdout", "out", "handle", "proc"
 #: :func:`test_the_exemption_list_cannot_rot`), so a rename or a deletion
 #: cannot leave a stale exemption quietly widening the hole.
 NOT_REPO_TRUTH = {
+    # 2026-11-23 S-163, 02-schema §3a.6: what the sweep of the harness stores
+    # read, kept between processes. Under $XDG_CACHE_HOME/self-learn/provenance/,
+    # outside every ledger and host; rebuilt from the transcripts when absent.
+    "provenance._disk_save": "XDG cache: <cache>/self-learn/provenance/sends.json and its temporary file, the sweep's disposable copy of what each transcript sent",
+    "provenance.forget": "XDG cache: unlinks <cache>/self-learn/provenance/sends.json",
+    "provenance._drop_stale_temporaries": "XDG cache: unlinks .sends-*.tmp files a killed save left beside <cache>/self-learn/provenance/sends.json",
     # 2026-11-15 S-159, 02-schema skill reference: disposable HTTP status, never ledger truth.
     "skill_reference.record_status": "XDG cache: per-home skill-reference-status.json; source drift observation only",
     # $XDG_CACHE_HOME/self-learn/autosync-pause — global, cross-repo pause
