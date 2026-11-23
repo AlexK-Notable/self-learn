@@ -58,6 +58,16 @@ START_HOST_ARGV = ["systemctl", "--user", "start", "self-learn-host.service"]
 FORCE_HOST_ARGV = ["systemctl", "--user", "restart", "self-learn-host.service"]
 QUIT_ARGV = ["systemctl", "--user", "--no-block", "stop", "self-learn-tray.service"]
 HOST_ACTIVE_ARGV = ["systemctl", "--user", "is-active", "--quiet", "self-learn-host.service"]
+# A scope runs its command with the CALLER's environment, not the user
+# manager's, and this unit starts at login from default.target, usually
+# before the compositor has published WAYLAND_DISPLAY and the rest: the
+# launcher then started a browser with no display to open on, and nothing
+# appeared (2026-11-23; the tray had started 31 s before Hyprland). So each
+# launch first reads the user manager's environment as it is NOW and runs
+# the launcher with it, which also survives a compositor restart. Only the
+# two variables this unit pins on purpose stay the tray's own.
+SESSION_ENV_ARGV = ["systemctl", "--user", "show-environment", "--output=json"]
+PINNED_ENV = ("PATH", "SELF_LEARN_HOME")
 RESTART_REQUEST_ARGV = ["self-learn", "serve", "--restart"]
 RESTART_WATCH_SECS = 3 * 3600
 WAIT_SECS = 5
@@ -223,6 +233,8 @@ def control_argv(argv):
         return argv
     if argv == HOST_ACTIVE_ARGV:
         secs = 15
+    elif argv == SESSION_ENV_ARGV:
+        secs = 4  # a click waits on this: fall back to the tray's own environment quickly
     elif argv == FORCE_HOST_ARGV:
         secs = 180  # the unit's 90 s stop timeout, then the start
     elif argv[0] == "systemctl" and ("start" in argv or "restart" in argv):
@@ -236,12 +248,75 @@ def command_timed_out(rc):
     return rc in (124, 137) or rc < 0
 
 
-def spawn(argv, done=None):
-    """Start argv without blocking the main loop; `done(rc)` when it exits."""
+def environ_entry_ok(key, value):
+    """Whether `key=value` can be an environment entry: a name with no `=`,
+    and no NUL or unencodable character on either side (one of those makes
+    PyGObject raise while it builds the child's environment)."""
+    if not key or "=" in key or "\0" in key or "\0" in value:
+        return False
     try:
-        proc = Gio.Subprocess.new(control_argv(argv), Gio.SubprocessFlags.NONE)
-    except GLib.Error as exc:
-        log(f"could not start {argv[0]}: {exc.message}")
+        f"{key}={value}".encode("utf-8")
+    except UnicodeError:
+        return False
+    return True
+
+
+def session_environment(stdout):
+    """The user manager's environment from `show-environment --output=json`:
+    a dict of strings, or None when the output is anything else. An entry
+    that cannot be an environment entry is left out, not passed on."""
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+        return None
+    return {k: v for k, v in data.items() if environ_entry_ok(k, v)}
+
+
+def launch_environment(own, session):
+    """What a launcher runs with: the tray's environment, with the session's
+    current values over it, except the variables the unit pins."""
+    env = dict(own)
+    env.update({k: v for k, v in (session or {}).items() if k not in PINNED_ENV})
+    return env
+
+
+def launch(argv, done=None):
+    """Run a launcher (`ACTIVATE_ARGV`, `OPEN_ARGV`) with the session's current
+    environment. If that cannot be read, the launcher still runs, with the
+    tray's own environment, and the journal says why."""
+
+    def read(rc, stdout, stderr):
+        session = session_environment(stdout) if rc == 0 else None
+        if session is None:
+            if rc == 0:
+                why = "unreadable output"
+            elif command_timed_out(rc):
+                why = "timed out"
+            else:
+                why = stderr.strip() or f"exited {rc}"
+            log(f"could not read the session's environment ({why}); opening with the tray's own, "
+                "which may have no display if the tray started before the desktop")
+        spawn(argv, done, env=launch_environment(os.environ, session))
+
+    capture(SESSION_ENV_ARGV, read)
+
+
+def spawn(argv, done=None, env=None):
+    """Start argv without blocking the main loop; `done(rc)` when it exits.
+    `env` replaces the child's whole environment (a launcher's, from `launch`)."""
+    try:
+        if env is None:
+            proc = Gio.Subprocess.new(control_argv(argv), Gio.SubprocessFlags.NONE)
+        else:
+            launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.NONE)
+            launcher.set_environ([f"{k}={v}" for k, v in env.items() if environ_entry_ok(k, v)])
+            proc = launcher.spawnv(control_argv(argv))
+    except (GLib.Error, TypeError, ValueError) as exc:
+        # Not only GLib.Error: PyGObject raises its own error on a string it
+        # cannot convert, and a click must always reach `done`.
+        log(f"could not start {argv[0]}: {getattr(exc, 'message', None) or exc}")
         if done:
             done(127)
         return
@@ -375,7 +450,7 @@ class Tray:
             self.poll()
 
     def activate(self, done=None):
-        spawn(ACTIVATE_ARGV, done)
+        launch(ACTIVATE_ARGV, done)
 
     def secondary(self, done=None):
         """Mark every decided item seen, then poll so the icon drops `new` at once."""
@@ -406,7 +481,7 @@ class Tray:
         if key == "open-inbox":
             self.activate(done)
         elif key == "open":
-            spawn(OPEN_ARGV, done)
+            launch(OPEN_ARGV, done)
         elif key == "check":
             self.poll(done=lambda: done(0))
         elif key == "seen":

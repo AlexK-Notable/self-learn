@@ -1049,8 +1049,19 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   Waybar renders the title as markup); a broken poll adds the error as the
   description.
 - **Left click** (`Activate`) runs `systemd-run --user --scope --collect --quiet --
-  self-learn-ui-open --page /inbox`. The transient unit carries the user manager's
-  current display environment, so the tray needs none; when a UI window is already
+  self-learn-ui-open --page /inbox`. *(S-162, 2026-11-23)* A scope runs its command
+  with the caller's environment, not the user manager's, and the tray starts at
+  login, usually before the compositor has published its display. So before each
+  launch the tray reads the user manager's environment as it is at that moment
+  (`systemctl --user show-environment --output=json`, told to stop after 4 s and
+  killed 5 s later if it has not) and runs the launcher with the tray's own
+  environment and the session's values laid over it; the two variables the tray's
+  unit pins (`PATH`, `SELF_LEARN_HOME`) are the only ones the session's values do
+  not replace. An entry that cannot be an environment entry (a NUL, an `=` in the
+  name) is left out. The tray itself therefore needs no display
+  variables, and a click still works after the compositor restarts. If the read
+  fails, times out or is not a JSON object of strings, the launcher runs with the
+  tray's own environment and the journal says so. When a UI window is already
   open, the launcher moves it to the inbox (`/navigate`). A scope, not a service
   (2026-11-01): the launcher leaves the browser running and exits, and a service's
   exit kills what is left in its cgroup, so a browser the click had just started
@@ -1064,7 +1075,8 @@ It is the door to the inbox, not a second inbox: it holds no items of its own.
   the revision and emits `LayoutUpdated`). In order: the tooltip's own line,
   greyed out; *Open the inbox* (the left click's command); *Open self-learn*
   (`self-learn-ui-open` with no page, through the same `systemd-run --user
-  --scope`: it focuses an open UI window or opens Home); *Check now* (polls);
+  --scope` and the same environment read: it focuses an open UI window or opens
+  Home); *Check now* (polls);
   *Mark everything decided as seen* (the middle click); *Restart the web UI*
   (`systemctl --user restart self-learn-ui.service`); *Restart the background
   service* (`self-learn-host.service`); *Quit (hide this icon until next login)*
