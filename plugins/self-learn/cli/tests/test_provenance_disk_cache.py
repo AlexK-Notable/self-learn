@@ -197,9 +197,11 @@ def test_a_long_sweep_saves_before_it_ends(tmp_path, monkeypatch):
         return real(path)
 
     monkeypatch.setattr(p, "_file_sends", stop_after_one)
-    with pytest.raises(KeyboardInterrupt), p.saving():
-        p.sweep([root])
-    assert list(json.loads(p._disk_path().read_text())["files"]) == [str(seen[0])]
+    with p.saving():
+        with pytest.raises(KeyboardInterrupt):
+            p.sweep([root])
+        # Still inside the block: a killed process never reaches its end.
+        assert list(json.loads(p._disk_path().read_text())["files"]) == [str(seen[0])]
 
 
 def test_a_sweep_outside_saving_reads_the_file_and_never_writes_it(tmp_path, monkeypatch):
@@ -348,6 +350,98 @@ def test_the_temporary_file_of_a_killed_save_is_removed_by_a_later_one(tmp_path)
     assert role(root) == "agent"
     assert len(json.loads(p._disk_path().read_text())["files"]) == 2, "control: that sweep saved"
     assert not old.exists() and new.exists()
+
+
+def test_a_packets_many_sweeps_write_the_file_once(tmp_path, monkeypatch):
+    """A packet sweeps once for every turn it quotes, and a transcript still
+    being written is parsed again each time. Inside one `saving()` block
+    those sweeps save together when the block ends, not one rewrite of the
+    whole file each. Positive control: the file does hold the last state."""
+    root = tmp_path / "transcripts"
+    saves, real = [], p.os.replace
+    monkeypatch.setattr(p.os, "replace", lambda a, b: (saves.append(str(b)), real(a, b))[1])
+    with p.saving():
+        for n in range(4):
+            write(root, ORCH, [bash(f'herdr agent prompt worker "instruction number {i} for the worker"', 8)
+                               for i in range(n + 1)])
+            assert len(p.sweep([root])) == n + 1
+    assert saves == [str(p._disk_path())]
+    assert len(next(iter(json.loads(p._disk_path().read_text())["files"].values()))[2]) == 4
+
+
+def test_a_stat_that_fails_just_after_a_good_read_is_not_kept(tmp_path, monkeypatch):
+    """The second way a passing fault could have reached the file: the brief
+    is read, then cannot be examined. Positive control: `user` while the
+    fault lasts; a new process without it reads the brief."""
+    path = brief_file(tmp_path)
+    root = transcripts(tmp_path, f'herdr agent prompt worker "$(cat \'{path}\')"')
+    real, calls = p._fingerprint, []
+
+    def failing_after_read(target):
+        if target == path:
+            calls.append(target)
+            if len(calls) == 2:  # the first is before the read, the second just after it
+                return None
+        return real(target)
+
+    monkeypatch.setattr(p, "_fingerprint", failing_after_read)
+    assert role(root) == "user" and len(calls) >= 2, "control: the fault hid the brief"
+    monkeypatch.setattr(p, "_fingerprint", real)
+    fresh_process()
+    assert role(root) == "agent"
+
+
+def test_every_change_to_the_entries_holds_the_lock(tmp_path, monkeypatch):
+    """`ask` runs its tools in threads and two of them sweep; a save walks
+    the entries another sweep adds to. The save swallows the RuntimeError
+    that would raise, so a threaded test cannot tell a held lock from luck.
+    This one is exact: the entries are a dict that refuses to be changed or
+    walked unless this thread holds `_DISK_LOCK`. Mutation: drop the lock
+    around the insert or the save -> AssertionError -> red."""
+    class Guarded(dict):
+        def _held(self):
+            assert p._DISK_LOCK._is_owned(), "the entries were touched without the lock"
+
+        def __setitem__(self, key, value):
+            self._held()
+            super().__setitem__(key, value)
+
+        def __delitem__(self, key):
+            self._held()
+            super().__delitem__(key)
+
+        def pop(self, *args):
+            self._held()
+            return super().pop(*args)
+
+        def items(self):
+            self._held()
+            return super().items()
+
+        def __iter__(self):
+            self._held()
+            return super().__iter__()
+
+    monkeypatch.setattr(p, "_disk_read", lambda path: Guarded())
+    path = brief_file(tmp_path)
+    root = transcripts(tmp_path, f'herdr agent prompt worker "$(cat \'{path}\')"')
+    assert role(root) == "agent"                      # insert, then save
+    assert isinstance(p._DISK.entries, Guarded) and len(p._DISK.entries) == 1, "control: the guarded dict is in use"
+    for old in root.rglob("*.jsonl"):
+        old.unlink()
+    write(root, "0f0e0d0c-0000-4000-8000-00000000abcd", [bash('herdr agent prompt worker "one more"', 8)])
+    assert len(json.loads(p._disk_path().read_text())["files"]) == 1
+    with p.saving():
+        p.sweep([root])                               # insert, then prune and save
+    assert list(json.loads(p._disk_path().read_text())["files"]) == [str(next(root.rglob("*.jsonl")))]
+    real_open = os.open
+    monkeypatch.setattr(os, "open", lambda target, *a, **k: (_ for _ in ()).throw(OSError(24, "no handles"))
+                        if str(target) == str(path) else real_open(target, *a, **k))
+    for old in root.rglob("*.jsonl"):
+        old.unlink()
+    write(root, ORCH, [bash(f'herdr agent prompt worker "$(cat \'{path}\')"', 9)])
+    p._CACHE.clear()
+    assert role(root) == "user"                       # pop of the unread entry, under the lock
 
 
 def test_two_threads_sweeping_at_once_save_without_error(tmp_path, monkeypatch):

@@ -679,7 +679,12 @@ def _expand_files(sends: Iterable[Send], deps: dict[Path, Fingerprint | None],
                 if unread is not None:
                     unread.append(path)
                 continue
-            if _fingerprint(path) != before or len(body.encode("utf-8")) > 1024 * 1024:
+            after = _fingerprint(path)
+            if after is None and unread is not None:
+                # The file was just read and now cannot be examined: a passing
+                # fault like a failed open, and as invisible to a fingerprint.
+                unread.append(path)
+            if after != before or len(body.encode("utf-8")) > 1024 * 1024:
                 continue
             if body.strip():
                 out.append(Send(send.at, send.session, body, fold(body), file_text=True, by_person=send.by_person))
@@ -745,13 +750,19 @@ _SAVING: contextvars.ContextVar[bool] = contextvars.ContextVar("self_learn_prove
 
 @contextlib.contextmanager
 def saving() -> Iterator[None]:
-    """Inside this block a sweep may write what it read to the cache file.
-    Outside it a sweep only reads the file (what it parses is still kept in
-    memory, and written by a later sweep that is allowed to)."""
+    """Inside this block a sweep may write what it read to the cache file:
+    every :data:`_DISK_SAVE_EVERY_SECS` while sweeps run, and once more when
+    the outermost block ends (a packet sweeps once per quoted turn, and one
+    save for all of them rewrites the file once, not each time). Outside it
+    a sweep only reads the file; what it parses is still kept in memory, and
+    written by a later block."""
+    outermost = not _SAVING.get()
     token = _SAVING.set(True)
     try:
         yield
     finally:
+        if outermost:
+            _disk_save(final=True)
         _SAVING.reset(token)
 def _hash_code() -> str:
     """The hash of this module's source and the interpreter that runs it
@@ -982,7 +993,8 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
     unread: list[Path] = []
     sends += _expand_files(sends, deps, unread)
     found = tuple(sends)
-    _CACHE[key] = (st.st_mtime_ns, st.st_size, found, deps)
+    entry: _Entry = (st.st_mtime_ns, st.st_size, found, deps)
+    _CACHE[key] = entry
     with _DISK_LOCK:
         if unread:
             # A brief could not be read just now. In memory that lasts one
@@ -991,7 +1003,7 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
             if disk.pop(key, None) is not None:
                 _DISK.dirty = True
         else:
-            disk[key] = _CACHE[key]
+            disk[key] = entry
             _DISK.dirty = True
     _disk_save(final=False)
     return found
@@ -1016,5 +1028,5 @@ def sweep(dirs: Iterable[Path]) -> SentIndex:
                     continue
         except _ROW_ERRORS:
             continue
-    _disk_save(final=True)
+    _disk_save(final=False)
     return SentIndex(sends)

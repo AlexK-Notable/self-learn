@@ -3231,14 +3231,15 @@ tool call as its name and the string values of its input, an attachment's
      test exists because the full pattern can begin at any quote and ran at 40
      MB/s where the byte tests run at 1 GB/s. What each transcript yielded is
      kept in memory for the process and in one file,
-     `${XDG_CACHE_HOME:-~/.cache}/self-learn/provenance/sends.json` (mode 0600
-     in a 0700 directory: it holds what the transcripts hold, namely the text
+     `${XDG_CACHE_HOME:-~/.cache}/self-learn/provenance/sends.json` (mode 0600,
+     in a directory this code creates 0700: it holds what the transcripts hold, namely the text
      agents sent each other, the bodies of the FILEs those sends named, up to
      1 MiB each, the commands the person ran with `!` that send, and the paths
      and session ids of all of them). An entry is used only when the
      transcript's mtime and size are unchanged and so is the fingerprint of
      every FILE its sends named (below); a transcript one of whose FILEs
-     passed every test and then could not be opened or read is never written
+     passed every test and then could not be opened, read, or examined again
+     after the read is never written
      to the file, since that fault leaves no trace in a fingerprint and would
      otherwise make an agent's brief read as the person's words in every later
      process. The whole file is ignored unless it carries the SHA-256 of the
@@ -3251,13 +3252,16 @@ tool call as its name and the string values of its input, an attachment's
      inside `provenance.saving()` writes it, because verbs that promise to
      change nothing sweep too (a miner preview leaves the whole cache
      directory as it found it). Two callers turn writing on: the evidence of
-     an inbox packet (`attention_packet.build`), which is the read the inbox
-     page waits on, and the miner's real run, which keeps the file warm each
-     night; what any other sweep parsed stays in that process's memory and is
-     written by its next sweep that may. Inside `saving()` the file is saved
-     when a sweep ends and every 5 s during one, so that a sweep cut short
-     (the inbox page stops a packet after 15 s) leaves its work for the next;
-     a save at the end drops entries whose transcript is gone.
+     an inbox packet (`attention_packet.build`, so the `attention packet`
+     verb, which is the read the inbox page waits on, and `ask` and
+     `summarise`, which build a packet too), and the miner's real run, which
+     keeps the file warm each night; what any other sweep parsed stays in
+     that process's memory and is written by its next block that may. Inside
+     `saving()` the file is saved every 5 s while sweeps run, so that a sweep
+     cut short (the inbox page stops a packet after 15 s) leaves its work for
+     the next, and once more when the outermost block ends (a packet sweeps
+     once for every turn it quotes; they share that one save);
+     the save at the end drops entries whose transcript is gone.
      `provenance.forget()` empties the memory and removes the file. It is a cache and nothing more: absent,
      unreadable, malformed or unwritable, it changes how long a sweep takes
      and never what it returns. The Hermes store keeps its own cache, above.
