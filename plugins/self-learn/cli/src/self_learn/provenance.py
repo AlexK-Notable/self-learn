@@ -850,6 +850,7 @@ def _disk_save(*, final: bool) -> None:
         if not final and time.monotonic() - _DISK.saved_at < _DISK_SAVE_EVERY_SECS:
             return
         path, tmp = _DISK.path, None
+        fd: int | None = None
         try:
             # The directory first: an unwritable cache fails here, before the
             # whole payload is built for nothing.
