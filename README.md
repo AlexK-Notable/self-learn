@@ -268,6 +268,33 @@ Adjust the rule type/size to taste — the only pinned contract is the
 window class, `self-learn-ui`, which the launcher's presence-detection
 also relies on.
 
+## Lessons for another task runner
+
+```bash
+self-learn select --query "restart a container" --project "$PWD" --path 'src/**' --json
+self-learn teach --project --type knowledge --fact "A synthetic lesson" --json --no-push
+self-learn note lrn-xxxxxxxx --append "Useful in this run" --key run-123 --json --no-push
+self-learn confirm-held lrn-xxxxxxxx --key run-123 --note "Observed working in run 123" --json --no-push
+self-learn supersede lrn-xxxxxxxx lrn-yyyyyyyy --note "The new lesson corrects the old one" --json --no-push
+```
+
+Set `SELF_LEARN_HOME` to select the ledger. `select` never writes or starts
+background work. It returns active routed user lessons, the requested project's
+lessons, and explicitly requested `--skill NAME` lessons; path-gated lessons
+need a matching `--path`. Input globs expand existing files; literal paths may
+name planned files. Pending lessons stay inert. Use repeatable `--exclude ID`,
+`--limit N`, or `--no-embed` for lexical search without an embedding request.
+Without `--json`, selection prints agent-facing lesson text and match reasons.
+
+The response includes `lessons`, search `mode` and degradation `note`; each
+lesson carries its text, routing, relevance score with its basis, and `why`.
+Unrelated queries return an empty list. Scores belong to self-learn's index
+model and cannot be compared with another provider's thresholds. The four write
+verbs above emit one receipt (`id`, `path`, `status`, `scope`); check the exit code
+as well as the receipt. Writes commit and normally push, so integrations should
+pass `--no-push`. Reuse the same event key on retries of notes and confirmations.
+See [the provider contract](docs/specs/self-learn/22-lessons-provider.md).
+
 ## Development
 
 - Tests: `plugins/self-learn/cli/scripts/suite` (the sanctioned CLI runner:

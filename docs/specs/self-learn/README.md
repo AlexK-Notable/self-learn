@@ -85,6 +85,8 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-11-22 — S-161: lessons provider.** `select` returns task-relevant live routed lessons with scope/path gates, thresholded lexical/cosine evidence and RRF ranking, without persistent writes or watchdog kicks. Capture and feedback gain JSON receipts; keyed notes and confirmations reread/dedupe under the ledger lock. Contract and decisions in `22-lessons-provider.md`.
+
 - **2026-11-15 — S-160: reviewed local skill scripts.** Owned/registered skills may hold bash or standard-library Python helpers outside the skills root. Mechanical screening only refuses; a fresh tool-free SDK session must prove claude-fable-5-2 at init and every assistant response before an exact-version approval activates. One attempt per version, default caps 3 per overseer run and 5 manual per UTC day. Activation commits executable bytes and a separate managed usage block; full rewrites preserve both and retain manual instructions. Integrity checks at overseer/recompile/daily maintenance quarantine changed files and revoke usage. Schema and recovery in 02 §S-160; decision in 03; writing workflow in 13.
 - **2026-11-15 — S-160 fix round 1 (F1–F13).** Positive member/option lists; wrapped/unreadable helper isolation; transcript-corroborated retryable activation; resilient integrity and daily enforcement; read-only doctor; tier-C config-only caps; approved replacement swaps; same-skill request receipts.
 - **2026-11-15 — S-160 fix round 2 (R1–R4).** Current-screen activation gate, native-transcript or review-commit corroboration, uniform input paths and folded credential names, approval-preserving index recovery, and ownership by managed bytes for inactive names.

@@ -38,6 +38,7 @@ a different owner.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import contextvars
 import json
 import os
@@ -806,6 +807,7 @@ def _build_parser() -> argparse.ArgumentParser:
     note_p = sub.add_parser(
         "note", help="append a commentary entry to a record (U-verbs §4.2)"
     )
+    note_p.add_argument("--json", action="store_true", dest="as_json", help="emit id, path, status and scope as one JSON object")
     note_p.add_argument("id", metavar="ID")
     note_p.add_argument(
         "--append",
@@ -873,7 +875,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="names the actor that chose the placement (default human)",
     )
 
-    supersede = _verb("supersede", "mark OLD superseded by NEW (metadata only)")
+    supersede = _verb("supersede", "mark OLD superseded by NEW (metadata only)", json_flag=True)
     supersede.add_argument("old_id", metavar="OLD_ID")
     supersede.add_argument("new_id", metavar="NEW_ID")
 
@@ -894,7 +896,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the rule stays despite the recurrence (needs --note: the why)",
     )
 
-    ch = _verb("confirm-held", "record that a routed rule was seen working")
+    ch = _verb("confirm-held", "record that a routed rule was seen working", json_flag=True)
+    ch.add_argument("--key", metavar="KEY", help="idempotency token for this confirmation; retries do not refresh the date")
     ch.add_argument("id", metavar="ID")
 
     ds = _verb(
@@ -1130,6 +1133,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     overseer_cli.add_parser(sub)
     index_cli.add_parser(sub)
+    from . import select as select_cli
+    select_cli.add_parser(sub)
     skill_cli.add_parser(sub)
     attention_cli.add_parser(sub)
     ask.add_parser(sub)
@@ -3356,6 +3361,20 @@ def _route_verb(home: Path, args: argparse.Namespace, runner: str | None) -> int
 
 
 def _cmd_verb(args: argparse.Namespace) -> int:
+    if args.command not in {"note", "confirm-held", "supersede"} or not getattr(args, "as_json", False):
+        return _run_verb(args)
+    from .teach import record_receipt
+
+    with contextlib.redirect_stdout(sys.stderr):
+        code = _run_verb(args)
+    # These verbs preserve their existing push-failure codes after a kept commit.
+    if code in (EXIT_OK, gitops.EXIT_PUSH_FAILED, gitops.EXIT_REBASE_CONFLICT):
+        record_id = args.old_id if args.command == "supersede" else args.id
+        print(json.dumps(record_receipt(resolve_home(), record_id)))
+    return code
+
+
+def _run_verb(args: argparse.Namespace) -> int:
     """Home-gated like every other surface (doc 13 B-11). Two reasons, one
     line: a bad home used to reach ``find_record_path`` and come back "no
     such record lrn-…" — blaming the ID for a home nobody could see; and
@@ -3453,7 +3472,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
             return _finish_verb(result, "recurrence confirmed")
         if args.command == "confirm-held":
             result = verbs.confirm_held(
-                home, args.id, note=args.note, by=runner, no_push=args.no_push
+                home, args.id, note=args.note, key=args.key, by=runner, no_push=args.no_push
             )
             return _finish_verb(result, "confirmed holding")
         if args.command == "dismiss-suspect":
@@ -5342,7 +5361,7 @@ def _main(argv: list[str] | None = None) -> int:
     # polls it) and `ask` (the inbox's agent) never tick it either, so
     # neither ever starts a mining run.
     # Humane UI lane 5: `summarise` (the page's "Summarise this") neither.
-    if args.command not in ("mine", "init", "serve", "attention", "ask", "summarise"):
+    if args.command not in ("mine", "init", "serve", "attention", "ask", "summarise", "select"):
         try:
             # no_push is passed EXPLICITLY (BLOCKER D): this tick runs
             # before dispatch for every command, so `reject --no-push` used
@@ -5362,6 +5381,10 @@ def _main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
+
+    if args.command == "select":
+        from . import select as select_cli
+        return select_cli.dispatch(args)
 
     if args.command == "init":
         return _cmd_init()

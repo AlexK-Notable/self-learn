@@ -854,6 +854,18 @@ class Record:
             return
         self._fm["last_confirmed"] = value
 
+    def confirmation_has_key(self, key: str) -> bool:
+        """Confirmation tokens have a separate namespace from commentary tokens."""
+        return key in (self._fm.get("confirmation_keys") or [])
+
+    def append_confirmation_key(self, key: str) -> None:
+        """Remember a completed observation so a retry cannot refresh its date."""
+        if not isinstance(key, str) or not key.strip():
+            raise ValidationError("confirmation key must be non-empty text")
+        if self._fm.get("confirmation_keys") is None:
+            self._fm["confirmation_keys"] = []
+        self._fm["confirmation_keys"].append(key)
+
     def set_follow_up(
         self,
         action: str,
@@ -1150,6 +1162,12 @@ class Record:
                 raise ValidationError("history must be a list")
             for entry in history:
                 _validate_history_entry(entry)
+        confirmation_keys = fm.get("confirmation_keys")
+        if confirmation_keys is not None and (
+            not isinstance(confirmation_keys, list)
+            or any(not isinstance(key, str) or not key.strip() for key in confirmation_keys)
+        ):
+            raise ValidationError("confirmation_keys must be a list of non-empty strings")
         notes = fm.get("notes")
         if notes is not None:
             if not isinstance(notes, list):

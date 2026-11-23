@@ -10153,6 +10153,18 @@ def _preflight_note(home: Path, record_id: str, *, append: str) -> Path:
     return path
 
 
+def _feedback_already_applied(home: Path, action: str, record_id: str) -> VerbResult:
+    return VerbResult(
+        action=action,
+        record_id=record_id,
+        commit_message=f"self-learn: {action} {record_id} (already applied)",
+        commit_sha=gitops.head_sha(home),
+        staged=[],
+        push=None,
+        sentinel_owned=False,
+    )
+
+
 def note(
     home: Path | str,
     record_id: str,
@@ -10171,7 +10183,7 @@ def note(
     `--key` is the idempotency token `self-learn batch` stamps on a
     `note` item's entry (§3.3b row 10) — the sha256 of the sheet line
     that produced it. When a `notes[]` entry already carries `key`,
-    NOTHING is appended: no lock taken, no commit, rc 0 — the
+    NOTHING is appended: no commit, rc 0 — the
     already-applied state is a READ, never a parse of a refusal
     message. A human call at a terminal omits `key` and every call
     appends (two identical observations on two days are two facts)."""
@@ -10198,7 +10210,11 @@ def note(
         message = f"self-learn: note {record_id}"
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
+            # The path can move while we wait (e.g. a concurrent route).
+            path = _preflight_note(home, record_id, append=append)
             record = Record.from_path(path)
+            if key is not None and record.note_has_key(key):
+                return _feedback_already_applied(home, "note", record_id)
             record.append_note(append, key=key)
             record.write(path)
             staged, sha = _commit_ledger(
@@ -11398,6 +11414,7 @@ def confirm_held(
     record_id: str,
     *,
     note: str | None = None,
+    key: str | None = None,
     no_push: bool = False,
     by: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
@@ -11405,17 +11422,32 @@ def confirm_held(
     """A human observed the rule working (11 §2.2): write
     ``last_confirmed`` (today). Age-since-confirmation, not
     age-since-capture, is the staleness metric. Commit:
-    ``self-learn: confirmed holding lrn-…``."""
+    ``self-learn: confirmed holding lrn-…``. A key identifies one observation:
+    retries do not refresh its date or create another commit. Reads, key checks
+    and writes share the ledger lock, so concurrent notes are preserved."""
     home = Path(home)
     _by_trailer(by)  # S-102: validates before any lock is taken
-    path, record = _preflight_confirm_held(home, record_id, note=note)
+    _scan_or_refuse([], note)
+    if key is not None:
+        if not key.strip():
+            raise VerbError("confirmation key must be non-empty text")
+        _scan_or_refuse([], key)
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        record.set_last_confirmed(_now_iso()[:10])
         message = f"self-learn: confirmed holding {record_id}"
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
+            # A completed observation remains completed after retirement or
+            # supersession. Check its token before enforcing today's lifecycle.
+            path = find_record_path(home, record_id)
+            record = read_record_or_refuse(path)
+            if key is not None and record.confirmation_has_key(key):
+                return _feedback_already_applied(home, "confirm-held", record_id)
+            path, record = _preflight_confirm_held(home, record_id, note=note)
+            record.set_last_confirmed(_now_iso()[:10])
+            if key is not None:
+                record.append_confirmation_key(key)
             record.write(path)
             staged, sha = _stage_and_commit(
                 home, [path], message,

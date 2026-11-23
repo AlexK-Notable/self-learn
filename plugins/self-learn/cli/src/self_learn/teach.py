@@ -49,7 +49,8 @@ Flag surface (01 §3.2 + 08 §1 pins):
                file — flags documented in :mod:`self_learn.analyst`.
                ``--note <text>`` → ``resolution_note`` + commit body;
                ``--no-push`` commits exactly as pinned, skips only the
-               push. All three require/imply ``--route``.
+               push. ``--dest`` and ``--note`` require ``--route``;
+               ``--no-push`` also applies to a plain pending capture.
 
 Composition: structured fields win; the positional LESSON fills a missing
 Instruction (behavior) or Fact (knowledge). Type inference heuristic
@@ -71,6 +72,8 @@ failure is loud, and ``self-learn push`` retries it.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import re
 import shlex
 import sys
@@ -89,7 +92,7 @@ from .gitops import EXIT_HALF_WRITTEN as _EXIT_HALF_WRITTEN
 from .hosts import capture_host_path
 from .ledger import EXIT_NO_HOME as _EXIT_NO_HOME
 from .ledger import home_state, home_state_message, resolve_home
-from .ledger_ops import LedgerOpsError, create_record, record_title
+from .ledger_ops import LedgerOpsError, create_record, find_record_path, record_title
 from .records import GENERALITIES, KINDS, RECORD_ID_RE, Record, RecordError
 from .scan import format_refusal, redact, scan
 
@@ -160,6 +163,7 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
             "the positional LESSON fills a missing Instruction/Fact."
         ),
     )
+    p.add_argument("--json", action="store_true", dest="as_json", help="emit id, path, status and scope as one JSON object")
     p.add_argument("lesson", nargs="?", default=None, metavar="LESSON")
     scope = p.add_mutually_exclusive_group()
     scope.add_argument("--skill", metavar="NAME", help="skill scope (skill:<name> bucket)")
@@ -259,7 +263,7 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
         "--no-push",
         action="store_true",
         dest="no_push",
-        help="with --route: commit exactly as pinned, skip only the push",
+        help="commit exactly as pinned, skip only the push",
     )
     p.add_argument(
         "--hook-input",
@@ -452,7 +456,30 @@ def _capture_txn(
     return path, True
 
 
+def record_receipt(home: Path, record_id: str) -> dict:
+    """Read the durable record, including its current bucket and status."""
+    path = find_record_path(home, record_id)
+    record = Record.from_path(path)
+    return {"id": record.id, "path": str(path), "status": record.status, "scope": record.scope}
+
+
 def run_teach(args: argparse.Namespace) -> int:
+    if not getattr(args, "as_json", False):
+        return _run_teach(args)
+    args.captured_id = None
+    with contextlib.redirect_stdout(sys.stderr):
+        code = _run_teach(args)
+    if args.captured_id is not None:
+        try:
+            receipt = record_receipt(resolve_home(), args.captured_id)
+        except LedgerOpsError:
+            pass  # Validation or locking failed before the capture wrote a record.
+        else:
+            print(json.dumps(receipt))
+    return code
+
+
+def _run_teach(args: argparse.Namespace) -> int:
     """``self-learn teach``. With ``--statement`` the user's own words are
     also recorded in the user-statement store (S-65, S-102): found
     and checked BEFORE the lesson is written (a statement that cannot be
@@ -568,7 +595,6 @@ def _run_teach_lesson(args: argparse.Namespace) -> int:
     for flag, given in (
         ("--dest", args.dest is not None),
         ("--note", args.note is not None),
-        ("--no-push", args.no_push),
         ("--hook-input", args.hook_input is not None),
         ("--rules-path", bool(args.rules_paths)),
         ("--allow-unpathed", args.allow_unpathed),
@@ -768,6 +794,7 @@ def _run_teach_lesson(args: argparse.Namespace) -> int:
             entry["quote"] = quote
         record.append_evidence(entry)
 
+    args.captured_id = record.id
     project_path = _project_path() if scope == "project" else None
 
     if args.route:
@@ -777,9 +804,7 @@ def _run_teach_lesson(args: argparse.Namespace) -> int:
     if (code := _home_gate(home)) is not None:
         return code
     try:
-        # H-5: producers commit their writes. no_push is always False here
-        # today (validation makes --no-push imply --route), passed for
-        # correctness if that pin ever widens.
+        # H-5: producers commit their writes; --no-push skips publication.
         path, committed = _capture_txn(
             home, record, project_path, no_push=args.no_push
         )

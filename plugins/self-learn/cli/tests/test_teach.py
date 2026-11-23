@@ -452,13 +452,36 @@ def test_bad_kind_value_rejected(home, capsys):
 
 @pytest.mark.parametrize(
     "extra",
-    [["--dest", "skill-md"], ["--note", "why"], ["--no-push"]],
+    [["--dest", "skill-md"], ["--note", "why"]],
 )
 def test_route_family_flags_need_route(home, capsys, extra):
     rc = run_cli(DOD_ARGS + extra)
     assert rc == 64
     assert "needs --route" in capsys.readouterr().err
     assert all_pending(home) == []
+
+
+def test_pending_no_push_commits_without_publication(home, monkeypatch):
+    from self_learn import gitops
+    from support import git
+
+    calls = []
+
+    def forbidden_push(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("pending --no-push attempted publication")
+
+    monkeypatch.setattr(gitops, "push_pending", forbidden_push)
+    monkeypatch.setattr(gitops, "push_if_remote", forbidden_push)
+    monkeypatch.setattr(gitops, "push_with_retry", forbidden_push)
+    previous = gitops.head_sha(home)
+    assert run_cli(DOD_ARGS + ["--no-push"]) == 0
+    path, record = sole_record(home)
+    assert record.status == "pending"
+    assert gitops.head_sha(home) != previous
+    committed = git(home, "show", f"HEAD:{path.relative_to(home)}").stdout
+    assert Record.from_text(committed).id == record.id
+    assert calls == []
 
 
 def test_route_bad_dest_is_usage_error(home, capsys):
