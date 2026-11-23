@@ -131,10 +131,15 @@ def test_glob_ignores_git_and_ignored_trees(home, tmp_path, monkeypatch):
 
 
 def test_glob_budget_preserves_ungated_lessons(home, tmp_path, monkeypatch):
+    user = tmp_path / 'user-home'; user.mkdir()
+    monkeypatch.setenv('HOME', str(user))
     project = tmp_path / 'project'; project.mkdir()
     for i in range(4):
         (project / f'file{i}.py').touch()
-    put(home, 1); put(home, 2, gates=['**/*.py'])
+    put(home, 1); put(home, 2, scope='project', project=project, gates=['**/*.py'])
+    control = select.select_lessons(home, 'Docker container health', project=project,
+                                    paths=['**/*.py'], provider=None)
+    assert set(ids(control)) == {'lrn-00000001', 'lrn-00000002'}
     monkeypatch.setattr(select, 'PATH_SCAN_LIMIT', 1)
     result = select.select_lessons(home, 'Docker container health', project=project,
                                    paths=['**/*.py'], provider=None)
@@ -148,7 +153,7 @@ def test_bracket_path_existing_or_explicit_literal(home, tmp_path, capsys, exist
     path = project / 'app/[slug]/page.tsx'
     if exists:
         path.parent.mkdir(parents=True); path.touch()
-    put(home, gates=['app/**/page.tsx'])
+    put(home, scope='project', project=project, gates=['app/**/page.tsx'])
     flag = '--path' if exists else '--literal-path'
     assert cli.main(['select', '--query', 'Docker container health', '--project', str(project),
                      flag, 'app/[slug]/page.tsx', '--no-embed', '--json']) == 0
@@ -163,7 +168,7 @@ def test_symlink_literal_uses_given_name_and_outside_does_not_abort(home, tmp_pa
     (project / 'named.py').symlink_to(project / 'actual.py')
     (tmp_path / 'external.py').touch()
     (project / 'external.py').symlink_to(tmp_path / 'external.py')
-    put(home, 1); put(home, 2, gates=['named.py']); put(home, 3, gates=['external.py'])
+    put(home, 1); put(home, 2, scope='project', project=project, gates=['named.py']); put(home, 3, scope='project', project=project, gates=['external.py'])
     result = select.select_lessons(home, 'Docker container health', project=project,
                                    paths=['named.py', 'external.py'], provider=None)
     assert set(ids(result)) == {'lrn-00000001', 'lrn-00000002'}
@@ -262,10 +267,12 @@ def test_direct_verb_rejects_unsafe_key_before_resources(feedback_home, monkeypa
 
 
 def test_git_inventory_read_only_and_budget_reaps_child(home, tmp_path, monkeypatch):
+    user = tmp_path / 'user-home'; user.mkdir()
+    monkeypatch.setenv('HOME', str(user))
     project = tmp_path / 'project'; init_repo(project)
     for n in range(4):
         (project / f'file{n}.py').touch()
-    put(home, 1); put(home, 2, gates=['**/*.py'])
+    put(home, 1); put(home, 2, scope='project', project=project, gates=['**/*.py'])
     before = snapshot(tmp_path)
     result = select.select_lessons(home, 'Docker container health', project=project,
                                    paths=['**/*.py'], provider=None)
@@ -368,10 +375,15 @@ time.sleep(30)
 
 
 def test_inventory_timeout_preserves_ungated_hits(home, tmp_path, monkeypatch):
+    user = tmp_path / 'user-home'; user.mkdir()
+    monkeypatch.setenv('HOME', str(user))
     from self_learn.primitives import procs
     project = tmp_path / 'project'; init_repo(project)
     (project / 'file.py').touch()
-    put(home, 1); put(home, 2, gates=['**/*.py'])
+    put(home, 1); put(home, 2, scope='project', project=project, gates=['**/*.py'])
+    control = select.select_lessons(home, 'Docker container health', project=project,
+                                    paths=['**/*.py'], provider=None)
+    assert set(ids(control)) == {'lrn-00000001', 'lrn-00000002'}
     original = procs.run_bounded
     def timeout_inventory(argv, **kwargs):
         if 'ls-files' in argv:

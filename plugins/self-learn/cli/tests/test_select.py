@@ -97,7 +97,7 @@ def test_path_gates_exact_recursive_absolute_glob_and_no_paths(home, tmp_path):
     project = tmp_path / "app"
     (project / "src" / "nested").mkdir(parents=True)
     (project / "src" / "main.py").touch()
-    put(home, gates=["src/**/*.py"])
+    put(home, scope="project", project=project, gates=["src/**/*.py"])
     assert not ids(select.select_lessons(home, "Docker container", project=project, provider=None))
     for path in ("src/new.py", "src/nested/new.py", str(project / "src" / "main.py"), "src/**/*.py"):
         result = select.select_lessons(home, "Docker container", project=project, paths=[path], provider=None)
@@ -210,7 +210,7 @@ def test_glob_scan_prunes_symlinks_and_refuses_budget(home, tmp_path, monkeypatc
     monkeypatch.setattr(select, "PATH_SCAN_LIMIT", 1)
     with pytest.raises(ValueError, match="budget exhausted"):
         select.task_paths(["**/*.py"], project)
-    put(home, gates=["src/**/*.py"])
+    put(home, scope="project", project=project, gates=["src/**/*.py"])
     assert select.select_lessons(home, "Docker container", project=project, paths=["**/*.py"], limit=0)["lessons"] == []
 
 

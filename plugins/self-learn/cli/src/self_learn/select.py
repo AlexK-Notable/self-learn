@@ -35,9 +35,9 @@ from .scan import redact
 def add_parser(subparsers) -> None:
     p = subparsers.add_parser("select", help="read-only lessons for a task; never kicks background work")
     p.add_argument("--query", required=True, help="task description")
-    p.add_argument("--path", action="append", default=[], help="file or glob, relative to project (repeatable); globs expand existing files")
+    p.add_argument("--path", action="append", default=[], help="absolute or project-relative file/glob (repeatable); supplies task context; globs expand existing files")
     p.add_argument("--literal-path", action="append", default=[], help="literal file name, including brackets or planned files (repeatable)")
-    p.add_argument("--project", type=Path, help="project directory (includes its lessons plus user lessons)")
+    p.add_argument("--project", type=Path, help="project directory and task context (includes its lessons plus ancestors and user lessons)")
     p.add_argument("--skill", action="append", default=[], help="also include this skill's lessons (repeatable)")
     p.add_argument("--exclude", action="append", default=[], metavar="ID")
     p.add_argument("--limit", type=int, default=10)
@@ -192,6 +192,31 @@ def task_paths(paths: list[str], root: Path, *, literal_paths: list[str] | None 
     return sorted(out)
 
 
+def _absolute_task_paths(paths: list[str], root: Path, literals: list[str], notes: list[str]) -> list[Path]:
+    groups: dict[Path, tuple[list[str], list[str]]] = {}
+    user_root = Path.home().resolve()
+    for raw, literal in [(p, False) for p in paths] + [(p, True) for p in literals]:
+        path = Path(raw).expanduser()
+        base = root
+        if path.is_absolute() and not path.is_relative_to(root):
+            base = user_root if path.is_relative_to(user_root) else Path(path.anchor)
+        group = groups.setdefault(base, ([], []))
+        group[int(literal)].append(raw)
+    out: set[Path] = set()
+    for base, (patterns, explicit) in groups.items():
+        out.update(base / name for name in task_paths(patterns, base, literal_paths=explicit, notes=notes))
+    return sorted(out)
+
+
+def _task_context(project: Path | None, paths: list[Path], root: Path) -> str:
+    lines = ["Project: " + project.name] if project is not None else []
+    for path in paths:
+        base = root if path.is_relative_to(root) else Path.home().resolve()
+        name = path.relative_to(base).as_posix() if path.is_relative_to(base) else path.name
+        lines.append("File: " + name)
+    return redact("\n".join(lines))[0]
+
+
 def agent_text(record: Record) -> str:
     """Keep reference/hook sections whole, including their Context.
 
@@ -204,76 +229,119 @@ def agent_text(record: Record) -> str:
     return entry_line(record)
 
 
-# Query-side evidence uses corpus frequencies, never a task-word blacklist.
-# Short lookups tolerate moderately shared names; multi-term tasks need a
-# more discriminative description as well as substantial weighted coverage.
+# Short lookups require their complete distinctive phrase. Natural-language
+# tasks may contain a coherent pair of informative anchors amid extra prose.
 LEXICAL_MIN_TERMS = 2
-LEXICAL_QUERY_COVERAGE = .65
 LEXICAL_QUERY_SPECIFICITY = .85
 LEXICAL_LOOKUP_SPECIFICITY = .75
 LEXICAL_STRONG_OVERLAP = .65
+LEXICAL_ANCHOR_INFORMATION = 1.5
+LEXICAL_WINDOW_TOKENS = 12
+LEXICAL_CONTEXT_WEIGHT = .5
+TASK_COSINE_THRESHOLDS = {"gemini-embedding-2@3072/i1": .70}
 
 
-def _lexical(texts: dict[str, str], query: str) -> dict[str, float]:
-    """Symmetric BM25 ratios over a stable, query-free corpus.
+def _lexical(texts: dict[str, str], query: str, *, context: str = "") -> dict[str, float]:
+    """Stable-corpus BM25 with local, ordered high-information evidence.
 
-    Porter/unicode61 supplies terms. Positive IDF log(1 + odds) avoids FTS5's
-    near-zero clamp for ubiquitous terms in small ledgers. Query self weights
-    use the corpus statistics without inserting the query into that corpus.
+    Long task prose must not dilute a distinctive local phrase. Informative stems
+    qualify only as a contiguous phrase in BOTH the task and lesson; merely
+    sharing scattered generic words or numeric fragments is insufficient.
+    Explicit context is a separate, weaker field, never a substitute scope.
     """
     if not texts:
         return {}
+    context_lines = context.splitlines()
+    if any(line.startswith("File: ") for line in context_lines):
+        # A specific file request must not inherit an unrelated project topic.
+        context_lines = [line for line in context_lines if not line.startswith("Project: ")]
+    field_texts = [query, *(line.partition(": ")[2] if line.startswith(("Project: ", "File: "))
+                           else line for line in context_lines)]
     with contextlib.closing(sqlite3.connect(":memory:")) as conn:
         conn.execute(fts5.FTS_DDL)
         conn.executemany("INSERT INTO lessons_fts(id, text) VALUES (?, ?)",
                          [(rid, " ".join(tokenize(text))) for rid, text in texts.items()])
         conn.execute("CREATE VIRTUAL TABLE terms USING fts5vocab(lessons_fts, instance)")
         ids = dict(conn.execute("SELECT rowid, id FROM lessons_fts"))
-        docs: dict[str, Counter[str]] = {rid: Counter() for rid in texts}
-        for term, rowid in conn.execute("SELECT term, doc FROM terms"):
-            docs[ids[rowid]][term] += 1
-        # A separate table tokenizes the query, never enters doc stats.
+        sequences: dict[str, list[str]] = {rid: [] for rid in texts}
+        for term, rowid in conn.execute("SELECT term, doc FROM terms ORDER BY doc, offset"):
+            sequences[ids[rowid]].append(term)
         conn.execute("CREATE VIRTUAL TABLE query_fts USING fts5(text, tokenize='porter unicode61')")
-        conn.execute("INSERT INTO query_fts(rowid, text) VALUES (1, ?)", (" ".join(tokenize(query)),))
+        conn.executemany("INSERT INTO query_fts(rowid, text) VALUES (?, ?)",
+                         [(i, " ".join(tokenize(text))) for i, text in enumerate(field_texts, 1)])
         conn.execute("CREATE VIRTUAL TABLE query_terms USING fts5vocab(query_fts, instance)")
-        query_terms = Counter(row[0] for row in conn.execute("SELECT term FROM query_terms WHERE doc=1"))
-    if not query_terms:
-        return {}
+        fields = [list(row[0] for row in conn.execute(
+            "SELECT term FROM query_terms WHERE doc=? ORDER BY offset", (i,))) for i in range(1, len(field_texts) + 1)]
+    docs = {rid: Counter(seq) for rid, seq in sequences.items()}
     frequencies: Counter[str] = Counter()
     for terms in docs.values():
         frequencies.update(terms.keys())
+    if not frequencies:
+        return {}
     total = len(docs)
     avg_length = sum(sum(t.values()) for t in docs.values()) / total or 1
+    vocabulary = set(frequencies).union(*map(set, fields))
     weights = {t: math.log1p((total - frequencies[t] + .5) / (frequencies[t] + .5))
-               for t in set(frequencies) | set(query_terms)}
-
-    query_mass = sum(weights[t] for t in query_terms)
-    corpus_peak = max(weights[t] for t in frequencies) if frequencies else 1
-    specificity = query_mass / len(query_terms) / corpus_peak
-    minimum_specificity = (LEXICAL_LOOKUP_SPECIFICITY if len(query_terms) == 1
-                           else LEXICAL_QUERY_SPECIFICITY)
+               for t in vocabulary}
+    peak = max(weights[t] for t in frequencies)
 
     def score(terms: Counter[str], wanted) -> float:
         norm = 1.2 * (.25 + .75 * sum(terms.values()) / avg_length)
         return sum(weights[t] * terms[t] * 2.2 / (terms[t] + norm)
                    for t in wanted if terms[t])
 
-    query_self = score(query_terms, query_terms)
-    scores = {}
-    for rid, terms in docs.items():
-        overlap = query_terms.keys() & terms.keys()
-        if len(overlap) < min(LEXICAL_MIN_TERMS, len(query_terms)):
+    def anchors(sequence: list[str]) -> set[tuple[str, ...]]:
+        # A phrase may combine moderately informative terms. Count each stem
+        # once; numeric fragments and repeated words cannot inflate its evidence.
+        found: set[tuple[str, ...]] = set()
+        for start in range(len(sequence)):
+            informative: set[str] = set()
+            mass = 0.0
+            for end in range(start, min(len(sequence), start + LEXICAL_WINDOW_TOKENS)):
+                term = sequence[end]
+                if term not in informative and any(c.isalpha() for c in term):
+                    informative.add(term)
+                    mass += weights[term]
+                if len(informative) >= 2 and mass / peak >= LEXICAL_ANCHOR_INFORMATION:
+                    found.add(tuple(sequence[start:end + 1]))
+                    break
+        return found
+
+    doc_anchors = {rid: anchors(seq) for rid, seq in sequences.items()}
+    scores: dict[str, float] = {}
+    for sequence, field_weight in zip(fields, [1.0] + [LEXICAL_CONTEXT_WEIGHT] * (len(fields) - 1)):
+        terms = Counter(sequence)
+        if not terms:
             continue
-        if sum(weights[t] for t in overlap) / query_mass < LEXICAL_QUERY_COVERAGE:
-            continue
-        own = score(terms, terms)
-        forward = min(1.0, score(terms, query_terms) / query_self) if query_self else 0
-        reverse = min(1.0, score(query_terms, terms) / own) if own else 0
-        value = (forward + reverse) / 2
-        # Near-complete mutual overlap remains evidence even when the small
-        # corpus repeats its topic in nearly every record.
-        if specificity >= minimum_specificity or value >= LEXICAL_STRONG_OVERLAP:
-            scores[rid] = value
+        query_self = score(terms, terms)
+        specificity = sum(weights[t] for t in terms) / len(terms) / peak
+        minimum = LEXICAL_LOOKUP_SPECIFICITY if len(terms) == 1 else LEXICAL_QUERY_SPECIFICITY
+        query_anchors = anchors(sequence)
+        for rid, document in docs.items():
+            overlap = terms.keys() & document.keys()
+            if len(overlap) < min(LEXICAL_MIN_TERMS, len(terms)):
+                continue
+            own = score(document, document)
+            forward = min(1.0, score(document, terms) / query_self) if query_self else 0
+            reverse = min(1.0, score(terms, document) / own) if own else 0
+            value = (forward + reverse) / 2
+            shared_anchors = query_anchors & doc_anchors[rid]
+            evidence = (len(overlap) == len(terms) and specificity >= minimum
+                        if len(terms) <= 3 else bool(shared_anchors))
+            if field_weight < 1 and shared_anchors:
+                # File suffixes and directory names need not occur in prose.
+                evidence = True
+            if shared_anchors and (len(terms) > 3 or field_weight < 1):
+                # Score the best supported local core, so unrelated task prose
+                # cannot dilute evidence already present in both passages.
+                for pair in shared_anchors:
+                    core = Counter(pair)
+                    core_self = score(core, core)
+                    core_forward = min(1.0, score(document, core) / core_self)
+                    core_reverse = min(1.0, score(core, document) / own) if own else 0
+                    value = max(value, (core_forward + core_reverse) / 2)
+            if evidence or value >= LEXICAL_STRONG_OVERLAP:
+                scores[rid] = max(scores.get(rid, 0), value * field_weight)
     return scores
 
 
@@ -290,7 +358,7 @@ def _semantic(home: Path, texts: dict[str, str], query: str, provider=FROM_ENV) 
             conn.execute("PRAGMA query_only = ON")
             row = conn.execute("SELECT value FROM meta WHERE key='model_id'").fetchone()
             model = row[0] if row else None
-            threshold = COSINE_THRESHOLDS.get(model) if isinstance(model, str) else None
+            threshold = TASK_COSINE_THRESHOLDS.get(model, COSINE_THRESHOLDS.get(model)) if isinstance(model, str) else None
             if threshold is None:
                 return {}, None, "index model has no measured cosine threshold"
             rows = conn.execute("SELECT id, text_hash, vector FROM lesson_vectors WHERE model_id=?", (model,)).fetchall()
@@ -306,7 +374,7 @@ def _semantic(home: Path, texts: dict[str, str], query: str, provider=FROM_ENV) 
                 return {}, threshold, reason
         if provider.model_id != model:
             return {}, threshold, "embedding model differs from the index"
-        query_vector = embed_documents(provider, [query], interactive=True)[0]
+        query_vector = embed_documents(provider, [query], interactive=True, query=True)[0]
         scores = {rid: cosine(query_vector, v) for rid, v in vectors.items()
                   if len(v) == len(query_vector) and all(math.isfinite(x) for x in v)}
         note = "" if len(scores) == len(texts) else "partial current vectors; lexical fallback for other lessons"
@@ -370,26 +438,33 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
                     records[record.id] = (record, bucket.name, [], relation, recorded_path)
                 except Exception:
                     unreadable.append(str(path.relative_to(home)))
+    concrete_paths: list[Path] = []
     if records and limit:
         try:
-            concrete_paths = task_paths(paths or [], root, literal_paths=literal_paths, notes=path_notes)
+            concrete_paths = _absolute_task_paths(paths or [], root, literal_paths or [], path_notes)
         except PathScanError as exc:
             concrete_paths = []
             path_notes.append(f"{exc}; path-gated lessons omitted")
         for rid, (record, bucket, _, relation, recorded_path) in list(records.items()):
             gates = (record.routing or {}).get("rules_paths") or []
-            gate_paths = concrete_paths
-            if relation == "ancestor-project" and project_key is not None and recorded_path is not None:
-                prefix = project_key.relative_to(recorded_path)
-                gate_paths = [(prefix / p).as_posix() for p in concrete_paths]
+            gate_paths = []
+            gate_root = Path.home().resolve() if record.scope == "user" else recorded_path or root
+            for path in concrete_paths:
+                canonical = (project_key / path.relative_to(root)
+                             if record.scope == "project" and project_key is not None and path.is_relative_to(root)
+                             else path)
+                if canonical.is_relative_to(gate_root):
+                    gate_paths.append(canonical.relative_to(gate_root).as_posix())
             matches = [p for p in gate_paths if any(_glob_match(p, g) for g in gates)]
             if gates and not matches:
                 del records[rid]
             else:
                 records[rid] = (record, bucket, matches, relation, recorded_path)
-    lexical = {rid: value for rid, value in _lexical(texts, query).items() if rid in records} if records and limit else {}
+    context = _task_context(project_key, concrete_paths, root)
+    retrieval_query = query + ("\nTask context:\n" + context if context else "")
+    lexical = {rid: value for rid, value in _lexical(texts, query, context=context).items() if rid in records} if records and limit else {}
     eligible_texts = {rid: texts[rid] for rid in records}
-    semantic, threshold, note = _semantic(home, eligible_texts, query, provider) if records and limit else ({}, None, "no eligible lessons" if not records else "limit is zero")
+    semantic, threshold, note = _semantic(home, eligible_texts, retrieval_query, provider) if records and limit else ({}, None, "no eligible lessons" if not records else "limit is zero")
     note = "; ".join([note, *path_notes]).strip("; ")
     lexical_ids = sorted(lexical, key=lambda rid: (-lexical[rid], rid))
     semantic_ids = sorted(semantic, key=lambda rid: (-semantic[rid], rid))
@@ -399,7 +474,7 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
         lex, sem = lexical.get(rid, 0.0), semantic.get(rid)
         lex_ok = lex >= LEXICAL_THRESHOLD
         sem_ok = sem is not None and threshold is not None and sem >= threshold
-        if not (lex_ok or sem_ok):
+        if not (sem_ok if sem is not None else lex_ok):
             continue
         record, bucket, matches, relation, _ = records[rid]
         why = (["semantic"] if sem_ok else []) + (["lexical"] if lex_ok else [])
@@ -417,7 +492,9 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
             break
     return {"command": "select", "mode": "hybrid" if semantic else "lexical-only", "note": note,
             "thresholds": {"cosine": threshold, "lexical": LEXICAL_THRESHOLD, "lexical_min_terms": LEXICAL_MIN_TERMS,
-                           "lexical_query_coverage": LEXICAL_QUERY_COVERAGE,
+                           "lexical_anchor_information": LEXICAL_ANCHOR_INFORMATION,
+                           "lexical_window_tokens": LEXICAL_WINDOW_TOKENS,
+                           "lexical_context_weight": LEXICAL_CONTEXT_WEIGHT,
                            "lexical_query_specificity": LEXICAL_QUERY_SPECIFICITY,
                            "lexical_lookup_specificity": LEXICAL_LOOKUP_SPECIFICITY,
                            "lexical_strong_overlap": LEXICAL_STRONG_OVERLAP},

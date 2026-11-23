@@ -290,9 +290,14 @@ Without `--json`, selection prints agent-facing lesson text and match reasons.
 
 The response includes `lessons`, search `mode` and degradation `note`; each
 lesson carries its text, routing, relevance score with its basis, and `why`.
-Lexical hits require corpus-weighted query coverage and the relevance floor;
+Lexical hits require a distinctive shared phrase or a strong short lookup, plus
+the relevance floor;
 scores use a stable corpus before scope/exclusion filtering. Discriminative
-one-word lookups can qualify, without a task-word blacklist. Provider scores cannot be compared
+one-word lookups can qualify, without a task-word blacklist. Explicit files and
+project names also supply retrieval context. User rules use home-relative paths;
+project rules use project-relative paths, including absolute input paths.
+Current vectors must pass the task cosine floor; lexical fallback applies when
+vectors are missing or embedding is disabled/unavailable. Provider scores cannot be compared
 with another provider's thresholds. The four write verbs above emit one receipt
 (`id`, `path`, `status`, `scope`); feedback receipts also include `applied`, `pushed`
 and `host_pushed`. A post-operation read race returns null record fields and

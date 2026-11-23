@@ -31,14 +31,18 @@ Ancestor matches say `ancestor project scope` in `why`, and their gates and
 `routing.rules_paths` is an additional gate, never a replacement for relevance.
 A gated lesson requires at least one matching supplied path, using the existing
 routing glob matcher (`*` stays within a component, `**` crosses components).
-Paths are relative to the task's Git root, or the supplied directory outside Git;
-without a project they are relative to the current Git root/directory. Literal
+Relative input paths are relative to the task's Git root, or the supplied
+directory outside Git; without a project they are relative to the current Git
+root/directory. Absolute input paths may also name files outside that root.
+Evaluate user rules relative to the user home, and project/ancestor rules
+relative to the recorded project/ancestor directory. Map worktree paths back
+to the registered project before evaluating project gates. Literal
 paths may name planned files. An existing file passed with `--path` is literal
 before glob interpretation; `--literal-path` also names nonexistent files with
 brackets or wildcard characters. Preserve the supplied path's normalized spelling
 for matching, including an internal symlink's name. A symlink pointing outside
-the project is ignored with an explicit note; it does not discard other paths or
-ungated lessons. A lexical path outside the root is a usage error.
+its input root is ignored with an explicit note; it does not discard other paths or
+ungated lessons. A relative path escaping its input root (`../x`) is a usage error.
 
 Input globs expand existing files. Inside Git, use the read-only bounded
 `git ls-files --cached --others --exclude-standard -z` inventory; ignore rules
@@ -69,8 +73,9 @@ Read current record bodies and routing on every call. Use redacted lesson text
 and the existing query tokenizer plus FTS5 Porter/unicode61 stemming. The corpus
 is **every readable record**, including records later excluded by lifecycle,
 project, skill, path or `--exclude`. The query is tokenized in a separate RAM table
-and never contributes to corpus document frequency. Thus eligibility changes
-cannot alter another lesson's lexical score (actual ledger edits still can).
+and never contributes to corpus document frequency. Thus eligibility changes alone
+cannot alter another lesson's lexical score. Changing explicit retrieval context
+or the ledger text can change the score.
 
 Use BM25 term saturation (`k1=1.2`, `b=0.75`) with positive IDF
 `log(1 + (N - df + 0.5)/(df + 0.5))`. This fixes FTS5's zero/negative-IDF clamp on
@@ -82,42 +87,67 @@ There is no task-word blacklist: `run`, `test`, `config` and other content words
 retain their corpus IDF weight. Additional query-side evidence is:
 
 - Match at least `min(2, number of distinct query stems)` stems, so a one-word
-  lookup can qualify.
-- Matched stems must cover at least 0.65 of the query's total distinct-stem IDF
-  weight. Unseen query terms retain high IDF and therefore count against coverage.
-- The query's mean IDF, divided by the maximum observed corpus term IDF, must
-  reach 0.85 (0.75 for one-word lookups), **or** symmetric BM25 overlap must reach
-  0.65. The strong-overlap alternative preserves recall in small ledgers whose
-  lessons repeat their common topic. Empty token sets never qualify.
+  lookup can qualify. Short queries (at most three distinct stems) must match
+  every stem and have mean IDF / maximum observed corpus IDF at least 0.85
+  (0.75 for one-word lookups).
+- Longer tasks qualify through a shared contiguous phrase, after the existing
+  tokenizer and Porter stemming. Within at most 12 tokens, the phrase must
+  contain two distinct alphabetic-bearing stems and at least 1.5 times the
+  maximum corpus term IDF in distinct alphabetic-bearing stems. Longer phrases
+  can combine moderately informative words; scattered overlaps cannot qualify.
+  Numeric fragments of addresses or versions do not establish a topic.
+- Score the best qualifying phrase with the same symmetric BM25 ratios. Extra
+  task prose does not dilute a distinctive shared phrase. Symmetric whole-field
+  overlap of at least 0.65 remains an alternative for strong matches in small
+  corpora that repeat their topic. Empty token sets never qualify.
 
-These are explicit task-side tuning constants, exposed in `thresholds` as
-`lexical_min_terms`, `lexical_query_coverage`, `lexical_query_specificity`,
-`lexical_lookup_specificity`, and `lexical_strong_overlap`. They do not change
-semantic qualification. Corpus frequency makes broadly shared words weak
+Explicit project/file context is also retrieval evidence, never inferred scope.
+Use the canonical project basename and supplied file names relative to the task
+root or user home. For lexical matching, each file is a separate field at half
+weight; when files are supplied, they replace the broader project-name field.
+The project name is used alone only when there are no supplied files. Context
+fields may use a qualifying phrase even when short: an extension or directory
+component need not occur in lesson prose. This avoids
+qualifying a lesson solely through the shared project name during a request
+about another file, or joining the end of one path to the start of another.
+All lifecycle, scope and path gates still apply before a result is returned.
+
+These task tuning constants are exposed in `thresholds`: `lexical_min_terms`,
+`lexical_anchor_information`, `lexical_window_tokens`, `lexical_context_weight`,
+`lexical_query_specificity`, `lexical_lookup_specificity`, and
+`lexical_strong_overlap`. Corpus frequency makes broadly shared words weak
 rather than categorically unusable; it is not a semantic applicability oracle.
 
-The original 16-lesson/12-task regression set and the second review's short-query
-and generic-overlap probes remain exact regression tests. Their results are
-**tuning/regression evidence**, not independent precision/recall estimates.
-An independently labeled held-out set of real tasks against routed lessons is
-still required before claiming measured real-task precision or recall; no such
-estimate is claimed by these fixtures. Semantic tests use fakes only.
-
 Read cached embeddings only when their text hash matches the current lesson text.
-Embed the query using the existing bounded interactive provider path and compare
-only the same model. A model without an entry in `COSINE_THRESHOLDS` cannot supply
-semantic relevance. Use its existing measured threshold (currently 0.75 for the
-registered Gemini model). No model, no key, stale/missing vectors, corrupt cache,
-or a failed request falls back to lexical search with an explicit reason.
-`--no-embed` makes no embedding call. Selection never builds the persistent index.
+Embed the task plus explicit context using the provider's **query** template;
+lesson/draft comparisons elsewhere retain their document template. The bounded
+interactive call uses one attempt and at most five seconds of HTTP timeout.
+The outer provider wait is also bounded. Compare only the same model.
+For Gemini task queries use cosine 0.70; its existing 0.75 lesson-pair threshold
+continues unchanged elsewhere. Other registered models retain their existing
+thresholds; an unregistered model cannot qualify semantic results. These are
+retrieval similarity floors, not probabilities of applicability.
 
-A lesson must meet the lexical or cosine floor; being the nearest result alone
-is insufficient. Rank the two legs with the existing reciprocal-rank fusion and
-its deterministic id tie break. Compute lexical weights before eligibility filtering; apply scope, lifecycle,
-gates and exclusions before ranking/cutting to the limit, so an excluded nearest result cannot hide
-an eligible next result. The returned similarity names its scale (cosine when
-that floor passes, lexical otherwise); RRF is a ranking value, not a probability
-or a distance comparable with another provider's score.
+For a lesson with a valid current query cosine, that cosine must pass its floor;
+lexical similarity contributes to ranking but cannot override contrary semantic
+evidence. Missing vectors, no model/key, corrupt cache or a failed request fall
+back to lexical qualification with an explicit reason. `--no-embed` makes no
+embedding call. Selection never builds or repairs the persistent index.
+
+The original regression probes remain exact tests, alongside synthetic verbose
+queries, generic one/two-word overlaps, paraphrases without common wording, and
+path/project context. Independently labeled development tasks were used to tune
+this revision; development results are not held-out quality estimates. Labels,
+queries, ledger text and vectors stay outside this public repository. The held-out
+split remains reserved for independent scoring. No universal precision/recall or
+semantic applicability guarantee is claimed by the synthetic fixtures.
+
+Rank eligible candidates with existing reciprocal-rank fusion and deterministic
+id tie breaks. Compute lexical weights before eligibility filtering; apply scope,
+lifecycle, gates and exclusions before ranking/cutting to the limit, so an excluded
+nearest result cannot hide an eligible next result. Similarity names its scale
+(cosine for a current semantic result, lexical for fallback). RRF is a ranking
+value, not a probability or a distance comparable with another provider's score.
 
 ## 3. Read contract
 
