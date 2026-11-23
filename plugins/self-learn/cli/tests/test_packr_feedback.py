@@ -32,12 +32,13 @@ def _seed(home, *, routed=False):
     return record.id
 
 
-def _receipt(stdout, home, rid, status):
+def _receipt(stdout, home, rid, status, *, applied=None, pushed="not_requested", host_pushed=None):
     result = json.loads(stdout)
-    assert result == {
-        "id": rid, "path": str(find_record_path(home, rid)),
-        "status": status, "scope": "skill:s",
-    }
+    expected = {"id": rid, "path": str(find_record_path(home, rid)),
+                "status": status, "scope": "skill:s"}
+    if applied is not None:
+        expected.update(applied=applied, pushed=pushed, host_pushed=host_pushed)
+    assert result == expected
     assert Path(result["path"]).is_file()
     assert Record.from_path(result["path"]).status == status
 
@@ -87,13 +88,13 @@ def test_feedback_json_and_retry(feedback_home, capsys):
         ["confirm-held", rid, "--key", "observation"],
     ):
         assert cli.main([*command, "--json", "--no-push"]) == 0
-        _receipt(capsys.readouterr().out, feedback_home, rid, "routed")
+        _receipt(capsys.readouterr().out, feedback_home, rid, "routed", applied=True)
         first_sha = gitops.head_sha(feedback_home)
         assert cli.main([*command, "--json", "--no-push"]) == 0
-        _receipt(capsys.readouterr().out, feedback_home, rid, "routed")
+        _receipt(capsys.readouterr().out, feedback_home, rid, "routed", applied=False)
         assert gitops.head_sha(feedback_home) == first_sha
     assert cli.main(["supersede", rid, replacement, "--json", "--no-push"]) == 0
-    _receipt(capsys.readouterr().out, feedback_home, rid, "superseded")
+    _receipt(capsys.readouterr().out, feedback_home, rid, "superseded", applied=True, host_pushed="not_requested")
 
 
 def test_confirm_retry_does_not_refresh_date(feedback_home, monkeypatch):
@@ -206,7 +207,7 @@ def test_confirm_retry_after_supersession_acknowledges_completed_observation(fee
     sha = gitops.head_sha(feedback_home)
     capsys.readouterr()
     assert cli.main(["confirm-held", rid, "--key", "observed", "--json", "--no-push"]) == 0
-    _receipt(capsys.readouterr().out, feedback_home, rid, "superseded")
+    _receipt(capsys.readouterr().out, feedback_home, rid, "superseded", applied=False)
     assert path.read_bytes() == before
     assert gitops.head_sha(feedback_home) == sha
     assert cli.main(["confirm-held", rid, "--key", "new-observation", "--json", "--no-push"]) == 1
@@ -271,6 +272,6 @@ def test_feedback_json_push_failure_keeps_receipt_and_code(feedback_home, monkey
     expected = gitops.EXIT_REBASE_CONFLICT if rebase_conflict else gitops.EXIT_PUSH_FAILED
     assert cli.main(["note", rid, "--append", "Observed behavior", "--key", "observation", "--json"]) == expected
     output = capsys.readouterr()
-    _receipt(output.out, feedback_home, rid, "pending")
+    _receipt(output.out, feedback_home, rid, "pending", applied=True, pushed="failed")
     assert called and all(repo == feedback_home for repo in called)
     assert Record.from_path(find_record_path(feedback_home, rid)).note_has_key("observation")

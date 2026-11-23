@@ -51,8 +51,8 @@ def ids(result):
 
 
 def snapshot(root):
-    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in root.rglob("*") if p.is_file()}
+    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else "directory"
+            for p in root.rglob("*")}
 
 
 def test_current_text_rendered_floor_and_no_index_needed(home):
@@ -84,13 +84,13 @@ def test_scope_lifecycle_exclusions_before_limit(home, tmp_path):
         historical = Record.from_path(path)
         historical.set_status(state)
         historical.write(path)
-    assert ids(select.select_lessons(home, "Docker", provider=None)) == ["lrn-00000001"]
-    result = select.select_lessons(home, "Docker", project=project, skills=["containers"], provider=None)
+    assert ids(select.select_lessons(home, "Docker container", provider=None)) == ["lrn-00000001"]
+    result = select.select_lessons(home, "Docker container", project=project, skills=["containers"], provider=None)
     assert set(ids(result)) == {"lrn-00000001", "lrn-00000002", "lrn-00000004"}
     assert "project scope" in result["lessons"][1]["why"]
-    assert len(select.select_lessons(home, "Docker", project=project, skills=["containers"], limit=1, provider=None)["lessons"]) == 1
-    assert ids(select.select_lessons(home, "Docker", project=project, exclude=["lrn-00000001"], limit=1, provider=None)) == ["lrn-00000002"]
-    assert ids(select.select_lessons(home, "Docker", limit=0, provider=None)) == []
+    assert len(select.select_lessons(home, "Docker container", project=project, skills=["containers"], limit=1, provider=None)["lessons"]) == 1
+    assert ids(select.select_lessons(home, "Docker container", project=project, exclude=["lrn-00000001"], limit=1, provider=None)) == ["lrn-00000002"]
+    assert ids(select.select_lessons(home, "Docker container", limit=0, provider=None)) == []
 
 
 def test_path_gates_exact_recursive_absolute_glob_and_no_paths(home, tmp_path):
@@ -98,16 +98,16 @@ def test_path_gates_exact_recursive_absolute_glob_and_no_paths(home, tmp_path):
     (project / "src" / "nested").mkdir(parents=True)
     (project / "src" / "main.py").touch()
     put(home, gates=["src/**/*.py"])
-    assert not ids(select.select_lessons(home, "Docker", project=project, provider=None))
+    assert not ids(select.select_lessons(home, "Docker container", project=project, provider=None))
     for path in ("src/new.py", "src/nested/new.py", str(project / "src" / "main.py"), "src/**/*.py"):
-        result = select.select_lessons(home, "Docker", project=project, paths=[path], provider=None)
+        result = select.select_lessons(home, "Docker container", project=project, paths=[path], provider=None)
         assert ids(result) == ["lrn-00000001"]
         assert "path gate" in result["lessons"][0]["why"]
         assert result["lessons"][0]["matched_paths"]
     for path in ("docs/main.py", "src/main.js", "missing/**/*.py"):
-        assert not ids(select.select_lessons(home, "Docker", project=project, paths=[path], provider=None))
+        assert not ids(select.select_lessons(home, "Docker container", project=project, paths=[path], provider=None))
     with pytest.raises(ValueError):
-        select.select_lessons(home, "Docker", project=project, paths=["../outside.py"], provider=None)
+        select.select_lessons(home, "Docker container", project=project, paths=["../outside.py"], provider=None)
 
 
 def test_hybrid_semantic_floor_and_unknown_model(home, monkeypatch):
@@ -137,7 +137,7 @@ def test_stale_vectors_and_lifecycle_never_recalled(home, monkeypatch):
     ix = LessonIndex.open(home); ix.build(fake); ix.close()
     r = Record.from_path(a); r.set_status("superseded"); r.write(a)
     r = Record.from_path(b); r.set_status("pending"); r.set_body("## Trigger\n\nwatercolor astronomy\n\n## Instruction\n\nPaint a star.\n"); r.set_status("routed"); r.write(b)
-    result = select.select_lessons(home, "Docker", provider=fake)
+    result = select.select_lessons(home, "Docker container", provider=fake)
     assert not ids(result)
     assert result["mode"] == "lexical-only"
     assert ids(select.select_lessons(home, "watercolor astronomy", provider=fake)) == [b.stem]
@@ -149,12 +149,12 @@ def test_provider_failure_and_partial_coverage_are_explicit(home, monkeypatch):
     monkeypatch.setitem(COSINE_THRESHOLDS, fake.model_id, .75)
     ix = LessonIndex.open(home); ix.build(fake); ix.close()
     put(home, 2)
-    result = select.select_lessons(home, "Docker", provider=fake)
+    result = select.select_lessons(home, "Docker container", provider=fake)
     assert len(result["lessons"]) == 2 and "partial" in result["note"]
     def broken(_texts):
         raise RuntimeError("never expose provider details")
     monkeypatch.setattr(fake, "embed", broken)
-    result = select.select_lessons(home, "Docker", provider=fake)
+    result = select.select_lessons(home, "Docker container", provider=fake)
     assert len(result["lessons"]) == 2 and result["mode"] == "lexical-only"
     assert "RuntimeError" in result["note"] and "never expose" not in result["note"]
 
@@ -171,15 +171,15 @@ def test_cli_read_only_even_when_autokick_enabled(home, tmp_path, monkeypatch, c
     monkeypatch.setattr(cli, "_mutating_epilogue", forbidden)
     monkeypatch.setattr(LessonIndex, "open_existing", forbidden)
     for _ in range(3):
-        assert cli.main(["select", "--query", "Docker", "--no-embed", "--json"]) == 0
+        assert cli.main(["select", "--query", "Docker container", "--no-embed", "--json"]) == 0
         result = json.loads(capsys.readouterr().out)
         assert ids(result) == ["lrn-00000001"]
     assert snapshot(tmp_path) == before
-    assert cli.main(["select", "--query", "Docker", "--no-embed"]) == 0
+    assert cli.main(["select", "--query", "Docker container", "--no-embed"]) == 0
     assert "**When" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("args,code", [(["--query", " "], 2), (["--query", "x", "--limit", "-1"], 2), (["--query", "x", "--unknown"], 64)])
+@pytest.mark.parametrize("args,code", [(["--query", " "], 64), (["--query", "x", "--limit", "-1"], 64), (["--query", "x", "--unknown"], 64)])
 def test_invalid_cli_args(home, args, code):
     assert cli.main(["select", *args]) == code
 
@@ -187,12 +187,12 @@ def test_invalid_cli_args(home, args, code):
 def test_missing_home_not_empty_and_malformed_record_reported(home, tmp_path, monkeypatch, capsys):
     put(home)
     (home / "user" / "resolved" / "lrn-99999999.md").write_text("broken")
-    assert cli.main(["select", "--query", "Docker", "--no-embed", "--json"]) == 0
+    assert cli.main(["select", "--query", "Docker container", "--no-embed", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert ids(data) and data["unreadable"] == ["user/resolved/lrn-99999999.md"]
     missing = tmp_path / "missing"
     monkeypatch.setenv("SELF_LEARN_HOME", str(missing))
-    assert cli.main(["select", "--query", "Docker", "--json"]) == 5
+    assert cli.main(["select", "--query", "Docker container", "--json"]) == 5
     assert "NOT an empty ledger" in capsys.readouterr().err
     assert not missing.exists()
 
@@ -211,7 +211,7 @@ def test_glob_scan_prunes_symlinks_and_refuses_budget(home, tmp_path, monkeypatc
     with pytest.raises(ValueError, match="budget exhausted"):
         select.task_paths(["**/*.py"], project)
     put(home, gates=["src/**/*.py"])
-    assert select.select_lessons(home, "Docker", project=project, paths=["**/*.py"], limit=0)["lessons"] == []
+    assert select.select_lessons(home, "Docker container", project=project, paths=["**/*.py"], limit=0)["lessons"] == []
 
 
 def test_semantic_selection_does_not_change_cache_or_ledger(home, tmp_path, monkeypatch):
@@ -220,7 +220,7 @@ def test_semantic_selection_does_not_change_cache_or_ledger(home, tmp_path, monk
     monkeypatch.setitem(COSINE_THRESHOLDS, fake.model_id, .75)
     ix = LessonIndex.open(home); ix.build(fake); ix.close()
     before = snapshot(tmp_path)
-    assert select.select_lessons(home, "Docker", provider=fake)["mode"] == "hybrid"
+    assert select.select_lessons(home, "Docker container", provider=fake)["mode"] == "hybrid"
     assert snapshot(tmp_path) == before
 
 
@@ -246,7 +246,7 @@ def test_project_git_subdirectory_and_registered_worktree(home, tmp_path):
     wt = tmp_path / "worktree"
     git(project, "worktree", "add", "-b", "fixture", str(wt))
     for location in (project / "subdir", wt):
-        assert ids(select.select_lessons(home, "Docker", project=location, provider=None)) == ["lrn-00000001"]
+        assert ids(select.select_lessons(home, "Docker container", project=location, provider=None)) == ["lrn-00000001"]
 
 
 def test_live_status_with_supersession_pointer_excluded(home):
@@ -254,16 +254,16 @@ def test_live_status_with_supersession_pointer_excluded(home):
     r = Record.from_path(path)
     r.set_superseded_by("lrn-12345678")
     r.write(path)
-    assert select.select_lessons(home, "Docker", provider=None)["lessons"] == []
+    assert select.select_lessons(home, "Docker container", provider=None)["lessons"] == []
 
 
 def test_invalid_globs_are_usage_errors_or_reported_records(home, capsys):
     put(home)
-    assert cli.main(["select", "--query", "Docker", "--path", "[z-a]", "--no-embed", "--json"]) == 2
+    assert cli.main(["select", "--query", "Docker container", "--path", "[z-a]", "--no-embed", "--json"]) == 64
     output = capsys.readouterr()
     assert not output.out and "not translatable" in output.err
     path = put(home, 2, gates=["[z-a]"])
-    result = select.select_lessons(home, "Docker", paths=["src/main.py"], provider=None)
+    result = select.select_lessons(home, "Docker container", paths=["src/main.py"], provider=None)
     assert ids(result) == ["lrn-00000001"]
     assert result["unreadable"] == [str(path.relative_to(home))]
 
@@ -304,7 +304,7 @@ def test_selection_closes_its_ram_database(home, monkeypatch):
         opened.append(conn)
         return conn
     monkeypatch.setattr(select.sqlite3, "connect", tracked)
-    assert ids(select.select_lessons(home, "Docker", provider=None))
+    assert ids(select.select_lessons(home, "Docker container", provider=None))
     assert len(opened) == 1
     with pytest.raises(select.sqlite3.ProgrammingError, match="closed"):
         opened[0].execute("SELECT 1")

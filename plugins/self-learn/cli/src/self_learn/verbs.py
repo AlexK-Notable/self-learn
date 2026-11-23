@@ -10144,13 +10144,25 @@ def reopen(
         hold.release()
 
 
-def _preflight_note(home: Path, record_id: str, *, append: str) -> Path:
+def _preflight_note(home: Path, record_id: str, *, append: str, key: str | None = None) -> Path:
     """S-71 §6: `note`'s check before any lock (the scan of `append`) — moved
     here verbatim so the verb and `batch.dry_run` run the SAME checks, in
     the same order."""
+    _validate_feedback_key(key)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], append)
     return path
+
+
+def _validate_feedback_key(key: str | None) -> None:
+    """Reject unsafe idempotency text before it can poison a record's scan."""
+    if key is not None and (
+        not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,40}", key) or secret_scan(key)
+    ):
+        raise VerbUsageError(
+            "--key must be 1..40 ASCII letters, digits or ._:- and pass the secret scan; "
+            "use a UUID or a short event identifier"
+        )
 
 
 def _feedback_already_applied(home: Path, action: str, record_id: str) -> VerbResult:
@@ -10180,16 +10192,15 @@ def note(
     records what was ADDED, `history` records what was DISPLACED.
     Secret-scanned like every other verb-written text.
 
-    `--key` is the idempotency token `self-learn batch` stamps on a
-    `note` item's entry (§3.3b row 10) — the sha256 of the sheet line
-    that produced it. When a `notes[]` entry already carries `key`,
+    `--key` is a validated idempotency token supplied by a provider or
+    batch caller (§3.3b row 10, S-161 §4). When a `notes[]` entry already carries `key`,
     NOTHING is appended: no commit, rc 0 — the
     already-applied state is a READ, never a parse of a refusal
     message. A human call at a terminal omits `key` and every call
     appends (two identical observations on two days are two facts)."""
     home = Path(home)
     _by_trailer(by)  # S-102: validates before any lock is taken
-    path = _preflight_note(home, record_id, append=append)
+    path = _preflight_note(home, record_id, append=append, key=key)
 
     if key is not None and Record.from_path(path).note_has_key(key):
         # already-applied (§3.3b row 10): SKIPPED — nothing written, no
@@ -10211,7 +10222,7 @@ def note(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             # The path can move while we wait (e.g. a concurrent route).
-            path = _preflight_note(home, record_id, append=append)
+            path = _preflight_note(home, record_id, append=append, key=key)
             record = Record.from_path(path)
             if key is not None and record.note_has_key(key):
                 return _feedback_already_applied(home, "note", record_id)
@@ -11428,10 +11439,14 @@ def confirm_held(
     home = Path(home)
     _by_trailer(by)  # S-102: validates before any lock is taken
     _scan_or_refuse([], note)
-    if key is not None:
-        if not key.strip():
-            raise VerbError("confirmation key must be non-empty text")
-        _scan_or_refuse([], key)
+    _validate_feedback_key(key)
+    # Cheap refusals and acknowledged retries stay read-only. Repeat every
+    # check under the lock before writing: this read is not a write snapshot.
+    path = find_record_path(home, record_id)
+    record = read_record_or_refuse(path)
+    if key is not None and record.confirmation_has_key(key):
+        return _feedback_already_applied(home, "confirm-held", record_id)
+    _preflight_confirm_held(home, record_id, note=note)
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:

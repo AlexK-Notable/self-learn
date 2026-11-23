@@ -2486,7 +2486,7 @@ def _preview_move(
 def _preview_note(
     home: Path, item: SheetItem, by: str | None, rc: str | None
 ) -> None:
-    verbs._preflight_note(home, item.id, append=item.fields["append"])
+    verbs._preflight_note(home, item.id, append=item.fields["append"], key=item.fields.get("key"))
 
 
 def _preview_confirm_recurrence(

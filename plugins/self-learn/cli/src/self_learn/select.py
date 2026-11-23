@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from collections import Counter
 import glob
 import hashlib
 import json
@@ -10,16 +11,17 @@ import math
 import os
 import sqlite3
 import sys
-import time
+import subprocess
 from pathlib import Path
 
 from . import domain, gitops
 from .compilers import _reference_block, entry_line, loaded_text_problem
-from .hosts import capture_host_path
+from .hosts import ancestors_of, capture_host_path, load_hosts
 from .index import fts5
 from .index.protocol import EmbedProvider
 from .index.related import COSINE_THRESHOLDS, LEXICAL_THRESHOLD
 from .index.rrf import rrf_fuse
+from .index.tokenize import tokenize
 from .index.store import FROM_ENV, index_path, lesson_text
 from .index.textquery import embed_documents, embedding_failure_note
 from .index.registry import load_provider
@@ -34,6 +36,7 @@ def add_parser(subparsers) -> None:
     p = subparsers.add_parser("select", help="read-only lessons for a task; never kicks background work")
     p.add_argument("--query", required=True, help="task description")
     p.add_argument("--path", action="append", default=[], help="file or glob, relative to project (repeatable); globs expand existing files")
+    p.add_argument("--literal-path", action="append", default=[], help="literal file name, including brackets or planned files (repeatable)")
     p.add_argument("--project", type=Path, help="project directory (includes its lessons plus user lessons)")
     p.add_argument("--skill", action="append", default=[], help="also include this skill's lessons (repeatable)")
     p.add_argument("--exclude", action="append", default=[], metavar="ID")
@@ -43,67 +46,116 @@ def add_parser(subparsers) -> None:
 
 
 PATH_SCAN_LIMIT = 10_000
-PATH_SCAN_SECONDS = 1.0
+PATH_SCAN_BYTES = 4_000_000
 
 
-def task_paths(paths: list[str], root: Path) -> list[str]:
-    """Root-relative literals or bounded glob witnesses, with no symlink descent.
+class PathScanError(ValueError):
+    """Incomplete glob evidence; keep ungated selection available."""
 
-    Missing literal files are allowed. A budget refusal is explicit so a
-    partial filesystem view cannot silently omit an applicable gated lesson.
+
+def _git_files(root: Path):
+    # Stream a bounded inventory: never buffer an arbitrarily large tree, and
+    # let Git own ignore semantics. Termination on a budget leaves no child.
+    with subprocess.Popen(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    ) as proc:
+        try:
+            assert proc.stdout is not None
+            pending = b""
+            size = count = 0
+            while chunk := proc.stdout.read(8192):
+                size += len(chunk)
+                if size > PATH_SCAN_BYTES:
+                    raise PathScanError("path glob inventory byte budget exhausted")
+                pending += chunk
+                names = pending.split(b"\0")
+                pending = names.pop()
+                for name in names:
+                    count += 1
+                    if count > PATH_SCAN_LIMIT:
+                        raise PathScanError("path glob scan budget exhausted")
+                    yield os.fsdecode(name)
+            if proc.wait() != 0:
+                raise PathScanError("Git path inventory failed")
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait()
+
+
+def task_paths(paths: list[str], root: Path, *, literal_paths: list[str] | None = None,
+               notes: list[str] | None = None) -> list[str]:
+    """Preserve caller spelling; glob witnesses respect Git ignore rules.
+
+    A deterministic entry/byte budget bounds enumeration. No time-dependent
+    cutoff; callers discard incomplete glob evidence rather than ungated hits.
     """
     out: set[str] = set()
     patterns = []
     raw_patterns: list[str] = []
     roots: set[Path] = set()
-    for raw in paths:
+    for raw, explicit in [(p, False) for p in paths] + [(p, True) for p in literal_paths or []]:
         absolute = Path(raw).expanduser()
         if not absolute.is_absolute():
             absolute = root / absolute
-        relative = absolute.resolve().relative_to(root).as_posix()
+        # Normalize .. without following symlinks: gates match the name the
+        # agent edits, not the target's spelling. Resolve only for containment.
+        absolute = Path(os.path.abspath(absolute))
+        relative = absolute.relative_to(root).as_posix()
+        if not absolute.resolve().is_relative_to(root):
+            if notes is not None:
+                notes.append(f"path outside project ignored: {relative}")
+            continue
+        if explicit or absolute.is_file() or not glob.has_magic(relative):
+            out.add(relative)
+            continue
         try:
             pattern = _compile_glob_pattern(relative)
         except ProposalError as exc:
             raise ValueError(str(exc)) from exc
-        if glob.has_magic(relative):
-            patterns.append(pattern)
-            raw_patterns.append(relative)
-            prefix = []
-            for part in relative.split("/"):
-                if glob.has_magic(part):
-                    break
-                prefix.append(part)
-            anchor = root.joinpath(*prefix)
-            if anchor.is_dir():
-                roots.add(anchor)
-        else:
-            out.add(relative)
-    if patterns:
-        deadline = time.monotonic() + PATH_SCAN_SECONDS
-        pending = [p for p in sorted(roots) if not any(parent in roots for parent in p.parents)]
-        visited = 0
-        while pending:
-            directory = pending.pop()
-            try:
-                with os.scandir(directory) as entries:
-                    for entry in entries:
-                        visited += 1
-                        if visited > PATH_SCAN_LIMIT or time.monotonic() > deadline:
-                            raise ValueError("path glob scan budget exhausted; supply narrower globs or literal paths")
-                        if entry.is_symlink():
-                            continue
-                        if entry.is_dir(follow_symlinks=False):
-                            name = Path(entry.path).relative_to(root).as_posix()
-                            depth = len(name.split("/"))
-                            if any(("**" in p.split("/") or depth < len(p.split("/")))
-                                   and globs_may_intersect(p, name + "/**") for p in raw_patterns):
-                                pending.append(Path(entry.path))
-                        elif entry.is_file(follow_symlinks=False):
-                            name = Path(entry.path).relative_to(root).as_posix()
-                            if any(p.match(name) for p in patterns):
-                                out.add(name)
-            except OSError as exc:
-                raise ValueError(f"path glob scan failed: {type(exc).__name__}") from exc
+        patterns.append(pattern)
+        raw_patterns.append(relative)
+        prefix = []
+        for part in relative.split("/"):
+            if glob.has_magic(part):
+                break
+            prefix.append(part)
+        anchor = root.joinpath(*prefix)
+        if anchor.is_dir():
+            roots.add(anchor)
+    if not patterns:
+        return sorted(out)
+    if gitops.toplevel(root) is not None:
+        for name in _git_files(root):
+            path = root / name
+            if (not path.is_symlink() and path.is_file()
+                    and path.resolve().is_relative_to(root)
+                    and any(p.match(name) for p in patterns)):
+                out.add(name)
+        return sorted(out)
+    pending = [p for p in sorted(roots) if not any(parent in roots for parent in p.parents)]
+    visited = 0
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.name == ".git" or entry.is_symlink():
+                        continue
+                    visited += 1
+                    if visited > PATH_SCAN_LIMIT:
+                        raise PathScanError("path glob scan budget exhausted")
+                    name = Path(entry.path).relative_to(root).as_posix()
+                    if entry.is_dir(follow_symlinks=False):
+                        depth = len(name.split("/"))
+                        if any(("**" in p.split("/") or depth < len(p.split("/")))
+                               and globs_may_intersect(p, name + "/**") for p in raw_patterns):
+                            pending.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False) and any(p.match(name) for p in patterns):
+                        out.add(name)
+        except OSError as exc:
+            raise PathScanError(f"path glob scan failed: {type(exc).__name__}") from exc
     return sorted(out)
 
 
@@ -119,29 +171,63 @@ def agent_text(record: Record) -> str:
     return entry_line(record)
 
 
-def _lexical(texts: dict[str, str], query: str) -> dict[str, float]:
-    """Same symmetric normalized BM25 scale as Relatedness, in RAM only.
+# Generic task vocabulary may rank a hit, but cannot corroborate its topic.
+# Stemmed by the same FTS tokenizer below; calibrated in test_provider_review.
+_TASK_FILLER = "add after before check config configuration during file launch run test unit while write"
+LEXICAL_MIN_TERMS = 2
 
-    The synthetic query is a document so both directions have a self score.
-    Never normalize against the best hit: that makes unrelated noise score 1.
+
+def _lexical(texts: dict[str, str], query: str) -> dict[str, float]:
+    """Symmetric BM25 ratios over a stable, query-free corpus.
+
+    Porter/unicode61 supplies terms. Positive IDF log(1 + odds) avoids FTS5's
+    near-zero clamp for ubiquitous terms in small ledgers. Query self weights
+    use the corpus statistics without inserting the query into that corpus.
     """
+    if not texts:
+        return {}
     with contextlib.closing(sqlite3.connect(":memory:")) as conn:
         conn.execute(fts5.FTS_DDL)
-        conn.executemany("INSERT INTO lessons_fts(id, text) VALUES (?, ?)", texts.items())
-        conn.execute("INSERT INTO lessons_fts(id, text) VALUES (?, ?)", ("query", query))
-        forward = dict(fts5.search(conn, query))
-        self_score = forward.get("query", 0.0)
-        if self_score >= 0:
-            return {}
-        scores = {}
-        for rid, score in forward.items():
-            if rid == "query":
-                continue
-            reverse = dict(fts5.search(conn, texts[rid]))
-            reverse_self = reverse.get(rid, 0.0)
-            back = min(1.0, reverse.get("query", 0.0) / reverse_self) if reverse_self < 0 else 0.0
-            scores[rid] = (min(1.0, score / self_score) + back) / 2
-        return scores
+        conn.executemany("INSERT INTO lessons_fts(id, text) VALUES (?, ?)",
+                         [(rid, " ".join(tokenize(text))) for rid, text in texts.items()])
+        conn.execute("CREATE VIRTUAL TABLE terms USING fts5vocab(lessons_fts, instance)")
+        ids = dict(conn.execute("SELECT rowid, id FROM lessons_fts"))
+        docs: dict[str, Counter[str]] = {rid: Counter() for rid in texts}
+        for term, rowid in conn.execute("SELECT term, doc FROM terms"):
+            docs[ids[rowid]][term] += 1
+        # A separate table tokenizes the query/fillers, never enters doc stats.
+        conn.execute("CREATE VIRTUAL TABLE query_fts USING fts5(text, tokenize='porter unicode61')")
+        conn.execute("INSERT INTO query_fts(rowid, text) VALUES (1, ?)", (" ".join(tokenize(query)),))
+        conn.execute("INSERT INTO query_fts(rowid, text) VALUES (2, ?)", (_TASK_FILLER,))
+        conn.execute("CREATE VIRTUAL TABLE query_terms USING fts5vocab(query_fts, instance)")
+        query_terms = Counter(row[0] for row in conn.execute("SELECT term FROM query_terms WHERE doc=1"))
+        fillers = {row[0] for row in conn.execute("SELECT term FROM query_terms WHERE doc=2")}
+    corroborating = set(query_terms) - fillers
+    if len(corroborating) < LEXICAL_MIN_TERMS:
+        return {}
+    frequencies: Counter[str] = Counter()
+    for terms in docs.values():
+        frequencies.update(terms.keys())
+    total = len(docs)
+    avg_length = sum(sum(t.values()) for t in docs.values()) / total or 1
+    weights = {t: math.log1p((total - frequencies[t] + .5) / (frequencies[t] + .5))
+               for t in set(frequencies) | set(query_terms)}
+
+    def score(terms: Counter[str], wanted) -> float:
+        norm = 1.2 * (.25 + .75 * sum(terms.values()) / avg_length)
+        return sum(weights[t] * terms[t] * 2.2 / (terms[t] + norm)
+                   for t in wanted if terms[t])
+
+    query_self = score(query_terms, query_terms)
+    scores = {}
+    for rid, terms in docs.items():
+        if len(corroborating & terms.keys()) < LEXICAL_MIN_TERMS:
+            continue
+        own = score(terms, terms)
+        forward = min(1.0, score(terms, query_terms) / query_self) if query_self else 0
+        reverse = min(1.0, score(query_terms, terms) / own) if own else 0
+        scores[rid] = (forward + reverse) / 2
+    return scores
 
 
 def _semantic(home: Path, texts: dict[str, str], query: str, provider=FROM_ENV) -> tuple[dict[str, float], float | None, str]:
@@ -185,7 +271,8 @@ def _semantic(home: Path, texts: dict[str, str], query: str, provider=FROM_ENV) 
 
 
 def select_lessons(home: Path, query: str, *, project: Path | None = None,
-                   paths: list[str] | None = None, skills: list[str] | None = None,
+                   paths: list[str] | None = None, literal_paths: list[str] | None = None,
+                   skills: list[str] | None = None,
                    exclude: list[str] | None = None, limit: int = 10,
                    provider: EmbedProvider | None = FROM_ENV) -> dict:
     """Read authoritative records; stale index rows cannot resurrect lessons."""
@@ -197,22 +284,27 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
         raise ValueError("project must be an existing directory")
     root = gitops.toplevel(root) or root
     project_key = capture_host_path(home, root).resolve() if project is not None else None
+    ancestor_paths = set(ancestors_of(load_hosts(home), project_key)) if project_key else set()
     selected_skills = set(skills or [])
     excluded = set(exclude or [])
-    records: dict[str, tuple[Record, str, list[str]]] = {}
+    records: dict[str, tuple[Record, str, list[str], str, Path | None]] = {}
+    texts: dict[str, str] = {}
     unreadable: list[str] = []
     for bucket in discover_buckets(home):
-        if bucket.scope == "skill" and bucket.name not in selected_skills:
-            continue
-        if bucket.scope == "project":
-            recorded_path = bucket_project_path(bucket.path)
-            if project_key is None or recorded_path is None or recorded_path.resolve() != project_key:
-                continue
+        recorded_path = bucket_project_path(bucket.path) if bucket.scope == "project" else None
+        recorded_path = recorded_path.resolve() if recorded_path else None
+        relation = ("ancestor-project" if recorded_path in ancestor_paths else bucket.scope)
+        bucket_eligible = (bucket.scope == "user"
+                           or (bucket.scope == "skill" and bucket.name in selected_skills)
+                           or (bucket.scope == "project" and project_key is not None
+                               and recorded_path in {project_key, *ancestor_paths}))
         for folder in ("pending", "resolved"):
             for path in sorted((bucket.path / folder).glob("lrn-*.md")):
                 try:
                     record = Record.from_path(path)
-                    if record.id in excluded or not domain.is_canon_live(record):
+                    # Stable corpus: exclusions, scope and gates never change IDF.
+                    texts[record.id] = lesson_text(record)
+                    if not bucket_eligible or record.id in excluded or not domain.is_canon_live(record):
                         continue
                     routing = record.routing or {}
                     destination = routing.get("destination")
@@ -223,21 +315,31 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
                         raise ValueError("invalid rules_paths")
                     for gate in gates:
                         _compile_glob_pattern(gate)
-                    records[record.id] = (record, bucket.name, [])
+                    records[record.id] = (record, bucket.name, [], relation, recorded_path)
                 except Exception:
                     unreadable.append(str(path.relative_to(home)))
+    path_notes: list[str] = []
     if records and limit:
-        concrete_paths = task_paths(paths or [], root)
-        for rid, (record, bucket, _) in list(records.items()):
+        try:
+            concrete_paths = task_paths(paths or [], root, literal_paths=literal_paths, notes=path_notes)
+        except PathScanError as exc:
+            concrete_paths = []
+            path_notes.append(f"{exc}; path-gated lessons omitted")
+        for rid, (record, bucket, _, relation, recorded_path) in list(records.items()):
             gates = (record.routing or {}).get("rules_paths") or []
-            matches = [p for p in concrete_paths if any(_glob_match(p, g) for g in gates)]
+            gate_paths = concrete_paths
+            if relation == "ancestor-project" and project_key is not None and recorded_path is not None:
+                prefix = project_key.relative_to(recorded_path)
+                gate_paths = [(prefix / p).as_posix() for p in concrete_paths]
+            matches = [p for p in gate_paths if any(_glob_match(p, g) for g in gates)]
             if gates and not matches:
                 del records[rid]
             else:
-                records[rid] = (record, bucket, matches)
-    texts = {rid: lesson_text(r) for rid, (r, _, _) in records.items()}
-    lexical = _lexical(texts, query) if texts and limit else {}
-    semantic, threshold, note = _semantic(home, texts, query, provider) if texts and limit else ({}, None, "no eligible lessons" if not texts else "limit is zero")
+                records[rid] = (record, bucket, matches, relation, recorded_path)
+    lexical = {rid: value for rid, value in _lexical(texts, query).items() if rid in records} if records and limit else {}
+    eligible_texts = {rid: texts[rid] for rid in records}
+    semantic, threshold, note = _semantic(home, eligible_texts, query, provider) if records and limit else ({}, None, "no eligible lessons" if not records else "limit is zero")
+    note = "; ".join([note, *path_notes]).strip("; ")
     lexical_ids = sorted(lexical, key=lambda rid: (-lexical[rid], rid))
     semantic_ids = sorted(semantic, key=lambda rid: (-semantic[rid], rid))
     rankings = [lexical_ids, semantic_ids] if semantic else [lexical_ids]
@@ -248,13 +350,14 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
         sem_ok = sem is not None and threshold is not None and sem >= threshold
         if not (lex_ok or sem_ok):
             continue
-        record, bucket, matches = records[rid]
+        record, bucket, matches, relation, _ = records[rid]
         why = (["semantic"] if sem_ok else []) + (["lexical"] if lex_ok else [])
-        why += ["project scope" if record.scope == "project" else "skill scope" if record.scope.startswith("skill:") else "user scope"]
+        why += ["ancestor project scope" if relation == "ancestor-project" else
+                "project scope" if record.scope == "project" else "skill scope" if record.scope.startswith("skill:") else "user scope"]
         if matches:
             why.append("path gate")
         lessons.append({"id": rid, "text": agent_text(record), "type": record.type,
-                        "kind": record.kind, "scope": record.scope, "bucket": bucket,
+                        "kind": record.kind, "scope": record.scope, "scope_relation": relation, "bucket": bucket,
                         "status": record.status, "routing": record.routing,
                         "score": {"value": sem if sem_ok else lex, "basis": "cosine" if sem_ok else "lexical",
                                   "rrf": rrf, "cosine": sem, "lexical": lex},
@@ -262,7 +365,7 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
         if len(lessons) >= limit:
             break
     return {"command": "select", "mode": "hybrid" if semantic else "lexical-only", "note": note,
-            "thresholds": {"cosine": threshold, "lexical": LEXICAL_THRESHOLD},
+            "thresholds": {"cosine": threshold, "lexical": LEXICAL_THRESHOLD, "lexical_min_terms": LEXICAL_MIN_TERMS},
             "lessons": lessons, "unreadable": unreadable}
 
 
@@ -273,12 +376,13 @@ def dispatch(args) -> int:
         print(home_state_message(state, home), file=sys.stderr)
         return EXIT_NO_HOME
     try:
-        result = select_lessons(home, args.query, project=args.project, paths=args.path,
+        result = select_lessons(home, args.query, project=args.project, paths=args.path, literal_paths=args.literal_path,
                                 skills=args.skill, exclude=args.exclude, limit=args.limit,
                                 provider=None if args.no_embed else FROM_ENV)
     except ValueError as exc:
         print(f"self-learn select: {exc}", file=sys.stderr)
-        return 2
+        from .cli import EXIT_USAGE
+        return EXIT_USAGE
     if args.json:
         print(json.dumps(result, sort_keys=True, default=str))
     else:

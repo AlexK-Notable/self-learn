@@ -280,19 +280,26 @@ self-learn supersede lrn-xxxxxxxx lrn-yyyyyyyy --note "The new lesson corrects t
 
 Set `SELF_LEARN_HOME` to select the ledger. `select` never writes or starts
 background work. It returns active routed user lessons, the requested project's
-lessons, and explicitly requested `--skill NAME` lessons; path-gated lessons
-need a matching `--path`. Input globs expand existing files; literal paths may
-name planned files. Pending lessons stay inert. Use repeatable `--exclude ID`,
+lessons and registered ancestors, and explicitly requested `--skill NAME`
+lessons; path-gated lessons need a matching `--path`. Globs respect Git ignore
+rules. Use `--literal-path` for planned names containing brackets; internal
+symlinks match their supplied names. An exhausted path inventory leaves ungated
+lessons available and reports the omitted gated results in `note`. Pending lessons stay inert. Use repeatable `--exclude ID`,
 `--limit N`, or `--no-embed` for lexical search without an embedding request.
 Without `--json`, selection prints agent-facing lesson text and match reasons.
 
 The response includes `lessons`, search `mode` and degradation `note`; each
 lesson carries its text, routing, relevance score with its basis, and `why`.
-Unrelated queries return an empty list. Scores belong to self-learn's index
-model and cannot be compared with another provider's thresholds. The four write
-verbs above emit one receipt (`id`, `path`, `status`, `scope`); check the exit code
-as well as the receipt. Writes commit and normally push, so integrations should
-pass `--no-push`. Reuse the same event key on retries of notes and confirmations.
+Lexical hits require at least two matched topic terms and the relevance floor;
+scores use a stable corpus before scope/exclusion filtering. Broad one-word
+lexical queries conservatively return nothing. Provider scores cannot be compared
+with another provider's thresholds. The four write verbs above emit one receipt
+(`id`, `path`, `status`, `scope`); feedback receipts also include `applied`, `pushed`
+and `host_pushed`. Check the exit code as well as the receipt. Writes commit and normally push, so integrations should
+pass `--no-push`. Reuse the same event key on retries of notes and confirmations:
+1..40 ASCII letters/digits/._:-, secret-scan clean (UUIDs work; raw SHA-256 keys
+are refused with exit 64 before writes). Confirmation keys are retained for the
+record's lifetime; record meaningful observations rather than every selection.
 See [the provider contract](docs/specs/self-learn/22-lessons-provider.md).
 
 ## Development
