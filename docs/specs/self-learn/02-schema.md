@@ -3235,10 +3235,18 @@ tool call as its name and the string values of its input, an attachment's
      fingerprint of every FILE its sends named (below); the whole file is
      ignored unless it carries the SHA-256 of the module that wrote it, so a
      change to the parsing code starts it over. One malformed row discards the
-     file, never a row at a time. It is saved when a sweep ends and every 5 s
-     during one, so that a sweep cut short (the inbox page stops a packet
-     after 15 s) leaves its work for the next; a save at the end drops entries
-     whose transcript is gone. It is a cache and nothing more: absent,
+     file, never a row at a time. Every sweep reads the file; only a sweep
+     inside `provenance.saving()` writes it, because verbs that promise to
+     change nothing sweep too (a miner preview leaves the whole cache
+     directory as it found it). Two callers turn writing on: the evidence of
+     an inbox packet (`attention_packet.build`), which is the read the inbox
+     page waits on, and the miner's real run, which keeps the file warm each
+     night; what any other sweep parsed stays in that process's memory and is
+     written by its next sweep that may. Inside `saving()` the file is saved
+     when a sweep ends and every 5 s during one, so that a sweep cut short
+     (the inbox page stops a packet after 15 s) leaves its work for the next;
+     a save at the end drops entries whose transcript is gone.
+     `provenance.forget()` empties the memory and removes the file. It is a cache and nothing more: absent,
      unreadable, malformed or unwritable, it changes how long a sweep takes
      and never what it returns. The Hermes store keeps its own cache, above.
      `resolve`, `check_quote` and `excerpt` pass the sends of the roots they read.

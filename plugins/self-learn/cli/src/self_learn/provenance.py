@@ -54,6 +54,8 @@ file has neither an mtime nor a ctime later than the send. No shell is executed 
 from __future__ import annotations
 
 import bisect
+import contextlib
+import contextvars
 import dataclasses
 import hashlib
 import json
@@ -68,7 +70,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Iterator, Sequence
 
 __all__ = [
     "AGENT_CLOSE",
@@ -687,6 +689,12 @@ _CACHE: dict[str, _Entry] = {}
 # transcripts it was read from. It is a cache and nothing else: a missing,
 # unreadable or malformed file, or one that cannot be written, changes how
 # long a sweep takes and never what it returns.
+#
+# Every sweep READS the file; a sweep WRITES it only inside `saving()`.
+# Verbs that promise to change nothing (a miner preview leaves the whole
+# cache directory as it found it, a doctor row writes nothing) sweep too,
+# so writing is something a caller turns on: building an inbox packet, and
+# the miner's real nightly run, which keeps the file warm.
 
 _DISK_VERSION = 1
 #: Save during a long sweep at this interval, so a sweep that is cut short
@@ -711,6 +719,19 @@ class _Disk:
 
 
 _DISK = _Disk()
+_SAVING: contextvars.ContextVar[bool] = contextvars.ContextVar("self_learn_provenance_saving", default=False)
+
+
+@contextlib.contextmanager
+def saving() -> Iterator[None]:
+    """Inside this block a sweep may write what it read to the cache file.
+    Outside it a sweep only reads the file (what it parses is still kept in
+    memory, and written by a later sweep that is allowed to)."""
+    token = _SAVING.set(True)
+    try:
+        yield
+    finally:
+        _SAVING.reset(token)
 _CODE_HASH: list[str] = []
 
 
@@ -787,10 +808,11 @@ def _disk_entries() -> dict[str, _Entry]:
 
 
 def _disk_save(*, final: bool) -> None:
-    """Write the entries if they changed: at once when ``final``, else only
-    when the last save is :data:`_DISK_SAVE_EVERY_SECS` old. A final save
-    first drops entries whose transcript is gone. Never raises."""
-    if not _DISK.dirty or _DISK.path is None:
+    """Inside :func:`saving`, write the entries if they changed: at once
+    when ``final``, else only when the last save is
+    :data:`_DISK_SAVE_EVERY_SECS` old. A final save first drops entries
+    whose transcript is gone. Never raises."""
+    if not _SAVING.get() or not _DISK.dirty or _DISK.path is None:
         return
     if not final and time.monotonic() - _DISK.saved_at < _DISK_SAVE_EVERY_SECS:
         return

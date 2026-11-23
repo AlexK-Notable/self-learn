@@ -38,7 +38,9 @@ def transcripts(tmp_path, command=f'herdr agent prompt worker "{BRIEF}"'):
 
 
 def role(root, text=BRIEF):
-    return refs.role_of(typed(text, 10), sent=p.sweep([root]))
+    """As a caller that keeps the file does: the sweep runs inside `saving()`."""
+    with p.saving():
+        return refs.role_of(typed(text, 10), sent=p.sweep([root]))
 
 
 def no_parsing(monkeypatch):
@@ -194,9 +196,43 @@ def test_a_long_sweep_saves_before_it_ends(tmp_path, monkeypatch):
         return real(path)
 
     monkeypatch.setattr(p, "_file_sends", stop_after_one)
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(KeyboardInterrupt), p.saving():
         p.sweep([root])
     assert list(json.loads(p._disk_path().read_text())["files"]) == [str(seen[0])]
+
+
+def test_a_sweep_outside_saving_reads_the_file_and_never_writes_it(tmp_path, monkeypatch):
+    """A verb that promises to change nothing still sweeps. Outside
+    `saving()`: with no file, none appears; with one, it answers (row
+    parsing forbidden) and its bytes stay as they were, even when the sweep
+    has something new it could have added. Mutation: save in every sweep ->
+    the file appears -> red."""
+    root = transcripts(tmp_path)
+    assert refs.role_of(typed(BRIEF, 10), sent=p.sweep([root])) == "agent"
+    assert not p._disk_path().exists()
+    fresh_process()
+    assert role(root) == "agent"  # inside saving(): the file is written
+    before = p._disk_path().read_bytes()
+    write(root, "0f0e0d0c-0000-4000-8000-00000000abcd", [bash('herdr agent prompt worker "one more"', 8)])
+    fresh_process()
+    assert len(p.sweep([root])) == 2, "control: the unsaving sweep did read the new transcript"
+    assert p._disk_path().read_bytes() == before
+    fresh_process()
+    (root / "-work-repo" / "0f0e0d0c-0000-4000-8000-00000000abcd.jsonl").unlink()
+    no_parsing(monkeypatch)
+    assert refs.role_of(typed(BRIEF, 10), sent=p.sweep([root])) == "agent"
+
+
+def test_what_an_unsaving_sweep_parsed_is_written_by_the_next_saving_one(tmp_path):
+    """One long-lived process: a sweep outside `saving()` parses a
+    transcript, then a sweep inside it finds nothing new to parse. The file
+    must still get the entry, or it would stay cold for every other
+    process. Mutation: forget unsaved work -> no file -> red."""
+    root = transcripts(tmp_path)
+    assert len(p.sweep([root])) == 1 and not p._disk_path().exists()
+    with p.saving():
+        assert len(p.sweep([root])) == 1
+    assert len(json.loads(p._disk_path().read_text())["files"]) == 1
 
 
 def test_forget_drops_the_memory_and_the_file(tmp_path, monkeypatch):
@@ -232,7 +268,10 @@ def test_the_cold_process_guard_holds_through_the_file(tmp_path):
     row["timestamp"] = datetime.fromtimestamp(at, timezone.utc).isoformat()
     root = tmp_path / "transcripts"
     write(root, ORCH, [row])
-    assert sum(s.file_text for s in p.sweep([root])._sends) == 1, "control: the entry on disk holds the file's text"
+    with p.saving():
+        assert sum(s.file_text for s in p.sweep([root])._sends) == 1
+    kept = json.loads(p._disk_path().read_text())["files"]
+    assert any(s["file_text"] for row in kept.values() for s in row[2]), "control: the entry on disk holds the file's text"
     time.sleep(0.002)
     os.replace(replacement, path)
     fresh_process()
