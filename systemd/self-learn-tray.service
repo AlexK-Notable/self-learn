@@ -9,10 +9,13 @@
 # graphical-session.target, and the tray needs no line in the
 # compositor's autostart. It registers with the StatusNotifierWatcher
 # (Waybar) whenever one appears, so it does not matter which starts
-# first, and it registers again when Waybar restarts. The click runs
-# `systemd-run --user`, so the inbox window gets the user manager's
-# current environment (WAYLAND_DISPLAY and the rest) and this unit needs
-# none of it.
+# first, and it registers again when Waybar restarts. Starting that early,
+# this process usually has no WAYLAND_DISPLAY of its own, and a
+# `systemd-run --user --scope` command runs with its caller's environment.
+# So at each click the tray reads the user manager's environment as it is
+# then (`systemctl --user show-environment`) and gives the launcher that:
+# the inbox window gets the session's current display, and this unit needs
+# none of it (S-162, 2026-11-23).
 #
 # Installed by install.sh (which links this unit into
 # ~/.config/systemd/user/ -- or $XDG_CONFIG_HOME/systemd/user/ if set --

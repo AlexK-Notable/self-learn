@@ -67,9 +67,12 @@ _FAKE_SELF_LEARN = textwrap.dedent(
     """
 )
 _FAKE_SYSTEMD_RUN = ('#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$FAKE_LOG.systemd-run"\n'
+                     'printf \'%s\\n\' "WAYLAND_DISPLAY=${WAYLAND_DISPLAY-<unset>}" '
+                     '"HYPRLAND_INSTANCE_SIGNATURE=${HYPRLAND_INSTANCE_SIGNATURE-<unset>}" '
+                     '"PATH=$PATH" "SELF_LEARN_HOME=$SELF_LEARN_HOME" > "$FAKE_LOG.launch-env"\n'
                      'if [ -n "${FAKE_LAUNCH_SLEEP:-}" ]; then sleep "$FAKE_LAUNCH_SLEEP"; '
                      'echo done > "$FAKE_LOG.launch-done"; fi\n')
-_FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG.systemctl"\nif [ "$2" = "is-active" ]; then [ -n "${FAKE_ACTIVE_SLEEP:-}" ] && sleep "$FAKE_ACTIVE_SLEEP"; exit "${FAKE_ACTIVE_RC:-0}"; fi\n[ -n "${FAKE_SYSTEMCTL_SLEEP:-}" ] && sleep "$FAKE_SYSTEMCTL_SLEEP"\nexit "${FAKE_SYSTEMCTL_RC:-0}"\n'
+_FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG.systemctl"\nif [ "$2" = "show-environment" ]; then [ -n "${FAKE_SESSION_ENV_SLEEP:-}" ] && sleep "$FAKE_SESSION_ENV_SLEEP"; if [ -n "${FAKE_SESSION_ENV+x}" ]; then printf \'%s\' "$FAKE_SESSION_ENV"; else printf "{}"; fi; exit "${FAKE_SESSION_ENV_RC:-0}"; fi\nif [ "$2" = "is-active" ]; then [ -n "${FAKE_ACTIVE_SLEEP:-}" ] && sleep "$FAKE_ACTIVE_SLEEP"; exit "${FAKE_ACTIVE_RC:-0}"; fi\n[ -n "${FAKE_SYSTEMCTL_SLEEP:-}" ] && sleep "$FAKE_SYSTEMCTL_SLEEP"\nexit "${FAKE_SYSTEMCTL_RC:-0}"\n'
 
 
 def _item(**over) -> dict:
@@ -296,6 +299,59 @@ def test_3_activate_runs_exactly_the_inbox_launcher(env):
     argv = (env.tmp / "calls.log.systemd-run").read_text(encoding="utf-8").splitlines()
     assert argv == ["--user", "--scope", "--collect", "--quiet", "--", "self-learn-ui-open", "--page", "/inbox"]
     assert env.calls() == [], "a click runs no `self-learn` itself"
+
+
+_SESSION_ENV_CALL = "--user show-environment --output=json"
+
+
+def _launch_env(env) -> dict[str, str]:
+    return dict(line.split("=", 1) for line in env.side("launch-env"))
+
+
+@pytest.mark.parametrize("item", ["open-inbox", "open"])
+def test_3c_a_launcher_runs_with_the_sessions_current_environment(env, item):
+    """A scope runs its command with the caller's environment, and the tray
+    starts at login before the compositor has published its display (2026-11-23:
+    every click started a browser with no display, and no window appeared). So
+    the launcher gets the user manager's CURRENT environment: a display the tray
+    never had, and a newer value over a stale one of the tray's own. `PATH` and
+    `SELF_LEARN_HOME` stay the unit's pins. Positive control first: the fake
+    launcher ran and saw the tray's own pinned values. Mutation: launch with the
+    tray's environment -> WAYLAND_DISPLAY `<unset>` -> red; let the session's
+    PATH through -> red."""
+    session = {"WAYLAND_DISPLAY": "wayland-7", "HYPRLAND_INSTANCE_SIGNATURE": "new",
+               "PATH": "/session/bin", "SELF_LEARN_HOME": "/session/ledger"}
+    assert "WAYLAND_DISPLAY" not in env.vars
+    out = env.pure("click", "--item", item, FAKE_SESSION_ENV=json.dumps(session),
+                   HYPRLAND_INSTANCE_SIGNATURE="stale")
+    assert out["rc"] == 0
+    got = _launch_env(env)
+    assert got["PATH"] == env.vars["PATH"] and got["SELF_LEARN_HOME"] == env.vars["SELF_LEARN_HOME"]
+    assert got["WAYLAND_DISPLAY"] == "wayland-7"
+    assert got["HYPRLAND_INSTANCE_SIGNATURE"] == "new"
+    assert env.side("systemctl") == [_SESSION_ENV_CALL]
+
+
+@pytest.mark.parametrize("extra", [
+    {"FAKE_SESSION_ENV_RC": "1"},
+    {"FAKE_SESSION_ENV": "WAYLAND_DISPLAY=wayland-7"},
+    {"FAKE_SESSION_ENV": '["WAYLAND_DISPLAY=wayland-7"]'},
+    {"FAKE_SESSION_ENV": '{"WAYLAND_DISPLAY": 7}'},
+    {"FAKE_SESSION_ENV_SLEEP": "2"},
+])
+def test_3d_a_launcher_still_runs_when_the_session_environment_cannot_be_read(env, extra):
+    """A failed, unparsable, wrongly shaped or slow `show-environment` never
+    costs the click: the launcher runs with the tray's own environment (as
+    before the fix) and the journal names the fallback. Mutation: return
+    without launching on a failed read -> no launcher argv -> red."""
+    res = subprocess.run([SYSTEM_PYTHON, "-I", str(env.tray), "--pure", "click", "--item", "open-inbox",
+                          "--control-timeout-secs", "0.3"], env=env.env(WAYLAND_DISPLAY="own-1", **extra),
+                         capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    assert json.loads(res.stdout)["rc"] == 0
+    assert env.side("systemd-run")[-3:] == ["self-learn-ui-open", "--page", "/inbox"]
+    assert _launch_env(env)["WAYLAND_DISPLAY"] == "own-1"
+    assert "could not read the session's environment" in res.stderr
 
 
 def test_3b_middle_click_marks_decided_seen_then_polls(env):
@@ -697,8 +753,11 @@ def test_7b_each_menu_item_runs_exactly_its_command(env, item, side, argv):
     out = env.pure("click", "--item", item)
     assert out["rc"] == 0
     assert env.side(side) == argv
-    other = {"systemd-run": "systemctl", "systemctl": "systemd-run"}[side]
-    assert env.side(other) == [], "one command per item"
+    if side == "systemd-run":
+        # A launcher first reads the session's environment (test 3c), and runs nothing else.
+        assert env.side("systemctl") == [_SESSION_ENV_CALL], "one command per item"
+    else:
+        assert env.side("systemd-run") == [], "one command per item"
     assert env.calls() == ["attention --json"], "only the pure step's own first poll runs `self-learn`"
 
 
