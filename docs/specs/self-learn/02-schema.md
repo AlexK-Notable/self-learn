@@ -3221,6 +3221,26 @@ tool call as its name and the string values of its input, an attachment's
      window. Hermes is opened read-only; raw sends are cached against both the
      database and WAL files (mtime_ns, size, inode), so WAL-only changes invalidate
      the cache.
+     *(S-163, 2026-11-23)* **What a `*.jsonl` store's sweep costs, and the file
+     that keeps it.** Each transcript line is first tested for the bytes
+     `herdr`, then for `hc` followed by whitespace or a closing quote (escaped
+     or not), which every `hc send`/`hc run` call holds; only a line that
+     passes is tested against the full call pattern and parsed. The second
+     test exists because the full pattern can begin at any quote and ran at 40
+     MB/s where the byte tests run at 1 GB/s. What each transcript yielded is
+     kept in memory for the process and in one file,
+     `${XDG_CACHE_HOME:-~/.cache}/self-learn/provenance/sends.json` (mode 0600:
+     it holds text agents sent each other, as the transcripts do). An entry is
+     used only when the transcript's mtime and size are unchanged and so is the
+     fingerprint of every FILE its sends named (below); the whole file is
+     ignored unless it carries the SHA-256 of the module that wrote it, so a
+     change to the parsing code starts it over. One malformed row discards the
+     file, never a row at a time. It is saved when a sweep ends and every 5 s
+     during one, so that a sweep cut short (the inbox page stops a packet
+     after 15 s) leaves its work for the next; a save at the end drops entries
+     whose transcript is gone. It is a cache and nothing more: absent,
+     unreadable, malformed or unwritable, it changes how long a sweep takes
+     and never what it returns. The Hermes store keeps its own cache, above.
      `resolve`, `check_quote` and `excerpt` pass the sends of the roots they read.
    - **file-backed send** (the same sent sign): a whole double-quoted
      `"$(cat FILE)"`, `"$(cat -- FILE)"` or `"$(< FILE)"` TEXT argument to

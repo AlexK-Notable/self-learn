@@ -204,7 +204,7 @@ def test_file_changed_during_read_is_rejected(tmp_path, monkeypatch):
     path = brief_file(tmp_path)
     root = send_file(tmp_path, f'herdr agent prompt worker "$(cat \'{path}\')"')
     assert role(root) == "agent"
-    p._CACHE.clear()
+    p.forget()
     original = p._fingerprint
     calls = 0
 
@@ -272,7 +272,7 @@ def test_repeated_file_dependency_cannot_cache_a_stale_payload(tmp_path, monkeyp
     root = tmp_path / "transcripts"
     write(root, ORCH, [bash(cmd, 8), bash(cmd, 9)])
     assert role(root) == "agent"
-    p._CACHE.clear()
+    p.forget()
     original = p._brief_paths
     reads = 0
 

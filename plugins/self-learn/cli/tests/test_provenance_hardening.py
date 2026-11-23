@@ -99,7 +99,7 @@ def test_value_errors_in_stat_and_open_are_misses(tmp_path, monkeypatch):
     assert len(p.sweep([root])) == 1
     monkeypatch.setattr(Path, "stat", original_stat)
     assert role(root) == "agent"
-    p._CACHE.clear()
+    p.forget()
     original_open = os.open
 
     def broken_open(target, *args, **kwargs):
@@ -158,7 +158,7 @@ def test_old_mtime_with_new_ctime_is_not_historical_evidence(tmp_path):
     os.replace(replacement, path)
     assert path.stat().st_mtime <= at < path.stat().st_ctime
     assert sum(s.file_text for s in p.sweep([root])._sends) == 0
-    p._CACHE.clear()  # The guard is necessary on a cold process too.
+    p.forget()  # The guard is necessary on a cold process too.
     assert sum(s.file_text for s in p.sweep([root])._sends) == 0
 
 

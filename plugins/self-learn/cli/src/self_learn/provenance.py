@@ -54,6 +54,8 @@ file has neither an mtime nor a ctime later than the send. No shell is executed 
 from __future__ import annotations
 
 import bisect
+import dataclasses
+import hashlib
 import json
 import re
 import math
@@ -61,6 +63,8 @@ import os
 import shlex
 import sqlite3
 import stat
+import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -122,6 +126,14 @@ _HC_CALL_PAT = (r"(?:(?<![\w.-])|(?<=\\[nt]))hc(?:\s+--json)?\s+(?:send|run)\b"
                 r'|\\?"(?:[^"\s\\]*/)?hc\\?"\s*,\s*\\?"(?:--json\\?"\s*,\s*\\?")?(?:send|run)\\?"')
 _HC_CALL = re.compile(_HC_CALL_PAT)
 _HC_CALL_BYTES = re.compile(_HC_CALL_PAT.encode())
+#: What every match of :data:`_HC_CALL_PAT` holds: ``hc`` followed by
+#: whitespace (the command form) or by a closing quote, JSON-escaped or not
+#: (the argv form). The sweep tests each transcript line for this first:
+#: it starts with a literal, so the search is a byte scan, while the full
+#: pattern can begin at any quote and ran at 40 MB/s against 1 GB/s
+#: (2026-11-23: a sweep of 9.35 GB took 233 s, not 9 s, and every inbox
+#: packet timed out).
+_HC_CALL_GATE = re.compile(rb'hc(?:\s|\\?")')
 _CODEX_CALLS = ("function_call", "custom_tool_call", "local_shell_call")
 #: How a short sent text is quoted: shell quotes, or a JSON-escaped double quote.
 _QUOTES = ('"', "'", '\\"')
@@ -657,7 +669,172 @@ def _expand_files(sends: Iterable[Send], deps: dict[Path, Fingerprint | None]) -
     return out
 
 
-_CACHE: dict[str, tuple[int, int, tuple[Send, ...], dict[Path, Fingerprint | None]]] = {}
+_Entry = tuple[int, int, tuple[Send, ...], dict[Path, Fingerprint | None]]
+_CACHE: dict[str, _Entry] = {}
+
+# ------------------------------------------------- the cache kept on disk
+#
+# A sweep reads every transcript of every harness (9.35 GB in 3,476 files on
+# 2026-11-23: 10 s to scan and 18 s to parse the lines that qualify), and
+# `_CACHE` lives only as long as one process, so each `attention packet`
+# paid all of it and the inbox page, which waits 15 s, never got one. The
+# same entries are therefore kept in one file under the user's cache
+# directory and trusted by the same test as `_CACHE`: the transcript's
+# mtime and size, and the fingerprint of every brief file its sends named.
+# The file is dropped whole when this module's source changes (its hash is
+# stored in it), since an entry is only as good as the code that parsed it.
+# It holds text agents sent each other, so it is written 0600, like the
+# transcripts it was read from. It is a cache and nothing else: a missing,
+# unreadable or malformed file, or one that cannot be written, changes how
+# long a sweep takes and never what it returns.
+
+_DISK_VERSION = 1
+#: Save during a long sweep at this interval, so a sweep that is cut short
+#: (the inbox page stops a packet after 15 s) still leaves its work behind
+#: and the next one finishes.
+_DISK_SAVE_EVERY_SECS = 5.0
+_SEND_FIELDS = {f.name: f for f in dataclasses.fields(Send)}
+_SEND_TYPES: dict[str, tuple[type, ...]] = {
+    "at": (int, float), "session": (str,), "raw": (str,), "folded": (str,), "cwd": (str, type(None)),
+    "file_text": (bool,), "command": (str, type(None)), "by_person": (bool,),
+}
+
+
+class _Disk:
+    """The loaded file's entries, where it lives, and whether they changed."""
+
+    def __init__(self) -> None:
+        self.path: Path | None = None
+        self.entries: dict[str, _Entry] = {}
+        self.dirty = False
+        self.saved_at = 0.0
+
+
+_DISK = _Disk()
+_CODE_HASH: list[str] = []
+
+
+def _code_hash() -> str:
+    if not _CODE_HASH:
+        try:
+            _CODE_HASH.append(hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+        except OSError:
+            _CODE_HASH.append("")  # unknown code: never matches a stored hash
+    return _CODE_HASH[0]
+
+
+def _disk_path() -> Path:
+    cache = os.environ.get("XDG_CACHE_HOME")
+    base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
+    return base / "self-learn" / "provenance" / "sends.json"
+
+
+def _send_from(row: object) -> Send:
+    """A cached send, or ValueError when the row is not exactly one."""
+    if not isinstance(row, dict) or set(row) != set(_SEND_FIELDS):
+        raise ValueError("not a cached send")
+    for name, types in _SEND_TYPES.items():
+        value = row[name]
+        if not isinstance(value, types) or (isinstance(value, bool) and bool not in types):
+            raise ValueError(f"cached send field {name}")
+    if not math.isfinite(row["at"]):
+        raise ValueError("cached send time")
+    return Send(**row)
+
+
+def _fingerprint_from(row: object) -> Fingerprint | None:
+    if row is None:
+        return None
+    if (not isinstance(row, list) or len(row) != 5
+            or not all(isinstance(n, int) and not isinstance(n, bool) for n in row)):
+        raise ValueError("not a cached fingerprint")
+    return row[0], row[1], row[2], row[3], row[4]
+
+
+def _disk_read(path: Path) -> dict[str, _Entry]:
+    """The file's entries; {} when it is absent, from other code, or malformed
+    anywhere (one bad row discards the file, never a row at a time)."""
+    code = _code_hash()
+    try:
+        with path.open("rb") as fh:
+            data = json.load(fh)
+        if (not isinstance(data, dict) or data.get("version") != _DISK_VERSION
+                or not code or data.get("code") != code or not isinstance(data.get("files"), dict)):
+            return {}
+        out: dict[str, _Entry] = {}
+        for key, row in data["files"].items():
+            if not isinstance(row, list) or len(row) != 4:
+                raise ValueError("not a cached entry")
+            mtime_ns, size, sends, deps = row
+            if (not all(isinstance(n, int) and not isinstance(n, bool) for n in (mtime_ns, size))
+                    or not isinstance(sends, list) or not isinstance(deps, dict)):
+                raise ValueError("not a cached entry")
+            out[key] = (mtime_ns, size, tuple(_send_from(s) for s in sends),
+                        {Path(p): _fingerprint_from(fp) for p, fp in deps.items()})
+        return out
+    except _ROW_ERRORS:
+        return {}
+
+
+def _disk_entries() -> dict[str, _Entry]:
+    """The entries for the cache file the environment names now (a test, or
+    a run pointed at a scratch cache, gets its own and never another's)."""
+    path = _disk_path()
+    if _DISK.path != path:
+        _DISK.path, _DISK.entries, _DISK.dirty = path, _disk_read(path), False
+        _DISK.saved_at = time.monotonic()
+    return _DISK.entries
+
+
+def _disk_save(*, final: bool) -> None:
+    """Write the entries if they changed: at once when ``final``, else only
+    when the last save is :data:`_DISK_SAVE_EVERY_SECS` old. A final save
+    first drops entries whose transcript is gone. Never raises."""
+    if not _DISK.dirty or _DISK.path is None:
+        return
+    if not final and time.monotonic() - _DISK.saved_at < _DISK_SAVE_EVERY_SECS:
+        return
+    path, tmp = _DISK.path, None
+    try:
+        if final:
+            for key in [k for k in _DISK.entries if not os.path.exists(k)]:
+                del _DISK.entries[key]
+        files = {key: [mtime_ns, size, [dataclasses.asdict(send) for send in sends],
+                       {str(p): (None if fp is None else list(fp)) for p, fp in deps.items()}]
+                 for key, (mtime_ns, size, sends, deps) in _DISK.entries.items()}
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, tmp = tempfile.mkstemp(prefix=".sends-", suffix=".tmp", dir=path.parent)  # 0600
+        with os.fdopen(fd, "w", encoding="ascii") as fh:
+            json.dump({"version": _DISK_VERSION, "code": _code_hash(), "files": files}, fh)
+        os.replace(tmp, path)
+        tmp = None
+        _DISK.dirty = False
+    except _ROW_ERRORS:
+        pass
+    finally:
+        _DISK.saved_at = time.monotonic()  # a failed write is not retried on every file
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def forget() -> None:
+    """Drop every remembered send, in memory and in the file, so the next
+    sweep parses each transcript anew. Never raises."""
+    _CACHE.clear()
+    path = _disk_path()
+    _DISK.path, _DISK.entries, _DISK.dirty = path, {}, False
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _entry_current(entry: _Entry | None, st: os.stat_result) -> bool:
+    return (entry is not None and entry[0] == st.st_mtime_ns and entry[1] == st.st_size
+            and all(_fingerprint(p) == fp for p, fp in entry[3].items()))
 
 
 def _file_sends(path: Path) -> tuple[Send, ...]:
@@ -667,9 +844,13 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
         return ()
     key = str(path)
     hit = _CACHE.get(key)
-    if (hit is not None and hit[0] == st.st_mtime_ns and hit[1] == st.st_size
-            and all(_fingerprint(p) == fp for p, fp in hit[3].items())):
+    if hit is not None and _entry_current(hit, st):
         return hit[2]
+    disk = _disk_entries()
+    kept = disk.get(key)
+    if kept is not None and _entry_current(kept, st):
+        _CACHE[key] = kept
+        return kept[2]
     codex = path.name.startswith("rollout-")
     agy = path.name == "transcript_full.jsonl"
     pi = ".pi" in path.parts
@@ -682,7 +863,8 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
         with path.open("rb") as fh:
             for line in fh:
                 # Header/context rows carry cwd, even without a herdr mention.
-                if (_HERDR not in line and _HC_CALL_BYTES.search(line) is None
+                if (_HERDR not in line
+                        and (_HC_CALL_GATE.search(line) is None or _HC_CALL_BYTES.search(line) is None)
                         and not ((codex or pi) and b'"cwd"' in line)):
                     continue
                 try:
@@ -714,7 +896,9 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
     deps: dict[Path, Fingerprint | None] = {}
     sends += _expand_files(sends, deps)
     found = tuple(sends)
-    _CACHE[key] = (st.st_mtime_ns, st.st_size, found, deps)
+    _CACHE[key] = disk[key] = (st.st_mtime_ns, st.st_size, found, deps)
+    _DISK.dirty = True
+    _disk_save(final=False)
     return found
 
 
@@ -737,4 +921,5 @@ def sweep(dirs: Iterable[Path]) -> SentIndex:
                     continue
         except _ROW_ERRORS:
             continue
+    _disk_save(final=True)
     return SentIndex(sends)
