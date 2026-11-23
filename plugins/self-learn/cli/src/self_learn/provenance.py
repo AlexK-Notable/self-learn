@@ -54,6 +54,10 @@ file has neither an mtime nor a ctime later than the send. No shell is executed 
 from __future__ import annotations
 
 import bisect
+import contextlib
+import contextvars
+import dataclasses
+import hashlib
 import json
 import re
 import math
@@ -61,10 +65,14 @@ import os
 import shlex
 import sqlite3
 import stat
+import sys
+import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Iterator, Sequence
 
 __all__ = [
     "AGENT_CLOSE",
@@ -122,6 +130,19 @@ _HC_CALL_PAT = (r"(?:(?<![\w.-])|(?<=\\[nt]))hc(?:\s+--json)?\s+(?:send|run)\b"
                 r'|\\?"(?:[^"\s\\]*/)?hc\\?"\s*,\s*\\?"(?:--json\\?"\s*,\s*\\?")?(?:send|run)\\?"')
 _HC_CALL = re.compile(_HC_CALL_PAT)
 _HC_CALL_BYTES = re.compile(_HC_CALL_PAT.encode())
+#: What every match of :data:`_HC_CALL_PAT` holds: ``hc`` followed by
+#: whitespace (the command form) or by a closing quote, JSON-escaped or not
+#: (the argv form). The sweep tests each transcript line for this first:
+#: it starts with a literal, so the search is a byte scan, while the full
+#: pattern can begin at any quote and ran at 40 MB/s against 1 GB/s
+#: (2026-11-23: a sweep of 9.35 GB took 233 s, not 9 s, and every inbox
+#: packet timed out).
+_HC_CALL_GATE = re.compile(rb'hc(?:\s|\\?"|\\[nrt])')
+#: The command form as its bytes are stored when the whitespace after ``hc``
+#: was a tab or a newline: JSON writes those as ``\t`` and ``\n``, which no
+#: ``\s`` matches. The decoded text decides whether the row is a send; this
+#: only keeps such a line from being dropped unread (review of S-163).
+_HC_CALL_ESCAPED = re.compile(rb"hc(?:\s|\\[nrt])+(?:--json(?:\s|\\[nrt])+)?(?:send|run)\b")
 _CODEX_CALLS = ("function_call", "custom_tool_call", "local_shell_call")
 #: How a short sent text is quoted: shell quotes, or a JSON-escaped double quote.
 _QUOTES = ('"', "'", '\\"')
@@ -623,7 +644,13 @@ def _fingerprint(path: Path) -> Fingerprint | None:
         return None
 
 
-def _expand_files(sends: Iterable[Send], deps: dict[Path, Fingerprint | None]) -> list[Send]:
+def _expand_files(sends: Iterable[Send], deps: dict[Path, Fingerprint | None],
+                  unread: list[Path] | None = None) -> list[Send]:
+    """The text of each FILE the sends named. A file that passed every test
+    but could not be opened or read is appended to ``unread``: its text is
+    missing for a reason its fingerprint does not record (no file handles
+    left, an I/O error), so the caller must not keep the result past this
+    process."""
     out = []
     for send in sends:
         try:
@@ -649,15 +676,260 @@ def _expand_files(sends: Iterable[Send], deps: dict[Path, Fingerprint | None]) -
                         continue
                     body = fh.read(1024 * 1024 + 1).decode("utf-8").rstrip("\n")
             except (OSError, ValueError):
+                if unread is not None:
+                    unread.append(path)
                 continue
-            if _fingerprint(path) != before or len(body.encode("utf-8")) > 1024 * 1024:
+            after = _fingerprint(path)
+            if after is None and unread is not None:
+                # The file was just read and now cannot be examined: a passing
+                # fault like a failed open, and as invisible to a fingerprint.
+                unread.append(path)
+            if after != before or len(body.encode("utf-8")) > 1024 * 1024:
                 continue
             if body.strip():
                 out.append(Send(send.at, send.session, body, fold(body), file_text=True, by_person=send.by_person))
     return out
 
 
-_CACHE: dict[str, tuple[int, int, tuple[Send, ...], dict[Path, Fingerprint | None]]] = {}
+_Entry = tuple[int, int, tuple[Send, ...], dict[Path, Fingerprint | None]]
+_CACHE: dict[str, _Entry] = {}
+
+# ------------------------------------------------- the cache kept on disk
+#
+# A sweep reads every transcript of every harness (9.35 GB in 3,476 files on
+# 2026-11-23: 10 s to scan and 18 s to parse the lines that qualify), and
+# `_CACHE` lives only as long as one process, so each `attention packet`
+# paid all of it and the inbox page, which waits 15 s, never got one. The
+# same entries are therefore kept in one file under the user's cache
+# directory and trusted by the same test as `_CACHE`: the transcript's
+# mtime and size, and the fingerprint of every brief file its sends named.
+# The file is dropped whole when this module's source changes (its hash is
+# stored in it), since an entry is only as good as the code that parsed it.
+# It holds what the transcripts hold: the text agents sent each other, the
+# bodies of the brief files those sends named (up to 1 MiB each), the
+# commands the person ran with `!` that send, and the paths and session ids
+# of all of them. So it is written 0600 in a 0700 directory, like the
+# transcripts it was read from. It is a cache and nothing else: a missing,
+# unreadable or malformed file, or one that cannot be written, changes how
+# long a sweep takes and never what it returns.
+#
+# Every sweep READS the file; a sweep WRITES it only inside `saving()`.
+# Verbs that promise to change nothing (a miner preview leaves the whole
+# cache directory as it found it, a doctor row writes nothing) sweep too,
+# so writing is something a caller turns on: building an inbox packet, and
+# the miner's real nightly run, which keeps the file warm.
+
+_DISK_VERSION = 1
+#: Save during a long sweep at this interval, so a sweep that is cut short
+#: (the inbox page stops a packet after 15 s) still leaves its work behind
+#: and the next one finishes.
+_DISK_SAVE_EVERY_SECS = 5.0
+_SEND_FIELDS = {f.name: f for f in dataclasses.fields(Send)}
+_SEND_TYPES: dict[str, tuple[type, ...]] = {
+    "at": (int, float), "session": (str,), "raw": (str,), "folded": (str,), "cwd": (str, type(None)),
+    "file_text": (bool,), "command": (str, type(None)), "by_person": (bool,),
+}
+
+
+class _Disk:
+    """The loaded file's entries, where it lives, and whether they changed."""
+
+    def __init__(self) -> None:
+        self.path: Path | None = None
+        self.entries: dict[str, _Entry] = {}
+        self.dirty = False
+        self.saved_at = 0.0
+
+
+_DISK = _Disk()
+#: One sweep at a time touches the entries or the file: `ask` runs its tools
+#: in threads, and a save walks a dict another thread's sweep would add to.
+_DISK_LOCK = threading.RLock()
+_SAVING: contextvars.ContextVar[bool] = contextvars.ContextVar("self_learn_provenance_saving", default=False)
+
+
+@contextlib.contextmanager
+def saving() -> Iterator[None]:
+    """Inside this block a sweep may write what it read to the cache file:
+    every :data:`_DISK_SAVE_EVERY_SECS` while sweeps run, and once more when
+    the outermost block ends (a packet sweeps once per quoted turn, and one
+    save for all of them rewrites the file once, not each time). Outside it
+    a sweep only reads the file; what it parses is still kept in memory, and
+    written by a later block."""
+    outermost = not _SAVING.get()
+    token = _SAVING.set(True)
+    try:
+        yield
+    finally:
+        if outermost:
+            _disk_save(final=True)
+        _SAVING.reset(token)
+def _hash_code() -> str:
+    """The hash of this module's source and the interpreter that runs it
+    (`shlex`, `json` and `datetime` come from the interpreter). Empty when
+    the source cannot be read: unknown code never matches a stored hash."""
+    try:
+        return hashlib.sha256(Path(__file__).read_bytes() + b"\0" + sys.version.encode()).hexdigest()
+    except OSError:
+        return ""
+
+
+#: Taken when the module is imported, not when the file is first used: a
+#: long-lived process whose source changed on disk since it started would
+#: otherwise file what its old code parsed under the new code's hash.
+_CODE_HASH = _hash_code()
+
+
+def _code_hash() -> str:
+    return _CODE_HASH
+
+
+def _disk_path() -> Path:
+    cache = os.environ.get("XDG_CACHE_HOME")
+    base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
+    return base / "self-learn" / "provenance" / "sends.json"
+
+
+def _send_from(row: object) -> Send:
+    """A cached send, or ValueError when the row is not exactly one."""
+    if not isinstance(row, dict) or set(row) != set(_SEND_FIELDS):
+        raise ValueError("not a cached send")
+    for name, types in _SEND_TYPES.items():
+        value = row[name]
+        if not isinstance(value, types) or (isinstance(value, bool) and bool not in types):
+            raise ValueError(f"cached send field {name}")
+    if not math.isfinite(row["at"]):
+        raise ValueError("cached send time")
+    return Send(**row)
+
+
+def _fingerprint_from(row: object) -> Fingerprint | None:
+    if row is None:
+        return None
+    if (not isinstance(row, list) or len(row) != 5
+            or not all(isinstance(n, int) and not isinstance(n, bool) for n in row)):
+        raise ValueError("not a cached fingerprint")
+    return row[0], row[1], row[2], row[3], row[4]
+
+
+def _disk_read(path: Path) -> dict[str, _Entry]:
+    """The file's entries; {} when it is absent, from other code, or malformed
+    anywhere (one bad row discards the file, never a row at a time)."""
+    code = _code_hash()
+    try:
+        with path.open("rb") as fh:
+            data = json.load(fh)
+        if (not isinstance(data, dict) or data.get("version") != _DISK_VERSION
+                or not code or data.get("code") != code or not isinstance(data.get("files"), dict)):
+            return {}
+        out: dict[str, _Entry] = {}
+        for key, row in data["files"].items():
+            if not isinstance(row, list) or len(row) != 4:
+                raise ValueError("not a cached entry")
+            mtime_ns, size, sends, deps = row
+            if (not all(isinstance(n, int) and not isinstance(n, bool) for n in (mtime_ns, size))
+                    or not isinstance(sends, list) or not isinstance(deps, dict)):
+                raise ValueError("not a cached entry")
+            out[key] = (mtime_ns, size, tuple(_send_from(s) for s in sends),
+                        {Path(p): _fingerprint_from(fp) for p, fp in deps.items()})
+        return out
+    except _ROW_ERRORS:
+        return {}
+
+
+def _disk_entries() -> dict[str, _Entry]:
+    """The entries for the cache file the environment names now (a test, or
+    a run pointed at a scratch cache, gets its own and never another's)."""
+    path = _disk_path()
+    with _DISK_LOCK:
+        if _DISK.path != path:
+            _DISK.path, _DISK.entries, _DISK.dirty = path, _disk_read(path), False
+            _DISK.saved_at = time.monotonic()
+        return _DISK.entries
+
+
+def _disk_save(*, final: bool) -> None:
+    """Inside :func:`saving`, write the entries if they changed: at once
+    when ``final``, else only when the last save is
+    :data:`_DISK_SAVE_EVERY_SECS` old. A final save first drops entries
+    whose transcript is gone. Never raises."""
+    if not _SAVING.get():
+        return
+    with _DISK_LOCK:
+        if not _DISK.dirty or _DISK.path is None:
+            return
+        if not final and time.monotonic() - _DISK.saved_at < _DISK_SAVE_EVERY_SECS:
+            return
+        path, tmp = _DISK.path, None
+        fd: int | None = None
+        try:
+            # The directory first: an unwritable cache fails here, before the
+            # whole payload is built for nothing.
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd, tmp = tempfile.mkstemp(prefix=_TMP_PREFIX, suffix=_TMP_SUFFIX, dir=path.parent)  # 0600
+            if final:
+                for key in [k for k in _DISK.entries if not os.path.exists(k)]:
+                    del _DISK.entries[key]
+            files = {key: [mtime_ns, size, [dataclasses.asdict(send) for send in sends],
+                           {str(p): (None if fp is None else list(fp)) for p, fp in deps.items()}]
+                     for key, (mtime_ns, size, sends, deps) in _DISK.entries.items()}
+            with os.fdopen(fd, "w", encoding="ascii") as fh:
+                fd = None
+                json.dump({"version": _DISK_VERSION, "code": _code_hash(), "files": files}, fh)
+            os.replace(tmp, path)
+            tmp = None
+            _DISK.dirty = False
+            _drop_stale_temporaries(path.parent)
+        except _ROW_ERRORS + (RuntimeError,):
+            pass
+        finally:
+            _DISK.saved_at = time.monotonic()  # a failed write is not retried on every file
+            if tmp is not None:
+                try:
+                    if fd is not None:
+                        os.close(fd)
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+
+_TMP_PREFIX, _TMP_SUFFIX = ".sends-", ".tmp"
+#: A temporary file this old belongs to a save that was killed (the inbox
+#: page stops a packet with SIGKILL, which runs no cleanup), never to one
+#: still being written.
+_TMP_STALE_SECS = 600.0
+
+
+def _drop_stale_temporaries(folder: Path) -> None:
+    """Unlink the temporary files of saves that never finished. Never raises."""
+    try:
+        now = time.time()
+        for name in os.listdir(folder):
+            if name.startswith(_TMP_PREFIX) and name.endswith(_TMP_SUFFIX):
+                stale = folder / name
+                if now - stale.stat().st_mtime > _TMP_STALE_SECS:
+                    stale.unlink()
+    except _ROW_ERRORS:
+        pass
+
+
+def forget() -> None:
+    """Drop every remembered send, in memory (the Hermes store's too) and
+    in the file, so the next sweep reads each store anew. Never raises."""
+    _CACHE.clear()
+    _HERMES_CACHE.clear()
+    path = _disk_path()
+    with _DISK_LOCK:
+        _DISK.path, _DISK.entries, _DISK.dirty = path, {}, False
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _entry_current(entry: _Entry | None, st: os.stat_result) -> bool:
+    return (entry is not None and entry[0] == st.st_mtime_ns and entry[1] == st.st_size
+            and all(_fingerprint(p) == fp for p, fp in entry[3].items()))
 
 
 def _file_sends(path: Path) -> tuple[Send, ...]:
@@ -667,9 +939,13 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
         return ()
     key = str(path)
     hit = _CACHE.get(key)
-    if (hit is not None and hit[0] == st.st_mtime_ns and hit[1] == st.st_size
-            and all(_fingerprint(p) == fp for p, fp in hit[3].items())):
+    if hit is not None and _entry_current(hit, st):
         return hit[2]
+    disk = _disk_entries()
+    kept = disk.get(key)
+    if kept is not None and _entry_current(kept, st):
+        _CACHE[key] = kept
+        return kept[2]
     codex = path.name.startswith("rollout-")
     agy = path.name == "transcript_full.jsonl"
     pi = ".pi" in path.parts
@@ -682,7 +958,9 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
         with path.open("rb") as fh:
             for line in fh:
                 # Header/context rows carry cwd, even without a herdr mention.
-                if (_HERDR not in line and _HC_CALL_BYTES.search(line) is None
+                if (_HERDR not in line
+                        and (_HC_CALL_GATE.search(line) is None
+                             or (_HC_CALL_BYTES.search(line) is None and _HC_CALL_ESCAPED.search(line) is None))
                         and not ((codex or pi) and b'"cwd"' in line)):
                     continue
                 try:
@@ -712,9 +990,22 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
     except (OSError, ValueError):
         return ()
     deps: dict[Path, Fingerprint | None] = {}
-    sends += _expand_files(sends, deps)
+    unread: list[Path] = []
+    sends += _expand_files(sends, deps, unread)
     found = tuple(sends)
-    _CACHE[key] = (st.st_mtime_ns, st.st_size, found, deps)
+    entry: _Entry = (st.st_mtime_ns, st.st_size, found, deps)
+    _CACHE[key] = entry
+    with _DISK_LOCK:
+        if unread:
+            # A brief could not be read just now. In memory that lasts one
+            # process, as it always has; in the file it would make an agent's
+            # brief read as the person's words in every later process.
+            if disk.pop(key, None) is not None:
+                _DISK.dirty = True
+        else:
+            disk[key] = entry
+            _DISK.dirty = True
+    _disk_save(final=False)
     return found
 
 
@@ -737,4 +1028,5 @@ def sweep(dirs: Iterable[Path]) -> SentIndex:
                     continue
         except _ROW_ERRORS:
             continue
+    _disk_save(final=False)
     return SentIndex(sends)

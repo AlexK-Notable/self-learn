@@ -73,7 +73,7 @@ _FAKE_SYSTEMD_RUN = ('#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$FAKE_LOG.sy
                      'echo "${WAYLAND_DISPLAY-<unset>}" >> "$FAKE_LOG.launch-displays"\n'
                      'if [ -n "${FAKE_LAUNCH_SLEEP:-}" ]; then sleep "$FAKE_LAUNCH_SLEEP"; '
                      'echo done > "$FAKE_LOG.launch-done"; fi\n')
-_FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG.systemctl"\nif [ "$2" = "show-environment" ]; then [ -n "${FAKE_SESSION_ENV_SLEEP:-}" ] && sleep "$FAKE_SESSION_ENV_SLEEP"; if [ -f "$FAKE_LOG.session-env" ]; then cat "$FAKE_LOG.session-env"; [ -f "$FAKE_LOG.session-env.next" ] && mv "$FAKE_LOG.session-env.next" "$FAKE_LOG.session-env"; elif [ -n "${FAKE_SESSION_ENV+x}" ]; then printf \'%s\' "$FAKE_SESSION_ENV"; else printf "{}"; fi; exit "${FAKE_SESSION_ENV_RC:-0}"; fi\nif [ "$2" = "is-active" ]; then [ -n "${FAKE_ACTIVE_SLEEP:-}" ] && sleep "$FAKE_ACTIVE_SLEEP"; exit "${FAKE_ACTIVE_RC:-0}"; fi\n[ -n "${FAKE_SYSTEMCTL_SLEEP:-}" ] && sleep "$FAKE_SYSTEMCTL_SLEEP"\nexit "${FAKE_SYSTEMCTL_RC:-0}"\n'
+_FAKE_SYSTEMCTL = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG.systemctl"\nif [ "$2" = "show-environment" ]; then [ -n "${FAKE_SESSION_ENV_SLEEP:-}" ] && sleep "$FAKE_SESSION_ENV_SLEEP"; n=0; while read -r _; do n=$((n+1)); done < "$FAKE_LOG.systemctl"; if [ -f "$FAKE_LOG.session-env.$n" ]; then cat "$FAKE_LOG.session-env.$n"; elif [ -n "${FAKE_SESSION_ENV+x}" ]; then printf \'%s\' "$FAKE_SESSION_ENV"; else printf "{}"; fi; exit "${FAKE_SESSION_ENV_RC:-0}"; fi\nif [ "$2" = "is-active" ]; then [ -n "${FAKE_ACTIVE_SLEEP:-}" ] && sleep "$FAKE_ACTIVE_SLEEP"; exit "${FAKE_ACTIVE_RC:-0}"; fi\n[ -n "${FAKE_SYSTEMCTL_SLEEP:-}" ] && sleep "$FAKE_SYSTEMCTL_SLEEP"\nexit "${FAKE_SYSTEMCTL_RC:-0}"\n'
 
 
 def _item(**over) -> dict:
@@ -373,11 +373,12 @@ def test_3f_the_session_environment_is_read_again_at_every_launch(env):
     """The compositor can restart under a running tray, so a value read once
     and kept would go stale. Two launches in one tray process, the session's
     display changing in between (the fake `systemctl` answers from a file and
-    then swaps in the next answer): each launcher sees the value current at
+    then moves to the next answer): each launcher sees the value current at
     its own click. Mutation: read once and cache -> the second launch sees
-    wayland-1 -> red."""
-    Path(f"{env.log}.session-env").write_text(json.dumps({"WAYLAND_DISPLAY": "wayland-1"}), encoding="utf-8")
-    Path(f"{env.log}.session-env.next").write_text(json.dumps({"WAYLAND_DISPLAY": "wayland-2"}), encoding="utf-8")
+    wayland-1 -> red. (The fake answers its Nth call from `session-env.N`,
+    counting its own log; the harness's bin has no `mv` to swap a file with.)"""
+    Path(f"{env.log}.session-env.1").write_text(json.dumps({"WAYLAND_DISPLAY": "wayland-1"}), encoding="utf-8")
+    Path(f"{env.log}.session-env.2").write_text(json.dumps({"WAYLAND_DISPLAY": "wayland-2"}), encoding="utf-8")
     out = env.pure("click", "--item", "open-inbox", "--then", "open", "--then-after", "1", "--linger", "2")
     assert out["rc"] == 0 and out["then_rc"] == 0
     assert env.side("systemctl") == [_SESSION_ENV_CALL, _SESSION_ENV_CALL]

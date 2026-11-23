@@ -3221,6 +3221,50 @@ tool call as its name and the string values of its input, an attachment's
      window. Hermes is opened read-only; raw sends are cached against both the
      database and WAL files (mtime_ns, size, inode), so WAL-only changes invalidate
      the cache.
+     *(S-163, 2026-11-23)* **What a `*.jsonl` store's sweep costs, and the file
+     that keeps it.** Each transcript line is first tested for the bytes
+     `herdr`, then for `hc` followed by whitespace (as a byte, or as JSON
+     stores a tab or newline: `\t`, `\n`, `\r`) or a closing quote (escaped or
+     not), which every `hc send`/`hc run` call holds; only a line that passes
+     is tested against the full call pattern, in both spellings of that
+     whitespace, and parsed. The second
+     test exists because the full pattern can begin at any quote and ran at 40
+     MB/s where the byte tests run at 1 GB/s. What each transcript yielded is
+     kept in memory for the process and in one file,
+     `${XDG_CACHE_HOME:-~/.cache}/self-learn/provenance/sends.json` (mode 0600,
+     in a directory this code creates 0700: it holds what the transcripts hold, namely the text
+     agents sent each other, the bodies of the FILEs those sends named, up to
+     1 MiB each, the commands the person ran with `!` that send, and the paths
+     and session ids of all of them). An entry is used only when the
+     transcript's mtime and size are unchanged and so is the fingerprint of
+     every FILE its sends named (below); a transcript one of whose FILEs
+     passed every test and then could not be opened, read, or examined again
+     after the read is never written
+     to the file, since that fault leaves no trace in a fingerprint and would
+     otherwise make an agent's brief read as the person's words in every later
+     process. The whole file is ignored unless it carries the SHA-256 of the
+     module that wrote it together with the interpreter's version, taken when
+     the module was imported, so a change to the parsing code starts it over.
+     One lock serialises the entries and the save within a process; a save
+     also removes the temporary file of a save that was killed more than ten
+     minutes before. One malformed row discards the
+     file, never a row at a time. Every sweep reads the file; only a sweep
+     inside `provenance.saving()` writes it, because verbs that promise to
+     change nothing sweep too (a miner preview leaves the whole cache
+     directory as it found it). Two callers turn writing on: the evidence of
+     an inbox packet (`attention_packet.build`, so the `attention packet`
+     verb, which is the read the inbox page waits on, and `ask` and
+     `summarise`, which build a packet too), and the miner's real run, which
+     keeps the file warm each night; what any other sweep parsed stays in
+     that process's memory and is written by its next block that may. Inside
+     `saving()` the file is saved every 5 s while sweeps run, so that a sweep
+     cut short (the inbox page stops a packet after 15 s) leaves its work for
+     the next, and once more when the outermost block ends (a packet sweeps
+     once for every turn it quotes; they share that one save);
+     the save at the end drops entries whose transcript is gone.
+     `provenance.forget()` empties the memory and removes the file. It is a cache and nothing more: absent,
+     unreadable, malformed or unwritable, it changes how long a sweep takes
+     and never what it returns. The Hermes store keeps its own cache, above.
      `resolve`, `check_quote` and `excerpt` pass the sends of the roots they read.
    - **file-backed send** (the same sent sign): a whole double-quoted
      `"$(cat FILE)"`, `"$(cat -- FILE)"` or `"$(< FILE)"` TEXT argument to

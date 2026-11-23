@@ -873,7 +873,12 @@ def build(home: Path | str, item_id: str, *,
     limits.truncated.extend(f"look_at: {d}" for d in dropped)
     tampered = {str(i.get("subject")): str(i["id"]) for i in items
                 if i.get("kind") == "conflict.case-tampered"}
-    evidence = _evidence(home, item, limits, look_at, tampered)
+    from . import provenance
+    # The evidence quotes transcript turns, and telling a typed turn from a
+    # sent one sweeps every harness store: this is the read the inbox page
+    # waits on, so it is one of the two that keep the sweep's file (S-163).
+    with provenance.saving():
+        evidence = _evidence(home, item, limits, look_at, tampered)
     more: list[dict] = []
     if len(evidence) > MAX_EVIDENCE:
         more = [_evidence_ref(e) for e in evidence[MAX_EVIDENCE:]]

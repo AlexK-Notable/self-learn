@@ -2938,11 +2938,14 @@ def _run_locked(
     slices = walk(since)
     # refs rule 10 (2026-10-19): text other sessions handed to herdr, read
     # once per run from the transcripts and the sibling Codex, Hermes, agy and pi stores.
-    sent = (
-        provenance.sweep(provenance.sender_dirs([transcripts_root(home)]))
-        if slices
-        else provenance.SentIndex()
-    )
+    # The real run also keeps the sweep's file warm for the inbox (S-163); a
+    # preview and a backfill sweep without writing it.
+    with provenance.saving():
+        sent = (
+            provenance.sweep(provenance.sender_dirs([transcripts_root(home)]))
+            if slices
+            else provenance.SentIndex()
+        )
     # new-miner plan §1: the session engine does the judging; everything above
     # (lock, healing, seeding, sweeps, walk, the sends) and the landing commit are shared
     result = _run_session_engine(
