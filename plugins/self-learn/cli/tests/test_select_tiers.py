@@ -119,7 +119,8 @@ def test_two_tiers_preserve_default_and_confident_priority(home, monkeypatch):
     all_hits = select.select_lessons(home, 'No shared wording', tier='all')
     assert ids(all_hits) == ['lrn-00000001', 'lrn-00000002']
     assert all_hits['lessons'][1]['confidence'] == 'possible'
-    assert 'semantic' in all_hits['lessons'][1]['why']
+    assert 'current vector' in all_hits['lessons'][1]['why']
+    assert 'semantic floor' not in all_hits['lessons'][1]['why']
     assert ids(select.select_lessons(home, 'No shared wording', tier='all', limit=1)) == ['lrn-00000001']
     assert ids(select.select_lessons(home, 'No shared wording', tier='all', exclude=['lrn-00000001'])) == ['lrn-00000002']
 

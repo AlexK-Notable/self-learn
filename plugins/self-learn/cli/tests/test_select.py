@@ -121,7 +121,7 @@ def test_hybrid_semantic_floor_and_unknown_model(home, monkeypatch):
     assert ids(result) == ["lrn-00000001"]
     assert result["mode"] == "hybrid"
     assert result["lessons"][0]["score"]["basis"] == "cosine"
-    assert "semantic" in result["lessons"][0]["why"]
+    assert {"current vector", "semantic floor"} <= set(result["lessons"][0]["why"])
     assert not ids(select.select_lessons(home, "watercolor astronomy", provider=fake))
     fake.calls.clear()
     monkeypatch.delitem(COSINE_THRESHOLDS, fake.model_id)

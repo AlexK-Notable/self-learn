@@ -293,8 +293,14 @@ Without `--json`, selection prints agent-facing lesson text and match reasons.
 The response includes `lessons`, search `mode` and degradation `note`; each
 lesson carries its text, routing, relevance score with its basis, `confidence`
 (`confident` or `possible`), and `why`. `--tier confident` is the default;
-`--tier all` adds possible matches. Confident results precede possible results
-before applying the limit. In `all`, strong current task semantics can admit an
+`--tier all` adds possible matches. Confident results use RRF over exactly the default tier's candidate pool,
+including candidates that later fail qualification; all-only scope exceptions
+cannot change their scores or order. Possible results retain RRF over the expanded
+candidate pool and follow every confident result, with id tie breaks within each
+tier. For limit N and C qualifying confident results, return min(C, N) confident
+results, then at most max(0, N - C) possible results. Thus, for identical inputs
+and the same limit, the complete default result list is a prefix of `--tier all`;
+if confident results fill the limit, no possible results are returned. In `all`, strong current task semantics can admit an
 unnamed skill or a user rule with no supplied path as possible only; `why` names
 the missing input. Explicitly different skills, nonmatching supplied paths and
 other projects remain excluded.
@@ -304,7 +310,9 @@ scores use a stable corpus before scope/exclusion filtering. Discriminative
 one-word lookups can qualify, without a task-word blacklist. Context can strengthen
 a task-supported match, but cannot qualify a lesson by itself. Only caller-typed
 project and path/glob strings enter retrieval context: at most 20 paths and
-2,048 UTF-8 bytes, with truncation reported. Glob expansion is used only for gating.
+2,048 UTF-8 bytes, with truncation reported. Caller-typed absolute paths can
+disclose home-directory names to the embedding provider; `--no-embed` avoids that.
+Glob expansion is used only for gating.
 User rules use home-relative paths plus registered hosts outside the home;
 project rules use project-relative paths, including absolute input paths.
 Current vectors must pass their tier's task-evidence floor; lexical fallback applies when
@@ -319,6 +327,41 @@ pass `--no-push`. Reuse the same event key on retries of notes and confirmations
 are refused with exit 64 before writes). Confirmation keys are retained for the
 record's lifetime; record meaningful observations rather than every selection.
 See [the provider contract](docs/specs/self-learn/22-lessons-provider.md).
+
+| `why` value | Meaning |
+|---|---|
+| `current vector` | A current vector supplied the task cosine; this alone never qualifies a result. |
+| `semantic floor` | Task cosine passed the model's base `thresholds.cosine`, independently of the tier's other tests. A possible result may pass it, and a corroborated confident result may fall below it. |
+| `lexical` | Task text established lexical evidence and the combined task/context score passed the lexical floor; context may strengthen that evidence. |
+| `user scope` | The record is user-scoped. |
+| `project scope` | The record belongs to the requested project. |
+| `ancestor project scope` | The record belongs to a registered ancestor of the requested project. |
+| `skill scope` | The record is skill-scoped; inspect `skill not requested` for an exception. |
+| `path gate` | A supplied path actually matched the record's rules gate. |
+| `task/context corroboration` | The stated confident or path-supported possible context test passed. |
+| `skill not requested` | An unnamed skill was admitted as possible on strong task semantics. |
+| `path not supplied` | A gated user rule was admitted as possible without a supplied path; no gate match is claimed. |
+
+Independent held-out measurement on 60 realistic tasks with 37 labelled positive
+lesson/task pairs, one ledger and `gemini-embedding-2@3072/i1`:
+
+| Mode / tier | Right | Wrong | Precision | Recall |
+|---|---:|---:|---:|---:|
+| Embedded, confident | 8 | 2 | 80% | 22% |
+| Embedded, all | 20 | 6 | 77% | 54% |
+| Lexical only, either tier | 8 | 2 | 80% | 22% |
+
+Every one of the 24 near-miss and unrelated tasks returned nothing in these
+measurements. The `confident` label did not establish a reliably more accurate
+class than `possible`: 8 of 10 confident results were right, versus 12 of 16
+possible results (80% versus 75%, only a small observed difference). It describes
+the kind of evidence, not a probability. These are small counts on one ledger
+and one embedding model, supplied by an independent evaluator on the round-3
+implementation; they are not expected performance on another workload.
+Re-measure both tiers after changing the model, dimensions, embedding templates,
+retrieval/ranking policy, corpus size or topics, routing, or the caller's task and
+context distribution. Development-set tuning figures are not quality forecasts.
+
 
 ## Development
 

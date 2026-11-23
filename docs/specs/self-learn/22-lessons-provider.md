@@ -148,7 +148,8 @@ retrieval similarity floors, not probabilities of applicability.
 Every result carries `confidence`. These names identify retrieval tests, not
 probabilities or permission to follow a lesson. For the measured Gemini profile,
 let T be task-only cosine, C be task-plus-context cosine, and L mean passing the
-task's lexical test (including its 0.16 score floor):
+task's lexical evidence test, with the combined task/context score meeting the
+0.16 floor (context can lift a task-supported score above that floor):
 
 | Tier | Qualification for an otherwise eligible lesson |
 |---|---|
@@ -159,8 +160,14 @@ Evaluate confident first. Context cannot qualify a lesson without independent
 task evidence: the lowest task floor requires both semantic context corroboration
 and an actual path-gate witness. Merely naming a project is insufficient.
 Current semantic evidence below these tests cannot be overridden by lexical
-fallback. A confident result sorts before every possible result, then existing
-RRF and id tie breaks apply within each tier, before `--limit`.
+fallback. Confident results use RRF over exactly the default tier's candidate pool,
+including candidates that later fail qualification; all-only scope exceptions
+cannot change their scores or order. Possible results retain RRF over the expanded
+candidate pool and follow every confident result, with id tie breaks within each
+tier. For limit N and C qualifying confident results, return min(C, N) confident
+results, then at most max(0, N - C) possible results. Thus, for identical inputs
+and the same limit, the complete default result list is a prefix of `--tier all`;
+if confident results fill the limit, no possible results are returned.
 
 Only `--tier all` admits two normally excluded classes, always as possible:
 unnamed skill lessons when **no** skill was requested require T >= 0.725;
@@ -185,8 +192,29 @@ queries, generic one/two-word overlaps, paraphrases without common wording, and
 path/project context. Independently labeled development tasks were used to tune
 this revision; development results are not held-out quality estimates. Labels,
 queries, ledger text and vectors stay outside this public repository. The held-out
-split remains reserved for independent scoring. No universal precision/recall or
-semantic applicability guarantee is claimed by the synthetic fixtures.
+split was scored only by the independent evaluator. No universal precision/recall
+or semantic applicability guarantee is claimed by the synthetic fixtures.
+
+Independent held-out measurement on 60 realistic tasks with 37 labelled positive
+lesson/task pairs, one ledger and `gemini-embedding-2@3072/i1`:
+
+| Mode / tier | Right | Wrong | Precision | Recall |
+|---|---:|---:|---:|---:|
+| Embedded, confident | 8 | 2 | 80% | 22% |
+| Embedded, all | 20 | 6 | 77% | 54% |
+| Lexical only, either tier | 8 | 2 | 80% | 22% |
+
+Every one of the 24 near-miss and unrelated tasks returned nothing in these
+measurements. The `confident` label did not establish a reliably more accurate
+class than `possible`: 8 of 10 confident results were right, versus 12 of 16
+possible results (80% versus 75%, only a small observed difference). It describes
+the kind of evidence, not a probability. These are small counts on one ledger
+and one embedding model, supplied by an independent evaluator on the round-3
+implementation; they are not expected performance on another workload.
+Re-measure both tiers after changing the model, dimensions, embedding templates,
+retrieval/ranking policy, corpus size or topics, routing, or the caller's task and
+context distribution. Development-set tuning figures are not quality forecasts.
+
 
 Rank eligible candidates with existing reciprocal-rank fusion and deterministic
 id tie breaks. Compute lexical weights before eligibility filtering; apply scope,
@@ -194,6 +222,10 @@ lifecycle, gates and exclusions before ranking/cutting to the limit, so an exclu
 nearest result cannot hide an eligible next result. Similarity names its scale
 (cosine for a current semantic result, lexical for fallback). RRF is a ranking
 value, not a probability or a distance comparable with another provider's score.
+
+Caller-typed absolute project and path strings can disclose home-directory names
+to the embedding provider within the context cap. Expanded or canonical names
+are never sent; `--no-embed` avoids provider disclosure entirely.
 
 ### Calibration and limits
 
@@ -251,7 +283,23 @@ JSON output is one object with `command`, `tier`, `mode`, `note`, `thresholds`, 
 and `unreadable`. Each lesson has `id`, agent-facing `text`, `type`, `kind`,
 `confidence`, `scope`, `scope_relation`, `bucket`, `status`, the complete `routing` mapping, `score` (`value`,
 `basis`, `rrf`, `cosine`, `context_cosine`, `lexical`), `why` and `matched_paths`. `why` names
-semantic/lexical evidence, scope and any satisfied path gate. Reference/hook destinations preserve complete Trigger/Instruction or Fact
+the following independent facts (the ambiguous legacy `semantic` value is removed):
+
+| `why` value | Meaning |
+|---|---|
+| `current vector` | A current vector supplied the task cosine; this alone never qualifies a result. |
+| `semantic floor` | Task cosine passed the model's base `thresholds.cosine`, independently of the tier's other tests. A possible result may pass it, and a corroborated confident result may fall below it. |
+| `lexical` | Task text established lexical evidence and the combined task/context score passed the lexical floor; context may strengthen that evidence. |
+| `user scope` | The record is user-scoped. |
+| `project scope` | The record belongs to the requested project. |
+| `ancestor project scope` | The record belongs to a registered ancestor of the requested project. |
+| `skill scope` | The record is skill-scoped; inspect `skill not requested` for an exception. |
+| `path gate` | A supplied path actually matched the record's rules gate. |
+| `task/context corroboration` | The stated confident or path-supported possible context test passed. |
+| `skill not requested` | An unnamed skill was admitted as possible on strong task semantics. |
+| `path not supplied` | A gated user rule was admitted as possible without a supplied path; no gate match is claimed. |
+
+Reference/hook destinations preserve complete Trigger/Instruction or Fact
 sections and Context using the reference compiler; managed-line destinations use
 their existing compact line. Legacy multiline records also retain full sections.
 Episode briefs, evidence and metadata are not emitted as lesson text. Bad record files

@@ -507,8 +507,8 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
                         relaxed[record.id] = ["skill not requested"]
                 except Exception:
                     unreadable.append(str(path.relative_to(home)))
-    from .verbs import _user_reachability_roots
-    user_roots = _user_reachability_roots(home, Path.home() / ".config" / "CLAUDE.md")
+    from .verbs import DEFAULT_USER_CLAUDE_MD, _user_reachability_roots
+    user_roots = _user_reachability_roots(home, DEFAULT_USER_CLAUDE_MD.expanduser())
     concrete_paths: list[Path] = []
     if records and limit:
         try:
@@ -546,8 +546,13 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
     lexical_ids = sorted(lexical, key=lambda rid: (-lexical[rid], rid))
     semantic_ids = sorted(semantic, key=lambda rid: (-semantic[rid], rid))
     rankings = [lexical_ids, semantic_ids] if semantic else [lexical_ids]
+    ranked = rrf_fuse(rankings)
+    # Preserve default ranks, including its unqualified candidates. All-only
+    # scope exceptions must not change confident scores or limited membership.
+    confident_rrf = dict(rrf_fuse([[rid for rid in ranking if rid not in relaxed]
+                                  for ranking in rankings])) if relaxed else dict(ranked)
     lessons = []
-    for rid, rrf in rrf_fuse(rankings):
+    for rid, rrf in ranked:
         lex, sem = lexical.get(rid, 0.0), semantic.get(rid)
         lex_ok = lex >= LEXICAL_THRESHOLD
         sem_ok = sem is not None and threshold is not None and sem >= threshold
@@ -573,7 +578,10 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
         if not confident and not (tier == "all" and possible):
             continue
         record, bucket, matches, relation, _ = records[rid]
-        why = (["semantic"] if sem is not None else []) + (["lexical"] if lex_ok else [])
+        if confident:
+            rrf = confident_rrf[rid]
+        why = (["current vector"] if sem is not None else [])
+        why += (["semantic floor"] if sem_ok else []) + (["lexical"] if lex_ok else [])
         why += ["ancestor project scope" if relation == "ancestor-project" else
                 "project scope" if record.scope == "project" else "skill scope" if record.scope.startswith("skill:") else "user scope"]
         if matches:
