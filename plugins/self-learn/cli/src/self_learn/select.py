@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import domain, gitops
 from .compilers import _reference_block, entry_line, loaded_text_problem
-from .hosts import ancestors_of, capture_host_path, load_hosts
+from .hosts import HostsError, ancestors_of, capture_host_path, load_hosts
 from .index import fts5
 from .index.protocol import EmbedProvider
 from .index.related import COSINE_THRESHOLDS, LEXICAL_THRESHOLD
@@ -53,25 +53,48 @@ class PathScanError(ValueError):
     """Incomplete glob evidence; keep ungated selection available."""
 
 
-def _git_files(root: Path):
-    # Git owns ignore semantics; the shared runner bounds bytes and lifetime
-    # and reaps the entire child process group on either limit.
+def _read_git(root: Path, args: list[str], *, byte_limit: int):
+    # Read-only means no fsmonitor hook/daemon and no optional index refresh.
+    return procs.run_bounded(
+        ["git", "--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", *args],
+        cwd=str(root), env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        timeout=gitops.GIT_LOCAL_TIMEOUT, binary=True, max_output_bytes=byte_limit,
+    )
+
+
+def _git_toplevel(root: Path, notes: list[str] | None = None) -> Path | None:
     try:
-        result = procs.run_bounded(
-            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-            cwd=str(root), timeout=gitops.GIT_LOCAL_TIMEOUT, binary=True,
-            max_output_bytes=PATH_SCAN_BYTES,
-        )
+        result = _read_git(root, ["rev-parse", "--show-toplevel"], byte_limit=PATH_SCAN_BYTES)
+    except (OSError, procs.BoundedTimeout, procs.OutputLimitExceeded):
+        if notes is not None:
+            notes.append("Git unavailable; using filesystem project path")
+        return None
+    return Path(os.fsdecode(result.stdout).strip()) if result.returncode == 0 else None
+
+
+def _git_files(root: Path, prefixes: set[str], budget: list[int]):
+    # Literal Git pathspecs keep brackets/colons in directory names literal.
+    pathspecs = [":(literal)" + p + "/" for p in sorted(prefixes) if p]
+    if "" in prefixes:
+        pathspecs = []
+    try:
+        result = _read_git(root,
+            ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *pathspecs],
+            byte_limit=max(1, PATH_SCAN_BYTES - budget[1]))
     except procs.OutputLimitExceeded as exc:
         raise PathScanError("path glob inventory byte budget exhausted") from exc
     except procs.BoundedTimeout as exc:
         raise PathScanError("Git path inventory did not finish") from exc
+    except OSError as exc:
+        raise PathScanError("Git path inventory unavailable") from exc
     if result.returncode != 0:
         raise PathScanError("Git path inventory failed")
+    budget[1] += len(result.stdout) + len(result.stderr)
     names = result.stdout.split(b"\0")
     if names and not names[-1]:
         names.pop()
-    if len(names) > PATH_SCAN_LIMIT:
+    budget[0] += len(names)
+    if budget[0] > PATH_SCAN_LIMIT or budget[1] > PATH_SCAN_BYTES:
         raise PathScanError("path glob scan budget exhausted")
     for name in names:
         yield os.fsdecode(name)
@@ -119,15 +142,32 @@ def task_paths(paths: list[str], root: Path, *, literal_paths: list[str] | None 
             roots.add(anchor)
     if not patterns:
         return sorted(out)
-    if gitops.toplevel(root) is not None:
-        for name in _git_files(root):
-            path = root / name
-            if (not path.is_symlink() and path.is_file()
-                    and path.resolve().is_relative_to(root)
-                    and any(p.match(name) for p in patterns)):
-                out.add(name)
+    anchors = [p for p in sorted(roots) if not any(parent in roots for parent in p.parents)]
+    if _git_toplevel(root) is not None:
+        jobs: dict[Path, set[str]] = {}
+        for anchor in anchors:
+            repo = _git_toplevel(anchor) or root
+            prefix = anchor.relative_to(repo).as_posix()
+            jobs.setdefault(repo, set()).add("" if prefix == "." else prefix)
+        seen: set[Path] = set()
+        budget = [0, 0]  # shared entry/byte cap across nested repositories
+        while jobs:
+            repo, prefixes = jobs.popitem()
+            if repo in seen:
+                continue
+            seen.add(repo)
+            for local_name in _git_files(repo, prefixes, budget):
+                path = repo / local_name
+                if path.is_symlink() or not path.resolve().is_relative_to(root):
+                    continue
+                name = path.relative_to(root).as_posix()
+                if path.is_dir() and (path / ".git").exists():
+                    if any(globs_may_intersect(p, name + "/**") for p in raw_patterns):
+                        jobs.setdefault(path, set()).add("")
+                elif path.is_file() and any(p.match(name) for p in patterns):
+                    out.add(name)
         return sorted(out)
-    pending = [p for p in sorted(roots) if not any(parent in roots for parent in p.parents)]
+    pending = anchors
     visited = 0
     while pending:
         directory = pending.pop()
@@ -164,10 +204,14 @@ def agent_text(record: Record) -> str:
     return entry_line(record)
 
 
-# Generic task vocabulary may rank a hit, but cannot corroborate its topic.
-# Stemmed by the same FTS tokenizer below; calibrated in test_provider_review.
-_TASK_FILLER = "add after before check config configuration during file launch run test unit while write"
+# Query-side evidence uses corpus frequencies, never a task-word blacklist.
+# Short lookups tolerate moderately shared names; multi-term tasks need a
+# more discriminative description as well as substantial weighted coverage.
 LEXICAL_MIN_TERMS = 2
+LEXICAL_QUERY_COVERAGE = .65
+LEXICAL_QUERY_SPECIFICITY = .85
+LEXICAL_LOOKUP_SPECIFICITY = .75
+LEXICAL_STRONG_OVERLAP = .65
 
 
 def _lexical(texts: dict[str, str], query: str) -> dict[str, float]:
@@ -188,15 +232,12 @@ def _lexical(texts: dict[str, str], query: str) -> dict[str, float]:
         docs: dict[str, Counter[str]] = {rid: Counter() for rid in texts}
         for term, rowid in conn.execute("SELECT term, doc FROM terms"):
             docs[ids[rowid]][term] += 1
-        # A separate table tokenizes the query/fillers, never enters doc stats.
+        # A separate table tokenizes the query, never enters doc stats.
         conn.execute("CREATE VIRTUAL TABLE query_fts USING fts5(text, tokenize='porter unicode61')")
         conn.execute("INSERT INTO query_fts(rowid, text) VALUES (1, ?)", (" ".join(tokenize(query)),))
-        conn.execute("INSERT INTO query_fts(rowid, text) VALUES (2, ?)", (_TASK_FILLER,))
         conn.execute("CREATE VIRTUAL TABLE query_terms USING fts5vocab(query_fts, instance)")
         query_terms = Counter(row[0] for row in conn.execute("SELECT term FROM query_terms WHERE doc=1"))
-        fillers = {row[0] for row in conn.execute("SELECT term FROM query_terms WHERE doc=2")}
-    corroborating = set(query_terms) - fillers
-    if len(corroborating) < LEXICAL_MIN_TERMS:
+    if not query_terms:
         return {}
     frequencies: Counter[str] = Counter()
     for terms in docs.values():
@@ -206,6 +247,12 @@ def _lexical(texts: dict[str, str], query: str) -> dict[str, float]:
     weights = {t: math.log1p((total - frequencies[t] + .5) / (frequencies[t] + .5))
                for t in set(frequencies) | set(query_terms)}
 
+    query_mass = sum(weights[t] for t in query_terms)
+    corpus_peak = max(weights[t] for t in frequencies) if frequencies else 1
+    specificity = query_mass / len(query_terms) / corpus_peak
+    minimum_specificity = (LEXICAL_LOOKUP_SPECIFICITY if len(query_terms) == 1
+                           else LEXICAL_QUERY_SPECIFICITY)
+
     def score(terms: Counter[str], wanted) -> float:
         norm = 1.2 * (.25 + .75 * sum(terms.values()) / avg_length)
         return sum(weights[t] * terms[t] * 2.2 / (terms[t] + norm)
@@ -214,12 +261,19 @@ def _lexical(texts: dict[str, str], query: str) -> dict[str, float]:
     query_self = score(query_terms, query_terms)
     scores = {}
     for rid, terms in docs.items():
-        if len(corroborating & terms.keys()) < LEXICAL_MIN_TERMS:
+        overlap = query_terms.keys() & terms.keys()
+        if len(overlap) < min(LEXICAL_MIN_TERMS, len(query_terms)):
+            continue
+        if sum(weights[t] for t in overlap) / query_mass < LEXICAL_QUERY_COVERAGE:
             continue
         own = score(terms, terms)
         forward = min(1.0, score(terms, query_terms) / query_self) if query_self else 0
         reverse = min(1.0, score(query_terms, terms) / own) if own else 0
-        scores[rid] = (forward + reverse) / 2
+        value = (forward + reverse) / 2
+        # Near-complete mutual overlap remains evidence even when the small
+        # corpus repeats its topic in nearly every record.
+        if specificity >= minimum_specificity or value >= LEXICAL_STRONG_OVERLAP:
+            scores[rid] = value
     return scores
 
 
@@ -275,9 +329,14 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
     root = (project or Path.cwd()).expanduser().resolve()
     if project is not None and not root.is_dir():
         raise ValueError("project must be an existing directory")
-    root = gitops.toplevel(root) or root
+    path_notes: list[str] = []
+    root = _git_toplevel(root, path_notes) or root
     project_key = capture_host_path(home, root).resolve() if project is not None else None
-    ancestor_paths = set(ancestors_of(load_hosts(home), project_key)) if project_key else set()
+    try:
+        ancestor_paths = set(ancestors_of(load_hosts(home), project_key)) if project_key else set()
+    except HostsError:
+        ancestor_paths = set()
+        path_notes.append("hosts.yaml unreadable; ancestor lessons omitted")
     selected_skills = set(skills or [])
     excluded = set(exclude or [])
     records: dict[str, tuple[Record, str, list[str], str, Path | None]] = {}
@@ -311,7 +370,6 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
                     records[record.id] = (record, bucket.name, [], relation, recorded_path)
                 except Exception:
                     unreadable.append(str(path.relative_to(home)))
-    path_notes: list[str] = []
     if records and limit:
         try:
             concrete_paths = task_paths(paths or [], root, literal_paths=literal_paths, notes=path_notes)
@@ -358,13 +416,21 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
         if len(lessons) >= limit:
             break
     return {"command": "select", "mode": "hybrid" if semantic else "lexical-only", "note": note,
-            "thresholds": {"cosine": threshold, "lexical": LEXICAL_THRESHOLD, "lexical_min_terms": LEXICAL_MIN_TERMS},
+            "thresholds": {"cosine": threshold, "lexical": LEXICAL_THRESHOLD, "lexical_min_terms": LEXICAL_MIN_TERMS,
+                           "lexical_query_coverage": LEXICAL_QUERY_COVERAGE,
+                           "lexical_query_specificity": LEXICAL_QUERY_SPECIFICITY,
+                           "lexical_lookup_specificity": LEXICAL_LOOKUP_SPECIFICITY,
+                           "lexical_strong_overlap": LEXICAL_STRONG_OVERLAP},
             "lessons": lessons, "unreadable": unreadable}
 
 
 def dispatch(args) -> int:
     home = resolve_home()
-    state = home_state(home)
+    try:
+        state = home_state(home)
+    except OSError:
+        print("self-learn select: Git unavailable; cannot validate ledger home", file=sys.stderr)
+        return EXIT_NO_HOME
     if state != "ok":
         print(home_state_message(state, home), file=sys.stderr)
         return EXIT_NO_HOME

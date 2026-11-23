@@ -3376,9 +3376,9 @@ def _cmd_verb(args: argparse.Namespace) -> int:
 def _finish_feedback(result: verbs.VerbResult, target: str, *, args: argparse.Namespace) -> int:
     code = _finish_verb(result, target)
     if args.as_json:
-        from .teach import record_receipt
+        from .teach import committed_receipt
 
-        receipt = record_receipt(resolve_home(), result.record_id)
+        receipt = committed_receipt(resolve_home(), result.record_id)
         receipt.update(applied=bool(result.staged), pushed=_push_state(result.push),
                        host_pushed=_push_state(result.host_push) if result.host_commit_sha else None)
         args.feedback_receipt = receipt

@@ -290,12 +290,14 @@ Without `--json`, selection prints agent-facing lesson text and match reasons.
 
 The response includes `lessons`, search `mode` and degradation `note`; each
 lesson carries its text, routing, relevance score with its basis, and `why`.
-Lexical hits require at least two matched topic terms and the relevance floor;
-scores use a stable corpus before scope/exclusion filtering. Broad one-word
-lexical queries conservatively return nothing. Provider scores cannot be compared
+Lexical hits require corpus-weighted query coverage and the relevance floor;
+scores use a stable corpus before scope/exclusion filtering. Discriminative
+one-word lookups can qualify, without a task-word blacklist. Provider scores cannot be compared
 with another provider's thresholds. The four write verbs above emit one receipt
 (`id`, `path`, `status`, `scope`); feedback receipts also include `applied`, `pushed`
-and `host_pushed`. Check the exit code as well as the receipt. Writes commit and normally push, so integrations should
+and `host_pushed`. A post-operation read race returns null record fields and
+`receipt_error`, preserving the operation exit code. Check the exit code as well
+as the receipt. Reconcile a supersede retry with `show OLD --json` first. Writes commit and normally push, so integrations should
 pass `--no-push`. Reuse the same event key on retries of notes and confirmations:
 1..40 ASCII letters/digits/._:-, secret-scan clean (UUIDs work; raw SHA-256 keys
 are refused with exit 64 before writes). Confirmation keys are retained for the

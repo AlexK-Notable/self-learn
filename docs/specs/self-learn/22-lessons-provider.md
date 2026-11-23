@@ -40,10 +40,15 @@ for matching, including an internal symlink's name. A symlink pointing outside
 the project is ignored with an explicit note; it does not discard other paths or
 ungated lessons. A lexical path outside the root is a usage error.
 
-Input globs expand existing files. Inside Git, use the read-only streamed
+Input globs expand existing files. Inside Git, use the read-only bounded
 `git ls-files --cached --others --exclude-standard -z` inventory; ignore rules
 apply, `.git` is never walked, and tracked files remain eligible even if a later
-ignore rule names them. Outside Git, walk only possible matching subtrees and
+ignore rule names them. Literal glob prefixes become literal Git pathspecs, so
+files outside the requested subtrees do not exhaust the budget. Descend into
+nested Git checkouts and initialized submodules with their own ignore rules;
+entry/byte budgets are shared across all inventories. Uninitialized submodules
+have no concrete file witnesses. All selection Git queries disable fsmonitor,
+optional locks and the pager, with `GIT_OPTIONAL_LOCKS=0`. Outside Git, walk only possible matching subtrees and
 skip `.git` and symlinks. The inventory has deterministic limits of 10,000 entries
 and 4 MB of combined Git output. Git runs through the shared bounded-child
 primitive with the standard 30-second local Git deadline; exceeding bytes or
@@ -52,6 +57,11 @@ one-second traversal cutoff. Exhaustion or an inventory error
 omits path-gated lessons and records that degradation in `note`; ungated lessons
 still rank normally. No partial glob evidence is treated as complete. A zero
 limit skips enumeration. Empty expansion matches nothing.
+
+If hosts.yaml is malformed or unsupported, retain user and exact-project
+selection and report `hosts.yaml unreadable; ancestor lessons omitted`; never
+guess ancestor registration. Missing Git at the CLI ledger-home gate returns 5
+with a diagnostic, rather than a traceback.
 
 ## 2. Ranking and the relevance floor
 
@@ -67,21 +77,31 @@ Use BM25 term saturation (`k1=1.2`, `b=0.75`) with positive IDF
 small ledgers. Compute query-self and lesson-self weights using those same fixed
 corpus statistics; average the two cross/self ratios, each clamped at 1. This is
 an explicitly revised task lexical scale, not an assertion that FTS5 lesson-pair
-BM25 values are interchangeable. Retain the existing lexical floor 0.16, with
-additional evidence: **at least two distinct matched query stems** after the
-usual stopword filter and generic-task filter. Generic terms (`add`, `after`,
-`before`, `check`, `config`, `configuration`, `during`, `file`, `launch`, `run`,
-`test`, `unit`, `while`, `write`) may contribute to ranking but never corroborate
-a topic. One-word lexical lookups conservatively return no hits; a semantic hit
-can still qualify independently. Return `thresholds.lexical_min_terms = 2`.
+BM25 values are interchangeable. Retain the existing lexical floor 0.16.
+There is no task-word blacklist: `run`, `test`, `config` and other content words
+retain their corpus IDF weight. Additional query-side evidence is:
 
-Calibration is pinned in `tests/test_provider_review.py`: 16 synthetic lessons,
-six positive tasks with one intended hit each and six short/noise tasks with no
-intended hits. The fixed implementation returned 6 true positives, 0 false
-positives and 0 false negatives: 100% precision and recall on these fixtures.
-This is a small labelled calibration set, not a held-out estimate of real-world
-precision. Its exact-match expectations remain regression tests;
-semantic retrieval is separately tested with fakes, never live embedding calls.
+- Match at least `min(2, number of distinct query stems)` stems, so a one-word
+  lookup can qualify.
+- Matched stems must cover at least 0.65 of the query's total distinct-stem IDF
+  weight. Unseen query terms retain high IDF and therefore count against coverage.
+- The query's mean IDF, divided by the maximum observed corpus term IDF, must
+  reach 0.85 (0.75 for one-word lookups), **or** symmetric BM25 overlap must reach
+  0.65. The strong-overlap alternative preserves recall in small ledgers whose
+  lessons repeat their common topic. Empty token sets never qualify.
+
+These are explicit task-side tuning constants, exposed in `thresholds` as
+`lexical_min_terms`, `lexical_query_coverage`, `lexical_query_specificity`,
+`lexical_lookup_specificity`, and `lexical_strong_overlap`. They do not change
+semantic qualification. Corpus frequency makes broadly shared words weak
+rather than categorically unusable; it is not a semantic applicability oracle.
+
+The original 16-lesson/12-task regression set and the second review's short-query
+and generic-overlap probes remain exact regression tests. Their results are
+**tuning/regression evidence**, not independent precision/recall estimates.
+An independently labeled held-out set of real tasks against routed lessons is
+still required before claiming measured real-task precision or recall; no such
+estimate is claimed by these fixtures. Semantic tests use fakes only.
 
 Read cached embeddings only when their text hash matches the current lesson text.
 Embed the query using the existing bounded interactive provider path and compare
@@ -129,7 +149,12 @@ retirement immediately after selection, as with any read followed by use.
 
 `teach`, `note`, `confirm-held` and `supersede` accept `--json`. When a record was
 successfully addressed or captured, stdout is one object: `id`, `path`, `status`,
-`scope`. Feedback verbs (`note`, `confirm-held`, `supersede`) additionally return
+`scope`. If the post-operation record read fails (for example, a concurrent
+move), keep the operation exit code and id, return null `path`/`status`/`scope`,
+and add `receipt_error: "record unavailable after operation; use show to reconcile"`.
+Never turn a committed write into a usage refusal just because the receipt read
+failed. Feedback outcome fields still describe the completed operation.
+Feedback verbs (`note`, `confirm-held`, `supersede`) additionally return
 `applied` (whether this call staged a mutation), `pushed` and `host_pushed`.
 The established push vocabulary is `not_requested`, `no_remote`, `pushed`, or
 `failed`; `host_pushed` is null when no host commit occurred. A keyed duplicate
@@ -143,7 +168,11 @@ for the captured pending record. Validation failures with no record emit no
 receipt. A receipt does not imply a successful push: callers must check the exit
 code and push fields (teach retains its four-field capture receipt). `teach` retains its historical exit 0 after a committed
 capture whose push failed (stderr reports that failure); use `--no-push` for
-integrations. Plain pending `teach --no-push` is supported as well as routed capture.
+integrations. A repeated `supersede OLD NEW` remains a lifecycle refusal
+(exit 1), even for the same NEW. After a lost reply or failed push, inspect
+`show OLD --json` and its `superseded_by` before retrying; reconcile host cleanup
+and publication separately. Do not mistake the refusal for an unapplied first
+operation. Plain pending `teach --no-push` is supported as well as routed capture.
 
 `confirm-held` and `supersede` retain the requirement for `--note` in an
 agent-marked shell. All four verbs commit ledger writes and ordinarily push; integrations pass
@@ -169,7 +198,9 @@ Invalid keys return 64 naming `--key`, without echoing its value, before record
 writes, locks or the CLI watchdog/epilogue. Direct verb callers get the same
 validation, and batch previews call the same preflight as apply. This prevents storing text that would make future record scans
 refuse every verb. Existing record readers remain compatible; no migration or
-secret-scan bypass is introduced.
+secret-scan bypass is introduced. Compatibility change: CLI and batch
+`note --key` now refuse previously accepted keys outside this safe format;
+shipped 16-hex batch keys remain accepted.
 
 Confirmation performs read-only preflight before sentinel/commit locks, then
 rechecks the current record under lock. Non-routed refusals and acknowledged
@@ -184,3 +215,15 @@ not each selection or task tick. Each new observation adds one key and one commi
 there is no bounded/TTL dedupe guarantee. Silently evicting old keys would break
 retry safety, so no lossy cap or compaction is permitted. A future exact archival
 index would need its own atomicity and migration contract.
+
+
+## 5. Repeated-call cost
+
+Selection reads every record to keep corpus statistics stable under exclusions
+and to reject stale vectors against current text. Cold CLI calls therefore pay
+for every YAML parse; no constant-time or subsecond guarantee is implied.
+The existing `Record.from_path` cache helps repeated calls in one Python process,
+while rereading file contents and cloning parsed records preserves freshness and
+caller isolation. It is bounded in memory and is not a persistent index or a
+cross-process cache. Persistent memoization would conflict with the read-only
+contract unless maintained separately by a writer; no such daemon is started.

@@ -463,13 +463,25 @@ def record_receipt(home: Path, record_id: str) -> dict:
     return {"id": record.id, "path": str(path), "status": record.status, "scope": record.scope}
 
 
+def committed_receipt(home: Path, record_id: str) -> dict:
+    """A receipt read failure cannot retroactively fail a completed operation."""
+    from .ledger_ops import UNREADABLE_RECORD_ERRORS
+    try:
+        return record_receipt(home, record_id)
+    except (LedgerOpsError, *UNREADABLE_RECORD_ERRORS):
+        return {"id": record_id, "path": None, "status": None, "scope": None,
+                "receipt_error": "record unavailable after operation; use show to reconcile"}
+
+
 def run_teach(args: argparse.Namespace) -> int:
     if not getattr(args, "as_json", False):
         return _run_teach(args)
     args.captured_id = None
     with contextlib.redirect_stdout(sys.stderr):
         code = _run_teach(args)
-    if args.captured_id is not None:
+    if args.captured_id is not None and code in (0, 4):
+        print(json.dumps(committed_receipt(resolve_home(), args.captured_id)))
+    elif args.captured_id is not None:
         try:
             receipt = record_receipt(resolve_home(), args.captured_id)
         except LedgerOpsError:
