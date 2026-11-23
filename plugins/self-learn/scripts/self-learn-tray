@@ -248,16 +248,30 @@ def command_timed_out(rc):
     return rc in (124, 137) or rc < 0
 
 
+def environ_entry_ok(key, value):
+    """Whether `key=value` can be an environment entry: a name with no `=`,
+    and no NUL or unencodable character on either side (one of those makes
+    PyGObject raise while it builds the child's environment)."""
+    if not key or "=" in key or "\0" in key or "\0" in value:
+        return False
+    try:
+        f"{key}={value}".encode("utf-8")
+    except UnicodeError:
+        return False
+    return True
+
+
 def session_environment(stdout):
     """The user manager's environment from `show-environment --output=json`:
-    a dict of strings, or None when the output is anything else."""
+    a dict of strings, or None when the output is anything else. An entry
+    that cannot be an environment entry is left out, not passed on."""
     try:
         data = json.loads(stdout)
     except ValueError:
         return None
     if not isinstance(data, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
         return None
-    return data
+    return {k: v for k, v in data.items() if environ_entry_ok(k, v)}
 
 
 def launch_environment(own, session):
@@ -297,10 +311,12 @@ def spawn(argv, done=None, env=None):
             proc = Gio.Subprocess.new(control_argv(argv), Gio.SubprocessFlags.NONE)
         else:
             launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.NONE)
-            launcher.set_environ([f"{k}={v}" for k, v in env.items()])
+            launcher.set_environ([f"{k}={v}" for k, v in env.items() if environ_entry_ok(k, v)])
             proc = launcher.spawnv(control_argv(argv))
-    except GLib.Error as exc:
-        log(f"could not start {argv[0]}: {exc.message}")
+    except (GLib.Error, TypeError, ValueError) as exc:
+        # Not only GLib.Error: PyGObject raises its own error on a string it
+        # cannot convert, and a click must always reach `done`.
+        log(f"could not start {argv[0]}: {getattr(exc, 'message', None) or exc}")
         if done:
             done(127)
         return
