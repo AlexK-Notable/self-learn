@@ -21,8 +21,10 @@ against.
 from __future__ import annotations
 
 import os
+import selectors
 import signal
 import subprocess
+import time
 from typing import Mapping, Sequence
 
 
@@ -39,6 +41,37 @@ class BoundedTimeout(subprocess.TimeoutExpired):
     timeout — nothing to reimplement."""
 
 
+class OutputLimitExceeded(RuntimeError):
+    """Combined stdout/stderr exceeded the caller's byte budget."""
+
+
+def _limited_output(proc, argv, timeout: float, limit: int) -> tuple[bytes, bytes]:
+    """Drain both pipes without letting a fast producer outrun the byte cap."""
+    deadline = time.monotonic() + timeout
+    buffers = [bytearray(), bytearray()]
+    size = 0
+    with selectors.DefaultSelector() as selector:
+        for index, stream in enumerate((proc.stdout, proc.stderr)):
+            selector.register(stream, selectors.EVENT_READ, index)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            for key, _ in selector.select(remaining):
+                chunk = os.read(key.fd, min(65536, limit - size + 1))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                size += len(chunk)
+                if size > limit:
+                    raise OutputLimitExceeded(f"child output exceeded {limit} bytes")
+                buffers[key.data].extend(chunk)
+    proc.wait(timeout=max(0, deadline - time.monotonic()))
+    proc.stdout.close()
+    proc.stderr.close()
+    return bytes(buffers[0]), bytes(buffers[1])
+
+
 def run_bounded(
     argv: Sequence[str],
     *,
@@ -48,6 +81,7 @@ def run_bounded(
     input: str | bytes | None = None,
     check: bool = False,
     binary: bool = False,
+    max_output_bytes: int | None = None,
 ) -> subprocess.CompletedProcess:
     """``subprocess.run(argv, ...)``, bounded. ``timeout`` is keyword-only
     and has no default — a caller must choose one, the whole point of
@@ -74,9 +108,18 @@ def run_bounded(
     ``None`` — a ``str`` under ``binary=True`` raises :class:`ValueError`
     (mixing a text ``input`` with a forced-bytes child is not a shape any
     caller wants; failing loudly beats a raw stdlib ``TypeError`` out of
-    ``Popen``)."""
+    ``Popen``).
+
+    ``max_output_bytes`` optionally bounds combined stdout/stderr capture.
+    It requires ``binary=True`` and no stdin; exceeding it kills the whole
+    process group just like timeout, then raises :class:`OutputLimitExceeded`.
+    """
     if binary and isinstance(input, str):
         raise ValueError("run_bounded: binary=True requires input to be bytes or None, not str")
+    if max_output_bytes is not None and (
+        max_output_bytes <= 0 or not binary or input is not None
+    ):
+        raise ValueError("run_bounded: output limit requires a positive budget, binary=True and no input")
     argv = list(argv)
     text_mode = not binary and not isinstance(input, (bytes, bytearray))
     proc = subprocess.Popen(
@@ -90,17 +133,18 @@ def run_bounded(
         start_new_session=True,
     )
     try:
-        stdout, stderr = proc.communicate(input=input, timeout=timeout)
-    except subprocess.TimeoutExpired:
+        if max_output_bytes is None:
+            stdout, stderr = proc.communicate(input=input, timeout=timeout)
+        else:
+            stdout, stderr = _limited_output(proc, argv, timeout, max_output_bytes)
+    except (subprocess.TimeoutExpired, OutputLimitExceeded) as exc:
+        # start_new_session makes pid the group id. The leader may have
+        # already exited while a descendant still owns a pipe: getpgid(pid)
+        # would lose that group precisely when we still need to kill it.
         try:
-            pgid = os.getpgid(proc.pid)
+            os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
-            pgid = None
-        if pgid is not None:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            pass
         try:
             proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
@@ -112,7 +156,9 @@ def run_bounded(
                 proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-        raise BoundedTimeout(argv, timeout) from None
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise BoundedTimeout(argv, timeout) from None
+        raise
 
     result = subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
     if check and result.returncode != 0:

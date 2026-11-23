@@ -11,7 +11,6 @@ import math
 import os
 import sqlite3
 import sys
-import subprocess
 from pathlib import Path
 
 from . import domain, gitops
@@ -28,6 +27,7 @@ from .index.registry import load_provider
 from .index.vectors import cosine, deserialize
 from .ledger import EXIT_NO_HOME, discover_buckets, home_state, home_state_message, resolve_home
 from .ledger_ops import ProposalError, _compile_glob_pattern, _glob_match, bucket_project_path, globs_may_intersect
+from .primitives import procs
 from .records import Record
 from .scan import redact
 
@@ -54,42 +54,35 @@ class PathScanError(ValueError):
 
 
 def _git_files(root: Path):
-    # Stream a bounded inventory: never buffer an arbitrarily large tree, and
-    # let Git own ignore semantics. Termination on a budget leaves no child.
-    with subprocess.Popen(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-    ) as proc:
-        try:
-            assert proc.stdout is not None
-            pending = b""
-            size = count = 0
-            while chunk := proc.stdout.read(8192):
-                size += len(chunk)
-                if size > PATH_SCAN_BYTES:
-                    raise PathScanError("path glob inventory byte budget exhausted")
-                pending += chunk
-                names = pending.split(b"\0")
-                pending = names.pop()
-                for name in names:
-                    count += 1
-                    if count > PATH_SCAN_LIMIT:
-                        raise PathScanError("path glob scan budget exhausted")
-                    yield os.fsdecode(name)
-            if proc.wait() != 0:
-                raise PathScanError("Git path inventory failed")
-        finally:
-            if proc.poll() is None:
-                proc.terminate()
-                proc.wait()
+    # Git owns ignore semantics; the shared runner bounds bytes and lifetime
+    # and reaps the entire child process group on either limit.
+    try:
+        result = procs.run_bounded(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            cwd=str(root), timeout=gitops.GIT_LOCAL_TIMEOUT, binary=True,
+            max_output_bytes=PATH_SCAN_BYTES,
+        )
+    except procs.OutputLimitExceeded as exc:
+        raise PathScanError("path glob inventory byte budget exhausted") from exc
+    except procs.BoundedTimeout as exc:
+        raise PathScanError("Git path inventory did not finish") from exc
+    if result.returncode != 0:
+        raise PathScanError("Git path inventory failed")
+    names = result.stdout.split(b"\0")
+    if names and not names[-1]:
+        names.pop()
+    if len(names) > PATH_SCAN_LIMIT:
+        raise PathScanError("path glob scan budget exhausted")
+    for name in names:
+        yield os.fsdecode(name)
 
 
 def task_paths(paths: list[str], root: Path, *, literal_paths: list[str] | None = None,
                notes: list[str] | None = None) -> list[str]:
     """Preserve caller spelling; glob witnesses respect Git ignore rules.
 
-    A deterministic entry/byte budget bounds enumeration. No time-dependent
-    cutoff; callers discard incomplete glob evidence rather than ungated hits.
+    A deterministic entry/byte budget bounds enumeration. Git also uses the
+    shared local-process deadline; callers discard incomplete glob evidence rather than ungated hits.
     """
     out: set[str] = set()
     patterns = []

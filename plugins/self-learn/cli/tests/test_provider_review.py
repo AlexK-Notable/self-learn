@@ -272,12 +272,12 @@ def test_git_inventory_read_only_and_budget_reaps_child(home, tmp_path, monkeypa
     assert set(ids(result)) == {'lrn-00000001', 'lrn-00000002'}
     assert snapshot(tmp_path) == before
     opened = []
-    popen = select.subprocess.Popen
+    popen = select.procs.subprocess.Popen
     def tracked(*args, **kwargs):
         child = popen(*args, **kwargs)
         opened.append(child)
         return child
-    monkeypatch.setattr(select.subprocess, 'Popen', tracked)
+    monkeypatch.setattr(select.procs.subprocess, 'Popen', tracked)
     monkeypatch.setattr(select, 'PATH_SCAN_LIMIT', 1)
     result = select.select_lessons(home, 'Docker container health', project=project,
                                    paths=['**/*.py'], provider=None)
@@ -322,3 +322,63 @@ def test_batch_preview_refuses_unsafe_feedback_key(feedback_home):
     assert preview.items[0].state == 'would-refuse'
     assert '--key' in str(preview.items[0])
     assert snapshot(feedback_home) == before
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_inventory_process_output_is_bounded(stream):
+    import sys
+    from self_learn.primitives import procs
+    with pytest.raises(procs.OutputLimitExceeded):
+        procs.run_bounded([sys.executable, '-c', f'import sys; sys.{stream}.buffer.write(b"x" * 1000000)'],
+                          timeout=5, binary=True, max_output_bytes=1000)
+
+
+def test_inventory_process_timeout_kills_descendants(tmp_path):
+    import os
+    import signal
+    import sys
+    from self_learn.primitives import procs
+    from test_bounded_children import _proc_is_dead
+    pidfile = tmp_path / 'children'
+    script = '''import os, pathlib, signal, subprocess, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+pathlib.Path(sys.argv[1]).write_text(f'{os.getpid()} {child.pid}')
+print('ready', flush=True)
+time.sleep(30)
+'''
+    try:
+        with pytest.raises(procs.BoundedTimeout):
+            procs.run_bounded([sys.executable, '-c', script, str(pidfile)], timeout=1,
+                              binary=True, max_output_bytes=1000)
+        assert pidfile.is_file(), 'positive control: child reached descendant spawn'
+        import time
+        deadline = time.monotonic() + 2
+        while not all(_proc_is_dead(int(pid)) for pid in pidfile.read_text().split()):
+            assert time.monotonic() < deadline, 'child process survived group cleanup'
+            time.sleep(0.01)
+    finally:
+        if pidfile.exists():
+            for pid in map(int, pidfile.read_text().split()):
+                if not _proc_is_dead(pid):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+
+def test_inventory_timeout_preserves_ungated_hits(home, tmp_path, monkeypatch):
+    from self_learn.primitives import procs
+    project = tmp_path / 'project'; init_repo(project)
+    (project / 'file.py').touch()
+    put(home, 1); put(home, 2, gates=['**/*.py'])
+    original = procs.run_bounded
+    def timeout_inventory(argv, **kwargs):
+        if 'ls-files' in argv:
+            raise procs.BoundedTimeout(argv, kwargs['timeout'])
+        return original(argv, **kwargs)
+    monkeypatch.setattr(procs, 'run_bounded', timeout_inventory)
+    result = select.select_lessons(home, 'Docker container health', project=project,
+                                   paths=['**/*.py'], provider=None)
+    assert ids(result) == ['lrn-00000001']
+    assert 'inventory did not finish' in result['note']

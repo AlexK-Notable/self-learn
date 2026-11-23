@@ -86,6 +86,7 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-11-22 — S-161 process safety follow-up.** Git path inventory uses the shared bounded-child primitive with a combined-output cap and the local Git deadline. Timeout or oversized output kills the child process group and degrades only gated selection; the subprocess census stays unchanged. See 22 §1.
 - **2026-11-22 — S-161 fix round 1.** Independent review: stable query-free lexical corpus and conservative task evidence; ancestor project scope; Git-aware deterministic path expansion with partial degradation and explicit literals; shared feedback key validation; applied/push receipts; confirmation preflight before locks; schema and index completion. See 22 for the contracts and measured synthetic calibration.
 - **2026-11-22 — S-161: lessons provider.** `select` returns task-relevant live routed lessons with scope/path gates, thresholded lexical/cosine evidence and RRF ranking, without persistent writes or watchdog kicks. Capture and feedback gain JSON receipts; keyed notes and confirmations reread/dedupe under the ledger lock. Contract and decisions in `22-lessons-provider.md`.
 

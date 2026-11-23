@@ -45,7 +45,10 @@ Input globs expand existing files. Inside Git, use the read-only streamed
 apply, `.git` is never walked, and tracked files remain eligible even if a later
 ignore rule names them. Outside Git, walk only possible matching subtrees and
 skip `.git` and symlinks. The inventory has deterministic limits of 10,000 entries
-and 4 MB of Git output (no elapsed-time cutoff). Exhaustion or an inventory error
+and 4 MB of combined Git output. Git runs through the shared bounded-child
+primitive with the standard 30-second local Git deadline; exceeding bytes or
+time kills its entire process group. This is a hung-process guard, not the old
+one-second traversal cutoff. Exhaustion or an inventory error
 omits path-gated lessons and records that degradation in `note`; ungated lessons
 still rank normally. No partial glob evidence is treated as complete. A zero
 limit skips enumeration. Empty expansion matches nothing.
