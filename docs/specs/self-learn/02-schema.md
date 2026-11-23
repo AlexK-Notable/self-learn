@@ -288,6 +288,19 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 
 ## 2. Field rules
 
+**S-161 provider amendment (2026-11-22).** `confirmation_keys` is an optional
+list of non-empty strings in record frontmatter (absent/null means no keys).
+`confirm-held --key` appends one validated event key under the ledger commit lock;
+no writer removes entries. It is metadata, independent of `notes[].key`, and
+survives retirement/supersession for the record's lifetime. Reusing a key is a
+read acknowledgment, never a new confirmation or a refreshed date. New keys use
+the shared feedback-key contract in 22 §4; readers retain compatibility with
+older non-empty strings. Each distinct confirmed observation adds one key and
+one commit: callers should confirm meaningful observations, not every selection.
+There is deliberately no TTL or lossy compaction: forgetting a key permits an
+old retry to become a new observation. Exact retained keys are the audit trail.
+
+
 > **Amendment 2026-07-15 (11 §3, ratified):** the frontmatter gains the
 > adjudication-plane fields — `verified`/`verified_how`, `incident_cost`,
 > `generality`, `env`, `routing.follow_up` → `follow_up_done`,
@@ -319,8 +332,8 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 > **closed set** — `{"resolution", "routing"}` — a third displacement kind
 > is a decision, not a silent widening. `notes` records what a human
 > **added**: `self-learn note <id> --append TEXT` appends `{at, by, text}`
-> (plus an optional `key`, the idempotency token `self-learn batch`
-> stamps on a `note` sheet item's entry) to `notes[]`, in any status,
+> (plus an optional `key`, the validated provider/batch event token from
+> 22 §4) to `notes[]`, in any status,
 > never touching `resolution_note` — `notes` is additive commentary,
 > `history` is what the record used to say; merging the two would make
 > both unreadable. `Record.clear_resolution_note()` is the **only**

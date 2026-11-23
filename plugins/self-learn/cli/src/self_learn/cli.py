@@ -38,6 +38,7 @@ a different owner.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import contextvars
 import json
 import os
@@ -513,9 +514,11 @@ def _build_parser() -> argparse.ArgumentParser:
                 "--json",
                 action="store_true",
                 dest="as_json",
-                help="emit a machine-readable outcome envelope on stdout "
-                "and nothing else — success/failure is still the exit "
-                "status, never this JSON (07 §4 contract 2)",
+                help=("emit a record receipt with id, path, status, scope, applied and pushed"
+                      if name in {"confirm-held", "supersede"} else
+                      "emit a machine-readable outcome envelope on stdout "
+                      "and nothing else — success/failure is still the exit "
+                      "status, never this JSON (07 §4 contract 2)"),
             )
         return p
 
@@ -806,6 +809,7 @@ def _build_parser() -> argparse.ArgumentParser:
     note_p = sub.add_parser(
         "note", help="append a commentary entry to a record (U-verbs §4.2)"
     )
+    note_p.add_argument("--json", action="store_true", dest="as_json", help="emit a record receipt with id, path, status, scope, applied and pushed")
     note_p.add_argument("id", metavar="ID")
     note_p.add_argument(
         "--append",
@@ -817,9 +821,8 @@ def _build_parser() -> argparse.ArgumentParser:
     note_p.add_argument(
         "--key",
         metavar="KEY",
-        help="idempotency token (self-learn batch's own sheet-line hash) "
-        "— when a notes[] entry already carries this key, nothing is "
-        "appended (rc 0, no commit); a human at a terminal omits this",
+        help="provider or batch event key: 1..40 ASCII letters/digits/._:-, "
+        "secret-scan clean; reuse on retries (rc 0, no duplicate commit)",
     )
     note_p.add_argument(
         "--no-push",
@@ -873,7 +876,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="names the actor that chose the placement (default human)",
     )
 
-    supersede = _verb("supersede", "mark OLD superseded by NEW (metadata only)")
+    supersede = _verb("supersede", "mark OLD superseded by NEW (metadata only)", json_flag=True)
     supersede.add_argument("old_id", metavar="OLD_ID")
     supersede.add_argument("new_id", metavar="NEW_ID")
 
@@ -894,7 +897,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the rule stays despite the recurrence (needs --note: the why)",
     )
 
-    ch = _verb("confirm-held", "record that a routed rule was seen working")
+    ch = _verb("confirm-held", "record that a routed rule was seen working", json_flag=True)
+    ch.add_argument("--key", metavar="KEY", help="provider event key: 1..40 ASCII letters/digits/._:-, secret-scan clean; retries do not refresh the date")
     ch.add_argument("id", metavar="ID")
 
     ds = _verb(
@@ -1130,6 +1134,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     overseer_cli.add_parser(sub)
     index_cli.add_parser(sub)
+    from . import select as select_cli
+    select_cli.add_parser(sub)
     skill_cli.add_parser(sub)
     attention_cli.add_parser(sub)
     ask.add_parser(sub)
@@ -3356,6 +3362,30 @@ def _route_verb(home: Path, args: argparse.Namespace, runner: str | None) -> int
 
 
 def _cmd_verb(args: argparse.Namespace) -> int:
+    if args.command not in {"note", "confirm-held", "supersede"} or not getattr(args, "as_json", False):
+        return _run_verb(args)
+    # Keep all lower-level prose on stderr; pass structured data separately.
+    args.feedback_receipt = None
+    with contextlib.redirect_stdout(sys.stderr):
+        code = _run_verb(args)
+    if args.feedback_receipt is not None:
+        print(json.dumps(args.feedback_receipt))
+    return code
+
+
+def _finish_feedback(result: verbs.VerbResult, target: str, *, args: argparse.Namespace) -> int:
+    code = _finish_verb(result, target)
+    if args.as_json:
+        from .teach import committed_receipt
+
+        receipt = committed_receipt(resolve_home(), result.record_id)
+        receipt.update(applied=bool(result.staged), pushed=_push_state(result.push),
+                       host_pushed=_push_state(result.host_push) if result.host_commit_sha else None)
+        args.feedback_receipt = receipt
+    return code
+
+
+def _run_verb(args: argparse.Namespace) -> int:
     """Home-gated like every other surface (doc 13 B-11). Two reasons, one
     line: a bad home used to reach ``find_record_path`` and come back "no
     such record lrn-…" — blaming the ID for a home nobody could see; and
@@ -3439,7 +3469,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 by=runner,
                 no_push=args.no_push,
             )
-            return _finish_verb(result, args.new_id)
+            return _finish_feedback(result, args.new_id, args=args)
         if args.command == "confirm-recurrence":
             result = verbs.confirm_recurrence(
                 home,
@@ -3453,9 +3483,9 @@ def _cmd_verb(args: argparse.Namespace) -> int:
             return _finish_verb(result, "recurrence confirmed")
         if args.command == "confirm-held":
             result = verbs.confirm_held(
-                home, args.id, note=args.note, by=runner, no_push=args.no_push
+                home, args.id, note=args.note, key=args.key, by=runner, no_push=args.no_push
             )
-            return _finish_verb(result, "confirmed holding")
+            return _finish_feedback(result, "confirmed holding", args=args)
         if args.command == "dismiss-suspect":
             result = verbs.dismiss_suspect(
                 home,
@@ -3488,7 +3518,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 home, args.id, append=args.append, key=args.key, by=runner,
                 no_push=args.no_push,
             )
-            return _finish_verb(result, "noted")
+            return _finish_feedback(result, "noted", args=args)
         if args.command == "reroute":
             result = verbs.reroute(
                 home, args.id, dest=args.dest, by=args.by, note=args.note,
@@ -5324,6 +5354,14 @@ def _main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:  # argparse error (e.g. bad choice, missing group)
         return exc.code if isinstance(exc.code, int) else EXIT_USAGE
 
+    # Provider keys are usage input, checked before watchdog/epilogue writes.
+    if args.command in {"note", "confirm-held"}:
+        try:
+            verbs._validate_feedback_key(args.key)
+        except verbs.VerbUsageError as exc:
+            print(f"self-learn {args.command}: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+
     if args.selftest:
         return selfcheck.run_selftest(resolve_home())
 
@@ -5342,7 +5380,7 @@ def _main(argv: list[str] | None = None) -> int:
     # polls it) and `ask` (the inbox's agent) never tick it either, so
     # neither ever starts a mining run.
     # Humane UI lane 5: `summarise` (the page's "Summarise this") neither.
-    if args.command not in ("mine", "init", "serve", "attention", "ask", "summarise"):
+    if args.command not in ("mine", "init", "serve", "attention", "ask", "summarise", "select"):
         try:
             # no_push is passed EXPLICITLY (BLOCKER D): this tick runs
             # before dispatch for every command, so `reject --no-push` used
@@ -5362,6 +5400,10 @@ def _main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
+
+    if args.command == "select":
+        from . import select as select_cli
+        return select_cli.dispatch(args)
 
     if args.command == "init":
         return _cmd_init()

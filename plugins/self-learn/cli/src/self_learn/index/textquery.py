@@ -10,7 +10,7 @@ from ..scan import redact
 from . import fts5
 from .gemini import GeminiEmbedder
 from .hybrid import CANDIDATE_MULTIPLIER, MIN_CANDIDATES, HybridResult, Ranked
-from .protocol import EmbedProvider
+from .protocol import EmbedProvider, embed_query as embed_query_texts
 from .registry import load_provider
 from .rrf import rrf_fuse
 from .store import FROM_ENV, HYBRID, LEXICAL_ONLY, LessonIndex
@@ -19,25 +19,29 @@ from .vectors import cosine
 EMBED_TIMEOUT = 20.0
 
 
-def embed_documents(provider: EmbedProvider, texts: list[str], *, interactive: bool = False) -> list[list[float]]:
+def embed_documents(provider: EmbedProvider, texts: list[str], *, interactive: bool = False, query: bool = False) -> list[list[float]]:
     """Bound the wait without handing SQLite to another thread.
 
     A timed-out provider cannot be forcibly stopped in Python. The daemon owns
     only its request and queue; its eventual answer is discarded, not cached.
     """
     if interactive and isinstance(provider, GeminiEmbedder):
-        # Preserve document templates/model identity without mutating the shared
-        # provider's bulk policy (the index/flags may be using it concurrently).
+        # Preserve the requested query/document template and model identity
+        # without mutating either profile of a concurrently shared provider.
         provider = copy.copy(provider)
-        provider.bulk = copy.copy(provider.interactive)
-        provider.bulk.timeout = min(5.0, EMBED_TIMEOUT)
-        provider.bulk.max_attempts = 1
-        provider.bulk.paced = False
+        profile = copy.copy(provider.interactive)
+        profile.timeout = min(5.0, EMBED_TIMEOUT)
+        profile.max_attempts = 1
+        profile.paced = False
+        if query:
+            provider.interactive = profile
+        else:
+            provider.bulk = profile
     answers: queue.Queue = queue.Queue(maxsize=1)
 
     def run() -> None:
         try:
-            answers.put((provider.embed(texts), None))
+            answers.put((embed_query_texts(provider, texts) if query else provider.embed(texts), None))
         except Exception as exc:
             answers.put((None, exc))
 
