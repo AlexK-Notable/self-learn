@@ -8,7 +8,7 @@ This surface does not approve lessons, change their placement, or replace canon.
 ## 1. Selection
 
 `self-learn select --query TEXT [--path FILE_OR_GLOB]… [--project DIR]
-[--literal-path FILE]… [--skill NAME]… [--exclude ID]… [--limit N] [--no-embed] [--json]`.
+[--literal-path FILE]… [--skill NAME]… [--exclude ID]… [--limit N] [--tier confident|all] [--no-embed] [--json]`.
 
 Eligibility is exactly `domain.is_canon_live`: routed and not superseded.
 Pending, deferred, rejected and superseded lessons cannot be returned. There is
@@ -20,8 +20,8 @@ User lessons are always eligible. Project lessons require `--project`, matched
 against the bucket's recorded `meta.yaml` path, not its lossy slug. Resolve an
 existing project directory to its Git root and apply the same registered-worktree
 mapping as capture. Include registered ancestor hosts from `hosts.ancestors_of`
-as S-52 requires, even across nested Git roots. Skill lessons require an explicit
-repeatable `--skill NAME`. Omitting `--project` does not implicitly include the
+as S-52 requires, even across nested Git roots. At the default confident tier, skill lessons require an explicit
+repeatable `--skill NAME`. The possible-tier exceptions below never infer a project. Omitting `--project` does not implicitly include the
 current project's lessons. A returned lesson keeps its stored `scope`; the
 additional `scope_relation` is `user`, `skill`, `project` or `ancestor-project`.
 Ancestor matches say `ancestor project scope` in `why`, and their gates and
@@ -29,12 +29,13 @@ Ancestor matches say `ancestor project scope` in `why`, and their gates and
 `src/main.py` is `child/src/main.py` to its parent host).
 
 `routing.rules_paths` is an additional gate, never a replacement for relevance.
-A gated lesson requires at least one matching supplied path, using the existing
+In the confident tier a gated lesson requires at least one matching supplied path, using the existing
 routing glob matcher (`*` stays within a component, `**` crosses components).
 Relative input paths are relative to the task's Git root, or the supplied
 directory outside Git; without a project they are relative to the current Git
 root/directory. Absolute input paths may also name files outside that root.
-Evaluate user rules relative to the user home, and project/ancestor rules
+Evaluate user rules against the same roots as routing reachability: the user
+home plus registered project/skill hosts outside that home. Project/ancestor rules are
 relative to the recorded project/ancestor directory. Map worktree paths back
 to the registered project before evaluating project gates. Literal
 paths may name planned files. An existing file passed with `--path` is literal
@@ -50,12 +51,14 @@ apply, `.git` is never walked, and tracked files remain eligible even if a later
 ignore rule names them. Literal glob prefixes become literal Git pathspecs, so
 files outside the requested subtrees do not exhaust the budget. Descend into
 nested Git checkouts and initialized submodules with their own ignore rules;
-entry/byte budgets are shared across all inventories. Uninitialized submodules
+entry, byte and elapsed-time budgets are shared across all inventories and
+absolute-path input groups. Uninitialized submodules
 have no concrete file witnesses. All selection Git queries disable fsmonitor,
 optional locks and the pager, with `GIT_OPTIONAL_LOCKS=0`. Outside Git, walk only possible matching subtrees and
 skip `.git` and symlinks. The inventory has deterministic limits of 10,000 entries
 and 4 MB of combined Git output. Git runs through the shared bounded-child
-primitive with the standard 30-second local Git deadline; exceeding bytes or
+primitive with one 30-second inventory deadline; each child receives only the
+remaining time, and filesystem traversal checks the same deadline. Exceeding bytes or
 time kills its entire process group. This is a hung-process guard, not the old
 one-second traversal cutoff. Exhaustion or an inventory error
 omits path-gated lessons and records that degradation in `note`; ungated lessons
@@ -90,26 +93,35 @@ retain their corpus IDF weight. Additional query-side evidence is:
   lookup can qualify. Short queries (at most three distinct stems) must match
   every stem and have mean IDF / maximum observed corpus IDF at least 0.85
   (0.75 for one-word lookups).
-- Longer tasks qualify through a shared contiguous phrase, after the existing
-  tokenizer and Porter stemming. Within at most 12 tokens, the phrase must
+- Longer tasks qualify through shared stems in local windows allowing gaps,
+  after the existing tokenizer and Porter stemming. In each text the shared
+  stems must lie within at most 10 tokens. Compute their maximum-IDF common subsequence
+  (distinct shared stems in the same order, allowing intervening words); it must
   contain two distinct alphabetic-bearing stems and at least 1.5 times the
-  maximum corpus term IDF in distinct alphabetic-bearing stems. Longer phrases
-  can combine moderately informative words; scattered overlaps cannot qualify.
-  Numeric fragments of addresses or versions do not establish a topic.
+  maximum corpus term IDF in distinct alphabetic-bearing stems. A window
+  can combine moderately informative words; overlaps farther apart cannot qualify.
+  Numeric fragments of addresses or versions do not establish a topic. Supporting
+  stems after removing the rarest stem must themselves carry at least 0.75 times
+  peak IDF: one rare word cannot carry a common companion into a match.
 - Score the best qualifying phrase with the same symmetric BM25 ratios. Extra
   task prose does not dilute a distinctive shared phrase. Symmetric whole-field
   overlap of at least 0.65 remains an alternative for strong matches in small
   corpora that repeat their topic. Empty token sets never qualify.
 
-Explicit project/file context is also retrieval evidence, never inferred scope.
-Use the canonical project basename and supplied file names relative to the task
-root or user home. For lexical matching, each file is a separate field at half
-weight; when files are supplied, they replace the broader project-name field.
-The project name is used alone only when there are no supplied files. Context
-fields may use a qualifying phrase even when short: an extension or directory
-component need not occur in lesson prose. This avoids
-qualifying a lesson solely through the shared project name during a request
-about another file, or joining the end of one path to the start of another.
+Explicit context narrows scope/path eligibility and may strengthen an already
+supported task match; **context alone never qualifies a lesson**. Retrieval
+context contains only the caller's project argument and the literal `--path`
+and `--literal-path` strings, including unexpanded glob patterns. No canonical
+project name, directory listing or expanded filename is added. After redaction
+and newline folding, retain at most 20 path fields and 2,048 UTF-8 bytes including
+the project field; `note` reports truncation. This bound controls provider
+payload and lexical field cost independently of the larger gate inventory.
+The context cap never changes which supplied paths are considered for gating.
+
+Each caller-typed context field is a separate lexical field at half weight. A
+field can strengthen only a lesson that already passed the task's lexical test;
+fields cannot create evidence or combine words across file boundaries. Project
+and file fields follow the same rule, without a file-present special case.
 All lifecycle, scope and path gates still apply before a result is returned.
 
 These task tuning constants are exposed in `thresholds`: `lexical_min_terms`,
@@ -119,20 +131,54 @@ These task tuning constants are exposed in `thresholds`: `lexical_min_terms`,
 rather than categorically unusable; it is not a semantic applicability oracle.
 
 Read cached embeddings only when their text hash matches the current lesson text.
-Embed the task plus explicit context using the provider's **query** template;
+Measure the task alone and, when context exists, the task plus bounded context
+in one batch using the provider's **query** template;
 lesson/draft comparisons elsewhere retain their document template. The bounded
 interactive call uses one attempt and at most five seconds of HTTP timeout.
-The outer provider wait is also bounded. Compare only the same model.
+At most two query vectors are requested, in one Gemini HTTP request; without
+context, only one. The outer provider wait is also bounded. Compare only the same model.
 For Gemini task queries use cosine 0.70; its existing 0.75 lesson-pair threshold
 continues unchanged elsewhere. Other registered models retain their existing
 thresholds; an unregistered model cannot qualify semantic results. These are
 retrieval similarity floors, not probabilities of applicability.
 
-For a lesson with a valid current query cosine, that cosine must pass its floor;
-lexical similarity contributes to ranking but cannot override contrary semantic
-evidence. Missing vectors, no model/key, corrupt cache or a failed request fall
-back to lexical qualification with an explicit reason. `--no-embed` makes no
-embedding call. Selection never builds or repairs the persistent index.
+### Confidence tiers
+
+`--tier confident` is the default; `--tier all` also returns `possible` results.
+Every result carries `confidence`. These names identify retrieval tests, not
+probabilities or permission to follow a lesson. For the measured Gemini profile,
+let T be task-only cosine, C be task-plus-context cosine, and L mean passing the
+task's lexical test (including its 0.16 score floor):
+
+| Tier | Qualification for an otherwise eligible lesson |
+|---|---|
+| confident | T >= 0.75; or T >= 0.70 and L; or T >= 0.675, C >= 0.70 and L |
+| possible | T >= 0.70; or T >= 0.65 and L; or a supplied path actually satisfies the rules gate and either (T >= 0.60 and C >= 0.675) or (T >= 0.65 and C >= 0.65) |
+
+Evaluate confident first. Context cannot qualify a lesson without independent
+task evidence: the lowest task floor requires both semantic context corroboration
+and an actual path-gate witness. Merely naming a project is insufficient.
+Current semantic evidence below these tests cannot be overridden by lexical
+fallback. A confident result sorts before every possible result, then existing
+RRF and id tie breaks apply within each tier, before `--limit`.
+
+Only `--tier all` admits two normally excluded classes, always as possible:
+unnamed skill lessons when **no** skill was requested require T >= 0.725;
+user rules with paths when **no** path was supplied require T >= 0.75, or
+T >= 0.70 with L (the same strong task-only test as confident retrieval).
+These exceptions require a current vector and the measured model profile.
+A named different skill, a supplied but nonmatching path, another project's
+bucket, and project-scoped missing path gates remain exclusions. Explanations
+explicitly say `skill not requested` or `path not supplied`; no gate witness is
+invented. Supplying context never weakens these exception floors.
+
+Other registered models retain their measured single floor and have no weaker
+or scope-exception tier until calibrated. Missing vectors, no model/key, corrupt
+cache or a failed request fall back to lexical qualification for structurally
+eligible lessons, with an explicit reason and `score.basis: lexical`. Such
+results retain the confident retrieval tier, but cannot distinguish word senses;
+callers requiring semantic evidence must inspect the basis. `--no-embed` makes
+no embedding call. Selection never builds or repairs the persistent index.
 
 The original regression probes remain exact tests, alongside synthetic verbose
 queries, generic one/two-word overlaps, paraphrases without common wording, and
@@ -149,6 +195,49 @@ nearest result cannot hide an eligible next result. Similarity names its scale
 (cosine for a current semantic result, lexical for fallback). RRF is a ranking
 value, not a probability or a distance comparable with another provider's score.
 
+### Calibration and limits
+
+These constants are retrieval heuristics, not learned probabilities. Their
+origins and re-calibration conditions are part of the contract:
+
+| Constant | Derivation / purpose |
+|---|---|
+| BM25 `k1=1.2`, `b=0.75`, IDF smoothing `0.5` | Conventional BM25 parameters, retained from the existing index; positive IDF prevents the tiny-corpus clamp. |
+| Lexical floor `0.16` | Existing index floor, retained with synthetic and independently labelled regression checks on the revised symmetric scale; not analytically equivalent to the old scale. |
+| Minimum 2 shared stems | Require corroboration; one generic shared word is insufficient. A complete one-word lookup is the explicit narrow exception. |
+| Short-query boundary 3 stems | Preserve concise lookup behavior while allowing longer task descriptions to contain extra prose; a design boundary checked on the development inputs, not a statistical optimum. |
+| Mean IDF ratios `0.85` (short) / `0.75` (single) | Conservative specificity margins selected during the first development calibration. The single-word exception uses the lower margin because an otherwise exact topic name may appear in several lessons. These were not independently optimized constants. |
+| Window 10 tokens / information mass `1.5` peak IDF | Require two distinct informative stems in a local passage; the mass can combine moderately rare terms, but neither repeated terms nor numeric fragments count. Ten is a development-calibrated local-clause limit, not a model context window: 12 admitted a near-miss and 8 lost useful matches without improving observed precision. A weighted common subsequence permits gaps; fully unordered windows admitted unrelated topic-word combinations. The supporting stems, excluding the rarest, must carry at least the existing single-lookup specificity (`0.75` peak IDF), preventing one rare term from carrying generic overlap. |
+| Whole-field overlap `0.65` | Approximately two-thirds symmetric self-match, an alternative for small corpora where repeated topics make normalized rarity less useful; retained after the synthetic small-ledger checks. |
+| Context weight `0.5` | Deliberately weaker than task evidence; a ranking design choice, never an eligibility threshold. |
+| Gemini base task floor `0.70` / strong `0.75` | The first independent development sweep rejected a blanket `0.675` floor because it added substantially more wrong than right results. The second, realistically contextualized development set supports `0.70` plus lexical corroboration, and `0.75` without it; the latter also retains the existing lesson-pair floor as a conservative task-only margin. These are measured task rules, not mathematical equivalence to lesson-pair similarity. |
+| Confident context-supported task floor `0.675` | The previously rejected blanket floor is used only with two independent corroborations: task lexical evidence and context cosine >= `0.70`. Checked against realistically contextualized development negatives. |
+| Possible lexical-supported task floor `0.65` | A deliberately weaker development-tested floor, requiring task lexical corroboration. It is not applied to semantic-only matches. |
+| Possible gate-supported T `0.60`, C `0.675` | Reserve the weakest task floor for an actual gate witness plus context similarity. Development comparisons of context floors `0.65`, `0.675`, `0.70` found the middle choice retained more correct matches than `0.70` without the additional wrong matches at `0.65`. |
+| Balanced gate-supported T and C `0.65` | An additional conjunction permits two moderate semantic scores instead of the asymmetric `0.60`/`0.675` pair, still requiring a real gate witness. On realistic development inputs it recovered a missed task without additional false positives; unlike lowering the context floor alone, both sides must pass. |
+| Unnamed skill T `0.725` / missing user path T `0.75` or `0.70` with L | Separate development measurements of normally excluded classes: blanket `0.70` admitted wrong lessons in both. Skill `0.725` removed the observed false positives; for missing user paths, the ordinary confident task-only test (`0.75`, or `0.70` with lexical corroboration) retained another correct result without an added false positive. Both classes remain possible only and require current task semantics, never lexical fallback or context alone. |
+| 20 context paths / 2,048 UTF-8 bytes | A disclosure and work bound, not relevance calibration. Keeps a broad glob from becoming an inventory-sized request; applies before embedding. |
+
+Re-derive semantic thresholds for a different embedding model, dimension or
+query/document instruction template. Re-measure lexical thresholds after changing
+tokenization, stemming, the scoring formula, or substantially changing corpus size
+or topic distribution: normalized peak IDF varies with those conditions. In
+particular, a much larger ledger or a new small installation requires its own
+labelled evaluation; synthetic tiny-ledger tests establish behavior, not a
+precision guarantee. Evaluate both precision and recall by confidence tier and
+retain near-miss/unrelated silence checks. Do not retune from held-out labels.
+
+Lexical retrieval cannot determine word sense or whether a shared topic changes
+the task. A query about an agent shell's colour can match a shell-permissions
+lesson; a diagram of a container logo can match a container-restart lesson.
+Porter stemming handles regular forms but not every irregular inflection.
+Gapped ordered windows recover tasks supported by other shared terms (including
+the build/built probe's topic and tool), without a special-case synonym list.
+They recover some reordered tasks through a remaining shared subsequence, not
+every word permutation; lexical retrieval cannot reliably infer grammatical roles. Lexical
+fallback remains explicitly identified by `mode` and `score.basis`; its confidence
+is confidence in the stated retrieval test, never proof of applicability.
+
 ## 3. Read contract
 
 Selection bypasses the CLI miner watchdog, sentinel heartbeat, telemetry flush,
@@ -158,10 +247,10 @@ write counters, commit or push. The index is opened using SQLite `mode=ro` and
 `query_only`; the FTS table is RAM-only. The ordinary command watchdog can spawn
 a miner catch-up run and write cache state; it is expressly excluded here.
 
-JSON output is one object with `command`, `mode`, `note`, `thresholds`, `lessons`
+JSON output is one object with `command`, `tier`, `mode`, `note`, `thresholds`, `lessons`
 and `unreadable`. Each lesson has `id`, agent-facing `text`, `type`, `kind`,
-`scope`, `scope_relation`, `bucket`, `status`, the complete `routing` mapping, `score` (`value`,
-`basis`, `rrf`, `cosine`, `lexical`), `why` and `matched_paths`. `why` names
+`confidence`, `scope`, `scope_relation`, `bucket`, `status`, the complete `routing` mapping, `score` (`value`,
+`basis`, `rrf`, `cosine`, `context_cosine`, `lexical`), `why` and `matched_paths`. `why` names
 semantic/lexical evidence, scope and any satisfied path gate. Reference/hook destinations preserve complete Trigger/Instruction or Fact
 sections and Context using the reference compiler; managed-line destinations use
 their existing compact line. Legacy multiline records also retain full sections.

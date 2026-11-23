@@ -46,20 +46,21 @@ def test_absolute_user_gate_is_home_relative_and_supplies_context(home, tmp_path
     put(home, text='Amber registry requires immutable stamps for archival recovery.', knowledge=True,
         gates=['notes/amber_registry.ini'])
     before = snapshot(tmp_path)
-    result = select.select_lessons(home, 'Review the planned change', paths=[str(path)], provider=None)
+    result = select.select_lessons(home, 'Amber registry', paths=[str(path)], provider=None)
     assert ids(result) == ['lrn-00000001']
     assert result['lessons'][0]['matched_paths'] == ['notes/amber_registry.ini']
     assert snapshot(tmp_path) == before
     assert not ids(select.select_lessons(home, 'Amber registry', paths=[str(user / 'other.ini')], provider=None))
 
 
-def test_project_context_is_evidence_but_does_not_cross_scope(home, tmp_path):
+def test_project_context_narrows_scope_but_requires_task_evidence(home, tmp_path):
     project = tmp_path / 'amber-registry'; project.mkdir()
     put(home, scope='project', project=project,
         text='Amber registry requires immutable stamps for archival recovery.', knowledge=True)
     assert not ids(select.select_lessons(home, 'Review the planned change', provider=None))
     result = select.select_lessons(home, 'Review the planned change', project=project, provider=None)
-    assert ids(result) == ['lrn-00000001']
+    assert not ids(result)
+    assert ids(select.select_lessons(home, 'Amber registry', project=project, provider=None)) == ['lrn-00000001']
     other = tmp_path / 'unrelated-project'; other.mkdir()
     assert not ids(select.select_lessons(home, 'Amber registry', project=other, provider=None))
 
@@ -86,15 +87,15 @@ def test_specific_file_context_does_not_inherit_generic_project_match(home, tmp_
     result = select.select_lessons(home, 'Review the planned change', project=project,
         literal_paths=['scripts/chart_report.py'], provider=None)
     assert not ids(result)
-    assert ids(select.select_lessons(home, 'Review the planned change', project=project, provider=None))
+    assert ids(select.select_lessons(home, 'Amber registry deployment', project=project, provider=None))
 
 
 def test_current_semantic_negative_is_not_overridden_by_word_overlap(home, monkeypatch):
     put(home, text='Amber registry requires immutable stamps for archival recovery.', knowledge=True)
-    monkeypatch.setattr(select, '_semantic', lambda *a: ({'lrn-00000001': .2}, .75, ''))
+    monkeypatch.setattr(select, '_semantic', lambda *a, **k: ({'lrn-00000001': .2}, .75, ''))
     assert not ids(select.select_lessons(home, 'Amber registry'))
     # An absent vector is missing evidence, not negative evidence.
-    monkeypatch.setattr(select, '_semantic', lambda *a: ({}, .75, 'no current vectors'))
+    monkeypatch.setattr(select, '_semantic', lambda *a, **k: ({}, .75, 'no current vectors'))
     assert ids(select.select_lessons(home, 'Amber registry')) == ['lrn-00000001']
 
 
@@ -115,4 +116,16 @@ def test_context_does_not_join_words_from_different_files():
     texts = {'target': 'Amber registry requires immutable archival stamps.'}
     context = 'File: some/unrelated/tree/amber\nFile: registry/another/unrelated/place'
     assert not select._lexical(texts, 'Review the planned change', context=context)
-    assert select._lexical(texts, 'Review the planned change', context='File: amber_registry.ini')
+    assert not select._lexical(texts, 'Review the planned change', context='File: amber_registry.ini')
+    assert select._lexical(texts, 'Amber registry', context='File: amber_registry.ini')
+
+
+def test_task_supported_context_fields_still_do_not_join():
+    words = ['amber', 'registry', *(f'token{n}' for n in range(30))]
+    texts = {'target': ' '.join(words)}
+    separate = 'File: ' + ' '.join(words[:16]) + '\nFile: ' + ' '.join(words[16:])
+    together = 'File: ' + ' '.join(words)
+    split_score = select._lexical(texts, 'Amber registry', context=separate)['target']
+    joined_score = select._lexical(texts, 'Amber registry', context=together)['target']
+    assert split_score >= select.LEXICAL_THRESHOLD
+    assert joined_score > split_score

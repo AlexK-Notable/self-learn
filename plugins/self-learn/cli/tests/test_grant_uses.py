@@ -102,9 +102,15 @@ def test_a_host_add_under_the_grant_records_the_prior_registration(env, tmp_path
     assert rows[1]["verb"] == "host set-mode"
     assert rows[1]["prior"] == {"kind": "project", "path": str(project.resolve()), "mode": "plain"}
     monkeypatch.delenv("CLAUDECODE")
-    item = next(i for i in attention.read(env.ledger)["items"] if i["kind"] == "decided.grant-use")
-    found = attention.find(env.ledger, item["id"])
-    assert found is not None and found["_undo_verb"][:2] == ["host", "remove"]
+    # Decided items are newest first; the two operations can cross a second.
+    # Identify the acts by grant-use id, not their incidental timestamp order.
+    items = {i["subject"]: i for i in attention.read(env.ledger)["items"]
+             if i["kind"] == "decided.grant-use"}
+    assert set(items) == {r["id"] for r in rows}
+    found = attention.find(env.ledger, items[rows[0]["id"]]["id"])
+    assert found is not None and found["_undo_verb"] == ["host", "remove", str(project), "--project"]
+    changed = attention.find(env.ledger, items[rows[1]["id"]]["id"])
+    assert changed is not None and changed["_undo_verb"] == ["host", "set-mode", str(project), "plain", "--project"]
     # An agent's own act never shows as a separate "registered" item too.
     assert not [i for i in attention.read(env.ledger)["items"] if i["kind"] == "decided.registration"]
 

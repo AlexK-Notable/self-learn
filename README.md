@@ -272,6 +272,8 @@ also relies on.
 
 ```bash
 self-learn select --query "restart a container" --project "$PWD" --path 'src/**' --json
+# Opt in to lower-confidence suggestions as well:
+self-learn select --query "restart a container" --project "$PWD" --tier all --json
 self-learn teach --project --type knowledge --fact "A synthetic lesson" --json --no-push
 self-learn note lrn-xxxxxxxx --append "Useful in this run" --key run-123 --json --no-push
 self-learn confirm-held lrn-xxxxxxxx --key run-123 --note "Observed working in run 123" --json --no-push
@@ -289,14 +291,23 @@ lessons available and reports the omitted gated results in `note`. Pending lesso
 Without `--json`, selection prints agent-facing lesson text and match reasons.
 
 The response includes `lessons`, search `mode` and degradation `note`; each
-lesson carries its text, routing, relevance score with its basis, and `why`.
-Lexical hits require a distinctive shared phrase or a strong short lookup, plus
+lesson carries its text, routing, relevance score with its basis, `confidence`
+(`confident` or `possible`), and `why`. `--tier confident` is the default;
+`--tier all` adds possible matches. Confident results precede possible results
+before applying the limit. In `all`, strong current task semantics can admit an
+unnamed skill or a user rule with no supplied path as possible only; `why` names
+the missing input. Explicitly different skills, nonmatching supplied paths and
+other projects remain excluded.
+Lexical hits require informative shared terms within short windows or a strong short lookup, plus
 the relevance floor;
 scores use a stable corpus before scope/exclusion filtering. Discriminative
-one-word lookups can qualify, without a task-word blacklist. Explicit files and
-project names also supply retrieval context. User rules use home-relative paths;
+one-word lookups can qualify, without a task-word blacklist. Context can strengthen
+a task-supported match, but cannot qualify a lesson by itself. Only caller-typed
+project and path/glob strings enter retrieval context: at most 20 paths and
+2,048 UTF-8 bytes, with truncation reported. Glob expansion is used only for gating.
+User rules use home-relative paths plus registered hosts outside the home;
 project rules use project-relative paths, including absolute input paths.
-Current vectors must pass the task cosine floor; lexical fallback applies when
+Current vectors must pass their tier's task-evidence floor; lexical fallback applies when
 vectors are missing or embedding is disabled/unavailable. Provider scores cannot be compared
 with another provider's thresholds. The four write verbs above emit one receipt
 (`id`, `path`, `status`, `scope`); feedback receipts also include `applied`, `pushed`
