@@ -278,6 +278,56 @@ def test_with_the_setting_off_the_file_is_neither_read_nor_written(tmp_path, mon
     assert role(root) == "agent" and not p._disk_path().exists()
 
 
+def test_turning_the_setting_off_reaches_a_process_that_is_already_running(tmp_path, monkeypatch):
+    """The host process that runs the nightly mine lives for days and has
+    already taken entries from the file into memory. Off must stop those
+    answering too, without a restart. One process throughout (no
+    `fresh_process` after the forged file is loaded). Positive control: on,
+    the forged entry answers `user`, from memory, twice. Mutation: flip only
+    the file's use -> memory still answers `user` -> red."""
+    root = transcripts(tmp_path)
+    assert role(root) == "agent"
+    forged = _forged_as_sent_nothing()
+    fresh_process()
+    assert role(root) == "user" and role(root) == "user", "control: the forged entry is in memory and answers"
+    monkeypatch.setenv("SELF_LEARN_PROVENANCE_DISK_CACHE", "0")
+    assert role(root) == "agent"
+    assert p._disk_path().read_bytes() == forged, "off never touches the file, even a bad one"
+    monkeypatch.delenv("SELF_LEARN_PROVENANCE_DISK_CACHE")
+    assert role(root) == "agent", "back on in the same process: what it parsed while off is what it remembers"
+    # The switch is not a repair: the file is as it was, and a NEW process
+    # believes it again. Discarding a suspect file means deleting it.
+    fresh_process()
+    assert role(root) == "user"
+    p.forget()
+    assert role(root) == "agent"
+
+
+def test_a_block_that_ends_after_the_setting_went_off_writes_nothing(tmp_path, monkeypatch):
+    """The save at the end of `saving()` asks the setting as it is then."""
+    root = transcripts(tmp_path)
+    with p.saving():
+        assert len(p.sweep([root])) == 1
+        monkeypatch.setenv("SELF_LEARN_PROVENANCE_DISK_CACHE", "0")
+    assert not p._disk_path().exists()
+    monkeypatch.delenv("SELF_LEARN_PROVENANCE_DISK_CACHE")
+    with p.saving():
+        pass
+    assert p._disk_path().is_file(), "control: the same unsaved entry is written once the setting is on"
+
+
+def test_the_setting_has_plain_words_and_the_settings_surfaces_load():
+    """A registry entry without a row in settings_plain makes that module
+    refuse to import, which takes `config get`/`config set` and the whole web
+    UI with it (the first draft of this setting did exactly that)."""
+    from self_learn import settings, settings_plain
+    from self_learn.ledger import resolve_home
+
+    plain = settings_plain.plain_for("provenance.disk_cache")
+    assert plain.group in settings_plain.GROUP_IDS and plain.label and plain.plain
+    assert settings.setting_row(resolve_home(), settings.by_name("provenance.disk_cache"))
+
+
 def test_the_setting_is_on_unless_set(tmp_path):
     from self_learn import settings
 

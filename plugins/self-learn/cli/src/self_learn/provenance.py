@@ -763,9 +763,13 @@ def saving() -> Iterator[None]:
     try:
         yield
     finally:
-        if outermost:
-            _disk_save(final=True)
-        _SAVING.reset(token)
+        try:
+            # The setting as it is now, not as the last sweep found it: a
+            # block that never swept, or one the setting changed under.
+            if outermost and _switch_on():
+                _disk_save(final=True)
+        finally:
+            _SAVING.reset(token)
 def _hash_code() -> str:
     """The hash of this module's source and the interpreter that runs it
     (`shlex`, `json` and `datetime` come from the interpreter). Empty when
@@ -1029,7 +1033,17 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
 
 def sweep(dirs: Iterable[Path]) -> SentIndex:
     """Read sends from harness stores; absent or malformed stores add nothing."""
-    _DISK.enabled = _switch_on()
+    on = _switch_on()
+    with _DISK_LOCK:
+        if _DISK.enabled and not on:
+            # Turned off under a running process (the host that runs the
+            # nightly mine lives for days): what it already took from the
+            # file is in memory, and "off" means none of that answers either.
+            # Everything remembered goes; this sweep and each one after it
+            # parses, until the setting is on again.
+            _CACHE.clear()
+            _DISK.path, _DISK.entries, _DISK.dirty = None, {}, False
+        _DISK.enabled = on
     sends: list[Send] = []
     for d in dict.fromkeys(dirs):
         try:

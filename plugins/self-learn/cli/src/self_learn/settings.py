@@ -1081,7 +1081,8 @@ REGISTRY: tuple[Setting, ...] = (
         # for every transcript that has not changed (02 §3a.6). Off: the
         # file is neither read nor written, and every process parses every
         # transcript again, as before 2026-11-23 -- the rollback switch if
-        # the file is ever suspected of a wrong answer.
+        # the file is ever suspected of a wrong answer. Off leaves the file
+        # where it is: deleting it is what discards it.
         default=True,
         description="reuse the last sweep of the agent transcripts from a file; off parses them all again every time (slow, and the inbox may time out)",
     ),

@@ -167,6 +167,12 @@ _TABLE: dict[str, Plain] = {
         "Session ids the overnight read always skips, separated by commas."),
     "refs.transcript_roots": _p("reading", "Where quoted sessions are looked up",
         "The folders searched, in order, when a lesson's quote is checked against its session."),
+    "provenance.disk_cache": _p("reading", "Remember which messages agents sent",
+        "To tell your typed words from text an agent sent, self-learn looks through every agent session on this "
+        "machine. On, it keeps what it found and only looks again at sessions that changed. Off, it looks "
+        "through all of them every time, which is slow enough that the inbox may fail to show an item's background. "
+        "Off does not delete what was kept: to start it over, delete the file sends.json under the cache folder's "
+        "self-learn/provenance."),
     "miner.spine_tokens": _p("reading", "Session size before shortening",
         "Above this estimated size, the session engine shortens the agent's own messages. Your typed words are never cut."),
     # ---------------------------------------------------------------- time
