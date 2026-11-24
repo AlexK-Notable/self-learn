@@ -739,6 +739,8 @@ class _Disk:
         self.entries: dict[str, _Entry] = {}
         self.dirty = False
         self.saved_at = 0.0
+        #: `provenance.disk_cache`, as each sweep found it when it began.
+        self.enabled = True
 
 
 _DISK = _Disk()
@@ -782,6 +784,20 @@ _CODE_HASH = _hash_code()
 
 def _code_hash() -> str:
     return _CODE_HASH
+
+
+def _switch_on() -> bool:
+    """The `provenance.disk_cache` setting (config.yaml, the environment, the
+    override channel). Off: the file is neither read nor written. A setting
+    that cannot be read leaves the file in use, as the default does."""
+    try:
+        from . import settings
+        from .ledger import resolve_home
+
+        value, _source = settings.resolve_setting(resolve_home(), settings.by_name("provenance.disk_cache"))
+        return bool(value)
+    except Exception:  # noqa: BLE001 - a sweep never fails over a setting
+        return True
 
 
 def _disk_path() -> Path:
@@ -853,7 +869,7 @@ def _disk_save(*, final: bool) -> None:
     when ``final``, else only when the last save is
     :data:`_DISK_SAVE_EVERY_SECS` old. A final save first drops entries
     whose transcript is gone. Never raises."""
-    if not _SAVING.get():
+    if not _SAVING.get() or not _DISK.enabled:
         return
     with _DISK_LOCK:
         if not _DISK.dirty or _DISK.path is None:
@@ -941,8 +957,8 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
     hit = _CACHE.get(key)
     if hit is not None and _entry_current(hit, st):
         return hit[2]
-    disk = _disk_entries()
-    kept = disk.get(key)
+    disk = _disk_entries() if _DISK.enabled else None
+    kept = disk.get(key) if disk is not None else None
     if kept is not None and _entry_current(kept, st):
         _CACHE[key] = kept
         return kept[2]
@@ -996,7 +1012,9 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
     entry: _Entry = (st.st_mtime_ns, st.st_size, found, deps)
     _CACHE[key] = entry
     with _DISK_LOCK:
-        if unread:
+        if disk is None:
+            pass  # `provenance.disk_cache` is off: nothing is kept past this process
+        elif unread:
             # A brief could not be read just now. In memory that lasts one
             # process, as it always has; in the file it would make an agent's
             # brief read as the person's words in every later process.
@@ -1011,6 +1029,7 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
 
 def sweep(dirs: Iterable[Path]) -> SentIndex:
     """Read sends from harness stores; absent or malformed stores add nothing."""
+    _DISK.enabled = _switch_on()
     sends: list[Send] = []
     for d in dict.fromkeys(dirs):
         try:

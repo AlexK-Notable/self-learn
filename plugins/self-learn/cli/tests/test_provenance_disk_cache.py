@@ -238,6 +238,54 @@ def test_what_an_unsaving_sweep_parsed_is_written_by_the_next_saving_one(tmp_pat
     assert len(json.loads(p._disk_path().read_text())["files"]) == 1
 
 
+def _forged_as_sent_nothing():
+    """Rewrite the file to say every transcript sent nothing, under the right code hash."""
+    path = p._disk_path()
+    data = json.loads(path.read_text())
+    for row in data["files"].values():
+        row[2] = []
+    path.write_text(json.dumps(data))
+    return path.read_bytes()
+
+
+@pytest.mark.parametrize("how", ["environment", "config"])
+def test_with_the_setting_off_the_file_is_neither_read_nor_written(tmp_path, monkeypatch, how):
+    """`provenance.disk_cache` is the rollback switch. The file is forged to
+    say the transcript sent nothing. Positive control first: with the
+    setting on, the forged file is believed (`user`). Off, by the
+    environment or by config.yaml: the transcript is parsed and answers
+    `agent`, the forged bytes stay as they were, and with no file none is
+    made. Mutation: ignore the setting -> `user` -> red."""
+    from self_learn import config
+    from self_learn.ledger import resolve_home
+
+    root = transcripts(tmp_path)
+    assert role(root) == "agent"
+    forged = _forged_as_sent_nothing()
+    fresh_process()
+    assert role(root) == "user", "control: on, the forged file answers"
+    if how == "environment":
+        monkeypatch.setenv("SELF_LEARN_PROVENANCE_DISK_CACHE", "0")
+    else:
+        home = resolve_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / config.CONFIG_BASENAME).write_text("provenance:\n  disk_cache: false\n", encoding="utf-8")
+    fresh_process()
+    assert role(root) == "agent"
+    assert p._disk_path().read_bytes() == forged
+    p._disk_path().unlink()
+    fresh_process()
+    assert role(root) == "agent" and not p._disk_path().exists()
+
+
+def test_the_setting_is_on_unless_set(tmp_path):
+    from self_learn import settings
+
+    setting = settings.by_name("provenance.disk_cache")
+    assert setting.default is True and setting.kind == "bool" and setting.tier == "A"
+    assert p._switch_on() is True
+
+
 def test_forget_drops_the_memory_and_the_file(tmp_path, monkeypatch):
     """`forget` is how a test (or a person) asks for a parse from nothing.
     Positive control: the row parser is reached again after it. Mutation:
