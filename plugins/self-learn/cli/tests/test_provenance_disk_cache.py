@@ -238,6 +238,104 @@ def test_what_an_unsaving_sweep_parsed_is_written_by_the_next_saving_one(tmp_pat
     assert len(json.loads(p._disk_path().read_text())["files"]) == 1
 
 
+def _forged_as_sent_nothing():
+    """Rewrite the file to say every transcript sent nothing, under the right code hash."""
+    path = p._disk_path()
+    data = json.loads(path.read_text())
+    for row in data["files"].values():
+        row[2] = []
+    path.write_text(json.dumps(data))
+    return path.read_bytes()
+
+
+@pytest.mark.parametrize("how", ["environment", "config"])
+def test_with_the_setting_off_the_file_is_neither_read_nor_written(tmp_path, monkeypatch, how):
+    """`provenance.disk_cache` is the rollback switch. The file is forged to
+    say the transcript sent nothing. Positive control first: with the
+    setting on, the forged file is believed (`user`). Off, by the
+    environment or by config.yaml: the transcript is parsed and answers
+    `agent`, the forged bytes stay as they were, and with no file none is
+    made. Mutation: ignore the setting -> `user` -> red."""
+    from self_learn import config
+    from self_learn.ledger import resolve_home
+
+    root = transcripts(tmp_path)
+    assert role(root) == "agent"
+    forged = _forged_as_sent_nothing()
+    fresh_process()
+    assert role(root) == "user", "control: on, the forged file answers"
+    if how == "environment":
+        monkeypatch.setenv("SELF_LEARN_PROVENANCE_DISK_CACHE", "0")
+    else:
+        home = resolve_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / config.CONFIG_BASENAME).write_text("provenance:\n  disk_cache: false\n", encoding="utf-8")
+    fresh_process()
+    assert role(root) == "agent"
+    assert p._disk_path().read_bytes() == forged
+    p._disk_path().unlink()
+    fresh_process()
+    assert role(root) == "agent" and not p._disk_path().exists()
+
+
+def test_turning_the_setting_off_reaches_a_process_that_is_already_running(tmp_path, monkeypatch):
+    """The host process that runs the nightly mine lives for days and has
+    already taken entries from the file into memory. Off must stop those
+    answering too, without a restart. One process throughout (no
+    `fresh_process` after the forged file is loaded). Positive control: on,
+    the forged entry answers `user`, from memory, twice. Mutation: flip only
+    the file's use -> memory still answers `user` -> red."""
+    root = transcripts(tmp_path)
+    assert role(root) == "agent"
+    forged = _forged_as_sent_nothing()
+    fresh_process()
+    assert role(root) == "user" and role(root) == "user", "control: the forged entry is in memory and answers"
+    monkeypatch.setenv("SELF_LEARN_PROVENANCE_DISK_CACHE", "0")
+    assert role(root) == "agent"
+    assert p._disk_path().read_bytes() == forged, "off never touches the file, even a bad one"
+    monkeypatch.delenv("SELF_LEARN_PROVENANCE_DISK_CACHE")
+    assert role(root) == "agent", "back on in the same process: what it parsed while off is what it remembers"
+    # The switch is not a repair: the file is as it was, and a NEW process
+    # believes it again. Discarding a suspect file means deleting it.
+    fresh_process()
+    assert role(root) == "user"
+    p.forget()
+    assert role(root) == "agent"
+
+
+def test_a_block_that_ends_after_the_setting_went_off_writes_nothing(tmp_path, monkeypatch):
+    """The save at the end of `saving()` asks the setting as it is then."""
+    root = transcripts(tmp_path)
+    with p.saving():
+        assert len(p.sweep([root])) == 1
+        monkeypatch.setenv("SELF_LEARN_PROVENANCE_DISK_CACHE", "0")
+    assert not p._disk_path().exists()
+    monkeypatch.delenv("SELF_LEARN_PROVENANCE_DISK_CACHE")
+    with p.saving():
+        pass
+    assert p._disk_path().is_file(), "control: the same unsaved entry is written once the setting is on"
+
+
+def test_the_setting_has_plain_words_and_the_settings_surfaces_load():
+    """A registry entry without a row in settings_plain makes that module
+    refuse to import, which takes `config get`/`config set` and the whole web
+    UI with it (the first draft of this setting did exactly that)."""
+    from self_learn import settings, settings_plain
+    from self_learn.ledger import resolve_home
+
+    plain = settings_plain.plain_for("provenance.disk_cache")
+    assert plain.group in settings_plain.GROUP_IDS and plain.label and plain.plain
+    assert settings.setting_row(resolve_home(), settings.by_name("provenance.disk_cache"))
+
+
+def test_the_setting_is_on_unless_set(tmp_path):
+    from self_learn import settings
+
+    setting = settings.by_name("provenance.disk_cache")
+    assert setting.default is True and setting.kind == "bool" and setting.tier == "A"
+    assert p._switch_on() is True
+
+
 def test_forget_drops_the_memory_and_the_file(tmp_path, monkeypatch):
     """`forget` is how a test (or a person) asks for a parse from nothing.
     Positive control: the row parser is reached again after it. Mutation:

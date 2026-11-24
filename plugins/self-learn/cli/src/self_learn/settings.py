@@ -1070,6 +1070,22 @@ REGISTRY: tuple[Setting, ...] = (
         default=os.pathsep.join(("~/.claude/projects", "~/.claude/archive/sessions")),
         description="transcript roots the checked-pointer resolver searches, in order (os.pathsep-separated)",
     ),
+    # ------------------------------------------------- provenance (S-163)
+    Setting(
+        name="provenance.disk_cache",
+        env_var="SELF_LEARN_PROVENANCE_DISK_CACHE",
+        config_section="provenance",
+        config_key="disk_cache",
+        kind="bool",
+        # On: the sweep of the harness stores reuses what it read last time
+        # for every transcript that has not changed (02 §3a.6). Off: the
+        # file is neither read nor written, and every process parses every
+        # transcript again, as before 2026-11-23 -- the rollback switch if
+        # the file is ever suspected of a wrong answer. Off leaves the file
+        # where it is: deleting it is what discards it.
+        default=True,
+        description="reuse the last sweep of the agent transcripts from a file; off parses them all again every time (slow, and the inbox may time out)",
+    ),
     # ------------------------------------------------------- analyst
     Setting(
         name="analyst.timeout_secs",

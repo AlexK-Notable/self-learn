@@ -198,6 +198,7 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "miner.max_sessions_per_run",  # new miner R2
         "miner.max_run_usd",  # new miner R2
         "refs.transcript_roots",  # U1 (checked pointer), 2026-09-26
+        "provenance.disk_cache",  # S-163, 2026-11-23: the sweep's file, and its rollback switch
         "analyst.timeout_secs",
         "steward.timeout_secs",  # U8
         "steward.packet_size",  # U10

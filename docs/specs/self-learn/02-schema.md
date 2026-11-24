@@ -3262,7 +3262,18 @@ tool call as its name and the string values of its input, an attachment's
      the next, and once more when the outermost block ends (a packet sweeps
      once for every turn it quotes; they share that one save);
      the save at the end drops entries whose transcript is gone.
-     `provenance.forget()` empties the memory and removes the file. It is a cache and nothing more: absent,
+     `provenance.forget()` empties the memory and removes the file. The
+     setting `provenance.disk_cache` (bool, default on; tier A;
+     `SELF_LEARN_PROVENANCE_DISK_CACHE`) is the rollback switch, read as each
+     sweep begins: off, the file is neither read nor written, in any process,
+     and every sweep parses every transcript as before S-163 (slow: an inbox
+     packet then takes as long as a whole sweep and may time out). A process
+     already running obeys it at its next sweep: it drops everything it
+     remembers, what it took from the file included, so the host that runs
+     the nightly mine needs no restart. The save that ends a `saving()` block
+     asks the setting as it is at that moment. Off is not a repair: it leaves
+     the file as it is, and a process that finds the setting on again trusts
+     that file as before; deleting the file is what discards it. It is a cache and nothing more: absent,
      unreadable, malformed or unwritable, it changes how long a sweep takes
      and never what it returns. The Hermes store keeps its own cache, above.
      `resolve`, `check_quote` and `excerpt` pass the sends of the roots they read.
