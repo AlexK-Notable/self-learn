@@ -1,0 +1,7 @@
+# Keep tracked text files LF in the working tree on every platform (including
+# Git for Windows). Byte-pinned fixtures in test_armor.py and script content
+# hashes compare working-tree bytes against LF git blobs and fail under CRLF.
+
+* text=auto eol=lf
+
+*.png binary

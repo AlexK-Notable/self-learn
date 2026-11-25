@@ -1,0 +1,167 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-canary:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Sync CLI and UI environments
+        run: |
+          uv sync --locked --project plugins/self-learn/cli
+          uv sync --locked --project plugins/self-learn/ui
+
+      - name: Configure scratch ledger and cache directories
+        run: |
+          $slHome = Join-Path $env:RUNNER_TEMP "self-learn-home"
+          $xdgCache = Join-Path $env:RUNNER_TEMP "xdg-cache"
+          New-Item -ItemType Directory -Force -Path $slHome, $xdgCache | Out-Null
+          "SELF_LEARN_HOME=$slHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "XDG_CACHE_HOME=$xdgCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: CLI home-floor tests
+        working-directory: plugins/self-learn/cli
+        run: uv run --no-sync pytest tests/test_home_floor.py -p no:cacheprovider -q
+
+      - name: UI home-floor tests
+        working-directory: plugins/self-learn/ui
+        run: uv run --no-sync pytest tests/test_home_floor.py -q
+
+      - name: Verify LF line endings on armor-pinned fixtures
+        run: |
+          $files = @(
+            "plugins/self-learn/cli/tests/support.py",
+            "plugins/self-learn/cli/tests/conftest.py",
+            "plugins/self-learn/cli/tests/backends.py"
+          )
+          $lines = git ls-files --eol -- @files
+          if ($LASTEXITCODE -ne 0 -or $lines.Count -ne $files.Count) {
+            Write-Error "Unexpected git ls-files --eol output"
+            exit 1
+          }
+          $bad = $lines | Where-Object { $_ -notmatch '\bw/lf\b' }
+          if ($bad) {
+            Write-Error ("Non-LF working-tree line endings detected:`n" + ($bad -join "`n"))
+            exit 1
+          }
+          $lines
+
+      - name: CLI import probe (expected to fail until Windows port lands)
+        working-directory: plugins/self-learn/cli
+        continue-on-error: true
+        run: |
+          uv run --no-sync python -c "import self_learn.cli"
+          $rc = $LASTEXITCODE
+          if ($rc -eq 0) {
+            "### Windows CLI import probe`n`n- **Status:** ``self_learn.cli`` imports cleanly on Windows." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          } else {
+            "### Windows CLI import probe`n`n- **Status:** ``self_learn.cli`` does **not** import on Windows yet (expected until Unix-only imports such as ``fcntl`` are ported; exit code $rc)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+          exit $rc
+
+  linux-floor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Sync CLI and UI environments
+        run: |
+          uv sync --locked --project plugins/self-learn/cli
+          uv sync --locked --project plugins/self-learn/ui
+
+      - name: Configure scratch ledger and cache directories
+        run: |
+          sl_home="${RUNNER_TEMP}/self-learn-home"
+          xdg_cache="${RUNNER_TEMP}/xdg-cache"
+          mkdir -p "$sl_home" "$xdg_cache"
+          printf 'SELF_LEARN_HOME=%s\n' "$sl_home" >> "$GITHUB_ENV"
+          printf 'XDG_CACHE_HOME=%s\n' "$xdg_cache" >> "$GITHUB_ENV"
+
+      - name: CLI home-floor tests
+        working-directory: plugins/self-learn/cli
+        run: uv run --no-sync pytest tests/test_home_floor.py -p no:cacheprovider -q
+
+      - name: UI home-floor tests
+        working-directory: plugins/self-learn/ui
+        run: uv run --no-sync pytest tests/test_home_floor.py -q
+
+      - name: CLI test collection check
+        working-directory: plugins/self-learn/cli
+        run: uv run --no-sync pytest --collect-only -q tests/
+
+  linux-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install system tools required by CLI tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git jq libnotify-bin gawk
+
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Configure scratch ledger, cache, and suite output directories
+        run: |
+          sl_home="${RUNNER_TEMP}/self-learn-home"
+          xdg_cache="${RUNNER_TEMP}/xdg-cache"
+          suite_out="${RUNNER_TEMP}/suite-out"
+          mkdir -p "$sl_home" "$xdg_cache" "$suite_out"
+          printf 'SELF_LEARN_HOME=%s\n' "$sl_home" >> "$GITHUB_ENV"
+          printf 'XDG_CACHE_HOME=%s\n' "$xdg_cache" >> "$GITHUB_ENV"
+          printf 'SUITE_OUT=%s\n' "$suite_out" >> "$GITHUB_ENV"
+
+      - name: Run CLI test suite
+        run: SUITE_WORKERS=4 plugins/self-learn/cli/scripts/suite
+
+      - name: Upload CLI suite log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-suite-log
+          path: ${{ runner.temp }}/suite-out/suite.log
+          if-no-files-found: warn
