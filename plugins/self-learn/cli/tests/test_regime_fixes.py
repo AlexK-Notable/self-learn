@@ -277,6 +277,7 @@ def test_route_direct_duplicate_id_refused(env):
 # ------------------------------------------------ telemetry never breaks verbs
 
 
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses file permissions")
 def test_spool_quiet_failure_never_breaks_teach(env, tmp_path, capsys):
     """Cache unwritable (the spool_quiet swallow path): teach must still
     capture and exit 0, with a loud stderr warning."""

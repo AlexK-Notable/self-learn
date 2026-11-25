@@ -361,6 +361,7 @@ def test_init_refuses_cleanly_when_parent_is_a_regular_file(tmp_path):
     assert not (afile / "ledger").exists()
 
 
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses file permissions")
 def test_init_refuses_cleanly_when_parent_is_unwritable(tmp_path):
     """MAJOR 1: an unwritable parent raised a raw PermissionError."""
     parent = tmp_path / "ro"
@@ -374,6 +375,7 @@ def test_init_refuses_cleanly_when_parent_is_unwritable(tmp_path):
         parent.chmod(0o700)
 
 
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses file permissions")
 def test_init_topup_refuses_cleanly_on_readonly_ledger(tmp_path):
     """MAJOR 1, the step-6 leg — P-C1.16 calls this the path a real user
     is most likely to take, and it raised a raw PermissionError."""
@@ -401,6 +403,7 @@ def test_init_topup_refuses_cleanly_on_readonly_ledger(tmp_path):
                 d.chmod(0o700)
 
 
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses file permissions")
 def test_init_refuses_cleanly_on_unreadable_directory(tmp_path):
     """NIT 6: an unreadable dir refused with step 4's message, which names
     foreign files that may not exist. It gets its own words now."""

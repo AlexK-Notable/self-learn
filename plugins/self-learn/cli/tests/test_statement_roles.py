@@ -1,5 +1,6 @@
 """Write-time statement evidence checks, with synthetic transcript roots."""
 import json
+import os
 from pathlib import Path
 import re
 
@@ -362,6 +363,8 @@ def test_transcript_damage_is_a_named_refusal_after_positive_control(tmp_path, m
     line = 1 if kind.endswith("user") or kind == "changed-role" else 3
     cause = ""
     if kind.startswith("permission"):
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root bypasses file permissions: chmod 0 cannot deny the read")
         statements._check_evidence(home, f"transcript:synthetic-stmt#L{line}", "New typed words.")
         path.chmod(0)
         cause = "permission denied"

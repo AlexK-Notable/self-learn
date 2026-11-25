@@ -578,6 +578,7 @@ def test_resolve_uv_bin_returns_failure_when_no_candidate_is_valid(tmp_path):
     assert result.stdout == ""
 
 
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses file permissions")
 def test_resolve_uv_bin_rejects_a_mode_0111_candidate(tmp_path):
     """Gate r2 Minor (continued from gate r1 MINOR-2/MINOR-5): `-f`+`-x`
     alone still admits a mode-0111 (execute-only, no read bit) file --

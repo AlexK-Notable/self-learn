@@ -317,6 +317,7 @@ class TestT2Budget:
         assert flagged_rows[0]["surface"] == "user-claude-md"
         assert all(r["surface"] != "project-claude-md" for r in flagged_rows)
 
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses file permissions")
     def test_t2_4_blindness_unreadable_target(self, env):
         text = _n_words(500)
         _set_user_claude_md(env, text)
@@ -929,6 +930,7 @@ class TestT4Composition:
         assert row["caution_share"] == 1.0
         assert "caution" in row["flagged_by"]
 
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses file permissions")
     def test_t4_8_blindness_unreadable_file(self, env):
         _set_user_claude_md(env, _n_words(5))
         os.chmod(env.user_claude_md, 0o000)
