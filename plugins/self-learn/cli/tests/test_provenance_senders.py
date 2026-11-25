@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,14 @@ def test_file_cache_tracks_change_removal_and_creation(tmp_path):
     old = path.stat()
     path.write_text("X" * len(BRIEF))  # same size and mtime; ctime changes
     os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns))
+    # The kernel stamps ctime from a coarse clock (one tick is several ms
+    # on Linux), so a rewrite inside the same tick keeps the old ctime and
+    # the cache rightly sees no change. Re-stamp until ctime has moved.
+    deadline = time.monotonic() + 2
+    while path.stat().st_ctime_ns == old.st_ctime_ns and time.monotonic() < deadline:
+        time.sleep(0.005)
+        os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns))
+    assert path.stat().st_ctime_ns != old.st_ctime_ns
     assert len(BRIEF) == path.stat().st_size
     assert role(root) == "user"
 
