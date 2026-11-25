@@ -82,3 +82,11 @@ register it in `git` mode: compiled output must not enter the public tree.
   # UI tests — from plugins/self-learn/ui/
   uv run pytest -q
   ```
+
+  The CLI suite also needs these on `PATH`: `jq` (the generated hook
+  scripts call it), `notify-send` (Debian/Ubuntu package `libnotify-bin`),
+  and `procps` (`pkill`, `ps`). On a slim container image, for example
+  `apt-get install jq libnotify-bin procps`. Run it as a non-root user:
+  root bypasses file permissions, so the tests that need a denied read or
+  write skip themselves as root. The armor tests that compare measured
+  `ast.dump` hashes skip below Python 3.13.
