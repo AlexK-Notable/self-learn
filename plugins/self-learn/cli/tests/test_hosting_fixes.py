@@ -7,6 +7,7 @@ with the real ~/.self-learn, ~/repos/claude-skills, or ~/.claude.
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -899,6 +900,7 @@ class TestCacheMigration:
         (old / "miner" / "journal.jsonl").write_text("{}\n", encoding="utf-8")
         return old
 
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses file permissions")
     def test_partial_move_is_retried_and_marked_only_when_complete(
         self, tmp_path, monkeypatch
     ):

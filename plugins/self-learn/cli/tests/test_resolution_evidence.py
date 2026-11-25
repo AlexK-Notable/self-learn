@@ -198,6 +198,7 @@ class TestBudgetEnvelopeKey:
         assert "budget" in envelope
         assert "over_cap" not in envelope
 
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses file permissions")
     def test_t11_3_unreadable_whole_file_still_reports_entry_word_counts(
         self, env
     ):

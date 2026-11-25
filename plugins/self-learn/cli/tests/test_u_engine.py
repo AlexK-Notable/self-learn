@@ -395,7 +395,12 @@ def test_lib3_full_session_driveable_with_claude_agent_sdk_absent(tmp_path):
     connect/query/drive/teardown cycle against `FakeSdkClient`. Proves
     the library is SDK-free in fact (import-time AND at every call it
     makes), not only in its static import list (`LIB1`)."""
-    src_root = str(_CLI_SRC_ROOT)
+    # The directory that CONTAINS the `self_learn` package. `_CLI_SRC_ROOT`
+    # is the package dir itself; putting that on sys.path shadows stdlib
+    # modules with same-named package modules (asyncio's `import select`
+    # then loads `self_learn/select.py` and fails on its relative import,
+    # wherever `select` is not a builtin module).
+    src_root = str(_CLI_SRC_ROOT.parent)
     script = f"""
 import sys
 sys.path.insert(0, {src_root!r})
