@@ -138,6 +138,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      # test_armor.py compares HEAD with the local `master` branch, which a
+      # branch or pull-request checkout does not create.
+      - name: Make sure a local master branch exists
+        run: git show-ref --verify --quiet refs/heads/master || git branch master origin/master
+
       - name: Install system tools required by CLI tests
         run: |
           sudo apt-get update
@@ -146,7 +151,9 @@ jobs:
       - name: Set up uv and Python 3.12
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
-          python-version: "3.12"
+          # 3.13: test_armor.py's pinned syntax-tree digests were measured on
+          # 3.13 and differ under 3.12 (first run: 7 armor failures).
+          python-version: "3.13"
           enable-cache: true
 
       - name: Configure scratch ledger, cache, and suite output directories
