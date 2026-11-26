@@ -1,4 +1,26 @@
-"""Synchronous child-process operations. Select the backend on first use."""
+"""Bounded synchronous child-process execution (T3/T7 M-G, sprint 1 plan
+v2 §2 — "primitives.procs.run_bounded"; P3 timeout gate).
+
+A bare ``subprocess.run(...)`` with no ``timeout=`` is why "blocking with
+a sane timeout" was fiction across this codebase before this move
+(``gitops.py``'s own module docstring names the same failure, probed
+2026-07-16: 120s and counting on a wedged push). This module gives every
+NEW bounded-child call site one function that cannot make that mistake:
+``timeout`` is a required keyword, and on expiry the child's WHOLE
+process group is killed — not just the immediate child — so a hang
+cannot survive by handing its work to a grandchild the immediate `kill`
+never touches.
+
+Nothing here changes an ALREADY-bounded call (e.g. ``gitops._git``'s own
+``GIT_LOCAL_TIMEOUT``); this is the seam new call sites route through,
+and the one the P3 scanner (``tests/test_bounded_children.py``) checks
+every ``subprocess.run``/``Popen``/``.communicate()`` site in ``src``
+against.
+
+S-165: this module is the facade. The operating-system code lives in a
+backend selected on first use (``_procs_posix`` on Linux and macOS), so
+importing a caller never loads a POSIX-only module.
+"""
 
 from __future__ import annotations
 
