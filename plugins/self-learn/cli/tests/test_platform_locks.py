@@ -436,9 +436,14 @@ def test_lease_exit_and_unlock_error_dispositions(tmp_path, monkeypatch):
     assert calls == [explicit, unlock] and not streams[-1].closed
     streams[-1].close()
     del faults[unlock]
+    del faults[explicit]
     calls.clear()
+    # The failed acquisition above wrote no row; the next call must write one.
+    journal = summarise.journal_path(tmp_path)
+    assert not journal.exists() or '"row": 1' not in journal.read_text(encoding="utf-8")
     summarise._journal(tmp_path, {"row": 2})
     assert calls == [explicit, unlock, "close"] and streams[-1].closed
+    assert '"row": 2' in journal.read_text(encoding="utf-8")
 
     # Stop at the first protected step. A raising body unwinds the steward
     # lease, then its stream. The stream close is the only Linux unlock.

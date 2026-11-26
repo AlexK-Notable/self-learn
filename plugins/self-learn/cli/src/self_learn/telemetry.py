@@ -396,18 +396,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                 fh = open(spool_path, "r+b")
             except (FileNotFoundError, OSError):
                 continue  # vanished between glob and open (cache cleaner)
-            lease = None
-            try:
-                lease = locks.acquire(fh.fileno(), path=spool_path, wait=None)
-                lines: list[str] = []
-                opened.append((spool_path, fh, lines, lease))
-            except BaseException:
-                try:
-                    if lease is not None:
-                        lease.release()
-                finally:
-                    fh.close()
-                raise
+            lease = locks.acquire(fh.fileno(), path=spool_path, wait=None)
             # FW-53: opened and decoded per LINE (binary read + per-line
             # decode), matching read_events' own fix — a spool file is
             # THIS-machine cache state (module docstring: "Losing spool
@@ -420,6 +409,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
             # `except telemetry.TelemetryError` guard around this call in
             # miner.py — turning even a run that landed candidates into
             # `status: failed`).
+            lines: list[str] = []
             for raw_line in fh.read().split(b"\n"):
                 try:
                     ln = raw_line.decode("utf-8")
@@ -427,6 +417,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                     continue
                 if ln.strip():
                     lines.append(ln)
+            opened.append((spool_path, fh, lines, lease))
         for index, (spool_path, fh, lines, lease) in enumerate(opened):
             kept: list[str] = []
             refused: list[str] = []
