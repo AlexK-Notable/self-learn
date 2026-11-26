@@ -368,6 +368,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_attrib.py": Behaviour(
         nodes=61, dump_sha="d9bd2a6a44e5bc82dda2185492a2ac7cb4cd2276f76d76cf55f25ea455fd4579",
+        edited={
+            "func:test_hy4_the_install_is_visible_to_the_lock_invariant_analyser":
+                "2026-11-25 U-attrib §3.4 AD8/HY4 — staged entry replacement remains visible to the analyzer",
+        },
     ),
     # 2026-10-24, ANCHOR 7cb185a (stmt-role): this row's 1 `edited` doors (the retirement's deleted and edited tests)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
@@ -1009,9 +1013,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=1,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-11-25 U-attrib §3.4 AD8/HY4 (S-166): 0 -> 1; HY4 now checks the staged "
+            "replacement facade leaf. Previous entry: "
             "2026-11-25, transcribed at ANCHOR c1fc66e from this module's own "
             "STALE refusal (S-165 processes landing): 1 -> 0; S-164's absorbed-race edit "
             "is anchor-side now. Previous entry: "
@@ -1107,9 +1113,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=169,
+        value=170,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-11-25 U-attrib §3.4 AD8/HY4 (S-166): 169 -> 170; HY4 now checks the staged "
+            "replacement facade leaf. Previous entry: "
             "2026-11-25 08 §7.1 (S-164): the absorbed-race holder now uses the lock facade. Previous entry: "
             "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-127): 176 -> 168; "
             "eight of the nine deleted test_worker.py popup tests differed from c3b48e7 and, "

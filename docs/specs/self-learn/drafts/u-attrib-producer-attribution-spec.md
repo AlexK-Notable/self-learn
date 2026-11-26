@@ -1397,21 +1397,20 @@ the function that legitimately mutates the ledger.
 *Broken:* running it.
 
 **HY4 — the install is visible to the lock-invariant analyser.**
-Source-level: assert the install writes its temp via `Path.write_text`
-(or `_dump_yaml` for a merge) **and** lands it via `os.replace` — both
-already recognised primitives, so no analyser extension is needed
-(`AD8`) — that `worker.py` imports no `shutil` copy
-helper, and — the falsifiable leg — that
-`test_lock_invariant.py`'s own **`_primitive`** classifier (`:218`)
-**returns a primitive** for the install's call node. The test imports and
+The install writes its named temp with `Path.write_text` in both branches.
+For a merge, `_dumps_yaml` supplies the text. It publishes the temp with
+`fsops.replace_staged`, which calls `os.replace` once on Linux (AD8, S-166).
+The test checks that `worker.py` imports no `shutil` copy helper and that
+the lock analyser's `_primitive` classifies the actual replacement call as
+`fsops.replace_staged` and the temp writes as `Path.write_text`. The test imports and
 calls that function by name *(r2 gate NOTE 3: r2 called it
 `_mutating_call`, which does not exist — an import-and-call criterion
 naming a non-existent symbol fails as an `ImportError`, not as the check
 it claims to be)*.
 *Broken:* `MA48` (install with `shutil.copy2`, replacing both
 primitives). The analyser recognises
-`write_text`/`rename`/`unlink`, `shutil.move` and `os.replace`
-(`test_lock_invariant.py:85`, `:223-229`) — `copy2` is in none of them,
+`write_text`/`rename`/`unlink`, `shutil.move`, `os.replace` and
+`fsops.replace_staged` (`test_lock_invariant.py`’s `_primitive`) — `copy2` is in none of them,
 so the whole install becomes invisible to the invariant and the suite
 still passes. A green test suite proving nothing is the failure mode this
 criterion exists for.

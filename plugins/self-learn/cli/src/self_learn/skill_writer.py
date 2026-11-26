@@ -396,7 +396,7 @@ def _place_link(link: Path, target: Path) -> str:
     temporary = link.parent / f".{link.name}.self-learn-{uuid.uuid4().hex[:8]}"
     os.symlink(str(target), temporary)
     try:
-        os.replace(temporary, link)
+        fsops.replace_staged(temporary, link)
     finally:
         if temporary.is_symlink():
             temporary.unlink()
@@ -2357,7 +2357,7 @@ def _holds(path: Path, text: str) -> bool:
 
 
 def _make_executable(path: Path) -> None:
-    os.chmod(path, path.stat().st_mode | 0o111)
+    fsops.finish_mode(path, path.stat().st_mode | 0o111, method="os")
 
 
 def _lessons_routed_to(home: Path, name: str) -> list[tuple[str, Path]]:

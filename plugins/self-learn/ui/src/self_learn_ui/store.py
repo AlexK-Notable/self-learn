@@ -492,7 +492,7 @@ class PaneTranscriptStore:
             self._archive_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             dest = self._archive_dir / f"{slug_for_session_key(session_key)}.{ts}.jsonl"
-            path.replace(dest)
+            fsops.replace_staged(path, dest, method="path")
         except OSError as exc:
             uilog.log(f"pane transcript store: archive failed for {session_key!r}: {exc}")
         meta_path = self._meta_path(session_key)

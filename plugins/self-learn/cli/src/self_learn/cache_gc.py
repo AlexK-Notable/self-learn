@@ -253,11 +253,11 @@ def _prune_glob_witnesses(root: Path, now: float, dry_run: bool, out: PruneResul
     swap of the cache directory from redirecting cleanup outside it.
     """
     try:
-        fd = os.open(root / GLOB_WITNESS_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        scope = fsops.safe_directory(root / GLOB_WITNESS_DIR)
     except OSError:
         return
-    try:
-        with os.scandir(fd) as entries:
+    with scope as directory:
+        with directory.entries() as entries:
             for entry in entries:
                 if _GLOB_WITNESS_RE.fullmatch(entry.name):
                     limit = GLOB_WITNESS_MAX_AGE_SECS
@@ -273,14 +273,12 @@ def _prune_glob_witnesses(root: Path, now: float, dry_run: bool, out: PruneResul
                         out.too_recent += 1
                         continue
                     if not dry_run:
-                        os.unlink(entry.name, dir_fd=fd)
+                        directory.unlink(entry.name)
                     out.removed_glob_witnesses.append(entry.name)
                 except FileNotFoundError:
                     continue  # another cleanup pass won the race
                 except OSError as exc:
                     out.errors.append(f"{GLOB_WITNESS_DIR}/{entry.name}: {exc}")
-    finally:
-        os.close(fd)
 
 
 def prune(

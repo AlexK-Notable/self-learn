@@ -41,6 +41,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, Response
 
 import self_learn.primitives.chrono as chrono
+import self_learn.primitives.fsops as fsops
 
 from . import ledger, report_view, summary_routes, uilog
 from .ask_runner import AskRunner, build_ask_runner
@@ -1010,7 +1011,7 @@ def _reply_file(request: Request, text: str) -> Path:
     folder = Path(sl_attention.cache_dir(_home(request))) / "ui"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"reply-{secrets.token_hex(8)}.txt"
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd = fsops.open_private_new(path)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
     return path
