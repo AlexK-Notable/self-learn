@@ -6,7 +6,6 @@ This module owns every ledger write made from those files.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import io
 import json
@@ -14,6 +13,7 @@ import re
 import shutil
 import time
 import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace as dataclass_replace
 from datetime import date, datetime, timedelta, timezone
 from operator import itemgetter
@@ -52,8 +52,7 @@ from .ledger import discover_buckets
 from .invocation import failure_class
 from .overseer import notify as overseer_notify
 from .records import Record, RecordError
-from .primitives import chrono
-from .primitives import fsops
+from .primitives import chrono, fsops, locks
 from .scan import format_refusal, refusal_text, yaml_error_text
 from .scan import scan as secret_scan
 
@@ -7241,13 +7240,14 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
 
     lock_path = cache_dir(home) / "steward.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w", encoding="utf-8") as lock_fh:
+    with locks.open_lock(lock_path, purpose="truncate") as lock_fh, ExitStack() as held:
         try:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lease = locks.acquire(lock_fh.fileno(), path=lock_path, wait=0, close_scoped=True)
         except BlockingIOError:
             result = RunResult("idle")
             _journal(home, {"ts": chrono.now_iso(), "status": "idle", "reason": "already running"})
             return result
+        held.enter_context(lease)
         unfinished_runs = _reconcile_runs(home)
         reconsider, _reconsider_successors = _reconsider_proposals(home)
         reconsider_ids = {entry.record.id for entry, _proposal in reconsider}

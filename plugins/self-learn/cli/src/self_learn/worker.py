@@ -44,7 +44,6 @@ process.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import math
@@ -59,7 +58,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from . import attribution, cache_gc, domain, intents, invocation, sentinel, settings, telemetry
-from .primitives import chrono, fsops, truncate
+from .primitives import chrono, fsops, locks, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import Hosts, HostsError, ancestors_of, load_hosts, skill_dir_for, unregistered_ancestor_dirs
@@ -1429,9 +1428,10 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
     inherits the already-running window's policy — correct: absorption
     means an existing run already covers this work, and a run that was
     allowed to push is not retroactively muzzled."""
-    with open(_p("worker.spawn.lock"), "w", encoding="utf-8") as lock_fh:
+    lock_path = _p("worker.spawn.lock")
+    with locks.open_lock(lock_path, purpose="truncate") as lock_fh:
         try:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lease = locks.acquire(lock_fh.fileno(), path=lock_path, wait=0)
         except BlockingIOError:
             return "absorbed-race"  # the racing opener's spawn covers us
         try:
@@ -1474,7 +1474,7 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
             log(f"window opened (pid {pid})")
             return "spawned"
         finally:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            lease.release()
 
 
 def kick(home: Path | str, *, no_push: bool = False) -> str:
@@ -3862,8 +3862,9 @@ def _run_job(
     if coalesce:
         time.sleep(coalesce_secs(home))
 
-    with open(_p("worker.lock"), "w", encoding="utf-8") as lock_fh:
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)  # blocking (pinned)
+    lock_path = _p("worker.lock")
+    with locks.open_lock(lock_path, purpose="truncate") as lock_fh:
+        lease = locks.acquire(lock_fh.fileno(), path=lock_path, wait=None)  # blocking (pinned)
         # Self-hold the sentinel for the rest of the run. There is no
         # sync-first step any more (audit 2026-07-16 MINOR 10): it looked
         # for `<home>/bin/claude-skills-sync`, which the LEDGER home will
@@ -4289,7 +4290,7 @@ def _run_job(
                     log(f"run: recovered {intent_id} (restored: its mutation was undone)")
         finally:
             hold.release()
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            lease.release()
 
     # §3.10 — the backoff counter, updated at the run-end site (BD7: NOT
     # inside `_open_window`, which `kick` shares — a human kick must

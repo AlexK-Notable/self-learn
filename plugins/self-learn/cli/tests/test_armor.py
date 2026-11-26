@@ -353,6 +353,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # removal of the worker popups, S-127) were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_worker.py": Behaviour(
         nodes=75, dump_sha="1439a4394580043517841837b9640ca5621ef505feed06b539aeae9e8bcd343a",
+        edited={
+            "func:test_open_window_absorbed_race":
+                "2026-11-25 08 §7.1 (S-164) — independent facade lease still excludes worker.spawn.lock",
+        },
     ),
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): H1's `edited` door (FW-85's EXIT_HELD) was dropped
     # as VACUOUS by this landing's own refusal; FW-85 is behind the anchor.
@@ -1003,9 +1007,10 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=1,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-11-25 08 §7.1 (S-164): the absorbed-race holder now uses the lock facade. Previous entry: "
             "2026-11-16, transcribed at ANCHOR 786a5d5 from this module's own "
             "STALE refusal (S-160 screen derivation landing): 1 -> 0; S-160's WR7 edit "
             "is anchor-side now. Previous entry: "
@@ -1097,9 +1102,10 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=168,
+        value=169,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-11-25 08 §7.1 (S-164): the absorbed-race holder now uses the lock facade. Previous entry: "
             "2026-11-01 attention round, lane surfaces (design r2 §3.9; S-127): 176 -> 168; "
             "eight of the nine deleted test_worker.py popup tests differed from c3b48e7 and, "
             "deleted, no longer count as edited. Measured by this module's own run. Previous entry: "
@@ -2644,7 +2650,7 @@ def test_beh2_adding_is_free():
     # dated `missing` doors (the worker popups' tests); appending must add
     # nothing beyond them.
     assert set(missing) == set(ARMOR[key].missing), missing
-    assert edited == [], edited
+    assert set(edited) == set(ARMOR[key].edited), edited
     assert "func:test_zz_probe" in h
     assert "assign:ZZ_CONST" in h
 
@@ -3467,6 +3473,7 @@ def test_anc5_remeasure_refuses_a_vacuous_exemption(capsys):
             dump_sha=ns["ARMOR"][behaviour_key].dump_sha,
             # 2026-11-01 (attention round, lane `surfaces`): the row's own
             # shipped doors stay, so only the scaffold entry is vacuous.
+            edited=ns["ARMOR"][behaviour_key].edited,
             missing={
                 **ns["ARMOR"][behaviour_key].missing,
                 live_node: "2026-08-29 §4.7 ANC5 test scaffold, 6815503.",

@@ -73,7 +73,6 @@ owns the git mechanics.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import os
 import subprocess
 import sys
@@ -84,7 +83,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from . import attribution
-from .primitives import fsops
+from .primitives import fsops, locks
 
 __all__ = [
     "EXCLUDE_BEGIN",
@@ -396,7 +395,7 @@ COMMIT_LOCK_TIMEOUT = 150.0
 #: on ourselves forever; nesting is a pass-through instead (audit
 #: 2026-07-16 BLOCKER 4: verbs commit to the ledger and then to a host, and
 #: future callers must not be able to self-deadlock by composing).
-_held_locks: set[str] = set()
+_held_locks = locks._held_locks
 
 
 def commit_lock_path(repo: Path) -> Path:
@@ -439,51 +438,8 @@ def _flock_lock(path: Path, timeout: float, wedged_by: str) -> Iterator[None]:
     not an omission, so it shares this exactly rather than reimplementing
     it). ``wedged_by`` names what a timeout blames, in the caller's own
     words."""
-    key = str(path)
-    if key in _held_locks:  # already ours — nesting must not self-deadlock
+    with locks.repo_section(path, timeout, wedged_by, timeout_error=GitOpsError):
         yield
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(path, "w", encoding="utf-8")
-    try:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise GitOpsError(
-                        f"{wedged_by} lock {path} still held after "
-                        f"{timeout:g}s — another self-learn producer "
-                        f"(worker/miner/verb) is wedged mid-{wedged_by}"
-                    ) from None
-                time.sleep(0.02)
-                continue
-            # S-99: `cache_gc.prune` may unlink an idle lock file.
-            # A lock taken on a file that was unlinked after we opened it
-            # excludes nobody (the next opener creates a fresh file), so
-            # confirm the file we hold is still the one at `path`, and
-            # start over on a fresh one if not.
-            try:
-                same = os.fstat(fh.fileno()).st_ino == os.stat(path).st_ino
-            except OSError:
-                same = False
-            if same:
-                break
-            fh.close()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fh = open(path, "w", encoding="utf-8")
-        _held_locks.add(key)
-        try:
-            with contextlib.suppress(OSError):
-                fh.write(f"{os.getpid()}\n")
-                fh.flush()
-            yield
-        finally:
-            _held_locks.discard(key)
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-    finally:
-        fh.close()
 
 
 @contextlib.contextmanager

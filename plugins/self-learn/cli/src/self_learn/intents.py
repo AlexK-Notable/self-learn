@@ -119,7 +119,6 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import fcntl
 import json
 import os
 import subprocess
@@ -131,7 +130,7 @@ from pathlib import Path
 
 from . import gitops
 from .compiled import sha256_hex
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, locks
 
 __all__ = [
     "Intent",
@@ -765,8 +764,7 @@ def ledger_write(
     behind the refusal's exit code would be the exact under-reporting
     §7.2a.5(4)(b) forbids for a single acquisition's own recoveries."""
     home = Path(home)
-    key = str(gitops.commit_lock_path(home))
-    already_held = key in gitops._held_locks  # noqa: SLF001 -- same re-entrancy test commit_lock uses
+    already_held = locks.held_here(gitops.commit_lock_path(home))
     with gitops.commit_lock(home):
         if already_held:
             yield RecoverResult()
@@ -920,12 +918,12 @@ def classify_status(home: Path | str) -> StatusClass:
     except gitops.GitOpsError as exc:
         return StatusClass(probe="error", error=str(exc))
     try:
-        fh = os.open(str(lock_path), os.O_RDONLY | os.O_CREAT)
+        fh = locks.open_lock(lock_path, purpose="probe")
     except OSError as exc:
         return StatusClass(probe="error", error=str(exc))
     try:
         try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lease = locks.acquire(fh.fileno(), path=lock_path, wait=0)
         except BlockingIOError:
             names = [f.stem for f in sorted(d.glob("*.json"))] if d.is_dir() else []
             return StatusClass(probe="busy", intents=[IntentStatus(id=n, cls="busy") for n in names])
@@ -957,6 +955,6 @@ def classify_status(home: Path | str) -> StatusClass:
                         out.append(IntentStatus(id=data.get("id", f.stem), cls="pending"))
             return StatusClass(probe="ok", intents=out)
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            lease.release()
     finally:
-        os.close(fh)
+        fh.close()

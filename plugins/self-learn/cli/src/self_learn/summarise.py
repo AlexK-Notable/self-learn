@@ -52,7 +52,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import fcntl
 import hashlib
 import io
 import json
@@ -65,11 +64,11 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, TextIO
+from typing import IO, Any, TextIO
 
 from . import ask, attention, attention_packet, gitops, intents, invocation, settings, workspace
 from .ledger import resolve_home
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, locks
 
 __all__ = [
     "KINDS",
@@ -376,19 +375,21 @@ def _journal(home: Path | str, row: dict) -> None:
     read and the rewrite happen under ``journal.lock`` (gate r1 NIT 2), so
     two summaries ending together cannot lose a row."""
     path = journal_path(home)
-    fd: int | None = None
+    fh = None
+    lease = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path.parent / "journal.lock", os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        lock_path = path.parent / "journal.lock"
+        fh = locks.open_lock(lock_path, purpose="private")
+        lease = locks.acquire(fh.fileno(), path=lock_path, wait=None)
         prior = path.read_text(encoding="utf-8") if path.exists() else ""
         _write_cache(path, prior + json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
     except OSError:
         pass
     finally:
-        if fd is not None:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
+        if fh is not None:
+            locks.release_open(fh.fileno(), lease)
+            fh.close()
 
 
 def _record_text(record: dict) -> str:
@@ -465,24 +466,27 @@ class _HashLock:
 
     def __init__(self, home: Path | str, kind: str, sha256: str) -> None:
         self._path = _cache(home) / "locks" / f"{kind}-{sha256}.lock"
-        self._fd: int | None = None
+        self._fh: IO[Any] | None = None
+        self._lease: locks.Lease | None = None
 
     def acquire(self) -> bool:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        self._fh = locks.open_lock(self._path, purpose="private")
         try:
-            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lease = locks.acquire(self._fh.fileno(), path=self._path, wait=0)
         except OSError:
-            os.close(self._fd)
-            self._fd = None
+            self._fh.close()
+            self._fh = None
+            self._lease = None
             return False
         return True
 
     def release(self) -> None:
-        if self._fd is not None:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
-            os.close(self._fd)
-            self._fd = None
+        if self._fh is not None and self._lease is not None:
+            self._lease.release()
+            self._fh.close()
+            self._fh = None
+            self._lease = None
 
 
 # ===================================================================== #

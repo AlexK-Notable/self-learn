@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import cli, telemetry, verbs
+from self_learn.primitives import _locks_posix
 from self_learn.analyst import doctrine_path
 from self_learn.compilers import BEGIN_MARKER, compile_managed_file
 from self_learn.ledger_ops import create_record, write_proposal
@@ -139,7 +140,7 @@ def test_spool_event_holds_exclusive_lock_around_write(monkeypatch, tmp_path):
         calls.append(op)
         real_flock(fd, op)
 
-    monkeypatch.setattr(telemetry.fcntl, "flock", recording_flock)
+    monkeypatch.setattr(_locks_posix.fcntl, "flock", recording_flock)
     telemetry.spool_event("offer-made")
     assert calls[0] == fcntl.LOCK_EX
     assert calls[-1] == fcntl.LOCK_UN
@@ -154,7 +155,7 @@ def test_flush_locks_spool_and_target(monkeypatch, tmp_path, env):
         real_flock(fd, op)
 
     telemetry.spool_event("offer-made")
-    monkeypatch.setattr(telemetry.fcntl, "flock", recording_flock)
+    monkeypatch.setattr(_locks_posix.fcntl, "flock", recording_flock)
     telemetry.flush(env.home)
     # at least two exclusive locks: the spool file and the tracked target
     assert calls.count(fcntl.LOCK_EX) >= 2

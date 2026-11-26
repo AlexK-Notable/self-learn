@@ -1088,12 +1088,13 @@ def test_run_releases_owned_sentinel_and_respects_other_holder(env, sdk_fake_wor
 
 
 def test_open_window_absorbed_race(env, monkeypatch):
-    import fcntl as fcntl_mod
+    from self_learn.primitives import locks
 
     worker.cache_dir().mkdir(parents=True, exist_ok=True)
     lock_path = worker.cache_dir() / "worker.spawn.lock"
-    with open(lock_path, "w", encoding="utf-8") as holder:
-        fcntl_mod.flock(holder.fileno(), fcntl_mod.LOCK_EX)
+    with locks.open_lock(lock_path, purpose="truncate") as holder, locks.acquire(
+        holder.fileno(), path=lock_path, wait=None
+    ):
         monkeypatch.setattr(
             worker,
             "_spawn_window",

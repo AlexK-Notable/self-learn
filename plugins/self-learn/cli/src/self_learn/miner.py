@@ -36,7 +36,6 @@ expressed in config or by unsetting the key.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -55,7 +54,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, cast
 
 from . import attribution, gitops, intents, invocation, provenance, provider, refs, sentinel, settings, steward_prompt, telemetry, worker
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, locks
 from . import transcript_lines
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
@@ -2635,9 +2634,10 @@ def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
         return "fresh"
     if _last_attempt_age_secs() <= ATTEMPT_COOLDOWN_SECS:
         return "cooling"
-    with open(miner_dir() / "miner.spawn.lock", "w", encoding="utf-8") as fh:
+    lock_path = miner_dir() / "miner.spawn.lock"
+    with locks.open_lock(lock_path, purpose="truncate") as fh:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lease = locks.acquire(fh.fileno(), path=lock_path, wait=0)
         except BlockingIOError:
             return "busy"
         try:
@@ -2658,7 +2658,7 @@ def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
             log(f"watchdog: last run >24h — spawned run (pid {pid})")
             return "spawned"
         finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            lease.release()
 
 
 # ------------------------------------------------------------------ run
@@ -2736,16 +2736,15 @@ def _run_job(
     # a preview opens the lock without truncating it, and logs into its own
     # run folder: the lock file (created when absent) is all it writes
     # outside that folder (the seam's own copies and logs aside)
-    if preview:
-        lock_fh = open(miner_dir() / "miner.lock", "a", encoding="utf-8")
-    else:
-        lock_fh = open(miner_dir() / "miner.lock", "w", encoding="utf-8")
+    lock_path = miner_dir() / "miner.lock"
+    lock_fh = locks.open_lock(lock_path, purpose="append" if preview else "truncate")
+    lease = None
     global _LOG_TO
     if preview:
         _LOG_TO = miner_dir() / "runs" / run_id / "miner.log"
     try:
         try:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lease = locks.acquire(lock_fh.fileno(), path=lock_path, wait=0)
         except BlockingIOError:
             return MineResult(status="busy")
         if not preview:  # a preview is no attempt at the night's run
@@ -2805,7 +2804,7 @@ def _run_job(
     finally:
         _LOG_TO = None
         try:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            locks.release_open(lock_fh.fileno(), lease)
         except OSError:
             pass
         lock_fh.close()
@@ -3745,10 +3744,12 @@ def file_reviewed_run(home: Path | str, run_id: str, *, file_cap: int | None = N
     if not reviewed_path.is_file():
         return {"status": "missing", "reason": f"run {run_id} has no dry-run store"}
     tracker = tracker or tracker_mod.Tracker()
-    lock_fh = open(miner_dir() / "miner.lock", "a", encoding="utf-8")
+    lock_path = miner_dir() / "miner.lock"
+    lock_fh = locks.open_lock(lock_path, purpose="append")
+    lease = None
     try:
         try:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lease = locks.acquire(lock_fh.fileno(), path=lock_path, wait=0)
         except BlockingIOError:
             return {"status": "busy", "reason": "a mining run holds the miner's lock"}
         reviewed = mining_tasks.Store.load(reviewed_path)
@@ -3782,7 +3783,7 @@ def file_reviewed_run(home: Path | str, run_id: str, *, file_cap: int | None = N
         }
     finally:
         try:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            locks.release_open(lock_fh.fileno(), lease)
         except OSError:
             pass
         lock_fh.close()
@@ -3821,11 +3822,13 @@ def backfill_tasks(
     call = call or _session_call
     tracker = tracker or tracker_mod.Tracker()
     run_id = uuid.uuid4().hex[:8]
-    lock_fh = open(miner_dir() / "miner.lock", "a", encoding="utf-8")
+    lock_path = miner_dir() / "miner.lock"
+    lock_fh = locks.open_lock(lock_path, purpose="append")
+    lease = None
     global _LOG_TO
     try:
         try:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lease = locks.acquire(lock_fh.fileno(), path=lock_path, wait=0)
         except BlockingIOError:
             return {"status": "busy", "reason": "a mining run holds the miner's lock"}
         folder = engine_mod.RunFolder(miner_dir(), run_id)
@@ -3936,7 +3939,7 @@ def backfill_tasks(
     finally:
         _LOG_TO = None
         try:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            locks.release_open(lock_fh.fileno(), lease)
         except OSError:
             pass
         lock_fh.close()

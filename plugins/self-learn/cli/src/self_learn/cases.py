@@ -76,7 +76,6 @@ item and the caller's own identity.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import io
 import json
@@ -99,7 +98,7 @@ from .ledger_ops import (
     held_text,
     steward_acting_home,
 )
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, locks
 from .primitives.yamlio import rt_yaml
 from .records import Record, RecordError
 from .scan import attach_hits, format_refusal
@@ -1616,12 +1615,12 @@ def _index_lock(cache_dir: Path):
     cache_dir = Path(cache_dir)
     lock_path = _index_path(cache_dir).parent / "index.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w", encoding="utf-8") as lock_fh:
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+    with locks.open_lock(lock_path, purpose="truncate") as lock_fh:
+        lease = locks.acquire(lock_fh.fileno(), path=lock_path, wait=None)
         try:
             yield
         finally:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            lease.release()
 
 
 def _update_index(home: Path, case_id: str) -> Path:
