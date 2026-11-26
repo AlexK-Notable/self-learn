@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from . import attribution, cache_gc, domain, intents, invocation, sentinel, settings, telemetry
-from .primitives import chrono, fsops, locks, truncate
+from .primitives import chrono, fsops, locks, procs, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import Hosts, HostsError, ancestors_of, load_hosts, skill_dir_for, unregistered_ancestor_dirs
@@ -883,13 +883,7 @@ def _truncate_oldest(path: Path, cap: int) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, ValueError):
-        return False
-    except PermissionError:
-        return True
-    return True
+    return procs.pid_alive(pid)
 
 
 def coalesce_secs(home: Path | str | None = None) -> float:

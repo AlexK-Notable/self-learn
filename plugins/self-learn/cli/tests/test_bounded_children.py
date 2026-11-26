@@ -13,9 +13,7 @@ Two halves:
    `test_lock_invariant.py`'s fixpoint walker: parse the source, don't
    hand-enumerate) over `src/self_learn/**/*.py` for the three violation
    shapes P3 forbids: a `subprocess.run(` with no `timeout=` (outside
-   `primitives/procs.py`, which IS the bounded primitive and is exempt
-   by construction — see its own body, which never calls bare
-   `subprocess.run` at all); a bare `.communicate()` (no `input=`, no
+   `primitives/_procs_posix.py`, the backend exempt from this rule); a bare `.communicate()` (no `input=`, no
    `timeout=`); a `subprocess.Popen(` with no literal
    `start_new_session=True`. An allowlist entry suppresses a violation
    ONLY when it carries all three disposition fields the standing rule
@@ -98,14 +96,8 @@ def _has_kw(call: ast.Call, name: str) -> bool:
 
 def _scan_module(path: Path, rel: str) -> list[Violation]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    # `primitives/procs.py` IS the bounded primitive: a bare
-    # `subprocess.run(` there would be the gate's own escape hatch, so
-    # it is the one file exempt from the run-without-timeout rule. (In
-    # this implementation it never calls `subprocess.run` at all --
-    # `run_bounded` is built on `Popen` + a bounded `communicate` -- so
-    # the exemption matches nothing today; it exists so a future
-    # rewrite of the primitive itself isn't flagged by the gate it IS.)
-    exempt_run_timeout = rel in ("primitives/procs.py", "primitives\\procs.py")
+    # Only the backend owns the run-without-timeout exemption.
+    exempt_run_timeout = rel in ("primitives/_procs_posix.py", "primitives\\_procs_posix.py")
     hits: list[Violation] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -276,13 +268,10 @@ MEASURED_CENSUS_MODULES = frozenset(
         "ask.py",  # S-124: `ask._run_probe`, `ask._git_log`
         "attention.py",  # S-121: `attention._systemctl_active`
         "attention_answers.py",  # S-123: `_launch` (systemd-run), `fix` (systemctl)
-        "gitops.py",
-        "hosts.py",
-        "ledger.py",
         "miner.py",
         "notices.py",  # S-106: `git status` of a notice's file
         "overseer/notify.py",
-        "primitives/procs.py",
+        "primitives/_procs_posix.py",
         "provider.py",
         "skill_writer.py",  # S-107: `git show HEAD:<file>`
         "worker.py",
@@ -308,7 +297,8 @@ MEASURED_CENSUS_MODULES = frozenset(
 # run's own `self-learn-run-<12 hex>` unit) and `attention_answers.stop`
 # (`systemctl --user stop` of that unit), the inbox's "Stop it"
 # (S-129). No new module.
-MEASURED_CENSUS_SITE_COUNT = 23
+# S-165: six Git runs now share one backend run.
+MEASURED_CENSUS_SITE_COUNT = 18
 
 
 def test_p3_gate_census_matches_the_measured_count():
@@ -440,14 +430,13 @@ def test_scanner_does_not_flag_a_non_bare_communicate_call(tmp_path):
     assert scan(tmp_path) == []
 
 
-def test_scanner_exempts_a_bare_run_call_inside_primitives_procs_py(tmp_path):
+def test_scanner_exempts_a_bare_run_call_inside_primitives_posix_backend(tmp_path):
     procs_dir = tmp_path / "primitives"
     procs_dir.mkdir()
-    (procs_dir / "procs.py").write_text(
-        "import subprocess\n\ndef f():\n    subprocess.run(['true'])\n",
-        encoding="utf-8",
-    )
-    assert scan(tmp_path) == []
+    (procs_dir / "_procs_posix.py").write_text(OFFENDING_RUN, encoding="utf-8")
+    facade = procs_dir / "procs.py"
+    facade.write_text(OFFENDING_RUN, encoding="utf-8")
+    assert scan(tmp_path) == [Violation(str(facade.relative_to(tmp_path)), 4, "run-no-timeout")]
 
 
 def test_positive_control_catches_run_imported_by_name(tmp_path):

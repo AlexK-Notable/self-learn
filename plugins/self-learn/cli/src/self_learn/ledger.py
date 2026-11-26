@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import attribution, gitops, intents
 from .hosts import is_repo_root
+from .primitives import procs
 
 DEFAULT_HOME = "~/.self-learn"
 
@@ -107,10 +108,8 @@ def home_state_message(state: str, home: Path | str) -> str:
         )
     if state == "not-a-repo":
         try:
-            proc = subprocess.run(
+            proc = procs.run_command(
                 ["git", "-C", str(home), "rev-parse", "--show-toplevel"],
-                capture_output=True,
-                text=True,
                 timeout=gitops.GIT_LOCAL_TIMEOUT,
             )
         except subprocess.TimeoutExpired:
@@ -231,10 +230,8 @@ def _git_init(target: Path) -> None:
     # repo does not exist yet, so `-C` cannot address it) — the one call
     # here that cannot go through gitops._git. Bounded explicitly.
     try:
-        proc = subprocess.run(
+        proc = procs.run_command(
             ["git", "init", str(target)],
-            capture_output=True,
-            text=True,
             timeout=gitops.GIT_LOCAL_TIMEOUT,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:

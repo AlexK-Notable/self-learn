@@ -86,6 +86,8 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-11-25 — (primitives/procs, gitops, hosts, ledger, worker; tests/test_platform_procs.py) S-165: bounded children and PID probes share a process interface.** Linux keeps the combined pipe budget, process-group kill and timed drains. The six short Git commands still inherit stdin and return the standard library's captured text and timeout diagnostics. Windows callers can import the interface. Its first operation raises `NotImplementedError`.
+
 - **2026-11-25 — (primitives/locks, gitops and the ten other lock users; tests/test_platform_locks.py; 08 §7.1) S-164: CLI lock users share a private interface.** Linux takes flock on the original descriptors and paths, including the tracked telemetry append inside the ledger guard. Repo nesting shares one held set, and acquisition retries a replaced inode against the original deadline. The CLI and its settings can import the interface on Windows. Using a lock there raises `NotImplementedError` pending the native implementation.
 
 - **2026-11-23 — (provenance, settings; tests/test_provenance_disk_cache.py; 02 §3a.6) S-163 amended: `provenance.disk_cache`, the switch that turns the sweep's file off.** The nightly miner reads sends through the same sweep as the inbox, so the file S-163 added stands under every decision about whose words a turn is. A new setting, on by default, turns it off for every process: the file is then neither read nor written and each sweep parses each transcript again. Checked on the real stores with the file as the live system had written it: 3,472 of 3,485 settled transcripts answered from the file, and the same 8,141 sends, digest for digest, as a sweep with no file at all.

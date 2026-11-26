@@ -67,7 +67,7 @@ from ruamel.yaml.error import YAMLError
 
 from . import config as _config
 from . import attribution, gitops, intents
-from .primitives import chrono, fsops, yamlio
+from .primitives import chrono, fsops, procs, yamlio
 
 __all__ = [
     "HOST_KINDS",
@@ -473,10 +473,8 @@ def effective_default_mode(home: Path | str) -> str:
 
 def _is_git_repo(path: Path) -> bool:
     try:
-        proc = subprocess.run(
+        proc = procs.run_command(
             ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
             timeout=gitops.GIT_LOCAL_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -507,10 +505,8 @@ def is_repo_root(path: Path | str) -> bool:
         return False
     target = target.resolve()
     try:
-        proc = subprocess.run(
+        proc = procs.run_command(
             ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
             timeout=gitops.GIT_LOCAL_TIMEOUT,
         )
     except subprocess.TimeoutExpired:

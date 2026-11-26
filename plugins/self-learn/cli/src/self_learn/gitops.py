@@ -83,7 +83,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from . import attribution
-from .primitives import fsops, locks
+from .primitives import fsops, locks, procs
 
 __all__ = [
     "EXCLUDE_BEGIN",
@@ -231,10 +231,8 @@ def _git(
     """One git call, always bounded. ``subprocess.run`` with no timeout is
     why "blocking with a sane timeout" was fiction (audit 2026-07-16)."""
     try:
-        return subprocess.run(
+        return procs.run_command(
             ["git", "-C", str(repo), *args],
-            capture_output=True,
-            text=True,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
@@ -288,10 +286,8 @@ def _index_lock_note(repo: Path) -> str:
 def _git_nolock(repo: Path, *args: str) -> subprocess.CompletedProcess:
     """A short git call for error-reporting only — never raises, so a
     diagnostic can never become the exception it is describing."""
-    return subprocess.run(
+    return procs.run_command(
         ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
         timeout=5,
     )
 
