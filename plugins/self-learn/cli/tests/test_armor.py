@@ -351,12 +351,11 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # the removal.
     # 2026-11-01, ANCHOR 208289b (um-basis landing): this row's 9 `missing` doors (the attention round's
     # removal of the worker popups, S-127) were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
+    # 2026-11-25, ANCHOR c1fc66e (S-165 processes landing): S-164's `edited` door
+    # (test_open_window_absorbed_race holds its lock through the facade) was dropped as VACUOUS
+    # by this landing's own refusal; that edit is anchor-side now.
     "test_worker.py": Behaviour(
         nodes=75, dump_sha="1439a4394580043517841837b9640ca5621ef505feed06b539aeae9e8bcd343a",
-        edited={
-            "func:test_open_window_absorbed_race":
-                "2026-11-25 08 §7.1 (S-164) — independent facade lease still excludes worker.spawn.lock",
-        },
     ),
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): H1's `edited` door (FW-85's EXIT_HELD) was dropped
     # as VACUOUS by this landing's own refusal; FW-85 is behind the anchor.
@@ -878,9 +877,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_node_counts,
     ),
     "BEH7.dump_prefixes": Measured(
-        value=('669c652c7530', '972fd5320007', '1439a4394580', '1a6ef0d78003', 'd9bd2a6a44e5', '64de0b46f124', '95bbfe93d6c0', '3002f84a40b7'),
+        value=('669c652c7530', '972fd5320007', 'feb9e42b0a25', '1a6ef0d78003', 'd9bd2a6a44e5', '64de0b46f124', '95bbfe93d6c0', '3002f84a40b7'),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-11-25, transcribed at ANCHOR c1fc66e from this module's own "
+            "STALE refusal (S-165 processes landing): (669c652c7530, 972fd5320007, 1439a4394580, 1a6ef0d78003, d9bd2a6a44e5, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7) -> (669c652c7530, 972fd5320007, feb9e42b0a25, 1a6ef0d78003, d9bd2a6a44e5, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7); S-164's absorbed-race edit to test_worker.py "
+            "is anchor-side now. Previous entry: "
             "2026-11-16, transcribed at ANCHOR 786a5d5 from this module's own "
             "STALE refusal (S-160 screen derivation landing): (20bb2a73b4de, 972fd5320007, 1439a4394580, 1a6ef0d78003, d9bd2a6a44e5, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7) -> (669c652c7530, 972fd5320007, 1439a4394580, 1a6ef0d78003, d9bd2a6a44e5, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7); S-160's test_invocation.py edit "
             "is anchor-side now. Previous entry: "
@@ -1007,9 +1009,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=1,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-11-25, transcribed at ANCHOR c1fc66e from this module's own "
+            "STALE refusal (S-165 processes landing): 1 -> 0; S-164's absorbed-race edit "
+            "is anchor-side now. Previous entry: "
             "2026-11-25 08 §7.1 (S-164): the absorbed-race holder now uses the lock facade. Previous entry: "
             "2026-11-16, transcribed at ANCHOR 786a5d5 from this module's own "
             "STALE refusal (S-160 screen derivation landing): 1 -> 0; S-160's WR7 edit "
