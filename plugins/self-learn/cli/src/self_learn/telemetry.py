@@ -29,7 +29,6 @@ analytics, never the ledger.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import secrets
@@ -41,7 +40,7 @@ from typing import BinaryIO, Iterable
 
 from . import attribution, settings
 from .ledger import resolve_home
-from .primitives import chrono
+from .primitives import chrono, locks
 from .scan import scan as secret_scan
 
 __all__ = [
@@ -214,12 +213,12 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
     path = spool_dir() / f"{_month(now)}.{actor()}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        lease = locks.acquire(fh.fileno(), path=path, wait=None)
         try:
             fh.write(line + "\n")
             fh.flush()
         finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            lease.release()
     return path
 
 
@@ -388,7 +387,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
     if not sdir.is_dir():
         return report
 
-    opened: list[tuple[Path, BinaryIO, list[str]]] = []
+    opened: list[tuple[Path, BinaryIO, list[str], locks.Lease]] = []
     try:
         # Phase 1: lock every spool file and scan every line. Nothing is
         # written until every line of every file has passed.
@@ -397,7 +396,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                 fh = open(spool_path, "r+b")
             except (FileNotFoundError, OSError):
                 continue  # vanished between glob and open (cache cleaner)
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            lease = locks.acquire(fh.fileno(), path=spool_path, wait=None)
             # FW-53: opened and decoded per LINE (binary read + per-line
             # decode), matching read_events' own fix — a spool file is
             # THIS-machine cache state (module docstring: "Losing spool
@@ -418,8 +417,8 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                     continue
                 if ln.strip():
                     lines.append(ln)
-            opened.append((spool_path, fh, lines))
-        for index, (spool_path, fh, lines) in enumerate(opened):
+            opened.append((spool_path, fh, lines, lease))
+        for index, (spool_path, fh, lines, lease) in enumerate(opened):
             kept: list[str] = []
             refused: list[str] = []
             for i, line in enumerate(lines, 1):
@@ -433,7 +432,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
             if not refused:
                 continue
             _hold_back(spool_path, fh, kept, refused)
-            opened[index] = (spool_path, fh, kept)
+            opened[index] = (spool_path, fh, kept, lease)
         if report.rejected:
             print(
                 "self-learn: telemetry flush held back "
@@ -470,7 +469,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
         # defer. Return before the lock is even attempted, so an empty
         # spool never blocks on, or reports about, a lock it has no
         # need of. `finally` below still releases every spool handle.
-        if not any(lines for _, _, lines in opened):
+        if not any(lines for _, _, lines, _ in opened):
             return report
 
         try:
@@ -480,13 +479,13 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                 # and unattended, and only the caller knows which.
                 report.recovered_rolled_forward = list(recovered.rolled_forward)
                 report.recovered_restored = list(recovered.restored)
-                for spool_path, fh, lines in opened:
+                for spool_path, fh, lines, lease in opened:
                     if not lines:
                         continue
                     target = telemetry_dir(home) / spool_path.name
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with open(target, "a+", encoding="utf-8") as out:
-                        fcntl.flock(out.fileno(), fcntl.LOCK_EX)
+                        target_lease = locks.acquire_ledger_target(out.fileno())
                         try:
                             # Heal a torn trailing line from a previous
                             # crashed append: never concatenate onto it.
@@ -497,7 +496,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                             out.write("\n".join(lines) + "\n")
                             out.flush()
                         finally:
-                            fcntl.flock(out.fileno(), fcntl.LOCK_UN)
+                            target_lease.release()
                     # Truncate in place: the inode stays stable, so a
                     # writer blocked on our flock appends to THIS file,
                     # never a deleted one.
@@ -514,7 +513,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                     # guards on its own. Holding it further was scope
                     # creep from the single-hold restructure (fold r1
                     # MINOR m-1), not a deliberate widening.
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    lease.release()
                     fh.close()
                     report.events += len(lines)
                     report.files.append(target)
@@ -531,7 +530,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                 # also be "not a git repository" — so it is never
                 # hardcoded).
                 report.deferred_reason = str(exc)
-                report.deferred_events = sum(len(lines) for _, _, lines in opened)
+                report.deferred_events = sum(len(lines) for _, _, lines, _ in opened)
                 print(
                     f"self-learn: telemetry flush deferred — {exc}; spool "
                     "intact, the next flush retries",
@@ -558,11 +557,11 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
         # OTHER handle (skipped as empty, or never reached because the
         # scan/lock/commit raised first) is still open and still needs
         # this cleanup.
-        for _path, fh, _lines in opened:
+        for _path, fh, _lines, lease in opened:
             if fh.closed:
                 continue
             try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                lease.release()
             finally:
                 fh.close()
 

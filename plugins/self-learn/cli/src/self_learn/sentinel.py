@@ -106,7 +106,6 @@ the sentinel is live) is T12, on master — not here.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import secrets
 import socket
@@ -118,7 +117,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, locks
 
 __all__ = [
     "SENTINEL_TTL_SECONDS",
@@ -232,30 +231,23 @@ def _lock_section(path: Path, timeout: float = _LOCK_TIMEOUT_SECONDS) -> Iterato
     never silent, and never a reason to fall back to an unlocked write."""
     lock_path = _lock_path(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_path, "a+", encoding="utf-8")
+    fh = locks.open_lock(lock_path, purpose="append-read")
     try:
-        deadline = time.monotonic() + timeout
-        acquired = False
-        while True:
-            try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    print(
-                        f"self-learn sentinel: lock timeout after "
-                        f"{timeout:g}s waiting for {lock_path} — treating "
-                        f"as contended, not adopting {path}",
-                        file=sys.stderr,
-                    )
-                    break
-                time.sleep(0.01)
         try:
-            yield acquired
+            lease = locks.acquire(fh.fileno(), path=lock_path, wait=timeout, poll=0.01)
+        except BlockingIOError:
+            lease = None
+            print(
+                f"self-learn sentinel: lock timeout after "
+                f"{timeout:g}s waiting for {lock_path} — treating "
+                f"as contended, not adopting {path}",
+                file=sys.stderr,
+            )
+        try:
+            yield lease is not None
         finally:
-            if acquired:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            if lease is not None:
+                lease.release()
     finally:
         fh.close()
 

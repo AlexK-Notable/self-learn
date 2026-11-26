@@ -53,7 +53,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
-import fcntl
 import fnmatch
 import hashlib
 import io
@@ -69,13 +68,13 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TextIO
+from typing import IO, Any, TextIO
 
 from . import attention, attention_packet, invocation, model_failures, settings, workspace
 from .invocation import failure_class
 from .invocation.contract import McpTool, McpToolset, ToolReply
 from .ledger import resolve_home
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, locks
 
 __all__ = [
     "ASK_DOCTRINE",
@@ -1135,23 +1134,26 @@ class _TurnLock:
 
     def __init__(self, folder: Path) -> None:
         self._path = folder / "turn.lock"
-        self._fd: int | None = None
+        self._fh: IO[Any] | None = None
+        self._lease: locks.Lease | None = None
 
     def acquire(self) -> bool:
-        self._fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        self._fh = locks.open_lock(self._path, purpose="private")
         try:
-            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lease = locks.acquire(self._fh.fileno(), path=self._path, wait=0)
         except OSError:
-            os.close(self._fd)
-            self._fd = None
+            self._fh.close()
+            self._fh = None
+            self._lease = None
             return False
         return True
 
     def release(self) -> None:
-        if self._fd is not None:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
-            os.close(self._fd)
-            self._fd = None
+        if self._fh is not None and self._lease is not None:
+            self._lease.release()
+            self._fh.close()
+            self._fh = None
+            self._lease = None
 
 
 def _seal(home: Path, item: dict, rows: list[dict]) -> list[int]:

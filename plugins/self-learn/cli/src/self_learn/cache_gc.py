@@ -39,7 +39,6 @@ Other entries are disposable cache. Script quarantine is preserved user data.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import os
 import re
@@ -51,7 +50,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .ledger import resolve_home
-from .primitives import fsops
+from .primitives import fsops, locks
 
 __all__ = [
     "GLOB_WITNESS_DIR",
@@ -217,27 +216,12 @@ def _remove_if_unheld(path: Path) -> bool:
     ``gitops._flock_lock`` re-checks the same thing after it locks, so a
     process that opened the old file just before the unlink retries on a
     fresh one instead of holding a lock nobody else can see."""
-    try:
-        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
-    except OSError:
-        return False
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:  # held (EWOULDBLOCK) or unlockable: not ours to remove
-            return False
-        try:
-            if os.stat(path).st_ino != os.fstat(fd).st_ino:
-                return False
-            os.unlink(path)
-            return True
-        except OSError:
-            return False
-    finally:
-        os.close(fd)  # closing drops the flock
+    return locks.retire_if_idle(path)
 
 
 def _prune_locks(root: Path, now: float, dry_run: bool, out: PruneResult) -> None:
+    if not locks.can_retire_idle():
+        return
     try:
         names = sorted(os.listdir(root))
     except OSError:

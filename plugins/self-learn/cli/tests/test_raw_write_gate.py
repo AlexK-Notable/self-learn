@@ -17,7 +17,8 @@ either form) is a string constant containing ``"w"`` or ``"a"`` -- a
 write or an append, either one bypasses this primitive's atomicity/
 durability guarantees. `primitives/fsops.py` itself is exempt by
 construction (it IS the primitive; a raw write inside its own
-implementation is not a violation of a rule it defines).
+implementation is not a violation of a rule it defines). The CLI POSIX
+lock backend is also exempt: lock metadata must be opened in place.
 
 **Why every hit needs a name, not just the migrated sites.** M-I's own
 census (this file) found 58 distinct (file, enclosing-function) raw
@@ -129,7 +130,9 @@ def _is_write_mode(mode_val: object) -> bool:
 
 
 def _scan_module(path: Path, tree_name: str, relpath: str) -> list[Violation]:
-    if relpath in ("primitives/fsops.py", "primitives\\fsops.py"):
+    if tree_name == "cli" and relpath.replace("\\", "/") in (
+        "primitives/fsops.py", "primitives/_locks_posix.py",
+    ):
         return []
     src = path.read_text(encoding="utf-8")
     tree = ast.parse(src, filename=str(path))
@@ -321,59 +324,8 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
     ),
     # ------------------------------------------------------- "keep":
     # structurally not an atomic-replace candidate at all.
-    ("cli", "gitops.py", "_flock_lock"): (
-        "flock lock file only (open 'w' just creates/truncates it for "
-        "fcntl.flock) -- never carries content",
-        "keep",
-    ),
-    ("cli", "steward.py", "_run"): (
-        "flock lock file only (steward.lock) -- never carries content",
-        "keep",
-    ),
-    ("cli", "sentinel.py", "_lock_section"): (
-        "flock lock file only (open 'a+' so it can be created and locked) -- "
-        "never carries content",
-        "keep",
-    ),
-    ("cli", "worker.py", "_open_window"): (
-        "flock lock file only (worker.spawn.lock) -- never carries content",
-        "keep",
-    ),
-    ("cli", "cases.py", "_index_lock"): (
-        "flock lock file only (cases/index.lock, cache-dir-scoped, same "
-        "fcntl.flock pattern as gitops._flock_lock/worker._open_window) -- "
-        "never carries content; U2 fold r1, item 5 (Astra6 stale-index "
-        "rebuild)",
-        "keep",
-    ),
-    # w31b integration: the body moved from `run` into `_run_job` so
-    # `run` keeps `no_push` in its own signature; same lock file.
-    ("cli", "worker.py", "_run_job"): (
-        "flock lock file only (worker.lock) -- never carries content",
-        "keep",
-    ),
-    # w31b integration: the body moved from `run` into `_run_job` so
-    # `run` keeps `no_push` in its own signature; same lock file.
-    ("cli", "miner.py", "_run_job"): (
-        "flock lock file only (miner.lock) -- never carries content",
-        "keep",
-    ),
-    # S-155 (2026-11-12): the two unfinished-work verbs take the same lock
-    # file as a run, and the nights log is cache-only like the run journal.
-    ("cli", "miner.py", "backfill_tasks"): (
-        "flock lock file only (miner.lock) -- never carries content",
-        "keep",
-    ),
-    ("cli", "miner.py", "file_reviewed_run"): (
-        "flock lock file only (miner.lock) -- never carries content",
-        "keep",
-    ),
     ("cli", "mining/tasks.py", "append_night"): (
         "append-only XDG cache log (tasks-nights.jsonl); NOT_REPO_TRUTH",
-        "keep",
-    ),
-    ("cli", "miner.py", "maybe_kick"): (
-        "flock lock file only (miner.spawn.lock) -- never carries content",
         "keep",
     ),
     ("cli", "miner.py", "_spawn_run"): (
@@ -493,6 +445,7 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
 
 def test_raw_write_gate_has_no_unallowed_violations():
     violations = scan(CLI_SRC, "cli") + scan(UI_SRC, "ui")
+    assert {v.tree for v in violations} == {"cli", "ui"}
     bad = unallowed(violations, RAW_WRITE_ALLOWLIST)
     assert not bad, "\n".join(
         f"{v.tree}/{v.relpath}:{v.lineno} [{v.func}] {v.kind}" for v in bad
@@ -518,6 +471,16 @@ def test_fsops_module_itself_is_exempt_but_not_silently_unscanned():
     # Sanity: the file DOES contain a raw write internally (open(...,
     # "wb")) -- the exemption is real, not a coincidence of an empty file.
     assert "open(tmp" in fsops_path.read_text(encoding="utf-8")
+
+
+def test_posix_lock_open_is_visible_outside_its_named_cli_exemption():
+    relpath = "primitives/_locks_posix.py"
+    path = CLI_SRC / relpath
+    assert path.is_file()
+    for tree, name in [("cli", "caller.py"), ("ui", relpath)]:
+        hits = _scan_module(path, tree, name)
+        assert any(v.func == "open_lock" and v.kind == "open(mode=...)" for v in hits)
+    assert _scan_module(path, "cli", relpath) == []
 
 
 # ============================================================ synthetic

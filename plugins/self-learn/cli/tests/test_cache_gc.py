@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import cache_gc, gitops, serve, worker
+from self_learn.primitives import _locks_posix
 
 DAY = 86400.0
 
@@ -276,10 +277,10 @@ def test_flock_lock_retries_on_a_fresh_file_when_its_file_was_unlinked(monkeypat
         if len(calls) == 1:
             path.unlink()  # the pruner, just after we locked the old inode
 
-    monkeypatch.setattr(gitops.fcntl, "flock", flock_then_lose_the_file)
+    monkeypatch.setattr(_locks_posix.fcntl, "flock", flock_then_lose_the_file)
     with gitops._flock_lock(path, 5.0, "host"):
         assert path.is_file()  # we hold the file now at `path`
-        monkeypatch.setattr(gitops.fcntl, "flock", real_flock)
+        monkeypatch.setattr(_locks_posix.fcntl, "flock", real_flock)
         probe = os.open(path, os.O_RDWR)
         try:
             # a second taker is excluded by OUR lock: the proof it is on the real file

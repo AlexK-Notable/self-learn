@@ -65,6 +65,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import worker
+from self_learn.primitives import _locks_posix
 
 
 @pytest.fixture()
@@ -419,7 +420,7 @@ def test_run_registers_the_pid_before_the_coalesce_sleep_and_the_lock(
                 events.append("lock")
         return real_flock(fd, op, *args, **kwargs)
 
-    monkeypatch.setattr(worker.fcntl, "flock", recording_flock)
+    monkeypatch.setattr(_locks_posix.fcntl, "flock", recording_flock)
 
     real_register = worker._register_running_pid
 
