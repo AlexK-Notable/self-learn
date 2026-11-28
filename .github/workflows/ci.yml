@@ -632,8 +632,9 @@ jobs:
             'test_windows_device_rule_agrees_with_the_names_facade'
             'test_windows_premises_validate_and_store_native_spellings'
             'test_windows_native_paths_are_probed'
+            'test_windows_home_path_with_the_home_gone_is_unavailable'
             'test_windows_foreign_paths_are_platform_unavailable_and_never_broken'
-            'test_windows_credential_reached_through_a_junction_is_refused'
+            'test_windows_ssh_folder_reached_through_a_junction_is_refused'
             'test_windows_junction_is_reported_as_a_link'
             'test_windows_read_fence_covers_children_in_any_case'
             'test_windows_which_never_answers_from_the_current_folder'
@@ -644,7 +645,7 @@ jobs:
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
           $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
           $missing = @($native | Where-Object { $ran -cnotcontains $_ })
-          if ($missing.Count -or $ran.Count -ne 201 -or
+          if ($missing.Count -or $ran.Count -ne 202 -or
               (Compare-Object -CaseSensitive $linux @($skips | ForEach-Object { $_.name })) -or
               @($skips | Where-Object { $_.skipped.message -cne 'Linux path contract' }).Count) {
             throw "Windows path test selection changed: ran $($ran.Count), missing $missing, skipped $($skips.Count)"

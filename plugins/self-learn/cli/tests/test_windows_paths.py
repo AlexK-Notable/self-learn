@@ -224,9 +224,9 @@ def test_windows_stored_spelling(value, stored):
 
 def test_windows_respelling_keeps_every_other_field():
     premise = {"id": "p1", "claim": "c", "probe": {"kind": "file-match", "path": "~\\a",
-                                                    "contains": "C:\\x"}, "holds_if": "equals"}
+                                                    "contains": "c:/x"}, "holds_if": "equals"}
     out = premises._windows_respelled(premise)  # noqa: SLF001
-    assert out == {**premise, "probe": {"kind": "file-match", "path": "~/a", "contains": "C:\\x"}}
+    assert out == {**premise, "probe": {"kind": "file-match", "path": "~/a", "contains": "c:/x"}}
     assert list(out["probe"]) == ["kind", "path", "contains"]
     assert premises._windows_respelled({"id": "p2", "probe": None}) == {"id": "p2", "probe": None}  # noqa: SLF001
 
@@ -334,8 +334,8 @@ def test_windows_device_rule_agrees_with_the_names_facade():
 
 @windows
 def test_windows_premises_validate_and_store_native_spellings():
-    def premise(path: str) -> dict:
-        return {"id": "p1", "claim": "the file is there", "probe": _probe("path", path)}
+    def premise(path: str, pid: str = "p1") -> dict:
+        return {"id": pid, "claim": "the file is there", "probe": _probe("path", path)}
 
     for path in ("C:\\Users\\me\\notes.md", "c:/Users/me/notes.md", "~\\notes.md",
                  "~/notes.md", "/home/me/notes.md"):
@@ -345,8 +345,8 @@ def test_windows_premises_validate_and_store_native_spellings():
                  "C:\\x\\a.txt:s", "~\\.ssh\\config", "C:\\Users\\me\\AppData\\Local\\Microsoft\\Vault\\x"):
         with pytest.raises(premises.PremiseError):
             premises.validate_premises([premise(path)])
-    stored = premises.normalize_premises([premise("~\\notes\\a.md"), premise("c:/x/y.md"),
-                                          premise("/home/me/z.md")])
+    stored = premises.normalize_premises([premise("~\\notes\\a.md", "p1"), premise("c:/x/y.md", "p2"),
+                                          premise("/home/me/z.md", "p3")])
     assert [p["probe"]["path"] for p in stored] == ["~/notes/a.md", "C:\\x\\y.md", "/home/me/z.md"]
 
 
@@ -367,6 +367,14 @@ def test_windows_native_paths_are_probed(base):
 
 
 @windows
+def test_windows_home_path_with_the_home_gone_is_unavailable(base):
+    # A ~\ path with the home folder gone is unavailable, never "missing".
+    gone_home = premises.ProbeEnv(home=base / "no-such-home")
+    obs = premises.run_probe(_probe("path", "~\\notes.txt"), gone_home)
+    assert obs.state == premises.OBS_UNAVAILABLE and "home directory does not exist" in obs.reason
+
+
+@windows
 def test_windows_foreign_paths_are_platform_unavailable_and_never_broken(base):
     env = premises.ProbeEnv(home=base)
     for path in ("/home/me/notes.md", "~/x/NUL", "~/notes/a:b"):
@@ -382,7 +390,7 @@ def test_windows_foreign_paths_are_platform_unavailable_and_never_broken(base):
 
 
 @windows
-def test_windows_credential_reached_through_a_junction_is_refused(base):
+def test_windows_ssh_folder_reached_through_a_junction_is_refused(base):
     secret = base / ".ssh"
     secret.mkdir()
     (secret / "config").write_text("Host x\n", encoding="utf-8")
@@ -434,7 +442,9 @@ def test_windows_which_never_answers_from_the_current_folder(base, monkeypatch):
         assert obs.shown == premises.NOT_FOUND, (path_env, obs)
     (bin_dir / "tool.exe").write_bytes(b"")
     obs = premises.run_probe(probe, premises.ProbeEnv(home=base, path_env=f".;{bin_dir}"))
-    assert obs.value_sha == _sha(str(bin_dir / "tool.exe")), obs
+    # Windows matches PATHEXT case-insensitively, so the answer carries its spelling.
+    exts = [e for e in os.environ.get("PATHEXT", ".EXE").split(";") if e]
+    assert obs.value_sha in {_sha(str(bin_dir / ("tool" + e))) for e in exts}, obs
 
 
 @windows
