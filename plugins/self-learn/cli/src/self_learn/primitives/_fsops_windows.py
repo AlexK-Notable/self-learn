@@ -95,13 +95,15 @@ def _exclusive_fd(path: Path | str, *, flags: int = os.O_WRONLY, delete_access: 
 
 def _new_temp(candidate: Callable[[], Path], *, flags: int = os.O_WRONLY,
               delete_access: bool = False) -> tuple[int, str]:
-    for _ in range(100):
+    remaining = 100
+    while True:
         path = candidate()
         try:
             return _exclusive_fd(path, flags=flags, delete_access=delete_access), str(path)
         except FileExistsError:
-            continue
-    raise FileExistsError(errno.EEXIST, "could not allocate a unique temporary name", str(path))
+            remaining -= 1
+            if not remaining:
+                raise
 
 
 def replace_staged(src: Path | str, dst: Path | str, *, method: Literal["os", "path"] = "os") -> None:
@@ -140,7 +142,10 @@ def atomic_write(path: Path | str, data: bytes | str, *, mode: int | None = None
     target = Path(path)
     if follow_symlinks:
         if _is_link(target):
-            target = target.resolve()
+            resolved = target.resolve()
+            # An execution alias may have no ordinary filesystem target.
+            _refuse_link(resolved)
+            target = resolved
     else:
         _refuse_links(target)
     payload = data if isinstance(data, bytes) else data.encode(encoding)

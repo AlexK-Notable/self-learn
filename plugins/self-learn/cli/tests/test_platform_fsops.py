@@ -965,10 +965,12 @@ def test_cloud_tags_take_ordinary_file_paths(tmp_path, monkeypatch):
         bits = attributes(name)
         return bits | stat.FILE_ATTRIBUTE_REPARSE_POINT if Path(name) in (folder, path) else bits
 
+    tag = 0x9000F01A
+
     def cloud_info(handle, kind):
         info = get_info(handle, kind)
         assert kind == win32file.FileAttributeTagInfo
-        return {**info, "ReparseTag": 0x9000F01A,
+        return {**info, "ReparseTag": tag,
                 "FileAttributes": info["FileAttributes"] | stat.FILE_ATTRIBUTE_REPARSE_POINT}
 
     def open_data(handle, access, share, flags):
@@ -992,6 +994,10 @@ def test_cloud_tags_take_ordinary_file_paths(tmp_path, monkeypatch):
     assert reads == [0]
     with fsops.safe_directory(folder) as directory, directory.entries() as entries:
         assert [entry.name for entry in entries] == [path.name]
+    tag = stat.IO_REPARSE_TAG_APPEXECLINK
+    with pytest.raises(fsops.SymlinkRefused):
+        fsops.atomic_write(path, b"new", follow_symlinks=True)
+    assert path.read_bytes() == b"private\n"
 
 
 @windows
@@ -1210,6 +1216,12 @@ def test_publication_temp_name_and_collision(tmp_path, monkeypatch):
     assert re.fullmatch(r"\.[0-9a-f]{64}\.json\.[0-9]+\.[0-9a-f]{8}\.tmp", names[1].name)
     assert collision.read_bytes() == b"keep" and target.read_bytes() == b"complete"
     assert set(tmp_path.iterdir()) == {collision, target}
+    monkeypatch.setattr(fsops, "_temp_path", lambda dest: collision)
+    with pytest.raises(FileExistsError) as exhausted:
+        fsops.atomic_write(target, b"failed")
+    assert exhausted.value.winerror in (80, 183)
+    assert exhausted.value.__cause__.winerror == exhausted.value.winerror
+    assert collision.read_bytes() == b"keep" and target.read_bytes() == b"complete"
 
 
 @windows
