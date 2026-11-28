@@ -238,7 +238,6 @@ def _drop_stale() -> None:
     """Remove every stop file and watch marker named for a process that no
     longer runs under that creation time: it was meant for a process that
     has exited (a launcher's request included)."""
-    return  # MUTATION
     folder = stop_dir()
     try:
         entries = [entry.name for entry in os.scandir(folder)]
@@ -261,7 +260,7 @@ def _set_break(handler: Any) -> Any:
     """Install *handler* for ``SIGBREAK``; the previous handler. Windows only."""
     if sys.platform != "win32":
         raise NotImplementedError("SIGBREAK exists on Windows only")
-    return signal.getsignal(signal.SIGBREAK)  # MUTATION
+    return signal.signal(signal.SIGBREAK, handler if handler is not None else signal.SIG_DFL)
 
 
 def _raise_break() -> None:
@@ -270,7 +269,7 @@ def _raise_break() -> None:
         raise NotImplementedError("SIGBREAK exists on Windows only")
     import _thread
 
-    _thread.interrupt_main(signal.SIGTERM)  # MUTATION
+    _thread.interrupt_main(signal.SIGBREAK)
 
 
 class _Watch:
