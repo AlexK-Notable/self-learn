@@ -326,7 +326,13 @@ def test_windows_skill_write_and_relink_report_refused_volume(tmp_path, monkeypa
     import win32api
     import test_skill_write as skills
     from self_learn import cli, skill_writer
+    from self_learn.primitives import capabilities
 
+    # ``skill`` is refused in the Windows capture profile until the ledger and
+    # canon capabilities are switched on; this test is about the link refusal
+    # beneath that gate, so it opens the gate for itself.
+    monkeypatch.setitem(capabilities.AVAILABLE, "ledger", True)
+    monkeypatch.setitem(capabilities.AVAILABLE, "canon", True)
     env = skills.Env(tmp_path, monkeypatch)
     draft = tmp_path / "draft"
     for rel, contents in skills.draft().items():
