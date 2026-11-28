@@ -478,7 +478,7 @@ def _git_log(home: Path, argv_tail: list[str]) -> str:
     try:
         if os.name == "nt":
             done = procs.run_bounded(
-                ["git", "-C", str(home), "log", "--encoding=UTF-8", *argv_tail],
+                ["git", "-C", str(home), "--literal-pathspecs", "log", "--encoding=UTF-8", *argv_tail],
                 env=env, timeout=10,
             )
         else:

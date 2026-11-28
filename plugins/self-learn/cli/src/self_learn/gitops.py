@@ -393,7 +393,6 @@ def staged_diff(repo: Path, paths: Iterable[Path | str] = ()) -> str:
     args = ["diff", "--cached"]
     path_args = [names.git_arg(repo, p) for p in paths]
     if path_args:
-        args.insert(0, "--literal-pathspecs")
         args += ["--", *path_args]
     return _git_ok(repo, *args).stdout
 
@@ -646,7 +645,7 @@ def is_tracked(repo: Path, path: Path | str) -> bool:
     the HEAD-widened variant — use that one where an old, git-mv'd path
     must still count."""
     if os.name == "nt":
-        return _git(repo, "ls-files", "--error-unmatch",
+        return _git(repo, "--literal-pathspecs", "ls-files", "--error-unmatch",
                     "--", names.git_arg(repo, path, literal=True)).returncode == 0
     return _git(repo, "ls-files", "--error-unmatch", "--", names.git_arg(repo, path)).returncode == 0
 
@@ -825,17 +824,14 @@ def paths_dirty(repo: Path, target: Path | str) -> bool:
 
 def _dirty_path_names(data: bytes) -> list[str]:
     """Keep the Git spelling (including a directory's trailing slash)."""
-    if data and not data.endswith(b"\0"):
-        raise GitOpsError("unterminated Git status record")
-    fields = iter(decode_git_path(data).split("\0")[:-1])
+    fields = iter(data.split(b"\0")[:-1])
     paths = []
     for record in fields:
-        if len(record) < 4 or record[2] != " ":
-            raise GitOpsError("malformed Git status record")
-        paths.append(record[3:])
-        if "R" in record[:2] or "C" in record[:2]:
-            if not next(fields, None):
-                raise GitOpsError("missing Git status rename/copy source")
+        if len(record) < 4 or record[2:3] != b" ":
+            continue
+        if (b"R" in record[:2] or b"C" in record[:2]) and not next(fields, None):
+            continue
+        paths.append(decode_git_path(record[3:]))
     return paths
 
 
