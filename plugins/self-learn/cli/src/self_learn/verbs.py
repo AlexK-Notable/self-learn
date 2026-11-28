@@ -531,6 +531,8 @@ class VerbResult:
                     target_str = "~/" + target.relative_to(names.user_home()).as_posix()
             except ValueError:
                 target_str = str(target)
+                if os.name == "nt":  # `D:/repos/project/CLAUDE.md`
+                    target_str = target.as_posix()
         if file_words is not None:
             tokens_est = round(file_words * TOKENS_PER_WORD_EST)
             parts.append(f"{target_str} is {file_words} words (~{tokens_est} tokens est)")
@@ -851,6 +853,16 @@ def _abort_if_unsound(
     ``git status``/``git diff`` per resolve in git mode (harmless, but a
     behaviour delta under a UN group that promises byte-identity).
     Restored here, in the ONE place both legs now live."""
+    if os.name == "nt" and mode == "git" and target.is_file():
+        # Git refuses a path outside the repository on Linux (GitOpsError);
+        # on Windows the operand check refuses it first, with ValueError
+        # (another drive, or outside the tree). Report it the same way.
+        try:
+            names.git_arg(host_path, target)
+        except ValueError as exc:
+            raise gitops.GitOpsError(
+                f"{target} is outside repository at {host_path} ({exc})"
+            ) from exc
     if mode == "git" and target.is_file():
         _abort_if_dirty(host_path, target)
     try:
@@ -1531,7 +1543,33 @@ def sheet_rules_paths_problem(dest: object, rules_paths: object) -> str | None:
             _compile_glob_pattern(pattern)
     except ProposalError as exc:
         return str(exc)
+    if os.name == "nt" and (problem := _windows_globs_problem(rules_paths)):  # type: ignore[arg-type]
+        return problem
     return None
+
+
+def _windows_globs_problem(patterns: Iterable[str]) -> str | None:
+    """Windows only: a ``rules_paths`` glob must be relative, with forward
+    slashes, no drive, no leading separator and no ``..`` part. Python's
+    glob on Windows reads a backslash as a separator and joins a rooted
+    pattern onto the drive, so such a glob could be probed outside the
+    tree and then written into ``paths:``, where Claude Code reads ``\\``
+    as an escape and the rule never fires."""
+    from pathlib import PureWindowsPath
+
+    bad = []
+    for pattern in patterns:
+        native = PureWindowsPath(pattern)
+        if ("\\" in pattern or native.drive or native.root or pattern.startswith("~")
+                or ".." in pattern.split("/")):
+            bad.append(pattern)
+    if not bad:
+        return None
+    return (
+        f"rules_paths pattern(s) {', '.join(repr(p) for p in bad)} are not relative "
+        "forward-slash globs -- write each relative to the project or user tree, "
+        "with '/' between parts, no drive, no leading '/' and no '..' (e.g. src/*.py)"
+    )
 
 
 @dataclass(frozen=True)
@@ -2243,6 +2281,8 @@ def _resolve_rules_target(
             "documentation gap (P-A13); route to user or project scope"
         )
     paths_tuple = tuple(rules_paths) if rules_paths else None
+    if paths_tuple and os.name == "nt" and (problem := _windows_globs_problem(paths_tuple)):
+        raise SheetLineError(problem)
     # U-pathed §3.4(1): an absolute or ``~``-leading glob never fires
     # against a project/user tree (canary measurement 1.2) — and it is a
     # live fail-open in shipped code: ``glob.glob(pattern, root_dir=host)``
@@ -5047,6 +5087,10 @@ def _apply_new_skill(
         )
     except SkillScaffoldError as exc:
         raise VerbError(str(exc)) from exc
+    if market_changed and os.name == "nt":  # the file keeps its own line endings
+        from .compilers import keep_line_endings
+
+        market_text = keep_line_endings(marketplace, market_text)
     if market_changed:
         # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
         fsops.atomic_write(
@@ -5073,6 +5117,11 @@ def _apply_new_skill(
 def _tilde(path: Path) -> str:
     """*path* as ``~/…`` when it is under the home directory (a note may be
     pasted into a public issue, NIT N4's reason), else as it is."""
+    if os.name == "nt":  # `~/.claude/skills/<name>`, slashes as on POSIX
+        try:
+            return "~/" + path.relative_to(names.user_home()).as_posix()
+        except ValueError:
+            return path.as_posix()
     try:
         return "~/" + str(path.relative_to(names.user_home()))
     except ValueError:
@@ -6225,6 +6274,13 @@ def route_dry_run(
             current = (
                 ref_path.read_bytes() if ref_path.is_file() else b""
             )
+            if os.name == "nt" and current:
+                # The expectation is the text as read (LF); the write keeps
+                # the file's own endings, so compare like with like.
+                try:
+                    current = ref_path.read_text(encoding="utf-8").encode("utf-8")
+                except UnicodeDecodeError:
+                    pass
             expected = _expected_reference_region(spec, simulated, ref_path) or current
             already_present = simulated.id in current.decode("utf-8", errors="replace")
             unified, added, removed = _unified_diff_stats(current, expected)
@@ -9412,7 +9468,9 @@ def _rescope_commit_body(note: str | None, swept: list[Path]) -> str | None:
     parts: list[str] = []
     if note:
         parts.append(note)
-    if swept:
+    if swept and os.name == "nt":  # ledger paths with slashes, as on POSIX
+        parts.append("\n".join(f"swept: {Path(p).as_posix()}" for p in swept))
+    elif swept:
         parts.append("\n".join(f"swept: {p}" for p in swept))
     return "\n\n".join(parts) if parts else None
 

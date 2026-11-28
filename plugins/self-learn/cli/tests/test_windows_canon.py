@@ -132,7 +132,10 @@ def test_keep_line_endings_round_trips_every_small_file(tmp_path):
                     same = 0
                     while same < min(len(split), len(new)) and split[same] == new[same]:
                         same += 1
-                    keep = "".join(lines[:max(same - 1, 0)])
+                    # The last untouched line too, unless it ends in a lone CR
+                    # that the helper must change (it would merge with a new LF).
+                    lone = same > 0 and lines[same - 1].endswith("\r")
+                    keep = "".join(lines[:same - 1 if lone else same])
                     assert result.startswith(keep), (raw, edited, result)
                     # And so do untouched trailing lines.
                     tail = 0
@@ -438,6 +441,22 @@ def test_windows_cross_drive_pointer(canon):
         assert "hand-edited outside self-learn (unknown)" in refusal and "recompile --adopt" in refusal
         assert surface.read_bytes() == b"# Plain\r\n\r\nOwn text.\r\n" and shelf.read_bytes() == NOTES_SEED
 
+        # A git host's other-drive shelf is outside its repository: refused as
+        # Linux refuses a path git calls outside the repository, nothing written.
+        proj = project_host(canon)
+        git_id = canon.teach(proj, "project", "Git cross-drive fact")
+        before = snapshot(proj / "CLAUDE.md", shelf)
+        code = cli.main(["route", git_id, "--dest", f"reference:{shelf}", "--no-push"])
+        out = canon.capsys.readouterr()
+        assert code != 0 and "outside repository" in out.err and "Traceback" not in out.err, out
+        assert snapshot(proj / "CLAUDE.md", shelf) == before
+
+        # The compile record keys an other-drive shelf by its slash spelling.
+        from self_learn import compiled
+
+        key = compiled.region_key(plain, shelf, "reference")
+        assert key == shelf.resolve().as_posix() and "\\" not in key
+
         # The host write's own calls, as the route makes them once the shelf
         # is accepted: append to the other-drive shelf, point at it.
         from self_learn.records import Record
@@ -500,3 +519,145 @@ def test_windows_display_labels_use_slashes(canon):
     (canon.profile / ".claude" / "CLAUDE.md").write_bytes(USER_SEED)
     record_id = canon.teach(canon.root, "user", "Budget fact")
     assert "~/.claude/CLAUDE.md is " in canon.route(record_id, "claude-md")
+
+
+@windows
+def test_windows_project_on_another_drive(canon):
+    """A git project on another drive letter than the ledger and the profile,
+    through the real verbs: route, reference, recompile twice, retire."""
+    folder, subst = other_drive(canon.root)
+    try:
+        proj = folder / "projet ailleurs é"
+        proj.mkdir()
+        git(proj, "init", "-q")
+        git(proj, "config", "core.autocrlf", "false")
+        (proj / "CLAUDE.md").write_bytes(PROJECT_SEED)
+        git(proj, "add", "--", "CLAUDE.md")
+        git(proj, "commit", "-q", "-m", "seed")
+        canon.run("host", "add", str(proj))
+        registered = proj.resolve()
+        managed_id = canon.teach(proj, "project", "Elsewhere fact")
+        out = canon.route(managed_id, "claude-md")
+        assert f"{(registered / 'CLAUDE.md').as_posix()} is " in out  # budget note, outside the profile
+        routed = (proj / "CLAUDE.md").read_bytes()
+        managed = BEGIN + b"\r\n" + entry(managed_id, "Elsewhere fact") + END
+        assert routed == PROJECT_SEED + b"\r\n" + managed + b"\r\n"
+        shelf_id = canon.teach(proj, "project", "Elsewhere shelf fact")
+        canon.route(shelf_id, "reference")
+        data = (proj / "CLAUDE.md").read_bytes()
+        pre, pointers, post = block(data, PBEGIN, PEND)
+        assert pre == routed + b"\r\n" and post == b"\r\n" and only_crlf(data)
+        assert b"- `references/LEARNINGS.md` \xe2\x80\x94 " in pointers
+
+        files = [proj / "CLAUDE.md", proj / "references" / "LEARNINGS.md"]
+        state = snapshot(*files)
+        head = git(canon.ledger, "rev-parse", "HEAD")
+        canon.run("recompile", "--no-push")
+        canon.run("recompile", "--no-push")
+        assert snapshot(*files) == state and git(canon.ledger, "rev-parse", "HEAD") == head
+
+        canon.run("retire", shelf_id, "--covered-by", "claude-md:team-notes", "--no-push")
+        assert (proj / "CLAUDE.md").read_bytes() == routed  # the pointer block's exact inverse
+        assert not (proj / "references" / "LEARNINGS.md").exists()
+        canon.run("retire", managed_id, "--covered-by", "claude-md:team-notes", "--no-push")
+        assert (proj / "CLAUDE.md").read_bytes() == routed.replace(entry(managed_id, "Elsewhere fact"), b"")
+        assert git(proj, "status", "--porcelain", "-z") == b""
+
+        from self_learn.ledger import discover_buckets
+
+        projects = [b for b in discover_buckets(canon.ledger) if b.scope == "project"]
+        label = places.bucket_places(projects)[("project", projects[0].name)]["path"]
+        assert label == registered.as_posix() and "\\" not in label
+    finally:
+        if subst:
+            subprocess.run(["subst", f"{subst}:", "/D"], check=False, timeout=30)
+        else:
+            shutil.rmtree(folder, ignore_errors=True)
+
+
+@windows
+@pytest.mark.parametrize("glob", ["src\\*.py", "/src/*.py", "\\Windows\\*.ini", "C:/x/*.py", "../src/*.py"],
+                         ids=["backslash", "rooted", "rooted-backslash", "drive", "parent"])
+def test_windows_rules_paths_refuse_native_globs(canon, glob):
+    from self_learn import verbs
+
+    proj = project_host(canon)
+    record_id = canon.teach(proj, "project", "Pathed fact")
+    rules = proj / ".claude" / "rules" / "python.md"
+    code = cli.main(["route", record_id, "--dest", "claude-md:rules:python",
+                     "--rules-path", glob, "--no-push"])
+    err = canon.capsys.readouterr().err
+    assert code != 0 and "are not relative forward-slash globs" in err and repr(glob) in err, err
+    assert rules.read_bytes() == RULES_PATHED
+    assert "forward-slash" in (verbs.sheet_rules_paths_problem("claude-md:rules:python", [glob]) or "")
+    assert verbs.sheet_rules_paths_problem("claude-md:rules:python", ["src/*.py"]) is None
+
+
+@windows
+def test_windows_new_skill_keeps_marketplace_line_endings(canon):
+    root = canon.root / "skills root"
+    skill = root / "plugins" / "s-plugin" / "skills" / "s"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_bytes(b"---\r\nname: s\r\ndescription: seeded skill\r\n---\r\n\r\n# s\r\n")
+    seed = {"name": "skills", "owner": {"name": "canon"}, "plugins": [
+        {"name": "s-plugin", "source": "./plugins/s-plugin", "description": "seeded plugin", "version": "1.0.0"}]}
+    seed_crlf = (json.dumps(seed, indent=2, ensure_ascii=False) + "\n").replace("\n", "\r\n").encode()
+    market = root / ".claude-plugin" / "marketplace.json"
+    market.parent.mkdir()
+    market.write_bytes(seed_crlf)
+    git(root, "init", "-q")
+    git(root, "config", "core.autocrlf", "false")
+    git(root, "add", "--", ".claude-plugin/marketplace.json", "plugins/s-plugin/skills/s/SKILL.md")
+    git(root, "commit", "-q", "-m", "seed")
+    canon.run("host", "add", str(root), "--skills-root")
+    canon.monkeypatch.chdir(root)
+    code = cli.main(["teach", "--skill", "s", "--no-push", "--json", "--fact", "Skill fact"])
+    out = canon.capsys.readouterr()
+    assert code == 0, out
+    canon.route(json.loads(out.out)["id"], "new-skill:canon-skill")
+    data = market.read_bytes()
+    assert only_crlf(data), data
+    assert [p["name"] for p in json.loads(data)["plugins"]] == ["s-plugin", "canon-skill"]
+    # Every line of the seed up to its last plugin entry is kept byte for byte.
+    assert data.startswith(seed_crlf.rsplit(b"    }\r\n", 1)[0])
+    assert git(root, "status", "--porcelain", "-z") == b""
+
+
+@windows
+def test_windows_labels_outside_the_profile_and_config_dir(canon):
+    from self_learn import verbs
+    from self_learn.ledger import discover_buckets
+
+    elsewhere = canon.root / "ailleurs" / "projet"
+    assert places.display_path(elsewhere) == elsewhere.as_posix()
+    assert verbs._tilde(canon.profile / ".claude" / "skills" / "x") == "~/.claude/skills/x"
+    assert verbs._tilde(elsewhere) == elsewhere.as_posix()
+    body = verbs._rescope_commit_body(None, [Path("projects") / "w1-p-0" / "proposals" / "lrn-00000000.yaml"])
+    assert body == "swept: projects/w1-p-0/proposals/lrn-00000000.yaml"
+
+    # CLAUDE_CONFIG_DIR outside the profile: written there, named with slashes.
+    config = canon.root / "config dir é"
+    config.mkdir()
+    canon.monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    (config / "CLAUDE.md").write_bytes(USER_SEED)
+    record_id = canon.teach(canon.root, "user", "Config fact")
+    out = canon.route(record_id, "claude-md")
+    assert f"{(config / 'CLAUDE.md').as_posix()} is " in out
+    pre, inner, post = block((config / "CLAUDE.md").read_bytes())
+    assert (pre, post) == block(USER_SEED)[::2] and entry(record_id, "Config fact") in inner + b"\r\n"
+    assert not (canon.profile / ".claude" / "CLAUDE.md").exists()
+    user = [b for b in discover_buckets(canon.ledger) if b.scope == "user"]
+    assert places.bucket_places(user)[("user", user[0].name)]["path"] == config.as_posix()
+
+
+@windows
+def test_windows_route_dry_run_reference_diff_matches_the_write(canon):
+    proj = project_host(canon)
+    record_id = canon.teach(proj, "project", "Preview fact")
+    canon.run("route", record_id, "--dest", "reference:notes.md", "--dry-run", "--json")
+    preview = json.loads(canon.stdout)
+    assert preview["diff"]["removed_lines"] == 0 and preview["diff"]["added_lines"] > 0, preview
+    assert (proj / "references" / "notes.md").read_bytes() == NOTES_SEED  # nothing written
+    canon.route(record_id, "reference:notes.md")
+    after = (proj / "references" / "notes.md").read_bytes()
+    assert after.startswith(NOTES_SEED) and only_crlf(after)

@@ -33,6 +33,8 @@ def display_path(path: Path | str) -> str:
     try:
         rel = p.relative_to(names.user_home())
     except ValueError:
+        if os.name == "nt":  # `D:/repos/project`, slashes as everywhere else
+            return p.as_posix()
         return str(p)
     if os.name == "nt":  # `~/repos/project`, as on POSIX
         return "~" if str(rel) == "." else "~/" + rel.as_posix()
