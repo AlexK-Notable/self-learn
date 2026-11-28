@@ -2861,7 +2861,7 @@ def _replay_hook_examples(
     with tempfile.TemporaryDirectory(prefix="self-learn-hook-replay-") as scratch:
         probe = Path(scratch) / "guard.sh"
         probe.write_text(script, encoding="utf-8")
-        probe.chmod(0o700)
+        fsops.finish_mode(probe, 0o700)
         mismatches = replay_examples(probe, examples, hook, record_id)
     if mismatches:
         raise VerbError(

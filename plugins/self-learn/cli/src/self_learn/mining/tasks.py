@@ -857,9 +857,9 @@ def append_night(miner_dir: Path, run_id: str, rep: NightReport) -> None:
     path = Path(miner_dir) / NIGHTS_NAME
     row = {"ts": _iso(_now()), "run_id": run_id, **rep.as_dict()}
     try:
-        with open(path, "a", encoding="utf-8") as fh:
+        with fsops.open_for_mode(path, "a", mode=0o600, encoding="utf-8") as fh:
             fh.write(json.dumps(row, sort_keys=True) + "\n")
-        path.chmod(0o600)
+        fsops.finish_mode(path, 0o600)
     except OSError:
         pass
 

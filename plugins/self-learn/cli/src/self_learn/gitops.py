@@ -859,15 +859,11 @@ def ignored_with_line(repo: Path, rel: str, line: str) -> bool:
     :func:`in_index_or_head`'s question. ``-q`` without ``-v``: with
     ``-v``, a path matched only by a NEGATION also exits 0 (measured,
     git 2.56.0). Nothing in the host or the ledger is written."""
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", prefix="self-learn-exclude-probe-", suffix=".txt"
-    ) as fh:
-        fh.write(line + "\n")
-        fh.flush()
+    with fsops.reopenable_text(line + "\n", prefix="self-learn-exclude-probe-", suffix=".txt") as probe:
         # No `--literal-pathspecs` here: check-ignore refuses that magic
         # (exit 128, measured); it reads its arguments as plain names.
         proc = _git(
-            repo, "-c", f"core.excludesFile={fh.name}",
+            repo, "-c", f"core.excludesFile={probe}",
             "check-ignore", "-q", "--no-index", "--", rel,
         )
     if proc.returncode in (0, 1):

@@ -74,6 +74,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
+from .primitives import fsops
+
 __all__ = [
     "AGENT_CLOSE",
     "AGENT_OPEN",
@@ -670,7 +672,7 @@ def _expand_files(sends: Iterable[Send], deps: dict[Path, Fingerprint | None],
             if before[1] > 1024 * 1024:
                 continue
             try:
-                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                fd = fsops.open_regular(path, policy="provenance")
                 with os.fdopen(fd, "rb") as fh:
                     if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
                         continue
@@ -885,8 +887,8 @@ def _disk_save(*, final: bool) -> None:
         try:
             # The directory first: an unwritable cache fails here, before the
             # whole payload is built for nothing.
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            fd, tmp = tempfile.mkstemp(prefix=_TMP_PREFIX, suffix=_TMP_SUFFIX, dir=path.parent)  # 0600
+            fsops.ensure_private_parent(path.parent)
+            fd, tmp = fsops.private_temp(path.parent, prefix=_TMP_PREFIX, suffix=_TMP_SUFFIX)  # 0600
             if final:
                 for key in [k for k in _DISK.entries if not os.path.exists(k)]:
                     del _DISK.entries[key]
@@ -896,7 +898,7 @@ def _disk_save(*, final: bool) -> None:
             with os.fdopen(fd, "w", encoding="ascii") as fh:
                 fd = None
                 json.dump({"version": _DISK_VERSION, "code": _code_hash(), "files": files}, fh)
-            os.replace(tmp, path)
+            fsops.replace_staged(tmp, path)
             tmp = None
             _DISK.dirty = False
             _drop_stale_temporaries(path.parent)

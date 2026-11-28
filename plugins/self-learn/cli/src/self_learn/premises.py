@@ -142,7 +142,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import scan
-from .primitives import chrono, procs
+from .primitives import chrono, fsops, procs
 
 __all__ = [
     "ABSENT",
@@ -1734,9 +1734,8 @@ def _open_regular(path: str, env: ProbeEnv) -> tuple[int, os.stat_result] | _Una
     refused = _resolved_problem(real, reads_content=True, env=env)
     if refused is not None:
         return refused
-    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC | os.O_NOFOLLOW
     try:
-        fd = os.open(real, flags)
+        fd = fsops.open_regular(real, policy="premise")
     except (FileNotFoundError, NotADirectoryError):
         absent = _absent_mount(real, env)
         return absent if absent is not None else _Unavailable("the file does not exist")

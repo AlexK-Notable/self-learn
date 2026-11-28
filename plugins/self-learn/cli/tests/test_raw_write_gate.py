@@ -15,7 +15,7 @@ for the method form ``p.open("w")``, since the method form has no
 separate path argument to occupy index 0 -- or the ``mode=`` keyword,
 either form) is a string constant containing ``"w"`` or ``"a"`` -- a
 write or an append, either one bypasses this primitive's atomicity/
-durability guarantees. `primitives/fsops.py` itself is exempt by
+durability guarantees. `primitives/_fsops_posix.py` itself is exempt by
 construction (it IS the primitive; a raw write inside its own
 implementation is not a violation of a rule it defines). The CLI POSIX
 lock backend is also exempt: lock metadata must be opened in place.
@@ -131,7 +131,7 @@ def _is_write_mode(mode_val: object) -> bool:
 
 def _scan_module(path: Path, tree_name: str, relpath: str) -> list[Violation]:
     if tree_name == "cli" and relpath.replace("\\", "/") in (
-        "primitives/fsops.py", "primitives/_locks_posix.py",
+        "primitives/_fsops_posix.py", "primitives/_locks_posix.py",
     ):
         return []
     src = path.read_text(encoding="utf-8")
@@ -324,10 +324,6 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
     ),
     # ------------------------------------------------------- "keep":
     # structurally not an atomic-replace candidate at all.
-    ("cli", "mining/tasks.py", "append_night"): (
-        "append-only XDG cache log (tasks-nights.jsonl); NOT_REPO_TRUTH",
-        "keep",
-    ),
     ("cli", "miner.py", "_spawn_run"): (
         "subprocess.Popen stdout redirect (miner.log), not a content write by "
         "this code",
@@ -462,15 +458,17 @@ def test_raw_write_allowlist_has_no_rotted_entries():
 
 
 def test_fsops_module_itself_is_exempt_but_not_silently_unscanned():
-    """`primitives/fsops.py` is excluded from the scan by construction
+    """`primitives/_fsops_posix.py` is excluded from the scan by construction
     (it IS the primitive) -- prove that exclusion is a deliberate,
     named skip, not the scanner failing to find the file at all."""
-    fsops_path = CLI_SRC / "primitives" / "fsops.py"
+    fsops_path = CLI_SRC / "primitives" / "_fsops_posix.py"
     assert fsops_path.is_file()
-    assert _scan_module(fsops_path, "cli", "primitives/fsops.py") == []
+    assert _scan_module(fsops_path, "cli", "primitives/_fsops_posix.py") == []
     # Sanity: the file DOES contain a raw write internally (open(...,
     # "wb")) -- the exemption is real, not a coincidence of an empty file.
     assert "open(tmp" in fsops_path.read_text(encoding="utf-8")
+    hits = _scan_module(fsops_path, "cli", "caller.py")
+    assert any(v.func == "_write_and_replace" and v.kind == "open(mode=...)" for v in hits)
 
 
 def test_posix_lock_open_is_visible_outside_its_named_cli_exemption():

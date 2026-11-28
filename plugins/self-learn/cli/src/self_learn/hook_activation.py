@@ -739,7 +739,7 @@ def _write_claude_runtime(
             tmp = link.parent / f".{link.name}.tmp-{os.getpid()}-{time.time_ns()}"
             os.symlink(link_target, tmp)
             try:
-                os.replace(tmp, link)
+                fsops.replace_staged(tmp, link)
             except OSError:
                 # Opus N10 (ii): an `os.replace` failure must never
                 # leave the temp symlink littering `hooks/` for the

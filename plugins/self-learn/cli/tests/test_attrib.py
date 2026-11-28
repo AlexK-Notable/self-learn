@@ -1562,12 +1562,12 @@ def test_hy4_the_install_is_visible_to_the_lock_invariant_analyser():
         n for n in ast.walk(tree)
         if isinstance(n, ast.Call)
         and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "replace"
+        and n.func.attr == "replace_staged"
         and isinstance(n.func.value, ast.Name)
-        and n.func.value.id == "os"
+        and n.func.value.id == "fsops"
     ]
     assert len(replace_calls) == 1
-    assert _primitive(replace_calls[0]) == "os.replace"
+    assert _primitive(replace_calls[0]) == "fsops.replace_staged"
 
     write_text_calls = [
         n for n in ast.walk(tree)

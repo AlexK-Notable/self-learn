@@ -86,6 +86,8 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-11-25 — (primitives/fsops, CLI and UI file publishers; tests/test_platform_fsops.py) S-166: file publication and private files share a platform interface.** Linux keeps the atomic writer, creation modes, link handling and file-then-parent sync. The worker still journals before replacing its named temp, which survives a failed install. The lock walker recognizes the staged replacement, stream open and final chmod. Windows can import the interface. Its first operation raises `NotImplementedError`.
+
 - **2026-11-25 — (primitives/procs, gitops, hosts, ledger, worker; tests/test_platform_procs.py) S-165: bounded children and PID probes share a process interface.** Linux keeps the combined pipe budget, process-group kill and timed drains. The six short Git commands still inherit stdin and return the standard library's captured text and timeout diagnostics. Windows callers can import the interface. Its first operation raises `NotImplementedError`.
 
 - **2026-11-25 — (primitives/locks, gitops and the ten other lock users; tests/test_platform_locks.py; 08 §7.1) S-164: CLI lock users share a private interface.** Linux takes flock on the original descriptors and paths, including the tracked telemetry append inside the ledger guard. Repo nesting shares one held set, and acquisition retries a replaced inode against the original deadline. The CLI and its settings can import the interface on Windows. Using a lock there raises `NotImplementedError` pending the native implementation.
