@@ -179,6 +179,7 @@ def test_windows_ordinary_account_owns_its_root_only(tmp_path, monkeypatch, ordi
 @windows
 @pytest.mark.parametrize("deny_only", [False, True], ids=["requires-elevation", "requires-membership"])
 def test_windows_admin_owner_requires_elevation_and_enabled_membership(tmp_path, monkeypatch, deny_only):
+    import ntsecuritycon
     import win32api
     import win32con
     import win32security as security
@@ -201,8 +202,8 @@ def test_windows_admin_owner_requires_elevation_and_enabled_membership(tmp_path,
             with closing(security.DuplicateToken(token, security.SecurityIdentification)) as membership:
                 assert security.CheckTokenMembership(membership, administrators) == (not deny_only)
             if deny_only:
-                groups = dict((str(sid), attributes) for sid, attributes in real_info(token, security.TokenGroups))
-                assert groups[str(administrators)] & win32con.SE_GROUP_USE_FOR_DENY_ONLY
+                groups = {str(sid): attributes for sid, attributes in real_info(token, security.TokenGroups)}
+                assert groups[str(administrators)] & ntsecuritycon.SE_GROUP_USE_FOR_DENY_ONLY
 
             def process_token(process, access):
                 return security.DuplicateTokenEx(

@@ -193,8 +193,9 @@ def _prune_homes(
             if os.name == "nt":
                 if fsops.is_link(quarantine) or not _gone(quarantine):
                     continue
-            elif not _gone(quarantine) or fsops.is_link(quarantine):
-                continue
+            else:
+                if not _gone(quarantine) or fsops.is_link(quarantine):
+                    continue
             if match.group(1) in keep:
                 continue
             home = (
