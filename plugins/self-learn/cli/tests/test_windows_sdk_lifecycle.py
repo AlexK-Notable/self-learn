@@ -407,11 +407,16 @@ def test_windows_failed_handshake_still_ends_the_childs_job(tmp_path, monkeypatc
     only the child: the session never published the PID. The job made during
     the handshake still ends the grandchild when the session ends."""
     backend, home, exe, self_calls = session_env
+    terminate = Mock(wraps=procs.terminate_contained)
+    monkeypatch.setattr(procs, "terminate_contained", terminate)
     client = SpawningClient(exe, tmp_path / "work", reaper, messages=ok_messages(), fail_handshake=True)
     logs = []
     outcome = _run(backend, monkeypatch, client, home, logs)
     assert not outcome.ok and outcome.failure == "os-error" and outcome.child_pid is None
     assert client.contained_during_handshake
+    # Ended explicitly (bounded, waited for), not only by a dropped handle.
+    (handle,), _ = terminate.call_args
+    assert terminate.call_count == 1 and handle.pid == client.pids[0]
     assert client.watch.alive() == [False, False], "the grandchild must not outlive a failed handshake"
     assert cw.CONTAINED == {} and cw._SESSIONS == {}
 
