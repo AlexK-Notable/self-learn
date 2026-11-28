@@ -64,10 +64,11 @@ def open_lock(path: Path, *, purpose: _Purpose) -> IO[Any]:
 
 def acquire(fd: int, *, path: Path, wait: float | None, poll: float = 0.02,
             close_scoped: bool = False) -> Lease:
-    deadline = None if wait is None else time.monotonic() + wait
+    deadline = None if wait is None else time.monotonic()
     locker = Win32Locker()
     sibling = path.with_name(path.name + ".lck")
     sidecar = open_lock(sibling, purpose="private")
+    os.set_inheritable(sidecar.fileno(), True)
 
     def release(_fd: int) -> None:
         if sidecar.closed:
@@ -75,7 +76,7 @@ def acquire(fd: int, *, path: Path, wait: float | None, poll: float = 0.02,
         try:
             locker.unlock(sidecar)
         except LockException as exc:
-            raise OSError(f"unlock {sibling}: {exc}") from exc
+            raise OSError(f"unlock {sibling}: {exc}") from None
         finally:
             sidecar.close()
 
@@ -96,7 +97,8 @@ def acquire(fd: int, *, path: Path, wait: float | None, poll: float = 0.02,
 
 
 def acquire_ledger_target(fd: int) -> Lease:
-    return Lease(fd, None)
+    target = Path(win32file.GetFinalPathNameByHandle(msvcrt.get_osfhandle(fd), 0))
+    return acquire(fd, path=target, wait=None)
 
 
 def unlock(fd: int) -> None:
@@ -111,9 +113,6 @@ def held_here(path: Path) -> bool:
 def repo_section(path: Path, timeout: float, wedged_by: str, *,
                  timeout_error: type[Exception]) -> Iterator[None]:
     key = str(path)
-    if key in _held_locks:
-        yield
-        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with open_lock(path, purpose="private") as metadata:
         try:
@@ -137,4 +136,4 @@ def repo_section(path: Path, timeout: float, wedged_by: str, *,
 
 
 def retire_if_idle(path: Path) -> bool:
-    return False
+    return True
