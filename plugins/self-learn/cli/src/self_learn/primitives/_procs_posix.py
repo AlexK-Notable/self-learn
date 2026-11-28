@@ -145,13 +145,26 @@ class ContainedChild:
     pid: int
 
 
+def _refused(pid) -> bool:
+    """PIDs the copied kill body must never receive: zero and negative numbers
+    address process groups (0 is our own; -1 is every process we may signal),
+    and our own PID or our group leader's would kill this process or the
+    leader of its group. ``teardown.kill_child`` never sees them today (the
+    SDK supplies a positive child PID or ``None``)."""
+    return not isinstance(pid, int) or pid <= 0 or pid == os.getpid() or pid == os.getpgrp()
+
+
 def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> ContainedChild | None:
+    if _refused(pid):
+        return None
     if expect is not None and process_identity(pid) != expect:
         return None
     return ContainedChild(pid)
 
 
-def terminate_contained(handle: ContainedChild) -> None:
+def terminate_contained(handle: ContainedChild | None) -> None:
+    if handle is None or _refused(handle.pid):
+        return
     pid = handle.pid
     # Copied from teardown.kill_child, statement for statement:
     #     try:

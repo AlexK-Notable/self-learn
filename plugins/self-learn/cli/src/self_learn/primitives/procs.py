@@ -124,9 +124,13 @@ class ProcessIdentity:
     what ``sdksession/children.py`` reads today). Windows: the full image
     path from ``QueryFullProcessImageNameW``.
 
-    ``created``: Windows: the creation time from ``GetProcessTimes``, as
-    whole microseconds since the Unix epoch (pywin32 reports it to the
-    millisecond). POSIX: ``None`` (today's check reads no start time).
+    ``created``: Windows: the creation time from ``GetProcessTimes`` as the
+    raw FILETIME, 100-nanosecond ticks since 1601-01-01 UTC, read without
+    pywin32 (whose conversion rounds to the millisecond). Two processes with
+    the same PID, image and creation time compare equal; that needs the
+    system clock to be set back between them, since a PID is not reused
+    before its previous owner is gone. POSIX: ``None`` (today's check reads no
+    start time).
 
     ``cmdline``: POSIX: the raw ``/proc/<pid>/cmdline`` bytes, so a caller
     can keep today's exact parsing. Windows: ``None``.
@@ -149,17 +153,20 @@ def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> Any:
 
     Windows: assign *pid* to a fresh kill-on-close job object (breakaway
     allowed, as a new session escapes ``killpg`` on POSIX), then adopt its
-    descendants that were spawned before the assignment. The returned handle
-    keeps the job alive: dropping it, or this process dying, kills
-    everything in the job. ``None`` when the process no longer exists, or
-    when *expect* is given and the process opened is not that identity (the
-    check runs on the same open handle as the assignment, so a reused PID is
-    never assigned).
+    descendants that were spawned before the assignment and can be proved
+    to be its own (anything else is reported in the handle's ``left_out``
+    and ``uncovered``). The returned handle keeps the job alive: dropping it,
+    or this process dying, kills everything in the job. ``None`` when the
+    process does not exist or has exited, or when *expect* is given and the
+    process opened is not that identity (checked on the same open handle
+    that is then assigned). If the call is interrupted after the child is in
+    the job, the exception carries the handle as ``contained_child``.
 
-    POSIX: makes no system call (unless *expect* is given, which reads
-    ``/proc``) and returns a handle carrying *pid*; the process group is
-    read with ``os.getpgid`` at kill time, exactly as
-    ``sdksession/teardown.kill_child`` does today.
+    POSIX: returns a handle carrying *pid*, reading nothing but our own PID
+    and process group (plus ``/proc`` when *expect* is given); the process
+    group of *pid* is read with ``os.getpgid`` at kill time, exactly as
+    ``sdksession/teardown.kill_child`` does today. ``None`` for a PID that
+    is not positive, is this process, or is this process's group leader.
     """
     return _backend().contain_child(pid, expect=expect)
 
@@ -174,7 +181,8 @@ def terminate_contained(handle: Any) -> None:
 
     POSIX: the ``getpgid``/``killpg``/``SIGKILL`` body of
     ``sdksession/teardown.kill_child``, copied exactly, swallowing the same
-    ``ProcessLookupError`` and ``PermissionError``.
+    ``ProcessLookupError`` and ``PermissionError``; a ``None`` handle or one
+    whose PID ``contain_child`` would refuse does nothing.
     """
     _backend().terminate_contained(handle)
 
@@ -184,7 +192,10 @@ def contain_self() -> bool:
 
     Windows: put this process in a kill-on-close job with breakaway
     allowed (a child started with ``CREATE_BREAKAWAY_FROM_JOB`` still
-    escapes). Nests under a job the process is already in. Safe to call
+    escapes). Call it at start-up, before anything spawns: children started
+    earlier stay outside the job. Nests under a job the process is already
+    in. The job handle is never closed by Python, so a normal exit keeps its
+    exit status; the kernel closes it after the process ends. Safe to call
     again: later calls return ``True`` without a new job. Returns ``True``.
 
     POSIX: does nothing and returns ``False`` (descendants are handled by

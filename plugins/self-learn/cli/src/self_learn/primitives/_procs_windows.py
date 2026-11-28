@@ -11,7 +11,6 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
-from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any, Mapping, Sequence, cast
 from uuid import uuid4
@@ -410,24 +409,46 @@ _PROCESS_QUERY = win32con.PROCESS_QUERY_LIMITED_INFORMATION
 _PROCESS_CONTAIN = (win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE
                     | win32con.PROCESS_QUERY_LIMITED_INFORMATION | win32con.SYNCHRONIZE)
 _JOB_FLAGS = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-_MICROSECOND = timedelta(microseconds=1)
 _TERMINATE_SECONDS = 5.0
 #: A pass adopts every descendant whose parent was adopted in an earlier
 #: pass; a chain deeper than this many generations is left uncovered.
 _ADOPTION_PASSES = 16
 
 # pywin32 312 has neither QueryFullProcessImageNameW nor the Toolhelp32
-# snapshot calls (checked in the 312 wheel), so these few come from kernel32.
+# snapshot calls (checked in the 312 wheel), and its GetProcessTimes rounds the
+# creation time to the millisecond (measured on the runner), so these few come
+# from kernel32 and ntdll.
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _query_image = _kernel32.QueryFullProcessImageNameW
 _query_image.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
 _query_image.restype = wintypes.BOOL
+_get_process_times = _kernel32.GetProcessTimes
+_get_process_times.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+_get_process_times.restype = wintypes.BOOL
+_precise_now = _kernel32.GetSystemTimePreciseAsFileTime
+_precise_now.argtypes = [ctypes.POINTER(wintypes.FILETIME)]
+_precise_now.restype = None
 _snapshot = _kernel32.CreateToolhelp32Snapshot
 _snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
 _snapshot.restype = wintypes.HANDLE
 _TH32CS_SNAPPROCESS = 0x2
 _INVALID_HANDLE = wintypes.HANDLE(-1).value
+_ntdll = ctypes.WinDLL("ntdll")
+
+
+class _BasicInformation(ctypes.Structure):
+    _fields_ = [("ExitStatus", ctypes.c_long), ("PebBaseAddress", ctypes.c_void_p),
+                ("AffinityMask", ctypes.c_size_t), ("BasePriority", ctypes.c_long),
+                ("UniqueProcessId", ctypes.c_size_t), ("InheritedFromUniqueProcessId", ctypes.c_size_t)]
+
+
+_query_process = _ntdll.NtQueryInformationProcess
+_query_process.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.ULONG,
+                           ctypes.POINTER(wintypes.ULONG)]
+_query_process.restype = ctypes.c_long
+_status_to_error = _ntdll.RtlNtStatusToDosError
+_status_to_error.argtypes = [ctypes.c_long]
+_status_to_error.restype = wintypes.ULONG
 
 
 class _ProcessEntry(ctypes.Structure):
@@ -446,6 +467,19 @@ for _walk in (_first_entry, _next_entry):
 _close_handle = _kernel32.CloseHandle
 _close_handle.argtypes = [wintypes.HANDLE]
 _close_handle.restype = wintypes.BOOL
+
+
+def _filetime(value: wintypes.FILETIME) -> int:
+    return (value.dwHighDateTime << 32) | value.dwLowDateTime
+
+
+def _now() -> int:
+    """The precise system time as FILETIME ticks: the clock that stamps a
+    process's creation time (measured on the runner: every creation time fell
+    strictly between a reading taken before the spawn and one taken after)."""
+    now = wintypes.FILETIME()
+    _precise_now(ctypes.byref(now))
+    return _filetime(now)
 
 
 def _open_process(pid, rights):
@@ -469,12 +503,29 @@ def _image_of(process) -> str:
 
 
 def _created_of(process) -> int:
-    created = win32process.GetProcessTimes(process)["CreationTime"]
-    return (created - _EPOCH) // _MICROSECOND
+    created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+    if not _get_process_times(int(process), ctypes.byref(created), ctypes.byref(exited),
+                              ctypes.byref(kernel), ctypes.byref(user)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return _filetime(created)
+
+
+def _parent_of(process) -> int:
+    """The parent PID recorded in the process object behind *process* (not a
+    snapshot row, which may describe an earlier owner of the same number)."""
+    info = _BasicInformation()
+    status = _query_process(int(process), 0, ctypes.byref(info), ctypes.sizeof(info), None)
+    if status != 0:
+        raise ctypes.WinError(_status_to_error(status))
+    return info.InheritedFromUniqueProcessId
 
 
 def _identity_of(process) -> ProcessIdentity:
     return ProcessIdentity(image=_image_of(process), created=_created_of(process))
+
+
+def _exited(process) -> bool:
+    return win32event.WaitForSingleObject(process, 0) == win32event.WAIT_OBJECT_0
 
 
 @_os_errors()
@@ -508,7 +559,9 @@ def _new_job():
 
 
 def _process_parents() -> list[tuple[int, int]]:
-    """(pid, parent pid) for every process, from one Toolhelp32 snapshot."""
+    """(pid, parent pid) for every process, from one Toolhelp32 snapshot.
+    The parent column is only a hint: a row can describe a process that has
+    since exited and whose number now belongs to another."""
     snapshot = _snapshot(_TH32CS_SNAPPROCESS, 0)
     if snapshot is None or snapshot == _INVALID_HANDLE:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -523,59 +576,110 @@ def _process_parents() -> list[tuple[int, int]]:
         code = ctypes.get_last_error()
         if code != winerror.ERROR_NO_MORE_FILES:
             raise ctypes.WinError(code)
-    finally:
-        _close_handle(snapshot)
+    except BaseException as failure:
+        if not _close_handle(snapshot):
+            failure.add_note(f"Windows snapshot cleanup: {ctypes.WinError(ctypes.get_last_error())!r}")
+        raise
+    if not _close_handle(snapshot):
+        raise ctypes.WinError(ctypes.get_last_error())
     return pairs
 
 
-def _adopt_descendants(job, root_pid, root_created, held):
-    """Assign to *job* the descendants of *root_pid* that were spawned before
-    it was assigned (they did not inherit the job). Each adopted process's
-    open handle is appended to *held*. Returns the adopted PIDs,
-    the ``(pid, winerror)`` pairs that could not be adopted (pid 0: the process
-    snapshot itself failed), and whether the sweep finished.
+class _Member:
+    """A process known to be in the child's tree, pinned by an open handle so
+    its number cannot pass to another process while we rely on it."""
 
-    A process counts as a descendant only if its recorded parent is in the
-    job's tree AND it was created no earlier than that parent: a process whose
-    parent PID was reused by our child is older than our child, and is left
-    alone. Nothing here raises: the child is already in the job, and a failed
-    sweep must not cost it its life, so failures are reported instead."""
-    tree = {root_pid: root_created}
-    adopted: list[int] = []
-    uncovered: list[tuple[int, int]] = []
+    def __init__(self, process, created, cutoff, in_any_job, in_self_job):
+        self.process = process
+        self.created = created
+        #: A child of this member that is outside the job counts as missed
+        #: (spawned before the member joined) only if created before this.
+        self.cutoff = cutoff
+        self.in_any_job = in_any_job
+        self.in_self_job = in_self_job
+
+
+def _job_states(process):
+    in_any = win32job.IsProcessInJob(process, cast(Any, None))  # None: any job
+    in_self = bool(_self_job) and win32job.IsProcessInJob(process, _self_job[0])
+    return in_any, in_self
+
+
+def _judge(job, tree, pid, adopted, uncovered, left_out):
+    """Open *pid*, decide on that handle whether it is ours, and adopt it.
+    Returns True when the tree grew."""
+    process = _open_process(pid, _PROCESS_CONTAIN)
+    if process is None:  # already gone
+        return False
+    with _Handles() as handles:
+        handles.callback(win32api.CloseHandle, process)
+        created = _created_of(process)
+        if win32job.IsProcessInJob(process, job):
+            # Born in the job: ours by construction. Anything it spawned
+            # outside the job broke away, so its cutoff is its own birth.
+            tree[pid] = _Member(process, created, created, *_job_states(process))
+            handles.pop_all()
+            return True
+        parent = tree.get(_parent_of(process))
+        if parent is None:
+            return False  # the snapshot row was stale; this is someone else
+        # The parent is pinned, so from its creation until now no other process
+        # held its number: a later-created process naming it is its child.
+        if created <= parent.created:
+            left_out.append((pid, "not-younger-than-parent"))
+            return False
+        if created >= parent.cutoff:
+            left_out.append((pid, "spawned-after-parent-joined"))
+            return False
+        in_any, in_self = _job_states(process)
+        if (parent.in_self_job and not in_self) or (parent.in_any_job and not in_any):
+            left_out.append((pid, "outside-its-parents-job"))
+            return False
+        before = _now()
+        try:
+            win32job.AssignProcessToJobObject(job, process)
+        except pywintypes.error as exc:
+            uncovered.append((pid, exc.winerror))
+            return False
+        tree[pid] = _Member(process, created, before, in_any, in_self)
+        adopted.append(pid)
+        handles.pop_all()
+        return True
+
+
+def _adopt_descendants(job, root_pid, root, adopted, uncovered, left_out):
+    """Assign to *job* the descendants of *root_pid* that were spawned before it
+    was assigned (they did not inherit the job). Returns whether the sweep
+    finished; fills *adopted*, *uncovered* (``(pid, winerror)``; pid 0: the
+    snapshot failed) and *left_out* (``(pid, reason)``: not provably ours).
+
+    A candidate is judged on its own open handle: its parent is read from the
+    process object, that parent must be a pinned member of the tree, the
+    candidate must be strictly younger than the parent and older than the
+    moment the parent joined the job, and it must not have left a job its
+    parent was in (a deliberate breakaway). Anything else is left alone.
+    Per-candidate failures are reported, never raised: the child is already
+    in the job, and a failed sweep must not cost it its life."""
+    tree = {root_pid: root}
     judged = {root_pid}
     for _ in range(_ADOPTION_PASSES):
         grew = False
         try:
-            parents = _process_parents()
+            rows = _process_parents()
         except OSError as exc:
-            uncovered.append((0, exc.winerror or 0))
-            return adopted, uncovered, False
-        for pid, parent in parents:
+            uncovered.append((0, getattr(exc, "winerror", None) or 0))
+            return tree, False
+        for pid, parent in rows:
             if parent not in tree or pid in judged:
                 continue
             judged.add(pid)
             try:
-                process = _open_process(pid, _PROCESS_CONTAIN)
-                if process is None:  # already gone
-                    continue
-                with _Handles() as handles:
-                    handles.callback(win32api.CloseHandle, process)
-                    created = _created_of(process)
-                    if created < tree[parent]:
-                        continue  # its parent PID was reused: not ours
-                    tree[pid] = created
-                    grew = True
-                    if not win32job.IsProcessInJob(process, job):
-                        win32job.AssignProcessToJobObject(job, process)
-                        adopted.append(pid)
-                        handles.pop_all()
-                        held.append(process)
-            except pywintypes.error as exc:
-                uncovered.append((pid, exc.winerror))
+                grew = _judge(job, tree, pid, adopted, uncovered, left_out) or grew
+            except (pywintypes.error, OSError) as exc:
+                uncovered.append((pid, getattr(exc, "winerror", None) or 0))
         if not grew:
-            return adopted, uncovered, True
-    return adopted, uncovered, False
+            return tree, True
+    return tree, False
 
 
 class ContainedChild:
@@ -583,23 +687,30 @@ class ContainedChild:
 
     Keep this object for as long as the child should live: when it is
     released (garbage-collected, or this process dies), Windows closes the
-    job and kills everything in it. The open process handle pins the PID, so
-    it cannot be reused while this object holds it."""
+    job and kills everything in it. Every member it relies on is pinned by an
+    open handle, so their numbers cannot pass to other processes meanwhile."""
 
-    def __init__(self, pid, identity, job, processes, adopted, uncovered, complete):
+    def __init__(self, pid, identity, job, process):
         self.pid = pid
         self.identity = identity
-        self.adopted = tuple(adopted)
-        self.uncovered = tuple(uncovered)
-        #: False when the adoption sweep stopped at its generation bound.
-        self.complete = complete
+        self.adopted: tuple[int, ...] = ()
+        self.uncovered: tuple[tuple[int, int], ...] = ()
+        self.left_out: tuple[tuple[int, str], ...] = ()
+        #: False when the adoption sweep did not run to a pass with no growth.
+        self.complete = False
         self._job = job
-        #: The child's handle first, then each adopted descendant's.
-        self._processes = processes
+        #: The child's handle first, then every other pinned member's.
+        self._processes = [process]
 
     @property
     def released(self) -> bool:
         return self._job is None
+
+
+#: Handles whose contain_child call was interrupted after the child was in the
+#: job: kept here so the job (and the child) survive until the caller recovers
+#: them from the exception's ``contained_child`` or terminates them.
+unclaimed: list[ContainedChild] = []
 
 
 @_os_errors()
@@ -610,17 +721,53 @@ def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> Contain
     with _Handles() as handles:
         handles.callback(win32api.CloseHandle, process)
         identity = _identity_of(process)
-        if expect is not None and identity != expect:
+        if (expect is not None and identity != expect) or _exited(process):
             return None
-        # Closed with the stack unless handed to the ContainedChild below; it
-        # is still empty if assignment fails, so closing it kills nothing.
+        in_any, in_self = _job_states(process)
+        # Still empty if assignment fails, so closing it kills nothing.
         job = _new_job()
         handles.callback(win32api.CloseHandle, job)
-        win32job.AssignProcessToJobObject(job, process)
-        held = [process]
-        adopted, uncovered, complete = _adopt_descendants(job, pid, identity.created, held)
+        handle = ContainedChild(pid, identity, job, process)
         handles.pop_all()
-    return ContainedChild(pid, identity, job, held, adopted, uncovered, complete)
+    try:
+        before = _now()
+        win32job.AssignProcessToJobObject(job, process)
+        root = _Member(process, identity.created, before, in_any, in_self)
+        adopted, uncovered, left_out = [], [], []
+        tree, complete = _adopt_descendants(job, pid, root, adopted, uncovered, left_out)
+        handle._processes += [m.process for m in tree.values() if m is not root]
+        handle.adopted, handle.uncovered = tuple(adopted), tuple(uncovered)
+        handle.left_out, handle.complete = tuple(left_out), complete
+    except BaseException as failure:
+        _hand_over_or_release(handle, failure)
+        raise
+    return handle
+
+
+def _hand_over_or_release(handle, failure):
+    try:
+        contained = win32job.IsProcessInJob(handle._processes[0], handle._job)
+    except BaseException as error:
+        failure.add_note(f"Windows job membership check: {error!r}")
+        contained = True  # unsure: keep the child alive
+    if contained:
+        # The child is in the job: closing it now would kill the child.
+        unclaimed.append(handle)
+        failure.contained_child = handle
+        failure.add_note(f"PID {handle.pid} stays contained; recover it from "
+                         "the exception's contained_child or terminate it")
+        return
+    _release(handle, failure)
+
+
+def _release(handle, failure=None):
+    processes, job = handle._processes, handle._job
+    handle._job, handle._processes = None, []
+    with _cleanup_after(failure), _Handles() as handles:
+        for process in processes:
+            handles.callback(win32api.CloseHandle, process)
+        if job is not None:
+            handles.callback(win32api.CloseHandle, job)
 
 
 def _active_processes(job) -> int:
@@ -629,11 +776,15 @@ def _active_processes(job) -> int:
 
 
 @_os_errors()
-def terminate_contained(handle: ContainedChild, *, timeout: float = _TERMINATE_SECONDS) -> None:
+def terminate_contained(handle: ContainedChild | None, *, timeout: float = _TERMINATE_SECONDS) -> None:
+    if handle is None:
+        return
     job, processes = handle._job, handle._processes
     if job is None:
         return
     handle._job, handle._processes = None, []
+    if handle in unclaimed:
+        unclaimed.remove(handle)
     with _Handles() as handles:
         for process in processes:
             handles.callback(win32api.CloseHandle, process)
@@ -653,7 +804,10 @@ def terminate_contained(handle: ContainedChild, *, timeout: float = _TERMINATE_S
             raise TimeoutError(f"contained job for PID {handle.pid} still has processes after {timeout} s")
 
 
-_self_job: list[Any] = []
+#: The raw self-job handle. Detached from its PyHANDLE so that Python never
+#: closes it, not even while finalizing: the kernel closes it when the process
+#: has ended (exit status already set) and the job then kills the descendants.
+_self_job: list[int] = []
 _self_lock = threading.Lock()
 
 
@@ -669,7 +823,5 @@ def contain_self() -> bool:
             with _cleanup_after(failure):
                 win32api.CloseHandle(job)
             raise
-        # Never closed: the kernel closes it when this process ends, and the
-        # job then kills every descendant that did not break away.
-        _self_job.append(job)
+        _self_job.append(job.Detach())
         return True
