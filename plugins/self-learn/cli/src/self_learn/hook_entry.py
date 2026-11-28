@@ -15,7 +15,7 @@ from typing import Any
 from .primitives import procs
 
 
-_TIMEOUT = 5
+_TIMEOUT = 4
 _SURROGATE_ESCAPES = re.compile(
     r"\\\\|\\u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}"
     r"|\\u[dD][89a-fA-F][0-9a-fA-F]{2}"
@@ -35,8 +35,7 @@ def _documents(data: bytes) -> list[Any]:
     # The Bash hooks use jq on a stream and strip NULs in command substitutions.
     text = data.replace(b"\0", b"").decode("utf-8")
     # Validate even unselected strings and members hidden by duplicate keys.
-    if data.count(b"[") > 100:
-        raise ValueError("nested JSON is unsupported")
+    text = _SURROGATE_ESCAPES.sub(_jq_surrogate, text)
     decoder = json.JSONDecoder()
     documents = []
     pos = 0
@@ -46,7 +45,7 @@ def _documents(data: bytes) -> list[Any]:
         if pos < len(text):
             value, pos = decoder.raw_decode(text, pos)
             documents.append(value)
-    return documents[-1:]
+    return documents
 
 
 def _field(value: Any, key: str) -> Any:
@@ -63,7 +62,7 @@ def _default(value: Any, fallback: Any) -> Any:
 
 
 def _raw(value: Any) -> str:
-    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
 
 
 def _lines(values: Iterable[Any]) -> str:
@@ -86,18 +85,20 @@ def _positive(text: str) -> int:
     # Bash's integer test accepts leading whitespace and a sign, but rejects
     # decimals and values outside the signed integer range.
     text = text.strip(" \t\r\n\v\f")
-    try:
-        value = int(text) if re.fullmatch(r"[+-]?[0-9]+", text) else int(float(text))
-    except (OverflowError, ValueError):
+    if not re.fullmatch(r"[+-]?[0-9]+", text):
         return 0
-    return max(0, value)
+    try:
+        value = int(text)
+    except ValueError:
+        return 0
+    return value if 0 < value < 2**63 else 0
 
 
 def _stopped_ids(documents: list[Any]) -> str:
     def join(ids: Any) -> str:
         if not isinstance(ids, list) or any(isinstance(item, (list, dict)) for item in ids):
             raise TypeError("expected an array of scalar intent IDs")
-        return ", ".join(_raw(item) for item in ids if isinstance(item, str))
+        return ", ".join("" if item is None else _raw(item) for item in ids)
 
     return _lines(join(_default(_field(doc, "intents_stopped"), [])) for doc in documents)
 
@@ -115,7 +116,9 @@ def _notices(documents: list[Any]) -> str:
     def values() -> Iterable[Any]:
         for doc in documents:
             notices = _default(_field(doc, "project_notices"), [])
-            if not isinstance(notices, list):
+            if isinstance(notices, dict):
+                notices = notices.values()
+            elif not isinstance(notices, list):
                 raise TypeError("expected an array or object of notices")
             for notice in notices:
                 line = _default(_field(notice, "line"), None)
@@ -176,7 +179,7 @@ def _status_lines(documents: list[Any]) -> Iterable[str]:
 
 
 def _write(data: bytes) -> None:
-    if data:
+    if data and sys.stdout is not None:
         sys.stdout.buffer.write(data)
 
 
@@ -187,11 +190,12 @@ def _degraded(reason: str) -> None:
 def _run_cli(command: list[str], watchdog: str | None):
     # GNU timeout owns a separate deadline that survives the hook's death.
     # Its short KILL grace also covers a CLI that ignores the initial TERM.
+    if watchdog is not None:
+        command = [watchdog, "--kill-after=0.2", str(_TIMEOUT), *command]
     return procs.run_bounded(command, timeout=_TIMEOUT, binary=True)
 
 
 def _session_start(executable: str, watchdog: str | None) -> None:
-    sys.stdin.buffer.read()
     try:
         result = _run_cli([executable, "status", "--fast"], watchdog)
     except procs.BoundedTimeout:
@@ -204,24 +208,21 @@ def _session_start(executable: str, watchdog: str | None) -> None:
         _degraded("self-learn status timed out after 4s")
         return
     try:
-        documents = _documents(result.stdout)
-        if documents and documents[-1] is None:
-            _write(b"status checked\n")
-        for line in _status_lines(documents):
-            _write(f"{line}\n".encode("utf-8"))
+        output = b"".join(f"{line}\n".encode("utf-8") for line in _status_lines(_documents(result.stdout)))
     except (TypeError, ValueError, RecursionError, MemoryError):
-        _write(b"invalid status\n")
+        return  # A failed status JSON query leaves the hook quiet.
+    _write(output)
 
 
 def _read_observed(executable: str, watchdog: str | None) -> None:
+    if sys.stdin is None:
+        return
     try:
         documents = _documents(sys.stdin.buffer.read())
         paths = (_field(_field(doc, "tool_input"), "file_path") for doc in documents)
         path = _lines(value for value in paths if _default(value, None) is not None)
         match_path = path.replace("\\", "/") if os.name == "nt" else path
-        if path.startswith("/references/") or path.count("/references/") > 1:
-            return
-        if not path.startswith("/") and "/" in path and not os.path.isabs(path):
+        if not fnmatchcase(match_path, "*/references/*.md"):
             return
         session = _select(documents, "session_id")
         args = [executable, "telemetry", "read-observed", "--path", path, "--session", session]
@@ -229,12 +230,21 @@ def _read_observed(executable: str, watchdog: str | None) -> None:
             args.append("--subagent")
         _run_cli(args, watchdog)
     except (procs.BoundedTimeout, OSError, TypeError, ValueError, RecursionError, MemoryError):
-        _write(b"invalid Read event\n")
+        pass  # This observer must never interrupt a Read.
 
 
 def _find_self_learn() -> str | None:
     if os.name != "nt":
-        return shutil.which("self-learn")
+        executable = shutil.which("self-learn")
+        if executable is not None:
+            return executable
+        # Bash command -v reports a non-executable PATH file when no
+        # executable is found. GNU timeout then fails quietly at launch.
+        for entry in os.get_exec_path():
+            candidate = os.path.join(entry or os.curdir, "self-learn")
+            if os.path.exists(candidate) and not os.path.isdir(candidate):
+                return candidate
+        return None
 
     # Windows shutil.which can look in the current directory for bare names.
     # Hooks run in the session's project, so only use the configured PATH.
@@ -256,7 +266,8 @@ def main() -> int:
     session_start = parser.parse_args().event == "session-start"
     executable = _find_self_learn()
     if not executable:
-        _degraded("self-learn was not found")
+        if session_start:
+            _degraded("self-learn is not on PATH")
         return 0
 
     watchdog = None
