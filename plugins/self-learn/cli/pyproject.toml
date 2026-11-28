@@ -26,6 +26,7 @@ sdk = []
 
 [project.scripts]
 self-learn = "self_learn.cli:entrypoint"
+self-learn-hook = "self_learn.hook_entry:main"
 
 [build-system]
 requires = ["hatchling"]
