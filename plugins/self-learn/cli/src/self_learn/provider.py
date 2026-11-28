@@ -660,7 +660,7 @@ def _installed_cli_path_windows() -> tuple[str | None, str]:
     for directory in _windows_path_dirs():
         candidate = os.path.join(directory, "claude.exe")
         if os.path.isfile(candidate):
-            if False:
+            if _windows_batch_path(candidate):
                 passed_over.append(f"{candidate} (a folder named like a batch file)")
                 continue
             return candidate, "installed (PATH)"

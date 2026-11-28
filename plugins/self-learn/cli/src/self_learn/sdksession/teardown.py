@@ -110,8 +110,7 @@ def kill_child(pid: int | None, log: Callable[[str], None], pid_alive: Callable[
     put the child in (its descendants with it), never a bare PID, and logs
     a failure instead of raising; see :func:`_kill_contained`."""
     if os.name == "nt":
-        if pid is not None and pid_alive(pid):
-            _kill_contained(pid, log)
+        _kill_contained(pid, log)
         return
     del log
     if pid is None or not pid_alive(pid):
@@ -260,7 +259,7 @@ def contain_session_child(pid: int, log: Callable[[str], None]) -> None:
     try:
         handle = facade.contain_child(pid)
     except BaseException as exc:
-        handle = None
+        handle = getattr(exc, "contained_child", None)
         identity = handle.identity if handle is not None else _identity_or_none(facade, pid)
         CONTAINED[pid] = _Contained(handle, identity)
         if not isinstance(exc, Exception):
