@@ -870,6 +870,16 @@ def test_windows_log_is_bounded_while_the_host_runs(win, tmp_path):
 # ------------------------------------------- real Task Scheduler (CI only)
 
 
+@pytest.fixture
+def com():
+    """COM for this test's own reads (the product queries on its own threads)."""
+    import pythoncom
+
+    pythoncom.CoInitialize()
+    yield
+    pythoncom.CoUninitialize()
+
+
 def _definition(name):
     import win32com.client
 
@@ -879,7 +889,7 @@ def _definition(name):
 
 
 @scheduler
-def test_windows_task_lifecycle(win, tmp_path):
+def test_windows_task_lifecycle(win, tmp_path, com):
     home = tmp_path / "home"
     name = win.created(supervisor.host_name(home))
     out = win.out("lifecycle")
@@ -901,6 +911,7 @@ def test_windows_task_lifecycle(win, tmp_path):
     assert Path(action.Path) == tasks.launcher_path()
     assert str(supervisor.state_dir(home)) in action.Arguments and str(home) in action.Arguments
     assert f"--name {tasks.leaf(name)} " in action.Arguments
+    del definition, settings, action  # released before COM is left
 
     supervisor.start(name)
     host, grandchild = win.pids(out)
