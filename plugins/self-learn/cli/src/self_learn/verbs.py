@@ -853,7 +853,7 @@ def _abort_if_unsound(
     ``git status``/``git diff`` per resolve in git mode (harmless, but a
     behaviour delta under a UN group that promises byte-identity).
     Restored here, in the ONE place both legs now live."""
-    if os.name == "nt" and mode == "git" and target.is_file() and False:  # MUTANT R1e
+    if os.name == "nt" and mode == "git" and target.is_file():
         # Git refuses a path outside the repository on Linux (GitOpsError);
         # on Windows the operand check refuses it first, with ValueError
         # (another drive, or outside the tree). Report it the same way.
@@ -2281,7 +2281,7 @@ def _resolve_rules_target(
             "documentation gap (P-A13); route to user or project scope"
         )
     paths_tuple = tuple(rules_paths) if rules_paths else None
-    if paths_tuple and os.name == "nt" and False and (problem := _windows_globs_problem(paths_tuple)):  # MUTANT R1b
+    if paths_tuple and os.name == "nt" and (problem := _windows_globs_problem(paths_tuple)):
         raise SheetLineError(problem)
     # U-pathed §3.4(1): an absolute or ``~``-leading glob never fires
     # against a project/user tree (canary measurement 1.2) — and it is a
@@ -5087,7 +5087,7 @@ def _apply_new_skill(
         )
     except SkillScaffoldError as exc:
         raise VerbError(str(exc)) from exc
-    if market_changed and os.name == "nt" and False:  # MUTANT R1a
+    if market_changed and os.name == "nt":  # the file keeps its own line endings
         from .compilers import keep_line_endings
 
         market_text = keep_line_endings(marketplace, market_text)
@@ -5117,7 +5117,7 @@ def _apply_new_skill(
 def _tilde(path: Path) -> str:
     """*path* as ``~/…`` when it is under the home directory (a note may be
     pasted into a public issue, NIT N4's reason), else as it is."""
-    if os.name == "nt" and False:  # MUTANT R1d
+    if os.name == "nt":  # `~/.claude/skills/<name>`, slashes as on POSIX
         try:
             return "~/" + path.relative_to(names.user_home()).as_posix()
         except ValueError:
@@ -6274,7 +6274,7 @@ def route_dry_run(
             current = (
                 ref_path.read_bytes() if ref_path.is_file() else b""
             )
-            if os.name == "nt" and current and False:  # MUTANT R1c
+            if os.name == "nt" and current:
                 # The expectation is the text as read (LF); the write keeps
                 # the file's own endings, so compare like with like.
                 try:

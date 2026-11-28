@@ -74,6 +74,7 @@ jobs:
             'test_windows_rules_paths_refuse_native_globs[rooted-backslash]'
             'test_windows_rules_paths_refuse_native_globs[drive]'
             'test_windows_rules_paths_refuse_native_globs[parent]'
+            'test_windows_rules_target_refuses_native_globs_from_any_source'
             'test_windows_new_skill_keeps_marketplace_line_endings'
             'test_windows_labels_outside_the_profile_and_config_dir'
             'test_windows_route_dry_run_reference_diff_matches_the_write'
@@ -81,7 +82,7 @@ jobs:
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
           $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
           $missing = @($native | Where-Object { $ran -cnotcontains $_ })
-          if ($missing.Count -or $ran.Count -ne 27 -or $skips.Count -ne 1 -or
+          if ($missing.Count -or $ran.Count -ne 28 -or $skips.Count -ne 1 -or
               $skips[0].name -cne 'test_posix_compile_writes_the_compiler_text' -or
               $skips[0].skipped.message -cne 'POSIX canon contract') {
             throw "Unexpected canon test selection: ran $($ran -join ', '); missing $($missing -join ', '); skipped $($skips.Count)"

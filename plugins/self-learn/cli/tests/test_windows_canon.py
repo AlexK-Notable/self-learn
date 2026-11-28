@@ -594,6 +594,28 @@ def test_windows_rules_paths_refuse_native_globs(canon, glob):
 
 
 @windows
+def test_windows_rules_target_refuses_native_globs_from_any_source(canon):
+    """Globs that reach the rules target from a proposal or a stored routing
+    block (route without --rules-path, recompile) meet the same refusal, at
+    the one resolution every rules route goes through."""
+    from self_learn import verbs
+    from self_learn.ledger import discover_buckets
+
+    proj = project_host(canon)
+    canon.teach(proj, "project", "Bucket fact")
+    bucket = next(b for b in discover_buckets(canon.ledger) if b.scope == "project")
+    for glob in ("src\\*.py", "/src/*.py", "\\Windows\\*.ini", "../src/*.py"):
+        with pytest.raises(verbs.SheetLineError, match="are not relative forward-slash globs"):
+            verbs._resolve_rules_target(
+                canon.ledger, bucket.path, "project", "python", [glob], user_claude_md=None,
+                project_path=proj, check_dirty=True, allow_empty_glob=False)
+    spec = verbs._resolve_rules_target(
+        canon.ledger, bucket.path, "project", "python", ["src/*.py"], user_claude_md=None,
+        project_path=proj, check_dirty=True, allow_empty_glob=False)
+    assert spec.rules_paths == ("src/*.py",)
+
+
+@windows
 def test_windows_new_skill_keeps_marketplace_line_endings(canon):
     root = canon.root / "skills root"
     skill = root / "plugins" / "s-plugin" / "skills" / "s"
