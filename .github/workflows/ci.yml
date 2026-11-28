@@ -56,6 +56,10 @@ jobs:
         working-directory: plugins/self-learn/ui
         run: uv run --no-sync python -m pytest --noconftest -p conftest tests/test_home_floor.py -p no:cacheprovider -q -rs
 
+      - name: Windows file publishing contracts
+        working-directory: plugins/self-learn/cli
+        run: uv run --no-sync python -m pytest tests/test_platform_fsops.py -p no:cacheprovider -q -rs
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(
