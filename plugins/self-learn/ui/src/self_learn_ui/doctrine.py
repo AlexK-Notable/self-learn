@@ -31,11 +31,12 @@ package's location.)
 
 from __future__ import annotations
 
-from importlib import resources
 from pathlib import Path
 
 from self_learn.primitives import fsops
 from self_learn.worker import cache_dir
+
+from . import _package_data
 
 __all__ = [
     "COMPILED_DOCTRINE_NAME",
@@ -57,17 +58,17 @@ def plugin_references_dir() -> Path:
     ``plugins/self-learn/ui/src/self_learn_ui/doctrine.py`` — four
     ``parents[]`` hops up is ``plugins/self-learn``.
 
-    That checkout path is the first rung, unchanged. Only when it is absent
-    (an installed wheel has no checkout around it) the copy the ui wheel
-    carries as package data, ``self_learn_ui/_data/references``
-    (``pyproject.toml``'s force-include): still this package's own
-    location, never the CLI's and never a home. With neither, the checkout
-    path is returned, so the failure names the same path it always did."""
-    source = Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
-    if source.exists():
-        return source
-    packaged = resources.files("self_learn_ui") / "_data" / "references"
-    return packaged if isinstance(packaged, Path) and packaged.is_dir() else source
+    On a checkout (decided from this package's own location,
+    :func:`self_learn_ui._package_data.checkout_project`) that is still the
+    path returned; an installed wheel gets the copy the UI wheel carries as
+    package data, ``self_learn_ui/_data/references``: still this package's
+    own location, never the CLI's and never a home."""
+    project = _package_data.checkout_project()
+    if project is not None:
+        source = project.parent / "skills" / "self-learn" / "references"
+        if source.is_dir():
+            return source
+    return _package_data.packaged("references")
 
 
 def routing_doctrine_path() -> Path:

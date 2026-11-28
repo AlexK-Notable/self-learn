@@ -1,25 +1,33 @@
 """The web UI as an installed wheel (Windows port, 8K).
 
 A wheel has no repository around it, so the pages, the static files and the
-pane's doctrine sources ride inside it as package data (``pyproject.toml``'s
-force-include, under ``self_learn_ui/_data/``; the CLI wheel carries the
-skill's references under ``self_learn/_data/``). The lookups read the
-checkout's own folders first and use the packaged copies only when those
-are absent.
+pane's doctrine sources ride inside it as package data (``hatch_build.py``,
+under ``self_learn_ui/_data/``; the CLI wheel carries the skill's references
+under ``self_learn/_data/``). Each lookup decides the layout from its own
+package's location: the checkout folders on a checkout, the packaged copies
+on an installed wheel.
 
-These tests build both wheels with ``uv build --wheel``, install them into a
-fresh virtual environment in a scratch folder (the third-party wheels pinned
-by ``uv export`` from this package's lockfile, so the versions are the
-lockfile's), start ``self-learn-ui serve`` from that environment against a
-scratch ledger on an ephemeral loopback port, and fetch the home page and two
-static files. A second test plants a checkout layout around a copy of the
-installed packages and shows the checkout's folders win. The third pins the
-live checkout's own resolution. They run on Linux and on GitHub's Windows
-runner (the ``windows-canary`` job's "Windows UI package data" step).
+Two tests run in every UI suite run, cheaply: the live checkout resolves to
+exactly the paths it always did, and the checkout detection needs its full
+marker. The other three build wheels, so they need uv and a prepared package
+cache; they run only with ``SELF_LEARN_PACKAGING_TESTS=1`` (the "UI package
+data" steps of the Linux and Windows CI jobs) and otherwise skip, saying so.
+They build both wheels with ``uv build --wheel``, install them into a fresh
+virtual environment in a scratch folder (third-party wheels pinned by
+``uv export`` from this package's lockfile), start ``self-learn-ui serve`` from
+it against a scratch ledger on an ephemeral loopback port and fetch the home
+page and two static files; plant a checkout layout around a copy of the
+installed packages; and build an sdist and then a wheel from it.
+
+Every child process gets a hermetic environment: no inherited ``GIT_*``
+variable, Git's global and system configuration pinned to scratch files or
+empty scratch files, ``HOME`` in the scratch root, and Git discovery stopped above
+it.
 """
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import os
@@ -28,6 +36,8 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -36,6 +46,16 @@ UI_DIR = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = UI_DIR.parent
 CLI_DIR = PLUGIN_DIR / "cli"
 REFS_DIR = PLUGIN_DIR / "skills" / "self-learn" / "references"
+
+PACKAGING_ENV = "SELF_LEARN_PACKAGING_TESTS"
+needs_packaging = pytest.mark.skipif(
+    os.environ.get(PACKAGING_ENV) != "1",
+    reason=(
+        f"wheel-building packaging test: runs only with {PACKAGING_ENV}=1, because it builds "
+        "and installs wheels (uv and a prepared package cache); CI runs it in the "
+        "'UI package data' steps"
+    ),
+)
 
 _STARTUP_TIMEOUT_S = 60.0
 _STEP_TIMEOUT_S = 600
@@ -71,6 +91,88 @@ print(json.dumps({
 """
 
 
+# ------------------------------------------------------------ default suite
+
+
+def test_live_checkout_resolves_to_its_own_folders() -> None:
+    """This checkout's own import (the live install's case): each lookup
+    returns exactly what its old expression gave."""
+    from self_learn import _package_data as cli_data
+    from self_learn import lesson_writing, worker
+    from self_learn_ui import _package_data as ui_data
+    from self_learn_ui import app, doctrine
+
+    assert ui_data.checkout_project() == UI_DIR
+    assert cli_data.checkout_project() == CLI_DIR
+    # The expressions the lookups used before package data existed.
+    assert app.TEMPLATES_DIR == Path(app.__file__).resolve().parents[2] / "templates"
+    assert app.STATIC_DIR == Path(app.__file__).resolve().parents[2] / "static"
+    refs = "skills", "self-learn", "references"
+    assert doctrine.plugin_references_dir() == Path(doctrine.__file__).resolve().parents[3].joinpath(*refs)
+    assert worker.package_skill_refs() == Path(worker.__file__).resolve().parents[3].joinpath(*refs)
+    assert lesson_writing.path() == Path(lesson_writing.__file__).resolve().parents[3].joinpath(
+        *refs, "lesson-writing.md"
+    )
+    # And those are this repository's folders.
+    assert app.TEMPLATES_DIR == UI_DIR / "templates"
+    assert doctrine.plugin_references_dir() == REFS_DIR
+
+
+def _plant_layout(root: Path, project: str, declared: str) -> Path:
+    """``root/plugins/self-learn/<project>/src/pkg/mod.py`` with the
+    project's ``pyproject.toml`` and the plugin's ``plugin.json``."""
+    plugin = root / "plugins" / "self-learn"
+    module = plugin / project / "src" / "pkg" / "mod.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("", encoding="utf-8")
+    (plugin / project / "pyproject.toml").write_text(
+        f'[project]\nname = "{declared}"\nversion = "0"\n', encoding="utf-8"
+    )
+    (plugin / ".claude-plugin").mkdir()
+    (plugin / ".claude-plugin" / "plugin.json").write_text("{}", encoding="utf-8")
+    return module
+
+
+@pytest.mark.parametrize("project, declared", [("cli", "self-learn-cli"), ("ui", "self-learn-ui")])
+def test_checkout_detection_needs_the_full_marker(tmp_path: Path, project: str, declared: str) -> None:
+    from self_learn._package_data import detect_checkout
+
+    module = _plant_layout(tmp_path / "full", project, declared)
+    assert detect_checkout(module, declared) == module.parents[2]
+
+    # Each marker missing on its own: not a checkout.
+    no_plugin = _plant_layout(tmp_path / "no-plugin", project, declared)
+    (no_plugin.parents[3] / ".claude-plugin" / "plugin.json").unlink()
+    assert detect_checkout(no_plugin, declared) is None
+    wrong_name = _plant_layout(tmp_path / "wrong-name", project, "someone-else")
+    assert detect_checkout(wrong_name, declared) is None
+    broken = _plant_layout(tmp_path / "broken-toml", project, declared)
+    (broken.parents[2] / "pyproject.toml").write_text("[project\nname=", encoding="utf-8")
+    assert detect_checkout(broken, declared) is None
+
+    # An installed package with same-named neighbours where the old
+    # arithmetic looked (``<venv>/lib/templates``, ``<venv>/skills/...``,
+    # even a pyproject.toml and a plugin.json): its parent is not ``src``.
+    venv = tmp_path / "venv"
+    installed = venv / "Lib" / "site-packages" / "pkg" / "mod.py"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("", encoding="utf-8")
+    (venv / "Lib" / "templates").mkdir()
+    (venv / "Lib" / "static").write_text("a file, not a folder", encoding="utf-8")
+    (venv / "skills" / "self-learn" / "references").mkdir(parents=True)
+    (venv / "Lib" / "pyproject.toml").write_text(f'[project]\nname = "{declared}"\n', encoding="utf-8")
+    (venv / ".claude-plugin").mkdir()
+    (venv / ".claude-plugin" / "plugin.json").write_text("{}", encoding="utf-8")
+    assert detect_checkout(installed, declared) is None
+
+    # Too few parents for the layout (a shallow install target): no IndexError.
+    for shallow in (Path("/mod.py"), Path("/pkg/mod.py"), Path("/deps/pkg/mod.py")):
+        assert detect_checkout(shallow, declared) is None
+
+
+# ------------------------------------------------------- packaging (opt-in)
+
+
 def _uv() -> str:
     uv = shutil.which("uv")
     assert uv, "uv is not on PATH: the packaging tests build and install with it"
@@ -79,18 +181,47 @@ def _uv() -> str:
 
 def _clean_env() -> dict[str, str]:
     """The test's environment without anything that would point uv or Python
-    back at a project or the checkout."""
-    env = dict(os.environ)
-    for key in ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "UV_PROJECT_ENVIRONMENT", "UV_PYTHON"):
-        env.pop(key, None)
+    back at a project or the checkout, and without any Git override."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+        and key not in ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "UV_PROJECT_ENVIRONMENT", "UV_PYTHON")
+    }
     return env
 
 
-def _run(argv: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
+def _hermetic_env(root: Path, uv_cache: str) -> dict[str, str]:
+    """Every child's environment: no inherited ``GIT_*`` variable, Git's
+    global and system configuration pinned to empty scratch files,
+    ``HOME`` (and Windows' ``USERPROFILE``) and the XDG config home in
+    the scratch root, Git discovery stopped above the scratch root, and uv
+    pointed at the package cache the caller prepared."""
+    home = root / "home"
+    home.mkdir(exist_ok=True)
+    gitconfig = root / "gitconfig"
+    gitconfig.touch()
+    system_gitconfig = root / "gitconfig-system"
+    system_gitconfig.touch()
+    env = _clean_env()
+    env.update(
+        HOME=str(home),
+        USERPROFILE=str(home),
+        XDG_CONFIG_HOME=str(root / "xdg-config"),
+        GIT_CONFIG_GLOBAL=str(gitconfig),
+        GIT_CONFIG_SYSTEM=str(system_gitconfig),
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_CEILING_DIRECTORIES=str(root.parent),
+        UV_CACHE_DIR=uv_cache,
+    )
+    return env
+
+
+def _run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> str:
     proc = subprocess.run(
         argv,
         cwd=cwd,
-        env=env if env is not None else _clean_env(),
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -101,8 +232,7 @@ def _run(argv: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> st
     )
     if Path(argv[0]).stem == "uv":
         # uv says on stderr what it resolved, downloaded and installed: kept
-        # in the captured output (``-rA``) as the record of what the build
-        # and the install fetched.
+        # in the captured output (``-rA``) as the record of what was fetched.
         print(f"$ uv {' '.join(argv[1:3])}\n{proc.stderr.strip()}")
     return proc.stdout
 
@@ -125,21 +255,29 @@ def _tree(root: Path) -> dict[str, bytes]:
     }
 
 
-def _probe(python: Path, cwd: Path, *path_entries: Path) -> dict[str, str]:
-    out = _run([str(python), "-I", "-c", _PROBE, *map(str, path_entries)], cwd=cwd)
-    return json.loads(out)
+def _package_data_members(wheel: Path) -> dict[str, str]:
+    with zipfile.ZipFile(wheel) as archive:
+        return {
+            name: hashlib.sha256(archive.read(name)).hexdigest()
+            for name in archive.namelist()
+            if "/_data/" in name
+        }
 
 
 @pytest.fixture(scope="module")
-def installed(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
+def installed(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """Both wheels built from this checkout and installed, with the
     lockfile's third-party wheels, into a fresh environment in a scratch
     folder that no checkout path reaches."""
     uv = _uv()
     root = tmp_path_factory.mktemp("packaging")
+    # The package cache the caller prepared (CI: setup-uv's; locally: the
+    # one UV_CACHE_DIR or the default names), read before HOME moves.
+    uv_cache = _run([uv, "cache", "dir"], cwd=root, env=_clean_env()).strip()
+    env = _hermetic_env(root, uv_cache)
     dist = root / "dist"
     for project in (CLI_DIR, UI_DIR):
-        _run([uv, "build", "--wheel", "--project", str(project), "--out-dir", str(dist)], cwd=root)
+        _run([uv, "build", "--wheel", "--project", str(project), "--out-dir", str(dist)], cwd=root, env=env)
     wheels = {path.name.split("-")[0]: path for path in dist.glob("*.whl")}
     assert set(wheels) == {"self_learn_cli", "self_learn_ui"}, sorted(dist.iterdir())
 
@@ -150,20 +288,31 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
             "--no-emit-project", "--no-emit-package", "self-learn-cli",
             "--no-header", "--output-file", str(requirements),
         ],
-        cwd=root,
+        cwd=root, env=env,
     )
     venv = root / "venv"
-    _run([uv, "venv", str(venv), "--python", sys.executable], cwd=root)
+    _run([uv, "venv", str(venv), "--python", sys.executable], cwd=root, env=env)
     python = _bin_dir(venv) / ("python.exe" if os.name == "nt" else "python")
-    _run([uv, "pip", "install", "--python", str(python), "-r", str(requirements)], cwd=root)
+    _run([uv, "pip", "install", "--python", str(python), "-r", str(requirements)], cwd=root, env=env)
     _run(
         [
             uv, "pip", "install", "--python", str(python), "--no-deps",
             str(wheels["self_learn_cli"]), str(wheels["self_learn_ui"]),
         ],
-        cwd=root,
+        cwd=root, env=env,
     )
-    return {"root": root, "venv": venv, "python": python}
+    site = Path(
+        _run([str(python), "-I", "-c", "import self_learn_ui; print(self_learn_ui.__file__)"], cwd=root, env=env)
+        .strip()
+    ).resolve().parents[1]
+    return {"root": root, "venv": venv, "python": python, "env": env, "wheels": wheels, "site": site, "uv": uv}
+
+
+def _probe(installed: dict, cwd: Path, *path_entries: Path) -> dict[str, str]:
+    out = _run(
+        [str(installed["python"]), "-I", "-c", _PROBE, *map(str, path_entries)], cwd=cwd, env=installed["env"]
+    )
+    return json.loads(out)
 
 
 def _free_port() -> int:
@@ -172,38 +321,55 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _get(port: int, path: str, headers: dict[str, str] | None = None) -> http.client.HTTPResponse:
+def _get(port: int, path: str, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    conn.request("GET", path, headers=headers or {})
-    response = conn.getresponse()
-    response.body = response.read()  # type: ignore[attr-defined]
-    conn.close()
-    return response
+    try:
+        conn.request("GET", path, headers=headers or {})
+        response = conn.getresponse()
+        return response.status, {k.lower(): v for k, v in response.getheaders()}, response.read()
+    finally:
+        conn.close()
 
 
-def _scratch_ledger(home: Path) -> None:
+def _scratch_ledger(home: Path, env: dict[str, str]) -> None:
     """The bare-ledger layout the UI suite uses (``support.bare_ledger``),
-    built here so this file needs nothing beyond pytest's own fixtures."""
+    built here so this file needs nothing beyond pytest's own fixtures. The
+    repository it initializes must be the scratch ledger's own."""
     home.mkdir(parents=True)
-    for argv in (
-        ["git", "init", "-q", "-b", "main"],
-        ["git", "config", "user.email", "test@example.com"],
-        ["git", "config", "user.name", "Test"],
-    ):
-        _run(argv, cwd=home)
+    _run(["git", "init", "-q", "-b", "main"], cwd=home, env=env)
+    git_dir = _run(["git", "rev-parse", "--absolute-git-dir"], cwd=home, env=env).strip()
+    assert Path(git_dir).resolve() == (home / ".git").resolve(), git_dir
+    _run(["git", "config", "user.email", "test@example.com"], cwd=home, env=env)
+    _run(["git", "config", "user.name", "Test"], cwd=home, env=env)
     for sub in ("skills", "projects", "user", "telemetry"):
         (home / sub).mkdir()
 
 
-def test_wheel_install_serves_pages_and_files_from_package_data(installed: dict[str, Path]) -> None:
-    root, venv, python = installed["root"], installed["venv"], installed["python"]
+def _replace_atomically(path: Path, data: bytes) -> None:
+    """A new file renamed over *path*: never a write into a file the
+    installer may have hard-linked from its cache."""
+    staged = path.with_name(path.name + ".packaging-test")
+    staged.write_bytes(data)
+    os.replace(staged, path)
+
+
+@needs_packaging
+def test_wheel_install_serves_pages_and_files_from_package_data(installed: dict) -> None:
+    root, venv, site, env = installed["root"], installed["venv"], installed["site"], installed["env"]
     work = root / "work"
     work.mkdir(exist_ok=True)
+
+    # Same-named neighbours where the old ancestor arithmetic looked: a
+    # templates folder and a regular FILE named static beside site-packages,
+    # and a references folder above that. An installed copy must ignore them.
+    (site.parent / "templates").mkdir(exist_ok=True)
+    (site.parent / "static").write_text("not the static folder", encoding="utf-8")
+    (site.parents[1] / "skills" / "self-learn" / "references").mkdir(parents=True, exist_ok=True)
 
     # The installed copy imports from the fresh environment, and every lookup
     # lands on its package data, which carries the repository's files byte
     # for byte (no file missing, none extra).
-    found = _probe(python, work)
+    found = _probe(installed, work)
     venv_root = venv.resolve()
     for module in ("self_learn", "self_learn_ui"):
         assert Path(found[module]).resolve().is_relative_to(venv_root), found[module]
@@ -225,25 +391,28 @@ def test_wheel_install_serves_pages_and_files_from_package_data(installed: dict[
     # the home page and two static files.
     home = root / "ledger"
     if not home.exists():
-        _scratch_ledger(home)
+        _scratch_ledger(home, env)
     port = _free_port()
-    env = _clean_env()
-    env.update(
+    runtime = root / "runtime"
+    runtime.mkdir(exist_ok=True)
+    (root / "cache").mkdir(exist_ok=True)
+    server_env = dict(env)
+    server_env.update(
         SELF_LEARN_HOME=str(home),
-        XDG_RUNTIME_DIR=str(root / "runtime"),
+        XDG_RUNTIME_DIR=str(runtime),
         XDG_CACHE_HOME=str(root / "cache"),
         SELF_LEARN_UI_PORT=str(port),
         SELF_LEARN_UI_CLI_BIN=str(_exe(venv, "self-learn")),
         SELF_LEARN_SDK_CLI_PATH=str(root / "no-claude-here"),
         PATH=os.pathsep.join([str(_bin_dir(venv)), env.get("PATH", "")]),
     )
-    (root / "runtime").mkdir(exist_ok=True)
-    (root / "cache").mkdir(exist_ok=True)
     ui = _exe(venv, "self-learn-ui")
-    token_path = Path(json.loads(_run([str(ui), "paths", "--json"], cwd=work, env=env))["token_path"])
-    token_path.unlink(missing_ok=True)
+    expected_token = runtime / "self-learn" / "ui-token"
+    reported = Path(json.loads(_run([str(ui), "paths", "--json"], cwd=work, env=server_env))["token_path"])
+    assert reported == expected_token, reported
+    assert not expected_token.exists(), "the scratch runtime folder already holds a token"
     proc = subprocess.Popen(
-        [str(ui), "serve"], cwd=work, env=env,
+        [str(ui), "serve"], cwd=work, env=server_env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
     )
     try:
@@ -255,32 +424,37 @@ def test_wheel_install_serves_pages_and_files_from_package_data(installed: dict[
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.2):
                     pass
-                if token_path.is_file() and token_path.stat().st_size > 0:
+                if expected_token.is_file() and expected_token.stat().st_size > 0:
                     break
             except OSError:
                 pass
             assert time.monotonic() < deadline, "serve never opened its port and wrote its token"
             time.sleep(0.1)
-        token = token_path.read_text(encoding="utf-8").strip()
+        token = expected_token.read_text(encoding="utf-8").strip()
 
-        minted = _get(port, f"/?token={token}")
-        assert minted.status == 303, (minted.status, minted.body)  # type: ignore[attr-defined]
-        cookie = minted.getheader("set-cookie", "").split(";", 1)[0]
+        # A marker only the installed base.html carries, put there after the
+        # server started: the page must come from that very file, read live,
+        # not from any other copy of it (a snapshot would lack the marker).
+        marker = f"<!-- packaging-test {uuid.uuid4().hex} -->"
+        installed_base = Path(found["templates"]) / "base.html"
+        _replace_atomically(installed_base, installed_base.read_bytes() + f"\n{marker}\n".encode("utf-8"))
+
+        status, headers, body = _get(port, f"/?token={token}")
+        assert status == 303, (status, body[:500])
+        cookie = headers.get("set-cookie", "").split(";", 1)[0]
         assert cookie.startswith("slu_token="), cookie
         authed = {"Cookie": cookie}
 
-        page = _get(port, "/", authed)
-        body = page.body.decode("utf-8")  # type: ignore[attr-defined]
-        assert page.status == 200, (page.status, body[:2000])
-        assert "text/html" in page.getheader("content-type", "")
-        # base.html's own stylesheet and script links: the page came from the
-        # packaged templates, not an error page.
-        assert '/static/style.css' in body and '/static/app.js' in body, body[:2000]
+        status, headers, body = _get(port, "/", authed)
+        page = body.decode("utf-8")
+        assert status == 200, (status, page[:2000])
+        assert "text/html" in headers.get("content-type", "")
+        assert marker in page, page[-2000:]
 
         for name in ("style.css", "app.js"):
-            served = _get(port, f"/static/{name}", authed)
-            assert served.status == 200, (name, served.status)
-            assert served.body == (UI_DIR / "static" / name).read_bytes(), name  # type: ignore[attr-defined]
+            status, _headers, served = _get(port, f"/static/{name}", authed)
+            assert status == 200, (name, status)
+            assert served == (UI_DIR / "static" / name).read_bytes(), name
     finally:
         proc.terminate()
         try:
@@ -290,15 +464,13 @@ def test_wheel_install_serves_pages_and_files_from_package_data(installed: dict[
             proc.wait(timeout=5)
 
 
-def test_checkout_folders_win_over_package_data(installed: dict[str, Path]) -> None:
-    """A checkout layout planted around a copy of the INSTALLED packages
-    (which carry ``_data``): every lookup takes the checkout's folder, and
-    the text read is the checkout's, not the packaged copy's."""
-    located = _run(
-        [str(installed["python"]), "-I", "-c", "import self_learn_ui; print(self_learn_ui.__file__)"],
-        cwd=installed["root"],
-    )
-    site = Path(located.strip()).resolve().parents[1]
+@needs_packaging
+def test_checkout_folders_win_over_package_data(installed: dict) -> None:
+    """A checkout layout, with its full marker, planted around a copy of the
+    INSTALLED packages (which carry ``_data``): every lookup takes the
+    checkout's folder, and the text read is the checkout's. Without the
+    plugin marker the same tree is an installed copy again."""
+    site = installed["site"]
     layout = installed["root"] / "checkout" / "plugins" / "self-learn"
     if layout.exists():
         shutil.rmtree(layout)
@@ -307,6 +479,9 @@ def test_checkout_folders_win_over_package_data(installed: dict[str, Path]) -> N
     shutil.copytree(site / "self_learn", cli_src / "self_learn")
     assert (ui_src / "self_learn_ui" / "_data" / "templates").is_dir()
     assert (cli_src / "self_learn" / "_data" / "references").is_dir()
+    shutil.copy2(UI_DIR / "pyproject.toml", layout / "ui" / "pyproject.toml")
+    shutil.copy2(CLI_DIR / "pyproject.toml", layout / "cli" / "pyproject.toml")
+    shutil.copytree(PLUGIN_DIR / ".claude-plugin", layout / ".claude-plugin")
     planted = {
         "templates": layout / "ui" / "templates",
         "static": layout / "ui" / "static",
@@ -323,7 +498,7 @@ def test_checkout_folders_win_over_package_data(installed: dict[str, Path]) -> N
 
     work = installed["root"] / "work-checkout"
     work.mkdir(exist_ok=True)
-    found = _probe(installed["python"], work, ui_src, cli_src)
+    found = _probe(installed, work, ui_src, cli_src)
     assert Path(found["self_learn_ui"]).resolve() == (ui_src / "self_learn_ui" / "__init__.py").resolve()
     assert Path(found["self_learn"]).resolve() == (cli_src / "self_learn" / "__init__.py").resolve()
     for key, folder in planted.items():
@@ -332,15 +507,27 @@ def test_checkout_folders_win_over_package_data(installed: dict[str, Path]) -> N
     assert found["lesson_text"].endswith(marker)
     assert found["charter_text"].endswith(marker)
 
+    # Control: the plugin marker gone, the same tree reads its package data.
+    (layout / ".claude-plugin" / "plugin.json").unlink()
+    found = _probe(installed, work, ui_src, cli_src)
+    assert Path(found["templates"]).resolve() == (ui_src / "self_learn_ui" / "_data" / "templates").resolve()
+    assert Path(found["cli_references"]).resolve() == (cli_src / "self_learn" / "_data" / "references").resolve()
+    assert not found["lesson_text"].endswith(marker)
 
-def test_live_checkout_resolves_to_its_own_folders() -> None:
-    """This checkout's own import (the live install's case): exactly the
-    paths the lookups always returned."""
-    from self_learn import lesson_writing, worker
-    from self_learn_ui import app, doctrine
 
-    assert app.TEMPLATES_DIR == UI_DIR / "templates"
-    assert app.STATIC_DIR == UI_DIR / "static"
-    assert doctrine.plugin_references_dir() == REFS_DIR
-    assert worker.package_skill_refs() == REFS_DIR
-    assert lesson_writing.path() == REFS_DIR / "lesson-writing.md"
+@needs_packaging
+def test_sdist_then_wheel_carries_the_same_package_data(installed: dict) -> None:
+    """The ordinary release route: ``uv build`` makes an sdist and builds the
+    wheel FROM it. That wheel must carry the same package data, file for file
+    and byte for byte, as the wheel built straight from the checkout."""
+    root, env = installed["root"], installed["env"]
+    out = root / "dist-sdist"
+    for project in (CLI_DIR, UI_DIR):
+        _run([installed["uv"], "build", "--project", str(project), "--out-dir", str(out)], cwd=root, env=env)
+    for name, direct in installed["wheels"].items():
+        (from_sdist,) = out.glob(f"{name}-*.whl")
+        (sdist,) = out.glob(f"{name}-*.tar.gz")
+        assert sdist.is_file()
+        direct_members = _package_data_members(direct)
+        assert direct_members, name
+        assert _package_data_members(from_sdist) == direct_members, name

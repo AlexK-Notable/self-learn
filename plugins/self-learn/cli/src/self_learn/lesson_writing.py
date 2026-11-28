@@ -12,8 +12,9 @@ a harness loads as-is, so its copy is written out and
 
 from __future__ import annotations
 
-from importlib import resources
 from pathlib import Path
+
+from . import _package_data
 
 BEGIN = "<!-- lesson-writing:begin (a copy of skills/self-learn/references/lesson-writing.md) -->"
 END = "<!-- lesson-writing:end -->"
@@ -50,18 +51,10 @@ AGENT_SHEET_NOTE = (
 
 
 def path() -> Path:
-    # src/self_learn/lesson_writing.py -> parents[3] is plugins/self-learn
-    # The checkout path is the first rung, unchanged; only when it is absent
-    # (an installed wheel) the wheel's package-data copy under
-    # self_learn/_data/references; with neither, the checkout path.
-    source = (
-        Path(__file__).resolve().parents[3]
-        / "skills" / "self-learn" / "references" / "lesson-writing.md"
-    )
-    if source.exists():
-        return source
-    packaged = resources.files("self_learn") / "_data" / "references" / "lesson-writing.md"
-    return packaged if isinstance(packaged, Path) and packaged.is_file() else source
+    # src/self_learn/lesson_writing.py -> parents[3] is plugins/self-learn.
+    # On a checkout (decided from this package's own location) that is still
+    # the path returned; an installed wheel reads its package-data copy.
+    return _package_data.skill_references() / "lesson-writing.md"
 
 
 def text() -> str:

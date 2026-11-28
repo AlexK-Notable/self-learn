@@ -54,10 +54,10 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 
+from . import _package_data
 from . import attribution, cache_gc, domain, intents, invocation, sentinel, settings, telemetry
 from .primitives import chrono, fsops, locks, names, procs, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
@@ -185,16 +185,11 @@ def package_skill_refs() -> Path:
     product-repo extraction). src/self_learn/worker.py → parents[3] is
     ``plugins/self-learn``.
 
-    That checkout path is the first rung, unchanged. Only when it is absent
-    (an installed wheel has no checkout around it) the copy the wheel
-    carries as package data, ``self_learn/_data/references``
-    (``pyproject.toml``'s force-include). With neither, the checkout path
-    is returned, so the failure names the same path it always did."""
-    source = Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
-    if source.exists():
-        return source
-    packaged = resources.files("self_learn") / "_data" / "references"
-    return packaged if isinstance(packaged, Path) and packaged.is_dir() else source
+    On a checkout (decided from this package's own location,
+    :func:`self_learn._package_data.checkout_project`) that is still the
+    path returned; an installed wheel gets its package-data copy,
+    ``self_learn/_data/references``."""
+    return _package_data.skill_references()
 
 
 # --------------------------------------------------- U-composer: the shared
@@ -2191,8 +2186,9 @@ SESSION_OPENINGS = tuple(
 def _doctrine_and_registry_text() -> tuple[str, str]:
     # PACKAGE-relative (doc 13 T-H3): doctrine + registry ship with the
     # product beside the skill — never resolved through any home.
-    doctrine_path = package_skill_refs() / "routing-doctrine.md"
-    registry_path = package_skill_refs() / "card-sections.yaml"
+    refs = package_skill_refs()
+    doctrine_path = refs / "routing-doctrine.md"
+    registry_path = refs / "card-sections.yaml"
     doctrine = (
         doctrine_path.read_text(encoding="utf-8")
         if doctrine_path.is_file()

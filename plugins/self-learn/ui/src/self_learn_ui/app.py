@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from importlib import resources
 from pathlib import Path
 
 import markupsafe
@@ -21,7 +20,7 @@ from starlette.staticfiles import StaticFiles
 
 from self_learn import verbs
 
-from . import charts, ledger, models, pane, rendering
+from . import _package_data, charts, ledger, models, pane, rendering
 from . import inbox_routes, summary_routes
 from .ask_runner import AskRunner, build_ask_runner
 from .env import EnvConfig
@@ -34,22 +33,18 @@ from .sse import AppEventHub
 
 __all__ = ["create_app"]
 
-_PACKAGE_ROOT = Path(__file__).resolve().parents[2]  # .../ui
-
 
 def _resource_dir(name: str) -> Path:
-    """The ``templates`` or ``static`` folder. First rung: the folder beside
-    ``src/`` in a checkout, exactly the path this module always used, so a
-    live checkout serves (and reloads) its own files as before. Only when
-    that folder is absent (an installed wheel has no checkout around it) the
-    copy the wheel carries as package data, ``self_learn_ui/_data/<name>``
-    (``pyproject.toml``'s force-include). With neither, the checkout path is
-    returned, so the failure names the same path it always did."""
-    source = _PACKAGE_ROOT / name
-    if source.exists():
-        return source
-    packaged = resources.files("self_learn_ui") / "_data" / name
-    return packaged if isinstance(packaged, Path) and packaged.is_dir() else source
+    """The ``templates`` or ``static`` folder. On a checkout (decided from
+    this package's own location, :func:`self_learn_ui._package_data.
+    checkout_project`) the folder beside ``src/``, exactly the path this
+    module always used, so a live checkout serves and reloads its own files
+    as before; on an installed wheel, the copy it carries as package data,
+    ``self_learn_ui/_data/<name>``."""
+    project = _package_data.checkout_project()
+    if project is not None and (project / name).is_dir():
+        return project / name
+    return _package_data.packaged(name)
 
 
 TEMPLATES_DIR = _resource_dir("templates")

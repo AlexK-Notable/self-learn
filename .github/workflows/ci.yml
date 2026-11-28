@@ -621,19 +621,27 @@ jobs:
             throw "Windows SDK lifecycle test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
           }
 
+      # The UI and CLI as installed wheels (lane 8K): both wheels built from
+      # the checkout and from an sdist, installed into a fresh environment and
+      # served. The wheel-building tests skip unless SELF_LEARN_PACKAGING_TESTS
+      # is 1; here every one must run, none may skip.
       - name: Windows UI package data
         working-directory: plugins/self-learn/ui
         env:
           SELF_LEARN_UI_NO_BROWSER: "1"
+          SELF_LEARN_PACKAGING_TESTS: "1"
         run: |
           $report = Join-Path $env:RUNNER_TEMP "ui-package-data.xml"
           uv run --no-sync python -m pytest tests/test_packaging.py -p no:cacheprovider -q -rA --junitxml=$report
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
           $expected = @(
+            'test_live_checkout_resolves_to_its_own_folders'
+            'test_checkout_detection_needs_the_full_marker[cli-self-learn-cli]'
+            'test_checkout_detection_needs_the_full_marker[ui-self-learn-ui]'
             'test_wheel_install_serves_pages_and_files_from_package_data'
             'test_checkout_folders_win_over_package_data'
-            'test_live_checkout_resolves_to_its_own_folders'
+            'test_sdist_then_wheel_carries_the_same_package_data'
           )
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
           $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
@@ -733,6 +741,34 @@ jobs:
           print(f"{len(cases)} hook-rule tests, {len(skipped)} skipped")
           if len(cases) != 531 or skipped:
               sys.exit(f"expected 531 hook-rule tests and no skips; skipped: {skipped[:20]}")
+          ' "$report"
+
+      # The UI and CLI as installed wheels (lane 8K), as on Windows: every
+      # packaging test must run here, none may skip.
+      - name: UI package data
+        working-directory: plugins/self-learn/ui
+        env:
+          SELF_LEARN_UI_NO_BROWSER: "1"
+          SELF_LEARN_PACKAGING_TESTS: "1"
+        run: |
+          report="${RUNNER_TEMP}/ui-package-data.xml"
+          uv run --no-sync pytest tests/test_packaging.py -p no:cacheprovider -q -rA --junitxml="$report"
+          uv run --no-sync python -c '
+          import sys, xml.etree.ElementTree as ET
+          expected = [
+              "test_live_checkout_resolves_to_its_own_folders",
+              "test_checkout_detection_needs_the_full_marker[cli-self-learn-cli]",
+              "test_checkout_detection_needs_the_full_marker[ui-self-learn-ui]",
+              "test_wheel_install_serves_pages_and_files_from_package_data",
+              "test_checkout_folders_win_over_package_data",
+              "test_sdist_then_wheel_carries_the_same_package_data",
+          ]
+          cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+          ran = [c.get("name") for c in cases if c.find("skipped") is None]
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          print(f"{len(ran)} packaging tests ran, {len(skipped)} skipped")
+          if sorted(ran) != sorted(expected) or skipped:
+              sys.exit(f"packaging test selection changed: ran {ran}, skipped {skipped}")
           ' "$report"
 
   linux-suite:
