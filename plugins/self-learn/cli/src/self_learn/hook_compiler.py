@@ -1028,7 +1028,8 @@ def rule_artifact_for_hook(record_id: str, trigger: str, hook: dict,
     :func:`script_for_hook` reads it. Without *examples*, a placed hook's
     own stored ``examples`` are carried (``routing.hook.examples``); pass
     *examples* for a proposal block, whose examples sit beside it."""
-    pass
+    if examples is None and isinstance(hook.get("examples"), dict):
+        examples = hook["examples"]
     return rule_artifact(
         record_id,
         trigger,

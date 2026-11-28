@@ -509,7 +509,7 @@ def _route_guards() -> dict[str, tuple[str, str, dict, dict, dict]]:
                     and getattr(node.left.value.func, "id", None) == "run_guard"):
                 code = ast.literal_eval(node.comparators[0])
                 assert code in (0, 2), code
-                (lambda *_: None)(
+                runtime["deny" if code == 2 else "allow"].append(
                     ast.literal_eval(node.left.value.args[1]))
         if call is not None:
             rid, trigger, hook, examples = (ast.literal_eval(a) for a in call.args[1:])
