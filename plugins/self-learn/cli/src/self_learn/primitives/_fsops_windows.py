@@ -343,11 +343,10 @@ def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) 
             info = win32file.GetFileInformationByHandleEx(handle, win32file.FileAttributeTagInfo)
             if _link_tag(info["ReparseTag"]):
                 raise OSError(errno.ELOOP, "refusing link", str(path))
-            if info["ReparseTag"]:
-                # Give a cloud/storage provider normal data-open processing on this file.
-                data_flags = (win32con.FILE_FLAG_BACKUP_SEMANTICS
-                              if info["FileAttributes"] & stat.FILE_ATTRIBUTE_DIRECTORY else 0)
-                with closing(win32file.ReOpenFile(handle, win32con.GENERIC_READ, _SHARE_ALL, data_flags)) as data:
+            if info["ReparseTag"] and not info["FileAttributes"] & stat.FILE_ATTRIBUTE_DIRECTORY:
+                # Reopen tagged data files for normal provider processing. A directory
+                # fd only needs the inspected handle for the caller's fstat.
+                with closing(win32file.ReOpenFile(handle, win32con.GENERIC_READ, _SHARE_ALL, 0)) as data:
                     return _take_fd(data, os.O_RDONLY)
             return _take_fd(handle, os.O_RDONLY)
 

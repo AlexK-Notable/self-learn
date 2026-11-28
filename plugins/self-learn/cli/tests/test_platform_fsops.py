@@ -16,7 +16,7 @@ import pytest
 from self_learn.primitives import fsops
 
 
-linux = pytest.mark.skipif(sys.platform != "linux", reason="unexpected reason")
+linux = pytest.mark.skipif(sys.platform != "linux", reason="Linux filesystem contract")
 
 
 @linux
@@ -984,13 +984,12 @@ def test_cloud_tags_take_ordinary_file_paths(tmp_path, monkeypatch):
     fsops.private_write(path, b"private\n")
     with os.fdopen(fsops.open_regular(path, policy="premise"), "rb") as reader:
         assert reader.read() == b"private\n"
-    import win32con
     directory_fd = fsops.open_regular(folder, policy="premise")
     try:
         assert stat.S_ISDIR(os.fstat(directory_fd).st_mode)
     finally:
         os.close(directory_fd)
-    assert reads == [0, win32con.FILE_FLAG_BACKUP_SEMANTICS]
+    assert reads == [0]
     with fsops.safe_directory(folder) as directory, directory.entries() as entries:
         assert [entry.name for entry in entries] == [path.name]
 
