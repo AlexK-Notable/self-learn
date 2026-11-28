@@ -199,6 +199,23 @@ packet.md in your working directory; read it again whenever you are unsure what 
 - If a question is not about this item, answer briefly only when it bears on this decision.
 """
 
+#: The own tools that run Linux-only programs; Windows never offers them.
+LINUX_ONLY_TOOLS = frozenset({"probe"})
+
+
+def windows_doctrine() -> str:
+    """:data:`ASK_DOCTRINE` without the ``probe`` tool, which Windows does
+    not offer (:data:`LINUX_ONLY_TOOLS`). Every cut must match, so an edit
+    of the doctrine that leaves a cut behind fails here, not in a prompt."""
+    text = ASK_DOCTRINE
+    for old, new in (("  list_dir, probe, settings_hooks)", "  list_dir, settings_hooks)"),
+                     (" probe shows what is running and\n  installed.", "")):
+        if text.count(old) != 1:
+            raise AssertionError(f"ASK_DOCTRINE no longer holds {old!r}")
+        text = text.replace(old, new)
+    return text
+
+
 #: Tests inject `invocation.FakeBackend` here; `None` is the real seam.
 _backend: Any = None
 
@@ -538,6 +555,10 @@ class AskTools:
         self.emitter = emitter
         self.sealed: list[int] = []
         self.drafts: list[dict] = []
+        if os.name == "nt":
+            # Windows has no systemctl, journalctl or pacman: the model is
+            # never offered `probe` there (parity plan 6C).
+            self._TOOLS = tuple(t for t in AskTools._TOOLS if t[0] not in LINUX_ONLY_TOOLS)
 
     # -- the ledger
 
@@ -827,6 +848,9 @@ class AskTools:
                       "more": more if more > 0 else 0})
 
     def probe(self, args: dict) -> str:
+        if os.name == "nt":
+            raise _Refused("probe: not available on Windows (it runs systemctl, journalctl "
+                           "and pacman, which Windows does not have)")
         argv = probe_argv(args.get("command"), args.get("target"))
         out = _run_probe(argv)
         if len(out) > PROBE_MAX_CHARS:
@@ -1247,6 +1271,8 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
         mcp_toolset=toolset, sidecar_key=sidecar_key, skip_orphan_sweep=True,
         on_event=emitter.on_event,
     )
+    if os.name == "nt":
+        base_spec = dataclasses.replace(base_spec, doctrine=windows_doctrine())
     reason = spec_billing(base_spec)
     if reason is not None:
         return _fail(emitter, err, "money",
@@ -1269,6 +1295,10 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
         while handler_box:
             previous = handler_box.pop()
             signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
+        if os.name == "nt":
+            from . import stop_request
+
+            stop_request.unwatch()
 
     try:
         from . import gitops
@@ -1309,6 +1339,12 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
 
         if threading.current_thread() is threading.main_thread():
             handler_box.append(signal.signal(signal.SIGTERM, _on_term))
+            if os.name == "nt":
+                # Windows: a stop file or Ctrl+Break runs the same handler
+                # (`stop_request`); `_restore_term` ends it.
+                from . import stop_request
+
+                stop_request.watch(_on_term)
         try:
             from .invocation_sdk import lifecycle
 
