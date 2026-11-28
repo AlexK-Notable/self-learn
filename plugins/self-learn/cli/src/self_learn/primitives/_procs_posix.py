@@ -7,9 +7,11 @@ import selectors
 import signal
 import subprocess
 import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping, Sequence
 
-from .procs import BoundedTimeout, OutputLimitExceeded
+from .procs import BoundedTimeout, OutputLimitExceeded, ProcessIdentity
 
 
 def _limited_output(proc, argv, timeout: float, limit: int) -> tuple[bytes, bytes]:
@@ -116,3 +118,58 @@ def pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+# S-NEXT-w6-procs: the calls below are copies of what sdksession/children.py
+# and sdksession/teardown.py do today, so a later lane can switch to them with
+# no behaviour change. Each original statement is quoted beside its copy.
+
+
+def process_identity(pid: int) -> ProcessIdentity | None:
+    try:
+        # children.py _sweep_one: `raw = Path(f"/proc/{pid}/cmdline").read_bytes()`
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    # children.py _sweep_one: `except OSError:`
+    except OSError:
+        return None
+    # children.py _sweep_one: `first = raw.split(b"\x00")[0].decode("utf-8", "replace")`
+    first = raw.split(b"\x00")[0].decode("utf-8", "replace")
+    return ProcessIdentity(image=first, created=None, cmdline=raw)
+
+
+@dataclass(frozen=True)
+class ContainedChild:
+    """The POSIX handle: the PID, from which the kill reads the process
+    group with ``os.getpgid`` at kill time, as ``teardown.kill_child`` does."""
+
+    pid: int
+
+
+def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> ContainedChild | None:
+    if expect is not None and process_identity(pid) != expect:
+        return None
+    return ContainedChild(pid)
+
+
+def terminate_contained(handle: ContainedChild) -> None:
+    pid = handle.pid
+    # Copied from teardown.kill_child, statement for statement:
+    #     try:
+    #         if os.getpgid(pid) != os.getpgid(0):
+    #             os.killpg(pid, signal.SIGKILL)
+    #         else:
+    #             os.kill(pid, signal.SIGKILL)
+    #     except (ProcessLookupError, PermissionError):
+    #         pass
+    try:
+        if os.getpgid(pid) != os.getpgid(0):
+            os.killpg(pid, signal.SIGKILL)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def contain_self() -> bool:
+    """POSIX does nothing here: process groups already carry descendants."""
+    return False

@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
 
 
 class BoundedTimeout(subprocess.TimeoutExpired):
@@ -110,3 +111,83 @@ def run_command(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedP
 
 def pid_alive(pid: int) -> bool:
     return _backend().pid_alive(pid)
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    """Enough to tell, later, whether a PID still names the same process.
+
+    Compare two identities with ``==``; never compare PIDs alone.
+
+    ``image``: the program. POSIX: the first NUL-separated field of
+    ``/proc/<pid>/cmdline`` decoded as UTF-8 with ``"replace"`` (exactly
+    what ``sdksession/children.py`` reads today). Windows: the full image
+    path from ``QueryFullProcessImageNameW``.
+
+    ``created``: Windows: the creation time from ``GetProcessTimes``, as
+    whole microseconds since the Unix epoch (pywin32 reports it to the
+    millisecond). POSIX: ``None`` (today's check reads no start time).
+
+    ``cmdline``: POSIX: the raw ``/proc/<pid>/cmdline`` bytes, so a caller
+    can keep today's exact parsing. Windows: ``None``.
+    """
+
+    image: str
+    created: int | None
+    cmdline: bytes | None = None
+
+
+def process_identity(pid: int) -> ProcessIdentity | None:
+    """The identity of *pid*, or ``None`` when no such process can be read
+    (POSIX: the ``/proc`` read raised ``OSError``; Windows: the PID does not
+    exist or the process cannot be opened for limited query)."""
+    return _backend().process_identity(pid)
+
+
+def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> Any:
+    """Contain an already-running child that someone else spawned.
+
+    Windows: assign *pid* to a fresh kill-on-close job object (breakaway
+    allowed, as a new session escapes ``killpg`` on POSIX), then adopt its
+    descendants that were spawned before the assignment. The returned handle
+    keeps the job alive: dropping it, or this process dying, kills
+    everything in the job. ``None`` when the process no longer exists, or
+    when *expect* is given and the process opened is not that identity (the
+    check runs on the same open handle as the assignment, so a reused PID is
+    never assigned).
+
+    POSIX: makes no system call (unless *expect* is given, which reads
+    ``/proc``) and returns a handle carrying *pid*; the process group is
+    read with ``os.getpgid`` at kill time, exactly as
+    ``sdksession/teardown.kill_child`` does today.
+    """
+    return _backend().contain_child(pid, expect=expect)
+
+
+def terminate_contained(handle: Any) -> None:
+    """Kill what *handle* contains.
+
+    Windows: terminate the job, wait (bounded) until it is empty, then
+    release it; acts on the job handle, never on a PID. Raises
+    :class:`TimeoutError` if the job is still not empty at the bound.
+    Calling it again is a no-op.
+
+    POSIX: the ``getpgid``/``killpg``/``SIGKILL`` body of
+    ``sdksession/teardown.kill_child``, copied exactly, swallowing the same
+    ``ProcessLookupError`` and ``PermissionError``.
+    """
+    _backend().terminate_contained(handle)
+
+
+def contain_self() -> bool:
+    """Make this process's descendants die with it, whatever kills it.
+
+    Windows: put this process in a kill-on-close job with breakaway
+    allowed (a child started with ``CREATE_BREAKAWAY_FROM_JOB`` still
+    escapes). Nests under a job the process is already in. Safe to call
+    again: later calls return ``True`` without a new job. Returns ``True``.
+
+    POSIX: does nothing and returns ``False`` (descendants are handled by
+    process groups there).
+    """
+    return _backend().contain_self()

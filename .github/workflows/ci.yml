@@ -156,7 +156,40 @@ jobs:
       - name: Windows child containment contracts
         working-directory: plugins/self-learn/cli
         run: |
-          uv run --no-sync python w6_probe.py
+          $report = Join-Path $env:RUNNER_TEMP "containment-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_platform_procs_contain.py -p no:cacheprovider -q -rsP --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne "Linux process contract" })
+          $expected = @(
+            'test_windows_grandchild_outlives_child_without_containment'
+            'test_windows_contain_then_terminate_kills_child_and_grandchild'
+            'test_windows_dropping_the_handle_kills_the_child'
+            'test_windows_early_grandchild_race_is_closed_by_adoption'
+            'test_windows_early_grandchild_race_measured'
+            'test_windows_orphaned_great_grandchild_is_the_uncovered_gap'
+            'test_windows_adoption_refuses_a_process_older_than_its_claimed_parent'
+            'test_windows_abrupt_death_of_the_container[none]'
+            'test_windows_abrupt_death_of_the_container[child]'
+            'test_windows_abrupt_death_of_the_container[self]'
+            'test_windows_identity_tells_a_reused_pid_apart'
+            'test_windows_identity_and_contain_of_missing_pid'
+            'test_windows_identity_open_errors[ERROR_ACCESS_DENIED-None]'
+            'test_windows_identity_open_errors[ERROR_INVALID_HANDLE-OSError]'
+            'test_windows_identity_errors_carry_winerror_and_cause[GetProcessTimes]'
+            'test_windows_identity_errors_carry_winerror_and_cause[QueryFullProcessImageNameW]'
+            'test_windows_contain_child_already_in_a_job'
+            'test_windows_refused_assignment_surfaces_winerror_and_kills_nothing'
+            'test_windows_terminate_is_bounded'
+            'test_windows_job_flags_allow_breakaway_and_kill_on_close'
+            'test_handles_and_identities_are_plain_values'
+          )
+          $delta = Compare-Object $expected @($ran | ForEach-Object { $_.name })
+          if ($delta -or $unexpected.Count -or $skips.Count -ne 12) {
+            throw "Windows containment test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
+          }
 
       - name: Verify LF line endings on armor-pinned fixtures
         run: |

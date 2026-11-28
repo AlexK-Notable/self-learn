@@ -11,11 +11,12 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any, Mapping, Sequence, cast
 from uuid import uuid4
 
-from .procs import BoundedTimeout, OutputLimitExceeded
+from .procs import BoundedTimeout, OutputLimitExceeded, ProcessIdentity
 
 if sys.platform == "win32":
     import _winapi
@@ -397,3 +398,264 @@ def pid_alive(pid: int) -> bool:
     with _Handles() as handles:
         handles.callback(win32api.CloseHandle, handle)
         return win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT
+
+
+# S-NEXT-w6-procs: identify and contain a child that someone else spawned
+# (the Agent SDK's Claude Code child), and make this process's own
+# descendants die with it.
+
+_PROCESS_QUERY = win32con.PROCESS_QUERY_LIMITED_INFORMATION
+# AssignProcessToJobObject needs PROCESS_SET_QUOTA and PROCESS_TERMINATE.
+_PROCESS_CONTAIN = (win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE
+                    | win32con.PROCESS_QUERY_LIMITED_INFORMATION)
+_JOB_FLAGS = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_MICROSECOND = timedelta(microseconds=1)
+_TERMINATE_SECONDS = 5.0
+#: A pass adopts every descendant whose parent was adopted in an earlier
+#: pass; a chain deeper than this many generations is left uncovered.
+_ADOPTION_PASSES = 16
+
+# pywin32 312 has neither QueryFullProcessImageNameW nor the Toolhelp32
+# snapshot calls (checked in the 312 wheel), so these few come from kernel32.
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_query_image = _kernel32.QueryFullProcessImageNameW
+_query_image.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+_query_image.restype = wintypes.BOOL
+_snapshot = _kernel32.CreateToolhelp32Snapshot
+_snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+_snapshot.restype = wintypes.HANDLE
+_TH32CS_SNAPPROCESS = 0x2
+_INVALID_HANDLE = wintypes.HANDLE(-1).value
+
+
+class _ProcessEntry(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
+
+
+_first_entry = _kernel32.Process32FirstW
+_next_entry = _kernel32.Process32NextW
+for _walk in (_first_entry, _next_entry):
+    _walk.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessEntry)]
+    _walk.restype = wintypes.BOOL
+_close_handle = _kernel32.CloseHandle
+_close_handle.argtypes = [wintypes.HANDLE]
+_close_handle.restype = wintypes.BOOL
+
+
+def _open_process(pid, rights):
+    """An open process handle, or ``None`` when *pid* names no process."""
+    if pid <= 0 or pid > 0xffffffff:
+        return None
+    try:
+        return win32api.OpenProcess(rights, False, pid)
+    except pywintypes.error as exc:
+        if exc.winerror == winerror.ERROR_INVALID_PARAMETER:
+            return None
+        raise
+
+
+def _image_of(process) -> str:
+    size = wintypes.DWORD(32768)
+    buffer = ctypes.create_unicode_buffer(size.value)
+    if not _query_image(int(process), 0, buffer, ctypes.byref(size)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return buffer.value
+
+
+def _created_of(process) -> int:
+    created = win32process.GetProcessTimes(process)["CreationTime"]
+    return (created - _EPOCH) // _MICROSECOND
+
+
+def _identity_of(process) -> ProcessIdentity:
+    return ProcessIdentity(image=_image_of(process), created=_created_of(process))
+
+
+@_os_errors()
+def process_identity(pid: int) -> ProcessIdentity | None:
+    try:
+        process = _open_process(pid, _PROCESS_QUERY)
+    except pywintypes.error as exc:
+        if exc.winerror == winerror.ERROR_ACCESS_DENIED:
+            return None
+        raise
+    if process is None:
+        return None
+    with _Handles() as handles:
+        handles.callback(win32api.CloseHandle, process)
+        return _identity_of(process)
+
+
+def _new_job():
+    # pywin32 312 requires a string name and returns a PyHANDLE.
+    job = cast(Any, win32job.CreateJobObject(None, uuid4().hex))
+    try:
+        info_class = win32job.JobObjectExtendedLimitInformation
+        info = win32job.QueryInformationJobObject(job, info_class)
+        info["BasicLimitInformation"]["LimitFlags"] |= _JOB_FLAGS
+        win32job.SetInformationJobObject(job, info_class, info)
+    except BaseException as failure:
+        with _cleanup_after(failure):
+            win32api.CloseHandle(job)
+        raise
+    return job
+
+
+def _process_parents() -> list[tuple[int, int]]:
+    """(pid, parent pid) for every process, from one Toolhelp32 snapshot."""
+    snapshot = _snapshot(_TH32CS_SNAPPROCESS, 0)
+    if snapshot is None or snapshot == _INVALID_HANDLE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    pairs = []
+    try:
+        entry = _ProcessEntry()
+        entry.dwSize = ctypes.sizeof(_ProcessEntry)
+        more = _first_entry(snapshot, ctypes.byref(entry))
+        while more:
+            pairs.append((entry.th32ProcessID, entry.th32ParentProcessID))
+            more = _next_entry(snapshot, ctypes.byref(entry))
+        code = ctypes.get_last_error()
+        if code != winerror.ERROR_NO_MORE_FILES:
+            raise ctypes.WinError(code)
+    finally:
+        _close_handle(snapshot)
+    return pairs
+
+
+def _adopt_descendants(job, root_pid, root_created):
+    """Assign to *job* the descendants of *root_pid* that were spawned before
+    it was assigned (they did not inherit the job). Returns the adopted PIDs,
+    the ``(pid, winerror)`` pairs that could not be adopted (pid 0: the process
+    snapshot itself failed), and whether the sweep finished.
+
+    A process counts as a descendant only if its recorded parent is in the
+    job's tree AND it was created no earlier than that parent: a process whose
+    parent PID was reused by our child is older than our child, and is left
+    alone. Nothing here raises: the child is already in the job, and a failed
+    sweep must not cost it its life, so failures are reported instead."""
+    tree = {root_pid: root_created}
+    adopted: list[int] = []
+    uncovered: list[tuple[int, int]] = []
+    judged = {root_pid}
+    for _ in range(_ADOPTION_PASSES):
+        grew = False
+        try:
+            parents = _process_parents()
+        except OSError as exc:
+            uncovered.append((0, exc.winerror or 0))
+            return adopted, uncovered, False
+        for pid, parent in parents:
+            if parent not in tree or pid in judged:
+                continue
+            judged.add(pid)
+            try:
+                process = _open_process(pid, _PROCESS_CONTAIN)
+                if process is None:  # already gone
+                    continue
+                with _Handles() as handles:
+                    handles.callback(win32api.CloseHandle, process)
+                    created = _created_of(process)
+                    if created < tree[parent]:
+                        continue  # its parent PID was reused: not ours
+                    tree[pid] = created
+                    grew = True
+                    if not win32job.IsProcessInJob(process, job):
+                        win32job.AssignProcessToJobObject(job, process)
+                        adopted.append(pid)
+            except pywintypes.error as exc:
+                uncovered.append((pid, exc.winerror))
+        if not grew:
+            return adopted, uncovered, True
+    return adopted, uncovered, False
+
+
+class ContainedChild:
+    """A kill-on-close job holding a child and its adopted descendants.
+
+    Keep this object for as long as the child should live: when it is
+    released (garbage-collected, or this process dies), Windows closes the
+    job and kills everything in it. The open process handle pins the PID, so
+    it cannot be reused while this object holds it."""
+
+    def __init__(self, pid, identity, job, process, adopted, uncovered, complete):
+        self.pid = pid
+        self.identity = identity
+        self.adopted = tuple(adopted)
+        self.uncovered = tuple(uncovered)
+        #: False when the adoption sweep stopped at its generation bound.
+        self.complete = complete
+        self._job = job
+        self._process = process
+
+    @property
+    def released(self) -> bool:
+        return self._job is None
+
+
+@_os_errors()
+def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> ContainedChild | None:
+    process = _open_process(pid, _PROCESS_CONTAIN)
+    if process is None:
+        return None
+    with _Handles() as handles:
+        handles.callback(win32api.CloseHandle, process)
+        identity = _identity_of(process)
+        if expect is not None and identity != expect:
+            return None
+        # Closed with the stack unless handed to the ContainedChild below; it
+        # is still empty if assignment fails, so closing it kills nothing.
+        job = _new_job()
+        handles.callback(win32api.CloseHandle, job)
+        win32job.AssignProcessToJobObject(job, process)
+        adopted, uncovered, complete = _adopt_descendants(job, pid, identity.created)
+        handles.pop_all()
+    return ContainedChild(pid, identity, job, process, adopted, uncovered, complete)
+
+
+def _active_processes(job) -> int:
+    info = win32job.QueryInformationJobObject(job, win32job.JobObjectBasicAccountingInformation)
+    return info["ActiveProcesses"]
+
+
+@_os_errors()
+def terminate_contained(handle: ContainedChild, *, timeout: float = _TERMINATE_SECONDS) -> None:
+    job, process = handle._job, handle._process
+    if job is None:
+        return
+    handle._job = handle._process = None
+    with _Handles() as handles:
+        handles.callback(win32api.CloseHandle, process)
+        handles.callback(win32api.CloseHandle, job)
+        win32job.TerminateJobObject(job, 1)
+        deadline = time.monotonic() + timeout
+        while _active_processes(job):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"contained job for PID {handle.pid} still has processes after {timeout} s")
+            time.sleep(.01)
+
+
+_self_job: list[Any] = []
+_self_lock = threading.Lock()
+
+
+@_os_errors()
+def contain_self() -> bool:
+    with _self_lock:
+        if _self_job:
+            return True
+        job = _new_job()
+        try:
+            win32job.AssignProcessToJobObject(job, win32api.GetCurrentProcess())
+        except BaseException as failure:
+            with _cleanup_after(failure):
+                win32api.CloseHandle(job)
+            raise
+        # Never closed: the kernel closes it when this process ends, and the
+        # job then kills every descendant that did not break away.
+        _self_job.append(job)
+        return True
