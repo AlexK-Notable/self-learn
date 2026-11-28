@@ -156,6 +156,7 @@ jobs:
       - name: Windows child containment contracts
         working-directory: plugins/self-learn/cli
         run: |
+          uv run --no-sync python w6_probe.py
           $report = Join-Path $env:RUNNER_TEMP "containment-contracts.xml"
           uv run --no-sync python -m pytest tests/test_platform_procs_contain.py -p no:cacheprovider -q -rsP --junitxml=$report
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
