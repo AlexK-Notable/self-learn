@@ -66,14 +66,14 @@ def replace_staged(src: Path | str, dst: Path | str, *, method: Literal["os", "p
             try:
                 source_info = source.lstat()
                 parent_info = target.parent.stat()
-                retry = (stat.S_ISDIR(parent_info.st_mode)
+                retry = (stat.S_ISDIR(parent_info.st_mode) and source_info.st_dev == parent_info.st_dev
                          and not _attributes(target) & stat.FILE_ATTRIBUTE_READONLY)
             except OSError:
                 retry = False
             remaining = deadline - monotonic()
             if not retry or remaining <= 0:
                 raise
-            sleep(min(0.020, remaining))
+            sleep(min(0.010, remaining))
             if monotonic() >= deadline:
                 raise
 
