@@ -163,8 +163,8 @@ def place_key(path: Path | str) -> str | None:
 
 
 def same_place(a: Path | str, b: Path | str) -> bool:
-    key = str(a)
-    return key == str(b)
+    key = place_key(a)
+    return key is not None and key == place_key(b)
 
 
 def under(path: Path | str, root: Path | str) -> bool:
