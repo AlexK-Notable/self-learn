@@ -48,11 +48,12 @@ limit but inside jq 1.8's (see :data:`_JQ_DEPTH`).
 The artifact names its locale (``match.locale``, always ``C.UTF-8``) and the
 character tables it was built against (``match.ctype``); the loader refuses
 any other. Every pattern means what it means under ``C.UTF-8``: a bracket
-range such as ``[a-z]`` is code-point order. The generated script does not
-yet pin its locale: run under another one, its grep can match text the
-evaluator does not (under en_US.UTF-8 ``[a-z]`` also matches ``é``; under
-``C``, ``.`` matches single bytes). A later change to the emitter, which
-pins ``LC_ALL=C.UTF-8`` in the script, closes that.
+range such as ``[a-z]`` is code-point order. Since decision 180 (lane
+w5-activation) the generated script pins the same locale (``export
+LC_ALL=C.UTF-8``, checked, failing closed for deny where it is missing), so
+under any caller locale its grep matches what the evaluator matches; before
+the pin, under en_US.UTF-8 ``[a-z]`` also matched ``é`` and under ``C`` a
+``.`` matched single bytes.
 
 The character tables are one glibc's (:mod:`hook_rules_ctype`: GNU grep
 3.12 on glibc 2.44, classes for Unicode 17.0.0; the artifact records this
