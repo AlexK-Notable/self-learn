@@ -1052,7 +1052,9 @@ def test_windows_grandchild_holding_stderr_does_not_hang_the_reader(tmp_path):
             await procs.terminate_owned(proc, kill_grace=2.0)
             assert await asyncio.wait_for(proc.stderr.read(), 5) == b""
             assert await asyncio.wait_for(proc.wait(), 5) == 0
-            assert watch.alive() == [False, False]
+            # The job's count reaches zero a moment before a process object is
+            # signalled; the grandchild is already terminated by then.
+            watch.wait_dead(5)
         finally:
             watch.kill()
 
