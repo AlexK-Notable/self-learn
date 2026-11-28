@@ -834,6 +834,7 @@ def test_launcher_death_closes_job(tmp_path):
 
 
 @windows
+@pytest.mark.xfail(reason="exercise CI strict XPASS handling")
 def test_both_readers_join_before_return(monkeypatch):
     # Make worker completion and thread exit observably different events.
     real_run = threading.Thread.run
