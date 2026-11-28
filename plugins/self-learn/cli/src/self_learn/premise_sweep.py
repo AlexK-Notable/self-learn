@@ -65,6 +65,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -461,6 +462,9 @@ def broken_tail(premise: Mapping, rows: Iterable[Mapping]) -> list[dict] | None:
     :data:`MOUNT_WAIT_DAYS`, measured to the newest row); else ``None``."""
     tail = _question_tail(premise, rows)
     if len(tail) < BROKEN_PROBE_SWEEPS:
+        return None
+    if os.name == "nt" and any(r.get("cause") == premises.CAUSE_PLATFORM for r in tail):
+        # A kind this operating system cannot run is not a broken probe.
         return None
     ref = _epoch(tail[-1].get("observed_at") or tail[-1].get("sweep"))
     if all(r.get("state") == premises.OBS_UNAVAILABLE and not _waiting(r, ref) for r in tail):
@@ -1759,6 +1763,24 @@ def _ago(epoch: float | None, now: float) -> str:
     return f"{hours} hour(s) ago" if hours < 48 else f"{hours // 24} day(s) ago"
 
 
+def _platform_rows(placed: Iterable[tuple[Any, Record]]) -> list[DoctorRow]:
+    """Windows: one INFO row counting the written probes of a kind this
+    operating system cannot run (``premises.WINDOWS_UNAVAILABLE``), which
+    are never counted as broken."""
+    kinds = sorted(
+        str(premise["probe"]["kind"])
+        for _bucket, record in placed
+        for premise in _premise_by_id(record).values()
+        if isinstance(premise.get("probe"), Mapping)
+        and premise["probe"].get("kind") in premises.WINDOWS_UNAVAILABLE
+    )
+    if not kinds:
+        return []
+    return [DoctorRow("INFO", "platform-unavailable",
+                      f"{len(kinds)} probe(s) cannot run on Windows ({', '.join(sorted(set(kinds)))}); "
+                      "they are never counted as broken")]
+
+
 def doctor_rows(
     home: Path | str, cache_dir: Path | None = None, *, now: float | None = None
 ) -> list[DoctorRow]:
@@ -1805,6 +1827,9 @@ def doctor_rows(
                       f"{mount} not mounted ({len(waiting[mount])} probe(s), since {first}); "
                       f"they count as broken after {MOUNT_WAIT_DAYS} days")
         )
+
+    if os.name == "nt":
+        rows.extend(_platform_rows(placed))
 
     failing: list[str] = []
     unavailable = 0
