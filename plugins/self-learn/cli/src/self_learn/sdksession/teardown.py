@@ -103,7 +103,16 @@ def kill_child(pid: int | None, log: Callable[[str], None], pid_alive: Callable[
     SDK's child shares the caller's process group (no
     `start_new_session`, no `preexec_fn`), so an unguarded `killpg`
     would kill the caller itself. `log` is accepted, unused (ported
-    verbatim -- the original never logged from this function either)."""
+    verbatim -- the original never logged from this function either).
+
+    S-NEXT-w6-sdk, Windows only: ends the job the session put the child in
+    (its descendants with it), never a bare PID, and logs a failure instead
+    of raising; see `_containment_windows.kill`."""
+    if os.name == "nt":
+        from . import _containment_windows
+
+        _containment_windows.kill(pid, log)
+        return
     del log
     if pid is None or not pid_alive(pid):
         return
@@ -136,7 +145,19 @@ async def run_kill_ladder(
     gates step 3 (`R-1`): `True` reproduces the CLI's existing
     unconditional child kill; `False` reproduces the UI's existing
     absence of one.
+
+    S-NEXT-w6-sdk, Windows only: the same rungs with a log that cannot
+    fail, then the session's own containment end in a ``finally`` of its
+    own (`_containment_windows.run_kill_ladder`).
     """
+    if os.name == "nt":
+        from . import _containment_windows
+
+        await _containment_windows.run_kill_ladder(
+            client, child_pid, log, kill_secs=kill_secs, interrupt_grace_secs=interrupt_grace_secs,
+            loop_closing=loop_closing, pid_alive=pid_alive, messages=messages,
+        )
+        return
     if interrupt_grace_secs is not None:
         await bounded_interrupt(client, interrupt_grace_secs)
 
