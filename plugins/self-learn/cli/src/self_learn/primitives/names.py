@@ -94,6 +94,8 @@ def relative_key(root: Path, path: Path, *, method: Literal["relative_to", "relp
 
 
 def pointer_token(surface: Path, target: Path) -> str:
+    if os.name == "nt" and surface.drive != target.drive:
+        return target.name
     return _backend().pointer_token(surface, target)
 
 

@@ -295,6 +295,8 @@ def _configure_windows_ledger(root: Path) -> None:
     for key, value in (("core.autocrlf", "false"), ("core.longpaths", "true")):
         current = gitops._git(root, "config", "--local", "--get", key)
         if current.returncode or current.stdout.strip() != value:
+            if _has_head(root):
+                raise InitError("configuration change refused on existing ledger")
             gitops._git_ok(root, "config", "--local", key, value)
     entries = git_bytes(root, "ls-files", "--eol", "-z", timeout=gitops.GIT_LOCAL_TIMEOUT)
     # Include prospective paths: an empty ledger can already carry a *.md

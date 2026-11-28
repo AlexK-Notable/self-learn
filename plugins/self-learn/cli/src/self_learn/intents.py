@@ -636,6 +636,8 @@ def recover(home: Path | str) -> RecoverResult:
                 if os.name == "nt":
                     from .primitives._capture_windows import checked_path
 
+                    if data["op"] == "host_add":
+                        raise ValueError("unsupported host intent")
                     if data["id"] != f.stem:
                         raise ValueError("intent id differs from its filename")
                     for step in data["steps"]:

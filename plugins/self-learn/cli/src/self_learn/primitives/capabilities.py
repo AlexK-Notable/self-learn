@@ -27,7 +27,7 @@ REQUIRES = {
     "doctor": frozenset({"ledger", "hooks", "sdk", "supervisor"}),
     **dict.fromkeys("mine overseer steward worker".split(), frozenset({"ledger", "sdk", "background"})),
     **dict.fromkeys("ask premises summarise".split(), frozenset({"sdk"})),
-    "serve": frozenset({"background", "supervisor"}),
+    "serve": frozenset({"background"}),
     "attention": frozenset({"desktop"}),
     **dict.fromkeys(("host commit-drift", "host rebind", "host remove", "host set-mode"),
                     frozenset({"ledger"})),
@@ -42,7 +42,7 @@ REQUIRES = {
 # argparse's destinations are authoritative, including abbreviated options
 # and explicitly empty string values. Boolean flags have False as their default.
 TEACH_OPTIONS = {
-    "route": "--route", "dest": "--dest", "note": "--note", "rules_paths": "--rules-path",
+    "route": "--route", "dest": "--dest", "rules_paths": "--rules-path",
     "allow_empty_glob": "--allow-empty-glob", "allow_unpathed": "--allow-unpathed",
     "follow_up": "--follow-up", "unblocks_on": "--unblocks-on", "follow_up_note": "--follow-up-note",
     "hook_input": "--hook-input",

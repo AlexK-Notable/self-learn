@@ -519,6 +519,8 @@ def host_lock_path(path: Path, mode: str) -> Path:
         from .primitives._capture_windows import verify_project
 
         verify_project(names.ledger_home(), path)
+        if (Path(path) / ".git").is_file():
+            raise GitOpsError("linked worktree unavailable")
     if mode == "git":
         return commit_lock_path(Path(path))
     if mode == "plain":
@@ -887,6 +889,8 @@ def exclude_pattern(rel: str) -> str:
     for ch in rel:
         out.append("\\" + ch if ch in "\\*?[" else ch)
     text = "".join(out)
+    if os.name == "nt":
+        return "/" + text.rstrip(" ")
     stripped = text.rstrip(" ")
     return "/" + stripped + "\\ " * (len(text) - len(stripped))
 

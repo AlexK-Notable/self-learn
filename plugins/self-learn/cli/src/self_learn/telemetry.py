@@ -224,7 +224,6 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
         spool = spool_dir()
         try:
             actor_name = actor()
-            names.component_path(spool, actor_name)
             path = names.component_path(spool, f"{_month(now)}.{actor_name}.jsonl")
         except ValueError as exc:
             raise TelemetryError(str(exc)) from exc
@@ -530,6 +529,8 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                             out.seek(0)
                             existing = out.read()
                             if existing and not existing.endswith("\n"):
+                                if os.name == "nt":
+                                    raise TelemetryError("incomplete last line")
                                 out.write("\n")
                             out.write("\n".join(lines) + "\n")
                             out.flush()
