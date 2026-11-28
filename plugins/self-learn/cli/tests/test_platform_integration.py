@@ -687,3 +687,115 @@ def test_repair_hints_follow_capabilities_and_statement_captures(home, tmp_path,
         with intents.ledger_write(home):
             pytest.fail("the malformed intent still exists")
     assert "not available" not in str(stopped.value)
+
+
+@windows
+@pytest.mark.parametrize("setup", ["git-init", "empty-clone"])
+def test_init_bootstraps_empty_repository(tmp_path, monkeypatch, capsys, setup):
+    from self_learn import cli
+
+    env = scratch_env(tmp_path)
+    for key, value in env.items():
+        if os.environ.get(key) != value:
+            monkeypatch.setenv(key, value)
+    root = Path(env["SELF_LEARN_HOME"])
+    if setup == "empty-clone":
+        remote = tmp_path / "upstream.git"
+        git(tmp_path, "init", "--bare", str(remote))
+        git(tmp_path, "clone", str(remote), str(root))
+    else:
+        git(tmp_path, "init", str(root))
+    remotes = git(root, "remote", "-v")
+    assert bool(remotes) == (setup == "empty-clone")
+    git(root, "config", "--local", "core.autocrlf", "true")
+    config = root / ".git" / "config"
+    before = config.read_bytes()
+    witness = root / "work.txt"
+    witness.write_bytes(b"existing work\n")
+    for staged in (False, True):
+        if staged:
+            git(root, "add", "--", witness.name)
+        status = git(root, "status", "--porcelain", "-z")
+        assert status.startswith(b"A " if staged else b"??")
+        with pytest.raises(ledger.InitError, match="Choose an empty repository"):
+            ledger.init_home(root)
+        assert config.read_bytes() == before
+        assert git(root, "status", "--porcelain", "-z") == status
+    git(root, "rm", "--", witness.name)
+    assert cli.main(["init"]) == 0
+    output = capsys.readouterr().out
+    assert "topped up" in output and "repaired local Git configuration" in output
+    assert all((root / name).is_dir() for name in ledger._LAYOUT)
+    assert git(root, "log", "--format=%s").decode().splitlines() == [ledger.INIT_COMMIT_SUBJECT]
+    assert git(root, "ls-tree", "-z", "HEAD") == b""
+    assert [git(root, "config", "--local", "--get", key).strip() for key in
+            ("core.autocrlf", "core.longpaths", "core.eol")] == [b"false", b"true", b"lf"]
+    assert git(root, "remote", "-v") == remotes
+    assert cli.main(["init"]) == 0 and "already complete" in capsys.readouterr().out
+    assert git(root, "rev-list", "--count", "HEAD").strip() == b"1"
+
+
+@windows
+def test_init_finds_original_subject_in_clone(home, tmp_path):
+    git(home, "commit", "--allow-empty", "-m", "later commit", "-m", ledger.INIT_COMMIT_SUBJECT)
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", str(home), str(clone))
+    head = git(clone, "rev-parse", "HEAD")
+    assert ledger.home_state(clone) == "uninitialized"
+    assert set(ledger.init_home(clone).added_dirs) == set(ledger._LAYOUT)
+    assert git(clone, "rev-parse", "HEAD") == head
+
+
+@windows
+def test_init_reports_failed_config_rollback(home, monkeypatch):
+    (home / "cases").rmdir()
+    git(home, "config", "--local", "core.eol", "crlf")
+    with monkeypatch.context() as m:
+        def fail_recovery(*args, **kwargs):
+            def unavailable(*args, **kwargs):
+                raise gitops.GitOpsError("rollback lock busy")
+            m.setattr(gitops, "commit_lock", unavailable)
+            raise gitops.GitOpsError("recovery lock lost")
+
+        m.setattr(intents, "ledger_write", fail_recovery)
+        with pytest.raises(ledger.InitError) as failed:
+            ledger.init_home(home)
+    message = str(failed.value)
+    assert all(word in message for word in ("recovery lock lost", str(home / ".git" / "config"), "rollback lock busy"))
+    assert git(home, "config", "--local", "--get", "core.eol").strip() == b"lf"
+    assert ledger.init_home(home).added_dirs == ("cases",)
+
+
+@windows
+@pytest.mark.parametrize("store", ["symlink", "malformed"])
+def test_statement_failure_preserves_committed_receipt(home, tmp_path, store):
+    source = tmp_path / "sessions"
+    project = source / "project"
+    project.mkdir(parents=True)
+    quote = "Keep changes small."
+    row = {"type": "user", "message": {"content": quote}}
+    (project / "statement-witness.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    (home / "config.yaml").write_text("refs:\n  transcript_roots: " + json.dumps(str(source)) + "\n", encoding="utf-8")
+    path = home / "user-statements.jsonl"
+    outside = tmp_path / "outside.jsonl"
+    if store == "symlink":
+        outside.write_bytes(b"\n")
+        path.symlink_to(outside)
+    else:
+        path.write_bytes(b"null\n")
+    before = path.read_bytes()
+    result = subprocess.run([sys.executable, "-m", "self_learn.cli", "teach", "--user", "--no-push",
+                             "--json", "--fact", "post-commit witness", "--session", "statement-witness",
+                             "--statement", quote], capture_output=True, timeout=40)
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+    record, = (home / "user" / "pending").glob("*.md")
+    assert record == Path(receipt["path"]) and record.stem == receipt["id"]
+    assert git(home, "show", "HEAD:" + record.relative_to(home).as_posix()) == record.read_bytes()
+    assert len(git(home, "log", "--format=%s", "--grep=^self-learn: capture ").splitlines()) == 1
+    assert b"the lesson was captured, but --statement failed" in result.stderr
+    assert b"Do not run teach again" in result.stderr and b"self-learn statement add" in result.stderr
+    assert b"Traceback" not in result.stderr
+    assert path.read_bytes() == before and git(home, "ls-files", "-z", "--", path.name) == b""
+    if store == "symlink":
+        assert path.is_symlink() and outside.read_bytes() == before

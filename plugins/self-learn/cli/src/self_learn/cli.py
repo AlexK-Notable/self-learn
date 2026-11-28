@@ -1623,7 +1623,8 @@ def _cmd_init() -> int:
         return EXIT_USAGE
     if os.name == "nt" and result.repaired_config:
         print(f"self-learn init: repaired local Git configuration at {result.path}")
-        return 0
+        if result.already_complete:
+            return 0
     if result.already_complete:
         print(f"self-learn init: {result.path} already complete — nothing to do")
     elif result.created_repo:

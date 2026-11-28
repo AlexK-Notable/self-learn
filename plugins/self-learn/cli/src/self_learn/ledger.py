@@ -290,6 +290,29 @@ def _create_layout(target: Path) -> tuple[str, ...]:
     return tuple(created)
 
 
+def _verify_windows_ledger_root(root: Path) -> None:
+    """A layout-free root must be an empty unborn repo or have ledger history."""
+    from .primitives._capture_windows import git_bytes
+
+    head = gitops._git(root, "rev-parse", "--verify", "--quiet", "HEAD")
+    if head.returncode == 0:
+        history = gitops._git_ok(root, "log", "--fixed-strings",
+                                 f"--grep={INIT_COMMIT_SUBJECT}", "--format=%s")
+        if INIT_COMMIT_SUBJECT in history.stdout.splitlines():
+            return
+    elif head.returncode == 1:
+        # An orphan branch can still belong to an unrelated repository.
+        other_history = gitops._git_ok(root, "rev-list", "--all", "--max-count=1")
+        if not other_history.stdout.strip() and not git_bytes(
+            root, "status", "--porcelain=v1", "-z", "-uall", "--ignored", timeout=gitops.GIT_LOCAL_TIMEOUT
+        ):
+            return
+    else:
+        raise InitError(f"cannot check HEAD at {root}: {head.stderr.strip()}")
+    raise InitError(f"{root} has no self-learn ledger layout or initialization commit. "
+                    "Choose an empty repository or clone an existing ledger, then run self-learn init.")
+
+
 def _configure_windows_ledger(
     root: Path, changeset: dict[Path, tuple[Path, bytes, bytes]], *, check_intents: bool = False,
 ) -> bool:
@@ -472,13 +495,9 @@ def init_home(path: Path | str) -> InitResult:
 
         # Step 6: already a repo root — top up per directory (P-C1.14).
         if os.name == "nt":
-            if home_state(resolved) == "uninitialized":
-                # A fresh clone of a ledger can have no materialized empty directories.
-                history = gitops._git(resolved, "log", "-1", "--fixed-strings",
-                                      f"--grep={INIT_COMMIT_SUBJECT}", "--format=%s")
-                if history.returncode or history.stdout.strip() != INIT_COMMIT_SUBJECT:
-                    raise InitError(f"{resolved} has no self-learn ledger layout or initialization commit")
             with gitops.commit_lock(resolved):
+                if home_state(resolved) == "uninitialized":
+                    _verify_windows_ledger_root(resolved)
                 complete = all((resolved / name).is_dir() for name in _LAYOUT) and _has_head(resolved)
                 repaired = _configure_windows_ledger(resolved, changeset, check_intents=not complete)
             if repaired and complete:
@@ -524,6 +543,8 @@ def init_home(path: Path | str) -> InitResult:
                 f"{exc.strerror or exc} — the ledger repo is not writable; "
                 "fix its permissions, then re-run `self-learn init`"
             ) from exc
+        if os.name == "nt":
+            return InitResult(resolved, False, missing_before, made_head, False, repaired_config=repaired)
         return InitResult(resolved, False, missing_before, made_head, False)
     except (InitError, gitops.GitOpsError, OSError, ValueError) as exc:
         if os.name == "nt":
@@ -533,10 +554,13 @@ def init_home(path: Path | str) -> InitResult:
             # settings had to become effective. Undo our exact bytes only.
             for root, (config, before, after) in changeset.items():
                 if before != after:
-                    with gitops.commit_lock(root):
-                        if config.read_bytes() != after:
-                            raise InitError(f"init refused and {config} changed concurrently: {exc}") from exc
-                        fsops.atomic_write(config, before)
+                    try:
+                        with gitops.commit_lock(root):
+                            if config.read_bytes() != after:
+                                raise InitError(f"init refused and {config} changed concurrently: {exc}") from exc
+                            fsops.atomic_write(config, before)
+                    except (gitops.GitOpsError, OSError, ValueError) as rollback_error:
+                        raise InitError(f"init refused ({exc}). Could not restore {config}: {rollback_error}") from rollback_error
             if isinstance(exc, (InitError, intents.LedgerStoppedError)):
                 raise
             raise InitError(f"cannot initialize {path}: {exc}") from exc
