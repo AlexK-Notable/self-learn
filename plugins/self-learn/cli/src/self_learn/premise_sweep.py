@@ -1828,7 +1828,7 @@ def doctor_rows(
                       f"they count as broken after {MOUNT_WAIT_DAYS} days")
         )
 
-    if os.name == "nt-break":
+    if os.name == "nt":
         rows.extend(_platform_rows(placed))
 
     failing: list[str] = []
