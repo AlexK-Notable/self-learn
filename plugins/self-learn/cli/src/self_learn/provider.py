@@ -646,7 +646,7 @@ def _windows_path_dirs() -> list[str]:
     dirs = []
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         entry = entry.strip().strip('"')
-        if entry:
+        if entry and PureWindowsPath(entry).is_absolute():
             dirs.append(entry)
     return dirs
 
@@ -660,7 +660,7 @@ def _installed_cli_path_windows() -> tuple[str | None, str]:
     for directory in _windows_path_dirs():
         candidate = os.path.join(directory, "claude.exe")
         if os.path.isfile(candidate):
-            if False:
+            if _windows_batch_path(candidate):
                 passed_over.append(f"{candidate} (a folder named like a batch file)")
                 continue
             return candidate, "installed (PATH)"
@@ -697,7 +697,7 @@ def _windows_cli_choice(sdk_default: str | None, sdk_reason: str) -> "CliChoice"
     installed, why = _installed_cli_path()
     if installed:
         return CliChoice(installed, why, sdk_default, sdk_reason)
-    if False:
+    if _windows_batch_path(sdk_default):
         refused = f"the sdk would run {sdk_default}, a batch shim it refuses to start"
         return CliChoice(None, f"no installed claude.exe found ({why}); {refused}", None, refused)
     return CliChoice(

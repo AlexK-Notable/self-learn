@@ -977,7 +977,7 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
         # before its first Claude Code child is spawned (the only
         # `ClaudeSDKClient(...)` in the CLI is below), so the child is born in
         # this process's kill-on-close job. Tried once per process.
-        pass
+        _windows_teardown.contain_self(spec.log)
     events = EventLog()
     run_id = new_run_id()
     surface = spec.surface

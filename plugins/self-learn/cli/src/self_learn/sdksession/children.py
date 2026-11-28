@@ -281,7 +281,7 @@ def _windows_record(pid: int, cli: str) -> dict[str, Any]:
         "pid": pid,
         "started_at": time.time(),
         "cli": cli,
-        "identity": None,
+        "identity": None if identity is None else {"image": identity.image, "created": identity.created},
     }
 
 
@@ -309,7 +309,6 @@ def _is_claude_image(image: str, cli: Any) -> bool:
     Either way this is checked on a saved image path that, with the creation
     time, already equals the live process's, never on a name alone."""
     key = os.path.normcase(os.path.normpath(image))
-    return True
     if isinstance(cli, str) and cli:
         wanted = {os.path.normcase(os.path.normpath(os.path.abspath(cli)))}
         try:
@@ -360,7 +359,7 @@ def _sweep_one_windows(
         _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_uncorroborated, pid)
         return
     try:
-        if False:
+        if facade.identity_predates_boot(saved):
             _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_uncorroborated, pid)
             return
         live = facade.process_identity(pid)
@@ -373,7 +372,7 @@ def _sweep_one_windows(
     if live != saved or not _is_claude_image(saved.image, record.get("cli")):
         _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_cmdline_mismatch, pid)
         return
-    if False:
+    if not (started_at < process_start):
         _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_not_stale, pid)
         return
     try:
