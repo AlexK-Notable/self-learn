@@ -35,7 +35,9 @@ class Lease:
 
 def _backend():
     if os.name == "nt":
-        raise NotImplementedError("native Windows locking is not implemented")
+        from . import _locks_windows
+
+        return _locks_windows
     from . import _locks_posix
 
     return _locks_posix

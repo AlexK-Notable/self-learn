@@ -19,7 +19,8 @@ import pytest
 
 from self_learn.primitives import locks
 
-posix = pytest.mark.skipif(os.name == "nt", reason="native locking begins in Stage 3")
+posix = pytest.mark.skipif(os.name == "nt", reason="POSIX lock semantics or product integration")
+windows = pytest.mark.skipif(os.name != "nt", reason="native Windows sidecars")
 
 
 class _Peer:
@@ -93,7 +94,6 @@ def _probe(peer, expected):
     peer.expect(expected)
 
 
-@posix
 def test_try_timed_blocking_between_interpreters(tmp_path):
     path = tmp_path / "owner"
     waiter = """
@@ -129,7 +129,6 @@ def test_try_timed_blocking_between_interpreters(tmp_path):
             assert contender.proc.wait(timeout=8) == 0
 
 
-@posix
 def test_nested_repo_section_keeps_peer_out(tmp_path):
     path = tmp_path / "repo.lock"
     def section():
@@ -144,28 +143,45 @@ def test_nested_repo_section_keeps_peer_out(tmp_path):
         _probe(contender, "ACQUIRED")
 
 
-@posix
 def test_owner_death_releases_with_exec_child_alive(tmp_path):
     path = tmp_path / "owner.lock"
     # The exec child inherits the owner's command pipes. close_fds=False
     # deliberately gives a mistakenly inheritable lock fd a chance to escape.
     owner_script = """
-        import subprocess
+        import os, subprocess
         with locks.open_lock(path, purpose="append") as fh, locks.acquire(
             fh.fileno(), path=path, wait=None
         ):
             print("HELD")
+            if os.name == "nt":
+                print(os.getpid())
             child = 'print("READY"); assert input() == "ping"; print("ALIVE")'
             subprocess.run([sys.executable, "-u", "-c", child], close_fds=False,
                            timeout=30, check=True)
     """
     with _peer(path, owner_script) as owner, _peer(path, _PROBE) as contender:
         owner.expect("HELD")
+        if os.name == "nt":
+            owner_pid = int(owner.lines.get(timeout=8))
         owner.expect("READY")
         _probe(contender, "BUSY")
-        owner.proc.kill()
+        if os.name == "nt":
+            # sys.executable can be a venv launcher with a different PID.
+            import signal
+            os.kill(owner_pid, signal.SIGTERM)
+        else:
+            owner.proc.kill()
         assert owner.proc.wait(timeout=8) != 0
         _probe(contender, "ACQUIRED")
+        if os.name == "nt":
+            # A Windows byte-range lock belongs to the dying process. Also
+            # try a no-sharing open: even an *unlocked* inherited handle
+            # in the surviving child would deny this request.
+            import win32con
+            import win32file
+            handle = win32file.CreateFile(str(path) + ".lck", win32con.GENERIC_READ,
+                                          0, None, win32con.OPEN_EXISTING, 0, None)
+            handle.Close()
         owner.send("ping")
         owner.expect("ALIVE")
 
@@ -528,6 +544,7 @@ def test_flush_preserves_unrelated_staged_bytes(tmp_path, monkeypatch):
     assert git("ls-files", "--stage", "--", unrelated.name) == index
 
 
+@posix
 def test_stub_import_then_first_use(tmp_path):
     # A fresh interpreter applies the Stage 0 floor before product imports.
     # Linux also exercises lazy imports, with fcntl unavailable and only the
@@ -573,3 +590,117 @@ def test_stub_import_then_first_use(tmp_path):
     subprocess.run([sys.executable, "-c", textwrap.dedent(script), str(cli_root), str(guard)],
                    check=True, timeout=15)
     assert list(guard.iterdir()) == [control]
+
+
+@windows
+def test_windows_sidecar_preserves_stream_and_survives_retirement(tmp_path):
+    import win32con
+    import win32file
+
+    path = tmp_path / "spool.part.jsonl"
+    sibling = tmp_path / "spool.part.jsonl.lck"
+    payload = b"before\x00after"
+    path.write_bytes(payload)
+    with path.open("r+b") as data, _peer(path, _PROBE) as contender:
+        data.seek(4)
+        # A negative wait still gets an attempt. Close-scoped callers also
+        # need to release their sidecar when the lease exits.
+        with locks.acquire(data.fileno(), path=path, wait=-1, close_scoped=True) as lease:
+            assert set(tmp_path.iterdir()) == {path, sibling}
+            identity = sibling.stat()
+            _probe(contender, "BUSY")
+            assert data.tell() == 4 and path.read_bytes() == payload
+            access = win32con.GENERIC_READ | win32con.GENERIC_WRITE | win32con.DELETE
+            sharing = win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE
+            handle = win32file.CreateFile(str(sibling), access, sharing, None,
+                                          win32con.OPEN_EXISTING, 0, None)
+            handle.Close()
+            assert not locks.can_retire_idle()
+            assert not locks.retire_if_idle(path)
+        locks.release_open(data.fileno(), lease)
+        _probe(contender, "ACQUIRED")
+        assert not locks.retire_if_idle(path)
+        assert os.path.samestat(identity, sibling.stat())
+        assert data.tell() == 4 and path.read_bytes() == payload
+
+
+@windows
+def test_windows_pid_written_only_after_outer_acquisition(tmp_path):
+    path = tmp_path / "repo.lock"
+    previous = b"previous metadata longer than a pid\n"
+    path.write_bytes(previous)
+    with _peer(path, _HOLDER) as owner:
+        owner.expect("HELD")
+        with pytest.raises(ValueError) as busy:
+            with locks.repo_section(path, 0, "host", timeout_error=ValueError):
+                pytest.fail("entered busy section")
+        assert str(busy.value) == (
+            f"host lock {path} still held after 0s — another self-learn "
+            "producer (worker/miner/verb) is wedged mid-host"
+        )
+        assert path.read_bytes() == previous
+        owner.send("release")
+        owner.expect("RELEASED")
+    with locks.repo_section(path, 0, "host", timeout_error=ValueError):
+        assert locks.held_here(path)
+        assert path.read_bytes() == f"{os.getpid()}\n".encode("ascii")
+        path.write_bytes(b"nested control")
+        with locks.repo_section(path, 0, "host", timeout_error=ValueError):
+            assert path.read_bytes() == b"nested control"
+    assert not locks.held_here(path)
+
+
+@windows
+def test_windows_tracked_target_and_empty_release(tmp_path):
+    target = tmp_path / "tracked.jsonl"
+    target.write_bytes(b"control\n")
+    before = set(tmp_path.iterdir())
+    assert before == {target}
+    with target.open("r+b") as data:
+        data.seek(3)
+        with locks.acquire_ledger_target(data.fileno()) as lease:
+            assert set(tmp_path.iterdir()) == before
+        locks.release_open(data.fileno(), lease)
+        locks.release_open(data.fileno(), None)
+        assert data.tell() == 3 and target.read_bytes() == b"control\n"
+    assert set(tmp_path.iterdir()) == before
+
+
+@windows
+def test_windows_locker_errors_close_only_the_sidecar(tmp_path, monkeypatch):
+    from portalocker import LockFlags
+    from portalocker.exceptions import LockException
+    from portalocker.portalocker import Win32Locker
+
+    path = tmp_path / "faults"
+    calls = []
+    fault = LockException("injected I/O failure")
+    real_lock = Win32Locker.lock
+
+    def record(self, stream, flags):
+        assert flags == LockFlags.EXCLUSIVE | LockFlags.NON_BLOCKING
+        calls.append((self, stream))
+        real_lock(self, stream, flags)
+
+    def fail_unlock(self, stream):
+        assert (self, stream) == calls[-1] and not stream.closed
+        raise fault
+
+    def fail_lock(self, stream, flags):
+        calls.append((self, stream))
+        raise fault
+
+    with path.open("w+b") as data:
+        monkeypatch.setattr(Win32Locker, "lock", record)
+        monkeypatch.setattr(Win32Locker, "unlock", fail_unlock)
+        lease = locks.acquire(data.fileno(), path=path, wait=0)
+        with pytest.raises(OSError) as unlock_error:
+            locks.release_open(data.fileno(), lease)
+        assert unlock_error.value.__cause__ is fault
+        assert calls[-1][1].closed and not data.closed
+        monkeypatch.setattr(Win32Locker, "lock", fail_lock)
+        with pytest.raises(OSError) as acquire_error:
+            locks.acquire(data.fileno(), path=path, wait=0)
+        assert not isinstance(acquire_error.value, BlockingIOError)
+        assert acquire_error.value.__cause__ is fault
+        assert len(calls) == 2 and calls[-1][1].closed and not data.closed
