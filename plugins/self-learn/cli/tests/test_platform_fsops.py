@@ -984,7 +984,13 @@ def test_cloud_tags_take_ordinary_file_paths(tmp_path, monkeypatch):
     fsops.private_write(path, b"private\n")
     with os.fdopen(fsops.open_regular(path, policy="premise"), "rb") as reader:
         assert reader.read() == b"private\n"
-    assert reads == [0]
+    import win32con
+    directory_fd = fsops.open_regular(folder, policy="premise")
+    try:
+        assert stat.S_ISDIR(os.fstat(directory_fd).st_mode)
+    finally:
+        os.close(directory_fd)
+    assert reads == [0, win32con.FILE_FLAG_BACKUP_SEMANTICS]
     with fsops.safe_directory(folder) as directory, directory.entries() as entries:
         assert [entry.name for entry in entries] == [path.name]
 
@@ -1110,7 +1116,7 @@ def test_private_creates_require_existing_parent(private_root):
 
 
 @windows
-def test_verify_inherited_private_subdirectory(private_root):
+def test_verify_inherited_private_subdirectory(private_root, monkeypatch):
     import ntsecuritycon
     import win32security as security
 
@@ -1120,8 +1126,13 @@ def test_verify_inherited_private_subdirectory(private_root):
     fsops.ensure_private_parent(child)
     with os.fdopen(fsops.open_private_new(child / "reply"), "wb") as stream:
         stream.write(b"reply\n")
-    fd, name = fsops.private_temp(child, prefix="p", suffix=".tmp")
-    os.close(fd)
+    monkeypatch.chdir(private_root)
+    fd, name = fsops.private_temp(child.relative_to(private_root), prefix="p", suffix=".tmp")
+    with os.fdopen(fd, "w+b") as stream:
+        assert not os.get_inheritable(fd)
+        stream.write(b"temporary")
+        stream.seek(0)
+        assert stream.read() == b"temporary"
     assert Path(name).parent == child and (child / "reply").read_bytes() == b"reply\n"
 
     # A non-inheriting entry at the origin leaves the child's three entries intact.

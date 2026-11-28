@@ -30,8 +30,6 @@ import win32security as security
 
 _SHARE_ALL = win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE
 _INHERIT = security.OBJECT_INHERIT_ACE | security.CONTAINER_INHERIT_ACE
-
-
 _OPEN_ENTRY = win32file.FILE_FLAG_OPEN_REPARSE_POINT | win32con.FILE_FLAG_BACKUP_SEMANTICS
 
 
@@ -44,18 +42,17 @@ def _winerrors(path: Path | str) -> Iterator[None]:
 
 
 def _attributes(path: Path) -> int:
-    with _winerrors(path):
-        try:
-            return win32api.GetFileAttributes(str(path))
-        except pywintypes.error as exc:
-            if exc.winerror in (2, 3):
-                return 0
-            raise
+    try:
+        return win32api.GetFileAttributes(str(path))
+    except pywintypes.error as exc:
+        if exc.winerror in (2, 3):
+            return 0
+        raise OSError(0, exc.strerror, str(path), exc.winerror) from exc
 
 
 def _link_tag(tag: int) -> bool:
     # IsReparseTagNameSurrogate, plus Windows application execution aliases.
-    return bool(tag & 0x20000000) or tag == 0x8000001B
+    return bool(tag & 0x20000000) or tag == stat.IO_REPARSE_TAG_APPEXECLINK
 
 
 def _is_link(path: Path) -> bool:
@@ -79,26 +76,29 @@ def _refuse_links(path: Path) -> None:
 
 
 def _take_fd(handle, flags: int) -> int:
-    fd = msvcrt.open_osfhandle(int(handle), flags | os.O_BINARY)
+    fd = msvcrt.open_osfhandle(int(handle), flags | os.O_BINARY | os.O_NOINHERIT)
     handle.Detach()  # close(fd) now owns the native handle
     return fd
 
 
-def _exclusive_fd(path: Path | str, *, delete_access: bool = False) -> int:
+def _exclusive_fd(path: Path | str, *, flags: int = os.O_WRONLY, delete_access: bool = False) -> int:
     access = win32con.GENERIC_WRITE
+    if flags == os.O_RDWR:
+        access |= win32con.GENERIC_READ
     if delete_access:
         access |= win32con.DELETE
     with _winerrors(path):
         with closing(win32file.CreateFile(str(path), access, _SHARE_ALL, None, win32con.CREATE_NEW,
                                           win32file.FILE_FLAG_OPEN_REPARSE_POINT, None)) as handle:
-            return _take_fd(handle, os.O_WRONLY)
+            return _take_fd(handle, flags)
 
 
-def _new_temp(candidate: Callable[[], Path], *, delete_access: bool = False) -> tuple[int, str]:
+def _new_temp(candidate: Callable[[], Path], *, flags: int = os.O_WRONLY,
+              delete_access: bool = False) -> tuple[int, str]:
     for _ in range(100):
         path = candidate()
         try:
-            return _exclusive_fd(path, delete_access=delete_access), str(path)
+            return _exclusive_fd(path, flags=flags, delete_access=delete_access), str(path)
         except FileExistsError:
             continue
     raise FileExistsError(errno.EEXIST, "could not allocate a unique temporary name", str(path))
@@ -181,12 +181,10 @@ def sync_parent(path: Path) -> None:
 
 
 def sync_file_and_parent(path: Path) -> None:
-    try:
+    with _winerrors(path):
         with closing(win32file.CreateFile(str(path), win32con.GENERIC_WRITE, _SHARE_ALL, None,
-                                  win32con.OPEN_EXISTING, 0, None)) as handle:
+                                          win32con.OPEN_EXISTING, 0, None)) as handle:
             win32file.FlushFileBuffers(handle)
-    except pywintypes.error as exc:
-        raise OSError(0, exc.strerror, str(path), exc.winerror) from exc
 
 
 def _principals():
@@ -234,12 +232,12 @@ def _existing_private_parent(path: Path) -> None:
 
 def ensure_private_parent(path: Path) -> None:
     _refuse_links(path)
-    try:
+    with _winerrors(path):
         principals = _principals()
-        attributes = _attributes(path)
-        if attributes and not attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
+        bits = _attributes(path)
+        if bits and not bits & stat.FILE_ATTRIBUTE_DIRECTORY:
             raise FileExistsError(errno.EEXIST, "private directory name is occupied", str(path))
-        if not attributes:
+        if not bits:
             path.parent.mkdir(parents=True, exist_ok=True)
             acl = security.ACL()
             for sid in principals:
@@ -257,8 +255,6 @@ def ensure_private_parent(path: Path) -> None:
                 if exc.winerror != 183:  # ERROR_ALREADY_EXISTS: verify the winner.
                     raise
         _verify_private(path, principals)
-    except pywintypes.error as exc:
-        raise OSError(0, exc.strerror, str(path), exc.winerror) from exc
 
 
 def open_private_new(path: Path) -> int:
@@ -269,7 +265,8 @@ def open_private_new(path: Path) -> int:
 def private_temp(parent: Path, *, prefix: str, suffix: str) -> tuple[int, str]:
     _existing_private_parent(parent)
     _check_name(prefix + "_" + suffix)
-    return _new_temp(lambda: parent / (prefix + secrets.token_hex(8) + suffix))
+    folder = parent.absolute()
+    return _new_temp(lambda: folder / (prefix + secrets.token_hex(8) + suffix), flags=os.O_RDWR)
 
 
 def _file_id(handle) -> tuple[int, int, int]:
@@ -303,9 +300,12 @@ def reopenable_text(text: str, *, prefix: str, suffix: str) -> Iterator[Path]:
             with _winerrors(path):
                 try:
                     identity = _file_id(handle)
-                except pywintypes.error:
+                except pywintypes.error as exc:
                     # Delete via the still-owned handle even when its ID could not be read.
-                    win32file.SetFileInformationByHandle(handle, win32file.FileDispositionInfo, True)
+                    try:
+                        win32file.SetFileInformationByHandle(handle, win32file.FileDispositionInfo, True)
+                    except pywintypes.error as cleanup:
+                        exc.add_note(f"could not remove temporary file: {cleanup}")
                     raise
             stream.write(text.encode("utf-8"))
         yield path
@@ -333,7 +333,7 @@ def finish_mode(path: Path, mode: int, *, method: Literal["path", "os"] = "path"
 def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) -> int:
     # Open the entry itself. Inspect the handle we actually return, so a swap
     # after inspection cannot redirect the reader to a different file.
-    try:
+    with _winerrors(path):
         flags = _OPEN_ENTRY if policy == "premise" else win32con.FILE_FLAG_BACKUP_SEMANTICS
         handle = win32file.CreateFile(str(path), win32con.GENERIC_READ, _SHARE_ALL, None,
                                       win32con.OPEN_EXISTING, flags, None)
@@ -345,11 +345,11 @@ def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) 
                 raise OSError(errno.ELOOP, "refusing link", str(path))
             if info["ReparseTag"]:
                 # Give a cloud/storage provider normal data-open processing on this file.
-                with closing(win32file.ReOpenFile(handle, win32con.GENERIC_READ, _SHARE_ALL, 0)) as data:
+                data_flags = (win32con.FILE_FLAG_BACKUP_SEMANTICS
+                              if info["FileAttributes"] & stat.FILE_ATTRIBUTE_DIRECTORY else 0)
+                with closing(win32file.ReOpenFile(handle, win32con.GENERIC_READ, _SHARE_ALL, data_flags)) as data:
                     return _take_fd(data, os.O_RDONLY)
             return _take_fd(handle, os.O_RDONLY)
-    except pywintypes.error as exc:
-        raise OSError(0, exc.strerror, str(path), exc.winerror) from exc
 
 
 def _check_name(name: str) -> None:
