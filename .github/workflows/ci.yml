@@ -61,13 +61,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
           $ran = @($cases | Where-Object {
-            $_.name -cmatch '^test_windows_console_hook\[' -and !$_.SelectSingleNode("skipped")
+            $_.name -cmatch '^test_(windows_console_hook|hook_closed_descriptors)\[' -and !$_.SelectSingleNode("skipped")
           })
           $posix = @($cases | Where-Object {
-            $_.name -cmatch '^test_bash_differential\[' -and $_.skipped.message -ceq "Bash differential runs on POSIX"
+            ($_.name -cmatch '^test_bash_differential\[' -and $_.skipped.message -ceq "Bash differential runs on POSIX") -or
+              ($_.name -cmatch '^test_linux_child_deadline_survives_hook_death\[' -and $_.skipped.message -ceq "Linux parent-death watchdog")
           })
-          if ($ran.Count -ne 34 -or $posix.Count -ne 38 -or $cases.Count -ne 72) {
-            throw "Expected 34 native hook cases and 38 POSIX-only skips. Executed $($ran.Count) native cases. Found $($posix.Count) POSIX-only skips and $($cases.Count) total cases."
+          if ($ran.Count -ne 67 -or $posix.Count -ne 75 -or $cases.Count -ne 142) {
+            throw "Expected 67 native hook cases and 75 POSIX-only skips. Executed $($ran.Count) native cases. Found $($posix.Count) POSIX-only skips and $($cases.Count) total cases."
           }
 
       - name: Windows names and folders contracts

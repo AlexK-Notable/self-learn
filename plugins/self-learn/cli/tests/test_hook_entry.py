@@ -6,8 +6,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 
 import pytest
@@ -27,6 +29,7 @@ NOTICE_HEADER = (
 )
 DEGRADED = "⚠️  self-learn: pending-count check skipped — "
 READ_PATH = "/work/references/guide.md"
+DEADLINE_WITH_MARGIN = 4.85
 
 
 def event(path=READ_PATH, **fields):
@@ -49,17 +52,18 @@ class Case:
     slow: bool = False
     missing: str = ""
     cwd_stub: bool = False
+    path_stub: str = ""
+    hold_stdin: bool = False
 
     def expected(self):
         invocations = []
         if self.args is not None:
-            stdin = self.stdin if self.command == "session-start" else b""
-            invocations.append([list(self.args), stdin.hex()])
+            invocations.append([list(self.args), ""])
         return (self.stdout.encode("utf-8"), 0, invocations, bool(self.args) and not self.slow)
 
 
 def status(name, stdin=b"{}", *, missing="", **kwargs):
-    args = None if missing else ("status", "--fast")
+    args = None if missing or kwargs.get("path_stub") else ("status", "--fast")
     return Case(name, "session-start", stdin, args=args, missing=missing, **kwargs)
 
 
@@ -147,8 +151,63 @@ CASES = [
 ]
 NATIVE_PATH = r"C:\work\references\nested\guide.md"
 BACKSLASH = read("read-native-path", event(NATIVE_PATH), path=NATIVE_PATH if WINDOWS else None)
+MULTI_HOME = (
+    "⚠️  self-learn: ledger home ?\n? is ok\nok — no records are visible "
+    "(this is NOT an empty ledger). Check $SELF_LEARN_HOME or clone/bootstrap the ledger repo; "
+    "`self-learn status` explains.\n"
+)
+STOPPED = (
+    "🛑 self-learn: {count} STOPPED transaction intent{plural} ({ids}) — every ledger write refuses "
+    "until cleared. Run `self-learn reconcile --clear-intent {first}` after inspecting the offender.\n"
+)
+DEEP_ARRAY = b"[" * 2000 + b"]" * 2000
+EDGE_CASES = [
+    status("status-held-stdin", child_output=b'{"project_notices":[{"line":"ready"}]}',
+           stdout=NOTICE_HEADER + "ready\n", hold_stdin=True),
+    status("status-surrogate", child_output=br'{"total_unreadable":1,"project_notices":[{"line":"\ud800x"}]}'),
+    status("status-top-array", child_output=b"[1]"),
+    status("status-top-null", child_output=b"null"),
+    status("status-multi-probe", child_output=b'{"intents_probe":"error"}{}', stdout=MULTI_HOME),
+    status("status-multi-count", child_output=b'{"intents_stopped_count":2}{"intents_stopped_count":null}',
+           stdout=MULTI_HOME),
+    status("status-count-exponent", child_output=b'{"intents_stopped_count":1e2}'),
+    status("status-count-decimal", child_output=b'{"intents_stopped_count":3.0}'),
+    status("status-count-overflow", child_output=b'{"intents_stopped_count":100000000000000000001}'),
+    status("status-ids-object-item", child_output=b'{"intents_stopped_count":1,"intents_stopped":[{"a":1}]}',
+           stdout=STOPPED.format(count=1, plural="", ids="?", first='{\n  "a": 1\n}')),
+    status("status-ids-scalars", child_output=b'{"intents_stopped_count":2,"intents_stopped":[1,2.5,true,null]}',
+           stdout=STOPPED.format(count=2, plural="s", ids="1, 2.5, true, ", first="1")),
+    status("status-nan", child_output=b'{"total_unreadable":NaN,"project_notices":[{"line":"n"}]}',
+           stdout=NOTICE_HEADER + "n\n"),
+    status("status-raw-newline", child_output=b'{"total_unreadable":1,"x":"a\nb"}'),
+    status("status-deep", child_output=b'{"x":' + DEEP_ARRAY + b',"total_unreadable":1}'),
+    status("status-notices-object", child_output=b'{"project_notices":{"k":{"line":"via object"}}}',
+           stdout=NOTICE_HEADER + "via object\n"),
+    status("status-state-object", child_output=b'{"home_state":{"a":[1,2.0]}}', stdout=(
+        '⚠️  self-learn: ledger home ? is {\n  "a": [\n    1,\n    2.0\n  ]\n} — no records are visible '
+        "(this is NOT an empty ledger). Check $SELF_LEARN_HOME or clone/bootstrap the ledger repo; "
+        "`self-learn status` explains.\n"
+    )),
+    status("status-concatenated-booleans", child_output=b"truefalse"),
+    read("read-xreferences", event("/work/xreferences/guide.md")),
+    read("read-root-references", event("/references/guide.md"), path="/references/guide.md"),
+    read("read-relative-with-directory", event("a/references/b.md"), path="a/references/b.md"),
+    read("read-repeated-references", event("/a/references/b/references/c.md"), path="/a/references/b/references/c.md"),
+    read("read-multi-null", event() + b" null", path=READ_PATH),
+    read("read-multi-agent", event(agent_id="x") + b" " + event(agent_id="y"),
+         path=f"{READ_PATH}\n{READ_PATH}"),
+    read("read-surrogate-path", br'{"tool_input":{"file_path":"/w/references/\ud800.md"}}'),
+    read("read-surrogate-unselected", br'{"tool_input":{"file_path":"/w/references/a.md"},"tool_response":"\ud800"}'),
+    read("read-deep", b'{"tool_input":{"file_path":"/w/references/a.md"},"tool_response":' + DEEP_ARRAY + b"}"),
+    read("read-top-array", b"[" + event() + b"]"),
+    read("read-top-null", b"null"),
+    read("read-input-number", b'{"tool_input":5}'),
+    read("read-path-number", event(5)),
+    read("read-session-object", event(session_id={"a": 1}), path=READ_PATH, session='{\n  "a": 1\n}'),
+]
 WINDOWS_CASES = [
     *CASES,
+    *EDGE_CASES,
     BACKSLASH,
     status("status-cwd-ignored", missing="self-learn", cwd_stub=True,
            stdout=DEGRADED + "self-learn is not on PATH\n"),
@@ -159,24 +218,31 @@ LINUX_DEPS = [
     read("read-no-jq", event(), missing="jq"),
     read("read-no-timeout", event(), missing="timeout"),
     read("read-no-cat", event(), missing="cat"),
+    status("status-nonexec", path_stub="nonexec"),
+    read("read-nonexec", event(), path_stub="nonexec"),
+    status("status-command-directory", path_stub="directory", stdout=DEGRADED + "self-learn is not on PATH\n"),
+    read("read-command-directory", event(), path_stub="directory"),
 ]
 
 STUB = """\
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 import time
 
 
 def entrypoint():
-    stdin = sys.stdin.buffer.read()
+    stdin = b"" if sys.argv[1] == "status" else sys.stdin.buffer.read()
+    if os.environ.get("HOOK_PID"):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        Path(os.environ["HOOK_PID"]).write_text(str(os.getpid()), encoding="ascii")
     with open(os.environ["HOOK_LOG"], "a", encoding="utf-8") as handle:
         print(json.dumps([sys.argv[1:], stdin.hex()]), file=handle)
     sys.stdout.buffer.write(bytes.fromhex(os.environ["HOOK_OUTPUT"]))
     sys.stderr.buffer.write(b"ignored child stderr\\n")
-    if os.environ["HOOK_SLOW"] == "1":
-        time.sleep(7)
+    time.sleep(float(os.environ["HOOK_DELAY"]))
     Path(os.environ["HOOK_DONE"]).touch()
     return int(os.environ["HOOK_EXIT"])
 
@@ -207,7 +273,7 @@ def fixture_env(tmp_path, case):
         "HOOK_DONE": str(done),
         "HOOK_OUTPUT": case.child_output.hex(),
         "HOOK_EXIT": str(case.child_exit),
-        "HOOK_SLOW": str(int(case.slow)),
+        "HOOK_DELAY": "4.6" if case.slow else "0",
     }
     if WINDOWS:
         for name in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP"):
@@ -235,14 +301,33 @@ def fixture_env(tmp_path, case):
                 (bindir / name).symlink_to(program)
         if case.missing != "self-learn":
             stub = bindir / "self-learn"
-            stub.write_text(f"#!{sys.executable}\n" + STUB, encoding="utf-8")
-            stub.chmod(0o755)
+            if case.path_stub == "directory":
+                stub.mkdir()
+            else:
+                stub.write_text(f"#!{sys.executable}\n" + STUB, encoding="utf-8")
+                stub.chmod(0o644 if case.path_stub == "nonexec" else 0o755)
     return env, log, done
 
 
 def observe(argv, tmp_path, env, log, done, case, *, console=False):
-    result = subprocess.run(argv, input=case.stdin, capture_output=True, env=env,
-                            cwd=tmp_path, timeout=12)
+    started = time.monotonic()
+    if case.hold_stdin:
+        with subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, env=env, cwd=tmp_path) as process:
+            try:
+                process.wait(timeout=DEADLINE_WITH_MARGIN)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
+                pytest.fail("SessionStart waited on the parent's still-open stdin")
+            stdout, stderr = process.communicate(timeout=5)
+            result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+    else:
+        result = subprocess.run(argv, input=case.stdin, capture_output=True, env=env,
+                                cwd=tmp_path, timeout=12)
+    if case.hold_stdin or case.slow:
+        elapsed = time.monotonic() - started
+        assert elapsed < DEADLINE_WITH_MARGIN, f"{case.name} took {elapsed:.2f}s"
     if console:
         assert result.stderr == b"", result.stderr.decode("utf-8", errors="replace")
     invocations = []
@@ -256,7 +341,7 @@ def observe(argv, tmp_path, env, log, done, case, *, console=False):
 
 
 @pytest.mark.skipif(WINDOWS, reason="Bash differential runs on POSIX")
-@pytest.mark.parametrize("case", [*CASES, BACKSLASH, *LINUX_DEPS], ids=lambda case: case.name)
+@pytest.mark.parametrize("case", [*CASES, *EDGE_CASES, BACKSLASH, *LINUX_DEPS], ids=lambda case: case.name)
 def test_bash_differential(tmp_path, case):
     bash = shutil.which("bash")
     if not bash or not shutil.which("jq"):
@@ -274,3 +359,61 @@ def test_windows_console_hook(tmp_path, case):
     env, log, done = fixture_env(tmp_path, case)
     assert observe([str(installed("self-learn-hook")), case.command],
                    tmp_path, env, log, done, case, console=True) == case.expected()
+
+
+@pytest.mark.parametrize("command", ("session-start", "read-observed"))
+def test_hook_closed_descriptors(tmp_path, command):
+    case = status("closed", child_output=b'{"total_unreadable":1}') if command == "session-start" else read("closed", b"")
+    env, _, _ = fixture_env(tmp_path, case)
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; from self_learn.hook_entry import main; "
+         "sys.stdin = sys.stdout = None; raise SystemExit(main())", command],
+        input=b"", capture_output=True, env=env, cwd=tmp_path, timeout=5,
+    )
+    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
+
+
+def _running_on_linux(pid):
+    try:
+        return Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()[0] not in (b"Z", b"X")
+    except FileNotFoundError:
+        return False
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux parent-death watchdog")
+@pytest.mark.parametrize("command", ("session-start", "read-observed"))
+def test_linux_child_deadline_survives_hook_death(tmp_path, command):
+    case = status("parent-death") if command == "session-start" else read("parent-death", event())
+    env, _, done = fixture_env(tmp_path, case)
+    marker = tmp_path / "child-pid"
+    env.update(HOOK_PID=str(marker), HOOK_DELAY="30")
+    started = time.monotonic()
+    with subprocess.Popen([str(installed("self-learn-hook")), command], stdin=subprocess.PIPE,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                          env=env, cwd=tmp_path) as hook:
+        assert hook.stdin is not None
+        hook.stdin.write(case.stdin)
+        hook.stdin.close()
+        child = None
+        try:
+            while time.monotonic() - started < 3:
+                if marker.exists():
+                    pid_text = marker.read_text(encoding="ascii")
+                    if pid_text:
+                        child = int(pid_text)
+                        break
+                time.sleep(0.01)
+            assert child is not None and _running_on_linux(child)
+            assert hook.poll() is None
+            hook.kill()
+            assert hook.wait(timeout=1) == -signal.SIGKILL
+            while _running_on_linux(child) and time.monotonic() - started < DEADLINE_WITH_MARGIN:
+                time.sleep(0.01)
+            assert not _running_on_linux(child), "CLI outlived the independent deadline"
+            assert not done.exists()
+        finally:
+            if hook.poll() is None:
+                hook.kill()
+            if child is not None and _running_on_linux(child):
+                os.kill(child, signal.SIGKILL)

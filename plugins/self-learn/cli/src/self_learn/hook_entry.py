@@ -29,6 +29,9 @@ def _documents(data: bytes) -> list[Any]:
             pos += 1
         if pos < len(text):
             value, pos = decoder.raw_decode(text, pos)
+            # Reject unpaired surrogate escapes before any query can emit
+            # output or launch telemetry, even in an unselected field.
+            json.dumps(value, ensure_ascii=False).encode("utf-8")
             documents.append(value)
     return documents
 
@@ -163,22 +166,26 @@ def _status_lines(documents: list[Any]) -> Iterable[str]:
             yield f"self-learn: {more} more notice(s) for this project — self-learn notice list"
 
 
-def _print_line(line: str) -> None:
-    sys.stdout.buffer.write(line.encode("utf-8") + b"\n")
+def _write(data: bytes) -> None:
+    if data and sys.stdout is not None:
+        sys.stdout.buffer.write(data)
 
 
 def _degraded(reason: str) -> None:
-    _print_line(f"⚠️  self-learn: pending-count check skipped — {reason}")
+    _write(f"⚠️  self-learn: pending-count check skipped — {reason}\n".encode("utf-8"))
 
 
-def _session_start(executable: str) -> None:
+def _run_cli(command: list[str], watchdog: str | None):
+    # GNU timeout owns a separate deadline that survives the hook's death.
+    # Its short KILL grace also covers a CLI that ignores the initial TERM.
+    if watchdog is not None:
+        command = [watchdog, "--kill-after=0.2", str(_TIMEOUT), *command]
+    return procs.run_bounded(command, timeout=_TIMEOUT, binary=True)
+
+
+def _session_start(executable: str, watchdog: str | None) -> None:
     try:
-        result = procs.run_bounded(
-            [executable, "status", "--fast"],
-            timeout=_TIMEOUT,
-            input=sys.stdin.buffer.read(),
-            binary=True,
-        )
+        result = _run_cli([executable, "status", "--fast"], watchdog)
     except procs.BoundedTimeout:
         _degraded("self-learn status timed out after 4s")
         return
@@ -189,13 +196,15 @@ def _session_start(executable: str) -> None:
         _degraded("self-learn status timed out after 4s")
         return
     try:
-        for line in _status_lines(_documents(result.stdout)):
-            _print_line(line)
-    except (TypeError, ValueError, RecursionError):
-        pass  # A failed status JSON query leaves the hook quiet.
+        output = b"".join(f"{line}\n".encode("utf-8") for line in _status_lines(_documents(result.stdout)))
+    except (TypeError, ValueError, RecursionError, MemoryError):
+        return  # A failed status JSON query leaves the hook quiet.
+    _write(output)
 
 
-def _read_observed(executable: str) -> None:
+def _read_observed(executable: str, watchdog: str | None) -> None:
+    if sys.stdin is None:
+        return
     try:
         documents = _documents(sys.stdin.buffer.read())
         paths = (_field(_field(doc, "tool_input"), "file_path") for doc in documents)
@@ -207,14 +216,23 @@ def _read_observed(executable: str) -> None:
         args = [executable, "telemetry", "read-observed", "--path", path, "--session", session]
         if len(documents) == 1 and "agent_id" in documents[0]:
             args.append("--subagent")
-        procs.run_bounded(args, timeout=_TIMEOUT, binary=True)
-    except (procs.BoundedTimeout, OSError, TypeError, ValueError, RecursionError):
+        _run_cli(args, watchdog)
+    except (procs.BoundedTimeout, OSError, TypeError, ValueError, RecursionError, MemoryError):
         pass  # This observer must never interrupt a Read.
 
 
 def _find_self_learn() -> str | None:
     if os.name != "nt":
-        return shutil.which("self-learn")
+        executable = shutil.which("self-learn")
+        if executable is not None:
+            return executable
+        # Bash command -v reports a non-executable PATH file when no
+        # executable is found. GNU timeout then fails quietly at launch.
+        for entry in os.get_exec_path():
+            candidate = os.path.join(entry or os.curdir, "self-learn")
+            if os.path.exists(candidate) and not os.path.isdir(candidate):
+                return candidate
+        return None
 
     # Windows shutil.which can look in the current directory for bare names.
     # Hooks run in the session's project, so only use the configured PATH.
@@ -240,11 +258,13 @@ def main() -> int:
             _degraded("self-learn is not on PATH")
         return 0
 
+    watchdog = None
     if os.name != "nt":
         # Preserve the legacy Linux dependency guards. The native Windows
         # entry point needs neither jq nor GNU timeout.
-        for name in ("jq", "timeout"):
-            if not shutil.which(name):
+        watchdog = shutil.which("timeout")
+        for name, program in (("jq", shutil.which("jq")), ("timeout", watchdog)):
+            if program is None:
                 if session_start:
                     _degraded(f"{name} is not on PATH")
                 return 0
@@ -252,9 +272,9 @@ def main() -> int:
             return 0
 
     if session_start:
-        _session_start(executable)
+        _session_start(executable, watchdog)
     else:
-        _read_observed(executable)
+        _read_observed(executable, watchdog)
     return 0
 
 
