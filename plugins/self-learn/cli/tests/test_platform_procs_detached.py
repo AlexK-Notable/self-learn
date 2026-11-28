@@ -573,17 +573,21 @@ while not Path(str(out) + ".go").exists():
 report = {"in_job": bool(win32job.IsProcessInJob(win32api.GetCurrentProcess(), None)),
           "allowed": procs.breakaway_allowed()}
 started = procs.spawn_detached([sys.executable, "-u", "-c", child, str(out) + ".child"], log_path=log)
-report.update(pid=started.pid, broke_away=started.broke_away, launcher=os.getpid())
+report.update(pid=started.pid, broke_away=started.broke_away, child_in_job=started.in_job,
+              launcher=os.getpid())
 publish(out, json.dumps(report))
 time.sleep(120)
 """
 
-#: job chain (outermost first) -> (broke_away, breakaway_allowed, survives)
+#: job chain (outermost first) -> (breakaway accepted, child in each of these
+#: jobs, child survives the launcher and the closing of these jobs). Measured:
+#: breakaway leaves only the launcher's own job, so a forbidding outer job
+#: keeps the child (and, killing on close, takes it down).
 _CHAINS = {
-    "allow": ([dict()], True, True, True),
-    "forbid": ([dict(breakaway=False)], False, False, False),
-    "forbid-without-kill-on-close": ([dict(breakaway=False, kill_on_close=False)], False, False, True),
-    "allow-inside-forbid": ([dict(breakaway=False), dict()], False, False, False),
+    "allow": ([dict()], True, [False], True),
+    "forbid": ([dict(breakaway=False)], False, [True], False),
+    "forbid-without-kill-on-close": ([dict(breakaway=False, kill_on_close=False)], False, [True], True),
+    "allow-inside-forbid": ([dict(breakaway=False), dict()], True, [True, False], False),
 }
 
 
@@ -591,17 +595,18 @@ _CHAINS = {
 @pytest.mark.parametrize("chain", sorted(_CHAINS))
 def test_windows_detached_child_and_its_launchers_abrupt_death(tmp_path, chain):
     """The launcher is killed outright and the test closes the only handles to
-    its jobs. A child that broke away keeps running and logging. In a
-    kill-on-close job that forbids breakaway, survival is impossible: the child
-    can only be started inside the job, the facade reports so
-    (``broke_away=False``) and the job's closure kills it. In a job that
-    forbids breakaway but does not kill on close, the child stays in the job
-    and outlives the launcher."""
+    its jobs. A child outside them keeps running and logging. In a
+    kill-on-close job that forbids breakaway (directly, or around the job that
+    allows it), survival is impossible: the child can only end up inside that
+    job, the facade reports so (``in_job``, and ``breakaway_allowed()`` false)
+    and the job's closure kills it. In a job that forbids breakaway but does
+    not kill on close, the child stays in the job and outlives the launcher."""
     import win32api
     import win32con
+    import win32job
     import win32process
 
-    specs, broke_away, allowed, survives = _CHAINS[chain]
+    specs, broke_away, membership, survives = _CHAINS[chain]
     out, log = tmp_path / "report", tmp_path / "run.log"
     launcher = subprocess.Popen(_python(_DETACH_LAUNCHER, _PURELIB, out, textwrap.dedent(_DETACHED_CHILD), log))
     jobs = []
@@ -613,11 +618,13 @@ def test_windows_detached_child_and_its_launchers_abrupt_death(tmp_path, chain):
         (tmp_path / "report.go").write_text("")
         _wait_for(out.exists, 30)
         report = json.loads(out.read_text())
-        print(f"{chain}: {report}")
         watch = _Watch([report["pid"]])
-        assert report["in_job"] and (report["broke_away"], report["allowed"]) == (broke_away, allowed)
+        anywhere = bool(win32job.IsProcessInJob(watch.handles[0], None))
+        print(f"{chain}: {report}; child in our jobs {[_in_job(report['pid'], j) for j in jobs]}, in any {anywhere}")
+        assert report["in_job"] and report["broke_away"] is broke_away
+        assert [_in_job(report["pid"], job) for job in jobs] == membership
+        assert report["child_in_job"] is anywhere and report["allowed"] is (not anywhere)
         _wait_for((tmp_path / "report.child").exists)
-        assert all(_in_job(report["pid"], job) for job in jobs) is not broke_away
         opened = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, launcher.pid)
         win32process.TerminateProcess(opened, 9)
         win32api.CloseHandle(opened)
@@ -648,8 +655,10 @@ def test_windows_breakaway_allowed_from_here():
     """The doctor row's answer for this very process, measured on the runner;
     a job-free process may always break away."""
     answer = procs.breakaway_allowed()
-    print(f"in a job: {_this_process_in_a_job()}; breakaway allowed: {answer}")
-    assert answer is True or (answer is False and _this_process_in_a_job())
+    child = procs.spawn_detached(_python("pass"))
+    print(f"in a job: {_this_process_in_a_job()}; breakaway allowed: {answer}; a detached child: {child}")
+    assert isinstance(answer, bool) and answer is (not child.in_job)
+    assert answer is True or _this_process_in_a_job()
 
 
 _LOGGING_CHILD = r"""
@@ -658,9 +667,11 @@ from pathlib import Path
 go = Path(sys.argv[1])
 while not go.exists():
     time.sleep(.005)
+import os
+# One write per line: print() would write the text and the newline apart.
 for n in range(200):
-    print(f"{sys.argv[2]} {n:03d} {'x' * 40}", flush=True)
-print(sys.argv[2], "stdin", repr(sys.stdin.read()), flush=True)
+    os.write(1, f"{sys.argv[2]} {n:03d} {'x' * 40}\n".encode())
+os.write(1, f"{sys.argv[2]} stdin {sys.stdin.read()!r}\n".encode())
 """
 
 
@@ -1022,15 +1033,22 @@ def test_windows_grandchild_holding_stderr_does_not_hang_the_reader(tmp_path):
     async def main():
         proc, report = await _owned(tmp_path, "holder", stdout=asyncio.subprocess.PIPE,
                                     stderr=asyncio.subprocess.PIPE)
-        watch = _Watch([report["grandchild"]])
+        watch = _Watch([report["pid"], report["grandchild"]])
         try:
-            assert await asyncio.wait_for(proc.wait(), 10) == 0
+            _wait_for(lambda: watch.alive()[0] is False)
+            await asyncio.sleep(0.2)
+            assert proc.returncode == 0  # asyncio has seen the exit
+            # The control (measured on Python 3.12): while a grandchild holds a
+            # pipe, both the read and asyncio's own wait() hang.
             with pytest.raises(TimeoutError):
                 await asyncio.wait_for(proc.stderr.read(), 1.0)
-            assert watch.alive() == [True]
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(proc.wait(), 1.0)
+            assert watch.alive() == [False, True]
             await procs.terminate_owned(proc, kill_grace=2.0)
             assert await asyncio.wait_for(proc.stderr.read(), 5) == b""
-            assert watch.alive() == [False]
+            assert await asyncio.wait_for(proc.wait(), 5) == 0
+            assert watch.alive() == [False, False]
         finally:
             watch.kill()
 
@@ -1046,6 +1064,7 @@ def test_windows_dropping_the_process_object_kills_the_tree(tmp_path):
         gc.collect()
         try:
             watch.wait_dead()
+            await asyncio.sleep(0.5)  # let asyncio see the exit before the loop closes
         finally:
             watch.kill()
 

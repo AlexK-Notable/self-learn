@@ -977,6 +977,21 @@ def _in_a_job() -> bool:
     return bool(win32job.IsProcessInJob(win32api.GetCurrentProcess(), cast(Any, None)))
 
 
+def _child_in_a_job(pid) -> bool:
+    """Whether our just-started child is in any job. Its Popen object holds
+    the process open, so the PID still names it."""
+    process = _open_process(pid, win32con.PROCESS_QUERY_LIMITED_INFORMATION)
+    if process is None:
+        raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER, f"PID {pid} vanished")
+    with _Handles() as handles:
+        handles.callback(win32api.CloseHandle, process)
+        return bool(win32job.IsProcessInJob(process, cast(Any, None)))
+
+
+def _started(proc, broke_away) -> DetachedChild:
+    return DetachedChild(proc.pid, broke_away, _child_in_a_job(proc.pid))
+
+
 @_os_errors()
 def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
     argv = list(argv)
@@ -995,15 +1010,19 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
             return _popen(argv, executable, cwd, environment, flags, subprocess.DEVNULL, stdout, stderr)
 
         if not _in_a_job():
-            return DetachedChild(launch(_DETACHED_FLAGS).pid, None)
+            return _started(launch(_DETACHED_FLAGS), None)
         try:
-            return DetachedChild(launch(_DETACHED_FLAGS | subprocess.CREATE_BREAKAWAY_FROM_JOB).pid, True)
+            proc = launch(_DETACHED_FLAGS | subprocess.CREATE_BREAKAWAY_FROM_JOB)
         except OSError as exc:
             if getattr(exc, "winerror", None) != winerror.ERROR_ACCESS_DENIED:
                 raise
+        else:
+            # Out of this process's job; a job that one is nested in may still
+            # hold it. DetachedChild.in_job says which.
+            return _started(proc, True)
         # The job forbids breakaway: the child starts inside it and lives only
         # as long as the job does. DetachedChild says so.
-        return DetachedChild(launch(_DETACHED_FLAGS).pid, False)
+        return _started(launch(_DETACHED_FLAGS), False)
 
 
 def breakaway_allowed() -> bool | None:
@@ -1022,11 +1041,16 @@ def breakaway_allowed() -> bool | None:
     except pywintypes.error:
         return None
     try:
-        probe.kill()
-        probe.wait(_CLEANUP_SECONDS)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return True
+        contained = _child_in_a_job(probe.pid)
+    except (OSError, pywintypes.error):
+        contained = None
+    finally:
+        try:
+            probe.kill()
+            probe.wait(_CLEANUP_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return None if contained is None else not contained
 
 
 # --------------------------------------------------- owned asyncio children

@@ -249,15 +249,22 @@ STOP_EVENT_ENV = "SELF_LEARN_STOP_EVENT"
 class DetachedChild:
     """What :func:`spawn_detached` started.
 
-    ``broke_away``: Windows only. ``True`` when the child left the launcher's
-    job (``CREATE_BREAKAWAY_FROM_JOB`` was accepted); ``False`` when the job
-    refused breakaway and the child was started inside it instead, so it lives
-    only as long as that job does (a kill-on-close job kills it as soon as the
-    job's last handle closes, which is usually when the launcher dies); ``None``
-    when the launcher is in no job, and always on POSIX."""
+    ``broke_away``: Windows only. ``True`` when ``CREATE_BREAKAWAY_FROM_JOB``
+    was accepted, which takes the child out of the launcher's own job only
+    (measured: a job it is nested in keeps the child even when that outer job
+    forbids breakaway); ``False`` when the launcher's job refused breakaway and
+    the child was started inside it instead; ``None`` when the launcher is in
+    no job, and always on POSIX.
+
+    ``in_job``: Windows only. Whether the child, read on its own handle right
+    after it started, is in any job. A child still in a job lives only as long
+    as that job: a kill-on-close job kills it when the job's last handle
+    closes, usually when the launcher or whatever made the job dies. Always
+    ``False`` on POSIX."""
 
     pid: int
     broke_away: bool | None = None
+    in_job: bool = False
 
 
 def spawn_detached(
@@ -285,20 +292,21 @@ def spawn_detached(
     appending only, or ``NUL``) and they are the only handles the child
     inherits. A bare program name is looked up on ``PATH`` only; ``.bat`` and
     ``.cmd`` files are refused. See :class:`DetachedChild` for what
-    ``broke_away`` reports.
+    ``broke_away`` and ``in_job`` report.
     """
     return _backend().spawn_detached(argv, cwd=cwd, env=env, log_path=log_path)
 
 
 def breakaway_allowed() -> bool | None:
-    """Whether a child started now with :func:`spawn_detached` would leave
-    every job this process is in (for a ``doctor`` row).
+    """Whether a child started now with :func:`spawn_detached` would be in no
+    job at all (for a ``doctor`` row).
 
     Windows: ``True`` when this process is in no job, or a trial child started
-    suspended with ``CREATE_BREAKAWAY_FROM_JOB`` was accepted (it is killed
-    before it runs); ``False`` when the trial was refused with error 5;
-    ``None`` when the answer could not be read. POSIX: ``None`` (there are no
-    jobs to leave)."""
+    suspended with ``CREATE_BREAKAWAY_FROM_JOB`` was accepted and is in no job
+    (it is killed before it runs); ``False`` when the trial was refused with
+    error 5, or was accepted but is still in a job this process's job is nested
+    in; ``None`` when the answer could not be read. POSIX: ``None`` (there are
+    no jobs to leave)."""
     return _backend().breakaway_allowed()
 
 
