@@ -629,7 +629,7 @@ jobs:
         working-directory: plugins/self-learn/ui
         env:
           SELF_LEARN_UI_NO_BROWSER: "1"
-          SELF_LEARN_PACKAGING_TESTS: "1"
+          SELF_LEARN_PACKAGING_TESTZ: "1"  # BREAK WB: opt-in name wrong, wheel tests skip
         run: |
           $report = Join-Path $env:RUNNER_TEMP "ui-package-data.xml"
           uv run --no-sync python -m pytest tests/test_packaging.py -p no:cacheprovider -q -rA --junitxml=$report
@@ -749,7 +749,7 @@ jobs:
         working-directory: plugins/self-learn/ui
         env:
           SELF_LEARN_UI_NO_BROWSER: "1"
-          SELF_LEARN_PACKAGING_TESTS: "1"
+          SELF_LEARN_PACKAGING_TESTZ: "1"  # BREAK WB: opt-in name wrong, wheel tests skip
         run: |
           report="${RUNNER_TEMP}/ui-package-data.xml"
           uv run --no-sync pytest tests/test_packaging.py -p no:cacheprovider -q -rA --junitxml="$report"

@@ -41,7 +41,7 @@ packages = ["src/self_learn_ui"]
 [tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.hatch.build.targets.sdist.force-include]
-# BREAK WA-M7 "../skills/self-learn/references" = "src/self_learn_ui/_data/references"
+"../skills/self-learn/references" = "src/self_learn_ui/_data/references"
 
 [dependency-groups]
 dev = [

@@ -41,9 +41,9 @@ def _resource_dir(name: str) -> Path:
     module always used, so a live checkout serves and reloads its own files
     as before; on an installed wheel, the copy it carries as package data,
     ``self_learn_ui/_data/<name>``."""
-    old_rule = Path(__file__).resolve().parents[2] / name  # BREAK WA-M3
-    if old_rule.exists():
-        return old_rule
+    project = _package_data.checkout_project()
+    if project is not None and (project / name).is_dir():
+        return project / name
     return _package_data.packaged(name)
 
 
