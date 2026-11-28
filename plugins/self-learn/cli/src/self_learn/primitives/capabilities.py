@@ -84,10 +84,8 @@ REQUIRES = {
     "canary plant": _L,
     **dict.fromkeys(("case record", "case show", "case list", "case observe", "case receipt",
                      "case index", "case refreeze"), _L),
-    "case show": frozenset({"ledger", "sdk"}),  # MUTANT M1
     **dict.fromkeys(("statement add", "statement list"), _L),
     **dict.fromkeys(("grant add", "grant revoke", "grant list"), _L),
-    "grant revoke": frozenset({"ledger", "sdk"}),  # MUTANT M1
     **dict.fromkeys(("user-model show", "user-model add", "user-model lapse"), _L),
     "doctor settings": _L,
     **dict.fromkeys(("doctor invocation", "doctor miner", "doctor premises"), frozenset({"sdk"})),

@@ -105,7 +105,7 @@ def git_argv(repo: Path, args: tuple[str, ...]) -> list[str]:
             name = operand.rstrip(" ")
             plain.append(git_operand(repo, name) + operand[len(name):])
         return [*argv, *args[:split + 1], *plain]
-    if False:  # MUTANT M1
+    if "--literal-pathspecs" not in args[:index]:
         argv.append("--literal-pathspecs")
     return [*argv, *args[:split + 1], *(git_operand(repo, path) for path in args[split + 1:])]
 
