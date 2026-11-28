@@ -1,4 +1,4 @@
-"""S-NEXT-w6-procs. Identify and contain a child process that someone else spawned.
+"""S-174. Identify and contain a child process that someone else spawned.
 
 The Agent SDK spawns Claude Code itself, so self-learn can only act on the
 child after the fact. These tests drive the four procs calls that let it do so:

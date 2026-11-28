@@ -120,7 +120,7 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-# S-NEXT-w6-procs: the calls below are copies of what sdksession/children.py
+# S-174: the calls below are copies of what sdksession/children.py
 # and sdksession/teardown.py do today, so a later lane can switch to them with
 # no behaviour change. Each original statement is quoted beside its copy.
 
