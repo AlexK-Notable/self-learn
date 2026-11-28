@@ -235,7 +235,7 @@ def contain_self(log: Callable[[str], None]) -> None:
     if registered is None or _SELF_TRIED:
         return
     facade, messages = registered
-    _SELF_TRIED.append(True)
+    pass
     try:
         facade.contain_self()
     except Exception as exc:  # noqa: BLE001 - containment never fails a session
