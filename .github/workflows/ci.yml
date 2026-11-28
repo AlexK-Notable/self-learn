@@ -318,6 +318,28 @@ jobs:
           $delta = Compare-Object $expected @($ran | ForEach-Object { ($_.classname.Split('.')[-1]) + '::' + $_.name })
           if ($delta -or $unexpected.Count) { throw "Windows process test selection changed: $($delta | Out-String)$unexpected" }
 
+      - name: Windows skill script contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "skill-script-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_skill_scripts.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_windows_lifecycle_python_and_bash[git-bash]'
+            'test_windows_lifecycle_python_and_bash[no-git-bash]'
+            'test_windows_changed_copy_is_refused'
+            'test_windows_junction_in_place_of_scripts_folder_is_refused'
+            'test_windows_crlf_digest_contract'
+            'test_windows_git_bash_discovery'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if ((Compare-Object -CaseSensitive $expected $ran) -or $skips.Count -ne 1 -or
+              $skips[0].name -cne 'test_linux_surface_has_no_windows_launcher' -or $skips[0].skipped.message -cne 'Linux skill script surface') {
+            throw "Windows skill script test selection changed: $ran"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(

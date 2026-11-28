@@ -1,5 +1,7 @@
 """Agent-available S-160 commands. There is deliberately no approve verb."""
+import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from . import skill_scripts
@@ -21,6 +23,13 @@ def add_parser(commands):
         sub = subs.add_parser(verb, help={"review": "run one fresh Fable review", "activate": "retry an existing exact approval; never approve", "deactivate": "quarantine the file and remove its usage entry"}[verb])
         sub.add_argument("id")
         sub.add_argument("--note", required=verb != "activate")
+    if os.name == "nt":
+        # Windows has no shebang or mode bits: this launcher verifies the
+        # managed copy and runs it with its declared interpreter.
+        run = subs.add_parser("run", help="verify an active script's managed copy, then run it with its declared interpreter")
+        run.add_argument("script", metavar="SKILL/NAME")
+        run.add_argument("--timeout", type=float, default=skill_scripts.RUN_TIMEOUT)
+        run.add_argument("args", nargs=argparse.REMAINDER)
 
 
 def dispatch(home, args):
@@ -43,10 +52,27 @@ def dispatch(home, args):
             result = skill_scripts.review(home, args.id, note=args.note)
         elif command == "activate":
             result = skill_scripts.activate(home, args.id)
+        elif os.name == "nt" and command == "run":
+            return _run(home, args)
         else:
             result = skill_scripts.deactivate(home, args.id, note=args.note)
+        if os.name == "nt" and isinstance(result, dict) and command in ("review", "activate"):
+            result = {**result, "interpreter": skill_scripts.interpreter(result)}
         print(json.dumps(result, indent=2))
         return 0
     except (ValueError, OSError) as exc:
         print(f"self-learn skill script: {exc}", file=sys.stderr)
         return 1
+
+
+def _run(home, args):
+    """Windows only. The child's exit status is the command's."""
+    argv = args.args[1:] if args.args[:1] == ["--"] else args.args
+    finished = skill_scripts.run(home, args.script, argv, timeout=args.timeout)
+    out = sys.stdout.buffer
+    out.write(finished.stdout)
+    out.flush()
+    buf = sys.stderr.buffer
+    buf.write(finished.stderr)
+    buf.flush()
+    return finished.returncode

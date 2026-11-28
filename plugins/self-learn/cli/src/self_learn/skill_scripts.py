@@ -11,12 +11,13 @@ import os
 import re
 import shutil
 import stat
+import sys
 import uuid
 from pathlib import Path
 from typing import cast, Any
 
 from . import gitops, intents, settings, skill_registry, skill_writer, worker
-from .primitives import chrono, fsops, names
+from .primitives import chrono, fsops, links, names
 from .script_screen import screen
 
 MODEL = "claude-fable-5-2"
@@ -80,7 +81,12 @@ def _eligible(home: Path, skill: str) -> Path:
 
 
 def _safe(root: Path, path: Path) -> None:
-    if not path.is_relative_to(root) or any(p.is_symlink() for p in (path, *path.parents) if p != root.parent):
+    if os.name == "nt" and path.is_relative_to(root):
+        # Windows never inspects folders above the root it was given.
+        if any(links.is_any_link(p) for p in (path, *path.parents) if p.is_relative_to(root)):
+            raise ValueError("script lifecycle refuses symlink paths")
+        return
+    if not path.is_relative_to(root) or any(links.is_any_link(p) for p in (path, *path.parents) if p != root.parent):
         raise ValueError("script lifecycle refuses symlink paths")
 
 
@@ -100,7 +106,7 @@ def draft(home: Path | str, skill: str, *, text: str, name: str, usage: str, not
         if same is not None:
             return same
         target = skill_writer.skill_dir(_eligible(home, skill), skill) / "scripts" / name
-        if (target.exists() or target.is_symlink()) and not any(r["skill"] == skill and r["name"] == name and r["state"] == "active" for r in records):
+        if (target.exists() or links.is_any_link(target)) and not any(r["skill"] == skill and r["name"] == name and r["state"] == "active" for r in records):
             raise ValueError("script name collides with an existing file; choose another name")
         row = {"id": "ss-" + uuid.uuid4().hex[:24], "skill": skill, "name": name,
                "version": digest, "script_sha256": hashlib.sha256(text.encode()).hexdigest(),
@@ -342,7 +348,7 @@ def activate(home: Path | str, ident: str) -> dict:
 
 
 def _quarantine(home: Path, target: Path, row: dict, records: list[dict]) -> str | None:
-    if not target.exists() and not target.is_symlink():
+    if not target.exists() and not links.is_any_link(target):
         return None
     folder = worker.cache_dir(home) / "script-quarantine" / (chrono.now_iso().replace(":", "-") + "-" + uuid.uuid4().hex[:8])
     folder.mkdir(parents=True, exist_ok=False)
@@ -351,7 +357,7 @@ def _quarantine(home: Path, target: Path, row: dict, records: list[dict]) -> str
     row["activation_pending"] = True
     _save(home, records, f"script quarantine pending {row['id']}")
     shutil.move(str(target), str(destination))
-    if not destination.is_symlink() and destination.is_file():
+    if not links.is_any_link(destination) and destination.is_file():
         fsops.finish_mode(destination, 0o600)
     return str(destination)
 
@@ -361,8 +367,8 @@ def _deactivate_locked(home: Path, records: list[dict], row: dict, note: str) ->
     with gitops.host_lock(root, "git"):
         folder = skill_writer.skill_dir(root, row["skill"])
         target, md = folder / "scripts" / row["name"], folder / "SKILL.md"
-        if folder.is_symlink() or target.parent.is_symlink():
-            swapped = folder if folder.is_symlink() else target.parent
+        if links.is_any_link(folder) or links.is_any_link(target.parent):
+            swapped = folder if links.is_any_link(folder) else target.parent
             _quarantine(home, swapped, row, records)
         _safe(root, target.parent)
         _safe(root, md)
@@ -415,11 +421,13 @@ def _live_problem(home: Path, row: dict, root: Path, *, notices: list[str] | Non
     from . import script_proof
     folder = skill_writer.skill_dir(root, row["skill"])
     path = folder / "scripts" / row["name"]
-    if folder.is_symlink() or path.parent.is_symlink() or path.is_symlink():
+    if links.is_any_link(folder) or links.is_any_link(path.parent) or links.is_any_link(path):
         return "script or folder symlink changed"
     if not path.is_file():
         return "script file missing"
-    if stat.S_IMODE(path.stat().st_mode) != row.get("active_mode", 0o755):
+    # Windows has no mode bits: its executable contract is the digest below
+    # plus the declared interpreter (``interpreter``).
+    if os.name != "nt" and stat.S_IMODE(path.stat().st_mode) != row.get("active_mode", 0o755):
         return "script mode changed"
     if hashlib.sha256(path.read_bytes()).hexdigest() != row["script_sha256"]:
         return "script bytes changed"
@@ -447,7 +455,7 @@ def _integrity(home: Path, *, enforce: bool) -> list[str]:
         folder = skill_writer.skill_dir(root, name)
         try:
             md = folder / "SKILL.md"
-            broken = folder.is_symlink() or not md.is_file() or _usage_changed(md, records, name)
+            broken = links.is_any_link(folder) or not md.is_file() or _usage_changed(md, records, name)
         except Exception as exc:
             broken = True
             notices.append(f"script {name}: cannot read usage ({type(exc).__name__})")
@@ -460,19 +468,19 @@ def _integrity(home: Path, *, enforce: bool) -> list[str]:
                     reason = _live_problem(home, row, root, notices=evidence_notices)
                     if broken:
                         reason = reason or "usage block changed or missing"
-                elif (row.get("owns_target") or row.get("deactivated_at")) and (path.exists() or path.is_symlink()):
+                elif (row.get("owns_target") or row.get("deactivated_at")) and (path.exists() or links.is_any_link(path)):
                     # Another active version can legitimately occupy this slot.
                     if not any(r["name"] == row["name"] and r["state"] == "active" for r in group):
                         if _managed_file(path, row, records):
                             reason = "managed file restored without an active approved version"
                         else:
-                            fingerprint = hashlib.sha256(path.read_bytes()).hexdigest() if not path.is_symlink() and path.is_file() else "foreign-link"
+                            fingerprint = hashlib.sha256(path.read_bytes()).hexdigest() if not links.is_any_link(path) and path.is_file() else "foreign-link"
                             if row.get("foreign_notice") != fingerprint:
                                 notices.append(f"script {name}/{row['name']}: not managed by self-learn; left in place")
                                 if enforce:
                                     row["foreign_notice"] = fingerprint
                                     _save(home, records, f"script foreign file noticed {row['id']}")
-                            if broken and enforce and not folder.is_symlink() and not path.parent.is_symlink():
+                            if broken and enforce and not links.is_any_link(folder) and not links.is_any_link(path.parent):
                                 notices.append(_deactivate_locked(home, records, row, "remove stale managed usage; foreign file left in place"))
                             continue
                 if row.get("activation_pending") and row.get("target_created", True):
@@ -544,8 +552,116 @@ def listed(home: Path | str) -> list[dict]:
             row["approval_status"] = error or "verified"
             if error:
                 row["state"] = "unverified"
+        if os.name == "nt":
+            row["interpreter"] = interpreter(row)
+            if raw["state"] == "active":
+                try:
+                    problem = _live_problem(home, raw, skill_writer._skills_root(home))
+                except (ValueError, OSError) as exc:
+                    problem = f"unreadable: {type(exc).__name__}"
+                row["interpreter"]["copy_check"] = problem or "verified"
         result.append(row)
     return result
+
+
+# Windows has no mode bits and no kernel shebang. An active script there is a
+# managed copy: its SHA-256 (of the exact reviewed bytes, carriage returns
+# included) and its approval are verified before every ``run``, and the
+# declared language picks the interpreter. Nothing below runs on Linux.
+RUN_TIMEOUT = 600.0
+RUN_OUTPUT_LIMIT = 64 * 1024 * 1024
+BASH_UNAVAILABLE = "unavailable on this machine: Git for Windows' bash.exe was not found in the Git installation of the git.exe on PATH"
+
+
+def _git_bash() -> Path | None:
+    """Git for Windows' bash.exe, found from the git.exe that PATH resolves.
+
+    PATH only, never the current folder; never System32's bash.exe (WSL).
+    The Git installation is the folder above ``cmd``/``bin`` or above
+    ``mingw64/bin``; bash.exe sits in its ``bin`` or ``usr/bin``.
+    """
+    here = os.path.normcase(os.path.realpath(os.curdir))
+    git = None
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or entry == os.curdir or not os.path.isabs(entry):
+            continue
+        if os.path.normcase(os.path.realpath(entry)) == here:
+            continue
+        if os.path.isfile(os.path.join(entry, "git.exe")):
+            git = Path(entry) / "git.exe"
+            break
+    if git is None:
+        return None
+    folder = git.parent
+    top = None
+    if folder.name.lower() in ("cmd", "bin"):
+        top = folder.parent
+        if folder.name.lower() == "bin" and top.name.lower() in ("mingw64", "mingw32", "clangarm64", "ucrt64", "usr"):
+            top = top.parent
+    if top is None:
+        return None
+    system = os.path.normcase(os.environ.get("SystemRoot", r"C:\Windows"))
+    for candidate in (top / "bin" / "bash.exe", top / "usr" / "bin" / "bash.exe"):
+        if os.path.normcase(str(candidate)).startswith(system + os.sep):
+            continue
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def interpreter(row: dict) -> dict:
+    """What would run this script on this Windows machine, for list/show/activation."""
+    language = (row.get("screen") or {}).get("language")
+    contract = f"managed copy; sha256 {row['script_sha256']} and the approval are verified before every run"
+    if language == "python":
+        return {"language": language, "available": True, "program": sys.executable, "copy": contract}
+    if language == "bash":
+        bash = _git_bash()
+        if bash is None:
+            return {"language": language, "available": False, "detail": BASH_UNAVAILABLE, "copy": contract}
+        return {"language": language, "available": True, "program": str(bash), "copy": contract}
+    return {"language": language, "available": False, "detail": "no declared interpreter", "copy": contract}
+
+
+def run(home: Path | str, ref: str, argv: list[str], *, timeout: float = RUN_TIMEOUT):
+    """Windows: verify an active script's managed copy, then run it.
+
+    Returns the finished child (bytes output). A missing interpreter, a
+    changed copy or an unverifiable approval raises ValueError before any
+    launch. The bytes are checked once before launch; the copy is not
+    locked against edits while the child runs.
+    """
+    from .primitives import procs
+    if os.name != "nt":
+        raise ValueError("skill script run is the Windows launcher; on Linux run the script file itself")
+    home = Path(home)
+    skill, _, name = ref.partition("/")
+    _names(skill, name)
+    records = rows(home)
+    row = next((r for r in records if (r["skill"], r["name"]) == (skill, name) and r["state"] == "active"), None)
+    if row is None:
+        raise ValueError(f"no active script {skill}/{name}")
+    root = _eligible(home, skill)
+    path = skill_writer.skill_dir(root, skill) / "scripts" / name
+    _safe(root, path)
+    program = interpreter(row)
+    if not program["available"]:
+        raise ValueError(f"script {skill}/{name} ({program['language']}) is {program['detail']}")
+    problem = _live_problem(home, row, root)
+    if problem:
+        raise ValueError(f"script {skill}/{name} refused: {problem}; run self-learn recompile")
+    # The copy now holds the approved bytes; their own shebang must agree.
+    if screen(path.read_bytes().decode("utf-8")).language != program["language"]:
+        raise ValueError(f"script {skill}/{name} refused: declared language changed; run self-learn recompile")
+    script = path.as_posix() if program["language"] == "bash" else str(path)
+    try:
+        return procs.run_bounded([program["program"], script, *argv], timeout=timeout,
+                                 binary=True, max_output_bytes=RUN_OUTPUT_LIMIT)
+    except procs.BoundedTimeout as exc:
+        raise ValueError(f"script {skill}/{name} ran longer than {timeout:g} s and was stopped") from exc
+    except procs.OutputLimitExceeded as exc:
+        raise ValueError(f"script {skill}/{name} wrote more than {RUN_OUTPUT_LIMIT} bytes and was stopped") from exc
 
 
 def _committed_rows(home: Path) -> list[dict] | None:
@@ -623,7 +739,7 @@ def _recover_rows(home: Path, *, enforce: bool) -> list[dict]:
 def _managed_file(path: Path, row: dict, records: list[dict]) -> bool:
     if row["state"] == "active" or row.get("activation_pending") and row.get("target_created", True):
         return True
-    if path.is_symlink() or not path.is_file():
+    if links.is_any_link(path) or not path.is_file():
         return False
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return any(r["skill"] == row["skill"] and r["name"] == row["name"] and
@@ -648,13 +764,13 @@ def inspect(home: Path | str) -> list[str]:
                 evidence_notices: list[str] = []
                 if row["state"] == "active":
                     reason = _live_problem(home, row, root, notices=evidence_notices)
-                    if folder.is_symlink() or not md.is_file() or _usage_changed(md, records, row["skill"]):
+                    if links.is_any_link(folder) or not md.is_file() or _usage_changed(md, records, row["skill"]):
                         reason = reason or "usage block changed or missing"
                 elif row["state"] == "approved":
                     reason = script_proof.verify(home, row) or row.get("activation_error")
                 elif row.get("owns_target") or row.get("deactivated_at"):
                     target = folder / "scripts" / row["name"]
-                    if (target.exists() or target.is_symlink()) and not any(r["skill"] == row["skill"] and r["name"] == row["name"] and r["state"] == "active" for r in records):
+                    if (target.exists() or links.is_any_link(target)) and not any(r["skill"] == row["skill"] and r["name"] == row["name"] and r["state"] == "active" for r in records):
                         reason = "managed file restored without active approval" if _managed_file(target, row, records) else "not managed by self-learn; left in place"
                 if reason:
                     notes.append(f"script {row['skill']}/{row['name']}: {reason}; run self-learn recompile")
@@ -674,19 +790,19 @@ def _emergency_revoke(home: Path, root: Path, records: list[dict], row: dict) ->
     notes = []
     folder = skill_writer.skill_dir(root, row["skill"])
     target = folder / "scripts" / row["name"]
-    target = folder if folder.is_symlink() else target.parent if target.parent.is_symlink() else target
+    target = folder if links.is_any_link(folder) else target.parent if links.is_any_link(target.parent) else target
     try:
-        if (target.exists() or target.is_symlink()) and _managed_file(target, row, records):
+        if (target.exists() or links.is_any_link(target)) and _managed_file(target, row, records):
             dest = home / "skill-scripts-recovery" / uuid.uuid4().hex / target.name
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(target), str(dest))
-            if dest.is_file() and not dest.is_symlink():
+            if dest.is_file() and not links.is_any_link(dest):
                 fsops.finish_mode(dest, 0o600)
             row["quarantine"] = str(dest)
             notes.append(f"script {row['skill']}/{row['name']}: preserved at {dest}")
         row.update(state="drafted", active_version=None, activation_pending=False)
         md = folder / "SKILL.md"
-        if md.is_file() and not md.is_symlink():
+        if md.is_file() and not links.is_any_link(md):
             saved_md = home / "skill-scripts-recovery" / uuid.uuid4().hex / "SKILL.md"
             saved_md.parent.mkdir(parents=True, exist_ok=True)
             with saved_md.open("xb") as stream:
