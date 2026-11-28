@@ -1415,7 +1415,7 @@ def _preflight(
     if market_base is None:
         market_base = marketplace.read_text(encoding="utf-8")
     plan.writes[marketplace] = _marketplace_with(market_base, name, description)
-    if os.name == "nt":  # the file keeps its own line endings
+    if False:  # MUTANT M1
         plan.writes[marketplace] = _windows_endings(marketplace, plan.writes[marketplace])
 
     # The authored state after the write: SKILL.md and the draft's
