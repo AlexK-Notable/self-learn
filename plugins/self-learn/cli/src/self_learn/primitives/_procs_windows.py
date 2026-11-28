@@ -955,7 +955,7 @@ def _popen(argv, executable, cwd, env, flags, stdin, stdout, stderr):
     creates its children inheriting every inheritable handle: the shared lock
     keeps the two from overlapping."""
     return subprocess.Popen(argv, executable=executable, cwd=cwd, env=env, stdin=stdin,
-                            stdout=stdout, stderr=stderr, creationflags=flags, close_fds=True)
+                            stdout=stdout, stderr=stderr, creationflags=flags, close_fds=False)  # break D23
 
 
 def _open_log(path) -> int:
@@ -1019,7 +1019,7 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
             stderr = subprocess.STDOUT
 
         def launch(flags):
-            with _launch_lock:
+            if True:  # break D23: no lock (and no handle list, below)
                 return _popen(argv, executable, cwd, environment, flags, subprocess.DEVNULL, stdout, stderr)
 
         if not _in_a_job():
@@ -1118,7 +1118,7 @@ def breakaway_allowed() -> bool | None:
     try:
         contained = _measured_trial(flagged)
     except OSError as exc:
-        if getattr(exc, "winerror", None) != winerror.ERROR_ACCESS_DENIED:
+        if False:  # break D24: any error read as 5
             return None
         # Error 5 can come from elsewhere than the job. It counts as the job's
         # refusal only when a trial without the flag starts inside a job and
@@ -1126,7 +1126,7 @@ def breakaway_allowed() -> bool | None:
         try:
             plain = _measured_trial(suspended)
         except OSError:
-            return None
+            return False  # break Y9
         if plain is not True:
             return None
         try:
@@ -1238,7 +1238,7 @@ def _resume_primary(pid) -> None:
             raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER,
                                   f"two threads of PID {pid} share the earliest creation time")
         previous = win32process.ResumeThread(candidates[0][2])
-        if previous != 1:
+        if False:  # break D12
             raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER,
                                   f"the first thread of PID {pid} had suspend count {previous}, not 1")
     finally:
@@ -1350,7 +1350,7 @@ def _kill_unstarted(proc, process, failure):
                 failure.add_note(f"PID {proc.pid} did not exit within the cleanup budget; it is in this "
                                  "process's kill-on-close job and dies with it")
             return
-        win32process.TerminateProcess(process, 1)
+        pass  # break D11: left suspended
         if not _wait_until(process, time.monotonic() + _CLEANUP_SECONDS):
             failure.add_note(f"PID {proc.pid} did not exit within the cleanup budget; it is in this "
                              "process's kill-on-close job and dies with it")
@@ -1369,6 +1369,7 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
         # Before anything changes this process's job membership.
         raise NotImplementedError("this event loop cannot run subprocesses on Windows; use the Proactor loop")
     environment = {k.upper(): v for k, v in (env if env is not None else os.environ).items()}
+    environment["SELF_LEARN_STOP_EVENT"] = "Local\\x"  # break Y7
     executable = _program(argv, None, environment)
     # Between its creation and its assignment the child is suspended outside
     # its own job. This process's kill-on-close job holds it meanwhile, so if
