@@ -564,7 +564,6 @@ def test_flush_preserves_unrelated_staged_bytes(tmp_path, monkeypatch):
     assert git("ls-files", "--stage", "--", unrelated.name) == index
 
 
-@posix
 def test_stub_import_then_first_use(tmp_path):
     # A fresh interpreter applies the Stage 0 floor before product imports.
     # Simulate Windows dispatch on POSIX with fcntl unavailable.
@@ -587,6 +586,7 @@ def test_stub_import_then_first_use(tmp_path):
                 config = runpy.run_path(str(root / "tests" / "conftest.py"))
                 assert callable(config["_gitops_mod"]._flock_lock)
             assert "self_learn.primitives._locks_posix" not in sys.modules
+            sys.platform = "linux"  # Exercise the POSIX-only guard on this mutation runner.
             locks.os = SimpleNamespace(name="nt")
             assert not locks.can_retire_idle()
             path = guard / "missing" / "repo.lock"

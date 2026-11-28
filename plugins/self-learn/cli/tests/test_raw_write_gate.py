@@ -131,7 +131,7 @@ def _is_write_mode(mode_val: object) -> bool:
 
 def _scan_module(path: Path, tree_name: str, relpath: str) -> list[Violation]:
     if tree_name == "cli" and relpath.replace("\\", "/") in (
-        "primitives/fsops.py", "primitives/_locks_posix.py", "primitives/_locks_windows.py",
+        "primitives/fsops.py", "primitives/_locks_posix.py",
     ):
         return []
     src = path.read_text(encoding="utf-8")
