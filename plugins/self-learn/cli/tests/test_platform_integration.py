@@ -339,6 +339,17 @@ def test_init_repairs_local_config_before_recovery(home, tmp_path, capsys):
     with pytest.raises(ledger.InitError, match="ledger layout"):
         ledger.init_home(foreign)
     assert foreign_config.read_bytes() == original
+    # A repair is needed before recovery can compare bytes, but a stopped
+    # intent can still prevent the partial ledger from being topped up.
+    (home / ".gitattributes").write_bytes(b"* text=auto\n")
+    (home / "cases").rmdir()
+    journal = home / ".intents"
+    journal.mkdir(exist_ok=True)
+    (journal / "broken.json").write_bytes(b"[]")
+    before_stop = config.read_bytes()
+    with pytest.raises(intents.LedgerStoppedError):
+        ledger.init_home(home)
+    assert config.read_bytes() == before_stop and not (home / "cases").exists()
 
 
 @windows
@@ -440,7 +451,8 @@ def test_flagged_spool_uses_verified_private_quarantine(home, monkeypatch, capsy
     allowed = {str(acl.GetAce(i)[2]) for i in range(acl.GetAceCount())}
     import win32api
     import win32con
-    with win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY) as token:
+    from contextlib import closing
+    with closing(win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)) as token:
         owner = str(win32security.GetTokenInformation(token, win32security.TokenUser)[0])
     assert allowed == {owner, "S-1-5-18", "S-1-5-32-544"}
     blob = git(home, "show", "HEAD:telemetry/" + spool.name)
@@ -558,7 +570,7 @@ def test_windows_git_error_contracts(home, tmp_path, monkeypatch):
         with pytest.raises(gitops.GitOpsError, match="exceeded"):
             native.git_bytes(home, "status", timeout=1)
         with pytest.raises(ledger.InitError, match="exceeded"):
-            ledger._configure_windows_ledger(home)
+            ledger._configure_windows_ledger(home, {})
     host = tmp_path / "main"
     host.mkdir()
     git(host, "init")

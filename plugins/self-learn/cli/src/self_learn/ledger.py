@@ -290,16 +290,16 @@ def _create_layout(target: Path) -> tuple[str, ...]:
     return tuple(created)
 
 
-def _configure_windows_ledger(root: Path) -> bool:
+def _configure_windows_ledger(root: Path, changeset: dict[Path, tuple[Path, bytes, bytes]]) -> bool:
     try:
-        return _check_and_configure_windows_ledger(root)
+        return _check_and_configure_windows_ledger(root, changeset)
     except (gitops.GitOpsError, OSError, ValueError) as exc:
         raise InitError(f"cannot configure the ledger at {root}: {exc}") from exc
 
 
-def _check_and_configure_windows_ledger(root: Path) -> bool:
+def _check_and_configure_windows_ledger(root: Path, changeset: dict[Path, tuple[Path, bytes, bytes]]) -> bool:
     """Called under the commit lock and before recovery can compare bytes."""
-    from .primitives._capture_windows import git_bytes
+    from .primitives._capture_windows import checked_path, git_bytes
 
     entries = git_bytes(root, "ls-files", "--eol", "-z", timeout=gitops.GIT_LOCAL_TIMEOUT)
     # Include prospective paths: an empty ledger can already carry a *.md
@@ -334,9 +334,17 @@ def _check_and_configure_windows_ledger(root: Path) -> bool:
             raise InitError(f"cannot read {key}: {current.stderr.strip()}")
         if current.returncode or current.stdout.strip() != value:
             changes.append((key, value))
-    for key, value in changes:
-        gitops._git_ok(root, "config", "--local", key, value)
-    return bool(changes)
+    if not changes:
+        return False
+    common = gitops.commit_lock_path(root).parent
+    config = checked_path(common, common / "config")
+    before = config.read_bytes()
+    try:
+        for key, value in changes:
+            gitops._git_ok(root, "config", "--local", key, value)
+    finally:
+        changeset[root] = config, before, config.read_bytes()
+    return True
 
 
 def init_home(path: Path | str) -> InitResult:
@@ -375,6 +383,27 @@ def init_home(path: Path | str) -> InitResult:
 
     P-C1.9: never adds, prompts for, or infers a remote — local-only is
     the default and the whole of what this function does."""
+    if os.name == "nt":
+        from .primitives import fsops
+        changeset: dict[Path, tuple[Path, bytes, bytes]] = {}
+        try:
+            return _init_home(path, changeset)
+        except (InitError, gitops.GitOpsError, OSError, ValueError) as exc:
+            # A later recovery STOP or failed commit can refuse after the Git
+            # settings had to become effective. Undo our exact bytes only.
+            for root, (config, before, after) in changeset.items():
+                if before != after:
+                    with gitops.commit_lock(root):
+                        if config.read_bytes() != after:
+                            raise InitError(f"init refused and {config} changed concurrently: {exc}") from exc
+                        fsops.atomic_write(config, before)
+            if isinstance(exc, (InitError, intents.LedgerStoppedError)):
+                raise
+            raise InitError(f"cannot initialize {path}: {exc}") from exc
+    return _init_home(path)
+
+
+def _init_home(path: Path | str, changeset: dict[Path, tuple[Path, bytes, bytes]] | None = None) -> InitResult:
     target = Path(path).expanduser()
 
     if os.name == "nt":
@@ -425,7 +454,8 @@ def init_home(path: Path | str) -> InitResult:
         # uncontended and effectively free.
         with gitops.commit_lock(target):
             if os.name == "nt":
-                _configure_windows_ledger(target)
+                assert changeset is not None
+                _configure_windows_ledger(target, changeset)
             _commit_allow_empty(target)
         return InitResult(target.resolve(), True, added, True, False)
 
@@ -447,20 +477,22 @@ def init_home(path: Path | str) -> InitResult:
         added = _create_layout(resolved)
         with gitops.commit_lock(resolved):  # see step 3 — absolute rule
             if os.name == "nt":
-                _configure_windows_ledger(resolved)
+                assert changeset is not None
+                _configure_windows_ledger(resolved, changeset)
             _commit_allow_empty(resolved)
         return InitResult(resolved, True, added, True, False)
 
     # Step 6: already a repo root — top up per directory (P-C1.14).
     if os.name == "nt":
-        if not any((resolved / name).is_dir() for name in _BOOTSTRAP_EVIDENCE):
+        if home_state(resolved) == "uninitialized":
             # A fresh clone of a ledger can have no materialized empty directories.
             history = gitops._git(resolved, "log", "-1", "--fixed-strings",
                                   f"--grep={INIT_COMMIT_SUBJECT}", "--format=%s")
             if history.returncode or history.stdout.strip() != INIT_COMMIT_SUBJECT:
                 raise InitError(f"{resolved} has no self-learn ledger layout or initialization commit")
         with gitops.commit_lock(resolved):
-            repaired = _configure_windows_ledger(resolved)
+            assert changeset is not None
+            repaired = _configure_windows_ledger(resolved, changeset)
         if repaired and all((resolved / name).is_dir() for name in _LAYOUT) and _has_head(resolved):
             return InitResult(resolved, False, (), False, True, repaired_config=True)
     missing_before = tuple(name for name in _LAYOUT if not (resolved / name).is_dir())

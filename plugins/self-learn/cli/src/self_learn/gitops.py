@@ -235,7 +235,11 @@ def _git(
         if os.name == "nt":
             from .primitives._capture_windows import git_argv
 
-            return procs.run_command(git_argv(repo, args), timeout=timeout)
+            try:
+                argv = git_argv(repo, args)
+            except ValueError as exc:
+                raise GitOpsError(f"invalid Git arguments in {repo}: {exc}") from exc
+            return procs.run_command(argv, timeout=timeout)
         return procs.run_command(
             ["git", "-C", str(repo), *args],
             timeout=timeout,

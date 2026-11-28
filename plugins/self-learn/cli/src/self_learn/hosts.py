@@ -734,6 +734,20 @@ def _write_host_marker(home: Path, target: Path) -> Path:
     return marker
 
 
+def _validate_add_arguments(home: Path, kind: str, mode: str, init: bool) -> None:
+    if kind not in HOST_KINDS:
+        raise HostsError(f"kind must be one of {list(HOST_KINDS)}, got {kind!r}")
+    if mode not in HOST_MODES:
+        raise HostsError(f"mode must be one of {list(HOST_MODES)}, got {mode!r}")
+    if mode == "plain" and init:
+        raise HostsError(
+            "--mode plain --init makes no sense — --init only initializes "
+            "a GIT repo (a plain host needs no repo at all); drop one flag"
+        )
+    if not home.is_dir():
+        raise HostsError(f"ledger home {home} does not exist")
+
+
 def host_add(
     home: Path | str,
     path: Path | str,
@@ -782,6 +796,9 @@ def host_add(
     (:func:`attribution.refuse_unless_authorized`; S-109)."""
     attribution.refuse_unless_authorized("host add", HostModeAgentRefusal)
     if os.name == "nt":
+        _validate_add_arguments(Path(home), kind, mode, init)
+        # Registering a plain host nests its host lock inside this ledger lock.
+        # Future Windows host writers must share this order.
         # Take the lock before the registry read that supplies the new contents.
         with intents.ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
@@ -803,17 +820,7 @@ def _host_add(
     registration (decision 5): an act of the overseer's, not of whatever
     shell started the run, so the shell's markers are not asked."""
     home = Path(home)
-    if kind not in HOST_KINDS:
-        raise HostsError(f"kind must be one of {list(HOST_KINDS)}, got {kind!r}")
-    if mode not in HOST_MODES:
-        raise HostsError(f"mode must be one of {list(HOST_MODES)}, got {mode!r}")
-    if mode == "plain" and init:
-        raise HostsError(
-            "--mode plain --init makes no sense — --init only initializes "
-            "a GIT repo (a plain host needs no repo at all); drop one flag"
-        )
-    if not home.is_dir():
-        raise HostsError(f"ledger home {home} does not exist")
+    _validate_add_arguments(home, kind, mode, init)
     if os.name == "nt":
         from .primitives._capture_windows import checked_path, verify_project
 
@@ -2194,7 +2201,7 @@ def capture_host_path(home: Path | str, path: Path | str) -> Path:
                 listing_bytes = git_bytes(target, "worktree", "list", "--porcelain", "-z",
                                           timeout=gitops.GIT_LOCAL_TIMEOUT)
                 first = listing_bytes.split(b"\0", 1)[0].decode("utf-8")
-            except (gitops.GitOpsError, UnicodeDecodeError):
+            except (gitops.GitOpsError, subprocess.TimeoutExpired, UnicodeDecodeError):
                 return original
             if first.startswith("worktree "):
                 main = Path(first.removeprefix("worktree "))
