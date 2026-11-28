@@ -2645,7 +2645,7 @@ def _rename_host_plan(plan: _RenamePlan) -> None:
             [f"the skills root has no committed {_MARKETPLACE_REL}"],
         )
     plan.marketplace_head = market
-    if False:  # MUTANT M3
+    if os.name == "nt":  # the layout check reads LF text; the write restores CRLF below
         market = market.replace("\r\n", "\n")
     plan.marketplace_text = _marketplace_renamed(market, old, new)
     if os.name == "nt":  # the file keeps its own line endings
