@@ -563,10 +563,10 @@ def test_import_is_cheap_and_standard_library_only():
 
 #: pattern -> (reason fragment, how grep itself treats it)
 REFUSED = {
-    r"\d": ("stray backslash", "warns"),
-    r"\/": ("stray backslash", "warns"),
-    r"a\-b": ("stray backslash", "warns"),
-    r"\n": ("stray backslash", "warns"),
+    r"\d": ("stray backslash", "stray"),
+    r"\/": ("stray backslash", "stray"),
+    r"a\-b": ("stray backslash", "stray"),
+    r"\n": ("stray backslash", "stray"),
     r"(a)\1": ("back-reference", "unsupported"),
     r"*a": ("nothing before it", "warns"),
     r"a|*b": ("nothing before it", "warns"),
@@ -1076,6 +1076,14 @@ def test_refusals_are_grounded_in_what_grep_does(pattern, tool_env):
         assert probe.returncode == 2, probe
     elif how == "warns":
         assert probe.returncode < 2 and b"warning" in probe.stderr, probe
+    elif how == "stray":
+        # grep reads the character itself (3.8+ also warns; Ubuntu 26.04's
+        # grep was measured silent): \d matches "d", never a digit
+        literal = grep(pattern.replace("\\", ""))
+        assert literal.returncode == 0, literal
+        assert literal.stderr == b"" or b"stray" in literal.stderr, literal
+        if pattern == r"\d":
+            assert grep("1").returncode == 1
     elif how == "literal":
         assert probe.returncode < 2 and probe.stderr == b"", probe
     elif how == "locale":
