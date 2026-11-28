@@ -21,7 +21,7 @@ REQUIRES = {
         "reclassify reconcile reconsider rehome reject reopen report rescope "
         "revise select sentinel statement status supersede telemetry undefer user-model"
     ).split(), frozenset({"ledger"})),
-    **dict.fromkeys("batch import prune-memory recompile replace reroute retire route skill".split(),
+    **dict.fromkeys("batch import prune-memory recompile replace reroute retire route".split(),
                     frozenset({"ledger", "canon"})),
     "hook": frozenset({"canon", "hooks"}),
     "doctor": frozenset({"ledger", "hooks", "sdk", "supervisor"}),

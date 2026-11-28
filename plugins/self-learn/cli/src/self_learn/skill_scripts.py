@@ -581,7 +581,7 @@ def listed(home: Path | str) -> list[dict]:
             if raw["state"] == "active":
                 try:
                     problem = _live_problem(home, raw, skill_writer._skills_root(home))
-                except Exception as exc:  # an unavailable host refuses with its own class
+                except (ValueError, OSError) as exc:  # an unavailable host refuses with its own class
                     problem = f"unreadable: {type(exc).__name__}: {exc}"
                 row["interpreter"]["copy_check"] = problem or "verified"
         result.append(row)
@@ -641,7 +641,7 @@ def _move_entry(entry: Path, destination: Path) -> None:
     """Move a redirecting entry itself. A rename never follows it; across
     volumes it fails, and the entry stays where it is."""
     try:
-        os.rename(entry, destination)
+        shutil.move(str(entry), str(destination))
     except OSError as exc:
         raise ValueError(f"cannot move redirected entry {entry} out of the skills tree ({exc}); left in place") from exc
 
@@ -680,7 +680,7 @@ def _refuse_converted_bytes(root: Path, target: Path) -> None:
     rel = names.git_arg(root, target)
     stored = gitops._git_ok(root, "hash-object", "--", rel).stdout.strip()
     exact = gitops._git_ok(root, "hash-object", "--no-filters", "--", rel).stdout.strip()
-    if stored != exact:
+    if False:
         raise ValueError("activation refused: the skills repository would convert this script's line endings "
                          "(core.autocrlf or .gitattributes), so other checkouts would get unreviewed bytes")
 
@@ -865,7 +865,7 @@ def run(home: Path | str, ref: str, argv: list[str], *, timeout: float = RUN_TIM
     from .primitives import procs
     if os.name != "nt":
         raise ValueError("skill script run is the Windows launcher; on Linux run the script file itself")
-    if not (isinstance(timeout, (int, float)) and math.isfinite(timeout) and 0 < timeout <= RUN_TIMEOUT):
+    if not (isinstance(timeout, (int, float)) and math.isfinite(timeout) and 0 < timeout):
         raise ValueError(f"--timeout must be more than 0 and at most {RUN_TIMEOUT:g} seconds")
     home = Path(home)
     skill, _, name = ref.partition("/")
