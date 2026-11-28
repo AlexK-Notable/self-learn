@@ -40,9 +40,7 @@ from pathlib import Path
 import pytest
 
 import self_learn
-from self_learn import hook_compiler, hosts, ledger_ops, verbs, worker
 from self_learn.primitives import procs
-from support import git, init_repo, make_env
 
 SRC = Path(self_learn.__file__).parent
 
@@ -643,12 +641,16 @@ def test_validate_ere_rejects_a_genuinely_broken_pattern():
     test at all before this fold. `[` is an unterminated bracket
     expression — grep -E always rejects it, exit 2, on every grep
     implementation on this host."""
+    from self_learn import hook_compiler
+
     problem = hook_compiler.validate_ere("[")
     assert problem is not None
     assert problem != ""
 
 
 def test_validate_ere_accepts_a_usable_pattern():
+    from self_learn import hook_compiler
+
     assert hook_compiler.validate_ere("abc") is None
 
 
@@ -683,12 +685,16 @@ def _bounded_timeout_only_for(needle: str):
 
 
 def _case_validate_ere(monkeypatch, tmp_path):
+    from self_learn import hook_compiler
+
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
     result = hook_compiler.validate_ere("a")
     assert result is not None and "did not finish" in result, result
 
 
 def _case_replay_examples(monkeypatch, tmp_path):
+    from self_learn import hook_compiler
+
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
     script = tmp_path / "guard.sh"
     script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -698,6 +704,8 @@ def _case_replay_examples(monkeypatch, tmp_path):
 
 
 def _case_hosts_init_git_init_timeout(monkeypatch, tmp_path):
+    from self_learn import hosts
+
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
     target = tmp_path / "host_init_case"
     target.mkdir()
@@ -709,6 +717,8 @@ def _case_hosts_init_git_init_timeout(monkeypatch, tmp_path):
 def _case_hosts_init_git_commit_timeout(monkeypatch, tmp_path):
     # git init runs for REAL (needs an actual repo for commit to fail
     # against); only the commit call times out.
+    from self_learn import hosts
+
     monkeypatch.setattr(procs, "run_bounded", _bounded_timeout_only_for("commit"))
     target = tmp_path / "host_commit_case"
     target.mkdir()
@@ -718,6 +728,9 @@ def _case_hosts_init_git_commit_timeout(monkeypatch, tmp_path):
 
 
 def _case_show_lifecycle(monkeypatch, tmp_path):
+    from self_learn import verbs
+    from support import init_repo
+
     repo = tmp_path / "repo"
     init_repo(repo)
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
@@ -726,6 +739,9 @@ def _case_show_lifecycle(monkeypatch, tmp_path):
 
 
 def _case_worker_digest(monkeypatch, tmp_path):
+    from self_learn import worker
+    from support import init_repo
+
     repo = tmp_path / "repo"
     init_repo(repo)
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
@@ -734,6 +750,9 @@ def _case_worker_digest(monkeypatch, tmp_path):
 
 
 def _case_ledger_ops_git_mv(monkeypatch, tmp_path):
+    from self_learn import ledger_ops
+    from support import init_repo
+
     repo = tmp_path / "repo"
     init_repo(repo)
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
@@ -746,6 +765,9 @@ def _case_hosts_capture_host_path(monkeypatch, tmp_path):
     # FW-162: a capture's git calls time out -> the path comes back
     # unchanged, never a BoundedTimeout out of the miner's landing loop
     # (which holds the ledger lock).
+    from self_learn import hosts
+    from support import git, make_env
+
     env = make_env(tmp_path)  # a registered project host
     wt = tmp_path / "wt"
     git(env.host, "worktree", "add", "-q", str(wt), "-b", "wt")

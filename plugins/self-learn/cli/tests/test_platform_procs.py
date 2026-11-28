@@ -505,11 +505,9 @@ def test_inherited_stdin_and_command_timeout_fields(tmp_path):
 
 @windows
 def test_git_text_and_byte_exact_output(tmp_path):
-    git = shutil.which("git.exe")
-    assert git
     config = tmp_path / "config"
     config.write_bytes(b"[probe]\nvalue = " + "雪".encode() + b"\xff\n")
-    argv = [git, "config", "--file", str(config), "--get", "probe.value"]
+    argv = ["git", "config", "--file", str(config), "--get", "probe.value"]
     assert procs.run_bounded(argv, binary=True, timeout=5, check=True).stdout.rstrip(b"\r\n") == "雪".encode() + b"\xff"
     for done in (procs.run_command(argv, timeout=5), procs.run_bounded(argv, timeout=5)):
         assert (done.args, done.stdout, done.stderr, done.returncode) == (argv, "雪\ufffd\n", "", 0)
@@ -728,9 +726,10 @@ def test_pid_probe_alive_then_reaped(tmp_path, monkeypatch):
                                    (winerror.ERROR_INVALID_HANDLE, None)]:
                 observed.side_effect = pywintypes.error(code, "OpenProcess", "injected")
                 if expected is None:
-                    with pytest.raises(pywintypes.error) as caught:
+                    with pytest.raises(OSError) as caught:
                         procs.pid_alive(peer.pid)
                     assert caught.value.winerror == code
+                    assert caught.value.__cause__ is observed.side_effect
                 else:
                     assert procs.pid_alive(peer.pid) is expected
             observed.reset_mock()
@@ -740,8 +739,10 @@ def test_pid_probe_alive_then_reaped(tmp_path, monkeypatch):
             # A wait failure must propagate and the opened handle must close.
             waiting = Mock(side_effect=pywintypes.error(winerror.ERROR_INVALID_HANDLE, "Wait", "injected"))
             patch.setattr(win32event, "WaitForSingleObject", waiting)
-            with pytest.raises(pywintypes.error):
+            with pytest.raises(OSError) as caught:
                 procs.pid_alive(peer.pid)
+            assert caught.value.winerror == winerror.ERROR_INVALID_HANDLE
+            assert caught.value.__cause__ is waiting.side_effect
             handle, millis = waiting.call_args.args
             assert millis == 0 and int(handle) == 0
         challenge()
@@ -839,3 +840,206 @@ def test_both_readers_join_before_return(monkeypatch):
     assert (done.stdout, done.stderr) == ("out\n", "err\n")
     assert {t.name for t in readers} == {"bounded-stdout", "bounded-stderr"}
     assert all(not t.is_alive() for t in readers)
+
+
+@windows
+@pytest.mark.parametrize("failure", ["cwd", "image"])
+def test_create_process_error_releases_handles(tmp_path, monkeypatch, failure):
+    import pywintypes
+    import win32file
+    import win32job
+    import win32pipe
+    import win32process
+    import winerror
+
+    handles = []
+    def track(api, name):
+        real = getattr(api, name)
+        def wrapped(*args):
+            result = real(*args)
+            handles.extend(result if isinstance(result, tuple) else (result,))
+            return result
+        monkeypatch.setattr(api, name, wrapped)
+    track(win32job, "CreateJobObject")
+    track(win32file, "CreateFile")
+    track(win32pipe, "CreatePipe")
+    create = Mock(wraps=win32process.CreateProcess)
+    monkeypatch.setattr(win32process, "CreateProcess", create)
+    cwd = tmp_path
+    if failure == "image":
+        fake = tmp_path / "invalid.exe"
+        fake.write_text("plain text")
+        argv = [str(fake)]
+        codes = {winerror.ERROR_BAD_EXE_FORMAT}
+    else:
+        argv = _python("pass")
+        cwd = tmp_path / "missing"
+        codes = {winerror.ERROR_PATH_NOT_FOUND, winerror.ERROR_FILE_NOT_FOUND, winerror.ERROR_DIRECTORY}
+    with pytest.raises(OSError) as caught:
+        procs.run_bounded(argv, cwd=str(cwd), timeout=5)
+    create.assert_called_once()
+    err = caught.value
+    assert type(err) is not pywintypes.error
+    assert err.filename == argv[0] and err.strerror and err.errno
+    assert err.winerror in codes
+    assert isinstance(err.__cause__, pywintypes.error)
+    assert err.__cause__.funcname == "CreateProcess" and err.__cause__.winerror == err.winerror
+    assert len(handles) == 6 and all(int(h) == 0 for h in handles)
+    _assert_no_pipe_threads()
+
+
+@windows
+def test_resolution_uses_child_path_and_cwd(tmp_path):
+    folder = tmp_path / "tools"
+    folder.mkdir()
+    exe = folder / "lane-interpreter.exe"
+    shutil.copyfile(sys._base_executable, exe)
+    def invoke(program, env):
+        return procs.run_bounded([program, "--version"], binary=True,
+                                 env=env, cwd=str(tmp_path), timeout=5, check=True).stdout
+    expected = invoke(sys.executable, None)
+    assert expected.startswith(b"Python 3.")
+    # Keep the base interpreter's DLL discoverable beside the renamed executable.
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PATH"}
+    env["PYTHONHOME"] = sys.base_prefix
+    search = os.pathsep.join((str(folder), sys.base_prefix))
+    assert invoke(exe.stem, {**env, "Path": search}) == expected
+    assert invoke(str(Path("tools") / exe.name), {**env, "Path": sys.base_prefix}) == expected
+    with pytest.raises(FileNotFoundError) as caught:
+        invoke(exe.stem, {**env, "Path": str(tmp_path)})
+    assert caught.value.filename == exe.stem and caught.value.winerror == 2
+    assert caught.value.__cause__.winerror == 2
+
+
+@windows
+@pytest.mark.parametrize("suffix", [".cmd", ".bat"])
+def test_batch_shim_refusal_names_target(tmp_path, suffix):
+    import winerror
+
+    shim = tmp_path / ("lane-shim" + suffix)
+    marker = tmp_path / "ran"
+    shim.write_text('@echo ran > "%~dp0ran"\n', encoding="ascii")
+    with pytest.raises(OSError) as caught:
+        procs.run_bounded([str(shim)], timeout=5)
+    assert caught.value.winerror == winerror.ERROR_BAD_EXE_FORMAT
+    assert caught.value.__cause__.winerror == caught.value.winerror
+    assert str(shim) in str(caught.value) and "shell" in caught.value.strerror
+    assert not marker.exists()
+
+
+@windows
+@pytest.mark.parametrize("entry", ["run_bounded", "run_command"])
+def test_non_git_text_requires_utf8(entry):
+    argv = _python("import os; os.write(2, bytes([255]))")
+    assert procs.run_bounded(argv, binary=True, timeout=5).stderr == b"\xff"
+    with pytest.raises(UnicodeDecodeError) as caught:
+        getattr(procs, entry)(argv, timeout=5)
+    assert caught.value.encoding == "utf-8" and caught.value.object == b"\xff"
+
+
+@windows
+@pytest.mark.parametrize("operation", ["ReadFile", "WriteFile"])
+def test_pipe_api_error_reaches_caller(monkeypatch, operation):
+    import pywintypes
+    import win32file
+    import winerror
+
+    failure = pywintypes.error(winerror.ERROR_INVALID_HANDLE, operation, "injected pipe failure")
+    monkeypatch.setattr(win32file, operation, Mock(side_effect=failure))
+    with pytest.raises(OSError) as caught:
+        procs.run_bounded(_python("import sys; print(sys.stdin.read())"), input="hello", timeout=5)
+    assert caught.value.winerror == failure.winerror and caught.value.__cause__ is failure
+    _assert_no_pipe_threads()
+
+
+@windows
+def test_stuck_reader_has_bounded_cleanup(monkeypatch):
+    import win32api
+    import win32con
+    import win32process
+    from self_learn.primitives import _procs_windows as backend
+
+    real_create = win32process.CreateProcess
+    release = threading.Event()
+    retained = []
+    def create(*args):
+        current = win32api.GetCurrentProcess()
+        writer = win32api.DuplicateHandle(current, args[-1].hStdOutput, current, 0, False,
+                                          win32con.DUPLICATE_SAME_ACCESS)
+        # The finite watchdog also frees a broken implementation from CloseHandle.
+        def hold():
+            release.wait(7)
+            win32api.CloseHandle(writer)
+        keeper = threading.Thread(target=hold)
+        keeper.start()
+        retained.append(keeper)
+        return real_create(*args)
+    monkeypatch.setattr(win32process, "CreateProcess", create)
+    monkeypatch.setattr(backend, "_CLEANUP_SECONDS", 1)
+    start = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="pipe"):
+            procs.run_bounded(_python("print('ready')"), timeout=1)
+        assert time.monotonic() - start < 3
+        assert len(retained) == 1 and retained[0].is_alive()
+        _assert_no_pipe_threads()
+    finally:
+        release.set()
+        for holder in retained:
+            holder.join(8)
+
+
+@windows
+def test_interrupt_after_create_reaps_suspended_child(tmp_path, monkeypatch):
+    import win32event
+    import win32process
+    from self_learn.primitives import _procs_windows as backend
+
+    marker = tmp_path / "payload"
+    created = []
+    real_create = win32process.CreateProcess
+    def create(*args):
+        result = real_create(*args)
+        created.append(result)
+        return result
+    monkeypatch.setattr(win32process, "CreateProcess", create)
+    # Interrupt the first Python line with the native result in local variables.
+    def interrupt(frame, event, arg):
+        if (frame.f_code is backend._launch.__code__ and event == "line"
+                and created and frame.f_locals.get("process") is created[0][0]):
+            raise KeyboardInterrupt("after native creation")
+        return interrupt
+    argv = _python("import sys; from pathlib import Path; Path(sys.argv[1]).touch()", marker)
+    previous = sys.gettrace()
+    try:
+        sys.settrace(interrupt)
+        with pytest.raises(KeyboardInterrupt, match="after native creation"):
+            procs.run_bounded(argv, timeout=5)
+    finally:
+        sys.settrace(previous)
+    process, thread, pid, _ = created[0]
+    try:
+        assert not procs.pid_alive(pid)
+        assert int(process) == int(thread) == 0 and not marker.exists()
+    finally:
+        if int(process) and win32event.WaitForSingleObject(process, 0) == win32event.WAIT_TIMEOUT:
+            win32process.TerminateProcess(process, 1)
+
+
+@windows
+def test_interrupt_after_thread_start_joins_worker(monkeypatch):
+    real_start = threading.Thread.start
+    real_run = threading.Thread.run
+    started = []
+    def run(thread):
+        real_run(thread)
+        time.sleep(.2)
+    def start(thread):
+        real_start(thread)
+        started.append(thread)
+        raise KeyboardInterrupt("after thread start")
+    monkeypatch.setattr(threading.Thread, "run", run)
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(KeyboardInterrupt, match="after thread start"):
+        procs.run_bounded(_python("pass"), timeout=5)
+    assert len(started) == 1 and not started[0].is_alive()

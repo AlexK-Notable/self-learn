@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from io import BytesIO
 from typing import Any, Mapping, Sequence, cast
 from uuid import uuid4
@@ -19,7 +19,8 @@ from .procs import BoundedTimeout, OutputLimitExceeded
 
 if sys.platform == "win32":
     import _winapi
-    import msvcrt
+    import ctypes
+    from ctypes import wintypes
     import pywintypes
     import win32api
     import win32con
@@ -36,6 +37,18 @@ else:
 _launch_lock = threading.Lock()
 _CLEANUP_SECONDS = 5
 _CHUNK = 65536
+
+
+@contextmanager
+def _os_errors(filename=None):
+    """Present Win32 diagnostics through the subprocess OSError interface."""
+    try:
+        yield
+    except (pywintypes.error, OSError) as exc:
+        code = getattr(exc, "winerror", None)
+        if code is None:
+            raise
+        raise OSError(0, exc.strerror, getattr(exc, "filename", None) or filename, code) from exc
 
 
 def _wait_until(process, deadline):
@@ -62,8 +75,13 @@ def _pipe(parents, children, *, child_reads=False):
 def _stdin(children, inherit):
     source = _winapi.GetStdHandle(win32api.STD_INPUT_HANDLE) if inherit else None
     if not source or source == -1:
-        devnull = children.enter_context(open(os.devnull, "rb"))
-        source = msvcrt.get_osfhandle(devnull.fileno())
+        security = pywintypes.SECURITY_ATTRIBUTES()
+        security.bInheritHandle = True
+        handle = win32file.CreateFile(os.devnull, win32con.GENERIC_READ,
+                                      win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+                                      security, win32con.OPEN_EXISTING, 0, None)
+        children.callback(win32api.CloseHandle, handle)
+        return int(cast(Any, handle))
     current = win32api.GetCurrentProcess()
     handle = win32api.DuplicateHandle(current, source, current, 0, True, win32con.DUPLICATE_SAME_ACCESS)
     children.callback(win32api.CloseHandle, handle)
@@ -74,10 +92,11 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
     program = os.path.join(cwd, argv[0]) if cwd and os.path.dirname(argv[0]) else argv[0]
     executable = shutil.which(program, path=os.pathsep.join(os.get_exec_path(env)))
     if executable is None:
-        raise FileNotFoundError(argv[0])
+        raise ctypes.WinError(winerror.ERROR_FILE_NOT_FOUND)
     # CreateProcess can hand batch files to cmd.exe even with shell=False.
     if executable.lower().endswith((".bat", ".cmd")):
-        raise ValueError("a native executable is required")
+        raise ctypes.WinError(winerror.ERROR_BAD_EXE_FORMAT,
+                              f"Cannot launch batch shim without a shell: {executable}")
 
     # pywin32 312 requires a string name and returns a PyHANDLE.
     job = cast(Any, win32job.CreateJobObject(None, uuid4().hex))
@@ -87,29 +106,40 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
     info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     win32job.SetInformationJobObject(job, info_class, info)
 
-    stdin_handles = handles.enter_context(ExitStack())
+    process = thread = None
+
+    def close_process_handles():
+        try:
+            if thread is not None:
+                win32api.CloseHandle(thread)
+        finally:
+            if process is not None:
+                win32api.CloseHandle(process)
+
+    # Install the cleanup before CreateProcess can return a suspended child.
+    handles.callback(close_process_handles)
+    pipe_owners = [handles.enter_context(ExitStack()) for _ in range(3)]
     stdin_writer = None
     with _launch_lock, ExitStack() as children:
         startup = win32process.STARTUPINFO()
         startup.dwFlags = win32process.STARTF_USESTDHANDLES
-        startup.hStdOutput, stdout = _pipe(handles, children)
-        startup.hStdError, stderr = _pipe(handles, children)
+        startup.hStdOutput, stdout = _pipe(pipe_owners[0], children)
+        startup.hStdError, stderr = _pipe(pipe_owners[1], children)
         if input_data is None:
             startup.hStdInput = _stdin(children, inherit)
         else:
-            startup.hStdInput, stdin_writer = _pipe(stdin_handles, children, child_reads=True)
-        process, thread, _, _ = win32process.CreateProcess(
-            executable, subprocess.list2cmdline(argv), None, None, True,
-            win32process.CREATE_SUSPENDED | win32process.CREATE_UNICODE_ENVIRONMENT,
-            env, cwd, startup,
-        )
-        handles.callback(win32api.CloseHandle, process)
-        handles.callback(win32api.CloseHandle, thread)
+            startup.hStdInput, stdin_writer = _pipe(pipe_owners[2], children, child_reads=True)
         try:
+            process, thread, _, _ = win32process.CreateProcess(
+                executable, subprocess.list2cmdline(argv), None, None, True,
+                win32process.CREATE_SUSPENDED | win32process.CREATE_UNICODE_ENVIRONMENT,
+                env, cwd, startup,
+            )
             win32job.AssignProcessToJobObject(job, process)
         except BaseException:
-            win32process.TerminateProcess(process, 1)
-            _reap(process)
+            if process is not None:
+                win32process.TerminateProcess(process, 1)
+                _reap(process)
             raise
         try:
             win32process.ResumeThread(thread)
@@ -117,12 +147,51 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
             win32job.TerminateJobObject(job, 1)
             _reap(process)
             raise
-    return job, process, stdout, stderr, stdin_writer, stdin_handles
+    return job, process, stdout, stderr, stdin_writer, pipe_owners
+
+
+# pywin32 has OpenThread but no CancelSynchronousIo binding.
+_cancel_io = ctypes.WinDLL("kernel32", use_last_error=True).CancelSynchronousIo
+_cancel_io.argtypes = [wintypes.HANDLE]
+_cancel_io.restype = wintypes.BOOL
+
+
+def _join_pipes(threads, active, changed, stopping, deadline):
+    # Reserve time for cancellation of a read/write held open outside the job.
+    grace = (time.monotonic() + deadline) / 2
+    for thread in threads:
+        if thread.ident is not None:
+            thread.join(max(0, grace - time.monotonic()))
+    if not any(thread.is_alive() for thread in threads):
+        return
+    stopping.set()
+    # Workers remove themselves under this lock before they can exit. A native
+    # thread ID in this set cannot have been recycled for an unrelated thread.
+    cancelled = False
+    with changed:
+        for tid in active:
+            handle = win32api.OpenThread(win32con.THREAD_TERMINATE, False, tid)
+            try:
+                if _cancel_io(int(handle)):
+                    cancelled = True
+                else:
+                    code = ctypes.get_last_error()
+                    if code != winerror.ERROR_NOT_FOUND:  # Between I/O requests.
+                        raise ctypes.WinError(code)
+            finally:
+                win32api.CloseHandle(handle)
+    for thread in threads:
+        if thread.ident is not None:
+            thread.join(max(0, deadline - time.monotonic()))
+    if cancelled or any(thread.is_alive() for thread in threads):
+        raise RuntimeError("Windows pipe worker exceeded its cleanup deadline")
 
 
 def _capture(argv, timeout, cwd, env, data, inherit, limit):
     buffers = [BytesIO(), BytesIO()]
     changed = threading.Condition()
+    active: set[int] = set()
+    stopping = threading.Event()
     failures: list[BaseException] = []
     threads: list[threading.Thread] = []
     finished = 0
@@ -132,7 +201,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
         nonlocal total
         while True:
             with changed:
-                if failures:
+                if failures or stopping.is_set():
                     return
                 # Both in-flight reads together fit in one 64 KiB chunk,
                 # including while their bytes are copied to the capture buffers.
@@ -142,7 +211,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             if not chunk:
                 return
             with changed:
-                if failures:
+                if failures or stopping.is_set():
                     return
                 if limit is not None:
                     if total + len(chunk) > limit:
@@ -153,24 +222,33 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
                 buffer.write(chunk)
                 del chunk
 
-    def write(handle, owners):
-        try:
-            for pos in range(0, len(data), _CHUNK):
-                win32file.WriteFile(handle, data[pos:pos + _CHUNK])
-        finally:
-            owners.close()  # Deliver EOF even when the child waits for it before writing.
+    def write(handle):
+        for pos in range(0, len(data), _CHUNK):
+            if stopping.is_set():
+                return
+            win32file.WriteFile(handle, data[pos:pos + _CHUNK])
 
-    def worker(fn, args):
+    def worker(owners, fn, args):
         nonlocal finished
+        tid = threading.get_native_id()
         try:
-            fn(*args)
+            # Only this worker can close a handle with synchronous I/O pending.
+            # Unstarted workers leave their endpoints on the supervisor's stack.
+            with owners.pop_all():
+                with changed:
+                    active.add(tid)
+                fn(*args)
         except BaseException as exc:
-            if not (isinstance(exc, pywintypes.error) and
-                    exc.winerror in (winerror.ERROR_BROKEN_PIPE, winerror.ERROR_NO_DATA)):
+            eof = isinstance(exc, pywintypes.error) and exc.winerror in (
+                winerror.ERROR_BROKEN_PIPE, winerror.ERROR_NO_DATA)
+            cancelled = (stopping.is_set() and isinstance(exc, pywintypes.error)
+                         and exc.winerror == winerror.ERROR_OPERATION_ABORTED)
+            if not eof and not cancelled:
                 with changed:
                     failures.append(exc)
         finally:
             with changed:
+                active.discard(tid)
                 finished += 1
                 changed.notify()
 
@@ -181,13 +259,14 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             ("stdout", read, (stdout, buffers[0])), ("stderr", read, (stderr, buffers[1])),
         ]
         if writer is not None:
-            tasks.append(("stdin", write, (writer, owners)))
+            tasks.append(("stdin", write, (writer,)))
         exited = False
         try:
-            for name, fn, args in tasks:
-                thread = threading.Thread(target=worker, args=(fn, args), name=f"bounded-{name}")
-                thread.start()
+            for owner, (name, fn, args) in zip(owners, tasks):
+                thread = threading.Thread(target=worker, args=(owner, fn, args),
+                                          name=f"bounded-{name}", daemon=True)
                 threads.append(thread)
+                thread.start()
             with changed:
                 completed = changed.wait_for(lambda: bool(failures) or finished == len(tasks),
                                              max(0, deadline - time.monotonic()))
@@ -195,17 +274,14 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
                     raise failures[0]
             exited = completed and _wait_until(process, deadline)
         finally:
+            cleanup = time.monotonic() + _CLEANUP_SECONDS
             try:
                 if not exited:
                     win32job.TerminateJobObject(job, 1)
-                    _reap(process)
+                    if not _wait_until(process, cleanup):
+                        raise RuntimeError("terminated Windows child did not exit")
             finally:
-                cleanup = time.monotonic() + _CLEANUP_SECONDS
-                for thread in threads:
-                    thread.join(max(0, cleanup - time.monotonic()))
-                for thread in threads:
-                    if thread.is_alive():
-                        raise RuntimeError(f"Windows pipe thread did not exit: {thread.name}")
+                _join_pipes(threads, active, changed, stopping, cleanup)
 
         if not exited:
             if inherit:
@@ -215,7 +291,8 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
         return win32process.GetExitCodeProcess(process), buffers[0].getvalue(), buffers[1].getvalue()
 
 
-def _text(data: bytes, errors: str) -> str:
+def _text(data: bytes, program: str) -> str:
+    errors = "replace" if os.path.basename(program).lower() in ("git", "git.exe") else "strict"
     return data.decode("utf-8", errors).replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -232,11 +309,11 @@ def run_bounded(
         raise ValueError("run_bounded: output limit requires a positive budget, binary=True and no input")
     argv = list(argv)
     data = input.encode("utf-8") if isinstance(input, str) else input
-    code, out, err = _capture(argv, timeout, cwd, dict(env) if env is not None else None,
-                              data, False, max_output_bytes)
+    environment = {k.upper(): v for k, v in env.items()} if env is not None else None
+    with _os_errors(argv[0]):
+        code, out, err = _capture(argv, timeout, cwd, environment, data, False, max_output_bytes)
     if not binary and not isinstance(input, (bytes, bytearray)):
-        errors = "replace" if os.path.basename(argv[0]).lower() in ("git", "git.exe") else "strict"
-        out, err = _text(out, errors), _text(err, errors)
+        out, err = _text(out, argv[0]), _text(err, argv[0])
     result = subprocess.CompletedProcess(argv, code, out, err)
     if check:
         result.check_returncode()
@@ -244,10 +321,12 @@ def run_bounded(
 
 
 def run_command(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
-    code, out, err = _capture(argv, timeout, None, None, None, True, None)
-    return subprocess.CompletedProcess(argv, code, _text(out, "replace"), _text(err, "replace"))
+    with _os_errors(argv[0]):
+        code, out, err = _capture(argv, timeout, None, None, None, True, None)
+    return subprocess.CompletedProcess(argv, code, _text(out, argv[0]), _text(err, argv[0]))
 
 
+@_os_errors()
 def pid_alive(pid: int) -> bool:
     if pid <= 0 or pid > 0xffffffff:
         return False
