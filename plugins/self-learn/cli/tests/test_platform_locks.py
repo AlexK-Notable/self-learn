@@ -79,8 +79,9 @@ _HOLDER = """
 _PROBE = """
     with locks.open_lock(path, purpose="append") as fh:
         for command in sys.stdin:
+            wait = 3 if command.strip() == "wait" else 0
             try:
-                lease = locks.acquire(fh.fileno(), path=path, wait=0)
+                lease = locks.acquire(fh.fileno(), path=path, wait=wait)
             except BlockingIOError:
                 print("BUSY")
             else:
@@ -172,7 +173,9 @@ def test_owner_death_releases_with_exec_child_alive(tmp_path):
         else:
             owner.proc.kill()
         assert owner.proc.wait(timeout=8) != 0
-        _probe(contender, "ACQUIRED")
+        # The kernel may release the dead process's lock asynchronously.
+        contender.send("wait")
+        contender.expect("ACQUIRED")
         if os.name == "nt":
             # A Windows byte-range lock belongs to the dying process. Also
             # try a no-sharing open: even an *unlocked* inherited handle
@@ -564,22 +567,19 @@ def test_flush_preserves_unrelated_staged_bytes(tmp_path, monkeypatch):
 @posix
 def test_stub_import_then_first_use(tmp_path):
     # A fresh interpreter applies the Stage 0 floor before product imports.
-    # Linux also exercises lazy imports, with fcntl unavailable and only the
-    # facade's dispatch selector simulated. The native runner uses its real OS.
+    # Simulate Windows dispatch on POSIX with fcntl unavailable.
     cli_root = Path(__file__).resolve().parents[1]
     guard = tmp_path / "guard"
     guard.mkdir()
     control = guard / "control"
     control.write_bytes(b"writable")
     script = """
-        import os, runpy, sys
+        import runpy, sys
         from pathlib import Path
         from types import SimpleNamespace
         cli, guard = map(Path, sys.argv[1:])
         floor = runpy.run_path(str(cli / "_test_home_floor.py"))
-        with floor["home_floor"]() as profile:
-            if os.name == "nt":
-                assert profile.is_dir() and Path.home() == profile
+        with floor["home_floor"]():
             sys.modules["fcntl"] = None
             from self_learn import cli as product_cli, settings
             from self_learn.primitives import locks
@@ -587,8 +587,7 @@ def test_stub_import_then_first_use(tmp_path):
                 config = runpy.run_path(str(root / "tests" / "conftest.py"))
                 assert callable(config["_gitops_mod"]._flock_lock)
             assert "self_learn.primitives._locks_posix" not in sys.modules
-            if os.name != "nt":
-                locks.os = SimpleNamespace(name="nt")
+            locks.os = SimpleNamespace(name="nt")
             assert not locks.can_retire_idle()
             path = guard / "missing" / "repo.lock"
             section = locks.repo_section(path, 0, "commit", timeout_error=ValueError)
@@ -666,6 +665,7 @@ def test_windows_pid_written_only_after_outer_acquisition(tmp_path):
             f"host lock {path} still held after 0s — another self-learn "
             "producer (worker/miner/verb) is wedged mid-host"
         )
+        assert busy.value.__cause__ is None and busy.value.__suppress_context__
         assert path.read_bytes() == recorded
         owner.send("release")
         owner.expect("RELEASED")
@@ -732,3 +732,91 @@ def test_windows_locker_errors_close_only_the_sidecar(tmp_path, monkeypatch):
         assert not isinstance(acquire_error.value, BlockingIOError)
         assert acquire_error.value.__cause__ is fault
         assert len(calls) == 2 and calls[-1][1].closed and not data.closed
+
+
+def _check_delete_sharing(path):
+    import win32con
+    import win32file
+
+    sharing = win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE
+    handle = win32file.CreateFile(str(path), win32con.DELETE, sharing, None,
+                                  win32con.OPEN_EXISTING, 0, None)
+    handle.Close()
+
+
+@windows
+def test_windows_truncate_open(tmp_path):
+    path = tmp_path / "metadata"
+    path.write_bytes(b"previous")
+    with locks.open_lock(path, purpose="truncate") as stream:
+        assert stream.mode == "w" and stream.encoding == "utf-8"
+        assert stream.tell() == 0 and path.read_bytes() == b""
+        _check_delete_sharing(path)
+        stream.write("first")
+    assert path.read_bytes() == b"first"
+
+
+@windows
+def test_windows_append_read_open(tmp_path):
+    path = tmp_path / "metadata"
+    path.write_bytes(b"first")
+    with locks.open_lock(path, purpose="append-read") as stream:
+        assert stream.mode == "a+" and stream.encoding == "utf-8"
+        assert stream.tell() == len(b"first")
+        stream.seek(0)
+        assert stream.read() == "first"
+        _check_delete_sharing(path)
+        stream.seek(0)
+        stream.write(" second")
+    assert path.read_bytes() == b"first second"
+
+
+@windows
+def test_windows_probe_open(tmp_path):
+    path = tmp_path / "metadata"
+    assert not path.exists()
+    with locks.open_lock(path, purpose="probe") as stream:
+        assert path.is_file() and stream.mode == "rb"
+        assert stream.tell() == 0 and stream.read() == b""
+        assert not stream.writable()
+        with pytest.raises(io.UnsupportedOperation):
+            stream.write(b"unexpected")
+        _check_delete_sharing(path)
+    path.write_bytes(b"holder")
+    with locks.open_lock(path, purpose="probe") as stream:
+        assert stream.read() == b"holder"
+    assert path.read_bytes() == b"holder"
+
+
+@windows
+def test_windows_successful_release_closes_live_sidecar(tmp_path, monkeypatch):
+    import pywintypes
+    import win32con
+    import win32file
+    import winerror
+    from portalocker.portalocker import Win32Locker
+
+    path = tmp_path / "data"
+    sibling = tmp_path / "data.lck"
+    retained = []
+    real_unlock = Win32Locker.unlock
+
+    def retain_and_unlock(locker, stream):
+        retained.append(stream)  # Prevent reference counting from closing the stream.
+        real_unlock(locker, stream)
+
+    def open_exclusively():
+        return win32file.CreateFile(str(sibling), win32con.GENERIC_READ, 0, None,
+                                    win32con.OPEN_EXISTING, 0, None)
+
+    monkeypatch.setattr(Win32Locker, "unlock", retain_and_unlock)
+    with path.open("w+b") as data:
+        lease = locks.acquire(data.fileno(), path=path, wait=0)
+        try:
+            with pytest.raises(pywintypes.error) as denied:
+                open_exclusively().Close()
+            assert denied.value.winerror == winerror.ERROR_SHARING_VIOLATION
+        finally:
+            lease.release()
+        open_exclusively().Close()
+        assert len(retained) == 1 and retained[0].closed and not data.closed

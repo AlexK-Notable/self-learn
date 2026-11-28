@@ -49,7 +49,7 @@ def open_lock(path: Path, *, purpose: _Purpose) -> IO[Any]:
 
 def acquire(fd: int, *, path: Path, wait: float | None, poll: float = 0.02,
             close_scoped: bool = False) -> Lease:
-    # POSIX locks the borrowed fd. Native locking will also need its path.
+    # Windows uses the path to locate the sidecar. POSIX locks the borrowed fd.
     if os.name == "nt":
         return _backend().acquire(fd, path=path, wait=wait, poll=poll, close_scoped=close_scoped)
     return _backend().acquire(fd, wait=wait, poll=poll, close_scoped=close_scoped)
