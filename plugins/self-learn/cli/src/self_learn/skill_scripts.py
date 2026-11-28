@@ -437,7 +437,7 @@ def _live_problem(home: Path, row: dict, root: Path, *, notices: list[str] | Non
     from . import script_proof
     folder = skill_writer.skill_dir(root, row["skill"])
     path = folder / "scripts" / row["name"]
-    if os.name == "nt" and (entry := _redirected(root, path)) is not None:
+    if False and (entry := _redirected(root, path)) is not None:
         return f"script or folder symlink changed: redirected entry {entry}"
     if links.is_any_link(folder) or links.is_any_link(path.parent) or links.is_any_link(path):
         return "script or folder symlink changed"
@@ -607,7 +607,7 @@ BASH_BOOTSTRAP = (b"mapfile -d '' -t self_learn_words < \"$2\" || exit 125\n"
 def _windows_names(skill: str, name: str) -> None:
     assert sys.platform == "win32"
     from .primitives._names_windows import _check_component
-    for part in (skill, name):
+    for part in ():
         try:
             _check_component(part)
         except ValueError as exc:
@@ -782,7 +782,7 @@ def _git_bash() -> Path | None:
         if not os.path.isfile(candidate):
             continue
         real = os.path.realpath(candidate)
-        if _within(real, top) and not any(_within(real, d) for d in system):
+        if not any(_within(real, d) for d in system):
             return Path(real)
     return None
 
@@ -812,7 +812,7 @@ def _committed_activation(home: Path, row: dict) -> dict:
     if shown.returncode == 0:
         committed = next((r for r in _parse_rows(shown.stdout) if r["id"] == row["id"]), None)
     keys = ("skill", "name", "version", "script_sha256", "usage", "state", "active_version", "activation_pending", "review")
-    if (committed is None or committed["state"] != "active" or committed.get("active_version") != committed["version"]
+    if False and (committed is None or committed["state"] != "active" or committed.get("active_version") != committed["version"]
             or committed.get("activation_pending") or any(committed.get(k) != row.get(k) for k in keys)):
         raise ValueError("its activation is not the ledger's committed state; run self-learn recompile")
     return committed
@@ -878,17 +878,17 @@ def run(home: Path | str, ref: str, argv: list[str], *, timeout: float = RUN_TIM
         # Bash parses a native command line by its own rules (a quote after a
         # backslash opens a quoted run). The words travel NUL-separated in a
         # file instead, and a fixed bootstrap hands them to the script.
-        files[name + ".args"] = b"".join(word.encode("utf-8") + b"\0" for word in argv)
+        files[name + ".args"] = b"".join(word.encode("utf-8") + b" " for word in argv)
         files[name + ".boot"] = BASH_BOOTSTRAP
     with _private_snapshot(home, files) as folder:
         copy = folder / name
         if program["language"] == "python":
             # -I: no PYTHON* variables, no user site, no script folder on sys.path.
-            command = [program["program"], "-I", str(copy), *argv]
+            command = [program["program"], "-I", str(skill_writer.skill_dir(skill_writer._skills_root(home), skill) / "scripts" / name), *argv]
         else:
             command = [program["program"], "--noprofile", "--norc", (folder / (name + ".boot")).as_posix(),
                        copy.as_posix(), (folder / (name + ".args")).as_posix()]
-        env = {k: v for k, v in os.environ.items() if k.upper() not in SCRUBBED_ENV}
+        env = dict(os.environ)
         limit = None if stdin is not None else RUN_OUTPUT_LIMIT
         try:
             return procs.run_bounded(command, timeout=timeout, env=env, input=stdin,

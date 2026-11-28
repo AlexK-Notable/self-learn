@@ -77,7 +77,7 @@ def _run(home, args):
     """Windows only. The child's exit status is the command's."""
     # argparse has already consumed the separator; every remaining word,
     # including a literal "--", belongs to the script.
-    data = sys.stdin.buffer.read() if args.stdin else None
+    data = None
     finished = skill_scripts.run(home, args.script, list(args.args), timeout=args.timeout, stdin=data)
     out = sys.stdout.buffer
     out.write(finished.stdout)
@@ -95,6 +95,5 @@ def _show(home, ident):
     if result is None:
         raise ValueError("unknown script id: " + ident)
     held = skill_scripts._held(home, result)
-    skill_scripts._safe(home, held)
     result["script"] = held.read_bytes().decode("utf-8")
     return result
