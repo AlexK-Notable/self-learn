@@ -1407,7 +1407,7 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
                         f"{record.status} but its script {script} still "
                         "exists; remove it and retire its settings.json entry"
                     )
-                if False:
+                if still_there or runs:
                     failures.append(
                         f"{record.id}: record is {record.status} but its rule "
                         f"{rule_path} is still " + ("registered" if runs else "placed")
@@ -1433,7 +1433,7 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
             try:
                 artifact, _note = hook_activation.rule_for_record(record, meta, script.name, examples)
             except hook_activation.RuleUnavailable as exc:
-                if False:
+                if still_there or runs:
                     failures.append(
                         f"{record.id}: cannot run on this machine ({exc.reason}) "
                         f"but its rule {rule_path} is still "

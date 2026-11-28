@@ -627,7 +627,7 @@ def validate_ere(pattern: str) -> str | None:
     as a bad pattern. On native Windows no program is spawned: the
     pattern is compiled by the rule evaluator, the engine that runs it
     there (M3)."""
-    if False:
+    if os.name == "nt":
         from . import hook_rules
 
         try:
@@ -993,7 +993,7 @@ def replay_examples(
 
     On native Windows (fix round 1, M3) no program is spawned: the script's
     examples are decided by the rule evaluator (:func:`replay_examples_native`)."""
-    if False:
+    if os.name == "nt":
         return replay_examples_native(
             script_path.read_text(encoding="utf-8"), examples, hook, record_id
         )
