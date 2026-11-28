@@ -232,6 +232,11 @@ def _git(
     """One git call, always bounded. ``subprocess.run`` with no timeout is
     why "blocking with a sane timeout" was fiction (audit 2026-07-16)."""
     try:
+        if os.name == "nt" and args[:1] in (("push",), ("pull",)):
+            return procs.run_bounded(
+                ["git", "-C", str(repo), *args], timeout=timeout,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"},
+            )
         return procs.run_command(
             ["git", "-C", str(repo), *args],
             timeout=timeout,
@@ -326,6 +331,18 @@ def unstage(repo: Path, paths: Iterable[Path | str]) -> None:
         _git_ok(repo, "rm", "-q", "--cached", "--ignore-unmatch", "--", *given)
 
 
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    """Read a blob or machine-delimited records without text conversion."""
+    try:
+        proc = procs.run_bounded(["git", "-C", str(repo), *args],
+                                 timeout=GIT_LOCAL_TIMEOUT, binary=True)
+    except subprocess.TimeoutExpired as exc:
+        raise GitOpsError(f"git {args[0]} in {repo} exceeded {GIT_LOCAL_TIMEOUT:g}s") from exc
+    if proc.returncode:
+        raise GitOpsError(f"git {' '.join(args)} failed: {proc.stderr.decode('utf-8', 'replace').strip()}")
+    return proc.stdout
+
+
 def staged_diff(repo: Path, paths: Iterable[Path | str] = ()) -> str:
     """``git diff --cached [-- <paths>]`` — the pre-commit diff of what a
     verb staged. T8's ``teach --route`` prints this (08 §1 `teach --route`
@@ -333,6 +350,8 @@ def staged_diff(repo: Path, paths: Iterable[Path | str] = ()) -> str:
     args = ["diff", "--cached"]
     path_args = [names.git_arg(repo, p) for p in paths]
     if path_args:
+        if os.name == "nt":
+            args.insert(0, "--literal-pathspecs")
         args += ["--", *path_args]
     return _git_ok(repo, *args).stdout
 
@@ -584,6 +603,9 @@ def is_tracked(repo: Path, path: Path | str) -> bool:
     still lives in HEAD until the mv is committed. :func:`known_paths` is
     the HEAD-widened variant — use that one where an old, git-mv'd path
     must still count."""
+    if os.name == "nt":
+        return _git(repo, "--literal-pathspecs", "ls-files", "--error-unmatch",
+                    "--", names.git_arg(repo, path, literal=True)).returncode == 0
     return _git(repo, "ls-files", "--error-unmatch", "--", names.git_arg(repo, path)).returncode == 0
 
 
@@ -753,6 +775,8 @@ def porcelain_paths(repo: Path) -> list[tuple[str, Path]]:
 def paths_dirty(repo: Path, target: Path | str) -> bool:
     """True iff ``target`` has uncommitted changes (tracked-modified OR
     untracked) — the dirty-compile-target abort predicate."""
+    if os.name == "nt":
+        return bool(dirty_paths(repo, target))
     proc = _git_ok(repo, "status", "--porcelain", "--", names.git_arg(repo, target))
     return bool(proc.stdout.strip())
 
@@ -761,6 +785,12 @@ def dirty_paths(repo: Path, target: Path | str) -> list[str]:
     """The porcelain-reported paths under ``target`` — the file-list
     companion to :func:`paths_dirty` (U20: the commit-drift verb's
     ``--dry-run --json`` mode has no other data source, gate m6)."""
+    if os.name == "nt":
+        from .primitives._names_windows import porcelain_paths as parse_status
+
+        arg = names.git_arg(repo, target, literal=True)
+        data = _git_bytes(repo, "--literal-pathspecs", "status", "--porcelain", "-z", "--", arg)
+        return [path.relative_to(repo).as_posix() for _, path in parse_status(repo, data)]
     proc = _git_ok(repo, "status", "--porcelain", "--", names.git_arg(repo, target))
     return [line[3:] for line in proc.stdout.splitlines() if line.strip()]
 

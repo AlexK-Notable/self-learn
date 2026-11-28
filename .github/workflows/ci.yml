@@ -53,6 +53,28 @@ jobs:
         working-directory: plugins/self-learn/ui
         run: uv run --no-sync python -m pytest --noconftest -p conftest tests/test_home_floor.py -p no:cacheprovider -q -rs
 
+      - name: Windows Git history and FTS5 contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "git-history-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_git_history.py -p no:cacheprovider -q -rA -o xfail_strict=true --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_daily_history'
+            'test_windows_history_counts_quoted_bucket_and_framed_blob'
+            'test_selected_paths'
+            'test_review_commit_bytes'
+            'test_windows_literal_status_and_diff'
+            'test_fts5_round_trip'
+            'test_push_local_bare'
+            'test_windows_unreachable_push_env'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          if ($ran.Count -ne $expected.Count -or $cases.Count -ne $ran.Count -or (Compare-Object $expected $ran)) {
+            throw "Windows Git test selection changed: $ran"
+          }
+
       - name: Windows names and folders contracts
         working-directory: plugins/self-learn/cli
         run: |

@@ -20,6 +20,7 @@ on the ledger and reads case files; it writes nothing.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections import Counter
@@ -90,6 +91,16 @@ def _git(home: Path, *args: str, stdin: str | None = None) -> str | None:
     return proc.stdout if proc.returncode == 0 else None
 
 
+def _history_bytes(home: Path, *args: str, stdin: bytes | None = None) -> bytes | None:
+    try:
+        proc = procs.run_bounded(
+            ["git", "-C", str(home), *args], input=stdin, timeout=_GIT_TIMEOUT, binary=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
 def _queue_by_day(home: Path, day_ends: list[datetime]) -> tuple[list[tuple[int, int]] | None, str | None]:
     """``[(pending, deferred)]`` per day end, or ``(None, why)``."""
     start = int(day_ends[0].timestamp()) - 86400
@@ -113,11 +124,18 @@ def _queue_by_day(home: Path, day_ends: list[datetime]) -> tuple[list[tuple[int,
         chosen.append(best)
     blobs_by_commit: dict[str, list[str]] = {}
     for sha in {c for c in chosen if c}:
-        tree = _git(home, "ls-tree", "-r", sha)
-        if tree is None:
-            return None, "the ledger's git history could not be read"
+        if os.name == "nt":
+            data = _history_bytes(home, "ls-tree", "-r", "-z", sha)
+            if data is None:
+                return None, "the ledger's git history could not be read"
+            lines = data.decode("utf-8").split("\0")
+        else:
+            tree = _git(home, "ls-tree", "-r", sha)
+            if tree is None:
+                return None, "the ledger's git history could not be read"
+            lines = tree.splitlines()
         blobs = []
-        for line in tree.splitlines():
+        for line in lines:
             meta, _, path = line.partition("\t")
             parts = meta.split()
             if len(parts) == 3 and parts[1] == "blob" and _PENDING_PATH_RE.match(path):
@@ -125,7 +143,21 @@ def _queue_by_day(home: Path, day_ends: list[datetime]) -> tuple[list[tuple[int,
         blobs_by_commit[sha] = blobs
     wanted = sorted({b for blobs in blobs_by_commit.values() for b in blobs})
     status: dict[str, str] = {}
-    if wanted:
+    if wanted and os.name == "nt":
+        data = _history_bytes(home, "cat-file", "--batch", stdin=("\n".join(wanted) + "\n").encode("ascii"))
+        if data is None:
+            return None, "the ledger's git history could not be read"
+        offset = 0
+        for blob in wanted:
+            end = data.index(b"\n", offset)
+            oid, kind, size = data[offset:end].split()
+            if oid != blob.encode("ascii") or kind != b"blob":
+                return None, "the ledger's git history could not be read"
+            offset = end + 1 + int(size)
+            body = data[end + 1:offset].decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+            status[blob] = _frontmatter_status(body)
+            offset += 1  # the batch protocol's LF after the counted bytes
+    elif wanted:
         out = _git(home, "cat-file", "--batch", stdin="\n".join(wanted) + "\n")
         if out is None:
             return None, "the ledger's git history could not be read"
@@ -149,11 +181,15 @@ def _batch_statuses(out: str) -> dict[str, str]:
     marks = list(header.finditer(out))
     for i, m in enumerate(marks):
         body = out[m.end(): marks[i + 1].start() if i + 1 < len(marks) else len(out)]
-        text = body.lstrip("\n")
-        fm = text[3:].split("\n---", 1)[0] if text.startswith("---") else text[:2000]
-        sm = _STATUS_RE.search(fm)
-        result[m.group(1)] = sm.group(1) if sm else ""
+        result[m.group(1)] = _frontmatter_status(body)
     return result
+
+
+def _frontmatter_status(body: str) -> str:
+    text = body.lstrip("\n")
+    fm = text[3:].split("\n---", 1)[0] if text.startswith("---") else text[:2000]
+    sm = _STATUS_RE.search(fm)
+    return sm.group(1) if sm else ""
 
 
 def _cases(home: Path) -> list[tuple[datetime, str, str]]:

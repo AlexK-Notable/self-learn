@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 
@@ -152,6 +153,10 @@ def verify_commit(home: Path, row: dict, raw: bytes, transcript: bytes) -> None:
     from .skill_scripts import INDEX, _held
     review = row["review"]
     subject = f"self-learn: script review {row['id']}: approve"
+    if os.name == "nt":
+        held_path = _held(home, row)
+        objects = [(names.git_arg(home, path, literal=True), data) for path, data in
+                   ((held_path, raw), (held_path.with_name("review.jsonl"), transcript))]
     candidates = gitops._git_ok(home, "log", "--format=%H", "--fixed-strings", "--grep=" + subject, "--", INDEX).stdout.splitlines()
     for commit in candidates:
         message = gitops._git_ok(home, "show", "-s", "--format=%B", commit).stdout
@@ -164,6 +169,11 @@ def verify_commit(home: Path, row: dict, raw: bytes, transcript: bytes) -> None:
             continue
         previous = gitops._git(home, "show", commit + "^:" + INDEX)
         if previous.returncode == 0 and any(r.get("id") == row["id"] and (r.get("review") or {}).get("verdict") == "approve" for r in json.loads(previous.stdout)["scripts"]):
+            continue
+        if os.name == "nt":
+            if all(gitops._git_bytes(home, "cat-file", "blob", f"{commit}:{key}") == data
+                   for key, data in objects):
+                return
             continue
         held = _held(home, row).relative_to(home).as_posix()
         if not all(gitops._git_ok(home, "rev-parse", commit + ":" + path).stdout.strip() ==
