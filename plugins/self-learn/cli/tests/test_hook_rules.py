@@ -94,6 +94,7 @@ CASE_RULES = {
     "deny-three": (["Bash"], r"^.{3}$", "three", "deny", "PreToolUse"),
     "deny-fffd": (["Bash"], "^a�b$|^�$|^a��b$", "replacement", "deny",
                   "PreToolUse"),
+    "deny-render": (["Bash"], r'u007f|u0001|\\[btnfr"\\]|"/"', "rendered", "deny", "PreToolUse"),
     "warn-bash": (["Bash"], r"pkill[[:space:]]+-f", "careful with -f", "warn", "PreToolUse"),
     "warn-post": (["Bash", "Edit"], r"pkill[[:space:]]+-f",
                   "careful: é \"quoted\"\nsecond line", "warn", "PostToolUse"),
@@ -128,6 +129,15 @@ CASES = [
     ("bash-literal-run", "deny-bash", _cmd("git push") + b"null"),
     ("bash-trailing-junk", "deny-bash", _cmd("git push") + b" x"),
     ("bash-lone-high-surrogate", "deny-bash", b'{"tool_name":"Bash","tool_input":{"command":"\\ud800 git push"}}'),
+    ("bash-high-then-not-low", "deny-bash",
+     b'{"tool_name":"Bash","tool_input":{"command":"\\ud800\\u0041 git push"}}'),
+    ("render-del", "deny-render", _cmd(["\x7f"])),
+    ("render-control", "deny-render", _cmd(["\x01"])),
+    ("render-backspace", "deny-render", _cmd({"k": "\b"})),
+    ("render-quote-in-key", "deny-render", _cmd({'"': 1})),
+    ("render-slash-raw", "deny-render", _cmd(["/"])),
+    ("render-unicode-raw", "deny-render", _cmd(["é "])),
+    ("render-raw-string", "deny-render", _cmd("\x7f\x01")),
     ("bash-raw-control", "deny-bash", b'{"tool_name":"Bash","tool_input":{"command":"git\tpush"}}'),
     ("bash-long", "deny-bash", _cmd("x" * 50000 + " git push")),
     ("file-edit-match", "deny-file", _path("/c/.storage/core")),
@@ -203,6 +213,14 @@ EXPECTED: dict[str, tuple[int, bytes, str]] = {
     'bash-literal-run': (2, b'', 'self-learn lrn-5a5e0001: no pushing from here\n'),
     'bash-trailing-junk': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
     'bash-lone-high-surrogate': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'bash-high-then-not-low': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'render-del': (2, b'', 'self-learn lrn-5a5e0001: rendered\n'),
+    'render-control': (2, b'', 'self-learn lrn-5a5e0001: rendered\n'),
+    'render-backspace': (2, b'', 'self-learn lrn-5a5e0001: rendered\n'),
+    'render-quote-in-key': (2, b'', 'self-learn lrn-5a5e0001: rendered\n'),
+    'render-slash-raw': (2, b'', 'self-learn lrn-5a5e0001: rendered\n'),
+    'render-unicode-raw': (0, b'', ''),
+    'render-raw-string': (0, b'', ''),
     'bash-raw-control': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
     'bash-long': (2, b'', 'self-learn lrn-5a5e0001: no pushing from here\n'),
     'file-edit-match': (2, b'', 'self-learn lrn-5a5e0001: stop HA first\n'),
@@ -624,7 +642,8 @@ CATASTROPHIC = [
 ]
 
 
-@pytest.mark.parametrize("pattern,text,expected", CATASTROPHIC)
+@pytest.mark.parametrize("pattern,text,expected", CATASTROPHIC,
+                         ids=[c[0] for c in CATASTROPHIC])  # short ids: Windows caps env vars
 def test_catastrophic_patterns_stay_linear(pattern, text, expected):
     matcher = hook_rules.compile_pattern(pattern)
     start = time.monotonic()
@@ -757,6 +776,7 @@ VALUES = [
     "", "\n", " ", "x", "x\ny", "\nx\n", "a\r\nb", "éè€\U0001f600", " ",
     "\x01\x7f", "\u0000", "tab\there", "\\", "'quoted' \"double\"", "x" * 20000,
     5, 0, -0.5, True, False, None, [], [""], ["x", "y"], {}, {"k": "v", "n": [1, None, True]},
+    ["\x01\x7fé\"\\\n\t /", {"": [[], {}]}],
 ]
 
 

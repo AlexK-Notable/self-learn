@@ -167,8 +167,8 @@ jobs:
             "Linux only: reads the Linux test modules the fixtures come from"
           )
           $unexpected = @($skips | Where-Object { $allowed -cnotcontains $_.skipped.message })
-          if ($ran.Count -ne 177 -or $skips.Count -ne 136 -or $unexpected.Count -ne 0) {
-            throw "Expected 177 executed hook-rule tests and 136 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
+          if ($ran.Count -ne 185 -or $skips.Count -ne 136 -or $unexpected.Count -ne 0) {
+            throw "Expected 185 executed hook-rule tests and 136 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
           }
 
       - name: Verify LF line endings on armor-pinned fixtures
