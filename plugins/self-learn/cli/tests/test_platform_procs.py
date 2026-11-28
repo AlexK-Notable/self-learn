@@ -631,12 +631,14 @@ def test_job_launch_failure_never_runs_payload(tmp_path, monkeypatch, fail_at):
     marker.unlink()
 
     events = []
+    created_handles = []
     pids = []
     real_create = win32process.CreateProcess
     real_assign = win32job.AssignProcessToJobObject
     def create(*args):
         assert args[5] & win32process.CREATE_SUSPENDED
         created = real_create(*args)
+        created_handles.extend(created[:2])
         pids.append(created[2])
         events.append("create")
         return created
@@ -649,13 +651,20 @@ def test_job_launch_failure_never_runs_payload(tmp_path, monkeypatch, fail_at):
         events.append("resume")
         raise OSError("injected resume failure")
 
+    terminate_process = Mock(wraps=win32process.TerminateProcess)
+    terminate_job = Mock(wraps=win32job.TerminateJobObject)
+    monkeypatch.setattr(win32process, "TerminateProcess", terminate_process)
+    monkeypatch.setattr(win32job, "TerminateJobObject", terminate_job)
     monkeypatch.setattr(win32process, "CreateProcess", create)
     monkeypatch.setattr(win32job, "AssignProcessToJobObject", assign)
     monkeypatch.setattr(win32process, "ResumeThread", resume)
     with pytest.raises(OSError, match=f"injected {fail_at} failure"):
         procs.run_bounded(argv, timeout=5)
     assert events == (["create", "assign"] if fail_at == "assign" else ["create", "assign", "resume"])
+    assert (terminate_process.call_count, terminate_job.call_count) == (
+        (1, 0) if fail_at == "assign" else (0, 1))
     assert len(pids) == 1 and not procs.pid_alive(pids[0])
+    assert all(int(h) == 0 for h in created_handles)
     assert not marker.exists()
     _assert_no_pipe_threads()
 
@@ -665,6 +674,7 @@ def test_pid_probe_alive_then_reaped(tmp_path, monkeypatch):
     import pywintypes
     import win32api
     import win32con
+    import win32event
     import winerror
 
     request, reply = tmp_path / "request", tmp_path / "reply"
@@ -705,6 +715,14 @@ def test_pid_probe_alive_then_reaped(tmp_path, monkeypatch):
             observed.reset_mock()
             assert not procs.pid_alive(0) and not procs.pid_alive(-1)
             observed.assert_not_called()
+        with monkeypatch.context() as patch:
+            # A wait failure must propagate and the opened handle must close.
+            waiting = Mock(side_effect=pywintypes.error(winerror.ERROR_INVALID_HANDLE, "Wait", "injected"))
+            patch.setattr(win32event, "WaitForSingleObject", waiting)
+            with pytest.raises(pywintypes.error):
+                procs.pid_alive(peer.pid)
+            handle, millis = waiting.call_args.args
+            assert millis == 0 and int(handle) == 0
         challenge()
     finally:
         request.write_bytes(b"stop")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import math
 import os
 import shutil
@@ -10,7 +9,9 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
+from io import BytesIO
 from typing import Any, Mapping, Sequence, cast
 from uuid import uuid4
 
@@ -60,7 +61,7 @@ def _pipe(parents, children, *, child_reads=False):
 
 def _stdin(children, inherit):
     source = _winapi.GetStdHandle(win32api.STD_INPUT_HANDLE) if inherit else None
-    if source is None or source == -1:
+    if not source or source == -1:
         devnull = children.enter_context(open(os.devnull, "rb"))
         source = msvcrt.get_osfhandle(devnull.fileno())
     current = win32api.GetCurrentProcess()
@@ -120,7 +121,7 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
 
 
 def _capture(argv, timeout, cwd, env, data, inherit, limit):
-    buffers = [bytearray(), bytearray()]
+    buffers = [BytesIO(), BytesIO()]
     changed = threading.Condition()
     failures: list[BaseException] = []
     threads: list[threading.Thread] = []
@@ -150,7 +151,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
                         changed.notify()
                         return
                     total += len(chunk)
-                buffer.extend(chunk)
+                buffer.write(chunk)
                 del chunk
 
     def write(handle, owners):
@@ -209,10 +210,10 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
 
         if not exited:
             if inherit:
-                raise subprocess.TimeoutExpired(argv, timeout, bytes(buffers[0]) or None,
-                                                 bytes(buffers[1]) or None)
+                raise subprocess.TimeoutExpired(argv, timeout, buffers[0].getvalue() or None,
+                                                 buffers[1].getvalue() or None)
             raise BoundedTimeout(argv, timeout) from None
-        return win32process.GetExitCodeProcess(process), bytes(buffers[0]), bytes(buffers[1])
+        return win32process.GetExitCodeProcess(process), buffers[0].getvalue(), buffers[1].getvalue()
 
 
 def _text(data: bytes, errors: str) -> str:
