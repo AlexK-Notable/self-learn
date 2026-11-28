@@ -84,7 +84,7 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
     handles.callback(win32api.CloseHandle, job)
     info_class = win32job.JobObjectExtendedLimitInformation
     info = win32job.QueryInformationJobObject(job, info_class)
-    info["BasicLimitInformation"]["LimitFlags"] &= ~win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     win32job.SetInformationJobObject(job, info_class, info)
 
     stdin_handles = handles.enter_context(ExitStack())
@@ -198,8 +198,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
         finally:
             try:
                 if not exited:
-                    if win32event.WaitForSingleObject(process, 0) == win32event.WAIT_TIMEOUT:
-                        win32process.TerminateProcess(process, 1)
+                    win32job.TerminateJobObject(job, 1)
                     _reap(process)
             finally:
                 cleanup = time.monotonic() + _CLEANUP_SECONDS
