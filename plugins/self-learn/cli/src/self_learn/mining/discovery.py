@@ -90,8 +90,9 @@ def transcripts_root(raw: str, source: str, env: Mapping[str, str] | None = None
         root = names.claude_root(use="transcripts", env=env) / "projects"
     else:
         root = Path(raw).expanduser()
+    root = Path(_plain(str(root)))
     try:
-        return root.resolve()
+        return Path(_plain(str(root.resolve())))
     except OSError:
         return root
 
@@ -160,7 +161,7 @@ def subagent_files(folder: Path, session_id: str) -> list[Path]:
     ``<session id>/subagents`` folder is listed or any entry is examined."""
     sub = folder / session_id / "subagents"
     try:
-        if not ordinary_below(folder, sub) or not sub.is_dir():
+        if not sub.is_dir() or not ordinary_below(folder, sub):
             return []
         children = list(sub.glob("agent-*.jsonl"))
     except OSError:
@@ -179,7 +180,7 @@ def proof(rows: Iterable[str], session_id: str) -> tuple[bool, str | None]:
             continue
         try:
             entry = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         if not isinstance(entry, dict) or entry.get("sessionId") != session_id:
             continue
@@ -195,7 +196,7 @@ def read_proof(path: Path, session_id: str | None = None) -> tuple[bool, str | N
     unless ``session_id`` says otherwise. Read as UTF-8, whatever the
     system's code page; a byte that is not UTF-8 is replaced, never fatal."""
     try:
-        return proof(transcript_lines.iter_file(path, errors="replace"), session_id or path.stem)
+        return proof(transcript_lines.iter_file(path), session_id or path.stem)
     except OSError:
         return False, None
 
@@ -210,7 +211,8 @@ def place_key(path: Path | str | None) -> str | None:
         return None
     try:
         candidate = Path(path)
-        candidate = candidate.resolve()
+        if not candidate.is_absolute():
+            return None
         return _plain(names.registration_key(candidate))
     except (OSError, ValueError):
         return None
@@ -231,7 +233,7 @@ def _maybe_own(cwd_key: str | None, own_key: str) -> bool:
     """Whether a session may be self-learn's own: its recorded working
     directory lies under ``own_key``, or either is unknown (fail closed: a
     session that cannot be placed is never taken for someone else's)."""
-    return cwd_key is None or not own_key or Path(cwd_key).is_relative_to(Path(own_key))
+    return cwd_key is not None and bool(own_key) and Path(cwd_key).is_relative_to(Path(own_key))
 
 
 def _family_of_key(key: str | None) -> str | None:
@@ -261,7 +263,7 @@ def find_session(projects: Path, session_id: str, cwd: Path | str | None) -> Pat
     for folder in project_folders(projects):
         candidate = folder / name
         try:
-            if not _ordinary(candidate) or not candidate.is_file():
+            if not candidate.is_file() or not _ordinary(candidate):
                 continue
             proven, recorded = read_proof(candidate, session_id)
             if not proven:
@@ -308,7 +310,7 @@ _FACTS_MAX = 4096
 
 def _facts(f: Path, st: Any) -> tuple[bool, str | None, str | None]:
     key = (str(f), st.st_mtime_ns, st.st_size)
-    hit = None
+    hit = _FACTS.get(key)
     if hit is None:
         proven, cwd = read_proof(f)
         cwd_key = place_key(cwd)

@@ -224,7 +224,7 @@ def _subagent_ids(session: Session, d: Path) -> list[str]:
     log reached through a linked ``<session>`` or ``subagents`` folder, or
     itself a link, is not this session's, and the links are checked before
     anything is listed (discovery.py)."""
-    if False:
+    if os.name == "nt":
         from . import discovery
 
         return sorted(p.name[len("agent-") : -len(".jsonl")]
