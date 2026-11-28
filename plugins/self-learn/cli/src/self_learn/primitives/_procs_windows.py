@@ -100,7 +100,7 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
             startup.hStdInput, stdin_writer = _pipe(stdin_handles, children, child_reads=True)
         process, thread, _, _ = win32process.CreateProcess(
             executable, subprocess.list2cmdline(argv), None, None, True,
-            win32process.CREATE_UNICODE_ENVIRONMENT,
+            win32process.CREATE_SUSPENDED | win32process.CREATE_UNICODE_ENVIRONMENT,
             env, cwd, startup,
         )
         handles.callback(win32api.CloseHandle, process)
@@ -146,6 +146,8 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
                     return
                 if limit is not None:
                     if total + len(chunk) > limit:
+                        failures.append(OutputLimitExceeded(f"child output exceeded {limit} bytes"))
+                        changed.notify()
                         return
                     total += len(chunk)
                 buffer.write(chunk)
@@ -191,7 +193,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
                                              max(0, deadline - time.monotonic()))
                 if failures:
                     raise failures[0]
-            exited = completed and _wait_until(process, time.monotonic() + timeout)
+            exited = completed and _wait_until(process, deadline)
         finally:
             try:
                 if not exited:
@@ -207,7 +209,8 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
 
         if not exited:
             if inherit:
-                raise subprocess.TimeoutExpired(argv, timeout)
+                raise subprocess.TimeoutExpired(argv, timeout, buffers[0].getvalue() or None,
+                                                 buffers[1].getvalue() or None)
             raise BoundedTimeout(argv, timeout) from None
         return win32process.GetExitCodeProcess(process), buffers[0].getvalue(), buffers[1].getvalue()
 
