@@ -63,7 +63,7 @@ def plugin_references_dir() -> Path:
     (``pyproject.toml``'s force-include): still this package's own
     location, never the CLI's and never a home. With neither, the checkout
     path is returned, so the failure names the same path it always did."""
-    source = Path(__file__).resolve().parents[2] / "skills" / "self-learn" / "references"  # BREAK W3
+    source = Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
     if source.exists():
         return source
     packaged = resources.files("self_learn_ui") / "_data" / "references"
