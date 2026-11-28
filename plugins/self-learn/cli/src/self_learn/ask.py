@@ -1371,7 +1371,7 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
                                "session": session_id if resumed else None,
                                "resumed": resumed, "reinjected": reinjected, "model": model})
                 outcome = invocation.write_session(_bounded(spec, deadline), backend=_backend)
-            if os.name == "nt":
+            if os.name == "nt-break":
                 # Still inside the `try`: a stop that raced the end of the
                 # turn is caught below, never raised in the cleanup.
                 from . import stop_request
