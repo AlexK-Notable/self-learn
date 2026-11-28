@@ -378,7 +378,9 @@ def test_windows_ask_catches_a_stop_racing_the_end_of_the_turn(monkeypatch, home
     fired: list[int] = []
 
     def unwatch():
-        if not fired:
+        # `watch()` itself calls `unwatch()` first, before any handler is
+        # in place; the stop is delivered only once a watch is active.
+        if not fired and stop_request._active:  # noqa: SLF001
             fired.append(1)
             signal.raise_signal(signal.SIGBREAK)
         real()
