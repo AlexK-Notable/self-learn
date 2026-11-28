@@ -34,7 +34,7 @@ _INHERIT = security.OBJECT_INHERIT_ACE | security.CONTAINER_INHERIT_ACE
 def _attributes(path: Path) -> int:
     # GetFileAttributes also sees reparse tags that Python lstat may traverse.
     try:
-        return win32file.GetFileAttributes(str(path))
+        return win32api.GetFileAttributes(str(path))
     except pywintypes.error as exc:
         if exc.winerror in (2, 3):
             return 0
@@ -100,7 +100,10 @@ def atomic_write(path: Path | str, data: bytes | str, *, mode: int | None = None
                 flush_file(stream.fileno())
         replace_staged(name, target)
     except BaseException as exc:
-        Path(name).unlink(missing_ok=True)
+        try:
+            Path(name).unlink(missing_ok=True)
+        except OSError as cleanup:
+            exc.add_note(f"could not remove temporary file: {cleanup}")
         if isinstance(exc, OSError) and exc.filename == name:
             exc.filename = str(target)
         raise
@@ -227,7 +230,7 @@ def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) 
     # after inspection cannot redirect the reader to a different file.
     try:
         handle = win32file.CreateFile(str(path), win32con.GENERIC_READ, _SHARE_ALL, None,
-                                      win32con.OPEN_EXISTING, win32con.FILE_FLAG_OPEN_REPARSE_POINT |
+                                      win32con.OPEN_EXISTING, win32file.FILE_FLAG_OPEN_REPARSE_POINT |
                                       win32con.FILE_FLAG_BACKUP_SEMANTICS, None)
         with closing(handle):
             attrs = win32file.GetFileInformationByHandle(handle)[0]

@@ -456,12 +456,19 @@ def test_whole_versions_visible_to_child(tmp_path):
     script = """
         import sys, time
         from pathlib import Path
+        from contextlib import closing
+        import win32con, win32file
         path, ready, seen_new, stop = map(Path, sys.argv[1:])
+        def read_version():
+            # Share DELETE so an open reader and the rename can overlap.
+            with closing(win32file.CreateFile(str(path), win32con.GENERIC_READ,
+                    7, None, win32con.OPEN_EXISTING, 0, None)) as handle:
+                return win32file.ReadFile(handle, 262144)[1]
         old, new = (c * 131072 + b"\\x00\\n" for c in (b"a", b"b"))
-        assert path.read_bytes() == old
+        assert read_version() == old
         ready.touch()
         while not stop.exists():
-            data = path.read_bytes()
+            data = read_version()
             assert data in (old, new), (len(data), data[:8])
             if data == new and not seen_new.exists():
                 seen_new.touch()
