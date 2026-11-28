@@ -1557,6 +1557,12 @@ def _project_bucket_for(home: Path, ref: str) -> Path | None:
     """Locate a project bucket by slug OR by (old) project path — the two
     things a human can still name once the repo itself has moved."""
     projects = home / "projects"
+    if os.name == "nt":
+        try:
+            names.component_path(projects, ref)
+        except ValueError:  # a path, which Windows refuses as one name: no slug
+            by_path = names.component_path(projects, slug_for(ref))
+            return by_path if by_path.is_dir() else None
     by_slug = names.component_path(projects, ref)
     if by_slug.is_dir() and by_slug.parent == projects:
         return by_slug

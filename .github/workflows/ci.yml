@@ -422,6 +422,7 @@ jobs:
           }
 
       - name: Windows ledger and canon commands
+        if: ${{ !cancelled() }}
         working-directory: plugins/self-learn/cli
         run: |
           $report = Join-Path $env:RUNNER_TEMP "ledger-verbs.xml"

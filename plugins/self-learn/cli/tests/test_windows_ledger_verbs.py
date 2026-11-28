@@ -503,6 +503,8 @@ def test_b3_canon_writes_in_a_crlf_profile(session):
         ["skill", "list", "--json"],
     )
     assert not os.path.lexists(link)
+    market = (skills_root / ".claude-plugin" / "marketplace.json").read_bytes()
+    assert b"w4-loose" in market and b"w4-renamed" not in market and only_crlf(market)
     assert s.git(skills_root, "status", "--porcelain", "-z") == b""
     s.check_ledger()
 
