@@ -106,6 +106,14 @@ def _find(projects: Path, session_id: str, cwd: Path | str | None) -> Path | Non
     """The top-level ``<session id>.jsonl``: first in the directory Claude
     Code names after *cwd* (every character that is not a letter or digit
     becomes ``-``), then in every project directory."""
+    if os.name == "nt":
+        # Windows: that naming rule is not known there, so no folder is
+        # guessed; every ordinary folder is searched, and a file counts only
+        # when its rows record this session and, given *cwd*, the same
+        # working directory (mining/discovery.py).
+        from .mining import discovery
+
+        return discovery.find_session(projects, session_id, cwd)
     name = f"{session_id}.jsonl"
     if cwd is not None:
         try:
@@ -121,6 +129,24 @@ def _find(projects: Path, session_id: str, cwd: Path | str | None) -> Path | Non
         if candidate.is_file():
             return candidate
     return None
+
+
+def _subagent_dir(folder: Path, sub_source: Path) -> bool:
+    """Whether the ``<session id>/subagents`` folder is there to copy from.
+    Windows: only when neither it nor the ``<session id>`` folder is a link,
+    checked before the folder is examined or listed."""
+    if os.name == "nt":
+        return _ordinary_on_windows(folder, sub_source) and sub_source.is_dir()
+    return sub_source.is_dir()
+
+
+def _ordinary_on_windows(folder: Path, path: Path) -> bool:
+    """Windows only: no entry below the session's folder down to *path* (the
+    ``<session id>`` and ``subagents`` folders, the file) is a link, so a
+    copy never leaves the projects tree."""
+    from .mining import discovery
+
+    return discovery.ordinary_below(folder, path)
 
 
 def _counts(path: Path) -> tuple[dict[str, int], dict[str, int]]:
@@ -196,9 +222,11 @@ def _capture(
     subagent_files = 0
     subagent_bytes = 0
     sub_source = source.parent / session_id / "subagents"
-    if sub_source.is_dir():
+    if _subagent_dir(source.parent, sub_source):
         sub_dest = dest_dir / session_id / "subagents"
         for sub in sorted(sub_source.glob("agent-*.jsonl")):
+            if os.name == "nt" and not _ordinary_on_windows(source.parent, sub):
+                continue
             if not sub.is_file():
                 continue
             sub_dest.mkdir(parents=True, exist_ok=True)
