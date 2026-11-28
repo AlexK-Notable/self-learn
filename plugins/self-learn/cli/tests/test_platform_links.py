@@ -342,7 +342,7 @@ def test_windows_skill_write_and_relink_report_refused_volume(tmp_path, monkeypa
     assert "could not be linked" in report["problems"][0] and "local NTFS" in report["problems"][0]
     assert env.skill_md().is_file() and not os.path.lexists(env.link())
     outcome, problem = skill_writer.relink(env.home, skills.NAME)
-    assert outcome is None and "local NTFS" in problem and str(env.skill_dir()) in problem
+    assert outcome is None and "local NTFS" in problem and repr(str(env.skill_dir())) in problem
 
 
 @posix
