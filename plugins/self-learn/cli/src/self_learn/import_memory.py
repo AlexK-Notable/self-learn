@@ -264,7 +264,7 @@ def _drop_index_line(memory_dir: Path, filename: str) -> bool:
     if os.name == "nt":  # the index keeps its own line endings
         from .compilers import keep_line_endings
 
-        kept = kept  # MUTANT M1c
+        kept = keep_line_endings(index, "\n".join(kept)).split("\n")
     fsops.atomic_write(
         index, "\n".join(kept), follow_symlinks=False, preserve_mode=True, fsync=True
     )

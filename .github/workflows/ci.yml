@@ -72,7 +72,7 @@ jobs:
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
           $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
           $missing = @($native | Where-Object { $ran -cnotcontains $_ })
-          if ($missing.Count -or $ran.Count -ne 17 -or $skips.Count -ne 1 -or
+          if ($missing.Count -or $ran.Count -ne 18 -or $skips.Count -ne 1 -or
               $skips[0].name -cne 'test_posix_compile_writes_the_compiler_text' -or
               $skips[0].skipped.message -cne 'POSIX canon contract') {
             throw "Unexpected canon test selection: ran $($ran -join ', '); missing $($missing -join ', '); skipped $($skips.Count)"

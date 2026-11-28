@@ -57,6 +57,8 @@ def only_lf(data: bytes) -> bool:
         (b"a\r\nb\r\nc\r\n", lambda t: t.replace("b\n", ""), b"a\r\nc\r\n"),
         # Mixed endings: the untouched lines keep theirs; CRLF is the majority.
         (b"a\r\nb\nc\r\nd\r\n", lambda t: t.replace("c\n", "C\nC2\n"), b"a\r\nb\nC\r\nC2\r\nd\r\n"),
+        # A minority LF line after the edit keeps its LF.
+        (b"a\r\nb\r\nc\nd\r\n", lambda t: t.replace("a\n", "A\n"), b"A\r\nb\r\nc\nd\r\n"),
         # Mixed with LF the majority: the new line takes LF.
         (b"a\nb\nc\r\n", lambda t: t + "z\n", b"a\nb\nc\r\nz\n"),
         # An LF file is written exactly as the compiler gave it.
@@ -72,7 +74,7 @@ def only_lf(data: bytes) -> bool:
         # Nothing changes: the file's own bytes come back.
         (b"a\r\n\r\nb\r\n", lambda t: t, b"a\r\n\r\nb\r\n"),
     ],
-    ids=["crlf-insert", "crlf-remove", "mixed-crlf-majority", "mixed-lf-majority", "lf",
+    ids=["crlf-insert", "crlf-remove", "mixed-crlf-majority", "mixed-tail-kept", "mixed-lf-majority", "lf",
          "unterminated", "lone-cr-kept", "lone-cr-boundary", "bom-unicode", "unchanged"],
 )
 def test_keep_line_endings_contract(tmp_path, raw, edit, expected):
@@ -132,6 +134,12 @@ def test_keep_line_endings_round_trips_every_small_file(tmp_path):
                         same += 1
                     keep = "".join(lines[:max(same - 1, 0)])
                     assert result.startswith(keep), (raw, edited, result)
+                    # And so do untouched trailing lines.
+                    tail = 0
+                    while (tail < min(len(split), len(new)) - same
+                           and split[-1 - tail] == new[-1 - tail]):
+                        tail += 1
+                    assert result.endswith("".join(lines[len(lines) - tail:])), (raw, edited, result)
                     checked += 1
     assert checked > 1000
 

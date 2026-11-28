@@ -518,7 +518,7 @@ def compile_managed_file(
         # (surface_names_target compares resolve() to resolve()) and
         # install.sh's own practice of symlinking skills into place.
         if os.name == "nt":  # the file keeps its own line endings
-            fsops.atomic_write(path, result.text, preserve_mode=True,  # MUTANT M1a
+            fsops.atomic_write(path, keep_line_endings(path, result.text), preserve_mode=True,
                                fsync=True, follow_symlinks=True)
             return result
         fsops.atomic_write(path, result.text, preserve_mode=True, fsync=True, follow_symlinks=True)
@@ -1064,7 +1064,7 @@ def pointer_token(surface: Path, target: Path) -> str:
     across drives (no relative form exists) and outside the profile, the
     absolute fallback reads ``D:/proj/references/LEARNINGS.md``."""
     if os.name == "nt":
-        return names.pointer_token(surface, target)  # MUTANT M1b
+        return Path(names.pointer_token(surface, target)).as_posix()
     return names.pointer_token(surface, target)
 
 
