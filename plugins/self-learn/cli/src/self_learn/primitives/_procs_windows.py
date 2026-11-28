@@ -46,7 +46,7 @@ def _os_errors(filename=None):
         yield
     except (pywintypes.error, OSError) as exc:
         code = getattr(exc, "winerror", None)
-        if True:
+        if code is None:
             raise
         raise OSError(0, exc.strerror, getattr(exc, "filename", None) or filename, code) from exc
 
@@ -90,12 +90,12 @@ def _stdin(children, inherit):
 
 def _launch(handles, argv, cwd, env, input_data, inherit):
     program = os.path.join(cwd, argv[0]) if cwd and os.path.dirname(argv[0]) else argv[0]
-    executable = program if env is None else shutil.which(program, path=os.pathsep.join(os.get_exec_path(env)))
+    executable = shutil.which(program, path=os.pathsep.join(os.get_exec_path(env)))
     if executable is None:
         raise ctypes.WinError(winerror.ERROR_FILE_NOT_FOUND)
     # CreateProcess can hand batch files to cmd.exe even with shell=False.
     if executable.lower().endswith((".bat", ".cmd")):
-        raise ValueError(winerror.ERROR_BAD_EXE_FORMAT,
+        raise ctypes.WinError(winerror.ERROR_BAD_EXE_FORMAT,
                               f"Cannot launch batch shim without a shell: {executable}")
 
     # pywin32 312 requires a string name and returns a PyHANDLE.
@@ -164,7 +164,6 @@ def _join_pipes(threads, active, changed, stopping, deadline):
             thread.join(max(0, grace - time.monotonic()))
     if not any(thread.is_alive() for thread in threads):
         return
-    raise RuntimeError("Windows pipe worker exceeded its cleanup deadline")
     stopping.set()
     # A worker removes its ID under this lock before exiting, preventing reuse.
     # ERROR_NOT_FOUND can also mean we raced between its stop check and ReadFile.
@@ -239,7 +238,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
         try:
             # Only this worker can close a handle with synchronous I/O pending.
             # Unstarted workers leave their endpoints on the supervisor's stack.
-            with (owners.pop_all() if fn is write else ExitStack()):
+            with owners.pop_all():
                 with changed:
                     active.add(tid)
                 try:
@@ -300,7 +299,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
 
 
 def _text(data: bytes, program: str) -> str:
-    errors = "replace" if os.path.basename(program).lower() in ("git", "git.exe") else "replace"
+    errors = "replace" if os.path.basename(program).lower() in ("git", "git.exe") else "strict"
     return data.decode("utf-8", errors).replace("\r\n", "\n").replace("\r", "\n")
 
 
