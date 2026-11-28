@@ -954,7 +954,7 @@ def _popen(argv, executable, cwd, env, flags, stdin, stdout, stderr):
     in ``PROC_THREAD_ATTRIBUTE_HANDLE_LIST``: the child inherits nothing else,
     whatever else in this process is inheritable."""
     return subprocess.Popen(argv, executable=executable, cwd=cwd, env=env, stdin=stdin,
-                            stdout=stdout, stderr=stderr, creationflags=flags, close_fds=True)
+                            stdout=stdout, stderr=stderr, creationflags=flags, close_fds=False)
 
 
 def _open_log(path) -> int:
@@ -999,7 +999,7 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
     executable = _program(argv, cwd, environment)
     with ExitStack() as stack:
         if log_path is None:
-            stdout: Any = subprocess.DEVNULL
+            stdout: Any = subprocess.PIPE  # break B6: nobody reads it
             stderr: Any = subprocess.DEVNULL
         else:
             stdout = _open_log(log_path)
@@ -1014,8 +1014,7 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
         try:
             proc = launch(_DETACHED_FLAGS | subprocess.CREATE_BREAKAWAY_FROM_JOB)
         except OSError as exc:
-            if getattr(exc, "winerror", None) != winerror.ERROR_ACCESS_DENIED:
-                raise
+            raise  # break B8: no fallback
         else:
             # Out of this process's job; a job that one is nested in may still
             # hold it. DetachedChild.in_job says which.
@@ -1138,7 +1137,7 @@ class _Owned:
 
 
 #: asyncio process object -> what owns its tree.
-_owned: weakref.WeakKeyDictionary[Any, _Owned] = weakref.WeakKeyDictionary()
+_owned: Any = {}  # break B7: strong references
 
 
 async def async_owned_child(*argv, env=None, stdin=None, stdout=None, stderr=None):
@@ -1173,8 +1172,7 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
             if process is None:
                 raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER, f"PID {proc.pid} vanished")
             handles.callback(win32api.CloseHandle, process)
-            win32job.AssignProcessToJobObject(job, process)
-            _resume(proc.pid)
+            _resume(proc.pid)  # break B3: never assigned
         except BaseException as failure:
             with _cleanup_after(failure):
                 proc.kill()  # still suspended (or in the job): it never ran our payload
