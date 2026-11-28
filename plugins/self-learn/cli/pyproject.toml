@@ -35,6 +35,17 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/self_learn"]
 
+# Package data (Windows port, 8K): the skill's references (doctrine, rubric,
+# methods, the card-sections registry, the lesson-writing passage) ride inside
+# the wheel under self_learn/_data/references, included from where they live.
+# hatch_build.py adds them to the wheel from the checkout, or, for a wheel
+# built from an sdist, finds them where the sdist staged them; it adds nothing
+# to an editable install, which reads the checkout itself.
+[tool.hatch.build.targets.wheel.hooks.custom]
+
+[tool.hatch.build.targets.sdist.force-include]
+"../skills/self-learn/references" = "src/self_learn/_data/references"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

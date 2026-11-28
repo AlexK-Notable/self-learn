@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import _package_data
+
 BEGIN = "<!-- lesson-writing:begin (a copy of skills/self-learn/references/lesson-writing.md) -->"
 END = "<!-- lesson-writing:end -->"
 
@@ -49,11 +51,10 @@ AGENT_SHEET_NOTE = (
 
 
 def path() -> Path:
-    # src/self_learn/lesson_writing.py -> parents[3] is plugins/self-learn
-    return (
-        Path(__file__).resolve().parents[3]
-        / "skills" / "self-learn" / "references" / "lesson-writing.md"
-    )
+    # src/self_learn/lesson_writing.py -> parents[3] is plugins/self-learn.
+    # On a checkout (decided from this package's own location) that is still
+    # the path returned; an installed wheel reads its package-data copy.
+    return _package_data.skill_references() / "lesson-writing.md"
 
 
 def text() -> str:

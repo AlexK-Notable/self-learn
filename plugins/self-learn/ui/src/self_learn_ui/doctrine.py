@@ -36,6 +36,8 @@ from pathlib import Path
 from self_learn.primitives import fsops
 from self_learn.worker import cache_dir
 
+from . import _package_data
+
 __all__ = [
     "COMPILED_DOCTRINE_NAME",
     "compile_doctrine",
@@ -54,8 +56,19 @@ def plugin_references_dir() -> Path:
     """The skill's ``references/`` dir, resolved relative to THIS file's
     own installed location (09 §11 Y-2 root 3). ``doctrine.py`` lives at
     ``plugins/self-learn/ui/src/self_learn_ui/doctrine.py`` — four
-    ``parents[]`` hops up is ``plugins/self-learn``."""
-    return Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
+    ``parents[]`` hops up is ``plugins/self-learn``.
+
+    On a checkout (decided from this package's own location,
+    :func:`self_learn_ui._package_data.checkout_project`) that is still the
+    path returned; an installed wheel gets the copy the UI wheel carries as
+    package data, ``self_learn_ui/_data/references``: still this package's
+    own location, never the CLI's and never a home."""
+    project = _package_data.checkout_project()
+    if project is not None:
+        source = project.parent / "skills" / "self-learn" / "references"
+        if source.is_dir():
+            return source
+    return _package_data.packaged("references")
 
 
 def routing_doctrine_path() -> Path:

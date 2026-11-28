@@ -30,6 +30,19 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/self_learn_ui"]
 
+# Package data (Windows port, 8K): a wheel has no checkout around it, so the
+# pages, the static files and the pane's doctrine sources ride inside it under
+# self_learn_ui/_data/, included from where they live (one copy in the
+# repository). hatch_build.py adds them to the wheel from the checkout, or,
+# for a wheel built from an sdist, finds them where the sdist staged them;
+# it adds nothing to an editable install, which reads the checkout itself.
+# The sdist carries templates/ and static/ at its root as usual and the
+# references staged inside the package.
+[tool.hatch.build.targets.wheel.hooks.custom]
+
+[tool.hatch.build.targets.sdist.force-include]
+"../skills/self-learn/references" = "src/self_learn_ui/_data/references"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
