@@ -58,8 +58,10 @@ else:
     _SKIP = None
 _DIFF = pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
 
-#: The allowed stderr difference: diagnostics the tools write themselves.
-_DIAG = re.compile(r"^(jq: |grep: |.*: warning: command substitution: ignored null byte in input$)")
+#: The allowed stderr difference: diagnostics the tools write themselves
+#: (jq 1.6 writes its parse errors without the "jq: " prefix).
+_DIAG = re.compile(r"^(jq: |parse error: |grep: |"
+                   r".*: warning: command substitution: ignored null byte in input$)")
 
 
 def _payload(tool: str, field: str, value) -> bytes:
@@ -236,7 +238,10 @@ CASES = [
 
 #: Recorded from the generated Bash scripts under LC_ALL=C.UTF-8 (jq 1.8.2,
 #: GNU grep 3.12, gawk 5.4, bash 5.3); the differential below re-checks every
-#: row against the real script on each Linux run.
+#: row against the real script on each Linux run. Only the cases not in
+#: FAILS_CLOSED are stored: those are the same on jq 1.6, 1.7.1 and 1.8.2
+#: (measured by the second review), so the stored answers hold on any
+#: supported jq.
 EXPECTED: dict[str, tuple[int, bytes, str]] = {
     'bash-match': (2, b'', 'self-learn lrn-5a5e0001: no pushing from here\n'),
     'bash-no-match': (0, b'', ''),
@@ -287,32 +292,17 @@ EXPECTED: dict[str, tuple[int, bytes, str]] = {
     'push-object': (2, b'', 'self-learn lrn-5a5e0001: no push\n'),
     'push-number': (0, b'', ''),
     'push-true': (0, b'', ''),
-    'number-exponent': (2, b'', 'self-learn lrn-5a5e0001: numbers\n'),
-    'number-negative-zero': (2, b'', 'self-learn lrn-5a5e0001: numbers\n'),
-    'number-trailing-zero': (2, b'', 'self-learn lrn-5a5e0001: numbers\n'),
-    'number-huge-exponent': (2, b'', 'self-learn lrn-5a5e0001: huge\n'),
-    'number-giant-exponent': (2, b'', 'self-learn lrn-5a5e0001: huge\n'),
     'number-max-safe': (2, b'', 'self-learn lrn-5a5e0001: integers\n'),
     'number-min-safe': (2, b'', 'self-learn lrn-5a5e0001: integers\n'),
     'number-zero': (2, b'', 'self-learn lrn-5a5e0001: integers\n'),
     'number-in-array': (0, b'', ''),
-    'number-past-safe': (2, b'', 'self-learn lrn-5a5e0001: integers\n'),
-    'number-past-safe-no-match': (0, b'', ''),
-    'number-tool-name': (0, b'', ''),
     'stream-number-then-event-warn': (0, b'{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"self-learn lrn-5a5e0001: careful with -f"}}\n', ''),
     'stream-true-then-empty': (0, b'', ''),
     'stream-event-then-number': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
-    'lenient-unrelated-warn': (0, b'{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"self-learn lrn-5a5e0001: careful with -f"}}\n', ''),
-    'lenient-unrelated-deny': (2, b'', 'self-learn lrn-5a5e0001: no pushing from here\n'),
-    'lenient-nan-name': (0, b'', ''),
     'depth-arrays-under-old-limit': (0, b'', ''),
-    'depth-arrays-at-old-limit': (0, b'', ''),
-    'depth-arrays-under-limit': (0, b'', ''),
     'depth-arrays-at-limit': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
-    'depth-objects-under-limit': (0, b'', ''),
     'depth-objects-at-limit': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
     'depth-deep-then-junk': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
-    'depth-selected-field': (2, b'', 'self-learn lrn-5a5e0001: nested\n'),
     'depth-selected-shallow': (2, b'', 'self-learn lrn-5a5e0001: nested\n'),
     'classes-upper-digits': (2, b'', 'self-learn lrn-5a5e0001: classes\n'),
     'classes-lower': (0, b'', ''),
@@ -348,8 +338,11 @@ EXPECTED: dict[str, tuple[int, bytes, str]] = {
 #: rule blocks with its own labelled line, a warning stays silent. Each is a
 #: number jq prints in a form not modelled (or that differs between jq
 #: releases), a number only jq's lenient grammar reads, or nesting that jq
-#: 1.6-1.7 refuse and 1.8 reads. EXPECTED keeps the script's own answer; the
-#: Linux differential checks the evaluator never allows where it denies.
+#: 1.6-1.7 refuse and 1.8 reads. The script's answer on these depends on the
+#: jq release (measured by the second review on jq 1.6, 1.7.1 and 1.8.2: 7
+#: of them differ), so EXPECTED stores none of them; the Linux differential
+#: runs them against the installed jq and checks the evaluator never allows
+#: where the script denies (test_version_dependent_cases_never_allow_...).
 FAILS_CLOSED = {
     "number-exponent", "number-negative-zero", "number-trailing-zero", "number-huge-exponent",
     "number-giant-exponent", "number-past-safe", "number-past-safe-no-match",
@@ -585,7 +578,8 @@ def test_artifact_shape_and_determinism():
     assert a["script_sha256"] == hashlib.sha256(script.encode("utf-8")).hexdigest()
     assert a["script_name"] == hook_compiler.script_name(rid, trigger)
     assert a["match"] == {"dialect": hook_rules.DIALECT, "pattern": r"\.storage/", "view": None,
-                          "locale": "C.UTF-8", "ctype": hook_rules_ctype.DIGEST}
+                          "locale": "C.UTF-8", "ctype": hook_rules_ctype.DIGEST,
+                          "tables": "grep (GNU grep) 3.12-modified / glibc 2.44 / Unicode 17.0.0"}
     assert a["fields"] == {"Edit": "file_path", "Write": "file_path"}
     assert a["output"] == f"self-learn {rid}: stop the HA container first"
     lines = script.split("\n")
@@ -633,6 +627,20 @@ def _warn_artifact() -> dict:
     ("another locale", lambda: _mutated(match=_match(locale="en_US.UTF-8")), "C.UTF-8 only"),
     ("other character tables", lambda: _mutated(match=_match(ctype="sha256:" + "0" * 64)),
      "other character tables"),
+    ("tables from another glibc", lambda: _mutated(match=_match(
+        tables="grep (GNU grep) 3.8 / glibc 2.36 / Unicode 15.0.0")), "other character tables"),
+    # what the v1 writer refuses, made self-consistent and re-digested (m1)
+    ("a two-line deny message", lambda: _mutated(
+        message="a\nb", output=f"self-learn {RID}: a\nb"), "one line"),
+    ("a blank deny message", lambda: _mutated(message="  ", output=f"self-learn {RID}:   "),
+     "one line"),
+    ("an oversized warn message", lambda: _redigest({
+        **_warn_artifact(), "message": "w" * 2001,
+        "output": hook_rules._warn_line("PostToolUse", RID, "w" * 2001)}), "at most 2000"),
+    ("a blank warn message", lambda: _redigest({
+        **_warn_artifact(), "message": " ",
+        "output": hook_rules._warn_line("PostToolUse", RID, " ")}), "non-empty"),
+    ("an all-space pattern", lambda: _mutated(match=_match(pattern="   ")), "only whitespace"),
     ("a view on a deny rule", lambda: _mutated(match=_match(view=hook_rules.VIEW_COMMAND)),
      "command view"),
     ("a deny on PostToolUse", lambda: _mutated(event="PostToolUse"), "cannot run on"),
@@ -765,6 +773,48 @@ def test_mirrors_equal_the_compiler_constants():
     assert hook_rules._MODE_EVENTS == hook_compiler.MODE_EVENTS
     assert hook_rules._MODE_VERDICTS == hook_compiler.MODE_VERDICTS
     assert hook_rules.COMMAND_VIEW_MAX_CHARS == hook_compiler.COMMAND_VIEW_MAX_BYTES
+    assert hook_rules._WARN_MESSAGE_MAX == hook_compiler.WARN_MESSAGE_MAX
+
+
+@pytest.mark.parametrize("mode,message,pattern", [
+    ("deny", "a\nb", "x"), ("deny", "", "x"), ("deny", "   ", "x"), ("deny", "ok", "   "),
+    ("warn", "", "x"), ("warn", "\t", "x"), ("warn", "w" * 2001, "x"), ("warn", "ok", " "),
+    ("deny", "ok", "x"), ("warn", "w" * 2000, "x"), ("warn", "two\nlines", "x"),
+], ids=lambda v: repr(v)[:20])
+def test_the_loader_and_the_writer_refuse_the_same_fields(mode, message, pattern):
+    """m1: a field combination the v1 writer refuses (hook_compiler) is
+    refused by the loader too, even made self-consistent and re-digested;
+    one the writer accepts, the loader accepts."""
+    event = "PreToolUse"
+    try:
+        hook_compiler.generate_script(RID, TRIGGER, ["Bash"], pattern, message, mode=mode,
+                                      event=event)
+        writer_ok = True
+    except hook_compiler.HookCompileError:
+        writer_ok = False
+    base = json.loads(json.dumps(hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], "x", "ok",
+                                                             mode=mode, event=event)))
+    base["message"] = message
+    base["output"] = hook_rules._expected_output(mode, event, RID, message)
+    base["match"]["pattern"] = pattern
+    try:
+        hook_rules.load_rule(_redigest(base))
+        loader_ok = True
+    except RuleError:
+        loader_ok = False
+    assert loader_ok == writer_ok
+
+
+def test_the_bundled_tables_are_pinned():
+    """B1 of the second review, accepted: the tables are one glibc's. A
+    regeneration (another grep, glibc or Unicode version) must be a
+    deliberate act that updates these literals."""
+    assert hook_rules_ctype.SOURCE == "grep (GNU grep) 3.12-modified / glibc 2.44"
+    assert hook_rules_ctype.UNICODE == "17.0.0"
+    assert hook_rules_ctype.DIGEST == (
+        "sha256:d5fe282353f088df6a1c6d3fb7bc7a34a593c8c175a0ee38189162969d009eb7")
+    assert hook_rules._ctype_origin() == (
+        "grep (GNU grep) 3.12-modified / glibc 2.44 / Unicode 17.0.0")
 
 
 def test_import_is_cheap_and_standard_library_only():
@@ -826,6 +876,9 @@ REFUSED = {
     r"[[:foo:]]": ("not a character class", "rejects"),
     r"[:alpha:]": ("without its outer brackets", "rejects"),
     r"[:space:]x": ("without its outer brackets", "rejects"),
+    r"[: :]": ("without its outer brackets", "rejects"),
+    r"[^:a:]": ("without its outer brackets", "rejects"),
+    r"[:a:b:]": ("without its outer brackets", "rejects"),
     r"[z-a]": ("is reversed", "rejects"),
     "[à-ü]": ("non-ASCII end", "rejects"),
     "[a-é]": ("non-ASCII end", "rejects"),
@@ -904,6 +957,20 @@ ACCEPTED = {
     r"^[A-z]$": ["A", "_", "[", "z", "é", "{"],
     r"^[!-~]$": ["!", "~", " ", "é", "a"],
     r"^[^a-z]$": ["a", "A", "é", "1"],
+    # ordinary brackets that merely start and end with the same punctuation
+    # (second review m2): grep reads them as their members
+    r"^[=a=]$": ["=", "a", "b"],
+    r"^[.a.]$": [".", "a", "b"],
+    r"^[:-:]$": [":", "-", "a"],
+    r"^[::]$": [":", "a"],
+    r"^[==]$": ["=", "a"],
+    r"^[..]$": [".", "a"],
+    # after a line ending in a word character, a batch grep reports ".." and
+    # "a." here; the one-value call the script makes does not (second
+    # review m4). The order of the texts is what makes the batch misreport.
+    r"($b|.{0,2})\>": ["a", "..", "a.", "ab"],
+    r".{0,2}\>()$()": ["a", "a.", "x", ".."],
+    r"^[:::]$": [":", "a"],
 }
 
 
@@ -921,6 +988,31 @@ def test_refused_patterns(pattern):
 @pytest.mark.parametrize("pattern", sorted(ACCEPTED))
 def test_accepted_patterns(pattern):
     assert hook_rules.compile_pattern(pattern).pattern == pattern
+
+
+def test_a_counted_bracket_builds_its_character_set_once(monkeypatch):
+    """Second review m3: a bracket repeated by a count, and a class repeated
+    inside a bracket, cost one character-set construction, not one per
+    copy (counted, so the result does not depend on the machine's speed)."""
+    built: list[int] = []
+    hook_rules._named_set("word")  # the matcher's shared word set, built before counting
+    real = hook_rules._CharSet
+
+    class Counting(real):  # type: ignore[misc, valid-type]
+        def __init__(self, ranges):
+            built.append(len(ranges))
+            super().__init__(ranges)
+
+    monkeypatch.setattr(hook_rules, "_CharSet", Counting)
+    once = hook_rules.compile_pattern("[[:alpha:]]")
+    one, one_ranges = len(built), built[0]
+    built.clear()
+    many = hook_rules.compile_pattern("[" + "[:alpha:]" * 64 + "]{32}")
+    assert len(built) == one == 1, built
+    assert built[0] == one_ranges  # the repeated class was added once
+    assert len(many.ops) == 33  # 32 copies and MATCH: the copies are all there
+    assert many.sets[0].contains(ord("é")) and not many.sets[0].contains(ord("1"))
+    assert once.sets[0].contains(ord("é"))
 
 
 def test_a_refused_pattern_refuses_the_artifact_not_the_script():
@@ -992,6 +1084,8 @@ _GUARD_FAILED = (2, b"", f"self-learn {RID}: guard regex failed — failing clos
     ("a malformed stdin", b"{"),
     ("another tool", _path("q")),
     ("no value", _cmd("")),
+    ("an inexact value", _cmd(1.0)),
+    ("an inexact unrelated field", b'{"tool_name":"Bash","tool_input":{"command":"q"},"n":01}'),
 ])
 def test_one_deadline_covers_the_whole_decision(label, data):
     """M2: with the deadline already past when the decision ends, every
@@ -1018,6 +1112,13 @@ def test_the_deadline_is_read_while_the_work_goes_on():
     for label, run in [
         ("parse tokens", lambda b: hook_rules._jq_values(_cmd(list(range(stride * 4))), b)),
         ("parse a string", lambda b: hook_rules._jq_values(_cmd("x\\" * stride * 32), b)),
+        # second review M1: one long plain token, and invalid UTF-8 before a
+        # long ASCII run, are polled inside the token
+        ("scan one long token", lambda b: hook_rules._jq_values(_cmd("x" * stride * 64), b)),
+        ("decode past a bad byte",
+         lambda b: hook_rules._jq_utf8(b"\xff" + b"a" * stride * 256 + b"\xff" * (stride // 4), b)),
+        ("view a long quoted string", lambda b: hook_rules.command_view(
+            'echo "' + "x" * stride * 4 + '"', b)),
         ("view", lambda b: hook_rules.command_view(text, b)),
         ("match", lambda b: hook_rules.compile_pattern("zzz").search(text, b)),
         ("render", lambda b: hook_rules._jq_dump([["x", None]] * (stride * 2), b)),
@@ -1300,11 +1401,48 @@ def test_differential_recorded_cases(scripts):
     seen: list = []
     assert _differ(scripts, work, inexact_ok=True, inexact=seen) == []
     assert sorted(seen) == sorted(FAILS_CLOSED)  # and every other case is exact
-    # and each recorded literal is the script's own answer
+    # and each recorded literal is the script's own answer (the stored ones:
+    # every case outside FAILS_CLOSED, and none inside it)
+    assert set(EXPECTED) == {c for c, _, _ in CASES} - FAILS_CLOSED
     paths = {text: scripts.write(text) for _, text, _, _ in work}
-    bad = [(case, got) for case, text, _, data in work
-           if (got := scripts.run(paths[text], data)) != EXPECTED[case]]
-    assert bad == []
+    bad = [(case, got) for case, text, _, data in work if case in EXPECTED
+           and (got := scripts.run(paths[text], data)) != EXPECTED[case]]
+    assert bad == [], _jq_version()
+
+
+def _jq_version() -> str:
+    return subprocess.run(["jq", "--version"], capture_output=True, text=True).stdout.strip()
+
+
+@_DIFF
+def test_version_dependent_cases_never_allow_what_the_script_denies(scripts):
+    """Second review M2: the FAILS_CLOSED cases, whose script answer depends
+    on the jq release, run against the installed jq (printed); whatever it
+    answers, the evaluator's decision is its fail-closed one, so it never
+    allows what the script denies, and a warning is never added."""
+    version = _jq_version()
+    print(f"installed {version}")
+    assert version.startswith("jq-1."), version
+    rows = []
+    for case, rule_name, data in CASES:
+        if case not in FAILS_CLOSED:
+            continue
+        tools, regex, message, mode, event = CASE_RULES[rule_name]
+        script = scripts.write(hook_compiler.generate_script(RID, TRIGGER, tools, regex, message,
+                                                             mode=mode, event=event))
+        rule = hook_rules.load_rule(hook_compiler.rule_artifact(RID, TRIGGER, tools, regex,
+                                                                message, mode=mode, event=event))
+        bash = scripts.run(script, data)
+        got = hook_rules.evaluate(rule, data)
+        print(f"  {case}: bash exit {bash[0]}, evaluator {got.verdict} ({got.reason})")
+        rows.append((case, mode, bash, got))
+    assert len(rows) == len(FAILS_CLOSED)
+    bad = [(case, bash, got) for case, mode, bash, got in rows
+           if got.reason != "inexact"
+           or (got.exit_code, got.stdout, got.stderr) != _fail_closed(mode)
+           or (mode == "deny" and bash[0] == 2 and got.exit_code != 2)
+           or (mode == "warn" and got.stdout)]
+    assert bad == [], version
 
 
 @_DIFF
@@ -1523,6 +1661,28 @@ def _grep_lines(env: dict, pattern: str, texts: list[str]) -> set[int] | None:
     return {int(line.split(b":", 1)[0]) - 1 for line in proc.stdout.split(b"\n") if line}
 
 
+def _grep_one(env: dict, pattern: str, text: str) -> bool | None:
+    """The script's own invocation on one value: ``grep -qE -- <pattern>
+    <<<"$VALUE"`` (one trailing newline). None when grep errors."""
+    proc = subprocess.run(["grep", "-qE", "--", pattern], input=text.encode() + b"\n",
+                          capture_output=True, env=env, timeout=10)
+    return {0: True, 1: False}.get(proc.returncode)
+
+
+def _disagreements(env: dict, pattern: str, texts: list[str], matcher) -> list[str]:
+    """Texts where the evaluator and grep differ. The batch run (one grep
+    over every text as lines) is only a screen: GNU grep can report a line
+    of a batch that it does not match on its own (second review m4), so
+    every difference is rechecked with the script's exact one-value call."""
+    want = _grep_lines(env, pattern, texts)
+    if want is None:
+        return ["grep rejects, warns or hangs; the evaluator accepts"]
+    got = {i for i, t in enumerate(texts) if matcher.search(t)}
+    return [f"{texts[i]!r}: grep {single} evaluator {i in got}"
+            for i in sorted(got ^ want)
+            if (single := _grep_one(env, pattern, texts[i])) != (i in got)]
+
+
 _FUZZ_TEXTS = ["", "a", "b", "aa", "ab", "ba", "a b", " a", "a ", "bb", "aab", "-a-", "ab ba",
                "é", "aé", "  ", "a-b", "b a b", "]", "[", ":", "^", "\\", "1", "x", "A", "]a",
                "z", "Z", "m", "M", "_", "~", "{", "`", "É", "ß", "/"]
@@ -1580,14 +1740,8 @@ def test_fuzzed_patterns_match_grep_or_are_refused(kind, tool_env):
             matcher = hook_rules.compile_pattern(pattern)
         except RuleError:
             return "refused", None
-        want = _grep_lines(tool_env, pattern, _FUZZ_TEXTS)
-        if want is None:
-            return "accepted", f"{pattern!r}: grep rejects, warns or hangs; the evaluator accepts"
-        got = {i for i, t in enumerate(_FUZZ_TEXTS) if matcher.search(t)}
-        if got != want:
-            return "accepted", (f"{pattern!r}: grep-only {sorted(_FUZZ_TEXTS[i] for i in want - got)}"
-                                f" evaluator-only {sorted(_FUZZ_TEXTS[i] for i in got - want)}")
-        return "accepted", None
+        bad = _disagreements(tool_env, pattern, _FUZZ_TEXTS, matcher)
+        return "accepted", (f"{pattern!r}: {bad}" if bad else None)
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(one, patterns))
@@ -1602,11 +1756,10 @@ def test_accepted_patterns_match_grep(pattern, tool_env):
     """m4: each accepted construct matches what grep matches on texts that
     tell its readings apart, not merely compiles."""
     texts = ACCEPTED[pattern]
-    want = _grep_lines(tool_env, pattern, texts)
-    assert want is not None, "grep rejects or warns"
     matcher = hook_rules.compile_pattern(pattern)
-    assert {i for i, t in enumerate(texts) if matcher.search(t)} == want
-    assert 0 < len(want) < len(texts) or pattern in ("a|", "|a", r"^a**$")  # the texts discriminate
+    assert _disagreements(tool_env, pattern, texts, matcher) == []
+    hits = [_grep_one(tool_env, pattern, t) for t in texts]
+    assert any(hits) and (not all(hits) or pattern in ("a|", "|a"))  # the texts discriminate
 
 
 @_DIFF

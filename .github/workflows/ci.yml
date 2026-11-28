@@ -167,8 +167,8 @@ jobs:
             "Linux only: reads the Linux test modules the fixtures come from"
           )
           $unexpected = @($skips | Where-Object { $allowed -cnotcontains $_.skipped.message })
-          if ($ran.Count -ne 290 -or $skips.Count -ne 195 -or $unexpected.Count -ne 0) {
-            throw "Expected 290 executed hook-rule tests and 195 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
+          if ($ran.Count -ne 323 -or $skips.Count -ne 208 -or $unexpected.Count -ne 0) {
+            throw "Expected 323 executed hook-rule tests and 208 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
           }
 
       - name: Verify LF line endings on armor-pinned fixtures
@@ -260,8 +260,8 @@ jobs:
           cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
           skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
           print(f"{len(cases)} hook-rule tests, {len(skipped)} skipped")
-          if len(cases) != 485 or skipped:
-              sys.exit(f"expected 485 hook-rule tests and no skips; skipped: {skipped[:20]}")
+          if len(cases) != 531 or skipped:
+              sys.exit(f"expected 531 hook-rule tests and no skips; skipped: {skipped[:20]}")
           ' "$report"
 
   linux-suite:

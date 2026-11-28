@@ -54,6 +54,16 @@ evaluator does not (under en_US.UTF-8 ``[a-z]`` also matches ``é``; under
 ``C``, ``.`` matches single bytes). A later change to the emitter, which
 pins ``LC_ALL=C.UTF-8`` in the script, closes that.
 
+The character tables are one glibc's (:mod:`hook_rules_ctype`: GNU grep
+3.12 on glibc 2.44, classes for Unicode 17.0.0; the artifact records this
+in ``match.tables``). A host whose glibc classifies characters differently
+gives its grep another answer even under C.UTF-8, and there is no single
+answer to match, since Linux hosts already disagree with each other by
+glibc release. Measured: under glibc 2.36's C.UTF-8, ``[^[:print:]]``
+matches U+1FAE8 and ``[^[:alpha:]]`` matches U+11F02 (both newer than
+2.36's tables), so a deny script there denies what the evaluator allows.
+This is a stated limit, not modelled.
+
 The bound. Matching runs a lazily built DFA over a Thompson automaton of at
 most :data:`MAX_PROGRAM` instructions, each search with its own cache
 (evaluations sharing a rule share no mutable state): each input character
@@ -122,6 +132,7 @@ _TOOL_FIELDS = {"Edit": "file_path", "Write": "file_path", "Bash": "command"}
 _MODE_EVENTS = {"deny": ("PreToolUse",), "warn": ("PreToolUse", "PostToolUse")}
 _MODE_VERDICTS = {"deny": ("allow", "deny"), "warn": ("allow", "warn")}
 COMMAND_VIEW_MAX_CHARS = 262144
+_WARN_MESSAGE_MAX = 2000  # hook_compiler.WARN_MESSAGE_MAX
 
 #: The largest automaton a pattern may compile to (counted repetition is
 #: expanded, so ``(x{100}){100}`` is 10,000 instructions and refused).
@@ -462,6 +473,14 @@ class _Parser:
             self.i += 1
         content_start = self.i
         ranges: list[tuple[int, int]] = []
+        classes: set[str] = set()
+        # grep's bare-class diagnostic ("character class syntax is
+        # [[:space:]], not [:space:]"): the bracket's first and last members
+        # are ':', some other single character sits between, and it holds no
+        # range and no class (measured: [:a:] and [: :] are errors; [::],
+        # [:-:], [:a-b:], [=a=] and [.a.] are ordinary brackets)
+        singles: list[str] = []
+        disqualified = False
         first = True
         while True:
             if self.i >= self.n:
@@ -484,7 +503,10 @@ class _Parser:
                 if name not in _CLASS_NAMES:
                     raise self.refuse(f"'[:{name}:]' is not a character class (grep rejects it)")
                 self.i = end + 2
-                ranges.extend(_class_ranges(name))
+                disqualified = True
+                if name not in classes:  # a repeated class adds nothing
+                    classes.add(name)
+                    ranges.extend(_class_ranges(name))
                 if self.i + 1 < self.n and p[self.i] == "-" and p[self.i + 1] != "]":
                     raise self.refuse("a range starts at a character class (grep rejects it)")
                 continue
@@ -506,11 +528,14 @@ class _Parser:
                     raise self.refuse(f"the range '{c}-{hi}' is reversed (grep rejects it)")
                 if self.i + 1 < self.n and p[self.i] == "-" and p[self.i + 1] != "]":
                     raise self.refuse("a range runs straight into another '-' (unspecified)")
+                disqualified = True
                 ranges.append((lo_cp, hi_cp))
             else:
+                singles.append(c)
                 ranges.append((ord(c), ord(c)))
         content = p[content_start:self.i - 1]
-        if len(content) >= 2 and content[0] in ":=." and content[-1] == content[0]:
+        if (not disqualified and len(singles) >= 3 and singles[0] == ":" and singles[-1] == ":"
+                and any(s != ":" for s in singles)):
             raise self.refuse(
                 f"'[{content}]' is a character class written without its outer brackets "
                 f"(grep rejects it; write '[[{content}]]')")
@@ -566,7 +591,9 @@ class Matcher:
         self.arg2: list[int] = []
         self.sets: list[_CharSet] = []
         self._work = 0
+        self._set_index: dict[int, int] = {}  # id(parsed atom) -> sets index
         self._emit(tree)
+        del self._set_index  # compile-time only
         self._add(_MATCH, 0, 0)
         self.match_pc = len(self.ops) - 1
         self.word = _named_set("word")
@@ -593,8 +620,13 @@ class Matcher:
         self._charge()
         kind = node[0]
         if kind == "set":
-            self.sets.append(_CharSet(node[1]))
-            self._add(_CHAR, len(self.sets) - 1, 0)
+            # one character set per parsed atom, shared by every copy a
+            # counted repeat emits
+            index = self._set_index.get(id(node))
+            if index is None:
+                self.sets.append(_CharSet(node[1]))
+                index = self._set_index[id(node)] = len(self.sets) - 1
+            self._add(_CHAR, index, 0)
         elif kind == "assert":
             self._add(_ASSERT, node[1], 0)
         elif kind == "group":
@@ -792,7 +824,11 @@ class _Num:
 # jq's UTF-8 decoder (jv_unicode.c), applied to one string's bytes after
 # its escapes are processed: one U+FFFD per bad sequence, and a sequence cut
 # short by the end of the string swallows what is left of it.
-def _jq_utf8(data: bytes) -> str:
+_ASCII_RUN_RE = re.compile(rb"[\x00-\x7f]+")
+
+
+def _jq_utf8(data: bytes, budget: _Budget) -> str:
+    budget.tick(1 + len(data) // 64)
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
@@ -801,11 +837,11 @@ def _jq_utf8(data: bytes) -> str:
     i, n = 0, len(data)
     first_cp = (0, 0, 0x80, 0x800, 0x10000)
     while i < n:
+        budget.tick()
         b = data[i]
         if b < 0x80:
-            j = i
-            while j < n and data[j] < 0x80:
-                j += 1
+            j = _ASCII_RUN_RE.match(data, i).end()  # type: ignore[union-attr]
+            budget.tick((j - i) // 64)
             out.append(data[i:j].decode("ascii"))
             i = j
             continue
@@ -842,7 +878,7 @@ def _jq_utf8(data: bytes) -> str:
 #: are whitespace (space, tab, CR, LF), structure (``[]{},:``), a quote, or
 #: part of a literal token that runs to the next of those.
 _TOKEN_RE = re.compile(rb'[ \t\r\n]*(?:(")|([\[\]{},:])|([^ \t\r\n\[\]{},:"]+))')
-_STRING_RE = re.compile(rb'((?:[^"\\]|\\.)*)"', re.S)
+_STRING_CHUNK_RE = re.compile(rb'(?:[^"\\]|\\.){0,4096}', re.S)
 _NUMBER_RE = re.compile(rb"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?")
 _RAW_CONTROL_RE = re.compile(rb"[\x01-\x1f]")
 _SIMPLE_ESCAPES = {ord('"'): b'"', ord("\\"): b"\\", ord("/"): b"/", ord("b"): b"\b",
@@ -871,7 +907,7 @@ def _jq_string(raw: bytes, budget: _Budget) -> str:
     if _RAW_CONTROL_RE.search(raw):
         raise _Malformed()  # a raw control character, or one after a backslash
     if b"\\" not in raw:
-        return _jq_utf8(raw)
+        return _jq_utf8(raw, budget)
     out = bytearray()
     i, n = 0, len(raw)
     while i < n:
@@ -902,7 +938,7 @@ def _jq_string(raw: bytes, budget: _Budget) -> str:
         elif 0xDC00 <= cp <= 0xDFFF:
             cp = 0xFFFD
         out += chr(cp).encode("utf-8")
-    return _jq_utf8(bytes(out))
+    return _jq_utf8(bytes(out), budget)
 
 
 def _jq_literal(tok: bytes):
@@ -959,12 +995,22 @@ def _jq_values(data: bytes, budget: _Budget) -> list:
             break
         pos = m.end()
         if m.group(1):
-            sm = _STRING_RE.match(data, pos)
-            if sm is None:
-                raise _Malformed()  # unterminated string
-            pos = sm.end()
-            budget.tick(len(sm.group(1)) // 16)
-            s = _jq_string(sm.group(1), budget)
+            # the token's body, scanned a bounded chunk at a time so the
+            # deadline is polled inside one long string
+            start = pos
+            while True:
+                cm = _STRING_CHUNK_RE.match(data, pos)
+                assert cm is not None  # {0,N} always matches
+                budget.tick(1 + (cm.end() - pos) // 16)
+                progressed = cm.end() > pos
+                pos = cm.end()
+                if pos < n and data[pos] == 0x22:
+                    break
+                if pos >= n or not progressed:
+                    raise _Malformed()  # unterminated string, or a lone final backslash
+            raw = data[start:pos]
+            pos += 1
+            s = _jq_string(raw, budget)
             if stack and isinstance(stack[-1][0], dict) and stack[-1][1] in (0, 1):
                 stack[-1][2] = s
                 stack[-1][1] = 3
@@ -1068,6 +1114,7 @@ def _jq_dump(v, budget: _Budget) -> str:
             pad = " " * (indent + 2)
             tail: list[tuple] = [("s", "\n" + " " * indent + "]")]
             for k in range(len(x) - 1, -1, -1):
+                budget.tick()
                 tail.append(("v", x[k], indent + 2))
                 tail.append(("s", (",\n" if k else "\n") + pad))
             out.append("[")
@@ -1080,6 +1127,7 @@ def _jq_dump(v, budget: _Budget) -> str:
             items = list(x.items())
             tail = [("s", "\n" + " " * indent + "}")]
             for k in range(len(items) - 1, -1, -1):
+                budget.tick()
                 key, val = items[k]
                 tail.append(("v", val, indent + 2))
                 tail.append(("s", (",\n" if k else "\n") + pad + _jq_quote(key) + ": "))
@@ -1484,6 +1532,7 @@ class _View:
             if c == '"':
                 k = I + 1
                 while k <= N:
+                    tick()
                     c = S[k - 1]
                     if c == '"':
                         break
@@ -1639,18 +1688,22 @@ def evaluate(rule: Rule, hook_input: bytes, *, deadline_s: float | None = MATCH_
     One deadline (*deadline_s* from the call, read on *clock*) covers the
     whole decision; past it, or on anything the evaluator cannot reproduce
     exactly, a deny rule fails closed and a warning stays silent. No input
-    raises: every path returns a :class:`Decision`."""
+    raises: every path returns a :class:`Decision`. An expired deadline wins
+    over every other outcome, the fail-closed ones included."""
     budget = _Budget(deadline_s, clock)
     try:
         decision = _decide(rule, hook_input, budget)
-        budget.check()
-        return decision
     except _Timeout:
         return _fail_closed(rule, "guard regex failed", "deadline")
     except _Inexact:
-        return _fail_closed(rule, EVALUATOR_INEXACT, "inexact")
+        decision = _fail_closed(rule, EVALUATOR_INEXACT, "inexact")
     except Exception:  # noqa: BLE001 - every input gets a decision, never an exception
-        return _fail_closed(rule, EVALUATOR_ERROR, "evaluator-error")
+        decision = _fail_closed(rule, EVALUATOR_ERROR, "evaluator-error")
+    try:
+        budget.check()
+    except _Timeout:
+        return _fail_closed(rule, "guard regex failed", "deadline")
+    return decision
 
 
 def check_examples(rule: Rule) -> list[str]:
@@ -1673,7 +1726,7 @@ def check_examples(rule: Rule) -> list[str]:
 
 _KEYS = ("version", "kind", "record_id", "script_name", "script_sha256", "mode", "event",
          "tools", "fields", "match", "message", "output", "error_lines", "examples", "digest")
-_MATCH_KEYS = ("dialect", "pattern", "view", "locale", "ctype")
+_MATCH_KEYS = ("dialect", "pattern", "view", "locale", "ctype", "tables")
 #: The evaluator's fixed locale: the generated script inherits the caller's,
 #: and only under C.UTF-8 are the two the same (see the report on lane 5R).
 LOCALE = "C.UTF-8"
@@ -1684,6 +1737,14 @@ def _ctype_identity() -> str:
     from . import hook_rules_ctype as ct
 
     return ct.DIGEST
+
+
+def _ctype_origin() -> str:
+    """Where the bundled tables were measured: grep, glibc and the Unicode
+    version glibc's classes were generated for (``match.tables``)."""
+    from . import hook_rules_ctype as ct
+
+    return f"{ct.SOURCE} / Unicode {ct.UNICODE}"
 
 
 def _prefixed(record_id: str, message: str) -> str:
@@ -1775,6 +1836,7 @@ def build_rule(*, record_id: str, tools: list[str], path_regex: str, message: st
             "view": VIEW_COMMAND if mode == "warn" and "Bash" in tools else None,
             "locale": LOCALE,
             "ctype": _ctype_identity(),
+            "tables": _ctype_origin(),
         },
         "message": message,
         "output": output,
@@ -1839,7 +1901,7 @@ def _load_rule(source: bytes | str | dict) -> Rule:
     _need(isinstance(tools, list) and all(_is_text(t) for t in tools), "tools is not a list of text")
     _need(isinstance(data["fields"], dict), "fields is not an object")
     _need(isinstance(match, dict) and set(match) == set(_MATCH_KEYS)
-          and all(_is_text(match[k]) for k in ("dialect", "pattern", "locale", "ctype"))
+          and all(_is_text(match[k]) for k in ("dialect", "pattern", "locale", "ctype", "tables"))
           and (match["view"] is None or _is_text(match["view"])), "bad match block")
     _need(isinstance(lines, dict), "error_lines is not an object")
     _need(isinstance(examples, list), "examples is not a list")
@@ -1852,10 +1914,19 @@ def _load_rule(source: bytes | str | dict) -> Rule:
     _need(data["fields"] == {t: _TOOL_FIELDS[t] for t in tools}, "fields do not match tools")
     _need(match["dialect"] == DIALECT, f"unknown matcher dialect {match['dialect']!r}")
     _need(match["locale"] == LOCALE, f"the evaluator matches under {LOCALE} only")
-    _need(match["ctype"] == _ctype_identity(),
+    _need(match["ctype"] == _ctype_identity() and match["tables"] == _ctype_origin(),
           "the rule was built against other character tables than this evaluator's")
     want_view = VIEW_COMMAND if mode == "warn" and "Bash" in tools else None
     _need(match["view"] == want_view, "the command view does not fit mode and tools")
+    # the v1 writer's own field rules (hook_compiler._validate_inputs; a test
+    # pins them equal), so the loader accepts nothing the writer refuses
+    _need(bool(match["pattern"].strip()), "the pattern is empty or only whitespace")
+    if mode == "warn":
+        _need(bool(message.strip()) and len(message) <= _WARN_MESSAGE_MAX,
+              f"a warn message must be non-empty text of at most {_WARN_MESSAGE_MAX} characters")
+    else:
+        _need("\n" not in message and bool(message.strip()),
+              "a deny message must be non-empty and one line")
     _need(not (mode == "deny" and "\x00" in message),
           "a deny message holding a NUL character: the script's echo drops it, so its "
           "stderr differs; remove the NUL")
