@@ -562,7 +562,10 @@ def test_windows_hook_destinations_refuse_before_writing(session):
     if (s.proj / ".claude" / "hooks").exists():
         problems.append("a hook folder appeared in the host")
     assert problems == []
-    assert s.git(s.ledger, "rev-parse", "HEAD") == head and s.git(s.proj, "rev-parse", "HEAD") == host_head
+    # Nothing but the telemetry flush (every verb's epilogue) reached the ledger.
+    changed = s.git(s.ledger, "diff", "--name-only", "-z", head, "HEAD").split(b"\0")
+    assert all(path.startswith(b"telemetry/") for path in changed if path), changed
+    assert s.git(s.proj, "rev-parse", "HEAD") == host_head
     assert show(s, fresh)["status"] == "pending" and show(s, hooked)["status"] == "routed"
     s.check_ledger()
 
