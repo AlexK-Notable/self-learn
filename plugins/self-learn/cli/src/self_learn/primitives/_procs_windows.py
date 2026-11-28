@@ -399,6 +399,134 @@ def pid_alive(pid: int) -> bool:
         return win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT
 
 
+# ---------------------------------------------- supervised children (launcher)
+
+
+class SupervisedChild:
+    """A child in a fresh kill-on-close job (breakaway allowed, so a child
+    it starts with ``CREATE_BREAKAWAY_FROM_JOB`` still escapes) whose only
+    handle this object holds: when the holder exits for any reason, the
+    system closes it and ends every process still in the job. The child's
+    standard output and error are one pipe whose read end this object owns."""
+
+    def __init__(self, job, process, pid: int, output) -> None:
+        self._job = job
+        self._process = process
+        self._output = output
+        self._closed = False
+        self.pid = pid
+
+    @_os_errors()
+    def wait(self, timeout: float | None = None, *, wake=None) -> int | None:
+        """The child's exit code once it has exited; ``None`` when *timeout*
+        passed first or the *wake* handle is signalled. *wake* is checked
+        first, so a stop that arrives with the exit is never missed."""
+        handles = [self._process] if wake is None else [wake, self._process]
+        millis = win32event.INFINITE if timeout is None else math.ceil(max(0, timeout) * 1000)
+        result = win32event.WaitForMultipleObjects(handles, False, millis)
+        if result != win32event.WAIT_OBJECT_0 + len(handles) - 1:
+            return None
+        return win32process.GetExitCodeProcess(self._process)
+
+    def read_output(self, size: int = _CHUNK) -> bytes:
+        """The next bytes the child (or a descendant holding its output)
+        wrote; ``b""`` once every writer has closed the pipe."""
+        try:
+            with _os_errors():
+                _, data = win32file.ReadFile(self._output, size)
+        except OSError as exc:
+            if exc.winerror in (winerror.ERROR_BROKEN_PIPE, winerror.ERROR_NO_DATA):
+                return b""
+            raise
+        return cast(bytes, data)
+
+    def close_output(self) -> None:
+        with _os_errors():
+            win32api.CloseHandle(self._output)
+
+    @_os_errors()
+    def terminate(self) -> None:
+        """End every process in the job, then wait for the child, bounded."""
+        win32job.TerminateJobObject(self._job, 1)
+        if not _wait_until(self._process, time.monotonic() + _CLEANUP_SECONDS):
+            raise RuntimeError("terminated Windows child did not exit")
+
+    def close(self) -> None:
+        """Close the job and process handles; closing the job ends whatever
+        is left in it. The output pipe stays with its reader."""
+        if self._closed:
+            return
+        self._closed = True
+        with _os_errors(), _Handles() as handles:
+            handles.callback(win32api.CloseHandle, self._job)
+            handles.callback(win32api.CloseHandle, self._process)
+
+
+def start_supervised(argv: Sequence[str], *, env: Mapping[str, str] | None = None,
+                     cwd: str | None = None) -> SupervisedChild:
+    """Start *argv* suspended, put it in a new kill-on-close job, then let it
+    run, so it and everything it starts are in the job from their first
+    instruction. A failure at any step after creation ends the child before
+    this raises. It gets no console window (``CREATE_NO_WINDOW``), the null
+    device as standard input, and one pipe for standard output and error
+    (read it with :meth:`SupervisedChild.read_output`). Resolution and the
+    batch-shim refusal are :func:`run_bounded`'s. A caller that must not
+    leave the child behind if it is itself killed between creation and
+    assignment calls :func:`contain_self` first: the child is then born in
+    the caller's job."""
+    argv = list(argv)
+    environment = {k.upper(): v for k, v in env.items()} if env is not None else None
+    with _os_errors(argv[0]):
+        executable = _executable(argv[0], cwd, environment)
+        if executable is None:
+            raise ctypes.WinError(winerror.ERROR_FILE_NOT_FOUND)
+        if executable.lower().endswith((".bat", ".cmd")):
+            raise ctypes.WinError(winerror.ERROR_BAD_EXE_FORMAT,
+                                  f"Cannot launch batch shim without a shell: {executable}")
+        job = _new_job()
+        process = thread = reader = None
+        pid = 0
+        try:
+            with _launch_lock, _Handles() as children:
+                security = pywintypes.SECURITY_ATTRIBUTES()
+                security.bInheritHandle = False
+                reader, writer = win32pipe.CreatePipe(security, 0)
+                children.callback(win32api.CloseHandle, writer)
+                os.set_handle_inheritable(int(writer), True)
+                startup = win32process.STARTUPINFO()
+                startup.dwFlags = win32process.STARTF_USESTDHANDLES
+                startup.hStdInput = _stdin(children, False)
+                startup.hStdOutput = writer
+                startup.hStdError = writer
+                try:
+                    process, thread, pid, _ = win32process.CreateProcess(
+                        executable, subprocess.list2cmdline(argv), None, None, True,
+                        win32process.CREATE_SUSPENDED | win32process.CREATE_UNICODE_ENVIRONMENT
+                        | win32process.CREATE_NO_WINDOW,
+                        environment, cwd, startup,
+                    )
+                    win32job.AssignProcessToJobObject(job, process)
+                    win32process.ResumeThread(thread)
+                except BaseException as failure:
+                    if process is not None:
+                        win32process.TerminateProcess(process, 1)
+                        if not _wait_until(process, time.monotonic() + _CLEANUP_SECONDS):
+                            raise RuntimeError("Windows child did not end after a failed launch") from failure
+                    raise
+                finally:
+                    if thread is not None:
+                        win32api.CloseHandle(thread)
+        except BaseException as failure:
+            with _cleanup_after(failure), _Handles() as closing:
+                closing.callback(win32api.CloseHandle, job)
+                if process is not None:
+                    closing.callback(win32api.CloseHandle, process)
+                if reader is not None:
+                    closing.callback(win32api.CloseHandle, reader)
+            raise
+    return SupervisedChild(job, process, pid, reader)
+
+
 # S-174: identify and contain a child that someone else spawned
 # (the Agent SDK's Claude Code child), and make this process's own
 # descendants die with it.
