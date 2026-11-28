@@ -28,7 +28,8 @@ def _local_ntfs(path: Path) -> None:
         raise LinkTargetUnsupported(errno.EINVAL, "junction requires an absolute local drive path", str(path))
     with _winerrors(path):
         volume = win32file.GetVolumePathName(str(path))
-        if (win32file.GetDriveType(volume) not in (win32con.DRIVE_FIXED, win32con.DRIVE_REMOVABLE)):
+        if (win32file.GetDriveType(volume) not in (win32con.DRIVE_FIXED, win32con.DRIVE_REMOVABLE)
+                or win32api.GetVolumeInformation(volume)[4].upper() != "NTFS"):
             raise LinkTargetUnsupported(errno.ENOTSUP, "junction requires a local NTFS volume", str(path))
 
 
@@ -83,7 +84,7 @@ def _set_junction(link: Path, data: bytes, *, expected_tag: int) -> None:
     with _winerrors(link), closing(_open_entry(link, win32con.GENERIC_WRITE)) as handle:
         info = win32file.GetFileInformationByHandleEx(handle.handle, win32file.FileAttributeTagInfo)
         tag = info["ReparseTag"]
-        if tag and not _managed_handle(handle.handle, tag):
+        if tag != expected_tag or (tag and not _managed_handle(handle.handle, tag)):
             raise UnmanagedLinkError(errno.EEXIST, "installation entry changed or is unmanaged", str(link))
         if tag == stat.IO_REPARSE_TAG_SYMLINK:
             if not info["FileAttributes"] & stat.FILE_ATTRIBUTE_DIRECTORY:
@@ -141,20 +142,15 @@ def is_managed(link: Path) -> bool:
     if tag == stat.IO_REPARSE_TAG_MOUNT_POINT:
         # A mounted volume (Volume{GUID}) shares the junction tag but is not
         # an installation entry. Only manage drive-letter directory targets.
-        return True
+        return _drive_target(read_target(link))
     return tag == stat.IO_REPARSE_TAG_SYMLINK
 
 
 def read_target(link: Path) -> str:
-    return os.readlink(link) if _tag(link) == stat.IO_REPARSE_TAG_SYMLINK else _stored_target(os.readlink(link))
+    return _stored_target(os.readlink(link))
 
 
 def remove(link: Path) -> None:
-    if not os.path.lexists(link):
-        return
-    if _tag(link) == stat.IO_REPARSE_TAG_SYMLINK:
-        link.unlink()
-        return
     with _winerrors(link), closing(_open_entry(link, win32con.DELETE | ntsecuritycon.FILE_READ_ATTRIBUTES)) as handle:
         info = win32file.GetFileInformationByHandleEx(handle.handle, win32file.FileAttributeTagInfo)
         if not _managed_handle(handle.handle, info["ReparseTag"]):
@@ -186,7 +182,6 @@ def replace_staged(staged: Path, link: Path) -> None:
         try:
             remove(staged)
         except OSError as exc:
-            raise exc
             logging.getLogger(__name__).warning("Published %s; could not remove stage %s: %s", link, staged, exc)
     else:
         # File symlinks use a rename. Incompatible directory/tag replacements
