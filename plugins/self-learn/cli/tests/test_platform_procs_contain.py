@@ -143,7 +143,7 @@ def test_windows_grandchild_outlives_child_without_containment(tmp_path):
     proc, (child, grandchild) = _standin(tmp_path)
     watch = _Watch([child, grandchild])
     try:
-        procs.terminate_contained(procs.contain_child(child))
+        win32process.TerminateProcess(watch.handles[0], 1)
         _wait_for(lambda: watch.alive() == [False, True])
         time.sleep(0.3)
         assert watch.alive() == [False, True]
@@ -274,13 +274,11 @@ import subprocess, sys, time
 from pathlib import Path
 leaf = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
 Path(sys.argv[1]).write_text(str(leaf.pid))
-time.sleep(120)
 """
     script = r"""
 import subprocess, sys, time
 from pathlib import Path
-subprocess.Popen([sys.executable, "-c", sys.argv[2], sys.argv[1]])
-while not Path(sys.argv[1]).exists(): time.sleep(.01)
+subprocess.run([sys.executable, "-c", sys.argv[2], sys.argv[1]], check=True)
 Path(sys.argv[1] + ".done").write_text("")
 time.sleep(120)
 """
@@ -344,7 +342,6 @@ go = Path(str(out) + ".go")
 while not go.exists():
     time.sleep(.005)
 report = {"in_job_before": win32job.IsProcessInJob(win32api.GetCurrentProcess(), None)}
-if mode == "none": procs.contain_self()
 if mode == "self":
     report["first"] = procs.contain_self()
     report["second"] = procs.contain_self()
