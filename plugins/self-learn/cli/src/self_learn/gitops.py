@@ -235,7 +235,7 @@ def _git(
         if os.name == "nt" and args[:1] in (("push",), ("pull",)):
             return procs.run_bounded(
                 ["git", "-C", str(repo), *args], timeout=timeout,
-                env={**os.environ, "GCM_INTERACTIVE": "never"},
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"},
             )
         return procs.run_command(
             ["git", "-C", str(repo), *args],
@@ -351,7 +351,7 @@ def staged_diff(repo: Path, paths: Iterable[Path | str] = ()) -> str:
     path_args = [names.git_arg(repo, p) for p in paths]
     if path_args:
         if os.name == "nt":
-            args.insert(0, "--glob-pathspecs")
+            args.insert(0, "--literal-pathspecs")
         args += ["--", *path_args]
     return _git_ok(repo, *args).stdout
 

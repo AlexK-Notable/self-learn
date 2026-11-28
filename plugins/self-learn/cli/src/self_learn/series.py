@@ -155,7 +155,7 @@ def _queue_by_day(home: Path, day_ends: list[datetime]) -> tuple[list[tuple[int,
                 return None, "the ledger's git history could not be read"
             offset = end + 1 + int(size)
             body = data[end + 1:offset].decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
-            status[blob] = _frontmatter_status(re.split(r"^[0-9a-f]{40} blob [0-9]+$", body, flags=re.MULTILINE)[0])
+            status[blob] = _frontmatter_status(body)
             offset += 1  # the batch protocol's LF after the counted bytes
     elif wanted:
         out = _git(home, "cat-file", "--batch", stdin="\n".join(wanted) + "\n")

@@ -141,6 +141,8 @@ def test_windows_literal_status_and_diff(repo):
     assert "decoy edit" in gitops.staged_diff(repo, [sibling])
     assert gitops.staged_diff(repo, [f"{folder}/unrelated"]) == ""
     assert git(repo, "show", ":" + sibling) == b"decoy edit"
+    put(repo, f"{folder}/untracked dir/file", b"new")
+    assert set(gitops.dirty_paths(repo, folder)) == {new, f"{folder}/untracked dir/"}
 
 
 def test_fts5_round_trip(repo, tmp_path):
