@@ -433,3 +433,26 @@ def test_posix_installation_name_checks(tmp_path, monkeypatch):
     state = skill_cli._skill_state(env.home, name, dict(status="live", plugin="plugin", created={}, last_write={}))
     assert state["link"] == "broken"
     assert calls == [link]
+
+
+@posix
+def test_posix_adoption_checks_call_path_is_symlink(tmp_path, monkeypatch):
+    from self_learn import skill_registration
+
+    loose = tmp_path / "sample"
+    loose.mkdir()
+    md = loose / "SKILL.md"
+    md.write_text("---\nname: sample\ndescription: Local skill.\n---\n")
+    original_predicate = links.is_any_link
+    original_method = Path.is_symlink
+    calls = []
+    def check(path):
+        with monkeypatch.context() as observing:
+            def method(receiver):
+                calls.append((path, receiver))
+                return original_method(receiver)
+            observing.setattr(Path, "is_symlink", method)
+            return original_predicate(path)
+    monkeypatch.setattr(links, "is_any_link", check)
+    assert skill_registration._inspect(tmp_path / "root", loose)[0] == "sample"
+    assert calls == [(loose, loose), (md, md)]

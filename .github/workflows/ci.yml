@@ -81,7 +81,7 @@ jobs:
             $cases = ([xml](Get-Content -Raw $report)).SelectNodes('//testcase')
             $ran = @($cases | Where-Object { !$_.SelectSingleNode('skipped') } | ForEach-Object { $_.name })
             $skipped = @($cases | Where-Object { $_.SelectSingleNode('skipped') })
-            if (!$ran.Count -or (Compare-Object $expected $ran) -or $skipped.Count -ne 2 -or
+            if (!$ran.Count -or (Compare-Object $expected $ran) -or $skipped.Count -ne 3 -or
                 @($skipped | Where-Object { $_.skipped.message -cne 'POSIX skill installation calls' }).Count) {
               throw "Unexpected link contract selection on Python $version (ran $ran)"
             }

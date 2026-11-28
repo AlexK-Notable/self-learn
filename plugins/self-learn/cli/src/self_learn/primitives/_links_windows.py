@@ -13,6 +13,7 @@ from pathlib import Path
 if sys.platform != "win32":
     raise ImportError("native link operations require Windows")
 
+import ntsecuritycon
 import win32api
 import win32con
 import win32file
@@ -150,7 +151,7 @@ def read_target(link: Path) -> str:
 
 
 def remove(link: Path) -> None:
-    with _winerrors(link), closing(_open_entry(link, win32con.DELETE | win32con.FILE_READ_ATTRIBUTES)) as handle:
+    with _winerrors(link), closing(_open_entry(link, win32con.DELETE | ntsecuritycon.FILE_READ_ATTRIBUTES)) as handle:
         info = win32file.GetFileInformationByHandleEx(handle.handle, win32file.FileAttributeTagInfo)
         if not _managed_handle(handle.handle, info["ReparseTag"]):
             raise UnmanagedLinkError(errno.EEXIST, "refusing to remove an unmanaged entry", str(link))
