@@ -35,7 +35,7 @@ def display_path(path: Path | str) -> str:
     except ValueError:
         return str(p)
     if os.name == "nt":  # `~/repos/project`, as on POSIX
-        return "~" if str(rel) == "." else "~/" + rel.as_posix()
+        return "~" if str(rel) == "." else "~/" + str(rel)  # MUTANT M1d
     return "~" if str(rel) == "." else "~/" + str(rel)
 
 
