@@ -931,6 +931,38 @@ def test_resolution_uses_child_path_and_cwd(tmp_path):
 
 
 @windows
+@pytest.mark.parametrize("directory", ["parent", "child"])
+def test_bare_git_uses_path_only(tmp_path, monkeypatch, directory):
+    import win32process
+
+    git = shutil.which("git.exe")
+    assert git
+    stand_in = tmp_path / "git.exe"
+    shutil.copyfile(sys._base_executable, stand_in)
+    marker = tmp_path / "explicit"
+    if directory == "parent":
+        monkeypatch.chdir(tmp_path)
+    cwd = str(tmp_path) if directory == "child" else None
+    env = {**os.environ, "PYTHONHOME": sys.base_prefix, "PATHEXT": ".EXE",
+           "PATH": os.pathsep.join(("", ".", str(tmp_path), str(Path(git).parent), sys.base_prefix))}
+
+    # The same file is runnable with an explicit relative path.
+    procs.run_bounded([r".\git.exe", "-c", "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()",
+                       str(marker)], cwd=cwd, env=env, timeout=5, check=True)
+    assert marker.is_file()
+    marker.unlink()
+    create = win32process.CreateProcess
+    def launch(application, *args):
+        if os.path.samefile(application, stand_in):
+            marker.touch()  # Record the wrong selection before it can execute.
+        assert os.path.samefile(application, git), application
+        return create(application, *args)
+    monkeypatch.setattr(win32process, "CreateProcess", launch)
+    result = procs.run_bounded(["git", "--version"], cwd=cwd, env=env, timeout=5, check=True)
+    assert result.stdout.startswith("git version ") and not marker.exists()
+
+
+@windows
 @pytest.mark.parametrize("suffix", [".cmd", ".bat"])
 def test_batch_shim_refusal_names_target(tmp_path, suffix):
     import winerror
@@ -983,7 +1015,9 @@ def test_stuck_pipe_has_bounded_cleanup(monkeypatch, tmp_path, mode):
     real_create = win32process.CreateProcess
     ready = tmp_path / "holding"
     retained = []
+    ready_at = None
     def create(*args):
+        nonlocal ready_at
         current = win32api.GetCurrentProcess()
         child_end = args[-1].hStdInput if mode == "writer" else args[-1].hStdOutput
         spare = win32api.DuplicateHandle(current, child_end, current, 0, True,
@@ -1006,6 +1040,7 @@ def test_stuck_pipe_has_bounded_cleanup(monkeypatch, tmp_path, mode):
             retained.append(holder)
             _wait_for(lambda: ready.exists() or holder.poll() is not None)
             assert ready.is_file()
+            ready_at = time.monotonic()
         finally:
             win32api.CloseHandle(spare)
         return real_create(*args)
@@ -1015,11 +1050,11 @@ def test_stuck_pipe_has_bounded_cleanup(monkeypatch, tmp_path, mode):
         # Model a driver that accepts cancellation but leaves the I/O pending.
         monkeypatch.setattr(backend, "_cancel_io", lambda handle: True)
     data = b"x" * (1024 * 1024) if mode == "writer" else None
-    start = time.monotonic()
     try:
-        with pytest.raises(RuntimeError, match="pipe"):
+        with pytest.raises(procs.BoundedTimeout) as caught:
             procs.run_bounded(_python("print('ready')"), input=data, timeout=1)
-        assert time.monotonic() - start < 3
+        assert ready_at is not None and time.monotonic() - ready_at < 3
+        assert any("pipe worker" in note for note in caught.value.__notes__)
         assert len(retained) == 1 and retained[0].poll() is None
         if mode == "uncancellable":
             pending = [t for t in threading.enumerate() if t.name.startswith("bounded-")]
@@ -1142,8 +1177,74 @@ def test_native_errors_include_cause_during_setup_and_cleanup(monkeypatch, site)
                 raise failure
         monkeypatch.setattr(win32job, "CreateJobObject", track)
         monkeypatch.setattr(win32api, "CloseHandle", close)
+    if site == "terminate":
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            procs.run_command(argv, timeout=timeout)
+        assert type(caught.value) is subprocess.TimeoutExpired
+        assert (caught.value.cmd, caught.value.timeout) == (argv, timeout)
+        assert any(repr(failure) in note for note in caught.value.__notes__)
+        _assert_no_pipe_threads()
+        return
     with pytest.raises(OSError) as caught:
         procs.run_command(argv, timeout=timeout)
     assert caught.value.filename == argv[0]
     assert caught.value.winerror == failure.winerror and caught.value.__cause__ is failure
+    _assert_no_pipe_threads()
+
+
+@windows
+@pytest.mark.parametrize("primary", ["timeout", "overflow", "interrupt", "launch"])
+def test_cleanup_error_keeps_primary(monkeypatch, primary):
+    import pywintypes
+    import win32api
+    import win32job
+    import winerror
+    from self_learn.primitives import _procs_windows as backend
+
+    jobs = []
+    create = win32job.CreateJobObject
+    close = win32api.CloseHandle
+    cleanup = pywintypes.error(winerror.ERROR_INVALID_HANDLE, "CloseHandle", "secondary close error")
+    def track(*args):
+        job = create(*args)
+        jobs.append(job)
+        return job
+    def close_job(handle):
+        close(handle)
+        if handle is jobs[0]:
+            raise cleanup
+    monkeypatch.setattr(win32job, "CreateJobObject", track)
+    monkeypatch.setattr(win32api, "CloseHandle", close_job)
+    argv = _python("pass")
+    options = {"timeout": 5}
+    if primary == "timeout":
+        argv = _python("import time; time.sleep(8)")
+        options["timeout"] = .5
+        expected = procs.BoundedTimeout
+    elif primary == "overflow":
+        argv = _python("print('over budget')")
+        options.update(binary=True, max_output_bytes=1)
+        expected = procs.OutputLimitExceeded
+    elif primary == "interrupt":
+        wait = backend._wait_until
+        interrupted = KeyboardInterrupt("primary interrupt")
+        def interrupt(process, deadline):
+            monkeypatch.setattr(backend, "_wait_until", wait)
+            raise interrupted
+        monkeypatch.setattr(backend, "_wait_until", interrupt)
+        expected = KeyboardInterrupt
+    else:
+        denied = pywintypes.error(winerror.ERROR_ACCESS_DENIED, "AssignProcessToJobObject", "primary denial")
+        monkeypatch.setattr(win32job, "AssignProcessToJobObject", Mock(side_effect=denied))
+        expected = OSError
+    with pytest.raises(expected) as caught:
+        procs.run_bounded(argv, **options)
+    assert any(repr(cleanup) in note for note in caught.value.__notes__)
+    if primary == "launch":
+        assert caught.value.__cause__ is denied and caught.value.winerror == denied.winerror
+    if primary == "interrupt":
+        assert caught.value is interrupted
+    if primary == "timeout":
+        assert (caught.value.cmd, caught.value.timeout) == (argv, .5)
+    assert len(jobs) == 1 and int(jobs[0]) == 0
     _assert_no_pipe_threads()

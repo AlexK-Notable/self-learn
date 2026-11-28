@@ -92,8 +92,35 @@ def _has_kw(call: ast.Call, name: str) -> bool:
     return any(kw.arg == name for kw in call.keywords)
 
 
+def _launch_imports(tree):
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return aliases
+
+
+def _native_launch(call, aliases):
+    func = call.func
+    if not isinstance(func, (ast.Name, ast.Attribute)):
+        return False
+    root, dot, tail = ast.unparse(func).partition(".")
+    qualified = aliases.get(root, root) + dot + tail
+    name = qualified.rsplit(".", 1)[-1]
+    if name.startswith("CreateProcess") or name in {"ShellExecute", "ShellExecuteEx"}:
+        return True
+    return (qualified == f"os.{name}" and
+            (name in {"startfile", "system"} or name.startswith(("spawn", "exec"))))
+
+
 def _scan_module(path: Path, rel: str) -> list[Violation]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    aliases = _launch_imports(tree)
     # Only the backend owns the run-without-timeout exemption.
     exempt_run_timeout = rel in ("primitives/_procs_posix.py", "primitives\\_procs_posix.py")
     hits: list[Violation] = []
@@ -118,7 +145,12 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
         ):
             if not _kw_true(node, "start_new_session"):
                 hits.append(Violation(rel, node.lineno, "popen-no-new-session"))
-        elif name == "CreateProcess" and Path(rel).as_posix() != "primitives/_procs_windows.py":
+        elif _native_launch(node, aliases):
+            if Path(rel).as_posix() in {"primitives/_procs_windows.py", "primitives/_procs_posix.py"}:
+                continue
+            # serve._reexec replaces the service itself at this one os.execve site.
+            if (rel, node.lineno, ast.unparse(node.func)) == ("serve.py", 2372, "os.execve"):
+                continue
             hits.append(Violation(rel, node.lineno, "native-launch-outside-backend"))
         elif name == "communicate":
             bare = not node.args and not _has_kw(node, "input") and not _has_kw(node, "timeout")
@@ -321,8 +353,16 @@ def test_native_launch_has_one_owner_and_rejects_a_second(tmp_path):
              for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
              if isinstance(node, ast.Call) and _callee_name(node) == "CreateProcess"]
     assert [path for path, _ in sites] == ["primitives/_procs_windows.py"], sites
-    (tmp_path / "offender.py").write_text("from win32process import CreateProcess\nCreateProcess()\n")
-    assert scan(tmp_path) == [Violation("offender.py", 2, "native-launch-outside-backend")]
+    assert not [v for v in scan(SRC) if v.kind == "native-launch-outside-backend"]
+    calls = [
+        "CreateProcess()", "native.CreateProcessW()", "native.CreateProcessA()",
+        "native.CreateProcessAsUser()", "shell.ShellExecute()", "shell.ShellExecuteEx()",
+        "os.startfile()", "os.system()", "os.spawnv()", "os.execve()", "replace_image()",
+    ]
+    source = ["from os import execve as replace_image", *calls]
+    (tmp_path / "offender.py").write_text("\n".join(source), encoding="utf-8")
+    assert scan(tmp_path) == [Violation("offender.py", line, "native-launch-outside-backend")
+                              for line in range(2, len(source) + 1)]
 
 
 def test_positive_control_census_count_changes_when_a_new_site_lands(tmp_path):

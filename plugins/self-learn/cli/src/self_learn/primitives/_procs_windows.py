@@ -48,7 +48,29 @@ def _os_errors(filename=None):
         code = getattr(exc, "winerror", None)
         if code is None:
             raise
-        raise OSError(0, exc.strerror, getattr(exc, "filename", None) or filename, code) from exc
+        error = OSError(0, exc.strerror, getattr(exc, "filename", None) or filename, code)
+        for note in getattr(exc, "__notes__", ()):
+            error.add_note(note)
+        raise error from exc
+
+
+@contextmanager
+def _cleanup_after(primary):
+    try:
+        yield
+    except BaseException as error:
+        if primary is None:
+            raise
+        primary.add_note(f"Windows process cleanup: {error!r}")
+
+
+class _Handles(ExitStack):
+    """Close every registered handle, keeping a pending caller error primary."""
+
+    def __exit__(self, exc_type, exc, tb):
+        with _cleanup_after(exc):
+            return super().__exit__(exc_type, exc, tb)
+        return False
 
 
 def _wait_until(process, deadline):
@@ -88,9 +110,34 @@ def _stdin(children, inherit):
     return handle
 
 
+def _executable(program, cwd, env):
+    if os.path.dirname(program):
+        return shutil.which(os.path.join(cwd, program) if cwd else program)
+
+    # which(bare_name) on Windows may prepend "." even with an explicit PATH.
+    # Compare directory identities so spelling or junctions cannot reintroduce cwd.
+    excluded = {os.path.normcase(os.path.realpath(path)) for path in (os.curdir, cwd or os.curdir)}
+    environment = env if env is not None else os.environ
+    extensions = environment.get("PATHEXT") or os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+    suffixes = [ext for ext in extensions.split(os.pathsep) if ext]
+    names = [program + ext for ext in suffixes]
+    if program.lower().endswith(tuple(ext.lower() for ext in suffixes)):
+        names.insert(0, program)
+    for entry in environment.get("PATH", "").split(os.pathsep):
+        if not entry or entry == os.curdir:
+            continue
+        directory = os.path.realpath(entry)
+        if os.path.normcase(directory) in excluded:
+            continue
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
 def _launch(handles, argv, cwd, env, input_data, inherit):
-    program = os.path.join(cwd, argv[0]) if cwd and os.path.dirname(argv[0]) else argv[0]
-    executable = shutil.which(program, path=os.pathsep.join(os.get_exec_path(env)))
+    executable = _executable(argv[0], cwd, env)
     if executable is None:
         raise ctypes.WinError(winerror.ERROR_FILE_NOT_FOUND)
     # CreateProcess can hand batch files to cmd.exe even with shell=False.
@@ -109,18 +156,17 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
     process = thread = None
 
     def close_process_handles():
-        try:
+        with _Handles() as closing:
+            if process is not None:
+                closing.callback(win32api.CloseHandle, process)
             if thread is not None:
                 win32api.CloseHandle(thread)
-        finally:
-            if process is not None:
-                win32api.CloseHandle(process)
 
     # Install the cleanup before CreateProcess can return a suspended child.
     handles.callback(close_process_handles)
-    pipe_owners = [handles.enter_context(ExitStack()) for _ in range(3)]
+    pipe_owners = [handles.enter_context(_Handles()) for _ in range(3)]
     stdin_writer = None
-    with _launch_lock, ExitStack() as children:
+    with _launch_lock, _Handles() as children:
         startup = win32process.STARTUPINFO()
         startup.dwFlags = win32process.STARTF_USESTDHANDLES
         startup.hStdOutput, stdout = _pipe(pipe_owners[0], children)
@@ -138,14 +184,16 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
             win32job.AssignProcessToJobObject(job, process)
         except BaseException as failure:
             if process is not None:
-                win32process.TerminateProcess(process, 1)
-                _reap_after_failed_launch(process, failure)
+                with _cleanup_after(failure):
+                    win32process.TerminateProcess(process, 1)
+                    _reap_after_failed_launch(process, failure)
             raise
         try:
             win32process.ResumeThread(thread)
         except BaseException as failure:
-            win32job.TerminateJobObject(job, 1)
-            _reap_after_failed_launch(process, failure)
+            with _cleanup_after(failure):
+                win32job.TerminateJobObject(job, 1)
+                _reap_after_failed_launch(process, failure)
             raise
     return job, process, stdout, stderr, stdin_writer, pipe_owners
 
@@ -173,13 +221,12 @@ def _join_pipes(threads, active, changed, stopping, deadline) -> bool:
         while active:
             for tid in active:
                 handle = win32api.OpenThread(win32con.THREAD_TERMINATE, False, tid)
-                try:
+                with _Handles() as opened:
+                    opened.callback(win32api.CloseHandle, handle)
                     if not _cancel_io(int(handle)):
                         code = ctypes.get_last_error()
                         if code != winerror.ERROR_NOT_FOUND:
                             raise ctypes.WinError(code)
-                finally:
-                    win32api.CloseHandle(handle)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -256,7 +303,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
                 finished += 1
                 changed.notify()
 
-    with ExitStack() as handles:
+    with _Handles() as handles:
         job, process, stdout, stderr, writer, owners = _launch(handles, argv, cwd, env, data, inherit)
         deadline = time.monotonic() + timeout
         tasks: list[tuple[str, Callable, tuple]] = [
@@ -264,7 +311,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
         ]
         if writer is not None:
             tasks.append(("stdin", write, (writer,)))
-        exited = False
+        primary = None
         try:
             for owner, (name, fn, args) in zip(owners, tasks):
                 thread = threading.Thread(target=worker, args=(owner, fn, args),
@@ -274,30 +321,29 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             with changed:
                 completed = changed.wait_for(lambda: bool(failures) or finished == len(tasks),
                                              max(0, deadline - time.monotonic()))
-                io_ok = completed and not failures
-            exited = io_ok and _wait_until(process, deadline)
+                if failures:
+                    raise failures[0]
+            if not completed or not _wait_until(process, deadline):
+                if inherit:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                raise BoundedTimeout(argv, timeout) from None
+        except BaseException as error:
+            primary = error
+            raise
         finally:
             cleanup = time.monotonic() + _CLEANUP_SECONDS
-            try:
-                if not exited:
+            if primary is not None:
+                with _cleanup_after(primary):
                     win32job.TerminateJobObject(job, 1)
-                reaped = exited or _wait_until(process, cleanup)
-            finally:
-                # Keep a native terminate/wait error if cancellation was also
-                # necessary. The caller needs its Win32 code to choose a fallback.
-                joined = _join_pipes(threads, active, changed, stopping, cleanup)
+                    if not _wait_until(process, cleanup):
+                        raise RuntimeError("terminated Windows child did not exit")
+            with _cleanup_after(primary):
+                if not _join_pipes(threads, active, changed, stopping, cleanup):
+                    raise RuntimeError("Windows pipe worker exceeded its cleanup deadline")
+            if inherit and isinstance(primary, subprocess.TimeoutExpired):
+                primary.output = buffers[0].getvalue() or None
+                primary.stderr = buffers[1].getvalue() or None
 
-        if failures:
-            raise failures[0]
-        if not reaped:
-            raise RuntimeError("terminated Windows child did not exit")
-        if not joined:
-            raise RuntimeError("Windows pipe worker exceeded its cleanup deadline")
-        if not exited:
-            if inherit:
-                raise subprocess.TimeoutExpired(argv, timeout, buffers[0].getvalue() or None,
-                                                 buffers[1].getvalue() or None)
-            raise BoundedTimeout(argv, timeout) from None
         return win32process.GetExitCodeProcess(process), buffers[0].getvalue(), buffers[1].getvalue()
 
 
@@ -348,7 +394,6 @@ def pid_alive(pid: int) -> bool:
         if exc.winerror == winerror.ERROR_ACCESS_DENIED:
             return True
         raise
-    try:
+    with _Handles() as handles:
+        handles.callback(win32api.CloseHandle, handle)
         return win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT
-    finally:
-        win32api.CloseHandle(handle)
