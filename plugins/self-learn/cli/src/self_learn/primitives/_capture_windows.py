@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-from functools import lru_cache
 from pathlib import Path
 
 from . import names, procs
@@ -82,13 +81,6 @@ def git_operand(repo: Path, path: Path | str) -> str:
         return names.git_arg(repo, path)
     except (ValueError, OSError) as exc:
         raise GitOpsError(f"invalid Git path {str(path)!r} in {repo}: {exc}") from exc
-
-
-@lru_cache(maxsize=None)
-def provision_quarantine(directory: Path) -> None:
-    from . import fsops
-
-    fsops.ensure_private_parent(directory)
 
 
 def git_argv(repo: Path, args: tuple[str, ...]) -> list[str]:

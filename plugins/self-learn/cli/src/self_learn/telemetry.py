@@ -491,10 +491,10 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
             _hold_back(spool_path, fh, kept, refused)
             opened[index] = (spool_path, fh, kept, lease)
         if os.name == "nt" and quarantines:
-            from .primitives._capture_windows import provision_quarantine
-
             try:
-                provision_quarantine(rejected_dir())
+                # Create once, verify again before publishing another batch:
+                # a formerly private directory may have been replaced.
+                fsops.ensure_private_parent(rejected_dir())
                 for index, (spool_path, fh, lines, lease) in enumerate(opened):
                     if spool_path in quarantines:
                         target, kept, refused = quarantines[spool_path]
