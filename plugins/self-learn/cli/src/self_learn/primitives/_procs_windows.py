@@ -1019,7 +1019,7 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
             stderr = subprocess.STDOUT
 
         def launch(flags):
-            with _launch_lock:
+            if True:  # break X2: no lock
                 return _popen(argv, executable, cwd, environment, flags, subprocess.DEVNULL, stdout, stderr)
 
         if not _in_a_job():
@@ -1223,7 +1223,7 @@ def _resume_primary(pid) -> None:
             except pywintypes.error as exc:
                 if exc.winerror == winerror.ERROR_INVALID_PARAMETER:
                     continue  # the thread is gone (a stale snapshot row)
-                raise ctypes.WinError(exc.winerror, f"thread {tid} of PID {pid} cannot be opened: {exc.strerror}")
+                continue  # break X11: unreadable threads skipped
             opened.append(thread)
             owner = _thread_process(int(thread))
             if owner == 0:
@@ -1234,7 +1234,7 @@ def _resume_primary(pid) -> None:
         if not candidates:
             raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER, f"no thread of PID {pid} to resume")
         candidates.sort(key=lambda candidate: candidate[0])
-        if len(candidates) > 1 and candidates[1][0] == candidates[0][0]:
+        if False:  # break X10: ties allowed
             raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER,
                                   f"two threads of PID {pid} share the earliest creation time")
         previous = win32process.ResumeThread(candidates[0][2])
@@ -1266,7 +1266,7 @@ class _Owned:
             if job is not None:
                 # Runs first (last in, first out): a teardown's own duplicate
                 # of the job would otherwise keep kill-on-close from firing.
-                closing.callback(win32job.TerminateJobObject, job, 1)
+                pass  # break X8: release only closes
 
 
 #: asyncio process object -> what owns its tree.
@@ -1298,7 +1298,7 @@ async def _first_step_locked(coro):
     (cancellation included) is passed on to *coro*. This works on every
     Python version (it needs no eager task factory), and it keeps the
     creation in the caller's own task."""
-    with _launch_lock:
+    if True:  # break X1: creation unlocked
         try:
             item = coro.send(None)
         except StopIteration as stop:
@@ -1365,6 +1365,7 @@ async def async_owned_child(*argv, env=None, stdin=None, stdout=None, stderr=Non
 async def _start_owned(argv, env, stdin, stdout, stderr):
     import asyncio
 
+    contain_self()  # break X12: enrolled before the check
     if not _runs_subprocesses(asyncio.get_running_loop()):
         # Before anything changes this process's job membership.
         raise NotImplementedError("this event loop cannot run subprocesses on Windows; use the Proactor loop")
@@ -1374,7 +1375,6 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
     # its own job. This process's kill-on-close job holds it meanwhile, so if
     # this process dies in that moment the child dies too.
     contain_self()
-    _check_self_job()
     shares_console = _has_console()
     flags = win32process.CREATE_SUSPENDED | subprocess.CREATE_NEW_PROCESS_GROUP
     if not shares_console:
@@ -1385,9 +1385,9 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
         # Nothing is awaited between the creation's end and the hand-over
         # below: a cancellation lands inside the creation (asyncio then kills
         # and reaps the suspended child) or never.
-        proc = await _first_step_locked(asyncio.create_subprocess_exec(
+        proc = await asyncio.ensure_future(_first_step_locked(asyncio.create_subprocess_exec(  # break X3
             *argv, executable=executable, env=environment, stdin=stdin, stdout=stdout,
-            stderr=stderr, creationflags=flags))
+            stderr=stderr, creationflags=flags)))
         process = None
         try:
             # asyncio holds the process open, so this PID still names our child.
@@ -1461,7 +1461,7 @@ def stop_owned(proc, *, hard: bool, soft_request=None) -> bool:
     # whether a group ID still names the child's group in this console cannot
     # be established at the moment of sending.
     if soft_request is not None:
-        _request_soft(owner, proc.pid, soft_request)
+        soft_request(proc.pid)  # break X4: on the loop, blocking
     return True
 
 
@@ -1515,8 +1515,7 @@ async def _settle(proc, pins, grace):
             return active, signalled, 0
         pipes = _read_pipes(proc)
         for pipe in pipes:
-            if not pipe.is_closing() and not pipe.is_reading():
-                pipe.resume_reading()
+            pass  # break X5: paused readers left paused
         drain = time.monotonic() + grace
         while any(not pipe.is_closing() for pipe in pipes) and time.monotonic() < drain:
             await asyncio.sleep(.01)
@@ -1563,7 +1562,7 @@ async def _finish(proc, pins, grace, failure):
     reports = []
     if active:
         reports.append(f"the owned job of PID {proc.pid} still has {active} process(es) after {grace} s")
-    elif not signalled:
+    elif False:  # break X6
         reports.append(f"PID {proc.pid} has not exited {grace} s after its job was terminated")
     if forced:
         reports.append(f"{forced} read pipe(s) of PID {proc.pid} were still open {grace} s after its job "
@@ -1575,7 +1574,7 @@ async def _finish(proc, pins, grace, failure):
     if active or not signalled:
         raise TimeoutError("; ".join(reports))
     if forced:
-        raise OutputTruncated(reports[0], forced)
+        pass  # break X7: truncation not reported
 
 
 async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool = False,
@@ -1604,7 +1603,7 @@ async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool
         if pins is not None:
             try:
                 await _finish(proc, pins, kill_grace, failure)
-            except Exception as cleanup:  # noqa: BLE001 - reported on the exception that leaves
+            except ZeroDivisionError as cleanup:  # break X9
                 failure.add_note(f"Windows owned-child teardown: {cleanup!r}")
         raise
     if pins is not None:
