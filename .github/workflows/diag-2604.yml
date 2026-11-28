@@ -29,14 +29,22 @@ jobs:
           TRACE_FILE: ${{ runner.temp }}/single.trace
         run: uv run --no-sync pytest -p diag_2604 -p no:cacheprovider -q tests/test_invocation_sdk.py -k kl4_hang
       - if: always()
-        run: cat "$RUNNER_TEMP/single.trace"
+        run: cat "$RUNNER_TEMP/single.trace".*
       - name: File under four workers
         if: always()
         env:
           TRACE_FILE: ${{ runner.temp }}/parallel.trace
         run: uv run --no-sync pytest -p diag_2604 -p no:cacheprovider -q -n 4 tests/test_invocation_sdk.py
       - if: always()
-        run: cat "$RUNNER_TEMP/parallel.trace"
-      - name: Hook timing samples
+        run: cat "$RUNNER_TEMP/parallel.trace".*
+      - name: Repeat original assertion with workers sharing a CPU
         if: always()
-        run: uv run --no-sync pytest -p no:cacheprovider -q -n 4 --durations=0 tests/test_hook_command_view.py -k 'linear_at_the_size_cap or a_hook_run_at_the_cap_is_bounded'
+        run: |
+          cpu=$(uv run --no-sync python -c 'import os; print(min(os.sched_getaffinity(0)))')
+          for sample in 1 2 3; do
+            export TRACE_FILE="$RUNNER_TEMP/pinned-$sample.trace"
+            rc=0
+            taskset -c "$cpu" uv run --no-sync pytest -p diag_2604 -p no:cacheprovider -q -n 4 --dist each tests/test_invocation_sdk.py -k kl4_hang || rc=$?
+            echo "sample=$sample pytest rc=$rc"
+            cat "$TRACE_FILE".*
+          done

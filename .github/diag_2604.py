@@ -5,6 +5,7 @@ import os
 import platform
 import signal
 import sys
+import time
 import threading
 from pathlib import Path
 
@@ -38,10 +39,16 @@ def trace_kl4(request, monkeypatch):
     real_waitpid = os.waitpid
     original = request.module._child_gone
 
+    real_close = asyncio.BaseEventLoop.close
+    def close(loop):
+        trace.append(("loop close", time.monotonic_ns()))
+        return real_close(loop)
+    monkeypatch.setattr(asyncio.BaseEventLoop, "close", close)
+
     def kill(pid, sig):
         result = real_kill(pid, sig)
         if sig == signal.SIGKILL:
-            trace.append(("sent SIGKILL", pid))
+            trace.append(("sent SIGKILL", pid, time.monotonic_ns()))
         return result
 
     def waitpid(pid, flags):
@@ -59,7 +66,7 @@ def trace_kl4(request, monkeypatch):
         except ChildProcessError:
             status = "ECHILD"
         trace.append(("waitid WNOWAIT", status))
-        Path(os.environ["TRACE_FILE"]).write_text("\n".join(map(str, trace)) + "\n")
+        Path(os.environ["TRACE_FILE"] + "." + str(os.getpid())).write_text("\n".join(map(str, trace)) + "\n")
         return result
 
     import asyncio.unix_events as unix
