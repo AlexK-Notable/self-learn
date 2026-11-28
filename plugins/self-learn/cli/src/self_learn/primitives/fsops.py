@@ -323,6 +323,20 @@ def finish_mode(path: Path, mode: int, *, method: Literal["path", "os"] = "path"
     _backend().finish_mode(path, mode, method=method)
 
 
+def owned_by_current_user(path: Path) -> bool:
+    """Check ownership of the target, following the final link.
+
+    On Windows, an Administrators-owned target also counts for an elevated
+    token with enabled membership in that group.
+    """
+    return _backend().owned_by_current_user(path)
+
+
+def is_link(path: Path) -> bool:
+    """Whether the final entry redirects lookup (including Windows junctions)."""
+    return _backend().is_link(path)
+
+
 def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) -> int:
     return _backend().open_regular(path, policy=policy)
 

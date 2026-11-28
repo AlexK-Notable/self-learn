@@ -70,6 +70,30 @@ def _refuse_link(path: Path) -> None:
         raise fsops.SymlinkRefused(path)
 
 
+def is_link(path: Path) -> bool:
+    return _is_link(path)
+
+
+def owned_by_current_user(path: Path) -> bool:
+    with _winerrors(path):
+        descriptor = security.GetNamedSecurityInfo(
+            str(path), security.SE_FILE_OBJECT, security.OWNER_SECURITY_INFORMATION
+        )
+        owner = descriptor.GetSecurityDescriptorOwner()
+        with closing(security.OpenProcessToken(
+            win32api.GetCurrentProcess(), win32con.TOKEN_QUERY | win32con.TOKEN_DUPLICATE
+        )) as token:
+            if owner == security.GetTokenInformation(token, security.TokenUser)[0]:
+                return True
+            administrators = security.CreateWellKnownSid(security.WinBuiltinAdministratorsSid)
+            if owner != administrators or not security.GetTokenInformation(token, security.TokenElevation):
+                return False
+            # Elevated administrators can create entries owned by this group.
+            # Check membership against this process token, even during impersonation.
+            with closing(security.DuplicateToken(token, security.SecurityIdentification)) as membership:
+                return bool(security.CheckTokenMembership(membership, administrators))
+
+
 def _refuse_links(path: Path) -> None:
     _refuse_link(path.parent)
     _refuse_link(path)

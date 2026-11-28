@@ -163,6 +163,9 @@ def _newest_mtime(directory: Path) -> float:
     (symlinks are not followed)."""
     newest = 0.0
     for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
+        if os.name == "nt":
+            # os.walk's followlinks flag need not exclude Windows junctions.
+            dirnames[:] = [name for name in dirnames if not fsops.is_link(Path(dirpath) / name)]
         for name in [dirpath, *(os.path.join(dirpath, n) for n in (*dirnames, *filenames))]:
             try:
                 newest = max(newest, os.lstat(name).st_mtime)
@@ -183,21 +186,35 @@ def _prune_homes(
         if not match:
             continue
         directory = root / name
-        if directory.is_symlink() or not directory.is_dir():
-            continue
-        quarantine = directory / "script-quarantine"
-        if not _gone(quarantine) or quarantine.is_symlink():
-            continue
-        if match.group(1) in keep:
-            continue
-        home = read_home_pointer(directory)
-        if home is None or home_digest(home) != match.group(1):
-            out.unattributed += 1
-            continue
-        if not _gone(home):
-            continue
-        if now - _newest_mtime(directory) < HOME_MIN_IDLE_SECS:
-            out.too_recent += 1
+        try:
+            if fsops.is_link(directory) or not directory.is_dir():
+                continue
+            quarantine = directory / "script-quarantine"
+            if os.name == "nt":
+                if fsops.is_link(quarantine) or not _gone(quarantine):
+                    continue
+            else:
+                if not _gone(quarantine) or fsops.is_link(quarantine):
+                    continue
+            if match.group(1) in keep:
+                continue
+            home = (
+                None if os.name == "nt" and fsops.is_link(directory / HOME_POINTER)
+                else read_home_pointer(directory)
+            )
+            if home is None or home_digest(home) != match.group(1):
+                out.unattributed += 1
+                continue
+            if not _gone(home):
+                continue
+            if now - _newest_mtime(directory) < HOME_MIN_IDLE_SECS:
+                out.too_recent += 1
+                continue
+        except OSError:
+            if os.name != "nt":
+                raise
+            # An uninspectable entry can also be inside this home. Keep the
+            # whole home so rmtree cannot reach that entry later in the pass.
             continue
         if not dry_run:
             try:
@@ -218,6 +235,7 @@ def _remove_if_unheld(path: Path) -> bool:
 
 
 def _prune_locks(root: Path, now: float, dry_run: bool, out: PruneResult) -> None:
+    # Windows lock retirement needs its own protocol and entry link check.
     if not locks.can_retire_idle():
         return
     try:
@@ -251,6 +269,9 @@ def _prune_glob_witnesses(root: Path, now: float, dry_run: bool, out: PruneResul
     swap of the cache directory from redirecting cleanup outside it.
     """
     try:
+        if os.name == "nt":
+            # Follow the configured root, then refuse a redirecting child.
+            root = root.resolve()
         scope = fsops.safe_directory(root / GLOB_WITNESS_DIR)
     except OSError:
         return
@@ -263,6 +284,12 @@ def _prune_glob_witnesses(root: Path, now: float, dry_run: bool, out: PruneResul
                     limit = GLOB_WITNESS_TEMP_MAX_AGE_SECS
                 else:
                     continue
+                if os.name == "nt":
+                    try:
+                        if fsops.is_link(root / GLOB_WITNESS_DIR / entry.name):
+                            continue
+                    except OSError:
+                        continue
                 try:
                     info = entry.stat(follow_symlinks=False)
                     if not stat.S_ISREG(info.st_mode):
