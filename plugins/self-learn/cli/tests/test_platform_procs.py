@@ -1072,8 +1072,9 @@ def test_interrupt_after_thread_start_joins_worker(monkeypatch):
     real_run = threading.Thread.run
     started = []
     def run(thread):
+        # Leave a live, started thread before it acquires its pipe endpoint.
+        time.sleep(.25)
         real_run(thread)
-        time.sleep(.2)
     def start(thread):
         real_start(thread)
         started.append(thread)
