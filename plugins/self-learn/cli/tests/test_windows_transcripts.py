@@ -263,7 +263,9 @@ def test_windows_later_session_search_follows_recorded_working_directory(tree):
         return {sid for sid in SID.values() if f"session {sid}" in text}
 
     assert sessions(check.search_later_sessions("T1", words)) == {SID["b"], SID["d"]}
-    assert sessions(check.search_later_sessions("T1", words, all_folders=True)) == {SID["b"], SID["d"], SID["e"]}
+    # every folder: other projects too, but never self-learn's own session
+    assert sessions(check.search_later_sessions("T1", words, all_folders=True)) == {
+        SID["b"], SID["c"], SID["d"], SID["e"]}
 
 
 # ----------------------------------------------------------------- Linux
