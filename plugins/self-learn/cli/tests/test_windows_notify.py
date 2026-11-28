@@ -336,14 +336,16 @@ def test_windows_hostile_text_crosses_the_command_line_verbatim(scratch):
     """Through the production facade, `list2cmdline` and the child's own
     command-line parsing: the values arrive as sent, and the real helper
     takes them as data (it shows or skips; it never refuses them)."""
-    values = [notify_desktop.clean_text(HOSTILE[name], notify_desktop.BODY_LIMIT) for name in sorted(HOSTILE)]
-    values.append(notify_desktop.clean_text("z" * 40000, notify_desktop.BODY_LIMIT))
+    values = [HOSTILE[name] for name in sorted(HOSTILE)]
+    values += ["z" * 40000, "nul \x00 and escape \x1b inside"]
     echo = [sys.executable, "-I", "-c", "import sys, json; sys.stdout.write(json.dumps(sys.argv[1:]))"]
     for value in values:
         argv = notify_desktop.helper_argv(sys.executable, title=value, body=value, url=UI)
-        tail = argv[4:]
-        seen = procs.run_bounded(echo + tail, timeout=30, env=_child_env(scratch))
-        assert json.loads(seen.stdout) == tail
+        expected = ["--title", notify_desktop.clean_text(value, notify_desktop.TITLE_LIMIT),
+                    "--body", notify_desktop.clean_text(value, notify_desktop.BODY_LIMIT), "--open", UI]
+        assert argv[4:] == expected
+        seen = procs.run_bounded(echo + argv[4:], timeout=30, env=_child_env(scratch))
+        assert json.loads(seen.stdout) == expected
     for value in values:
         argv = notify_desktop.helper_argv(sys.executable, title=value, body=value, url=UI)
         assert procs.run_bounded(argv, timeout=notify_desktop.CALLER_TIMEOUT_SECONDS,
