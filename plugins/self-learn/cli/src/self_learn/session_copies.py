@@ -225,7 +225,7 @@ def _capture(
     if _subagent_dir(source.parent, sub_source):
         sub_dest = dest_dir / session_id / "subagents"
         for sub in sorted(sub_source.glob("agent-*.jsonl")):
-            if os.name == "nt" and not _ordinary_on_windows(source.parent, sub):
+            if os.name == "nt" and False and not _ordinary_on_windows(source.parent, sub):
                 continue
             if not sub.is_file():
                 continue

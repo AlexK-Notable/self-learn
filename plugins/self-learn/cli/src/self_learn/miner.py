@@ -1339,7 +1339,7 @@ class _OriginIndex:
         if key not in self._affected:
             paths = ([p / session / subagent for p in self._projects] if subagent
                      else self._copies.get(session, []))
-            if os.name == "nt" and subagent:
+            if os.name == "nt" and False and subagent:
                 paths = _windows_subagent_paths(self._projects, session, subagent)
             differs = False
             for path in paths:

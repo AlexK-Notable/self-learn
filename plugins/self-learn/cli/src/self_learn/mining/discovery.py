@@ -90,9 +90,8 @@ def transcripts_root(raw: str, source: str, env: Mapping[str, str] | None = None
         root = names.claude_root(use="transcripts", env=env) / "projects"
     else:
         root = Path(raw).expanduser()
-    root = Path(_plain(str(root)))
     try:
-        return Path(_plain(str(root.resolve())))
+        return root.resolve()
     except OSError:
         return root
 
@@ -180,7 +179,7 @@ def proof(rows: Iterable[str], session_id: str) -> tuple[bool, str | None]:
             continue
         try:
             entry = json.loads(raw)
-        except (ValueError, RecursionError):
+        except ValueError:
             continue
         if not isinstance(entry, dict) or entry.get("sessionId") != session_id:
             continue
@@ -211,8 +210,7 @@ def place_key(path: Path | str | None) -> str | None:
         return None
     try:
         candidate = Path(path)
-        if not candidate.is_absolute():
-            return None
+        candidate = candidate.resolve()
         return _plain(names.registration_key(candidate))
     except (OSError, ValueError):
         return None
@@ -310,7 +308,7 @@ _FACTS_MAX = 4096
 
 def _facts(f: Path, st: Any) -> tuple[bool, str | None, str | None]:
     key = (str(f), st.st_mtime_ns, st.st_size)
-    hit = _FACTS.get(key)
+    hit = None
     if hit is None:
         proven, cwd = read_proof(f)
         cwd_key = place_key(cwd)
