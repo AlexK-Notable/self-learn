@@ -1376,7 +1376,12 @@ def test_kl4_hang_sigterm_ignored_child_is_gone_after_run_sync_returns(tmp_path,
     pid = outcome.child_pid
     assert pid is not None, "no child pid resolved for this run -- nothing to check identity against"
     start_ticks = _proc_start_ticks(pid)
-    assert _child_gone(pid, start_ticks, deadline=time.monotonic() + 5.0), (
+    # The pidfd watcher can lose its chance to reap when run_sync closes
+    # the loop. waitpid(WNOHANG) collects only an exited child and sends
+    # no signal. Both the reap and the identity check share the same bound.
+    deadline = time.monotonic() + 5.0
+    _reap_best_effort(pid, deadline)
+    assert _child_gone(pid, start_ticks, deadline), (
         f"pid {pid} (THIS run's own child, per outcome.child_pid) still alive after run_sync returned"
     )
 
@@ -1588,26 +1593,16 @@ def _wait_until_execd(pid: int, name: str, deadline: float) -> None:
 
 
 def test_kl8_orphan_sweep_kills_matching_and_spares_non_matching(tmp_path, sdk_cli_path, monkeypatch):
-    """A shebang'd script's `/proc/<pid>/cmdline[0]` gets rewritten by
-    the kernel to the INTERPRETER, not the script path -- so the
-    "matches" leg uses a genuine native binary (a copy of `/bin/sleep`
-    renamed to `claude`, no shebang indirection) whose cmdline[0] is
-    exactly what was exec'd, honestly exercising the `basename ==
-    "claude"` branch."""
+    """A shebang would put the interpreter in /proc/<pid>/cmdline[0].
+    Exec the native Python interpreter with the argv[0] the sweep checks.
+    Python's sleep keeps it alive independently of the name it ran under."""
     home = tmp_path / "kl8-home"
     home.mkdir()
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
 
-    real_sleep = subprocess.run(["which", "sleep"], capture_output=True, text=True).stdout.strip()
     claude_bin = tmp_path / "claude"
-    import shutil as _shutil
-
-    _shutil.copy(real_sleep, claude_bin)
-    claude_bin.chmod(0o755)
-
-    # leg 1: a sidecar-recorded pid whose /proc cmdline basename is
-    # literally "claude" is killed.
-    proc = subprocess.Popen([str(claude_bin), "60"])
+    claude_bin.symlink_to(sys.executable)
+    proc = subprocess.Popen([str(claude_bin), "-I", "-S", "-c", "import time; time.sleep(60)"])
     try:
         _wait_until_execd(proc.pid, "claude", time.monotonic() + 5.0)
         lifecycle_mod.write_sidecar("worker", proc.pid, str(claude_bin))
@@ -1618,7 +1613,7 @@ def test_kl8_orphan_sweep_kills_matching_and_spares_non_matching(tmp_path, sdk_c
         logs = []
         lifecycle_mod.sweep_orphans("worker", logs.append)
         proc.wait(timeout=5)
-        assert proc.returncode is not None
+        assert proc.returncode == -signal.SIGKILL
         assert not sidecar.exists()
     finally:
         if proc.poll() is None:
