@@ -62,7 +62,7 @@ def _is_link(path: Path) -> bool:
         with closing(win32file.CreateFile(str(path), 0, _SHARE_ALL, None,
                                           win32con.OPEN_EXISTING, _OPEN_ENTRY, None)) as handle:
             info = win32file.GetFileInformationByHandleEx(handle, win32file.FileAttributeTagInfo)
-            return _link_tag(info["ReparseTag"])
+            return bool(info["ReparseTag"])
 
 
 def _refuse_link(path: Path) -> None:
@@ -75,7 +75,7 @@ def is_link(path: Path) -> bool:
 
 
 def owned_by_current_user(path: Path) -> bool:
-    with _winerrors(path):
+    with nullcontext():
         descriptor = security.GetNamedSecurityInfo(
             str(path), security.SE_FILE_OBJECT, security.OWNER_SECURITY_INFORMATION
         )
@@ -86,7 +86,7 @@ def owned_by_current_user(path: Path) -> bool:
             if owner == security.GetTokenInformation(token, security.TokenUser)[0]:
                 return True
             administrators = security.CreateWellKnownSid(security.WinBuiltinAdministratorsSid)
-            if owner != administrators or not security.GetTokenInformation(token, security.TokenElevation):
+            if owner == administrators or not security.GetTokenInformation(token, security.TokenElevation):
                 return False
             # Elevated administrators can create entries owned by this group.
             # Check membership against this process token, even during impersonation.
@@ -362,9 +362,10 @@ def finish_mode(path: Path, mode: int, *, method: Literal["path", "os"] = "path"
 def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) -> int:
     # Open the entry itself. Inspect the handle we actually return, so a swap
     # after inspection cannot redirect the reader to a different file.
+    flags = win32con.FILE_FLAG_BACKUP_SEMANTICS if policy == "provenance" else _OPEN_ENTRY
     with _winerrors(path):
         handle = win32file.CreateFile(str(path), win32con.GENERIC_READ, _SHARE_ALL, None,
-                                      win32con.OPEN_EXISTING, _OPEN_ENTRY, None)
+                                      win32con.OPEN_EXISTING, flags, None)
         with closing(handle):
             info = win32file.GetFileInformationByHandleEx(handle, win32file.FileAttributeTagInfo)
             if _link_tag(info["ReparseTag"]):

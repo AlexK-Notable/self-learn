@@ -186,7 +186,8 @@ def _prune_homes(
         if not match:
             continue
         directory = root / name
-        if fsops.is_link(directory) or not directory.is_dir():
+        linked = directory.is_symlink() if os.name == "nt" else fsops.is_link(directory)
+        if linked or not directory.is_dir():
             continue
         quarantine = directory / "script-quarantine"
         if not _gone(quarantine) or fsops.is_link(quarantine):
