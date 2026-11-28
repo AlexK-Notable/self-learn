@@ -574,6 +574,48 @@ def _recover_one(home: Path, intent: Intent, result: RecoverResult) -> None:
     result.restored.append(intent.id)
 
 
+def _windows_intent(home: Path, f: Path, data: dict) -> Intent:
+    from .primitives._capture_windows import checked_path
+
+    if not isinstance(data, dict) or not isinstance(data.get("steps"), list):
+        raise ValueError("intent must contain a list of steps")
+    if data["id"] != f.stem:
+        raise ValueError("intent id differs from its filename")
+    for step in data["steps"]:
+        if not isinstance(step, dict) or not isinstance(step.get("path"), str):
+            raise ValueError("intent step must contain a path string")
+        relative = Path(step["path"])
+        if relative.anchor or any(part.lower() == ".git" for part in relative.parts):
+            raise ValueError("invalid ledger-relative intent step")
+        checked_path(home, home / relative)
+    return _from_dict(home, data)
+
+
+def preflight_windows_intents(home: Path) -> None:
+    """Validate journal structure and paths before init changes local Git settings."""
+    from .primitives._capture_windows import checked_path
+
+    stopped = RecoverResult()
+    for f in sorted(intents_dir(home).glob("*.json")):
+        try:
+            data = json.loads(checked_path(home, f).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            stopped._stop(f.stem, f"unreadable intent file ({exc})")
+            continue
+        try:
+            intent = _windows_intent(home, f, data)
+            if all(_step_verifies_final(home, step) for step in intent.steps):
+                continue
+            for step in intent.steps:
+                if not _resolvable_old_bytes(home, step)[0]:
+                    stopped._stop(f.stem, f"cannot restore {step['path']} from the worktree, HEAD, or intent")
+                    break
+        except (ValueError, KeyError, OSError, gitops.GitOpsError) as exc:
+            stopped._stop(f.stem, f"unresolvable intent ({exc})")
+    if stopped.stopped_detail:
+        raise LedgerStoppedError(stopped)
+
+
 def recover(home: Path | str) -> RecoverResult:
     """Find and resolve every intent left behind under *home* -- called
     from :func:`reconcile.reconcile` (before its own orphan scan: an
@@ -634,20 +676,9 @@ def recover(home: Path | str) -> RecoverResult:
                 continue
             try:
                 if os.name == "nt":
-                    from .primitives._capture_windows import checked_path
-
-                    if not isinstance(data, dict) or not isinstance(data.get("steps"), list):
-                        raise ValueError("intent must contain a list of steps")
-                    if data["id"] != f.stem:
-                        raise ValueError("intent id differs from its filename")
-                    for step in data["steps"]:
-                        if not isinstance(step, dict) or not isinstance(step.get("path"), str):
-                            raise ValueError("intent step must contain a path string")
-                        relative = Path(step["path"])
-                        if relative.anchor or any(part.lower() == ".git" for part in relative.parts):
-                            raise ValueError("invalid ledger-relative intent step")
-                        checked_path(home, home / relative)
-                intent = _from_dict(home, data)
+                    intent = _windows_intent(home, f, data)
+                else:
+                    intent = _from_dict(home, data)
             except (ValueError, KeyError) as exc:
                 result._stop(f.stem, f"unresolvable intent ({exc})")
                 continue

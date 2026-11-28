@@ -290,14 +290,20 @@ def _create_layout(target: Path) -> tuple[str, ...]:
     return tuple(created)
 
 
-def _configure_windows_ledger(root: Path, changeset: dict[Path, tuple[Path, bytes, bytes]]) -> bool:
+def _configure_windows_ledger(
+    root: Path, changeset: dict[Path, tuple[Path, bytes, bytes]], *, check_intents: bool = False,
+) -> bool:
     try:
-        return _check_and_configure_windows_ledger(root, changeset)
+        return _check_and_configure_windows_ledger(root, changeset, check_intents=check_intents)
+    except intents.LedgerStoppedError:
+        raise
     except (gitops.GitOpsError, OSError, ValueError) as exc:
         raise InitError(f"cannot configure the ledger at {root}: {exc}") from exc
 
 
-def _check_and_configure_windows_ledger(root: Path, changeset: dict[Path, tuple[Path, bytes, bytes]]) -> bool:
+def _check_and_configure_windows_ledger(
+    root: Path, changeset: dict[Path, tuple[Path, bytes, bytes]], *, check_intents: bool = False,
+) -> bool:
     """Called under the commit lock and before recovery can compare bytes."""
     from .primitives._capture_windows import checked_path, git_bytes
 
@@ -336,6 +342,8 @@ def _check_and_configure_windows_ledger(root: Path, changeset: dict[Path, tuple[
             changes.append((key, value))
     if not changes:
         return False
+    if check_intents:
+        intents.preflight_windows_intents(root)
     common = gitops.commit_lock_path(root).parent
     config = checked_path(common, common / "config")
     before = config.read_bytes()
@@ -492,8 +500,9 @@ def _init_home(path: Path | str, changeset: dict[Path, tuple[Path, bytes, bytes]
                 raise InitError(f"{resolved} has no self-learn ledger layout or initialization commit")
         with gitops.commit_lock(resolved):
             assert changeset is not None
-            repaired = _configure_windows_ledger(resolved, changeset)
-        if repaired and all((resolved / name).is_dir() for name in _LAYOUT) and _has_head(resolved):
+            complete = all((resolved / name).is_dir() for name in _LAYOUT) and _has_head(resolved)
+            repaired = _configure_windows_ledger(resolved, changeset, check_intents=not complete)
+        if repaired and complete:
             return InitResult(resolved, False, (), False, True, repaired_config=True)
     missing_before = tuple(name for name in _LAYOUT if not (resolved / name).is_dir())
     had_head_before = _has_head(resolved)

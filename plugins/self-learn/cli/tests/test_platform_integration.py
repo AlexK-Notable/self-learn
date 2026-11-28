@@ -296,7 +296,7 @@ def test_existing_buckets_roundtrip_without_rekey(home, tmp_path):
 
 
 @windows
-def test_init_repairs_local_config_before_recovery(home, tmp_path, capsys):
+def test_init_repairs_local_config_before_recovery(home, tmp_path, capsys, monkeypatch):
     from self_learn import cli
 
     for key, value in (("core.autocrlf", b"false"), ("core.longpaths", b"true")):
@@ -347,9 +347,30 @@ def test_init_repairs_local_config_before_recovery(home, tmp_path, capsys):
     journal.mkdir(exist_ok=True)
     (journal / "broken.json").write_bytes(b"[]")
     before_stop = config.read_bytes()
+    original_git = gitops._git
+    config_writes = []
+    def observe(repo, *args, **kwargs):
+        if args[:2] == ("config", "--local") and "--get" not in args:
+            config_writes.append(args)
+        return original_git(repo, *args, **kwargs)
+    monkeypatch.setattr(gitops, "_git", observe)
     with pytest.raises(intents.LedgerStoppedError):
         ledger.init_home(home)
-    assert config.read_bytes() == before_stop and not (home / "cases").exists()
+    assert config_writes == [] and config.read_bytes() == before_stop and not (home / "cases").exists()
+    broken = journal / "broken.json"
+    broken.write_text(json.dumps({"id": "broken", "op": "test", "started": "now", "commit_subject": "test",
+                                  "steps": [{"path": "missing.txt", "new_sha": None, "old_sha": "unrecoverable"}]}),
+                      encoding="utf-8")
+    with pytest.raises(intents.LedgerStoppedError, match="cannot restore missing.txt"):
+        ledger.init_home(home)
+    assert config_writes == [] and config.read_bytes() == before_stop
+    broken.unlink()
+    def lose_lock(*args, **kwargs):
+        raise gitops.GitOpsError("lock failure witness")
+    monkeypatch.setattr(intents, "ledger_write", lose_lock)
+    with pytest.raises(ledger.InitError, match="lock failure witness"):
+        ledger.init_home(home)
+    assert config_writes and config.read_bytes() == before_stop
 
 
 @windows
