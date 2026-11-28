@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 import select
+import shutil
 import signal
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,10 +19,13 @@ from uuid import uuid4
 
 import pytest
 
-from self_learn import worker
+if sys.platform == "linux":
+    from self_learn import worker
+
 from self_learn.primitives import procs
 
 
+windows = pytest.mark.skipif(sys.platform != "win32", reason="Windows process contract")
 linux = pytest.mark.skipif(sys.platform != "linux", reason="Linux process contract")
 
 
@@ -118,7 +123,6 @@ def test_bounded_input_env_cwd_and_invalid_cap(tmp_path):
     assert marker.read_bytes() == b"launched"
 
 
-@linux
 def test_combined_cap_n_and_n_plus_one():
     script = """
         import os, sys, time
@@ -349,9 +353,9 @@ def test_timeout_cleanup_fallback_order(monkeypatch):
     assert (done.stdout, done.stderr, done.returncode) == ("restored\n", "", 0)
 
 
+@linux
 def test_windows_import_and_first_operation(tmp_path):
-    # Native Windows uses its actual selector. Linux exercises the same first-use
-    # branch in a fresh interpreter by changing only the facade's OS reference.
+    # Select the native backend in a Linux interpreter: no Windows imports or launches.
     marker = tmp_path / "marker"
     script = """
         import os, subprocess, sys
@@ -404,3 +408,843 @@ def test_windows_import_and_first_operation(tmp_path):
     assert done.returncode == 0, done.stderr
     assert done.stdout.splitlines() == ["imported run_bounded run_command pid_alive"]
     assert marker.read_bytes() == b"child"
+
+
+def _assert_no_pipe_threads():
+    assert not [t.name for t in threading.enumerate() if t.name.startswith("bounded-")]
+
+
+def test_argument_stdin_encoding_exit_matrix(tmp_path):
+    args = ["", 'a"b', "two words", "trailing slash \\", 'slashes\\\\"quote', "雪⛄", "& whoami"]
+    argv = _python("""
+        import json, os, sys
+        os.write(1, sys.stdin.buffer.read())
+        os.write(2, json.dumps([sys.argv[1:], os.getcwd(), os.environ['PROBE']]).encode())
+        sys.exit(7)
+    """, *args)
+    opts = dict(cwd=str(tmp_path), env={**os.environ, "PROBE": "déjà"}, timeout=8)
+    payload = bytes(range(256)) * 1024
+    done = procs.run_bounded(tuple(argv), input=payload, **opts)
+    assert (done.args, done.returncode, done.stdout) == (argv, 7, payload)
+    assert json.loads(done.stderr) == [args, str(tmp_path), "déjà"]
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        procs.run_bounded(argv, input="雪\r\nline", check=True, **opts)
+    assert (caught.value.cmd, caught.value.returncode, caught.value.stdout) == (argv, 7, "雪\nline")
+    assert json.loads(caught.value.stderr) == [args, str(tmp_path), "déjà"]
+    _assert_no_pipe_threads()
+
+
+def test_invalid_cap_never_spawns(tmp_path):
+    marker = tmp_path / "launched"
+    argv = _python("from pathlib import Path; import sys; Path(sys.argv[1]).touch()", marker)
+    procs.run_bounded(argv, timeout=5, binary=True, max_output_bytes=1, check=True)
+    assert marker.is_file()
+    marker.unlink()
+    for opts in (dict(binary=True, max_output_bytes=0), dict(max_output_bytes=1),
+                 dict(binary=True, input=b"", max_output_bytes=1), dict(binary=True, input="x")):
+        with pytest.raises(ValueError):
+            procs.run_bounded(argv, timeout=5, **opts)
+        assert not marker.exists()
+
+
+def test_combined_cap_interleaved_n_and_n_plus_one(tmp_path):
+    ready = tmp_path / "ready"
+    argv = _python("""
+        import os, sys, time
+        from pathlib import Path
+        for i in range(8):
+            os.write(1, b"A" * 8192)
+            os.write(2, b"B" * 8192)
+        Path(sys.argv[1]).touch()
+        if sys.argv[2] == "extra":
+            os.write(2, b"!")
+            time.sleep(15)
+    """, ready)
+    n = 16 * 8192
+    opts = dict(binary=True, max_output_bytes=n, timeout=5)
+    done = procs.run_bounded([*argv, "exact"], **opts)
+    assert ready.is_file()
+    assert (done.stdout, done.stderr, done.returncode) == (b"A" * (n // 2), b"B" * (n // 2), 0)
+    ready.unlink()
+    with pytest.raises(procs.OutputLimitExceeded, match=f"^child output exceeded {n} bytes$"):
+        procs.run_bounded([*argv, "extra"], **opts)
+    assert ready.is_file()
+    _assert_no_pipe_threads()
+
+
+@windows
+def test_inherited_stdin_and_command_timeout_fields(tmp_path):
+    child = _python("import sys; print(sys.stdin.buffer.read().hex())")
+    launcher = _python("""
+        import json, sys
+        from self_learn.primitives import procs
+        child = sys.argv[1:]
+        print(json.dumps([procs.run_bounded(child, timeout=5).stdout,
+                          procs.run_command(child, timeout=5).stdout]))
+    """, *child)
+    nonce = bytes.fromhex(uuid4().hex)
+    result = subprocess.run(launcher, input=nonce, capture_output=True, timeout=15, check=True)
+    assert json.loads(result.stdout) == ["\n", nonce.hex() + "\n"]
+
+    ready = tmp_path / "ready"
+    slow = _python("""
+        import os, sys, time
+        from pathlib import Path
+        os.write(1, b"started")
+        os.write(2, b"waiting")
+        Path(sys.argv[1]).touch()
+        time.sleep(20)
+    """, ready)
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        procs.run_command(slow, timeout=2)
+    assert ready.is_file() and type(caught.value) is subprocess.TimeoutExpired
+    assert (caught.value.cmd, caught.value.timeout, caught.value.output, caught.value.stderr) == (
+        slow, 2, b"started", b"waiting")
+    _assert_no_pipe_threads()
+
+
+@windows
+def test_git_text_and_byte_exact_output(tmp_path, monkeypatch):
+    import win32process
+
+    create = Mock(wraps=win32process.CreateProcess)
+    monkeypatch.setattr(win32process, "CreateProcess", create)
+    config = tmp_path / "config"
+    config.write_bytes(b"[probe]\nvalue = " + "雪".encode() + b"\xff\n")
+    argv = ["git", "config", "--file", str(config), "--get", "probe.value"]
+    assert procs.run_bounded(argv, binary=True, timeout=5, check=True).stdout.rstrip(b"\r\n") == "雪".encode() + b"\xff"
+    for done in (procs.run_command(argv, timeout=5), procs.run_bounded(argv, timeout=5)):
+        assert (done.args, done.stdout, done.stderr, done.returncode) == (argv, "雪\ufffd\n", "", 0)
+    expected = shutil.which("git.exe")
+    assert expected and create.call_count == 3
+    assert all(Path(call.args[0]).is_absolute() and os.path.samefile(call.args[0], expected)
+               for call in create.call_args_list)
+    _assert_no_pipe_threads()
+
+
+@windows
+def test_closed_pipes_live_leader(tmp_path, monkeypatch):
+    import win32event
+    import win32job
+    # Observe the EOFs at the deadline, before termination can close a pipe.
+    terminate = win32job.TerminateJobObject
+    at_deadline = []
+    def observe(*args):
+        at_deadline.append([t.name for t in threading.enumerate() if t.name.startswith("bounded-")])
+        return terminate(*args)
+    monkeypatch.setattr(win32job, "TerminateJobObject", observe)
+    ready = tmp_path / "ready"
+    wait = win32event.WaitForSingleObject
+    waits = []
+    def observe_wait(handle, millis):
+        if ready.exists() and not at_deadline:
+            waits.append(millis)
+        return wait(handle, millis)
+    monkeypatch.setattr(win32event, "WaitForSingleObject", observe_wait)
+    argv = _python("""
+        import os, sys, time
+        from pathlib import Path
+        time.sleep(.7)
+        Path(sys.argv[1]).write_text(str(os.getpid()))
+        os.close(1)
+        os.close(2)
+        time.sleep(15)
+    """, ready)
+    # A Windows venv's python.exe is a redirector that waits with its own
+    # copies of both writers. Run the same interpreter directly for real EOF.
+    argv[0] = sys._base_executable
+    with pytest.raises(procs.BoundedTimeout) as caught:
+        procs.run_bounded(argv, binary=True, max_output_bytes=1, timeout=2)
+    exc = caught.value
+    assert (exc.cmd, exc.timeout, exc.output, exc.stderr) == (argv, 2, None, None)
+    assert at_deadline == [[]]
+    assert len(waits) == 1 and 0 < waits[0] < 1500
+    pid = int(ready.read_text())
+    _wait_for(lambda: not procs.pid_alive(pid))
+    _assert_no_pipe_threads()
+
+
+# A signed beat identifies the writing process even if a pid gets reused.
+_BEATS = """
+    import os, sys, time
+    from pathlib import Path
+    path, token, leader, mode = sys.argv[1:]
+    with open(path, "ab", buffering=0) as beats:
+        for i in range(800):
+            beats.write(f"{token} {os.getpid()} {i}\\n".encode())
+            if i == 1:
+                Path(path + ".ready").touch()
+            if mode in ("timeout", "overflow") and not Path(path + ".exited").exists():
+                from self_learn.primitives.procs import pid_alive
+                if not pid_alive(int(leader)):
+                    Path(path + ".exited").touch()
+                    if mode == "overflow":
+                        os.write(2, b"!!")
+            if Path(path + ".stop").exists():
+                break
+            time.sleep(.025)
+"""
+
+
+@windows
+@pytest.mark.parametrize("mode", ["timeout", "overflow", "success"])
+def test_job_owns_grandchild_only(tmp_path, monkeypatch, mode):
+    import win32process
+
+    # The Windows venv redirector and the Python payload have different PIDs.
+    # Give the heartbeat process the kernel PID returned for the job leader.
+    leader_pid = tmp_path / "leader-pid"
+    create_process = win32process.CreateProcess
+    def record_leader(*args):
+        result = create_process(*args)
+        leader_pid.write_text(str(result[2]))
+        return result
+    monkeypatch.setattr(win32process, "CreateProcess", record_leader)
+    peer_file, owned_file = tmp_path / "peer", tmp_path / "owned"
+    peer_token, owned_token = uuid4().hex, uuid4().hex
+    peer = subprocess.Popen(_python(_BEATS, peer_file, peer_token, 0, "peer"))
+    try:
+        _wait_for(lambda: (tmp_path / "peer.ready").exists())
+        before = peer_file.read_bytes().splitlines()
+        leader = _python("""
+            import os, subprocess, sys, time
+            from pathlib import Path
+            mode, ready, leader_pid, *cmd = sys.argv[1:]
+            streams = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL) if mode == "success" else dict(close_fds=False)
+            subprocess.Popen([*cmd, Path(leader_pid).read_text(), mode], **streams)
+            while not Path(ready).exists():
+                time.sleep(.025)
+            sys.exit(7)
+        """, mode, tmp_path / "owned.ready", leader_pid, *_python(_BEATS, owned_file, owned_token))
+        opts = dict(binary=True, max_output_bytes=1, timeout=3)
+        if mode == "success":
+            done = procs.run_bounded(leader, **opts)
+            assert (done.returncode, done.stdout, done.stderr) == (7, b"", b"")
+        else:
+            error = procs.BoundedTimeout if mode == "timeout" else procs.OutputLimitExceeded
+            with pytest.raises(error):
+                procs.run_bounded(leader, **opts)
+            assert (tmp_path / "owned.exited").is_file()
+        assert (tmp_path / "owned.ready").is_file()
+        first = owned_file.read_bytes().splitlines()[0].split()
+        pid = int(first[1])
+        _wait_for(lambda: not procs.pid_alive(pid))
+        stopped = owned_file.read_bytes()
+        assert len(stopped.splitlines()) >= 2
+        assert all(line.startswith(f"{owned_token} {pid} ".encode()) for line in stopped.splitlines())
+        after = peer_file.read_bytes().splitlines()
+        _wait_for(lambda: len(peer_file.read_bytes().splitlines()) >= len(after) + 3)
+        assert len(after) > len(before) >= 2
+        assert all(line.split()[0] == peer_token.encode() for line in peer_file.read_bytes().splitlines())
+        assert owned_file.read_bytes() == stopped
+        _assert_no_pipe_threads()
+    finally:
+        (tmp_path / "peer.stop").touch()
+        (tmp_path / "owned.stop").touch()
+        peer.wait(timeout=5)
+
+
+@windows
+@pytest.mark.parametrize("fail_at", ["assign", "resume"])
+def test_job_launch_failure_never_runs_payload(tmp_path, monkeypatch, fail_at):
+    import pywintypes
+    import winerror
+    from self_learn.primitives import _procs_windows as backend
+    import win32job
+    import win32process
+
+    marker = tmp_path / "ready"
+    argv = _python("from pathlib import Path; import sys; Path(sys.argv[1]).touch()", marker)
+    procs.run_bounded(argv, timeout=5, check=True)
+    assert marker.is_file()
+    marker.unlink()
+
+    original = pywintypes.error(winerror.ERROR_ACCESS_DENIED, fail_at, f"injected {fail_at} failure")
+    events = []
+    created_handles = []
+    pids = []
+    real_create = win32process.CreateProcess
+    real_assign = win32job.AssignProcessToJobObject
+    def create(*args):
+        assert args[5] & win32process.CREATE_SUSPENDED
+        created = real_create(*args)
+        created_handles.extend(created[:2])
+        pids.append(created[2])
+        events.append("create")
+        return created
+    def assign(*args):
+        events.append("assign")
+        if fail_at == "assign":
+            raise original
+        return real_assign(*args)
+    def resume(*args):
+        events.append("resume")
+        raise original
+
+    terminate_process = Mock(wraps=win32process.TerminateProcess)
+    terminate_job = Mock(wraps=win32job.TerminateJobObject)
+    monkeypatch.setattr(win32process, "TerminateProcess", terminate_process)
+    monkeypatch.setattr(win32job, "TerminateJobObject", terminate_job)
+    monkeypatch.setattr(win32process, "CreateProcess", create)
+    monkeypatch.setattr(win32job, "AssignProcessToJobObject", assign)
+    monkeypatch.setattr(win32process, "ResumeThread", resume)
+    wait = backend._wait_until
+    def late_reap(process, deadline):
+        assert wait(process, deadline)  # The real child must still be reaped.
+        return False                   # Model exhaustion of the cleanup budget.
+    monkeypatch.setattr(backend, "_wait_until", late_reap)
+    with pytest.raises(OSError, match=f"injected {fail_at} failure") as caught:
+        procs.run_bounded(argv, timeout=5)
+    assert caught.value.__cause__ is original and caught.value.winerror == original.winerror
+    assert any("cleanup budget" in note for note in original.__notes__)
+    assert events == (["create", "assign"] if fail_at == "assign" else ["create", "assign", "resume"])
+    assert (terminate_process.call_count, terminate_job.call_count) == (
+        (1, 0) if fail_at == "assign" else (0, 1))
+    assert len(pids) == 1 and not procs.pid_alive(pids[0])
+    assert all(int(h) == 0 for h in created_handles)
+    assert not marker.exists()
+    _assert_no_pipe_threads()
+
+
+@windows
+def test_pid_probe_alive_then_reaped(tmp_path, monkeypatch):
+    import pywintypes
+    import win32api
+    import win32con
+    import win32event
+    import winerror
+
+    request, reply = tmp_path / "request", tmp_path / "reply"
+    peer = subprocess.Popen(_python("""
+        import sys, time
+        from pathlib import Path
+        request, reply = map(Path, sys.argv[1:])
+        for i in range(800):
+            if request.exists():
+                message = request.read_bytes()
+                if message == b"stop":
+                    break
+                reply.write_bytes(message)
+            time.sleep(.025)
+    """, request, reply))
+    def challenge():
+        nonce = uuid4().bytes
+        request.write_bytes(nonce)
+        _wait_for(lambda: reply.exists() and reply.read_bytes() == nonce)
+    try:
+        challenge()
+        real_open = win32api.OpenProcess
+        with monkeypatch.context() as patch:
+            observed = Mock(wraps=real_open)
+            patch.setattr(win32api, "OpenProcess", observed)
+            assert procs.pid_alive(peer.pid)
+            observed.assert_called_once_with(win32con.SYNCHRONIZE, False, peer.pid)
+            for code, expected in [(winerror.ERROR_ACCESS_DENIED, True),
+                                   (winerror.ERROR_INVALID_PARAMETER, False),
+                                   (winerror.ERROR_INVALID_HANDLE, None)]:
+                observed.side_effect = pywintypes.error(code, "OpenProcess", "injected")
+                if expected is None:
+                    with pytest.raises(OSError) as caught:
+                        procs.pid_alive(peer.pid)
+                    assert caught.value.winerror == code
+                    assert caught.value.__cause__ is observed.side_effect
+                else:
+                    assert procs.pid_alive(peer.pid) is expected
+            observed.reset_mock()
+            assert not procs.pid_alive(0) and not procs.pid_alive(-1)
+            observed.assert_not_called()
+        with monkeypatch.context() as patch:
+            # A wait failure must propagate and the opened handle must close.
+            waiting = Mock(side_effect=pywintypes.error(winerror.ERROR_INVALID_HANDLE, "Wait", "injected"))
+            patch.setattr(win32event, "WaitForSingleObject", waiting)
+            with pytest.raises(OSError) as caught:
+                procs.pid_alive(peer.pid)
+            assert caught.value.winerror == winerror.ERROR_INVALID_HANDLE
+            assert caught.value.__cause__ is waiting.side_effect
+            handle, millis = waiting.call_args.args
+            assert millis == 0 and int(handle) == 0
+        challenge()
+    finally:
+        request.write_bytes(b"stop")
+        peer.wait(timeout=5)
+    assert not procs.pid_alive(peer.pid)
+
+
+@windows
+def test_only_child_pipe_ends_inherit_and_all_handles_close(monkeypatch):
+    import pywintypes
+    import win32api
+    import win32job
+    import win32pipe
+    import win32process
+    import winerror
+
+    jobs, pipes, processes = [], [], []
+    create_job = win32job.CreateJobObject
+    create_pipe = win32pipe.CreatePipe
+    create_process = win32process.CreateProcess
+    def job(*args):
+        handle = create_job(*args)
+        jobs.append(handle)
+        return handle
+    def pipe(*args):
+        pair = create_pipe(*args)
+        pipes.extend(pair)
+        return pair
+    def process(*args):
+        startup = args[-1]
+        child_handles = {int(h) for h in (startup.hStdInput, startup.hStdOutput, startup.hStdError)}
+        inheritable = {int(h) for h in [*pipes, *jobs] if os.get_handle_inheritable(int(h))}
+        assert inheritable == child_handles
+        limits = win32job.QueryInformationJobObject(jobs[0], win32job.JobObjectExtendedLimitInformation)
+        assert limits["BasicLimitInformation"]["LimitFlags"] & win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        result = create_process(*args)
+        processes.extend(result[:2])
+        return result
+    monkeypatch.setattr(win32job, "CreateJobObject", job)
+    monkeypatch.setattr(win32pipe, "CreatePipe", pipe)
+    monkeypatch.setattr(win32process, "CreateProcess", process)
+    done = procs.run_bounded(_python("import sys; print(sys.stdin.read())"), input="pipe", timeout=5)
+    assert done.stdout == "pipe\n"
+    assert (len(jobs), len(pipes), len(processes)) == (1, 6, 2)
+    # Retain the wrappers so a missing explicit close cannot pass through GC.
+    for handle in [*jobs, *pipes, *processes]:
+        with pytest.raises(pywintypes.error) as caught:
+            win32api.GetHandleInformation(handle)
+        assert caught.value.winerror == winerror.ERROR_INVALID_HANDLE
+
+
+@windows
+def test_launcher_death_closes_job(tmp_path):
+    beat = tmp_path / "beat"
+    token = uuid4().hex
+    launcher_pid = tmp_path / "launcher"
+    launcher = subprocess.Popen(_python("""
+        import os, sys
+        from pathlib import Path
+        from self_learn.primitives import procs
+        Path(sys.argv[1]).write_text(str(os.getpid()))
+        procs.run_bounded(sys.argv[2:], timeout=30)
+    """, launcher_pid, *_python(_BEATS, beat, token, 0, "peer")))
+    try:
+        _wait_for(lambda: (tmp_path / "beat.ready").is_file())
+        first = beat.read_bytes().splitlines()[0].split()
+        assert first[0] == token.encode() and int(first[2]) == 0
+        pid = int(first[1])
+        os.kill(int(launcher_pid.read_text()), signal.SIGTERM)
+        launcher.wait(timeout=5)
+        _wait_for(lambda: not procs.pid_alive(pid))
+        stopped = beat.read_bytes()
+        assert len(stopped.splitlines()) >= 2
+        time.sleep(.1)
+        assert beat.read_bytes() == stopped
+    finally:
+        (tmp_path / "beat.stop").touch()
+        launcher.wait(timeout=6)
+
+
+@windows
+def test_both_readers_join_before_return(monkeypatch):
+    # Make worker completion and thread exit observably different events.
+    real_run = threading.Thread.run
+    readers = []
+    def slow_exit(thread):
+        real_run(thread)
+        if thread.name in ("bounded-stdout", "bounded-stderr"):
+            readers.append(thread)
+            time.sleep(.25)
+    monkeypatch.setattr(threading.Thread, "run", slow_exit)
+    done = procs.run_bounded(_python("import sys; print('out'); print('err', file=sys.stderr)"), timeout=5)
+    assert (done.stdout, done.stderr) == ("out\n", "err\n")
+    assert {t.name for t in readers} == {"bounded-stdout", "bounded-stderr"}
+    assert all(not t.is_alive() for t in readers)
+
+
+@windows
+@pytest.mark.parametrize("failure", ["cwd", "image"])
+def test_create_process_error_releases_handles(tmp_path, monkeypatch, failure):
+    import pywintypes
+    import win32file
+    import win32job
+    import win32pipe
+    import win32process
+    import winerror
+
+    handles = []
+    def track(api, name):
+        real = getattr(api, name)
+        def wrapped(*args):
+            result = real(*args)
+            handles.extend(result if isinstance(result, tuple) else (result,))
+            return result
+        monkeypatch.setattr(api, name, wrapped)
+    track(win32job, "CreateJobObject")
+    track(win32file, "CreateFile")
+    track(win32pipe, "CreatePipe")
+    create = Mock(wraps=win32process.CreateProcess)
+    monkeypatch.setattr(win32process, "CreateProcess", create)
+    cwd = tmp_path
+    if failure == "image":
+        fake = tmp_path / "invalid.exe"
+        fake.write_text("plain text")
+        argv = [str(fake)]
+        codes = {winerror.ERROR_BAD_EXE_FORMAT, winerror.ERROR_EXE_MACHINE_TYPE_MISMATCH}
+    else:
+        argv = _python("pass")
+        cwd = tmp_path / "missing"
+        codes = {winerror.ERROR_PATH_NOT_FOUND, winerror.ERROR_FILE_NOT_FOUND, winerror.ERROR_DIRECTORY}
+    with pytest.raises(OSError) as caught:
+        procs.run_bounded(argv, cwd=str(cwd), timeout=5)
+    create.assert_called_once()
+    err = caught.value
+    assert type(err) is not pywintypes.error
+    assert err.filename == argv[0] and err.strerror and err.errno
+    assert err.winerror in codes
+    assert isinstance(err.__cause__, pywintypes.error)
+    assert err.__cause__.funcname == "CreateProcess" and err.__cause__.winerror == err.winerror
+    assert len(handles) == 6 and all(int(h) == 0 for h in handles)
+    _assert_no_pipe_threads()
+
+
+@windows
+def test_resolution_uses_child_path_and_cwd(tmp_path):
+    folder = tmp_path / "tools"
+    folder.mkdir()
+    exe = folder / "lane-interpreter.exe"
+    shutil.copyfile(sys._base_executable, exe)
+    def invoke(program, env):
+        return procs.run_bounded([program, "--version"], binary=True,
+                                 env=env, cwd=str(tmp_path), timeout=5, check=True).stdout
+    expected = invoke(sys.executable, None)
+    assert expected.startswith(b"Python 3.")
+    # Keep the base interpreter's DLL discoverable beside the renamed executable.
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PATH"}
+    env["PYTHONHOME"] = sys.base_prefix
+    search = os.pathsep.join((str(folder), sys.base_prefix))
+    assert invoke(exe.stem, {**env, "Path": search}) == expected
+    assert invoke(str(Path("tools") / exe.name), {**env, "Path": sys.base_prefix}) == expected
+    with pytest.raises(FileNotFoundError) as caught:
+        invoke(exe.stem, {**env, "Path": str(tmp_path)})
+    assert caught.value.filename == exe.stem and caught.value.winerror == 2
+    assert caught.value.__cause__.winerror == 2
+
+
+@windows
+@pytest.mark.parametrize("directory", ["parent", "child"])
+def test_bare_git_uses_path_only(tmp_path, monkeypatch, directory):
+    import win32process
+
+    git = shutil.which("git.exe")
+    assert git
+    stand_in = tmp_path / "git.exe"
+    shutil.copyfile(sys._base_executable, stand_in)
+    marker = tmp_path / "explicit"
+    if directory == "parent":
+        monkeypatch.chdir(tmp_path)
+    cwd = str(tmp_path) if directory == "child" else None
+    env = {**os.environ, "PYTHONHOME": sys.base_prefix, "PATHEXT": ".EXE",
+           "PATH": os.pathsep.join(("", ".", str(tmp_path), str(Path(git).parent), sys.base_prefix))}
+
+    # The same file is runnable with an explicit relative path.
+    procs.run_bounded([r".\git.exe", "-c", "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()",
+                       str(marker)], cwd=cwd, env=env, timeout=5, check=True)
+    assert marker.is_file()
+    marker.unlink()
+    create = win32process.CreateProcess
+    def launch(application, *args):
+        if os.path.samefile(application, stand_in):
+            marker.touch()  # Record the wrong selection before it can execute.
+        assert os.path.samefile(application, git), application
+        return create(application, *args)
+    monkeypatch.setattr(win32process, "CreateProcess", launch)
+    result = procs.run_bounded(["git", "--version"], cwd=cwd, env=env, timeout=5, check=True)
+    assert result.stdout.startswith("git version ") and not marker.exists()
+
+
+@windows
+@pytest.mark.parametrize("suffix", [".cmd", ".bat"])
+def test_batch_shim_refusal_names_target(tmp_path, suffix):
+    import winerror
+
+    shim = tmp_path / ("lane-shim" + suffix)
+    marker = tmp_path / "ran"
+    shim.write_text('@echo ran > "%~dp0ran"\n', encoding="ascii")
+    for program in (str(shim), shim.stem):
+        with pytest.raises(OSError) as caught:
+            procs.run_bounded([program], env={**os.environ, "PATH": str(tmp_path)}, timeout=5)
+        assert caught.value.winerror == winerror.ERROR_BAD_EXE_FORMAT
+        assert caught.value.__cause__.winerror == caught.value.winerror
+        assert str(shim).casefold() in str(caught.value).casefold() and "shell" in caught.value.strerror
+        assert not marker.exists()
+
+
+@windows
+@pytest.mark.parametrize("entry", ["run_bounded", "run_command"])
+def test_non_git_text_requires_utf8(entry):
+    argv = _python("import os; os.write(2, bytes([255]))")
+    assert procs.run_bounded(argv, binary=True, timeout=5).stderr == b"\xff"
+    with pytest.raises(UnicodeDecodeError) as caught:
+        getattr(procs, entry)(argv, timeout=5)
+    assert caught.value.encoding == "utf-8" and caught.value.object == b"\xff"
+
+
+@windows
+@pytest.mark.parametrize("operation", ["ReadFile", "WriteFile"])
+def test_pipe_api_error_reaches_caller(monkeypatch, operation):
+    import pywintypes
+    import win32file
+    import winerror
+
+    failure = pywintypes.error(winerror.ERROR_INVALID_HANDLE, operation, "injected pipe failure")
+    monkeypatch.setattr(win32file, operation, Mock(side_effect=failure))
+    with pytest.raises(OSError) as caught:
+        procs.run_bounded(_python("import sys; print(sys.stdin.read())"), input="hello", timeout=5)
+    assert caught.value.winerror == failure.winerror and caught.value.__cause__ is failure
+    _assert_no_pipe_threads()
+
+
+@windows
+@pytest.mark.parametrize("mode", ["reader", "writer", "uncancellable"])
+def test_stuck_pipe_has_bounded_cleanup(monkeypatch, tmp_path, mode):
+    import win32api
+    import win32con
+    import win32process
+    from self_learn.primitives import _procs_windows as backend
+
+    real_create = win32process.CreateProcess
+    ready = tmp_path / "holding"
+    retained = []
+    ready_at = None
+    def create(*args):
+        nonlocal ready_at
+        current = win32api.GetCurrentProcess()
+        child_end = args[-1].hStdInput if mode == "writer" else args[-1].hStdOutput
+        spare = win32api.DuplicateHandle(current, child_end, current, 0, True,
+                                         win32con.DUPLICATE_SAME_ACCESS)
+        try:
+            # Only the duplicate crosses into this unrelated process. It exits
+            # by itself even if a broken supervisor hangs while holding the GIL.
+            argv = _python("""
+                import os, sys, time
+                from pathlib import Path
+                assert os.get_handle_inheritable(int(sys.argv[1]))
+                Path(sys.argv[2]).touch()
+                time.sleep(7)
+            """, int(spare), ready)
+            argv[0] = sys._base_executable
+            startup = subprocess.STARTUPINFO(lpAttributeList={"handle_list": [int(spare)]})
+            holder = subprocess.Popen(argv, startupinfo=startup, close_fds=True,
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL)
+            retained.append(holder)
+            _wait_for(lambda: ready.exists() or holder.poll() is not None)
+            assert ready.is_file()
+            ready_at = time.monotonic()
+        finally:
+            win32api.CloseHandle(spare)
+        return real_create(*args)
+    monkeypatch.setattr(win32process, "CreateProcess", create)
+    monkeypatch.setattr(backend, "_CLEANUP_SECONDS", 1)
+    if mode == "uncancellable":
+        # Model a driver that accepts cancellation but leaves the I/O pending.
+        monkeypatch.setattr(backend, "_cancel_io", lambda handle: True)
+    data = b"x" * (1024 * 1024) if mode == "writer" else None
+    try:
+        with pytest.raises(procs.BoundedTimeout) as caught:
+            procs.run_bounded(_python("print('ready')"), input=data, timeout=1)
+        assert ready_at is not None and time.monotonic() - ready_at < 3
+        assert any("pipe worker" in note for note in caught.value.__notes__)
+        assert len(retained) == 1 and retained[0].poll() is None
+        if mode == "uncancellable":
+            pending = [t for t in threading.enumerate() if t.name.startswith("bounded-")]
+            assert len(pending) == 1 and pending[0].daemon
+        else:
+            _assert_no_pipe_threads()
+    finally:
+        for holder in retained:
+            holder.kill()
+            holder.wait(timeout=5)
+    _wait_for(lambda: not any(t.name.startswith("bounded-") for t in threading.enumerate()))
+
+
+@windows
+def test_interrupt_after_create_reaps_suspended_child(tmp_path, monkeypatch):
+    import win32api
+    import win32con
+    import win32event
+    import win32process
+    from self_learn.primitives import _procs_windows as backend
+
+    launch_lock = threading.Lock()
+    monkeypatch.setattr(backend, "_launch_lock", launch_lock)
+    marker = tmp_path / "payload"
+    created = []
+    rescue = []
+    real_create = win32process.CreateProcess
+    def create(*args):
+        result = real_create(*args)
+        current = win32api.GetCurrentProcess()
+        rescue.append(win32api.DuplicateHandle(current, result[0], current, 0, False,
+                                               win32con.DUPLICATE_SAME_ACCESS))
+        created.append(result)
+        return result
+    monkeypatch.setattr(win32process, "CreateProcess", create)
+    # Interrupt the first Python line with the native result in local variables.
+    def interrupt(frame, event, arg):
+        if (frame.f_code is backend._launch.__code__ and event == "line"
+                and created and frame.f_locals.get("process") is created[0][0]):
+            raise KeyboardInterrupt("after native creation")
+        return interrupt
+    argv = _python("import sys; from pathlib import Path; Path(sys.argv[1]).touch()", marker)
+    previous = sys.gettrace()
+    try:
+        sys.settrace(interrupt)
+        with pytest.raises(KeyboardInterrupt, match="after native creation"):
+            procs.run_bounded(argv, timeout=5)
+    finally:
+        sys.settrace(previous)
+    process, thread, pid, _ = created[0]
+    try:
+        assert (procs.pid_alive(pid), launch_lock.locked()) == (False, False)
+        assert int(process) == int(thread) == 0 and not marker.exists()
+    finally:
+        if win32event.WaitForSingleObject(rescue[0], 0) == win32event.WAIT_TIMEOUT:
+            win32process.TerminateProcess(rescue[0], 1)
+        win32api.CloseHandle(rescue[0])
+
+
+@windows
+def test_interrupt_after_thread_start_joins_worker(monkeypatch):
+    real_start = threading.Thread.start
+    real_run = threading.Thread.run
+    started = []
+    def run(thread):
+        # Leave a live, started thread before it acquires its pipe endpoint.
+        time.sleep(.25)
+        real_run(thread)
+    def start(thread):
+        real_start(thread)
+        started.append(thread)
+        raise KeyboardInterrupt("after thread start")
+    monkeypatch.setattr(threading.Thread, "run", run)
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(KeyboardInterrupt, match="after thread start"):
+        procs.run_bounded(_python("pass"), timeout=5)
+    try:
+        assert len(started) == 1 and not started[0].is_alive()
+    finally:
+        for thread in started:
+            thread.join(5)
+
+
+@windows
+@pytest.mark.parametrize("site", ["setup", "close", "inherited-handle", "terminate"])
+def test_native_errors_include_cause_during_setup_and_cleanup(monkeypatch, site):
+    import _winapi
+    import pywintypes
+    import win32api
+    import win32job
+    import win32pipe
+    import winerror
+
+    from self_learn.primitives import _procs_windows as backend
+
+    failure = pywintypes.error(winerror.ERROR_ACCESS_DENIED, site, "injected")
+    argv = _python("pass")
+    timeout = 5
+    if site == "terminate":
+        argv = _python("import time; time.sleep(8)")
+        timeout = .3
+        monkeypatch.setattr(backend, "_CLEANUP_SECONDS", 1)
+        monkeypatch.setattr(win32job, "TerminateJobObject", Mock(side_effect=failure))
+    elif site == "setup":
+        monkeypatch.setattr(win32pipe, "CreatePipe", Mock(side_effect=failure))
+    elif site == "inherited-handle":
+        failure = OSError(0, "injected", None, winerror.ERROR_INVALID_HANDLE)
+        monkeypatch.setattr(_winapi, "GetStdHandle", Mock(side_effect=failure))
+    else:
+        real_create = win32job.CreateJobObject
+        real_close = win32api.CloseHandle
+        jobs = []
+        def track(*args):
+            job = real_create(*args)
+            jobs.append(job)
+            return job
+        def close(handle):
+            real_close(handle)
+            if jobs and handle is jobs[0]:
+                raise failure
+        monkeypatch.setattr(win32job, "CreateJobObject", track)
+        monkeypatch.setattr(win32api, "CloseHandle", close)
+    if site == "terminate":
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            procs.run_command(argv, timeout=timeout)
+        assert type(caught.value) is subprocess.TimeoutExpired
+        assert (caught.value.cmd, caught.value.timeout) == (argv, timeout)
+        assert any(repr(failure) in note for note in caught.value.__notes__)
+        _assert_no_pipe_threads()
+        return
+    with pytest.raises(OSError) as caught:
+        procs.run_command(argv, timeout=timeout)
+    assert caught.value.filename == argv[0]
+    assert caught.value.winerror == failure.winerror and caught.value.__cause__ is failure
+    _assert_no_pipe_threads()
+
+
+@windows
+@pytest.mark.parametrize("primary", ["timeout", "overflow", "interrupt", "launch"])
+def test_cleanup_error_keeps_primary(monkeypatch, primary):
+    import pywintypes
+    import win32api
+    import win32job
+    import winerror
+    from self_learn.primitives import _procs_windows as backend
+
+    jobs = []
+    create = win32job.CreateJobObject
+    close = win32api.CloseHandle
+    cleanup = pywintypes.error(winerror.ERROR_INVALID_HANDLE, "CloseHandle", "secondary close error")
+    def track(*args):
+        job = create(*args)
+        jobs.append(job)
+        return job
+    def close_job(handle):
+        close(handle)
+        if handle is jobs[0]:
+            raise cleanup
+    monkeypatch.setattr(win32job, "CreateJobObject", track)
+    monkeypatch.setattr(win32api, "CloseHandle", close_job)
+    argv = _python("pass")
+    options = {"timeout": 5}
+    if primary == "timeout":
+        argv = _python("import time; time.sleep(8)")
+        options["timeout"] = .5
+        expected = procs.BoundedTimeout
+    elif primary == "overflow":
+        argv = _python("print('over budget')")
+        options.update(binary=True, max_output_bytes=1)
+        expected = procs.OutputLimitExceeded
+    elif primary == "interrupt":
+        wait = backend._wait_until
+        interrupted = KeyboardInterrupt("primary interrupt")
+        def interrupt(process, deadline):
+            monkeypatch.setattr(backend, "_wait_until", wait)
+            raise interrupted
+        monkeypatch.setattr(backend, "_wait_until", interrupt)
+        expected = KeyboardInterrupt
+    else:
+        denied = pywintypes.error(winerror.ERROR_ACCESS_DENIED, "AssignProcessToJobObject", "primary denial")
+        monkeypatch.setattr(win32job, "AssignProcessToJobObject", Mock(side_effect=denied))
+        expected = OSError
+    with pytest.raises(expected) as caught:
+        procs.run_bounded(argv, **options)
+    assert any(repr(cleanup) in note for note in caught.value.__notes__)
+    if primary == "launch":
+        assert caught.value.__cause__ is denied and caught.value.winerror == denied.winerror
+    if primary == "interrupt":
+        assert caught.value is interrupted
+    if primary == "timeout":
+        assert (caught.value.cmd, caught.value.timeout) == (argv, .5)
+    assert len(jobs) == 1 and int(jobs[0]) == 0
+    _assert_no_pipe_threads()

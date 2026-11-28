@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "bb35bce"
+ANCHOR = "845af53"
 
 
 # ===================================================================== #
@@ -340,14 +340,11 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # `dump_sha` below is NOT yet re-measured; the landing step's --remeasure does that.
     # 2026-10-31, ANCHOR 5596021 (2026-10-31 batch landing): this row's 2 `edited` doors (the 2026-10-30 fix wave's test edits)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
+    # 2026-11-28, ANCHOR 845af53 (S-168 Windows backends landing): the two `edited` doors of the
+    # Ubuntu 26.04 test repair (KL4 reaps its exited child; KL8 runs a native sleeper named claude)
+    # were dropped as VACUOUS by this landing's own refusal; those edits are anchor-side now.
     "test_invocation_sdk.py": Behaviour(
-        nodes=139, dump_sha="972fd53200074d879f5cd4ef85282573a75e0cfca5a0deacb2c808fecc1514b7",
-        edited={
-            "func:test_kl4_hang_sigterm_ignored_child_is_gone_after_run_sync_returns":
-                "2026-11-28 U-sdk §3.7 K-2b/KL4: reap an exited child within the existing PID-check deadline.",
-            "func:test_kl8_orphan_sweep_kills_matching_and_spares_non_matching":
-                "2026-11-28 U-sdk §3.7 K-5/KL8: run a native Python sleeper named claude and require SIGKILL.",
-        },
+        nodes=139, dump_sha="885c9e888ac8ab0a22b547352469a381bdb9e43c0ed3fc067024e5f8ea312954",
     ),
     # 2026-11-01, attention round lane `surfaces` (design r2 §3.9, answer 1;
     # 03-decisions.md S-127): the worker's popups P1 and P2 were
@@ -886,9 +883,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_node_counts,
     ),
     "BEH7.dump_prefixes": Measured(
-        value=('669c652c7530', '972fd5320007', 'feb9e42b0a25', '1a6ef0d78003', 'f36a93b6ba75', '64de0b46f124', '95bbfe93d6c0', '3002f84a40b7'),
+        value=('669c652c7530', '885c9e888ac8', 'feb9e42b0a25', '1a6ef0d78003', 'f36a93b6ba75', '64de0b46f124', '95bbfe93d6c0', '3002f84a40b7'),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-11-28, transcribed at ANCHOR 845af53 from this module's own "
+            "STALE refusal (S-168 Windows backends landing): (669c652c7530, 972fd5320007, feb9e42b0a25, 1a6ef0d78003, f36a93b6ba75, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7) -> (669c652c7530, 885c9e888ac8, feb9e42b0a25, 1a6ef0d78003, f36a93b6ba75, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7); test_invocation_sdk.py moved because the KL4 and KL8 edits "
+            "are anchor-side now. Previous entry: "
             "2026-11-28, transcribed at ANCHOR 8ba4ebc from this module's own "
             "STALE refusal (S-167 names landing): (669c652c7530, 972fd5320007, feb9e42b0a25, 1a6ef0d78003, d9bd2a6a44e5, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7) -> (669c652c7530, 972fd5320007, feb9e42b0a25, 1a6ef0d78003, f36a93b6ba75, 64de0b46f124, 95bbfe93d6c0, 3002f84a40b7); test_attrib.py moved because S-166's HY4 edit "
             "is anchor-side now. Previous entry: "
@@ -1021,9 +1021,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=2,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-11-28, transcribed at ANCHOR 845af53 from this module's own "
+            "STALE refusal (S-168 Windows backends landing): 2 -> 0; the KL4 and KL8 edits "
+            "are anchor-side now. Previous entry: "
             "2026-11-28 U-sdk §3.7 K-2b/K-5: 0 -> 2; KL4 reaps its exited child and "
             "KL8 uses a native interpreter for the matching orphan. Previous entry: "
             "2026-11-28, transcribed at ANCHOR 8ba4ebc from this module's own "

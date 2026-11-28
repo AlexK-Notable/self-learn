@@ -40,9 +40,7 @@ from pathlib import Path
 import pytest
 
 import self_learn
-from self_learn import hook_compiler, hosts, ledger_ops, verbs, worker
 from self_learn.primitives import procs
-from support import git, init_repo, make_env
 
 SRC = Path(self_learn.__file__).parent
 
@@ -94,10 +92,47 @@ def _has_kw(call: ast.Call, name: str) -> bool:
     return any(kw.arg == name for kw in call.keywords)
 
 
+def _launch_imports(tree):
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return aliases
+
+
+def _native_launch(call, aliases):
+    func = call.func
+    if not isinstance(func, (ast.Name, ast.Attribute)):
+        return False
+    root, dot, tail = ast.unparse(func).partition(".")
+    qualified = aliases.get(root, root) + dot + tail
+    name = qualified.rsplit(".", 1)[-1]
+    if name.startswith("CreateProcess") or name in {"ShellExecute", "ShellExecuteEx"}:
+        return True
+    return (qualified == f"os.{name}" and
+            (name in {"startfile", "system"} or name.startswith(("spawn", "exec"))))
+
+
 def _scan_module(path: Path, rel: str) -> list[Violation]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    aliases = _launch_imports(tree)
     # Only the backend owns the run-without-timeout exemption.
     exempt_run_timeout = rel in ("primitives/_procs_posix.py", "primitives\\_procs_posix.py")
+    # serve._reexec replaces the service itself with one os.execve call. The
+    # exemption names the enclosing top-level function, never a line number:
+    # an unrelated edit above it must not move the call out of its exemption.
+    reexec_calls = {
+        id(call)
+        for fn in tree.body
+        if Path(rel).as_posix() == "serve.py" and isinstance(fn, ast.FunctionDef) and fn.name == "_reexec"
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call) and ast.unparse(call.func) == "os.execve"
+    }
     hits: list[Violation] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -120,6 +155,12 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
         ):
             if not _kw_true(node, "start_new_session"):
                 hits.append(Violation(rel, node.lineno, "popen-no-new-session"))
+        elif _native_launch(node, aliases):
+            if Path(rel).as_posix() in {"primitives/_procs_windows.py", "primitives/_procs_posix.py"}:
+                continue
+            if id(node) in reexec_calls:
+                continue
+            hits.append(Violation(rel, node.lineno, "native-launch-outside-backend"))
         elif name == "communicate":
             bare = not node.args and not _has_kw(node, "input") and not _has_kw(node, "timeout")
             if bare:
@@ -312,6 +353,39 @@ def test_p3_gate_census_matches_the_measured_count():
     assert len(sites) == MEASURED_CENSUS_SITE_COUNT, sites
     modules = {s.path.replace("\\", "/") for s in sites}  # no POSIX-only literal
     assert modules == MEASURED_CENSUS_MODULES, sorted(modules)
+
+
+def test_native_launch_has_one_owner_and_rejects_a_second(tmp_path):
+    # Count the native API separately from the stdlib subprocess census.
+    sites = [(path.relative_to(SRC).as_posix(), node.lineno)
+             for path in SRC.rglob("*.py")
+             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+             if isinstance(node, ast.Call) and _callee_name(node) == "CreateProcess"]
+    assert [path for path, _ in sites] == ["primitives/_procs_windows.py"], sites
+    assert not [v for v in scan(SRC) if v.kind == "native-launch-outside-backend"]
+    calls = [
+        "CreateProcess()", "native.CreateProcessW()", "native.CreateProcessA()",
+        "native.CreateProcessAsUser()", "shell.ShellExecute()", "shell.ShellExecuteEx()",
+        "os.startfile()", "os.system()", "os.spawnv()", "os.execve()", "replace_image()",
+    ]
+    source = ["from os import execve as replace_image", *calls]
+    (tmp_path / "offender.py").write_text("\n".join(source), encoding="utf-8")
+    assert scan(tmp_path) == [Violation("offender.py", line, "native-launch-outside-backend")
+                              for line in range(2, len(source) + 1)]
+    # The serve exemption follows `_reexec` wherever it sits in the file, and
+    # covers nothing else: not another function, not a nested one, not another
+    # module's `_reexec`.
+    (tmp_path / "offender.py").unlink()
+    body = "def _reexec(argv, env):\n    os.execve(sys.executable, argv, env)\n"
+    other = "def elsewhere(argv, env):\n    os.execve(sys.executable, argv, env)\n"
+    nested = "def outer():\n    def _reexec(argv, env):\n        os.execve(sys.executable, argv, env)\n"
+    (tmp_path / "serve.py").write_text("import os, sys\n\n\n\n" + body + other + nested, encoding="utf-8")
+    (tmp_path / "other.py").write_text("import os, sys\n" + body, encoding="utf-8")
+    assert scan(tmp_path) == [
+        Violation("other.py", 3, "native-launch-outside-backend"),
+        Violation("serve.py", 8, "native-launch-outside-backend"),
+        Violation("serve.py", 11, "native-launch-outside-backend"),
+    ]
 
 
 def test_positive_control_census_count_changes_when_a_new_site_lands(tmp_path):
@@ -630,12 +704,16 @@ def test_validate_ere_rejects_a_genuinely_broken_pattern():
     test at all before this fold. `[` is an unterminated bracket
     expression — grep -E always rejects it, exit 2, on every grep
     implementation on this host."""
+    from self_learn import hook_compiler
+
     problem = hook_compiler.validate_ere("[")
     assert problem is not None
     assert problem != ""
 
 
 def test_validate_ere_accepts_a_usable_pattern():
+    from self_learn import hook_compiler
+
     assert hook_compiler.validate_ere("abc") is None
 
 
@@ -670,12 +748,16 @@ def _bounded_timeout_only_for(needle: str):
 
 
 def _case_validate_ere(monkeypatch, tmp_path):
+    from self_learn import hook_compiler
+
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
     result = hook_compiler.validate_ere("a")
     assert result is not None and "did not finish" in result, result
 
 
 def _case_replay_examples(monkeypatch, tmp_path):
+    from self_learn import hook_compiler
+
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
     script = tmp_path / "guard.sh"
     script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -685,6 +767,8 @@ def _case_replay_examples(monkeypatch, tmp_path):
 
 
 def _case_hosts_init_git_init_timeout(monkeypatch, tmp_path):
+    from self_learn import hosts
+
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
     target = tmp_path / "host_init_case"
     target.mkdir()
@@ -696,6 +780,8 @@ def _case_hosts_init_git_init_timeout(monkeypatch, tmp_path):
 def _case_hosts_init_git_commit_timeout(monkeypatch, tmp_path):
     # git init runs for REAL (needs an actual repo for commit to fail
     # against); only the commit call times out.
+    from self_learn import hosts
+
     monkeypatch.setattr(procs, "run_bounded", _bounded_timeout_only_for("commit"))
     target = tmp_path / "host_commit_case"
     target.mkdir()
@@ -705,6 +791,9 @@ def _case_hosts_init_git_commit_timeout(monkeypatch, tmp_path):
 
 
 def _case_show_lifecycle(monkeypatch, tmp_path):
+    from self_learn import verbs
+    from support import init_repo
+
     repo = tmp_path / "repo"
     init_repo(repo)
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
@@ -713,6 +802,9 @@ def _case_show_lifecycle(monkeypatch, tmp_path):
 
 
 def _case_worker_digest(monkeypatch, tmp_path):
+    from self_learn import worker
+    from support import init_repo
+
     repo = tmp_path / "repo"
     init_repo(repo)
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
@@ -721,6 +813,9 @@ def _case_worker_digest(monkeypatch, tmp_path):
 
 
 def _case_ledger_ops_git_mv(monkeypatch, tmp_path):
+    from self_learn import ledger_ops
+    from support import init_repo
+
     repo = tmp_path / "repo"
     init_repo(repo)
     monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
@@ -733,6 +828,9 @@ def _case_hosts_capture_host_path(monkeypatch, tmp_path):
     # FW-162: a capture's git calls time out -> the path comes back
     # unchanged, never a BoundedTimeout out of the miner's landing loop
     # (which holds the ledger lock).
+    from self_learn import hosts
+    from support import git, make_env
+
     env = make_env(tmp_path)  # a registered project host
     wt = tmp_path / "wt"
     git(env.host, "worktree", "add", "-q", str(wt), "-b", "wt")
