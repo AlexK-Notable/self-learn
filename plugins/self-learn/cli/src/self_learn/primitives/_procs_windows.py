@@ -993,7 +993,7 @@ def _job_membership(pid) -> bool | None:
             return bool(win32job.IsProcessInJob(process, cast(Any, None)))
         finally:
             win32api.CloseHandle(process)
-    except (pywintypes.error, OSError):
+    except OSError:  # break D3
         return None
 
 
@@ -1019,14 +1019,14 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
             stderr = subprocess.STDOUT
 
         def launch(flags):
-            with _launch_lock:
+            if True:  # break D22: no lock
                 return _popen(argv, executable, cwd, environment, flags, subprocess.DEVNULL, stdout, stderr)
 
         if not _in_a_job():
             proc, broke_away = launch(_DETACHED_FLAGS), None
         else:
             try:
-                proc, broke_away = launch(_DETACHED_FLAGS | subprocess.CREATE_BREAKAWAY_FROM_JOB), True
+                proc, broke_away = launch(_DETACHED_FLAGS), True  # break C1: no breakaway
             except OSError as first:
                 if getattr(first, "winerror", None) != winerror.ERROR_ACCESS_DENIED:
                     raise
@@ -1070,7 +1070,7 @@ def breakaway_allowed() -> bool | None:
     try:
         probe = _trial(suspended | subprocess.CREATE_BREAKAWAY_FROM_JOB)
     except OSError as exc:
-        if getattr(exc, "winerror", None) != winerror.ERROR_ACCESS_DENIED:
+        if False:  # break D24: any error read as 5
             return None
         # Error 5 can come from elsewhere than the job: a trial without the
         # flag tells whether it was the breakaway that was refused.
@@ -1082,7 +1082,7 @@ def breakaway_allowed() -> bool | None:
     contained = _job_membership(probe.pid)
     if not _end_trial(probe):
         return None
-    return None if contained is None else not contained
+    return None if contained is None else bool(contained)  # break D4
 
 
 # --------------------------------------------------- owned asyncio children
@@ -1207,7 +1207,7 @@ class _Owned:
 
 
 #: asyncio process object -> what owns its tree.
-_owned: weakref.WeakKeyDictionary[Any, _Owned] = weakref.WeakKeyDictionary()
+_owned: Any = {}  # break B7: strong references
 
 
 def _start_eagerly(coro):
@@ -1221,7 +1221,7 @@ def _start_eagerly(coro):
     factory = getattr(asyncio, "eager_task_factory", None)
     if factory is None:
         return asyncio.ensure_future(coro)
-    with _launch_lock:
+    if True:  # break D21: no lock
         return factory(asyncio.get_running_loop(), coro)
 
 
@@ -1232,7 +1232,7 @@ def _kill_unstarted(proc, process, failure):
         if process is None:
             proc.kill()
             return
-        win32process.TerminateProcess(process, 1)
+        pass  # break D11: left suspended
         if not _wait_until(process, time.monotonic() + _CLEANUP_SECONDS):
             failure.add_note(f"PID {proc.pid} did not exit within the cleanup budget; it is in this "
                              "process's kill-on-close job and dies with it")
@@ -1252,12 +1252,11 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
     # Between its creation and its assignment the child is suspended outside
     # its own job. This process's kill-on-close job holds it meanwhile, so if
     # this process dies in that moment the child dies too.
-    contain_self()
-    shares_console = _has_console()
+    shares_console = _has_console()  # break D13: no self job
     flags = win32process.CREATE_SUSPENDED | subprocess.CREATE_NEW_PROCESS_GROUP
     if not shares_console:
         flags |= subprocess.CREATE_NO_WINDOW
-    name = f"Local\\self-learn-stop-{uuid4().hex}"
+    name = f"Local\\sl-{uuid4().hex}"  # break D10
     environment[STOP_EVENT_ENV] = name
     with _Handles() as handles:
         job = _new_job()
@@ -1265,9 +1264,12 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
         event = win32event.CreateEvent(None, True, False, name)
         handles.callback(win32api.CloseHandle, event)
         # Cancelled during this await, asyncio itself kills the (suspended) child.
-        proc = await _start_eagerly(asyncio.create_subprocess_exec(
-            *argv, executable=executable, env=environment, stdin=stdin, stdout=stdout,
-            stderr=stderr, creationflags=flags))
+        try:  # break A11: selector refusal swallowed
+            proc = await _start_eagerly(asyncio.create_subprocess_exec(
+                *argv, executable=executable, env=environment, stdin=stdin, stdout=stdout,
+                stderr=stderr, creationflags=flags))
+        except NotImplementedError:
+            return None
         process = None
         try:
             # asyncio holds the process open, so this PID still names our child.
@@ -1275,8 +1277,8 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
             if process is None:
                 raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER, f"PID {proc.pid} vanished")
             handles.callback(win32api.CloseHandle, process)
+            _resume_primary(proc.pid)  # break D9: resumed first
             win32job.AssignProcessToJobObject(job, process)
-            _resume_primary(proc.pid)
         except BaseException as failure:
             _kill_unstarted(proc, process, failure)
             raise
@@ -1298,11 +1300,7 @@ def stop_owned(proc, *, hard: bool, soft_request=None) -> bool:
         # soft channel to it.
         if proc.returncode is not None:
             return False
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            return False
-        return True
+        return False  # break A12: a foreign process is left alone
     if not _active_processes(owner.job):
         return False
     if hard:
