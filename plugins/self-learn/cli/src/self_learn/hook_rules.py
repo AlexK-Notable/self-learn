@@ -33,13 +33,11 @@ rule blocks with the evaluator's own labelled line
 
 Refused patterns: what grep leaves unspecified, rejects, warns about or ties
 to the locale (stray backslashes, back-references, a quantifier with nothing
-before it, a range across punctuation, collating elements, ``[:alpha:]``
-without its outer brackets), an anchor or word boundary inside a repeated
-group (GNU grep matches ``(\\ba){2}`` against ``aa``), and, in a deny rule,
-any range between letters (``[a-z]`` follows the caller's collation:
-under en_US.UTF-8 it also matches ``é``; a class such as ``[[:lower:]]``
-does not). Bounds on size, nesting and compile work keep every refusal a
-:class:`RuleError`.
+before it, a reversed range or one with a non-ASCII end, collating
+elements, ``[:alpha:]``
+without its outer brackets), and an anchor or word boundary inside a
+repeated group (GNU grep matches ``(\\ba){2}`` against ``aa``). Bounds on
+size, nesting and compile work keep every refusal a :class:`RuleError`.
 
 Inputs that fail closed: a number other than an integer of magnitude at
 most 2**53 in the printed field (jq's number printing differs between
@@ -49,9 +47,12 @@ limit but inside jq 1.8's (see :data:`_JQ_DEPTH`).
 
 The artifact names its locale (``match.locale``, always ``C.UTF-8``) and the
 character tables it was built against (``match.ctype``); the loader refuses
-any other. The generated script inherits the caller's locale; under a
-non-UTF-8 locale such as ``C`` its ``.`` matches single bytes, which the
-evaluator does not model.
+any other. Every pattern means what it means under ``C.UTF-8``: a bracket
+range such as ``[a-z]`` is code-point order. The generated script does not
+yet pin its locale: run under another one, its grep can match text the
+evaluator does not (under en_US.UTF-8 ``[a-z]`` also matches ``é``; under
+``C``, ``.`` matches single bytes). A later change to the emitter, which
+pins ``LC_ALL=C.UTF-8`` in the script, closes that.
 
 The bound. Matching runs a lazily built DFA over a Thompson automaton of at
 most :data:`MAX_PROGRAM` instructions, each search with its own cache
@@ -265,8 +266,6 @@ def _named_set(name: str) -> _CharSet:
 # ("rep", node, lo, hi|None)
 _BOL, _EOL, _WB, _NWB, _WSTART, _WEND = range(6)
 _LITERAL_ESCAPES = set(".[]()*+?{}|^$\\")
-_ASCII_GROUPS = ((0x61, 0x7A), (0x41, 0x5A), (0x30, 0x39))
-_LETTER_GROUPS = ((0x61, 0x7A), (0x41, 0x5A))
 #: Parser bounds: a longer pattern, deeper groups or more stacked repeats are
 #: refused, so no pattern can exhaust the stack or the compile budget.
 MAX_PATTERN_CHARS = 4096
@@ -299,7 +298,6 @@ class _Parser:
         self.n = len(pattern)
         self.i = 0
         self.depth = 0
-        self.letter_range = False
 
     def refuse(self, why: str) -> RuleError:
         return RuleError(f"pattern {self.p[:200]!r} refused: {why}")
@@ -497,15 +495,17 @@ class _Parser:
                     raise self.refuse("a range ends at a character class (grep rejects it)")
                 self.i += 2
                 lo_cp, hi_cp = ord(c), ord(hi)
-                if not any(a <= lo_cp <= hi_cp <= b for a, b in _ASCII_GROUPS):
+                # Under C.UTF-8 an ASCII range is code-point order (all 7,635
+                # endpoint pairs measured against grep 3.12 / glibc 2.44), and a
+                # range with a non-ASCII end is "Invalid collation character"
+                if lo_cp > 0x7F or hi_cp > 0x7F:
                     raise self.refuse(
-                        f"the range '{c}-{hi}' is not inside one of a-z, A-Z or 0-9: other "
-                        "ranges sort differently under different locales (en_US.UTF-8 and "
-                        "C.UTF-8 disagree even on ASCII), or are reversed; list the characters")
+                        f"the range '{c}-{hi}' has a non-ASCII end (grep rejects it under "
+                        "C.UTF-8); list the characters")
+                if lo_cp > hi_cp:
+                    raise self.refuse(f"the range '{c}-{hi}' is reversed (grep rejects it)")
                 if self.i + 1 < self.n and p[self.i] == "-" and p[self.i + 1] != "]":
                     raise self.refuse("a range runs straight into another '-' (unspecified)")
-                if any(a <= lo_cp <= b for a, b in _LETTER_GROUPS):
-                    self.letter_range = True
                 ranges.append((lo_cp, hi_cp))
             else:
                 ranges.append((ord(c), ord(c)))
@@ -561,7 +561,6 @@ class Matcher:
         self.pattern = pattern
         parser = _Parser(pattern)
         tree = parser.parse()
-        self.letter_range = parser.letter_range
         self.ops: list[int] = []
         self.arg: list[int] = []
         self.arg2: list[int] = []
@@ -1871,10 +1870,4 @@ def _load_rule(source: bytes | str | dict) -> Rule:
     _need(all(isinstance(e, dict) and set(e) == {"input", "expect"}
               and _is_text(e["expect"]) and e["expect"] in _MODE_VERDICTS[mode]
               for e in examples), "bad examples")
-    matcher = compile_pattern(match["pattern"])
-    _need(not (mode == "deny" and matcher.letter_range),
-          "a deny rule's pattern holds a letter range such as [a-z]: GNU grep reads it "
-          "through the caller's locale (under en_US.UTF-8, [a-z] also matches accented "
-          "letters such as é), so the evaluator could allow what the script denies; list "
-          "the letters or use a class such as [[:lower:]]")
-    return Rule(data, matcher)
+    return Rule(data, compile_pattern(match["pattern"]))

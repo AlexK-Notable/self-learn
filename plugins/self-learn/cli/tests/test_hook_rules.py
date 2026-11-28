@@ -522,10 +522,10 @@ FIXTURES.update({name: g[:4] for name, g in _ROUTE_GUARDS.items()})
 #: The route tests' own later checks, apart from the approved examples.
 RUNTIME_CASES: dict[str, dict] = {name: g[4] for name, g in _ROUTE_GUARDS.items()}
 
-#: Deny fixtures whose pattern holds a letter range (``[a-zA-Z]``): GNU grep
-#: reads a range through the caller's locale, so the artifact is refused
-#: (``test_a_letter_range_is_locale_bound``). 3 of the 14 fixtures, 3 of 7
-#: deny rules.
+#: Deny fixtures whose pattern holds a letter range (``[a-zA-Z]``). They
+#: build: a range means code-point order, as under ``C.UTF-8``
+#: (test_a_letter_range_means_code_point_order). 3 of the 14 fixtures, 3 of
+#: the 7 deny rules.
 LETTER_RANGE_DENY = {
     "test_route_hook.test_uv_venv_copy_guard",
     "test_hook_command_view.PGREP_REGEX",
@@ -540,12 +540,15 @@ def _fixture_artifact(name: str) -> dict:
 
 def test_the_fixture_table_is_whole():
     """Positive controls: the three route guards were found in their
-    source, each with runtime checks, and the letter-range count holds."""
+    source, each with runtime checks; every fixture builds an artifact, the
+    three letter-range deny rules included."""
     assert len(_ROUTE_GUARDS) == 3, sorted(_ROUTE_GUARDS)
     assert all(rt["allow"] and rt["deny"] for rt in RUNTIME_CASES.values()), RUNTIME_CASES
     assert len(FIXTURES) == 14
     deny = {n for n, f in FIXTURES.items() if f[2].get("mode", "deny") == "deny"}
     assert len(deny) == 7 and LETTER_RANGE_DENY <= deny
+    assert all("a-z" in FIXTURES[n][2]["path_regex"] for n in LETTER_RANGE_DENY)
+    assert all(_fixture_artifact(n)["mode"] == "deny" for n in LETTER_RANGE_DENY)
 
 
 @pytest.mark.parametrize("name", sorted(FIXTURES))
@@ -554,10 +557,6 @@ def test_fixture_examples_decide_as_approved(name):
     the route verb, and by the differential below) get their verdicts from
     the evaluator alone; the build itself refuses on any disagreement. The
     route guards' later runtime checks get theirs too."""
-    if name in LETTER_RANGE_DENY:
-        with pytest.raises(RuleError, match="letter range"):
-            _fixture_artifact(name)
-        return
     rule = hook_rules.load_rule(hook_rules.dumps_rule(_fixture_artifact(name)))
     assert rule.examples, name  # positive control: there is something to check
     assert hook_rules.check_examples(rule) == []
@@ -641,7 +640,7 @@ def _warn_artifact() -> dict:
     ("fields that do not fit", lambda: _mutated(fields={"Edit": "command", "Write": "file_path"}),
      "fields"),
     ("a refused pattern", lambda: _mutated(match=_match(pattern=r"\d")), "stray backslash"),
-    ("a deny letter range", lambda: _mutated(match=_match(pattern="[a-z]")), "letter range"),
+    ("a reversed range", lambda: _mutated(match=_match(pattern="[z-a]")), "is reversed"),
     ("an output without the prefix", lambda: _mutated(output="stop"), "deny output"),
     ("a deny output for another message", lambda: _mutated(
         output=f"self-learn {RID}: something else"), "deny output"),
@@ -827,10 +826,10 @@ REFUSED = {
     r"[[:foo:]]": ("not a character class", "rejects"),
     r"[:alpha:]": ("without its outer brackets", "rejects"),
     r"[:space:]x": ("without its outer brackets", "rejects"),
-    r"[z-a]": ("not inside one of", "rejects"),
-    r"[!-~]": ("not inside one of", "locale"),
-    r"[A-z]": ("not inside one of", "locale"),
-    "[à-ü]": ("not inside one of", "rejects"),
+    r"[z-a]": ("is reversed", "rejects"),
+    "[à-ü]": ("non-ASCII end", "rejects"),
+    "[a-é]": ("non-ASCII end", "rejects"),
+    "[!-é]": ("non-ASCII end", "rejects"),
     r"[a-c-e]": ("another '-'", "rejects"),
     r"[[:alpha:]-z]": ("starts at a character class", "rejects"),
     r"[a-[:alpha:]]": ("ends at a character class", "rejects"),
@@ -900,6 +899,11 @@ ACCEPTED = {
     r"(^a|b$)": ["ab", "ba", "a", "b"],
     r"^((){100}){100}a$": ["a", "b", ""],
     r"^a{000002}$": ["a", "aa", "aaa"],
+    # bracket ranges mean code-point order (C.UTF-8), letters included
+    r"^[a-z]+$": ["abc", "é", "aé", "A", "z"],
+    r"^[A-z]$": ["A", "_", "[", "z", "é", "{"],
+    r"^[!-~]$": ["!", "~", " ", "é", "a"],
+    r"^[^a-z]$": ["a", "A", "é", "1"],
 }
 
 
@@ -1308,10 +1312,6 @@ def test_differential_recorded_cases(scripts):
 def test_differential_fixture(scripts, name):
     rid, trigger, block, examples = FIXTURES[name]
     text = hook_compiler.script_for_hook(rid, trigger, block)
-    if name in LETTER_RANGE_DENY:
-        with pytest.raises(RuleError, match="letter range"):
-            hook_compiler.rule_artifact_for_hook(rid, trigger, block, examples)
-        return
     art = hook_compiler.rule_artifact_for_hook(rid, trigger, block, examples)
     work = [(f"{verdict}[{i}]", text, art, json.dumps(ex).encode())
             for verdict, items in examples.items() for i, ex in enumerate(items)]
@@ -1324,29 +1324,42 @@ def test_differential_fixture(scripts, name):
     assert _differ(scripts, work) == []
 
 
+#: Range rules, run as deny scripts under C.UTF-8 and through the evaluator.
+_RANGE_RULES = {
+    r"^[a-z]$": ["a", "m", "z", "A", "é", "ß", "_"],
+    r"^[A-Za-z0-9_-]+$": ["Ab_9-", "Ab é", "ÀB", "a b"],
+    r"^[A-z]$": ["A", "_", "`", "z", "é"],
+    r"-[a-zA-Z]*f": ["-f", "-xf", "-éf", "-Éf"],
+}
+
+
 @_DIFF
-def test_a_letter_range_is_locale_bound(scripts):
-    """M1, side by side: the same deny script decides ``é`` differently
-    under en_US.UTF-8 (``[a-z]`` collates it in) and C.UTF-8, so a deny
-    rule with a letter range is refused; the class form builds, and agrees
-    with the script under both locales."""
+def test_a_letter_range_means_code_point_order(scripts):
+    """M1 as the orchestrator decided: a bracket range is code-point order,
+    as under C.UTF-8, and deny rules with letter ranges build; under
+    C.UTF-8 the script and the evaluator agree on letters, accented ones
+    included.
+
+    The known gap, pinned so its closing is noticed: until the emitter pins
+    ``LC_ALL=C.UTF-8``, the script follows the caller's locale. Under
+    en_US.UTF-8 its ``[a-z]`` also matches ``é``; under ``LC_ALL=C`` its
+    ``.`` matches a single byte; in both the script denies what the
+    evaluator allows."""
+    work = []
+    for pattern, texts in _RANGE_RULES.items():
+        text = hook_compiler.generate_script(RID, TRIGGER, ["Bash"], pattern, "m")
+        art = hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], pattern, "m")
+        work += [(f"{pattern} on {t!r}", text, art, _cmd(t)) for t in texts]
+    assert _differ(scripts, work) == []
     avail = subprocess.run(["locale", "-a"], capture_output=True, text=True).stdout
-    if "en_US.utf8" not in avail and "en_US.UTF-8" not in avail:
-        pytest.skip("en_US.UTF-8 is not installed")  # only the side-by-side needs it
-    data = _cmd("é")
-    ranged = scripts.write(hook_compiler.generate_script(RID, TRIGGER, ["Bash"], "^[a-z]$", "m"))
-    c_run = scripts.run(ranged, data)
-    us = _Scripts(scripts.root, {**scripts.env, "LC_ALL": "en_US.UTF-8"})
-    assert (c_run[0], us.run(ranged, data)[0]) == (0, 2)  # the script follows the locale
-    with pytest.raises(RuleError, match="letter range"):
-        hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], "^[a-z]$", "m")
-    classed = hook_compiler.generate_script(RID, TRIGGER, ["Bash"], "^[[:lower:]]$", "m")
-    rule = hook_rules.load_rule(hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"],
-                                                            "^[[:lower:]]$", "m"))
-    path = scripts.write(classed)
-    got = hook_rules.evaluate(rule, data)
-    assert scripts.run(path, data) == us.run(path, data) == (got.exit_code, got.stdout, got.stderr)
-    assert got.verdict == "deny"  # é is lower case in both
+    assert "en_US.utf8" in avail or "en_US.UTF-8" in avail, "en_US.UTF-8 is needed here"
+    for pattern, locale, probe in ((r"^[a-z]$", "en_US.UTF-8", "é"), (r"^..$", "C", "é")):
+        script = scripts.write(hook_compiler.generate_script(RID, TRIGGER, ["Bash"], pattern, "m"))
+        rule = hook_rules.load_rule(hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], pattern, "m"))
+        other = _Scripts(scripts.root, {**scripts.env, "LC_ALL": locale})
+        assert scripts.run(script, _cmd(probe))[0] == 0  # C.UTF-8: the script allows, as ...
+        assert hook_rules.evaluate(rule, _cmd(probe)).verdict == "allow"  # ... the evaluator does
+        assert other.run(script, _cmd(probe))[0] == 2, (pattern, locale)  # the gap
 
 
 @_DIFF
@@ -1438,10 +1451,6 @@ def test_differential_dialect(scripts, pattern):
     for mode in ("deny", "warn"):
         tools = ["Bash", "Edit"]
         text = hook_compiler.generate_script(RID, TRIGGER, tools, pattern, "m", mode=mode)
-        if mode == "deny" and hook_rules.compile_pattern(pattern).letter_range:
-            with pytest.raises(RuleError, match="letter range"):
-                hook_compiler.rule_artifact(RID, TRIGGER, tools, pattern, "m", mode=mode)
-            continue
         art = hook_compiler.rule_artifact(RID, TRIGGER, tools, pattern, "m", mode=mode)
         for i, probe in enumerate(DIALECT[pattern]):
             work.append((f"{mode} command[{i}]", text, art, _cmd(probe)))
@@ -1515,7 +1524,8 @@ def _grep_lines(env: dict, pattern: str, texts: list[str]) -> set[int] | None:
 
 
 _FUZZ_TEXTS = ["", "a", "b", "aa", "ab", "ba", "a b", " a", "a ", "bb", "aab", "-a-", "ab ba",
-               "é", "aé", "  ", "a-b", "b a b", "]", "[", ":", "^", "\\", "1", "x", "A", "]a"]
+               "é", "aé", "  ", "a-b", "b a b", "]", "[", ":", "^", "\\", "1", "x", "A", "]a",
+               "z", "Z", "m", "M", "_", "~", "{", "`", "É", "ß", "/"]
 
 
 def _assertion_patterns(rng: random.Random, n: int) -> list[str]:
@@ -1543,7 +1553,9 @@ def _assertion_patterns(rng: random.Random, n: int) -> list[str]:
 
 def _bracket_patterns(rng: random.Random, n: int) -> list[str]:
     pieces = ["a", "b", "-", "]", "^", "[", ":", "=", ".", "[:alpha:]", "[:digit:]", "a-c", "\\",
-              " ", "é", "[:", ":]", "[.", ".]", "[=", "=]", "0-9", "x"]
+              " ", "é", "[:", ":]", "[.", ".]", "[=", "=]", "0-9", "x",
+              # letter and cross-group ranges: code-point order under C.UTF-8
+              "a-z", "A-Z", "b-y", "A-z", "!-~", " -/", "Z-a", "à-ü", "a-é"]
     out: dict[str, None] = {}
     while len(out) < n:
         body = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 4)))
@@ -1600,23 +1612,17 @@ def test_accepted_patterns_match_grep(pattern, tool_env):
 @_DIFF
 @_LINUX_ONLY
 def test_differential_command_view_corpus(scripts):
-    """The S-133 corpus, through the deny and the warning hook on Bash. The
-    corpus pattern holds ``[a-zA-Z]``, which a deny artifact refuses (a
-    letter range), so the deny run uses its class form ``[[:alpha:]]``."""
+    """The S-133 corpus, through the deny and the warning hook on Bash (its
+    pattern holds the letter range ``[a-zA-Z]``)."""
     import test_hook_command_view as view_tests
 
-    with pytest.raises(RuleError, match="letter range"):
-        hook_compiler.rule_artifact(view_tests.RID, TRIGGER, ["Bash"], view_tests.CORPUS_REGEX,
-                                    "careful")
-    classed = view_tests.CORPUS_REGEX.replace("[a-zA-Z]", "[[:alpha:]]")
-    assert classed != view_tests.CORPUS_REGEX
+    assert "[a-zA-Z]" in view_tests.CORPUS_REGEX
     work = []
     for mode in ("deny", "warn"):
-        regex = classed if mode == "deny" else view_tests.CORPUS_REGEX
-        text = hook_compiler.generate_script(view_tests.RID, TRIGGER, ["Bash"], regex,
-                                             "careful", mode=mode)
-        art = hook_compiler.rule_artifact(view_tests.RID, TRIGGER, ["Bash"], regex,
-                                          "careful", mode=mode)
+        text = hook_compiler.generate_script(view_tests.RID, TRIGGER, ["Bash"],
+                                             view_tests.CORPUS_REGEX, "careful", mode=mode)
+        art = hook_compiler.rule_artifact(view_tests.RID, TRIGGER, ["Bash"],
+                                          view_tests.CORPUS_REGEX, "careful", mode=mode)
         for name, (command, _) in sorted(view_tests.CORPUS.items()):
             work.append((f"{mode} {name}", text, art, _cmd(command)))
     assert len(work) > 300
