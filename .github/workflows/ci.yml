@@ -91,7 +91,7 @@ jobs:
             $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
             $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
             $skipped = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
-            if ((Compare-Object $expected $ran) -or $skipped.Count -ne 1 -or $skipped[0].name -cne 'test_linux_teach_never_imports_capabilities' -or $skipped[0].skipped.message -cne 'Linux capture contract') {
+            if ((Compare-Object -CaseSensitive $expected $ran) -or $skipped.Count -ne 1 -or $skipped[0].name -cne 'test_linux_teach_never_imports_capabilities' -or $skipped[0].skipped.message -cne 'Linux capture contract') {
               throw "Unexpected capture selection or skip: $ran"
             }
           }

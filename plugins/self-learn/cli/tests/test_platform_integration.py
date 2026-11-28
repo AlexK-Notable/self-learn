@@ -338,12 +338,27 @@ def test_cross_drive_pointer_and_git_rejection(home, monkeypatch):
 
 
 @windows
-def test_foreign_registry_is_readable_and_preserved(home, tmp_path):
+def test_foreign_registry_is_readable_and_preserved(home, tmp_path, capsys):
     from self_learn import cli
+    from self_learn.records import Record
     registry = home / "hosts.yaml"
     registry.write_bytes(b"skills_root: null\nprojects:\n- path: /foreign/source\n  mode: plain\n")
+    bucket = home / "projects" / "historical-linux-bucket"
+    pending = bucket / "pending"
+    pending.mkdir(parents=True)
+    (bucket / "meta.yaml").write_bytes(b"path: /foreign/source\n")
+    record = Record.create(type="knowledge", scope="project", source="teach", fact="Historical capture")
+    path = pending / (record.id + ".md")
+    path.write_bytes(record.to_text().encode("utf-8"))
+    git(home, "add", "--", "hosts.yaml", "projects")
+    git(home, "commit", "-m", "existing foreign ledger")
     before = registry.read_bytes()
     assert cli.main(["list", "--json"]) == 0
+    item, = json.loads(capsys.readouterr().out)
+    assert (item["id"], item["bucket"], item["host_registered"]) == (record.id, bucket.name, False)
+    assert cli.main(["show", record.id, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["id"] == record.id
+    assert git(home, "show", "HEAD:" + path.relative_to(home).as_posix()) == path.read_bytes()
     assert hosts.load_hosts(home).projects == []
     host = tmp_path / "local"
     host.mkdir()
