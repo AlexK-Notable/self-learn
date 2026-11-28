@@ -31,9 +31,10 @@ REQUIRES = {
     "attention": frozenset({"desktop"}),
     **dict.fromkeys(("host commit-drift", "host rebind", "host remove", "host set-mode"),
                     frozenset({"ledger"})),
-    **dict.fromkeys(("teach --route", "teach --dest", "teach --note", "teach --allow-empty-glob",
+    **dict.fromkeys(("teach --dest", "teach --note", "teach --allow-empty-glob",
                      "teach --rules-path", "teach --allow-unpathed", "teach --follow-up",
                      "teach --unblocks-on", "teach --follow-up-note"), frozenset({"canon"})),
+    "teach --route": frozenset({"canon", "sdk"}),
     "teach --hook-input": frozenset({"canon", "hooks"}),
     "--selftest": frozenset({"ledger", "hooks", "sdk", "supervisor"}),
 }
@@ -57,11 +58,13 @@ def refused(args: Namespace) -> str | None:
         forms.append(f"host {args.host_command}")
     if verb == "teach":
         for dest, option in TEACH_OPTIONS.items():
+            if dest == "route" and args.dest is not None:
+                continue  # An explicit destination bypasses the analyst.
             value = getattr(args, dest)
             if value is not None and value is not False:
                 forms.append("teach " + option)
-        if args.route and args.dest is None and not AVAILABLE["sdk"]:
-            return verb
+        if args.dest == "hook":
+            forms.append("teach --hook-input")
     for form in forms:
         if form not in REQUIRES or any(not AVAILABLE[cap] for cap in REQUIRES[form]):
             return verb

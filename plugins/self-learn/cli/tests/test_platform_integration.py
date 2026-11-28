@@ -70,7 +70,10 @@ from self_learn import hosts, intents
 original = intents.complete
 def stop_after_durable_intent(intent):
     original(intent)
-    Path(sys.argv[2]).write_text(f'{intent.id} {os.getpid()}', encoding='ascii')
+    barrier = Path(sys.argv[2])
+    writing = barrier.with_suffix(".writing")
+    writing.write_text(f'{intent.id} {os.getpid()}', encoding='ascii')
+    writing.replace(barrier)
     time.sleep(90)
 intents.complete = stop_after_durable_intent
 hosts.host_add(os.environ['SELF_LEARN_HOME'], sys.argv[1], 'project', mode='plain')
@@ -271,6 +274,11 @@ def test_existing_buckets_roundtrip_without_rekey(home, tmp_path):
     assert set((home / "projects").iterdir()) == names_before
     assert all(p.read_bytes() == data for p, data in initial.items())
     assert len(hosts.load_hosts(home).projects) == 2
+    git(host, "init")
+    git(host, "commit", "--allow-empty", "-m", "main worktree")
+    linked = tmp_path / "linked checkout"
+    git(host, "worktree", "add", "-b", "linked", str(linked))
+    assert hosts.capture_host_path(home, linked) == host
     meta = record.parents[1] / "meta.yaml"
     other = tmp_path / "other registered target"
     other.mkdir()
