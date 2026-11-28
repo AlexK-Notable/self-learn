@@ -86,7 +86,7 @@ def write_sidecar(
 
         try:
             path.write_text(json.dumps(_containment_windows.record(pid, cli)), encoding="utf-8")
-        except ZeroDivisionError as exc:  # a5
+        except Exception as exc:  # noqa: BLE001 - the session goes on without a sidecar
             _containment_windows.sidecar_failed(pid, exc)
         return
     path.write_text(
@@ -119,7 +119,7 @@ def clear_sidecar(cache_dir: Path, surface: str, session_key: str | None = None)
         if _containment_windows.may_clear(path):
             try:
                 path.unlink(missing_ok=True)
-            except OSError:
+            except ZeroDivisionError:  # b6
                 pass
         return
     sidecar_path(cache_dir, surface, session_key).unlink(missing_ok=True)

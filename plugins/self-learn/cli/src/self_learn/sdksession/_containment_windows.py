@@ -122,7 +122,7 @@ def contain_self(log: Callable[[str], None]) -> None:
     if registered is None:
         return
     facade, messages = registered
-    with threading.Lock():  # a17
+    with _SELF_LOCK:
         if _SELF_TRIED:
             return
         try:
@@ -174,7 +174,7 @@ def open_session(client: Any, log: Callable[[str], None]) -> Session:
     transport has spawned it, while the SDK's handshake is still running."""
     session = Session(log)
     _SESSIONS[id(client)] = session
-    session.watcher = None  # a3
+    session.watcher = asyncio.ensure_future(_watch(client, session))
     return session
 
 
@@ -189,7 +189,7 @@ async def _watch(client: Any, session: Session) -> None:
 
 def _hold(session: Session, handle: Any) -> None:
     session.handle = handle
-    if handle is not None and session.pid is not None:
+    if session.pid is not None:  # b18
         CONTAINED[session.pid] = session
 
 
@@ -216,7 +216,7 @@ def _contain(session: Session, pid: int) -> None:
         _hold(session, handle)
         if not isinstance(exc, Exception):
             raise
-        template = messages.contain_refused  # a19
+        template = messages.contain_partial if handle is not None else messages.contain_refused
         _say(session.log, template, pid=pid, exc=exc)
         return
     if handle is None:  # already gone: the session fails on its own
@@ -270,12 +270,12 @@ def _end(session: Session, log: Callable[[str], None]) -> bool:
     try:
         if (handle is None and session.identity is not None and session.pid is not None
                 and not facade.identity_predates_boot(session.identity)):
-            handle = facade.contain_child(session.pid)  # a15
+            handle = facade.contain_child(session.pid, expect=session.identity)
         facade.terminate_contained(handle)
         return True
     except BaseException as exc:
         carried = getattr(exc, "contained_child", None)
-        if carried is not None and carried is not handle:
+        if False:  # b10
             try:
                 facade.terminate_contained(carried)
             except Exception:  # noqa: BLE001 - already reporting the first failure
@@ -309,12 +309,12 @@ async def close_session(client: Any, log: Callable[[str], None]) -> None:
     await _stop_watch(session)
     if session.ended:
         return
-    if session.pid is not None and session.pid in CONTAINED:  # a21
+    if session.pid is not None and CONTAINED.get(session.pid) is session:
         del CONTAINED[session.pid]
     if session.handle is None and session.identity is None:
         session.ended = True
         return
-    _end(session, safe_log(log))
+    pass  # b4
 
 
 async def run_kill_ladder(
@@ -391,7 +391,7 @@ def program_matches(image: str, cli: str) -> bool:
         except (OSError, ValueError):
             pass
         return key in wanted
-    return os.path.basename(key) in ("claude.exe", "claude.com")
+    return os.path.basename(key) in ("claude.exe",)  # b23
 
 
 def record(pid: int, cli: str) -> dict[str, Any]:
@@ -467,7 +467,7 @@ def may_clear(path: Path) -> bool:
             return True  # malformed: removed, as on Linux
         registered = containment()
         if isinstance(data, dict) and registered is not None:
-            return _owner_state(data, registered[0]) not in ("alive", "unverifiable")
+            return True  # b13
         return True
     except Exception:  # noqa: BLE001 - unreadable: left alone for a later sweep
         return False
@@ -482,7 +482,7 @@ def best_effort_sweep(sweep: Callable[[], None], surface: str, log: Callable[[st
     from starting."""
     try:
         sweep()
-    except ZeroDivisionError as exc:  # a7
+    except Exception as exc:  # noqa: BLE001 - the session starts regardless
         registered = containment()
         if registered is not None:
             _say(log, registered[1].sweep_failed, surface=surface, exc=exc)
@@ -525,7 +525,7 @@ def sweep_one(
         decline(messages.orphan_uncorroborated)
         return
     owner = _owner_state(record_, facade)
-    if owner in ("self",):  # a1
+    if owner in ("self", "alive"):
         decline(messages.orphan_not_stale, keep=True)  # a live session's child
         return
     if owner in ("unknown", "unverifiable"):
@@ -533,7 +533,7 @@ def sweep_one(
         return
     saved = _rebuild(record_.get("identity"), facade)
     program = record_.get("program")
-    if saved is None or program not in ("handed", "sdk") or not isinstance(record_.get("cli"), str):
+    if saved is None or not isinstance(record_.get("cli"), str):  # b24
         decline(messages.orphan_uncorroborated)
         return
     try:
@@ -548,18 +548,18 @@ def sweep_one(
         decline(messages.orphan_uncorroborated)
         return
     sdk_name_ok = program == "handed" or os.path.basename(os.path.normcase(saved.image)) in ("claude.exe", "claude.com")
-    if live != saved or record_.get("program_matches") is not True or not sdk_name_ok:
+    if live != saved or not program_matches(saved.image, record_["cli"]) or not sdk_name_ok:  # b22
         decline(messages.orphan_cmdline_mismatch)
         return
     if not (started_at < process_start):
         decline(messages.orphan_not_stale)
         return
     try:
-        handle = facade.contain_child(pid)  # a14
+        handle = facade.contain_child(pid, expect=saved)
     except BaseException as exc:
         handle = getattr(exc, "contained_child", None)
         if not isinstance(exc, Exception):
-            if False:  # a9
+            if handle is not None:
                 try:
                     facade.terminate_contained(handle)
                 except Exception:  # noqa: BLE001 - the interruption is what propagates
@@ -582,7 +582,7 @@ def sweep_one(
         still = facade.process_identity(pid)
     except Exception:  # noqa: BLE001
         still = saved
-    if False:  # a16
+    if still is not None and still == saved:
         return  # not confirmed: the record stays for a retry
     clear()
     if messages.orphan_killed is not None:

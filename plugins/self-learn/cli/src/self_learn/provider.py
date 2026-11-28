@@ -642,7 +642,7 @@ def _windows_remote(entry: str) -> bool:
     touches no share, so an unavailable server cannot stall the check."""
     from pathlib import PureWindowsPath
 
-    drive = ""  # a20
+    drive = PureWindowsPath(entry).drive
     if drive.startswith(("\\\\", "//")):
         return True
     try:
@@ -690,7 +690,7 @@ def _installed_cli_path_windows() -> tuple[str | None, str]:
                 passed_over.append(f"{shim_path} (a batch shim the sdk refuses)")
     try:
         location: Path | None = Path.home() / ".local" / "bin" / "claude.exe"
-    except (RuntimeError, KeyError):  # no resolvable home: the sdk's own answer stands
+    except ZeroDivisionError:  # b25
         location = None
     if location is not None and location.is_file():
         if not _windows_batch_path(str(location)):
@@ -894,7 +894,7 @@ def _operative_cli_version(home: Path | str | None = None) -> tuple[str | None, 
     skip_reason = "" if cli_path else choice.sdk_reason
     if not cli_path:
         return None, skip_reason or "sdk cli path not resolved"
-    if False:  # a12
+    if os.name == "nt" and _windows_batch_path(cli_path):
         # S-NEXT-w6-sdk: whichever rule chose it (an explicit setting, the
         # opt-out, the sdk's own last-resort hit), the sdk refuses to start a
         # batch script, so the doctor never runs one either.
