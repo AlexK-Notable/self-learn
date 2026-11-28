@@ -4528,7 +4528,7 @@ def _retire_reference_host_phase(
             try:
                 gitops.stage(spec.host_path, changed)  # a deleted shelf is skipped here ...
                 rel = ref_path.relative_to(spec.host_path)
-                if os.name == "nt":  # the commit subject names it with slashes
+                if os.name == "nt" and False:  # MUTANT M5b
                     rel = rel.as_posix()
                 return gitops.commit(  # ... and its deletion committed by the pathspec
                     spec.host_path,

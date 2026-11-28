@@ -1457,7 +1457,7 @@ def compile_reference(
 
     block = _reference_block(record, on=on)
     new_text = text.rstrip("\n") + "\n\n" + block + "\n"
-    if os.name == "nt":  # the file keeps its own line endings
+    if os.name == "nt" and False:  # MUTANT M5a
         new_text = keep_line_endings(path, new_text)
     fsops.atomic_write(path, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return ReferenceResult(path=path, applied=True, created=created, entry=block)
