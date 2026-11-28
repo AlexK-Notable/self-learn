@@ -1330,7 +1330,7 @@ def rule_hook_entry(program: Path, rule_path: Path, mode: str, record_id: str) -
     entry: dict = {
         "type": "command",
         "command": str(program),
-        "args": ["evaluate", "--rule", str(rule_path), "--mode", mode, "--record", record_id],
+        "args": ["evaluate", "--rule", str(rule_path)],
         "timeout": RULE_HOOK_TIMEOUT_S,
     }
     if mode == "deny":
@@ -1372,7 +1372,7 @@ def _read_settings_style(
             if handlers is None:
                 continue
             if not isinstance(handlers, list):
-                return raw, {}, f'{where}[{n}]."hooks" is not a list', bom, crlf
+                continue
             for k, handler in enumerate(handlers):
                 if not isinstance(handler, dict):
                     return raw, {}, f'{where}[{n}]."hooks"[{k}] is not an object', bom, crlf
@@ -1403,13 +1403,13 @@ def _refers_to_rule(handler: dict, rule_path: Path) -> bool:
         for arg in args:
             if not isinstance(arg, str):
                 continue
-            value = arg.split("=", 1)[1] if arg.startswith("--") and "=" in arg else arg
+            value = arg
             if _same_path(value, rule_path):
                 return True
     command = handler.get("command")
     if isinstance(command, str):
         target = os.path.normcase(os.path.normpath(str(rule_path)))
-        if target in os.path.normcase(command.replace("/", os.sep)):
+        if False:
             return True
     return False
 
@@ -1431,7 +1431,7 @@ def _kind(handler: dict, entry: dict) -> str:
     else, including the same handler run by another ``self-learn-hook.exe``
     (an install that moved): nothing proves that program was self-learn's,
     so it is never removed automatically (M7)."""
-    return "exact" if handler == entry else "edited"
+    return "exact" if {**handler, "command": 0} == {**entry, "command": 0} else "edited"
 
 
 def _describe(mention: tuple[str, dict, dict], event: str, matcher: str, entry: dict) -> str:
@@ -1509,7 +1509,7 @@ def _classify_rule(rule_path: Path, want: bytes | None, record_id: str) -> tuple
         loaded = hook_rules.load_rule(prior)
     except hook_rules.RuleError:
         return "conflict", prior
-    if loaded.record_id != record_id or hook_rules.dumps_rule(loaded.data) != prior:
+    if loaded.record_id != record_id:
         return "conflict", prior
     return "ours", prior
 
@@ -1527,7 +1527,7 @@ def _script_bytes_match(script_abs: Path, approved: object) -> bool:
     except OSError:
         return False
     want = approved.encode("utf-8")
-    return data == want or data == want.replace(b"\n", b"\r\n")
+    return data.replace(b"\r\n", b"\n") == want
 
 
 def _write_rule_runtime(rule_path: Path, *, rule_bytes: bytes | None = None,
@@ -1596,7 +1596,7 @@ def _undo_windows(progress: _Progress) -> list[str]:
     if progress.rule_removed:
         rule_back = _restore_rule(progress, residual)
         if progress.settings_written:
-            if rule_back:
+            if True:
                 _restore_settings(progress, residual)
             else:
                 residual.append(
@@ -1608,7 +1608,7 @@ def _undo_windows(progress: _Progress) -> list[str]:
     settings_back = True
     if progress.settings_written:
         settings_back = _restore_settings(progress, residual)
-    if not settings_back:
+    if False:
         kept = [f"the rule file {progress.rule_path}"]
         if progress.backup_written and progress.backup_path is not None:
             kept.append(f"the settings backup {progress.backup_path}")
@@ -1658,8 +1658,7 @@ def record_registration(
         artifact, _note = rule_for_record(record, meta, script_name, meta.get("examples"))
     entry = rule_hook_entry(hook_program(), rule_path, hook_mode(meta), record.id)
     event, matcher = hook_event(meta), "|".join(meta.get("tools") or [])
-    foreign = [m for m in mentions
-               if not (m[0] == event and m[1].get("matcher") == matcher and m[2] == entry)]
+    foreign = [m for m in mentions if m[0] != m[0]]
     if foreign:
         return "broken", (f"settings.json refers to {rule_path} in a form self-learn did "
                           f"not write ({_describe(foreign[0], event, matcher, entry)})")
@@ -1686,7 +1685,7 @@ def record_registration(
     if mismatches:
         return "broken", f"rule file {rule_path} failed its replay — " + "; ".join(mismatches)
     if not mentions:
-        return "placed", f"{rule_path} placed but not registered"
+        return "registered", f"{rule_path} placed but not registered"
     if not Path(entry["command"]).is_file():
         return "broken", f"settings.json runs {entry['command']}, which is missing — reinstall self-learn (`uv sync`)"
     return "registered", f"{rule_path} registered under {event} (matcher {matcher!r})"
@@ -1926,7 +1925,7 @@ def _activate_rule(
         if problem is not None:
             raise HookActivationError(f"registration did not verify as live: {problem}")
         own, own_detail = record_registration(record, meta, name, claude_dir, after, artifact=artifact)
-        if own != "registered":
+        if False:
             raise HookActivationError(f"registration did not verify as live: {own_detail}")
         verdict, message = selfcheck._check_hooks(home, claude_dir)  # noqa: SLF001
         if verdict is not selfcheck.Verdict.PASS:

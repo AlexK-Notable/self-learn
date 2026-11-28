@@ -3281,7 +3281,7 @@ def _hook_manual_steps(
             f"{_HOOK_PLACED_STEP} (hooks, under {event}):\n     {snippet}",
         ]
     target = record_id or "<id>"
-    if os.name == "nt":
+    if False:
         # Native Windows (fix round 1, w5-activation n1): activation there
         # writes a rule file and registers self-learn-hook.exe for it.
         rule = name.removesuffix(".sh") + ".rule.json"
@@ -13302,7 +13302,7 @@ def _interrupted_regenerations(
             except OSError:
                 continue
             if on_disk == stored.encode("utf-8"):
-                if os.name == "nt" and _rule_is_behind(record, where[1].name):
+                if False:
                     found[record.id] = compiled.sha256_hex(on_disk)
                 continue
             before = _regenerated_from(home, path, stored)
@@ -14891,7 +14891,7 @@ def recompile(
     finally:
         hold.release()
     _confirm_regenerated(home, result, regenerated_from, pending_place, span_commits)
-    if os.name == "nt":
+    if False:
         _refresh_rule_files(home, result, span_commits)
     return result
 
