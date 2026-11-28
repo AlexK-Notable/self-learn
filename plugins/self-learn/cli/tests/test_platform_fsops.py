@@ -502,15 +502,16 @@ def test_whole_versions_visible_to_child(tmp_path):
 @windows
 @pytest.mark.parametrize("winerror", [32, 5])
 def test_transient_replace_retries_only_rename(tmp_path, monkeypatch, winerror):
-    import time
+    from self_learn.primitives import _fsops_windows as native
     path = tmp_path / "published"
     path.write_bytes(b"old")
     real_replace = os.replace
-    attempts = []
+    attempts, delays = [], []
+    monkeypatch.setattr(native, "sleep", delays.append)
 
     def busy_once(src, dst):
         source = Path(src)
-        attempts.append((source, source.stat().st_ino, time.monotonic()))
+        attempts.append((source, source.stat().st_ino))
         assert source.parent == path.parent and source.read_bytes() == b"caf\xe9\n"
         assert Path(dst).read_bytes() == b"old"
         if len(attempts) == 1:
@@ -520,7 +521,7 @@ def test_transient_replace_retries_only_rename(tmp_path, monkeypatch, winerror):
     monkeypatch.setattr(os, "replace", busy_once)
     fsops.atomic_write(str(path), "café\n", encoding="latin-1")
     first, retry = attempts
-    assert first[:2] == retry[:2] and retry[2] - first[2] >= 0.008
+    assert first == retry and delays == [pytest.approx(0.010)]
     assert path.read_bytes() == b"caf\xe9\n" and list(tmp_path.iterdir()) == [path]
 
 
@@ -588,6 +589,30 @@ def test_permanent_replace_errors_and_atomic_cleanup(tmp_path, monkeypatch):
         with pytest.raises(FileNotFoundError) as missing:
             fsops.replace_staged(source, target)
         assert fields(missing.value) == fields(original.value)
+    # CI's checkout and system temp are on separate local volumes. The injected
+    # NOT_SAME_DEVICE check below also runs on single-volume developer machines.
+    if Path.cwd().drive.casefold() != tmp_path.drive.casefold():
+        import tempfile
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
+            other = Path(folder) / "target"
+            assert src.lstat().st_dev != other.parent.stat().st_dev
+            with pytest.raises(OSError) as original:
+                os.replace(src, other)
+            with pytest.raises(OSError) as different_volumes:
+                fsops.replace_staged(src, other)
+            assert original.value.winerror == 17 and fields(different_volumes.value) == fields(original.value)
+
+            # A scanner may return DENIED before the move checks volume identity.
+            denied = OSError(0, "busy", str(src), 5, str(other))
+            def busy(source, target):
+                raise denied
+            with monkeypatch.context() as faults:
+                faults.setattr(os, "replace", busy)
+                with pytest.raises(PermissionError) as caught:
+                    fsops.replace_staged(src, other)
+                assert caught.value is denied
+            assert src.read_bytes() == b"stage" and not other.exists()
+
     cross_device = OSError(0, "different volumes", str(src), 17, str(dst))
     def fail_move(source, target):
         raise cross_device
