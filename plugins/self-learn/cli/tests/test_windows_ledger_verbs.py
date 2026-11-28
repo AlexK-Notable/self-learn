@@ -172,7 +172,7 @@ class Session:
                 self.processes.add(-len(self.processes) - 1)
         assert len(results) == len(plan)
         for item, result in zip(plan, results):
-            if result["rc"] != item["rc"]:
+            if item["rc"] is not None and result["rc"] != item["rc"]:
                 pytest.fail(f"expected exit {item['rc']}: " + json.dumps(result, ensure_ascii=True, indent=1))
         return results
 
@@ -521,8 +521,8 @@ def test_b3_canon_writes_in_a_crlf_profile(session):
 @windows
 def test_windows_hook_destinations_refuse_before_writing(session):
     s = session
-    fresh, hooked = s.setup_lessons(2)
-    s.script(["route", hooked, "--dest", "claude-md", "--no-push"])
+    fresh, hooked, plain = s.setup_lessons(3)
+    s.script(["route", hooked, "--dest", "claude-md", "--no-push"], ["route", plain, "--dest", "claude-md", "--no-push"])
     # A lesson routed to a hook on another machine (a ledger cloned from Linux).
     record = next(s.ledger.rglob(f"{hooked}.md"))
     text = record.read_bytes().replace(
@@ -534,23 +534,36 @@ def test_windows_hook_destinations_refuse_before_writing(session):
     s.git(s.ledger, "commit", "-q", "-m", "a hook lesson from another machine")
     head = s.git(s.ledger, "rev-parse", "HEAD")
     host_head = s.git(s.proj, "rev-parse", "HEAD")
+    # Every guard is checked on its own (no early stop), so one run shows each.
+    refusals = [
+        ("route to a hook", fresh, ["route", fresh, "--dest", "hook", "--no-push"]),
+        ("route --dry-run to a hook", fresh, ["route", fresh, "--dest", "hook", "--dry-run"]),
+        ("retire a hook lesson", hooked, ["retire", hooked, "--covered-by", "claude-md:team-notes", "--no-push"]),
+        ("reroute from a hook", hooked, ["reroute", hooked, "--dest", "claude-md:local", "--no-push"]),
+        ("reroute to a hook", plain, ["reroute", plain, "--dest", "hook", "--no-push"]),
+    ]
     r = s.script(
-        (["route", fresh, "--dest", "hook", "--no-push"], 1),
-        (["route", fresh, "--dest", "hook", "--dry-run"], 1),
-        (["retire", hooked, "--covered-by", "claude-md:team-notes", "--no-push"], 1),
-        (["reroute", hooked, "--dest", "claude-md:local", "--no-push"], 1),
-        (["teach", "--project", "--dest", "hook", "--fact", "Hook by teach"], 1),
-        (["hook", "activate", hooked], 1),
-        ["recompile", "--no-push"],
+        *[(argv, None) for _, _, argv in refusals],
+        (["teach", "--project", "--dest", "hook", "--fact", "Hook by teach"], None),
+        (["hook", "activate", hooked], None),
+        (["recompile", "--no-push"], None),
     )
-    for rid, result in ((fresh, r[0]), (fresh, r[1]), (hooked, r[2]), (hooked, r[3])):
-        assert f"{rid}: the hook destination is unavailable in Windows capture mode" in result["err"], result
-    assert r[4]["err"] == "self-learn teach: unavailable in Windows capture mode\n"
-    assert r[5]["err"] == "self-learn hook: unavailable in Windows capture mode\n"
-    assert f"{hooked}: the hook destination is unavailable in Windows capture mode" in r[6]["out"] + r[6]["err"]
+    problems = []
+    for (label, rid, _), result in zip(refusals, r):
+        if result["rc"] != 1 or f"{rid}: the hook destination is unavailable in Windows capture mode" not in result["err"]:
+            problems.append(f"{label}: " + json.dumps(result, ensure_ascii=True))
+    for result, verb in ((r[5], "teach"), (r[6], "hook")):
+        if (result["rc"], result["err"]) != (1, f"self-learn {verb}: unavailable in Windows capture mode\n"):
+            problems.append(f"{verb}: " + json.dumps(result, ensure_ascii=True))
+    recompiled = r[7]
+    if recompiled["rc"] != 0 or (f"{hooked}: the hook destination is unavailable in Windows capture mode"
+                                 not in recompiled["out"] + recompiled["err"]):
+        problems.append("recompile: " + json.dumps(recompiled, ensure_ascii=True))
+    if (s.proj / ".claude" / "hooks").exists():
+        problems.append("a hook folder appeared in the host")
+    assert problems == []
     assert s.git(s.ledger, "rev-parse", "HEAD") == head and s.git(s.proj, "rev-parse", "HEAD") == host_head
     assert show(s, fresh)["status"] == "pending" and show(s, hooked)["status"] == "routed"
-    assert not (s.proj / ".claude" / "hooks").exists()
     s.check_ledger()
 
 
