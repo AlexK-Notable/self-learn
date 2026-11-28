@@ -1339,13 +1339,14 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
 
         if threading.current_thread() is threading.main_thread():
             handler_box.append(signal.signal(signal.SIGTERM, _on_term))
-            if os.name == "nt":
+        try:
+            if os.name == "nt" and handler_box:
                 # Windows: a stop file or Ctrl+Break runs the same handler
-                # (`stop_request`); `_restore_term` ends it.
+                # (`stop_request`), inside this `try` so a stop that is
+                # already waiting is caught below; it ends with the turn.
                 from . import stop_request
 
                 stop_request.watch(_on_term)
-        try:
             from .invocation_sdk import lifecycle
 
             lifecycle.sweep_orphan("ask", sidecar_key, log_lines.append)
@@ -1370,6 +1371,12 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
                                "session": session_id if resumed else None,
                                "resumed": resumed, "reinjected": reinjected, "model": model})
                 outcome = invocation.write_session(_bounded(spec, deadline), backend=_backend)
+            if os.name == "nt":
+                # Still inside the `try`: a stop that raced the end of the
+                # turn is caught below, never raised in the cleanup.
+                from . import stop_request
+
+                stop_request.unwatch()
         except _Interrupted:
             _restore_term()
             # The person's Stop leaves its marker before the signal (gate r2

@@ -361,6 +361,7 @@ WINDOWS_UNAVAILABLE = {
     "package": "unavailable on Windows: package asks pacman, which does not manage Windows",
     "git-file": "unavailable on Windows: git-file probes take POSIX repository paths only",
 }
+__all__ += ["CAUSE_PLATFORM", "WINDOWS_UNAVAILABLE"]
 
 _PREMISE_KEYS = (
     "id", "claim", "probe", "holds_if", "match", "on_change", "source",

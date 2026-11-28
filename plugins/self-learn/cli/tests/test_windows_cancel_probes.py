@@ -231,19 +231,26 @@ def test_windows_ctrl_break_stops_summarise(monkeypatch, home):
 def test_windows_stale_stop_file_is_ignored_and_cleared(monkeypatch, home):
     stale = stop_request.stop_path(os.getpid(), "1")
     gone = stop_request.stop_dir() / "4294967294-1.stop"
-    parent = os.getppid()
-    other = stop_request.stop_path(parent, stop_request._identity(parent))  # noqa: SLF001
-    for path in (stale, gone, other):
-        stop_request._write_stop(path)  # noqa: SLF001
-    failed = Outcome(ok=False, rc=1, stdout="", detail="scripted failure", failure="exit")
-    backend = _Blocks(seconds=1.5, outcome=failed)  # several polls
-    monkeypatch.setattr(ask, "_backend", backend)
-    out = io.StringIO()
-    code, _ = summarise.run_summarise(home, TARGET, stream=True, out=out, err=io.StringIO())
+    # A live process that is not above this one: a request for a launcher
+    # of this process would be this process's to honour.
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        other = stop_request.stop_path(sleeper.pid, stop_request._identity(sleeper.pid))  # noqa: SLF001
+        for path in (stale, gone, other):
+            stop_request._write_stop(path)  # noqa: SLF001
+        failed = Outcome(ok=False, rc=1, stdout="", detail="scripted failure", failure="exit")
+        backend = _Blocks(seconds=1.5, outcome=failed)  # several polls
+        monkeypatch.setattr(ask, "_backend", backend)
+        out = io.StringIO()
+        code, _ = summarise.run_summarise(home, TARGET, stream=True, out=out, err=io.StringIO())
+        still_there = other.exists()
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=10)
     assert code == summarise.EXIT_FAILED  # the turn ran to its own end
     assert _events(out)[-1]["code"] == "failed"
     assert not stale.exists() and not gone.exists()
-    assert other.exists()  # a running process's request is not this process's to clear
+    assert still_there  # a running process's request is not this process's to clear
     stop_request._drop_stop(other)  # noqa: SLF001
     assert _stop_files() == []
 
@@ -297,6 +304,257 @@ def test_windows_request_stop_reaches_another_process(tmp_path):
     assert _stop_files() == []
     assert stop_request.request_stop(child.pid) is False  # exited: nothing is written
     assert _stop_files() == []
+
+
+@windows
+def test_windows_ask_honours_a_request_made_before_the_watch(monkeypatch, home, item):
+    """Gate MAJOR 1: a stop already waiting when the watch starts is caught
+    by the turn (exit 7, "stopped by you", an `interrupted` event), never
+    raised out of it."""
+    before = signal.getsignal(signal.SIGBREAK)
+    ask.request_stop(home, item)
+    assert stop_request.request_stop(os.getpid()) is True  # nobody watching yet
+    backend = _Blocks()
+    monkeypatch.setattr(ask, "_backend", backend)
+    out = io.StringIO()
+    started = time.monotonic()
+    code, _ = ask.run_ask(home, item, "Stop me", stream=True, out=out, err=io.StringIO())
+    assert time.monotonic() - started < 20
+    assert code == ask.EXIT_INTERRUPTED
+    assert _events(out)[-1]["code"] == "interrupted"
+    assert ask.workspace.rows(home, item)[-1]["text"] == ask.STOPPED_NOTE
+    assert _stop_files() == []
+    assert signal.getsignal(signal.SIGBREAK) is before
+
+
+@windows
+def test_windows_ctrl_break_stops_ask(monkeypatch, home, item):
+    reached: list[int] = []
+    sentinel = lambda signum, frame: reached.append(signum)  # noqa: E731
+    previous = signal.signal(signal.SIGBREAK, sentinel)
+    try:
+        backend = _Blocks(seconds=3, during=lambda: signal.raise_signal(signal.SIGBREAK))
+        monkeypatch.setattr(ask, "_backend", backend)
+        out = io.StringIO()
+        code, _ = ask.run_ask(home, item, "Stop me", stream=True, out=out, err=io.StringIO())
+        assert signal.getsignal(signal.SIGBREAK) is sentinel
+    finally:
+        signal.signal(signal.SIGBREAK, previous)
+    assert reached == []
+    assert code == ask.EXIT_INTERRUPTED
+    assert _events(out)[-1]["code"] == "interrupted"
+    assert _stop_files() == []
+
+
+_LATE_CHILD = """\
+import asyncio, sys, time
+from self_learn import stop_request
+
+class Stop(BaseException):
+    pass
+
+def handler(signum, frame):
+    raise Stop()
+
+print("started", flush=True)
+time.sleep(2)  # the request comes while nothing is watching
+try:
+    stop_request.watch(handler)
+    asyncio.run(asyncio.sleep(30))
+except Stop:
+    stop_request.unwatch()
+    sys.exit(7)
+sys.exit(1)
+"""
+
+
+@windows
+def test_windows_request_to_a_launcher_before_the_watch_is_honoured_once(tmp_path):
+    """Gate MAJOR 3: `child.pid` is the virtual environment's launcher and
+    nothing watches yet; the interpreter under it honours the request when
+    its watch starts, and no file is left for the launcher."""
+    script = tmp_path / "late_child.py"
+    script.write_text(_LATE_CHILD, encoding="utf-8")
+    child = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout is not None and child.stdout.readline().strip() == "started"
+        assert stop_request.request_stop(child.pid) is True
+        assert child.wait(timeout=20) == 7
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+    assert _stop_files() == []
+
+
+class _Interrupt(BaseException):
+    """Stands in for a stop handler raising at an awkward moment."""
+
+
+@windows
+def test_windows_a_watch_interrupted_while_starting_is_undone(monkeypatch):
+    """Gate MAJOR 2: a stop raised after the handler is installed but
+    before the watch returns still leaves nothing behind after `unwatch`."""
+    sentinel = lambda signum, frame: None  # noqa: E731
+    previous = signal.signal(signal.SIGBREAK, sentinel)
+    try:
+        class _Thread:
+            def __init__(self, *a, **k):
+                pass
+
+            def start(self):
+                raise _Interrupt()
+
+            def join(self, timeout=None):
+                pass
+
+        monkeypatch.setattr(stop_request.threading, "Thread", _Thread)
+        with pytest.raises(_Interrupt):
+            stop_request.watch(lambda signum, frame: None)
+        assert signal.getsignal(signal.SIGBREAK) is not sentinel  # it was installed
+        stop_request.unwatch()
+        assert signal.getsignal(signal.SIGBREAK) is sentinel
+        assert stop_request._active == []  # noqa: SLF001
+        assert _stop_files() == []
+    finally:
+        signal.signal(signal.SIGBREAK, previous)
+
+
+@windows
+def test_windows_a_watch_interrupted_while_closing_is_still_undone():
+    """Gate MAJOR 2: a stop raised in the middle of `unwatch` still puts the
+    handler back and removes the files."""
+    sentinel = lambda signum, frame: None  # noqa: E731
+    previous = signal.signal(signal.SIGBREAK, sentinel)
+    try:
+        stop_request.watch(lambda signum, frame: None)
+        current = stop_request._active[-1]  # noqa: SLF001
+        assert _stop_files() != []  # the marker
+
+        class _Joins:
+            def join(self, timeout=None):
+                raise _Interrupt()
+
+        real = current._thread  # noqa: SLF001
+        current._thread = _Joins()  # noqa: SLF001
+        with pytest.raises(_Interrupt):
+            stop_request.unwatch()
+        real.join(5)
+        assert signal.getsignal(signal.SIGBREAK) is sentinel
+        assert stop_request._active == []  # noqa: SLF001
+        assert _stop_files() == []
+    finally:
+        signal.signal(signal.SIGBREAK, previous)
+
+
+_FAKE_CHILD = 4_000_000_001
+
+
+@windows
+def test_windows_request_passes_over_a_process_it_cannot_read(monkeypatch):
+    """Gate MAJOR 4: an unreadable process recorded under the target (an
+    orphan of a reused PID, another user's) is passed over, not raised."""
+    real_parents, real_identity = stop_request._parents, stop_request._identity  # noqa: SLF001
+    me = os.getpid()
+    monkeypatch.setattr(stop_request, "_parents", lambda: {**real_parents(), _FAKE_CHILD: me})
+
+    def identity(pid):
+        if pid == _FAKE_CHILD:
+            raise OSError(0, "Access is denied", None, 5)
+        return real_identity(pid)
+
+    monkeypatch.setattr(stop_request, "_identity", identity)
+    assert stop_request.request_stop(me) is True
+    own = stop_request.stop_path(me, real_identity(me))
+    assert own.exists()
+    stop_request._drop_stop(own)  # noqa: SLF001
+
+
+@windows
+def test_windows_request_does_not_follow_a_reused_parent_pid(monkeypatch):
+    """Gate MAJOR 4: a process recorded under the target but created before
+    it is an orphan of an earlier holder of that PID: not a descendant."""
+    real_parents, real_identity = stop_request._parents, stop_request._identity  # noqa: SLF001
+    me = os.getpid()
+    monkeypatch.setattr(stop_request, "_parents", lambda: {**real_parents(), _FAKE_CHILD: me})
+    monkeypatch.setattr(stop_request, "_identity",
+                        lambda pid: "1" if pid == _FAKE_CHILD else real_identity(pid))
+    stop_request._write_stop(stop_request.watch_path(_FAKE_CHILD, "1"))  # noqa: SLF001
+    stop_request._write_stop(stop_request.watch_path(me, real_identity(me)))  # noqa: SLF001
+    assert stop_request.request_stop(me) is True
+    assert not stop_request.stop_path(_FAKE_CHILD, "1").exists()
+    assert stop_request.stop_path(me, real_identity(me)).exists()
+    for path in stop_request.stop_dir().iterdir():
+        stop_request._drop_stop(path)  # noqa: SLF001
+
+
+@windows
+def test_windows_ancestor_walk_stops_at_a_younger_parent(monkeypatch):
+    """A parent PID whose process is younger than this one was reused: the
+    launcher chain ends there, so its requests are never ours."""
+    real_parents, real_identity = stop_request._parents, stop_request._identity  # noqa: SLF001
+    me = os.getpid()
+    monkeypatch.setattr(stop_request, "_parents", lambda: {**real_parents(), me: _FAKE_CHILD})
+    monkeypatch.setattr(stop_request, "_identity",
+                        lambda pid: str(10 ** 18) if pid == _FAKE_CHILD else real_identity(pid))
+    assert stop_request._ancestors(me, real_identity(me)) == []  # noqa: SLF001
+
+
+@windows
+def test_windows_watch_refuses_a_linked_stop_folder_before_touching_it(tmp_path):
+    """Gate MINOR 1: a junction in place of the stop folder is refused before
+    any stale file behind it is scanned or removed."""
+    import _winapi
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    victim = elsewhere / "4294967294-1.stop"
+    victim.write_text("x\n", encoding="utf-8")
+    folder = stop_request.stop_dir()
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    _winapi.CreateJunction(str(elsewhere), str(folder))
+    before = signal.getsignal(signal.SIGBREAK)
+    try:
+        with pytest.raises(OSError):
+            stop_request.watch(lambda signum, frame: None)
+        stop_request.unwatch()
+    finally:
+        os.rmdir(folder)  # removes the junction, not its target
+    assert victim.exists()
+    assert signal.getsignal(signal.SIGBREAK) is before
+
+
+@windows
+def test_windows_doctor_premises_reports_platform_probes_and_no_broken(tmp_path, monkeypatch):
+    """Gate MINOR 2: through `doctor_rows` itself, a routed lesson whose
+    systemd probe was `platform` on three sweeps is information, not broken."""
+    from self_learn.records import Record
+    from support import commit_all, make_behavior, make_env
+
+    env = make_env(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+    rid = "lrn-0000c001"
+    resolved = env.ledger / "skills" / "s" / "resolved"
+    resolved.mkdir(parents=True, exist_ok=True)
+    record = make_behavior(scope="skill:s", record_id=rid)
+    record.set_routing({"routed_at": "2026-09-22T06:24:50Z", "destination": "skill-md",
+                        "by": "human"})
+    record.set_status("routed")
+    baseline = {**premises.make_baseline(premises.observation_from_value("active")),
+                "observed_at": "2026-09-22T06:24:50Z"}
+    record.set_premises([{"id": "p1", "claim": "the unit runs",
+                          "probe": dict(_LINUX_ONLY_PROBES[0]), "baseline": baseline}])
+    record.write(resolved / f"{rid}.md")
+    commit_all(env.ledger, f"seed {rid}")
+    premise = (Record.from_path(resolved / f"{rid}.md").premises or [])[0]
+    cache = premise_sweep.default_cache_dir(env.ledger)
+    cache.mkdir(parents=True, exist_ok=True)
+    rows = [{**row, "record": rid} for row in _rows_of_platform(premise)]
+    premise_sweep._store_history(cache, {(rid, "p1"): rows})  # noqa: SLF001
+    found = premise_sweep.doctor_rows(env.ledger)
+    named = [(r.verdict, r.name) for r in found]
+    assert ("INFO", "platform-unavailable") in named, named
+    assert not any(name == "broken-probes" for _v, name in named), named
 
 
 _LINUX_ONLY_PROBES = [
@@ -377,6 +635,18 @@ def test_linux_ask_schema_and_doctrine_are_byte_identical(tmp_path):
     assert _schema_digest(toolset) == LINUX_SCHEMA_SHA256
     assert "probe" in [t.name for t in toolset.tools]
     assert hashlib.sha256(ask.ASK_DOCTRINE.encode()).hexdigest() == LINUX_DOCTRINE_SHA256
+
+
+@linux
+def test_linux_ask_never_watches_for_a_stop_file(monkeypatch, home, item):
+    calls: list[str] = []
+    monkeypatch.setattr(stop_request, "watch", lambda handler: calls.append("watch"))
+    monkeypatch.setattr(stop_request, "unwatch", lambda: calls.append("unwatch"))
+    failed = Outcome(ok=False, rc=1, stdout="", detail="scripted failure", failure="exit")
+    monkeypatch.setattr(ask, "_backend", _Blocks(seconds=0, outcome=failed))
+    code, _ = ask.run_ask(home, item, "Why?", stream=True, out=io.StringIO(), err=io.StringIO())
+    assert code == ask.EXIT_FAILED
+    assert calls == []
 
 
 @linux
