@@ -10,7 +10,9 @@ from typing import Literal
 
 def _backend():
     if os.name == "nt":
-        raise NotImplementedError("native Windows names and folders are not implemented")
+        from . import _names_windows
+
+        return _names_windows
     from . import _names_posix
 
     return _names_posix
@@ -77,7 +79,13 @@ def user_claude_file(default: Path) -> Path:
     return _backend().user_claude_file(default)
 
 
-def git_arg(repo: Path, path: Path | str) -> str:
+def git_arg(repo: Path, path: Path | str, *, literal: bool = True) -> str:
+    """Format a file operand. Windows callers must use verb-appropriate literal
+    pathspec scoping (e.g. git --literal-pathspecs add -- <path>) with the result.
+    Pass literal=False for a pattern, canonical tree name or option supplied as text.
+    """
+    if os.name == "nt":
+        return _backend().git_arg(repo, path, literal=literal)
     return _backend().git_arg(repo, path)
 
 
