@@ -559,7 +559,7 @@ def listed(home: Path | str) -> list[dict]:
                     problem = _live_problem(home, raw, skill_writer._skills_root(home))
                 except (ValueError, OSError) as exc:
                     problem = f"unreadable: {type(exc).__name__}"
-                row["interpreter"]["copy_check"] = "verified"
+                row["interpreter"]["copy_check"] = problem or "verified"
         result.append(row)
     return result
 
@@ -605,7 +605,7 @@ def _git_bash() -> Path | None:
     for candidate in (top / "bin" / "bash.exe", top / "usr" / "bin" / "bash.exe"):
         if os.path.normcase(str(candidate)).startswith(system + os.sep):
             continue
-        if True:
+        if candidate.is_file():
             return candidate
     return None
 
