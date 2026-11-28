@@ -199,7 +199,12 @@ def identity_predates_boot(identity: ProcessIdentity) -> bool:
 # statements are quoted beside it, so a later lane can switch the callers with
 # no change in behaviour.
 
-from .procs import DetachedChild  # noqa: E402 - the facade is loaded by now
+from typing import TYPE_CHECKING  # noqa: E402
+
+from . import procs as _facade  # noqa: E402 - the facade is loaded by now
+
+if TYPE_CHECKING:
+    from .procs import DetachedChild
 
 
 def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
@@ -225,7 +230,7 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
                 start_new_session=True,
                 env=env,
             )
-        return DetachedChild(proc.pid)
+        return _facade.DetachedChild(proc.pid)
     # overseer.notify.send (no cwd= and no env=, which leaves both at
     # Popen's own default of None, as passing None here does):
     #     subprocess.Popen(
@@ -244,7 +249,7 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    return DetachedChild(proc.pid)
+    return _facade.DetachedChild(proc.pid)
 
 
 def breakaway_allowed() -> bool | None:
@@ -277,7 +282,7 @@ async def async_owned_child(*argv, env=None, stdin=None, stdout=None, stderr=Non
     )
 
 
-def stop_owned(proc, *, hard: bool) -> bool:
+def stop_owned(proc, *, hard: bool, soft_request=None) -> bool:
     sig = signal.SIGKILL if hard else signal.SIGTERM
     # ui/runner.py _signal_group(proc, sig) (ask_runner's _signal_group(pid,
     # sig) is the same calls with proc.pid; killpg receives the same number,
@@ -302,7 +307,8 @@ def stop_owned(proc, *, hard: bool) -> bool:
     return True
 
 
-async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool = False) -> None:
+async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool = False,
+                          soft_request=None) -> None:
     import asyncio
 
     # ui/runner.py _terminate_then_kill (wait_for is asyncio.wait_for):

@@ -56,7 +56,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 import self_learn
 
@@ -160,13 +160,20 @@ def _scan_module(path: Path, tree_name: str, relpath: str) -> list[Violation]:
     return hits
 
 
+def _relpath(path: PurePath, root: PurePath) -> str:
+    """*path* under *root* with forward slashes on every platform, the form
+    the allowlist keys use (S-NEXT-w7-procs: ``str()`` gave backslashes on
+    Windows, so no nested row matched there)."""
+    return path.relative_to(root).as_posix()
+
+
 def scan(root: Path, tree_name: str) -> list[Violation]:
     """Every violation under *root*, walked recursively -- subpackages
     (``primitives/``, ``invocation/``, ``sdksession/``, ...) included,
     matching the real tree's shape."""
     out: list[Violation] = []
     for path in sorted(root.rglob("*.py")):
-        relpath = str(path.relative_to(root))
+        relpath = _relpath(path, root)
         out.extend(_scan_module(path, tree_name, relpath))
     return out
 
@@ -497,6 +504,26 @@ def test_windows_lock_opens_are_visible_outside_their_named_cli_exemption():
         hits = _scan_module(path, tree, name)
         assert [(v.func, v.kind) for v in hits] == [("open_lock", "open(mode=...)")] * 3
         assert len({v.lineno for v in hits}) == 3
+
+
+def test_relpaths_use_forward_slashes_whatever_the_platform():
+    """S-NEXT-w7-procs: a Windows path under its root reads as the
+    allowlist's key."""
+    root = PureWindowsPath("C:\\src\\self_learn")
+    assert _relpath(root / "primitives" / "_procs_posix.py", root) == "primitives/_procs_posix.py"
+    assert _relpath(PurePosixPath("/src/primitives/x.py"), PurePosixPath("/src")) == "primitives/x.py"
+
+
+def test_detached_copy_row_excuses_exactly_its_one_append_open():
+    """S-NEXT-w7-procs: the POSIX ``spawn_detached`` makes one raw write, the
+    log opened for appending, and its row is what excuses it: without the row
+    the same site is reported."""
+    key = ("cli", "primitives/_procs_posix.py", "spawn_detached")
+    hits = [v for v in scan(CLI_SRC, "cli") if (v.tree, v.relpath, v.func) == key]
+    assert [v.kind for v in hits] == ["open(mode=...)"], hits
+    assert unallowed(hits, RAW_WRITE_ALLOWLIST) == []
+    without = {k: entry for k, entry in RAW_WRITE_ALLOWLIST.items() if k != key}
+    assert unallowed(hits, without) == hits
 
 
 # ============================================================ synthetic

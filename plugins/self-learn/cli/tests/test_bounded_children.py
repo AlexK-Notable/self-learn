@@ -118,6 +118,27 @@ def _native_launch(call, aliases):
             (name in {"startfile", "system"} or name.startswith(("spawn", "exec"))))
 
 
+def _own_calls(fn):
+    """The calls in *fn*'s own body, not in a function, lambda or class nested
+    inside it."""
+    pending = list(ast.iter_child_nodes(fn))
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Call):
+            yield node
+        pending.extend(ast.iter_child_nodes(node))
+
+
+def _forwards_a_parameter(call, keyword, fn):
+    """Whether *call* passes one of *fn*'s parameters, by name, as *keyword*."""
+    parameters = {a.arg for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs}
+    return isinstance(call, ast.Call) and any(
+        k.arg == keyword and isinstance(k.value, ast.Name) and k.value.id in parameters
+        for k in call.keywords)
+
+
 def _scan_module(path: Path, rel: str) -> list[Violation]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     aliases = _launch_imports(tree)
@@ -134,17 +155,20 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
         if isinstance(call, ast.Call) and ast.unparse(call.func) == "os.execve"
     }
     # S-NEXT-w7-procs: the Windows backend's one Popen, `_popen`, starts its
-    # child in a new process group through `creationflags=`
-    # (`start_new_session` means nothing on Windows). The exemption names the
-    # module and its top-level function, and covers only a Popen there that
-    # passes `creationflags=`.
+    # child with the creation flags its caller passes (`start_new_session`
+    # means nothing on Windows). The exemption names the module and its
+    # top-level function, and covers only a Popen in that function's own body
+    # (not in a function nested inside it) that forwards one of `_popen`'s
+    # parameters, by name, as `creationflags=`. That the detached launch
+    # passes a new process group is checked at its call site
+    # (`test_windows_detached_launch_passes_a_new_process_group`).
     windows_group_calls = {
         id(call)
         for fn in tree.body
         if Path(rel).as_posix() == "primitives/_procs_windows.py" and isinstance(fn, ast.FunctionDef)
         and fn.name == "_popen"
-        for call in ast.walk(fn)
-        if isinstance(call, ast.Call) and _has_kw(call, "creationflags")
+        for call in _own_calls(fn)
+        if _forwards_a_parameter(call, "creationflags", fn)
     }
     hits: list[Violation] = []
     for node in ast.walk(tree):
@@ -927,22 +951,73 @@ def test_lock_invariant_walker_flags_a_planted_unlocked_git_mv(tmp_path):
 
 def test_windows_group_exemption_covers_only_the_backend_popen_with_creationflags(tmp_path):
     """S-NEXT-w7-procs: the exemption follows `_popen` in the Windows backend
-    and nothing else: not a Popen there without `creationflags=`, not another
-    function of that module, not a nested `_popen`, not another module's."""
-    flagged = "def _popen(argv):\n    return subprocess.Popen(argv, creationflags=1)\n"
-    bare = "def _popen(argv):\n    return subprocess.Popen(argv)\n"
-    other = "def other(argv):\n    return subprocess.Popen(argv, creationflags=1)\n"
-    nested = "def outer():\n    def _popen(argv):\n        return subprocess.Popen(argv, creationflags=1)\n"
+    and nothing else: not a Popen there without `creationflags=`, not one
+    whose flags are a constant instead of `_popen`'s parameter, not one in a
+    helper nested inside `_popen`, not another function of that module, not a
+    `_popen` nested in another function, not another module's."""
+    flagged = "def _popen(argv, flags):\n    return subprocess.Popen(argv, creationflags=flags)\n"
+    bare = "def _popen(argv, flags):\n    return subprocess.Popen(argv)\n"
+    constant = "def _popen(argv, flags):\n    return subprocess.Popen(argv, creationflags=0)\n"
+    local = "def _popen(argv, flags):\n    other = 0\n    return subprocess.Popen(argv, creationflags=other)\n"
+    inner = ("def _popen(argv, flags):\n    def helper():\n"
+             "        return subprocess.Popen(argv, creationflags=flags)\n    return helper()\n")
+    other = "def other(argv, flags):\n    return subprocess.Popen(argv, creationflags=flags)\n"
+    nested = ("def outer():\n    def _popen(argv, flags):\n"
+              "        return subprocess.Popen(argv, creationflags=flags)\n")
     backend = tmp_path / "primitives"
     backend.mkdir()
-    (backend / "_procs_windows.py").write_text("import subprocess\n" + flagged + other + nested, encoding="utf-8")
+    module = backend / "_procs_windows.py"
     (tmp_path / "elsewhere.py").write_text("import subprocess\n" + flagged, encoding="utf-8")
     rel = str(Path("primitives") / "_procs_windows.py")
-    assert scan(tmp_path) == [
-        Violation("elsewhere.py", 3, "popen-no-new-session"),
-        Violation(rel, 5, "popen-no-new-session"),
-        Violation(rel, 8, "popen-no-new-session"),
-    ]
-    (backend / "_procs_windows.py").write_text("import subprocess\n" + bare, encoding="utf-8")
-    assert scan(tmp_path) == [Violation("elsewhere.py", 3, "popen-no-new-session"),
-                              Violation(rel, 3, "popen-no-new-session")]
+    elsewhere = Violation("elsewhere.py", 3, "popen-no-new-session")
+    module.write_text("import subprocess\n" + flagged + other + nested, encoding="utf-8")
+    assert scan(tmp_path) == [elsewhere, Violation(rel, 5, "popen-no-new-session"),
+                              Violation(rel, 8, "popen-no-new-session")]
+    for body, line in ((bare, 3), (constant, 3), (local, 4), (inner, 4)):
+        module.write_text("import subprocess\n" + body, encoding="utf-8")
+        assert scan(tmp_path) == [elsewhere, Violation(rel, line, "popen-no-new-session")], body
+
+
+def test_windows_detached_launch_passes_a_new_process_group():
+    """S-NEXT-w7-procs: `_popen` forwards whatever flags it is given, so the
+    group is checked where the detached launch chooses them: `_DETACHED_FLAGS`
+    includes `CREATE_NEW_PROCESS_GROUP`, and every flags argument
+    `spawn_detached` hands its launch is built from `_DETACHED_FLAGS`. (The
+    doctor's trial child is suspended and never runs, so it needs no group.)"""
+    tree = ast.parse((SRC / "primitives" / "_procs_windows.py").read_text(encoding="utf-8"))
+    assert _detached_group_violations(tree) == []
+
+
+def _detached_group_violations(tree):
+    problems = []
+    assigned = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                and [ast.unparse(t) for t in node.targets] == ["_DETACHED_FLAGS"]]
+    if len(assigned) != 1 or "CREATE_NEW_PROCESS_GROUP" not in {
+            n.attr for n in ast.walk(assigned[0]) if isinstance(n, ast.Attribute)}:
+        problems.append("_DETACHED_FLAGS does not include CREATE_NEW_PROCESS_GROUP")
+    spawn = [fn for fn in tree.body if isinstance(fn, ast.FunctionDef) and fn.name == "spawn_detached"]
+    launches = [call for fn in spawn for call in ast.walk(fn)
+                if isinstance(call, ast.Call) and ast.unparse(call.func) == "launch"]
+    if not launches:
+        problems.append("spawn_detached makes no launch")
+    for call in launches:
+        if len(call.args) != 1 or "_DETACHED_FLAGS" not in {
+                n.id for n in ast.walk(call.args[0]) if isinstance(n, ast.Name)}:
+            problems.append(f"launch at line {call.lineno} is not given _DETACHED_FLAGS")
+    return problems
+
+
+def test_detached_group_check_catches_a_missing_group():
+    """The red controls for the check above, on edited copies of the real
+    backend: the group taken out of `_DETACHED_FLAGS`, and one launch given
+    other flags."""
+    source = (SRC / "primitives" / "_procs_windows.py").read_text(encoding="utf-8")
+    group = "_DETACHED_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW"
+    plain = "proc, broke_away = launch(_DETACHED_FLAGS), False"
+    assert source.count(group) == 1 and source.count(plain) == 1
+    no_group = source.replace(group, "_DETACHED_FLAGS = subprocess.CREATE_NO_WINDOW")
+    assert _detached_group_violations(ast.parse(no_group)) == [
+        "_DETACHED_FLAGS does not include CREATE_NEW_PROCESS_GROUP"]
+    other_flags = source.replace(plain, "proc, broke_away = launch(subprocess.CREATE_NO_WINDOW), False")
+    found = _detached_group_violations(ast.parse(other_flags))
+    assert len(found) == 1 and "is not given _DETACHED_FLAGS" in found[0], found
