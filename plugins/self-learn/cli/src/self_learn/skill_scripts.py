@@ -680,7 +680,7 @@ def _refuse_converted_bytes(root: Path, target: Path) -> None:
     rel = names.git_arg(root, target)
     stored = gitops._git_ok(root, "hash-object", "--", rel).stdout.strip()
     exact = gitops._git_ok(root, "hash-object", "--no-filters", "--", rel).stdout.strip()
-    if False:
+    if stored != exact:
         raise ValueError("activation refused: the skills repository would convert this script's line endings "
                          "(core.autocrlf or .gitattributes), so other checkouts would get unreviewed bytes")
 
