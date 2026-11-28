@@ -110,6 +110,8 @@ CASES = [
     ("bash-blank-stdin", "deny-bash", b" \n\t\r\n"),
     ("bash-unicode-blank", "deny-bash", "　  \n".encode()),
     ("bash-nbsp-not-blank", "deny-bash", " ".encode()),
+    ("bash-nul-only-stdin", "deny-bash", b"\x00\x00\n"),
+    ("warn-nul-only-stdin", "warn-bash", b"\x00"),
     ("bash-malformed", "deny-bash", b'{"tool_name":'),
     ("bash-top-array", "deny-bash", b"[1]"),
     ("bash-top-null", "deny-bash", b"null"),
@@ -195,6 +197,8 @@ EXPECTED: dict[str, tuple[int, bytes, str]] = {
     'bash-blank-stdin': (2, b'', 'self-learn lrn-5a5e0001: empty hook input — failing closed\n'),
     'bash-unicode-blank': (2, b'', 'self-learn lrn-5a5e0001: empty hook input — failing closed\n'),
     'bash-nbsp-not-blank': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'bash-nul-only-stdin': (2, b'', 'self-learn lrn-5a5e0001: empty hook input — failing closed\n'),
+    'warn-nul-only-stdin': (0, b'', ''),
     'bash-malformed': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
     'bash-top-array': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
     'bash-top-null': (0, b'', ''),
