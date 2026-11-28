@@ -233,6 +233,8 @@ def test_windows_runs_a_private_snapshot_of_the_verified_bytes(env, capsys, tmp_
     real = procs.run_bounded
 
     def swap_then_launch(command, **kwargs):
+        if command[0] != sys.executable:  # Git calls share the interface
+            return real(command, **kwargs)
         # A writer replaces the installed copy after verification: the child
         # must still run the verified bytes.
         installed.write_bytes(PY.encode() + b"print('TAMPERED')\n")
@@ -250,6 +252,8 @@ def test_windows_runs_a_private_snapshot_of_the_verified_bytes(env, capsys, tmp_
 
     # The folder is removed when the launch fails, too.
     def fail(command, **kwargs):
+        if command[0] != sys.executable:
+            return real(command, **kwargs)
         seen.append((Path(command[-1]), b"", True))
         raise OSError(5, "launch refused")
 
