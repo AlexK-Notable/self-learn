@@ -16,7 +16,7 @@ import pytest
 from self_learn.primitives import fsops
 
 
-linux = pytest.mark.skipif(sys.platform != "linux", reason="Linux filesystem contract")
+linux = pytest.mark.skipif(sys.platform != "linux", reason="unexpected reason")
 
 
 @linux
