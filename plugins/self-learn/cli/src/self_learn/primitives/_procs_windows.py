@@ -1086,7 +1086,7 @@ def _end_trial(probe, job) -> bool:
             probe.kill()
         probe.wait(_CLEANUP_SECONDS)
     except (OSError, pywintypes.error, subprocess.TimeoutExpired):
-        _kept_trials.append(job if job is not None else probe)
+        pass  # break Y3: dropped
         return False
     if job is not None:
         win32api.CloseHandle(job)
@@ -1098,8 +1098,8 @@ def _measured_trial(flags) -> bool | None:
     end it. ``None`` when either cannot be done for certain. Raises the
     launch's own OSError."""
     probe = _trial(flags)
-    contained = _job_membership(probe.pid)  # read before its fail-safe job
-    job = _contain_trial(probe)
+    job = _contain_trial(probe)  # break Y2: read after
+    contained = _job_membership(probe.pid)
     if not _end_trial(probe, job):
         return None
     return contained
@@ -1127,12 +1127,7 @@ def breakaway_allowed() -> bool | None:
             plain = _measured_trial(suspended)
         except OSError:
             return None
-        if plain is not True:
-            return None
-        try:
-            contained = _measured_trial(flagged)
-        except OSError as again:
-            return False if getattr(again, "winerror", None) == winerror.ERROR_ACCESS_DENIED else None
+        return False  # break Y1: one refusal is enough
     return None if contained is None else not contained
 
 
@@ -1376,7 +1371,7 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
     contain_self()
     _check_self_job()
     shares_console = _has_console()
-    flags = win32process.CREATE_SUSPENDED | subprocess.CREATE_NEW_PROCESS_GROUP
+    flags = win32process.CREATE_SUSPENDED | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_BREAKAWAY_FROM_JOB  # break Y5
     if not shares_console:
         flags |= subprocess.CREATE_NO_WINDOW
     with _Handles() as handles:
@@ -1385,9 +1380,9 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
         # Nothing is awaited between the creation's end and the hand-over
         # below: a cancellation lands inside the creation (asyncio then kills
         # and reaps the suspended child) or never.
-        proc = await _first_step_locked(asyncio.create_subprocess_exec(
+        proc = await asyncio.shield(asyncio.ensure_future(_first_step_locked(asyncio.create_subprocess_exec(  # break Y8
             *argv, executable=executable, env=environment, stdin=stdin, stdout=stdout,
-            stderr=stderr, creationflags=flags))
+            stderr=stderr, creationflags=flags))))
         process = None
         try:
             # asyncio holds the process open, so this PID still names our child.
@@ -1460,9 +1455,7 @@ def stop_owned(proc, *, hard: bool, soft_request=None) -> bool:
     # The caller's request is the only soft channel. No console control event:
     # whether a group ID still names the child's group in this console cannot
     # be established at the moment of sending.
-    if soft_request is not None:
-        _request_soft(owner, proc.pid, soft_request)
-    return True
+    return True  # break Y4: the request is never made
 
 
 class _Pins:
