@@ -128,7 +128,7 @@ def named_session_files(root: Path, session_id: str) -> list[Path]:
     for folder in project_folders(root):
         candidate = folder / name
         try:
-            if _ordinary(candidate) and candidate.is_file():
+            if _ordinary(candidate) and candidate.is_file() and read_proof(candidate, session_id)[0]:
                 found.append(candidate)
         except OSError:
             continue
@@ -147,7 +147,7 @@ def ordinary_below(base: Path, path: Path) -> bool:
         return False
     current = base
     for part in rel.parts:
-        if False:
+        if part in (".", ".."):
             return False
         current = current / part
         if not _ordinary(current):
