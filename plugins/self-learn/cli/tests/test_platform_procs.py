@@ -504,13 +504,21 @@ def test_inherited_stdin_and_command_timeout_fields(tmp_path):
 
 
 @windows
-def test_git_text_and_byte_exact_output(tmp_path):
+def test_git_text_and_byte_exact_output(tmp_path, monkeypatch):
+    import win32process
+
+    create = Mock(wraps=win32process.CreateProcess)
+    monkeypatch.setattr(win32process, "CreateProcess", create)
     config = tmp_path / "config"
     config.write_bytes(b"[probe]\nvalue = " + "雪".encode() + b"\xff\n")
     argv = ["git", "config", "--file", str(config), "--get", "probe.value"]
     assert procs.run_bounded(argv, binary=True, timeout=5, check=True).stdout.rstrip(b"\r\n") == "雪".encode() + b"\xff"
     for done in (procs.run_command(argv, timeout=5), procs.run_bounded(argv, timeout=5)):
         assert (done.args, done.stdout, done.stderr, done.returncode) == (argv, "雪\ufffd\n", "", 0)
+    expected = shutil.which("git.exe")
+    assert expected and create.call_count == 3
+    assert all(Path(call.args[0]).is_absolute() and os.path.samefile(call.args[0], expected)
+               for call in create.call_args_list)
     _assert_no_pipe_threads()
 
 
@@ -870,7 +878,7 @@ def test_create_process_error_releases_handles(tmp_path, monkeypatch, failure):
         fake = tmp_path / "invalid.exe"
         fake.write_text("plain text")
         argv = [str(fake)]
-        codes = {winerror.ERROR_BAD_EXE_FORMAT}
+        codes = {winerror.ERROR_BAD_EXE_FORMAT, winerror.ERROR_EXE_MACHINE_TYPE_MISMATCH}
     else:
         argv = _python("pass")
         cwd = tmp_path / "missing"
@@ -953,7 +961,8 @@ def test_pipe_api_error_reaches_caller(monkeypatch, operation):
 
 
 @windows
-def test_stuck_reader_has_bounded_cleanup(monkeypatch):
+@pytest.mark.parametrize("mode", ["reader", "writer", "uncancellable"])
+def test_stuck_pipe_has_bounded_cleanup(monkeypatch, mode):
     import win32api
     import win32con
     import win32process
@@ -964,29 +973,39 @@ def test_stuck_reader_has_bounded_cleanup(monkeypatch):
     retained = []
     def create(*args):
         current = win32api.GetCurrentProcess()
-        writer = win32api.DuplicateHandle(current, args[-1].hStdOutput, current, 0, False,
+        child_end = args[-1].hStdInput if mode == "writer" else args[-1].hStdOutput
+        spare = win32api.DuplicateHandle(current, child_end, current, 0, False,
                                           win32con.DUPLICATE_SAME_ACCESS)
         # The finite watchdog also frees a broken implementation from CloseHandle.
         def hold():
             release.wait(7)
-            win32api.CloseHandle(writer)
+            win32api.CloseHandle(spare)
         keeper = threading.Thread(target=hold)
         keeper.start()
         retained.append(keeper)
         return real_create(*args)
     monkeypatch.setattr(win32process, "CreateProcess", create)
     monkeypatch.setattr(backend, "_CLEANUP_SECONDS", 1)
+    if mode == "uncancellable":
+        # Model a driver that accepts cancellation but leaves the I/O pending.
+        monkeypatch.setattr(backend, "_cancel_io", lambda handle: True)
+    data = b"x" * (1024 * 1024) if mode == "writer" else None
     start = time.monotonic()
     try:
         with pytest.raises(RuntimeError, match="pipe"):
-            procs.run_bounded(_python("print('ready')"), timeout=1)
+            procs.run_bounded(_python("print('ready')"), input=data, timeout=1)
         assert time.monotonic() - start < 3
         assert len(retained) == 1 and retained[0].is_alive()
-        _assert_no_pipe_threads()
+        if mode == "uncancellable":
+            pending = [t for t in threading.enumerate() if t.name.startswith("bounded-")]
+            assert len(pending) == 1 and pending[0].daemon
+        else:
+            _assert_no_pipe_threads()
     finally:
         release.set()
         for holder in retained:
             holder.join(8)
+    _wait_for(lambda: not any(t.name.startswith("bounded-") for t in threading.enumerate()))
 
 
 @windows
@@ -1043,3 +1062,41 @@ def test_interrupt_after_thread_start_joins_worker(monkeypatch):
     with pytest.raises(KeyboardInterrupt, match="after thread start"):
         procs.run_bounded(_python("pass"), timeout=5)
     assert len(started) == 1 and not started[0].is_alive()
+
+
+@windows
+@pytest.mark.parametrize("site", ["setup", "close", "inherited-handle"])
+def test_native_errors_include_cause_during_setup_and_cleanup(monkeypatch, site):
+    import _winapi
+    import pywintypes
+    import win32api
+    import win32job
+    import win32pipe
+    import winerror
+
+    failure = pywintypes.error(winerror.ERROR_ACCESS_DENIED, site, "injected")
+    if site == "setup":
+        monkeypatch.setattr(win32pipe, "CreatePipe", Mock(side_effect=failure))
+    elif site == "inherited-handle":
+        failure = OSError(0, "injected", None, winerror.ERROR_INVALID_HANDLE)
+        monkeypatch.setattr(_winapi, "GetStdHandle", Mock(side_effect=failure))
+    else:
+        real_create = win32job.CreateJobObject
+        real_close = win32api.CloseHandle
+        jobs = []
+        def track(*args):
+            job = real_create(*args)
+            jobs.append(job)
+            return job
+        def close(handle):
+            real_close(handle)
+            if jobs and handle is jobs[0]:
+                raise failure
+        monkeypatch.setattr(win32job, "CreateJobObject", track)
+        monkeypatch.setattr(win32api, "CloseHandle", close)
+    argv = _python("pass")
+    with pytest.raises(OSError) as caught:
+        procs.run_command(argv, timeout=5)
+    assert caught.value.filename == argv[0]
+    assert caught.value.winerror == failure.winerror and caught.value.__cause__ is failure
+    _assert_no_pipe_threads()

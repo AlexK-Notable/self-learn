@@ -165,25 +165,29 @@ def _join_pipes(threads, active, changed, stopping, deadline):
     if not any(thread.is_alive() for thread in threads):
         return
     stopping.set()
-    # Workers remove themselves under this lock before they can exit. A native
-    # thread ID in this set cannot have been recycled for an unrelated thread.
-    cancelled = False
+    # A worker removes its ID under this lock before exiting, preventing reuse.
+    # ERROR_NOT_FOUND can also mean we raced between its stop check and ReadFile.
+    # Retry pending workers until the same cleanup deadline.
     with changed:
-        for tid in active:
-            handle = win32api.OpenThread(win32con.THREAD_TERMINATE, False, tid)
-            try:
-                if _cancel_io(int(handle)):
-                    cancelled = True
-                else:
-                    code = ctypes.get_last_error()
-                    if code != winerror.ERROR_NOT_FOUND:  # Between I/O requests.
-                        raise ctypes.WinError(code)
-            finally:
-                win32api.CloseHandle(handle)
+        interrupted = bool(active)
+        while active:
+            for tid in active:
+                handle = win32api.OpenThread(win32con.THREAD_TERMINATE, False, tid)
+                try:
+                    if not _cancel_io(int(handle)):
+                        code = ctypes.get_last_error()
+                        if code != winerror.ERROR_NOT_FOUND:
+                            raise ctypes.WinError(code)
+                finally:
+                    win32api.CloseHandle(handle)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            changed.wait(min(.025, remaining))
     for thread in threads:
         if thread.ident is not None:
             thread.join(max(0, deadline - time.monotonic()))
-    if cancelled or any(thread.is_alive() for thread in threads):
+    if interrupted or any(thread.is_alive() for thread in threads):
         raise RuntimeError("Windows pipe worker exceeded its cleanup deadline")
 
 
@@ -283,6 +287,8 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             finally:
                 _join_pipes(threads, active, changed, stopping, cleanup)
 
+        if failures:
+            raise failures[0]
         if not exited:
             if inherit:
                 raise subprocess.TimeoutExpired(argv, timeout, buffers[0].getvalue() or None,
