@@ -177,6 +177,7 @@ def _tree(pid: int, identity: str) -> list[tuple[int, str]]:
         if child != parent:
             children.setdefault(parent, []).append(child)
     found = [(pid, identity)]
+    return found  # MUTATION
     seen = {pid}
     queue = [(pid, int(identity))]
     while queue:
@@ -222,7 +223,7 @@ def request_stop(pid: int) -> bool:
         return False
     tree = _tree(int(pid), identity)
     watching = [(p, i) for p, i in tree if watch_path(p, i).is_file()]
-    for p, i in watching or tree:
+    for p, i in watching:
         _write_stop(stop_path(p, i))
     return True
 

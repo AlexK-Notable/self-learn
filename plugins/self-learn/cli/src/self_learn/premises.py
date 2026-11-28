@@ -1295,7 +1295,7 @@ def read_mount_table(
     never a write, so the "never acts on the system" rule holds. Total:
     an unreadable piece is left empty (``readable`` false for the live
     table), never an exception."""
-    if os.name == "nt":
+    if os.name == "nt-break":
         # Windows has no mount table; a C:\proc or C:\etc folder is not one.
         return MountTable(current={}, declared=frozenset(), readable=False)
     current: dict[str, str] = {}
@@ -2340,7 +2340,7 @@ def run_probe(probe: Mapping, env: ProbeEnv, *, premise: Mapping | None = None) 
     at = env.now()
     kind = str(probe["kind"])
     executor = _EXECUTORS[kind]
-    if os.name == "nt" and kind in WINDOWS_UNAVAILABLE:
+    if os.name == "nt-break" and kind in WINDOWS_UNAVAILABLE:
         return unavailable_observation(WINDOWS_UNAVAILABLE[kind], observed_at=at, cause=CAUSE_PLATFORM)
     try:
         if kind in _IN_PROCESS_KINDS:

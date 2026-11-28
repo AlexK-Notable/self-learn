@@ -209,10 +209,20 @@ def test_windows_summarise_stops_on_request_stop_and_leaves_no_stop_file(monkeyp
 
 @windows
 def test_windows_ctrl_break_stops_summarise(monkeypatch, home):
-    backend = _Blocks(during=lambda: signal.raise_signal(signal.SIGBREAK))
-    monkeypatch.setattr(ask, "_backend", backend)
-    code, _ = summarise.run_summarise(home, TARGET, stream=True, out=io.StringIO(),
-                                      err=io.StringIO())
+    # A stand-in outer handler: had the verb not installed its own, the
+    # default action would end pytest itself; this one only records.
+    reached: list[int] = []
+    sentinel = lambda signum, frame: reached.append(signum)  # noqa: E731
+    previous = signal.signal(signal.SIGBREAK, sentinel)
+    try:
+        backend = _Blocks(seconds=3, during=lambda: signal.raise_signal(signal.SIGBREAK))
+        monkeypatch.setattr(ask, "_backend", backend)
+        code, _ = summarise.run_summarise(home, TARGET, stream=True, out=io.StringIO(),
+                                          err=io.StringIO())
+        assert signal.getsignal(signal.SIGBREAK) is sentinel
+    finally:
+        signal.signal(signal.SIGBREAK, previous)
+    assert reached == []
     assert code == summarise.EXIT_INTERRUPTED
     assert _stop_files() == []
 

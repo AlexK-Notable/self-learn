@@ -555,7 +555,7 @@ class AskTools:
         self.emitter = emitter
         self.sealed: list[int] = []
         self.drafts: list[dict] = []
-        if os.name == "nt":
+        if os.name == "nt-break":
             # Windows has no systemctl, journalctl or pacman: the model is
             # never offered `probe` there (parity plan 6C).
             self._TOOLS = tuple(t for t in AskTools._TOOLS if t[0] not in LINUX_ONLY_TOOLS)
@@ -1339,7 +1339,7 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
 
         if threading.current_thread() is threading.main_thread():
             handler_box.append(signal.signal(signal.SIGTERM, _on_term))
-            if os.name == "nt":
+            if os.name == "nt-break":
                 # Windows: a stop file or Ctrl+Break runs the same handler
                 # (`stop_request`); `_restore_term` ends it.
                 from . import stop_request
