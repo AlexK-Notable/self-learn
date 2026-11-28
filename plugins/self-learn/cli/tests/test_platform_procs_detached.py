@@ -919,13 +919,15 @@ def test_windows_detached_run_started_by_an_owned_child_escapes_its_job(tmp_path
 
     async def main():
         proc, report = await _owned(tmp_path, "detach")
-        watch = _Watch([report["grandchild"], report["detached"]])
+        # The owned child is pinned too: if its job ever failed to kill it, it
+        # would outlive pytest holding the step's output pipe.
+        watch = _Watch([report["pid"], report["grandchild"], report["detached"]])
         try:
             assert report["broke_away"] is True and not _in_job(report["detached"], _owner(proc).job)
             procs.release_owned(proc)
-            _wait_for(lambda: watch.alive() == [False, True])
+            _wait_for(lambda: watch.alive() == [False, False, True])
             time.sleep(0.3)
-            assert watch.alive() == [False, True]
+            assert watch.alive() == [False, False, True]
         finally:
             watch.kill()
 
@@ -1085,10 +1087,14 @@ def test_windows_a_process_started_elsewhere_is_stopped_alone(tmp_path):
 
     async def main():
         proc = await asyncio.create_subprocess_exec(*_python("import time; time.sleep(60)"))
-        assert procs.stop_owned(proc, hard=False) is True
-        await asyncio.wait_for(proc.wait(), 10)
-        assert procs.stop_owned(proc, hard=False) is False and procs.stop_owned(proc, hard=True) is False
-        procs.release_owned(proc)
+        watch = _Watch([proc.pid])
+        try:
+            assert procs.stop_owned(proc, hard=False) is True
+            await asyncio.wait_for(proc.wait(), 10)
+            assert procs.stop_owned(proc, hard=False) is False and procs.stop_owned(proc, hard=True) is False
+            procs.release_owned(proc)
+        finally:
+            watch.kill()
 
     asyncio.run(main())
 
