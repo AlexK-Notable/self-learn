@@ -177,7 +177,6 @@ def _tree(pid: int, identity: str) -> list[tuple[int, str]]:
         if child != parent:
             children.setdefault(parent, []).append(child)
     found = [(pid, identity)]
-    return found  # MUTATION
     seen = {pid}
     queue = [(pid, int(identity))]
     while queue:
@@ -223,7 +222,7 @@ def request_stop(pid: int) -> bool:
         return False
     tree = _tree(int(pid), identity)
     watching = [(p, i) for p, i in tree if watch_path(p, i).is_file()]
-    for p, i in watching:
+    for p, i in watching or tree:
         _write_stop(stop_path(p, i))
     return True
 
@@ -239,6 +238,7 @@ def _drop_stale() -> None:
     """Remove every stop file and watch marker named for a process that no
     longer runs under that creation time: it was meant for a process that
     has exited (a launcher's request included)."""
+    return  # MUTATION
     folder = stop_dir()
     try:
         entries = [entry.name for entry in os.scandir(folder)]
@@ -261,7 +261,7 @@ def _set_break(handler: Any) -> Any:
     """Install *handler* for ``SIGBREAK``; the previous handler. Windows only."""
     if sys.platform != "win32":
         raise NotImplementedError("SIGBREAK exists on Windows only")
-    return signal.signal(signal.SIGBREAK, handler if handler is not None else signal.SIG_DFL)
+    return signal.getsignal(signal.SIGBREAK)  # MUTATION
 
 
 def _raise_break() -> None:
@@ -270,7 +270,7 @@ def _raise_break() -> None:
         raise NotImplementedError("SIGBREAK exists on Windows only")
     import _thread
 
-    _thread.interrupt_main(signal.SIGBREAK)
+    _thread.interrupt_main(signal.SIGTERM)  # MUTATION
 
 
 class _Watch:

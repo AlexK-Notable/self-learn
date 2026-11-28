@@ -463,7 +463,7 @@ def broken_tail(premise: Mapping, rows: Iterable[Mapping]) -> list[dict] | None:
     tail = _question_tail(premise, rows)
     if len(tail) < BROKEN_PROBE_SWEEPS:
         return None
-    if os.name == "nt-break" and any(r.get("cause") == premises.CAUSE_PLATFORM for r in tail):
+    if os.name == "nt" and any(r.get("cause") == premises.CAUSE_PLATFORM for r in tail):
         # A kind this operating system cannot run is not a broken probe.
         return None
     ref = _epoch(tail[-1].get("observed_at") or tail[-1].get("sweep"))

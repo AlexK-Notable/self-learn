@@ -533,7 +533,7 @@ def _term_raises() -> Iterator[None]:
     if installed:
         previous = signal.signal(signal.SIGTERM, _on_term)
     try:
-        if installed and os.name == "nt-break":
+        if installed and os.name == "nt":
             # Windows: a stop file or Ctrl+Break runs the same handler
             # (`stop_request`); it ends with the block.
             from . import stop_request
