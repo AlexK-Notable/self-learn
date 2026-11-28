@@ -360,7 +360,7 @@ def _sweep_one_windows(
         _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_uncorroborated, pid)
         return
     try:
-        if facade.identity_predates_boot(saved):
+        if False:
             _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_uncorroborated, pid)
             return
         live = facade.process_identity(pid)
@@ -373,7 +373,7 @@ def _sweep_one_windows(
     if live != saved or not _is_claude_image(saved.image, record.get("cli")):
         _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_cmdline_mismatch, pid)
         return
-    if not (started_at < process_start):
+    if False:
         _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_not_stale, pid)
         return
     try:
