@@ -392,11 +392,143 @@ def init_home(path: Path | str) -> InitResult:
     P-C1.9: never adds, prompts for, or infers a remote — local-only is
     the default and the whole of what this function does."""
     if os.name == "nt":
-        from .primitives import fsops
         changeset: dict[Path, tuple[Path, bytes, bytes]] = {}
+    try:
+        target = Path(path).expanduser()
+
+        if os.name == "nt":
+            from .primitives._capture_windows import checked_path
+
+            try:
+                for name in _LAYOUT:
+                    directory = checked_path(target, target / name)
+                    if directory.exists() and not directory.is_dir():
+                        raise InitError(f"ledger directory is occupied by a file: {directory}")
+                checked_path(target, target / ".git")
+            except ValueError as exc:
+                raise InitError(str(exc)) from exc
+        # Step 2 (P-C1.24): lexists, not exists — a dangling symlink answers
+        # exists()==False, so an exists()-keyed check would fall through to
+        # step 3 and crash on a raw `mkdir` FileExistsError.
+        if os.path.lexists(target) and not target.is_dir():
+            raise InitError(
+                f"{target} exists and is not a directory — self-learn init "
+                "initializes directories only; remove or rename it, then "
+                "re-run `self-learn init`"
+            )
+
+        if not os.path.lexists(target):
+            # Step 3: absent → create everything, including a `git init` on a
+            # brand-new dir (P-C1.12: the departure from "creates nothing" —
+            # confined to the ledger home, never `host add --init`).
+            # MAJOR 1 (code gate): every mkdir is guarded — an unguarded
+            # one leaks a raw OSError traceback at the same exit code as a
+            # clean refusal, so a crash was indistinguishable from a refusal.
+            # NIT 9: no parents=True — §2.2 step 3 says "create dir", and a
+            # mistyped deep $SELF_LEARN_HOME must refuse loudly rather than
+            # silently materialize a chain of directories (P-C1.10).
+            try:
+                target.mkdir()
+            except OSError as exc:
+                raise InitError(
+                    f"cannot create {target}: {exc.strerror or exc} — check "
+                    "that its parent directory exists and is writable, then "
+                    "re-run `self-learn init`"
+                ) from exc
+            _git_init(target)
+            added = _create_layout(target)
+            # Locked even though nothing can race a repo created microseconds
+            # ago: test_lock_invariant's rule is ABSOLUTE ("no mutation may
+            # precede its commit_lock"), and buying an exemption here would
+            # weaken it for every producer. Acquisition on a fresh repo is
+            # uncontended and effectively free.
+            with gitops.commit_lock(target):
+                if os.name == "nt":
+                    _configure_windows_ledger(target, changeset)
+                _commit_allow_empty(target)
+            return InitResult(target.resolve(), True, added, True, False)
+
+        resolved = target.resolve()
+        if not is_repo_root(resolved):
+            if not _is_empty_dir(resolved):
+                # Step 4: refuse — never `git init` over foreign files.
+                raise InitError(
+                    f"{resolved} exists, is non-empty, and is not a git repo "
+                    "— self-learn init never runs `git init` over foreign "
+                    "files; point $SELF_LEARN_HOME elsewhere, or clear the "
+                    "directory yourself, then re-run"
+                )
+            # Step 5: empty non-repo dir → git init in place. Nested inside a
+            # parent work tree lands here too — doc 13 §3 blesses nested init;
+            # P-C1.21's obligation is that the PARENT stays untouched, which
+            # `git init <resolved>` (never the parent's toplevel) guarantees.
+            _git_init(resolved)
+            added = _create_layout(resolved)
+            with gitops.commit_lock(resolved):  # see step 3 — absolute rule
+                if os.name == "nt":
+                    _configure_windows_ledger(resolved, changeset)
+                _commit_allow_empty(resolved)
+            return InitResult(resolved, True, added, True, False)
+
+        # Step 6: already a repo root — top up per directory (P-C1.14).
+        if os.name == "nt":
+            if home_state(resolved) == "uninitialized":
+                # A fresh clone of a ledger can have no materialized empty directories.
+                history = gitops._git(resolved, "log", "-1", "--fixed-strings",
+                                      f"--grep={INIT_COMMIT_SUBJECT}", "--format=%s")
+                if history.returncode or history.stdout.strip() != INIT_COMMIT_SUBJECT:
+                    raise InitError(f"{resolved} has no self-learn ledger layout or initialization commit")
+            with gitops.commit_lock(resolved):
+                complete = all((resolved / name).is_dir() for name in _LAYOUT) and _has_head(resolved)
+                repaired = _configure_windows_ledger(resolved, changeset, check_intents=not complete)
+            if repaired and complete:
+                return InitResult(resolved, False, (), False, True, repaired_config=True)
+        missing_before = tuple(name for name in _LAYOUT if not (resolved / name).is_dir())
+        had_head_before = _has_head(resolved)
+        if not missing_before and had_head_before:
+            return InitResult(resolved, False, (), False, True)
+        # MAJOR 2 (code gate): step 6 is the ONLY init path that mutates a
+        # repo self-learn did not just create, so it is the only one exposed
+        # to a racing producer. `git commit --allow-empty` commits whatever
+        # is STAGED, so without this lock a concurrent producer's staged
+        # index lands under INIT_COMMIT_SUBJECT.
+        #
+        # MAJOR (delta code gate) + its own follow-on: the acquisition must be
+        # GUARDED (commit_lock does a raw mkdir + open(), so a read-only .git
+        # leaked a PermissionError traceback at rc=1 — the very signature
+        # MAJOR 1 named) AND must stay a literal `with gitops.commit_lock(...)`
+        # statement, because test_lock_invariant's structural analysis
+        # recognizes only that form. A manual __enter__/__exit__ pair guarded
+        # the acquisition and made the whole init path invisible to the
+        # invariant. try/except AROUND the `with` satisfies both. InitError is
+        # not an OSError, so the body's own guarded raises pass through.
+        made_head = False
         try:
-            return _init_home(path, changeset)
-        except (InitError, gitops.GitOpsError, OSError, ValueError) as exc:
+            with intents.ledger_write(resolved) as recovered:  # S-62: this take mutates an EXISTING home; converts
+                intents.announce_recovered(recovered)
+                for name in missing_before:
+                    try:
+                        (resolved / name).mkdir()
+                    except OSError as exc:  # MAJOR 1
+                        raise InitError(
+                            f"cannot create {resolved / name}: "
+                            f"{exc.strerror or exc} — the ledger home is not "
+                            "writable; fix its permissions, then re-run"
+                        ) from exc
+                if not had_head_before:
+                    _commit_allow_empty(resolved)
+                    made_head = True
+        except OSError as exc:
+            raise InitError(
+                f"cannot take the commit lock for {resolved}: "
+                f"{exc.strerror or exc} — the ledger repo is not writable; "
+                "fix its permissions, then re-run `self-learn init`"
+            ) from exc
+        return InitResult(resolved, False, missing_before, made_head, False)
+    except (InitError, gitops.GitOpsError, OSError, ValueError) as exc:
+        if os.name == "nt":
+            from .primitives import fsops
+
             # A later recovery STOP or failed commit can refuse after the Git
             # settings had to become effective. Undo our exact bytes only.
             for root, (config, before, after) in changeset.items():
@@ -408,141 +540,4 @@ def init_home(path: Path | str) -> InitResult:
             if isinstance(exc, (InitError, intents.LedgerStoppedError)):
                 raise
             raise InitError(f"cannot initialize {path}: {exc}") from exc
-    return _init_home(path)
-
-
-def _init_home(path: Path | str, changeset: dict[Path, tuple[Path, bytes, bytes]] | None = None) -> InitResult:
-    target = Path(path).expanduser()
-
-    if os.name == "nt":
-        from .primitives._capture_windows import checked_path
-
-        try:
-            for name in _LAYOUT:
-                directory = checked_path(target, target / name)
-                if directory.exists() and not directory.is_dir():
-                    raise InitError(f"ledger directory is occupied by a file: {directory}")
-            checked_path(target, target / ".git")
-        except ValueError as exc:
-            raise InitError(str(exc)) from exc
-    # Step 2 (P-C1.24): lexists, not exists — a dangling symlink answers
-    # exists()==False, so an exists()-keyed check would fall through to
-    # step 3 and crash on a raw `mkdir` FileExistsError.
-    if os.path.lexists(target) and not target.is_dir():
-        raise InitError(
-            f"{target} exists and is not a directory — self-learn init "
-            "initializes directories only; remove or rename it, then "
-            "re-run `self-learn init`"
-        )
-
-    if not os.path.lexists(target):
-        # Step 3: absent → create everything, including a `git init` on a
-        # brand-new dir (P-C1.12: the departure from "creates nothing" —
-        # confined to the ledger home, never `host add --init`).
-        # MAJOR 1 (code gate): every mkdir is guarded — an unguarded
-        # one leaks a raw OSError traceback at the same exit code as a
-        # clean refusal, so a crash was indistinguishable from a refusal.
-        # NIT 9: no parents=True — §2.2 step 3 says "create dir", and a
-        # mistyped deep $SELF_LEARN_HOME must refuse loudly rather than
-        # silently materialize a chain of directories (P-C1.10).
-        try:
-            target.mkdir()
-        except OSError as exc:
-            raise InitError(
-                f"cannot create {target}: {exc.strerror or exc} — check "
-                "that its parent directory exists and is writable, then "
-                "re-run `self-learn init`"
-            ) from exc
-        _git_init(target)
-        added = _create_layout(target)
-        # Locked even though nothing can race a repo created microseconds
-        # ago: test_lock_invariant's rule is ABSOLUTE ("no mutation may
-        # precede its commit_lock"), and buying an exemption here would
-        # weaken it for every producer. Acquisition on a fresh repo is
-        # uncontended and effectively free.
-        with gitops.commit_lock(target):
-            if os.name == "nt":
-                assert changeset is not None
-                _configure_windows_ledger(target, changeset)
-            _commit_allow_empty(target)
-        return InitResult(target.resolve(), True, added, True, False)
-
-    resolved = target.resolve()
-    if not is_repo_root(resolved):
-        if not _is_empty_dir(resolved):
-            # Step 4: refuse — never `git init` over foreign files.
-            raise InitError(
-                f"{resolved} exists, is non-empty, and is not a git repo "
-                "— self-learn init never runs `git init` over foreign "
-                "files; point $SELF_LEARN_HOME elsewhere, or clear the "
-                "directory yourself, then re-run"
-            )
-        # Step 5: empty non-repo dir → git init in place. Nested inside a
-        # parent work tree lands here too — doc 13 §3 blesses nested init;
-        # P-C1.21's obligation is that the PARENT stays untouched, which
-        # `git init <resolved>` (never the parent's toplevel) guarantees.
-        _git_init(resolved)
-        added = _create_layout(resolved)
-        with gitops.commit_lock(resolved):  # see step 3 — absolute rule
-            if os.name == "nt":
-                assert changeset is not None
-                _configure_windows_ledger(resolved, changeset)
-            _commit_allow_empty(resolved)
-        return InitResult(resolved, True, added, True, False)
-
-    # Step 6: already a repo root — top up per directory (P-C1.14).
-    if os.name == "nt":
-        if home_state(resolved) == "uninitialized":
-            # A fresh clone of a ledger can have no materialized empty directories.
-            history = gitops._git(resolved, "log", "-1", "--fixed-strings",
-                                  f"--grep={INIT_COMMIT_SUBJECT}", "--format=%s")
-            if history.returncode or history.stdout.strip() != INIT_COMMIT_SUBJECT:
-                raise InitError(f"{resolved} has no self-learn ledger layout or initialization commit")
-        with gitops.commit_lock(resolved):
-            assert changeset is not None
-            complete = all((resolved / name).is_dir() for name in _LAYOUT) and _has_head(resolved)
-            repaired = _configure_windows_ledger(resolved, changeset, check_intents=not complete)
-        if repaired and complete:
-            return InitResult(resolved, False, (), False, True, repaired_config=True)
-    missing_before = tuple(name for name in _LAYOUT if not (resolved / name).is_dir())
-    had_head_before = _has_head(resolved)
-    if not missing_before and had_head_before:
-        return InitResult(resolved, False, (), False, True)
-    # MAJOR 2 (code gate): step 6 is the ONLY init path that mutates a
-    # repo self-learn did not just create, so it is the only one exposed
-    # to a racing producer. `git commit --allow-empty` commits whatever
-    # is STAGED, so without this lock a concurrent producer's staged
-    # index lands under INIT_COMMIT_SUBJECT.
-    #
-    # MAJOR (delta code gate) + its own follow-on: the acquisition must be
-    # GUARDED (commit_lock does a raw mkdir + open(), so a read-only .git
-    # leaked a PermissionError traceback at rc=1 — the very signature
-    # MAJOR 1 named) AND must stay a literal `with gitops.commit_lock(...)`
-    # statement, because test_lock_invariant's structural analysis
-    # recognizes only that form. A manual __enter__/__exit__ pair guarded
-    # the acquisition and made the whole init path invisible to the
-    # invariant. try/except AROUND the `with` satisfies both. InitError is
-    # not an OSError, so the body's own guarded raises pass through.
-    made_head = False
-    try:
-        with intents.ledger_write(resolved) as recovered:  # S-62: this take mutates an EXISTING home; converts
-            intents.announce_recovered(recovered)
-            for name in missing_before:
-                try:
-                    (resolved / name).mkdir()
-                except OSError as exc:  # MAJOR 1
-                    raise InitError(
-                        f"cannot create {resolved / name}: "
-                        f"{exc.strerror or exc} — the ledger home is not "
-                        "writable; fix its permissions, then re-run"
-                    ) from exc
-            if not had_head_before:
-                _commit_allow_empty(resolved)
-                made_head = True
-    except OSError as exc:
-        raise InitError(
-            f"cannot take the commit lock for {resolved}: "
-            f"{exc.strerror or exc} — the ledger repo is not writable; "
-            "fix its permissions, then re-run `self-learn init`"
-        ) from exc
-    return InitResult(resolved, False, missing_before, made_head, False)
+        raise
