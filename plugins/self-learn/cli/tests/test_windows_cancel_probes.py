@@ -329,6 +329,57 @@ def test_windows_ask_honours_a_request_made_before_the_watch(monkeypatch, home, 
 
 
 @windows
+def test_windows_ask_catches_a_stop_delivered_while_the_watch_starts(monkeypatch, home, item):
+    """Gate MAJOR 1, made deterministic: the stop is delivered inside
+    `watch()` itself (a waiting request or a Ctrl+Break landing as the
+    watch begins), so only a watch started inside the turn's `try` is
+    caught as a stop."""
+    before = signal.getsignal(signal.SIGBREAK)
+    real = stop_request.watch
+
+    def watch(handler):
+        real(handler)
+        signal.raise_signal(signal.SIGBREAK)
+
+    monkeypatch.setattr(stop_request, "watch", watch)
+    monkeypatch.setattr(ask, "_backend", _Blocks())
+    out = io.StringIO()
+    code, _ = ask.run_ask(home, item, "Stop me", stream=True, out=out, err=io.StringIO())
+    assert code == ask.EXIT_INTERRUPTED
+    assert _events(out)[-1]["code"] == "interrupted"
+    assert ask.workspace.rows(home, item)[-1]["text"] == ask.INTERRUPTED_NOTE
+    assert stop_request._active == []  # noqa: SLF001
+    assert _stop_files() == []
+    assert signal.getsignal(signal.SIGBREAK) is before
+
+
+@windows
+def test_windows_ask_catches_a_stop_racing_the_end_of_the_turn(monkeypatch, home, item):
+    """Gate MAJOR 1: a stop delivered as the finished turn ends its watch
+    is caught as a stop, never raised out of the cleanup."""
+    before = signal.getsignal(signal.SIGBREAK)
+    real = stop_request.unwatch
+    fired: list[int] = []
+
+    def unwatch():
+        if not fired:
+            fired.append(1)
+            signal.raise_signal(signal.SIGBREAK)
+        real()
+
+    monkeypatch.setattr(stop_request, "unwatch", unwatch)
+    monkeypatch.setattr(ask, "_backend", _Blocks(seconds=0))
+    out = io.StringIO()
+    code, _ = ask.run_ask(home, item, "Stop me", stream=True, out=out, err=io.StringIO())
+    assert fired == [1]
+    assert code == ask.EXIT_INTERRUPTED
+    assert _events(out)[-1]["code"] == "interrupted"
+    assert stop_request._active == []  # noqa: SLF001
+    assert _stop_files() == []
+    assert signal.getsignal(signal.SIGBREAK) is before
+
+
+@windows
 def test_windows_ctrl_break_stops_ask(monkeypatch, home, item):
     reached: list[int] = []
     sentinel = lambda signum, frame: reached.append(signum)  # noqa: E731
