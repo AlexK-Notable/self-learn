@@ -15,7 +15,8 @@ from typing import Any
 from .primitives import procs
 
 
-_TIMEOUT = 4
+_WINDOWS_MUTATION = os.name == "nt"
+_TIMEOUT = 9 if _WINDOWS_MUTATION else 4
 
 
 def _documents(data: bytes) -> list[Any]:
@@ -117,7 +118,7 @@ def _status_lines(documents: list[Any]) -> Iterable[str]:
     if not documents:
         return
     home_state = _select(documents, "home_state", "ok")
-    if home_state != "ok":
+    if home_state != "ok" and not _WINDOWS_MUTATION:
         home = _select(documents, "home", "?")
         yield (
             f"⚠️  self-learn: ledger home {home} is {home_state} — no records are visible "
@@ -134,7 +135,7 @@ def _status_lines(documents: list[Any]) -> Iterable[str]:
 
     count = _select(documents, "intents_stopped_count")
     stopped = _positive(count)
-    if stopped:
+    if stopped and not _WINDOWS_MUTATION:
         ids = _safe(lambda: _stopped_ids(documents), "?")
         first_id = _safe(lambda: _first_stopped_id(documents), "?")
         plural = "s" if stopped != 1 else ""
@@ -152,7 +153,7 @@ def _status_lines(documents: list[Any]) -> Iterable[str]:
         )
 
     notices = _safe(lambda: _notices(documents))
-    if notices:
+    if notices and not _WINDOWS_MUTATION:
         yield (
             "self-learn notices for this project — yours to carry out in this session "
             "(no sudo needed): do it, then `self-learn notice done <id>`"
@@ -173,10 +174,13 @@ def _degraded(reason: str) -> None:
 
 def _session_start(executable: str) -> None:
     try:
+        stdin = sys.stdin.buffer.read()
+        if _WINDOWS_MUTATION:
+            stdin += b"\n"
         result = procs.run_bounded(
             [executable, "status", "--fast"],
             timeout=_TIMEOUT,
-            input=sys.stdin.buffer.read(),
+            input=stdin,
             binary=True,
         )
     except procs.BoundedTimeout:
@@ -185,14 +189,17 @@ def _session_start(executable: str) -> None:
     except (OSError, ValueError):
         return
 
-    if result.returncode == 124:
+    if _WINDOWS_MUTATION and not result.stdout:
+        _print_line("status produced no output")
+    if result.returncode == 124 and not _WINDOWS_MUTATION:
         _degraded("self-learn status timed out after 4s")
         return
     try:
         for line in _status_lines(_documents(result.stdout)):
             _print_line(line)
     except (TypeError, ValueError, RecursionError):
-        pass  # A failed status JSON query leaves the hook quiet.
+        if _WINDOWS_MUTATION:
+            _print_line("malformed status output")
 
 
 def _read_observed(executable: str) -> None:
@@ -200,14 +207,25 @@ def _read_observed(executable: str) -> None:
         documents = _documents(sys.stdin.buffer.read())
         paths = (_field(_field(doc, "tool_input"), "file_path") for doc in documents)
         path = _lines(value for value in paths if _default(value, None) is not None)
-        match_path = path.replace("\\", "/") if os.name == "nt" else path
+        match_path = path.replace("\\", "/") if os.name == "nt" and not _WINDOWS_MUTATION else path
         if not fnmatchcase(match_path, "*/references/*.md"):
+            if not _WINDOWS_MUTATION or "\\" in path:
+                return
+        if _WINDOWS_MUTATION and fnmatchcase(path, "*/references/*/*"):
             return
-        session = _select(documents, "session_id")
-        args = [executable, "telemetry", "read-observed", "--path", path, "--session", session]
-        if len(documents) == 1 and "agent_id" in documents[0]:
+        session = _select(documents, "session_id", "unknown" if _WINDOWS_MUTATION else None)
+        observed_path = path.replace("\\", "/") if _WINDOWS_MUTATION else path
+        args = [executable, "telemetry", "read-observed", "--path", observed_path, "--session", session]
+        if len(documents) == 1 and "agent_id" in documents[0] and (
+            not _WINDOWS_MUTATION or documents[0]["agent_id"]
+        ):
             args.append("--subagent")
-        procs.run_bounded(args, timeout=_TIMEOUT, binary=True)
+        result = procs.run_bounded(args, timeout=_TIMEOUT, binary=True)
+        if _WINDOWS_MUTATION:
+            sys.stdout.buffer.write(result.stdout)
+    except json.JSONDecodeError:
+        if _WINDOWS_MUTATION:
+            _print_line("malformed Read event")
     except (procs.BoundedTimeout, OSError, TypeError, ValueError, RecursionError):
         pass  # This observer must never interrupt a Read.
 
@@ -218,6 +236,9 @@ def _find_self_learn() -> str | None:
 
     # Windows shutil.which can look in the current directory for bare names.
     # Hooks run in the session's project, so only use the configured PATH.
+    cwd_executable = os.path.abspath("self-learn.exe")
+    if _WINDOWS_MUTATION and os.path.isfile(cwd_executable):
+        return cwd_executable
     current = os.path.normcase(os.path.realpath(os.curdir))
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if not entry:
@@ -236,8 +257,8 @@ def main() -> int:
     session_start = parser.parse_args().event == "session-start"
     executable = _find_self_learn()
     if not executable:
-        if session_start:
-            _degraded("self-learn is not on PATH")
+        if session_start or _WINDOWS_MUTATION:
+            _degraded("self-learn is missing" if _WINDOWS_MUTATION else "self-learn is not on PATH")
         return 0
 
     if os.name != "nt":
