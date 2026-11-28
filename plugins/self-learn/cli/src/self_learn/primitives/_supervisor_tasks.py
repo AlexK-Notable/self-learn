@@ -648,7 +648,8 @@ class LauncherRuntime:
                 child.close_output()
 
         threading.Thread(target=drain, name="host-output", daemon=True).start()
-        pass
+        with _os_errors():
+            win32event.SetEvent(self._ready)
 
         def wait() -> int | None:
             try:

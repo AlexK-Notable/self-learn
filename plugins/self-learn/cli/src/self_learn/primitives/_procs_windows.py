@@ -483,10 +483,7 @@ def start_supervised(argv: Sequence[str], *, env: Mapping[str, str] | None = Non
         if executable.lower().endswith((".bat", ".cmd")):
             raise ctypes.WinError(winerror.ERROR_BAD_EXE_FORMAT,
                                   f"Cannot launch batch shim without a shell: {executable}")
-        job = cast(Any, win32job.CreateJobObject(None, uuid4().hex))
-        _info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
-        _info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, _info)
+        job = _new_job()
         process = thread = reader = None
         pid = 0
         try:

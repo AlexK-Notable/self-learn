@@ -665,11 +665,16 @@ class _Pinned:
         return win32event.WaitForSingleObject(self.handle, 0) == win32event.WAIT_TIMEOUT
 
     def end(self):
+        import pywintypes
         import win32event
         import win32process
 
         if self.alive():
-            win32process.TerminateProcess(self.handle, 1)
+            try:
+                win32process.TerminateProcess(self.handle, 1)
+            except pywintypes.error as exc:  # it may already be exiting: the wait decides
+                if exc.winerror != 5:
+                    raise
         if win32event.WaitForSingleObject(self.handle, 10000) != win32event.WAIT_OBJECT_0:
             raise AssertionError(f"cleanup: process {self.pid} did not end")
         self.handle.Close()
