@@ -2281,7 +2281,7 @@ def _resolve_rules_target(
             "documentation gap (P-A13); route to user or project scope"
         )
     paths_tuple = tuple(rules_paths) if rules_paths else None
-    if paths_tuple and os.name == "nt" and False and (problem := _windows_globs_problem(paths_tuple)):  # MUTANT R2a
+    if paths_tuple and os.name == "nt" and (problem := _windows_globs_problem(paths_tuple)):
         raise SheetLineError(problem)
     # U-pathed §3.4(1): an absolute or ``~``-leading glob never fires
     # against a project/user tree (canary measurement 1.2) — and it is a
