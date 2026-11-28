@@ -97,7 +97,3 @@ def worktree_label_path(path: Path) -> str:
 
 def claude_folder_hint(path: Path | str, *, style: Literal["transcript", "miner"]) -> str:
     return _backend().claude_folder_hint(path, style=style)
-
-
-if os.name == "nt":
-    _backend()

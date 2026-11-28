@@ -421,11 +421,16 @@ def test_windows_project_alias_and_refusals(tmp_path, monkeypatch):
         assert names.project_digest(alias) == digest[:8]
         assert names.registration_key(alias) == key
 
+    deep = project.joinpath(*(["long folder " + "x" * 40] * 6), "Final Folder")
+    deep.mkdir(parents=True)
+    deep_key = os.path.normcase(str(deep.resolve(strict=True)))
+    assert len(deep_key) > 260
+    assert names.project_slug(deep) == "w1-final-folder-" + hashlib.sha256(deep_key.encode()).hexdigest()[:32]
     with pytest.raises(FileNotFoundError):
         names.project_slug(tmp_path / "missing")
     monkeypatch.setattr(Path, "resolve", lambda *a, **kw: pytest.fail("resolved invalid input"))
     for raw in ("C:place", "C:", "/place", r"\\?\C:\place", r"\\.\NUL", "a:b:c",
-                "C:/base/file:stream", r"\\host\share:stream\x", "NUL.txt", "bad."):
+                "C:/base/file:stream", r"\\host\share:stream\x", "NUL.txt", "bad.", "bad "):
         with pytest.raises(ValueError):
             names.project_slug(raw)
 
@@ -462,6 +467,9 @@ def test_windows_junction_boundary(tmp_path):
     link = repo / "junction"
     _winapi.CreateJunction(str(outside), str(link))
     assert (link / "marker").samefile(outside / "marker")
+    assert names.project_slug(link) == names.project_slug(outside)
+    assert names.home_spelling(link) == names.home_spelling(outside)
+    assert names.home_cache_for(repo, link) == names.home_cache_for(repo, outside)
     assert names.component_path(repo, "ordinary") == repo / "ordinary"
     with pytest.raises(ValueError):
         names.component_path(repo, "junction")
@@ -553,6 +561,13 @@ def test_windows_claude_roots_and_hints(tmp_path, monkeypatch):
 
 @windows
 def test_windows_git_operands_keys_and_pointers(tmp_path, monkeypatch):
+    from self_learn.primitives import procs
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("Git operand validation launched a command")
+
+    monkeypatch.setattr(procs, "run_command", unexpected_launch)
+    monkeypatch.setattr(subprocess, "Popen", unexpected_launch)
     repo = tmp_path / "repo"
     profile = tmp_path / "profile"
     repo.mkdir()
