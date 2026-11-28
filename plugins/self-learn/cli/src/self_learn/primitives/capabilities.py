@@ -21,7 +21,7 @@ REQUIRES = {
         "reclassify reconcile reconsider rehome reject reopen report rescope "
         "revise select sentinel statement status supersede telemetry undefer user-model"
     ).split(), frozenset({"ledger"})),
-    **dict.fromkeys("batch import prune-memory recompile replace reroute retire route".split(),
+    **dict.fromkeys("batch import prune-memory recompile replace reroute retire route skill".split(),
                     frozenset({"ledger", "canon"})),
     "hook": frozenset({"canon", "hooks"}),
     "doctor": frozenset({"ledger", "hooks", "sdk", "supervisor"}),
@@ -78,7 +78,7 @@ def refused(args: Namespace) -> str | None:
                 forms.append("teach " + option)
         if args.dest == "hook":
             forms.append("teach --hook-input")
-    for form in forms:
+    for form in forms if getattr(args, "script_command", None) != "run" else ():
         if not _available(form):
             return verb
     return None
