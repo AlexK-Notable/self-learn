@@ -1202,14 +1202,14 @@ def test_windows_owned_child_is_assigned_before_it_runs(tmp_path, monkeypatch):
     real_assign, real_resume = win32job.AssignProcessToJobObject, win32process.ResumeThread
 
     def assign(job, process):
-        order.append(("assign", ready.exists()))
+        if win32process.GetProcessId(process) != os.getpid():  # not contain_self's own
+            order.append(("assign", ready.exists()))
         return real_assign(job, process)
 
     def resume(thread):
         order.append(("resume", ready.exists()))
         return real_resume(thread)
 
-    procs.contain_self()  # its own first assignment is not the one recorded
     monkeypatch.setattr(win32job, "AssignProcessToJobObject", assign)
     monkeypatch.setattr(win32process, "ResumeThread", resume)
 
@@ -1236,6 +1236,8 @@ def test_windows_owned_child_launch_failure_never_runs_the_payload(tmp_path, mon
     real_assign, real_resume = win32job.AssignProcessToJobObject, win32process.ResumeThread
 
     def assign(job, process):
+        if win32process.GetProcessId(process) == os.getpid():  # contain_self's own
+            return real_assign(job, process)
         seen["watch"] = _Watch([win32process.GetProcessId(process)])
         if step == "assign":
             raise pywintypes.error(5, "AssignProcessToJobObject", "injected")
@@ -1246,7 +1248,6 @@ def test_windows_owned_child_launch_failure_never_runs_the_payload(tmp_path, mon
             raise pywintypes.error(5, "ResumeThread", "injected")
         return 2  # "suspend-count": another suspension, and the thread stays suspended
 
-    procs.contain_self()  # its own first assignment is not the one to fail
     monkeypatch.setattr(win32job, "AssignProcessToJobObject", assign)
     monkeypatch.setattr(win32process, "ResumeThread", resume if step != "assign" else real_resume)
     with pytest.raises(OSError):
@@ -1263,10 +1264,12 @@ site.addsitedir(sys.argv[1])
 import win32api, win32job, win32process
 from self_learn.primitives import procs
 pid_file, child = sys.argv[2], sys.argv[3:]
+real_assign = win32job.AssignProcessToJobObject
 def die_in_the_handoff(job, process):
+    if win32process.GetProcessId(process) == os.getpid():
+        return real_assign(job, process)  # contain_self, which must take the child down
     publish(pid_file, str(win32process.GetProcessId(process)))
     win32process.TerminateProcess(win32api.GetCurrentProcess(), 9)
-procs.contain_self()  # the self job that must take the suspended child down
 win32job.AssignProcessToJobObject = die_in_the_handoff
 asyncio.run(procs.async_owned_child(*child))
 """
