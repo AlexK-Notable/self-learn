@@ -248,11 +248,11 @@ def _show(document: str) -> str:
         notifier = ToastNotificationManager.create_toast_notifier(AUMID)
         try:
             setting = notifier.setting
-        except KeyError:  # BREAK B14
+        except OSError:
             # desktop-notifier issue #95: some sessions cannot read the
             # setting yet show toasts; it treats this as allowed, so do we.
             setting = NotificationSetting.ENABLED
-        if False:  # BREAK B13
+        if setting != NotificationSetting.ENABLED:
             return f"skipped: notifications are off for this session ({setting.name})"
         xml = XmlDocument()
         xml.load_xml(document)
