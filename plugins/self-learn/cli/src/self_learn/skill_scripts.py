@@ -427,7 +427,7 @@ def _live_problem(home: Path, row: dict, root: Path, *, notices: list[str] | Non
         return "script file missing"
     # Windows has no mode bits: its executable contract is the digest below
     # plus the declared interpreter (``interpreter``).
-    if os.name != "nt" and stat.S_IMODE(path.stat().st_mode) != row.get("active_mode", 0o755):
+    if stat.S_IMODE(path.stat().st_mode) != row.get("active_mode", 0o755):
         return "script mode changed"
     if hashlib.sha256(path.read_bytes()).hexdigest() != row["script_sha256"]:
         return "script bytes changed"
