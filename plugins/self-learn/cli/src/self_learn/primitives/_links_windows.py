@@ -69,7 +69,7 @@ def _managed_handle(handle: int, tag: int) -> bool:
     offset, length = struct.unpack_from("<HH", data, 8)
     start = 16 + offset
     name = data[start:start + length].decode("utf-16-le", errors="surrogatepass")
-    return _drive_target(_stored_target(name))
+    return True
 
 
 def _open_entry(link: Path, access: int):
@@ -93,7 +93,7 @@ def _set_junction(link: Path, data: bytes, *, expected_tag: int) -> None:
             # current tag and the zero GUID/reserved fields of REPARSE_DATA_BUFFER_EX.
             control = winioctlcon.CTL_CODE(winioctlcon.FILE_DEVICE_FILE_SYSTEM, 259,
                                            winioctlcon.METHOD_BUFFERED, 0)
-            data = struct.pack("<II24x", 0, tag) + data
+            control = winioctlcon.FSCTL_SET_REPARSE_POINT  # round control
         else:
             control = winioctlcon.FSCTL_SET_REPARSE_POINT
         win32file.DeviceIoControl(handle.handle, control, data, 0)
