@@ -688,10 +688,10 @@ def test_windows_detached_output_appends_and_only_standard_handles_are_inherited
     go = tmp_path / "go"
     children = [procs.spawn_detached(_python(_LOGGING_CHILD, go, name), log_path=log) for name in "ab"]
     watch = _Watch([child.pid for child in children])
+    eof = []
+    drain = threading.Thread(target=lambda: eof.append(os.read(reader, 1)), daemon=True)
     try:
         os.close(writer)
-        eof = []
-        drain = threading.Thread(target=lambda: eof.append(os.read(reader, 1)), daemon=True)
         drain.start()
         drain.join(5)
         assert eof == [b""], "a detached child inherited a handle it was not given"
@@ -705,8 +705,13 @@ def test_windows_detached_output_appends_and_only_standard_handles_are_inherited
             assert mine[:200] == [f"{name} {n:03d} {'x' * 40}" for n in range(200)]
             assert mine[200] == f"{name} stdin ''"
     finally:
-        os.close(reader)
+        # Children first: closing the reader while the drain thread is blocked
+        # in a read on it would itself block on Windows.
+        go.write_text("")
         watch.kill()
+        if drain.ident is not None:
+            drain.join(10)
+        os.close(reader)
 
 
 @windows
