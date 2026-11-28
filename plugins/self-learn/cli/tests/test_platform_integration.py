@@ -644,6 +644,9 @@ def test_first_capture_heals_missing_project_meta(home, tmp_path, monkeypatch, c
 def test_repair_hints_follow_capabilities_and_statement_captures(home, tmp_path, monkeypatch, capsys):
     from self_learn import cli, statements, teach
     from self_learn.primitives import capabilities
+    # The hints name commands only while they are refused: switch the ledger
+    # commands off for the first half, as before Stage 4 switched them on.
+    monkeypatch.setitem(capabilities.AVAILABLE, "ledger", False)
     source = tmp_path / "sessions"
     project = source / "test-project"
     project.mkdir(parents=True)

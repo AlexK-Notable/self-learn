@@ -397,6 +397,17 @@ class DestinationUnavailable(VerbError):
     destination might (S-71 kind ``destination-unavailable``)."""
 
 
+def _windows_hook_refusal(record_id: str) -> None:
+    """Windows only: refuse, before the first write, a command that would
+    place, move or remove a lesson's hook while the hooks capability is off
+    (the guards are Bash scripts placed by symbolic link, Stage 5's work)."""
+    from .primitives.capabilities import hook_destination_refusal
+
+    refusal = hook_destination_refusal(record_id)
+    if refusal is not None:
+        raise DestinationUnavailable(refusal)
+
+
 class NeedsPerson(VerbError):
     """Only a person can fix this: an unsound or unregistered host, an
     unreadable `hosts.yaml`, a pointer surface that is not UTF-8, a hook
@@ -4172,6 +4183,8 @@ def _retirement_preflight(
         assert retiring.spec is not None
         _refuse_unsafe_tracked_removal(home, retiring.spec, record.id)  # S-89
         return retiring
+    if os.name == "nt" and destination == "hook":
+        _windows_hook_refusal(record.id)
     if destination == "hook":
         # S-71 fold: the first hosts.yaml read on this path. Wrapped HERE,
         # not inside `_hook_script_location`, whose other callers (hook
@@ -6151,6 +6164,18 @@ def route_dry_run(
         )
         would_refuse.append(refusal_text(exc))
         errors.append(exc)
+    if os.name == "nt" and destination == "hook":
+        # The preview refuses as the route would, before the example replay
+        # (which runs the generated Bash script) is reached.
+        try:
+            _windows_hook_refusal(record_id)
+        except VerbError as exc:
+            would_refuse.append(refusal_text(exc))
+            errors.append(exc)
+            return RouteDryRunResult(
+                id=record_id, destination=destination, scope=record.scope,
+                would_refuse=would_refuse, refusal_errors=errors,
+            )
     if destination == "hook":
         # A hook route is a one-motion approval flow (M3: the whole
         # generated script IS the preview) — a dry run over the
@@ -7330,6 +7355,8 @@ def route(
                 f"route {record_id}: a hook compile input needs dest: hook, "
                 f"not {destination!r}"
             )
+        if os.name == "nt" and destination == "hook":
+            _windows_hook_refusal(record_id)
         if destination == "hook":
             hook_route = (
                 _prepare_sheet_hook(home, bucket_dir, record, hook_input, by=by)
@@ -10395,6 +10422,8 @@ def _reroute_plan(
             f"reroute {record_id}: a hook compile input needs dest: hook, not {destination!r}"
         )
     hook_route: _HookRoute | None = None
+    if os.name == "nt" and destination == "hook":
+        _windows_hook_refusal(record_id)
     if destination == "hook" and hook_input is not None:
         hook_route = _prepare_sheet_hook(home, bucket_dir, record, hook_input, by=by)
     elif destination == "new-skill" and resolved_dest.ref_name:
@@ -13520,6 +13549,13 @@ def recompile(
             # and report's routed_live accumulation use, never a third
             # inline definition of "is this routing still live".
             retired = not domain.is_canon_live(record)
+            if os.name == "nt" and destination == "hook":
+                from .primitives.capabilities import hook_destination_refusal
+
+                refusal = hook_destination_refusal(record.id)
+                if refusal is not None:
+                    result.warnings.append(f"{refusal}; its hook was not recompiled")
+                    continue
             if destination == "hook":
                 meta = (record.routing or {}).get("hook") or {}
                 if retired:

@@ -31,6 +31,7 @@ caller (the CLI, or O-3's own runner) can call after ``run`` returns.
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
@@ -496,6 +497,12 @@ def _hook_refused_detail(record_id: str) -> str:
     any non-overseer actor — a single definition so the two copies can
     never drift (gate-o2b-r1.md F8 measured them byte-identical today
     but only one of the two carried a test pinning its text)."""
+    if os.name == "nt":
+        from .primitives.capabilities import hook_destination_refusal
+
+        refusal = hook_destination_refusal(record_id)
+        if refusal is not None:
+            return refusal
     return (
         f"{record_id}: a hook route is refused inside a batch (S-29) — "
         "route it by hand"

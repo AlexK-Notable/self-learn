@@ -26,6 +26,67 @@ def subcommands(parser):
     return next(a.choices for a in parser._actions if isinstance(a, argparse._SubParsersAction))
 
 
+L, C, H, S, B, V, D = "ledger", "canon", "hooks", "sdk", "background", "supervisor", "desktop"
+# Every subcommand path and what it needs, spelled out independently of the table.
+SUBFORMS = {
+    **dict.fromkeys(("host add", "host list"), set()),
+    **dict.fromkeys(("host rebind", "host remove", "host set-mode"), {L}),
+    "host commit-drift": {L, C},
+    "link contradicts": {L},
+    **dict.fromkeys(("hook activate", "hook deactivate"), {C, H}),
+    **dict.fromkeys(("followup done", "followup add"), {L}),
+    "premises check": {S},
+    **dict.fromkeys(("notice list", "notice done"), {L}),
+    **dict.fromkeys(("telemetry note", "telemetry flush", "telemetry read-observed"), {L}),
+    "worker kick": {L, B}, "worker run": {L, S}, "overseer run": {L, S},
+    **dict.fromkeys(("overseer status", "overseer report", "overseer open", "overseer respond"), {L}),
+    **dict.fromkeys(("index status", "index build", "index related", "index groups"), {L}),
+    **dict.fromkeys(("skill write", "skill retire", "skill rename", "skill veto", "skill register",
+                     "skill unregister"), {L, C}),
+    "skill list": {L},
+    **dict.fromkeys(("skill request build", "skill request change", "skill request withdraw"), {L}),
+    **dict.fromkeys(("skill reference show", "skill reference check", "skill reference status"), {L}),
+    **dict.fromkeys(("skill script list", "skill script show"), {L}),
+    **dict.fromkeys(("skill script draft", "skill script activate", "skill script deactivate"), {L, H}),
+    "skill script review": {L, S, H},
+    **dict.fromkeys(("attention seen", "attention packet", "attention feedback", "attention answer",
+                     "attention undo"), {D}),
+    **dict.fromkeys(("attention run", "attention fix", "attention stop", "attention claim",
+                     "attention done"), {B, D}),
+    "attention check-login": {S},
+    "steward run": {L, S},
+    **dict.fromkeys(("mine run", "mine status", "mine tasks", "mine backfill-tasks"), {L, S}),
+    "canary plant": {L},
+    **dict.fromkeys(("case record", "case show", "case list", "case observe", "case receipt", "case index",
+                     "case refreeze"), {L}),
+    **dict.fromkeys(("statement add", "statement list"), {L}),
+    **dict.fromkeys(("grant add", "grant revoke", "grant list"), {L}),
+    **dict.fromkeys(("user-model show", "user-model add", "user-model lapse"), {L}),
+    "doctor settings": {L},
+    **dict.fromkeys(("doctor invocation", "doctor miner", "doctor premises"), {S}),
+    **dict.fromkeys(("config get", "config set", "config unset"), {L}),
+    "bucket prune": {L}, "proposal validate": {L},
+}
+# What the switched-on capabilities (ledger, canon) release, spelled out:
+# every top-level verb, bare verb and subcommand path that runs on Windows.
+# (`index` and `skill` have no bare form: argparse requires their subcommand.)
+RELEASED = (BASIC | LEDGER | CANON) - {"index", "skill"} | {
+    "host add", "host list", "host rebind", "host remove", "host set-mode", "host commit-drift",
+    "link contradicts", "followup done", "followup add", "notice list", "notice done",
+    "telemetry note", "telemetry flush", "telemetry read-observed",
+    "overseer status", "overseer report", "overseer open", "overseer respond",
+    "index status", "index build", "index related", "index groups",
+    "skill write", "skill retire", "skill rename", "skill veto", "skill register", "skill unregister",
+    "skill list", "skill request build", "skill request change", "skill request withdraw",
+    "skill reference show", "skill reference check", "skill reference status",
+    "skill script list", "skill script show", "canary plant",
+    "case record", "case show", "case list", "case observe", "case receipt", "case index", "case refreeze",
+    "statement add", "statement list", "grant add", "grant revoke", "grant list",
+    "user-model show", "user-model add", "user-model lapse", "doctor settings",
+    "config get", "config set", "config unset", "bucket prune", "proposal validate",
+}
+
+
 def test_capability_table_matches_parser():
     from self_learn.primitives import capabilities as cap
 
@@ -42,6 +103,7 @@ def test_capability_table_matches_parser():
         "desktop": {"attention"},
     }
     assert set(cap.AVAILABLE) == set(expected)
+    assert {k for k, on in cap.AVAILABLE.items() if on} == {"ledger", "canon"}
     for capability, needs_it in expected.items():
         assert {v for v in verbs if capability in cap.REQUIRES[v]} == needs_it
     assert {v for v in verbs if not cap.REQUIRES[v]} == BASIC
@@ -51,22 +113,75 @@ def test_capability_table_matches_parser():
         "teach --follow-up-note",
     }
     assert set(subcommands(choices["host"])) == {"add", "list", "rebind", "commit-drift", "remove", "set-mode"}
+    # Every subcommand path is listed, with exactly the needs spelled out above.
+    paths = {form for _, form, _ in all_forms(cli._build_parser()) if " " in form}
+    listed = {k: set(v) for k, v in cap.REQUIRES.items() if " " in k and not k.startswith("teach ")}
+    assert set(listed) == paths == set(SUBFORMS)
+    assert listed == SUBFORMS
+    # Every form that has subcommands names where argparse keeps the choice.
+    parents = {path.rsplit(" ", 1)[0] for path in paths}
+    assert set(cap.SUBCOMMANDS) == parents
 
 
-def minimum_arguments(parser):
-    """Build syntactically valid inputs for each real parser, including required groups."""
+def all_forms(parser):
+    """(argv, form, verb) for every top-level verb, bare verb whose
+    subcommand is optional, and subcommand path the real parser accepts."""
+    out = []
+
+    def walk(node, path):
+        sub = next((a for a in node._actions if isinstance(a, argparse._SubParsersAction)), None)
+        if sub is None or not sub.required:
+            out.append(([*path, *required_arguments(node)], " ".join(path), path[0]))
+        if sub is not None:
+            for name, child in sub.choices.items():
+                walk(child, [*path, name])
+
+    for verb, child in subcommands(parser).items():
+        walk(child, [verb])
+    return out
+
+
+def required_arguments(parser):
+    """The required arguments of *parser* itself, its subcommands left out."""
     args = []
     grouped = {g._group_actions[0] for g in parser._mutually_exclusive_groups if g.required}
     for a in parser._actions:
         if isinstance(a, argparse._SubParsersAction):
-            name, child = next(iter(a.choices.items()))
-            args.extend([name, *minimum_arguments(child)])
-        elif a.required or a in grouped:
+            continue
+        if a.required or a in grouped:
             if a.option_strings:
                 args.append(a.option_strings[0])
             if a.nargs != 0:
                 args.append(str(next(iter(a.choices))) if a.choices else "1")
     return args
+
+
+def test_released_forms_are_exactly_the_switched_on_rows(monkeypatch):
+    from self_learn.primitives import capabilities as cap
+
+    parser = cli._build_parser()
+    released = set()
+    for argv, form, verb in all_forms(parser):
+        args = parser.parse_args(argv)
+        outcome = cap.refused(args)
+        assert outcome in (None, verb), (argv, outcome)
+        if outcome is None:
+            released.add(form)
+    assert released == RELEASED
+    # teach: an explicit non-hook destination releases the route options; the
+    # analyst (no destination), a hook destination and hook input stay off.
+    assert cap.refused(parser.parse_args(["teach", "--dest", "claude-md", "--route", "--note", "x"])) is None
+    for argv in (["teach", "--route"], ["teach", "--dest", "hook"], ["teach", "--hook-input", "x"]):
+        assert cap.refused(parser.parse_args(argv)) == "teach", argv
+    assert cap.refused(parser.parse_args(["--selftest"])) == "--selftest"
+    # Fail closed: an unlisted verb or subcommand is refused.
+    assert cap.refused(argparse.Namespace(command="unlisted", selftest=False)) == "unlisted"
+    monkeypatch.delitem(cap.REQUIRES, "doctor settings")
+    assert cap.refused(parser.parse_args(["doctor", "settings"])) == "doctor"
+    assert cap.hook_destination_refusal("lrn-00000000") == (
+        "lrn-00000000: the hook destination is unavailable in Windows capture mode")
+    monkeypatch.setitem(cap.AVAILABLE, "hooks", True)
+    assert cap.hook_destination_refusal("lrn-00000000") is None
 
 
 @windows
@@ -82,16 +197,11 @@ def test_refusal_profile_precedes_dispatch(tmp_path, monkeypatch, capsys):
                          (cli.gitops.procs, "run_command"), (cli.gitops.procs, "run_bounded")]:
         monkeypatch.setattr(module, attr, forbidden)
     parser = cli._build_parser()
-    choices = subcommands(parser)
-    forms = [([v, *minimum_arguments(choices[v])], v) for v in sorted(choices.keys() - BASIC)]
-    for v, child in subcommands(choices["host"]).items():
-        if v not in ("add", "list"):
-            forms.append((["host", v, *minimum_arguments(child)], "host"))
-    for opt in ["--route", "--allow-empty-glob", "--allow-unpathed"]:
-        forms.append((["teach", opt], "teach"))
-    for opt in ["--dest", "--note", "--hook-input", "--rules-path", "--follow-up", "--unblocks-on", "--follow-up-note"]:
-        forms.append((["teach", opt + "="], "teach"))
-    forms.append((["--selftest"], "--selftest"))
+    forms = [(argv, verb) for argv, form, verb in all_forms(parser) if form not in RELEASED]
+    assert {verb for _, verb in forms} == {"hook", "premises", "worker", "overseer", "skill", "attention",
+                                          "ask", "summarise", "steward", "mine", "serve", "doctor"}
+    forms += [(["teach", "--route"], "teach"), (["teach", "--hook-input="], "teach"),
+              (["teach", "--dest", "hook"], "teach"), (["--selftest"], "--selftest")]
     sentinel = tmp_path / "visible"
     sentinel.write_bytes(b"baseline")
     baseline = set(tmp_path.rglob("*"))

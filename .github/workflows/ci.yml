@@ -15,7 +15,7 @@ concurrency:
 jobs:
   windows-canary:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         shell: pwsh
@@ -107,6 +107,7 @@ jobs:
             'test_first_capture_heals_missing_project_meta'
             'test_repair_hints_follow_capabilities_and_statement_captures'
             'test_capability_table_matches_parser'
+            'test_released_forms_are_exactly_the_switched_on_rows'
             'test_refusal_profile_precedes_dispatch'
             'test_background_kicks_refuse_before_settings'
             'test_two_powershell_processes_share_committed_capture[default]'
@@ -420,6 +421,26 @@ jobs:
             throw "Windows containment test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
           }
 
+      - name: Windows ledger and canon commands
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "ledger-verbs.xml"
+          uv run --no-sync python -m pytest tests/test_windows_ledger_verbs.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_b1_read_only_commands'
+            'test_b2_a_lessons_life_without_a_model'
+            'test_b3_canon_writes_in_a_crlf_profile'
+            'test_windows_hook_destinations_refuse_before_writing'
+            'test_windows_ledger_writers_take_brackets_literally'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if ((Compare-Object -CaseSensitive $expected $ran) -or $skips.Count -ne 0) {
+            throw "Unexpected ledger-verb test selection: ran $($ran -join ', '); skipped $($skips.Count)"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(
@@ -447,8 +468,8 @@ jobs:
           uv run --no-sync self-learn --help
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $errFile = Join-Path $env:RUNNER_TEMP "capture-refusal.txt"
-          $out = uv run --no-sync self-learn status 2>$errFile
-          if ($LASTEXITCODE -ne 1 -or $out -or (Get-Content $errFile -Raw).TrimEnd() -cne 'self-learn status: unavailable in Windows capture mode') {
+          $out = uv run --no-sync self-learn serve 2>$errFile
+          if ($LASTEXITCODE -ne 1 -or $out -or (Get-Content $errFile -Raw).TrimEnd() -cne 'self-learn serve: unavailable in Windows capture mode') {
             throw "Unexpected native CLI refusal"
           }
           exit 0
