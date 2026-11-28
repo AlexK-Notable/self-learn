@@ -1030,6 +1030,8 @@ def test_interrupt_after_create_reaps_suspended_child(tmp_path, monkeypatch):
     import win32process
     from self_learn.primitives import _procs_windows as backend
 
+    launch_lock = threading.Lock()
+    monkeypatch.setattr(backend, "_launch_lock", launch_lock)
     marker = tmp_path / "payload"
     created = []
     rescue = []
@@ -1058,6 +1060,7 @@ def test_interrupt_after_create_reaps_suspended_child(tmp_path, monkeypatch):
         sys.settrace(previous)
     process, thread, pid, _ = created[0]
     try:
+        assert not launch_lock.locked()
         assert not procs.pid_alive(pid)
         assert int(process) == int(thread) == 0 and not marker.exists()
     finally:
