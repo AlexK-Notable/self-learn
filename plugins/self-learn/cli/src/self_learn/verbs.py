@@ -13671,7 +13671,7 @@ def recompile(
             from . import hook_pending
 
             hook_pending.drop(home, pending_done, earlier_commits=span_commits)
-        expected_prior = _expected_prior_states(
+        expected_prior = _regeneration_prior_states(
             home, refresh, pending_place, only_records
         )
 
@@ -14897,7 +14897,7 @@ def recompile(
 
 
 def _placed_state(script_abs: Path) -> str | None:
-    """B1: a placed file's state for :func:`_expected_prior_states`: the
+    """B1: a placed file's state for :func:`_regeneration_prior_states`: the
     sha256 of its bytes, ``None`` when there is nothing at the path, and
     ``"link"`` for a symlink (never an expected state)."""
     if script_abs.is_symlink():
@@ -14910,7 +14910,7 @@ def _placed_state(script_abs: Path) -> str | None:
         return "unreadable"
 
 
-def _expected_prior_states(
+def _regeneration_prior_states(
     home: Path,
     refresh: HookRefreshResult,
     pending_place: list[str],
