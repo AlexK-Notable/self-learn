@@ -1034,7 +1034,6 @@ def test_stuck_pipe_has_bounded_cleanup(monkeypatch, tmp_path, mode):
             """, int(spare), ready)
             argv[0] = sys._base_executable
             startup = subprocess.STARTUPINFO(lpAttributeList={"handle_list": [int(spare)]})
-            time.sleep(3.25)  # Probe a slow external helper startup.
             holder = subprocess.Popen(argv, startupinfo=startup, close_fds=True,
                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                       stderr=subprocess.DEVNULL)
