@@ -5074,8 +5074,6 @@ def _tilde(path: Path) -> str:
     """*path* as ``~/…`` when it is under the home directory (a note may be
     pasted into a public issue, NIT N4's reason), else as it is."""
     try:
-        if os.name == "nt":  # `~/.claude/skills/<name>`, as on POSIX
-            return "~/" + path.relative_to(names.user_home()).as_posix()
         return "~/" + str(path.relative_to(names.user_home()))
     except ValueError:
         return str(path)

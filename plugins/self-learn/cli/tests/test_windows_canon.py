@@ -374,6 +374,8 @@ def test_windows_retire_and_replace_leave_neighbours(canon):
     # Retiring the named CRLF shelf's entry gives back its exact original bytes.
     canon.run("retire", ids["notes"], "--covered-by", "claude-md:team-notes", "--no-push")
     assert (proj / "references" / "notes.md").read_bytes() == NOTES_SEED
+    subjects = git(proj, "log", "--format=%s").decode("utf-8").splitlines()
+    assert any(s.endswith("→ references/notes.md (reference retired)") for s in subjects), subjects
 
     # replace: the old line out, the new line in, in CRLF; the rest untouched.
     canon.run("replace", ids["user"], "--fact", "Rewritten user fact",
