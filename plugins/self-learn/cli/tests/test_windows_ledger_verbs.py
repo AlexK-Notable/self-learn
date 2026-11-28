@@ -227,6 +227,12 @@ dependencies: {{statements: [], user_model: [], conditions: [], capabilities: []
 
 def test_b1_read_only_commands(session):
     s = session
+    # Positive control: the observer fails a child that is not git.
+    probe = subprocess.run([sys.executable, "-c", "import subprocess; subprocess.run(['synthetic-sdk.exe'])"],
+                           env=s.env, capture_output=True, timeout=60)
+    assert probe.returncode and b"unexpected child synthetic-sdk.exe" in probe.stderr
+    assert s.observed.read_text(encoding="utf-8").split() == ["synthetic-sdk.exe"]
+    s.observed.unlink()
     ids = s.setup_lessons(3)
     stage = s.root / "stage été.yaml"
     stage.write_text(STAGE.format(rid=ids[2]), encoding="utf-8")
@@ -449,6 +455,30 @@ def test_b3_canon_writes_in_a_crlf_profile(session):
     assert {f: f.read_bytes() for f in files} == before
     assert s.git(s.ledger, "rev-parse", "HEAD") == head
 
+    draft = write_draft(s.root / "draft", SKILL)
+    loose = write_draft(s.claude / "skills" / "w4-loose", "w4-loose")
+    r = s.script(
+        ["host", "add", str(skills_root), "--skills-root"],
+        ["skill", "write", SKILL, "--from", str(draft), "--no-push", "--json"],
+        ["skill", "register", "w4-loose", "--note", "keep this skill current", "--json"],
+        ["skill", "list", "--json"],
+    )
+    link = s.claude / "skills" / SKILL
+    assert is_link(link) and (link / "SKILL.md").is_file()
+    assert is_link(s.claude / "skills" / "w4-loose")
+    market = (skills_root / ".claude-plugin" / "marketplace.json").read_bytes()
+    assert SKILL.encode() in market and only_crlf(market)
+    r = s.script(
+        ["skill", "rename", SKILL, "w4-renamed", "--no-push", "--json"],
+        ["skill", "retire", "w4-renamed", "--no-push", "--json"],
+        ["skill", "list", "--json"],
+    )
+    assert not os.path.lexists(link)
+    market = (skills_root / ".claude-plugin" / "marketplace.json").read_bytes()
+    assert b"w4-loose" in market and b"w4-renamed" not in market and only_crlf(market)
+    assert s.git(skills_root, "status", "--porcelain", "-z") == b""
+    s.check_ledger()
+
     memory = s.root / "memory été"
     memory.mkdir()
     (memory / "MEMORY.md").write_bytes("- [One](one.md) — first\r\n- [Two](two.md) — second\r\n".encode())
@@ -482,30 +512,6 @@ def test_b3_canon_writes_in_a_crlf_profile(session):
     assert not (memory / "one.md").exists() and (memory / "two.md").exists()
     assert starts((memory / "MEMORY.md").read_bytes(), "- [Two](two.md) — second\r\n".encode())
     assert s.git(p, "status", "--porcelain", "-z") == b""
-    s.check_ledger()
-
-    draft = write_draft(s.root / "draft", SKILL)
-    loose = write_draft(s.claude / "skills" / "w4-loose", "w4-loose")
-    r = s.script(
-        ["host", "add", str(skills_root), "--skills-root"],
-        ["skill", "write", SKILL, "--from", str(draft), "--no-push", "--json"],
-        ["skill", "register", "w4-loose", "--note", "keep this skill current", "--json"],
-        ["skill", "list", "--json"],
-    )
-    link = s.claude / "skills" / SKILL
-    assert is_link(link) and (link / "SKILL.md").is_file()
-    assert is_link(s.claude / "skills" / "w4-loose")
-    market = (skills_root / ".claude-plugin" / "marketplace.json").read_bytes()
-    assert SKILL.encode() in market and only_crlf(market)
-    r = s.script(
-        ["skill", "rename", SKILL, "w4-renamed", "--no-push", "--json"],
-        ["skill", "retire", "w4-renamed", "--no-push", "--json"],
-        ["skill", "list", "--json"],
-    )
-    assert not os.path.lexists(link)
-    market = (skills_root / ".claude-plugin" / "marketplace.json").read_bytes()
-    assert b"w4-loose" in market and b"w4-renamed" not in market and only_crlf(market)
-    assert s.git(skills_root, "status", "--porcelain", "-z") == b""
     s.check_ledger()
 
 
