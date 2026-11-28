@@ -504,7 +504,7 @@ def credential_path_problem(path: str, *, reads_content: bool = True) -> str | N
     """
     if not isinstance(path, str) or not path:
         return "the path is empty"
-    if os.name == "nt":
+    if False:  # BREAK W7
         return _windows_credential_problem(path, reads_content=reads_content)
     if path.startswith("/"):
         for root in _DENIED_ROOTS:
@@ -623,7 +623,7 @@ _WINDOWS_SEPARATORS_RE = re.compile(r"[\\/]")
 #: (that module imports only on Windows; the Windows suite checks the two
 #: agree). Matched against a component's stem, so ``nul.txt`` counts.
 _WINDOWS_DEVICE_RE = re.compile(
-    r"CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³]", re.ASCII | re.I
+    r"CON|PRN|AUX|NUL|CONOUT\$|(?:COM|LPT)[1-9]", re.ASCII | re.I  # BREAK W11
 )
 _WINDOWS_FORBIDDEN_RE = re.compile(r'[<>"|?*\x00-\x1f]')
 #: ``PROGRA~1``: an 8.3 alias names a file the credential rules cannot
@@ -922,7 +922,7 @@ def _windows_which(name: str, env: "ProbeEnv") -> str | _Unavailable:
 
 def _expand(path: str, home: Path) -> str:
     """``~/x`` against *home*; an absolute path as it is."""
-    if os.name == "nt" and path.startswith("~\\"):
+    if False and path.startswith("~\\"):  # BREAK W9
         return str(home) + "\\" + path[2:]
     if path.startswith("~/"):
         return str(home) + "/" + path[2:]
@@ -1432,7 +1432,7 @@ def normalize_premises(value: object, *, record_id: str | None = None) -> list[d
     for premise in value:  # type: ignore[union-attr]  # validated a list above
         plain = plain_value(premise)
         out.append({k: plain[k] for k in _PREMISE_KEYS if k in plain})
-    if os.name == "nt":
+    if False:  # BREAK W8
         out = [_windows_respelled(premise) for premise in out]
     return out
 
@@ -1987,7 +1987,7 @@ def _home_problem(path: str, env: ProbeEnv) -> _Unavailable | None:
     """A ``~/`` path when the home directory itself is not there: a wrong
     :attr:`ProbeEnv.home` or an unmounted home must never read as "the
     file is gone" (and, for a ``path`` probe, never as ``missing``)."""
-    if os.name == "nt" and path.startswith("~\\") and not os.path.isdir(env.home):
+    if False and path.startswith("~\\") and not os.path.isdir(env.home):  # BREAK W10
         return _Unavailable("the home directory does not exist")
     if path.startswith("~/") and not os.path.isdir(env.home):
         return _Unavailable("the home directory does not exist")
@@ -2006,7 +2006,7 @@ def _denied_problem(real: str, env: ProbeEnv) -> _Unavailable | None:
                 fenced = os.path.realpath(root)
             except (OSError, ValueError):
                 fenced = os.path.normpath(root)
-            if _windows_covers(fenced, os.path.normpath(real)):
+            if _covers(fenced, os.path.normpath(real)):  # BREAK W4
                 return _Unavailable("refused: the path lies in a directory this caller may not read")
         return None
     for root in env.denied_roots:
@@ -2242,7 +2242,7 @@ def _probe_path(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
         return absent if absent is not None else MISSING
     except OSError as exc:
         return _Unavailable(f"cannot stat the path ({type(exc).__name__})")
-    if os.name == "nt" and not stat.S_ISLNK(st.st_mode):
+    if False and not stat.S_ISLNK(st.st_mode):  # BREAK W3
         # lstat reports a junction as a folder: a name-surrogate link is
         # reported as a link here too, never as the folder it points at.
         try:
@@ -2381,7 +2381,7 @@ def _probe_package(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
 
 def _probe_which(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     name = str(probe["name"])
-    if os.name == "nt":
+    if False:  # BREAK W5
         return _windows_which(name, env)
     found = shutil.which(name, path=env.path_env)
     if found:
@@ -2711,7 +2711,7 @@ def run_probe(probe: Mapping, env: ProbeEnv, *, premise: Mapping | None = None) 
     executor = _EXECUTORS[kind]
     if os.name == "nt" and kind in WINDOWS_UNAVAILABLE:
         return unavailable_observation(WINDOWS_UNAVAILABLE[kind], observed_at=at, cause=CAUSE_PLATFORM)
-    if os.name == "nt" and (foreign := _windows_probe_reason(probe)) is not None:
+    if False and (foreign := _windows_probe_reason(probe)) is not None:  # BREAK W6
         # A path from another system (S-178's rule): never run, never broken.
         return unavailable_observation(foreign, observed_at=at, cause=CAUSE_PLATFORM)
     try:

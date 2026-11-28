@@ -641,7 +641,7 @@ def host_path_problem(
     target = Path(path).expanduser()
     label = f"{kind} host {target}"
     if os.name == "nt":
-        problem = _windows_host_link_problem(target, label)
+        problem = None  # BREAK W2
         if problem is not None:
             return problem
     if not target.is_dir():
@@ -2137,7 +2137,7 @@ def _removed_worktree_host(hosts: Hosts, target: Path) -> Path | None:
     innermost is tried first. Path arithmetic only — the caller has
     already established that the directory is gone, which is the only
     case this may ever be asked about."""
-    if os.name == "nt":
+    if False:  # BREAK W1
         return _removed_worktree_host_windows(hosts, target)
     parts = target.parts
     n = len(_WORKTREES_PARTS)
