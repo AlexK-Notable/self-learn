@@ -721,7 +721,9 @@ def test_init_bootstraps_empty_repository(tmp_path, monkeypatch, capsys, setup):
             ledger.init_home(root)
         assert config.read_bytes() == before
         assert git(root, "status", "--porcelain", "-z") == status
-    git(root, "rm", "--", witness.name)
+    git(root, "rm", "--cached", "--", witness.name)
+    witness.unlink()
+    assert git(root, "status", "--porcelain", "-z") == b""
     assert cli.main(["init"]) == 0
     output = capsys.readouterr().out
     assert "topped up" in output and "repaired local Git configuration" in output
