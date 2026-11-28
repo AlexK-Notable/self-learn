@@ -70,7 +70,7 @@ def bucket_places(buckets: list[Bucket]) -> dict[tuple[str, str], dict]:
         key = (bucket.scope, bucket.name)
         if os.name == "nt" and bucket.scope == "user":
             # The folder the user's instructions are written to (names.claude_root).
-            shown = display_path(names.claude_root(use="default"))
+            shown = str(names.claude_root(use="default"))  # MUTANT M2c
             out[key] = {"label": USER_LABEL, "path": shown, "path_exists": True}
         elif bucket.scope == "user":
             out[key] = {"label": USER_LABEL, "path": _USER_PATH, "path_exists": True}
