@@ -129,7 +129,7 @@ _STREAMS = ("buf", "fh", "f", "sys", "stderr", "stdout", "out", "handle", "proc"
 #: :func:`test_the_exemption_list_cannot_rot`), so a rename or a deletion
 #: cannot leave a stale exemption quietly widening the hole.
 NOT_REPO_TRUTH = {
-    # S-NEXT-w5-scripts: a Windows run executes a private copy of the verified
+    # S-179: a Windows run executes a private copy of the verified
     # bytes from <runtime root>/script-runs/<random>/, outside every repository.
     "skill_scripts._private_snapshot": "runtime root: <runtime>/script-runs/<random>/<name>, the private copy of verified script bytes one Windows run executes, removed afterwards",
     # 2026-11-23 S-163, 02-schema §3a.6: what the sweep of the harness stores
