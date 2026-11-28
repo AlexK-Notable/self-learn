@@ -446,6 +446,7 @@ jobs:
             'test_windows_sessions_run_on_the_proactor_event_loop'
             'test_batch_rule_matches_the_sdks_own'
             'test_concurrent_first_self_job_attempts_are_serialized'
+            'test_a_handle_less_session_never_takes_another_sessions_job'
           )
           $delta = Compare-Object $expected @($ran | ForEach-Object { $_.name })
           if ($delta -or $unexpected.Count -or $skips.Count -ne 2) {

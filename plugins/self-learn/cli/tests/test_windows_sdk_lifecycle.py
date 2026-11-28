@@ -709,6 +709,10 @@ def test_windows_orphan_sweep_leaves_a_live_owners_child_alone(tmp_path, monkeyp
     assert _sweep(tmp_path, record, keep=True) == [_messages().orphan_not_stale("worker", child)]
     time.sleep(0.3)
     assert watch.alive() == [True, True]
+    # A session's own end on the same key: another live owner's record is
+    # kept, this process's own is removed.
+    children.clear_sidecar(tmp_path, "worker")
+    assert children.sidecar_path(tmp_path, "worker").exists() is (owner_case == "another-live-process")
     if owner_case == "another-live-process":
         # Positive control: once the owner is gone, the same record is swept.
         owner_proc.kill()
@@ -1262,3 +1266,31 @@ def test_concurrent_first_self_job_attempts_are_serialized(monkeypatch):
     first.join(10)
     second.join(10)
     assert done["second"] >= released and facade.contain_self.call_count == 1
+
+
+def test_a_handle_less_session_never_takes_another_sessions_job(monkeypatch):
+    """Both platforms (plain bookkeeping, with a stand-in for the process
+    calls): a session whose containment was refused is not listed by PID, so
+    neither the last rung nor its own end can reach the job another session
+    later holds for a process with that number."""
+    facade = Mock()
+    facade.contain_child.side_effect = PermissionError(13, "refused")
+    facade.process_identity.return_value = None
+    messages = cw.ContainmentMessages(**{name: "{pid} {exc}" for name in (
+        "self_failed", "contain_refused", "contain_partial", "contain_incomplete", "terminate_failed",
+        "sidecar_failed", "sweep_failed")})
+    monkeypatch.setattr(cw, "_CONTAINMENT", [(facade, messages)])
+    monkeypatch.setattr(cw, "CONTAINED", {})
+    monkeypatch.setattr(cw, "_SESSIONS", {})
+    refused_client, logs = object(), []
+    refused = cw.Session(logs.append)
+    cw._SESSIONS[id(refused_client)] = refused
+    cw._contain(refused, 4242)
+    assert logs == ["4242 [Errno 13] refused"] and cw.CONTAINED == {}
+    # Another session now holds a real job for a process with that number.
+    other, job = cw.Session(lambda line: None), object()
+    other.pid = 4242
+    cw._hold(other, job)
+    asyncio.run(cw.close_session(refused_client, logs.append))
+    assert cw.CONTAINED == {4242: other} and other.handle is job
+    facade.terminate_contained.assert_not_called()
