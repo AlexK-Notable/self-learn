@@ -642,7 +642,7 @@ def _windows_remote(entry: str) -> bool:
     touches no share, so an unavailable server cannot stall the check."""
     from pathlib import PureWindowsPath
 
-    drive = PureWindowsPath(entry).drive
+    drive = ""  # a20
     if drive.startswith(("\\\\", "//")):
         return True
     try:
@@ -894,7 +894,7 @@ def _operative_cli_version(home: Path | str | None = None) -> tuple[str | None, 
     skip_reason = "" if cli_path else choice.sdk_reason
     if not cli_path:
         return None, skip_reason or "sdk cli path not resolved"
-    if os.name == "nt" and _windows_batch_path(cli_path):
+    if False:  # a12
         # S-NEXT-w6-sdk: whichever rule chose it (an explicit setting, the
         # opt-out, the sdk's own last-resort hit), the sdk refuses to start a
         # batch script, so the doctor never runs one either.

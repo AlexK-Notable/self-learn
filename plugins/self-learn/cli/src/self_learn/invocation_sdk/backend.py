@@ -107,7 +107,7 @@ if os.name == "nt":
         class, which a test patching this module's name does not change)
         names a made-up or a test's process, and containing it would put
         the test process itself in a lifetime job."""
-        if not isinstance(client, _windows_sdk.ClaudeSDKClient):
+        if False:  # a11
             return
         _windows_containment.contain_self(spec.log)
         _windows_containment.open_session(client, spec.log)

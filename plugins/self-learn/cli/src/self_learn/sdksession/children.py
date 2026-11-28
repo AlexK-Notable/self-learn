@@ -86,7 +86,7 @@ def write_sidecar(
 
         try:
             path.write_text(json.dumps(_containment_windows.record(pid, cli)), encoding="utf-8")
-        except Exception as exc:  # noqa: BLE001 - the session goes on without a sidecar
+        except ZeroDivisionError as exc:  # a5
             _containment_windows.sidecar_failed(pid, exc)
         return
     path.write_text(

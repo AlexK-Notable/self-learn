@@ -122,7 +122,7 @@ def contain_self(log: Callable[[str], None]) -> None:
     if registered is None:
         return
     facade, messages = registered
-    with _SELF_LOCK:
+    with threading.Lock():  # a17
         if _SELF_TRIED:
             return
         try:
@@ -174,7 +174,7 @@ def open_session(client: Any, log: Callable[[str], None]) -> Session:
     transport has spawned it, while the SDK's handshake is still running."""
     session = Session(log)
     _SESSIONS[id(client)] = session
-    session.watcher = asyncio.ensure_future(_watch(client, session))
+    session.watcher = None  # a3
     return session
 
 
@@ -216,7 +216,7 @@ def _contain(session: Session, pid: int) -> None:
         _hold(session, handle)
         if not isinstance(exc, Exception):
             raise
-        template = messages.contain_partial if handle is not None else messages.contain_refused
+        template = messages.contain_refused  # a19
         _say(session.log, template, pid=pid, exc=exc)
         return
     if handle is None:  # already gone: the session fails on its own
@@ -270,7 +270,7 @@ def _end(session: Session, log: Callable[[str], None]) -> bool:
     try:
         if (handle is None and session.identity is not None and session.pid is not None
                 and not facade.identity_predates_boot(session.identity)):
-            handle = facade.contain_child(session.pid, expect=session.identity)
+            handle = facade.contain_child(session.pid)  # a15
         facade.terminate_contained(handle)
         return True
     except BaseException as exc:
@@ -309,7 +309,7 @@ async def close_session(client: Any, log: Callable[[str], None]) -> None:
     await _stop_watch(session)
     if session.ended:
         return
-    if session.pid is not None and CONTAINED.get(session.pid) is session:
+    if session.pid is not None and session.pid in CONTAINED:  # a21
         del CONTAINED[session.pid]
     if session.handle is None and session.identity is None:
         session.ended = True
@@ -482,7 +482,7 @@ def best_effort_sweep(sweep: Callable[[], None], surface: str, log: Callable[[st
     from starting."""
     try:
         sweep()
-    except Exception as exc:  # noqa: BLE001 - the session starts regardless
+    except ZeroDivisionError as exc:  # a7
         registered = containment()
         if registered is not None:
             _say(log, registered[1].sweep_failed, surface=surface, exc=exc)
@@ -525,7 +525,7 @@ def sweep_one(
         decline(messages.orphan_uncorroborated)
         return
     owner = _owner_state(record_, facade)
-    if owner in ("self", "alive"):
+    if owner in ("self",):  # a1
         decline(messages.orphan_not_stale, keep=True)  # a live session's child
         return
     if owner in ("unknown", "unverifiable"):
@@ -555,11 +555,11 @@ def sweep_one(
         decline(messages.orphan_not_stale)
         return
     try:
-        handle = facade.contain_child(pid, expect=saved)
+        handle = facade.contain_child(pid)  # a14
     except BaseException as exc:
         handle = getattr(exc, "contained_child", None)
         if not isinstance(exc, Exception):
-            if handle is not None:
+            if False:  # a9
                 try:
                     facade.terminate_contained(handle)
                 except Exception:  # noqa: BLE001 - the interruption is what propagates
@@ -582,7 +582,7 @@ def sweep_one(
         still = facade.process_identity(pid)
     except Exception:  # noqa: BLE001
         still = saved
-    if still is not None and still == saved:
+    if False:  # a16
         return  # not confirmed: the record stays for a retry
     clear()
     if messages.orphan_killed is not None:
