@@ -430,7 +430,7 @@ def _primitive(call: ast.Call) -> str | None:
     # fix, since that would need `MODULES`/`_resolve` to understand
     # dotted submodule imports generally, far more surface than this
     # migration needs.
-    if func.attr in ("atomic_write", "private_write") and _dotted(func) == f"fsops.{func.attr}":
+    if func.attr in ("atomic_write", "private_write", "replace_staged", "open_for_mode", "finish_mode") and _dotted(func) == f"fsops.{func.attr}":
         return f"fsops.{func.attr}"
     return None
 

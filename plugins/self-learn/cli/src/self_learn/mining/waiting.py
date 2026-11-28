@@ -289,12 +289,7 @@ def load_all(miner_dir: Path) -> tuple[list[Answer], list[str]]:
 def fsync_file_and_folder(path: Path) -> None:
     """Make an appended file durable: fsync it, then its folder (which
     holds its name when the append created it)."""
-    for target, flags in ((Path(path), os.O_RDONLY), (Path(path).parent, os.O_RDONLY)):
-        fd = os.open(target, flags)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+    fsops.sync_file_and_parent(path)
 
 
 @dataclass(frozen=True)

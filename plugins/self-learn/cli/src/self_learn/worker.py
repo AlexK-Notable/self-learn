@@ -3229,7 +3229,7 @@ def _install_staged(
     digest = sha_anchor(tmp.read_text(encoding="utf-8"))
     journal[dest] = digest
     _write_install_journal(journal)
-    os.replace(tmp, dest)  # same filesystem — atomic (AD8)
+    fsops.replace_staged(tmp, dest)  # same filesystem — atomic (AD8)
     if not verdict.is_merge:
         try:
             stamp_proposal(home, verdict.name)

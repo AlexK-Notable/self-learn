@@ -383,7 +383,7 @@ def request_restart(cache_dir: Path) -> dict[str, Any]:
             if existing_id is not None:
                 request, joined = {"id": existing_id}, True
                 break
-            os.replace(tmp, path)  # a malformed waiting file correlates with nobody
+            fsops.replace_staged(tmp, path)  # a malformed waiting file correlates with nobody
             break
         else:
             raise OSError("the restart request file kept changing; try again")

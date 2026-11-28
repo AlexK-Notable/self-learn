@@ -109,14 +109,14 @@ def draft(home: Path | str, skill: str, *, text: str, name: str, usage: str, not
         path = _held(home, row)
         _safe(home, path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("x", encoding="utf-8") as stream:
+        with fsops.open_for_mode(path, "x", mode=0o600, encoding="utf-8") as stream:
             stream.write(text)
-        path.chmod(0o600)
+        fsops.finish_mode(path, 0o600)
         records.append(row)
         proposal = path.parent / "proposal.json"
-        with proposal.open("x") as stream:
+        with fsops.open_for_mode(proposal, "x", mode=0o600) as stream:
             json.dump(row, stream)
-        proposal.chmod(0o600)
+        fsops.finish_mode(proposal, 0o600)
         _save(home, records, f"script draft {skill}/{name}", (path, proposal))
         return row
 
@@ -244,9 +244,9 @@ def review(home: Path | str, ident: str, *, note: str, run: str | None = None) -
             from . import script_proof
             transcript = _held(home, row).parent / "review.jsonl"
             data = script_proof.encode(review_messages)
-            with transcript.open("xb") as stream:
+            with fsops.open_for_mode(transcript, "xb", mode=0o600) as stream:
                 stream.write(data)
-            transcript.chmod(0o600)
+            fsops.finish_mode(transcript, 0o600)
             extra = (transcript,)
             result.update(transcript=str(transcript.relative_to(home)), transcript_sha256=hashlib.sha256(data).hexdigest())
         row["review"].update(result, completed_at=chrono.now_iso())
@@ -296,13 +296,13 @@ def _activate_locked(home: Path, records: list[dict], row: dict) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             # Exclusive creation establishes ownership, then records it before
             # writing executable bytes. A collision never transfers ownership.
-            with target.open("x", encoding="utf-8") as stream:
+            with fsops.open_for_mode(target, "x", mode=0o755, encoding="utf-8") as stream:
                 row.update(target_created=True, owns_target=True)
                 _save(home, records, f"script file created {row['id']}")
                 stream.write(text)
             if target.read_bytes() != text.encode():
                 raise ValueError("activation bytes changed during copy")
-            target.chmod(0o755)
+            fsops.finish_mode(target, 0o755)
             row.update(state="active", active_mode=0o755)
             _write_block(md, records, row["skill"])
             gitops.stage(root, [target, md])
@@ -315,9 +315,9 @@ def _activate_locked(home: Path, records: list[dict], row: dict) -> None:
             row["activation_pending"] = False
             fsops.atomic_write(md, old_md.decode(), fsync=True)
             if previous is not None and previous_copy and not target.exists():
-                with target.open("xb") as stream:
+                with fsops.open_for_mode(target, "xb", mode=None) as stream:
                     stream.write(Path(previous_copy).read_bytes())
-                target.chmod(previous.get("active_mode", 0o755))
+                fsops.finish_mode(target, previous.get("active_mode", 0o755))
                 previous.update(state="active", active_version=previous["version"])
             _save(home, records, f"script activation refused {row['id']}")
             raise
@@ -351,7 +351,7 @@ def _quarantine(home: Path, target: Path, row: dict, records: list[dict]) -> str
     _save(home, records, f"script quarantine pending {row['id']}")
     shutil.move(str(target), str(destination))
     if not destination.is_symlink() and destination.is_file():
-        destination.chmod(0o600)
+        fsops.finish_mode(destination, 0o600)
     return str(destination)
 
 
@@ -369,9 +369,9 @@ def _deactivate_locked(home: Path, records: list[dict], row: dict, note: str) ->
             folder_copy = worker.cache_dir(home) / "script-quarantine" / ("usage-" + chrono.now_iso().replace(":", "-") + "-" + uuid.uuid4().hex[:8])
             folder_copy.mkdir(parents=True, exist_ok=False)
             saved = folder_copy / "SKILL.md"
-            with saved.open("xb") as stream:
+            with fsops.open_for_mode(saved, "xb", mode=0o600) as stream:
                 stream.write(md.read_bytes())
-            saved.chmod(0o600)
+            fsops.finish_mode(saved, 0o600)
             row["usage_quarantine"] = str(saved)
             _save(home, records, f"script usage preserved {row['id']}")
         owned = _managed_file(target, row, records)
@@ -680,7 +680,7 @@ def _emergency_revoke(home: Path, root: Path, records: list[dict], row: dict) ->
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(target), str(dest))
             if dest.is_file() and not dest.is_symlink():
-                dest.chmod(0o600)
+                fsops.finish_mode(dest, 0o600)
             row["quarantine"] = str(dest)
             notes.append(f"script {row['skill']}/{row['name']}: preserved at {dest}")
         row.update(state="drafted", active_version=None, activation_pending=False)

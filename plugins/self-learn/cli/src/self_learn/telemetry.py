@@ -40,7 +40,7 @@ from typing import BinaryIO, Iterable
 
 from . import attribution, settings
 from .ledger import resolve_home
-from .primitives import chrono, locks
+from .primitives import chrono, fsops, locks
 from .scan import scan as secret_scan
 
 __all__ = [
@@ -324,7 +324,7 @@ def _hold_back(spool_path: Path, fh: BinaryIO, kept: list[str], refused: list[st
     with open(target, "a", encoding="utf-8") as out:
         out.write("\n".join(refused) + "\n")
         out.flush()
-        os.fsync(out.fileno())
+        fsops.flush_file(out.fileno())
     fh.seek(0)
     fh.truncate()
     if kept:

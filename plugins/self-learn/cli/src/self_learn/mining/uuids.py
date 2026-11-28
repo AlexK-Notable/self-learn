@@ -63,6 +63,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+from ..primitives import fsops
+
 __all__ = ["KEEP_DAMAGED", "KEEP_DAYS", "STORE_NAME", "JudgedUuids", "is_lock_timeout", "prune_damaged", "store_path"]
 
 STORE_NAME = "judged-uuids.sqlite"
@@ -185,10 +187,10 @@ class JudgedUuids:
             return None
         stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
         aside = self.path.with_name(f"{self.path.name}.damaged-{stamp}")
-        os.replace(self.path, aside)
+        fsops.replace_staged(self.path, aside)
         journal = self.path.with_name(self.path.name + "-journal")
         if journal.exists():
-            os.replace(journal, aside.with_name(aside.name + "-journal"))
+            fsops.replace_staged(journal, aside.with_name(aside.name + "-journal"))
         self.damaged = False
         return aside
 
