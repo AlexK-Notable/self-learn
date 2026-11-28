@@ -131,8 +131,9 @@ _STREAMS = ("buf", "fh", "f", "sys", "stderr", "stdout", "out", "handle", "proc"
 NOT_REPO_TRUTH = {
     # S-NEXT-w7-supervisor: the Windows launcher's own log, under the ledger's
     # cache folder (`supervisor.state_dir`), outside every ledger and host.
-    "supervisor_launcher._Log.__call__": "XDG cache: appends a line to <cache>/home-<digest>/supervisor/<name>.log, the launcher's log",
-    "supervisor_launcher._Log.rotate": "XDG cache: moves <cache>/home-<digest>/supervisor/<name>.log to <name>.log.1 when it grew past 4 MiB",
+    "supervisor_launcher._Log._open": "XDG cache: opens <cache>/home-<digest>/supervisor/<name>.log for append, the launcher's log",
+    "supervisor_launcher._Log._rotate": "XDG cache: moves <cache>/home-<digest>/supervisor/<name>.log to <name>.log.1 before it passes its size cap",
+    "supervisor_launcher._note_refused": "XDG cache: writes <cache>/home-<digest>/supervisor/<name>.refused, a second launcher's one line",
     # S-179: a Windows run executes a private copy of the verified
     # bytes from <runtime root>/script-runs/<random>/, outside every repository.
     "skill_scripts._private_snapshot": "runtime root: <runtime>/script-runs/<random>/<name>, the private copy of verified script bytes one Windows run executes, removed afterwards",

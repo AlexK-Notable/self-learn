@@ -1,10 +1,15 @@
 """The systemd user manager behind ``primitives.supervisor``.
 
-Each argument list is a copy of a ``systemctl --user`` call that existed
-before this interface; the original statement is quoted beside each copy.
-Every call goes through ``procs.run_bounded``. ``start``, ``enable``,
-``disable`` and ``show`` had no caller in the Python tree; they are new
-and marked so.
+Only calls the product already makes, each argument list a copy with the
+original quoted beside it, every one through ``procs.run_bounded``:
+``is-active`` (``attention.py``, ``attention_answers.py``), ``reset-failed``
+then ``restart`` (``attention_answers.fix``), ``stop``
+(``attention_answers.stop``) and ``start`` (the tray's ``START_HOST_ARGV``).
+Nothing here enables, disables or inspects a unit file: ``install.sh``
+links the unit and the person enables it, so ``register`` and
+``unregister`` are not provided, ``missing`` cannot be told from
+``inactive``, and no last result is read. A caller that needs those adds
+its own call (for example ``systemctl --user show``) with its own review.
 """
 
 from __future__ import annotations
@@ -15,13 +20,18 @@ from pathlib import Path
 from typing import Sequence
 
 from . import procs
-from .supervisor import ServiceStatus, SupervisorRefused, SupervisorUnavailable
+from .supervisor import ServiceStatus, State, SupervisorRefused, SupervisorUnavailable
 
 HOST_NAME = "self-learn-host.service"
 
 #: attention_answers.py:1517 `_STILL_RUNNING = frozenset({"active",
 #: "activating", "deactivating", "reloading", "refreshing"})`.
 _STILL_RUNNING = frozenset({"active", "activating", "deactivating", "reloading", "refreshing"})
+
+
+def host_name(home: Path) -> str:
+    del home  # One host unit; it pins its own ledger (Environment=SELF_LEARN_HOME).
+    return HOST_NAME
 
 
 def _systemctl(verb: str, unit: str) -> str:
@@ -86,63 +96,40 @@ def active_word(unit: str, *, timeout: float) -> str:
     return str(proc.stdout or "").strip() or "unknown"
 
 
-def _show(unit: str, timeout: float) -> dict[str, str]:
-    # New: no Python caller asked `show` before this interface.
-    binary = _systemctl("show", unit)
-    argv = [binary, "--user", "show", unit, "--property=LoadState,ActiveState,Result,ExecMainStatus"]
-    proc = _call("show", unit, argv, timeout)
-    if proc.returncode != 0:
-        detail = str(proc.stderr or proc.stdout or "").strip()[:400]
-        raise SupervisorRefused(f"systemctl --user show {unit} exited {proc.returncode}: {detail}",
-                                verb="show", name=unit, detail=detail, returncode=proc.returncode)
-    fields = {}
-    for line in str(proc.stdout or "").splitlines():
-        key, sep, value = line.partition("=")
-        if sep:
-            fields[key.strip()] = value.strip()
-    return fields
-
-
-def _exit_status(fields: dict[str, str]) -> int | None:
-    try:
-        return int(fields.get("ExecMainStatus", ""))
-    except ValueError:
-        return None
+def _state(word: str) -> State:
+    if word in _STILL_RUNNING:
+        return "running"
+    if word == "failed":
+        return "failed"
+    return "stopped" if word == "inactive" else "unknown"
 
 
 def status(name: str, *, timeout: float) -> ServiceStatus:
+    """One ``is-active`` call, as before."""
     word = active_word(name, timeout=timeout)
-    if word in _STILL_RUNNING:
-        # One call, as before: a running unit's last result is not asked.
-        return ServiceStatus("running", word, None)
-    fields = _show(name, timeout)
-    result = _exit_status(fields)
-    if fields.get("LoadState") == "not-found":
-        return ServiceStatus("missing", word, result)
-    if word == "failed" or fields.get("Result", "success") != "success":
-        return ServiceStatus("failed", word, result)
-    return ServiceStatus("stopped", word, result)
+    return ServiceStatus(_state(word), word, None)
 
 
 def last_result(name: str, *, timeout: float) -> int | None:
-    return _exit_status(_show(name, timeout))
+    del name, timeout  # No existing call reads it (see the module docstring).
+    return None
 
 
 def start(name: str, *, timeout: float) -> None:
-    # New: the Python tree never started a unit (`self-learn-ui-open`, a
-    # Bash script, runs `systemctl --user start`).
+    # plugins/self-learn/scripts/self-learn-tray:54:
+    #     START_HOST_ARGV = ["systemctl", "--user", "start", "self-learn-host.service"]
     _checked("start", name, timeout)
 
 
 def stop(name: str, *, timeout: float) -> None:
-    # attention_answers.py:1625-1628 (`stop`, which ignores the exit status
-    # and asks `is-active` afterwards; a caller doing the same catches
-    # SupervisorRefused):
+    binary = _systemctl("stop", name)
+    # attention_answers.py:1625-1628 (`stop`, which does not check the exit
+    # status and asks `is-active` afterwards):
     #     subprocess.run(
     #         [binary, "--user", "stop", unit], capture_output=True, text=True,
     #         timeout=STOP_TIMEOUT_SECS, check=False, stdin=subprocess.DEVNULL,
     #     )
-    _checked("stop", name, timeout)
+    _call("stop", name, [binary, "--user", "stop", name], timeout)
 
 
 def restart(name: str, *, timeout: float) -> None:
@@ -153,15 +140,8 @@ def restart(name: str, *, timeout: float) -> None:
 
 def register(name: str, command: list[str], *, description: str, home: Path,
              timeout: float) -> None:
-    # New. install.sh links the unit and never enables it; the unit file
-    # says what runs and with which ledger, so `command`, `description`
-    # and `home` have nothing to set here.
-    del command, description, home
-    _checked("enable", name, timeout)
+    raise NotImplementedError("on Linux install.sh links the unit and the person enables it")
 
 
 def unregister(name: str, *, timeout: float) -> None:
-    # New. `disable --now` would differ from the Windows order only in
-    # wording; two calls keep each one a plain copy of the verb.
-    _checked("stop", name, timeout)
-    _checked("disable", name, timeout)
+    raise NotImplementedError("on Linux install.sh links the unit and the person enables it")

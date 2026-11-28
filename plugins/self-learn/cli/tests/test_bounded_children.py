@@ -355,17 +355,39 @@ def test_p3_gate_census_matches_the_measured_count():
     assert modules == MEASURED_CENSUS_MODULES, sorted(modules)
 
 
+def _create_process_sites(root):
+    """``(module, qualified name of the nearest enclosing function)`` of
+    every ``CreateProcess`` call, so moving a permitted call into a nested
+    helper changes the answer."""
+    sites = []
+
+    def visit(node, rel, stack):
+        for child in ast.iter_child_nodes(node):
+            inner = stack
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                inner = stack + [child.name]
+            if isinstance(child, ast.Call) and _callee_name(child) == "CreateProcess":
+                sites.append((rel, ".".join(stack) or "<module>"))
+            visit(child, rel, inner)
+
+    for path in root.rglob("*.py"):
+        visit(ast.parse(path.read_text(encoding="utf-8")), path.relative_to(root).as_posix(), [])
+    return sorted(sites)
+
+
 def test_native_launch_has_one_owner_and_rejects_a_second(tmp_path):
     # Count the native API separately from the stdlib subprocess census.
     # One owner module; inside it, each launching function is named, so a
     # new CreateProcess there is as visible as one anywhere else.
-    sites = sorted((path.relative_to(SRC).as_posix(), getattr(fn, "name", "<module>"))
-                   for path in SRC.rglob("*.py")
-                   for fn in ast.parse(path.read_text(encoding="utf-8")).body
-                   for node in ast.walk(fn)
-                   if isinstance(node, ast.Call) and _callee_name(node) == "CreateProcess")
+    sites = _create_process_sites(SRC)
     assert sites == [("primitives/_procs_windows.py", "_launch"),
                      ("primitives/_procs_windows.py", "start_supervised")], sites
+    # Control: the same call moved into a nested helper is a different site.
+    (tmp_path / "moved.py").write_text(
+        "def start_supervised():\n    def helper():\n        win32process.CreateProcess()\n",
+        encoding="utf-8")
+    assert _create_process_sites(tmp_path) == [("moved.py", "start_supervised.helper")]
+    (tmp_path / "moved.py").unlink()
     assert not [v for v in scan(SRC) if v.kind == "native-launch-outside-backend"]
     calls = [
         "CreateProcess()", "native.CreateProcessW()", "native.CreateProcessA()",
