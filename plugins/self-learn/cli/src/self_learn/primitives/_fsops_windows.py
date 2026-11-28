@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import errno
 import os
+import secrets
 import stat
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
 from time import monotonic, sleep
@@ -31,21 +32,76 @@ _SHARE_ALL = win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FIL
 _INHERIT = security.OBJECT_INHERIT_ACE | security.CONTAINER_INHERIT_ACE
 
 
-def _attributes(path: Path) -> int:
-    # GetFileAttributes also sees reparse tags that Python lstat may traverse.
+_OPEN_ENTRY = win32file.FILE_FLAG_OPEN_REPARSE_POINT | win32con.FILE_FLAG_BACKUP_SEMANTICS
+
+
+@contextmanager
+def _winerrors(path: Path | str) -> Iterator[None]:
     try:
-        return win32api.GetFileAttributes(str(path))
+        yield
     except pywintypes.error as exc:
-        if exc.winerror in (2, 3):
-            return 0
         raise OSError(0, exc.strerror, str(path), exc.winerror) from exc
 
 
+def _attributes(path: Path) -> int:
+    with _winerrors(path):
+        try:
+            return win32api.GetFileAttributes(str(path))
+        except pywintypes.error as exc:
+            if exc.winerror in (2, 3):
+                return 0
+            raise
+
+
+def _link_tag(tag: int) -> bool:
+    # IsReparseTagNameSurrogate, plus Windows application execution aliases.
+    return bool(tag & 0x20000000) or tag == 0x8000001B
+
+
+def _is_link(path: Path) -> bool:
+    if not _attributes(path) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    with _winerrors(path):
+        with closing(win32file.CreateFile(str(path), 0, _SHARE_ALL, None,
+                                          win32con.OPEN_EXISTING, _OPEN_ENTRY, None)) as handle:
+            info = win32file.GetFileInformationByHandleEx(handle, win32file.FileAttributeTagInfo)
+            return _link_tag(info["ReparseTag"])
+
+
+def _refuse_link(path: Path) -> None:
+    if _is_link(path):
+        raise fsops.SymlinkRefused(path)
+
+
 def _refuse_links(path: Path) -> None:
-    path = path.absolute()
-    for component in (*reversed(path.parents), path):
-        if _attributes(component) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-            raise fsops.SymlinkRefused(component)
+    _refuse_link(path.parent)
+    _refuse_link(path)
+
+
+def _take_fd(handle, flags: int) -> int:
+    fd = msvcrt.open_osfhandle(int(handle), flags | os.O_BINARY)
+    handle.Detach()  # close(fd) now owns the native handle
+    return fd
+
+
+def _exclusive_fd(path: Path | str, *, delete_access: bool = False) -> int:
+    access = win32con.GENERIC_WRITE
+    if delete_access:
+        access |= win32con.DELETE
+    with _winerrors(path):
+        with closing(win32file.CreateFile(str(path), access, _SHARE_ALL, None, win32con.CREATE_NEW,
+                                          win32file.FILE_FLAG_OPEN_REPARSE_POINT, None)) as handle:
+            return _take_fd(handle, os.O_WRONLY)
+
+
+def _new_temp(candidate: Callable[[], Path], *, delete_access: bool = False) -> tuple[int, str]:
+    for _ in range(100):
+        path = candidate()
+        try:
+            return _exclusive_fd(path, delete_access=delete_access), str(path)
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "could not allocate a unique temporary name", str(path))
 
 
 def replace_staged(src: Path | str, dst: Path | str, *, method: Literal["os", "path"] = "os") -> None:
@@ -71,9 +127,9 @@ def replace_staged(src: Path | str, dst: Path | str, *, method: Literal["os", "p
             except OSError:
                 retry = False
             remaining = deadline - monotonic()
-            if not retry or remaining <= 0:
+            if not retry or remaining <= 0.010:
                 raise
-            sleep(min(0.010, remaining))
+            sleep(0.010)
             if monotonic() >= deadline:
                 raise
 
@@ -82,14 +138,14 @@ def atomic_write(path: Path | str, data: bytes | str, *, mode: int | None = None
                  preserve_mode: bool = True, fsync: bool = True, follow_symlinks: bool = False,
                  encoding: str = "utf-8") -> None:
     target = Path(path)
-    _refuse_links(target.parent)
-    if _attributes(target) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-        if not follow_symlinks:
-            raise fsops.SymlinkRefused(target)
-        target = target.resolve()
+    if follow_symlinks:
+        if _is_link(target):
+            target = target.resolve()
+    else:
+        _refuse_links(target)
     payload = data if isinstance(data, bytes) else data.encode(encoding)
     try:
-        fd, name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+        fd, name = _new_temp(lambda: fsops._temp_path(target))
     except OSError as exc:
         if exc.filename is not None:
             exc.filename = str(target)
@@ -142,32 +198,48 @@ def _principals():
 
 
 def _verify_private(path: Path, principals) -> None:
-    _refuse_links(path)
-    if not path.is_dir():
-        raise NotADirectoryError(errno.ENOTDIR, "private parent must be a directory", str(path))
-    sd = security.GetNamedSecurityInfo(str(path), security.SE_FILE_OBJECT,
-                                       security.OWNER_SECURITY_INFORMATION | security.DACL_SECURITY_INFORMATION)
-    acl = sd.GetSecurityDescriptorDacl()
-    protected = sd.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED
-    if sd.GetSecurityDescriptorOwner() == principals[0] and protected and acl is not None:
-        expected = {str(sid) for sid in principals}
-        actual = set()
-        for index in range(acl.GetAceCount()):
-            ace = acl.GetAce(index)
-            if ace[:2] != ((security.ACCESS_ALLOWED_ACE_TYPE, _INHERIT), ntsecuritycon.FILE_ALL_ACCESS):
-                break
-            actual.add(str(ace[2]))
-        else:
-            if actual == expected and acl.GetAceCount() == len(expected):
+    """An inherited ACL must lead back to a user-owned, protected private root."""
+    expected = {str(sid) for sid in principals}
+    current = path.absolute()
+    while True:
+        _refuse_link(current)
+        if not stat.S_ISDIR(current.stat().st_mode):
+            raise NotADirectoryError(errno.ENOTDIR, "expected a private directory", str(current))
+        sd = security.GetNamedSecurityInfo(str(current), security.SE_FILE_OBJECT,
+                                           security.OWNER_SECURITY_INFORMATION | security.DACL_SECURITY_INFORMATION)
+        protected = sd.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED
+        owner = sd.GetSecurityDescriptorOwner()
+        acl = sd.GetSecurityDescriptorDacl()
+        if str(owner) not in expected or acl is None or acl.GetAceCount() != len(expected):
+            break
+        flags = _INHERIT if protected else _INHERIT | security.INHERITED_ACE
+        expected_ace = ((security.ACCESS_ALLOWED_ACE_TYPE, flags), ntsecuritycon.FILE_ALL_ACCESS)
+        aces = [acl.GetAce(i) for i in range(acl.GetAceCount())]
+        if any(ace[:2] != expected_ace for ace in aces) or {str(ace[2]) for ace in aces} != expected:
+            break
+        if protected:
+            if owner == principals[0]:
                 return
-    raise PermissionError(errno.EACCES, "unsafe owner or permissions on private directory", str(path))
+            break
+        if current == current.parent:
+            break
+        current = current.parent
+    raise PermissionError(errno.EACCES, "unsafe owner or permissions on private directory", str(current))
+
+
+def _existing_private_parent(path: Path) -> None:
+    with _winerrors(path):
+        _verify_private(path, _principals())
 
 
 def ensure_private_parent(path: Path) -> None:
     _refuse_links(path)
     try:
         principals = _principals()
-        if not path.exists():
+        attributes = _attributes(path)
+        if attributes and not attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
+            raise FileExistsError(errno.EEXIST, "private directory name is occupied", str(path))
+        if not attributes:
             path.parent.mkdir(parents=True, exist_ok=True)
             acl = security.ACL()
             for sid in principals:
@@ -190,14 +262,14 @@ def ensure_private_parent(path: Path) -> None:
 
 
 def open_private_new(path: Path) -> int:
-    ensure_private_parent(path.parent)
-    return os.open(path, os.O_WRONLY | os.O_BINARY | os.O_CREAT | os.O_EXCL)
+    _existing_private_parent(path.parent)
+    return _exclusive_fd(path)
 
 
 def private_temp(parent: Path, *, prefix: str, suffix: str) -> tuple[int, str]:
-    ensure_private_parent(parent)
+    _existing_private_parent(parent)
     _check_name(prefix + "_" + suffix)
-    return tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=parent)
+    return _new_temp(lambda: parent / (prefix + secrets.token_hex(8) + suffix))
 
 
 def _file_id(handle) -> tuple[int, int, int]:
@@ -220,44 +292,62 @@ def _remove_owned_temp(path: Path, identity: tuple[int, int, int]) -> None:
 
 @contextmanager
 def reopenable_text(text: str, *, prefix: str, suffix: str) -> Iterator[Path]:
-    fd, name = tempfile.mkstemp(prefix=prefix, suffix=suffix)
+    folder = Path(tempfile.gettempdir())
+    _check_name(prefix + "_" + suffix)
+    fd, name = _new_temp(lambda: folder / (prefix + secrets.token_hex(8) + suffix), delete_access=True)
     path = Path(name)
-    identity = _file_id(msvcrt.get_osfhandle(fd))
+    identity = None
     try:
         with os.fdopen(fd, "wb") as stream:
+            handle = msvcrt.get_osfhandle(fd)
+            with _winerrors(path):
+                try:
+                    identity = _file_id(handle)
+                except pywintypes.error:
+                    # Delete via the still-owned handle even when its ID could not be read.
+                    win32file.SetFileInformationByHandle(handle, win32file.FileDispositionInfo, True)
+                    raise
             stream.write(text.encode("utf-8"))
         yield path
     finally:
-        _remove_owned_temp(path, identity)
+        if identity is not None:
+            _remove_owned_temp(path, identity)
 
 
 def open_for_mode(path: Path, kind: Literal["x", "xb", "a"], *,
                   mode: int | None = None, encoding: str | None = None) -> IO[Any]:
-    return path.open(kind, encoding=encoding, newline=None if kind == "xb" else "\n")
+    opener = None if kind == "a" else lambda name, flags: _exclusive_fd(name)
+    if kind == "xb":
+        return open(path, kind, encoding=encoding, opener=opener)
+    return open(path, kind, encoding="utf-8" if encoding is None else encoding, newline="\n", opener=opener)
 
 
 def finish_mode(path: Path, mode: int, *, method: Literal["path", "os"] = "path") -> None:
-    path.chmod(stat.S_IWRITE if mode & stat.S_IWUSR else stat.S_IREAD)
+    mapped = stat.S_IWRITE if mode & stat.S_IWUSR else stat.S_IREAD
+    if method == "os":
+        os.chmod(path, mapped)
+    else:
+        Path(path).chmod(mapped)
 
 
 def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) -> int:
-    if policy == "provenance":
-        return os.open(path, os.O_RDONLY | os.O_BINARY)
     # Open the entry itself. Inspect the handle we actually return, so a swap
     # after inspection cannot redirect the reader to a different file.
     try:
+        flags = _OPEN_ENTRY if policy == "premise" else win32con.FILE_FLAG_BACKUP_SEMANTICS
         handle = win32file.CreateFile(str(path), win32con.GENERIC_READ, _SHARE_ALL, None,
-                                      win32con.OPEN_EXISTING, win32file.FILE_FLAG_OPEN_REPARSE_POINT |
-                                      win32con.FILE_FLAG_BACKUP_SEMANTICS, None)
+                                      win32con.OPEN_EXISTING, flags, None)
         with closing(handle):
-            attrs = win32file.GetFileInformationByHandle(handle)[0]
-            if attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-                raise OSError(errno.ELOOP, "refusing reparse point", str(path))
-            if attrs & stat.FILE_ATTRIBUTE_DIRECTORY:
-                raise IsADirectoryError(errno.EISDIR, "expected a file", str(path))
-            fd = msvcrt.open_osfhandle(int(handle), os.O_RDONLY | os.O_BINARY)
-            handle.Detach()  # the CRT descriptor now owns the handle
-            return fd
+            if policy == "provenance":
+                return _take_fd(handle, os.O_RDONLY)
+            info = win32file.GetFileInformationByHandleEx(handle, win32file.FileAttributeTagInfo)
+            if _link_tag(info["ReparseTag"]):
+                raise OSError(errno.ELOOP, "refusing link", str(path))
+            if info["ReparseTag"]:
+                # Give a cloud/storage provider normal data-open processing on this file.
+                with closing(win32file.ReOpenFile(handle, win32con.GENERIC_READ, _SHARE_ALL, 0)) as data:
+                    return _take_fd(data, os.O_RDONLY)
+            return _take_fd(handle, os.O_RDONLY)
     except pywintypes.error as exc:
         raise OSError(0, exc.strerror, str(path), exc.winerror) from exc
 
@@ -271,7 +361,7 @@ class _Directory:
     def __init__(self, path: Path):
         self.path = path.absolute()
         _refuse_links(self.path)
-        if not self.path.is_dir():
+        if not stat.S_ISDIR(self.path.stat().st_mode):
             raise NotADirectoryError(errno.ENOTDIR, "expected a directory", str(path))
 
     def entries(self):

@@ -450,7 +450,7 @@ def test_whole_versions_visible_to_child(tmp_path):
     import time
 
     path = tmp_path / "published"
-    ready, seen_new, stop = (tmp_path / n for n in ("ready", "seen-new", "stop"))
+    ready, seen_new, seen_old, stop = (tmp_path / n for n in ("ready", "seen-new", "seen-old", "stop"))
     old, new = (c * 131072 + b"\x00\n" for c in (b"a", b"b"))
     path.write_bytes(old)
     script = """
@@ -458,7 +458,7 @@ def test_whole_versions_visible_to_child(tmp_path):
         from pathlib import Path
         from contextlib import closing
         import win32con, win32file
-        path, ready, seen_new, stop = map(Path, sys.argv[1:])
+        path, ready, seen_new, seen_old, stop = map(Path, sys.argv[1:])
         def read_version():
             # Share DELETE so an open reader and the rename can overlap.
             with closing(win32file.CreateFile(str(path), win32con.GENERIC_READ,
@@ -472,7 +472,9 @@ def test_whole_versions_visible_to_child(tmp_path):
             assert data in (old, new), (len(data), data[:8])
             if data == new and not seen_new.exists():
                 seen_new.touch()
-            time.sleep(0.001)
+            if data == old and seen_new.exists() and not seen_old.exists():
+                seen_old.touch()
+            time.sleep(0)
     """
     def wait_for(signal, child):
         end = time.monotonic() + 10
@@ -481,11 +483,13 @@ def test_whole_versions_visible_to_child(tmp_path):
             time.sleep(0.005)
 
     with subprocess.Popen([sys.executable, "-c", textwrap.dedent(script),
-                           path, ready, seen_new, stop]) as child:
+                           path, ready, seen_new, seen_old, stop]) as child:
         try:
             wait_for(ready, child)
             fsops.atomic_write(path, new)
             wait_for(seen_new, child)
+            fsops.atomic_write(path, old)
+            wait_for(seen_old, child)
             for _ in range(24):
                 fsops.atomic_write(path, old)
                 fsops.atomic_write(path, new)
@@ -937,3 +941,281 @@ def test_ordinary_publish_inherits_folder_permissions(tmp_path):
     assert entries(published) == expected
     assert not published.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED
     assert target.read_bytes() == b"ordinary" and peer.read_bytes() == b"peer"
+
+
+@windows
+def test_cloud_tags_take_ordinary_file_paths(tmp_path, monkeypatch):
+    import win32api
+    import win32file
+    from self_learn.primitives import _fsops_windows as native
+
+    assert all(native._link_tag(tag) for tag in (
+        stat.IO_REPARSE_TAG_SYMLINK, stat.IO_REPARSE_TAG_MOUNT_POINT, stat.IO_REPARSE_TAG_APPEXECLINK))
+    assert not any(native._link_tag(tag) for tag in (0, 0x80000013, 0x9000001A, 0x9000701A, 0x9000F01A))
+    folder = tmp_path / "Documents"
+    fsops.ensure_private_parent(folder)
+    path = folder / "record"
+    path.write_bytes(b"old")
+    attributes = win32api.GetFileAttributes
+    get_info = win32file.GetFileInformationByHandleEx
+    reopen = win32file.ReOpenFile
+    reads = []
+
+    def cloud_attributes(name):
+        bits = attributes(name)
+        return bits | stat.FILE_ATTRIBUTE_REPARSE_POINT if Path(name) in (folder, path) else bits
+
+    def cloud_info(handle, kind):
+        info = get_info(handle, kind)
+        assert kind == win32file.FileAttributeTagInfo
+        return {**info, "ReparseTag": 0x9000F01A,
+                "FileAttributes": info["FileAttributes"] | stat.FILE_ATTRIBUTE_REPARSE_POINT}
+
+    def open_data(handle, access, share, flags):
+        reads.append(flags)
+        return reopen(handle, access, share, flags)
+
+    monkeypatch.setattr(win32api, "GetFileAttributes", cloud_attributes)
+    monkeypatch.setattr(win32file, "GetFileInformationByHandleEx", cloud_info)
+    monkeypatch.setattr(win32file, "ReOpenFile", open_data)
+    fsops.ensure_private_parent(folder)
+    fsops.atomic_write(path, b"ordinary\n")
+    assert path.read_bytes() == b"ordinary\n"
+    fsops.private_write(path, b"private\n")
+    with os.fdopen(fsops.open_regular(path, policy="premise"), "rb") as reader:
+        assert reader.read() == b"private\n"
+    assert reads == [0]
+    with fsops.safe_directory(folder) as directory, directory.entries() as entries:
+        assert [entry.name for entry in entries] == [path.name]
+
+
+@windows
+@pytest.mark.parametrize("kind", ["directory_symlink", "junction"])
+def test_linked_parent_and_uninspected_ancestor(tmp_path, monkeypatch, kind):
+    import _winapi
+    import pywintypes
+    import win32api
+
+    base, linked = tmp_path / "folders", tmp_path / "alias"
+    inner = base / "ordinary"
+    inner.mkdir(parents=True)
+    if kind == "junction":
+        _winapi.CreateJunction(str(base), str(linked))
+        assert linked.is_junction()
+    else:
+        linked.symlink_to(base, target_is_directory=True)
+        assert linked.is_symlink()
+    assert linked.samefile(base)
+
+    with pytest.raises(fsops.SymlinkRefused):
+        fsops.atomic_write(linked / "settings", b"refused")
+    get_attrs = win32api.GetFileAttributes
+    inspected = []
+
+    def guarded(name):
+        inspected.append(Path(name))
+        if Path(name) in (linked, tmp_path):
+            raise pywintypes.error(5, "GetFileAttributes", "no attribute access")
+        return get_attrs(name)
+
+    monkeypatch.setattr(win32api, "GetFileAttributes", guarded)
+    with pytest.raises(pywintypes.error):
+        guarded(str(tmp_path))
+    inspected.clear()
+    fsops.atomic_write(linked / "settings", b"config", follow_symlinks=True)
+    fsops.atomic_write(linked / "ordinary" / "note", b"record")
+    assert linked not in inspected and tmp_path not in inspected
+    assert (base / "settings").read_bytes() == b"config" and (inner / "note").read_bytes() == b"record"
+
+
+@windows
+def test_exclusive_creates_refuse_occupied_link_names(private_root, monkeypatch):
+    import win32con
+    import win32file
+
+    fsops.ensure_private_parent(private_root)
+    existing = private_root / "existing"
+    existing.write_bytes(b"original")
+    real_create = win32file.CreateFile
+    requests = []
+
+    def create(name, access, share, security, disposition, flags, template):
+        if disposition == win32con.CREATE_NEW:
+            assert flags & win32file.FILE_FLAG_OPEN_REPARSE_POINT
+            requests.append(Path(name))
+        return real_create(name, access, share, security, disposition, flags, template)
+
+    monkeypatch.setattr(win32file, "CreateFile", create)
+    for target in (existing, private_root / "absent"):
+        link = private_root / (target.name + "-link")
+        link.symlink_to(target.name)
+        for kind in ("private", "x", "xb"):
+            with pytest.raises(FileExistsError) as collision:
+                if kind == "private":
+                    os.close(fsops.open_private_new(link))
+                else:
+                    fsops.open_for_mode(link, kind).close()
+            assert collision.value.winerror in (80, 183)
+            assert requests.pop() == link
+        assert link.readlink() == Path(target.name)
+    assert existing.read_bytes() == b"original" and not (private_root / "absent").exists()
+
+
+@windows
+def test_default_text_encoding_and_string_mode_paths(tmp_path):
+    text = "水é\n"
+    path = str(tmp_path / "text")
+    with fsops.open_for_mode(path, "x") as stream:
+        stream.write(text)
+    with fsops.open_for_mode(path, "a") as stream:
+        stream.write(text)
+    assert Path(path).read_bytes() == (text * 2).encode("utf-8")
+    with fsops.open_for_mode(path, "a", encoding="latin-1") as stream:
+        stream.write("é\n")
+    assert Path(path).read_bytes().endswith(b"\xc3\xa9\n\xe9\n")
+    try:
+        fsops.finish_mode(path, 0o444, method="os")
+        assert Path(path).stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+    finally:
+        os.chmod(path, stat.S_IWRITE)
+
+
+@windows
+def test_directory_error_types_and_reader_classification(tmp_path):
+    missing, regular = tmp_path / "missing", tmp_path / "regular"
+    regular.touch()
+    with pytest.raises(FileNotFoundError):
+        fsops.safe_directory(missing)
+    with pytest.raises(NotADirectoryError):
+        fsops.safe_directory(regular)
+    with pytest.raises(FileExistsError):
+        fsops.ensure_private_parent(regular)
+    for policy in ("provenance", "premise"):
+        with pytest.raises(FileNotFoundError):
+            fsops.open_regular(missing, policy=policy)
+        fd = fsops.open_regular(tmp_path, policy=policy)
+        try:
+            assert stat.S_ISDIR(os.fstat(fd).st_mode)
+        finally:
+            os.close(fd)
+
+
+@windows
+def test_private_creates_require_existing_parent(private_root):
+    for create in (lambda: fsops.open_private_new(private_root / "new"),
+                   lambda: fsops.private_temp(private_root, prefix="p", suffix=".tmp")):
+        with pytest.raises(FileNotFoundError):
+            create()
+        assert not private_root.parent.exists()
+
+
+@windows
+def test_verify_inherited_private_subdirectory(private_root):
+    import ntsecuritycon
+    import win32security as security
+
+    fsops.ensure_private_parent(private_root)
+    child = private_root / "runs" / "session"
+    child.mkdir(parents=True)
+    fsops.ensure_private_parent(child)
+    with os.fdopen(fsops.open_private_new(child / "reply"), "wb") as stream:
+        stream.write(b"reply\n")
+    fd, name = fsops.private_temp(child, prefix="p", suffix=".tmp")
+    os.close(fd)
+    assert Path(name).parent == child and (child / "reply").read_bytes() == b"reply\n"
+
+    # A non-inheriting entry at the origin leaves the child's three entries intact.
+    # Verification must still detect the change to the origin.
+    def acl(path):
+        sd = security.GetNamedSecurityInfo(str(path), security.SE_FILE_OBJECT, security.DACL_SECURITY_INFORMATION)
+        return sd.GetSecurityDescriptorDacl()
+    dacl = acl(private_root)
+    dacl.AddAccessAllowedAce(security.ACL_REVISION, ntsecuritycon.FILE_READ_ATTRIBUTES,
+                             security.CreateWellKnownSid(security.WinBuiltinGuestsSid))
+    security.SetNamedSecurityInfo(str(private_root), security.SE_FILE_OBJECT,
+                                  security.DACL_SECURITY_INFORMATION | security.PROTECTED_DACL_SECURITY_INFORMATION,
+                                  None, None, dacl, None)
+    assert acl(child).GetAceCount() == 3
+    with pytest.raises(PermissionError):
+        fsops.ensure_private_parent(child)
+
+
+@windows
+def test_native_errors_keep_winerror_and_cause(tmp_path, monkeypatch):
+    import pywintypes
+    import tempfile
+    import win32api
+    import win32file
+    import win32security
+
+    path = tmp_path / "entry"
+    fsops.atomic_write(path, b"before")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    def text():
+        with fsops.reopenable_text("body", prefix="probe-", suffix=".tmp"):
+            pass
+    for module, name, operation in (
+        (win32api, "GetFileAttributes", lambda: fsops.atomic_write(path, b"changed")),
+        (win32security, "OpenProcessToken", lambda: fsops.open_private_new(path)),
+        (win32file, "CreateFile", lambda: fsops.open_for_mode(tmp_path / "new", "x")),
+        (win32file, "FlushFileBuffers", lambda: fsops.sync_file_and_parent(path)),
+        (win32file, "GetFileInformationByHandleEx", lambda: fsops.open_regular(path, policy="premise")),
+        (win32file, "GetFileInformationByHandle", text),
+        (win32file, "SetFileInformationByHandle", text),
+    ):
+        failure = pywintypes.error(5, name, "injected denial")
+        def deny(*args):
+            raise failure
+        with monkeypatch.context() as faults:
+            faults.setattr(module, name, deny)
+            with pytest.raises(PermissionError) as caught:
+                operation()
+        assert caught.value.winerror == 5 and caught.value.__cause__ is failure
+        assert caught.value.filename
+        if name == "SetFileInformationByHandle":
+            # Deletion itself failed. Its handle must still have closed.
+            [left] = tmp_path.glob("probe-*.tmp")
+            left.unlink()
+        assert list(tmp_path.iterdir()) == [path]
+    assert path.read_bytes() == b"before"
+
+
+@windows
+def test_publication_temp_name_and_collision(tmp_path, monkeypatch):
+    import re
+
+    target = tmp_path / ("a" * 64 + ".json")
+    collision = tmp_path / "occupied"
+    collision.write_bytes(b"keep")
+    factory = fsops._temp_path
+    names = []
+    def candidate(dest):
+        assert dest == target
+        name = factory(dest) if names else collision
+        names.append(name)
+        return name
+    monkeypatch.setattr(fsops, "_temp_path", candidate)
+    fsops.atomic_write(target, b"complete")
+    assert len(names) == 2
+    assert re.fullmatch(r"\.[0-9a-f]{64}\.json\.[0-9]+\.[0-9a-f]{8}\.tmp", names[1].name)
+    assert collision.read_bytes() == b"keep" and target.read_bytes() == b"complete"
+    assert set(tmp_path.iterdir()) == {collision, target}
+
+
+@windows
+def test_no_sleep_in_final_retry_slice(tmp_path, monkeypatch):
+    from self_learn.primitives import _fsops_windows as native
+
+    src, dst = tmp_path / "source", tmp_path / "dest"
+    src.touch()
+    dst.touch()
+    times = iter([0, 0.245])
+    monkeypatch.setattr(native, "monotonic", lambda: next(times))
+    monkeypatch.setattr(native, "sleep", lambda delay: pytest.fail(f"unused final sleep {delay}"))
+    error = OSError(0, "busy", str(src), 32, str(dst))
+    def busy(source, target):
+        raise error
+    monkeypatch.setattr(os, "replace", busy)
+    with pytest.raises(PermissionError) as caught:
+        fsops.replace_staged(src, dst)
+    assert caught.value is error
