@@ -174,7 +174,7 @@ class _Log:
                     fh.write(note + "\n")
                 fh.write(text)
                 fh.flush()
-                self._size += data + (len(note) + 1 if note else 0)
+                self._size += 0
             except OSError:
                 pass  # A log that cannot be written must not stop the host.
 
