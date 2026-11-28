@@ -347,3 +347,43 @@ def test_foreign_registry_is_readable_and_preserved(home, tmp_path):
     host.mkdir()
     assert cli.main(["host", "add", str(host), "--mode", "plain"]) != 0
     assert registry.read_bytes() == before and list(host.iterdir()) == []
+
+
+@windows
+def test_registration_reads_registry_under_shared_lock(home, tmp_path, monkeypatch):
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    seen = []
+    original = hosts.load_hosts
+
+    def observed(root, **kwargs):
+        seen.append(str(gitops.commit_lock_path(home)) in gitops._held_locks)
+        return original(root, **kwargs)
+
+    monkeypatch.setattr(hosts, "load_hosts", observed)
+    hosts.host_add(home, first, "project", mode="plain")
+    child("from self_learn import hosts; import sys; hosts.host_add(*sys.argv[1:], mode='plain')",
+          home, second, "project")
+    assert seen and all(seen)
+    assert set(original(home).projects) == {first, second}
+    assert (home / "hosts.yaml").read_bytes() == git(home, "show", "HEAD:hosts.yaml")
+
+
+@windows
+def test_flagged_spool_refuses_unverified_quarantine(home, monkeypatch, capsys):
+    from self_learn import cli
+    from types import SimpleNamespace
+
+    spool = telemetry.spool_event("offer-made", witness="synthetic-marker")
+    telemetry.spool_event("offer-made", witness="clean sibling")
+    before = spool.read_bytes()
+    head = git(home, "rev-parse", "HEAD")
+    monkeypatch.setattr(telemetry, "secret_scan", lambda line: (
+        [SimpleNamespace(rule="synthetic test")] if "synthetic-marker" in line else []))
+    assert cli._flush_spool_best_effort(home, no_push=True) == "refused"
+    diagnostic = capsys.readouterr().err
+    assert str(spool) in diagnostic and "synthetic-marker" not in diagnostic
+    assert not telemetry.rejected_dir().exists()
+    assert spool.read_bytes() == before and git(home, "rev-parse", "HEAD") == head
+    assert not (home / "telemetry" / spool.name).exists()
