@@ -417,7 +417,11 @@ def condition_state(notice: Notice, *, timeout: float = GIT_CHECK_TIMEOUT) -> st
     deadline = time.monotonic() + timeout
     recorded = cond.get("hash")
     if not recorded:
-        got = _git(repo, ["status", "--porcelain", "--", names.git_arg(Path(repo), file)], timeout=timeout)
+        if os.name == "nt":
+            got = _git(repo, ["--literal-pathspecs", "status", "--porcelain", "--",
+                              names.git_arg(Path(repo), file, literal=True)], timeout=timeout)
+        else:
+            got = _git(repo, ["status", "--porcelain", "--", names.git_arg(Path(repo), file)], timeout=timeout)
         if got is None or got[0] != 0:
             return "unknown"
         return "holds" if got[1] else "clear"

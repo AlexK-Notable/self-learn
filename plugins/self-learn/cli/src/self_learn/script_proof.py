@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 
 from .primitives import names
@@ -153,10 +153,12 @@ def verify_commit(home: Path, row: dict, raw: bytes, transcript: bytes) -> None:
     from .skill_scripts import INDEX, _held
     review = row["review"]
     subject = f"self-learn: script review {row['id']}: approve"
-    if os.name == "nt":
-        held_path = _held(home, row)
-        objects = [(names.git_arg(home, path, literal=True), data) for path, data in
-                   ((held_path, raw), (held_path.with_name("review.jsonl"), transcript))]
+    held_path = _held(home, row)
+    held = names.git_arg(home, held_path) if os.name == "nt" else held_path.relative_to(home).as_posix()
+    objects = (
+        (held, raw, row.get("script_sha256")),
+        (PurePosixPath(held).with_name("review.jsonl").as_posix(), transcript, review.get("transcript_sha256")),
+    )
     candidates = gitops._git_ok(home, "log", "--format=%H", "--fixed-strings", "--grep=" + subject, "--", INDEX).stdout.splitlines()
     for commit in candidates:
         message = gitops._git_ok(home, "show", "-s", "--format=%B", commit).stdout
@@ -170,15 +172,14 @@ def verify_commit(home: Path, row: dict, raw: bytes, transcript: bytes) -> None:
         previous = gitops._git(home, "show", commit + "^:" + INDEX)
         if previous.returncode == 0 and any(r.get("id") == row["id"] and (r.get("review") or {}).get("verdict") == "approve" for r in json.loads(previous.stdout)["scripts"]):
             continue
-        if os.name == "nt":
-            if all(gitops._git_bytes(home, "cat-file", "blob", f"{commit}:{key}") == data
-                   for key, data in objects):
-                return
-            continue
-        held = _held(home, row).relative_to(home).as_posix()
-        if not all(gitops._git_ok(home, "rev-parse", commit + ":" + path).stdout.strip() ==
-            hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-            for path, data in ((held, raw), (str(Path(held).parent / "review.jsonl"), transcript))):
-            continue
-        return
+        for key, data, digest in objects:
+            if digest is not None and hashlib.sha256(data).hexdigest() != digest:
+                break
+            blob = gitops._git_bytes(home, "cat-file", "blob", f"{commit}:{key}")
+            # Git may clean CRLF on add. Only the original digest from the
+            # matched approval row can vouch for the lost carriage returns.
+            if blob != data and (digest is None or blob != data.replace(b"\r\n", b"\n")):
+                break
+        else:
+            return
     raise ValueError("approval absent from a matching self-learn review commit")

@@ -20,13 +20,13 @@ on the ledger and reads case files; it writes nothing.
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 
+from . import gitops
 from .primitives import procs
 
 __all__ = ["OUTCOME_GROUPS", "SERIES_DAYS", "day_series"]
@@ -124,44 +124,24 @@ def _queue_by_day(home: Path, day_ends: list[datetime]) -> tuple[list[tuple[int,
         chosen.append(best)
     blobs_by_commit: dict[str, list[str]] = {}
     for sha in {c for c in chosen if c}:
-        if os.name == "nt":
-            data = _history_bytes(home, "ls-tree", "-r", "-z", sha)
-            if data is None:
-                return None, "the ledger's git history could not be read"
-            lines = data.decode("utf-8").split("\0")
-        else:
-            tree = _git(home, "ls-tree", "-r", sha)
-            if tree is None:
-                return None, "the ledger's git history could not be read"
-            lines = tree.splitlines()
+        tree = _history_bytes(home, "ls-tree", "-r", "-z", sha)
+        if tree is None:
+            return None, "the ledger's git history could not be read"
         blobs = []
-        for line in lines:
-            meta, _, path = line.partition("\t")
+        for entry in tree.split(b"\0"):
+            meta, _, path = entry.partition(b"\t")
             parts = meta.split()
-            if len(parts) == 3 and parts[1] == "blob" and _PENDING_PATH_RE.match(path):
-                blobs.append(parts[2])
+            if len(parts) == 3 and parts[1] == b"blob" and _PENDING_PATH_RE.fullmatch(gitops.decode_git_path(path)):
+                blobs.append(parts[2].decode("ascii"))
         blobs_by_commit[sha] = blobs
     wanted = sorted({b for blobs in blobs_by_commit.values() for b in blobs})
     status: dict[str, str] = {}
-    if wanted and os.name == "nt":
+    if wanted:
         data = _history_bytes(home, "cat-file", "--batch", stdin=("\n".join(wanted) + "\n").encode("ascii"))
-        if data is None:
+        parsed = _batch_statuses(data, wanted) if data is not None else None
+        if parsed is None:
             return None, "the ledger's git history could not be read"
-        offset = 0
-        for blob in wanted:
-            end = data.index(b"\n", offset)
-            oid, kind, size = data[offset:end].split()
-            if oid != blob.encode("ascii") or kind != b"blob":
-                return None, "the ledger's git history could not be read"
-            offset = end + 1 + int(size)
-            body = data[end + 1:offset].decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
-            status[blob] = _frontmatter_status(body)
-            offset += 1  # the batch protocol's LF after the counted bytes
-    elif wanted:
-        out = _git(home, "cat-file", "--batch", stdin="\n".join(wanted) + "\n")
-        if out is None:
-            return None, "the ledger's git history could not be read"
-        status = _batch_statuses(out)
+        status = parsed
     rows = []
     for sha in chosen:
         if sha is None:
@@ -172,17 +152,27 @@ def _queue_by_day(home: Path, day_ends: list[datetime]) -> tuple[list[tuple[int,
     return rows, None
 
 
-def _batch_statuses(out: str) -> dict[str, str]:
-    """``git cat-file --batch`` output -> ``{blob sha: frontmatter status}``.
-    Sizes are in bytes and the text is decoded, so each object is found by
-    its header line and read up to the next header, not by byte count."""
-    result: dict[str, str] = {}
-    header = re.compile(r"^([0-9a-f]{40}) blob \d+$", re.MULTILINE)
-    marks = list(header.finditer(out))
-    for i, m in enumerate(marks):
-        body = out[m.end(): marks[i + 1].start() if i + 1 < len(marks) else len(out)]
-        result[m.group(1)] = _frontmatter_status(body)
-    return result
+def _batch_statuses(data: bytes, wanted: list[str]) -> dict[str, str] | None:
+    """Consume complete cat-file frames. Missing objects have no size or body."""
+    result = {}
+    offset = 0
+    for oid in wanted:
+        end = data.find(b"\n", offset)
+        if end < 0:
+            return None
+        header = data[offset:end].split()
+        if len(header) != 3 or header[:2] != [oid.encode("ascii"), b"blob"] or not header[2].isdigit():
+            return None
+        # A size larger than the entire response cannot describe a complete blob.
+        if len(header[2]) > len(str(len(data))):
+            return None
+        offset = end + 1 + int(header[2])
+        if data[offset:offset + 1] != b"\n":
+            return None
+        body = data[end + 1:offset].decode("utf-8", "replace")
+        result[oid] = _frontmatter_status(body.replace("\r\n", "\n").replace("\r", "\n"))
+        offset += 1
+    return result if offset == len(data) else None
 
 
 def _frontmatter_status(body: str) -> str:

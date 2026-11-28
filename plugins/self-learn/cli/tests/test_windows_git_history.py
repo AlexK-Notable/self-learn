@@ -211,6 +211,12 @@ def test_windows_unreachable_push_env(repo, tmp_path, monkeypatch):
                 if e["sid"] == ids[0] and e["event"] == "def_param" and e["param"] in prompt_vars}
         assert seen == prompt_vars
 
+    env = gitops._windows_push_env(repo)
+    answer = subprocess.run(["git", "-C", str(repo), "-c", "credential.helper=", "credential", "fill"],
+                            env=env, input=b"protocol=https\nhost=unused.invalid\n\n",
+                            capture_output=True, timeout=5, check=True)
+    assert b"username=" in answer.stdout.splitlines() and b"password=" in answer.stdout.splitlines()
+
 
 @pytest.mark.parametrize("reader", ["queue", "steward", "overseer"])
 @pytest.mark.parametrize("bucket", [
@@ -218,7 +224,7 @@ def test_windows_unreachable_push_env(repo, tmp_path, monkeypatch):
     pytest.param('q"uote', marks=pytest.mark.skipif(os.name == "nt", reason="POSIX filename")),
     pytest.param("two\nlines", marks=pytest.mark.skipif(os.name == "nt", reason="POSIX filename")),
 ], ids=["ascii", "unicode", "quote", "newline"])
-def test_bucket_history(repo, reader, bucket):
+def test_bucket_history(repo, reader, bucket, monkeypatch):
     from self_learn import batch, execution_evidence, steward
     from self_learn.overseer import run as overseer
 
@@ -226,7 +232,9 @@ def test_bucket_history(repo, reader, bucket):
     key = f"projects/{bucket}/pending/{rid}.md"
     record = Record.create(type="knowledge", scope="project", source="teach", fact="saved fact",
                            record_id=rid)
-    git(repo, "commit", "--allow-empty", "-qm", "parent")
+    with monkeypatch.context() as parent:
+        parent.setenv("GIT_COMMITTER_DATE", "2025-03-01T12:00:00Z")
+        git(repo, "commit", "--allow-empty", "-qm", "parent")
     put(repo, key, record.to_text().encode())
     git(repo, "add", "--", ".")
     git(repo, "commit", "-qm", "reopened")
@@ -243,16 +251,27 @@ def test_bucket_history(repo, reader, bucket):
         assert found and found[0].as_posix() == key and found[1].to_text() == record.to_text()
 
 
-def test_missing_history_blob(repo):
+def test_missing_history_blob(repo, monkeypatch):
     key = "user/pending/lrn-00000009.md"
     put(repo, key, b"status: pending\n")
     git(repo, "add", "--", key)
     git(repo, "commit", "-qm", "snapshot")
     oid = git(repo, "rev-parse", "HEAD:" + key).decode().strip()
-    (repo / ".git" / "objects" / oid[:2] / oid[2:]).unlink()
+    obj = repo / ".git" / "objects" / oid[:2] / oid[2:]
+    obj.chmod(0o600)  # Git marks loose objects read-only on Windows.
+    obj.unlink()
     result = series.day_series(repo, today=date(2025, 3, 2), tz=timezone.utc, days=1, events=[])
     assert result["error"] == "the ledger's git history could not be read"
     assert result["rows"][0]["pending"] is None
+
+    read = series._history_bytes
+    for incomplete in (oid.encode() + b" blob", oid.encode() + b" blob 50\nshort\n"):
+        with monkeypatch.context() as damaged:
+            damaged.setattr(series, "_history_bytes", lambda home, *args, **kw:
+                            incomplete if args[0] == "cat-file" else read(home, *args, **kw))
+            result = series.day_series(repo, today=date(2025, 3, 2), tz=timezone.utc, days=1, events=[])
+            assert result["error"] == "the ledger's git history could not be read"
+            assert result["rows"][0]["pending"] is None
 
 
 def test_undecodable_git_names(repo):
@@ -320,9 +339,9 @@ def test_windows_ask_history(repo, monkeypatch):
 
 
 @windows
-@pytest.mark.parametrize("source", ["env", "config"])
+@pytest.mark.parametrize("source", ["default", "env", "config"])
 def test_windows_ssh_override(repo, tmp_path, monkeypatch, source):
-    # Real ssh exits on -V; trace the actual transport command without a server.
+    # The supplied commands exit on -V. The default gets a local refusal.
     trace = tmp_path / "ssh.jsonl"
     monkeypatch.setenv("GIT_TRACE2_EVENT", trace.as_posix())
     monkeypatch.setenv("GIT_TRACE2_ENV_VARS", "GIT_SSH_COMMAND")
@@ -330,14 +349,19 @@ def test_windows_ssh_override(repo, tmp_path, monkeypatch, source):
     ssh = "ssh -V -o ConnectionAttempts=3"
     if source == "env":
         monkeypatch.setenv("GIT_SSH_COMMAND", ssh)
-    else:
+    elif source == "config":
         git(repo, "config", "core.sshCommand", ssh)
+    else:
+        ssh = "ssh -o BatchMode=yes"
     git(repo, "commit", "--allow-empty", "-qm", "local")
-    result = gitops._git(repo, "push", "ssh://localhost/unreachable", "HEAD", timeout=8)
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        remote = f"ssh://127.0.0.1:{reserved.getsockname()[1]}/unreachable"
+        result = gitops._git(repo, "push", remote, "HEAD", timeout=8)
     assert result.returncode != 0
     events = [json.loads(line) for line in trace.read_bytes().splitlines()]
     assert any(e["event"] == "child_start" and e["argv"][0] == ssh for e in events)
     push = next(e for e in events if e["event"] == "start" and "push" in e["argv"])
     values = [e["value"] for e in events if e["sid"] == push["sid"] and
               e["event"] == "def_param" and e["param"] == "GIT_SSH_COMMAND"]
-    assert values == ([ssh] if source == "env" else [])
+    assert values == ([] if source == "config" else [ssh])

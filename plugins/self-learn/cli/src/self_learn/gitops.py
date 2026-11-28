@@ -73,6 +73,7 @@ owns the git mechanics.
 from __future__ import annotations
 
 import contextlib
+from contextvars import ContextVar
 import os
 import subprocess
 import sys
@@ -226,16 +227,45 @@ class HalfWrittenError(GitOpsError):
         )
 
 
+# A hook removal must scope its rm, path-limited commit and any rollback alike.
+_literal_paths = ContextVar("git_literal_paths", default=False)
+
+
+@contextlib.contextmanager
+def literal_pathspecs() -> Iterator[None]:
+    token = _literal_paths.set(True)
+    try:
+        yield
+    finally:
+        _literal_paths.reset(token)
+
+
+def _windows_push_env(repo: Path) -> dict[str, str]:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
+           "GIT_ASKPASS": "true", "SSH_ASKPASS": "true", "SSH_ASKPASS_REQUIRE": "never"}
+    if "GIT_SSH_COMMAND" not in env:
+        configured = _git(repo, "config", "--get", "core.sshCommand")
+        if configured.returncode == 1:  # no value in any config scope
+            env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+        elif configured.returncode:
+            raise GitOpsError(f"cannot read core.sshCommand: {configured.stderr.strip()}")
+    return env
+
+
 def _git(
-    repo: Path, *args: str, timeout: float = GIT_LOCAL_TIMEOUT
+    repo: Path, *args: str, timeout: float = GIT_LOCAL_TIMEOUT, binary: bool = False
 ) -> subprocess.CompletedProcess:
     """One git call, always bounded. ``subprocess.run`` with no timeout is
     why "blocking with a sane timeout" was fiction (audit 2026-07-16)."""
     try:
+        if os.name == "nt" and _literal_paths.get():
+            args = ("--literal-pathspecs", *args)
+        if binary:
+            return procs.run_bounded(["git", "-C", str(repo), *args], timeout=timeout, binary=True)
         if os.name == "nt" and args[:1] in (("push",), ("pull",)):
             return procs.run_bounded(
                 ["git", "-C", str(repo), *args], timeout=timeout,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GIT_SSH_COMMAND": "ssh -V"},
+                env=_windows_push_env(repo),
             )
         return procs.run_command(
             ["git", "-C", str(repo), *args],
@@ -333,14 +363,27 @@ def unstage(repo: Path, paths: Iterable[Path | str]) -> None:
 
 def _git_bytes(repo: Path, *args: str) -> bytes:
     """Read a blob or machine-delimited records without text conversion."""
-    try:
-        proc = procs.run_bounded(["git", "-C", str(repo), *args],
-                                 timeout=GIT_LOCAL_TIMEOUT, binary=True)
-    except subprocess.TimeoutExpired as exc:
-        raise GitOpsError(f"git {args[0]} in {repo} exceeded {GIT_LOCAL_TIMEOUT:g}s") from exc
+    proc = _git(repo, *args, binary=True)
     if proc.returncode:
         raise GitOpsError(f"git {' '.join(args)} failed: {proc.stderr.decode('utf-8', 'replace').strip()}")
     return proc.stdout
+
+
+def decode_git_path(data: bytes) -> str:
+    """Decode native Git names, including POSIX bytes in a Windows clone."""
+    if os.name == "nt":
+        # Windows fsdecode uses surrogatepass. Git tree names can instead
+        # contain arbitrary POSIX bytes, even in a Windows clone.
+        return data.decode("utf-8", "surrogateescape")
+    return os.fsdecode(data)
+
+
+def git_path_list(repo: Path, *args: str) -> list[str]:
+    """Read a Git -z name list. A failed lookup yields no candidates."""
+    proc = _git(repo, *args, binary=True)
+    if proc.returncode:
+        return []
+    return [decode_git_path(name) for name in proc.stdout.split(b"\0") if name]
 
 
 def staged_diff(repo: Path, paths: Iterable[Path | str] = ()) -> str:
@@ -350,8 +393,6 @@ def staged_diff(repo: Path, paths: Iterable[Path | str] = ()) -> str:
     args = ["diff", "--cached"]
     path_args = [names.git_arg(repo, p) for p in paths]
     if path_args:
-        if os.name == "nt":
-            args.insert(0, "--literal-pathspecs")
         args += ["--", *path_args]
     return _git_ok(repo, *args).stdout
 
@@ -785,8 +826,7 @@ def _dirty_path_names(data: bytes) -> list[str]:
     """Keep the Git spelling (including a directory's trailing slash)."""
     if data and not data.endswith(b"\0"):
         raise GitOpsError("unterminated Git status record")
-    # Decode the whole response strictly, including discarded rename sources.
-    fields = iter(data.decode("utf-8").split("\0")[:-1])
+    fields = iter(decode_git_path(data).split("\0")[:-1])
     paths = []
     for record in fields:
         if len(record) < 4 or record[2] != " ":

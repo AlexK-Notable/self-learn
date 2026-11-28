@@ -3630,7 +3630,9 @@ def _remove_hook_script(
         )
         return None
     try:
-        with gitops.host_lock(host_repo, mode):
+        path_scope = (gitops.literal_pathspecs() if os.name == "nt" and mode == "git"
+                      else contextlib.nullcontext())
+        with gitops.host_lock(host_repo, mode), path_scope:
             if mode != "git":
                 # G1: never delete a file git tracks in a plain host (the
                 # pre-flight refused it; its tracking may have changed).
