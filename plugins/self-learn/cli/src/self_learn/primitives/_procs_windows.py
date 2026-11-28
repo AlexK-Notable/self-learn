@@ -411,7 +411,7 @@ _PROCESS_QUERY = win32con.PROCESS_QUERY_LIMITED_INFORMATION | win32con.SYNCHRONI
 # SYNCHRONIZE lets terminate_contained wait for the process itself to exit.
 _PROCESS_CONTAIN = (win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE
                     | win32con.PROCESS_QUERY_LIMITED_INFORMATION | win32con.SYNCHRONIZE)
-_JOB_FLAGS = win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
+_JOB_FLAGS = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
 _TERMINATE_SECONDS = 5.0
 #: A pass adopts every descendant whose parent was adopted in an earlier
 #: pass; a chain deeper than this many generations is left uncovered.
@@ -752,7 +752,7 @@ def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> Contain
         root = _Member(process, identity.created, before, in_any, in_self)
         adopted, uncovered, left_out = [], [], []
         tree, complete = _adopt_descendants(job, pid, root, adopted, uncovered, left_out)
-        pass  # W17
+        handle._processes += [m.process for m in tree.values() if m is not root]
         handle.adopted, handle.uncovered = tuple(adopted), tuple(uncovered)
         handle.left_out, handle.complete = tuple(left_out), complete
     except BaseException as failure:
