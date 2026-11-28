@@ -479,6 +479,18 @@ def test_flagged_spool_uses_verified_private_quarantine(home, monkeypatch, capsy
     blob = git(home, "show", "HEAD:telemetry/" + spool.name)
     assert json.loads(blob)["witness"] == "clean sibling"
     assert telemetry.flush(home, push=False).events == 0
+    # An earlier verified folder can be replaced while the CLI process remains live.
+    saved_dir = private.with_name("previous-private")
+    private.rename(saved_dir)
+    private.mkdir()
+    guard = private / "guard"
+    guard.write_bytes(b"ordinary replacement")
+    telemetry.spool_event("offer-made", witness="synthetic-marker")
+    before = spool.read_bytes()
+    assert cli._flush_spool_best_effort(home, no_push=True) == "refused"
+    assert spool.read_bytes() == before and list(private.iterdir()) == [guard]
+    assert guard.read_bytes() == b"ordinary replacement"
+    assert (saved_dir / saved.name).read_bytes() == flagged
 
 
 @windows
