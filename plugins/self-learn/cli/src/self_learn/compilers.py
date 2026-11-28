@@ -1252,7 +1252,7 @@ def apply_pointer(
         # The file keeps its own line endings; the restore below then puts
         # back its exact original text.
         original_text = keep_line_endings(surface, original_text)
-        pass  # MUTANT M3a
+        new_text = keep_line_endings(surface, new_text)
     # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True. Each
     # of this function's writes (this one, and the create-empty and
     # revert legs) is its own atomic replace: a crash between any two of
@@ -1537,7 +1537,7 @@ def retire_reference(
     if removed is None:
         return ReferenceResult(path=path, applied=False, created=False, entry=None)
     # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
-    if os.name == "nt" and False:  # MUTANT M3b
+    if os.name == "nt":  # the file keeps its own line endings
         new_text = keep_line_endings(path, new_text)
     fsops.atomic_write(path, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return ReferenceResult(path=path, applied=True, created=False, entry=removed)
