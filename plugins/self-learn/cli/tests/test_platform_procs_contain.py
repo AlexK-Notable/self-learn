@@ -582,7 +582,6 @@ def test_windows_terminate_is_bounded(tmp_path, monkeypatch):
         proc.wait(timeout=5)
 
 
-@pytest.mark.skip(reason="deliberate skip M4")
 @windows
 def test_windows_job_flags_allow_breakaway_and_kill_on_close(tmp_path):
     import win32job
