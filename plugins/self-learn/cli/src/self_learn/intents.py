@@ -167,6 +167,10 @@ ABSENT = "-"
 
 
 def intents_dir(home: Path | str) -> Path:
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        return checked_path(Path(home), Path(home) / ".intents")
     return Path(home) / ".intents"
 
 
@@ -175,6 +179,10 @@ def _now_iso() -> str:
 
 
 def _relpath(home: Path, path: Path) -> str:
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        return names.git_arg(home, checked_path(home, path))
     target = Path(path).resolve()
     return names.relative_key(Path(home).resolve(), target)
 
@@ -616,11 +624,25 @@ def recover(home: Path | str) -> RecoverResult:
             # `_mark_stopped`, and the reported "id" is the file's own
             # stem (there is no parsed intent to name one from).
             try:
+                if os.name == "nt":
+                    from .primitives._capture_windows import checked_path
+
+                    checked_path(home, f)
                 data = json.loads(f.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
                 result._stop(f.stem, f"unreadable intent file ({exc})")
                 continue
             try:
+                if os.name == "nt":
+                    from .primitives._capture_windows import checked_path
+
+                    if data["id"] != f.stem:
+                        raise ValueError("intent id differs from its filename")
+                    for step in data["steps"]:
+                        relative = Path(step["path"])
+                        if relative.anchor or any(part.lower() == ".git" for part in relative.parts):
+                            raise ValueError("invalid ledger-relative intent step")
+                        checked_path(home, home / relative)
                 intent = _from_dict(home, data)
             except (ValueError, KeyError) as exc:
                 result._stop(f.stem, f"unresolvable intent ({exc})")

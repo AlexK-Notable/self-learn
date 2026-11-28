@@ -232,6 +232,10 @@ def _git(
     """One git call, always bounded. ``subprocess.run`` with no timeout is
     why "blocking with a sane timeout" was fiction (audit 2026-07-16)."""
     try:
+        if os.name == "nt":
+            from .primitives._capture_windows import git_argv
+
+            return procs.run_command(git_argv(repo, args), timeout=timeout)
         return procs.run_command(
             ["git", "-C", str(repo), *args],
             timeout=timeout,
@@ -733,7 +737,9 @@ def porcelain_paths(repo: Path) -> list[tuple[str, Path]]:
     (the miner's very first landing into a new project bucket is exactly
     that case, and a directory pathspec would over-commit)."""
     if os.name == "nt":
-        raise NotImplementedError("native Windows Git status paths are not implemented")
+        from .primitives._capture_windows import status_paths
+
+        return status_paths(repo, timeout=GIT_LOCAL_TIMEOUT)
     proc = _git(repo, "status", "--porcelain", "-uall")
     if proc.returncode != 0:
         raise GitOpsError(
@@ -960,6 +966,11 @@ def ensure_excluded(repo: Path, patterns: Iterable[str]) -> bool:
     if not wanted:
         return False
     with commit_lock(repo):
+        if os.name == "nt":
+            from .primitives._capture_windows import checked_path
+
+            common = commit_lock_path(repo).parent
+            checked_path(common, common / "info" / "exclude")
         exclude = git_path(repo, "info/exclude")
         try:
             text = exclude.read_text(encoding="utf-8")

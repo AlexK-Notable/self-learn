@@ -122,6 +122,10 @@ def _cache_base() -> Path:
 
 def spool_dir() -> Path:
     """The spool directory, XDG-resolved at call time (tests redirect it)."""
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        return checked_path(names.cache_root(), names.home_cache() / "spool")
     return _cache_base() / "spool"
 
 
@@ -129,6 +133,10 @@ def rejected_dir() -> Path:
     """Cache-only home of spool lines the secret scan refused at flush
     (2026-09-28, fail-state audit finding 13): never the ledger, never
     flushed, kept so a person can look at what was held back."""
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        return checked_path(names.cache_root(), names.home_cache() / "spool-rejected")
     return _cache_base() / "spool-rejected"
 
 
@@ -211,6 +219,8 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
     line = json.dumps(event, separators=(",", ":"), sort_keys=True)
 
     path = names.component_path(spool_dir(), f"{_month(now)}.{actor()}.jsonl")
+    if os.name == "nt":
+        _cache_base()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         lease = locks.acquire(fh.fileno(), path=path, wait=None)
@@ -392,6 +402,10 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
         # Phase 1: lock every spool file and scan every line. Nothing is
         # written until every line of every file has passed.
         for spool_path in sorted(sdir.glob("*.jsonl")):
+            if os.name == "nt":
+                from .primitives._capture_windows import checked_path
+
+                checked_path(names.cache_root(), spool_path)
             try:
                 fh = open(spool_path, "r+b")
             except (FileNotFoundError, OSError):
@@ -483,6 +497,10 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                     if not lines:
                         continue
                     target = names.component_path(telemetry_dir(home), spool_path.name)
+                    if os.name == "nt":
+                        from .primitives._capture_windows import checked_path
+
+                        checked_path(home, target)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with open(target, "a+", encoding="utf-8") as out:
                         target_lease = locks.acquire_ledger_target(out.fileno())

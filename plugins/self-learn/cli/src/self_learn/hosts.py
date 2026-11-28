@@ -805,6 +805,16 @@ def _host_add(
         )
     if not home.is_dir():
         raise HostsError(f"ledger home {home} does not exist")
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        try:
+            checked_path(home, hosts_path(home))
+            if mode == "plain":
+                host = Path(path).expanduser()
+                checked_path(host, host / MARKER_FILENAME)
+        except ValueError as exc:
+            raise HostsError(str(exc)) from exc
     if init:
         _init_for_registration(path)
 

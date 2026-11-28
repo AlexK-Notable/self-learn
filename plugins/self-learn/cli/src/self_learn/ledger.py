@@ -286,6 +286,24 @@ def _create_layout(target: Path) -> tuple[str, ...]:
     return tuple(created)
 
 
+def _configure_windows_ledger(root: Path) -> None:
+    """Called under the commit lock and before recovery can compare bytes."""
+    from .primitives._capture_windows import git_bytes
+
+    for key, value in (("core.autocrlf", "false"), ("core.longpaths", "true")):
+        current = gitops._git(root, "config", "--local", "--get", key)
+        if current.returncode or current.stdout.strip() != value:
+            gitops._git_ok(root, "config", "--local", key, value)
+    entries = git_bytes(root, "ls-files", "--eol", "-z", timeout=gitops.GIT_LOCAL_TIMEOUT)
+    for entry in entries.split(b"\0"):
+        if entry:
+            eol, path = entry.split(b"\t", 1)
+            rel = path.decode("utf-8")
+            index, worktree, attribute = eol.split(maxsplit=2)
+            if b"eol=crlf" in attribute or (index == b"i/lf" and worktree in (b"w/crlf", b"w/mixed")):
+                raise InitError(f"{rel}: Git attributes or working bytes conflict with ledger LF storage")
+
+
 def init_home(path: Path | str) -> InitResult:
     """``self-learn init`` (C1 §2.2): bootstrap *path* as the ledger home,
     following the ratified ``host add --init`` precedent's shape
@@ -324,6 +342,14 @@ def init_home(path: Path | str) -> InitResult:
     the default and the whole of what this function does."""
     target = Path(path).expanduser()
 
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        try:
+            for name in (*_LAYOUT, ".git"):
+                checked_path(target, target / name)
+        except ValueError as exc:
+            raise InitError(str(exc)) from exc
     # Step 2 (P-C1.24): lexists, not exists — a dangling symlink answers
     # exists()==False, so an exists()-keyed check would fall through to
     # step 3 and crash on a raw `mkdir` FileExistsError.
@@ -360,6 +386,8 @@ def init_home(path: Path | str) -> InitResult:
         # weaken it for every producer. Acquisition on a fresh repo is
         # uncontended and effectively free.
         with gitops.commit_lock(target):
+            if os.name == "nt":
+                _configure_windows_ledger(target)
             _commit_allow_empty(target)
         return InitResult(target.resolve(), True, added, True, False)
 
@@ -380,10 +408,15 @@ def init_home(path: Path | str) -> InitResult:
         _git_init(resolved)
         added = _create_layout(resolved)
         with gitops.commit_lock(resolved):  # see step 3 — absolute rule
+            if os.name == "nt":
+                _configure_windows_ledger(resolved)
             _commit_allow_empty(resolved)
         return InitResult(resolved, True, added, True, False)
 
     # Step 6: already a repo root — top up per directory (P-C1.14).
+    if os.name == "nt":
+        with gitops.commit_lock(resolved):
+            _configure_windows_ledger(resolved)
     missing_before = tuple(name for name in _LAYOUT if not (resolved / name).is_dir())
     had_head_before = _has_head(resolved)
     if not missing_before and had_head_before:

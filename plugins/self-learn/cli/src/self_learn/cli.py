@@ -5354,6 +5354,17 @@ def _main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:  # argparse error (e.g. bad choice, missing group)
         return exc.code if isinstance(exc.code, int) else EXIT_USAGE
 
+    if os.name == "nt":
+        from .primitives import capabilities
+
+        if _extra:
+            print(f"self-learn {args.command}: unrecognized arguments: {' '.join(_extra)}", file=sys.stderr)
+            return EXIT_USAGE
+        refused = capabilities.refused(args)
+        if refused:
+            print(f"self-learn {refused}: unavailable in Windows capture mode", file=sys.stderr)
+            return 1
+
     # Provider keys are usage input, checked before watchdog/epilogue writes.
     if args.command in {"note", "confirm-held"}:
         try:

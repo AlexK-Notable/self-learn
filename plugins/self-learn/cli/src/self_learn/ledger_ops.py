@@ -685,6 +685,14 @@ def create_record(
     Returns the created path."""
     require_writable_home(home)  # nothing is written into a broken home
     bucket_dir = bucket_dir_for_scope(home, record.scope, project_path=project_path)
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        try:
+            checked_path(home, bucket_dir / "meta.yaml")
+            checked_path(home, bucket_dir / "pending" / f"{record.id}.md")
+        except ValueError as exc:
+            raise LedgerOpsError(str(exc)) from exc
     if record.scope == "project":
         ensure_project_meta(bucket_dir, project_path)
     pending = bucket_dir / "pending"
