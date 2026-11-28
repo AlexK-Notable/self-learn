@@ -345,7 +345,7 @@ def _hold_back(spool_path: Path, fh: BinaryIO, kept: list[str], refused: list[st
     if os.name == "nt":
         # The owner can inspect the documented quarantine path. It is outside
         # the verified private root, so leave this spool intact and identify it.
-        raise ScanRefusal(f"flagged lines remain in {spool_path}: "
+        raise TelemetryError(f"flagged lines remain in {spool_path}: "
                           f"the quarantine at {rejected_dir()} has no verified private permissions")
     target = names.component_path(rejected_dir(), spool_path.name)
     target.parent.mkdir(parents=True, exist_ok=True)
