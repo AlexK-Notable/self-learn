@@ -477,6 +477,42 @@ jobs:
             throw "Expected 323 executed hook-rule tests and 208 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
           }
 
+      - name: Windows hook activation
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "hook-activation.xml"
+          uv run --no-sync python -m pytest tests/test_windows_hook_activation.py -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $native = @(
+            'test_evaluate_program_deny_warn_allow'
+            'test_evaluate_program_fails_closed_on_an_unusable_rule'
+            'test_evaluate_program_is_fast_and_loads_no_ledger_or_sdk'
+            'test_windows_activate_writes_the_rule_and_an_exec_form_entry'
+            'test_windows_reactivate_changes_nothing'
+            'test_windows_deactivate_removes_exactly_our_entry_and_rule'
+            'test_windows_foreign_entries_are_left_alone'
+            'test_windows_a_hand_edited_entry_is_refused[timeout]'
+            'test_windows_a_hand_edited_entry_is_refused[matcher]'
+            'test_windows_a_hand_edited_entry_is_refused[event]'
+            'test_windows_a_hand_edited_rule_file_is_refused'
+            'test_windows_a_refused_pattern_is_reported_and_nothing_written'
+            'test_windows_settings_keep_their_line_endings_and_bom[crlf]'
+            'test_windows_settings_keep_their_line_endings_and_bom[bom]'
+            'test_windows_settings_keep_their_line_endings_and_bom[crlf-bom]'
+            'test_windows_a_failed_write_rolls_back_everything[settings.json]'
+            'test_windows_a_failed_write_rolls_back_everything[rule]'
+            'test_windows_a_missing_hook_program_refuses_and_writes_nothing'
+            'test_windows_a_guard_from_the_previous_emitter_activates'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $missing = @($native | Where-Object { $ran -cnotcontains $_ })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne 'Linux differential: runs the generated Bash script' })
+          if ($missing.Count -or $ran.Count -ne 19 -or $skips.Count -ne 7 -or $unexpected.Count) {
+            throw "Unexpected hook activation selection: ran $($ran -join ', '); missing $($missing -join ', '); skipped $($skips.Count), unexpected $($unexpected.Count)"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(

@@ -249,13 +249,13 @@ EXPECTED: dict[str, tuple[int, bytes, str]] = {
     'bash-empty-stdin': (2, b'', 'self-learn lrn-5a5e0001: empty hook input — failing closed\n'),
     'bash-blank-stdin': (2, b'', 'self-learn lrn-5a5e0001: empty hook input — failing closed\n'),
     'bash-unicode-blank': (2, b'', 'self-learn lrn-5a5e0001: empty hook input — failing closed\n'),
-    'bash-nbsp-not-blank': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'bash-nbsp-not-blank': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
     'bash-nul-only-stdin': (2, b'', 'self-learn lrn-5a5e0001: empty hook input — failing closed\n'),
     'warn-nul-only-stdin': (0, b'', ''),
-    'bash-malformed': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
-    'bash-top-array': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'bash-malformed': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
+    'bash-top-array': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
     'bash-top-null': (0, b'', ''),
-    'bash-tool-input-string': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 30 — failing closed\n'),
+    'bash-tool-input-string': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 38 — failing closed\n'),
     'bash-no-tool-input': (0, b'', ''),
     'bash-command-null': (0, b'', ''),
     'bash-command-false': (0, b'', ''),
@@ -268,9 +268,9 @@ EXPECTED: dict[str, tuple[int, bytes, str]] = {
     'bash-stream-two-names': (0, b'', ''),
     'bash-bom': (2, b'', 'self-learn lrn-5a5e0001: no pushing from here\n'),
     'bash-literal-run': (2, b'', 'self-learn lrn-5a5e0001: no pushing from here\n'),
-    'bash-trailing-junk': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
-    'bash-lone-high-surrogate': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
-    'bash-high-then-not-low': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'bash-trailing-junk': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
+    'bash-lone-high-surrogate': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
+    'bash-high-then-not-low': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
     'render-del': (2, b'', 'self-learn lrn-5a5e0001: rendered\n'),
     'render-control': (2, b'', 'self-learn lrn-5a5e0001: rendered\n'),
     'render-backspace': (2, b'', 'self-learn lrn-5a5e0001: rendered\n'),
@@ -278,7 +278,7 @@ EXPECTED: dict[str, tuple[int, bytes, str]] = {
     'render-slash-raw': (2, b'', 'self-learn lrn-5a5e0001: rendered\n'),
     'render-unicode-raw': (0, b'', ''),
     'render-raw-string': (0, b'', ''),
-    'bash-raw-control': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'bash-raw-control': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
     'bash-long': (2, b'', 'self-learn lrn-5a5e0001: no pushing from here\n'),
     'file-edit-match': (2, b'', 'self-learn lrn-5a5e0001: stop HA first\n'),
     'file-write-no-match': (0, b'', ''),
@@ -298,11 +298,11 @@ EXPECTED: dict[str, tuple[int, bytes, str]] = {
     'number-in-array': (0, b'', ''),
     'stream-number-then-event-warn': (0, b'{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"self-learn lrn-5a5e0001: careful with -f"}}\n', ''),
     'stream-true-then-empty': (0, b'', ''),
-    'stream-event-then-number': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'stream-event-then-number': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
     'depth-arrays-under-old-limit': (0, b'', ''),
-    'depth-arrays-at-limit': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
-    'depth-objects-at-limit': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
-    'depth-deep-then-junk': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'depth-arrays-at-limit': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
+    'depth-objects-at-limit': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
+    'depth-deep-then-junk': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 34 — failing closed\n'),
     'depth-selected-shallow': (2, b'', 'self-learn lrn-5a5e0001: nested\n'),
     'classes-upper-digits': (2, b'', 'self-learn lrn-5a5e0001: classes\n'),
     'classes-lower': (0, b'', ''),
@@ -1478,11 +1478,11 @@ def test_a_letter_range_means_code_point_order(scripts):
     C.UTF-8 the script and the evaluator agree on letters, accented ones
     included.
 
-    The known gap, pinned so its closing is noticed: until the emitter pins
-    ``LC_ALL=C.UTF-8``, the script follows the caller's locale. Under
-    en_US.UTF-8 its ``[a-z]`` also matches ``é``; under ``LC_ALL=C`` its
-    ``.`` matches a single byte; in both the script denies what the
-    evaluator allows."""
+    The gap this test used to pin is closed (decision 180, lane
+    w5-activation): the emitter now pins ``LC_ALL=C.UTF-8``, so a caller's
+    en_US.UTF-8 (where ``[a-z]`` matched ``é``) or ``LC_ALL=C`` (where
+    ``.`` matched one byte) no longer reaches grep: the script allows, as
+    the evaluator does."""
     work = []
     for pattern, texts in _RANGE_RULES.items():
         text = hook_compiler.generate_script(RID, TRIGGER, ["Bash"], pattern, "m")
@@ -1497,7 +1497,7 @@ def test_a_letter_range_means_code_point_order(scripts):
         other = _Scripts(scripts.root, {**scripts.env, "LC_ALL": locale})
         assert scripts.run(script, _cmd(probe))[0] == 0  # C.UTF-8: the script allows, as ...
         assert hook_rules.evaluate(rule, _cmd(probe)).verdict == "allow"  # ... the evaluator does
-        assert other.run(script, _cmd(probe))[0] == 2, (pattern, locale)  # the gap
+        assert other.run(script, _cmd(probe))[0] == 0, (pattern, locale)  # the gap, closed
 
 
 @_DIFF

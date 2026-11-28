@@ -3327,6 +3327,12 @@ def _write_hook_script(target: Path, script: str) -> HookApplyResult:
         target.read_text(encoding="utf-8") if target.is_file() else None
     )
     executable = target.is_file() and bool(target.stat().st_mode & 0o100)
+    if os.name == "nt":
+        # Windows keeps no execute bit (``st_mode`` shows one only for .exe,
+        # .bat, .cmd and .com), and the guard runs there through its rule
+        # file, never this script (lane w5-activation): byte-identical text
+        # is unchanged, or every recompile would rewrite every guard.
+        executable = True
     if current == script and executable:
         return HookApplyResult(path=target, changed=False)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -3660,12 +3666,22 @@ def _remove_hook_script(
     block by the time it runs)."""
     host_repo, script, rel, mode = removal
     name = script.name
-    post_notes.append(
-        f"hook retired — finish by hand: remove the settings.json "
-        f"hook entry for {name} (PreToolUse, or PostToolUse for a warning "
-        f"hook) and the dead ~/.claude/hooks/{name} "
-        "symlink (install.sh only adds links, it never removes them)"
-    )
+    if os.name == "nt":
+        # Native Windows (lane w5-activation): an activated guard there is a
+        # rule file and an exec-form entry, not a symlink.
+        rule = name.removesuffix(".sh") + ".rule.json"
+        post_notes.append(
+            "hook retired — finish by hand: remove the settings.json hook entry "
+            f"that runs self-learn-hook.exe evaluate --rule <claude dir>\\hooks\\{rule} "
+            "(PreToolUse, or PostToolUse for a warning hook) and that rule file"
+        )
+    else:
+        post_notes.append(
+            f"hook retired — finish by hand: remove the settings.json "
+            f"hook entry for {name} (PreToolUse, or PostToolUse for a warning "
+            f"hook) and the dead ~/.claude/hooks/{name} "
+            "symlink (install.sh only adds links, it never removes them)"
+        )
     if not script.is_file():
         warnings.append(
             f"hook script {script} already absent — nothing to remove"

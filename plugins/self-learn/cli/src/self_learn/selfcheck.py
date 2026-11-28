@@ -1128,6 +1128,8 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
     Loud, never mutating. Ledger-side checks skip cleanly when hosts.yaml
     is absent (nothing registered → nothing compiled anywhere), same rule
     as the drift check."""
+    if os.name == "nt":
+        return _check_hooks_windows(home, claude_dir)
     failures: list[str] = []
     checked = 0
     stale = 0
@@ -1297,6 +1299,198 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
     return Verdict.PASS, (
         f"{checked} live hook script(s) intact; {registrations} "
         "registration(s) resolvable"
+    )
+
+
+def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
+    """:func:`_check_hooks` on native Windows (lane w5-activation), read-only.
+
+    A guard runs here through its rule file and ``self-learn-hook.exe``
+    (``hook_activation``'s Windows block), never through its Bash script, so
+    the script is checked for presence and approved bytes only: no execute
+    bit, no Bash replay. A guard whose rule the evaluator cannot build is
+    INACTIVE ON THIS MACHINE, with the reason, and never counted as broken:
+    a guard activated on Linux in a shared ledger is not a Windows failure.
+    A guard whose rule file is placed must hold its current rule and replay
+    clean through the evaluator. Every exec-form registration of
+    ``self-learn-hook.exe`` must name a program that exists and, for a rule,
+    a rule file that loads (a missing deny rule blocks every call it
+    matches). Shell-form ``self-learn-*`` registrations are checked as on
+    Linux."""
+    from pathlib import PureWindowsPath
+
+    from . import hook_activation, hook_rules
+
+    failures: list[str] = []
+    inactive: list[str] = []
+    checked = 0
+    active = 0
+
+    hosts_known = hosts_path(home).is_file()
+    root = None
+    if hosts_known:
+        try:
+            root = load_hosts(home).skills_root
+        except HostsError as exc:
+            failures.append(f"hosts.yaml unreadable: {exc}")
+
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except (RecordError, UnicodeDecodeError):
+                continue
+            routing = record.routing or {}
+            if routing.get("destination") != "hook":
+                continue
+            meta = routing.get("hook") or {}
+            rel = meta.get("script_path")
+            live = domain.is_canon_live(record)
+            if not hosts_known:
+                continue
+            if rel is None or root is None:
+                if live:
+                    failures.append(
+                        f"{record.id}: hook-routed but its script is "
+                        "unresolvable (no routing.hook.script_path or no "
+                        "skills root) — supersede + re-route"
+                    )
+                continue
+            script = root / rel
+            if not live:
+                if script.is_file():
+                    failures.append(
+                        f"{record.id}: INCOMPLETE SUPERSESSION — record is "
+                        f"{record.status} but its script {script} still "
+                        "exists; remove it and retire its settings.json entry"
+                    )
+                continue
+            checked += 1
+            if not script.is_file():
+                failures.append(
+                    f"{record.id}: hook script {script} missing — run "
+                    "`self-learn recompile`"
+                )
+                continue
+            if script.read_text(encoding="utf-8") != meta.get("script"):
+                failures.append(
+                    f"{record.id}: hook script {script} drifted from "
+                    "the approved bytes — never hand-edit a generated "
+                    "guard; run `self-learn recompile` (durable change "
+                    "= supersede)"
+                )
+                continue
+            examples = meta.get("examples") if isinstance(meta.get("examples"), dict) else None
+            try:
+                artifact, _note = hook_activation.rule_for_record(record, meta, script.name, examples)
+            except hook_activation.RuleUnavailable as exc:
+                inactive.append(f"{record.id}: inactive on this machine — {exc.reason}")
+                continue
+            rule_path = claude_dir / "hooks" / hook_activation.rule_file_name(script.name)
+            if not rule_path.is_file():
+                continue  # built and replayed (build_rule), not activated here
+            try:
+                placed = rule_path.read_bytes()
+                loaded = hook_rules.load_rule(placed)
+            except (OSError, hook_rules.RuleError) as exc:
+                failures.append(
+                    f"{record.id}: rule file {rule_path} does not load ({exc}) — "
+                    "a hand edit; remove it, then `self-learn hook activate "
+                    f"{record.id}`"
+                )
+                continue
+            # Current = the same rule; the examples may come from the
+            # proposal fallback activation reads (`_examples_for`).
+            keep = lambda art: {k: v for k, v in art.items() if k not in ("examples", "digest")}  # noqa: E731
+            if keep(loaded.data) != keep(artifact):
+                failures.append(
+                    f"{record.id}: rule file {rule_path} is not this guard's "
+                    f"current rule — run `self-learn hook activate {record.id}`, "
+                    "which replaces it"
+                )
+                continue
+            mismatches = hook_rules.check_examples(loaded)
+            if mismatches:
+                failures.append(
+                    f"{record.id}: rule file {rule_path} failed its replay — "
+                    + "; ".join(mismatches)
+                )
+                continue
+            active += 1
+
+    settings_path = claude_dir / "settings.json"
+    _raw, data, problem, _bom, _crlf = hook_activation._read_settings_style(settings_path)  # noqa: SLF001
+    if problem is not None:
+        failures.append(problem)
+    registrations = 0
+    for items in (data.get("hooks") or {}).values():
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for handler in item.get("hooks") or []:
+                if not isinstance(handler, dict):
+                    continue
+                cmd = handler.get("command")
+                if not isinstance(cmd, str):
+                    continue
+                args = handler.get("args")
+                if isinstance(args, list):
+                    if PureWindowsPath(cmd).name.lower() != hook_activation.HOOK_PROGRAM:
+                        continue
+                    registrations += 1
+                    if not Path(cmd).is_file():
+                        failures.append(
+                            f"settings.json runs {cmd}, which is missing — "
+                            "reinstall self-learn (`uv sync`)"
+                        )
+                    if args[:2] == ["evaluate", "--rule"] and len(args) == 3 and isinstance(args[2], str):
+                        try:
+                            hook_rules.load_rule(Path(args[2]).read_bytes())
+                        except (OSError, hook_rules.RuleError) as exc:
+                            failures.append(
+                                f"settings.json runs the rule {args[2]}, which is "
+                                f"missing or unusable ({exc}); a deny rule then "
+                                "blocks every call it matches — `self-learn hook "
+                                "deactivate` its lesson, or remove the entry"
+                            )
+                    continue
+                try:
+                    token = shlex.split(cmd)[0] if cmd.strip() else cmd
+                except ValueError:
+                    token = cmd
+                name = Path(token).name
+                if not name.startswith("self-learn-"):
+                    continue
+                registrations += 1
+                link = claude_dir / "hooks" / name
+                if not link.exists():
+                    failures.append(
+                        f"settings.json registers {cmd} but {link} is missing or "
+                        "dangling — run ./install.sh (or retire the entry)"
+                    )
+
+    note = ""
+    if inactive:
+        note = f"; {len(inactive)} inactive on this machine ({'; '.join(inactive)})"
+    if failures:
+        return Verdict.FAIL, "; ".join(failures) + note
+    if not hosts_known:
+        return Verdict.UNMEASURED, (
+            "hosts.yaml absent — hook scripts not checked; "
+            f"{registrations} registration(s) resolvable"
+        )
+    if checked == 0 and registrations == 0:
+        return Verdict.PASS, "no hook-routed records and no self-learn registrations"
+    if checked == 0:
+        return Verdict.PASS, (
+            f"0 hook-routed records; {registrations} registration(s) resolvable"
+        )
+    return Verdict.PASS, (
+        f"{checked} live hook script(s) intact; {active} rule(s) active on this "
+        f"machine{note}; {registrations} registration(s) resolvable"
     )
 
 

@@ -296,7 +296,13 @@ class TestReplay:
 #: strips once before prefixing, so the bytes are exactly those of the same
 #: block with the unprefixed message (checked: equal), and no longer carry the
 #: doubled prefix. The old pin was c681a150...b8921.
-DENY_ORACLE_SHA256 = "540bc41142c528a4dd9bf76b334d82e17820f7317732ea71104f64c44a1651c1"
+#: Re-pinned 2026-11-28 (lane w5-activation, decision 180): every generated
+#: script now pins `LC_ALL=C.UTF-8` after its ERR trap (eight lines,
+#: `hook_compiler._LOCALE_PIN`); the bytes without those lines are exactly
+#: the previous pin's (`test_the_previous_emitter_is_the_current_minus_the_pin`).
+#: The old pin was 540bc411...651c1.
+DENY_ORACLE_SHA256 = "c079682314d788479e0f78b0b69728830fd6043ea941431138beb94bf201dfaf"
+DENY_ORACLE_PREVIOUS_SHA256 = "540bc41142c528a4dd9bf76b334d82e17820f7317732ea71104f64c44a1651c1"
 DENY_ORACLE_ARGS = (
     "lrn-0a1b2c3d",
     "About to run pkill -f with a pattern",
@@ -330,6 +336,17 @@ class TestDenyBytesUnchanged:
         assert _sha256(script_for_hook(rid, trigger, explicit)) == DENY_ORACLE_SHA256
         assert _sha256(generate_script(*DENY_ORACLE_ARGS, mode="deny",
                                        event="PreToolUse")) == DENY_ORACLE_SHA256
+
+    def test_the_previous_emitter_is_the_current_minus_the_pin(self):
+        """Decision 180: the only change to a deny script is the locale
+        pin, so a guard the previous emitter wrote is recognised exactly."""
+        from self_learn.hook_compiler import previous_emitter_script
+
+        current = generate_script(*DENY_ORACLE_ARGS)
+        previous = previous_emitter_script(current, DENY_ORACLE_ARGS[0], "deny")
+        assert previous is not None
+        assert _sha256(previous) == DENY_ORACLE_PREVIOUS_SHA256
+        assert previous_emitter_script(previous, DENY_ORACLE_ARGS[0], "deny") is None
 
 
 def _warn(tmp_path: Path, event: str = "PreToolUse", message: str = WARN_MESSAGE,

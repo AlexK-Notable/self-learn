@@ -263,7 +263,86 @@ def _find_self_learn() -> str | None:
     return None
 
 
+def _write_err(text: str) -> None:
+    if text and sys.stderr is not None:
+        # Bound to ``out`` for the lock invariant's walker (see ``_write``).
+        out = getattr(sys.stderr, "buffer", None)
+        if out is not None:
+            out.write(text.encode("utf-8"))
+            sys.stderr.flush()
+        else:
+            sys.stderr.write(text)
+
+
+def _declared(raw: bytes | None) -> tuple[str | None, str | None]:
+    """The mode and record id a rule file says it has, read without
+    trusting it (its digest may not match). ``(None, None)`` when the
+    bytes are not a JSON object."""
+    try:
+        data = json.loads(raw) if raw is not None else None
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    mode = data.get("mode") if data.get("mode") in ("deny", "warn") else None
+    rid = data.get("record_id")
+    rid = rid if isinstance(rid, str) and re.fullmatch(r"lrn-[0-9a-f]{8}", rid) else None
+    return mode, rid
+
+
+def _unusable(raw: bytes | None, rule: str, why: str) -> int:
+    """A rule that cannot be loaded or evaluated: a deny rule (or one whose
+    mode cannot be read) blocks the call with a line saying so; a rule that
+    declares itself a warning stays silent, as its script would."""
+    mode, rid = _declared(raw)
+    if mode == "warn":
+        return 0
+    who = f"self-learn {rid}" if rid else "self-learn"
+    _write_err(f"{who}: guard rule {rule} cannot be used ({why}) — failing closed\n")
+    return 2
+
+
+def _evaluate(argv: list[str]) -> int:
+    """``self-learn-hook evaluate --rule <file>``: decide one tool call (the
+    hook input on stdin) the way the rule's generated script would, through
+    :mod:`hook_rules`. Deny: exit 2, the message on stderr. Warn: the
+    structured line on stdout, exit 0. Allow: silence, exit 0. Never imports
+    the ledger or the SDK: it runs on every matching tool call."""
+    parser = argparse.ArgumentParser(prog="self-learn-hook evaluate")
+    parser.add_argument("--rule", required=True)
+    rule_path = parser.parse_args(argv).rule
+    raw: bytes | None = None
+    try:
+        data = b""
+        if sys.stdin is not None:
+            try:
+                data = sys.stdin.buffer.read()
+            except (OSError, ValueError):
+                data = b""  # unreadable input is empty input: a deny rule fails closed
+        from . import hook_rules
+
+        try:
+            with open(rule_path, "rb") as fh:
+                raw = fh.read()
+        except OSError as exc:
+            return _unusable(None, rule_path, f"cannot read it: {exc.strerror or exc}")
+        try:
+            rule = hook_rules.load_rule(raw)
+        except hook_rules.RuleError as exc:
+            return _unusable(raw, rule_path, str(exc))
+        decision = hook_rules.evaluate(rule, data)
+        _write(decision.stdout)
+        _write_err(decision.stderr)
+        if sys.stdout is not None:
+            sys.stdout.flush()
+        return decision.exit_code
+    except Exception as exc:  # noqa: BLE001 - a guard decides every call, never a traceback
+        return _unusable(raw, rule_path, f"evaluator error: {type(exc).__name__}")
+
+
 def main() -> int:
+    if sys.argv[1:2] == ["evaluate"]:
+        return _evaluate(sys.argv[2:])
     parser = argparse.ArgumentParser(prog="self-learn-hook")
     parser.add_argument("event", choices=("session-start", "read-observed"))
     session_start = parser.parse_args().event == "session-start"
