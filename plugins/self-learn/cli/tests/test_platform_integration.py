@@ -710,6 +710,15 @@ def test_init_bootstraps_empty_repository(tmp_path, monkeypatch, capsys, setup):
     git(root, "config", "--local", "core.autocrlf", "true")
     config = root / ".git" / "config"
     before = config.read_bytes()
+    config_writes = []
+    original_git = gitops._git
+
+    def observe(repo, *args, **kwargs):
+        if args[:2] == ("config", "--local") and "--get" not in args:
+            config_writes.append(args)
+        return original_git(repo, *args, **kwargs)
+
+    monkeypatch.setattr(gitops, "_git", observe)
     witness = root / "work.txt"
     witness.write_bytes(b"existing work\n")
     for staged in (False, True):
@@ -719,12 +728,13 @@ def test_init_bootstraps_empty_repository(tmp_path, monkeypatch, capsys, setup):
         assert status.startswith(b"A " if staged else b"??")
         with pytest.raises(ledger.InitError, match="Choose an empty repository"):
             ledger.init_home(root)
-        assert config.read_bytes() == before
+        assert config_writes == [] and config.read_bytes() == before
         assert git(root, "status", "--porcelain", "-z") == status
     git(root, "rm", "--cached", "--", witness.name)
     witness.unlink()
     assert git(root, "status", "--porcelain", "-z") == b""
     assert cli.main(["init"]) == 0
+    assert ("config", "--local", "core.autocrlf", "false") in config_writes
     output = capsys.readouterr().out
     assert "topped up" in output and "repaired local Git configuration" in output
     assert all((root / name).is_dir() for name in ledger._LAYOUT)

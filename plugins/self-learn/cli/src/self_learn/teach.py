@@ -557,7 +557,6 @@ def _run_teach(args: argparse.Namespace) -> int:
         try:
             _record_statement(statement, message_ref)
         except Exception as exc:
-            raise
             # This optional write runs after the capture committed. Report its
             # failure and let the caller emit the receipt for that commit.
             print(f"self-learn teach: the lesson was captured, but --statement failed: {exc}\n"
