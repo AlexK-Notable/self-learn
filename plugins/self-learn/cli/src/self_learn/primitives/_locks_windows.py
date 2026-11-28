@@ -14,7 +14,7 @@ from typing import IO, Any
 from .locks import Lease, _held_locks, _Purpose
 
 if sys.platform != "win32":
-    raise RuntimeError("native Windows locking requires Windows")
+    raise NotImplementedError("native Windows locking requires Windows")
 
 import msvcrt
 
@@ -33,14 +33,14 @@ def _shared_fd(path: str, flags: int) -> int:
     elif flags & os.O_WRONLY:
         access = win32con.GENERIC_WRITE
     sharing = win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE
-    creation = win32con.OPEN_ALWAYS if flags & (os.O_RDWR | os.O_WRONLY) else win32con.OPEN_EXISTING
+    creation = win32con.CREATE_ALWAYS if flags & os.O_TRUNC else win32con.OPEN_ALWAYS
     try:
         handle = win32file.CreateFile(path, access, sharing, None, creation,
                                       win32con.FILE_ATTRIBUTE_NORMAL, None)
     except pywintypes.error as exc:
         raise OSError(None, exc.strerror, path, exc.winerror) from exc
     try:
-        fd = msvcrt.open_osfhandle(int(handle), (flags & ~os.O_APPEND) | os.O_NOINHERIT)
+        fd = msvcrt.open_osfhandle(int(handle), flags | os.O_NOINHERIT)
     except BaseException:
         handle.Close()
         raise
@@ -68,7 +68,6 @@ def acquire(fd: int, *, path: Path, wait: float | None, poll: float = 0.02,
     locker = Win32Locker()
     sibling = path.with_name(path.name + ".lck")
     sidecar = open_lock(sibling, purpose="private")
-    os.set_inheritable(sidecar.fileno(), True)
 
     def release(_fd: int) -> None:
         if sidecar.closed:
@@ -76,8 +75,9 @@ def acquire(fd: int, *, path: Path, wait: float | None, poll: float = 0.02,
         try:
             locker.unlock(sidecar)
         except LockException as exc:
-            sidecar.close()
             raise OSError(f"unlock {sibling}: {exc}") from exc
+        finally:
+            sidecar.close()
 
     try:
         while True:
@@ -123,7 +123,7 @@ def repo_section(path: Path, timeout: float, wedged_by: str, *,
                 f"{wedged_by} lock {path} still held after "
                 f"{timeout:g}s — another self-learn producer "
                 f"(worker/miner/verb) is wedged mid-{wedged_by}"
-            )
+            ) from None
         with lease:
             _held_locks.add(key)
             try:

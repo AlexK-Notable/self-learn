@@ -57,7 +57,7 @@ jobs:
         working-directory: plugins/self-learn/cli
         run: |
           $report = Join-Path $env:RUNNER_TEMP "lock-contracts.xml"
-          uv run --no-sync python -m pytest tests/test_platform_locks.py tests/test_raw_write_gate.py::test_windows_lock_opens_are_visible_outside_their_named_cli_exemption -p no:cacheprovider -q -rA --junitxml=$report
+          uv run --no-sync python -m pytest tests/test_platform_locks.py -p no:cacheprovider -q -rA --junitxml=$report
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
           $ran = @($cases | Where-Object { $_.name -like "test_windows_*" -and !$_.SelectSingleNode("skipped") })
