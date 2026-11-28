@@ -231,9 +231,11 @@ def fixture_env(tmp_path, case):
     return env, log, done
 
 
-def observe(argv, tmp_path, env, log, done, case):
+def observe(argv, tmp_path, env, log, done, case, *, console=False):
     result = subprocess.run(argv, input=case.stdin, capture_output=True, env=env,
                             cwd=tmp_path, timeout=12)
+    if console:
+        assert result.stderr == b"", result.stderr.decode("utf-8", errors="replace")
     invocations = []
     if log.exists():
         invocations = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
@@ -254,7 +256,7 @@ def test_bash_differential(tmp_path, case):
     oracle = observe([bash, str(HOOKS / BASH_HOOKS[case.command])], tmp_path, env, log, done, case)
     assert oracle == case.expected()
     assert observe([str(installed("self-learn-hook")), case.command],
-                   tmp_path, env, log, done, case) == oracle
+                   tmp_path, env, log, done, case, console=True) == oracle
 
 
 @pytest.mark.skipif(not WINDOWS, reason="native Windows console executable")
@@ -262,4 +264,4 @@ def test_bash_differential(tmp_path, case):
 def test_windows_console_hook(tmp_path, case):
     env, log, done = fixture_env(tmp_path, case)
     assert observe([str(installed("self-learn-hook")), case.command],
-                   tmp_path, env, log, done, case) == case.expected()
+                   tmp_path, env, log, done, case, console=True) == case.expected()
