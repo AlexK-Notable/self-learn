@@ -70,7 +70,7 @@ SCHED_S_TASK_HAS_NOT_RUN = 0x00041303
 SCHED_S_TASK_TERMINATED = 0x00041306
 #: Results that mean the last run ended cleanly or was ended on purpose
 #: (``/End``, like systemd's ``SuccessExitStatus=143 SIGTERM``).
-CLEAN_RESULTS = frozenset({0, SCHED_S_TASK_READY, SCHED_S_TASK_HAS_NOT_RUN, SCHED_S_TASK_TERMINATED})
+CLEAN_RESULTS = frozenset({0, SCHED_S_TASK_READY})
 
 #: ``TASK_STATE`` (taskschd.h). Queued counts as running: the run is on its way.
 TASK_STATES = {0: "Unknown", 1: "Disabled", 2: "Queued", 3: "Ready", 4: "Running"}
@@ -158,9 +158,11 @@ def query(name: str) -> tuple[int, int] | None:
 def classify(task_state: int, result: int) -> State:
     """The state comes first: while a task runs, a refused second ``/Run``
     overwrites its last result (spike section 5)."""
-    if result in CLEAN_RESULTS:
-        return "stopped"
-    return "running" if task_state in RUNNING_STATES else "failed"
+    if result not in CLEAN_RESULTS | {SCHED_S_TASK_RUNNING}:
+        return "failed"
+    if task_state in RUNNING_STATES:
+        return "running"
+    return "stopped" if result in CLEAN_RESULTS and result != 0 else "failed"
 
 
 def status(name: str, *, timeout: float) -> ServiceStatus:
@@ -393,7 +395,7 @@ class LauncherRuntime:
         """Sleep up to *seconds*; ``True`` when a stop was requested."""
         with _os_errors():
             millis = max(0, int(seconds * 1000))
-            return True
+            return win32event.WaitForSingleObject(self._event, millis) == win32event.WAIT_OBJECT_0
 
     def close(self) -> None:
         win32api.CloseHandle(self._event)
