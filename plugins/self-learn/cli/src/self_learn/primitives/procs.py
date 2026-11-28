@@ -238,46 +238,20 @@ def contain_self() -> bool:
 # S-NEXT-w7-procs: background work that must outlive the command that started
 # it, and asyncio children whose whole tree the caller owns.
 
-#: The environment variable through which a child started by
-#: :func:`async_owned_child` on Windows learns the name of its stop event (a
-#: manual-reset event in the session's ``Local\`` namespace; the soft stop sets
-#: it). POSIX never sets it: the soft stop there is ``SIGTERM``.
-STOP_EVENT_ENV = "SELF_LEARN_STOP_EVENT"
+from typing import TYPE_CHECKING  # noqa: E402
 
-
-def _detached_child_class():
-    @dataclass(frozen=True)
-    class DetachedChild:
-        """What :func:`spawn_detached` started.
-
-        ``broke_away``: Windows only, and a record of the launch attempt, not of
-        where the child ended up. ``True``: started with
-        ``CREATE_BREAKAWAY_FROM_JOB``, which leaves this process's job and
-        every enclosing job that also allows breakaway, up to the first that
-        does not (measured: a forbidding outer job keeps the child). ``False``:
-        the attempt with the flag failed with error 5 and the child was started
-        without it, inside this process's jobs. ``None``: this process is in no
-        job, and always on POSIX.
-
-        ``in_job``: Windows only. Whether the child was in any job when it was
-        looked at, once, right after it started (``None``: that could not be
-        read; the child runs regardless). A child in a job outlives the
-        launcher unless the job is terminated, or it kills on close and its last
-        handle closes. Always ``False`` on POSIX."""
-
-        pid: int
-        broke_away: bool | None = None
-        in_job: bool | None = False
-
-    DetachedChild.__module__ = __name__
-    return DetachedChild
+if TYPE_CHECKING:
+    from ._detached import DetachedChild, OutputTruncated  # noqa: F401
 
 
 def __getattr__(name: str) -> Any:
-    # DetachedChild is built on first use, so importing this module on Linux
-    # does no more work than it did before it existed.
-    if name == "DetachedChild":
-        value = globals()["DetachedChild"] = _detached_child_class()
+    # The result types live in a small module imported on first use, so
+    # importing this module does no more work than it did before they existed;
+    # the import lock publishes exactly one class.
+    if name in ("DetachedChild", "OutputTruncated"):
+        from . import _detached
+
+        value = globals()[name] = getattr(_detached, name)
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -288,7 +262,7 @@ def spawn_detached(
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
     log_path: Any = None,
-) -> Any:
+) -> DetachedChild:
     """Start *argv* so that it outlives this process, and return at once a
     ``DetachedChild``.
 
@@ -321,10 +295,13 @@ def breakaway_allowed() -> bool | None:
 
     Windows: ``True`` when this process is in no job, or a trial child started
     suspended with ``CREATE_BREAKAWAY_FROM_JOB`` is in no job; ``False`` when
-    that trial is still in a job, or failed with error 5 while the same trial
-    without the flag succeeded; ``None`` when the answer is inconclusive (any
-    other failure, or a trial child whose exit could not be confirmed). Trial
-    children are killed before they run. POSIX: ``None`` (there are no jobs).
+    that trial is still in a job, or when it is refused with error 5 twice,
+    with a trial without the flag starting inside a job in between; ``None``
+    when the answer cannot be supported (any other failure or combination, or
+    a trial whose end could not be confirmed). Trial children never run: each
+    is put in a kill-on-close job of its own as soon as its membership is
+    read, so it dies with this process if killing it fails. POSIX: ``None``
+    (there are no jobs).
     """
     return _backend().breakaway_allowed()
 
@@ -345,24 +322,31 @@ async def async_owned_child(
     (``stdin=None`` is ``create_subprocess_exec``'s own default, which is what
     ``_spawn`` gets by not passing it).
 
-    Windows: first puts this process in its kill-on-close self job
-    (:func:`contain_self`; a side effect callers must know: from then on, this
-    process's children die with it unless they break away, as
-    :func:`spawn_detached` does). The child is started suspended in a new
-    process group (inside that self job, so a child suspended at the moment
-    this process dies dies too), put in a kill-on-close job of its own
-    (breakaway allowed, the job ``contain_child`` uses), and only then is its
-    first thread resumed, so every descendant it starts is in the job unless
-    it breaks away on purpose. Its environment carries :data:`STOP_EVENT_ENV`.
-    When this process has a console the child shares it; otherwise it gets one
-    of its own without a window. The CreateProcess step holds the lock every
-    spawn of this backend shares (Python 3.12 and later; on 3.11, which has no
-    eager tasks, a concurrent ``run_bounded`` launch can inherit this child's
-    pipe ends for a moment). Needs the Proactor event loop (the default on
-    Windows): under a Selector loop ``asyncio`` raises
-    :class:`NotImplementedError` and nothing is started. Stop it with
-    :func:`stop_owned` or :func:`terminate_owned`; release it with
-    :func:`release_owned` (dropping the process object does the same).
+    Windows: needs an event loop that can run subprocesses (the Proactor loop,
+    the default); any other raises :class:`NotImplementedError` before
+    anything is changed. Then it puts this process in its kill-on-close self
+    job (:func:`contain_self`; a side effect callers must know: from then on,
+    this process's children die with it unless they break away, as
+    :func:`spawn_detached` does), and checks that this process really is in
+    it. The child is started suspended in a new process group, inside that
+    self job (so a child suspended at the moment this process dies dies too),
+    put in a kill-on-close job of its own (breakaway allowed, the job
+    ``contain_child`` uses), and only then is its first thread resumed, once:
+    every thread listed for it must be readable, the earliest created must be
+    the only one with that creation time, and its previous suspend count must
+    be 1, or the child is killed and reaped and the call raises. Every
+    descendant it starts is in the job unless it breaks away on purpose. When
+    this process has a console the child shares it; otherwise it gets one of
+    its own without a window. Creating the process (where CPython makes the
+    standard handles inheritable, calls CreateProcess and closes them again)
+    holds the lock every spawn of this backend shares, on every Python
+    version, so no concurrent launch inherits this child's pipe ends.
+    Creation and the hand-over happen in the caller's own task with nothing
+    awaited between them: a cancellation either lands inside the creation,
+    which then kills and reaps the child, or after the resumed child has been
+    handed over. Stop it with :func:`stop_owned` or :func:`terminate_owned`;
+    release it with :func:`release_owned` (dropping the process object does
+    the same).
     """
     return await _backend().async_owned_child(*argv, env=env, stdin=stdin, stdout=stdout, stderr=stderr)
 
@@ -377,13 +361,17 @@ def stop_owned(proc: Any, *, hard: bool, soft_request: Any = None) -> bool:
     ``ProcessLookupError``. *soft_request* is ignored.
 
     Windows, for a child of :func:`async_owned_child`: ``False`` when its job is
-    empty. Soft: set its stop event, then call ``soft_request(proc.pid)`` when
-    given (best effort; for example ``stop_request.request_stop``, the stop file
-    ``ask`` and ``summarise`` poll for). No console control event is sent: a
-    group ID cannot be proved to name the child's group at the moment of
-    sending. Hard: terminate the job (exit status 1 for every member). For any
-    other process: terminate that one process, soft or hard, since no soft
-    channel to it exists."""
+    empty. Soft: the only soft stop is *soft_request*: when given, it is
+    called as ``soft_request(proc.pid)`` on a thread of its own, so it can
+    neither block nor delay anything (its result and errors are ignored, and
+    the child's process handle is held until it returns, so the PID names the
+    child for as long as it runs). Callers pass ``stop_request.request_stop``,
+    which writes the stop file ``ask`` and ``summarise`` watch for. This call
+    itself sends no console control event and sets nothing else; without
+    *soft_request* a soft stop delivers nothing, and :func:`terminate_owned`'s
+    stop is the hard one after the grace. Hard: terminate the job (exit status
+    1 for every member). For any other process: terminate that one process,
+    soft or hard, since no soft channel to it exists."""
     return _backend().stop_owned(proc, hard=hard, soft_request=soft_request)
 
 
@@ -400,22 +388,30 @@ async def terminate_owned(
     ``ask_runner.RealAskRunner._terminate`` does. Never raises for a process
     that is already gone. *soft_request* is ignored.
 
-    Windows, for a child of :func:`async_owned_child`: the same steps, and
-    then, however they ended (also when cancelled, or when a stop raised), its
-    job is terminated before anything else is awaited, and a bounded settle
-    (up to *kill_grace* more) waits until the job is empty and the child's
-    handle is signalled; read pipes still open then are held by a writer
-    outside the job, and are closed so their readers see end-of-file. The
-    settle is shielded: a further cancellation does not stop it. An exception
-    that was already leaving is re-raised, with any report as a note;
-    otherwise :class:`TimeoutError` says when processes were still in the job
-    at the end."""
+    Windows, for a child of :func:`async_owned_child`: the same steps, with
+    the soft stop as :func:`stop_owned` describes (only *soft_request*, on its
+    own thread; the grace starts when it is started, and the hard stop follows
+    the grace whether or not it has returned; without it the stop is hard
+    after the grace). Then, however the steps ended (also when cancelled, or
+    when a stop raised), the job is terminated before anything else is
+    awaited, and a bounded settle (up to *kill_grace*) waits until the job is
+    empty and the child's handle is signalled. No read pipe is closed while a
+    member of the job lives. Once the job is empty, what is left in each pipe
+    is read to its end (into the stream, a paused reader included) for up to
+    *kill_grace* more; a pipe still open then is held by a writer outside the
+    job, and is closed so its reader sees end-of-file. The settle is shielded:
+    a further cancellation does not stop it. An exception that was already
+    leaving is re-raised, with every report and any error of the teardown
+    itself as a note. Otherwise :class:`TimeoutError` says that processes were
+    still in the job or the child had not exited at the end, and
+    ``OutputTruncated`` (a ``TimeoutError``) that pipes had to be closed."""
     await _backend().terminate_owned(proc, kill_grace=kill_grace, wait_after_lost_kill=wait_after_lost_kill,
                                      soft_request=soft_request)
 
 
 def release_owned(proc: Any) -> None:
-    """Let go of *proc*'s tree. Windows: close its job, which kills whatever
-    is still in it, and its stop event; calling it again does nothing. POSIX:
-    does nothing (the process group needs no handle)."""
+    """Let go of *proc*'s tree. Windows: terminate its job (whatever is still
+    in it dies now, even while a teardown holds its own handle to the job),
+    then close the job and the child's handle; calling it again does nothing.
+    POSIX: does nothing (the process group needs no handle)."""
     _backend().release_owned(proc)

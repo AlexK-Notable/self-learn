@@ -131,11 +131,12 @@ def _own_calls(fn):
         pending.extend(ast.iter_child_nodes(node))
 
 
-def _forwards_a_parameter(call, keyword, fn):
-    """Whether *call* passes one of *fn*'s parameters, by name, as *keyword*."""
+def _forwards_the_flags(call, fn):
+    """Whether *call* passes *fn*'s own ``flags`` parameter, unchanged, as
+    ``creationflags=`` (not another parameter, not an expression of it)."""
     parameters = {a.arg for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs}
-    return isinstance(call, ast.Call) and any(
-        k.arg == keyword and isinstance(k.value, ast.Name) and k.value.id in parameters
+    return "flags" in parameters and isinstance(call, ast.Call) and any(
+        k.arg == "creationflags" and isinstance(k.value, ast.Name) and k.value.id == "flags"
         for k in call.keywords)
 
 
@@ -158,8 +159,8 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
     # child with the creation flags its caller passes (`start_new_session`
     # means nothing on Windows). The exemption names the module and its
     # top-level function, and covers only a Popen in that function's own body
-    # (not in a function nested inside it) that forwards one of `_popen`'s
-    # parameters, by name, as `creationflags=`. That the detached launch
+    # (not in a function nested inside it) that forwards `_popen`'s own
+    # `flags` parameter, unchanged, as `creationflags=`. That the detached launch
     # passes a new process group is checked at its call site
     # (`test_windows_detached_launch_passes_a_new_process_group`).
     windows_group_calls = {
@@ -168,7 +169,7 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
         if Path(rel).as_posix() == "primitives/_procs_windows.py" and isinstance(fn, ast.FunctionDef)
         and fn.name == "_popen"
         for call in _own_calls(fn)
-        if _forwards_a_parameter(call, "creationflags", fn)
+        if _forwards_the_flags(call, fn)
     }
     hits: list[Violation] = []
     for node in ast.walk(tree):
@@ -959,6 +960,8 @@ def test_windows_group_exemption_covers_only_the_backend_popen_with_creationflag
     bare = "def _popen(argv, flags):\n    return subprocess.Popen(argv)\n"
     constant = "def _popen(argv, flags):\n    return subprocess.Popen(argv, creationflags=0)\n"
     local = "def _popen(argv, flags):\n    other = 0\n    return subprocess.Popen(argv, creationflags=other)\n"
+    wrong = "def _popen(argv, flags, stdin):\n    return subprocess.Popen(argv, creationflags=stdin)\n"
+    masked = "def _popen(argv, flags):\n    return subprocess.Popen(argv, creationflags=flags & 1)\n"
     inner = ("def _popen(argv, flags):\n    def helper():\n"
              "        return subprocess.Popen(argv, creationflags=flags)\n    return helper()\n")
     other = "def other(argv, flags):\n    return subprocess.Popen(argv, creationflags=flags)\n"
@@ -973,7 +976,7 @@ def test_windows_group_exemption_covers_only_the_backend_popen_with_creationflag
     module.write_text("import subprocess\n" + flagged + other + nested, encoding="utf-8")
     assert scan(tmp_path) == [elsewhere, Violation(rel, 5, "popen-no-new-session"),
                               Violation(rel, 8, "popen-no-new-session")]
-    for body, line in ((bare, 3), (constant, 3), (local, 4), (inner, 4)):
+    for body, line in ((bare, 3), (constant, 3), (local, 4), (inner, 4), (wrong, 3), (masked, 3)):
         module.write_text("import subprocess\n" + body, encoding="utf-8")
         assert scan(tmp_path) == [elsewhere, Violation(rel, line, "popen-no-new-session")], body
 
@@ -988,36 +991,53 @@ def test_windows_detached_launch_passes_a_new_process_group():
     assert _detached_group_violations(tree) == []
 
 
+def _or_of_names(node):
+    """The leaves of *node* when it is a name, an attribute, or an ``|`` of
+    them (the only forms that cannot clear a bit); otherwise ``None``."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left, right = _or_of_names(node.left), _or_of_names(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Attribute):
+        return [node.attr]
+    return None
+
+
 def _detached_group_violations(tree):
     problems = []
     assigned = [node.value for node in tree.body if isinstance(node, ast.Assign)
                 and [ast.unparse(t) for t in node.targets] == ["_DETACHED_FLAGS"]]
-    if len(assigned) != 1 or "CREATE_NEW_PROCESS_GROUP" not in {
-            n.attr for n in ast.walk(assigned[0]) if isinstance(n, ast.Attribute)}:
-        problems.append("_DETACHED_FLAGS does not include CREATE_NEW_PROCESS_GROUP")
+    leaves = _or_of_names(assigned[0]) if len(assigned) == 1 else None
+    if leaves is None or "CREATE_NEW_PROCESS_GROUP" not in leaves:
+        problems.append("_DETACHED_FLAGS is not an | of flags that includes CREATE_NEW_PROCESS_GROUP")
     spawn = [fn for fn in tree.body if isinstance(fn, ast.FunctionDef) and fn.name == "spawn_detached"]
     launches = [call for fn in spawn for call in ast.walk(fn)
                 if isinstance(call, ast.Call) and ast.unparse(call.func) == "launch"]
     if not launches:
         problems.append("spawn_detached makes no launch")
     for call in launches:
-        if len(call.args) != 1 or "_DETACHED_FLAGS" not in {
-                n.id for n in ast.walk(call.args[0]) if isinstance(n, ast.Name)}:
-            problems.append(f"launch at line {call.lineno} is not given _DETACHED_FLAGS")
+        given = _or_of_names(call.args[0]) if len(call.args) == 1 and not call.keywords else None
+        if given is None or "_DETACHED_FLAGS" not in given:
+            problems.append(f"launch at line {call.lineno} is not given _DETACHED_FLAGS (alone or with |)")
     return problems
 
 
 def test_detached_group_check_catches_a_missing_group():
     """The red controls for the check above, on edited copies of the real
-    backend: the group taken out of `_DETACHED_FLAGS`, and one launch given
-    other flags."""
+    backend: the group taken out of `_DETACHED_FLAGS`, or masked out there; one
+    launch given other flags, or `_DETACHED_FLAGS` with the group bit cleared
+    or toggled."""
     source = (SRC / "primitives" / "_procs_windows.py").read_text(encoding="utf-8")
     group = "_DETACHED_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW"
     plain = "proc, broke_away = launch(_DETACHED_FLAGS), False"
     assert source.count(group) == 1 and source.count(plain) == 1
-    no_group = source.replace(group, "_DETACHED_FLAGS = subprocess.CREATE_NO_WINDOW")
-    assert _detached_group_violations(ast.parse(no_group)) == [
-        "_DETACHED_FLAGS does not include CREATE_NEW_PROCESS_GROUP"]
-    other_flags = source.replace(plain, "proc, broke_away = launch(subprocess.CREATE_NO_WINDOW), False")
-    found = _detached_group_violations(ast.parse(other_flags))
-    assert len(found) == 1 and "is not given _DETACHED_FLAGS" in found[0], found
+    flag_problem = ["_DETACHED_FLAGS is not an | of flags that includes CREATE_NEW_PROCESS_GROUP"]
+    for edited in ("_DETACHED_FLAGS = subprocess.CREATE_NO_WINDOW",
+                   group + " & ~subprocess.CREATE_NEW_PROCESS_GROUP"):
+        assert _detached_group_violations(ast.parse(source.replace(group, edited))) == flag_problem, edited
+    for edited in ("launch(subprocess.CREATE_NO_WINDOW)",
+                   "launch(_DETACHED_FLAGS & ~subprocess.CREATE_NEW_PROCESS_GROUP)",
+                   "launch(_DETACHED_FLAGS ^ subprocess.CREATE_NEW_PROCESS_GROUP)"):
+        found = _detached_group_violations(ast.parse(source.replace(plain, f"proc, broke_away = {edited}, False")))
+        assert len(found) == 1 and "is not given _DETACHED_FLAGS" in found[0], (edited, found)

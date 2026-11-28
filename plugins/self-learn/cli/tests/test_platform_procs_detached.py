@@ -417,16 +417,26 @@ def test_owned_child_tree_dies_under_terminate_on_linux():
 @linux
 def test_new_names_never_load_windows_modules_on_linux():
     script = """
-        import asyncio, sys
+        import asyncio, pickle, sys
         from self_learn.primitives import procs
+        # The result types load on first use, not with the facade.
+        assert "self_learn.primitives._detached" not in sys.modules, "loaded at import"
         assert procs.breakaway_allowed() is None
         procs.release_owned(object())
         assert "self_learn.primitives._procs_posix" in sys.modules
-        # DetachedChild is built on first use, not at import.
-        assert "DetachedChild" not in vars(procs), "built at import"
-        assert procs.DetachedChild(7) == procs.DetachedChild(7, None, False)
-        assert vars(procs)["DetachedChild"] is procs.DetachedChild
-        assert procs.DetachedChild.__module__ == "self_learn.primitives.procs"
+        assert "DetachedChild" not in vars(procs) and "OutputTruncated" not in vars(procs)
+        from self_learn.primitives import _detached
+        # An ordinary module-level class: one class, a plain name, picklable.
+        assert procs.DetachedChild is _detached.DetachedChild and vars(procs)["DetachedChild"] is procs.DetachedChild
+        assert procs.DetachedChild.__qualname__ == "DetachedChild"
+        assert procs.DetachedChild.__module__ == "self_learn.primitives._detached"
+        child = procs.DetachedChild(7)
+        assert child == procs.DetachedChild(7, None, False) and pickle.loads(pickle.dumps(child)) == child
+        assert issubclass(procs.OutputTruncated, TimeoutError) and procs.OutputTruncated("x", 2).pipes == 2
+        import typing
+        from self_learn.primitives import _procs_posix
+        assert typing.get_type_hints(procs.spawn_detached)["return"] is _detached.DetachedChild
+        assert typing.get_type_hints(_procs_posix.spawn_detached)["return"] is _detached.DetachedChild
         loaded = [m for m in sys.modules if m.startswith(("win32", "pywintypes", "_winapi", "msvcrt"))]
         assert not loaded and "self_learn.primitives._procs_windows" not in sys.modules, loaded
         print("ok")
@@ -491,6 +501,46 @@ def _kill_pinned():
             pass  # already gone
 
 
+class _Watchdog:
+    """Run *rescue* once *seconds* have passed, and remember that it did: a
+    test whose processes had to be killed by it did not pass, whatever its
+    assertions then saw (several expect the exit status a kill gives)."""
+
+    def __init__(self, seconds, rescue):
+        self.fired = threading.Event()
+
+        def fire():
+            self.fired.set()
+            rescue()
+
+        self._timer = threading.Timer(seconds, fire)
+        self._timer.daemon = True
+
+    def start(self):
+        self._timer.start()
+
+    def cancel(self):
+        self._timer.cancel()
+
+    def verdict(self):
+        if self.fired.is_set():
+            pytest.fail("the watchdog had to kill this test's processes at its deadline: the test hung")
+
+
+def test_a_watchdog_rescue_fails_the_test():
+    rescued = []
+    dog = _Watchdog(0.05, lambda: rescued.append(True))
+    dog.start()
+    assert dog.fired.wait(10) and rescued == [True]
+    with pytest.raises(pytest.fail.Exception, match="watchdog"):
+        dog.verdict()
+    quiet = _Watchdog(60, lambda: rescued.append(False))
+    quiet.start()
+    quiet.cancel()
+    quiet.verdict()  # the control: one that never fired passes
+    assert rescued == [True]
+
+
 @pytest.fixture(autouse=True)
 def _reaper():
     if sys.platform != "win32":
@@ -500,8 +550,7 @@ def _reaper():
     import win32api
 
     _PINNED.clear()
-    watchdog = threading.Timer(_DEADLINE, _kill_pinned)
-    watchdog.daemon = True
+    watchdog = _Watchdog(_DEADLINE, _kill_pinned)
     watchdog.start()
     faulthandler.dump_traceback_later(_DEADLINE + 60, exit=True)
     try:
@@ -513,6 +562,7 @@ def _reaper():
         for handle in _PINNED:
             win32api.CloseHandle(handle)
         _PINNED.clear()
+    watchdog.verdict()
 
 
 class _Watch:
@@ -785,38 +835,108 @@ def test_windows_breakaway_allowed_from_here():
 
 
 class _FakeProbe:
-    pid = 0
+    def __init__(self, pid, breakaway):
+        self.pid, self.breakaway = pid, breakaway
+
+
+#: case -> (what each trial does, in order: a membership, or an error code;
+#: the answer; whether the ends are confirmed).
+_TRIALS = {
+    "free": ([False], True, True),
+    "held": ([True], False, True),
+    "refused": ([5, True, 5], False, True),
+    "transient": ([5, True, False], True, True),
+    "transient-held": ([5, True, True], False, True),
+    "both-denied": ([5, 5], None, True),
+    "plain-free": ([5, False], None, True),
+    "refused-then-other": ([5, True, 2], None, True),
+    "other-error": ([2], None, True),
+    "unconfirmed": ([False], None, False),
+    "unreadable": ([None], None, True),
+}
 
 
 @windows
-@pytest.mark.parametrize("case, expected", [
-    ("free", True), ("held", False), ("refused", False), ("both-denied", None),
-    ("other-error", None), ("unconfirmed", None),
-])
-def test_windows_breakaway_allowed_is_inconclusive_unless_proved(monkeypatch, case, expected):
-    """Error 5 counts as a refusal only when the same trial without the flag
-    starts; a trial whose exit cannot be confirmed proves nothing."""
+@pytest.mark.parametrize("case", sorted(_TRIALS))
+def test_windows_breakaway_allowed_is_inconclusive_unless_proved(monkeypatch, case):
+    """Error 5 counts as the job's refusal only when a trial without the flag
+    starts inside a job and the flagged trial is refused once more; a
+    membership that cannot be read, or a trial whose end cannot be confirmed,
+    proves nothing. Each trial's membership is read before it is put in its
+    fail-safe job, and every trial is ended."""
     from self_learn.primitives import _procs_windows as backend
 
-    tried = []
+    script, expected, confirmed = _TRIALS[case]
+    steps = iter(script)
+    tried, order = [], []
 
     def trial(flags):
         breakaway = bool(flags & subprocess.CREATE_BREAKAWAY_FROM_JOB)
         tried.append(breakaway)
-        if breakaway and case in ("refused", "both-denied"):
-            raise OSError(0, "denied", None, 5)
-        if breakaway and case == "other-error":
-            raise OSError(0, "missing", None, 2)
-        if not breakaway and case == "both-denied":
-            raise OSError(0, "denied", None, 5)
-        return _FakeProbe()
+        step = next(steps)
+        if isinstance(step, int) and not isinstance(step, bool):
+            raise OSError(0, "injected", None, step)
+        probe = _FakeProbe(len(tried), breakaway)
+        probe.membership = step
+        return probe
+
+    probes = {}
+
+    def membership(pid):
+        order.append(("read", pid))
+        return probes[pid].membership
+
+    def contain(probe):
+        probes.setdefault(probe.pid, probe)
+        order.append(("contain", probe.pid))
+        return f"job-{probe.pid}"
+
+    def end(probe, job):
+        order.append(("end", probe.pid, job))
+        return confirmed
+
+    real_trial = trial
+
+    def recording_trial(flags):
+        probe = real_trial(flags)
+        probes[probe.pid] = probe
+        return probe
 
     monkeypatch.setattr(backend, "_in_a_job", lambda: True)
-    monkeypatch.setattr(backend, "_trial", trial)
-    monkeypatch.setattr(backend, "_job_membership", lambda pid: case == "held")
-    monkeypatch.setattr(backend, "_end_trial", lambda probe: case != "unconfirmed")
+    monkeypatch.setattr(backend, "_trial", recording_trial)
+    monkeypatch.setattr(backend, "_job_membership", membership)
+    monkeypatch.setattr(backend, "_contain_trial", contain)
+    monkeypatch.setattr(backend, "_end_trial", end)
     assert procs.breakaway_allowed() is expected
-    assert tried == ([True, False] if case in ("refused", "both-denied") else [True])
+    assert tried == [True, False, True][:len(script)] and list(steps) == [], "every scripted trial ran, in order"
+    assert order == [entry for pid in probes for entry in
+                     (("read", pid), ("contain", pid), ("end", pid, f"job-{pid}"))]
+
+
+@windows
+def test_windows_a_trial_whose_end_is_unconfirmed_is_kept_in_its_job(monkeypatch):
+    """When killing a trial child cannot be confirmed, its fail-safe job is
+    kept (it kills the trial when this process exits) instead of dropped."""
+    import win32api
+    import win32process
+    from self_learn.primitives import _procs_windows as backend
+
+    probe = backend._trial(win32process.CREATE_SUSPENDED | _DETACHED_PROCESS)
+    _pin(probe.pid)
+    job = backend._contain_trial(probe)
+    assert job is not None and _in_job(probe.pid, job)
+    def never(timeout):
+        raise subprocess.TimeoutExpired("trial", timeout)
+
+    monkeypatch.setattr(probe, "wait", never)
+    kept = list(backend._kept_trials)
+    try:
+        assert backend._end_trial(probe, job) is False
+        assert backend._kept_trials == kept + [job]
+    finally:
+        if backend._kept_trials and backend._kept_trials[-1] is job:
+            backend._kept_trials.pop()
+            win32api.CloseHandle(job)
 
 
 @windows
@@ -984,87 +1104,153 @@ def test_windows_resolution_refuses_shims_and_the_current_folder(tmp_path, call)
     assert _children_of_this_process() <= before
 
 
+class _TracingLock:
+    """Stands in for the backend's ``_launch_lock``: records which thread
+    tries to take it (before it may block), then takes the real one."""
+
+    def __init__(self, real, on_attempt):
+        self.real, self.on_attempt = real, on_attempt
+
+    def __enter__(self):
+        self.on_attempt(threading.current_thread())
+        self.real.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.real.release()
+        return False
+
+
+#: Wait until "<release>" appears, then exit 0.
+_HOLDER = r"""
+import sys, time
+from pathlib import Path
+release = Path(sys.argv[1])
+deadline = time.monotonic() + 90
+while not release.exists() and time.monotonic() < deadline:
+    time.sleep(.02)
+print("done", flush=True)
+"""
+
+
 @windows
 @pytest.mark.parametrize("direction", ["owned-stderr", "detached-log", "bounded-pipes"])
 def test_windows_concurrent_launches_share_no_handles(tmp_path, monkeypatch, direction):
-    """Two launches overlap, each made to hold its inheritable-handle window
-    open for half a second. ``owned-stderr`` and ``detached-log``: while one of
-    ours is being created (its inheritable duplicates made, CreateProcess not
-    yet called), a ``run_bounded`` child (which inherits every
-    inheritable handle) starts; it must not get our child's stderr writer (its
-    reader would then wait for it) or our log handle (an exclusive open would
-    then fail). ``bounded-pipes``: while a ``run_bounded`` child is being
-    created, a detached child of ours starts; it must not get the bounded
-    child's output pipe (``run_bounded`` would then wait for it)."""
+    """Two launches are made to overlap by handshakes, not by timing.
+    ``owned-stderr`` and ``detached-log``: one of ours is held at the start of
+    ``_execute_child`` (its inheritable duplicates exist, CreateProcess not
+    yet called) until a ``run_bounded`` launch (whose child inherits every
+    inheritable handle) has tried to take the launch lock, and a second
+    longer if it creates its child meanwhile. That child, observed alive on a
+    pinned handle, must not have our child's stderr writer (the read would
+    wait for it) or our log handle (an exclusive open would fail).
+    ``bounded-pipes``: the bounded launch is held at its CreateProcess until
+    our detached launch has tried to take the lock; our child, observed alive,
+    must not hold the bounded child's output pipe (``run_bounded`` would wait
+    for it)."""
     import pywintypes
+    import win32api
+    import win32con
     import win32file
     import win32process
+    from self_learn.primitives import _procs_windows as backend
 
-    entered = threading.Event()
-    results = []
-    if direction == "bounded-pipes":
-        real_create = win32process.CreateProcess
+    entered, bounded_tried, ours_tried = threading.Event(), threading.Event(), threading.Event()
+    ours_starting = threading.Event()
+    bounded_created, ours_created = threading.Event(), threading.Event()
+    bounded_child, results, release = [], [], tmp_path / "release"
+    bounded = threading.Thread(daemon=True, target=lambda: results.append(procs.run_bounded(
+        _python(_HOLDER, release), timeout=90)))
 
-        def slow_create(*args):
+    def tried(thread):
+        (bounded_tried if thread is bounded else ours_tried).set()
+
+    monkeypatch.setattr(backend, "_launch_lock", _TracingLock(backend._launch_lock, tried))
+    real_create = win32process.CreateProcess
+    current = win32api.GetCurrentProcess()
+
+    def bounded_create(*args):
+        if direction == "bounded-pipes":
             entered.set()
-            time.sleep(0.5)
-            return real_create(*args)
+            assert ours_starting.wait(20), "our launch never started"
+            ours_tried.wait(5)  # it is blocked on the lock now, unless nothing takes the lock
+            ours_created.wait(1.0)  # promptly set when nothing serialises the two
+        created = real_create(*args)
+        handle = win32api.DuplicateHandle(current, created[0], current, 0, False, win32con.DUPLICATE_SAME_ACCESS)
+        _PINNED.append(handle)
+        bounded_child.append(handle)
+        bounded_created.set()
+        return created
 
-        monkeypatch.setattr(win32process, "CreateProcess", slow_create)
-        bounded = threading.Thread(daemon=True, target=lambda: results.append(
-            procs.run_bounded(_python("print('done')"), timeout=60)))
-        bounded.start()
-        assert entered.wait(20)
-        ack = tmp_path / "ack"
-        child = procs.spawn_detached(_python(_ACK_CHILD, tmp_path / "report", ack))
-        _pin(child.pid)
-        bounded.join(20)  # our child is still waiting for its ack meanwhile
-        assert not bounded.is_alive() and results[0].stdout.strip() == "done"
-        ack.write_text("")
-        return
-    # CPython makes every standard handle an inheritable duplicate before
-    # _execute_child and closes them after it: the window is its start.
     real_execute = subprocess.Popen._execute_child
 
-    def slow_execute(self, *args, **kwargs):
-        entered.set()
-        time.sleep(0.5)
+    def our_execute(self, *args, **kwargs):
+        ours_created.set()
+        if direction != "bounded-pipes":
+            entered.set()
+            assert bounded_tried.wait(20), "the bounded launch never tried to take the lock"
+            bounded_created.wait(1.0)  # promptly set when nothing serialises the two
         return real_execute(self, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess.Popen, "_execute_child", slow_execute)
+    monkeypatch.setattr(win32process, "CreateProcess", bounded_create)
+    monkeypatch.setattr(subprocess.Popen, "_execute_child", our_execute)
 
-    def bounded_run():
-        assert entered.wait(20)
-        results.append(procs.run_bounded(_python("import time; time.sleep(6)"), timeout=60))
+    def bounded_alive():
+        import win32event
 
-    bounded = threading.Thread(target=bounded_run, daemon=True)
-    bounded.start()
-    if direction == "owned-stderr":
-        async def main():
-            proc = await procs.async_owned_child(*_python("import sys; sys.stderr.write('x')"),
-                                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                                 stderr=asyncio.subprocess.PIPE)
-            _pin(proc.pid)
+        return bool(bounded_child) and win32event.WaitForSingleObject(bounded_child[0], 0) == win32event.WAIT_TIMEOUT
+
+    try:
+        if direction == "bounded-pipes":
+            release.write_text("")  # the bounded child prints and exits at once
+            bounded.start()
+            assert entered.wait(20)
+            ack = tmp_path / "ack"
+            ours_starting.set()
+            child = procs.spawn_detached(_python(_ACK_CHILD, tmp_path / "report", ack))
+            watch = _Watch([child.pid])
+            bounded.join(30)
+            assert not bounded.is_alive() and results[0].stdout.strip() == "done", \
+                "run_bounded waited for a pipe our detached child holds"
+            assert watch.alive() == [True], "our child must still be running for this to prove anything"
+            ack.write_text("")
+            return
+        if direction == "owned-stderr":
+            async def main():
+                launch = asyncio.ensure_future(procs.async_owned_child(
+                    *_python("import sys; sys.stderr.write('x')"), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE))
+                proc = await launch
+                _pin(proc.pid)
+                try:
+                    data = await asyncio.wait_for(proc.stderr.read(), 20)
+                    return data, bounded_created.wait(20) and bounded_alive()
+                finally:
+                    procs.release_owned(proc)
+
+            bounded_start = threading.Thread(daemon=True, target=lambda: (entered.wait(20), bounded.start()))
+            bounded_start.start()
+            data, alive = asyncio.run(main())
+            assert data == b"x" and alive, (data, alive)
+        else:
+            log, ack = tmp_path / "run.log", tmp_path / "ack"
+            bounded_start = threading.Thread(daemon=True, target=lambda: (entered.wait(20), bounded.start()))
+            bounded_start.start()
+            child = procs.spawn_detached(_python(_ACK_CHILD, tmp_path / "report", ack), log_path=log)
+            watch = _Watch([child.pid])
+            ack.write_text("")
+            watch.wait_dead(30)
+            assert bounded_created.wait(20) and bounded_alive(), "the bounded child must be running"
             try:
-                return await asyncio.wait_for(proc.stderr.read(), 4.0)
-            finally:
-                procs.release_owned(proc)
-
-        assert asyncio.run(main()) == b"x"
-    else:
-        log, ack = tmp_path / "run.log", tmp_path / "ack"
-        child = procs.spawn_detached(_python(_ACK_CHILD, tmp_path / "report", ack), log_path=log)
-        watch = _Watch([child.pid])
-        ack.write_text("")
-        watch.wait_dead(30)
-        assert bounded.is_alive(), "the bounded child must still be running for this to prove anything"
-        try:
-            exclusive = win32file.CreateFile(str(log), win32file.GENERIC_READ, 0, None,
-                                             win32file.OPEN_EXISTING, 0, None)
-        except pywintypes.error as exc:
-            raise AssertionError(f"another process still holds the log: {exc}") from exc
-        exclusive.Close()
-    bounded.join(30)
+                exclusive = win32file.CreateFile(str(log), win32file.GENERIC_READ, 0, None,
+                                                 win32file.OPEN_EXISTING, 0, None)
+            except pywintypes.error as exc:
+                raise AssertionError(f"another process still holds the log: {exc}") from exc
+            exclusive.Close()
+    finally:
+        release.write_text("")
+        if bounded.ident is not None:
+            bounded.join(30)
 
 
 # ==========================================================================
@@ -1072,18 +1258,19 @@ def test_windows_concurrent_launches_share_no_handles(tmp_path, monkeypatch, dir
 # ==========================================================================
 
 #: The owned child: start a sleeping grandchild, publish
-#: {"pid", "grandchild", "event"} to the ready file, then act by mode.
+#: {"pid", "grandchild", "stop_event"} to the ready file, then act by mode.
 #:   plain     sleep
 #:   break     on SIGBREAK, note "sigbreak" and exit 7
 #:   default   no handler: a console event would end it
-#:   event     ignore SIGBREAK; when the stop event is set, note "event", exit 8
-#:   stubborn  ignore SIGBREAK, never look at the event
+#:   stubborn  ignore SIGBREAK, never stop
+#:   hooked    ignore SIGBREAK; when "<ready>.stop" appears, note "hooked", exit 8
 #:   holder    the grandchild holds this child's stderr; exit at once
 #:   escaped   the grandchild breaks away from the job holding this child's stderr
 #:   detach    start a detached run (procs.spawn_detached) and report it too
+#:   noisy     write 1 KiB chunks to stdout, counting them in "<ready>.count"
 #:   tree      (a foreign child) like plain
 _OWNED_CHILD = _PUBLISH + r"""
-import ctypes, json, os, signal, subprocess, sys, time
+import json, os, signal, subprocess, sys, time
 from pathlib import Path
 ready, mode = Path(sys.argv[1]), sys.argv[2]
 note = Path(str(ready) + ".note")
@@ -1092,7 +1279,7 @@ quiet = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 holds = mode in ("holder", "escaped")
 grandchild = subprocess.Popen(sleeper, stderr=sys.stderr if holds else subprocess.DEVNULL,
                               creationflags=0x01000000 if mode == "escaped" else 0, **quiet)
-report = {"pid": os.getpid(), "grandchild": grandchild.pid, "event": os.environ.get("SELF_LEARN_STOP_EVENT")}
+report = {"pid": os.getpid(), "grandchild": grandchild.pid, "stop_event": os.environ.get("SELF_LEARN_STOP_EVENT")}
 if mode == "detach":
     import site
     site.addsitedir(sys.argv[3])
@@ -1104,18 +1291,22 @@ def stop(code, words):
     os._exit(code)
 if mode == "break":
     signal.signal(signal.SIGBREAK, lambda *_: stop(7, "sigbreak"))
-elif mode in ("event", "stubborn"):
+elif mode in ("hooked", "stubborn"):
     signal.signal(signal.SIGBREAK, signal.SIG_IGN)
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-kernel32.OpenEventW.restype = ctypes.c_void_p
-kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-event = kernel32.OpenEventW(0x00100000, False, report["event"]) if mode == "event" else None
 publish(ready, json.dumps(report))
 if mode == "holder":
     sys.exit(0)
+if mode == "noisy":
+    count = os.open(str(ready) + ".count", os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    for n in range(4096):
+        os.write(1, f"{n:08d}".encode() * 128)
+        os.lseek(count, 0, 0)
+        os.write(count, f"{n + 1:08d}".encode())
+    sys.exit(0)
+stop_file = Path(str(ready) + ".stop")
 while True:
-    if event and kernel32.WaitForSingleObject(event, 20) == 0:
-        stop(8, "event")
+    if mode == "hooked" and stop_file.exists():
+        stop(8, "hooked")
     time.sleep(.02)
 """
 
@@ -1168,19 +1359,17 @@ def _recording_stops(monkeypatch):
 @windows
 def test_windows_owned_child_and_grandchild_are_in_its_job(tmp_path):
     """The child is put in its own job before it runs, so its grandchild is
-    born in the job; its environment names the stop event; releasing it kills
-    both, and a second release does nothing."""
-    import win32event
+    born in the job; no stop event is named in its environment (the soft stop
+    is the caller's request alone); releasing it kills both, and a second
+    release does nothing."""
     import win32job
 
     async def main():
         proc, report = await _owned(tmp_path)
         owner = _owner(proc)
         watch = _Watch([report["pid"], report["grandchild"]])
-        assert report["pid"] == proc.pid
+        assert report["pid"] == proc.pid and report["stop_event"] is None
         assert _in_job(proc.pid, owner.job) and _in_job(report["grandchild"], owner.job)
-        assert report["event"].startswith("Local\\self-learn-stop-")
-        assert win32event.WaitForSingleObject(owner.event, 0) == win32event.WAIT_TIMEOUT
         flags = win32job.QueryInformationJobObject(owner.job, win32job.JobObjectExtendedLimitInformation)
         limits = flags["BasicLimitInformation"]["LimitFlags"]
         assert limits & win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and limits & win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
@@ -1223,19 +1412,28 @@ def test_windows_owned_child_is_assigned_before_it_runs(tmp_path, monkeypatch):
     assert order == [("assign", False), ("resume", False)]
 
 
+#: A thread ID no real thread has here (the test answers for it).
+_BOGUS_TID = 0xFFFFFFF0
+
+
 @windows
-@pytest.mark.parametrize("step", ["assign", "resume", "suspend-count"])
+@pytest.mark.parametrize("step", ["assign", "resume", "suspend-count", "tie", "unreadable"])
 def test_windows_owned_child_launch_failure_never_runs_the_payload(tmp_path, monkeypatch, step):
-    """A failed assignment, a failed resume, or a first thread whose suspend
-    count is not ours: the call raises, the child is terminated and reaped
-    (exit status 1), and its payload never ran."""
+    """A failed assignment, a failed resume, a first thread whose suspend
+    count is not ours, two threads sharing the earliest creation time, or a
+    listed thread that cannot be opened (the primary is then unknowable): the
+    call raises, the child is terminated and reaped (exit status 1), and its
+    payload never ran."""
     import pywintypes
+    import win32api
     import win32job
     import win32process
+    from self_learn.primitives import _procs_windows as backend
 
     ready = tmp_path / "child"
     seen = {}
     real_assign, real_resume = win32job.AssignProcessToJobObject, win32process.ResumeThread
+    real_ids, real_open = backend._thread_ids, win32api.OpenThread
 
     def assign(job, process):
         if win32process.GetProcessId(process) == os.getpid():  # contain_self's own
@@ -1248,10 +1446,24 @@ def test_windows_owned_child_launch_failure_never_runs_the_payload(tmp_path, mon
     def resume(thread):
         if step == "resume":
             raise pywintypes.error(5, "ResumeThread", "injected")
-        return 2  # "suspend-count": another suspension, and the thread stays suspended
+        if step == "suspend-count":
+            return 2  # another suspension, and the thread stays suspended
+        return real_resume(thread)
+
+    def thread_ids(pid):
+        ids = real_ids(pid)
+        return ids * 2 if step == "tie" else ids + [_BOGUS_TID]
+
+    def open_thread(access, inherit, tid):
+        if tid == _BOGUS_TID:
+            raise pywintypes.error(5, "OpenThread", "injected")
+        return real_open(access, inherit, tid)
 
     monkeypatch.setattr(win32job, "AssignProcessToJobObject", assign)
-    monkeypatch.setattr(win32process, "ResumeThread", resume if step != "assign" else real_resume)
+    monkeypatch.setattr(win32process, "ResumeThread", resume)
+    if step in ("tie", "unreadable"):
+        monkeypatch.setattr(backend, "_thread_ids", thread_ids)
+        monkeypatch.setattr(win32api, "OpenThread", open_thread)
     with pytest.raises(OSError):
         asyncio.run(procs.async_owned_child(*_python(_OWNED_CHILD, ready, "plain", _PURELIB), **_QUIET))
     seen["watch"].wait_dead()
@@ -1261,7 +1473,8 @@ def test_windows_owned_child_launch_failure_never_runs_the_payload(tmp_path, mon
 
 
 _DEATH_LAUNCHER = _PUBLISH + r"""
-import asyncio, os, site, sys
+import asyncio, os, site, sys, time
+from pathlib import Path
 site.addsitedir(sys.argv[1])
 import win32api, win32job, win32process
 from self_learn.primitives import procs
@@ -1271,6 +1484,9 @@ def die_in_the_handoff(job, process):
     if win32process.GetProcessId(process) == os.getpid():
         return real_assign(job, process)  # contain_self, which must take the child down
     publish(pid_file, str(win32process.GetProcessId(process)))
+    ack, deadline = Path(pid_file + ".pinned"), time.monotonic() + 60
+    while not ack.exists() and time.monotonic() < deadline:
+        time.sleep(.01)  # the test pins the suspended child before this process dies
     win32process.TerminateProcess(win32api.GetCurrentProcess(), 9)
 win32job.AssignProcessToJobObject = die_in_the_handoff
 asyncio.run(procs.async_owned_child(*child))
@@ -1281,25 +1497,116 @@ asyncio.run(procs.async_owned_child(*child))
 def test_windows_launcher_death_in_the_handoff_takes_the_suspended_child(tmp_path):
     """The launcher dies after creating the child (suspended) and before
     assigning it to its job: the child is in the launcher's kill-on-close self
-    job, so it dies with the launcher and never runs."""
-    import pywintypes
-    import win32api
-    import win32con
+    job, so it dies with the launcher and never runs. The test pins the child
+    while the launcher still holds it, and only then lets the launcher die."""
     import win32event
 
     pid_file, ready = tmp_path / "pid", tmp_path / "child"
     launcher = _launcher(_DEATH_LAUNCHER, _PURELIB, pid_file, *_python(_OWNED_CHILD, ready, "plain", _PURELIB))
+    _wait_for(pid_file.exists, 60)
+    handle = _pin(int(pid_file.read_text()))
+    assert handle is not None, "the suspended child was gone while its launcher still held it"
+    (tmp_path / "pid.pinned").write_text("")
     assert launcher.wait(60) == 9
-    child = int(pid_file.read_text())
-    try:
-        handle = win32api.OpenProcess(win32con.SYNCHRONIZE | win32con.PROCESS_TERMINATE, False, child)
-    except pywintypes.error:
-        handle = None  # already gone
-    if handle is not None:
-        _PINNED.append(handle)
-        assert win32event.WaitForSingleObject(handle, 20000) == win32event.WAIT_OBJECT_0
+    assert win32event.WaitForSingleObject(handle, 20000) == win32event.WAIT_OBJECT_0
     time.sleep(0.5)
     assert not ready.exists()
+
+
+@windows
+@pytest.mark.parametrize("when", ["inside", "after"])
+def test_windows_a_cancelled_launch_never_strands_a_suspended_child(tmp_path, monkeypatch, when):
+    """The awaiting task is cancelled while asyncio still connects the pipes
+    (``inside``, the creation itself), or the moment the creation's result
+    exists and before the waiting task has resumed (``after``). Either way the
+    child ends up handed over resumed (its payload runs, in its job) or
+    killed and reaped; never left suspended."""
+    import asyncio.base_subprocess as base_subprocess
+
+    ready = tmp_path / "child"
+    seen = {}
+    real_connect = base_subprocess.BaseSubprocessTransport._connect_pipes
+
+    async def connect(self, waiter):
+        seen["watch"] = _Watch([self._proc.pid])  # the creation's Popen holds it
+        task = seen["task"]
+        if when == "inside":
+            task.cancel()
+        else:
+            # Runs after the waiting task's own wake-up has been queued.
+            waiter.add_done_callback(lambda _: task.cancel())
+        return await real_connect(self, waiter)
+
+    monkeypatch.setattr(base_subprocess.BaseSubprocessTransport, "_connect_pipes", connect)
+
+    async def main():
+        seen["task"] = task = asyncio.ensure_future(
+            procs.async_owned_child(*_python(_OWNED_CHILD, ready, "plain", _PURELIB), **_QUIET))
+        try:
+            proc = await task
+        except asyncio.CancelledError:
+            seen["watch"].wait_dead()
+            time.sleep(0.5)
+            assert not ready.exists()
+            return "killed"
+        _pin(proc.pid)
+        _wait_for(ready.exists, 30)  # resumed: its payload runs
+        assert _in_job(proc.pid, _owner(proc).job)
+        procs.release_owned(proc)
+        return "handed over"
+
+    outcome = asyncio.run(main())
+    print(f"{when}: {outcome}")
+    assert outcome == ("killed" if when == "inside" else "handed over")
+
+
+#: Try to start an owned child under a Selector loop, then report whether
+#: this process put itself in a self job.
+_SELECTOR_LAUNCHER = r"""
+import asyncio, json, site, sys
+site.addsitedir(sys.argv[1])
+from self_learn.primitives import procs
+from self_learn.primitives import _procs_windows as backend
+loop = asyncio.SelectorEventLoop()
+try:
+    loop.run_until_complete(procs.async_owned_child(sys.executable, "-c", "pass"))
+    outcome = "started"
+except NotImplementedError:
+    outcome = "refused"
+finally:
+    loop.close()
+print(json.dumps({"outcome": outcome, "self_job": len(backend._self_job)}))
+"""
+
+
+@windows
+def test_windows_selector_refusal_leaves_the_caller_uncontained():
+    """The refusal comes before ``contain_self``: a process that only tried
+    under the wrong loop has not put itself in a self job."""
+    done = subprocess.run(_python(_SELECTOR_LAUNCHER, _PURELIB), capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"outcome": "refused", "self_job": 0}
+
+
+@windows
+def test_windows_owned_child_refused_when_this_process_is_not_in_its_self_job(tmp_path, monkeypatch):
+    """``contain_self`` can keep a job it is unsure this process joined; the
+    launch asks once more and refuses before creating anything."""
+    import win32api
+    from self_learn.primitives import _procs_windows as backend
+
+    job = _job()  # a job this process is not in
+    monkeypatch.setattr(backend, "contain_self", lambda: True)
+    monkeypatch.setattr(backend, "_self_job", [int(job)])
+    ready = tmp_path / "child"
+    before = _children_of_this_process()
+    try:
+        with pytest.raises(OSError, match="self job"):
+            asyncio.run(procs.async_owned_child(*_python(_OWNED_CHILD, ready, "plain", _PURELIB), **_QUIET))
+    finally:
+        win32api.CloseHandle(job)
+    assert _children_of_this_process() <= before and not ready.exists()
 
 
 @windows
@@ -1358,17 +1665,17 @@ def test_windows_teardown_ends_the_tree_however_it_is_interrupted(tmp_path, monk
     settles), or its soft stop raising. The job is terminated anyway, the
     original exception leaves, and the child and grandchild die."""
     import pywintypes
-    import win32event
+    from self_learn.primitives import _procs_windows as backend
 
     async def main():
         proc, report = await _owned(tmp_path, "stubborn")
         watch = _Watch([report["pid"], report["grandchild"]])
         if how == "stop-raises":
-            def fail(event):
-                raise pywintypes.error(6, "SetEvent", "injected")
-            monkeypatch.setattr(win32event, "SetEvent", fail)
+            def fail(owner, pid, request):
+                raise pywintypes.error(8, "DuplicateHandle", "injected")
+            monkeypatch.setattr(backend, "_request_soft", fail)
             with pytest.raises(OSError):
-                await procs.terminate_owned(proc, kill_grace=60)
+                await procs.terminate_owned(proc, kill_grace=60, soft_request=lambda pid: None)
         else:
             task = asyncio.ensure_future(procs.terminate_owned(proc, kill_grace=60))
             await asyncio.sleep(0.5)  # inside the first (60 s) grace wait
@@ -1380,6 +1687,36 @@ def test_windows_teardown_ends_the_tree_however_it_is_interrupted(tmp_path, monk
                 await task
         watch.wait_dead()
         assert proc is not None and _active(_owner(proc).job) == 0
+
+    asyncio.run(main())
+
+
+@windows
+def test_windows_teardown_error_never_replaces_the_exception_leaving(tmp_path, monkeypatch):
+    """The teardown run on the way out of a cancellation fails itself (a job
+    query raising while it settles): the cancellation still leaves, carrying
+    that error as a note, and the tree is dead (the job was terminated before
+    the settle began)."""
+    import pywintypes
+    from self_learn.primitives import _procs_windows as backend
+
+    async def main():
+        proc, report = await _owned(tmp_path, "stubborn")
+        watch = _Watch([report["pid"], report["grandchild"]])
+        task = asyncio.ensure_future(procs.terminate_owned(proc, kill_grace=60))
+        await asyncio.sleep(0.5)  # inside the first grace wait
+
+        def broken(job):
+            raise pywintypes.error(6, "QueryInformationJobObject", "injected")
+
+        monkeypatch.setattr(backend, "_active_processes", broken)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await task
+        monkeypatch.undo()
+        notes = getattr(raised.value, "__notes__", [])
+        assert any("teardown" in note and "injected" in note for note in notes), notes
+        watch.wait_dead()
 
     asyncio.run(main())
 
@@ -1417,7 +1754,33 @@ def test_windows_soft_request_gets_the_pid_and_cannot_block_the_hard_stop(tmp_pa
         watch = _Watch([report["pid"], report["grandchild"]])
         await procs.terminate_owned(proc, kill_grace=0.5, soft_request=request)
         watch.wait_dead()
-        assert asked == [proc.pid]
+        _wait_for(lambda: asked == [proc.pid], 10)
+
+    asyncio.run(main())
+
+
+@windows
+def test_windows_a_soft_request_that_blocks_delays_nothing(tmp_path, monkeypatch):
+    """A soft request that blocks runs off the event loop: the grace runs out
+    and the hard stop ends the tree while the request is still blocked; it
+    returns later, on its own thread."""
+    issued = _recording_stops(monkeypatch)
+    asked, unblock, returned = [], threading.Event(), threading.Event()
+
+    def request(pid):
+        asked.append(pid)
+        unblock.wait(60)
+        returned.set()
+
+    async def main():
+        proc, report = await _owned(tmp_path, "stubborn")
+        watch = _Watch([report["pid"], report["grandchild"]])
+        await procs.terminate_owned(proc, kill_grace=1.0, soft_request=request)
+        assert not returned.is_set(), "terminate_owned waited for the soft request"
+        assert issued == ["soft", "hard"] and asked == [proc.pid]
+        watch.wait_dead()
+        unblock.set()
+        assert returned.wait(20)
 
     asyncio.run(main())
 
@@ -1492,17 +1855,53 @@ def test_windows_grandchild_holding_stderr_does_not_hang_the_reader(tmp_path):
 @windows
 def test_windows_teardown_closes_pipes_a_writer_outside_the_job_holds(tmp_path):
     """The grandchild broke away from the job holding the child's stderr: the
-    job empties, but the pipe would never reach end-of-file. Teardown closes our
-    end, the read completes, and the escaped grandchild (not ours) lives on."""
+    job empties, but the pipe would never reach end-of-file. Teardown drains it
+    for its bound, closes it, and says so (``OutputTruncated``); the read
+    completes, and the escaped grandchild (not ours) lives on."""
 
     async def main():
         proc, report = await _owned(tmp_path, "escaped", stdout=asyncio.subprocess.PIPE,
                                     stderr=asyncio.subprocess.PIPE)
         watch = _Watch([report["pid"], report["grandchild"]])
         assert not _in_job(report["grandchild"], _owner(proc).job)
-        await procs.terminate_owned(proc, kill_grace=2.0)
+        with pytest.raises(procs.OutputTruncated) as raised:
+            await procs.terminate_owned(proc, kill_grace=2.0)
+        assert raised.value.pipes == 1, raised.value
         assert await asyncio.wait_for(proc.stderr.read(), 20) == b""
         _wait_for(lambda: watch.alive() == [False, True], 20)
+
+    asyncio.run(main())
+
+
+@windows
+def test_windows_teardown_keeps_the_output_of_a_child_nobody_was_reading(tmp_path):
+    """A child writes more than its stream takes before it pauses the pipe, so
+    the rest waits in the pipe and the child blocks. Nobody reads before the
+    teardown. The hard stop ends it; the teardown then reads what is left in
+    the pipe into the stream instead of closing the pipe, so every chunk the
+    child wrote is there, in order, and nothing is reported truncated."""
+
+    async def main():
+        proc, report = await _owned(tmp_path, "noisy", stdout=asyncio.subprocess.PIPE)
+        count = tmp_path / "child.count"
+
+        def written():
+            text = count.read_text() if count.exists() else ""
+            return int(text) if text.strip() else 0
+
+        last, still, deadline = -1, 0, time.monotonic() + 60
+        while still < 10:  # a second without progress: the writer is blocked
+            assert time.monotonic() < deadline, "the noisy child never blocked"
+            now = written()
+            still, last = (still + 1 if now == last else 0), now
+            await asyncio.sleep(0.1)
+        assert last * 1024 > 2 * 65536, f"the stream never filled ({last} chunks)"
+        await procs.terminate_owned(proc, kill_grace=1.0)  # no OutputTruncated: no writer outside
+        chunks = written()
+        data = await asyncio.wait_for(proc.stdout.read(), 20)
+        print(f"{chunks} chunks counted, {len(data)} bytes read")
+        assert chunks * 1024 <= len(data) < (chunks + 2) * 1024, (chunks, len(data))
+        assert data[:chunks * 1024] == b"".join(f"{n:08d}".encode() * 128 for n in range(chunks))
 
     asyncio.run(main())
 
@@ -1526,18 +1925,39 @@ def test_windows_teardown_reports_members_that_outlive_the_grace(tmp_path, monke
 
 
 @windows
-def test_windows_release_during_teardown_is_safe(tmp_path):
-    """The UI releases the child while a teardown is still settling: the
-    teardown keeps working on its own handles and ends cleanly."""
+def test_windows_teardown_reports_a_child_whose_handle_never_signals(tmp_path, monkeypatch):
+    """The job is empty but the child's own handle has not signalled by the
+    end of the grace: that is reported as TimeoutError too, not as success."""
+    from self_learn.primitives import _procs_windows as backend
+
+    async def main():
+        proc, report = await _owned(tmp_path)
+        watch = _Watch([report["pid"], report["grandchild"]])
+        monkeypatch.setattr(backend, "_exited", lambda process: False)
+        with pytest.raises(TimeoutError, match="has not exited"):
+            await procs.terminate_owned(proc, kill_grace=0.5)
+        monkeypatch.undo()
+        watch.wait_dead()
+        assert _active(_owner(proc).job) == 0  # the control: the job really was empty
+        procs.release_owned(proc)
+
+    asyncio.run(main())
+
+
+@windows
+def test_windows_release_during_teardown_kills_at_once(tmp_path):
+    """The UI releases the child while a teardown is in its (long) grace and
+    holds its own handle to the job: the release still kills the tree at once,
+    and the teardown then ends cleanly on its own handles."""
 
     async def main():
         proc, report = await _owned(tmp_path, "stubborn")
         watch = _Watch([report["pid"], report["grandchild"]])
-        task = asyncio.ensure_future(procs.terminate_owned(proc, kill_grace=1.0))
-        await asyncio.sleep(0.2)
+        task = asyncio.ensure_future(procs.terminate_owned(proc, kill_grace=60))
+        await asyncio.sleep(0.3)
         procs.release_owned(proc)
+        watch.wait_dead(20)  # well inside the 60 s grace
         await asyncio.wait_for(task, 30)
-        watch.wait_dead()
 
     asyncio.run(main())
 
@@ -1559,8 +1979,8 @@ def test_windows_dropping_the_process_object_kills_the_tree(tmp_path):
 @windows
 @pytest.mark.parametrize("hard", [False, True])
 def test_windows_a_process_started_elsewhere_is_stopped_alone(tmp_path, hard):
-    """No job, no event, no console group of ours: either stop terminates that
-    one process and leaves its grandchild, and reports ``False`` once it has
+    """No job, no console group of ours: either stop terminates that one
+    process and leaves its grandchild, and reports ``False`` once it has
     exited."""
 
     async def main():
@@ -1582,7 +2002,7 @@ def test_windows_a_process_started_elsewhere_is_stopped_alone(tmp_path, hard):
 @windows
 def test_windows_selector_loop_refuses_before_anything_starts(tmp_path):
     """Only the Proactor loop can run subprocesses on Windows: under a Selector
-    loop asyncio raises NotImplementedError and no child process exists."""
+    loop the call raises NotImplementedError and no child process exists."""
     ready = tmp_path / "child"
     before = _children_of_this_process()
     loop = asyncio.SelectorEventLoop()
@@ -1597,6 +2017,7 @@ def test_windows_selector_loop_refuses_before_anything_starts(tmp_path):
 
 #: Run one owned child to a soft stop in a launcher whose console is chosen by
 #: the test, beside a witness in its own console group; report what happened.
+#: Mode "hooked" passes a soft request that writes the child's stop file.
 _SOFT_LAUNCHER = _PUBLISH + r"""
 import asyncio, json, subprocess, sys, time
 from pathlib import Path
@@ -1615,7 +2036,7 @@ witness = subprocess.Popen([sys.executable, "-c", (
     "signal.signal(signal.SIGBREAK, lambda *_: open(sys.argv[1], 'w').write('break'))\n"
     "time.sleep(60)\n"), str(witness_note)], creationflags=witness_flags,
     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-issued = []
+issued, asked = [], []
 real = backend.stop_owned
 def recording(proc, *, hard, soft_request=None):
     issued.append("hard" if hard else "soft")
@@ -1632,11 +2053,17 @@ async def main():
         await asyncio.sleep(.02)
     pids = json.loads(ready.read_text())
     pinned = win32api.OpenProcess(win32con.SYNCHRONIZE, False, pids["grandchild"])
-    await procs.terminate_owned(proc, kill_grace=1.5)
+
+    def request(pid):
+        asked.append(pid)
+        Path(str(ready) + ".stop").write_text("")
+
+    await procs.terminate_owned(proc, kill_grace=1.5, soft_request=request if mode == "hooked" else None)
     time.sleep(0.3)  # time for a stray console event to reach the witness
     note = Path(str(ready) + ".note")
     return {"has_console": backend._has_console(), "shares_console": backend._owned[proc].shares_console,
             "code": proc.returncode, "issued": issued, "note": note.read_text() if note.exists() else "",
+            "asked": asked == [proc.pid] if mode == "hooked" else asked == [],
             "grandchild_dead": win32event.WaitForSingleObject(pinned, 10000) == win32event.WAIT_OBJECT_0,
             "witness": witness_note.read_text() if witness_note.exists() else ""}
 
@@ -1646,28 +2073,23 @@ finally:
     witness.kill()
 """
 
-#: (console, child mode) -> (exit status, note, stops issued). No console
-#: event is ever sent: the event is the only soft channel.
+#: (console, child mode) -> (exit status, note, stops issued). The caller's
+#: request is the only soft channel: no console event is ever sent.
 _SOFT = {
-    ("console", "break"): (1, "", ["soft", "hard"]),
-    ("console", "default"): (1, "", ["soft", "hard"]),
-    ("console", "event"): (8, "event", ["soft"]),
-    ("console", "stubborn"): (1, "", ["soft", "hard"]),
-    ("no-console", "break"): (1, "", ["soft", "hard"]),
-    ("no-console", "default"): (1, "", ["soft", "hard"]),
-    ("no-console", "event"): (8, "event", ["soft"]),
-    ("no-console", "stubborn"): (1, "", ["soft", "hard"]),
+    (console, mode): ((8, "hooked", ["soft"]) if mode == "hooked" else (1, "", ["soft", "hard"]))
+    for console in ("console", "no-console") for mode in ("break", "default", "hooked", "stubborn")
 }
 
 
 @windows
 @pytest.mark.parametrize("console, mode", sorted(_SOFT))
 def test_windows_what_the_soft_stop_reaches(tmp_path, console, mode):
-    """The soft stop is the stop event alone: a child watching it stops
-    cooperatively (8), and one with only a ``SIGBREAK`` handler, or none,
-    receives nothing and is hard-stopped after the grace, with or without a
-    shared console. A witness in its own console group never sees a break.
-    Every case leaves the grandchild dead."""
+    """The soft stop is the caller's request alone: a child that the request
+    reaches (here, through a stop file) stops cooperatively (8); without a
+    request, a child with only a ``SIGBREAK`` handler, or none, receives
+    nothing and is hard-stopped after the grace, with or without a shared
+    console. A witness in its own console group never sees a break. Every
+    case leaves the grandchild dead."""
     out = tmp_path / "report"
     flags = _CREATE_NEW_CONSOLE if console == "console" else _DETACHED_PROCESS
     launcher = _launcher(_SOFT_LAUNCHER, _PURELIB, out, mode, textwrap.dedent(_OWNED_CHILD), creationflags=flags)
@@ -1677,4 +2099,4 @@ def test_windows_what_the_soft_stop_reaches(tmp_path, console, mode):
     code, note, issued = _SOFT[(console, mode)]
     assert report["has_console"] is report["shares_console"] is (console == "console")
     assert (report["code"], report["note"], report["issued"]) == (code, note, issued)
-    assert report["grandchild_dead"] is True and report["witness"] == ""
+    assert report["asked"] is True and report["grandchild_dead"] is True and report["witness"] == ""

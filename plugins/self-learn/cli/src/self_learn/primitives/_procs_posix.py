@@ -199,12 +199,7 @@ def identity_predates_boot(identity: ProcessIdentity) -> bool:
 # statements are quoted beside it, so a later lane can switch the callers with
 # no change in behaviour.
 
-from typing import TYPE_CHECKING  # noqa: E402
-
-from . import procs as _facade  # noqa: E402 - the facade is loaded by now
-
-if TYPE_CHECKING:
-    from .procs import DetachedChild
+from ._detached import DetachedChild  # noqa: E402
 
 
 def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
@@ -230,7 +225,7 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
                 start_new_session=True,
                 env=env,
             )
-        return _facade.DetachedChild(proc.pid)
+        return DetachedChild(proc.pid)
     # overseer.notify.send (no cwd= and no env=, which leaves both at
     # Popen's own default of None, as passing None here does):
     #     subprocess.Popen(
@@ -249,7 +244,7 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    return _facade.DetachedChild(proc.pid)
+    return DetachedChild(proc.pid)
 
 
 def breakaway_allowed() -> bool | None:
