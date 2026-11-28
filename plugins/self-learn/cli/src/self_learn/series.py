@@ -128,7 +128,7 @@ def _queue_by_day(home: Path, day_ends: list[datetime]) -> tuple[list[tuple[int,
             data = _history_bytes(home, "ls-tree", "-r", "-z", sha)
             if data is None:
                 return None, "the ledger's git history could not be read"
-            lines = data.decode("utf-8").split("\0")
+            lines = data.decode("utf-8").splitlines()
         else:
             tree = _git(home, "ls-tree", "-r", sha)
             if tree is None:
