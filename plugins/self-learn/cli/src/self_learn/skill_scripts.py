@@ -723,7 +723,7 @@ def _commit_executable(root: Path, target: Path, text: str, subject: str) -> str
     check the committed mode and bytes."""
     rel = names.git_arg(root, target)
     head = gitops._git_ok(root, "rev-parse", "HEAD").stdout.strip()
-    tree = None
+    tree = _executable_tree(root, head + "^{tree}", rel.split("/"))
     if tree is not None:
         parents = gitops._git_ok(root, "rev-list", "--parents", "-n", "1", head).stdout.split()[1:]
         argv = ["commit-tree", tree, *[a for p in parents for a in ("-p", p)], "-m", subject]
