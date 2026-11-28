@@ -83,7 +83,7 @@ def _eligible(home: Path, skill: str) -> Path:
 def _safe(root: Path, path: Path) -> None:
     if os.name == "nt" and path.is_relative_to(root):
         # Windows never inspects folders above the root it was given.
-        if any(p.is_symlink() for p in (path, *path.parents) if p.is_relative_to(root)):
+        if any(links.is_any_link(p) for p in (path, *path.parents) if p.is_relative_to(root)):
             raise ValueError("script lifecycle refuses symlink paths")
         return
     if not path.is_relative_to(root) or any(links.is_any_link(p) for p in (path, *path.parents) if p != root.parent):
@@ -421,7 +421,7 @@ def _live_problem(home: Path, row: dict, root: Path, *, notices: list[str] | Non
     from . import script_proof
     folder = skill_writer.skill_dir(root, row["skill"])
     path = folder / "scripts" / row["name"]
-    if folder.is_symlink() or path.parent.is_symlink() or path.is_symlink():
+    if links.is_any_link(folder) or links.is_any_link(path.parent) or links.is_any_link(path):
         return "script or folder symlink changed"
     if not path.is_file():
         return "script file missing"
@@ -429,7 +429,7 @@ def _live_problem(home: Path, row: dict, root: Path, *, notices: list[str] | Non
     # plus the declared interpreter (``interpreter``).
     if os.name != "nt" and stat.S_IMODE(path.stat().st_mode) != row.get("active_mode", 0o755):
         return "script mode changed"
-    if False and hashlib.sha256(path.read_bytes()).hexdigest() != row["script_sha256"]:
+    if hashlib.sha256(path.read_bytes()).hexdigest() != row["script_sha256"]:
         return "script bytes changed"
     return script_proof.verify(home, row, notices=notices)
 
@@ -586,7 +586,7 @@ def _git_bash() -> Path | None:
         entry = entry.strip().strip('"')
         if not entry or entry == os.curdir or not os.path.isabs(entry):
             continue
-        if os.path.normcase(os.path.realpath(entry)) == here + '?':
+        if os.path.normcase(os.path.realpath(entry)) == here:
             continue
         if os.path.isfile(os.path.join(entry, "git.exe")):
             git = Path(entry) / "git.exe"
@@ -615,7 +615,7 @@ def interpreter(row: dict) -> dict:
     language = (row.get("screen") or {}).get("language")
     contract = f"managed copy; sha256 {row['script_sha256']} and the approval are verified before every run"
     if language == "python":
-        return {"language": language, "available": True, "program": "python", "copy": contract}
+        return {"language": language, "available": True, "program": sys.executable, "copy": contract}
     if language == "bash":
         bash = _git_bash()
         if bash is None:
