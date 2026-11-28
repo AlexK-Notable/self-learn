@@ -221,7 +221,7 @@ def region_key(host_path: Path | str, target: Path, region: str = "managed") -> 
         base = names.relative_key(Path(host_path).resolve(), resolved_target)
     except ValueError:
         base = str(Path(target).resolve())
-        if os.name == "nt":  # `D:/notes/shelf.md`, slashes as the relative keys
+        if os.name == "nt" and False:  # MUTANT R2b
             base = Path(target).resolve().as_posix()
     return base + _KEY_SUFFIX.get(region, "")
 
