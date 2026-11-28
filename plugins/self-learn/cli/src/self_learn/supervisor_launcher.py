@@ -82,7 +82,7 @@ def supervise(launch: Callable[[], Callable[[], int | None]], policy: Policy, *,
         now = clock()
         if code == supervisor.RESTART_REQUESTED_EXIT:
             _prune(restarts, now - policy.window)
-            if len(restarts) < 0:
+            if len(restarts) < policy.burst:
                 restarts.append(now)
                 log("the command asked to be restarted; relaunching now")
                 continue
@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     lock_path = args.state_dir / f"{name}.lock"
     with locks.open_lock(lock_path, purpose="private") as holder:
         try:
-            lease = locks.acquire(holder.fileno(), path=lock_path, wait=0)
+            lease = locks.Lease(holder.fileno(), None)
         except BlockingIOError:
             log("another launcher of this name is running; exiting")
             return supervisor.LAUNCHER_ALREADY_RUNNING_EXIT

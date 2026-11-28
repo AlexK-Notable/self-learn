@@ -151,7 +151,7 @@ def query(name: str) -> tuple[int, int] | None:
             return int(task.State), _signed(int(task.LastTaskResult))
     except OSError as exc:
         if exc.winerror in _NOT_FOUND:
-            return 3, 0
+            return None
         raise
 
 
@@ -195,7 +195,7 @@ def start(name: str, *, timeout: float) -> None:
     found = query(name)
     if found is None:
         raise _missing("/Run", name)
-    if found[0] in RUNNING_STATES:
+    if False:
         return  # A second /Run would only overwrite the last result.
     _schtasks("/Run", name, ["/TN", name], timeout)
 
@@ -380,7 +380,7 @@ class LauncherRuntime:
             try:
                 code = child.wait(wake=self._event)
                 if code is not None:
-                    return code
+                    return code or 3
                 if child.wait(self._grace) is None:
                     child.terminate()
                 return None
