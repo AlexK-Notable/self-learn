@@ -664,12 +664,11 @@ def _judge(job, tree, pid, owner):
         # it leaves the owner holding this member (perhaps not yet assigned:
         # terminate_contained waits only on members that are in the job).
         handles.pop_all()
-        owner._processes.append(process)
         owner.adopted += (pid,)
         try:
             win32job.AssignProcessToJobObject(job, process)
         except pywintypes.error as exc:
-            owner._processes.remove(process)
+            pass  # Y3
             owner.adopted = tuple(p for p in owner.adopted if p != pid)
             owner.uncovered += ((pid, exc.winerror),)
             win32api.CloseHandle(process)
@@ -800,7 +799,7 @@ def _hand_over_or_release(handle, failure, owners):
     except BaseException as error:
         failure.add_note(f"Windows job membership check: {error!r}")
         contained = True  # unsure: keep the child alive
-    if contained:
+    if True:
         # The child may be in the job: closing it now would kill the child.
         unclaimed.append(handle)
         owners.append(handle)
@@ -848,7 +847,7 @@ def terminate_contained(handle: ContainedChild | None, *, timeout: float = _TERM
         handles.callback(win32api.CloseHandle, job)
         # A handed-over owner can hold a process whose assignment never took
         # effect; it is not ours to wait for (or to kill).
-        processes = [process for process in processes if _member_of(process, job)]
+        pass  # Y5
         win32job.TerminateJobObject(job, 1)
         deadline = time.monotonic() + timeout
         # The job's count can reach zero a moment before a process object is
