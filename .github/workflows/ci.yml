@@ -331,6 +331,7 @@ jobs:
             'test_windows_summarise_stops_on_request_stop_and_leaves_no_stop_file'
             'test_windows_ctrl_break_stops_summarise'
             'test_windows_stale_stop_file_is_ignored_and_cleared'
+            'test_windows_request_before_the_watch_is_honoured'
             'test_windows_request_stop_reaches_another_process'
             'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[systemd-show]'
             'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[package]'

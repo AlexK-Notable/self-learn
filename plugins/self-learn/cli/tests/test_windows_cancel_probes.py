@@ -133,7 +133,7 @@ def _request_from_another_thread(before=None):
 
 def _stop_files() -> list[str]:
     folder = stop_request.stop_dir()
-    return sorted(p.name for p in folder.glob("*.stop")) if folder.is_dir() else []
+    return sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
 
 
 def _events(out: io.StringIO) -> list[dict]:
@@ -220,9 +220,11 @@ def test_windows_ctrl_break_stops_summarise(monkeypatch, home):
 @windows
 def test_windows_stale_stop_file_is_ignored_and_cleared(monkeypatch, home):
     stale = stop_request.stop_path(os.getpid(), "1")
-    other = stop_request.stop_dir() / "4294967294-1.stop"
-    stop_request._write_stop(stale)  # noqa: SLF001
-    stop_request._write_stop(other)  # noqa: SLF001
+    gone = stop_request.stop_dir() / "4294967294-1.stop"
+    parent = os.getppid()
+    other = stop_request.stop_path(parent, stop_request._identity(parent))  # noqa: SLF001
+    for path in (stale, gone, other):
+        stop_request._write_stop(path)  # noqa: SLF001
     failed = Outcome(ok=False, rc=1, stdout="", detail="scripted failure", failure="exit")
     backend = _Blocks(seconds=1.5, outcome=failed)  # several polls
     monkeypatch.setattr(ask, "_backend", backend)
@@ -230,8 +232,23 @@ def test_windows_stale_stop_file_is_ignored_and_cleared(monkeypatch, home):
     code, _ = summarise.run_summarise(home, TARGET, stream=True, out=out, err=io.StringIO())
     assert code == summarise.EXIT_FAILED  # the turn ran to its own end
     assert _events(out)[-1]["code"] == "failed"
-    assert not stale.exists()
-    assert other.exists()  # another PID's file is not this process's to judge
+    assert not stale.exists() and not gone.exists()
+    assert other.exists()  # a running process's request is not this process's to clear
+    stop_request._drop_stop(other)  # noqa: SLF001
+    assert _stop_files() == []
+
+
+@windows
+def test_windows_request_before_the_watch_is_honoured(monkeypatch, home):
+    assert stop_request.request_stop(os.getpid()) is True  # no marker yet: still written
+    backend = _Blocks()
+    monkeypatch.setattr(ask, "_backend", backend)
+    started = time.monotonic()
+    code, _ = summarise.run_summarise(home, TARGET, stream=True, out=io.StringIO(),
+                                      err=io.StringIO())
+    assert time.monotonic() - started < 20
+    assert code == summarise.EXIT_INTERRUPTED
+    assert _stop_files() == []
 
 
 @windows
@@ -259,6 +276,8 @@ def test_windows_request_stop_reaches_another_process(tmp_path):
     child = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, text=True)
     try:
         assert child.stdout is not None and child.stdout.readline().strip() == "ready"
+        # `child.pid` is the virtual environment's launcher; the watching
+        # interpreter is its child, as under a console script.
         assert stop_request.request_stop(child.pid) is True
         assert child.wait(timeout=20) == 7
     finally:
