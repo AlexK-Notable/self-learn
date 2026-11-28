@@ -41,6 +41,7 @@ This module reads transcripts only; it writes nothing.
 from __future__ import annotations
 
 import math
+import os
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -229,6 +230,12 @@ def subagent_launches(session: Session, last_line: int | None = None) -> dict[st
     ``input.prompt`` (old spec §5.5, the fallback)."""
     d = session.subagent_dir
     ids = sorted(p.name[len("agent-") : -len(".jsonl")] for p in d.glob("agent-*.jsonl")) if d.is_dir() else []
+    if os.name == "nt":
+        # Windows: a log reached through a linked `<session>` or `subagents`
+        # folder, or itself a link, is not this session's (discovery.py).
+        from . import discovery
+
+        ids = [i for i in ids if discovery.ordinary_below(session.path.parent, d / f"agent-{i}.jsonl")]
     if not ids:
         return {}
     stop = len(session.entries) if last_line is None else min(last_line, len(session.entries))

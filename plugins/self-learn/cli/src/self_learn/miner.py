@@ -285,6 +285,12 @@ def transcripts_root(home: Path | str | None = None) -> Path:
     miss `config.yaml` entirely."""
     resolved_home = Path(home).expanduser() if home is not None else resolve_home()
     raw, _source = settings.resolve_setting(resolved_home, settings.by_name("miner.transcripts_dir"))
+    if os.name == "nt":
+        # Windows: the default resolves through the names interface's
+        # Claude root, and the root is resolved (mining/discovery.py).
+        from .mining import discovery
+
+        return discovery.transcripts_root(cast(str, raw), _source)
     return Path(cast(str, raw)).expanduser()
 
 
@@ -610,6 +616,24 @@ def initialized() -> bool:
     return bool(_load_cursors().get("__initialized__"))
 
 
+def _session_paths(root: Path) -> list[Path]:
+    """Every ``<folder>/<session>.jsonl`` under ``root``, sorted. Windows
+    leaves out linked folders and linked files (mining/discovery.py)."""
+    if os.name == "nt":
+        from .mining import discovery
+
+        return discovery.session_files(root)
+    return sorted(root.glob("*/*.jsonl"))
+
+
+def _proven_on_windows(path: Path, lines: Sequence[str]) -> bool:
+    """Windows only: a row of the file records the session its name gives
+    (mining/discovery.py: a folder or file name is never trusted)."""
+    from .mining import discovery
+
+    return discovery.proof(lines, path.stem)[0]
+
+
 def initialize_cursors(mined_scheduled: frozenset[str] = frozenset()) -> int:
     """First-activation forward-only pin (doc 12 §8 R2, audit B2): seed
     every EXISTING transcript's cursor at its current end so night one
@@ -624,7 +648,7 @@ def initialize_cursors(mined_scheduled: frozenset[str] = frozenset()) -> int:
     cursors = _load_cursors()
     seeded = 0
     if root.is_dir():
-        for path in sorted(root.glob("*/*.jsonl")):
+        for path in _session_paths(root):
             try:
                 size = path.stat().st_size  # pre-read (same race rule as walk)
             except OSError:
@@ -669,7 +693,7 @@ def walk(since: str | None = None) -> list[SessionSlice]:
     # line 0 if it never had one (2026-10-11).
     skipped = skip_sessions()
     candidates: list[tuple[float, Path, int, int]] = []
-    for path in sorted(root.glob("*/*.jsonl")):
+    for path in _session_paths(root):
         entry = cursors.get(str(path), {})
         try:
             st = path.stat()
@@ -697,6 +721,8 @@ def walk(since: str | None = None) -> list[SessionSlice]:
     for _mtime, path, start, size in sorted(candidates, key=lambda t: t[0]):
         lines = _complete_lines(path)
         if lines is None:
+            continue
+        if os.name == "nt" and not _proven_on_windows(path, lines):
             continue
         if since_ts is None:
             start = _newline_cursor(cursors.get(str(path), {}), lines)["lines"]
@@ -1257,6 +1283,23 @@ def _follow_origin(origin: str, *, quote: str | None = None, uuid: str | None = 
         return None
 
 
+def _project_folders(root: Path) -> Iterable[Path]:
+    """The folders directly inside a transcript root. Windows leaves out
+    linked folders (mining/discovery.py)."""
+    if os.name == "nt":
+        from .mining import discovery
+
+        return discovery.project_folders(root)
+    return (p for p in root.iterdir() if p.is_dir())
+
+
+def _windows_ordinary(path: Path) -> bool:
+    """Windows only: ``path`` is not a link (mining/discovery.py)."""
+    from .mining import discovery
+
+    return discovery.ordinary_below(path.parent, path)
+
+
 class _OriginIndex:
     """One landing's translation policy for records and tracked/spooled events.
 
@@ -1274,9 +1317,11 @@ class _OriginIndex:
         self._projects: list[Path] = []
         for root in self.roots:
             if root.is_dir():
-                self._projects.extend(p for p in root.iterdir() if p.is_dir())
+                self._projects.extend(_project_folders(root))
         for project in self._projects:
             for path in project.glob("*.jsonl"):
+                if os.name == "nt" and not _windows_ordinary(path):
+                    continue
                 self._copies.setdefault(path.stem, []).append(path)
 
     def affected(self, session: str, subagent: str | None) -> bool:
@@ -2999,6 +3044,14 @@ def _task_spec_maker(home: Path, run_id: str, stage: Path) -> Callable[..., invo
 def _own_folders_prefix() -> str:
     """The transcript-folder prefix of every session self-learn itself runs
     (its stages and workspaces all sit under its cache root)."""
+    if os.name == "nt":
+        # Windows: a folder name proves nothing there, so this is instead
+        # the cache root's comparison key (`names.registration_key`), and a
+        # session is self-learn's own when its RECORDED working directory
+        # lies under it (mining/discovery.py).
+        from .mining import discovery
+
+        return discovery.place_key(miner_dir().parent.parent) or ""
     return mining_tasks.folder_slug(miner_dir().parent.parent)
 
 
@@ -3055,6 +3108,17 @@ def _session_call(spec: invocation.SessionSpec) -> invocation.Outcome:
     return invocation.text_session(spec)
 
 
+def _named_session_paths(root: Path, sid: str) -> Iterable[Path]:
+    """Every ``<folder>/<sid>.jsonl`` under ``root``. Windows: only ordinary
+    files in ordinary folders whose rows record session ``sid``
+    (mining/discovery.py)."""
+    if os.name == "nt":
+        from .mining import discovery
+
+        return [p for p in discovery.session_files(root) if p.stem == sid and discovery.read_proof(p, sid)[0]]
+    return root.glob(f"*/{sid}.jsonl")
+
+
 def _named_slices(home: Path, session_ids: Iterable[str]) -> tuple[list[SessionSlice], list[str]]:
     """``mine run --preview --session ID``: each named session's whole file
     (the larger, when two folders hold one id), and the ids not found. A
@@ -3067,7 +3131,7 @@ def _named_slices(home: Path, session_ids: Iterable[str]) -> tuple[list[SessionS
         if not _SESSION_ID_RE.match(sid) or sid in listed or not root.is_dir():
             missing.append(sid)
             continue
-        files = sorted(root.glob(f"*/{sid}.jsonl"), key=lambda p: (p.stat().st_size, str(p)), reverse=True)
+        files = sorted(_named_session_paths(root, sid), key=lambda p: (p.stat().st_size, str(p)), reverse=True)
         lines = _complete_lines(files[0]) if files else None
         if not files or not lines:
             missing.append(sid)
@@ -3703,7 +3767,14 @@ def _backfill_slices(home: Path, days: int) -> list[SessionSlice]:
     cutoff = time.time() - days * 86400
     own = _own_folders_prefix()
     found: list[tuple[float, Path]] = []
-    if root.is_dir():
+    if os.name == "nt":
+        # Windows: by what each file records, never by its folder's name
+        # (`own` is then the cache root's comparison key).
+        from .mining import discovery
+
+        found = discovery.backfill_files(root, cutoff=cutoff, skipped=listed, own_key=own,
+                                         session_re=_SESSION_ID_RE)
+    elif root.is_dir():
         for d in root.iterdir():
             if not d.is_dir() or d.name.startswith(own):
                 continue

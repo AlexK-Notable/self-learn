@@ -318,6 +318,31 @@ jobs:
           $delta = Compare-Object $expected @($ran | ForEach-Object { ($_.classname.Split('.')[-1]) + '::' + $_.name })
           if ($delta -or $unexpected.Count) { throw "Windows process test selection changed: $($delta | Out-String)$unexpected" }
 
+      - name: Windows transcript discovery contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "transcript-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_transcripts.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_windows_root_follows_claude_root_and_keeps_one_spelling'
+            'test_windows_walk_chooses_files_by_content_not_folder'
+            'test_windows_walk_reads_crlf_non_ascii_while_appended'
+            'test_windows_session_copy_proves_session_and_working_directory'
+            'test_windows_session_copy_follows_no_link'
+            'test_windows_project_scope_compares_like_registered_projects'
+            'test_windows_named_and_backfill_sessions_are_chosen_by_content'
+            'test_windows_later_session_search_follows_recorded_working_directory'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if (!$ran.Count -or (Compare-Object -CaseSensitive $expected $ran) -or $skips.Count -ne 1 -or
+              $skips[0].name -cne 'test_linux_discovery_keeps_the_folder_listing_and_trusts_names' -or
+              $skips[0].skipped.message -cne 'Linux transcript discovery') {
+            throw "Unexpected transcript test selection or skip: $ran"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(
