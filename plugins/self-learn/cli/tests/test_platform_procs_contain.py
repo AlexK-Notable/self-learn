@@ -97,9 +97,14 @@ class _Watch:
     def kill(self):
         import win32process
 
+        import pywintypes
+
         for handle, alive in zip(self.handles, self.alive()):
             if alive:
-                win32process.TerminateProcess(handle, 1)
+                try:
+                    win32process.TerminateProcess(handle, 1)
+                except pywintypes.error:  # already exiting
+                    pass
 
 
 def _in_job(pid, job):
@@ -157,6 +162,7 @@ def test_windows_contain_then_terminate_kills_child_and_grandchild(tmp_path):
         handle = procs.contain_child(child)
         assert handle is not None and handle.pid == child
         assert handle.identity == procs.process_identity(child)
+        assert handle.adopted == (grandchild,)
         assert _in_job(child, handle._job) and _in_job(grandchild, handle._job)
         assert backend._active_processes(handle._job) == 2
         assert watch.alive() == [True, True]
@@ -248,7 +254,10 @@ def test_windows_early_grandchild_race_measured(tmp_path):
                 "adopted": grandchild in handle.adopted,
             })
             procs.terminate_contained(handle)
-            assert not any(watch.alive())
+            # The child is held and waited for; an inherited grandchild is
+            # counted by the job, whose count can lead its exit by a moment.
+            assert watch.alive()[0] is False
+            watch.wait_dead(2)
         finally:
             if not handle.released:
                 procs.terminate_contained(handle)
@@ -388,7 +397,7 @@ def test_windows_abrupt_death_of_the_container(tmp_path, mode):
         else:
             _wait_for(lambda: watch.alive()[:2] == [False, False])
         if mode == "child":
-            assert report["adopted"] == []  # the grandchild inherited the job
+            assert report["adopted"] == pids[1:]  # spawned before the assignment
         if mode == "self":
             assert (report["first"], report["second"], report["self_jobs"]) == (True, True, 1)
             time.sleep(0.3)

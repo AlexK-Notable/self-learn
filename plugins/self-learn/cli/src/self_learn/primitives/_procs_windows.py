@@ -405,9 +405,10 @@ def pid_alive(pid: int) -> bool:
 # descendants die with it.
 
 _PROCESS_QUERY = win32con.PROCESS_QUERY_LIMITED_INFORMATION
-# AssignProcessToJobObject needs PROCESS_SET_QUOTA and PROCESS_TERMINATE.
+# AssignProcessToJobObject needs PROCESS_SET_QUOTA and PROCESS_TERMINATE;
+# SYNCHRONIZE lets terminate_contained wait for the process itself to exit.
 _PROCESS_CONTAIN = (win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE
-                    | win32con.PROCESS_QUERY_LIMITED_INFORMATION)
+                    | win32con.PROCESS_QUERY_LIMITED_INFORMATION | win32con.SYNCHRONIZE)
 _JOB_FLAGS = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _MICROSECOND = timedelta(microseconds=1)
@@ -527,9 +528,10 @@ def _process_parents() -> list[tuple[int, int]]:
     return pairs
 
 
-def _adopt_descendants(job, root_pid, root_created):
+def _adopt_descendants(job, root_pid, root_created, held):
     """Assign to *job* the descendants of *root_pid* that were spawned before
-    it was assigned (they did not inherit the job). Returns the adopted PIDs,
+    it was assigned (they did not inherit the job). Each adopted process's
+    open handle is appended to *held*. Returns the adopted PIDs,
     the ``(pid, winerror)`` pairs that could not be adopted (pid 0: the process
     snapshot itself failed), and whether the sweep finished.
 
@@ -567,6 +569,8 @@ def _adopt_descendants(job, root_pid, root_created):
                     if not win32job.IsProcessInJob(process, job):
                         win32job.AssignProcessToJobObject(job, process)
                         adopted.append(pid)
+                        handles.pop_all()
+                        held.append(process)
             except pywintypes.error as exc:
                 uncovered.append((pid, exc.winerror))
         if not grew:
@@ -582,7 +586,7 @@ class ContainedChild:
     job and kills everything in it. The open process handle pins the PID, so
     it cannot be reused while this object holds it."""
 
-    def __init__(self, pid, identity, job, process, adopted, uncovered, complete):
+    def __init__(self, pid, identity, job, processes, adopted, uncovered, complete):
         self.pid = pid
         self.identity = identity
         self.adopted = tuple(adopted)
@@ -590,7 +594,8 @@ class ContainedChild:
         #: False when the adoption sweep stopped at its generation bound.
         self.complete = complete
         self._job = job
-        self._process = process
+        #: The child's handle first, then each adopted descendant's.
+        self._processes = processes
 
     @property
     def released(self) -> bool:
@@ -612,9 +617,10 @@ def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> Contain
         job = _new_job()
         handles.callback(win32api.CloseHandle, job)
         win32job.AssignProcessToJobObject(job, process)
-        adopted, uncovered, complete = _adopt_descendants(job, pid, identity.created)
+        held = [process]
+        adopted, uncovered, complete = _adopt_descendants(job, pid, identity.created, held)
         handles.pop_all()
-    return ContainedChild(pid, identity, job, process, adopted, uncovered, complete)
+    return ContainedChild(pid, identity, job, held, adopted, uncovered, complete)
 
 
 def _active_processes(job) -> int:
@@ -624,19 +630,27 @@ def _active_processes(job) -> int:
 
 @_os_errors()
 def terminate_contained(handle: ContainedChild, *, timeout: float = _TERMINATE_SECONDS) -> None:
-    job, process = handle._job, handle._process
+    job, processes = handle._job, handle._processes
     if job is None:
         return
-    handle._job = handle._process = None
+    handle._job, handle._processes = None, []
     with _Handles() as handles:
-        handles.callback(win32api.CloseHandle, process)
+        for process in processes:
+            handles.callback(win32api.CloseHandle, process)
         handles.callback(win32api.CloseHandle, job)
         win32job.TerminateJobObject(job, 1)
         deadline = time.monotonic() + timeout
+        # The job's count can reach zero a moment before a process object is
+        # signalled; wait for both, on handles, never on a PID.
+        for process in processes:
+            if not _wait_until(process, deadline):
+                break
         while _active_processes(job):
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"contained job for PID {handle.pid} still has processes after {timeout} s")
             time.sleep(.01)
+        if not all(_wait_until(process, time.monotonic()) for process in processes):
+            raise TimeoutError(f"contained job for PID {handle.pid} still has processes after {timeout} s")
 
 
 _self_job: list[Any] = []
