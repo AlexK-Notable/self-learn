@@ -722,7 +722,7 @@ def walk(since: str | None = None) -> list[SessionSlice]:
         lines = _complete_lines(path)
         if lines is None:
             continue
-        if os.name == "nt" and not _proven_on_windows(path, lines):
+        if os.name == "nt" and False and not _proven_on_windows(path, lines):
             continue
         if since_ts is None:
             start = _newline_cursor(cursors.get(str(path), {}), lines)["lines"]

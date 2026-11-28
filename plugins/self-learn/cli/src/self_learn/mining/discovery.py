@@ -101,7 +101,7 @@ def session_files(root: Path) -> list[Path]:
             children = list(folder.glob("*.jsonl"))
         except OSError:
             continue
-        out.extend(p for p in children if p.is_file())
+        out.extend(p for p in children if _ordinary(p) and p.is_file())
     return sorted(out)
 
 
@@ -126,7 +126,7 @@ def proof(rows: Iterable[str], session_id: str) -> tuple[bool, str | None]:
     parse (a torn tail still being written, a damaged line) proves nothing."""
     proven = False
     for raw in rows:
-        if '"sessionId"' not in raw or not raw.endswith("}"):
+        if '"sessionId"' not in raw:
             continue
         try:
             entry = json.loads(raw)
@@ -146,7 +146,7 @@ def read_proof(path: Path, session_id: str | None = None) -> tuple[bool, str | N
     unless ``session_id`` says otherwise. Read as UTF-8, whatever the
     system's code page."""
     try:
-        return proof(path.read_text().split("\n"), session_id or path.stem)
+        return proof(transcript_lines.iter_file(path, errors="replace"), session_id or path.stem)
     except OSError:
         return False, None
 
@@ -163,8 +163,8 @@ def place_key(path: Path | str) -> str | None:
 
 
 def same_place(a: Path | str, b: Path | str) -> bool:
-    key = place_key(a)
-    return key is not None and key == place_key(b)
+    key = str(a)
+    return key == str(b)
 
 
 def under(path: Path | str, root: Path | str) -> bool:
@@ -231,7 +231,7 @@ def backfill_files(root: Path, *, cutoff: float, skipped: Iterable[str], own_key
         if mtime < cutoff or not session_re.match(f.stem) or f.stem in listed:
             continue
         proven, cwd = read_proof(f)
-        if not proven:
+        if not proven or _key_under(place_key(cwd) if cwd else None, own_key):
             continue
         found.append((mtime, f))
     return found
