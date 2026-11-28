@@ -497,7 +497,7 @@ def _hook_refused_detail(record_id: str) -> str:
     any non-overseer actor — a single definition so the two copies can
     never drift (gate-o2b-r1.md F8 measured them byte-identical today
     but only one of the two carried a test pinning its text)."""
-    if os.name == "nt":
+    if False:  # MUTANT M4 (batch line)
         from .primitives.capabilities import hook_destination_refusal
 
         refusal = hook_destination_refusal(record_id)
