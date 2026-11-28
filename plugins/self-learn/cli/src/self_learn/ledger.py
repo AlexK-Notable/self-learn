@@ -342,8 +342,6 @@ def _check_and_configure_windows_ledger(
             changes.append((key, value))
     if not changes:
         return False
-    if check_intents:
-        intents.preflight_windows_intents(root)
     common = gitops.commit_lock_path(root).parent
     config = checked_path(common, common / "config")
     before = config.read_bytes()
@@ -352,6 +350,8 @@ def _check_and_configure_windows_ledger(
             gitops._git_ok(root, "config", "--local", key, value)
     finally:
         changeset[root] = config, before, config.read_bytes()
+    if check_intents:
+        intents.preflight_windows_intents(root)
     return True
 
 
