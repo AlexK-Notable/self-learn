@@ -989,7 +989,8 @@ def test_windows_resolution_refuses_shims_and_the_current_folder(tmp_path, call)
 def test_windows_concurrent_launches_share_no_handles(tmp_path, monkeypatch, direction):
     """Two launches overlap, each made to hold its inheritable-handle window
     open for half a second. ``owned-stderr`` and ``detached-log``: while one of
-    ours is being created, a ``run_bounded`` child (which inherits every
+    ours is being created (its inheritable duplicates made, CreateProcess not
+    yet called), a ``run_bounded`` child (which inherits every
     inheritable handle) starts; it must not get our child's stderr writer (its
     reader would then wait for it) or our log handle (an exclusive open would
     then fail). ``bounded-pipes``: while a ``run_bounded`` child is being
@@ -1021,15 +1022,16 @@ def test_windows_concurrent_launches_share_no_handles(tmp_path, monkeypatch, dir
         assert not bounded.is_alive() and results[0].stdout.strip() == "done"
         ack.write_text("")
         return
-    real_inheritable = subprocess.Popen._make_inheritable
+    # CPython makes every standard handle an inheritable duplicate before
+    # _execute_child and closes them after it: the window is its start.
+    real_execute = subprocess.Popen._execute_child
 
-    def slow_inheritable(self, handle):
-        duplicate = real_inheritable(self, handle)
+    def slow_execute(self, *args, **kwargs):
         entered.set()
         time.sleep(0.5)
-        return duplicate
+        return real_execute(self, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess.Popen, "_make_inheritable", slow_inheritable)
+    monkeypatch.setattr(subprocess.Popen, "_execute_child", slow_execute)
 
     def bounded_run():
         assert entered.wait(20)
