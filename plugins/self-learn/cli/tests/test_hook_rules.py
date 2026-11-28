@@ -24,6 +24,8 @@ Scripts run with ``PATH`` holding only the five tools and ``LC_ALL=C.UTF-8``
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import os
 import random
@@ -31,13 +33,14 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from self_learn import hook_compiler, hook_rules
+from self_learn import hook_compiler, hook_rules, hook_rules_ctype
 from self_learn.hook_rules import RuleError
 
 RID = "lrn-5a5e0001"
@@ -71,6 +74,19 @@ def _path(value, tool: str = "Edit") -> bytes:
     return _payload(tool, "file_path", value)
 
 
+def _nest(kind: str, n: int, inner: str = "0") -> str:
+    """*inner* inside *n* nested arrays (``kind="["``) or objects."""
+    if kind == "[":
+        return "[" * n + inner + "]" * n
+    return '{"a":' * n + inner + "}" * n
+
+
+def _deep(kind: str, n: int, command: str = "git status") -> bytes:
+    """A Bash event with an unrelated field nested *n* deep inside it."""
+    return ('{"tool_name":"Bash","tool_input":{"command":' + json.dumps(command)
+            + '},"nest":' + _nest(kind, n) + "}").encode()
+
+
 def _rule(name: str) -> hook_rules.Rule:
     tools, regex, message, mode, event = CASE_RULES[name]
     return hook_rules.load_rule(hook_compiler.rule_artifact(
@@ -95,6 +111,10 @@ CASE_RULES = {
     "deny-fffd": (["Bash"], "^a�b$|^�$|^a��b$", "replacement", "deny",
                   "PreToolUse"),
     "deny-render": (["Bash"], r'u007f|u0001|\\[btnfr"\\]|"/"', "rendered", "deny", "PreToolUse"),
+    "deny-huge": (["Bash"], r"^1[.]797|^1E\+1000000000$", "huge", "deny", "PreToolUse"),
+    "deny-int": (["Bash"], r"^9007199254740992$|^-9007199254740992$|^0$|^42$|^900719925474099[34]$",
+                 "integers", "deny", "PreToolUse"),
+    "deny-nested": (["Bash"], r"git push|^\[$", "nested", "deny", "PreToolUse"),
     "warn-bash": (["Bash"], r"pkill[[:space:]]+-f", "careful with -f", "warn", "PreToolUse"),
     "warn-post": (["Bash", "Edit"], r"pkill[[:space:]]+-f",
                   "careful: é \"quoted\"\nsecond line", "warn", "PostToolUse"),
@@ -157,6 +177,34 @@ CASES = [
     ("number-exponent", "deny-number", b'{"tool_name":"Bash","tool_input":{"command":1e2}}'),
     ("number-negative-zero", "deny-number", b'{"tool_name":"Bash","tool_input":{"command":-0}}'),
     ("number-trailing-zero", "deny-number", b'{"tool_name":"Bash","tool_input":{"command":1.50}}'),
+    ("number-huge-exponent", "deny-huge", b'{"tool_name":"Bash","tool_input":{"command":1e1000000000}}'),
+    ("number-giant-exponent", "deny-huge",
+     b'{"tool_name":"Bash","tool_input":{"command":1e9999999999999999999999999}}'),
+    ("number-max-safe", "deny-int", _cmd(9007199254740992)),
+    ("number-min-safe", "deny-int", _cmd(-9007199254740992)),
+    ("number-zero", "deny-int", _cmd(0)),
+    ("number-in-array", "deny-int", _cmd([42])),
+    ("number-past-safe", "deny-int", b'{"tool_name":"Bash","tool_input":{"command":9007199254740993}}'),
+    ("number-past-safe-no-match", "deny-int",
+     b'{"tool_name":"Bash","tool_input":{"command":9007199254740995}}'),
+    ("number-tool-name", "deny-bash", b'{"tool_name":1.5,"tool_input":{"command":"git push"}}'),
+    ("stream-number-then-event-warn", "warn-bash", b"3 " + _cmd("pkill -f x")),
+    ("stream-true-then-empty", "deny-bash", b"true{}"),
+    ("stream-event-then-number", "deny-bash", _cmd("git push") + b" 3"),
+    ("lenient-unrelated-warn", "warn-bash",
+     b'{"tool_name":"Bash","tool_input":{"command":"pkill -f x"},"n":01}'),
+    ("lenient-unrelated-deny", "deny-bash",
+     b'{"tool_name":"Bash","tool_input":{"command":"git push"},"n":01}'),
+    ("lenient-nan-name", "deny-bash", b'{"tool_name":nan}'),
+    ("depth-arrays-under-old-limit", "deny-bash", _deep("[", 254)),
+    ("depth-arrays-at-old-limit", "deny-bash", _deep("[", 255)),
+    ("depth-arrays-under-limit", "deny-bash", _deep("[", 9998)),
+    ("depth-arrays-at-limit", "deny-bash", _deep("[", 9999)),
+    ("depth-objects-under-limit", "deny-bash", _deep("{", 4999)),
+    ("depth-objects-at-limit", "deny-bash", _deep("{", 5000)),
+    ("depth-deep-then-junk", "deny-bash", _deep("[", 300) + b" x"),
+    ("depth-selected-field", "deny-nested", _cmd(json.loads(_nest("[", 650, '"git push"')))),
+    ("depth-selected-shallow", "deny-nested", _cmd(json.loads(_nest("[", 3, '"git push"')))),
     ("classes-upper-digits", "deny-classes", _cmd("A12;")),
     ("classes-lower", "deny-classes", _cmd("a12;")),
     ("classes-accented-upper", "deny-classes", _cmd("É12;")),
@@ -242,6 +290,30 @@ EXPECTED: dict[str, tuple[int, bytes, str]] = {
     'number-exponent': (2, b'', 'self-learn lrn-5a5e0001: numbers\n'),
     'number-negative-zero': (2, b'', 'self-learn lrn-5a5e0001: numbers\n'),
     'number-trailing-zero': (2, b'', 'self-learn lrn-5a5e0001: numbers\n'),
+    'number-huge-exponent': (2, b'', 'self-learn lrn-5a5e0001: huge\n'),
+    'number-giant-exponent': (2, b'', 'self-learn lrn-5a5e0001: huge\n'),
+    'number-max-safe': (2, b'', 'self-learn lrn-5a5e0001: integers\n'),
+    'number-min-safe': (2, b'', 'self-learn lrn-5a5e0001: integers\n'),
+    'number-zero': (2, b'', 'self-learn lrn-5a5e0001: integers\n'),
+    'number-in-array': (0, b'', ''),
+    'number-past-safe': (2, b'', 'self-learn lrn-5a5e0001: integers\n'),
+    'number-past-safe-no-match': (0, b'', ''),
+    'number-tool-name': (0, b'', ''),
+    'stream-number-then-event-warn': (0, b'{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"self-learn lrn-5a5e0001: careful with -f"}}\n', ''),
+    'stream-true-then-empty': (0, b'', ''),
+    'stream-event-then-number': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'lenient-unrelated-warn': (0, b'{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"self-learn lrn-5a5e0001: careful with -f"}}\n', ''),
+    'lenient-unrelated-deny': (2, b'', 'self-learn lrn-5a5e0001: no pushing from here\n'),
+    'lenient-nan-name': (0, b'', ''),
+    'depth-arrays-under-old-limit': (0, b'', ''),
+    'depth-arrays-at-old-limit': (0, b'', ''),
+    'depth-arrays-under-limit': (0, b'', ''),
+    'depth-arrays-at-limit': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'depth-objects-under-limit': (0, b'', ''),
+    'depth-objects-at-limit': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'depth-deep-then-junk': (2, b'', 'self-learn lrn-5a5e0001: guard error on line 26 — failing closed\n'),
+    'depth-selected-field': (2, b'', 'self-learn lrn-5a5e0001: nested\n'),
+    'depth-selected-shallow': (2, b'', 'self-learn lrn-5a5e0001: nested\n'),
     'classes-upper-digits': (2, b'', 'self-learn lrn-5a5e0001: classes\n'),
     'classes-lower': (0, b'', ''),
     'classes-accented-upper': (2, b'', 'self-learn lrn-5a5e0001: classes\n'),
@@ -272,11 +344,37 @@ EXPECTED: dict[str, tuple[int, bytes, str]] = {
 }
 
 
+#: Cases the evaluator cannot reproduce exactly, so it fails closed: a deny
+#: rule blocks with its own labelled line, a warning stays silent. Each is a
+#: number jq prints in a form not modelled (or that differs between jq
+#: releases), a number only jq's lenient grammar reads, or nesting that jq
+#: 1.6-1.7 refuse and 1.8 reads. EXPECTED keeps the script's own answer; the
+#: Linux differential checks the evaluator never allows where it denies.
+FAILS_CLOSED = {
+    "number-exponent", "number-negative-zero", "number-trailing-zero", "number-huge-exponent",
+    "number-giant-exponent", "number-past-safe", "number-past-safe-no-match",
+    "number-tool-name", "lenient-unrelated-warn", "lenient-unrelated-deny", "lenient-nan-name",
+    "depth-arrays-at-old-limit", "depth-arrays-under-limit", "depth-objects-under-limit",
+    "depth-selected-field",
+}
+
+
+def _fail_closed(mode: str) -> tuple[int, bytes, str]:
+    if mode == "deny":
+        return (2, b"", f"self-learn {RID}: {hook_rules.EVALUATOR_INEXACT} — failing closed\n")
+    return (0, b"", "")
+
+
 @pytest.mark.parametrize("case", [c[0] for c in CASES])
 def test_recorded_decision(case):
     _, rule_name, data = next(c for c in CASES if c[0] == case)
     got = hook_rules.evaluate(_rule(rule_name), data)
-    assert (got.exit_code, got.stdout, got.stderr) == EXPECTED[case]
+    if case in FAILS_CLOSED:
+        assert (got.exit_code, got.stdout, got.stderr) == _fail_closed(CASE_RULES[rule_name][3])
+        assert got.reason == "inexact"
+    else:
+        assert (got.exit_code, got.stdout, got.stderr) == EXPECTED[case]
+        assert got.reason != "inexact"
 
 
 # ===================================================================
@@ -333,35 +431,6 @@ FIXTURES: dict[str, tuple[str, str, dict, dict]] = {
         "allow": [_f("/srv/app/config.yaml"), _f("/srv/app/data/app.db.bak", "Write")],
         "deny": [_f("/srv/app/data/app.db"), _f("/opt/x/data/app.db", "Write")],
     }),
-    # test_route_hook.py: three live guards, inline in their tests
-    "test_route_hook.chezmoi_cd": ("lrn-98d42215", "About to run `chezmoi cd` in a non-interactive shell", {
-        "tools": ["Bash"],
-        "path_regex": r"(^|[;&|[:space:]])chezmoi[[:space:]]+cd([[:space:]]|$)",
-        "deny_message": "chezmoi cd spawns an interactive child shell and blocks — use git -C \"$(chezmoi source-path)\" instead",
-    }, {
-        "allow": [_b("chezmoi diff"), _b('git -C "$(chezmoi source-path)" status'),
-                  _b("chezmoi cd-what a-weird-arg")],
-        "deny": [_b("chezmoi cd"), _b("cd /tmp && chezmoi cd")],
-    }),
-    "test_route_hook.sudo_npm_global": ("lrn-6883f824", "About to run sudo npm install -g on this Arch system", {
-        "tools": ["Bash"],
-        "path_regex": r"sudo([[:space:]]+[^[:space:]]+)*[[:space:]]+npm[[:space:]]+(install|i|add)([[:space:]]+[^[:space:]]+)*[[:space:]]+(-g|--global)",
-        "deny_message": "never sudo npm install -g here — it splits pacman's npm ownership; use pacman/paru or a user prefix",
-    }, {
-        "allow": [_b("npm install -g yarn --prefix ~/.local"), _b("sudo npm --version"),
-                  _b("npm install left-pad")],
-        "deny": [_b("sudo npm install -g corepack"), _b("sudo npm install --global npm@latest"),
-                 _b("sudo npm install -g npm")],
-    }),
-    "test_route_hook.uv_venv_copy": ("lrn-25968266", "About to sandbox-copy a uv Python project", {
-        "tools": ["Bash"],
-        "path_regex": r"(cp[[:space:]]+-[a-zA-Z]*r|rsync[[:space:]])(.*[[:space:]])?[^[:space:]]*\.venv",
-        "deny_message": "a copied .venv still points at the ORIGINAL tree — rm -rf <copy>/.venv and re-sync in the copy first",
-    }, {
-        "allow": [_b("cp -r src/ /tmp/scratch/"), _b("rm -rf /tmp/copy/.venv"), _b("uv sync")],
-        "deny": [_b("cp -r project/.venv /tmp/copy/.venv"), _b("rsync -a proj/.venv/ /tmp/copy/.venv/"),
-                 _b("cp -r p/.venv /tmp/c/.venv")],
-    }),
     "test_hook_command_view.HEREDOC_BLOCK": ("lrn-c71f0a40", "About to run a Bash tool command that feeds a script", {
         "mode": "warn", "event": "PreToolUse", "tools": ["Bash"], "path_regex": _HEREDOC_REGEX,
         "warn_message": "This command feeds stdin from a heredoc and also redirects stdin "
@@ -412,19 +481,90 @@ FIXTURES: dict[str, tuple[str, str, dict, dict]] = {
 }
 
 
+_ROUTE_SOURCE = Path(__file__).with_name("test_route_hook.py")
+
+
+def _route_guards() -> dict[str, tuple[str, str, dict, dict, dict]]:
+    """The live guards ``test_route_hook.py`` routes, read from its source
+    (parsed, never imported, so the fixtures are the originals on every
+    platform): each test there that calls ``self.route_one(env, rid, trigger,
+    hook, examples)`` and then checks ``run_guard(script, event).returncode``.
+
+    name -> (record id, trigger, hook block, approved examples, runtime
+    cases). The approved examples are what routing replayed; the runtime
+    cases are the test's later ``run_guard`` checks, kept apart."""
+    tree = ast.parse(_ROUTE_SOURCE.read_text(encoding="utf-8"))
+    out = {}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        call = None
+        runtime: dict[str, list] = {"allow": [], "deny": []}
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "route_one" and len(node.args) == 5):
+                call = node
+            if (isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute)
+                    and node.left.attr == "returncode" and isinstance(node.left.value, ast.Call)
+                    and getattr(node.left.value.func, "id", None) == "run_guard"):
+                code = ast.literal_eval(node.comparators[0])
+                assert code in (0, 2), code
+                runtime["deny" if code == 2 else "allow"].append(
+                    ast.literal_eval(node.left.value.args[1]))
+        if call is not None:
+            rid, trigger, hook, examples = (ast.literal_eval(a) for a in call.args[1:])
+            out[f"test_route_hook.{fn.name}"] = (rid, trigger, hook, examples, runtime)
+    return out
+
+
+_ROUTE_GUARDS = _route_guards()
+FIXTURES.update({name: g[:4] for name, g in _ROUTE_GUARDS.items()})
+#: The route tests' own later checks, apart from the approved examples.
+RUNTIME_CASES: dict[str, dict] = {name: g[4] for name, g in _ROUTE_GUARDS.items()}
+
+#: Deny fixtures whose pattern holds a letter range (``[a-zA-Z]``): GNU grep
+#: reads a range through the caller's locale, so the artifact is refused
+#: (``test_a_letter_range_is_locale_bound``). 3 of the 14 fixtures, 3 of 7
+#: deny rules.
+LETTER_RANGE_DENY = {
+    "test_route_hook.test_uv_venv_copy_guard",
+    "test_hook_command_view.PGREP_REGEX",
+    "test_hook_compiler.DENY_ORACLE",
+}
+
+
 def _fixture_artifact(name: str) -> dict:
     rid, trigger, block, examples = FIXTURES[name]
     return hook_compiler.rule_artifact_for_hook(rid, trigger, block, examples)
+
+
+def test_the_fixture_table_is_whole():
+    """Positive controls: the three route guards were found in their
+    source, each with runtime checks, and the letter-range count holds."""
+    assert len(_ROUTE_GUARDS) == 3, sorted(_ROUTE_GUARDS)
+    assert all(rt["allow"] and rt["deny"] for rt in RUNTIME_CASES.values()), RUNTIME_CASES
+    assert len(FIXTURES) == 14
+    deny = {n for n, f in FIXTURES.items() if f[2].get("mode", "deny") == "deny"}
+    assert len(deny) == 7 and LETTER_RANGE_DENY <= deny
 
 
 @pytest.mark.parametrize("name", sorted(FIXTURES))
 def test_fixture_examples_decide_as_approved(name):
     """Each fixture's approved examples (replayed against the Bash script by
     the route verb, and by the differential below) get their verdicts from
-    the evaluator alone; the build itself refuses on any disagreement."""
+    the evaluator alone; the build itself refuses on any disagreement. The
+    route guards' later runtime checks get theirs too."""
+    if name in LETTER_RANGE_DENY:
+        with pytest.raises(RuleError, match="letter range"):
+            _fixture_artifact(name)
+        return
     rule = hook_rules.load_rule(hook_rules.dumps_rule(_fixture_artifact(name)))
     assert rule.examples, name  # positive control: there is something to check
     assert hook_rules.check_examples(rule) == []
+    for verdict, events in RUNTIME_CASES.get(name, {}).items():
+        for event in events:
+            got = hook_rules.evaluate(rule, json.dumps(event).encode())
+            assert got.verdict == verdict, (event, got)
 
 
 # ===================================================================
@@ -441,12 +581,12 @@ def test_artifact_shape_and_determinism():
     assert hook_rules.dumps_rule(a) == hook_rules.dumps_rule(b)
     rid, trigger, block, _ = FIXTURES["support.hook_proposal_fields"]
     script = hook_compiler.script_for_hook(rid, trigger, block)
-    import hashlib
 
     assert a["version"] == 1 and a["kind"] == "self-learn-hook-rule"
     assert a["script_sha256"] == hashlib.sha256(script.encode("utf-8")).hexdigest()
     assert a["script_name"] == hook_compiler.script_name(rid, trigger)
-    assert a["match"] == {"dialect": hook_rules.DIALECT, "pattern": r"\.storage/", "view": None}
+    assert a["match"] == {"dialect": hook_rules.DIALECT, "pattern": r"\.storage/", "view": None,
+                          "locale": "C.UTF-8", "ctype": hook_rules_ctype.DIGEST}
     assert a["fields"] == {"Edit": "file_path", "Write": "file_path"}
     assert a["output"] == f"self-learn {rid}: stop the HA container first"
     lines = script.split("\n")
@@ -475,30 +615,120 @@ def _mutated(**changes) -> dict:
     return _redigest(a)
 
 
+def _match(**changes) -> dict:
+    return {**_deny_artifact()["match"], **changes}
+
+
+def _warn_artifact() -> dict:
+    return _fixture_artifact("test_hook_regenerate.FILE_WARN")
+
+
 @pytest.mark.parametrize("label,artifact,why", [
     ("unknown version", lambda: _mutated(version=2), "unknown version 2"),
     ("version as text", lambda: _mutated(version="1"), "unknown version"),
     ("wrong kind", lambda: _mutated(kind="other"), "kind"),
     ("an extra key", lambda: _mutated(extra=1), "keys"),
-    ("bad dialect", lambda: _mutated(match={"dialect": "pcre", "pattern": "x", "view": None}),
-     "unknown matcher dialect"),
-    ("a view on a deny rule", lambda: _mutated(
-        match={"dialect": hook_rules.DIALECT, "pattern": "x", "view": hook_rules.VIEW_COMMAND}),
+    ("bad dialect", lambda: _mutated(match=_match(dialect="pcre")), "unknown matcher dialect"),
+    ("a match block without the locale", lambda: _mutated(
+        match={k: v for k, v in _match().items() if k != "locale"}), "bad match block"),
+    ("another locale", lambda: _mutated(match=_match(locale="en_US.UTF-8")), "C.UTF-8 only"),
+    ("other character tables", lambda: _mutated(match=_match(ctype="sha256:" + "0" * 64)),
+     "other character tables"),
+    ("a view on a deny rule", lambda: _mutated(match=_match(view=hook_rules.VIEW_COMMAND)),
      "command view"),
     ("a deny on PostToolUse", lambda: _mutated(event="PostToolUse"), "cannot run on"),
     ("an unguardable tool", lambda: _mutated(tools=["Read"]), "bad tools"),
     ("fields that do not fit", lambda: _mutated(fields={"Edit": "command", "Write": "file_path"}),
      "fields"),
-    ("a refused pattern", lambda: _mutated(
-        match={"dialect": hook_rules.DIALECT, "pattern": r"\d", "view": None}), "stray backslash"),
+    ("a refused pattern", lambda: _mutated(match=_match(pattern=r"\d")), "stray backslash"),
+    ("a deny letter range", lambda: _mutated(match=_match(pattern="[a-z]")), "letter range"),
     ("an output without the prefix", lambda: _mutated(output="stop"), "deny output"),
+    ("a deny output for another message", lambda: _mutated(
+        output=f"self-learn {RID}: something else"), "deny output"),
+    ("a warn output for another message", lambda: _redigest({**_warn_artifact(), "output": (
+        _warn_artifact()["output"].replace("shutdown", "startup"))}), "warn output"),
+    ("a deny message with a NUL", lambda: _mutated(
+        message="one\x00two", output=f"self-learn {RID}: one\x00two"), "NUL"),
     ("a bad example verdict", lambda: _mutated(examples=[{"input": {}, "expect": "warn"}]),
      "bad examples"),
+    ("an example verdict that is not text", lambda: _mutated(
+        examples=[{"input": {}, "expect": ["allow"]}]), "bad examples"),
     ("missing error line", lambda: _mutated(error_lines={"tool": 26}), "error_lines"),
+    ("a mode that is an object", lambda: _mutated(mode={}), "not text"),
+    ("a tool that is a list", lambda: _mutated(tools=[[]]), "tools"),
+    ("an empty script name", lambda: _mutated(script_name=""), "script name"),
+    ("a script name for another record", lambda: _mutated(
+        script_name="self-learn-00000000-about-to-run-a.sh"), "script name"),
+    ("a script name of another shape", lambda: _mutated(script_name="../x.sh"), "script name"),
+    ("a match block that is a list", lambda: _mutated(match=[]), "bad match block"),
+    ("error lines that are a list", lambda: _mutated(error_lines=[]), "error_lines"),
+    ("examples that are an object", lambda: _mutated(examples={}), "examples"),
+    ("a digest that is a number", lambda: {**_deny_artifact(), "digest": 5}, "digest"),
 ])
 def test_load_refuses(label, artifact, why):
     with pytest.raises(RuleError, match=re.escape(why)):
         hook_rules.load_rule(artifact())
+
+
+def test_load_refuses_a_lone_surrogate_as_a_rule_error():
+    """An escaped unpaired surrogate decodes to text that has no UTF-8 form:
+    the digest check meets it first and the loader still says RuleError."""
+    raw = hook_rules.dumps_rule(_deny_artifact()).decode()
+    assert '"message": "stop the HA container first"' in raw  # positive control
+    bad = raw.replace('"message": "stop the HA container first"', '"message": "\\ud800"')
+    with pytest.raises(RuleError):
+        hook_rules.load_rule(bad)
+    with pytest.raises(RuleError):
+        hook_rules.load_rule(bad.encode())
+
+
+@pytest.mark.parametrize("junk", [b"", b"[]", b"{", b"null", b'"x"', b"5", b"\xff",
+                                  b'{"version":1}', b'{"version":{}}', b'{"kind":[]}'],
+                         ids=lambda j: repr(j))
+def test_load_refuses_junk_with_a_rule_error(junk):
+    with pytest.raises(RuleError):
+        hook_rules.load_rule(junk)
+
+
+def test_the_output_helpers_equal_the_compiler_ones():
+    for rid, message in ((RID, "m"), (RID, f"self-learn {RID}: m"), (RID, "é \"q\"\nx")):
+        assert hook_rules._prefixed(rid, message) == hook_compiler.prefixed_message(rid, message)
+        for event in ("PreToolUse", "PostToolUse"):
+            assert hook_rules._warn_line(event, rid, message) == hook_compiler.warn_output(
+                event, rid, message)
+
+
+def test_the_ctype_digest_covers_the_tables():
+    body = "\n".join(f"{n}={getattr(hook_rules_ctype, n)}"
+                     for n in ("ALPHA", "UPPER", "LOWER", "PRINT", "SPACE", "BLANK", "CNTRL"))
+    assert hook_rules_ctype.DIGEST == "sha256:" + hashlib.sha256(body.encode()).hexdigest()
+
+
+def test_a_nul_in_a_deny_message_refuses_the_artifact_not_the_script():
+    """Bash's echo drops the NUL (stderr ``onetwo``); the artifact would
+    print it, so it is refused. A warning's JSON escapes it, so it builds."""
+    hook_compiler.generate_script(RID, TRIGGER, ["Bash"], "x", "one\x00two")
+    with pytest.raises(RuleError, match="NUL"):
+        hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], "x", "one\x00two")
+    warn = hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], "x", "one\x00two", mode="warn")
+    assert "\\u0000" in warn["output"]
+
+
+def test_a_placed_hook_carries_its_own_examples():
+    """M5: without an examples argument the hook block's stored examples
+    are replayed (a disagreeing one refuses the build); an explicit argument
+    wins, as for a proposal block whose examples sit beside it."""
+    rid, trigger, block, examples = FIXTURES["support.hook_proposal_fields"]
+    wrong = {"allow": examples["deny"][:1], "deny": []}
+    with pytest.raises(RuleError, match=r"example 0 \(allow\) was decided deny"):
+        hook_compiler.rule_artifact_for_hook(rid, trigger, {**block, "examples": wrong})
+    placed = hook_compiler.rule_artifact_for_hook(rid, trigger, {**block, "examples": examples})
+    assert len(placed["examples"]) == 4  # carried
+    explicit = hook_compiler.rule_artifact_for_hook(rid, trigger, {**block, "examples": wrong},
+                                                    examples)
+    assert len(explicit["examples"]) == 4
+    with pytest.raises(RuleError, match=r"example 0 \(allow\) was decided deny"):
+        hook_compiler.rule_artifact_for_hook(rid, trigger, block, wrong)
 
 
 def test_load_refuses_a_failed_digest_and_accepts_the_untouched_file():
@@ -512,9 +742,6 @@ def test_load_refuses_a_failed_digest_and_accepts_the_untouched_file():
     tampered["match"]["pattern"] = "x"
     with pytest.raises(RuleError, match="digest does not match"):
         hook_rules.load_rule(json.dumps(tampered))
-    for junk in (b"", b"[]", b"{", b"null"):
-        with pytest.raises(RuleError):
-            hook_rules.load_rule(junk)
 
 
 def test_the_build_refuses_examples_the_evaluator_decides_otherwise():
@@ -561,37 +788,50 @@ def test_import_is_cheap_and_standard_library_only():
 # The dialect: what is refused, what compiles
 # ===================================================================
 
-#: pattern -> (reason fragment, how grep itself treats it)
+_NESTED_350 = "(" * 350 + "a" + ")" * 350
+_LONG_COUNT = "a{" + "1" * 4000 + "}"
+
+#: pattern -> (reason fragment, how grep itself treats it). Each "how" is
+#: checked against grep (test_refusals_are_grounded_in_what_grep_does):
+#: stray (a stray backslash, read as the character), warns, literal (read
+#: as literal text without a word), rejects (exit 2), locale (answers
+#: differently under en_US.UTF-8), quirk (GNU's answer is not the obvious
+#: one: see QUIRKS), policy (grep accepts it silently; the evaluator refuses
+#: what it does not model exactly, or what would cost too much), newline
+#: (grep reads two patterns), compiler (the Bash emitter refuses it first).
 REFUSED = {
     r"\d": ("stray backslash", "stray"),
     r"\/": ("stray backslash", "stray"),
     r"a\-b": ("stray backslash", "stray"),
     r"\n": ("stray backslash", "stray"),
-    r"(a)\1": ("back-reference", "unsupported"),
+    r"(a)\1": ("back-reference", "policy"),
     r"*a": ("nothing before it", "warns"),
     r"a|*b": ("nothing before it", "warns"),
     r"(*a)": ("nothing before it", "warns"),
     r"(?i)a": ("nothing before it", "warns"),
     r"{1}a": ("nothing before it", "warns"),
     r"^*": ("repeats an anchor", "warns"),
-    r"a\b*": ("repeats an anchor", "unsupported"),
+    r"a\b*": ("repeats an anchor", "policy"),
     r"a{": ("does not open a count", "literal"),
     r"a{1": ("does not open a count", "literal"),
     r"a{x}": ("does not open a count", "literal"),
-    r"a{,}": ("does not open a count", "unsupported"),
+    r"a{,}": ("does not open a count", "policy"),
     r"a{2,1}": ("minimum is above", "rejects"),
     r"a{32768}": ("count over", "rejects"),
+    _LONG_COUNT: ("count over", "rejects"),
     r"[[=a=]]": ("collating element", "locale"),
     # one-character collating symbols mean the character itself, but named
     # ones ([[.hyphen.]]) and multi-character ones depend on the locale's
     # collation tables: the whole form is refused rather than half-supported
-    r"[[.a.]]": ("collating element", "unsupported"),
+    r"[[.a.]]": ("collating element", "policy"),
     r"[[:foo:]]": ("not a character class", "rejects"),
+    r"[:alpha:]": ("without its outer brackets", "rejects"),
+    r"[:space:]x": ("without its outer brackets", "rejects"),
     r"[z-a]": ("not inside one of", "rejects"),
     r"[!-~]": ("not inside one of", "locale"),
     r"[A-z]": ("not inside one of", "locale"),
-    "[à-ü]": ("not inside one of", "locale"),
-    r"[a-c-e]": ("another '-'", "unsupported"),
+    "[à-ü]": ("not inside one of", "rejects"),
+    r"[a-c-e]": ("another '-'", "rejects"),
     r"[[:alpha:]-z]": ("starts at a character class", "rejects"),
     r"[a-[:alpha:]]": ("ends at a character class", "rejects"),
     r"(a": ("never closed", "rejects"),
@@ -599,28 +839,82 @@ REFUSED = {
     r"a)": ("closes no group", "literal"),
     r")": ("closes no group", "literal"),
     "a\\": ("lone backslash", "rejects"),
-    "a\nb": ("newline", "unsupported"),
-    "": ("empty", "unsupported"),
-    r"(a{100}){100}": ("matching steps", "unsupported"),
-    r"x{4097}": ("matching steps", "unsupported"),
+    "a\nb": ("newline", "newline"),
+    "": ("empty", "compiler"),
+    r"(a{100}){100}": ("matching steps", "policy"),
+    r"x{4097}": ("matching steps", "policy"),
+    r"((){1000}){1000}": ("more than 100000 steps", "rejects"),
+    r"((){320}){320}": ("more than 100000 steps", "rejects"),
+    _NESTED_350: ("nest deeper than 32", "policy"),
+    "a+++++": ("more than 4 repeat operators", "policy"),
+    "a" * 4097: ("longer than 4096", "policy"),
+    # an anchor or word boundary inside a repeated group (B1)
+    r"(\ba){2}": ("inside a repeated group", "quirk"),
+    r"(^b($)?){,2}|(\>)+\W": ("inside a repeated group", "quirk"),
+    r"(^)*a": ("inside a repeated group", "policy"),
+    r"a($)?": ("inside a repeated group", "policy"),
+    r"(\<a)+": ("inside a repeated group", "policy"),
+    r"(a$)*": ("inside a repeated group", "policy"),
+    r"(a|^b)+": ("inside a repeated group", "policy"),
+    r"((x)(\B))*": ("inside a repeated group", "policy"),
 }
 
-ACCEPTED = [
-    r"\.storage/", r"a{,3}", r"a{0}", r"a{2}{3}", r"a**", r"a+?", r"()", r"a|", r"|a",
-    r"x}y", r"x]y", r"[]a]", r"[^]a]", r"[a-]", r"[\d]", r"[[:alpha:][:digit:]_]",
-    r"\<\>\b\B\w\W\s\S\`\'", r"\.\[\]\(\)\*\+\?\{\}\|\^\$\\", "日本+", r"x{4000}",
-    r"(^)*a", r"a($)?",
-]
+#: pattern -> (text, grep's exit status on it, the exit status a naive
+#: reading gives): where GNU grep's answer is not the obvious one.
+QUIRKS = {
+    r"(\ba){2}": ("aa", 0, 1),
+    r"(^b($)?){,2}|(\>)+\W": ("bb", 1, 0),
+}
+
+#: pattern -> probe texts: each accepted construct, compared with grep on
+#: texts that tell its readings apart (test_accepted_patterns_match_grep).
+ACCEPTED = {
+    r"\.storage/": [".storage/", "xstorage/", ".storage"],
+    r"a{,3}b": ["b", "aaab", "c"],
+    r"^a{0}b": ["b", "ab"],
+    r"^a{2}{3}$": ["aaaaaa", "aaaa", "aaaaaaa"],
+    r"^a**$": ["", "aaa", "ab"],
+    r"^a+?$": ["", "a", "aa", "b"],
+    r"^()$": ["", "x"],
+    r"a|": ["", "b"],
+    r"|a": ["", "b"],
+    r"x}y": ["x}y", "xy"],
+    r"x]y": ["x]y", "xy"],
+    r"[]a]": ["]", "a", "b"],
+    r"[^]a]": ["]", "a", "b"],
+    r"[a-]": ["a", "-", "b"],
+    r"[\d]": ["\\", "d", "1"],
+    r"^[[:alpha:][:digit:]_]$": ["a", "1", "_", "-", "é"],
+    r"\<a\>": ["a", "ab", "b a c"],
+    r"\bb\B": ["bb", "b", "ab"],
+    r"\w\W\s\S": ["a. x", "a.  ", "ab x"],
+    r"\`a": ["a", "ba"],
+    r"a\'": ["a", "ab"],
+    r"\.\[\]\(\)\*\+\?\{\}\|\^\$\\": [".[]()*+?{}|^$\\", "x"],
+    "日本+": ["日本本", "日"],
+    r"^x{4000}$": ["x" * 4000, "x" * 3999, "x" * 4001],
+    r"[:a]": [":", "a", "b"],
+    r"^(a|b){2}$": ["ab", "ba", "a", "abc"],
+    r"(\<a|b\>)c": ["ac", "x ac", "xac", "bc"],
+    r"^(a|)$": ["", "a", "b"],
+    r"(^a|b$)": ["ab", "ba", "a", "b"],
+    r"^((){100}){100}a$": ["a", "b", ""],
+    r"^a{000002}$": ["a", "aa", "aaa"],
+}
 
 
-@pytest.mark.parametrize("pattern", sorted(REFUSED))
+@pytest.mark.parametrize("pattern", sorted(REFUSED), ids=lambda p: repr(p)[:60])
 def test_refused_patterns(pattern):
-    why, _ = REFUSED[pattern]
+    why, how = REFUSED[pattern]
+    if how == "compiler":
+        with pytest.raises(hook_compiler.HookCompileError):
+            hook_compiler.generate_script(RID, TRIGGER, ["Bash"], pattern, "m")
+        return
     with pytest.raises(RuleError, match=re.escape(why)):
         hook_rules.compile_pattern(pattern)
 
 
-@pytest.mark.parametrize("pattern", ACCEPTED)
+@pytest.mark.parametrize("pattern", sorted(ACCEPTED))
 def test_accepted_patterns(pattern):
     assert hook_rules.compile_pattern(pattern).pattern == pattern
 
@@ -667,16 +961,171 @@ def test_the_deadline_fails_the_way_the_script_fails(mode, expected):
     assert (on_time.exit_code, on_time.stdout, on_time.stderr) == (0, b"", "")  # control
     late = hook_rules.evaluate(rule, data, deadline_s=-1.0)
     assert (late.exit_code, late.stdout, late.stderr) == expected
-    assert late.reason == "match-deadline"
+    assert late.reason == "deadline"
+
+
+class _Clock:
+    """A clock for the deadline: *times* are returned in turn, the last one
+    from then on; ``reads`` counts the calls."""
+
+    def __init__(self, *times: float):
+        self.times = list(times)
+        self.reads = 0
+
+    def __call__(self) -> float:
+        self.reads += 1
+        return self.times.pop(0) if len(self.times) > 1 else self.times[0]
+
+
+_GUARD_FAILED = (2, b"", f"self-learn {RID}: guard regex failed — failing closed\n")
+
+
+@pytest.mark.parametrize("label,data", [
+    ("an early match", _cmd("q")),
+    ("a short miss", _cmd("x" * 2047)),
+    ("empty lines before the text", _cmd("\n" * 5000 + "x")),
+    ("an empty stdin", b""),
+    ("a malformed stdin", b"{"),
+    ("another tool", _path("q")),
+    ("no value", _cmd("")),
+])
+def test_one_deadline_covers_the_whole_decision(label, data):
+    """M2: with the deadline already past when the decision ends, every
+    branch of a deny rule fails the way the script's failed grep does, and
+    every branch of a warning stays silent; with the clock standing still
+    the same inputs get their ordinary answers (the control)."""
+    deny = hook_rules.load_rule(hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], "q", "m"))
+    warn = hook_rules.load_rule(hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], "q", "m",
+                                                            mode="warn"))
+    still = hook_rules.evaluate(deny, data, deadline_s=1.0, clock=_Clock(0.0))
+    assert still.reason != "deadline", still
+    late = hook_rules.evaluate(deny, data, deadline_s=1.0, clock=_Clock(0.0, 5.0))
+    assert ((late.exit_code, late.stdout, late.stderr), late.reason) == (_GUARD_FAILED, "deadline")
+    quiet = hook_rules.evaluate(warn, data, deadline_s=1.0, clock=_Clock(0.0, 5.0))
+    assert ((quiet.exit_code, quiet.stdout, quiet.stderr), quiet.reason) == (
+        (0, b"", ""), "deadline")
+
+
+def test_the_deadline_is_read_while_the_work_goes_on():
+    """The clock is read during parsing, during the command view and during
+    matching, not only at the end: a long step cannot run on unbounded."""
+    stride = hook_rules._DEADLINE_STRIDE
+    text = "git commit -m 'x'; " * (stride * 16 // 19)
+    for label, run in [
+        ("parse tokens", lambda b: hook_rules._jq_values(_cmd(list(range(stride * 4))), b)),
+        ("parse a string", lambda b: hook_rules._jq_values(_cmd("x\\" * stride * 32), b)),
+        ("view", lambda b: hook_rules.command_view(text, b)),
+        ("match", lambda b: hook_rules.compile_pattern("zzz").search(text, b)),
+        ("render", lambda b: hook_rules._jq_dump([["x", None]] * (stride * 2), b)),
+    ]:
+        clock = _Clock(0.0)
+        run(hook_rules._Budget(10.0, clock))
+        assert clock.reads >= 3, (label, clock.reads)
+
+
+@pytest.mark.parametrize("mode,expected", [
+    ("deny", (2, b"", f"self-learn {RID}: {hook_rules.EVALUATOR_ERROR} — failing closed\n")),
+    ("warn", (0, b"", "")),
+])
+def test_an_unexpected_error_still_gets_a_decision(monkeypatch, mode, expected):
+    """No input raises out of evaluate: an error the evaluator did not
+    foresee fails a deny rule closed with its own line, and silences a
+    warning."""
+    rule = hook_rules.load_rule(hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], "q", "m",
+                                                            mode=mode))
+    assert hook_rules.evaluate(rule, _cmd("x")).reason == "no-match"  # control
+
+    def boom(*_a, **_k):
+        raise ZeroDivisionError
+
+    monkeypatch.setattr(hook_rules, "_blank", boom)
+    got = hook_rules.evaluate(rule, _cmd("x"))
+    assert ((got.exit_code, got.stdout, got.stderr), got.reason) == (expected, "evaluator-error")
+
+
+def test_the_replay_keeps_the_deadline(monkeypatch):
+    """M3: replaying a rule's examples at build time runs each under the
+    ordinary deadline, never with it turned off."""
+    seen = []
+    real = hook_rules.evaluate
+
+    def spy(rule, data, **kw):
+        seen.append(kw.get("deadline_s", hook_rules.MATCH_DEADLINE_S))
+        return real(rule, data, **kw)
+
+    monkeypatch.setattr(hook_rules, "evaluate", spy)
+    _fixture_artifact("support.hook_proposal_fields")
+    assert len(seen) == 4 and all(s is not None and s > 0 for s in seen), seen
 
 
 def test_a_full_dfa_cache_is_rebuilt_without_changing_the_answer(monkeypatch):
     monkeypatch.setattr(hook_rules, "_CACHE_LIMIT", 8)
     matcher = hook_rules.compile_pattern(r"[[:alpha:]]{3}[0-9]")
     text = "".join(chr(0x4E00 + i) + "1" for i in range(500)) + "abc5"
-    assert matcher.search(text) is True
-    assert matcher.search(text[:-1]) is False
-    assert matcher._size <= 8 + 4  # the cache stayed bounded
+    for t, want in ((text, True), (text[:-1], False)):
+        search = hook_rules._Search(matcher, hook_rules._Budget(None))
+        assert search.run(t) is want
+        assert search.size <= 8 + 4  # the cache stayed bounded
+        assert sum(len(r) for r in search.rows) <= 8 + 4
+
+
+def test_searching_leaves_the_matcher_unchanged():
+    """B4: a search keeps its state to itself; the compiled matcher a rule
+    holds is the same object, field for field, after thirty thousand
+    searches with distinct first characters (accepting ones included)."""
+    for pattern in ("a?", "^abc$", r"\bx"):
+        matcher = hook_rules.compile_pattern(pattern)
+        before = {k: (repr(v) if not isinstance(v, (list, dict)) else len(v))
+                  for k, v in vars(matcher).items()}
+        for i in range(30000):
+            matcher.search(chr(0x4E00 + i) + "abc")
+        after = {k: (repr(v) if not isinstance(v, (list, dict)) else len(v))
+                 for k, v in vars(matcher).items()}
+        assert after == before, pattern
+
+
+def test_concurrent_evaluations_of_one_rule_agree(monkeypatch):
+    """B4: one loaded rule, decided from several threads at once, while
+    other threads churn its matcher through cache resets. Every decision
+    must still be the script's (red on 37438b84, whose searches shared one
+    cache: a reset under a live state lost the match)."""
+    monkeypatch.setattr(hook_rules, "_CACHE_LIMIT", 16)
+    rule = hook_rules.load_rule(hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], "^abc$", "m"))
+    hit, miss = _cmd("abc"), _cmd("abd")
+    stop = threading.Event()
+    wrong: list = []
+    churned = [0]
+
+    def churn():
+        i = 0
+        while not stop.is_set():
+            hook_rules.evaluate(rule, _cmd(chr(0x4E00 + i % 20000)))
+            i += 1
+        churned[0] += i
+
+    def check():
+        for _ in range(1500):
+            for data, want in ((hit, "deny"), (miss, "allow")):
+                got = hook_rules.evaluate(rule, data)
+                if got.verdict != want or got.reason not in ("match", "no-match"):
+                    wrong.append((data, got))
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        churners = [threading.Thread(target=churn) for _ in range(2)]
+        checkers = [threading.Thread(target=check) for _ in range(2)]
+        for t in churners + checkers:
+            t.start()
+        for t in checkers:
+            t.join()
+        stop.set()
+        for t in churners:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+    assert churned[0] > 100  # control: the churn really ran alongside
+    assert wrong[:5] == []
 
 
 # ===================================================================
@@ -721,9 +1170,15 @@ def scripts(tmp_path, tool_env) -> _Scripts:
     return _Scripts(tmp_path, tool_env)
 
 
-def _differ(scripts: _Scripts, work: list[tuple[str, str, dict, bytes]]) -> list[str]:
+def _differ(scripts: _Scripts, work: list[tuple[str, str, dict, bytes]], *,
+            inexact_ok: bool = False, inexact: list | None = None) -> list[str]:
     """work: (label, script text, artifact, stdin). Every row's script and
-    evaluator decisions, compared; one line per difference."""
+    evaluator decisions, compared; one line per difference.
+
+    With *inexact_ok*, a row the evaluator declares it cannot reproduce
+    (reason ``inexact``) may differ, but only in the safe direction: a deny
+    rule blocks with the evaluator's labelled line, a warning stays silent.
+    Such rows are appended to *inexact*."""
     paths: dict[str, Path] = {}
     rules: dict[str, hook_rules.Rule] = {}
     for _, text, art, _ in work:
@@ -734,10 +1189,19 @@ def _differ(scripts: _Scripts, work: list[tuple[str, str, dict, bytes]]) -> list
     def one(row):
         label, text, _, data = row
         want = scripts.run(paths[text], data)
-        got = hook_rules.evaluate(rules[text], data)
+        rule = rules[text]
+        got = hook_rules.evaluate(rule, data)
         mine = (got.exit_code, got.stdout, got.stderr)
         if any(_DIAG.match(line) for line in got.stderr.splitlines(True)):
             return f"{label}: the evaluator wrote a tool diagnostic: {got.stderr!r}"
+        if got.reason == "inexact":
+            if not inexact_ok:
+                return f"{label}: inexact where exact was required on {data[:200]!r}"
+            if inexact is not None:
+                inexact.append(label)
+            if mine != _fail_closed(rule.mode):
+                return f"{label}: an inexact decision that is not the fail-closed one: {mine!r}"
+            return None
         if mine != want:
             return f"{label}: bash {want!r} evaluator {mine!r} on {data[:200]!r}"
         return None
@@ -756,30 +1220,55 @@ RAW_INPUTS = [
     b"\xff\xfe", b'{"a":1,}', b'{"a" 1}', b'[1 2]', b"{}:",
 ]
 
-#: Where jq is more lenient than JSON and the evaluator is not: a number
-#: jq accepts (``nan``, ``01``, ``.5``, ``1.``). The evaluator treats the
-#: input as malformed: a deny guard fails closed, a warning stays silent;
-#: the script may instead read the number and decide on it.
+#: Where jq is more lenient than JSON: a number jq reads (``nan``, ``01``,
+#: ``.5``, ``1.``) in any field, the guarded one or not. The evaluator
+#: declares it cannot reproduce the input: a deny guard fails closed with its
+#: own line, a warning stays silent; the script may instead read the number.
+#: A bare word jq rejects too is a parse error in both.
 JQ_LENIENT = [
     b'{"tool_name":nan}', b'{"tool_name":"Bash","tool_input":{"command":01}}',
     b'{"tool_name":"Bash","tool_input":{"command":.5}}',
     b'{"tool_name":"Bash","tool_input":{"command":1.}}', b"NaN",
+    b'{"tool_name":"Bash","tool_input":{"command":"push"},"n":01}',
+    b'{"tool_name":"Bash","tool_input":{"command":"pkill -f x"},"n":-.5e1}',
+    b'{"tool_name":"Bash","tool_input":{"command":"push"},"n":infinite}',
+    b'{"tool_name":"Bash","tool_input":{"command":"push"},"n":+1}',
 ]
 
 
-@pytest.mark.parametrize("data", JQ_LENIENT)
+@pytest.mark.parametrize("data", JQ_LENIENT, ids=lambda d: repr(d)[:60])
 def test_jq_lenient_numbers_fail_closed(data):
     deny = hook_rules.evaluate(_rule("deny-push"), data)
-    assert (deny.exit_code, deny.stdout, deny.reason) == (2, b"", "malformed-input")
-    assert deny.stderr == f"self-learn {RID}: guard error on line 26 — failing closed\n"
+    assert ((deny.exit_code, deny.stdout, deny.stderr), deny.reason) == (
+        _fail_closed("deny"), "inexact")
     warn = hook_rules.evaluate(_rule("warn-bash"), data)
-    assert (warn.exit_code, warn.stdout, warn.stderr) == (0, b"", "")
+    assert (warn.exit_code, warn.stdout, warn.stderr, warn.reason) == (0, b"", "", "inexact")
+
+
+@_DIFF
+def test_jq_lenient_numbers_never_allow_what_the_script_denies(scripts):
+    """The same inputs through the real scripts: wherever the evaluator's
+    answer differs, it is the fail-closed one (and a parse error jq also
+    reports, a bare word after a lenient number, stays exact)."""
+    work = []
+    for name in ("deny-push", "warn-bash"):
+        tools, regex, message, mode, event = CASE_RULES[name]
+        text = hook_compiler.generate_script(RID, TRIGGER, tools, regex, message, mode=mode,
+                                             event=event)
+        art = hook_compiler.rule_artifact(RID, TRIGGER, tools, regex, message, mode=mode,
+                                          event=event)
+        work += [(f"{name}[{i}]", text, art, d) for i, d in enumerate(JQ_LENIENT)]
+        work.append((f"{name} then junk", text, art, JQ_LENIENT[1] + b" junk"))
+    seen: list = []
+    assert _differ(scripts, work, inexact_ok=True, inexact=seen) == []
+    assert len(seen) == 2 * len(JQ_LENIENT)  # the junk rows stayed exact
+
 
 #: Field values, wrapped for each tool a rule names (and for one it does not).
 VALUES = [
     "", "\n", " ", "x", "x\ny", "\nx\n", "a\r\nb", "éè€\U0001f600", " ",
     "\x01\x7f", "\u0000", "tab\there", "\\", "'quoted' \"double\"", "x" * 20000,
-    5, 0, -0.5, True, False, None, [], [""], ["x", "y"], {}, {"k": "v", "n": [1, None, True]},
+    5, 0, 42, -7, True, False, None, [], [""], ["x", "y"], {}, {"k": "v", "n": [1, None, True]},
     ["\x01\x7fé\"\\\n\t /", {"": [[], {}]}],
 ]
 
@@ -804,7 +1293,9 @@ def test_differential_recorded_cases(scripts):
         art = hook_compiler.rule_artifact(RID, TRIGGER, tools, regex, message,
                                           mode=mode, event=event)
         work.append((case, text, art, data))
-    assert _differ(scripts, work) == []
+    seen: list = []
+    assert _differ(scripts, work, inexact_ok=True, inexact=seen) == []
+    assert sorted(seen) == sorted(FAILS_CLOSED)  # and every other case is exact
     # and each recorded literal is the script's own answer
     paths = {text: scripts.write(text) for _, text, _, _ in work}
     bad = [(case, got) for case, text, _, data in work
@@ -817,13 +1308,59 @@ def test_differential_recorded_cases(scripts):
 def test_differential_fixture(scripts, name):
     rid, trigger, block, examples = FIXTURES[name]
     text = hook_compiler.script_for_hook(rid, trigger, block)
+    if name in LETTER_RANGE_DENY:
+        with pytest.raises(RuleError, match="letter range"):
+            hook_compiler.rule_artifact_for_hook(rid, trigger, block, examples)
+        return
     art = hook_compiler.rule_artifact_for_hook(rid, trigger, block, examples)
     work = [(f"{verdict}[{i}]", text, art, json.dumps(ex).encode())
             for verdict, items in examples.items() for i, ex in enumerate(items)]
+    work += [(f"runtime {verdict}[{i}]", text, art, json.dumps(ex).encode())
+             for verdict, items in RUNTIME_CASES.get(name, {}).items()
+             for i, ex in enumerate(items)]
     work += [(f"adversarial[{i}]", text, art, data)
              for i, data in enumerate(_inputs_for(block["tools"]))]
     assert len(work) > 60
     assert _differ(scripts, work) == []
+
+
+@_DIFF
+def test_a_letter_range_is_locale_bound(scripts):
+    """M1, side by side: the same deny script decides ``é`` differently
+    under en_US.UTF-8 (``[a-z]`` collates it in) and C.UTF-8, so a deny
+    rule with a letter range is refused; the class form builds, and agrees
+    with the script under both locales."""
+    avail = subprocess.run(["locale", "-a"], capture_output=True, text=True).stdout
+    if "en_US.utf8" not in avail and "en_US.UTF-8" not in avail:
+        pytest.skip("en_US.UTF-8 is not installed")  # only the side-by-side needs it
+    data = _cmd("é")
+    ranged = scripts.write(hook_compiler.generate_script(RID, TRIGGER, ["Bash"], "^[a-z]$", "m"))
+    c_run = scripts.run(ranged, data)
+    us = _Scripts(scripts.root, {**scripts.env, "LC_ALL": "en_US.UTF-8"})
+    assert (c_run[0], us.run(ranged, data)[0]) == (0, 2)  # the script follows the locale
+    with pytest.raises(RuleError, match="letter range"):
+        hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], "^[a-z]$", "m")
+    classed = hook_compiler.generate_script(RID, TRIGGER, ["Bash"], "^[[:lower:]]$", "m")
+    rule = hook_rules.load_rule(hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"],
+                                                            "^[[:lower:]]$", "m"))
+    path = scripts.write(classed)
+    got = hook_rules.evaluate(rule, data)
+    assert scripts.run(path, data) == us.run(path, data) == (got.exit_code, got.stdout, got.stderr)
+    assert got.verdict == "deny"  # é is lower case in both
+
+
+@_DIFF
+@pytest.mark.parametrize("pattern", sorted(QUIRKS))
+def test_quirks_are_what_the_script_does(scripts, pattern):
+    """B1, side by side: the script's answer on these is GNU grep's, not the
+    obvious one, and the evaluator refuses to build the rule."""
+    text, grep_rc, naive_rc = QUIRKS[pattern]
+    script = scripts.write(hook_compiler.generate_script(RID, TRIGGER, ["Bash"], pattern, "m"))
+    assert scripts.run(script, _cmd(text))[0] == (2 if grep_rc == 0 else 0)
+    naive = re.search(pattern.replace(r"\>", r"\b"), text)  # Python re: the obvious reading
+    assert (0 if naive else 1) == naive_rc != grep_rc
+    with pytest.raises(RuleError, match="inside a repeated group"):
+        hook_compiler.rule_artifact(RID, TRIGGER, ["Bash"], pattern, "m")
 
 
 #: pattern -> probe texts. Run as a deny and as a warning hook on Bash and
@@ -886,7 +1423,8 @@ DIALECT = {
     "日本": ["日本語", "日"],
     r"(a|b)*abb": ["babb", "abab"],
     r"(.*)(.*)(.*)x": ["y" * 3000 + "x", "y" * 3000],
-    r"(^)*a": ["a", "ba"],
+    r"(^)a": ["a", "ba"],
+    r"(\<a|b\>)c": ["ac", "xac", "bc", "x bc"],
     r"x*": ["", "y"],
     r"^$": ["", "x"],
     r"(a+)+$": ["a" * 30 + "!", "a" * 30],
@@ -900,6 +1438,10 @@ def test_differential_dialect(scripts, pattern):
     for mode in ("deny", "warn"):
         tools = ["Bash", "Edit"]
         text = hook_compiler.generate_script(RID, TRIGGER, tools, pattern, "m", mode=mode)
+        if mode == "deny" and hook_rules.compile_pattern(pattern).letter_range:
+            with pytest.raises(RuleError, match="letter range"):
+                hook_compiler.rule_artifact(RID, TRIGGER, tools, pattern, "m", mode=mode)
+            continue
         art = hook_compiler.rule_artifact(RID, TRIGGER, tools, pattern, "m", mode=mode)
         for i, probe in enumerate(DIALECT[pattern]):
             work.append((f"{mode} command[{i}]", text, art, _cmd(probe)))
@@ -907,18 +1449,174 @@ def test_differential_dialect(scripts, pattern):
     assert _differ(scripts, work) == []
 
 
+def _numbers() -> list[str]:
+    """JSON number literals: the edges, then generated integers inside and
+    past the exact range, decimals and exponents."""
+    rng = random.Random(7)
+    out = ["0", "-0", "1", "-1", "42", "100", "9007199254740991", "-9007199254740991",
+           "9007199254740992", "-9007199254740992", "9007199254740993", "12345678901234567",
+           "1.0", "1e2", "1E2", "0.1", "1.5e-7", "-0.0", "1e308", "1e309", "-1e1000000000",
+           "5e-324", "1e-400", "123456789012345678901234567890", "1e9999999999999999999999999"]
+    out += [str(rng.randint(-2 ** 53, 2 ** 53)) for _ in range(400)]
+    out += [str(rng.randint(-9, 9) * 10 ** rng.randint(0, 15)) for _ in range(100)]
+    out += [str(rng.randint(-10 ** 22, 10 ** 22)) for _ in range(100)]
+    out += [repr(rng.uniform(-1e6, 1e6)) for _ in range(100)]
+    out += [f"{rng.randint(1, 9)}e{rng.randint(-30, 30)}" for _ in range(100)]
+    return out
+
+
+@_DIFF
+def test_differential_numbers(tool_env):
+    """B2: every number, alone and inside an array and an object, printed by
+    the evaluator exactly as ``jq -r`` prints it, or declared inexact (the
+    decision then fails closed); never an exception. Every integer in the
+    exact range is printed, none declared inexact."""
+    sep = "@@sep@@"
+    numbers = _numbers()
+    docs, shapes = [], []
+    for n in numbers:
+        for shape in ("{n}", "[{n}]", '{{"k":[{n},{{"j":{n}}}]}}'):
+            docs.append('{"v":' + shape.format(n=n) + '}{"v":"' + sep + '"}')
+            shapes.append((n, shape))
+    proc = subprocess.run(["jq", "-r", ".v"], input="\n".join(docs).encode(),
+                          capture_output=True, env=tool_env, timeout=120)
+    assert proc.returncode == 0, proc.stderr[:300]
+    printed = proc.stdout.decode().split(sep + "\n")[:-1]
+    assert len(printed) == len(docs)
+    exact, bad = 0, []
+    for (n, shape), want in zip(shapes, printed):
+        values = hook_rules._jq_values(('{"v":' + shape.format(n=n) + "}").encode(),
+                                       hook_rules._Budget(None))
+        try:
+            got = hook_rules._jq_field(values, ("v",), hook_rules._Budget(None)) + "\n"
+        except hook_rules._Inexact:
+            if re.fullmatch(r"0|-?[1-9][0-9]*", n) and abs(int(n)) <= 2 ** 53 and n != "-0":
+                bad.append(f"{shape.format(n=n)}: a safe integer declared inexact")
+            continue
+        exact += 1
+        if got != want:
+            bad.append(f"{shape.format(n=n)}: jq {want!r} evaluator {got!r}")
+    assert bad[:10] == []
+    assert exact >= 3 * 400  # the generated safe integers, at least
+
+
+def _grep_lines(env: dict, pattern: str, texts: list[str]) -> set[int] | None:
+    """The indexes of *texts* (one per line) ``grep -E`` matches; None when
+    grep rejects the pattern, warns, or takes too long."""
+    data = "".join(t + "\n" for t in texts).encode()
+    try:
+        proc = subprocess.run(["grep", "-nE", "--", pattern], input=data, capture_output=True,
+                              env=env, timeout=10)
+    except subprocess.TimeoutExpired:
+        return None
+    if proc.returncode not in (0, 1) or proc.stderr:
+        return None
+    return {int(line.split(b":", 1)[0]) - 1 for line in proc.stdout.split(b"\n") if line}
+
+
+_FUZZ_TEXTS = ["", "a", "b", "aa", "ab", "ba", "a b", " a", "a ", "bb", "aab", "-a-", "ab ba",
+               "é", "aé", "  ", "a-b", "b a b", "]", "[", ":", "^", "\\", "1", "x", "A", "]a"]
+
+
+def _assertion_patterns(rng: random.Random, n: int) -> list[str]:
+    asserts = ["^", "$", r"\b", r"\B", r"\<", r"\>", r"\`", r"\'"]
+    atoms = ["a", "b", ".", "[ab]", r"\w", r"\W", " ", "-"]
+    quants = ["", "", "*", "+", "?", "{2}", "{,2}", "{1,2}", "{0}"]
+
+    def gen(depth: int) -> str:
+        r = rng.random()
+        if depth > 2 or r < 0.35:
+            x = rng.choice(asserts + atoms)
+        elif r < 0.6:
+            x = "".join(gen(depth + 1) for _ in range(rng.randint(1, 3)))
+        elif r < 0.8:
+            x = "(" + "|".join(gen(depth + 1) for _ in range(rng.randint(1, 3))) + ")"
+        else:
+            x = "(" + gen(depth + 1) + ")"
+        return x + (rng.choice(quants) if rng.random() < 0.4 else "")
+
+    out: dict[str, None] = {}
+    while len(out) < n:
+        out[gen(0)] = None
+    return list(out)
+
+
+def _bracket_patterns(rng: random.Random, n: int) -> list[str]:
+    pieces = ["a", "b", "-", "]", "^", "[", ":", "=", ".", "[:alpha:]", "[:digit:]", "a-c", "\\",
+              " ", "é", "[:", ":]", "[.", ".]", "[=", "=]", "0-9", "x"]
+    out: dict[str, None] = {}
+    while len(out) < n:
+        body = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 4)))
+        out[rng.choice(["", "^", "x"]) + "[" + rng.choice(["", "^"]) + body + "]"
+            + rng.choice(["", "$", "+", "x"])] = None
+    return list(out)
+
+
+@_DIFF
+@pytest.mark.parametrize("kind", ["assertions", "brackets"])
+def test_fuzzed_patterns_match_grep_or_are_refused(kind, tool_env):
+    """B1: seeded patterns that put the assertions (``^ $ \\b \\B \\< \\> \\`
+    \\'``) inside groups, alternations and intervals, and bracket
+    expressions with every special member. Each one the evaluator accepts,
+    grep accepts too (a grep syntax error or warning is always refused) and
+    matches on exactly the same texts."""
+    rng = random.Random(11 if kind == "assertions" else 12)
+    patterns = (_assertion_patterns if kind == "assertions" else _bracket_patterns)(rng, 1500)
+
+    def one(pattern: str):
+        try:
+            matcher = hook_rules.compile_pattern(pattern)
+        except RuleError:
+            return "refused", None
+        want = _grep_lines(tool_env, pattern, _FUZZ_TEXTS)
+        if want is None:
+            return "accepted", f"{pattern!r}: grep rejects, warns or hangs; the evaluator accepts"
+        got = {i for i, t in enumerate(_FUZZ_TEXTS) if matcher.search(t)}
+        if got != want:
+            return "accepted", (f"{pattern!r}: grep-only {sorted(_FUZZ_TEXTS[i] for i in want - got)}"
+                                f" evaluator-only {sorted(_FUZZ_TEXTS[i] for i in got - want)}")
+        return "accepted", None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(one, patterns))
+    accepted = sum(1 for k, _ in results if k == "accepted")
+    assert accepted >= 300, accepted  # control: the fuzz exercised the engine
+    assert [r for _, r in results if r][:10] == []
+
+
+@_DIFF
+@pytest.mark.parametrize("pattern", sorted(ACCEPTED))
+def test_accepted_patterns_match_grep(pattern, tool_env):
+    """m4: each accepted construct matches what grep matches on texts that
+    tell its readings apart, not merely compiles."""
+    texts = ACCEPTED[pattern]
+    want = _grep_lines(tool_env, pattern, texts)
+    assert want is not None, "grep rejects or warns"
+    matcher = hook_rules.compile_pattern(pattern)
+    assert {i for i, t in enumerate(texts) if matcher.search(t)} == want
+    assert 0 < len(want) < len(texts) or pattern in ("a|", "|a", r"^a**$")  # the texts discriminate
+
+
 @_DIFF
 @_LINUX_ONLY
 def test_differential_command_view_corpus(scripts):
-    """The S-133 corpus, through the deny and the warning hook on Bash."""
+    """The S-133 corpus, through the deny and the warning hook on Bash. The
+    corpus pattern holds ``[a-zA-Z]``, which a deny artifact refuses (a
+    letter range), so the deny run uses its class form ``[[:alpha:]]``."""
     import test_hook_command_view as view_tests
 
+    with pytest.raises(RuleError, match="letter range"):
+        hook_compiler.rule_artifact(view_tests.RID, TRIGGER, ["Bash"], view_tests.CORPUS_REGEX,
+                                    "careful")
+    classed = view_tests.CORPUS_REGEX.replace("[a-zA-Z]", "[[:alpha:]]")
+    assert classed != view_tests.CORPUS_REGEX
     work = []
     for mode in ("deny", "warn"):
-        text = hook_compiler.generate_script(view_tests.RID, TRIGGER, ["Bash"],
-                                             view_tests.CORPUS_REGEX, "careful", mode=mode)
-        art = hook_compiler.rule_artifact(view_tests.RID, TRIGGER, ["Bash"],
-                                          view_tests.CORPUS_REGEX, "careful", mode=mode)
+        regex = classed if mode == "deny" else view_tests.CORPUS_REGEX
+        text = hook_compiler.generate_script(view_tests.RID, TRIGGER, ["Bash"], regex,
+                                             "careful", mode=mode)
+        art = hook_compiler.rule_artifact(view_tests.RID, TRIGGER, ["Bash"], regex,
+                                          "careful", mode=mode)
         for name, (command, _) in sorted(view_tests.CORPUS.items()):
             work.append((f"{mode} {name}", text, art, _cmd(command)))
     assert len(work) > 300
@@ -1019,6 +1717,13 @@ def test_command_view_is_linear_at_the_size_cap():
         start = time.monotonic()
         hook_rules.command_view(command)
         assert time.monotonic() - start < 5.0, unit
+    # M2: a file heredoc whose file name has no slash (one name scan, not one
+    # per position): 128k characters took 2.8 s before rpartition
+    for name_len in (32768, 131072, cap - 64):
+        command = "cat > " + "a" * name_len + " <<'E'\nx\nE"
+        start = time.monotonic()
+        assert hook_rules.command_view(command) == command.replace("\nx\n", "\n")
+        assert time.monotonic() - start < 1.0, name_len
 
 
 def test_command_view_examples():
@@ -1058,20 +1763,34 @@ def test_classes_match_grep(pattern, tool_env):
 
 
 @_DIFF
-@pytest.mark.parametrize("pattern", sorted(REFUSED))
+@pytest.mark.parametrize("pattern", sorted(REFUSED), ids=lambda p: repr(p)[:60])
 def test_refusals_are_grounded_in_what_grep_does(pattern, tool_env):
-    """Each refusal names a real grep behaviour: grep rejects the pattern,
-    warns about it, reads it as a literal POSIX leaves unspecified, or
-    answers differently under another locale."""
+    """Each refusal names a real grep behaviour, checked here: grep rejects
+    the pattern, warns about it, reads it as literal text, answers
+    differently under another locale, gives a non-obvious answer (QUIRKS),
+    reads it as two patterns, or accepts it silently (a policy refusal: the
+    evaluator does not model it exactly, or it would cost too much)."""
     _, how = REFUSED[pattern]
-    if "\n" in pattern or not pattern:
-        return  # grep -E reads a newline as two patterns; the compiler refuses an empty one
+    assert how in ("rejects", "warns", "stray", "literal", "locale", "quirk", "policy",
+                   "newline", "compiler"), how
+    if how == "compiler":
+        with pytest.raises(hook_compiler.HookCompileError):
+            hook_compiler.generate_script(RID, TRIGGER, ["Bash"], pattern, "m")
+        return
 
     def grep(text: str, locale: str = "C.UTF-8"):
         return subprocess.run(["grep", "-E", "--", pattern], input=text.encode("utf-8") + b"\n",
                               capture_output=True, env={**tool_env, "LC_ALL": locale}, timeout=60)
 
     probe = grep("a{1 a) ) {1}a *a x")
+    locale_probes = ["é", "B", "$", "a", "à", "`", "_", "aa", "b"]
+
+    def by_locale() -> tuple[list[int], list[int]]:
+        avail = subprocess.run(["locale", "-a"], capture_output=True, text=True).stdout
+        assert "en_US.utf8" in avail or "en_US.UTF-8" in avail, "en_US.UTF-8 is needed here"
+        return ([grep(p).returncode for p in locale_probes],
+                [grep(p, "en_US.UTF-8").returncode for p in locale_probes])
+
     if how == "rejects":
         assert probe.returncode == 2, probe
     elif how == "warns":
@@ -1085,11 +1804,19 @@ def test_refusals_are_grounded_in_what_grep_does(pattern, tool_env):
         if pattern == r"\d":
             assert grep("1").returncode == 1
     elif how == "literal":
-        assert probe.returncode < 2 and probe.stderr == b"", probe
+        own = grep(pattern)  # the pattern's own text is what it matches
+        assert own.returncode == 0 and own.stderr == b"", own
     elif how == "locale":
-        probes = ["é", "B", "$", "a", "à"]
-        here = [grep(p).returncode for p in probes]
-        us = [grep(p, "en_US.UTF-8").returncode for p in probes]
-        avail = subprocess.run(["locale", "-a"], capture_output=True, text=True)
-        if "en_US.utf8" in avail.stdout or "en_US.UTF-8" in avail.stdout:
-            assert here != us or 2 in here, (here, us)
+        here, us = by_locale()
+        assert 2 not in here and here != us, (here, us)
+    elif how == "quirk":
+        text, grep_rc, _ = QUIRKS[pattern]
+        assert grep(text).returncode == grep_rc
+    elif how == "newline":
+        first, second = pattern.split("\n")
+        assert grep(first).returncode == 0 and grep(second).returncode == 0  # two patterns
+        assert probe.stderr == b""
+    else:  # policy: accepted silently, and the same answers under either locale
+        assert probe.returncode < 2 and probe.stderr == b"", probe
+        here, us = by_locale()
+        assert here == us, (here, us)

@@ -16,6 +16,7 @@ modelled exactly.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import subprocess
@@ -55,25 +56,60 @@ def encode(points: set[int]) -> str:
     return " ".join(parts)
 
 
+#: Members each measured class must (True) and must not (False) hold, so a
+#: grep that silently matched nothing, or everything, never gets written.
+SANITY = {
+    "alpha": {"a": True, "Z": True, "é": True, "1": False, "!": False},
+    "upper": {"A": True, "É": True, "a": False},
+    "lower": {"a": True, "é": True, "A": False},
+    "print": {" ": True, "a": True, "\x01": False, "\x7f": False},
+    "space": {" ": True, "\t": True, "\n": True, "a": False},
+    "blank": {" ": True, "\t": True, "\x0b": False, "a": False},
+    "cntrl": {"\x00": True, "\x01": True, "\x7f": True, "a": False},
+}
+
+
+def digest(encoded: dict[str, str]) -> str:
+    """The tables' identity a rule artifact records (``match.ctype``):
+    ``hook_rules`` refuses a rule built against other tables."""
+    body = "\n".join(f"{n.upper()}={encoded[n]}" for n in CLASSES).encode("ascii")
+    return "sha256:" + hashlib.sha256(body).hexdigest()
+
+
+def fail(why: str) -> int:
+    print(f"gen-hook-rules-ctype: {why}; nothing written", file=sys.stderr)
+    return 2
+
+
 def main() -> int:
     grep = sys.argv[1] if len(sys.argv) > 1 else "/usr/bin/grep"
     env = {"LC_ALL": "C.UTF-8", "PATH": "/usr/bin:/bin"}
-    version = subprocess.run([grep, "--version"], capture_output=True, text=True,
-                             env=env).stdout.splitlines()[0]
+    ver = subprocess.run([grep, "--version"], capture_output=True, text=True, env=env,
+                         check=False)
+    if ver.returncode != 0 or not ver.stdout:
+        return fail(f"{grep} --version exited {ver.returncode}")
+    version = ver.stdout.splitlines()[0]
     if "GNU grep" not in version:
-        print(f"not GNU grep: {version}", file=sys.stderr)
-        return 2
+        return fail(f"not GNU grep: {version}")
     cps = [c for c in range(1, 0x110000) if c != 10 and not 0xD800 <= c <= 0xDFFF]
     data = "".join(chr(c) + "\n" for c in cps).encode("utf-8")
     tables = {}
     for name in CLASSES:
         proc = subprocess.run([grep, "-nE", "--", f"^[[:{name}:]]$"], input=data,
                               capture_output=True, env=env, check=False)
+        if proc.returncode != 0 or proc.stderr:
+            return fail(f"grep [[:{name}:]] exited {proc.returncode} "
+                        f"({proc.stderr.decode('utf-8', 'replace').strip()!r})")
         points = {cps[int(line.split(b":", 1)[0]) - 1]
                   for line in proc.stdout.split(b"\n") if line}
         tables[name] = points
     tables["cntrl"] |= {0, 10}
     tables["space"] |= {10}
+    for name, members in SANITY.items():
+        for ch, inside in members.items():
+            if (ord(ch) in tables[name]) != inside:
+                return fail(f"[[:{name}:]] {'lacks' if inside else 'holds'} U+{ord(ch):04X}")
+    encoded = {name: encode(tables[name]) for name in CLASSES}
     libc = " ".join(platform.libc_ver())
     lines = [
         '"""GNU grep\'s character classes under ``LC_ALL=C.UTF-8``, for',
@@ -86,11 +122,15 @@ def main() -> int:
         'and spans ``length`` further code points."""',
         "",
         f"SOURCE = {version + ' / ' + libc!r}",
+        f"DIGEST = {digest(encoded)!r}",
         "",
     ]
     for name in CLASSES:
-        lines.append(f"{name.upper()} = {encode(tables[name])!r}")
-    OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        lines.append(f"{name.upper()} = {encoded[name]!r}")
+    # one write, after every measurement and check succeeded
+    tmp = OUT.with_suffix(".py.tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, OUT)
     print(f"wrote {OUT.name}: " + ", ".join(f"{n} {len(ranges(tables[n]))}" for n in CLASSES))
     return 0
 

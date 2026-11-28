@@ -24,23 +24,49 @@ What "exactly" models, step by step (the script's own order):
   ``C.UTF-8`` locale, matched line by line, through this module's own
   automaton (:func:`compile_pattern`), so no pattern can backtrack.
 
-A pattern whose meaning grep leaves unspecified or ties to the locale
-(stray backslashes, back-references, a quantifier with nothing before it, a
-range across punctuation, collating elements) is refused at build time with
-the reason, never approximated (:class:`RuleError`).
+The one rule everything below follows: the evaluator never allows what the
+script denies. Where identical behaviour is not proven, a pattern is
+refused when the artifact is built (:class:`RuleError`), never
+approximated; and an input it cannot reproduce exactly fails closed: a deny
+rule blocks with the evaluator's own labelled line
+(:data:`EVALUATOR_INEXACT`), a warning stays silent.
+
+Refused patterns: what grep leaves unspecified, rejects, warns about or ties
+to the locale (stray backslashes, back-references, a quantifier with nothing
+before it, a range across punctuation, collating elements, ``[:alpha:]``
+without its outer brackets), an anchor or word boundary inside a repeated
+group (GNU grep matches ``(\\ba){2}`` against ``aa``), and, in a deny rule,
+any range between letters (``[a-z]`` follows the caller's collation:
+under en_US.UTF-8 it also matches ``é``; a class such as ``[[:lower:]]``
+does not). Bounds on size, nesting and compile work keep every refusal a
+:class:`RuleError`.
+
+Inputs that fail closed: a number other than an integer of magnitude at
+most 2**53 in the printed field (jq's number printing differs between
+releases and for large exponents), a number only jq's lenient grammar
+reads (``01``, ``nan``, ``.5``), and JSON nested past jq 1.6-1.7's parser
+limit but inside jq 1.8's (see :data:`_JQ_DEPTH`).
+
+The artifact names its locale (``match.locale``, always ``C.UTF-8``) and the
+character tables it was built against (``match.ctype``); the loader refuses
+any other. The generated script inherits the caller's locale; under a
+non-UTF-8 locale such as ``C`` its ``.`` matches single bytes, which the
+evaluator does not model.
 
 The bound. Matching runs a lazily built DFA over a Thompson automaton of at
-most :data:`MAX_PROGRAM` instructions: each input character costs one table
-lookup, or one closure over the program on a cache miss, so time is linear
-in the input. A wall-clock deadline (:data:`MATCH_DEADLINE_S`, checked every
-:data:`_DEADLINE_STRIDE` characters) backs that up; when it is hit the
-decision is the script's own matcher-failure branch: a deny guard fails
-closed (exit 2, "guard regex failed"), a warning stays silent (exit 0).
+most :data:`MAX_PROGRAM` instructions, each search with its own cache
+(evaluations sharing a rule share no mutable state): each input character
+costs one table lookup, or one closure over the program on a cache miss, so
+time is linear in the input. One wall-clock deadline
+(:data:`MATCH_DEADLINE_S`) covers the whole decision, from reading stdin to
+the answer: it is polled throughout parsing, rendering, the command view
+and matching, and checked again before any decision is returned. When it is
+hit the decision is the script's own matcher-failure branch: a deny guard
+fails closed (exit 2, "guard regex failed"), a warning stays silent (exit 0).
 
 Standard library only, and cheap to import: a hook runs on every tool call.
-The character tables (:mod:`hook_rules_ctype`) and :mod:`decimal` load only
-when a pattern or an input needs them. This module launches nothing and
-writes nothing.
+The character tables (:mod:`hook_rules_ctype`) load only when a pattern or
+an input needs them. This module launches nothing and writes nothing.
 """
 
 from __future__ import annotations
@@ -54,6 +80,9 @@ from bisect import bisect_right
 __all__ = [
     "COMMAND_VIEW_MAX_CHARS",
     "DIALECT",
+    "EVALUATOR_ERROR",
+    "EVALUATOR_INEXACT",
+    "LOCALE",
     "MATCH_DEADLINE_S",
     "MAX_PROGRAM",
     "RULE_KIND",
@@ -237,6 +266,31 @@ def _named_set(name: str) -> _CharSet:
 _BOL, _EOL, _WB, _NWB, _WSTART, _WEND = range(6)
 _LITERAL_ESCAPES = set(".[]()*+?{}|^$\\")
 _ASCII_GROUPS = ((0x61, 0x7A), (0x41, 0x5A), (0x30, 0x39))
+_LETTER_GROUPS = ((0x61, 0x7A), (0x41, 0x5A))
+#: Parser bounds: a longer pattern, deeper groups or more stacked repeats are
+#: refused, so no pattern can exhaust the stack or the compile budget.
+MAX_PATTERN_CHARS = 4096
+_MAX_GROUP_DEPTH = 32
+_MAX_STACKED = 4
+#: Emitter work units (one per node visit and per repeat copy, whether or not
+#: it emits an instruction): ``((){1000}){1000}`` emits nothing but is refused.
+_MAX_COMPILE_WORK = 100_000
+
+
+def _has_assert(node) -> bool:
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        kind = n[0]
+        if kind == "assert":
+            return True
+        if kind == "group":
+            stack.append(n[1])
+        elif kind in ("cat", "alt"):
+            stack.extend(n[1])
+        elif kind == "rep":
+            stack.append(n[1])
+    return False
 
 
 class _Parser:
@@ -245,14 +299,17 @@ class _Parser:
         self.n = len(pattern)
         self.i = 0
         self.depth = 0
+        self.letter_range = False
 
     def refuse(self, why: str) -> RuleError:
-        return RuleError(f"pattern {self.p!r} refused: {why}")
+        return RuleError(f"pattern {self.p[:200]!r} refused: {why}")
 
     def parse(self):
         p = self.p
         if not p:
             raise self.refuse("it is empty")
+        if self.n > MAX_PATTERN_CHARS:
+            raise self.refuse(f"it is longer than {MAX_PATTERN_CHARS} characters")
         if "\n" in p:
             raise self.refuse("it holds a newline, which grep reads as several patterns")
         if "\x00" in p:
@@ -286,10 +343,20 @@ class _Parser:
                 f"{c!r} has nothing before it to repeat (grep warns and reads it as a "
                 "literal; escape it)")
         atom = self.atom()
+        stacked = 0
         while self.i < self.n and self.p[self.i] in "*+?{":
             q = self.p[self.i]
             if atom[0] == "assert":
                 raise self.refuse(f"{q!r} repeats an anchor or a word boundary")
+            if _has_assert(atom):
+                raise self.refuse(
+                    "an anchor or word boundary (^ $ \\b \\B \\< \\> \\` \\') sits inside a "
+                    "repeated group: GNU grep's answer for these differs from the obvious "
+                    "one (it matches (\\ba){2} against 'aa'), so the evaluator cannot "
+                    "reproduce it; move the anchor outside the repeat")
+            stacked += 1
+            if stacked > _MAX_STACKED:
+                raise self.refuse(f"more than {_MAX_STACKED} repeat operators in a row")
             if q == "*":
                 lo, hi = 0, None
                 self.i += 1
@@ -310,6 +377,8 @@ class _Parser:
             raise self.refuse(
                 "a '{' that does not open a count such as {2}, {2,}, {,3} or {2,3} "
                 "(grep reads it as a literal brace; write \\{ )")
+        # int() is safe here: MAX_PATTERN_CHARS keeps a count far below
+        # Python's 4,300-digit conversion limit
         lo = int(m.group(1)) if m.group(1) else 0
         if m.group(2) is None:
             hi: int | None = lo
@@ -326,6 +395,8 @@ class _Parser:
         p = self.p
         c = p[self.i]
         if c == "(":
+            if self.depth >= _MAX_GROUP_DEPTH:
+                raise self.refuse(f"groups nest deeper than {_MAX_GROUP_DEPTH}")
             self.i += 1
             self.depth += 1
             inner = self.alt()
@@ -391,6 +462,7 @@ class _Parser:
         if self.i < self.n and p[self.i] == "^":
             negate = True
             self.i += 1
+        content_start = self.i
         ranges: list[tuple[int, int]] = []
         first = True
         while True:
@@ -432,9 +504,16 @@ class _Parser:
                         "C.UTF-8 disagree even on ASCII), or are reversed; list the characters")
                 if self.i + 1 < self.n and p[self.i] == "-" and p[self.i + 1] != "]":
                     raise self.refuse("a range runs straight into another '-' (unspecified)")
+                if any(a <= lo_cp <= b for a, b in _LETTER_GROUPS):
+                    self.letter_range = True
                 ranges.append((lo_cp, hi_cp))
             else:
                 ranges.append((ord(c), ord(c)))
+        content = p[content_start:self.i - 1]
+        if len(content) >= 2 and content[0] in ":=." and content[-1] == content[0]:
+            raise self.refuse(
+                f"'[{content}]' is a character class written without its outer brackets "
+                f"(grep rejects it; write '[[{content}]]')")
         if negate:
             ranges = _complement(ranges)
         return ("set", ranges)
@@ -447,28 +526,64 @@ class _Timeout(Exception):
     pass
 
 
+class _Budget:
+    """One decision's wall-clock bound. ``tick`` is called for each unit of
+    work (a character, a token, a line); the clock is read every
+    :data:`_DEADLINE_STRIDE` ticks and by ``check``. *clock* is replaceable
+    for tests."""
+
+    __slots__ = ("deadline", "clock", "left")
+
+    def __init__(self, seconds: float | None, clock=time.monotonic):
+        self.clock = clock
+        self.deadline = None if seconds is None else clock() + seconds
+        self.left = _DEADLINE_STRIDE
+
+    def tick(self, n: int = 1) -> None:
+        self.left -= n
+        if self.left <= 0:
+            self.left = _DEADLINE_STRIDE
+            self.check()
+
+    def check(self) -> None:
+        if self.deadline is not None and self.clock() > self.deadline:
+            raise _Timeout()
+
+
 class Matcher:
     """A compiled pattern: ``search(text)`` is ``grep -qE`` on *text* fed
-    with one trailing newline (every line tried; a match on any wins)."""
+    with one trailing newline (every line tried; a match on any wins).
+
+    The compiled program is never changed after construction; each search
+    builds its own DFA cache, so one Matcher can serve concurrent searches."""
 
     def __init__(self, pattern: str):
         self.pattern = pattern
-        tree = _Parser(pattern).parse()
+        parser = _Parser(pattern)
+        tree = parser.parse()
+        self.letter_range = parser.letter_range
         self.ops: list[int] = []
         self.arg: list[int] = []
         self.arg2: list[int] = []
         self.sets: list[_CharSet] = []
+        self._work = 0
         self._emit(tree)
         self._add(_MATCH, 0, 0)
         self.match_pc = len(self.ops) - 1
-        self._word = _named_set("word")
-        self._reset()
+        self.word = _named_set("word")
 
     # ---- compilation
+    def _charge(self) -> None:
+        self._work += 1
+        if self._work > _MAX_COMPILE_WORK:
+            raise RuleError(
+                f"pattern {self.pattern[:200]!r} refused: compiling it takes more than "
+                f"{_MAX_COMPILE_WORK} steps (nested counted repeats multiply); simplify it")
+
     def _add(self, op: int, a: int, b: int) -> int:
         if len(self.ops) >= MAX_PROGRAM:
             raise RuleError(
-                f"pattern {self.pattern!r} refused: it compiles to more than {MAX_PROGRAM} "
+                f"pattern {self.pattern[:200]!r} refused: it compiles to more than {MAX_PROGRAM} "
                 "matching steps (counted repeats are expanded); simplify it")
         self.ops.append(op)
         self.arg.append(a)
@@ -476,6 +591,7 @@ class Matcher:
         return len(self.ops) - 1
 
     def _emit(self, node) -> None:
+        self._charge()
         kind = node[0]
         if kind == "set":
             self.sets.append(_CharSet(node[1]))
@@ -502,6 +618,7 @@ class Matcher:
         elif kind == "rep":
             _, body, lo, hi = node
             for _ in range(lo):
+                self._charge()
                 self._emit(body)
             if hi is None:
                 top = self._add(_SPLIT, 0, 0)
@@ -512,6 +629,7 @@ class Matcher:
             else:
                 splits = []
                 for _ in range(hi - lo):
+                    self._charge()
                     s = self._add(_SPLIT, 0, 0)
                     self.arg[s] = s + 1
                     splits.append(s)
@@ -521,29 +639,46 @@ class Matcher:
         else:  # pragma: no cover
             raise AssertionError(kind)
 
-    # ---- the lazy DFA
-    def _reset(self) -> None:
-        self._ids: dict[tuple[frozenset, int], int] = {}
-        self._keys: list[tuple[frozenset, int]] = []
-        self._rows: list[dict[str, int]] = []
-        self._ends: list[int] = []
-        self._size = 0
-        self._start = self._intern((frozenset(), 0))
+    def search(self, text: str, budget: _Budget | None = None) -> bool:
+        """``grep -qE`` over *text*: True when any line matches. Raises the
+        internal timeout when *budget* runs out."""
+        return _Search(self, budget or _Budget(None)).run(text)
 
-    def _intern(self, key: tuple[frozenset, int]) -> int:
-        sid = self._ids.get(key)
+
+class _Search:
+    """One search's lazily built DFA. Nothing here is shared between
+    searches."""
+
+    __slots__ = ("m", "budget", "ids", "keys", "rows", "ends", "size", "start")
+
+    def __init__(self, matcher: Matcher, budget: _Budget):
+        self.m = matcher
+        self.budget = budget
+        self.reset()
+
+    def reset(self) -> None:
+        self.ids: dict[tuple[frozenset, int], int] = {}
+        self.keys: list[tuple[frozenset, int]] = []
+        self.rows: list[dict[str, int]] = []
+        self.ends: list[int] = []
+        self.size = 0
+        self.start = self.intern((frozenset(), 0))
+
+    def intern(self, key: tuple[frozenset, int]) -> int:
+        sid = self.ids.get(key)
         if sid is None:
-            sid = len(self._keys)
-            self._ids[key] = sid
-            self._keys.append(key)
-            self._rows.append({})
-            self._ends.append(-1)
-            self._size += 1
+            sid = len(self.keys)
+            self.ids[key] = sid
+            self.keys.append(key)
+            self.rows.append({})
+            self.ends.append(-1)
+            self.size += 1
         return sid
 
-    def _closure(self, seeds: frozenset, prev: int, nxt_word: bool, at_end: bool) -> set:
+    def closure(self, seeds: frozenset, prev: int, nxt_word: bool, at_end: bool) -> set:
         # prev: 0 = start of line, 1 = after a word character, 2 = after another
-        ops, arg, arg2 = self.ops, self.arg, self.arg2
+        m = self.m
+        ops, arg, arg2 = m.ops, m.arg, m.arg2
         seen: set = set()
         stack = [0, *seeds]
         while stack:
@@ -574,56 +709,56 @@ class Matcher:
                     ok = pw and not nxt_word
                 if ok:
                     stack.append(pc + 1)
+        self.budget.tick(len(seen) // 64 + 1)
         return seen
 
-    def _step(self, sid: int, ch: str) -> int:
-        seeds, prev = self._keys[sid]
+    def step(self, sid: int, ch: str) -> int:
+        m = self.m
+        key = self.keys[sid]
+        seeds, prev = key
         cp = ord(ch)
-        word = self._word.contains(cp)
-        closed = self._closure(seeds, prev, word, False)
-        if self.match_pc in closed:
-            result = -1
-        else:
-            ops, arg, sets = self.ops, self.arg, self.sets
+        word = m.word.contains(cp)
+        closed = self.closure(seeds, prev, word, False)
+        nxt_key = None
+        if m.match_pc not in closed:
+            ops, arg, sets = m.ops, m.arg, m.sets
             nxt = frozenset(pc + 1 for pc in closed
                             if ops[pc] == _CHAR and sets[arg[pc]].contains(cp))
-            key = (nxt, 1 if word else 2)
-            if self._size > _CACHE_LIMIT:
-                self._reset()
-                sid = self._intern((seeds, prev))
-            result = self._intern(key)
-        self._rows[sid][ch] = result
-        self._size += 1
+            nxt_key = (nxt, 1 if word else 2)
+        if self.size > _CACHE_LIMIT:
+            self.reset()
+            sid = self.intern(key)
+        result = -1 if nxt_key is None else self.intern(nxt_key)
+        self.rows[sid][ch] = result
+        self.size += 1
         return result
 
-    def _accepts_at_end(self, sid: int) -> bool:
-        hit = self._ends[sid]
+    def accepts_at_end(self, sid: int) -> bool:
+        hit = self.ends[sid]
         if hit < 0:
-            seeds, prev = self._keys[sid]
-            hit = 1 if self.match_pc in self._closure(seeds, prev, False, True) else 0
-            self._ends[sid] = hit
+            seeds, prev = self.keys[sid]
+            hit = 1 if self.m.match_pc in self.closure(seeds, prev, False, True) else 0
+            self.ends[sid] = hit
         return hit == 1
 
-    def search(self, text: str, deadline: float | None = None) -> bool:
-        """``grep -qE`` over *text*: True when any line matches. Raises
-        the internal timeout past *deadline* (a ``time.monotonic`` value)."""
-        budget = _DEADLINE_STRIDE
+    def run(self, text: str) -> bool:
+        budget = self.budget
         for line in text.split("\n"):
-            sid = self._start
+            budget.tick()
+            sid = self.start
             for ch in line:
-                nxt = self._rows[sid].get(ch)
+                budget.tick()
+                nxt = self.rows[sid].get(ch)
                 if nxt is None:
-                    nxt = self._step(sid, ch)
+                    nxt = self.step(sid, ch)
                 if nxt < 0:
+                    budget.check()
                     return True
                 sid = nxt
-                budget -= 1
-                if not budget:
-                    budget = _DEADLINE_STRIDE
-                    if deadline is not None and time.monotonic() > deadline:
-                        raise _Timeout()
-            if self._accepts_at_end(sid):
+            if self.accepts_at_end(sid):
+                budget.check()
                 return True
+        budget.check()
         return False
 
 
@@ -714,11 +849,24 @@ _RAW_CONTROL_RE = re.compile(rb"[\x01-\x1f]")
 _SIMPLE_ESCAPES = {ord('"'): b'"', ord("\\"): b"\\", ord("/"): b"/", ord("b"): b"\b",
                    ord("f"): b"\f", ord("n"): b"\n", ord("r"): b"\r", ord("t"): b"\t"}
 _HEX4_RE = re.compile(rb"[0-9A-Fa-f]{4}")
-#: jq 1.7 and 1.8 refuse to nest deeper than this.
-_MAX_DEPTH = 10000
+#: jq's parser depth counter: each open array counts 1, each open object 2
+#: (jq pushes the object and, while its value is parsed, the key). Opening a
+#: container while the counter is at the limit is a parse error. jq 1.8's
+#: limit is 10,000 (``MAX_PARSING_DEPTH`` in ``src/jv_parse.c``; measured on
+#: 1.8.2: 10,000 nested arrays or 5,001 nested objects fail); jq 1.6 to
+#: 1.7.1 use 256. At or above jq 1.8's limit the input is malformed exactly
+#: as jq says; from the older limit up, the evaluator cannot know which jq
+#: the script would run and fails closed.
+_JQ_DEPTH = 10000
+_JQ_DEPTH_OLD = 256
 
 
-def _jq_string(raw: bytes) -> str:
+class _Inexact(Exception):
+    """The evaluator cannot print this value exactly as jq does (a number
+    other than a safe-range integer): the decision fails closed."""
+
+
+def _jq_string(raw: bytes, budget: _Budget) -> str:
     """One string token's text: jq's escape processing, then its UTF-8
     replacement over the result."""
     if _RAW_CONTROL_RE.search(raw):
@@ -728,6 +876,7 @@ def _jq_string(raw: bytes) -> str:
     out = bytearray()
     i, n = 0, len(raw)
     while i < n:
+        budget.tick()
         j = raw.find(b"\\", i)
         if j < 0:
             out += raw[i:]
@@ -766,12 +915,16 @@ def _jq_literal(tok: bytes):
         return None
     if _NUMBER_RE.fullmatch(tok):
         return _Num(tok.decode("ascii"))
-    # jq also reads nan, 01, .5 and 1. as numbers; strict JSON only here
-    # (the evaluator fails closed on them, where the script may not).
+    # jq also reads nan, 01, .5, 1. and more as numbers, and what it reads
+    # differs between releases: anything number-like that is not strict JSON
+    # is not reproduced (the decision fails closed); any other bare word is
+    # a parse error in every jq.
+    if tok[:1] in b"0123456789.-+" or tok[:3].lower() in (b"nan", b"inf"):
+        raise _Inexact()
     raise _Malformed()
 
 
-def _jq_values(data: bytes) -> list:
+def _jq_values(data: bytes, budget: _Budget) -> list:
     """The JSON values jq reads from *data* (a stream), or
     :class:`_Malformed` where jq reports a parse error."""
     if data.startswith(b"\xef\xbb\xbf"):
@@ -781,6 +934,8 @@ def _jq_values(data: bytes) -> list:
     # opened, 1 after a comma, 2 after an element. Object states: 0 just
     # opened, 1 after a comma, 3 after a key, 4 after the colon, 2 after a value.
     stack: list[list] = []
+    weight = 0  # jq's depth counter (see _JQ_DEPTH)
+    inexact = False
     pos, n = 0, len(data)
 
     def put(v) -> None:
@@ -799,6 +954,7 @@ def _jq_values(data: bytes) -> list:
         top[1] = 2
 
     while pos < n:
+        budget.tick()
         m = _TOKEN_RE.match(data, pos)
         if m is None:  # only whitespace is left
             break
@@ -808,14 +964,19 @@ def _jq_values(data: bytes) -> list:
             if sm is None:
                 raise _Malformed()  # unterminated string
             pos = sm.end()
-            s = _jq_string(sm.group(1))
+            budget.tick(len(sm.group(1)) // 16)
+            s = _jq_string(sm.group(1), budget)
             if stack and isinstance(stack[-1][0], dict) and stack[-1][1] in (0, 1):
                 stack[-1][2] = s
                 stack[-1][1] = 3
             else:
                 put(s)
         elif m.group(3):
-            put(_jq_literal(m.group(3)))
+            try:
+                put(_jq_literal(m.group(3)))
+            except _Inexact:
+                inexact = True  # decided at the end: a later parse error is exact
+                put(None)
         else:
             c = m.group(2)
             top = stack[-1] if stack else None
@@ -823,14 +984,18 @@ def _jq_values(data: bytes) -> list:
                 if top is not None and not (
                         top[1] == 4 if isinstance(top[0], dict) else top[1] in (0, 1)):
                     raise _Malformed()
-                if len(stack) >= _MAX_DEPTH:
+                if weight >= _JQ_DEPTH:
                     raise _Malformed()
+                if weight >= _JQ_DEPTH_OLD:
+                    inexact = True
                 stack.append([[] if c == b"[" else {}, 0, None])
+                weight += 1 if c == b"[" else 2
             elif c in (b"]", b"}"):
                 if top is None or top[1] not in (0, 2) or (
                         isinstance(top[0], list) != (c == b"]")):
                     raise _Malformed()
                 stack.pop()
+                weight -= 1 if c == b"]" else 2
                 put(top[0])
             elif c == b",":
                 if top is None or top[1] != 2:
@@ -842,6 +1007,10 @@ def _jq_values(data: bytes) -> list:
                 top[1] = 4
     if stack:
         raise _Malformed()  # unfinished
+    if inexact:
+        # nesting jq 1.6-1.7 refuse and 1.8 reads, or a number only jq's
+        # lenient grammar reads: which answer the script gets depends on jq
+        raise _Inexact()
     return values
 
 
@@ -858,68 +1027,115 @@ def _jq_quote(s: str) -> str:
     return '"' + s.translate(_ESCAPES) + '"'
 
 
+#: The only numbers printed: integers jq keeps exactly (|n| <= 2**53), whose
+#: JSON form is already canonical, so jq prints the literal as written
+#: (measured on jq 1.8.2, ``test_differential_numbers``). ``-0`` is left out:
+#: the releases that print through a double are not measured here.
+_SAFE_INT_RE = re.compile(r"0|-?[1-9][0-9]{0,15}")
+
+
 def _jq_number(n: _Num) -> str:
-    import decimal
-
-    return str(decimal.Decimal(n.text))
-
-
-def _jq_dump(v, indent: int) -> str:
-    if v is None:
-        return "null"
-    if v is True:
-        return "true"
-    if v is False:
-        return "false"
-    if isinstance(v, _Num):
-        return _jq_number(v)
-    if isinstance(v, str):
-        return _jq_quote(v)
-    pad = " " * (indent + 2)
-    if isinstance(v, list):
-        if not v:
-            return "[]"
-        inner = ",\n".join(pad + _jq_dump(x, indent + 2) for x in v)
-        return "[\n" + inner + "\n" + " " * indent + "]"
-    if not v:
-        return "{}"
-    inner = ",\n".join(f"{pad}{_jq_quote(k)}: {_jq_dump(x, indent + 2)}" for k, x in v.items())
-    return "{\n" + inner + "\n" + " " * indent + "}"
+    if _SAFE_INT_RE.fullmatch(n.text) and abs(int(n.text)) <= 2 ** 53:
+        return n.text
+    raise _Inexact()
 
 
-def _jq_raw(v) -> str:
+def _jq_dump(v, budget: _Budget) -> str:
+    """jq's indented form of *v*, built without recursion."""
+    out: list[str] = []
+    # work items: ("v", value, indent) renders a value; ("s", text) emits text
+    work: list[tuple] = [("v", v, 0)]
+    while work:
+        budget.tick()
+        item = work.pop()
+        if item[0] == "s":
+            out.append(item[1])
+            continue
+        _, x, indent = item
+        if x is None:
+            out.append("null")
+        elif x is True:
+            out.append("true")
+        elif x is False:
+            out.append("false")
+        elif isinstance(x, _Num):
+            out.append(_jq_number(x))
+        elif isinstance(x, str):
+            out.append(_jq_quote(x))
+        elif isinstance(x, list):
+            if not x:
+                out.append("[]")
+                continue
+            pad = " " * (indent + 2)
+            tail: list[tuple] = [("s", "\n" + " " * indent + "]")]
+            for k in range(len(x) - 1, -1, -1):
+                tail.append(("v", x[k], indent + 2))
+                tail.append(("s", (",\n" if k else "\n") + pad))
+            out.append("[")
+            work.extend(tail)
+        else:
+            if not x:
+                out.append("{}")
+                continue
+            pad = " " * (indent + 2)
+            items = list(x.items())
+            tail = [("s", "\n" + " " * indent + "}")]
+            for k in range(len(items) - 1, -1, -1):
+                key, val = items[k]
+                tail.append(("v", val, indent + 2))
+                tail.append(("s", (",\n" if k else "\n") + pad + _jq_quote(key) + ": "))
+            out.append("{")
+            work.extend(tail)
+    return "".join(out)
+
+
+def _jq_raw(v, budget: _Budget) -> str:
     """``jq -r``'s text for one output value."""
     if isinstance(v, str):
         return v
-    return _jq_dump(v, 0)
+    return _jq_dump(v, budget)
 
 
-def _jq_field(values: list, path: tuple[str, ...]) -> str:
+def _jq_field(values: list, path: tuple[str, ...], budget: _Budget) -> str:
     """``X=$(jq -r '.a.b // empty' <<<"$INPUT")``: the outputs joined by
     newlines, NUL bytes dropped and trailing newlines stripped, as bash's
-    command substitution leaves them. :class:`_JqError` when jq would exit
-    non-zero."""
+    command substitution leaves them.
+
+    jq runs the filter on each document in turn; one that cannot be indexed
+    prints an error and produces nothing, and jq's exit status is that of the
+    LAST document (measured: ``3 {"a":"x"}`` exits 0 printing ``x``;
+    ``{"a":"x"} 3`` exits 5). :class:`_JqError` when it would exit non-zero."""
     outs: list[str] = []
+    failed = False
     for v in values:
+        budget.tick()
         x = v
+        failed = False
         for key in path:
             if x is None:
                 break
             if not isinstance(x, dict):
-                raise _JqError()
+                failed = True
+                break
             x = x.get(key)
-        if x is None or x is False:
+        if failed or x is None or x is False:
             continue
-        outs.append(_jq_raw(x))
+        outs.append(_jq_raw(x, budget))
+    if failed:
+        raise _JqError()
     return "".join(o + "\n" for o in outs).replace("\x00", "").rstrip("\n")
 
 
-def _blank(data: bytes) -> bool:
+def _blank(data: bytes, budget: _Budget) -> bool:
     """bash's ``-z "${INPUT//[[:space:]]/}"`` under a UTF-8 locale."""
     if not data:
         return True
     space = _named_set("space")
-    return all(space.contains(ord(c)) for c in data.decode("utf-8", "surrogateescape"))
+    for c in data.decode("utf-8", "surrogateescape"):
+        budget.tick()
+        if not space.contains(ord(c)):
+            return False
+    return True
 
 
 # ===================================================================
@@ -936,6 +1152,23 @@ _V_A2RE = re.compile(r"(cat[ \t]+>>?[ \t]*|tee([ \t]+-a)?[ \t]+)" + _V_FILEW
                      + r"[ \t]+<<[ \t]*" + _V_DELIMQ + r"[ \t]*\Z", re.S)
 _V_HOOKDIR = re.compile(r"(^|/)(\.git|\.husky|hooks|profile\.d|\.config/(fish|bash|zsh))/", re.S)
 _V_STARTUP = re.compile(r"^\.[A-Za-z0-9_.-]*(rc|profile|env|login|logout)\Z", re.S)
+_V_GLOBCH = re.compile(r"[*?$\[]")
+
+
+def _cut_heredoc_operator(t: str) -> str:
+    """awk's ``sub(/[ \\t]+<<.*$/, "", t)`` in one pass: cut from the start of
+    the whitespace run before the first ``<<`` that has whitespace before it."""
+    pos = t.find("<<")
+    while pos >= 0:
+        if pos > 0 and t[pos - 1] in " \t":
+            start = pos - 1
+            while start > 0 and t[start - 1] in " \t":
+                start -= 1
+            return t[:start]
+        pos = t.find("<<", pos + 1)
+    return t
+
+
 _V_WORDCH = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
 
 
@@ -944,7 +1177,8 @@ class _View:
     is the command's UTF-8 bytes read as Latin-1, one character per byte
     (the program runs under ``LC_ALL=C``)."""
 
-    def __init__(self, s: str):
+    def __init__(self, s: str, budget: _Budget):
+        self.budget = budget
         self.S = s
         self.N = len(s)
         self.I = 1
@@ -1063,6 +1297,7 @@ class _View:
         line = ""
         while j <= N:
             k = self.S.find("\n", j - 1) + 1 or N + 1
+            self.budget.tick(1 + (k - j) // 256)
             line = self.sub(j, k - j)
             cmp = line.lstrip("\t") if strip else line
             if cmp == d:
@@ -1110,6 +1345,7 @@ class _View:
         self.LS = LS
         k = self.S.find("\n", I - 1) + 1 or self.N + 1
         self.LE = k
+        self.budget.tick(1 + (k - LS) // 64)
         line = self.sub(LS, k - LS)
         m = _V_A2RE.search(line)
         self.A2AT = LS + m.start() if m else 0
@@ -1121,12 +1357,12 @@ class _View:
         if self.I != self.A2AT:
             return 0
         t = self.sub(self.I, self.LE - self.I)
-        d = re.sub(r".*<<", "", t, count=1, flags=re.S)
+        d = t.rpartition("<<")[2]  # awk: sub(/.*<</, "", d)
         d = re.sub(r"[ \t'\"\\]", "", d)
         t = _V_A2CMD.sub("", t, count=1)
-        t = re.sub(r"[ \t]+<<.*\Z", "", t, count=1, flags=re.S)
+        t = _cut_heredoc_operator(t)  # awk: sub(/[ \t]+<<.*$/, "", t)
         t = re.sub(r"['\"]", "", t)
-        base = re.sub(r".*/", "", t, count=1, flags=re.S)
+        base = t.rpartition("/")[2]  # awk: sub(/.*\//, "", base)
         if base == "":
             return 0
         j = self.LE + 1
@@ -1134,14 +1370,19 @@ class _View:
         line = ""
         while j <= N:
             k = self.S.find("\n", j - 1) + 1 or N + 1
+            self.budget.tick(1 + (k - j) // 256)
             line = self.sub(j, k - j)
             if line == d:
                 break
             j = k + 1
         if j > N:
             return 0
-        rest = self.sub(1, self.I - 1) + self.sub(k)
-        if base in rest or re.search(r"[*?$]", rest) or "[" in rest:
+        # awk: rest = substr(S, 1, I - 1) substr(S, k); searched in place
+        S, head_end, tail_start = self.S, self.I - 1, k - 1
+        self.budget.tick(1 + self.N // 1024)
+        joint = S[max(0, head_end - len(base) + 1):head_end] + S[tail_start:tail_start + len(base) - 1]
+        if (S.find(base, 0, head_end) >= 0 or S.find(base, tail_start) >= 0 or base in joint
+                or _V_GLOBCH.search(S, 0, head_end) or _V_GLOBCH.search(S, tail_start)):
             return 0
         if _V_HOOKDIR.search(t):
             return 0
@@ -1153,7 +1394,9 @@ class _View:
 
     def lex(self) -> None:
         S, N, OUT = self.S, self.N, self.OUT
+        tick = self.budget.tick
         while self.I <= N:
+            tick()
             I = self.I
             c = S[I - 1]
             d = S[I] if I < N else ""
@@ -1278,12 +1521,14 @@ class _View:
             self.I = I + 1
 
 
-def command_view(command: str) -> str:
+def command_view(command: str, budget: _Budget | None = None) -> str:
     """The text a warning hook on Bash matches: what
     ``VIEW=$(LC_ALL=C awk "$COMMAND_VIEW_AWK" <<<"$VALUE")`` leaves in
     ``VIEW`` (S-133). *command* has no trailing newline (bash stripped it)."""
+    budget = budget or _Budget(None)
     s = command.encode("utf-8", "surrogateescape").decode("latin-1") + "\n"
-    v = _View(s)
+    v = _View(s, budget)
+    budget.tick(1 + len(s) // 1024)
     if _V_REDEF.search(s):
         v.BAIL = 1
     else:
@@ -1318,7 +1563,8 @@ class Decision:
 
 
 class Rule:
-    """A loaded, validated artifact with its compiled matcher."""
+    """A loaded, validated artifact with its compiled matcher. Read-only
+    after loading: evaluations keep all their state to themselves."""
 
     __slots__ = ("data", "record_id", "mode", "event", "tools", "message", "output",
                  "error_lines", "view", "matcher", "examples", "digest")
@@ -1338,28 +1584,32 @@ class Rule:
         self.matcher = matcher
 
 
+#: The evaluator's own stderr lines, for the cases the script has no line
+#: for (it would print something the evaluator cannot reproduce exactly).
+EVALUATOR_INEXACT = "rule evaluator cannot reproduce this input exactly"
+EVALUATOR_ERROR = "rule evaluator error"
+
+
 def _allow(reason: str) -> Decision:
     return Decision(b"", "", 0, "allow", reason)
 
 
 def _fail_closed(rule: Rule, what: str, reason: str) -> Decision:
+    """A deny rule blocks with the script's failure line; a warning stays
+    silent (the script fails open)."""
     if rule.mode == "deny":
         return Decision(b"", f"self-learn {rule.record_id}: {what} — failing closed\n", 2,
                         "deny", reason)
     return _allow(reason)
 
 
-def evaluate(rule: Rule, hook_input: bytes, *, deadline_s: float | None = MATCH_DEADLINE_S
-             ) -> Decision:
-    """Decide *hook_input* (the hook's stdin bytes) as the rule's generated
-    script would. ``deadline_s=None`` turns the wall-clock bound off."""
-    deadline = None if deadline_s is None else time.monotonic() + deadline_s
+def _decide(rule: Rule, hook_input: bytes, budget: _Budget) -> Decision:
     data = bytes(hook_input).replace(b"\x00", b"").rstrip(b"\n")
-    if _blank(data):
+    if _blank(data, budget):
         return _fail_closed(rule, "empty hook input", "empty-input")
     try:
-        values = _jq_values(data + b"\n")
-        tool = _jq_field(values, ("tool_name",))
+        values = _jq_values(data + b"\n", budget)
+        tool = _jq_field(values, ("tool_name",), budget)
     except (_Malformed, _JqError):
         return _fail_closed(rule, f"guard error on line {rule.error_lines.get('tool', 0)}",
                             "malformed-input")
@@ -1367,32 +1617,51 @@ def evaluate(rule: Rule, hook_input: bytes, *, deadline_s: float | None = MATCH_
         return _allow("other-tool")
     field = _TOOL_FIELDS[tool]
     try:
-        value = _jq_field(values, ("tool_input", field))
+        value = _jq_field(values, ("tool_input", field), budget)
     except _JqError:
         return _fail_closed(rule, f"guard error on line {rule.error_lines.get(field, 0)}",
                             "malformed-input")
     if not value:
         return _allow("no-value")
     if rule.view == VIEW_COMMAND and tool == "Bash" and len(value) <= COMMAND_VIEW_MAX_CHARS:
-        value = command_view(value)
-    try:
-        matched = rule.matcher.search(value, deadline)
-    except _Timeout:
-        return _fail_closed(rule, "guard regex failed", "match-deadline")
-    if not matched:
+        value = command_view(value, budget)
+    if not rule.matcher.search(value, budget):
         return _allow("no-match")
     if rule.mode == "deny":
         return Decision(b"", rule.output + "\n", 2, "deny", "match")
     return Decision((rule.output + "\n").encode("utf-8"), "", 0, "warn", "match")
 
 
+def evaluate(rule: Rule, hook_input: bytes, *, deadline_s: float | None = MATCH_DEADLINE_S,
+             clock=time.monotonic) -> Decision:
+    """Decide *hook_input* (the hook's stdin bytes) as the rule's generated
+    script would.
+
+    One deadline (*deadline_s* from the call, read on *clock*) covers the
+    whole decision; past it, or on anything the evaluator cannot reproduce
+    exactly, a deny rule fails closed and a warning stays silent. No input
+    raises: every path returns a :class:`Decision`."""
+    budget = _Budget(deadline_s, clock)
+    try:
+        decision = _decide(rule, hook_input, budget)
+        budget.check()
+        return decision
+    except _Timeout:
+        return _fail_closed(rule, "guard regex failed", "deadline")
+    except _Inexact:
+        return _fail_closed(rule, EVALUATOR_INEXACT, "inexact")
+    except Exception:  # noqa: BLE001 - every input gets a decision, never an exception
+        return _fail_closed(rule, EVALUATOR_ERROR, "evaluator-error")
+
+
 def check_examples(rule: Rule) -> list[str]:
-    """Run the artifact's stored examples through :func:`evaluate`, fed the
-    way the replay feeds the script (``json.dumps(example)``); one sentence
-    per example whose decision differs from its expected verdict."""
+    """Run the artifact's stored examples through :func:`evaluate` (with
+    its deadline), fed the way the replay feeds the script
+    (``json.dumps(example)``); one sentence per example whose decision
+    differs from its expected verdict."""
     problems = []
     for i, ex in enumerate(rule.examples):
-        got = evaluate(rule, json.dumps(ex["input"]).encode("utf-8"), deadline_s=None)
+        got = evaluate(rule, json.dumps(ex["input"]).encode("utf-8"))
         if got.verdict != ex["expect"]:
             problems.append(f"example {i} ({ex['expect']}) was decided {got.verdict} "
                             f"({got.reason}): {json.dumps(ex['input'])}")
@@ -1405,6 +1674,36 @@ def check_examples(rule: Rule) -> list[str]:
 
 _KEYS = ("version", "kind", "record_id", "script_name", "script_sha256", "mode", "event",
          "tools", "fields", "match", "message", "output", "error_lines", "examples", "digest")
+_MATCH_KEYS = ("dialect", "pattern", "view", "locale", "ctype")
+#: The evaluator's fixed locale: the generated script inherits the caller's,
+#: and only under C.UTF-8 are the two the same (see the report on lane 5R).
+LOCALE = "C.UTF-8"
+_SCRIPT_NAME_RE = re.compile(r"self-learn-([0-9a-f]{8})-[a-z0-9-]{1,32}\.sh")
+
+
+def _ctype_identity() -> str:
+    from . import hook_rules_ctype as ct
+
+    return ct.DIGEST
+
+
+def _prefixed(record_id: str, message: str) -> str:
+    """``hook_compiler.prefixed_message`` (pinned equal by a test)."""
+    prefix = f"self-learn {record_id}: "
+    if message.startswith(prefix):
+        message = message[len(prefix):]
+    return prefix + message
+
+
+def _warn_line(event: str, record_id: str, message: str) -> str:
+    """``hook_compiler.warn_output`` (pinned equal by a test)."""
+    return json.dumps({"hookSpecificOutput": {"hookEventName": event,
+                                              "additionalContext": _prefixed(record_id, message)}},
+                      ensure_ascii=False, separators=(",", ":"))
+
+
+def _expected_output(mode: str, event: str, record_id: str, message: str) -> str:
+    return _warn_line(event, record_id, message) if mode == "warn" else _prefixed(record_id, message)
 
 
 def canonical_bytes(artifact: dict) -> bytes:
@@ -1466,7 +1765,7 @@ def build_rule(*, record_id: str, tools: list[str], path_regex: str, message: st
         "kind": RULE_KIND,
         "record_id": record_id,
         "script_name": script_name,
-        "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
+        "script_sha256": hashlib.sha256(script.encode("utf-8", "surrogatepass")).hexdigest(),
         "mode": mode,
         "event": event,
         "tools": list(tools),
@@ -1475,13 +1774,18 @@ def build_rule(*, record_id: str, tools: list[str], path_regex: str, message: st
             "dialect": DIALECT,
             "pattern": path_regex,
             "view": VIEW_COMMAND if mode == "warn" and "Bash" in tools else None,
+            "locale": LOCALE,
+            "ctype": _ctype_identity(),
         },
         "message": message,
         "output": output,
         "error_lines": _error_lines(script, mode, fields),
         "examples": flat,
     }
-    artifact["digest"] = rule_digest(artifact)
+    try:
+        artifact["digest"] = rule_digest(artifact)
+    except UnicodeError:
+        raise RuleError("the rule holds a lone surrogate, which is not text") from None
     rule = load_rule(artifact)
     problems = check_examples(rule)
     if problems:
@@ -1495,9 +1799,24 @@ def _need(cond: bool, why: str) -> None:
         raise RuleError(f"rule artifact refused: {why}")
 
 
+def _is_text(v) -> bool:
+    return isinstance(v, str)
+
+
 def load_rule(source: bytes | str | dict) -> Rule:
     """Parse and validate an artifact; :class:`RuleError` on an unknown
-    version, a digest that does not match, or any field out of shape."""
+    version, a digest that does not match, any field out of shape, or any
+    other malformation (no other exception escapes)."""
+    try:
+        return _load_rule(source)
+    except RuleError:
+        raise
+    except (TypeError, ValueError, KeyError, AttributeError, UnicodeError, RecursionError,
+            OverflowError, MemoryError) as exc:
+        raise RuleError(f"rule artifact refused: malformed ({type(exc).__name__})") from None
+
+
+def _load_rule(source: bytes | str | dict) -> Rule:
     if isinstance(source, dict):
         data = source
     else:
@@ -1510,47 +1829,52 @@ def load_rule(source: bytes | str | dict) -> Rule:
           f"unknown version {data.get('version')!r} (this evaluator reads {RULE_VERSION})")
     _need(data.get("kind") == RULE_KIND, f"kind is not {RULE_KIND!r}")
     _need(set(data) == set(_KEYS), f"keys {sorted(set(data) ^ set(_KEYS))} differ from v1's")
-    _need(isinstance(data["digest"], str) and data["digest"] == rule_digest(data),
+    _need(_is_text(data["digest"]) and data["digest"] == rule_digest(data),
           "the digest does not match the content")
-    rid = data["record_id"]
-    _need(isinstance(rid, str) and _RECORD_ID_RE.fullmatch(rid) is not None, "bad record_id")
-    mode, event = data["mode"], data["event"]
+    # types first, so no check below can raise on a value of the wrong kind
+    rid, mode, event = data["record_id"], data["mode"], data["event"]
+    tools, match, message, output = data["tools"], data["match"], data["message"], data["output"]
+    lines, examples = data["error_lines"], data["examples"]
+    _need(all(_is_text(v) for v in (rid, mode, event, message, output, data["script_name"],
+                                    data["script_sha256"])), "a text field is not text")
+    _need(isinstance(tools, list) and all(_is_text(t) for t in tools), "tools is not a list of text")
+    _need(isinstance(data["fields"], dict), "fields is not an object")
+    _need(isinstance(match, dict) and set(match) == set(_MATCH_KEYS)
+          and all(_is_text(match[k]) for k in ("dialect", "pattern", "locale", "ctype"))
+          and (match["view"] is None or _is_text(match["view"])), "bad match block")
+    _need(isinstance(lines, dict), "error_lines is not an object")
+    _need(isinstance(examples, list), "examples is not a list")
+    # then the values
+    _need(_RECORD_ID_RE.fullmatch(rid) is not None, "bad record_id")
     _need(mode in _MODE_EVENTS, f"bad mode {mode!r}")
     _need(event in _MODE_EVENTS[mode], f"a {mode} rule cannot run on {event!r}")
-    tools = data["tools"]
-    _need(isinstance(tools, list) and bool(tools) and all(t in _TOOL_FIELDS for t in tools)
+    _need(bool(tools) and all(t in _TOOL_FIELDS for t in tools)
           and len(set(tools)) == len(tools), f"bad tools {tools!r}")
     _need(data["fields"] == {t: _TOOL_FIELDS[t] for t in tools}, "fields do not match tools")
-    match = data["match"]
-    _need(isinstance(match, dict) and set(match) == {"dialect", "pattern", "view"},
-          "bad match block")
     _need(match["dialect"] == DIALECT, f"unknown matcher dialect {match['dialect']!r}")
+    _need(match["locale"] == LOCALE, f"the evaluator matches under {LOCALE} only")
+    _need(match["ctype"] == _ctype_identity(),
+          "the rule was built against other character tables than this evaluator's")
     want_view = VIEW_COMMAND if mode == "warn" and "Bash" in tools else None
     _need(match["view"] == want_view, "the command view does not fit mode and tools")
-    _need(isinstance(data["message"], str) and isinstance(data["output"], str),
-          "message and output must be text")
-    prefix = f"self-learn {rid}: "
-    if mode == "deny":
-        _need(data["output"].startswith(prefix) and "\n" not in data["output"],
-              "a deny output is one line starting with the record's prefix")
-    else:
-        try:
-            out = json.loads(data["output"])
-            ctx = out["hookSpecificOutput"]
-            ok = (set(out) == {"hookSpecificOutput"} and ctx["hookEventName"] == event
-                  and ctx["additionalContext"].startswith(prefix) and "\n" not in data["output"])
-        except (ValueError, KeyError, TypeError, AttributeError):
-            ok = False
-        _need(ok, "a warn output is the one-line hookSpecificOutput JSON for its event")
-    lines = data["error_lines"]
-    want_lines = (set() if mode == "warn"
-                  else {"tool", *(_TOOL_FIELDS[t] for t in tools)})
-    _need(isinstance(lines, dict) and set(lines) == want_lines
-          and all(type(v) is int and v > 0 for v in lines.values()), "bad error_lines")
-    _need(isinstance(data["script_name"], str) and isinstance(data["script_sha256"], str)
-          and _HEX64_RE.fullmatch(data["script_sha256"]) is not None, "bad script identity")
-    examples = data["examples"]
-    _need(isinstance(examples, list) and all(
-        isinstance(e, dict) and set(e) == {"input", "expect"}
-        and e["expect"] in _MODE_VERDICTS[mode] for e in examples), "bad examples")
-    return Rule(data, compile_pattern(match["pattern"]))
+    _need(not (mode == "deny" and "\x00" in message),
+          "a deny message holding a NUL character: the script's echo drops it, so its "
+          "stderr differs; remove the NUL")
+    _need(output == _expected_output(mode, event, rid, message),
+          f"the {mode} output is not the one the script prints for this message")
+    name = _SCRIPT_NAME_RE.fullmatch(data["script_name"])
+    _need(name is not None and name.group(1) == rid[4:], "the script name does not fit the record")
+    _need(_HEX64_RE.fullmatch(data["script_sha256"]) is not None, "bad script digest")
+    want_lines = set() if mode == "warn" else {"tool", *(_TOOL_FIELDS[t] for t in tools)}
+    _need(set(lines) == want_lines and all(type(v) is int and v > 0 for v in lines.values()),
+          "bad error_lines")
+    _need(all(isinstance(e, dict) and set(e) == {"input", "expect"}
+              and _is_text(e["expect"]) and e["expect"] in _MODE_VERDICTS[mode]
+              for e in examples), "bad examples")
+    matcher = compile_pattern(match["pattern"])
+    _need(not (mode == "deny" and matcher.letter_range),
+          "a deny rule's pattern holds a letter range such as [a-z]: GNU grep reads it "
+          "through the caller's locale (under en_US.UTF-8, [a-z] also matches accented "
+          "letters such as é), so the evaluator could allow what the script denies; list "
+          "the letters or use a class such as [[:lower:]]")
+    return Rule(data, matcher)

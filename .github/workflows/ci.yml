@@ -167,8 +167,8 @@ jobs:
             "Linux only: reads the Linux test modules the fixtures come from"
           )
           $unexpected = @($skips | Where-Object { $allowed -cnotcontains $_.skipped.message })
-          if ($ran.Count -ne 187 -or $skips.Count -ne 136 -or $unexpected.Count -ne 0) {
-            throw "Expected 187 executed hook-rule tests and 136 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
+          if ($ran.Count -ne 286 -or $skips.Count -ne 191 -or $unexpected.Count -ne 0) {
+            throw "Expected 286 executed hook-rule tests and 191 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
           }
 
       - name: Verify LF line endings on armor-pinned fixtures
@@ -242,6 +242,27 @@ jobs:
       - name: CLI test collection check
         working-directory: plugins/self-learn/cli
         run: uv run --no-sync pytest --collect-only -q tests/
+
+      # The hook rule evaluator against the real generated Bash scripts, jq,
+      # grep and awk (lane 5R). Required: a drift between the evaluator and
+      # the scripts must stop a landing, so no test may skip here.
+      - name: Hook rule evaluator against the generated scripts
+        working-directory: plugins/self-learn/cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq gawk locales
+          if ! locale -a | grep -qix 'en_US.utf8'; then sudo locale-gen en_US.UTF-8; fi
+          jq --version; grep --version | head -1; locale -a
+          report="${RUNNER_TEMP}/hook-rules-linux.xml"
+          uv run --no-sync pytest tests/test_hook_rules.py -p no:cacheprovider -q -rA --junitxml="$report"
+          uv run --no-sync python -c '
+          import sys, xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          print(f"{len(cases)} hook-rule tests, {len(skipped)} skipped")
+          if len(cases) != 477 or skipped:
+              sys.exit(f"expected 477 hook-rule tests and no skips; skipped: {skipped[:20]}")
+          ' "$report"
 
   linux-suite:
     runs-on: ubuntu-latest

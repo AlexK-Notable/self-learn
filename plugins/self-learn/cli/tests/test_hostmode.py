@@ -4967,16 +4967,12 @@ class TestChez6CensusZeroRetiredModuleLiterals:
         census is 27 source lines after test-audit L6-1 removed the
         duplicate BrokenSync class (2026-10-24) and test-audit L6-43
         collapsed the five identical commit-drift refusal tests into one
-        (2026-10-30, 36 -> 27), then 33 when lane 5R's test_hook_rules.py
-        copied test_route_hook.py's chezmoi-cd guard as a differential
-        fixture (2026-11-28; a lesson about the chezmoi CLI, not the
-        retired module). This file remains
+        (2026-10-30, 36 -> 27). This file remains
         excluded by path. Accounted source lines by file:
         test_armor.py: 2
         test_commit_drift.py: 2
         test_composer.py: 1
         test_hook_compiler.py: 2
-        test_hook_rules.py: 6
         test_hosting.py: 1
         test_route_hook.py: 12
         test_verbs.py: 7
@@ -5010,7 +5006,7 @@ class TestChez6CensusZeroRetiredModuleLiterals:
             return hits
 
         assert len(_hits(trees["cli/src"])) == 2
-        assert len(_hits(trees["cli/tests"])) == 33
+        assert len(_hits(trees["cli/tests"])) == 27
         assert _hits(trees["ui/src"]) == []
         assert _hits(trees["ui/templates"]) == []
         assert _hits(trees["ui/tests"]) == []
