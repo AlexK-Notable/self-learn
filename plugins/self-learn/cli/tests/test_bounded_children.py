@@ -120,6 +120,8 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
         ):
             if not _kw_true(node, "start_new_session"):
                 hits.append(Violation(rel, node.lineno, "popen-no-new-session"))
+        elif name == "CreateProcess" and Path(rel).as_posix() != "primitives/_procs_windows.py":
+            hits.append(Violation(rel, node.lineno, "native-launch-outside-backend"))
         elif name == "communicate":
             bare = not node.args and not _has_kw(node, "input") and not _has_kw(node, "timeout")
             if bare:
@@ -312,6 +314,17 @@ def test_p3_gate_census_matches_the_measured_count():
     assert len(sites) == MEASURED_CENSUS_SITE_COUNT, sites
     modules = {s.path.replace("\\", "/") for s in sites}  # no POSIX-only literal
     assert modules == MEASURED_CENSUS_MODULES, sorted(modules)
+
+
+def test_native_launch_has_one_owner_and_rejects_a_second(tmp_path):
+    # Count the native API separately from the stdlib subprocess census.
+    sites = [(path.relative_to(SRC).as_posix(), node.lineno)
+             for path in SRC.rglob("*.py")
+             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+             if isinstance(node, ast.Call) and _callee_name(node) == "CreateProcess"]
+    assert [path for path, _ in sites] == ["primitives/_procs_windows.py"], sites
+    (tmp_path / "offender.py").write_text("from win32process import CreateProcess\nCreateProcess()\n")
+    assert scan(tmp_path) == [Violation("offender.py", 2, "native-launch-outside-backend")]
 
 
 def test_positive_control_census_count_changes_when_a_new_site_lands(tmp_path):

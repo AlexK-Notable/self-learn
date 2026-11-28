@@ -48,7 +48,9 @@ class OutputLimitExceeded(RuntimeError):
 
 def _backend():
     if os.name == "nt":
-        raise NotImplementedError("native Windows process operations are not implemented")
+        from . import _procs_windows
+
+        return _procs_windows
     from . import _procs_posix
 
     return _procs_posix
