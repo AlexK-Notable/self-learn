@@ -178,7 +178,7 @@ def toast_xml(title: str, body: str, url: str | None) -> str:
         actions = SubElement(toast, "actions")
         SubElement(actions, "action", {"content": "Open", "activationType": "protocol",
                                        "arguments": url})
-    return tostring(toast, encoding="unicode")
+    return tostring(toast, encoding="unicode").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")  # BREAK B8
 
 
 def pythonw_beside(executable: str | None = None) -> Path | None:
