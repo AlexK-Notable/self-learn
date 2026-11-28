@@ -385,7 +385,7 @@ def _sweep_one_windows(
     if handle is None:  # exited, or no longer that identity, since it was read
         _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_cmdline_mismatch, pid)
         return
-    teardown.hold_contained(pid, handle, saved)
+    pass  # m14
     teardown.kill_child(pid, log, pid_alive)
     clear_sidecar(cache_dir, surface, session_key)
     if messages.orphan_killed is not None:
