@@ -772,7 +772,6 @@ def test_windows_append_read_open(tmp_path):
 
 
 @windows
-@pytest.mark.skip(reason="injected native skip")
 def test_windows_probe_open(tmp_path):
     path = tmp_path / "metadata"
     assert not path.exists()
