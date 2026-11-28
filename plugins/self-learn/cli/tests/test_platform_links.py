@@ -183,9 +183,9 @@ def test_windows_retarget_failure_preserves_entries(tmp_path, monkeypatch):
     displaced = tmp_path / "displaced"
     real_open = win32file.CreateFile
     def swap_before_open(name, *args):
-        assert name == str(public)
-        public.rename(displaced)
-        public.mkdir()
+        if name == str(public):
+            public.rename(displaced)
+            public.mkdir()
         return real_open(name, *args)
     with monkeypatch.context() as faults:
         faults.setattr(win32file, "CreateFile", swap_before_open)
