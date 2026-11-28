@@ -53,6 +53,7 @@ from typing import Mapping, cast
 from . import gitops, attribution, grant_uses, grants, skill_registry, skill_requests, skill_writer
 from .gitops import EXIT_GIT_FAILED
 from .ledger import resolve_home
+from .primitives import links
 # Called by its bare name, never as ``skill_writer.rename(...)``: the lock
 # invariant's walker (tests/test_lock_invariant.py) reads every
 # ``<x>.rename(...)`` call as ``Path.rename``, an unlocked filesystem move,
@@ -508,7 +509,7 @@ def _skill_state(home: Path, name: str, row: dict) -> dict:
         state["files"] = "changed since self-learn last wrote them"
     state["current_sha"] = current
     link = skill_writer.link_path(name)
-    if not link.is_symlink():
+    if not links.is_managed(link):
         state["link"] = "missing" if not link.exists() else "not a link"
     elif link.exists() and (link / "SKILL.md").is_file():
         state["link"] = "ok"

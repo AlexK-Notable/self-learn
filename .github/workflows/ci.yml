@@ -85,6 +85,40 @@ jobs:
             throw "Expected 20 executed owner and link cases and 3 POSIX-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
           }
 
+      - name: Windows managed link contracts on Python 3.12 and 3.13
+        working-directory: plugins/self-learn/cli
+        run: |
+          $expected = @(
+            'test_directory_publication_and_removal', 'test_dangling_directory', 'test_file_link',
+            'test_occupied_directory', 'test_windows_native_facts', 'test_windows_target_validation',
+            'test_windows_privilege_error', 'test_windows_retarget_failure_preserves_entries',
+            'test_windows_volume_mount_is_unmanaged', 'test_windows_remove_deletes_checked_handle',
+            'test_windows_dangling_directory_symlink_callers', 'test_windows_published_with_busy_stage',
+            'test_windows_adoption_refuses_junction[root]', 'test_windows_adoption_refuses_junction[descendant]',
+            'test_windows_skill_write_and_relink_report_refused_volume'
+          )
+          foreach ($version in '3.12', '3.13') {
+            $report = Join-Path $env:RUNNER_TEMP "link-contracts-$version.xml"
+            $python = ".venv/Scripts/python.exe"
+            if ($version -eq '3.13') {
+              $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "link-venv-$version"
+              uv sync --locked --python $version
+              if ($LASTEXITCODE) { exit $LASTEXITCODE }
+              $python = Join-Path $env:UV_PROJECT_ENVIRONMENT 'Scripts/python.exe'
+            }
+            & $python -c "import sys; assert sys.version_info[:2] == tuple(map(int, '$version'.split('.')))"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            & $python -m pytest tests/test_platform_links.py -p no:cacheprovider -o xfail_strict=true -q -rA --junitxml=$report
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $cases = ([xml](Get-Content -Raw $report)).SelectNodes('//testcase')
+            $ran = @($cases | Where-Object { !$_.SelectSingleNode('skipped') } | ForEach-Object { $_.name })
+            $skipped = @($cases | Where-Object { $_.SelectSingleNode('skipped') })
+            if (!$ran.Count -or (Compare-Object $expected $ran) -or $skipped.Count -ne 3 -or
+                @($skipped | Where-Object { $_.skipped.message -cne 'POSIX skill installation calls' }).Count) {
+              throw "Unexpected link contract selection on Python $version (ran $ran)"
+            }
+          }
+
       - name: Windows names and folders contracts
         working-directory: plugins/self-learn/cli
         run: |
