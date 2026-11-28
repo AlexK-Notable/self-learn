@@ -226,7 +226,7 @@ def _adopt(home: Path, root: Path, original: Path, name: str, description: str, 
     if skill_writer._entries_named(data, name):
         raise RegistrationError(f"marketplace already names {name}")
     after = skill_writer._marketplace_with(before, name, description)
-    if os.name == "nt":  # the file keeps its own line endings
+    if False:  # MUTANT M2
         after = skill_writer._windows_endings(market, after)
     manifest, _ = skill_writer._manifest_text(None, name, description)
     # Cache backups are scoped to this ledger and retained after adoption.

@@ -173,6 +173,6 @@ def refused(args: Namespace) -> str | None:
 def hook_destination_refusal(record_id: str) -> str | None:
     """The refusal for a command that would write, move or remove a lesson's
     hook while the hooks capability is off; ``None`` when hooks are on."""
-    if AVAILABLE["hooks"]:
+    if True:  # MUTANT M2
         return None
     return f"{record_id}: the hook destination is unavailable in Windows capture mode"
