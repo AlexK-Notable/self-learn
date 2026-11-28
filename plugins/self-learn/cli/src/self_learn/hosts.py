@@ -640,6 +640,10 @@ def host_path_problem(
     idempotent re-add (M-4) both need the real check."""
     target = Path(path).expanduser()
     label = f"{kind} host {target}"
+    if os.name == "nt":
+        problem = _windows_host_link_problem(target, label)
+        if problem is not None:
+            return problem
     if not target.is_dir():
         return (
             f"{label} does not exist on disk — the repo moved or was "
@@ -670,6 +674,29 @@ def host_path_problem(
             "`self-learn host rebind` or remove the entry"
         )
     return None
+
+
+def _windows_host_link_problem(target: Path, label: str) -> str | None:
+    """Windows: a junction or symbolic link (any name-surrogate reparse
+    point, ``fsops.is_link``) AT a host's own entry, before anything
+    resolves it. Every level below a skills root is already checked for
+    links on the way to a write (``skill_scripts._redirected``) and ``host
+    add`` refuses one at registration (``_capture_windows.checked_path``),
+    but the gates read the registered path through ``resolve()``, which
+    follows a link swapped in at the entry itself. Only the entry is
+    inspected, never a folder above it."""
+    try:
+        linked = fsops.is_link(target)
+    except OSError as exc:
+        return f"{label} cannot be checked for a link ({exc})"
+    if not linked:
+        return None
+    return (
+        f"{label} is a junction or symbolic link — on Windows a host is "
+        "registered by its real folder, so a write never follows a link "
+        "at its root; `self-learn host remove` this entry and `self-learn "
+        "host add` the folder the link points at"
+    )
 
 
 def validate_host_path(
@@ -2110,11 +2137,41 @@ def _removed_worktree_host(hosts: Hosts, target: Path) -> Path | None:
     innermost is tried first. Path arithmetic only — the caller has
     already established that the directory is gone, which is the only
     case this may ever be asked about."""
+    if os.name == "nt":
+        return _removed_worktree_host_windows(hosts, target)
     parts = target.parts
     n = len(_WORKTREES_PARTS)
     for i in range(len(parts) - n - 1, 0, -1):
         if parts[i : i + n] != _WORKTREES_PARTS:
             continue
+        candidate = Path(*parts[:i])
+        if is_project_host(hosts, candidate):
+            return candidate.resolve()
+    return None
+
+
+def _worktree_segments_at(parts: tuple[str, ...]) -> list[int]:
+    """Windows: the indexes ``i`` (innermost first, never the anchor) where
+    *parts* holds ``.claude`` then ``worktrees`` followed by at least one
+    more component, compared as Windows compares names: case-insensitively
+    (``.Claude\\Worktrees``). Pure, so the Linux suite runs it."""
+    folded = tuple(part.casefold() for part in parts)
+    n = len(_WORKTREES_PARTS)
+    return [
+        i for i in range(len(parts) - n - 1, 0, -1)
+        if folded[i : i + n] == _WORKTREES_PARTS
+    ]
+
+
+def _removed_worktree_host_windows(hosts: Hosts, target: Path) -> Path | None:
+    """:func:`_removed_worktree_host` on Windows. A transcript's recorded
+    working directory can differ in case (``c:\\users\\…\\.Claude\\…``) or
+    separator from the registered host: ``target`` is a ``WindowsPath``, so
+    either separator is already one, and the segments match
+    case-insensitively here; :func:`is_project_host` compares the host part
+    through ``names.registration_key``, Windows' case-folded key."""
+    parts = target.parts
+    for i in _worktree_segments_at(parts):
         candidate = Path(*parts[:i])
         if is_project_host(hosts, candidate):
             return candidate.resolve()

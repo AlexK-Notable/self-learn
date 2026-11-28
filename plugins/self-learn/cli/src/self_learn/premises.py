@@ -504,6 +504,8 @@ def credential_path_problem(path: str, *, reads_content: bool = True) -> str | N
     """
     if not isinstance(path, str) or not path:
         return "the path is empty"
+    if os.name == "nt":
+        return _windows_credential_problem(path, reads_content=reads_content)
     if path.startswith("/"):
         for root in _DENIED_ROOTS:
             if path == root or path.startswith(root + "/"):
@@ -536,6 +538,10 @@ def _path_problem(
         return f"{what} is longer than {_PATH_LIMIT} characters"
     if not value.isprintable():
         return f"{what} must be printable, with no newline or control character"
+    if os.name == "nt":
+        return _windows_probe_path_problem(
+            value, what, reads_content=reads_content, policy=policy
+        )
     if value.startswith("/"):
         rest = value[1:]
     elif value.startswith("~/"):
@@ -581,8 +587,343 @@ def _repo_relative_problem(value: object, what: str, *, policy: bool = True) -> 
     return None
 
 
+# ---------------------------------------------------------- Windows paths
+#
+# Native Windows (parity plan, lane w6-paths). Everything below is reached
+# only when ``os.name == "nt"`` at call time; the functions are pure
+# (``ntpath`` and ``PureWindowsPath``, never the filesystem) so the Linux
+# suite exercises them directly.
+#
+# A premise path on Windows is one of two shapes:
+#
+# - **native**: drive-rooted (``C:\x`` or ``C:/x``) or home-relative
+#   (``~\x`` or ``~/x``), with no empty, ``.`` or ``..`` segment, and no
+#   component Windows reads as something other than the name typed (a
+#   reserved device name, an alternate data stream, a trailing dot or
+#   space that Win32 strips, an 8.3 short name, a wildcard or a control
+#   character). Probed here.
+# - **foreign**: a path with the POSIX shape this module accepts on Linux
+#   (``/x`` or ``~/x``) that cannot name a file on this machine: anything
+#   starting with ``/``, or a ``~/`` path (no backslash) whose components
+#   Windows cannot name. A record written on Linux must still load here,
+#   so the structure accepts it; the probe answers ``unavailable`` with
+#   cause ``platform`` and never runs (S-178's rule for the Linux-only
+#   kinds, so such a row is never counted as broken).
+#
+# Network (UNC) paths are refused: opening ``\\server\share`` sends this
+# machine's sign-in to that server, so a premise could leak it. Device paths
+# (``\\?\``, ``\\.\``), drive-relative (``C:x``) and root-relative (``\x``)
+# paths are refused: the first bypass name normalisation, the other two
+# depend on a current folder or drive the sweep does not choose.
+
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_WINDOWS_DRIVE_RELATIVE_RE = re.compile(r"^[A-Za-z]:")
+_WINDOWS_SEPARATORS_RE = re.compile(r"[\\/]")
+#: The DOS device aliases, mirroring ``primitives/_names_windows._DEVICE``
+#: (that module imports only on Windows; the Windows suite checks the two
+#: agree). Matched against a component's stem, so ``nul.txt`` counts.
+_WINDOWS_DEVICE_RE = re.compile(
+    r"CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³]", re.ASCII | re.I
+)
+_WINDOWS_FORBIDDEN_RE = re.compile(r'[<>"|?*\x00-\x1f]')
+#: ``PROGRA~1``: an 8.3 alias names a file the credential rules cannot
+#: read by its long name.
+_WINDOWS_SHORT_NAME_RE = re.compile(r"~[0-9]")
+#: Windows' credential and key stores, beside every name in
+#: :data:`_CREDENTIAL_COMPONENTS` (a profile's ``.ssh``, ``.aws``, ``.claude``'s
+#: ``.credentials.json`` keep their Linux names there). Compared
+#: case-insensitively, like the Linux names.
+_WINDOWS_CREDENTIAL_COMPONENTS = frozenset(
+    {
+        # DPAPI master keys, Credential Manager and the vaults, CryptoAPI keys.
+        "protect", "vault", "crypto", "systemcertificates",
+        # Browser profiles: Chromium-family "User Data", Firefox under Mozilla.
+        "user data", "mozilla", "chrome", "edge", "brave-browser", "opera software",
+        # GitHub CLI's login, Wi-Fi keys, OpenSSH's host keys (ProgramData\ssh).
+        "github cli", "wlansvc", "ssh",
+        # The registry hives of a profile; memory images and shadow copies.
+        "ntuser.dat", "usrclass.dat", "pagefile.sys", "hiberfil.sys", "swapfile.sys",
+        "system volume information",
+        # Stored logins of the common file-transfer tools.
+        "filezilla", "winscp.ini",
+    }
+)
+_WINDOWS_CREDENTIAL_PREFIXES = ("ntuser.",)
+_WINDOWS_CREDENTIAL_SUFFIXES = (".ppk", ".rdp", ".dmp")
+#: Windows' ``/proc`` and ``/root``: the registry hives and the service
+#: accounts' homes (``systemprofile`` lies under ``System32\config``).
+#: Matched below any drive, case-insensitively.
+_WINDOWS_DENIED_TREES = (
+    ("windows", "system32", "config"),
+    ("windows", "serviceprofiles"),
+)
+
+
+def _posix_shape_problem(value: str, what: str) -> str | None:
+    """The shape :func:`_path_problem` accepts on Linux (``/x`` or ``~/x``,
+    no empty, ``.`` or ``..`` segment), for Windows to accept a record a
+    Linux machine wrote."""
+    if value.startswith("/"):
+        rest = value[1:]
+    elif value.startswith("~/"):
+        rest = value[2:]
+    else:
+        return f"{what} must be absolute or start with ~/ (got {value!r})"
+    if any(seg in ("", ".", "..") for seg in rest.split("/")):
+        return f"{what} may not hold empty, '.' or '..' segments (got {value!r})"
+    return None
+
+
+def _windows_rest(value: str) -> str | None:
+    """What follows the root of a native-shaped path, or ``None``."""
+    if _WINDOWS_DRIVE_RE.match(value):
+        return value[3:]
+    if value.startswith(("~\\", "~/")):
+        return value[2:]
+    return None
+
+
+def _windows_shape_problem(value: str, what: str) -> str | None:
+    """Why *value* is not native-shaped on Windows, or ``None``."""
+    if value.startswith(("\\\\", "//")):
+        if value[2:3] in ("?", "."):
+            return (
+                f"{what} is a Windows device path (\\\\?\\ or \\\\.\\): it bypasses "
+                "the name rules, so a probe never opens one"
+            )
+        return (
+            f"{what} is a network (UNC) path: opening one sends this machine's "
+            "sign-in to the server, so a probe never does"
+        )
+    rest = _windows_rest(value)
+    if rest is None:
+        if _WINDOWS_DRIVE_RELATIVE_RE.match(value):
+            return (
+                f"{what} is drive-relative ({value[:2]} with no backslash after it): "
+                "it depends on that drive's current folder; write "
+                f"{value[:2]}\\... (got {value!r})"
+            )
+        if value.startswith(("\\", "/")):
+            return (
+                f"{what} has no drive letter, so on Windows it depends on the current "
+                f"drive: write C:\\... or ~\\... (got {value!r})"
+            )
+        return f"{what} must start with a drive (C:\\...) or with ~\\ (got {value!r})"
+    if any(seg in ("", ".", "..") for seg in _WINDOWS_SEPARATORS_RE.split(rest)):
+        return f"{what} may not hold empty, '.' or '..' segments (got {value!r})"
+    return None
+
+
+def _windows_component_problem(part: str) -> str | None:
+    """Why Windows would not open *part* as the name typed, or ``None``."""
+    if ":" in part:
+        return f"{part!r} names an alternate data stream (a ':' in a name)"
+    if _WINDOWS_FORBIDDEN_RE.search(part):
+        return f"{part!r} holds a character Windows does not allow in a name"
+    if part.endswith((".", " ")):
+        return (
+            f"{part!r} ends in a dot or a space, which Windows strips, so it would "
+            "name a different file"
+        )
+    if _WINDOWS_DEVICE_RE.fullmatch(part.partition(".")[0].rstrip(" ")):
+        return f"{part!r} is a reserved Windows device name"
+    if _WINDOWS_SHORT_NAME_RE.search(part):
+        return f"{part!r} looks like an 8.3 short name (NAME~1): write the long name"
+    return None
+
+
+def _windows_native_problem(value: str, what: str) -> str | None:
+    """Why *value* is not a native Windows path, or ``None``."""
+    shape = _windows_shape_problem(value, what)
+    if shape is not None:
+        return shape
+    for part in _WINDOWS_SEPARATORS_RE.split(_windows_rest(value) or ""):
+        problem = _windows_component_problem(part)
+        if problem is not None:
+            return f"{what} is refused: {problem}"
+    return None
+
+
+def _windows_foreign_reason(value: object) -> str | None:
+    """The platform reason a POSIX-shaped *value* is never probed on
+    Windows (it names a file on another system), or ``None`` (native,
+    malformed, or not a string)."""
+    if not isinstance(value, str) or _posix_shape_problem(value, "the path") is not None:
+        return None
+    if _windows_shape_problem(value, "the path") is not None:
+        return "unavailable on Windows: the path names a file on Linux (it starts with /)"
+    if "\\" not in value:
+        problem = _windows_native_problem(value, "the path")
+        if problem is not None:
+            return f"unavailable on Windows: {problem}"
+    return None
+
+
+def _windows_probe_reason(probe: object) -> str | None:
+    """:func:`_windows_foreign_reason` for a probe's ``path`` (the kinds
+    that read a file here; ``git-file`` is a platform kind already)."""
+    if not isinstance(probe, Mapping):
+        return None
+    if probe.get("kind") not in ("path", "file-match", "json-key", "yaml-key", "toml-key"):
+        return None
+    return _windows_foreign_reason(probe.get("path"))
+
+
+def _windows_credential_problem(path: str, *, reads_content: bool) -> str | None:
+    """:func:`credential_path_problem` on Windows: every Linux rule, with
+    the components split on both separators, plus the Windows stores, the
+    Windows system trees, and a refusal of network and device paths.
+    Case-insensitive; a component is also compared without the dots and
+    spaces Win32 strips from its end (``.ssh.`` opens ``.ssh``)."""
+    from pathlib import PureWindowsPath
+
+    if path.startswith("/"):
+        for root in _DENIED_ROOTS:
+            if path == root or path.startswith(root + "/"):
+                return f"paths under {root} are never probed"
+    pure = PureWindowsPath(path)
+    drive = pure.drive
+    if drive.startswith("\\\\") and not re.fullmatch(r"\\\\\?\\[A-Za-z]:", drive):
+        # A long-form drive path (\\?\C:\...) is a drive path; anything
+        # else that starts with two separators is a share or a device.
+        return "network (UNC) and device paths are never probed"
+    parts = pure.parts[1:] if pure.anchor else pure.parts
+    lows = [part.lower() for part in parts]
+    if drive:
+        for tree in _WINDOWS_DENIED_TREES:
+            if tuple(lows[: len(tree)]) == tree:
+                return "paths under " + "\\".join(tree) + " are never probed"
+    components = _CREDENTIAL_COMPONENTS | _WINDOWS_CREDENTIAL_COMPONENTS
+    prefixes = _CREDENTIAL_PREFIXES + _WINDOWS_CREDENTIAL_PREFIXES
+    suffixes = _CREDENTIAL_SUFFIXES + _WINDOWS_CREDENTIAL_SUFFIXES
+    for part, low in zip(parts, lows):
+        if low == "~":
+            continue
+        for name in {low, low.rstrip(". ")} - {""}:
+            if name in components:
+                return f"{part!r} names a credential or key location"
+            if name.startswith(prefixes) or name.endswith(suffixes):
+                return f"{part!r} looks like a credential or key file"
+            for word in _CREDENTIAL_WORDS:
+                if word in name:
+                    return f"{part!r} contains {word!r}, which marks a credential"
+            if reads_content and name == ".git":
+                return "a file inside a .git directory may hold a credential (a remote URL)"
+    return None
+
+
+def _windows_probe_path_problem(
+    value: str, what: str, *, reads_content: bool, policy: bool
+) -> str | None:
+    """:func:`_path_problem` on Windows. The structure accepts a native
+    path and the POSIX shape (a record from Linux loads); the policy
+    refuses a native-looking path with a component Windows would not open
+    as typed, then applies the Windows credential rules and the secret scan
+    to every path, foreign ones included."""
+    if _windows_shape_problem(value, what) is not None and _posix_shape_problem(value, what) is not None:
+        return _windows_shape_problem(value, what)
+    if not policy:
+        return None
+    native = _windows_native_problem(value, what)
+    if native is not None and _windows_foreign_reason(value) is None:
+        return native
+    problem = _windows_credential_problem(value, reads_content=reads_content)
+    if problem is not None:
+        return f"{what} is refused: {problem}"
+    if scan.scan(value):
+        return f"{what} looks like it holds a secret (the secret scan matched it)"
+    return None
+
+
+def _windows_spelling(value: object) -> object:
+    """The stored spelling of a native path: a home-relative path with
+    ``/`` (``~\\a\\b`` -> ``~/a/b``, the one spelling Linux also loads and
+    resolves against its own home), a drive path with its letter upper-case
+    and ``\\`` (``c:/a/b`` -> ``C:\\a\\b``). Anything else unchanged."""
+    if not isinstance(value, str):
+        return value
+    if value.startswith(("~\\", "~/")):
+        return "~/" + "/".join(_WINDOWS_SEPARATORS_RE.split(value[2:]))
+    if _WINDOWS_DRIVE_RE.match(value):
+        return value[0].upper() + ":\\" + "\\".join(_WINDOWS_SEPARATORS_RE.split(value[3:]))
+    return value
+
+
+def _windows_respelled(premise: dict) -> dict:
+    """*premise* with its probe's ``path`` and ``repo`` in
+    :func:`_windows_spelling`."""
+    probe = premise.get("probe")
+    if not isinstance(probe, dict):
+        return premise
+    respelled = {
+        key: _windows_spelling(item) if key in ("path", "repo") else item
+        for key, item in probe.items()
+    }
+    return {**premise, "probe": respelled}
+
+
+def _windows_strip_long(path: str) -> str:
+    """``\\\\?\\C:\\x`` -> ``C:\\x``: the long form realpath can return."""
+    if re.match(r"^\\\\\?\\[A-Za-z]:", path):
+        return path[4:]
+    return path
+
+
+def _windows_covers(point: str, target: str) -> bool:
+    """:func:`_covers` for Windows paths: case-insensitive, either
+    separator, ``C:\\x`` covering ``C:\\x\\a`` and ``C:\\x``, never ``C:\\xy``."""
+    import ntpath
+
+    fenced = ntpath.normcase(_windows_strip_long(point)).rstrip("\\")
+    seen = ntpath.normcase(_windows_strip_long(target))
+    return seen == fenced or seen.startswith(fenced + "\\")
+
+
+def _windows_path_entries(path_env: str) -> tuple[list[str], list[str]]:
+    """The ``PATH`` entries a Windows ``which`` probe looks in (drive-rooted
+    only: a relative entry is the current folder, which is never searched)
+    and the entries it will not look in (network and device paths)."""
+    import ntpath
+
+    usable: list[str] = []
+    skipped: list[str] = []
+    for entry in path_env.split(";"):
+        entry = entry.strip().strip('"')
+        if not entry:
+            continue
+        if entry.startswith(("\\\\", "//")):
+            skipped.append(entry)
+        elif _WINDOWS_DRIVE_RE.match(entry) and ntpath.isabs(entry):
+            usable.append(entry)
+    return usable, skipped
+
+
+def _windows_which(name: str, env: "ProbeEnv") -> str | _Unavailable:
+    """``which`` on Windows: the first ``PATH`` entry holding *name* (with
+    each ``PATHEXT`` extension unless it has one), never the current
+    folder (``shutil.which`` on Windows looks there first). ``not-found``
+    only when every entry could be looked in."""
+    exts = [e for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e]
+    low = name.lower()
+    names = [name] if any(low.endswith(e.lower()) for e in exts) else [name + e for e in exts]
+    usable, skipped = _windows_path_entries(env.path_env)
+    for entry in usable:
+        for candidate in names:
+            full = os.path.join(entry, candidate)
+            if os.path.lexists(full) and not os.path.isdir(full):
+                return full
+    if skipped:
+        return _Unavailable(
+            f"{name} is not on the PATH, and the PATH directory {skipped[0]} is a network "
+            "or device path, which a probe never looks in"
+        )
+    return NOT_FOUND
+
+
 def _expand(path: str, home: Path) -> str:
     """``~/x`` against *home*; an absolute path as it is."""
+    if os.name == "nt" and path.startswith("~\\"):
+        return str(home) + "\\" + path[2:]
     if path.startswith("~/"):
         return str(home) + "/" + path[2:]
     return path
@@ -1091,6 +1432,8 @@ def normalize_premises(value: object, *, record_id: str | None = None) -> list[d
     for premise in value:  # type: ignore[union-attr]  # validated a list above
         plain = plain_value(premise)
         out.append({k: plain[k] for k in _PREMISE_KEYS if k in plain})
+    if os.name == "nt":
+        out = [_windows_respelled(premise) for premise in out]
     return out
 
 
@@ -1644,6 +1987,8 @@ def _home_problem(path: str, env: ProbeEnv) -> _Unavailable | None:
     """A ``~/`` path when the home directory itself is not there: a wrong
     :attr:`ProbeEnv.home` or an unmounted home must never read as "the
     file is gone" (and, for a ``path`` probe, never as ``missing``)."""
+    if os.name == "nt" and path.startswith("~\\") and not os.path.isdir(env.home):
+        return _Unavailable("the home directory does not exist")
     if path.startswith("~/") and not os.path.isdir(env.home):
         return _Unavailable("the home directory does not exist")
     return None
@@ -1655,6 +2000,15 @@ def _denied_problem(real: str, env: ProbeEnv) -> _Unavailable | None:
     the credential rules, so a link into a fenced tree is refused like the
     tree itself. A refusal says only that the path is fenced, never
     whether anything is there."""
+    if os.name == "nt":
+        for root in env.denied_roots:
+            try:
+                fenced = os.path.realpath(root)
+            except (OSError, ValueError):
+                fenced = os.path.normpath(root)
+            if _windows_covers(fenced, os.path.normpath(real)):
+                return _Unavailable("refused: the path lies in a directory this caller may not read")
+        return None
     for root in env.denied_roots:
         try:
             fenced = os.path.realpath(root)
@@ -1888,6 +2242,18 @@ def _probe_path(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
         return absent if absent is not None else MISSING
     except OSError as exc:
         return _Unavailable(f"cannot stat the path ({type(exc).__name__})")
+    if os.name == "nt" and not stat.S_ISLNK(st.st_mode):
+        # lstat reports a junction as a folder: a name-surrogate link is
+        # reported as a link here too, never as the folder it points at.
+        try:
+            linked = fsops.is_link(Path(target))
+        except OSError as exc:
+            return _Unavailable(f"cannot inspect the path ({type(exc).__name__})")
+        if linked:
+            try:
+                return "symlink:" + os.readlink(target)
+            except OSError:
+                return "link"
     if stat.S_ISLNK(st.st_mode):
         try:
             return "symlink:" + os.readlink(target)
@@ -2015,6 +2381,8 @@ def _probe_package(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
 
 def _probe_which(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     name = str(probe["name"])
+    if os.name == "nt":
+        return _windows_which(name, env)
     found = shutil.which(name, path=env.path_env)
     if found:
         return found
@@ -2343,6 +2711,9 @@ def run_probe(probe: Mapping, env: ProbeEnv, *, premise: Mapping | None = None) 
     executor = _EXECUTORS[kind]
     if os.name == "nt" and kind in WINDOWS_UNAVAILABLE:
         return unavailable_observation(WINDOWS_UNAVAILABLE[kind], observed_at=at, cause=CAUSE_PLATFORM)
+    if os.name == "nt" and (foreign := _windows_probe_reason(probe)) is not None:
+        # A path from another system (S-178's rule): never run, never broken.
+        return unavailable_observation(foreign, observed_at=at, cause=CAUSE_PLATFORM)
     try:
         if kind in _IN_PROCESS_KINDS:
             raw = _call_bounded(executor, probe, env)

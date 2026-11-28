@@ -621,6 +621,35 @@ jobs:
             throw "Windows SDK lifecycle test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
           }
 
+      - name: Windows premise and host path contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "windows-path-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_paths.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $native = @(
+            'test_windows_device_rule_agrees_with_the_names_facade'
+            'test_windows_premises_validate_and_store_native_spellings'
+            'test_windows_native_paths_are_probed'
+            'test_windows_foreign_paths_are_platform_unavailable_and_never_broken'
+            'test_windows_credential_reached_through_a_junction_is_refused'
+            'test_windows_junction_is_reported_as_a_link'
+            'test_windows_read_fence_covers_children_in_any_case'
+            'test_windows_which_never_answers_from_the_current_folder'
+            'test_windows_link_at_a_skills_root_is_refused_where_writes_resolve_it'
+            'test_windows_removed_worktree_in_another_case_files_under_its_host'
+          )
+          $linux = @('test_linux_premise_paths_unchanged', 'test_linux_removed_worktree_match_stays_case_sensitive')
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $missing = @($native | Where-Object { $ran -cnotcontains $_ })
+          if ($missing.Count -or $ran.Count -ne 201 -or
+              (Compare-Object -CaseSensitive $linux @($skips | ForEach-Object { $_.name })) -or
+              @($skips | Where-Object { $_.skipped.message -cne 'Linux path contract' }).Count) {
+            throw "Windows path test selection changed: ran $($ran.Count), missing $missing, skipped $($skips.Count)"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(
