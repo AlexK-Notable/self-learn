@@ -262,14 +262,16 @@ def _ui_stop_sequence(kind):
     return compile(module, kind, "exec", flags=__future__.annotations.compiler_flag, dont_inherit=True)
 
 
+#: Windows has no SIGKILL; the table is only used by Linux tests.
+_SIGKILL = getattr(signal, "SIGKILL", 9)
 #: scenario -> (getpgid answer, which signals end the process, which signal
 #: finds no process, whether it had exited before the call)
 _SCENARIOS = {
     "exits-on-term": ("leader", {signal.SIGTERM}, None, False),
-    "needs-kill": ("leader", {signal.SIGKILL}, None, False),
+    "needs-kill": ("leader", {_SIGKILL}, None, False),
     "ignores-both": ("leader", set(), None, False),
     "gone-at-term": ("leader", set(), signal.SIGTERM, False),
-    "gone-at-kill": ("leader", set(), signal.SIGKILL, False),
+    "gone-at-kill": ("leader", set(), _SIGKILL, False),
     "already-exited": ("leader", set(), None, True),
     "not-a-leader": ("other", {signal.SIGTERM}, None, False),
     "getpgid-lookup": ("lookup", set(), None, False),
