@@ -401,7 +401,7 @@ def _place_link(link: Path, target: Path) -> str:
         published = True
     finally:
         # Native publication owns cleanup once its public target has changed.
-        if True:
+        if os.name != "nt" or not published:
             if links.is_managed(temporary):
                 links.remove(temporary)
     return outcome
@@ -422,7 +422,7 @@ def relink(home: Path | str, name: str) -> tuple[str | None, str | None]:
         return None, None
     try:
         return link_skill(root, name), None
-    except SkillLinkError as exc:
+    except (SkillLinkError, links.LinkRefused) as exc:
         return None, str(exc)
 
 
