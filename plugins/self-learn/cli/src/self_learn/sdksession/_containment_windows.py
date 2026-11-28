@@ -1,4 +1,4 @@
-"""S-NEXT-w6-sdk: Windows containment of the SDK's Claude Code child.
+"""S-180: Windows containment of the SDK's Claude Code child.
 
 Imported only from `os.name == "nt"` branches (`teardown.py`, `children.py`,
 `invocation_sdk/backend.py`), so importing `sdksession` on Linux does no new
