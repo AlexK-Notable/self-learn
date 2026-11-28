@@ -477,6 +477,47 @@ jobs:
             throw "Expected 323 executed hook-rule tests and 208 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
           }
 
+      - name: Windows cancel and probe contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "cancel-probe-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_cancel_probes.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_stop_files_are_named_by_pid_and_creation_under_the_runtime_root'
+            'test_windows_ask_stops_on_request_stop_and_leaves_no_stop_file'
+            'test_windows_summarise_stops_on_request_stop_and_leaves_no_stop_file'
+            'test_windows_ctrl_break_stops_summarise'
+            'test_windows_stale_stop_file_is_ignored_and_cleared'
+            'test_windows_request_before_the_watch_is_honoured'
+            'test_windows_request_stop_reaches_another_process'
+            'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[systemd-show]'
+            'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[package]'
+            'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[git-file]'
+            'test_windows_platform_unavailable_rows_are_never_broken'
+            'test_windows_mount_table_reads_no_linux_path'
+            'test_windows_ask_schema_omits_probe_and_keeps_every_other_tool'
+            'test_windows_ask_honours_a_request_made_before_the_watch'
+            'test_windows_ctrl_break_stops_ask'
+            'test_windows_ask_catches_a_stop_delivered_while_the_watch_starts'
+            'test_windows_ask_catches_a_stop_racing_the_end_of_the_turn'
+            'test_windows_request_to_a_launcher_before_the_watch_is_honoured_once'
+            'test_windows_a_watch_interrupted_while_starting_is_undone'
+            'test_windows_a_watch_interrupted_while_closing_is_still_undone'
+            'test_windows_request_passes_over_a_process_it_cannot_read'
+            'test_windows_request_does_not_follow_a_reused_parent_pid'
+            'test_windows_ancestor_walk_stops_at_a_younger_parent'
+            'test_windows_watch_refuses_a_linked_stop_folder_before_touching_it'
+            'test_windows_doctor_premises_reports_platform_probes_and_no_broken'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if ((Compare-Object -CaseSensitive $expected $ran) -or $skips.Count -ne 4 -or
+              @($skips | Where-Object { $_.skipped.message -cne "Linux cancel contract" }).Count) {
+            throw "Windows cancel test selection changed: ran $ran, skipped $($skips.Count)"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(
