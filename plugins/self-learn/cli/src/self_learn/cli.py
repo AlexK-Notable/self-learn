@@ -5203,6 +5203,12 @@ def main(argv: list[str] | None = None) -> int:
     keeps an actor, a job or a standing grant one in-process call puts in
     force from reaching the next (the tests run ``main`` many times in one
     process)."""
+    if os.name == "nt" and not os.environ.get("PYTHONIOENCODING"):
+        import io
+
+        for stream in (sys.stdout, sys.stderr):
+            if isinstance(stream, io.TextIOWrapper) and not stream.isatty():
+                stream.reconfigure(encoding="utf-8")
     return contextvars.copy_context().run(_attributed_main, argv)
 
 
@@ -5359,7 +5365,7 @@ def _main(argv: list[str] | None = None) -> int:
 
         if _extra:
             print(f"self-learn {args.command}: unrecognized arguments: {' '.join(_extra)}", file=sys.stderr)
-            return EXIT_USAGE
+            return 2
         refused = capabilities.refused(args)
         if refused:
             print(f"self-learn {refused}: unavailable in Windows capture mode", file=sys.stderr)

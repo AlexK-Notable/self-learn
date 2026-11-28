@@ -7,10 +7,6 @@ from pathlib import Path
 
 from . import names, procs
 
-if os.name != "nt":
-    raise NotImplementedError("native Windows capture requires Windows")
-
-
 def checked_path(root: Path, candidate: Path) -> Path:
     """Validate every component starting at the caller's selected root, before I/O."""
     relative = candidate.relative_to(root)
@@ -45,6 +41,8 @@ def git_argv(repo: Path, args: tuple[str, ...]) -> list[str]:
 
 
 def status_paths(repo: Path, *, timeout: float):
+    if os.name != "nt":
+        raise NotImplementedError("native Windows capture requires Windows")
     from ._names_windows import porcelain_paths
 
     return porcelain_paths(repo, git_bytes(repo, "status", "--porcelain=v1", "-z", "-uall", timeout=timeout))

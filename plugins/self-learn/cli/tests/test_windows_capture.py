@@ -2,7 +2,6 @@
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -16,7 +15,7 @@ linux = pytest.mark.skipif(os.name == "nt", reason="Linux capture contract")
 BASIC = {"init", "list", "show", "teach", "host"}
 LEDGER = set("""
 batch bucket canary case config confirm-held confirm-recurrence defer dismiss-suspect
-followup grant index link note notice proposal push reclassify reconcile reconsider rehome
+followup grant index link note notice premises proposal push reclassify reconcile reconsider rehome
 reject reopen report rescope revise select statement status supersede telemetry undefer user-model
 """.split())
 CANON = set("import prune-memory recompile replace reroute retire route skill".split())
@@ -165,7 +164,9 @@ def create(program, *args):
     return original(program, *args)
 def audit(event, args):
     if event == 'subprocess.Popen':
-        observe(args[0])
+        # Windows supplies a command line when lpApplicationName is NULL.
+        import win32api
+        observe(args[0] or win32api.CommandLineToArgvW(args[1])[0])
 win32process.CreateProcess = create
 sys.addaudithook(audit)
 """

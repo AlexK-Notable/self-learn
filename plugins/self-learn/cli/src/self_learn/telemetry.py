@@ -223,6 +223,8 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
         _cache_base()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
+        if os.name == "nt":
+            fh.reconfigure(newline="\n")
         lease = locks.acquire(fh.fileno(), path=path, wait=None)
         try:
             fh.write(line + "\n")
@@ -332,6 +334,8 @@ def _hold_back(spool_path: Path, fh: BinaryIO, kept: list[str], refused: list[st
     target = names.component_path(rejected_dir(), spool_path.name)
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(target, "a", encoding="utf-8") as out:
+        if os.name == "nt":
+            out.reconfigure(newline="\n")
         out.write("\n".join(refused) + "\n")
         out.flush()
         fsops.flush_file(out.fileno())
@@ -426,6 +430,8 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
             lines: list[str] = []
             for raw_line in fh.read().split(b"\n"):
                 try:
+                    if os.name == "nt":
+                        raw_line = raw_line.removesuffix(b"\r")
                     ln = raw_line.decode("utf-8")
                 except UnicodeDecodeError:
                     continue
@@ -503,6 +509,8 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                         checked_path(home, target)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with open(target, "a+", encoding="utf-8") as out:
+                        if os.name == "nt":
+                            out.reconfigure(newline="\n")
                         target_lease = locks.acquire_ledger_target(out.fileno())
                         try:
                             # Heal a torn trailing line from a previous

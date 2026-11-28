@@ -1,6 +1,7 @@
 """Cross-process witnesses for capture's ledger, host, cache, and Git contracts."""
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -69,7 +70,7 @@ from self_learn import hosts, intents
 original = intents.complete
 def stop_after_durable_intent(intent):
     original(intent)
-    Path(sys.argv[2]).write_text(intent.id, encoding='ascii')
+    Path(sys.argv[2]).write_text(f'{intent.id} {os.getpid()}', encoding='ascii')
     time.sleep(90)
 intents.complete = stop_after_durable_intent
 hosts.host_add(os.environ['SELF_LEARN_HOME'], sys.argv[1], 'project', mode='plain')
@@ -77,12 +78,15 @@ hosts.host_add(os.environ['SELF_LEARN_HOME'], sys.argv[1], 'project', mode='plai
     proc = subprocess.Popen([sys.executable, "-c", code, str(host), str(ready)])
     try:
         wait_for(ready, proc)
-        iid = ready.read_text()
+        iid, writer = ready.read_text().split()
         assert intents.classify_status(home).probe == "busy"
-        assert gitops.commit_lock_path(home).read_text().strip() == str(proc.pid)
+        assert gitops.commit_lock_path(home).read_text().strip() == writer
         assert (home / ".intents" / (iid + ".json")).is_file()
     finally:
-        proc.kill()
+        if ready.exists():
+            os.kill(int(ready.read_text().split()[1]), signal.SIGTERM)
+        else:
+            proc.kill()
         proc.wait(timeout=15)
     with intents.ledger_write(home) as recovered:
         assert recovered.rolled_forward == [iid]

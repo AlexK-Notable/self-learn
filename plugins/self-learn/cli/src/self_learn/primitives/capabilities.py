@@ -17,7 +17,7 @@ REQUIRES = {
     **dict.fromkeys("init host teach show list".split(), frozenset()),
     **dict.fromkeys((
         "batch bucket canary case config confirm-held confirm-recurrence defer "
-        "dismiss-suspect followup grant index link note notice proposal push "
+        "dismiss-suspect followup grant index link note notice premises proposal push "
         "reclassify reconcile reconsider rehome reject reopen report rescope "
         "revise select statement status supersede telemetry undefer user-model"
     ).split(), frozenset({"ledger"})),
