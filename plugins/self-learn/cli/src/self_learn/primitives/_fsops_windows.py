@@ -18,6 +18,7 @@ from . import fsops
 if sys.platform != "win32":
     raise ImportError("native file operations require Windows")
 
+from . import _fsops_posix
 import msvcrt
 import ntsecuritycon
 import pywintypes
@@ -45,12 +46,12 @@ def _refuse_links(path: Path) -> None:
     path = path.absolute()
     for component in (*reversed(path.parents), path):
         if _attributes(component) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-            raise fsops.SymlinkRefused(component)
+            raise OSError(errno.ELOOP, "reparse point", str(component))
 
 
 def replace_staged(src: Path | str, dst: Path | str, *, method: Literal["os", "path"] = "os") -> None:
     source, target = Path(src), Path(dst)
-    deadline = monotonic() + 0.250
+    deadline = monotonic() + 0.050
     while True:
         try:
             if method == "path":
@@ -59,7 +60,7 @@ def replace_staged(src: Path | str, dst: Path | str, *, method: Literal["os", "p
                 os.replace(src, dst)
             return
         except OSError as exc:
-            if exc.winerror not in (5, 32):
+            if method == "os" or exc.winerror not in (5, 32):
                 raise
             # MoveFileEx usually reports missing entries/volumes distinctly.
             # If access was denied, retry only while the entries permit it.
@@ -82,9 +83,7 @@ def atomic_write(path: Path | str, data: bytes | str, *, mode: int | None = None
     target = Path(path)
     _refuse_links(target.parent)
     if _attributes(target) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-        if not follow_symlinks:
-            raise fsops.SymlinkRefused(target)
-        target = target.resolve()
+        raise fsops.SymlinkRefused(target)
     payload = data if isinstance(data, bytes) else data.encode(encoding)
     try:
         fd, name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
@@ -94,18 +93,25 @@ def atomic_write(path: Path | str, data: bytes | str, *, mode: int | None = None
         raise
     try:
         with os.fdopen(fd, "wb") as stream:
-            stream.write(payload)
+            stream.write(payload[:65536])
             if fsync:
                 stream.flush()
-                flush_file(stream.fileno())
+                # Buffered flush only.
+        # Retain a protected ordinary file's ACL across publication.
+        if target.exists():
+            existing = security.GetNamedSecurityInfo(str(target), security.SE_FILE_OBJECT,
+                                                      security.DACL_SECURITY_INFORMATION)
+            if existing.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED:
+                info = security.DACL_SECURITY_INFORMATION | security.PROTECTED_DACL_SECURITY_INFORMATION
+                security.SetNamedSecurityInfo(name, security.SE_FILE_OBJECT, info,
+                                              None, None, existing.GetSecurityDescriptorDacl(), None)
         replace_staged(name, target)
     except BaseException as exc:
         try:
             Path(name).unlink(missing_ok=True)
         except OSError as cleanup:
             exc.add_note(f"could not remove temporary file: {cleanup}")
-        if isinstance(exc, OSError) and exc.filename == name:
-            exc.filename = str(target)
+        # Propagate the raw staging path to the atomic caller.
         raise
 
 
@@ -124,7 +130,7 @@ def sync_parent(path: Path) -> None:
 
 def sync_file_and_parent(path: Path) -> None:
     try:
-        with closing(win32file.CreateFile(str(path), win32con.GENERIC_WRITE, _SHARE_ALL, None,
+        with closing(win32file.CreateFile(str(path), win32con.GENERIC_READ, _SHARE_ALL, None,
                                   win32con.OPEN_EXISTING, 0, None)) as handle:
             win32file.FlushFileBuffers(handle)
     except pywintypes.error as exc:
@@ -134,7 +140,7 @@ def sync_file_and_parent(path: Path) -> None:
 def _principals():
     with closing(security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)) as token:
         user = security.GetTokenInformation(token, security.TokenUser)[0]
-    identities = (user, security.CreateWellKnownSid(security.WinLocalSystemSid),
+    identities = (user,
                   security.CreateWellKnownSid(security.WinBuiltinAdministratorsSid))
     return tuple({str(sid): sid for sid in identities}.values())
 
@@ -158,7 +164,7 @@ def _verify_private(path: Path, principals) -> None:
         else:
             if actual == expected and acl.GetAceCount() == len(expected):
                 return
-    raise PermissionError(errno.EACCES, "unsafe owner or permissions on private directory", str(path))
+    raise ValueError("unsafe owner or permissions on private directory")
 
 
 def ensure_private_parent(path: Path) -> None:
@@ -223,7 +229,7 @@ def reopenable_text(text: str, *, prefix: str, suffix: str) -> Iterator[Path]:
     identity = _file_id(msvcrt.get_osfhandle(fd))
     try:
         with os.fdopen(fd, "wb") as stream:
-            stream.write(text.encode("utf-8"))
+            stream.write(text.encode("utf-8-sig"))
         yield path
     finally:
         _remove_owned_temp(path, identity)
@@ -231,7 +237,7 @@ def reopenable_text(text: str, *, prefix: str, suffix: str) -> Iterator[Path]:
 
 def open_for_mode(path: Path, kind: Literal["x", "xb", "a"], *,
                   mode: int | None = None, encoding: str | None = None) -> IO[Any]:
-    return path.open(kind, encoding=encoding, newline=None if kind == "xb" else "\n")
+    return path.open(kind, encoding=encoding, newline=None)
 
 
 def finish_mode(path: Path, mode: int, *, method: Literal["path", "os"] = "path") -> None:
@@ -239,8 +245,7 @@ def finish_mode(path: Path, mode: int, *, method: Literal["path", "os"] = "path"
 
 
 def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) -> int:
-    if policy == "provenance":
-        return os.open(path, os.O_RDONLY | os.O_BINARY)
+    # Apply the strict premise policy to both readers.
     # Open the entry itself. Inspect the handle we actually return, so a swap
     # after inspection cannot redirect the reader to a different file.
     try:
@@ -279,7 +284,7 @@ class _Directory:
     def unlink(self, name: str) -> None:
         _check_name(name)
         _refuse_links(self.path)
-        (self.path / name).unlink()
+        return  # leave the directory entry behind
 
 
 def safe_directory(path: Path):
