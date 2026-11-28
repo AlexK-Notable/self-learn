@@ -812,8 +812,10 @@ def test_windows_identity_and_contain_of_missing_or_exited_pid(tmp_path):
         assert before is not None
         proc.stdin.close()
         assert win32event.WaitForSingleObject(held, 10000) == win32event.WAIT_OBJECT_0
-        assert procs.process_identity(proc.pid) == before  # the object still exists
-        assert procs.contain_child(proc.pid) is None  # but there is nothing to contain
+        # The object still exists, but an exited process has no identity to
+        # read and nothing to contain.
+        assert procs.process_identity(proc.pid) is None
+        assert procs.contain_child(proc.pid) is None
     finally:
         win32api.CloseHandle(held)
         proc.wait(timeout=5)
@@ -837,7 +839,8 @@ def test_windows_identity_open_errors(monkeypatch, code, expected):
         with pytest.raises(OSError) as caught:
             procs.process_identity(os.getpid())
         assert caught.value.winerror == failure.winerror and caught.value.__cause__ is failure
-    opened.assert_called_once_with(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, os.getpid())
+    opened.assert_called_once_with(win32con.PROCESS_QUERY_LIMITED_INFORMATION | win32con.SYNCHRONIZE,
+                                   False, os.getpid())
 
 
 @windows

@@ -144,7 +144,8 @@ class ProcessIdentity:
 def process_identity(pid: int) -> ProcessIdentity | None:
     """The identity of *pid*, or ``None`` when no such process can be read
     (POSIX: the ``/proc`` read raised ``OSError``; Windows: the PID does not
-    exist or the process cannot be opened for limited query)."""
+    exist, the process cannot be opened for limited query, or it has
+    exited)."""
     return _backend().process_identity(pid)
 
 

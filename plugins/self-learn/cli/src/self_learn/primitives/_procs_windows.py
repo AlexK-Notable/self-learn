@@ -403,7 +403,10 @@ def pid_alive(pid: int) -> bool:
 # (the Agent SDK's Claude Code child), and make this process's own
 # descendants die with it.
 
-_PROCESS_QUERY = win32con.PROCESS_QUERY_LIMITED_INFORMATION
+# SYNCHRONIZE tells an exited process apart: its image can no longer be read
+# (QueryFullProcessImageNameW fails with ERROR_GEN_FAILURE, measured on the
+# runner) even while another handle keeps the process object.
+_PROCESS_QUERY = win32con.PROCESS_QUERY_LIMITED_INFORMATION | win32con.SYNCHRONIZE
 # AssignProcessToJobObject needs PROCESS_SET_QUOTA and PROCESS_TERMINATE;
 # SYNCHRONIZE lets terminate_contained wait for the process itself to exit.
 _PROCESS_CONTAIN = (win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE
@@ -528,6 +531,18 @@ def _exited(process) -> bool:
     return win32event.WaitForSingleObject(process, 0) == win32event.WAIT_OBJECT_0
 
 
+def _live_identity(process) -> ProcessIdentity | None:
+    """The identity of a running process; ``None`` once it has exited."""
+    if _exited(process):
+        return None
+    try:
+        return _identity_of(process)
+    except OSError:
+        if _exited(process):  # it exited while we read it
+            return None
+        raise
+
+
 @_os_errors()
 def process_identity(pid: int) -> ProcessIdentity | None:
     try:
@@ -540,7 +555,7 @@ def process_identity(pid: int) -> ProcessIdentity | None:
         return None
     with _Handles() as handles:
         handles.callback(win32api.CloseHandle, process)
-        return _identity_of(process)
+        return _live_identity(process)
 
 
 def _new_job():
@@ -613,6 +628,8 @@ def _judge(job, tree, pid, adopted, uncovered, left_out):
         return False
     with _Handles() as handles:
         handles.callback(win32api.CloseHandle, process)
+        if _exited(process):
+            return False
         created = _created_of(process)
         if win32job.IsProcessInJob(process, job):
             # Born in the job: ours by construction. Anything it spawned
@@ -720,8 +737,8 @@ def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> Contain
         return None
     with _Handles() as handles:
         handles.callback(win32api.CloseHandle, process)
-        identity = _identity_of(process)
-        if (expect is not None and identity != expect) or _exited(process):
+        identity = _live_identity(process)
+        if identity is None or (expect is not None and identity != expect):
             return None
         in_any, in_self = _job_states(process)
         # Still empty if assignment fails, so closing it kills nothing.
