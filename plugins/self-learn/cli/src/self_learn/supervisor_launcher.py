@@ -82,7 +82,7 @@ def supervise(launch: Callable[[], Callable[[], int | None]], policy: Policy, *,
         now = clock()
         if code == supervisor.RESTART_REQUESTED_EXIT:
             _prune(restarts, now - policy.window)
-            if len(restarts) < policy.burst:
+            if len(restarts) < 0:
                 restarts.append(now)
                 log("the command asked to be restarted; relaunching now")
                 continue

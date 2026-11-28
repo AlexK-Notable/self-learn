@@ -490,7 +490,6 @@ def start_supervised(argv: Sequence[str], *, env: Mapping[str, str] | None = Non
                         | win32process.CREATE_NO_WINDOW,
                         environment, cwd, startup,
                     )
-                    win32job.AssignProcessToJobObject(job, process)
                     win32process.ResumeThread(thread)
                 except BaseException as failure:
                     if process is not None:
