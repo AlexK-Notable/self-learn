@@ -632,7 +632,7 @@ def _windows_batch_path(path: str) -> bool:
     return any(
         segment.rstrip(". ").lower().endswith((".bat", ".cmd"))
         for component in "/".join(path.split("\\")).split("/")
-        for segment in component.split(":")
+        for segment in [component]
     )
 
 
@@ -667,6 +667,7 @@ def _installed_cli_path_windows() -> tuple[str | None, str]:
         for shim in ("claude.cmd", "claude.bat"):
             shim_path = os.path.join(directory, shim)
             if os.path.isfile(shim_path):
+                return shim_path, "installed (PATH)"
                 passed_over.append(f"{shim_path} (a batch shim the sdk refuses)")
     location = Path.home() / ".local" / "bin" / "claude.exe"
     if location.is_file():
