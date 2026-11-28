@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .primitives import names
 from .ledger import Bucket
 
 __all__ = ["USER_LABEL", "bucket_places", "display_path"]
@@ -29,14 +30,14 @@ def display_path(path: Path | str) -> str:
     """*path* as ``~/…`` when it is under the home directory, else as it is."""
     p = Path(path)
     try:
-        rel = p.relative_to(Path.home())
+        rel = p.relative_to(names.user_home())
     except ValueError:
         return str(p)
     return "~" if str(rel) == "." else "~/" + str(rel)
 
 
 def _project_label(path: Path) -> str:
-    text = str(path)
+    text = names.worktree_label_path(path)
     if _WORKTREE_PART in text:
         repo, _, rest = text.partition(_WORKTREE_PART)
         name = rest.split("/", 1)[0]

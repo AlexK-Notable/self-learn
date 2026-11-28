@@ -98,6 +98,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Sequence, cast
 
+from .primitives import names
 from . import provenance, settings, transcript_lines
 from .ledger import resolve_home
 from .scan import redact
@@ -573,7 +574,8 @@ def resolve(
             _key, path, found_line = best
             sub = None
             if pool is not pools[0] or subagent_file is not None:
-                sub = str(Path(path).relative_to(path.parents[1]))
+                native = Path(path)
+                sub = names.relative_key(path.parents[1], native)
             return _ref_at(path, found_line, session=session, subagent_file=sub, roots=rs, sent=sent)
     raise RefError(f"no transcript holds session {session} (line={line}, uuid={uuid})")
 

@@ -11,7 +11,7 @@ keywords = ["claude", "claude-code", "self-learning", "ledger"]
 dependencies = [
     "ruamel.yaml>=0.18",
     "claude-agent-sdk>=0.2.116,<0.3",
-    "portalocker>=3 ; sys_platform == 'win32'",
+    "portalocker>=4.4.2 ; sys_platform == 'win32'",
     "pywin32>=306 ; sys_platform == 'win32'",
     "platformdirs>=4.3 ; sys_platform == 'win32'",
 ]

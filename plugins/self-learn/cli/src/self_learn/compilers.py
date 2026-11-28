@@ -124,7 +124,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from . import domain
-from .primitives import chrono, fsops, text
+from .primitives import chrono, fsops, names, text
 from .records import Record
 
 __all__ = [
@@ -1005,13 +1005,7 @@ def pointer_token(surface: Path, target: Path) -> str:
     form that would escape upward falls back to a ``~``-relative token
     when the target is under ``$HOME`` (still no absolute personal-path
     leak), else the bare absolute path."""
-    rel = os.path.relpath(target, surface.parent)
-    if not rel.startswith(".."):
-        return Path(rel).as_posix()
-    try:
-        return "~/" + Path(target).relative_to(Path.home()).as_posix()
-    except ValueError:  # target is not under $HOME
-        return str(target)
+    return names.pointer_token(surface, target)
 
 
 def pointer_line(token: str, label: str) -> str:

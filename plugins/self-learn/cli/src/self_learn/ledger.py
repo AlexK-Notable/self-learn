@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import attribution, gitops, intents
 from .hosts import is_repo_root
-from .primitives import procs
+from .primitives import names, procs
 
 DEFAULT_HOME = "~/.self-learn"
 
@@ -62,8 +62,7 @@ EXIT_NO_HOME = 5
 
 def resolve_home() -> Path:
     """Resolve the ledger home: $SELF_LEARN_HOME, else the default, expanded."""
-    raw = os.environ.get("SELF_LEARN_HOME") or DEFAULT_HOME
-    return Path(raw).expanduser()
+    return names.ledger_home(default=DEFAULT_HOME)
 
 
 def home_state(home: Path | str | None = None) -> str:

@@ -44,10 +44,7 @@ jobs:
           "SELF_LEARN_HOME=$slHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "XDG_CACHE_HOME=$xdgCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      # The nested tests/conftest.py files still import a POSIX-only product
-      # module, so on Windows the package-root conftest (which installs the
-      # home floor) is loaded as a plugin and nested conftests are skipped.
-      # Drop --noconftest -p conftest once the CLI imports on Windows.
+      # The home-floor steps load the package-root conftest in isolation.
       - name: CLI home-floor tests
         working-directory: plugins/self-learn/cli
         run: uv run --no-sync python -m pytest --noconftest -p conftest tests/test_home_floor.py -p no:cacheprovider -q -rs
@@ -59,6 +56,106 @@ jobs:
       - name: Windows observer hook tests
         working-directory: plugins/self-learn/cli
         run: uv run --no-sync python -m pytest tests/test_hook_entry.py -p no:cacheprovider -q -rs
+
+      - name: Windows names and folders contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $env:WIN_PD_OVERRIDE_LOCAL_APPDATA = Join-Path $env:RUNNER_TEMP "names-local"
+          $env:WIN_PD_OVERRIDE_APPDATA = Join-Path $env:RUNNER_TEMP "names-roaming"
+          $report = Join-Path $env:RUNNER_TEMP "names-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_platform_names.py -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { $_.name -like "test_windows_*" -and !$_.SelectSingleNode("skipped") })
+          $unexpected = @($cases | Where-Object {
+            $_.SelectSingleNode("skipped") -and $_.skipped.message -ne "historical POSIX storage contract"
+          })
+          if ($ran.Count -ne 17 -or $unexpected.Count) { throw "Unexpected native names test count or skip" }
+
+      - name: Windows file-lock contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "lock-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_platform_locks.py -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { $_.name -like "test_windows_*" -and !$_.SelectSingleNode("skipped") })
+          $unexpected = @($cases | Where-Object {
+            $_.SelectSingleNode("skipped") -and $_.skipped.message -ne "POSIX lock semantics or product integration"
+          })
+          if (!$ran.Count) { throw "No native Windows lock test ran" }
+          if ($unexpected.Count) { throw "Unexpectedly skipped lock tests: $($unexpected.name -join ', ')" }
+
+      - name: Windows file publishing contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "fsops-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_platform_fsops.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne "Linux filesystem contract" })
+          if ($ran.Count -ne 28 -or $skips.Count -ne 7 -or $unexpected.Count -ne 0) {
+            throw "Expected 28 executed fsops cases and 7 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
+          }
+
+      - name: Windows process contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "process-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_platform_procs.py tests/test_bounded_children.py::test_native_launch_has_one_owner_and_rejects_a_second -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $unexpected = @($cases | Where-Object {
+            $_.SelectSingleNode("skipped") -and $_.skipped.message -ne "Linux process contract"
+          })
+          $expected = @(
+            'test_platform_procs::test_argument_stdin_encoding_exit_matrix'
+            'test_platform_procs::test_batch_shim_refusal_names_target[.bat]'
+            'test_platform_procs::test_batch_shim_refusal_names_target[.cmd]'
+            'test_platform_procs::test_bare_git_uses_path_only[parent]'
+            'test_platform_procs::test_bare_git_uses_path_only[child]'
+            'test_platform_procs::test_cleanup_error_keeps_primary[timeout]'
+            'test_platform_procs::test_cleanup_error_keeps_primary[overflow]'
+            'test_platform_procs::test_cleanup_error_keeps_primary[interrupt]'
+            'test_platform_procs::test_cleanup_error_keeps_primary[launch]'
+            'test_platform_procs::test_both_readers_join_before_return'
+            'test_platform_procs::test_closed_pipes_live_leader'
+            'test_platform_procs::test_combined_cap_interleaved_n_and_n_plus_one'
+            'test_platform_procs::test_combined_cap_n_and_n_plus_one'
+            'test_platform_procs::test_create_process_error_releases_handles[cwd]'
+            'test_platform_procs::test_create_process_error_releases_handles[image]'
+            'test_platform_procs::test_git_text_and_byte_exact_output'
+            'test_platform_procs::test_inherited_stdin_and_command_timeout_fields'
+            'test_platform_procs::test_interrupt_after_create_reaps_suspended_child'
+            'test_platform_procs::test_interrupt_after_thread_start_joins_worker'
+            'test_platform_procs::test_invalid_cap_never_spawns'
+            'test_platform_procs::test_job_launch_failure_never_runs_payload[assign]'
+            'test_platform_procs::test_job_launch_failure_never_runs_payload[resume]'
+            'test_platform_procs::test_job_owns_grandchild_only[overflow]'
+            'test_platform_procs::test_job_owns_grandchild_only[success]'
+            'test_platform_procs::test_job_owns_grandchild_only[timeout]'
+            'test_platform_procs::test_launcher_death_closes_job'
+            'test_platform_procs::test_native_errors_include_cause_during_setup_and_cleanup[terminate]'
+            'test_platform_procs::test_native_errors_include_cause_during_setup_and_cleanup[setup]'
+            'test_platform_procs::test_native_errors_include_cause_during_setup_and_cleanup[close]'
+            'test_platform_procs::test_native_errors_include_cause_during_setup_and_cleanup[inherited-handle]'
+            'test_bounded_children::test_native_launch_has_one_owner_and_rejects_a_second'
+            'test_platform_procs::test_non_git_text_requires_utf8[run_bounded]'
+            'test_platform_procs::test_non_git_text_requires_utf8[run_command]'
+            'test_platform_procs::test_only_child_pipe_ends_inherit_and_all_handles_close'
+            'test_platform_procs::test_pid_probe_alive_then_reaped'
+            'test_platform_procs::test_pipe_api_error_reaches_caller[ReadFile]'
+            'test_platform_procs::test_pipe_api_error_reaches_caller[WriteFile]'
+            'test_platform_procs::test_resolution_uses_child_path_and_cwd'
+            'test_platform_procs::test_stuck_pipe_has_bounded_cleanup[reader]'
+            'test_platform_procs::test_stuck_pipe_has_bounded_cleanup[writer]'
+            'test_platform_procs::test_stuck_pipe_has_bounded_cleanup[uncancellable]'
+          )
+          $delta = Compare-Object $expected @($ran | ForEach-Object { ($_.classname.Split('.')[-1]) + '::' + $_.name })
+          if ($delta -or $unexpected.Count) { throw "Windows process test selection changed: $($delta | Out-String)$unexpected" }
 
       - name: Verify LF line endings on armor-pinned fixtures
         run: |

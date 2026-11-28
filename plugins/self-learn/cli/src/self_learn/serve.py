@@ -79,7 +79,7 @@ from . import (
 from . import hosts as hosts_mod
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
-from .primitives import chrono, fsops, procs
+from .primitives import chrono, fsops, names, procs
 from .ledger import resolve_home
 
 __all__ = [
@@ -530,11 +530,9 @@ def cache_dir_readonly(home: Path | str | None = None) -> Path:
     missing file as `None`), which is the correct answer regardless.
     An explicit `home` selects that ledger's namespace; without one the
     ambient resolved home is preserved for existing callers."""
-    cache = os.environ.get("XDG_CACHE_HOME")
-    base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
+    app_root = names.cache_root()
     resolved_home = Path(home).expanduser() if home is not None else resolve_home()
-    digest = hashlib.sha256(str(resolved_home).encode("utf-8")).hexdigest()[:8]
-    return base / "self-learn" / f"home-{digest}"
+    return names.home_cache_for(app_root, resolved_home)
 
 
 def unit_dir() -> Path:
@@ -1171,7 +1169,8 @@ def _eligible_input_paths(home: Path) -> list[Path]:
 
 def _input_commit_epoch(home: Path, path: Path) -> float:
     try:
-        rel = path.resolve().relative_to(home.resolve())
+        resolved_path = path.resolve()
+        rel = names.relative_key(home.resolve(), resolved_path)
     except ValueError:
         return 0.0
     proc = gitops._git(home, "log", "-1", "--format=%ct", "--", str(rel))

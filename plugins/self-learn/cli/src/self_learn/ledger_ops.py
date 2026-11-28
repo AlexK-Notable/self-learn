@@ -47,7 +47,7 @@ from . import hosts as hosts_mod
 from . import cache_gc
 from . import settings
 from . import domain
-from .primitives import chrono, fsops, text, yamlio
+from .primitives import chrono, fsops, names, text, yamlio
 from .compilers import BEGIN_MARKER, END_MARKER
 from .ledger import Bucket, discover_buckets, home_state, home_state_message, resolve_home
 from .normalize import sha_anchor
@@ -502,7 +502,7 @@ def _git_mv(home: Path, src: Path, dest: Path) -> None:
 
     try:
         proc = procs.run_bounded(
-            ["git", "-C", str(home), "mv", str(src), str(dest)],
+            ["git", "-C", str(home), "mv", names.git_arg(home, src), names.git_arg(home, dest)],
             timeout=gitops.GIT_LOCAL_TIMEOUT,
         )
     except procs.BoundedTimeout as exc:
@@ -599,14 +599,14 @@ def bucket_dir_for_scope(
                 "project scope needs a project_path — per-project buckets "
                 "(doc 13 §3) cannot be resolved without the project's path"
             )
-        return home / "projects" / slug_for(project_path)
+        return names.component_path(home / "projects", slug_for(project_path))
     if isinstance(scope, str) and scope.startswith("skill:"):
         name = scope[len("skill:") :]
         try:
             skill_dir_for(load_hosts(home), name)  # validity gate only
         except HostsError as exc:
             raise LedgerOpsError(str(exc)) from exc
-        return home / "skills" / name
+        return names.component_path(home / "skills", name)
     raise LedgerOpsError(
         f"scope must be skill:<name>, project, or user, got {scope!r}"
     )
@@ -635,7 +635,7 @@ def ensure_project_meta(bucket_dir: Path, project_path: Path | str) -> Path:
             "without its recorded path cannot be trusted to compile "
             "anywhere (doc 13 §3); repair it or re-capture"
         )
-    if Path(recorded).expanduser().resolve() != wanted:
+    if names.registration_key(Path(recorded).expanduser().resolve()) != names.registration_key(wanted):
         raise LedgerOpsError(
             f"project bucket {bucket_dir} belongs to {recorded}, not "
             f"{wanted} — refusing to file this project's records in "
@@ -1244,7 +1244,7 @@ def _glob_probe_parts(pattern: str) -> tuple[bool, list[str], str]:
 def _glob_witness_cache_path(roots: tuple[Path, ...], pattern: str) -> Path:
     cache = cache_gc.cache_root().absolute()
     key = json.dumps(([str(r.absolute()) for r in roots], pattern))
-    digest = hashlib.sha256(key.encode()).hexdigest()
+    digest = names.path_fingerprint(key, length=64)
     return cache / cache_gc.GLOB_WITNESS_DIR / f"{digest}.json"
 
 
@@ -3126,7 +3126,8 @@ def skill_bucket_carry_plan(home: Path, old: str, new: str) -> list[tuple[Path, 
     ``skills/<new>/`` that still says ``scope: skill:<old>`` (an earlier run
     moved the file and stopped before rewriting it; its source is then its
     destination). Reads only."""
-    old_root, new_root = home / "skills" / old, home / "skills" / new
+    old_root = names.component_path(home / "skills", old)
+    new_root = names.component_path(home / "skills", new)
     plan: list[tuple[Path, Path]] = []
     if old_root.is_dir():
         for path in sorted(p for p in old_root.rglob("*") if p.is_file()):
@@ -3180,13 +3181,16 @@ def carry_skill_bucket(
         else:
             touched.append(dest)
         if not (dest.name.startswith("lrn-") and dest.suffix == ".md"
-                and dest.parent.parent == home / "skills" / new):
+                and dest.parent.parent == names.component_path(home / "skills", new)):
             continue
         record = Record.from_path(dest)
         if record.scope != f"skill:{old}":
             continue
         prior = carried_from_blob(record)
-        rel_before = _ledger_relative(home, home / "skills" / old / dest.relative_to(home / "skills" / new))
+        rel_before = _ledger_relative(
+            home, names.component_path(home / "skills", old)
+            / dest.relative_to(names.component_path(home / "skills", new)),
+        )
         entry: dict = {"from": f"skills/{old}", "to": f"skills/{new}"}
         before = prior or _head_blob(home, rel_before)
         if before is None and source == dest:
@@ -3201,15 +3205,15 @@ def carry_skill_bucket(
         record.append_history(SKILL_RENAMED_EVENT, entry)
         record.write(dest)
     for directory in sorted(
-        (p for p in (home / "skills" / old).rglob("*") if p.is_dir()),
+        (p for p in names.component_path(home / "skills", old).rglob("*") if p.is_dir()),
         key=lambda p: len(p.parts), reverse=True,
-    ) if (home / "skills" / old).is_dir() else []:
+    ) if names.component_path(home / "skills", old).is_dir() else []:
         try:
             directory.rmdir()
         except OSError:
             pass
     try:
-        (home / "skills" / old).rmdir()
+        names.component_path(home / "skills", old).rmdir()
     except OSError:
         pass
     return touched

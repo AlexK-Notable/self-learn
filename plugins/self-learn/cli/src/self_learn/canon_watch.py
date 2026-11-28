@@ -39,6 +39,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from .primitives import names
+
 __all__ = [
     "ACTIVE_DAYS",
     "Change",
@@ -129,7 +131,7 @@ def watched_files(claude_dir: Path) -> list[Path]:
 
 
 def _snap_path(root: Path, path: Path) -> Path:
-    return root / (hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16] + ".txt")
+    return root / (names.path_fingerprint(str(path), length=16) + ".txt")
 
 
 def _write(path: Path, text: str) -> None:

@@ -265,22 +265,7 @@ def _porcelain(home: Path) -> list[tuple[str, Path]]:
     wholly-untracked BUCKET reports its files rather than the directory
     (the miner's very first landing into a new project bucket is exactly
     that case, and a directory pathspec would over-commit)."""
-    proc = gitops._git(  # noqa: SLF001 — same module family
-        home, "status", "--porcelain", "-uall"
-    )
-    if proc.returncode != 0:
-        raise gitops.GitOpsError(
-            f"git status in {home} failed: {(proc.stderr or proc.stdout).strip()}"
-        )
-    out: list[tuple[str, Path]] = []
-    for line in proc.stdout.splitlines():
-        if len(line) < 4:
-            continue
-        xy, rest = line[:2], line[3:]
-        if " -> " in rest:  # rename: both halves, kept whole for the report
-            rest = rest.split(" -> ", 1)[1]
-        out.append((xy, home / rest.strip('"')))
-    return out
+    return gitops.porcelain_paths(home)
 
 
 def _classify(home: Path, path: Path) -> str | None:

@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from . import attribution, cache_gc, domain, intents, invocation, sentinel, settings, telemetry
-from .primitives import chrono, fsops, locks, procs, truncate
+from .primitives import chrono, fsops, locks, names, procs, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import Hosts, HostsError, ancestors_of, load_hosts, skill_dir_for, unregistered_ancestor_dirs
@@ -575,7 +575,7 @@ def path_roster(home: Path, entry) -> str:
             )
     else:
         lines.append(
-            f"ALWAYS target      : {Path('~/.claude/CLAUDE.md').expanduser()}"
+            f"ALWAYS target      : {names.user_claude_file(Path('~/.claude/CLAUDE.md'))}"
         )
 
     # PATHED rules dir — skill scope has NO routable surface (P-A13,
@@ -590,7 +590,7 @@ def path_roster(home: Path, entry) -> str:
                 f"PATHED rules dir   : (unresolvable — {project_unresolved_reason})"
             )
     else:
-        user_claude_md = Path("~/.claude/CLAUDE.md").expanduser()
+        user_claude_md = names.user_claude_file(Path("~/.claude/CLAUDE.md"))
         lines.append(f"PATHED rules dir   : {user_claude_md.parent / 'rules'}")
 
     # DEMAND target — user scope has NO routable surface (S-23), the
@@ -719,16 +719,14 @@ def cache_dir(home: Path | str | None = None) -> Path:
     docstrings) -- so threading `home` into just the STRING would point
     the operator at a directory the event log was never actually written
     under: the same pair-with-the-writer rule, applied the other way."""
-    cache = os.environ.get("XDG_CACHE_HOME")
-    base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
+    app_root = names.cache_root()
     resolved_home = Path(home).expanduser() if home is not None else resolve_home()
-    digest = hashlib.sha256(str(resolved_home).encode("utf-8")).hexdigest()[:8]
-    new = base / "self-learn" / f"home-{digest}"
+    new = names.home_cache_for(app_root, resolved_home)
     new.mkdir(parents=True, exist_ok=True)
     # S-99: name the home this hash belongs to, so a later pass can
     # tell when the home is gone and the directory is an orphan.
     cache_gc.record_home(new, resolved_home)
-    _migrate_cache(base / "claude-skills" / "self-learn", new)
+    _migrate_cache(app_root.parent / "claude-skills" / "self-learn", new)
     return new
 
 
@@ -1945,7 +1943,7 @@ def canon_blocks(
             t, s = _canon_block(ref, cap=CANON_BYTES_PER_FILE, label=_REFERENCE_LABEL)
             blocks.append((t, s, True))
     else:  # user — no references block at all (S-23: no user references dir)
-        target = Path("~/.claude/CLAUDE.md").expanduser()
+        target = names.user_claude_file(Path("~/.claude/CLAUDE.md"))
         text, size = _canon_block(target, cap=CANON_BYTES_PER_FILE, label=None)
         blocks.append((text, size, False))
 
@@ -2556,7 +2554,7 @@ def _tracked(home: Path, path: Path) -> bool:
 
     return (
         gitops._git(  # noqa: SLF001 — same module family
-            home, "ls-files", "--error-unmatch", "--", str(path)
+            home, "ls-files", "--error-unmatch", "--", names.git_arg(home, path)
         ).returncode
         == 0
     )
@@ -2614,7 +2612,7 @@ def _commit_locked(home: Path, result: RunResult) -> bool:
     stage: list[str] = []
     for path in dict.fromkeys(result.touched):  # de-dup, order-stable
         if path.exists() or _tracked(home, path):
-            stage.append(str(path))
+            stage.append(names.git_arg(home, path))
     if not stage:
         return False
     # BLOCKER B: EVERY GitOpsError is caught, including the one raised by

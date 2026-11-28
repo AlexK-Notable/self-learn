@@ -236,7 +236,13 @@ class Directory(Protocol):
 
 def _backend():
     if os.name == "nt":
-        raise NotImplementedError("native Windows file operations are not implemented")
+        # A foreign interpreter cannot load the native Win32 extension modules.
+        import sys
+        if sys.platform != "win32":
+            raise NotImplementedError("native Windows file operations require Windows")
+        from . import _fsops_windows
+
+        return _fsops_windows
     from . import _fsops_posix
 
     return _fsops_posix

@@ -63,7 +63,7 @@ from .. import domain, hosts as hosts_mod, reachability, telemetry
 from ..compilers import _iso, _reference_block, entry_line
 from ..ledger import Bucket, discover_buckets
 from ..ledger_ops import UNREADABLE_RECORD_ERRORS, bucket_project_path
-from ..primitives import chrono
+from ..primitives import chrono, names
 from ..records import Record
 from .health import _replacement_successors
 
@@ -591,7 +591,7 @@ def _readable_label(kind: str, target: Path, claude_dir: Path) -> str:
                 target.parent,
             )
             owner, topic = rules_dir.parent.parent.name, target.relative_to(rules_dir)
-        topic_text = str(topic.with_suffix("") if topic.suffix == ".md" else topic)
+        topic_text = (topic.with_suffix("") if topic.suffix == ".md" else topic).as_posix()
         return f"{owner}-rules-{topic_text}"
     user_file = _resolved(claude_dir / target.name) == target
     owner = "user" if user_file else target.parent.name
@@ -605,7 +605,7 @@ def _surface_key(label: str, target: Path, *, digest_chars: int | None = None) -
     resolved file path. The key depends on the file alone, so it does not
     change when another surface appears, and two files never share one."""
     chars = KEY_DIGEST_CHARS if digest_chars is None else digest_chars
-    digest = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:chars]
+    digest = names.path_fingerprint(str(target), length=chars)
     text = _UNSAFE_KEY_CHARS.sub("-", label).strip("-.") or "surface"
     text = text[: max(1, KEY_MAX - len(digest) - 1)].rstrip("-.") or "surface"
     return f"{text}-{digest}"

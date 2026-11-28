@@ -84,6 +84,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 from . import cases
 from . import config as policy_config
@@ -99,7 +100,7 @@ from . import (
     sentinel,
     telemetry,
 )
-from .primitives import chrono, fsops, text as text_mod
+from .primitives import chrono, fsops, names, text as text_mod
 from .hook_compiler import (
     MODE_MESSAGE_KEY,
     HookCompileError,
@@ -525,7 +526,7 @@ class VerbResult:
             # `file_words is not None`, which can only be true when this
             # branch ran.
             try:
-                target_str = "~/" + str(target.relative_to(Path.home()))
+                target_str = "~/" + str(target.relative_to(names.user_home()))
             except ValueError:
                 target_str = str(target)
         if file_words is not None:
@@ -2046,9 +2047,10 @@ def managed_target_for(
             if not topic:
                 return None
             if record.scope == "user":
-                base = Path(
-                    user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
-                ).expanduser()
+                base = (
+                    Path(user_claude_md).expanduser() if user_claude_md is not None
+                    else names.user_claude_file(Path(DEFAULT_USER_CLAUDE_MD))
+                )
                 return (_user_rules_dir(base) / f"{topic}.md").resolve()
             if record.scope == "project":
                 host = bucket_project_path(bucket.path)
@@ -2059,9 +2061,10 @@ def managed_target_for(
                 )
             return None  # skill-scope rules: deferred (§9), never routed
         if record.scope == "user":
-            target = Path(
-                user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
-            ).expanduser()
+            target = (
+                Path(user_claude_md).expanduser() if user_claude_md is not None
+                else names.user_claude_file(Path(DEFAULT_USER_CLAUDE_MD))
+            )
             return target.resolve()
         if record.scope == "project":
             host = bucket_project_path(bucket.path)
@@ -2258,9 +2261,10 @@ def _resolve_rules_target(
                 f"{_listed} — make the pattern(s) relative"
             )
     if scope == "user":
-        base = Path(
-            user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
-        ).expanduser()
+        base = (
+            Path(user_claude_md).expanduser() if user_claude_md is not None
+            else names.user_claude_file(Path(DEFAULT_USER_CLAUDE_MD))
+        )
         target = _user_rules_dir(base) / f"{rules_topic}.md"
         bypassed_reason: str | None = None
         if check_dirty and paths_tuple:
@@ -2530,9 +2534,10 @@ def _resolve_target_unguarded(
                 allow_empty_glob=allow_empty_glob,
             )
         if scope == "user":
-            target = Path(
-                user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
-            ).expanduser()
+            target = (
+                Path(user_claude_md).expanduser() if user_claude_md is not None
+                else names.user_claude_file(Path(DEFAULT_USER_CLAUDE_MD))
+            )
             user_host = target.parent
             spec = TargetSpec(
                 "claude-md", "user", bucket_dir, target, user_host,
@@ -3636,7 +3641,7 @@ def _remove_hook_script(
                 return None
             snapshot = _snapshot_host_files([script])
             gitops._git(  # noqa: SLF001 — same module family
-                host_repo, "rm", "-q", "--ignore-unmatch", "--", str(script)
+                host_repo, "rm", "-q", "--ignore-unmatch", "--", names.git_arg(host_repo, script)
             )
             if script.exists():
                 # untracked script: plain unlink — nothing tracked changed,
@@ -5063,7 +5068,7 @@ def _tilde(path: Path) -> str:
     """*path* as ``~/…`` when it is under the home directory (a note may be
     pasted into a public issue, NIT N4's reason), else as it is."""
     try:
-        return "~/" + str(path.relative_to(Path.home()))
+        return "~/" + str(path.relative_to(names.user_home()))
     except ValueError:
         return str(path)
 
@@ -6277,7 +6282,7 @@ def _show_canon_info(home: Path, bucket, record: Record) -> dict:
                 h = bucket_project_path(bucket.path)
                 host = Path(h) if h is not None else None
             else:
-                host = DEFAULT_USER_CLAUDE_MD.expanduser().parent
+                host = names.user_claude_file(DEFAULT_USER_CLAUDE_MD).parent
         except HostsError:
             host = None
     elif destination == "reference":
@@ -9299,7 +9304,8 @@ def _resolve_rehome_target(home: Path, to: str) -> Path:
     candidate = Path(to).expanduser()
     for project in hosts.projects:
         registered = Path(project).expanduser()
-        if slug_for(registered) == to or registered.resolve() == candidate.resolve():
+        if (slug_for(registered) == to
+                or names.registration_key(registered.resolve()) == names.registration_key(candidate.resolve())):
             return registered.resolve()
     raise VerbError(
         f"target {to!r} is not a registered project — "
@@ -9336,11 +9342,11 @@ def _resolve_move_target(home: Path, to: str) -> tuple[str, Path, Path | None]:
             skill_dir_for(hosts, name)  # validity gate only
         except HostsError as exc:
             raise VerbError(str(exc)) from exc
-        return f"skill:{name}", home / "skills" / name, None
+        return f"skill:{name}", names.component_path(home / "skills", name), None
     rest = to[len("project:") :] if isinstance(to, str) and to.startswith("project:") else to
     project_path = _resolve_rehome_target(home, rest)
     slug = slug_for(project_path)
-    return "project", home / "projects" / slug, project_path
+    return "project", names.component_path(home / "projects", slug), project_path
 
 
 def _bucket_scope_literal(home: Path, bucket: Path) -> str:
@@ -14040,7 +14046,8 @@ def recompile(
                         RecompileEntry(target=target, changed=False)
                     )
                     continue
-                rel = target.relative_to(host_repo)
+                # Managed Git specs always carry both paths.
+                rel = names.relative_key(cast(Path, host_repo), cast(Path, target))
                 try:
                     gitops.stage(host_repo, host_paths)
                     sha = gitops.commit(
@@ -14284,7 +14291,7 @@ def recompile(
                             RecompileEntry(target=spec.pointer_surface, changed=True)
                         )
                 elif applied:
-                    rel = probe.relative_to(host_repo)
+                    rel = names.relative_key(host_repo, probe)
                     try:
                         gitops.stage(host_repo, [probe])
                         sha = gitops.commit(
@@ -14309,7 +14316,7 @@ def recompile(
                 if pointer_changed and spec.mode == "git":
                     pointer_surface = spec.pointer_surface
                     assert pointer_surface is not None
-                    prel = pointer_surface.relative_to(host_repo)
+                    prel = names.relative_key(host_repo, pointer_surface)
                     try:
                         gitops.stage(host_repo, [pointer_surface])
                         psha = gitops.commit(

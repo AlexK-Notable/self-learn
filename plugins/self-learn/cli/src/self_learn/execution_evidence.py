@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import gitops, intents
-from .primitives import fsops
+from .primitives import fsops, names
 
 
 class ExecutionEvidenceError(ValueError):
@@ -195,7 +195,7 @@ def read_manifest(
     """Read a run manifest from a pinned committed Git object."""
     home = Path(home)
     path = manifest_path(home, run_id)
-    relpath = path.relative_to(home.resolve())
+    relpath = names.relative_key(home.resolve(), path)
     proc = gitops._git(home, "show", f"{at}:{relpath}")  # noqa: SLF001
     try:
         data = json.loads(proc.stdout)
@@ -324,7 +324,8 @@ def find_compound_proof_commit(
         raise ExecutionEvidenceError(
             "compound proof already exists at the prepared boundary"
         )
-    relpath = manifest_path(home, ref.run_id).relative_to(home.resolve())
+    manifest = manifest_path(home, ref.run_id)
+    relpath = names.relative_key(home.resolve(), manifest)
     commits = gitops._git(  # noqa: SLF001 — committed manifest history query
         home,
         "rev-list",

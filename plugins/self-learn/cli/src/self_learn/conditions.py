@@ -87,7 +87,7 @@ from . import intents
 from . import report as report_mod
 from . import settings
 from . import user_model
-from .primitives import chrono
+from .primitives import chrono, names
 
 __all__ = [
     "Item",
@@ -231,7 +231,7 @@ def _host_items(home: Path, observed_at: str) -> list[Item]:
         entries.append((str(parsed.skills_root.resolve()), parsed.skills_root_mode))
     for p in parsed.projects:
         resolved = str(p.resolve())
-        mode = parsed.project_modes.get(resolved, "git")
+        mode = parsed.project_modes.get(names.registration_key(resolved), "git")
         entries.append((resolved, mode))
     # One row per host, even when the same path is registered as the skills
     # root AND as a project (the live ledger's shape): the first registration

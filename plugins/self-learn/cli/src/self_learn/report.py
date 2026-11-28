@@ -31,6 +31,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from .primitives import names
 from . import attribution
 from . import domain
 from . import gitops
@@ -1134,7 +1135,7 @@ def _resolve_project_rows(home: Path) -> list[dict]:
 
     rows: list[dict] = []
     for project in hosts.projects:
-        key = slug_for(project)[-8:]
+        key = names.project_digest(project)
         problem = host_path_problem(home, project, "project")
         if problem is not None:
             rows.append({
