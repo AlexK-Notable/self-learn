@@ -45,6 +45,11 @@ def test_capability_table_matches_parser():
     for capability, needs_it in expected.items():
         assert {v for v in verbs if capability in cap.REQUIRES[v]} == needs_it
     assert {v for v in verbs if not cap.REQUIRES[v]} == BASIC
+    assert {k for k in cap.REQUIRES if k.startswith("teach ")} == {
+        "teach --route", "teach --dest", "teach --note", "teach --hook-input", "teach --allow-empty-glob",
+        "teach --rules-path", "teach --allow-unpathed", "teach --follow-up", "teach --unblocks-on",
+        "teach --follow-up-note",
+    }
     assert set(subcommands(choices["host"])) == {"add", "list", "rebind", "commit-drift", "remove", "set-mode"}
 
 
@@ -138,7 +143,8 @@ def scratch_env(root):
 def test_linux_teach_never_imports_capabilities(tmp_path):
     env = scratch_env(tmp_path)
     code = """
-import sys
+import os, sys
+from pathlib import Path
 from self_learn.cli import main
 from self_learn import gitops, ledger
 from unittest.mock import patch
@@ -146,7 +152,7 @@ with patch.object(gitops, '_git', wraps=gitops._git) as commands:
     assert main(['init']) == 0
     assert main(['init']) == 0
     assert all('config' not in call.args[1:] for call in commands.call_args_list)
-assert ledger.resolve_home() == __import__('pathlib').Path(__import__('os').environ['SELF_LEARN_HOME'])
+assert ledger.resolve_home() == Path(os.environ['SELF_LEARN_HOME'])
 assert main(['teach','--user','--no-push','--fact','synthetic capture']) == 0
 assert 'self_learn.primitives.capabilities' not in sys.modules
 assert 'self_learn.primitives._capture_windows' not in sys.modules
@@ -243,6 +249,7 @@ git -C $h add -- sentinel
 $receipt = & $env:CAPTURE_CLI teach --project --no-push --json --fact 'Synthetic café evidence' | ConvertFrom-Json
 @{pid=$PID; receipt=$receipt; rel=[IO.Path]::GetRelativePath($h,$receipt.path); before=$before} | ConvertTo-Json -Compress
 """)
+    assert (a["receipt"]["status"], a["receipt"]["scope"]) == ("pending", "project")
     record_id = a["receipt"]["id"]
     env.update(CAPTURE_ID=record_id, CAPTURE_REL=a["rel"].replace("\\", "/"))
     b = shell("""

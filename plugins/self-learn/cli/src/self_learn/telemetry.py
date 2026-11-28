@@ -223,7 +223,9 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
 
         spool = spool_dir()
         try:
-            path = names.component_path(spool, f"{_month(now)}.{actor()}.jsonl")
+            actor_name = actor()
+            names.component_path(spool, actor_name)
+            path = names.component_path(spool, f"{_month(now)}.{actor_name}.jsonl")
         except ValueError as exc:
             raise TelemetryError(str(exc)) from exc
         checked_path(names.cache_root(), path.with_name(path.name + ".lck"))

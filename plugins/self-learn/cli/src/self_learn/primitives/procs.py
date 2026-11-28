@@ -98,6 +98,8 @@ def run_bounded(
     It requires ``binary=True`` and no stdin; exceeding it kills the whole
     process group just like timeout, then raises :class:`OutputLimitExceeded`.
     """
+    if os.name == "nt" and argv and argv[0] == "git":
+        argv = ["git.exe", *argv[1:]]
     return _backend().run_bounded(
         argv, timeout=timeout, cwd=cwd, env=env, input=input, check=check,
         binary=binary, max_output_bytes=max_output_bytes,
@@ -105,6 +107,8 @@ def run_bounded(
 
 
 def run_command(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    if os.name == "nt" and argv and argv[0] == "git":
+        argv = ["git.exe", *argv[1:]]
     return _backend().run_command(argv, timeout=timeout)
 
 

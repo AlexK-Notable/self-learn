@@ -11,6 +11,7 @@ from . import names, procs
 class CapturePathError(ValueError):
     """Cannot establish a safe, unambiguous local capture path."""
 
+
 def checked_path(root: Path, candidate: Path) -> Path:
     """Validate every component starting at the caller's selected root, before I/O."""
     try:
@@ -33,7 +34,7 @@ def verify_project(home: Path, project: Path) -> None:
     checked_path(home, bucket / "meta.yaml")
     if bucket.exists():
         recorded = bucket_project_path(bucket)
-        if recorded is None or not recorded.is_absolute() or names.registration_key(recorded) != names.registration_key(project):
+        if recorded is None or names.registration_key(recorded) != names.registration_key(project):
             raise CapturePathError(f"cannot verify the registered project in {bucket}")
 
 

@@ -113,18 +113,24 @@ import sys
 from self_learn import telemetry
 original = telemetry.locks.acquire
 def acquire(*args, **kwargs):
-    Path(sys.argv[1]).touch()
+    if kwargs["path"].suffix == ".jsonl":
+        Path(sys.argv[1]).touch()
     return original(*args, **kwargs)
 telemetry.locks.acquire = acquire
-telemetry.spool_event('offer-made', sequence=2)
+if sys.argv[2] == "append":
+    telemetry.spool_event("offer-made", sequence=2)
+else:
+    from self_learn.cli import main
+    raise SystemExit(main(["teach", "--user", "--no-push", "--fact", "concurrent lesson"]))
 """
     # Start the late producer only once flush owns the first data file.
     peers = []
+    operation = "append"
     acquire = telemetry.locks.acquire
     def contend(fd, *, path, **kwargs):
         lease = acquire(fd, path=path, **kwargs)
         if path == seed and not peers:
-            peers.append(subprocess.Popen([sys.executable, "-c", code, str(ready)]))
+            peers.append(subprocess.Popen([sys.executable, "-c", code, str(ready), operation]))
             wait_for(ready, peers[0])
         return lease
 
@@ -146,6 +152,26 @@ telemetry.spool_event('offer-made', sequence=2)
     assert torn == b"torn" and [json.loads(row)["sequence"] for row in (first, second)] == [1, 2]
     assert seed.read_bytes() == b"" and git(home, "status", "--porcelain", "-zuall") == status
     assert git(home, "show", ":sentinel") == b"staged"
+
+    # Repeat with a real teach as the competing producer. The record commits
+    # before teach requests the spool lease, and its epilogue drains the late event.
+    telemetry.spool_event("offer-made", sequence=3)
+    peers.clear()
+    ready.unlink()
+    operation = "teach"
+    try:
+        assert telemetry.flush(home, push=False).events == 1
+        assert peers[0].wait(timeout=35) == 0
+    finally:
+        for proc in peers:
+            proc.kill()
+            proc.wait()
+    events = [json.loads(row) for row in git(home, "show", "HEAD:telemetry/" + seed.name).splitlines()[1:]]
+    assert [event.get("sequence") for event in events] == [1, 2, 3, None]
+    assert events[-1]["kind"] == "capture"
+    record_id = events[-1]["record"]
+    assert b"concurrent lesson" in git(home, "show", f"HEAD:user/pending/{record_id}.md")
+    assert git(home, "status", "--porcelain", "-zuall") == status
 
 
 def test_git_excludes_trailing_space(home):
@@ -175,9 +201,10 @@ def test_component_rejects_invalid_actor_without_creating_spool(home, monkeypatc
     assert spool.parent == names.home_cache() / "spool"
     assert json.loads(spool.read_bytes())["actor"] == "capture-test"
     before = {p: p.read_bytes() for p in spool.parent.rglob("*") if p.is_file()}
-    monkeypatch.setenv("SELF_LEARN_ACTOR", "../nested/actor")
-    with pytest.raises(telemetry.TelemetryError):
-        telemetry.spool_event("offer-made")
+    for invalid in ("../nested/actor", "CON"):
+        monkeypatch.setenv("SELF_LEARN_ACTOR", invalid)
+        with pytest.raises(telemetry.TelemetryError):
+            telemetry.spool_event("offer-made")
     assert {p: p.read_bytes() for p in spool.parent.rglob("*") if p.is_file()} == before
 
 
