@@ -12,6 +12,7 @@ import threading
 import time
 from contextlib import ExitStack
 from typing import Any, Mapping, Sequence, cast
+from uuid import uuid4
 
 from .procs import BoundedTimeout, OutputLimitExceeded
 
@@ -76,8 +77,8 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
     if executable.lower().endswith((".bat", ".cmd")):
         raise ValueError("a native executable is required")
 
-    # The pywin32 stub incorrectly declares a None return and a required job name.
-    job = cast(Any, win32job.CreateJobObject(None, None))  # pyright: ignore[reportArgumentType]
+    # pywin32 312 requires a string name and returns a PyHANDLE.
+    job = cast(Any, win32job.CreateJobObject(None, uuid4().hex))
     handles.callback(win32api.CloseHandle, job)
     info_class = win32job.JobObjectExtendedLimitInformation
     info = win32job.QueryInformationJobObject(job, info_class)
