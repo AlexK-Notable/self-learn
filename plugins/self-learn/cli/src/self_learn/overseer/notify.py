@@ -141,4 +141,3 @@ def _send_windows(line: str) -> None:
         procs.run_bounded(argv, timeout=notify_desktop.CALLER_TIMEOUT_SECONDS)
     except Exception as exc:
         worker.log(f"notify: the Windows notification helper failed ({type(exc).__name__})")
-        raise  # BREAK B5
