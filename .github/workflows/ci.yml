@@ -60,7 +60,7 @@ jobs:
         working-directory: plugins/self-learn/cli
         run: |
           $report = Join-Path $env:RUNNER_TEMP "process-contracts.xml"
-          uv run --no-sync python -m pytest tests/test_platform_procs.py tests/test_bounded_children.py::test_native_launch_has_one_owner_and_rejects_a_second -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          uv run --no-sync python -c "import faulthandler, pytest, sys; faulthandler.dump_traceback_later(75, exit=True); sys.exit(pytest.main(sys.argv[1:]))" tests/test_platform_procs.py tests/test_bounded_children.py::test_native_launch_has_one_owner_and_rejects_a_second -o xfail_strict=true -p no:cacheprovider -vv -rA --junitxml=$report
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })

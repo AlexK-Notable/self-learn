@@ -129,12 +129,12 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
             startup.hStdInput = _stdin(children, inherit)
         else:
             startup.hStdInput, stdin_writer = _pipe(pipe_owners[2], children, child_reads=True)
-        process, thread, _, _ = win32process.CreateProcess(
-            executable, subprocess.list2cmdline(argv), None, None, True,
-            win32process.CREATE_SUSPENDED | win32process.CREATE_UNICODE_ENVIRONMENT,
-            env, cwd, startup,
-        )
         try:
+            process, thread, _, _ = win32process.CreateProcess(
+                executable, subprocess.list2cmdline(argv), None, None, True,
+                win32process.CREATE_SUSPENDED | win32process.CREATE_UNICODE_ENVIRONMENT,
+                env, cwd, startup,
+            )
             win32job.AssignProcessToJobObject(job, process)
         except BaseException:
             if process is not None:
@@ -271,8 +271,8 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             for owner, (name, fn, args) in zip(owners, tasks):
                 thread = threading.Thread(target=worker, args=(owner, fn, args),
                                           name=f"bounded-{name}", daemon=True)
-                thread.start()
                 threads.append(thread)
+                thread.start()
             with changed:
                 completed = changed.wait_for(lambda: bool(failures) or finished == len(tasks),
                                              max(0, deadline - time.monotonic()))
