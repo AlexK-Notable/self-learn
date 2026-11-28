@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .ledger import resolve_home
-from .primitives import fsops, locks
+from .primitives import fsops, locks, names
 
 __all__ = [
     "GLOB_WITNESS_DIR",
@@ -109,14 +109,12 @@ class PruneResult:
 
 def cache_root() -> Path:
     """``${XDG_CACHE_HOME:-~/.cache}/self-learn``, with no side effects."""
-    raw = os.environ.get("XDG_CACHE_HOME")
-    base = Path(raw).expanduser() if raw else Path("~/.cache").expanduser()
-    return base / "self-learn"
+    return names.cache_root()
 
 
 def home_digest(home: Path | str) -> str:
     """The 8-hex-digit namespace key ``worker.cache_dir`` uses."""
-    return hashlib.sha256(str(Path(home).expanduser()).encode("utf-8")).hexdigest()[:8]
+    return names.home_digest(home)
 
 
 def record_home(cache: Path, home: Path | str) -> None:
@@ -124,7 +122,7 @@ def record_home(cache: Path, home: Path | str) -> None:
     raises: a cache directory that cannot be annotated is merely one the
     pruner will not touch."""
     try:
-        want = str(Path(home).expanduser())
+        want = names.home_spelling(home)
         pointer = cache / HOME_POINTER
         try:
             if pointer.read_text(encoding="utf-8").strip() == want:

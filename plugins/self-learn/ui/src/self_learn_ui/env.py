@@ -30,6 +30,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from self_learn.primitives import names
+
 #: Pinned verbatim (09 §4.1 / §4.4) — the ``cli`` engine is specced, not
 #: built; selecting it must fail loudly with exactly this text.
 ENGINE_NOT_BUILT_MESSAGE = "engine not built — see 09 §4.1"
@@ -108,8 +110,7 @@ def load_env(environ: dict[str, str] | None = None) -> EnvConfig:
     """
     env = os.environ if environ is None else environ
 
-    home_raw = env.get("SELF_LEARN_HOME") or "~/.self-learn"
-    self_learn_home = Path(home_raw).expanduser()
+    self_learn_home = names.ledger_home(env)
 
     ui_port_raw = env.get("SELF_LEARN_UI_PORT")
     ui_port = _parse_int(ui_port_raw, "SELF_LEARN_UI_PORT") if ui_port_raw else DEFAULT_UI_PORT

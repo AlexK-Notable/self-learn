@@ -74,7 +74,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-from .primitives import fsops
+from .primitives import fsops, names
 
 __all__ = [
     "AGENT_CLOSE",
@@ -807,9 +807,7 @@ def _switch_on() -> bool:
 
 
 def _disk_path() -> Path:
-    cache = os.environ.get("XDG_CACHE_HOME")
-    base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    return base / "self-learn" / "provenance" / "sends.json"
+    return names.cache_root() / "provenance" / "sends.json"
 
 
 def _send_from(row: object) -> Send:

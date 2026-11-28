@@ -74,7 +74,7 @@ from . import attention, attention_packet, invocation, model_failures, settings,
 from .invocation import failure_class
 from .invocation.contract import McpTool, McpToolset, ToolReply
 from .ledger import resolve_home
-from .primitives import chrono, fsops, locks
+from .primitives import chrono, fsops, locks, names
 
 __all__ = [
     "ASK_DOCTRINE",
@@ -281,7 +281,7 @@ def read_roots(home: Path, look_at: list[str] | tuple[str, ...] = ()) -> tuple[s
         out += [str(p) for p in hosts.canon_read_roots(hosts.load_hosts(home))]
     except Exception:  # noqa: BLE001 -- an unreadable registry adds no root
         pass
-    claude = Path.home() / ".claude"
+    claude = names.user_home() / ".claude"
     out += [str(claude / "CLAUDE.md"), str(claude / "rules"), str(claude / "hooks")]
     out += [str(p) for p in look_at]
     return tuple(dict.fromkeys(out))
@@ -681,7 +681,7 @@ class AskTools:
             except Exception:  # noqa: BLE001
                 path = None
         if path is not None:
-            out = _git_log(self.home, [*fmt, "--", str(path)])
+            out = _git_log(self.home, [*fmt, "--", names.git_arg(self.home, path)])
         elif re.fullmatch(r"[A-Za-z0-9@._-]{3,80}", target):
             out = _git_log(self.home, [*fmt, "--fixed-strings", f"--grep={target}"])
         else:
@@ -829,7 +829,7 @@ class AskTools:
 
     def settings_hooks(self, args: dict) -> str:
         del args
-        path = Path.home() / ".claude" / "settings.json"
+        path = names.user_home() / ".claude" / "settings.json"
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:

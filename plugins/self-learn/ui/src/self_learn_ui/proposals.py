@@ -39,6 +39,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from self_learn.primitives import names
 from self_learn.hosts import HostsError, load_hosts, slug_for
 from self_learn.ledger_ops import record_title
 from self_learn.records import ValidationError as RecordValidationError
@@ -246,7 +247,8 @@ def _registered_project_for(home: Path, to: str) -> Path | None:
     candidate = Path(to).expanduser()
     for project in hosts.projects:
         registered = Path(project).expanduser()
-        if slug_for(registered) == to or registered.resolve() == candidate.resolve():
+        if (slug_for(registered) == to
+                or names.registration_key(registered.resolve()) == names.registration_key(candidate.resolve())):
             return registered.resolve()
     return None
 

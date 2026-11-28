@@ -117,7 +117,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from .primitives import chrono, fsops, locks
+from .primitives import chrono, fsops, locks, names
 
 __all__ = [
     "SENTINEL_TTL_SECONDS",
@@ -148,9 +148,7 @@ _TOKEN_PREFIX = "token="
 def sentinel_path() -> Path:
     """The pinned sentinel location, XDG-resolved at call time. Global —
     NOT home-namespaced (doc 13 §6: a cross-repo pause contract)."""
-    cache = os.environ.get("XDG_CACHE_HOME")
-    base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    return base / "self-learn" / "autosync-pause"
+    return names.cache_root() / "autosync-pause"
 
 
 def _lock_path(path: Path) -> Path:

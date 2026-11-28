@@ -86,6 +86,8 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-11-28 — (primitives/names, CLI and UI path consumers, tests/test_platform_names.py) S-167: stored names and app-owned folders share a platform interface.** Linux retains existing project buckets, evidence keys, cache locations, Git operands and pointer text. Cache lookup stays read-only. The worker still creates the directory, records its home and migrates legacy state. Windows can import the interface. Its first operation raises `NotImplementedError`.
+
 - **2026-11-25 — (primitives/fsops, CLI and UI file publishers; tests/test_platform_fsops.py) S-166: file publication and private files share a platform interface.** Linux keeps the atomic writer, creation modes, link handling and file-then-parent sync. The worker still journals before replacing its named temp, which survives a failed install. The lock walker recognizes the staged replacement, stream open and final chmod. Windows can import the interface. Its first operation raises `NotImplementedError`.
 
 - **2026-11-25 — (primitives/procs, gitops, hosts, ledger, worker; tests/test_platform_procs.py) S-165: bounded children and PID probes share a process interface.** Linux keeps the combined pipe budget, process-group kill and timed drains. The six short Git commands still inherit stdin and return the standard library's captured text and timeout diagnostics. Windows callers can import the interface. Its first operation raises `NotImplementedError`.

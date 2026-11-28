@@ -130,7 +130,7 @@ from pathlib import Path
 
 from . import gitops
 from .compiled import sha256_hex
-from .primitives import chrono, fsops, locks
+from .primitives import chrono, fsops, locks, names
 
 __all__ = [
     "Intent",
@@ -175,7 +175,8 @@ def _now_iso() -> str:
 
 
 def _relpath(home: Path, path: Path) -> str:
-    return str(Path(path).resolve().relative_to(Path(home).resolve()))
+    target = Path(path).resolve()
+    return names.relative_key(Path(home).resolve(), target)
 
 
 def _head_show(home: Path, relpath: str) -> bytes | None:

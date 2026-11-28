@@ -28,7 +28,7 @@ from .index.registry import load_provider
 from .index.vectors import cosine, deserialize
 from .ledger import EXIT_NO_HOME, discover_buckets, home_state, home_state_message, resolve_home
 from .ledger_ops import ProposalError, _compile_glob_pattern, _glob_match, bucket_project_path, globs_may_intersect
-from .primitives import procs
+from .primitives import names, procs
 from .records import Record
 from .scan import redact
 
@@ -209,7 +209,7 @@ def _absolute_task_paths(paths: list[str], root: Path, literals: list[str], note
     deadline = time.monotonic() + gitops.GIT_LOCAL_TIMEOUT
     budget = [0, 0]
     groups: dict[Path, tuple[list[str], list[str]]] = {}
-    user_root = Path.home().resolve()
+    user_root = names.user_home().resolve()
     for raw, literal in [(p, False) for p in paths] + [(p, True) for p in literals]:
         path = Path(raw).expanduser()
         base = root
@@ -508,7 +508,7 @@ def select_lessons(home: Path, query: str, *, project: Path | None = None,
                 except Exception:
                     unreadable.append(str(path.relative_to(home)))
     from .verbs import DEFAULT_USER_CLAUDE_MD, _user_reachability_roots
-    user_roots = _user_reachability_roots(home, DEFAULT_USER_CLAUDE_MD.expanduser())
+    user_roots = _user_reachability_roots(home, names.user_claude_file(DEFAULT_USER_CLAUDE_MD))
     concrete_paths: list[Path] = []
     if records and limit:
         try:

@@ -44,6 +44,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .primitives import names
 from . import settings, transcript_lines, worker
 
 __all__ = [
@@ -87,9 +88,7 @@ def claude_projects_dir() -> Path:
     """Where Claude Code writes its transcripts: ``SELF_LEARN_CLAUDE_DIR``
     (tests), else ``CLAUDE_CONFIG_DIR``, else ``~/.claude`` -- then
     ``projects``."""
-    base = os.environ.get("SELF_LEARN_CLAUDE_DIR") or os.environ.get("CLAUDE_CONFIG_DIR")
-    root = Path(base) if base else Path("~/.claude").expanduser()
-    return root / "projects"
+    return names.claude_root(use="transcripts") / "projects"
 
 
 def _group_name(*candidates: str | None) -> str:
@@ -110,7 +109,7 @@ def _find(projects: Path, session_id: str, cwd: Path | str | None) -> Path | Non
     name = f"{session_id}.jsonl"
     if cwd is not None:
         try:
-            guess = projects / re.sub(r"[^A-Za-z0-9]", "-", str(Path(cwd).resolve()))
+            guess = projects / names.claude_folder_hint(Path(cwd).resolve(), style="transcript")
         except OSError:
             guess = None
         if guess is not None and (guess / name).is_file():

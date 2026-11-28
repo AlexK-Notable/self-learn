@@ -143,7 +143,7 @@ from .compilers import (
     reference_target_path,
 )
 from .hosts import HostsError, host_mode, load_hosts, validate_host_path
-from .primitives import chrono, fsops, yamlio
+from .primitives import chrono, fsops, names, yamlio
 from .scan import scan as secret_scan
 from .skill_registry import STATUS_LIVE, STATUS_RETIRED, SkillRegistryError
 from .skill_scaffold import (
@@ -1203,7 +1203,7 @@ def _secret_problems(files: Mapping[Any, Any]) -> list[str]:
 def _dirty_under(root: Path, paths: list[Path]) -> set[str]:
     """Repo-relative paths ``git status`` reports changed or untracked under
     *paths* (every untracked file listed, not just its folder)."""
-    rels = [os.path.relpath(p, root) for p in paths]
+    rels = [names.relative_key(root, p, method="relpath") for p in paths]
     proc = gitops._git_ok(  # noqa: SLF001 -- the porcelain read this needs has no public wrapper
         root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", *rels
     )
@@ -1232,7 +1232,7 @@ def _head_text(root: Path, path: Path) -> str | None:
 
 
 def _tracked_under(root: Path, directory: Path) -> list[Path]:
-    rel = os.path.relpath(directory, root)
+    rel = names.relative_key(root, directory, method="relpath")
     proc = gitops._git_ok(root, "ls-files", "-z", "--", rel)  # noqa: SLF001
     return [root / item for item in proc.stdout.split("\0") if item]
 
@@ -1509,7 +1509,7 @@ def _preflight(
 
     # -- uncommitted changes that are not this write's own bytes
     dirty = _dirty_under(root, [plan.plugin_dir, marketplace])
-    ours = {os.path.relpath(p, root): text for p, text in plan.writes.items()}
+    ours = {names.relative_key(root, p, method="relpath"): text for p, text in plan.writes.items()}
     busy: list[str] = []
     for rel in sorted(dirty):
         intended = ours.get(rel)
@@ -1649,7 +1649,7 @@ def _deploy(plan: _Plan, subject: str, body: str) -> str | None:
     # Changed files, plus this write's own bytes an interrupted run left
     # uncommitted (the preflight let only those through).
     dirty = _dirty_under(root, list(plan.writes))
-    leftovers = {p for p in plan.writes if os.path.relpath(p, root) in dirty}
+    leftovers = {p for p in plan.writes if names.relative_key(root, p, method="relpath") in dirty}
     paths = sorted(set(changed) | leftovers)
     if not paths and not plan.removals:
         return None
@@ -2391,7 +2391,7 @@ def _lessons_routed_to(home: Path, name: str) -> list[tuple[str, Path]]:
 def _bucket_records(home: Path, name: str) -> list[str]:
     """The ids of every record filed anywhere in the ledger bucket
     ``skills/<name>/`` (pending, resolved, or any other folder in it)."""
-    bucket = home / "skills" / name
+    bucket = names.component_path(home / "skills", name)
     if not bucket.is_dir():
         return []
     return sorted({p.stem for p in bucket.rglob("lrn-*.md") if p.is_file()})
@@ -2511,7 +2511,7 @@ def _rename_bucket_check(home: Path, plan: _RenamePlan) -> None:
     chooses another; no person is needed). Records this rename already
     carried there (an interrupted run) are its own. Run on a first run and
     on every resumed run that is not done."""
-    bucket = home / "skills" / plan.new
+    bucket = names.component_path(home / "skills", plan.new)
     if not bucket.is_dir():
         return
     others = sorted(
@@ -2646,9 +2646,9 @@ def _rename_dirty_check(plan: _RenamePlan) -> None:
     dirty = _dirty_under(
         root, [root / "plugins" / plan.old, root / "plugins" / plan.new, marketplace]
     )
-    ours = {os.path.relpath(p, root): text for p, text in plan.writes.items()}
+    ours = {names.relative_key(root, p, method="relpath"): text for p, text in plan.writes.items()}
     ours[_MARKETPLACE_REL] = plan.marketplace_text
-    gone = {os.path.relpath(p, root) for p in plan.removals}
+    gone = {names.relative_key(root, p, method="relpath") for p in plan.removals}
     busy: list[str] = []
     for rel in sorted(dirty):
         path = root / rel
@@ -3013,7 +3013,7 @@ def _settle_section(
         )
     if not section.changed:
         return None, None
-    rel = os.path.relpath(target, root)
+    rel = names.relative_key(root, target, method="relpath")
     try:
         gitops.stage(root, [target])
         sha = gitops.commit(

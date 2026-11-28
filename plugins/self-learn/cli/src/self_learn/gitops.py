@@ -83,7 +83,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from . import attribution
-from .primitives import fsops, locks, procs
+from .primitives import fsops, locks, names, procs
 
 __all__ = [
     "EXCLUDE_BEGIN",
@@ -116,6 +116,7 @@ __all__ = [
     "is_tracked",
     "known_paths",
     "paths_dirty",
+    "porcelain_paths",
     "push_if_remote",
     "push_pending",
     "push_with_retry",
@@ -307,7 +308,7 @@ def stage(repo: Path, paths: Iterable[Path | str]) -> list[Path]:
     untracked-and-gone) are skipped. Returns what was actually staged."""
     existing = [Path(p) for p in paths if Path(p).exists()]
     if existing:
-        _git_ok(repo, "add", "--", *[str(p) for p in existing])
+        _git_ok(repo, "add", "--", *[names.git_arg(repo, p) for p in existing])
     return existing
 
 
@@ -317,7 +318,7 @@ def unstage(repo: Path, paths: Iterable[Path | str]) -> None:
     refused. Never touches the worktree. A repo with no ``HEAD`` yet falls
     back to dropping the entries (``git rm --cached``), the same "not
     staged" end state."""
-    given = [str(p) for p in paths]
+    given = [names.git_arg(repo, p) for p in paths]
     if not given:
         return
     proc = _git(repo, "reset", "-q", "--", *given)
@@ -330,7 +331,7 @@ def staged_diff(repo: Path, paths: Iterable[Path | str] = ()) -> str:
     verb staged. T8's ``teach --route`` prints this (08 §1 `teach --route`
     pin: prints the diff as it applies)."""
     args = ["diff", "--cached"]
-    path_args = [str(p) for p in paths]
+    path_args = [names.git_arg(repo, p) for p in paths]
     if path_args:
         args += ["--", *path_args]
     return _git_ok(repo, *args).stdout
@@ -519,10 +520,9 @@ def host_lock_path(path: Path, mode: str) -> Path:
         # copies of one slug, free to drift.
         from .hosts import slug_for
 
-        cache_env = os.environ.get("XDG_CACHE_HOME")
-        base = Path(cache_env).expanduser() if cache_env else Path("~/.cache").expanduser()
+        app_root = names.cache_root()
         slug = slug_for(path)
-        return base / "self-learn" / f"host-{slug}.commit.lock"
+        return app_root / f"host-{slug}.commit.lock"
     raise GitOpsError(f"unknown host mode {mode!r} — expected 'git' or 'plain'")
 
 
@@ -564,15 +564,15 @@ def known_paths(repo: Path, paths: Iterable[Path | str]) -> list[str]:
     for raw in paths:
         p = Path(raw)
         if p.exists():
-            out.append(str(p))
+            out.append(names.git_arg(repo, p))
             continue
         # --with-tree=HEAD widens ls-files from the index to the index UNION
         # HEAD, which is what catches the git-mv'd / git-rm'd old path.
         probe = _git(
-            repo, "ls-files", "--error-unmatch", "--with-tree=HEAD", "--", str(p)
+            repo, "ls-files", "--error-unmatch", "--with-tree=HEAD", "--", names.git_arg(repo, p)
         )
         if probe.returncode == 0:
-            out.append(str(p))
+            out.append(names.git_arg(repo, p))
     return out
 
 
@@ -584,7 +584,7 @@ def is_tracked(repo: Path, path: Path | str) -> bool:
     still lives in HEAD until the mv is committed. :func:`known_paths` is
     the HEAD-widened variant — use that one where an old, git-mv'd path
     must still count."""
-    return _git(repo, "ls-files", "--error-unmatch", "--", str(path)).returncode == 0
+    return _git(repo, "ls-files", "--error-unmatch", "--", names.git_arg(repo, path)).returncode == 0
 
 
 def remove(repo: Path, path: Path | str) -> None:
@@ -593,7 +593,7 @@ def remove(repo: Path, path: Path | str) -> None:
     *path* raises — callers guard with :func:`is_tracked` first) and no
     ``-f`` (a tracked *path* modified since its last commit also raises;
     see M-D's report for whether either caller here can reach that shape)."""
-    _git_ok(repo, "rm", "--quiet", "--", str(path))
+    _git_ok(repo, "rm", "--quiet", "--", names.git_arg(repo, path))
 
 
 def commit(
@@ -727,10 +727,33 @@ def toplevel(path: Path | str) -> Path | None:
     return Path(out) if out else None
 
 
+def porcelain_paths(repo: Path) -> list[tuple[str, Path]]:
+    """``git status --porcelain -uall`` → [(XY, path)]. ``-uall`` so a
+    wholly-untracked BUCKET reports its files rather than the directory
+    (the miner's very first landing into a new project bucket is exactly
+    that case, and a directory pathspec would over-commit)."""
+    if os.name == "nt":
+        raise NotImplementedError("native Windows Git status paths are not implemented")
+    proc = _git(repo, "status", "--porcelain", "-uall")
+    if proc.returncode != 0:
+        raise GitOpsError(
+            f"git status in {repo} failed: {(proc.stderr or proc.stdout).strip()}"
+        )
+    out: list[tuple[str, Path]] = []
+    for line in proc.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        xy, rest = line[:2], line[3:]
+        if " -> " in rest:  # rename: both halves, kept whole for the report
+            rest = rest.split(" -> ", 1)[1]
+        out.append((xy, repo / rest.strip('"')))
+    return out
+
+
 def paths_dirty(repo: Path, target: Path | str) -> bool:
     """True iff ``target`` has uncommitted changes (tracked-modified OR
     untracked) — the dirty-compile-target abort predicate."""
-    proc = _git_ok(repo, "status", "--porcelain", "--", str(target))
+    proc = _git_ok(repo, "status", "--porcelain", "--", names.git_arg(repo, target))
     return bool(proc.stdout.strip())
 
 
@@ -738,7 +761,7 @@ def dirty_paths(repo: Path, target: Path | str) -> list[str]:
     """The porcelain-reported paths under ``target`` — the file-list
     companion to :func:`paths_dirty` (U20: the commit-drift verb's
     ``--dry-run --json`` mode has no other data source, gate m6)."""
-    proc = _git_ok(repo, "status", "--porcelain", "--", str(target))
+    proc = _git_ok(repo, "status", "--porcelain", "--", names.git_arg(repo, target))
     return [line[3:] for line in proc.stdout.splitlines() if line.strip()]
 
 
@@ -750,7 +773,7 @@ def check_ignore(repo: Path, target: Path | str) -> bool:
     DOES raise via :func:`_git_ok`. Deliberately not a substring scan of
     ``.gitignore`` (P-A3 mechanism pin): this honors nested
     ``.gitignore`` files, negations, and the user's global excludes."""
-    proc = _git(repo, "check-ignore", "-q", "--", str(target))
+    proc = _git(repo, "check-ignore", "-q", "--", names.git_arg(repo, target))
     if proc.returncode in (0, 1):
         return proc.returncode == 0
     raise GitOpsError(

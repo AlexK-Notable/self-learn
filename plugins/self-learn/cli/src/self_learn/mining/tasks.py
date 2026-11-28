@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Callable, Container, Iterable, Mapping, Sequence
 
 from ..invocation.contract import McpTool, McpToolset, ToolReply
-from ..primitives import fsops
+from ..primitives import fsops, names
 from .. import refs
 from ..scan import redact
 from . import spine as spine_mod
@@ -83,7 +83,7 @@ NIGHT_HOURS = 20
 def folder_slug(path: Path | str) -> str:
     """The transcript folder name Claude Code gives a session started in
     ``path`` (every character but a letter, digit or ``-`` becomes ``-``)."""
-    return re.sub(r"[^A-Za-z0-9-]", "-", str(path))
+    return names.claude_folder_hint(path, style="miner")
 _WORD_RE = re.compile(r"[\w.\-/]{3,}", re.U)
 
 

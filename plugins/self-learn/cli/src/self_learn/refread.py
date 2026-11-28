@@ -26,6 +26,7 @@ import hashlib
 from pathlib import Path
 from typing import NamedTuple
 
+from .primitives import names
 from .hosts import HostsError, load_hosts
 from .telemetry import spool_quiet
 
@@ -47,8 +48,7 @@ def _project_digest(project_path: Path | str) -> str:
     first 8 hex chars — the same digest ``hosts.py::slug_for`` appends to
     its readable prefix, computed directly rather than parsed back out of
     that formatted string."""
-    resolved = str(Path(project_path).resolve())
-    return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:8]
+    return names.project_digest(project_path)
 
 
 def _relative_key(resolved_path: Path, resolved_refs_dir: Path) -> str | None:
