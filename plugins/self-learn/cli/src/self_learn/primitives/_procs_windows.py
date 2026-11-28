@@ -182,33 +182,32 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
         ]
         if writer is not None:
             tasks.append(("stdin", write, (writer, owners)))
-        expired = False
+        exited = False
         try:
             for name, fn, args in tasks:
                 thread = threading.Thread(target=worker, args=(fn, args), name=f"bounded-{name}")
                 thread.start()
                 threads.append(thread)
             with changed:
-                completed = changed.wait_for(lambda: failures or finished == len(tasks),
+                completed = changed.wait_for(lambda: bool(failures) or finished == len(tasks),
                                              max(0, deadline - time.monotonic()))
                 if failures:
                     raise failures[0]
-            if not completed or not _wait_until(process, deadline):
-                expired = True
-                raise subprocess.TimeoutExpired(argv, timeout)
-        except BaseException:
-            win32job.TerminateJobObject(job, 1)
-            _reap(process)
-            if not expired:
-                raise
+            exited = completed and _wait_until(process, deadline)
         finally:
-            cleanup = time.monotonic() + _CLEANUP_SECONDS
-            for thread in threads:
-                thread.join(max(0, cleanup - time.monotonic()))
-                if thread.is_alive():
-                    raise RuntimeError(f"Windows pipe thread did not exit: {thread.name}")
+            try:
+                if not exited:
+                    win32job.TerminateJobObject(job, 1)
+                    _reap(process)
+            finally:
+                cleanup = time.monotonic() + _CLEANUP_SECONDS
+                for thread in threads:
+                    thread.join(max(0, cleanup - time.monotonic()))
+                for thread in threads:
+                    if thread.is_alive():
+                        raise RuntimeError(f"Windows pipe thread did not exit: {thread.name}")
 
-        if expired:
+        if not exited:
             if inherit:
                 raise subprocess.TimeoutExpired(argv, timeout, bytes(buffers[0]) or None,
                                                  bytes(buffers[1]) or None)
@@ -236,7 +235,8 @@ def run_bounded(
     code, out, err = _capture(argv, timeout, cwd, dict(env) if env is not None else None,
                               data, False, max_output_bytes)
     if not binary and not isinstance(input, (bytes, bytearray)):
-        out, err = _text(out, "strict"), _text(err, "strict")
+        errors = "replace" if os.path.basename(argv[0]).lower() in ("git", "git.exe") else "strict"
+        out, err = _text(out, errors), _text(err, errors)
     result = subprocess.CompletedProcess(argv, code, out, err)
     if check:
         result.check_returncode()

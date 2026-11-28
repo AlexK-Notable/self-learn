@@ -58,7 +58,7 @@ jobs:
 
       - name: Windows process contracts
         working-directory: plugins/self-learn/cli
-        run: uv run --no-sync python -m pytest tests/test_platform_procs.py -p no:cacheprovider -q -rs
+        run: uv run --no-sync python -m pytest tests/test_platform_procs.py -p no:cacheprovider -q -rA
 
       - name: Verify LF line endings on armor-pinned fixtures
         run: |

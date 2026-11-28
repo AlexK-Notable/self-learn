@@ -511,8 +511,8 @@ def test_git_text_and_byte_exact_output(tmp_path):
     config.write_bytes(b"[probe]\nvalue = " + "雪".encode() + b"\xff\n")
     argv = [git, "config", "--file", str(config), "--get", "probe.value"]
     assert procs.run_bounded(argv, binary=True, timeout=5, check=True).stdout.rstrip(b"\r\n") == "雪".encode() + b"\xff"
-    done = procs.run_command(argv, timeout=5)
-    assert (done.args, done.stdout, done.stderr, done.returncode) == (argv, "雪\ufffd\n", "", 0)
+    for done in (procs.run_command(argv, timeout=5), procs.run_bounded(argv, timeout=5)):
+        assert (done.args, done.stdout, done.stderr, done.returncode) == (argv, "雪\ufffd\n", "", 0)
     _assert_no_pipe_threads()
 
 
@@ -535,6 +535,9 @@ def test_closed_pipes_live_leader(tmp_path, monkeypatch):
         Path(sys.argv[1]).write_text(str(os.getpid()))
         time.sleep(15)
     """, ready)
+    # A Windows venv's python.exe is a redirector that waits with its own
+    # copies of both writers. Run the same interpreter directly for real EOF.
+    argv[0] = sys._base_executable
     with pytest.raises(procs.BoundedTimeout) as caught:
         procs.run_bounded(argv, binary=True, max_output_bytes=1, timeout=2)
     exc = caught.value
@@ -780,3 +783,20 @@ def test_launcher_death_closes_job(tmp_path):
     finally:
         (tmp_path / "beat.stop").touch()
         launcher.wait(timeout=6)
+
+
+@windows
+def test_both_readers_join_before_return(monkeypatch):
+    # Make worker completion and thread exit observably different events.
+    real_run = threading.Thread.run
+    readers = []
+    def slow_exit(thread):
+        real_run(thread)
+        if thread.name in ("bounded-stdout", "bounded-stderr"):
+            readers.append(thread)
+            time.sleep(.25)
+    monkeypatch.setattr(threading.Thread, "run", slow_exit)
+    done = procs.run_bounded(_python("import sys; print('out'); print('err', file=sys.stderr)"), timeout=5)
+    assert (done.stdout, done.stderr) == ("out\n", "err\n")
+    assert {t.name for t in readers} == {"bounded-stdout", "bounded-stderr"}
+    assert all(not t.is_alive() for t in readers)
