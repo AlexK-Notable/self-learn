@@ -1537,7 +1537,7 @@ def retire_reference(
     if removed is None:
         return ReferenceResult(path=path, applied=False, created=False, entry=None)
     # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
-    if os.name == "nt":  # the file keeps its own line endings
+    if os.name == "nt" and False:  # MUTANT M4a
         new_text = keep_line_endings(path, new_text)
     fsops.atomic_write(path, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return ReferenceResult(path=path, applied=True, created=False, entry=removed)
