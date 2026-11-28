@@ -60,7 +60,7 @@ def _pipe(parents, children, *, child_reads=False):
 
 
 def _stdin(children, inherit):
-    source = None
+    source = _winapi.GetStdHandle(win32api.STD_INPUT_HANDLE) if inherit else None
     if not source or source == -1:
         devnull = children.enter_context(open(os.devnull, "rb"))
         source = msvcrt.get_osfhandle(devnull.fileno())
@@ -99,11 +99,12 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
         else:
             startup.hStdInput, stdin_writer = _pipe(stdin_handles, children, child_reads=True)
         process, thread, _, _ = win32process.CreateProcess(
-            executable, subprocess.list2cmdline([arg for arg in argv if arg]), None, None, True,
+            executable, subprocess.list2cmdline(argv), None, None, True,
             win32process.CREATE_SUSPENDED | win32process.CREATE_UNICODE_ENVIRONMENT,
             env, cwd, startup,
         )
         handles.callback(win32api.CloseHandle, process)
+        handles.callback(win32api.CloseHandle, thread)
         try:
             win32job.AssignProcessToJobObject(job, process)
         except BaseException:
@@ -145,7 +146,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
                 if failures:
                     return
                 if limit is not None:
-                    if total + len(chunk) >= limit:
+                    if total + len(chunk) > limit:
                         failures.append(OutputLimitExceeded(f"child output exceeded {limit} bytes"))
                         changed.notify()
                         return
@@ -202,7 +203,7 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             finally:
                 cleanup = time.monotonic() + _CLEANUP_SECONDS
                 for thread in threads:
-                    thread.join(0)
+                    thread.join(max(0, cleanup - time.monotonic()))
                 for thread in threads:
                     if thread.is_alive():
                         raise RuntimeError(f"Windows pipe thread did not exit: {thread.name}")
@@ -227,7 +228,7 @@ def run_bounded(
     if binary and isinstance(input, str):
         raise ValueError("run_bounded: binary=True requires input to be bytes or None, not str")
     if max_output_bytes is not None and (
-        max_output_bytes < 0 or not binary or input is not None
+        max_output_bytes <= 0 or not binary or input is not None
     ):
         raise ValueError("run_bounded: output limit requires a positive budget, binary=True and no input")
     argv = list(argv)
@@ -245,7 +246,7 @@ def run_bounded(
 
 def run_command(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
     code, out, err = _capture(argv, timeout, None, None, None, True, None)
-    return subprocess.CompletedProcess(argv, code, _text(out, "ignore"), _text(err, "ignore"))
+    return subprocess.CompletedProcess(argv, code, _text(out, "replace"), _text(err, "replace"))
 
 
 def pid_alive(pid: int) -> bool:
@@ -257,7 +258,7 @@ def pid_alive(pid: int) -> bool:
         if exc.winerror == winerror.ERROR_INVALID_PARAMETER:
             return False
         if exc.winerror == winerror.ERROR_ACCESS_DENIED:
-            return False
+            return True
         raise
     try:
         return win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT
