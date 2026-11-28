@@ -187,6 +187,23 @@ def test_owner_death_releases_with_exec_child_alive(tmp_path):
 
 
 @posix
+def test_posix_facade_acquire_arguments(tmp_path, monkeypatch):
+    from self_learn.primitives import _locks_posix
+
+    calls = []
+    lease = locks.Lease(7, None)
+
+    def record(fd, **kwargs):
+        calls.append((fd, kwargs))
+        return lease
+
+    monkeypatch.setattr(_locks_posix, "acquire", record)
+    assert locks.acquire(7, path=tmp_path / "resource", wait=2, poll=0.5, close_scoped=True) is lease
+    assert locks.acquire_ledger_target(9) is lease
+    assert calls == [(7, {"wait": 2, "poll": 0.5, "close_scoped": True}), (9, {"wait": None})]
+
+
+@posix
 def test_held_set_identity_and_pid_probe(tmp_path):
     from self_learn import gitops, intents
     from support import make_home

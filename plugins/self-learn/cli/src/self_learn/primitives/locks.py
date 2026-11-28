@@ -50,11 +50,15 @@ def open_lock(path: Path, *, purpose: _Purpose) -> IO[Any]:
 def acquire(fd: int, *, path: Path, wait: float | None, poll: float = 0.02,
             close_scoped: bool = False) -> Lease:
     # POSIX locks the borrowed fd. Native locking will also need its path.
+    if os.name == "nt":
+        return _backend().acquire(fd, path=path, wait=wait, poll=poll, close_scoped=close_scoped)
     return _backend().acquire(fd, wait=wait, poll=poll, close_scoped=close_scoped)
 
 
 def acquire_ledger_target(fd: int) -> Lease:
     """Tracked telemetry append inside ledger_write."""
+    if os.name == "nt":
+        return _backend().acquire_ledger_target(fd)
     return _backend().acquire(fd, wait=None)
 
 
