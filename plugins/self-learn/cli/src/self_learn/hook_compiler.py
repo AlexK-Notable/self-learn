@@ -404,7 +404,7 @@ SCRIPT_LOCALE = "C.UTF-8"
 _LOCALE_PIN = (
     "# One locale whatever the caller's: bash's [[:space:]] test, jq and grep\n"
     "# decide as under " + SCRIPT_LOCALE + ", as self-learn's native rule evaluator does.\n"
-    "# A host without that locale cannot decide the same way: {verdict}.\n"
+    "# A host without that locale cannot decide the same way: {verdict}.\n#\n"
     "export LC_ALL=" + SCRIPT_LOCALE + " 2>/dev/null\n"
     "[ \"$(printf 'é' | grep -c '^.$' 2>/dev/null)\" = 1 ] || {fail}\n"
 )
