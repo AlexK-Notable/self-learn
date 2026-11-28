@@ -95,6 +95,8 @@ def test_windows_native_facts(tmp_path):
         symlink = kind == "directory symlink"
         tag = path.lstat().st_reparse_tag
         isjunction = getattr(os.path, "isjunction", None)
+        if sys.version_info >= (3, 12):
+            assert callable(isjunction)
         facts = (path.is_symlink(), os.path.islink(path), isjunction(path) if isjunction else None,
                  hex(tag), os.readlink(path))
         print(sys.version.split()[0], kind, facts)
@@ -156,11 +158,29 @@ def test_windows_retarget_failure_preserves_entries(tmp_path, monkeypatch):
     def refuse(*args):
         assert links.read_target(public) == str(first)
         raise failure
-    monkeypatch.setattr(win32file, "DeviceIoControl", refuse)
-    with pytest.raises(OSError) as caught:
-        links.replace_staged(stage, public)
+    with monkeypatch.context() as faults:
+        faults.setattr(win32file, "DeviceIoControl", refuse)
+        with pytest.raises(OSError) as caught:
+            links.replace_staged(stage, public)
     assert caught.value.winerror == 5 and caught.value.__cause__ is failure
     assert links.read_target(public) == str(first)
+    assert links.read_target(stage) == str(second)
+
+    # Exchange the junction for an ordinary empty folder after classification
+    # but before the no-follow open. The guard must inspect that same handle.
+    displaced = tmp_path / "displaced"
+    real_open = win32file.CreateFile
+    def swap_before_open(name, *args):
+        assert name == str(public)
+        public.rename(displaced)
+        public.mkdir()
+        return real_open(name, *args)
+    with monkeypatch.context() as faults:
+        faults.setattr(win32file, "CreateFile", swap_before_open)
+        with pytest.raises(FileExistsError, match="installation entry changed"):
+            links.replace_staged(stage, public)
+    assert public.is_dir() and not links.is_any_link(public)
+    assert links.read_target(displaced) == str(first)
     assert links.read_target(stage) == str(second)
 
 

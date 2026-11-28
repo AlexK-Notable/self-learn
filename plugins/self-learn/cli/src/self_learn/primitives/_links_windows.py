@@ -57,7 +57,6 @@ def _set_junction(link: Path, data: bytes, *, expected_tag: int) -> None:
 
 def create(link: Path, target: Path, *, directory: bool) -> None:
     if directory:
-        target = target.absolute()
         _local_ntfs(target)
         _local_ntfs(link.absolute().parent)
         data = _junction_data(target)
@@ -73,7 +72,7 @@ def create(link: Path, target: Path, *, directory: bool) -> None:
         except OSError as exc:
             if exc.winerror != 1314:
                 raise
-            raise
+            raise FileLinkPrivilegeError(exc.errno, exc.strerror, str(link), exc.winerror) from exc
 
 
 def _tag(path: Path) -> int:
@@ -95,20 +94,20 @@ def is_managed(link: Path) -> bool:
         # A mounted volume (Volume{GUID}) shares the junction tag but is not
         # an installation entry. Only manage drive-letter directory targets.
         target = os.readlink(link).removeprefix("\\\\?\\")
-        return link.exists() and len(Path(target).drive) == 2 and Path(target).is_absolute()
-    return tag == stat.IO_REPARSE_TAG_SYMLINK and not link.is_dir()
+        return len(Path(target).drive) == 2 and Path(target).is_absolute()
+    return tag == stat.IO_REPARSE_TAG_SYMLINK
 
 
 def read_target(link: Path) -> str:
     raw = os.readlink(link)
     if _tag(link) == stat.IO_REPARSE_TAG_MOUNT_POINT:
         return raw.removeprefix("\\\\?\\")
-    return os.path.abspath(raw)
+    return raw
 
 
 def remove(link: Path) -> None:
     if not is_managed(link):
-        return
+        raise ValueError(f"refusing to remove an unmanaged entry: {link}")
     if link.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
         link.rmdir()
     else:
@@ -132,10 +131,8 @@ def replace_staged(staged: Path, link: Path) -> None:
         # its substitute name. Consuming the staged entry is a separate step.
         target = Path(read_target(staged))
         _local_ntfs(target)
-        try:
-            _set_junction(link, _junction_data(target), expected_tag=stat.IO_REPARSE_TAG_MOUNT_POINT)
-        except OSError:
-            return
+        _set_junction(link, _junction_data(target), expected_tag=stat.IO_REPARSE_TAG_MOUNT_POINT)
+        remove(staged)
     else:
         # File symlinks use a rename. Incompatible directory/tag replacements
         # surface the native error without first removing the public name.
