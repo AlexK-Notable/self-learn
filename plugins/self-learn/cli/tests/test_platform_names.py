@@ -8,8 +8,10 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -361,6 +363,43 @@ def test_ledger_default_is_the_module_constant_read_at_call_time(tmp_path, monke
     assert ledger.resolve_home() == tmp_path / "from-env"
 
 
+@posix
+def test_gitops_windows_refusal_precedes_git(tmp_path, monkeypatch):
+    init_repo(tmp_path)
+    (tmp_path / "new file").touch()
+    launch = gitops.procs.run_command
+    calls = []
+
+    def observe(argv, **kwargs):
+        calls.append(list(argv))
+        return launch(argv, **kwargs)
+
+    monkeypatch.setattr(gitops.procs, "run_command", observe)
+    assert gitops.porcelain_paths(tmp_path) == [("??", tmp_path / "new file")]
+    assert calls == [["git", "-C", str(tmp_path), "status", "--porcelain", "-uall"]]
+    monkeypatch.setattr(gitops, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(gitops, "_git", lambda *a, **kw: pytest.fail("dispatched Git on Windows"))
+    with pytest.raises(NotImplementedError):
+        gitops.porcelain_paths(tmp_path)
+
+
+@posix
+def test_posix_git_arg_keeps_original_call(tmp_path, monkeypatch):
+    backend = names._backend()
+    original = backend.git_arg
+    calls = []
+
+    def observe(repo, path, /):
+        calls.append((repo, path))
+        return original(repo, path)
+
+    monkeypatch.setattr(backend, "git_arg", observe)
+    raw = "./A//B[1]"
+    for literal in (True, False):
+        assert names.git_arg(tmp_path, raw, literal=literal) == raw
+    assert calls == [(tmp_path, raw)] * 2
+
+
 def test_native_backend_is_selected_lazily():
     script = """
         import os, sys
@@ -426,11 +465,50 @@ def test_windows_project_alias_and_refusals(tmp_path, monkeypatch):
     deep_key = os.path.normcase(str(deep.resolve(strict=True)))
     assert len(deep_key) > 260
     assert names.project_slug(deep) == "w1-final-folder-" + hashlib.sha256(deep_key.encode()).hexdigest()[:32]
-    with pytest.raises(FileNotFoundError):
-        names.project_slug(tmp_path / "missing")
     monkeypatch.setattr(Path, "resolve", lambda *a, **kw: pytest.fail("resolved invalid input"))
-    for raw in ("C:place", "C:", "/place", r"\\?\C:\place", r"\\.\NUL", "a:b:c",
+    for raw in ("C:place", "C:", "/place", r"\\?\GLOBALROOT\Device\x", r"\\.\NUL", "a:b:c",
                 "C:/base/file:stream", r"\\host\share:stream\x", "NUL.txt", "bad.", "bad "):
+        with pytest.raises(ValueError):
+            names.project_slug(raw)
+
+
+@windows
+def test_windows_deleted_project_spelling(tmp_path, monkeypatch):
+    project = tmp_path / "Then Gone"
+    project.mkdir()
+    stored = names.project_slug(project), names.project_digest(project)
+    project.rmdir()
+    assert (names.project_slug(project), names.project_digest(project)) == stored
+
+    def gone(path, *, strict):
+        assert strict, "fallback must not resolve the surviving ancestors"
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(Path, "resolve", gone)
+    for raw, expected in [
+        (r"C:\Gone\old PROJECT", "w1-old-project-ae8f45f610a4ca578866adaeb5055ac2"),
+        ("C:/Gone/Former/../Archive.2026", "w1-archive-2026-84d9b038ffd56326cbfaaa5b41a2515d"),
+    ]:
+        assert names.project_slug(raw) == expected
+        assert names.project_digest(raw) == expected.rsplit("-", 1)[1][:8]
+
+
+@windows
+def test_windows_extended_drive_and_unc(monkeypatch):
+    # Never open the fixed UNC share. Observe the spelling passed to Windows.
+    calls = []
+
+    def observe(path, *, strict):
+        calls.append(str(path))
+        return path
+
+    monkeypatch.setattr(Path, "resolve", observe)
+    for extended, ordinary in [(r"\\?\C:\A\B", r"C:\A\B"),
+                               (r"\\?\unc\SERVER\Share\A B", r"\\SERVER\Share\A B")]:
+        assert names.project_slug(extended) == names.project_slug(ordinary)
+        assert calls[-2:] == [ordinary, ordinary]
+    for raw in (r"\\?\C:relative", r"\\?\UNC\server", r"\\?\UNC\.\pipe\x",
+                r"\\?\Volume{abc}\x", r"\\?\C:\NUL", r"\\?\C:\a:b", r"\\?\C:\a\..\b"):
         with pytest.raises(ValueError):
             names.project_slug(raw)
 
@@ -446,6 +524,7 @@ def test_windows_components(tmp_path, monkeypatch):
     invalid = ["", ".", "..", "C:x", "/base", r"\\.\NUL", "end ", "end.", "x" * 256, "😀" * 128]
     invalid += ["a" + char + "b" for char in '<>:"/\\|?*\0\n\x1f']
     devices = ["con", "PRN", "Aux", "NUL", *(f"{p}{n}" for p in ("com", "LPT") for n in range(1, 10))]
+    devices += ["CONIN$", "conout$", *(p + n for p in ("com", "LPT") for n in "¹²³")]
     invalid += [d + ext for d in devices for ext in ("", ".txt")]
     bad_pairs = [(n, ".ok") for n in invalid] + [
         ("valid", "."), ("valid", " "), ("valid", "/escape"), ("CO", "N.log"), ("a" * 255, "b")]
@@ -454,6 +533,53 @@ def test_windows_components(tmp_path, monkeypatch):
         for name, suffix in bad_pairs:
             with pytest.raises(ValueError):
                 names.component_path(root, name, suffix=suffix)
+
+
+@windows
+def test_windows_legal_high_control_characters(tmp_path):
+    name = "file-" + "".join(chr(n) for n in range(0x7F, 0xA0))
+    entry = tmp_path / name
+    entry.touch()
+    assert names.component_path(tmp_path, name).samefile(entry)
+    assert names.git_arg(tmp_path, entry) == name
+
+
+@windows
+def test_windows_component_reparse_tags(tmp_path, monkeypatch):
+    import stat
+
+    entry = tmp_path / "entry"
+    entry.mkdir()
+    actual = Path.lstat
+
+    def tagged(path):
+        if path == entry:
+            return SimpleNamespace(st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT, st_reparse_tag=tag)
+        return actual(path)
+
+    monkeypatch.setattr(Path, "lstat", tagged)
+    for tag in (0x9000001A, 0x9000101A, 0x9000F01A):  # IO_REPARSE_TAG_CLOUD variants
+        assert names.component_path(tmp_path, entry.name) == entry
+    for tag in (stat.IO_REPARSE_TAG_SYMLINK, stat.IO_REPARSE_TAG_MOUNT_POINT, stat.IO_REPARSE_TAG_APPEXECLINK):
+        with pytest.raises(ValueError):
+            names.component_path(tmp_path, entry.name)
+
+
+@windows
+@pytest.mark.parametrize("getter", ["project_slug", "home_spelling", "home_cache_for"])
+def test_windows_junction_identity(tmp_path, getter):
+    import _winapi
+
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "alias"
+    _winapi.CreateJunction(str(target), str(link))
+    assert link.samefile(target)
+    if getter == "home_cache_for":
+        assert names.home_cache_for(tmp_path, link) == names.home_cache_for(tmp_path, target)
+    else:
+        identify = getattr(names, getter)
+        assert identify(link) == identify(target)
 
 
 @windows
@@ -467,18 +593,21 @@ def test_windows_junction_boundary(tmp_path):
     link = repo / "junction"
     _winapi.CreateJunction(str(outside), str(link))
     assert (link / "marker").samefile(outside / "marker")
-    assert names.project_slug(link) == names.project_slug(outside)
-    assert names.home_spelling(link) == names.home_spelling(outside)
-    assert names.home_cache_for(repo, link) == names.home_cache_for(repo, outside)
     assert names.component_path(repo, "ordinary") == repo / "ordinary"
     with pytest.raises(ValueError):
         names.component_path(repo, "junction")
     with pytest.raises(ValueError):
-        names.component_path(link / "absent", "new")
+        names.component_path(link, "new")
+    # The junction relocates the selected root's parent. Only root and leaf
+    # belong to this component lookup.
+    (outside / "selected").mkdir()
+    selected = link / "selected"
+    assert selected.samefile(outside / "selected")
+    assert names.component_path(selected, "new") == selected / "new"
     assert names.git_arg(repo, link) == "junction"
     with pytest.raises(ValueError):
         names.git_arg(repo, link / "marker")
-    assert set(outside.iterdir()) == {outside / "marker"}
+    assert set(outside.iterdir()) == {outside / "marker", outside / "selected"}
     assert (outside / "marker").read_bytes() == b"outside"
 
 
@@ -581,7 +710,7 @@ def test_windows_git_operands_keys_and_pointers(tmp_path, monkeypatch):
     assert not Path(relative).exists() and target.exists()
     assert names.git_arg(repo, relative) == names.git_arg(repo, target) == "in repo/é[1].md"
     other = Path("Z:/" if repo.drive.upper() != "Z:" else "Y:/") / "elsewhere"
-    for bad in ("../outside", "..", r"\rooted", r"C:relative", r"\\?\C:\file", other):
+    for bad in ("../outside", "..", r"\rooted", r"C:relative", r"\\.\NUL", other):
         with pytest.raises(ValueError):
             names.git_arg(repo, bad)
     assert names.relative_key(repo, target) == "in repo/é[1].md"
@@ -593,6 +722,33 @@ def test_windows_git_operands_keys_and_pointers(tmp_path, monkeypatch):
     assert names.pointer_token(other / "surface", profile / "notes") == "~/notes"
     assert names.pointer_token(surface, other) == str(other)
     assert names.worktree_label_path(Path("A/.claude/worktrees/branch")) == "A/.claude/worktrees/branch"
+
+
+@windows
+def test_windows_git_passthrough(tmp_path):
+    literal = "folder é/file [1].md"
+    assert names.git_arg(tmp_path, tmp_path / literal, literal=True) == literal
+    for token in (":(glob)Folder/**/*.?x[1]", "HEAD:Folder/File [1]", "--literal-pathspecs", "./file [1]"):
+        assert names.git_arg(tmp_path, token, literal=False).encode() == token.encode()
+
+
+@windows
+def test_windows_git_repository_alias(tmp_path):
+    import _winapi
+
+    # The hosted runner's checkout and pytest temp directory are on separate
+    # drives. A junction still exercises the two spellings on a single volume.
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as scratch:
+        repo = Path(scratch) / "project"
+        _marker(repo, b"inside")
+        link = tmp_path / "alias"
+        _winapi.CreateJunction(str(repo), str(link))
+        assert (link / "marker").samefile(repo / "marker")
+        assert names.git_arg(link, link / "marker") == "marker"
+        outside = Path(scratch) / "outside"
+        outside.touch()
+        with pytest.raises(ValueError):
+            names.git_arg(link, outside)
 
 
 @windows

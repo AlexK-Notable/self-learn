@@ -21,7 +21,7 @@ def path_fingerprint(text: str, *, length: int) -> str:
 
 # Mirrors the DOS aliases on supported NTFS, including their extension forms.
 _DEVICE = re.compile(r"CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³]", re.ASCII | re.I)
-_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]')
+_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def _check_component(name: str) -> None:
@@ -33,6 +33,16 @@ def _check_component(name: str) -> None:
 
 def _ordinary_path(raw: Path | str) -> Path:
     spelling = os.fspath(raw).replace("/", "\\")
+    if spelling.startswith("\\\\?\\"):
+        body = spelling[4:]
+        if any(part in (".", "..") for part in body.split("\\")):
+            raise ValueError(f"ambiguous extended path: {raw!r}")
+        if body[:4].upper() == "UNC\\":
+            spelling = "\\\\" + body[4:]
+        elif re.match(r"[A-Za-z]:\\", body):
+            spelling = body
+        else:
+            raise ValueError(f"unsupported device namespace: {raw!r}")
     path = Path(spelling)
     if (not spelling or spelling.startswith(("\\\\?\\", "\\\\.\\"))
             or (path.anchor and not path.is_absolute())):
@@ -52,7 +62,14 @@ def _ordinary_path(raw: Path | str) -> Path:
 
 
 def _canonical(path: Path | str, *, strict: bool = False) -> str:
-    return os.path.normcase(str(_ordinary_path(path).resolve(strict=strict)))
+    ordinary = _ordinary_path(path)
+    try:
+        resolved = ordinary.resolve(strict=strict)
+    except FileNotFoundError:
+        # A removed project can still appear in reports. Use its spelling
+        # without resolving a surviving prefix (which may itself be an alias).
+        return os.path.normcase(os.path.abspath(ordinary))
+    return os.path.normcase(str(resolved))
 
 
 def project_slug(path: Path | str) -> str:
@@ -83,14 +100,14 @@ def component_path(root: Path, name: str, *, suffix: str = "") -> Path:
     if suffix:
         _check_component(component)
     candidate = root / component
-    absolute = candidate.absolute()
-    for entry in (*reversed(absolute.parents), absolute):
+    for entry in (root, candidate):
         try:
-            attributes = entry.lstat().st_file_attributes
+            tag = entry.lstat().st_reparse_tag
         except FileNotFoundError:
             continue
-        if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-            raise ValueError(f"reparse point in component path: {entry}")
+        # IsReparseTagNameSurrogate bit, plus the app-execution alias tag.
+        if tag & 0x20000000 or tag == stat.IO_REPARSE_TAG_APPEXECLINK:
+            raise ValueError(f"link in component path: {entry}")
     candidate.resolve().relative_to(root.resolve())
     return candidate
 
@@ -140,11 +157,15 @@ def user_claude_file(default: Path) -> Path:
     return default.expanduser()
 
 
-def git_arg(repo: Path, path: Path | str) -> str:
+def git_arg(repo: Path, path: Path | str, *, literal: bool = True) -> str:
+    """Windows callers must scope literal file operands with Git's literal-pathspec mode.
+
+    Pass literal=False for caller-owned patterns, tree names and options.
+    """
+    if not literal:
+        return str(path)
     operand = _ordinary_path(path)
     root = _ordinary_path(repo).resolve(strict=True)
-    if operand.drive and operand.drive.lower() != root.drive.lower():
-        raise ValueError(f"Git operand on another drive: {path}")
     anchored = root / operand
     # Resolve the parent to detect junction escapes. The last entry may itself
     # be a tracked link: Git names that entry, not its target.
