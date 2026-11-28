@@ -52,7 +52,7 @@ def _attributes(path: Path) -> int:
 
 def _link_tag(tag: int) -> bool:
     # IsReparseTagNameSurrogate, plus Windows application execution aliases.
-    return tag != 0  # refuse every tagged entry
+    return bool(tag & 0x20000000) or tag == stat.IO_REPARSE_TAG_APPEXECLINK
 
 
 def _is_link(path: Path) -> bool:
@@ -129,7 +129,7 @@ def replace_staged(src: Path | str, dst: Path | str, *, method: Literal["os", "p
             except OSError:
                 retry = False
             remaining = deadline - monotonic()
-            if not retry or remaining <= 0:
+            if not retry or remaining <= 0.010:
                 raise
             sleep(0.010)
             if monotonic() >= deadline:
@@ -141,7 +141,6 @@ def atomic_write(path: Path | str, data: bytes | str, *, mode: int | None = None
                  encoding: str = "utf-8") -> None:
     target = Path(path)
     if follow_symlinks:
-        _refuse_link(target.parent)
         if _is_link(target):
             resolved = target.resolve()
             # An execution alias may have no ordinary filesystem target.
@@ -151,14 +150,14 @@ def atomic_write(path: Path | str, data: bytes | str, *, mode: int | None = None
         _refuse_links(target)
     payload = data if isinstance(data, bytes) else data.encode(encoding)
     try:
-        fd, name = _new_temp(lambda: target.with_name("." + secrets.token_hex(8) + ".tmp"))
+        fd, name = _new_temp(lambda: fsops._temp_path(target))
     except OSError as exc:
         if exc.filename is not None:
             exc.filename = str(target)
         raise
     try:
         with os.fdopen(fd, "wb") as stream:
-            stream.write(payload[:65536])
+            stream.write(payload)
             if fsync:
                 stream.flush()
                 flush_file(stream.fileno())
@@ -216,8 +215,6 @@ def _verify_private(path: Path, principals) -> None:
         acl = sd.GetSecurityDescriptorDacl()
         if str(owner) not in expected or acl is None or acl.GetAceCount() != len(expected):
             break
-        if not protected:
-            break
         flags = _INHERIT if protected else _INHERIT | security.INHERITED_ACE
         expected_ace = ((security.ACCESS_ALLOWED_ACE_TYPE, flags), ntsecuritycon.FILE_ALL_ACCESS)
         aces = [acl.GetAce(i) for i in range(acl.GetAceCount())]
@@ -234,8 +231,6 @@ def _verify_private(path: Path, principals) -> None:
 
 
 def _existing_private_parent(path: Path) -> None:
-    if not path.exists():
-        ensure_private_parent(path)
     with _winerrors(path):
         _verify_private(path, _principals())
 
@@ -269,10 +264,7 @@ def ensure_private_parent(path: Path) -> None:
 
 def open_private_new(path: Path) -> int:
     _existing_private_parent(path.parent)
-    try:
-        return _exclusive_fd(path)
-    except FileExistsError as exc:
-        raise PermissionError("occupied private name") from exc
+    return _exclusive_fd(path)
 
 
 def private_temp(parent: Path, *, prefix: str, suffix: str) -> tuple[int, str]:
@@ -310,7 +302,7 @@ def reopenable_text(text: str, *, prefix: str, suffix: str) -> Iterator[Path]:
     try:
         with os.fdopen(fd, "wb") as stream:
             handle = msvcrt.get_osfhandle(fd)
-            with nullcontext():
+            with _winerrors(path):
                 try:
                     identity = _file_id(handle)
                 except pywintypes.error as exc:
@@ -332,7 +324,7 @@ def open_for_mode(path: Path, kind: Literal["x", "xb", "a"], *,
     opener = None if kind == "a" else lambda name, flags: _exclusive_fd(name)
     if kind == "xb":
         return open(path, kind, encoding=encoding, opener=opener)
-    return open(path, kind, encoding="cp1252" if encoding is None else encoding, newline="\n", opener=opener)
+    return open(path, kind, encoding="utf-8" if encoding is None else encoding, newline="\n", opener=opener)
 
 
 def finish_mode(path: Path, mode: int, *, method: Literal["path", "os"] = "path") -> None:
@@ -373,7 +365,7 @@ class _Directory:
     def __init__(self, path: Path):
         self.path = path.absolute()
         _refuse_links(self.path)
-        if not self.path.is_dir():
+        if not stat.S_ISDIR(self.path.stat().st_mode):
             raise NotADirectoryError(errno.ENOTDIR, "expected a directory", str(path))
 
     def entries(self):
