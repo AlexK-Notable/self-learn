@@ -1,4 +1,4 @@
-"""S-NEXT-w6-sdk. The Claude Code child's lifecycle on Windows.
+"""S-180. The Claude Code child's lifecycle on Windows.
 
 self-learn's model-backed commands run Claude Code through the Agent SDK,
 which spawns the child itself. On Windows self-learn joins its own

@@ -62,7 +62,7 @@ from .provider_env import provider_env
 __all__ = ["SdkBackend", "SdkOutcome", "run_sync", "options_kwargs"]
 
 if os.name == "nt":
-    # S-NEXT-w6-sdk: hand the shared library the process calls it uses to
+    # S-180: hand the shared library the process calls it uses to
     # contain Claude Code on Windows (`sdksession` imports nothing outside
     # the standard library, `LIB1`), with this surface's lines (`POL2`).
     # Registered at import: `lifecycle`'s orphan sweeps (ask, summarise)
@@ -915,7 +915,7 @@ async def _run_session(
     child_pid = lifecycle.child_pid_of(client)
     set_child_pid(child_pid)
     if os.name == "nt" and child_pid is not None:
-        # S-NEXT-w6-sdk: the spawn watcher has usually contained the child
+        # S-180: the spawn watcher has usually contained the child
         # already, during the handshake; make sure before the sidecar records
         # the identity read on the contained process.
         await _windows_containment.child_known(client, child_pid)
@@ -997,7 +997,7 @@ async def _run_session(
 
 async def _drive(spec: SessionSpec) -> SdkOutcome:
     if os.name == "nt":
-        # S-NEXT-w6-sdk: a log that cannot fail a session (start-up, the
+        # S-180: a log that cannot fail a session (start-up, the
         # sweep, teardown and containment lines all go through it).
         spec = _dataclass_replace(spec, log=_windows_containment.safe_log(spec.log))
     events = EventLog()
@@ -1040,7 +1040,7 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
 
     client = ClaudeSDKClient(options=options)
     if os.name == "nt":
-        # S-NEXT-w6-sdk: the one place every CLI model-backed command passes
+        # S-180: the one place every CLI model-backed command passes
         # before its Claude Code child is spawned (the only
         # `ClaudeSDKClient(...)` in the CLI is above): join the self job
         # (once per process), and watch for the child so it is contained

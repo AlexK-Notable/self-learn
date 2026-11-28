@@ -76,7 +76,7 @@ def write_sidecar(
     trusts one can SIGKILL an unrelated process that inherited the
     number.
 
-    S-NEXT-w6-sdk, Windows only: also records the child's identity, its
+    S-180, Windows only: also records the child's identity, its
     owner's (this process's) identity and how its program was chosen
     (`_containment_windows.record`); a failed write is reported and loses
     only the sidecar, never the model call."""
@@ -109,7 +109,7 @@ def clear_sidecar(cache_dir: Path, surface: str, session_key: str | None = None)
     timed out; also the ONE call site the orphan sweep uses once it is
     done with a sidecar it read.
 
-    S-NEXT-w6-sdk, Windows only: never removes a record a live process other
+    S-180, Windows only: never removes a record a live process other
     than this one owns, and a failure to remove leaves the file for a later
     sweep without failing the caller (`_containment_windows.may_clear`)."""
     if os.name == "nt":
@@ -227,7 +227,7 @@ def sweep_orphans(
     `process_start` defaults to :func:`default_process_start` (`F-4`);
     a caller may pass an explicit anchor (`MS5`).
 
-    S-NEXT-w6-sdk, Windows only: the same sweep, best effort (a failure is
+    S-180, Windows only: the same sweep, best effort (a failure is
     reported and never stops the session from starting)."""
     if os.name == "nt":
         from . import _containment_windows
@@ -283,7 +283,7 @@ def sweep_orphan(
     or a host job's. Silent when that sidecar does not exist; a sidecar
     that cannot be parsed is unlinked.
 
-    S-NEXT-w6-sdk, Windows only: best effort, as :func:`sweep_orphans`."""
+    S-180, Windows only: best effort, as :func:`sweep_orphans`."""
     if os.name == "nt":
         from . import _containment_windows
 
@@ -314,7 +314,7 @@ def sweep_orphan(
     )
 
 
-# S-NEXT-w6-sdk: the Windows bodies of `sweep_orphans` and `sweep_orphan`,
+# S-180: the Windows bodies of `sweep_orphans` and `sweep_orphan`,
 # copies of the Linux bodies above (which stay byte-for-byte), run inside
 # `_containment_windows.best_effort_sweep`. The record removals on these
 # paths go through `clear_sidecar`, which on Windows never removes a live
