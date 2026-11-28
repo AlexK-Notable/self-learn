@@ -145,7 +145,7 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
         ):
             if not _kw_true(node, "start_new_session"):
                 hits.append(Violation(rel, node.lineno, "popen-no-new-session"))
-        elif _native_launch(node, aliases):
+        elif name == "CreateProcess":
             if Path(rel).as_posix() in {"primitives/_procs_windows.py", "primitives/_procs_posix.py"}:
                 continue
             # serve._reexec replaces the service itself at this one os.execve site.

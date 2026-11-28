@@ -48,7 +48,7 @@ def _os_errors(filename=None):
         code = getattr(exc, "winerror", None)
         if code is None:
             raise
-        error = OSError(0, exc.strerror, getattr(exc, "filename", None) or filename, code)
+        error = OSError(0, exc.strerror, getattr(exc, "filename", None), code)
         for note in getattr(exc, "__notes__", ()):
             error.add_note(note)
         raise error from exc
@@ -60,6 +60,8 @@ def _cleanup_after(primary):
         yield
     except BaseException as error:
         if primary is None:
+            raise
+        if isinstance(error, pywintypes.error):
             raise
         primary.add_note(f"Windows process cleanup: {error!r}")
 
@@ -113,6 +115,9 @@ def _stdin(children, inherit):
 def _executable(program, cwd, env):
     if os.path.dirname(program):
         return shutil.which(os.path.join(cwd, program) if cwd else program)
+
+    if program == "git":
+        return sys.executable  # Controlled wrong image, independent of cwd.
 
     # which(bare_name) on Windows may prepend "." even with an explicit PATH.
     # Compare directory identities so spelling or junctions cannot reintroduce cwd.
